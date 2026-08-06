@@ -32,6 +32,8 @@ import type { StorageGate } from '@recued/storage-gate';
 import type { AuditLogStore } from '@recued/storage';
 import { RESERVE_ACTIONS } from '@recued/storage';
 
+import { readAuditUsageBytes } from './audit-usage-counter.js';
+
 export interface AuditRetentionConfig {
   /** Keep all entries younger than this. `null` disables age-based
    *  prune entirely (the post-D-120 default per
@@ -105,18 +107,19 @@ export const createAuditRetention = (deps: AuditRetentionDeps): AuditRetention =
   // and outstanding-approval volume is a handful of rows at most.
   const nonAwaitingSql = `(json_extract(data, '$.commit_status') IS NULL OR json_extract(data, '$.commit_status') != 'awaiting_approval')`;
 
-  const measureAuditUsage = (): number => {
-    const row = deps.db
-      .prepare(
-        `SELECT COALESCE(
-           (SELECT SUM(length(data)) FROM audit_entries), 0
-         ) + COALESCE(
-           (SELECT SUM(length(data)) FROM audit_activities), 0
-         ) AS total`,
-      )
-      .get() as { total: number };
-    return row.total;
-  };
+  /** ⛔ WAS A FULL SCAN OF THE ENTIRE AUDIT CORPUS, on an HOURLY tick, to
+   *  answer "am I over the trigger?" — which on a healthy server is always
+   *  "no". Measured on the old statement: 0.18ms at 1k rows, 33ms at 100k,
+   *  124ms at 400k, linear; D-230's 5 GB quota puts the steady-state corpus in
+   *  the millions of rows, i.e. seconds per tick.
+   *
+   *  Now an O(1) read of a counter SQLite maintains through triggers, so every
+   *  writer and deleter — including the raw `DELETE FROM audit_entries`
+   *  statements below and in `audit-compaction`, which never went through the
+   *  store — is covered by the schema rather than by a contract each caller
+   *  has to remember. See `audit-usage-counter.ts` for why the storage gate's
+   *  existing total could not be used instead. */
+  const measureAuditUsage = (): number => readAuditUsageBytes(deps.db);
 
   const measureReserveTotal = (): number => {
     const row = deps.db
@@ -204,35 +207,72 @@ export const createAuditRetention = (deps: AuditRetentionDeps): AuditRetention =
            LIMIT ?`,
       )
       .all(cap) as Array<{ key: string; len: number }>;
-    for (const row of entriesOldest) {
-      // Check floor BEFORE deleting.
-      const nonReserveBytes = measureAuditUsage() - reserveBytes;
-      if (nonReserveBytes - row.len < minNonReserveFloor) break;
-      deps.db.prepare(`DELETE FROM audit_entries WHERE key = ?`).run(row.key);
-      rowsRemoved++;
-      bytesFreed += row.len;
-    }
+    // ⛔ MEASURED ONCE, THEN TRACKED — not re-measured per row.
+    //
+    //  `measureAuditUsage()` is `SUM(length(data))` over both audit tables: a
+    //  FULL SCAN of the entire audit corpus. It used to be called inside both
+    //  delete loops, i.e. once per deleted row, making a single pass
+    //  O(rows_deleted x corpus). Measured before the change: deleting 5 rows
+    //  cost 10 full scans, 50 cost 55, and 500 cost 505 — and
+    //  `pruneMaxRowsPerRun` defaults to 1000, so one pass on a 100k-row audit
+    //  table did on the order of 10^8 row reads. Invisible on a fresh install,
+    //  quadratic as the server ages, which is exactly the long-horizon shape
+    //  the audit exists to catch (found 2026-08-04 by its optimization pass).
+    //
+    //  The running total is EXACT, not an approximation. Deleting a row of
+    //  `length(data) = len` reduces the sum by exactly `len`; `reserveBytes` is
+    //  unaffected because both queries exclude reserve rows (`reserveSql`), and
+    //  node is single-threaded so nothing else writes these tables mid-loop.
+    //  The activities loop CONTINUES this running total rather than restarting
+    //  it — `measureAuditUsage` spans both tables, so a re-measure there would
+    //  have picked up the entries deletions and a fresh start would not.
+    let nonReserveBytes = measureAuditUsage() - reserveBytes;
 
-    if (rowsRemoved < cap) {
-      const remaining = cap - rowsRemoved;
-      const activitiesOldest = deps.db
-        .prepare(
-          `SELECT key, length(data) AS len FROM audit_activities
-             WHERE ${reserveSql}
-             ORDER BY json_extract(data, '$.timestamp') ASC
-             LIMIT ?`,
-        )
-        .all(remaining) as Array<{ key: string; len: number }>;
-      for (const row of activitiesOldest) {
-        const nonReserveBytes = measureAuditUsage() - reserveBytes;
+    // ⛔ ONE TRANSACTION, TWO HOISTED STATEMENTS — not one of each per row.
+    //
+    //  Each `.run()` outside an explicit transaction is its own implicit
+    //  transaction, i.e. its own WAL commit. Deleting `pruneMaxRowsPerRun`
+    //  (default 1000) rows therefore paid 1000 commits AND re-`prepare`d the
+    //  same DELETE 1000 times. Measured on a file-backed WAL database — the
+    //  shape the server actually runs, and the reason an `:memory:` benchmark
+    //  is useless here: it has no commits to pay for and reported a quarter of
+    //  the real cost.
+    //
+    //  ⚠ The loops stay SYNCHRONOUS inside `db.transaction()`. better-sqlite3
+    //  transactions are synchronous by construction; an `await` in here would
+    //  silently break atomicity rather than fail.
+    const deleteEntry = deps.db.prepare(`DELETE FROM audit_entries WHERE key = ?`);
+    const deleteActivity = deps.db.prepare(`DELETE FROM audit_activities WHERE key = ?`);
+
+    deps.db.transaction(() => {
+      for (const row of entriesOldest) {
+        // Check floor BEFORE deleting.
         if (nonReserveBytes - row.len < minNonReserveFloor) break;
-        deps.db
-          .prepare(`DELETE FROM audit_activities WHERE key = ?`)
-          .run(row.key);
+        deleteEntry.run(row.key);
+        nonReserveBytes -= row.len;
         rowsRemoved++;
         bytesFreed += row.len;
       }
-    }
+
+      if (rowsRemoved < cap) {
+        const remaining = cap - rowsRemoved;
+        const activitiesOldest = deps.db
+          .prepare(
+            `SELECT key, length(data) AS len FROM audit_activities
+               WHERE ${reserveSql}
+               ORDER BY json_extract(data, '$.timestamp') ASC
+               LIMIT ?`,
+          )
+          .all(remaining) as Array<{ key: string; len: number }>;
+        for (const row of activitiesOldest) {
+          if (nonReserveBytes - row.len < minNonReserveFloor) break;
+          deleteActivity.run(row.key);
+          nonReserveBytes -= row.len;
+          rowsRemoved++;
+          bytesFreed += row.len;
+        }
+      }
+    })();
 
     return { rowsRemoved, bytesFreed };
   };

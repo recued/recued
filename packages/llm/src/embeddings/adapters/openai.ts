@@ -2,6 +2,7 @@ import { callProvider } from '../../adapters/anthropic.js';
 import type { LLMProvider, TokenUsage } from '../../types.js';
 import { LLMError } from '../../types.js';
 import type { EmbeddingsAdapter } from '../types.js';
+import { joinApiBase } from '../../base-url.js';
 
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com';
 
@@ -39,7 +40,7 @@ export const createOpenAIEmbeddingsAdapter = (
 ): EmbeddingsAdapter => ({
   provider,
   async embed(slot, request, options) {
-    const baseUrl = (slot.base_url ?? DEFAULT_OPENAI_BASE_URL).replace(/\/+$/, '');
+    const baseUrl = joinApiBase(slot.base_url ?? DEFAULT_OPENAI_BASE_URL, 'v1');
     const url = `${baseUrl}/v1/embeddings`;
 
     const body: Record<string, unknown> = {

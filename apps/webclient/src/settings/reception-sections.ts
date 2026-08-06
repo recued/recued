@@ -80,10 +80,25 @@ export const RECEPTION_ROUTE_CONTENT_ATTR =
  *  introduction, and compact segmented navigation. */
 export const RECEPTION_SECTION_NAV_STYLES = `
 [${RECEPTION_ROUTE_HOST_ATTR}] {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
   max-width: var(--wc-content-max, 1160px);
   margin: 0 auto;
   padding: clamp(18px, 3vw, 30px);
   color: var(--fg);
+  overflow-wrap: anywhere;
+}
+[${RECEPTION_ROUTE_HOST_ATTR}] *,
+[${RECEPTION_ROUTE_HOST_ATTR}] *::before,
+[${RECEPTION_ROUTE_HOST_ATTR}] *::after {
+  box-sizing: border-box;
+  min-width: 0;
+}
+[${RECEPTION_ROUTE_CONTENT_ATTR}] {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 [${RECEPTION_ROUTE_HOST_ATTR}] .reception-route-header {
   display: grid;
@@ -116,6 +131,7 @@ export const RECEPTION_SECTION_NAV_STYLES = `
   line-height: 1.55;
 }
 [${RECEPTION_ROUTE_TABS_ATTR}] {
+  box-sizing: border-box;
   display: inline-flex;
   gap: 4px;
   width: fit-content;
@@ -157,6 +173,17 @@ export const RECEPTION_SECTION_NAV_STYLES = `
 [${RECEPTION_ROUTE_CONTENT_ATTR}] .reception-page {
   padding: 0;
 }
+[${RECEPTION_ROUTE_CONTENT_ATTR}] .reception-section-heading {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
 @media (max-width: 720px) {
   [${RECEPTION_ROUTE_HOST_ATTR}] {
     padding: 18px 14px 28px;
@@ -166,9 +193,20 @@ export const RECEPTION_SECTION_NAV_STYLES = `
     width: 100%;
   }
   [${RECEPTION_ROUTE_TABS_ATTR}] .reception-route-tab {
-    flex: 1;
-    padding-inline: 10px;
+    min-width: 0;
+    flex: 1 1 0;
+    padding-inline: 6px;
     text-align: center;
+    overflow-wrap: anywhere;
+  }
+}
+@media (max-width: 340px) {
+  [${RECEPTION_ROUTE_TABS_ATTR}] {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  [${RECEPTION_ROUTE_TABS_ATTR}] .reception-route-tab {
+    overflow-wrap: normal;
   }
 }
 `;

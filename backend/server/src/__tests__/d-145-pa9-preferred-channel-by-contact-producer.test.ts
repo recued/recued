@@ -34,6 +34,10 @@ import {
 } from '../housekeeping/index.js';
 import type { HousekeepingContext } from '../housekeeping/registry.js';
 import type { SourceRecord } from '../housekeeping/source-walkers.js';
+import {
+  createCalendarFixtureTable,
+  insertCalendarFixtureRow,
+} from './_calendar-fixture.js';
 
 // ────────────────────────────────────────────────────────────────
 // Fixture infrastructure
@@ -44,16 +48,16 @@ let db: Database.Database;
 const NOW = 1_700_000_000_000;
 const ONE_DAY = 86_400_000;
 
-const MAIL_TABLE = 'collection_mail_test';
-const MAIL_TABLE_2 = 'collection_mail_other';
-const CAL_TABLE = 'collection_calendar_test';
-const CAL_TABLE_2 = 'collection_calendar_other';
+const MAIL_TABLE = 'collection_mail_11111111aa';
+const MAIL_TABLE_2 = 'collection_mail_22222222bb';
+const CAL_TABLE = 'collection_calendar_11111111aa';
+const CAL_TABLE_2 = 'collection_calendar_22222222bb';
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'd-145-pa9-pcc-'));
   db = new Database(join(dir, 'test.db'));
   db.pragma('journal_mode = WAL');
-  for (const t of [MAIL_TABLE, MAIL_TABLE_2, CAL_TABLE, CAL_TABLE_2]) {
+  for (const t of [MAIL_TABLE, MAIL_TABLE_2]) {
     db.exec(`
       CREATE TABLE IF NOT EXISTS ${t} (
         record_id   TEXT PRIMARY KEY,
@@ -66,6 +70,10 @@ beforeEach(() => {
         blob_hash   TEXT
       );
     `);
+  }
+  // ⛔ Calendar tables get the PRODUCTION shape, not mail's.
+  for (const t of [CAL_TABLE, CAL_TABLE_2]) {
+    createCalendarFixtureTable(db, t);
   }
 });
 
@@ -94,12 +102,7 @@ const insertCalendar = (
   hot: Record<string, unknown>,
   received_at = NOW,
 ): void => {
-  db.prepare(
-    `INSERT INTO ${table} (
-       record_id, received_at, modified_at, hot_fields,
-       size_bytes, source_id, body_inline, blob_hash
-     ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)`,
-  ).run(record_id, received_at, received_at, JSON.stringify(hot), 200, record_id);
+  insertCalendarFixtureRow(db, table, { record_id, hot, received_at });
 };
 
 const stubCtx = (now: number = NOW): HousekeepingContext => ({

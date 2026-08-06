@@ -34,6 +34,7 @@ import {
   RECIPE_EDITOR_ROUTE_ATTR,
   RECIPE_EDITOR_ROW_ATTR,
   RECIPE_EDITOR_SAVE_ATTR,
+  RECIPE_EDITOR_STYLES,
   RECIPE_EDITOR_STATUS_ATTR,
   RECIPE_EDITOR_TRIGGER_ADD_ATTR,
   RECIPE_EDITOR_TRIGGER_ADD_EVENT_ATTR,
@@ -59,8 +60,10 @@ import {
 } from '../recipe-editor-route.js';
 import {
   mountExecutionCaseDraftRoute,
+  EXECUTION_CASE_DRAFT_HOST_ATTR,
   EXECUTION_CASE_DRAFT_REFINE_ATTR,
   EXECUTION_CASE_DRAFT_REFINE_ERROR_ATTR,
+  EXECUTION_CASE_DRAFT_REFINE_PANEL_ATTR,
   EXECUTION_CASE_DRAFT_REFINE_PROMPT_ATTR,
   type MountExecutionCaseDraftRouteOptions,
 } from '../mount-execution-case-draft-route.js';
@@ -308,6 +311,55 @@ const connVar = (label: string, kind = 'api'): never =>
 // ────────────────────────────────────────────────────────────────
 
 describe('recipe-editor step inspector route', () => {
+  it('keeps its dense mobile editor controls at full interaction size', () => {
+    expect(RECIPE_EDITOR_STYLES).toContain(
+      `[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-actions .rx-btn {\n`
+        + '  min-width: 36px;\n  min-height: 36px;',
+    );
+    expect(RECIPE_EDITOR_STYLES).toContain(
+      `[${RECIPE_EDITOR_ROUTE_ATTR}] button.rx-btn {\n    min-height: 36px;`,
+    );
+    expect(RECIPE_EDITOR_STYLES).toContain(
+      `[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-actions .rx-btn {\n`
+        + '    min-width: 36px;\n    min-height: 36px;',
+    );
+    expect(RECIPE_EDITOR_STYLES).toContain(
+      `[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-id input {\n`
+        + '    min-height: 36px;',
+    );
+    expect(RECIPE_EDITOR_STYLES).toContain(
+      `[${RECIPE_EDITOR_WEBHOOKS_ATTR}] .recipe-editor-webhook-row {\n`
+        + '    min-width: 0;\n'
+        + '    grid-template-columns: minmax(0, 1fr);',
+    );
+    expect(RECIPE_EDITOR_STYLES).toContain(
+      `[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-field-grid,\n`
+        + `  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-trigger-fields {\n`
+        + '    grid-template-columns: minmax(0, 1fr);',
+    );
+    expect(RECIPE_EDITOR_STYLES).toContain(
+      `[${RECIPE_EDITOR_STATUS_ATTR}] {\n`
+        + '  min-width: 0;\n'
+        + '  max-width: 100%;',
+    );
+    expect(RECIPE_EDITOR_STYLES).toContain(
+      `[${RECIPE_EDITOR_ISSUE_ATTR}] > * {\n`
+        + '  min-width: 0;\n'
+        + '  overflow-wrap: anywhere;',
+    );
+    expect(RECIPE_EDITOR_STYLES).toContain(
+      '@media (max-width: 340px) {\n'
+        + `  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-summary {\n`
+        + '    grid-template-columns: auto minmax(0, 1fr);',
+    );
+    expect(RECIPE_EDITOR_STYLES).toContain(
+      `[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-actions {\n`
+        + '    grid-column: 1 / -1;\n'
+        + '    grid-row: 2;\n'
+        + '    width: 100%;',
+    );
+  });
+
   it('mounts with a blank recipe and an empty Steps section', () => {
     const { doc, root, route } = mount();
 
@@ -1179,6 +1231,49 @@ describe('recipe-editor step inspector route', () => {
     expect(args.query).toBe('{{config.query}}');
   });
 
+  it('names repeated op and condition controls for their exact step', () => {
+    const { root } = mount({
+      initialRecipe: opRecipe({
+        id: 'find_deal',
+        op: 'deal.search',
+        args: { query: '{{config.query}}' },
+      }),
+    });
+
+    expect(findByAttrValue(root, RECIPE_EDITOR_ROW_ATTR, 'find_deal')?.getAttribute(
+      'aria-label',
+    )).toBe('Step find_deal');
+    expect(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'arg:query')?.getAttribute(
+      'aria-label',
+    )).toBe('Argument query value for step find_deal');
+    expect(findByAttrValue(root, RECIPE_EDITOR_OP_ARG_REMOVE_ATTR, 'query')?.getAttribute(
+      'aria-label',
+    )).toBe('Remove argument query from step find_deal');
+    expect(findByAttr(root, RECIPE_EDITOR_OP_ARG_NAME_ATTR)?.getAttribute('aria-label'))
+      .toBe('New argument name for step find_deal');
+    expect(findByAttr(root, RECIPE_EDITOR_OP_ARG_ADD_ATTR)?.getAttribute('aria-label'))
+      .toBe('Add argument to step find_deal');
+
+    const reveal = findByAttrValue(
+      root,
+      RECIPE_EDITOR_COND_ADD_ATTR,
+      'find_deal:skip_when',
+    );
+    expect(reveal?.getAttribute('aria-label'))
+      .toBe('Add Skip when condition for step find_deal');
+    reveal?.click();
+
+    expect(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'skip_when')?.getAttribute(
+      'aria-label',
+    )).toBe('Skip when source for step find_deal');
+    expect(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'skip_when_op')?.getAttribute(
+      'aria-label',
+    )).toBe('Skip when operator for step find_deal');
+    expect(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'skip_when_value')?.getAttribute(
+      'aria-label',
+    )).toBe('Skip when value for step find_deal');
+  });
+
   it('Add arg focuses its value and final Remove returns to the draft input', () => {
     const { doc, root, route } = mount({
       initialRecipe: opRecipe({ id: 'q', op: 'deal.search', args: {} }),
@@ -1930,6 +2025,21 @@ describe('execution-case draft route: iterative refinement', () => {
     findByAttr(root, EXECUTION_CASE_DRAFT_REFINE_PROMPT_ATTR)!;
   const note = (root: ReturnType<typeof makeFakeElement>) =>
     findByAttr(root, EXECUTION_CASE_DRAFT_REFINE_ERROR_ATTR)!;
+
+  it('places a named, styled refinement panel before the long editor', () => {
+    const h = mountDraft();
+    const host = findByAttr(h.root, EXECUTION_CASE_DRAFT_HOST_ATTR)!;
+    const panel = findByAttr(host, EXECUTION_CASE_DRAFT_REFINE_PANEL_ATTR)!;
+    const editor = findByAttr(host, RECIPE_EDITOR_ROUTE_ATTR)!;
+
+    expect(host.children.indexOf(panel)).toBeLessThan(host.children.indexOf(editor));
+    expect(panel.getAttribute('aria-label')).toBe('Refine AI draft');
+    expect(box(h.root).getAttribute('aria-label')).toBe('What should change?');
+    expect(note(h.root).getAttribute('role')).toBe('status');
+    expect(h.doc.styleElements.some((style) =>
+      style.hasAttribute('data-recued-execution-case-draft-styles'))).toBe(true);
+    h.route.dispose();
+  });
 
   it('⛔ refuses to spend anything until the owner says what should change', async () => {
     // "Revise it" with nothing said is a second slow call that produces the same

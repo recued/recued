@@ -76,11 +76,17 @@ describe('buildUpdateReleaseEntry', () => {
   });
 
   it('carries the apply half on a self-applying channel', () => {
+    // ⚠ The apply half is wired per CHANNEL CAPABILITY, not per default mode.
+    // `binary` now defaults to `notify` and STILL needs applyDeps — the owner
+    // applies explicitly via `update.apply`. Asserting one mode for both here
+    // would conflate "can apply" with "applies unasked", which is exactly the
+    // distinction the notify default draws.
     for (const channel of ['binary', 'docker-thin'] as const) {
       const entry = build(channel, applyDeps);
       expect(entry?.applyDeps).toBe(applyDeps);
-      expect(channelDefaultMode(channel)).toBe('auto');
     }
+    expect(channelDefaultMode('docker-thin')).toBe('auto');
+    expect(channelDefaultMode('binary')).toBe('notify');
   });
 
   it('publishes NOTHING when the platform has no release deps at all', () => {

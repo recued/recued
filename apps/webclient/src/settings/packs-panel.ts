@@ -497,6 +497,12 @@ export type PacksDetailTab = 'use' | 'detail' | 'permissions' | 'access';
 const MANAGE_TABS: ReadonlyArray<PacksDetailTab> = ['detail', 'permissions', 'access'];
 type PacksDetailTabGroup = 'primary' | 'manage';
 
+const PACKS_DETAIL_TAB_PANEL_ID = 'recued-packs-detail-tab-panel';
+const packsDetailTabDomId = (
+  group: PacksDetailTabGroup,
+  id: PacksDetailTab,
+): string => `recued-packs-detail-${group}-${id}-tab`;
+
 type PacksDeleteActionFocus = {
   kind: 'delete' | 'confirm' | 'cancel';
   slug: string;
@@ -576,6 +582,8 @@ export const PACKS_DETAIL_REPO_LINK_ATTR = 'data-recued-packs-detail-repo';
 export const PACKS_DETAIL_RESOLVING_ATTR = 'data-recued-packs-detail-resolving';
 export const PACKS_DETAIL_RESOLVE_ERROR_ATTR =
   'data-recued-packs-detail-resolve-error';
+export const PACKS_DETAIL_RESOLVE_RETRY_ATTR =
+  'data-recued-packs-detail-resolve-retry';
 /** Pack-app recipe roster state. This read is separate from `packs.list`: a
  *  failure must not silently remove the Use surface or retry in a loop. */
 export const PACKS_DETAIL_RECIPES_STATUS_ATTR =
@@ -1408,8 +1416,9 @@ export const mountPacksPanel = (
    *  detail renders at full fidelity + installs via the by-slug path. Idempotent
    *  + guarded: no-op when not detail-only, no resolve caller, already in the
    *  roster, already resolved (pending), in flight, or already errored for this
-   *  slug (so a failure doesn't loop on every render). Re-renders on completion. */
-  const ensureDetailResolved = (slug: string): void => {
+   *  slug unless the owner explicitly retries (so a failure doesn't loop on
+   *  every render). Re-renders on completion. */
+  const ensureDetailResolved = (slug: string, retry = false): void => {
     if (opts.runResolvePack === undefined) return;
     // ⛔ Was `packs.some(...)` — skip anything already listed. That held while
     // `packs.list` forwarded EVERY manifest; it no longer does (installed only,
@@ -1421,7 +1430,7 @@ export const mountPacksPanel = (
     if (listed !== undefined && listed.manifest !== undefined) return;
     if (pendingAddEntry?.slug === slug) return;
     if (detailResolving === slug) return;
-    if (detailResolveError?.slug === slug) return;
+    if (detailResolveError?.slug === slug && !retry) return;
     detailResolving = slug;
     const resolve = opts.runResolvePack;
     void (async () => {
@@ -3011,8 +3020,19 @@ export const mountPacksPanel = (
     dismiss.textContent = COPY.disclosure_dismiss_label;
     dismiss.addEventListener('click', () => {
       if (disposed) return;
+      const dismissedSlug = notice.pack_slug;
       disclosure = null;
       render();
+      // The notice is transient DOM. Without an explicit successor its
+      // focused Dismiss button is removed by render() and keyboard ownership
+      // falls all the way back to <body>. Return to the action for the pack
+      // whose outcome was dismissed; an inventory refresh may have removed
+      // that row, so keep stable detail controls as ordered fallbacks.
+      focusPanelElement(
+        findBtn(PACKS_ROW_INSTALL_BTN_ATTR, dismissedSlug)
+          ?? findSelectedDetailTab()
+          ?? findBtn(PACKS_DETAIL_BACK_ATTR),
+      );
     });
     head.appendChild(dismiss);
     box.appendChild(head);
@@ -3096,10 +3116,20 @@ export const mountPacksPanel = (
     wrapper.appendChild(err);
     const retry = doc.createElement('button');
     retry.type = 'button';
-    retry.className = 'rx-btn rx-btn-secondary rx-btn-sm';
-    retry.textContent = COPY.detail_resolve_error_retry_label;
+    retry.setAttribute(PACKS_DETAIL_RESOLVE_RETRY_ATTR, slug);
+    retry.className =
+      'rx-btn rx-btn-secondary rx-btn-sm packs-detail-resolve-retry';
+    const retrying = detailResolving === slug;
+    retry.textContent = retrying
+      ? COPY.retrying_label
+      : COPY.detail_resolve_error_retry_label;
+    if (retrying) {
+      retry.setAttribute('aria-disabled', 'true');
+      retry.setAttribute('aria-busy', 'true');
+    }
     retry.addEventListener('click', () => {
-      if (detailResolveError?.slug === slug) detailResolveError = null;
+      if (detailResolving === slug) return;
+      ensureDetailResolved(slug, true);
       render();
     });
     wrapper.appendChild(retry);
@@ -3264,6 +3294,8 @@ export const mountPacksPanel = (
       button.setAttribute(PACKS_DETAIL_TAB_ATTR, id);
       button.setAttribute(PACKS_DETAIL_TAB_GROUP_ATTR, group);
       button.setAttribute('role', 'tab');
+      button.setAttribute('id', packsDetailTabDomId(group, id));
+      button.setAttribute('aria-controls', PACKS_DETAIL_TAB_PANEL_ID);
       button.setAttribute('aria-selected', selected ? 'true' : 'false');
       button.tabIndex = selected ? 0 : -1;
       button.textContent = label;
@@ -3312,6 +3344,7 @@ export const mountPacksPanel = (
       };
       const topStrip = doc.createElement('nav');
       topStrip.setAttribute(PACKS_DETAIL_TABS_ATTR, '');
+      topStrip.setAttribute('data-recued-scroll-rail', '');
       topStrip.setAttribute('role', 'tablist');
       topStrip.setAttribute('aria-label', COPY.detail_tabs_label);
       topStrip.appendChild(makeTabButton(
@@ -3332,6 +3365,7 @@ export const mountPacksPanel = (
     if (!showUse || shownTab !== 'use') {
       const tabStrip = doc.createElement('nav');
       tabStrip.setAttribute(PACKS_DETAIL_TABS_ATTR, '');
+      tabStrip.setAttribute('data-recued-scroll-rail', '');
       tabStrip.setAttribute('role', 'tablist');
       tabStrip.setAttribute(
         'aria-label',
@@ -3361,7 +3395,17 @@ export const mountPacksPanel = (
 
     const tabPanel = doc.createElement('div');
     tabPanel.setAttribute(PACKS_DETAIL_TAB_PANEL_ATTR, shownTab);
+    tabPanel.setAttribute('id', PACKS_DETAIL_TAB_PANEL_ID);
     tabPanel.setAttribute('role', 'tabpanel');
+    tabPanel.setAttribute(
+      'aria-labelledby',
+      shownTab === 'use'
+        ? packsDetailTabDomId('primary', 'use')
+        : showUse
+          ? `${packsDetailTabDomId('primary', 'detail')} `
+            + packsDetailTabDomId('manage', shownTab)
+          : packsDetailTabDomId('manage', shownTab),
+    );
     tabPanel.className = 'packs-detail-tab-panel';
 
     if (shownTab === 'use') {
@@ -3551,6 +3595,7 @@ export const mountPacksPanel = (
     let activeOwned = false;
     let restoreListRetry = false;
     let restoreRecipesRetry = false;
+    let restoreDetailResolveRetry = false;
     let restoreDetailBack = false;
     let restoreDetailTab = pendingDetailTabFocus;
     let restoreDeleteAction = pendingDeleteActionFocus;
@@ -3568,6 +3613,8 @@ export const mountPacksPanel = (
         && activeElement.hasAttribute(PACKS_RETRY_BTN_ATTR);
       restoreRecipesRetry = activeOwned
         && activeElement.hasAttribute(PACKS_DETAIL_RECIPES_RETRY_ATTR);
+      restoreDetailResolveRetry = activeOwned
+        && activeElement.hasAttribute(PACKS_DETAIL_RESOLVE_RETRY_ATTR);
       if (activeOwned && restoreDetailTab === null) {
         const id = activeElement.getAttribute(PACKS_DETAIL_TAB_ATTR);
         const group = activeElement.getAttribute(PACKS_DETAIL_TAB_GROUP_ATTR);
@@ -3607,6 +3654,15 @@ export const mountPacksPanel = (
       focusPanelElement(
         findBtn(PACKS_DETAIL_RECIPES_RETRY_ATTR)
           ?? findDetailTab('primary', 'use')
+          ?? findSelectedDetailTab()
+          ?? findBtn(PACKS_DETAIL_BACK_ATTR),
+      );
+    } else if (restoreDetailResolveRetry) {
+      focusPanelElement(
+        findBtn(PACKS_DETAIL_RESOLVE_RETRY_ATTR)
+          ?? (selectedSlug === null
+            ? null
+            : findBtn(PACKS_ROW_INSTALL_BTN_ATTR, selectedSlug))
           ?? findSelectedDetailTab()
           ?? findBtn(PACKS_DETAIL_BACK_ATTR),
       );
@@ -3858,7 +3914,11 @@ export const mountPacksPanel = (
 
 export const PACKS_PANEL_STYLES = `
 [${PACKS_PANEL_ATTR}] {
+  box-sizing: border-box;
   display: flex;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   flex-direction: column;
   gap: 16px;
   padding: 20px;
@@ -3869,14 +3929,17 @@ export const PACKS_PANEL_STYLES = `
   font-size: 13px;
   box-shadow: 0 1px 2px rgba(24, 24, 27, 0.035);
 }
+[${PACKS_PANEL_ATTR}] > * { min-width: 0; max-width: 100%; }
 [${PACKS_PANEL_ATTR}] .packs-status {
   margin: 0;
   color: var(--fg-muted);
+  overflow-wrap: anywhere;
 }
 [${PACKS_PANEL_ATTR}] .packs-title {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 [${PACKS_PANEL_ATTR}] .packs-title-error {
   color: var(--danger);
@@ -3893,6 +3956,8 @@ export const PACKS_PANEL_STYLES = `
 }
 [${PACKS_PANEL_ATTR}] .packs-actions {
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   gap: 8px;
   flex-wrap: wrap;
 }
@@ -3941,12 +4006,16 @@ export const PACKS_PANEL_STYLES = `
    of the compact Detail summary. */
 [${PACKS_PANEL_ATTR}] [${PACKS_DETAIL_TABS_ATTR}] {
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   gap: 4px;
   overflow-x: auto;
   border-bottom: 1px solid var(--border);
 }
 [${PACKS_PANEL_ATTR}] [${PACKS_DETAIL_TAB_ATTR}] {
   appearance: none;
+  box-sizing: border-box;
+  min-height: 36px;
   flex: 0 0 auto;
   padding: 8px 12px;
   border: none;
@@ -3969,6 +4038,7 @@ export const PACKS_PANEL_STYLES = `
 [${PACKS_PANEL_ATTR}] [${PACKS_DETAIL_TAB_PANEL_ATTR}] {
   display: flex;
   min-width: 0;
+  max-width: 100%;
   flex-direction: column;
   gap: 16px;
 }
@@ -3976,11 +4046,14 @@ export const PACKS_PANEL_STYLES = `
    use the tab divider, while subsequent Detail sections keep a hairline. */
 [${PACKS_PANEL_ATTR}] .packs-detail-section {
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   flex-direction: column;
   gap: 6px;
   padding-top: 10px;
   border-top: 1px solid var(--border);
 }
+[${PACKS_PANEL_ATTR}] .packs-detail-section > * { min-width: 0; max-width: 100%; }
 [${PACKS_PANEL_ATTR}] .packs-detail-section[${PACKS_DETAIL_SECTION_ATTR}="identity"] {
   border-top: none;
   padding-top: 0;
@@ -3999,36 +4072,63 @@ export const PACKS_PANEL_STYLES = `
 }
 [${PACKS_PANEL_ATTR}] .packs-detail-header {
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
 [${PACKS_PANEL_ATTR}] .packs-detail-name {
+  min-width: 0;
+  max-width: 100%;
   margin: 0;
   font-size: 16px;
   font-weight: 650;
+  overflow-wrap: anywhere;
 }
 [${PACKS_PANEL_ATTR}] .packs-detail-facts,
 [${PACKS_PANEL_ATTR}] .packs-detail-counts,
 [${PACKS_PANEL_ATTR}] .packs-detail-tags,
 [${PACKS_PANEL_ATTR}] .packs-detail-note {
+  min-width: 0;
+  max-width: 100%;
   margin: 0;
   line-height: 1.45;
   color: var(--fg-muted);
+  overflow-wrap: anywhere;
 }
 [${PACKS_PANEL_ATTR}] .packs-detail-counts {
   font-variant-numeric: tabular-nums;
 }
 [${PACKS_PANEL_ATTR}] .packs-detail-desc {
+  min-width: 0;
+  max-width: 100%;
   margin: 0;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 [${PACKS_PANEL_ATTR}] .packs-detail-repo,
 [${PACKS_PANEL_ATTR}] .packs-detail-access-link {
   font-size: 12px;
 }
+[${PACKS_PANEL_ATTR}] .packs-detail-access-link {
+  box-sizing: border-box;
+  display: inline-flex;
+  width: fit-content;
+  min-height: 36px;
+  align-items: center;
+  align-self: flex-start;
+  padding: 4px;
+  border-radius: 6px;
+}
+[${PACKS_PANEL_ATTR}] .packs-detail-access-link:hover {
+  background: var(--accent-weak);
+}
 [${PACKS_PANEL_ATTR}] .packs-detail-recipes-state {
+  box-sizing: border-box;
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
@@ -4048,9 +4148,21 @@ export const PACKS_PANEL_STYLES = `
   opacity: .65;
 }
 [${PACKS_PANEL_ATTR}] .packs-row-footer {
+  box-sizing: border-box;
   display: flex;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+  align-items: flex-start;
   justify-content: flex-end;
   gap: 8px;
+}
+[${PACKS_PANEL_ATTR}] .packs-row-footer > .rx-btn {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 40px;
+  flex: 0 0 auto;
 }
 [${PACKS_PANEL_ATTR}] [${PACKS_ROW_DELETE_CONFIRM_BTN_ATTR}][aria-disabled="true"],
 [${PACKS_PANEL_ATTR}] [${PACKS_ROW_DELETE_CANCEL_BTN_ATTR}][aria-disabled="true"] {
@@ -4063,7 +4175,11 @@ export const PACKS_PANEL_STYLES = `
   opacity: .65;
 }
 [${PACKS_PANEL_ATTR}] [${PACKS_DIALOG_ATTR}] {
+  box-sizing: border-box;
   display: flex;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   flex-direction: column;
   gap: 10px;
   padding: clamp(18px, 3vw, 26px);
@@ -4071,6 +4187,10 @@ export const PACKS_PANEL_STYLES = `
   border: 1px solid var(--accent);
   border-radius: 14px;
   box-shadow: 0 14px 36px rgba(24, 24, 27, 0.07);
+}
+[${PACKS_PANEL_ATTR}] [${PACKS_DIALOG_ATTR}] > * {
+  min-width: 0;
+  max-width: 100%;
 }
 [${PACKS_PANEL_ATTR}] .packs-dialog-eyebrow {
   margin: 0;
@@ -4086,20 +4206,25 @@ export const PACKS_PANEL_STYLES = `
   font-weight: 720;
   line-height: 1.2;
   letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
 }
 [${PACKS_PANEL_ATTR}] .packs-dialog-intro {
-  max-width: 66ch;
+  max-width: min(66ch, 100%);
   margin: 0 0 6px;
   color: var(--fg-muted);
   font-size: 13px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 [${PACKS_PANEL_ATTR}] .packs-dialog-summary {
   margin: 0;
   font-weight: 650;
+  overflow-wrap: anywhere;
 }
 [${PACKS_PANEL_ATTR}] .packs-dialog-list {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   gap: 6px;
   margin: 0;
   padding: 0;
@@ -4108,10 +4233,14 @@ export const PACKS_PANEL_STYLES = `
   font-size: 12px;
 }
 [${PACKS_PANEL_ATTR}] .packs-dialog-list > li {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface-sunk);
+  overflow-wrap: anywhere;
 }
 [${PACKS_PANEL_ATTR}] .packs-dialog-perms-heading,
 [${PACKS_PANEL_ATTR}] .packs-dialog-body-heading {
@@ -4119,6 +4248,8 @@ export const PACKS_PANEL_STYLES = `
 }
 [${PACKS_PANEL_ATTR}] .packs-dialog-perm-list {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
   margin: 0;
@@ -4126,7 +4257,10 @@ export const PACKS_PANEL_STYLES = `
   list-style: none;
 }
 [${PACKS_PANEL_ATTR}] .packs-dialog-body-list {
+  box-sizing: border-box;
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   gap: 6px;
   margin: 0;
   padding: 12px 12px 12px 30px;
@@ -4135,8 +4269,11 @@ export const PACKS_PANEL_STYLES = `
   background: var(--surface-sunk);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 [${PACKS_PANEL_ATTR}] .packs-dialog-si-list {
+  min-width: 0;
+  max-width: 100%;
   margin: 0;
   padding-left: 18px;
   display: flex;
@@ -4144,8 +4281,11 @@ export const PACKS_PANEL_STYLES = `
   gap: 6px;
 }
 [${PACKS_PANEL_ATTR}] .packs-dialog-si-row {
+  min-width: 0;
+  max-width: 100%;
   font-size: 12px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 [${PACKS_PANEL_ATTR}] .packs-dialog-si-scope {
   margin-bottom: 2px;
@@ -4154,17 +4294,23 @@ export const PACKS_PANEL_STYLES = `
   color: var(--fg-muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
   font-size: 11px;
+  overflow-wrap: anywhere;
 }
 [${PACKS_PANEL_ATTR}] .packs-dialog-si-label {
   font-weight: 600;
   color: var(--fg-muted);
 }
 [${PACKS_PANEL_ATTR}] .packs-dialog-perm-row {
+  min-width: 0;
+  max-width: 100%;
   margin: 0;
   list-style: none;
 }
 [${PACKS_PANEL_ATTR}] .packs-dialog-perm-row label {
+  box-sizing: border-box;
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   align-items: center;
   gap: 8px;
   min-height: 42px;
@@ -4182,6 +4328,7 @@ export const PACKS_PANEL_STYLES = `
   cursor: default;
 }
 [${PACKS_PANEL_ATTR}] .packs-dialog-perm-row input {
+  flex: 0 0 auto;
   width: 17px;
   height: 17px;
   margin: 0;
@@ -4210,6 +4357,8 @@ export const PACKS_PANEL_STYLES = `
 }
 [${PACKS_PANEL_ATTR}] .packs-dialog-actions {
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
@@ -4218,20 +4367,48 @@ export const PACKS_PANEL_STYLES = `
   border-top: 1px solid var(--border);
 }
 [${PACKS_PANEL_ATTR}] .packs-dialog-actions .rx-btn {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   min-height: 40px;
   padding-inline: 16px;
   border-radius: 9px;
 }
+/* Both shared pickers are grid children of the pack consent surface. Bound
+   their tracks here so catalog operation ids and account labels stay local. */
+[${PACKS_PANEL_ATTR}] [${PACKS_DIALOG_ATTR}] :is(
+  [data-recued-install-grant-picker], [data-recued-install-connect]
+) { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; }
+[${PACKS_PANEL_ATTR}] [${PACKS_DIALOG_ATTR}] [data-recued-install-grant-picker] :is(
+  .igp-access-list, .igp-access-row, .igp-access-label,
+  .igp-scope, .igp-scope-list, .igp-scope-row, .igp-scope-label
+),
+[${PACKS_PANEL_ATTR}] [${PACKS_DIALOG_ATTR}] [data-recued-install-connect] :is(
+  .packs-dialog-connect-list, .packs-dialog-connect-row,
+  .packs-dialog-connect-row label, .packs-dialog-connect-option-label
+) { min-width: 0; max-width: 100%; }
+[${PACKS_PANEL_ATTR}] [${PACKS_DIALOG_ATTR}] [data-recued-install-grant-picker] .igp-access-list {
+  grid-template-columns: repeat(auto-fit, minmax(min(176px, 100%), 1fr));
+}
+[${PACKS_PANEL_ATTR}] [${PACKS_DIALOG_ATTR}] [data-recued-install-connect] :is(
+  .packs-dialog-connect-heading, .packs-dialog-connect-empty,
+  .packs-dialog-connect-hint, .packs-dialog-connect-summary,
+  .packs-dialog-connect-option-label
+) { overflow-wrap: anywhere; }
 [${PACKS_PANEL_ATTR}] .packs-row-delete-error {
+  box-sizing: border-box;
   display: inline-block;
-  margin-left: 8px;
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 100%;
   padding: 4px 6px;
   background: var(--danger-bg);
   color: var(--danger);
   border-radius: 4px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
   font-size: 11px;
-  word-break: break-all;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 [${PACKS_PANEL_ATTR}] .packs-row-collision {
   margin: 0;
@@ -4361,7 +4538,11 @@ export const PACKS_PANEL_STYLES = `
   word-break: break-all;
 }
 [${PACKS_PANEL_ATTR}] .packs-disclosure {
+  box-sizing: border-box;
   display: flex;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   flex-direction: column;
   gap: 6px;
   padding: 8px 10px;
@@ -4369,31 +4550,60 @@ export const PACKS_PANEL_STYLES = `
   color: var(--warn);
   border-left: 3px solid var(--warn);
   border-radius: 3px;
+  overflow-wrap: anywhere;
+}
+[${PACKS_PANEL_ATTR}] .packs-disclosure > * {
+  min-width: 0;
+  max-width: 100%;
 }
 [${PACKS_PANEL_ATTR}] .packs-disclosure-head {
   display: flex;
-  align-items: baseline;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
 }
 [${PACKS_PANEL_ATTR}] .packs-disclosure-title {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 140px;
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 [${PACKS_PANEL_ATTR}] .packs-disclosure-dismiss {
+  box-sizing: border-box;
+  min-height: 36px;
+  max-width: 100%;
+  flex: 0 0 auto;
   margin-left: auto;
 }
 [${PACKS_PANEL_ATTR}] .packs-disclosure-block {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   font-size: 12px;
   line-height: 1.45;
 }
 [${PACKS_PANEL_ATTR}] .packs-disclosure-headline {
   margin: 0;
+  overflow-wrap: anywhere;
 }
 [${PACKS_PANEL_ATTR}] .packs-disclosure-list {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   margin: 2px 0 0;
   padding-left: 18px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
   font-size: 12px;
-  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+[${PACKS_PANEL_ATTR}] .packs-disclosure-list > li {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 /* Add-a-pack (2026-07-01) — the "Add a pack" section. */
 [${PACKS_PANEL_ATTR}] .packs-add-form {
@@ -4419,9 +4629,19 @@ export const PACKS_PANEL_STYLES = `
   font-size: 13px;
 }
 [${PACKS_PANEL_ATTR}] .packs-add-error {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   margin: 6px 0 0;
   color: var(--danger, #b42318);
   font-size: 12px;
+  overflow-wrap: anywhere;
+}
+[${PACKS_PANEL_ATTR}] [${PACKS_DETAIL_RESOLVE_RETRY_ATTR}].packs-detail-resolve-retry {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 36px;
 }
 [${PACKS_PANEL_ATTR}] .packs-add-marketplace-link {
   display: inline-block;
@@ -4435,9 +4655,20 @@ export const PACKS_PANEL_STYLES = `
 }
 @media (max-width: 640px) {
   [${PACKS_PANEL_ATTR}] { padding: 14px; border-radius: 12px; }
+  [${PACKS_PANEL_ATTR}] [${PACKS_DETAIL_TAB_ATTR}] { min-height: 44px; }
+  [${PACKS_PANEL_ATTR}] .packs-detail-access-link { min-height: 44px; }
+  [${PACKS_PANEL_ATTR}] [${PACKS_DISCLOSURE_DISMISS_BTN_ATTR}].packs-disclosure-dismiss.rx-btn {
+    min-height: 44px;
+  }
+  [${PACKS_PANEL_ATTR}] [${PACKS_DETAIL_RESOLVE_RETRY_ATTR}].packs-detail-resolve-retry.rx-btn {
+    min-height: 44px;
+  }
   [${PACKS_PANEL_ATTR}] [${PACKS_DIALOG_ATTR}] { padding: 16px 14px; border-radius: 12px; }
   [${PACKS_PANEL_ATTR}] .packs-dialog-heading { font-size: 19px; }
   [${PACKS_PANEL_ATTR}] .packs-dialog-perm-list { grid-template-columns: 1fr; }
   [${PACKS_PANEL_ATTR}] .packs-dialog-actions .rx-btn { flex: 1 1 auto; }
+  [${PACKS_PANEL_ATTR}] [${PACKS_DIALOG_ATTR}] [data-recued-install-grant-picker] :is(
+    .igp-access-list, .igp-scope-list
+  ) { grid-template-columns: minmax(0, 1fr); }
 }
 `;

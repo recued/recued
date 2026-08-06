@@ -50,6 +50,13 @@ import {
   matchesAnyAddress,
   sqlLikeAny,
 } from './_contact-addresses.js';
+import { listCollectionDataTables } from '../../collections/table.js';
+import {
+  CALENDAR_LIKE_COLUMN,
+  CALENDAR_ROW_SELECT,
+  calendarRowHotFields,
+  type CalendarScanRow as CalendarRawRow,
+} from './_calendar-rows.js';
 
 /** Rolling window for the 30-day stats. The aggregate is computed
  *  forward-looking from `ctx.now()` — moves with the producer's
@@ -108,16 +115,7 @@ interface CalendarScanRow {
 const listCollectionTables = (
   ctx: HousekeepingContext,
   platform: 'mail' | 'calendar',
-): string[] => {
-  const prefix = `collection_${platform}_`;
-  const rows = ctx.db
-    .prepare(
-      `SELECT name FROM sqlite_master
-        WHERE type='table' AND name LIKE ?`,
-    )
-    .all(`${prefix}%`) as Array<{ name: string }>;
-  return rows.map((r) => r.name);
-};
+): string[] => listCollectionDataTables(ctx.db, platform);
 
 /** Pull every mail row whose canonical addresses involve `email`.
  *  The JSON `LIKE` filter is a pre-narrow — the precise canonical
@@ -172,17 +170,13 @@ const collectCalendarRows = (
   for (const table of tables) {
     const rows = ctx.db
       .prepare(
-        `SELECT hot_fields FROM "${table}"
-          WHERE ${sqlLikeAny('hot_fields', addresses.length)}`,
+        `SELECT ${CALENDAR_ROW_SELECT} FROM "${table}"
+          WHERE ${sqlLikeAny(CALENDAR_LIKE_COLUMN, addresses.length)}`,
       )
-      .all(...likeAnyParams(addresses)) as Array<{ hot_fields: string }>;
+      .all(...likeAnyParams(addresses)) as CalendarRawRow[];
     for (const row of rows) {
-      let parsed: Record<string, unknown>;
-      try {
-        parsed = JSON.parse(row.hot_fields) as Record<string, unknown>;
-      } catch {
-        continue;
-      }
+      const parsed = calendarRowHotFields(row);
+      if (parsed === null) continue;
       const all = new Set<string>();
       collectAddresses(parsed[CAL_ORGANIZER_KEY], all);
       collectAddresses(parsed[CAL_ATTENDEES_KEY], all);

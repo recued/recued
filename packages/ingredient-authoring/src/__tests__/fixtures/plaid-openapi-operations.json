@@ -74,7 +74,7 @@
       "plaid-sandbox": 17
     },
     "composition_bytes": {
-      "plaid": 224765,
+      "plaid": 225412,
       "plaid-core-link-items": 39794,
       "plaid-transactions-investments": 18458,
       "plaid-credit-reports": 58150,
@@ -97,9 +97,8 @@
     },
     "idempotency_counts": {
       "idempotent": 14,
-      "non_idempotent": 126,
-      "safe": 136,
-      "unspecified": 27
+      "non_idempotent": 134,
+      "safe": 155
     },
     "binary_capture": {
       "operation_count": 0,
@@ -180,8 +179,8 @@
       "empty_json_body_contracts": 299
     },
     "compatibility": {
-      "operation_sha256": "315660072ad74ef6e089d043dc0376f7d7396da80fbe556d5aaf100f9ac2004b",
-      "hardened_operation_sha256": "95d6fa09925d8ac1762a38d7b101c46d25b9f6bb1f0ac85ee8970753d2f9b40f",
+      "operation_sha256": "1793cf7d07d05f072a3199744bb031b0176c13251e2a52042aa88e3944199011",
+      "hardened_operation_sha256": "b79e03e14aa229726b963e3a1c332a234a8d44e2d756c74c1629376120f17a02",
       "entities_sha256": "928e9d9dd86eb8cb35bc4868e74b65366387f4e0cf0e28958210dfdc05c39eb4",
       "operation_ids": [
         "link_token.create",
@@ -8542,7 +8541,7 @@
       "sensitive_response_fields_sha256": "8a0cadab7de4635f16d621d98954cbd4a879d00612372f43f7ca5846a6f624f3",
       "risk": "write",
       "approval": "ask",
-      "idempotency": null,
+      "idempotency": "non_idempotent",
       "arg_keys": [
         "body.client_name",
         "body.language",
@@ -8623,7 +8622,7 @@
       "sensitive_response_fields_sha256": "04de5535d11ca8fe551e607cd19442d975fee3f55d7580fef4b2943fe98b3b26",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "body.link_token"
       ],
@@ -8685,7 +8684,7 @@
       "sensitive_response_fields_sha256": "71e79c16cebab51e026ffe111e28caf2b39f63adc3422bec3e1b188a740f106b",
       "risk": "write",
       "approval": "ask",
-      "idempotency": null,
+      "idempotency": "non_idempotent",
       "arg_keys": [
         "body.public_token"
       ],
@@ -8745,7 +8744,7 @@
       "sensitive_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "body.access_token"
       ],
@@ -8806,7 +8805,7 @@
       "sensitive_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "write",
       "approval": "ask",
-      "idempotency": null,
+      "idempotency": "non_idempotent",
       "arg_keys": [
         "body.access_token",
         "body.webhook"
@@ -8869,7 +8868,7 @@
       "sensitive_response_fields_sha256": "76856c209d9df9f5a0f70f77188b9a4d8d35017037058e3266af956ee6f5c02c",
       "risk": "write",
       "approval": "ask",
-      "idempotency": null,
+      "idempotency": "non_idempotent",
       "arg_keys": [
         "body.access_token"
       ],
@@ -8930,7 +8929,7 @@
       "sensitive_response_fields_sha256": "558deae38c2f1ddf70e1458f29da1c34e0ef188b042e4d6f622aa32f1c4e3225",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "body.access_token",
         "body.cursor",
@@ -8996,7 +8995,7 @@
       "sensitive_response_fields_sha256": "161492ceee6cd7a515614f1c871c663152b9257e32e32a643de66f580218bfc8",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "body.count",
         "body.offset",
@@ -9061,7 +9060,7 @@
       "sensitive_response_fields_sha256": "161492ceee6cd7a515614f1c871c663152b9257e32e32a643de66f580218bfc8",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "body.query",
         "body.country_codes",
@@ -9126,7 +9125,7 @@
       "sensitive_response_fields_sha256": "0ba854657363a41ff4f196c7c1987cb5519fefd24019a2d59262d339b400688b",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "body.institution_id",
         "body.country_codes",
@@ -9190,7 +9189,7 @@
       "sensitive_response_fields_sha256": "08b415096ef952cc31b28fb3d403a5285e11ac88ebe3278f24fff82cb71c4325",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "body.access_token",
         "body.options"
@@ -9253,7 +9252,7 @@
       "sensitive_response_fields_sha256": "08b415096ef952cc31b28fb3d403a5285e11ac88ebe3278f24fff82cb71c4325",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "body.access_token",
         "body.options"
@@ -9319,7 +9318,7 @@
       "sensitive_response_fields_sha256": "c035785ee5af07d43f122475e5557d72bcbd9f70effcbe9270cb779efa055be4",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "body.access_token",
         "body.start_date",
@@ -9386,7 +9385,7 @@
       "sensitive_response_fields_sha256": "d893baa014e8b67421437524dcb3affb5f348e391c835b218d7bbbdc60f4d976",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "body.access_token",
         "body.cursor",
@@ -9449,7 +9448,7 @@
       "sensitive_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "write",
       "approval": "ask",
-      "idempotency": null,
+      "idempotency": "non_idempotent",
       "arg_keys": [
         "body.access_token"
       ],
@@ -9509,7 +9508,7 @@
       "sensitive_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "body.access_token",
         "body.account_ids",
@@ -9571,7 +9570,7 @@
       "sensitive_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "body.access_token",
         "body.account_ids",
@@ -9636,7 +9635,7 @@
       "sensitive_response_fields_sha256": "430186bf31501a46ef630053a446465f825fa98c6bd59f4a4dbccefca501a1a7",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "body.access_token",
         "body.options"
@@ -9697,7 +9696,7 @@
       "sensitive_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "write",
       "approval": "ask",
-      "idempotency": null,
+      "idempotency": "non_idempotent",
       "arg_keys": [
         "body.access_token"
       ],
@@ -9763,7 +9762,7 @@
       "sensitive_response_fields_sha256": "0a182cfc4bed540aeb9006d35dcaee7311752a35b35cbda1eaae35535241baad",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "body.access_token",
         "body.options"
@@ -9826,7 +9825,7 @@
       "sensitive_response_fields_sha256": "08b415096ef952cc31b28fb3d403a5285e11ac88ebe3278f24fff82cb71c4325",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "body.access_token",
         "body.options"
@@ -9889,7 +9888,7 @@
       "sensitive_response_fields_sha256": "08b415096ef952cc31b28fb3d403a5285e11ac88ebe3278f24fff82cb71c4325",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "body.access_token",
         "body.options"
@@ -9954,7 +9953,7 @@
       "sensitive_response_fields_sha256": "08b415096ef952cc31b28fb3d403a5285e11ac88ebe3278f24fff82cb71c4325",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "body.access_token",
         "body.start_date",
@@ -10017,7 +10016,7 @@
       "sensitive_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "write",
       "approval": "ask",
-      "idempotency": null,
+      "idempotency": "non_idempotent",
       "arg_keys": [
         "body.access_token"
       ],
@@ -10077,7 +10076,7 @@
       "sensitive_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "body.access_token"
       ],
@@ -10140,7 +10139,7 @@
       "sensitive_response_fields_sha256": "430186bf31501a46ef630053a446465f825fa98c6bd59f4a4dbccefca501a1a7",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "body.access_token"
       ],
@@ -10204,7 +10203,7 @@
       "sensitive_response_fields_sha256": "ea128175fc358c08b090d01d7f6c0803fc842089c6a79e918ee4e0aa9e716d6e",
       "risk": "write",
       "approval": "ask",
-      "idempotency": null,
+      "idempotency": "non_idempotent",
       "arg_keys": [
         "body.institution_id",
         "body.initial_products",

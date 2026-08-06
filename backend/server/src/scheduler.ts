@@ -24,6 +24,7 @@ import { handleExecute, type ExecuteHandlerDeps } from './execute-handler.js';
 import type { ScheduleStore } from './schedule-store.js';
 import { retireSchedule } from './schedule-retire.js';
 import { emitSchedule } from './events/emit-sites.js';
+import { buildPackOpResolution, missingPackDependencies } from './pack-inventory.js';
 import { presentAutomationFailure } from './automation-failure.js';
 
 export interface SchedulerConfig {
@@ -92,6 +93,17 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
    *  2 minutes on a 1-minute tick would start firing again before the
    *  first execution finished. */
   const firingNow = new Set<string>();
+  /** Per-tick memo of the installed-pack resolution (the fire-time pack gate).
+   *  Rebuilt on every tick — an install or uninstall between ticks must be seen,
+   *  and a memo that outlived the tick would gate on a stale inventory. */
+  let packResolutionMemo: ReturnType<typeof buildPackOpResolution> | null = null;
+  const packResolutionForTick = (): ReturnType<typeof buildPackOpResolution> => {
+    packResolutionMemo ??= buildPackOpResolution(
+      () => config.executeDeps.contractScan!('installed_pack', []),
+      (slug) => config.executeDeps.executorConfig.manifests.get(slug),
+    );
+    return packResolutionMemo;
+  };
 
   const reportBackgroundError = (message: string, error: unknown): void => {
     try {
@@ -172,6 +184,45 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
           ...terminalPatch,
         });
         return true;
+      }
+    }
+    // Fire-time PACK gate. A recipe whose declared pack is no longer installed
+    // cannot lower: `lowerSequentialStep` throws `CanonicalOpResolutionError`
+    // for "a two-tier id that resolves to nothing" BEFORE step 1. Dispatching
+    // anyway turns an uninstall into a cron that fails every firing, forever —
+    // and nobody is watching a schedule at 03:00, so a loud error there is
+    // functionally silent.
+    //
+    // ⚠ SKIPPED, NOT ERROR, AND STILL ARMED. Nothing was attempted, so this is
+    // not a failed run; and runnability is recoverable BY DESIGN — "uninstalling
+    // a provider NEVER deletes a recipe, it only MOVES the recipe's
+    // runnability". Reinstalling the pack must bring the schedule back on its
+    // own, which retiring or disabling it here would prevent.
+    //
+    // ⚠ But NOT silent either. `last_error` names the missing packs, because the
+    // dish gate's silent skip is right for a state the user chose and wrong for
+    // one they did not: an uninstall elsewhere is exactly the case where the
+    // owner does not know this schedule stopped.
+    if (config.executeDeps.contractScan !== undefined) {
+      const recipe = config.executeDeps.recipeStore.get(schedule.recipe_id);
+      if (recipe !== null) {
+        // ⚠ Resolved through a per-TICK memo, not per fire. `buildPackOpResolution`
+        // scans the whole installed_pack inventory and resolves a manifest per
+        // ingredient id; doing that once per firing schedule would repeat the
+        // same scan N times in a minute for N due schedules, to reach the same
+        // answer. The inventory cannot change mid-tick, so one scan is enough —
+        // the runnability read hoists it for the same reason.
+        const missing = missingPackDependencies(recipe, packResolutionForTick());
+        if (missing.length > 0) {
+          config.store.updateRun(schedule.schedule_id, {
+            last_run_at: fireAt,
+            next_run_at: nextRun,
+            last_status: 'skipped',
+            last_error: `pack not installed: ${missing.join(', ')} — reinstall to resume this schedule`,
+            ...terminalPatch,
+          });
+          return true;
+        }
       }
     }
     try {
@@ -277,6 +328,10 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
     // while the vault is sealed. The interval keeps ticking and re-checks;
     // the coordinator kicks a catch-up tick on unlock.
     if (config.isVaultUnlocked && !config.isVaultUnlocked()) return [];
+
+    // Drop the previous tick's inventory memo — an install or uninstall since
+    // then must be visible to this tick's pack gate.
+    packResolutionMemo = null;
 
     const tickMinute = startOfMinute(now());
     const nowMs = now();

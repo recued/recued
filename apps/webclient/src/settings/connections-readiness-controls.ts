@@ -167,6 +167,8 @@ const STATUS_COPY: Record<
 export const CONNECTIONS_READINESS_STYLES = `
 [${CONNECTIONS_READINESS_SECTION_ATTR}] {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   gap: 6px;
   margin: 10px 0 2px;
   padding-top: 8px;
@@ -179,22 +181,38 @@ export const CONNECTIONS_READINESS_STYLES = `
   color: var(--muted, #666);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  overflow-wrap: anywhere;
 }
 [${CONNECTIONS_READINESS_SECTION_ATTR}] .packs-connection-row {
   display: flex;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 8px;
   font-size: 13px;
 }
-[${CONNECTIONS_READINESS_SECTION_ATTR}] .packs-connection-vendor { font-weight: 600; }
-[${CONNECTIONS_READINESS_SECTION_ATTR}] .packs-connection-status { color: var(--muted, #666); }
+[${CONNECTIONS_READINESS_SECTION_ATTR}] .packs-connection-vendor {
+  min-width: 0; max-width: 100%; font-weight: 600; overflow-wrap: anywhere;
+}
+[${CONNECTIONS_READINESS_SECTION_ATTR}] .packs-connection-status {
+  flex: 1 1 140px; min-width: 0; max-width: 100%;
+  color: var(--muted, #666); overflow-wrap: anywhere;
+}
 [${CONNECTIONS_READINESS_SECTION_ATTR}] .packs-connection-row[${CONNECTIONS_READINESS_STATUS_ATTR}="under_scoped"] .packs-connection-status,
 [${CONNECTIONS_READINESS_SECTION_ATTR}] .packs-connection-row[${CONNECTIONS_READINESS_STATUS_ATTR}="not_set_up"] .packs-connection-status {
   color: var(--danger, #b3261e);
 }
 [${CONNECTIONS_READINESS_SECTION_ATTR}] .packs-connection-cta {
-  margin-left: auto;
-  font-size: 12px;
+  box-sizing: border-box; display: inline-flex; flex: 0 0 auto;
+  min-height: 36px; align-items: center; margin-left: auto; padding: 4px;
+  border-radius: 6px; font-size: 12px;
+}
+[${CONNECTIONS_READINESS_SECTION_ATTR}] .packs-connection-cta:hover {
+  background: var(--accent-weak);
+}
+@media (max-width: 640px) {
+  [${CONNECTIONS_READINESS_SECTION_ATTR}] .packs-connection-cta { min-height: 44px; }
 }
 `;
 

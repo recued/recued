@@ -325,5 +325,8 @@ describe('renderInstallConnectPicker — presentation contract', () => {
     expect(INSTALL_CONNECT_PICKER_STYLES).toContain(
       'label:has(input:checked)',
     );
+    expect(INSTALL_CONNECT_PICKER_STYLES).toMatch(
+      /\.packs-dialog-connect-customize,[\s\S]*?\.packs-dialog-connect-enroll \{[\s\S]*?min-height: 36px;/,
+    );
   });
 });

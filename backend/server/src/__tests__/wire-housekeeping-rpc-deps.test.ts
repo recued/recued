@@ -117,11 +117,11 @@ const addProducer = (
 
 const seedMailTables = () => {
   db!.exec(`
-    CREATE TABLE "collection_mail_alpha" (id TEXT);
-    CREATE TABLE "collection_mail_beta" (id TEXT);
+    CREATE TABLE "collection_mail_77777777aa" (id TEXT);
+    CREATE TABLE "collection_mail_88888888bb" (id TEXT);
     CREATE TABLE "collection_contact_alpha" (id TEXT);
-    INSERT INTO "collection_mail_alpha" (id) VALUES ('a1'), ('a2');
-    INSERT INTO "collection_mail_beta" (id) VALUES ('b1');
+    INSERT INTO "collection_mail_77777777aa" (id) VALUES ('a1'), ('a2');
+    INSERT INTO "collection_mail_88888888bb" (id) VALUES ('b1');
     INSERT INTO "collection_contact_alpha" (id) VALUES ('c1'), ('c2'), ('c3');
   `);
 };

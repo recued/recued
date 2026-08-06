@@ -241,6 +241,10 @@ export const renderHousekeepingTopicResetModal = (
       role="dialog"
       aria-modal="true"
       aria-label="Reset enrichment topic ${e(topic)}"
+      tabindex="-1"
+      ${state.phase === 'previewing' || state.phase === 'confirming'
+        ? 'aria-busy="true"'
+        : ''}
       data-topic="${e(topic)}"
       data-phase="${e(state.phase)}"
     >

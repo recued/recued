@@ -314,7 +314,14 @@ export const composeNotificationBlock = (
   } = deps;
 
   const askStore = createAskStore(
-    createSQLiteCollection<PendingAsk>(db, 'pending_asks'),
+    (() => {
+      const asks = createSQLiteCollection<PendingAsk>(db, 'pending_asks');
+      // Without these the store's field queries are still correct but still
+      // scan — SQLite needs an expression index over the SAME
+      // `json_extract(data, '$.<field>')` text the query emits.
+      asks.ensureFieldIndexes(['status', 'created_at']);
+      return asks;
+    })(),
   );
   const settingsStore = createNotificationSettingsStore(
     createSQLiteCollection<NotificationSettings>(db, 'notification_settings'),

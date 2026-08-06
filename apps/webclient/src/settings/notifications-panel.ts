@@ -985,6 +985,15 @@ export const mountNotificationsPanel = (
     btn.setAttribute(NOTIFICATIONS_ROW_TOGGLE_BTN_ATTR, row.channel);
     btn.setAttribute(NOTIFICATIONS_AXIS_ATTR, axis);
     btn.setAttribute('role', 'switch');
+    // Keep the switch name stable across Off / Updating / On paints and
+    // include the row identity.  The visible state text alone otherwise
+    // exposes a matrix of anonymous "Off" controls to assistive tech.
+    btn.setAttribute(
+      'aria-label',
+      `${CHANNEL_DISPLAY_NAME[row.channel]} ${
+        axis === 'notification' ? 'notifications' : 'approvals'
+      }`,
+    );
     btn.setAttribute('aria-checked', enabled ? 'true' : 'false');
     btn.className = `rx-btn rx-btn-sm ${
       enabled ? 'rx-btn-primary' : 'rx-btn-secondary'
@@ -1209,6 +1218,14 @@ export const mountNotificationsPanel = (
     btn.setAttribute(NOTIFICATIONS_BRIDGE_MODE_BTN_ATTR, br.client_token_id);
     btn.setAttribute(NOTIFICATIONS_BRIDGE_MODE_ATTR, mode);
     btn.setAttribute('role', 'switch');
+    // A user can rename multiple paired browsers to the same label.  Include
+    // the durable row id so every switch remains an unambiguous target.
+    btn.setAttribute(
+      'aria-label',
+      `${br.label} ${
+        mode === 'notification' ? 'notifications' : 'approvals'
+      } (${br.client_token_id})`,
+    );
     btn.setAttribute('aria-checked', enabled ? 'true' : 'false');
     btn.className = `rx-btn rx-btn-sm ${
       enabled ? 'rx-btn-primary' : 'rx-btn-secondary'
@@ -1258,7 +1275,7 @@ export const mountNotificationsPanel = (
     const section = doc.createElement('div');
     section.className = 'notif-phrase';
 
-    const heading = doc.createElement('h4');
+    const heading = doc.createElement('h3');
     heading.className = 'notif-phrase-heading';
     heading.textContent = COPY.phrase_heading;
     section.appendChild(heading);
@@ -1274,6 +1291,7 @@ export const mountNotificationsPanel = (
     const input = doc.createElement('input');
     input.setAttribute(NOTIFICATIONS_PHRASE_INPUT_ATTR, '');
     input.setAttribute('type', 'text');
+    input.setAttribute('aria-label', COPY.phrase_heading);
     input.setAttribute('placeholder', COPY.phrase_placeholder);
     input.className = 'notif-phrase-input rx-input';
     (input as unknown as { value: string }).value = verificationPhrase;
@@ -1291,6 +1309,7 @@ export const mountNotificationsPanel = (
     const save = doc.createElement('button');
     save.type = 'button';
     save.setAttribute(NOTIFICATIONS_PHRASE_SAVE_ATTR, '');
+    save.setAttribute('aria-label', `Save ${COPY.phrase_heading.toLowerCase()}`);
     save.className = 'rx-btn rx-btn-sm rx-btn-secondary notif-phrase-save';
     save.textContent = phraseSaving ? COPY.phrase_saving : COPY.phrase_save;
     if (phraseSaving) {

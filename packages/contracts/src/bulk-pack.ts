@@ -111,25 +111,6 @@ export const BULK_PACK_MAX_RECIPES = 50;
  *  must never gate access or billing. */
 export const INSTALL_MANIFEST_MARKER_HEADER = 'x-recued-install';
 
-/** D-200 Slice 6 — closed role vocabulary for one non-authoritative paid-
- *  workflow discovery descriptor. Requiring every role to name a distinct
- *  recipe already inside the pack keeps this materially narrower than a
- *  generic "add a price to any recipe" switch. Runtime payment and
- *  fulfillment authority remain in the referenced pack-owned capabilities. */
-export const PACK_PAID_WORKFLOW_LIFECYCLE_ROLES = [
-  'prepare_checkout_recipe',
-  'verify_payment_recipe',
-  'fulfill_recipe',
-  'review_recipe',
-  'deliver_recipe',
-  'reconcile_recipe',
-] as const;
-
-export type PackPaidWorkflowLifecycleRole =
-  (typeof PACK_PAID_WORKFLOW_LIFECYCLE_ROLES)[number];
-
-export const PACK_PAID_WORKFLOW_OUTCOME_LABEL_MAX_CHARS = 120;
-
 /** D-139 P6.B — closed-list MCP body-content registry keys a pack
  *  install is allowed to grant. Body content access carries an
  *  outsized privacy cost (mail bodies, meeting notes, call recap
@@ -179,25 +160,6 @@ export interface BulkPackRecipeRef {
    *  mirroring `installPackBySlug`'s `resolveMarketplaceRecipe`); deep recipe
    *  validation still runs at install time when the body is persisted. */
   recipe?: RecipeDefinition;
-}
-
-/** A paid workflow is one pack-owned transactional outcome, not one priced
- *  recipe and not a D-196 access entitlement. This descriptor is presentation
- *  metadata only: it contains no amount, provider result, customer identity,
- *  token, grant, artifact decision, or execution input. */
-export interface PackPaidWorkflowLifecycle {
-  readonly prepare_checkout_recipe: string;
-  readonly verify_payment_recipe: string;
-  readonly fulfill_recipe: string;
-  readonly review_recipe: string;
-  readonly deliver_recipe: string;
-  readonly reconcile_recipe: string;
-}
-
-export interface PackTransactionalOfferDescriptor {
-  readonly kind: 'paid_workflow';
-  readonly outcome_label: string;
-  readonly lifecycle: PackPaidWorkflowLifecycle;
 }
 
 /** Portable bulk-install pack payload. Fetched by slug from the
@@ -253,12 +215,6 @@ export interface BulkPackManifest {
   /** Discovery tags. Free-form per the marketplace tag convention
    *  (`pack:personal-crm`, `graph-builder`, `l1`, etc.). */
   tags: string[];
-  /** D-200 Slice 6 — optional Seller discovery metadata for one governed paid
-   *  workflow. Accepted only on a v2 `app_pack` / `workflow` whose six closed
-   *  lifecycle roles resolve to distinct recipes declared by this same pack.
-   *  Seller may display it, but must never treat it as payment or fulfillment
-   *  authority and must not create D-196 customer/access rows from it. */
-  transactional_offer?: PackTransactionalOfferDescriptor;
   /** D-139 P6.B — optional badge identifying the pack as a post-
    *  substrate canary. The `crm-commitment-tracker` pack sets this
    *  to `true`. Marketplace UI renders a "post-substrate canary"
@@ -1251,14 +1207,6 @@ const isPositiveInt = (v: unknown): boolean =>
 const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 
-const PACK_TRANSACTIONAL_OFFER_KEYS: ReadonlySet<string> = new Set([
-  'kind',
-  'outcome_label',
-  'lifecycle',
-]);
-const PACK_PAID_WORKFLOW_LIFECYCLE_ROLE_SET: ReadonlySet<string> = new Set(
-  PACK_PAID_WORKFLOW_LIFECYCLE_ROLES,
-);
 
 const declaredPackRecipeSlugs = (
   manifest: Record<string, unknown>,
@@ -1284,124 +1232,6 @@ const declaredPackRecipeSlugs = (
     }
   }
   return slugs;
-};
-
-const validatePackTransactionalOffer = (
-  manifest: Record<string, unknown>,
-  isV2: boolean,
-  add: AddPackIssue,
-): void => {
-  if (manifest.transactional_offer === undefined) return;
-  const path = 'transactional_offer';
-  if (!isObjectRecord(manifest.transactional_offer)) {
-    add(
-      'error',
-      'pack_transactional_offer_shape',
-      path,
-      'transactional_offer must be an object when present',
-    );
-    return;
-  }
-  const descriptor = manifest.transactional_offer;
-  if (!isV2 || manifest.pack_kind !== 'app_pack' || manifest.service_kind !== 'workflow') {
-    add(
-      'error',
-      'pack_transactional_offer_pack_shape',
-      path,
-      "transactional_offer requires manifest_version 2, pack_kind 'app_pack', and service_kind 'workflow'",
-    );
-  }
-  for (const key of Object.keys(descriptor)) {
-    if (!PACK_TRANSACTIONAL_OFFER_KEYS.has(key)) {
-      add(
-        'error',
-        'pack_transactional_offer_unknown_field',
-        `${path}.${key}`,
-        `transactional_offer does not admit ${JSON.stringify(key)}; price and authority fields remain pack-owned`,
-      );
-    }
-  }
-  if (descriptor.kind !== 'paid_workflow') {
-    add(
-      'error',
-      'pack_transactional_offer_kind',
-      `${path}.kind`,
-      "transactional_offer.kind must be 'paid_workflow'",
-    );
-  }
-  if (
-    typeof descriptor.outcome_label !== 'string'
-    || descriptor.outcome_label.length === 0
-    || descriptor.outcome_label.trim() !== descriptor.outcome_label
-    || descriptor.outcome_label.length > PACK_PAID_WORKFLOW_OUTCOME_LABEL_MAX_CHARS
-    || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(
-      descriptor.outcome_label,
-    )
-  ) {
-    add(
-      'error',
-      'pack_transactional_offer_outcome_label',
-      `${path}.outcome_label`,
-      `outcome_label must be a trimmed, single-line 1-${PACK_PAID_WORKFLOW_OUTCOME_LABEL_MAX_CHARS} character string`,
-    );
-  }
-  if (!isObjectRecord(descriptor.lifecycle)) {
-    add(
-      'error',
-      'pack_transactional_offer_lifecycle_shape',
-      `${path}.lifecycle`,
-      'transactional_offer.lifecycle must be an object',
-    );
-    return;
-  }
-  for (const key of Object.keys(descriptor.lifecycle)) {
-    if (!PACK_PAID_WORKFLOW_LIFECYCLE_ROLE_SET.has(key)) {
-      add(
-        'error',
-        'pack_transactional_offer_lifecycle_unknown_role',
-        `${path}.lifecycle.${key}`,
-        `lifecycle roles are closed to ${PACK_PAID_WORKFLOW_LIFECYCLE_ROLES.join('|')}`,
-      );
-    }
-  }
-  const declaredRecipes = declaredPackRecipeSlugs(manifest, isV2);
-  const roleValues: string[] = [];
-  for (const role of PACK_PAID_WORKFLOW_LIFECYCLE_ROLES) {
-    const recipeSlug = descriptor.lifecycle[role];
-    if (
-      typeof recipeSlug !== 'string'
-      || recipeSlug.length === 0
-      || !SLUG_RE.test(recipeSlug)
-    ) {
-      add(
-        'error',
-        'pack_transactional_offer_lifecycle_role',
-        `${path}.lifecycle.${role}`,
-        `${role} must name one URL-safe recipe slug`,
-      );
-      continue;
-    }
-    roleValues.push(recipeSlug);
-    if (!declaredRecipes.has(recipeSlug)) {
-      add(
-        'error',
-        'pack_transactional_offer_lifecycle_ref',
-        `${path}.lifecycle.${role}`,
-        `${role} must reference a recipe declared by this pack`,
-      );
-    }
-  }
-  if (
-    roleValues.length === PACK_PAID_WORKFLOW_LIFECYCLE_ROLES.length
-    && new Set(roleValues).size !== roleValues.length
-  ) {
-    add(
-      'error',
-      'pack_transactional_offer_lifecycle_duplicate',
-      `${path}.lifecycle`,
-      'each paid-workflow lifecycle role must reference a distinct pack recipe',
-    );
-  }
 };
 
 /** Validate one recipe ref (slug + version), tracking per-array slug
@@ -1817,7 +1647,6 @@ export const parseBulkPackManifest = (input: unknown): BulkPackParseResult => {
   // D-200 Slice 6 — Seller presentation metadata only. The descriptor must
   // prove a six-recipe workflow shape inside one v2 workflow app pack; it
   // cannot carry price, provider evidence, access, or execution authority.
-  validatePackTransactionalOffer(obj, isV2, add);
 
   // requires[] — required array, must include the install permission.
   if (!Array.isArray(obj.requires)) {

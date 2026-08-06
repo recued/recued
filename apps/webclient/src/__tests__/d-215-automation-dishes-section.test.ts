@@ -697,6 +697,9 @@ describe('D-215 slice 4b — rename, create, config', () => {
   it('offers Rename on an ASSIGNED dish', async () => {
     const { rig } = await rigB();
     expect(rig.host.innerHTML).toContain('rename:dish');
+    expect(rig.host.innerHTML).toContain(
+      'aria-label="Rename Tuesday post (dsh_t)"',
+    );
   });
 
   it('⚠ offers Rename on a MANAGED dish too — name is a label, not resolution', async () => {
@@ -745,6 +748,9 @@ describe('D-215 slice 4b — rename, create, config', () => {
   it('offers Config only when the recipe declares variables', async () => {
     const { rig } = await rigB();
     expect(rig.host.innerHTML).toContain('configure:dish');
+    expect(rig.host.innerHTML).toContain(
+      'aria-label="Config Tuesday post (dsh_t)"',
+    );
 
     const bare = { ...recipeEntry, recipe: { ...recipeEntry.recipe, variables: {} } };
     const rig2 = mount({

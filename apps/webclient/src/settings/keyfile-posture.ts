@@ -133,10 +133,10 @@ export const describeKeyfilePosture = (
           'The key that opens this realm sits readable in the server’s own data '
           + 'directory, with nothing wrapping it.',
         consequence:
-          'Your realm is still encrypted — but the key travels with the '
-          + 'directory, so anyone who copies the whole data directory gets '
-          + 'everything in it. It is a copy of the database alone, a backup job, '
-          + 'or a snapshot that this still defends against.',
+          'Your realm is still encrypted, but the key travels with the data '
+          + 'directory: anyone who copies that whole directory gets everything '
+          + 'in it. Only copies that omit the keyfile — for example, a '
+          + 'database-only backup — retain this protection.',
         remediation: UNSEALED_REMEDIATION,
       };
     case null:

@@ -146,7 +146,7 @@ interface FakeDoc {
   createElement(tag: string): FakeEl;
   addEventListener(t: string, fn: (ev: unknown) => void): void;
   removeEventListener(t: string, fn: (ev: unknown) => void): void;
-  fireKeydown(key: string): void;
+  fireKeydown(key: string, isComposing?: boolean): void;
 }
 
 const makeDoc = (): FakeDoc => {
@@ -190,8 +190,8 @@ const makeDoc = (): FakeDoc => {
       const i = keydown.indexOf(fn);
       if (i >= 0) keydown.splice(i, 1);
     },
-    fireKeydown(key) {
-      for (const fn of [...keydown]) fn({ key });
+    fireKeydown(key, isComposing = false) {
+      for (const fn of [...keydown]) fn({ key, isComposing });
     },
   };
 };
@@ -277,6 +277,7 @@ describe('Shell-frame Step 4 — composer buttons + Create overlay', () => {
     const create = createButton(root);
     expect(create).toBeDefined();
     expect(create?.textContent).toContain('Create');
+    expect(create?.getAttribute('aria-label')).toBe('Create');
     route.dispose();
   });
 
@@ -321,6 +322,18 @@ describe('Shell-frame Step 4 — composer buttons + Create overlay', () => {
     await tick();
     createButton(root)?.click();
     expect(collectByAttr(doc.body, CHAT_ROUTE_CREATE_OVERLAY_ATTR)).toHaveLength(1);
+    doc.fireKeydown('Escape');
+    expect(collectByAttr(doc.body, CHAT_ROUTE_CREATE_OVERLAY_ATTR)).toHaveLength(0);
+    route.dispose();
+  });
+
+  it('leaves a composing Escape to the active IME', async () => {
+    const { doc, root, route } = mount(true);
+    await tick();
+    createButton(root)?.click();
+    doc.fireKeydown('Escape', true);
+    expect(collectByAttr(doc.body, CHAT_ROUTE_CREATE_OVERLAY_ATTR)).toHaveLength(1);
+
     doc.fireKeydown('Escape');
     expect(collectByAttr(doc.body, CHAT_ROUTE_CREATE_OVERLAY_ATTR)).toHaveLength(0);
     route.dispose();

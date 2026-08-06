@@ -77,6 +77,8 @@ export const APPROVALS_ROUTE_SUMMARY_ATTR =
  *  per-kind sections). */
 export const APPROVALS_ROUTE_LIST_ATTR =
   'data-recued-approvals-list';
+export const APPROVALS_ROUTE_LIST_HEADING_ATTR =
+  'data-recued-approvals-list-heading';
 /** R17 — a uniform per-card hook carrying the row's id (approval_id / ask_id /
  *  plan_id), so a run-scoped `#approvals/<id>` deep link from the Runs detail
  *  can find + highlight the exact card regardless of its kind. */
@@ -117,12 +119,13 @@ const APPROVALS_ROUTE_CHROME_STYLES = `
   font-weight: 650;
 }
 [${APPROVALS_ROUTE_HOST_ATTR}] .approvals-refresh {
+  box-sizing: border-box;
   margin-left: auto;
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--surface);
   color: var(--fg);
-  min-height: 34px;
+  min-height: 36px;
   padding: 0 11px;
   font: inherit;
   font-size: 12px;
@@ -136,6 +139,17 @@ const APPROVALS_ROUTE_CHROME_STYLES = `
   margin: 0 0 14px;
   font-size: 13px;
   color: var(--muted);
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-list-heading {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 [${APPROVALS_ROUTE_HOST_ATTR}] .approvals-plan-resolution {
   display: grid;
@@ -176,8 +190,9 @@ const APPROVALS_ROUTE_CHROME_STYLES = `
 }
 [${APPROVALS_ROUTE_HOST_ATTR}] .approvals-plan-resolution-link,
 [${APPROVALS_ROUTE_HOST_ATTR}] .approvals-plan-resolution-dismiss {
+  box-sizing: border-box;
   display: inline-flex;
-  min-height: 32px;
+  min-height: 36px;
   align-items: center;
   justify-content: center;
   border-radius: 7px;
@@ -534,9 +549,19 @@ export const bootstrapApprovalsRoute = (
   routeRoot.appendChild(planResolution);
 
   // ONE unified list (R20) — gate + ask cards interleaved newest-first.
+  const listHeadingId = 'recued-approvals-list-heading';
+  const listHeading = doc.createElement('h2');
+  listHeading.className = 'approvals-list-heading';
+  listHeading.setAttribute(APPROVALS_ROUTE_LIST_HEADING_ATTR, '');
+  listHeading.setAttribute('id', listHeadingId);
+  listHeading.textContent = 'Pending decisions';
+  routeRoot.appendChild(listHeading);
+
   const list = doc.createElement('div');
   list.className = 'approvals-list';
   list.setAttribute(APPROVALS_ROUTE_LIST_ATTR, '');
+  list.setAttribute('role', 'list');
+  list.setAttribute('aria-labelledby', listHeadingId);
   routeRoot.appendChild(list);
 
   const empty = doc.createElement('p');
@@ -1111,6 +1136,16 @@ export const bootstrapApprovalsRoute = (
       // attr is set on EVERY card (so `applyFocus` can find the target); the
       // highlight flag only on the match (re-applied each paint while it lives).
       card.setAttribute(APPROVALS_ROUTE_FOCUS_ATTR, row.id);
+      card.setAttribute('role', 'listitem');
+      const cardTitle = (Array.from(card.children) as HTMLElement[]).find(
+        (child) =>
+          child.className === 'rx-ask-card-title'
+          || child.className === 'rx-approval-card-title',
+      );
+      if (cardTitle !== undefined) {
+        cardTitle.setAttribute('role', 'heading');
+        cardTitle.setAttribute('aria-level', '3');
+      }
       if (focusId !== undefined && row.id === focusId) {
         card.setAttribute('data-focused', 'true');
         card.setAttribute('tabindex', '-1');

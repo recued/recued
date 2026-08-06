@@ -46,6 +46,54 @@ const mkEntry = (o: Partial<AuditEntry> = {}): AuditEntry => ({
   ...o,
 });
 
+describe('audit index coverage for the execution-case compiler', () => {
+  // ⛔ PLAN, not result. `execution-case-compiler.ts` filters the WHOLE audit
+  // log on these two expressions, and both tables grow without bound — so
+  // without an index the compiler's cost rises with everything the server has
+  // ever done rather than with the case being compiled. The answers were
+  // always right; only the plan was wrong. Measured: 200k audit rows,
+  // 26.39ms → 2.09ms.
+  const planFor = (sql: string): string => {
+    const probe = new Database(':memory:');
+    createSQLiteCollection<AuditEntry>(probe, 'audit_entries');
+    createSQLiteCollection<ActivityEntry>(probe, 'audit_activities');
+    ensureAuditIndexes(probe);
+    const out = (probe.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>)
+      .map((r) => r.detail).join(' ; ');
+    probe.close();
+    return out;
+  };
+
+  it('SEARCHes chat-channel entries instead of scanning the log', () => {
+    expect(planFor(
+      `SELECT data FROM audit_entries
+        WHERE json_extract(data, '$.execution_source.channel') = 'chat'
+        ORDER BY json_extract(data, '$.started_at') ASC, key ASC`,
+    )).toMatch(/SEARCH audit_entries USING INDEX/);
+  });
+
+  it('SEARCHes chat_tool_call activities instead of scanning', () => {
+    expect(planFor(
+      `SELECT data FROM audit_activities
+        WHERE json_extract(data, '$.action') = 'chat_tool_call'`,
+    )).toMatch(/SEARCH audit_activities USING INDEX/);
+  });
+
+  it('both indexes are PARTIAL — unrelated audit writes do not pay for them', () => {
+    const probe = new Database(':memory:');
+    createSQLiteCollection<AuditEntry>(probe, 'audit_entries');
+    createSQLiteCollection<ActivityEntry>(probe, 'audit_activities');
+    ensureAuditIndexes(probe);
+    for (const name of ['audit_entries_exec_channel_idx', 'audit_activities_action_idx']) {
+      const ddl = (probe
+        .prepare(`SELECT sql FROM sqlite_master WHERE type='index' AND name = ?`)
+        .get(name) as { sql: string } | undefined)?.sql ?? '';
+      expect(ddl, name).toMatch(/ WHERE /);
+    }
+    probe.close();
+  });
+});
+
 describe('createAuditRetention', () => {
   let db: Database.Database;
   let gate: StorageGate;
@@ -231,6 +279,237 @@ describe('createAuditRetention', () => {
     const r = await retention.run();
     expect(r.size_pass_ran).toBe(true);
     expect(r.rows_removed).toBeGreaterThan(0);
+  });
+
+  it('⛔ evicts the OLDEST rows first, and stops at the per-run cap', async () => {
+    // ⛔ WHY THIS EXISTS. Every other size-pass test asserts only
+    // `size_pass_ran === true` and `rows_removed > 0` — both of which are
+    // satisfied by evicting the NEWEST rows, or by draining the whole table.
+    // Reversing `ORDER BY … ASC` to `DESC` at `audit-retention.ts:203` and
+    // `:223` was verified to leave the ENTIRE suite green (14 tests here, plus
+    // eviction-cascade / phase-b-e2e / pressure-handler / wire-retention-
+    // pruners — 63 more), while destroying the most recent audit history first.
+    // That is the opposite of what a retention pruner is for: the newest
+    // records are the ones an operator is about to need.
+    //
+    // The age pass is disabled by default (`audit.retention_days` defaults to
+    // 0 ⇒ null), so the size pass is the ONLY live pass on a stock server —
+    // which is what makes its eviction ORDER load-bearing rather than academic.
+    const now = 1_000_000_000_000;
+    // r-0 is the NEWEST (now - 1000), r-9 the OLDEST (now - 1009).
+    for (let i = 0; i < 10; i++) {
+      await auditLog.append(mkEntry({ run_id: `r-${i}`, started_at: now - 1000 - i }));
+    }
+
+    const retention = createAuditRetention({
+      db, auditLog, gate,
+      config: () => mkConfig({
+        retentionDays: 30,
+        quotaBytes: 100,
+        pruneAtPct: 50,
+        pruneMaxRowsPerRun: 5,
+        reservePct: 0,
+      }),
+      now: () => now,
+    });
+
+    const r = await retention.run();
+    expect(r.size_pass_ran).toBe(true);
+    // The cap BOUNDS the pass — it does not drain the table. `> 0` passes on
+    // both 1 and 10; this does not.
+    expect(r.rows_removed).toBe(5);
+
+    const survivors = (db
+      .prepare(`SELECT json_extract(data, '$.run_id') AS run_id FROM audit_entries`)
+      .all() as Array<{ run_id: string }>)
+      .map((row) => row.run_id)
+      .sort();
+    // The five NEWEST survive; the five oldest are gone.
+    expect(survivors).toEqual(['r-0', 'r-1', 'r-2', 'r-3', 'r-4']);
+  });
+
+  it('⛔ evicts the OLDEST activities first once the entries budget is spent', async () => {
+    // The activities half is a SEPARATE `ORDER BY` (`$.timestamp`) reached only
+    // through the `rowsRemoved < cap` carry-over, so it needs its own proof —
+    // the entries assertion above cannot reach this statement at all.
+    const now = 1_000_000_000_000;
+    // a-0 newest (now), a-5 oldest (now - 5000). All non-reserve.
+    for (let i = 0; i < 6; i++) {
+      await auditLog.logActivity({
+        activity_id: `a-${i}`,
+        timestamp: now - i * 1000,
+        action: 'install',
+        target: 't',
+      });
+    }
+
+    const retention = createAuditRetention({
+      db, auditLog, gate,
+      config: () => mkConfig({
+        retentionDays: 30,
+        quotaBytes: 100,
+        pruneAtPct: 50,
+        pruneMaxRowsPerRun: 3,
+        reservePct: 0,
+      }),
+      now: () => now,
+    });
+
+    const r = await retention.run();
+    expect(r.size_pass_ran).toBe(true);
+    expect(r.rows_removed).toBe(3);
+
+    // ⚠ Scoped to the SEEDED ids. The pass logs its own `reserve` activity into
+    // this same table, so an unfiltered read returns a generated id too — which
+    // is correct behaviour, not a leak, but it is not what this test is about.
+    const survivors = (db
+      .prepare(`SELECT json_extract(data, '$.activity_id') AS activity_id FROM audit_activities`)
+      .all() as Array<{ activity_id: string }>)
+      .map((row) => row.activity_id)
+      .filter((id) => /^a-\d+$/.test(id))
+      .sort();
+    expect(survivors).toEqual(['a-0', 'a-1', 'a-2']);
+  });
+
+  it('⛔ STOPS at the non-reserve floor instead of draining to it', async () => {
+    // ⛔ WHY THIS EXISTS. Every other size-pass test sets `reservePct: 0`, which
+    // makes `reserveFloor` 0, which makes `minNonReserveFloor` 0, which makes
+    // the floor `break` in BOTH delete loops UNREACHABLE. The guard shipped
+    // with no coverage at all — and it is the one piece of that loop that
+    // decides when to stop deleting.
+    //
+    // That mattered acutely when the per-row `measureAuditUsage()` full scan
+    // was replaced by a running total: the running total feeds this comparison,
+    // so a fix that was correct about performance and wrong about the
+    // arithmetic would have deleted straight through the floor with every test
+    // still green.
+    const now = 1_000_000_000_000;
+    // Rows are ~200 bytes each; 60 of them puts usage well over the trigger.
+    for (let i = 0; i < 60; i++) {
+      await auditLog.append(mkEntry({ run_id: `r-${i}`, started_at: now - 1000 - i }));
+    }
+    const usedBefore = (db
+      .prepare(`SELECT COALESCE(SUM(length(data)),0) AS t FROM audit_entries`)
+      .get() as { t: number }).t;
+
+    const quotaBytes = Math.round(usedBefore / 0.8);
+    const retention = createAuditRetention({
+      db, auditLog, gate,
+      config: () => mkConfig({
+        retentionDays: 30,
+        quotaBytes,
+        pruneAtPct: 50,          // trigger well below current usage
+        pruneMaxRowsPerRun: 1000, // cap must NOT be what stops the pass
+        reservePct: 40,          // floor = 40% of quota, and no reserve rows
+      }),
+      now: () => now,
+    });
+
+    const r = await retention.run();
+    expect(r.size_pass_ran).toBe(true);
+
+    const usedAfter = (db
+      .prepare(`SELECT COALESCE(SUM(length(data)),0) AS t FROM audit_entries`)
+      .get() as { t: number }).t;
+    const floor = quotaBytes * 0.4;
+
+    // It did real work...
+    expect(r.rows_removed).toBeGreaterThan(0);
+    // ...but STOPPED, rather than draining the table the cap would have allowed.
+    expect(r.rows_removed).toBeLessThan(60);
+    expect(usedAfter).toBeGreaterThanOrEqual(floor);
+    expect(usedAfter).toBeLessThan(usedBefore);
+  });
+
+  it('⛔ carries the byte budget from the entries loop INTO the activities loop', async () => {
+    // ⛔ WHY THIS EXISTS. The size pass deletes entries first, then activities,
+    // sharing one budget — and the floor comparison is against total non-reserve
+    // bytes ACROSS BOTH tables. Nothing covered that hand-off: no test seeded
+    // both tables under quota pressure at once, so the activities loop's view of
+    // the budget was unasserted.
+    //
+    // It matters specifically because the per-row `measureAuditUsage()` scan was
+    // replaced by a running total. A mutation that RESTARTS that total in the
+    // activities loop (rather than continuing it) went undetected by every test
+    // including the floor one above — because with zero reserve rows the
+    // restart is arithmetically identical. Real RESERVE rows are what make the
+    // two differ, so this test seeds them.
+    const now = 1_000_000_000_000;
+    // Reserve rows: excluded from deletion, but counted in `reserveBytes` —
+    // which is exactly the term a restart would drop.
+    for (let i = 0; i < 8; i++) {
+      await auditLog.logActivity({
+        activity_id: `a-res-${i}`,
+        timestamp: now - i,
+        action: 'pressure_state_change', // auto-classified reserve
+        target: 't',
+      });
+    }
+    for (let i = 0; i < 30; i++) {
+      await auditLog.append(mkEntry({ run_id: `r-${i}`, started_at: now - 1000 - i }));
+    }
+    for (let i = 0; i < 30; i++) {
+      await auditLog.logActivity({
+        activity_id: `a-user-${i}`,
+        timestamp: now - 5000 - i,
+        action: 'install',
+        target: 't',
+      });
+    }
+
+    const total = (): number => (db
+      .prepare(
+        `SELECT COALESCE((SELECT SUM(length(data)) FROM audit_entries),0)
+              + COALESCE((SELECT SUM(length(data)) FROM audit_activities),0) AS t`,
+      )
+      .get() as { t: number }).t;
+    const usedBefore = total();
+    const quotaBytes = Math.round(usedBefore / 0.85);
+
+    const retention = createAuditRetention({
+      db, auditLog, gate,
+      config: () => mkConfig({
+        retentionDays: 30,
+        quotaBytes,
+        pruneAtPct: 50,
+        pruneMaxRowsPerRun: 1000, // the cap must not be what stops the pass
+        reservePct: 45,
+      }),
+      now: () => now,
+    });
+
+    const r = await retention.run();
+    expect(r.size_pass_ran).toBe(true);
+    expect(r.rows_removed).toBeGreaterThan(0);
+
+    // Reserve rows are never touched, whichever loop was running.
+    // ⚠ Scoped to the SEEDED ids: the pass emits its own
+    // `audit_retention_prune` activity, which is auto-classified reserve, so an
+    // unfiltered count reads 9. Correct behaviour, not a leak — but it is not
+    // what this assertion is about.
+    const reserveLeft = (db
+      .prepare(
+        `SELECT COUNT(*) c FROM audit_activities
+          WHERE json_extract(data,'$.reserve') = 1
+            AND json_extract(data,'$.activity_id') LIKE 'a-res-%'`,
+      )
+      .get() as { c: number }).c;
+    expect(reserveLeft).toBe(8);
+
+    // ⛔ The floor is measured on NON-RESERVE bytes, across both tables. A loop
+    // that restarted the running total without subtracting `reserveBytes` would
+    // over-count what it still had to spend and delete past this.
+    const reserveBytes = (db
+      .prepare(
+        `SELECT COALESCE(SUM(length(data)),0) AS t FROM audit_activities
+          WHERE json_extract(data,'$.reserve') = 1`,
+      )
+      .get() as { t: number }).t;
+    const nonReserveAfter = total() - reserveBytes;
+    const minNonReserveFloor = Math.max(0, quotaBytes * 0.45 - reserveBytes);
+    expect(nonReserveAfter).toBeGreaterThanOrEqual(minNonReserveFloor);
+    // ...and it did stop short of draining, so the floor is what stopped it.
+    expect(r.rows_removed).toBeLessThan(60);
   });
 
   it('size-based pass never drops reserve rows', async () => {

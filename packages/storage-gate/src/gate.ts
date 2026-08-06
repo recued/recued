@@ -25,6 +25,30 @@ import {
 export interface CreateGateOptions extends GateConfig {
   /** Time source — injectable for deterministic tests. */
   now?: () => number;
+  /** ⛔ AUTHORITATIVE USAGE, PULLED INSTEAD OF PUSHED. When supplied, this is
+   *  the surface's byte total and the internal `used` counter is never read.
+   *
+   *  WHY IT EXISTS. `used` is maintained by callers — `addUsed` on write,
+   *  `setUsed` on re-anchor — and a caller that mutates the surface WITHOUT
+   *  reporting it silently desynchronises the gate. That is not hypothetical:
+   *  `audit-compaction` deletes audit rows through raw SQL and reports nothing,
+   *  so the audit gate over-reported until the hourly retention pass
+   *  re-anchored it. Once the pressure read-out surfaced `used_bytes` to the
+   *  owner, that stale number became visible.
+   *
+   *  Threading a gate into every deleter would RELOCATE the obligation, not
+   *  remove it — the next deleter forgets too. A provider removes it: the gate
+   *  asks the source of truth, so no writer anywhere has to remember.
+   *
+   *  ⚠ MUST BE CHEAP. It is called on every read and every state recompute. The
+   *  audit surface can afford it only because `readAuditUsageBytes` is an
+   *  O(1) indexed row read backed by SQLite triggers; before that counter
+   *  existed a provider would have meant a full table scan per call, which is
+   *  far worse than the drift it fixes.
+   *
+   *  ⚠ A provider that throws or returns a non-finite/negative value falls back
+   *  to the internal counter rather than corrupting the gate. */
+  usageProvider?: () => number;
 }
 
 const DEFAULT_PRESSURE_RATIO = 0.8;
@@ -36,11 +60,27 @@ export const createStorageGate = (opts: CreateGateOptions): StorageGate => {
   const surface = opts.surface;
   const now = opts.now ?? (() => Date.now());
 
+  const usageProvider = opts.usageProvider;
   let used = 0;
   let state: StorageState = 'running';
   let haltReason: string | null = null;
 
   const listeners = new Set<StateChangeListener>();
+
+  /** The surface's byte total: the provider when one is wired, else the
+   *  caller-maintained counter. Every read of usage goes through here. */
+  const currentUsed = (): number => {
+    if (!usageProvider) return used;
+    try {
+      const value = usageProvider();
+      return Number.isFinite(value) && value >= 0 ? value : used;
+    } catch {
+      // A broken provider must not take the gate down, and must not invent a
+      // 0 — that reads as "empty". Fall back to the pushed counter, which is
+      // stale but in the right neighbourhood.
+      return used;
+    }
+  };
 
   const computeThresholds = () => {
     const reserve = Math.max(MIN_RESERVE_BYTES, Math.floor(quota * (reservePct / 100)));
@@ -55,7 +95,7 @@ export const createStorageGate = (opts: CreateGateOptions): StorageGate => {
     return {
       surface,
       state,
-      used,
+      used: currentUsed(),
       quota,
       reserve: t.reserve,
       available: t.available,
@@ -75,8 +115,9 @@ export const createStorageGate = (opts: CreateGateOptions): StorageGate => {
     if (state === 'halted') return; // halt overrides everything
     const t = computeThresholds();
     let next: StorageState;
-    if (used >= t.blockedAt) next = 'writes_blocked';
-    else if (used >= t.pressureAt) next = 'pressure_managed';
+    const u = currentUsed();
+    if (u >= t.blockedAt) next = 'writes_blocked';
+    else if (u >= t.pressureAt) next = 'pressure_managed';
     else next = 'running';
     if (next !== state) {
       const previous = state;
@@ -89,6 +130,14 @@ export const createStorageGate = (opts: CreateGateOptions): StorageGate => {
     if (!Number.isFinite(bytes) || bytes < 0) {
       throw new RangeError(`gate(${surface}).setUsed: bytes must be a non-negative finite number`);
     }
+    // ⚠ THE COUNTER IS MAINTAINED EVEN UNDER A PROVIDER, and that is load
+    // bearing rather than tidy-mindedness. It is the FALLBACK `currentUsed`
+    // returns when the provider throws or answers nonsense. The first cut
+    // skipped the write under a provider, which made `used` permanently 0 — so
+    // the fallback reported an EMPTY surface, the most dangerous wrong answer
+    // (it clears pressure and unblocks writes on a full disk). The mutation
+    // that replaced the fallback with a literal 0 passed every test, because
+    // the fixture made both branches agree.
     used = bytes;
     recomputeState();
   };
@@ -117,7 +166,7 @@ export const createStorageGate = (opts: CreateGateOptions): StorageGate => {
 
     const reserveClass = !!options.reserve;
     const ceiling = reserveClass ? info.quota : info.blockedAt;
-    const projected = used + bytes;
+    const projected = currentUsed() + bytes;
 
     if (projected > ceiling) {
       return {
@@ -165,7 +214,14 @@ export const createStorageGate = (opts: CreateGateOptions): StorageGate => {
   };
 
   return {
-    info: buildInfo,
+    // ⚠ A provider-backed surface can change with NO call into the gate (a raw
+    // DELETE elsewhere), so its state is recomputed at read time — that is what
+    // makes `info().state` agree with `info().used`. Surfaces without a
+    // provider keep the previous behaviour exactly: no recompute on read.
+    info: () => {
+      if (usageProvider) recomputeState();
+      return buildInfo();
+    },
     setUsed,
     addUsed,
     subUsed,

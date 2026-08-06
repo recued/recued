@@ -82,6 +82,12 @@ describe('renderMemoryLens', () => {
       ],
     });
     expect(html).toContain('memory-origin-user_self');
+    expect(html).toContain(
+      'data-recued-memory-lens\n    aria-labelledby="recued-memory-lens-heading"',
+    );
+    expect(html).toContain(
+      '<h2 class="memory-lens-title" id="recued-memory-lens-heading">Memory</h2>',
+    );
     expect(html).toContain('>You<');
     expect(html).toContain('a note');
     expect(html).toContain('href="#logs/r1"');
@@ -170,6 +176,8 @@ describe('renderMemoryLens', () => {
 describe('renderLensSwitcher', () => {
   it('marks the active lens + emits the select-lens action for both buttons', () => {
     const html = renderLensSwitcher('memory', 'data-recued-data-action');
+    expect(html).toContain('role="group"');
+    expect(html).not.toContain('role="tablist"');
     expect(html).toContain(MEMORY_LENS_SELECT_ACTION);
     expect(html).toMatch(/data-lens-btn is-active[^>]*data-memory-lens="memory"/);
     expect(html).toContain('data-memory-lens="data"');
@@ -183,6 +191,18 @@ describe('renderLensSwitcher', () => {
 
   it('uses canonical high-contrast theme tokens for the active lens and row actions', () => {
     expect(MEMORY_LENS_STYLES).toMatch(
+      /\.data-lens-btn\s*\{[^}]*min-height:\s*36px/s,
+    );
+    expect(MEMORY_LENS_STYLES).toMatch(
+      /\.memory-filter-chip\s*\{[^}]*min-height:\s*36px/s,
+    );
+    expect(MEMORY_LENS_STYLES).toMatch(
+      /\.memory-row-run-link\s*\{[^}]*min-height:\s*36px/s,
+    );
+    expect(MEMORY_LENS_STYLES).toMatch(
+      /\.memory-row-btn, \.memory-btn\s*\{[^}]*min-height:\s*36px/s,
+    );
+    expect(MEMORY_LENS_STYLES).toMatch(
       /\.data-lens-btn\.is-active\s*\{[^}]*background:\s*var\(--surface\);[^}]*color:\s*var\(--fg-strong\)/s,
     );
     expect(MEMORY_LENS_STYLES).toMatch(
@@ -190,6 +210,27 @@ describe('renderLensSwitcher', () => {
     );
     expect(MEMORY_LENS_STYLES).not.toMatch(
       /var\(--(?:text|text-muted|surface-2)\b/,
+    );
+  });
+
+  it('contains narrow controls and arbitrary memory text at their owning surface', () => {
+    expect(MEMORY_LENS_STYLES).toMatch(
+      /\.memory-lens-controls\s*\{[^}]*flex-wrap:\s*wrap;[^}]*min-width:\s*0/s,
+    );
+    expect(MEMORY_LENS_STYLES).toMatch(
+      /\.memory-row-kind\s*\{[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(MEMORY_LENS_STYLES).toMatch(
+      /\.memory-row-title\s*\{[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(MEMORY_LENS_STYLES).toMatch(
+      /\.memory-input, \.memory-textarea\s*\{[^}]*width:\s*100%;[^}]*min-width:\s*0/s,
+    );
+    expect(MEMORY_LENS_STYLES).toMatch(
+      /\.memory-detail-body\s*\{[^}]*max-width:\s*100%;[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(MEMORY_LENS_STYLES).toMatch(
+      /@media \(max-width:\s*520px\)[\s\S]*\.memory-lens-controls\s*\{[^}]*flex-direction:\s*column/s,
     );
   });
 });
@@ -214,6 +255,42 @@ describe('renderMemoryLens — Slice 2 CRUD affordances', () => {
     expect(rw).not.toMatch(new RegExp(`${MEMORY_EDIT_ACTION}[^>]*data-memory-id="run-1"`));
     // read-only mode hides every write affordance
     expect(renderMemoryLens({ ...baseProps, entries: [own], canWrite: false })).not.toContain(MEMORY_EDIT_ACTION);
+  });
+
+  it('gives repeated row actions a visible identity and stable id', () => {
+    const secondOwn = entry({
+      memory_id: 'umem_2',
+      origin_actor: 'user_self',
+      kind: 'note',
+      ts: 998_000,
+      summary: 'Another preference',
+      has_body: true,
+    });
+    const system = entry({
+      memory_id: 'run-2',
+      origin_actor: 'system',
+      kind: 'run',
+      ts: 997_000,
+      summary: 'Recipe execution remembered',
+      run_id: 'recipe-run-2',
+    });
+    const html = renderMemoryLens({
+      ...baseProps,
+      entries: [own, secondOwn, system],
+      canWrite: true,
+    });
+    expect(html).toContain('aria-label="View memory mine (umem_1)"');
+    expect(html).toContain('aria-label="Edit memory mine (umem_1)"');
+    expect(html).toContain('aria-label="Delete memory mine (umem_1)"');
+    expect(html).toContain(
+      'aria-label="View memory Another preference (umem_2)"',
+    );
+    expect(html).toContain(
+      'aria-label="Open run for memory Recipe execution remembered (run-2)"',
+    );
+    expect(html).toContain(
+      'aria-label="Forget memory Recipe execution remembered (run-2)"',
+    );
   });
 
   it('renders a "View" affordance only for rows carrying a body', () => {
@@ -387,7 +464,7 @@ describe('renderMemoryLens — Slice 2 CRUD affordances', () => {
     const html = renderMemoryLens({ ...baseProps, entries: [own], canWrite: true, detail });
     expect(html).toContain('the full body text');
     expect(html).toContain(MEMORY_DETAIL_HEADING_ATTR);
-    expect(html).toContain('tabindex="-1">Memory detail</h2>');
+    expect(html).toContain('tabindex="-1">Memory detail</h3>');
     expect(html).toContain(MEMORY_EDIT_ACTION); // own → editable from detail
     // detail beats an open compose form
     const compose: MemoryComposeState = { open: true, mode: 'create', kind: '', summary: '', body: '', submitting: false };

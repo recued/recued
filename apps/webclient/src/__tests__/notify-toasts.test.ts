@@ -23,6 +23,7 @@ import {
   NOTIFY_TOASTS_HOST_ATTR,
   NOTIFY_TOAST_ATTR,
   NOTIFY_TOAST_DISMISS_ATTR,
+  NOTIFY_TOASTS_STYLES,
   mountNotifyToasts,
   type MountNotifyToastsOptions,
 } from '../notify-toasts.js';
@@ -275,6 +276,24 @@ const mount = (
 // ════════════════════════════════════════════════════════════════
 
 describe('D-169 P2 Slice 5 notify toasts', () => {
+  it('keeps the dismiss action full-sized with an explicit focus ring', () => {
+    expect(NOTIFY_TOASTS_STYLES).toMatch(
+      /\.notify-toast-dismiss\s*\{[^}]*width:\s*36px;[^}]*height:\s*36px;/s,
+    );
+    expect(NOTIFY_TOASTS_STYLES).toMatch(
+      /\.notify-toast-dismiss:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);/s,
+    );
+    expect(NOTIFY_TOASTS_STYLES).toMatch(
+      /@media \(max-width: 520px\)[\s\S]*?\.notify-toast-dismiss\s*\{[^}]*width:\s*44px;[^}]*height:\s*44px;/s,
+    );
+    expect(NOTIFY_TOASTS_STYLES).toContain(
+      'width: min(320px, calc(100vw - 32px));',
+    );
+    expect(NOTIFY_TOASTS_STYLES).toMatch(
+      /\.notify-toast-title\s*\{[^}]*overflow-wrap:\s*anywhere;/s,
+    );
+  });
+
   it('subscribes to notification.notify and renders a one-way toast on a frame', () => {
     const { host, fake, toasts } = mount();
     expect(fake.calls.filter((c) => c.kind === 'notification.notify')).toHaveLength(1);
@@ -292,6 +311,9 @@ describe('D-169 P2 Slice 5 notify toasts', () => {
     const dismissBtns = findAllByAttr(host, NOTIFY_TOAST_DISMISS_ATTR);
     expect(dismissBtns).toHaveLength(1);
     expect(dismissBtns[0]!.tagName).toBe('BUTTON');
+    expect(dismissBtns[0]!.getAttribute('aria-label')).toBe(
+      'Dismiss notification: Storage ready — Sync complete',
+    );
   });
 
   it('renders an untitled frame as text-only (no title element)', () => {

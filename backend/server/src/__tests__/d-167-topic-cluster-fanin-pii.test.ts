@@ -124,7 +124,7 @@ describe('D-167 fan-in seam — wrapHousekeepingCtxForFanIn', () => {
 // B. topic_cluster — the live fan-in producer
 // ────────────────────────────────────────────────────────────────
 
-const MAIL_TABLE = 'collection_mail_a';
+const MAIL_TABLE = 'collection_mail_55555555ee';
 
 let dir: string;
 let db: Database.Database;

@@ -39,6 +39,7 @@ import {
   EXPOSURE_LOAD_ERROR_ATTR,
   EXPOSURE_MODAL_ATTR,
   EXPOSURE_PANEL_ATTR,
+  EXPOSURE_PANEL_STYLES,
   EXPOSURE_PATH_ROW_ATTR,
   EXPOSURE_PRESET_ROW_ATTR,
   EXPOSURE_PUBLIC_MCP_BTN_ATTR,
@@ -348,8 +349,14 @@ describe('R26.2 Delta 1 — mountExposurePanel: cold load', () => {
     for (const path of ['health', 'ws', 'mcp', 'webhooks', 'reception', 'oauth', 'ask']) {
       expect(findByAttr(host, EXPOSURE_PATH_ROW_ATTR, path)).not.toBeNull();
     }
-    expect(findByAttr(host, EXPOSURE_CELL_ATTR, 'reception.public')).not.toBeNull();
+    const receptionPublic = findByAttr(host, EXPOSURE_CELL_ATTR, 'reception.public');
+    expect(receptionPublic).not.toBeNull();
+    expect(receptionPublic?.parent?.tagName).toBe('LABEL');
+    expect(receptionPublic?.parent?.className).toContain('exposure-cell-target');
     expect(findByAttr(host, EXPOSURE_CELL_ATTR, 'mcp.public')).not.toBeNull();
+    expect(EXPOSURE_PANEL_STYLES).toMatch(
+      /\.exposure-cell-target\s*\{[^}]*min-width:\s*36px[^}]*min-height:\s*36px/s,
+    );
     expect(mount.getState().state?.derived_preset_label).toBe('lan_only');
   });
 
@@ -424,7 +431,20 @@ describe('R26.2 Delta 1 — /mcp.public ack gate', () => {
   it('public-MCP card button opens the acknowledge modal', async () => {
     const { host, mount } = await setup();
     mount.clickManagePublicMcp();
-    expect(findByAttr(host, EXPOSURE_MODAL_ATTR)).not.toBeNull();
+    const modal = findByAttr(host, EXPOSURE_MODAL_ATTR);
+    expect(modal).not.toBeNull();
+    expect(modal?.getAttribute('role')).toBe('dialog');
+    expect(modal?.getAttribute('aria-modal')).toBe('true');
+    const titleId = modal?.getAttribute('aria-labelledby');
+    const descriptionId = modal?.getAttribute('aria-describedby');
+    expect(titleId).toMatch(/^recued-exposure-modal-\d+-title$/);
+    expect(descriptionId).toMatch(/^recued-exposure-modal-\d+-description$/);
+    expect(findByAttr(host, 'id', titleId ?? '')?.textContent).toBe(
+      'Enable public MCP?',
+    );
+    expect(findByAttr(host, 'id', descriptionId ?? '')?.textContent).toMatch(
+      /AI agents at remote endpoints/,
+    );
     expect(mount.getState().publicMcpModal.kind).toBe('open');
   });
 

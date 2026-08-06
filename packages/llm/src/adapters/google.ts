@@ -2,6 +2,7 @@ import type { LLMAdapter, LLMFinishReason, LLMMessage } from '../types.js';
 import { LLMError } from '../types.js';
 import { callProvider } from './anthropic.js';
 import { hasNonTextPart, joinTextParts, toGoogleParts } from './content-parts.js';
+import { joinApiBase } from '../base-url.js';
 
 const DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com';
 const API_VERSION = 'v1beta';
@@ -12,7 +13,7 @@ const API_VERSION = 'v1beta';
 export const createGoogleAdapter = (): LLMAdapter => ({
   provider: 'google',
   async complete(slot, messages, options) {
-    const baseUrl = (slot.base_url ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
+    const baseUrl = joinApiBase(slot.base_url ?? DEFAULT_BASE_URL, API_VERSION);
     const url = `${baseUrl}/${API_VERSION}/models/${encodeURIComponent(options.model)}:generateContent`;
 
     const { system_instruction, contents } = splitGoogleMessages(messages);

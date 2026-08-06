@@ -53,6 +53,7 @@ import {
   deriveBoundConventionFamilies,
   liveVendorRegistry,
 } from './connection-convention-families.js';
+import { missingPackDependencies } from './pack-inventory.js';
 import type { ConnectionStoreSqlite } from './storage/connection-store.js';
 import type { RecipeStore } from './recipe-store.js';
 import type { LocalManifestStore } from './ingredient-authoring/local-manifest-store.js';
@@ -75,6 +76,16 @@ export interface RecipeRunnabilityHandlerDeps {
    *  registry to find which recipes' convention families become unbound. Absent
    *  (dbless / no contract store) → the reverse-walk discloses nothing. */
   localCatalogDropIdsForPack?: (pack_slug: string) => readonly string[];
+  /** The `<publisher>.<pack>` refs currently resolvable — i.e. installed AND
+   *  binding a catalog. A recipe declaring one that is absent cannot LOWER
+   *  (`lowerSequentialStep` throws before step 1), so it is `blocked` no matter
+   *  what its connection families say.
+   *
+   *  ⚠ Absent (dbless / no contract store) ⇒ the pack arm discloses nothing
+   *  rather than claiming every pack is missing. Same fail-open posture as the
+   *  scheduler's fire-time gate, and for the same reason: "cannot tell" must not
+   *  render as "nothing here works". */
+  installedPackRefs?: () => ReadonlySet<string>;
 }
 
 /** Poll-manager / G6 — re-exported from the shared convention-families home so the
@@ -170,17 +181,63 @@ const STATUS_RANK: Record<RunnabilityStatus, number> = { runnable: 0, degraded: 
  *  every canonical family bound (or no canonical op) → `runnable`. A blocked recipe
  *  may also carry degraded reads in another family, so its synthesized detail spans
  *  both the blocked + warned entries. */
+/** One `DependencyResolution` per pack the recipe declares but cannot resolve.
+ *
+ *  The MISSING-PACK decision itself is `pack-inventory`'s `missingPackDependencies`
+ *  — the same call the run path and the scheduler's fire-time gate make. This
+ *  only projects that answer into the disclosure's wire shape. A local
+ *  re-implementation here would be a second source of truth for the one property
+ *  every surface must agree on, and the disagreement would be invisible: each
+ *  surface would look self-consistent while naming different packs.
+ *
+ *  `capability` holds the pack_ref; the disclosure tells packs from connection
+ *  families with `isKernelConnectionFamily`. Always HARD (`optional: false`) — a
+ *  missing pack does not degrade a run, it stops it starting. `unprovided_ops`
+ *  stays empty: there is no partial coverage to describe, the pack is absent. */
+const missingPackDeps = (
+  recipe: RecipeDefinition,
+  installed: ReadonlySet<string>,
+): DependencyResolution[] =>
+  missingPackDependencies(recipe, installed).map((ref) => ({
+    capability: ref,
+    ops: [],
+    optional: false,
+    satisfied: false,
+    providers: [],
+    unprovided_ops: [],
+  }));
+
 const kernelRunnability = (
   recipe_id: string,
   recipe: RecipeDefinition,
   boundFamilies: ReadonlySet<KernelConnectionFamily>,
+  installedPacks: ReadonlySet<string> | null,
 ): RecipeRunnabilityEntry => {
+  // A missing pack outranks every family verdict: the recipe cannot lower, so
+  // no amount of connection binding makes it runnable. Listed FIRST so the
+  // disclosure leads with the thing the owner can actually fix.
+  const packDeps = installedPacks === null
+    ? []
+    : missingPackDeps(recipe, installedPacks);
   const verdict = applyKernelOpRunnability(recipe, boundFamilies);
   if (!verdict.ok) {
     return {
       recipe_id,
       status: 'blocked',
-      dependencies: synthesizeDependencies([...verdict.blocked, ...verdict.warnings]),
+      dependencies: [
+        ...packDeps,
+        ...synthesizeDependencies([...verdict.blocked, ...verdict.warnings]),
+      ],
+    };
+  }
+  if (packDeps.length > 0) {
+    // Blocked on the pack even though every family it needs is bound — and the
+    // family warnings still ride along, so fixing the pack does not then reveal
+    // a second problem the disclosure had been hiding.
+    return {
+      recipe_id,
+      status: 'blocked',
+      dependencies: [...packDeps, ...synthesizeDependencies(verdict.warnings)],
     };
   }
   if (verdict.warnings.length > 0) {
@@ -202,11 +259,15 @@ const computeKernelRunnabilityForAll = (
   // connected QuickBooks/Xero (`acct`) or 3rd-party CRM vendor binds its family —
   // the SAME registry the run path passes, so disclosure can't disagree.
   const boundFamilies = deriveBoundConventionFamilies(deps.connectionStore, liveRegistry(deps));
+  // Resolved ONCE per read, not per recipe — the inventory scan is the expensive
+  // half and it cannot change mid-walk. `null` (dep unwired) disables the pack
+  // arm entirely rather than treating every pack as missing.
+  const installedPacks = deps.installedPackRefs?.() ?? null;
   const out: RecipeRunnabilityEntry[] = [];
   for (const recipe_id of deps.recipeStore.ids()) {
     const recipe = deps.recipeStore.get(recipe_id);
     if (recipe === null) continue;
-    out.push(kernelRunnability(recipe_id, recipe, boundFamilies));
+    out.push(kernelRunnability(recipe_id, recipe, boundFamilies, installedPacks));
   }
   return out;
 };
@@ -246,16 +307,71 @@ export const listRecipeRunnability = (
  *  worse ones (`STATUS_RANK`). The pack drops no local catalog (recipe-only pack /
  *  built-in-vendor binding) → the registry is unchanged → `[]` without walking
  *  recipes. Absent drop-ids callback or manifest store (dbless) → `[]`. */
+/** Recipes that will not LOWER once `pack_slug` is gone — the Tier-P arm.
+ *
+ *  ⛔ WHY THIS IS SEPARATE FROM THE FAMILY WALK BELOW. R1 runnability is a pure
+ *  function of bound CONNECTION families, and both of that walk's short-circuits
+ *  (`dropIds.size === 0`, `afterFamilies.size === beforeFamilies.size`) are true
+ *  for a pack that enrols no connection. So uninstalling a local-CLI pack —
+ *  docling, whisper, ffmpeg, officecli — disclosed NOTHING while its dependent
+ *  recipes were about to stop working. 121 of the shipped packs are `service_kind:
+ *  cli`, and 34 recipes depend on one. An empty would-disable list reads as
+ *  "nothing is affected", not "I did not look", which is the worst way for a
+ *  disclosure to be wrong.
+ *
+ *  A recipe naming a Tier-P op of this pack does not degrade — it cannot start.
+ *  `lowerSequentialStep` throws `CanonicalOpResolutionError` for "a two-tier id
+ *  that resolves to nothing" BEFORE step 1, so the honest transition is
+ *  `→ blocked` regardless of what the family walk would have said.
+ *
+ *  Keyed on `depends_on`, which is the recipe's declared `<publisher>.<pack>`
+ *  list and is now enforced corpus-wide against the ops each recipe actually
+ *  calls (`recipe-depends-on-coverage`). Before that enforcement 137 recipes
+ *  under-declared and this walk would have missed them.
+ *
+ *  ⚠ Matched on the pack SLUG, not the publisher-qualified ref. That is
+ *  deliberate and consistent: `installed_pack` is itself keyed by `pack_slug`
+ *  alone (contract-schema `segments: ['pack_slug']`), so two publishers' packs
+ *  with one slug cannot coexist in the inventory anyway. Qualifying here would
+ *  claim a precision the inventory does not have. */
+const listRecipesBlockedByPackUninstall = (
+  deps: RecipeRunnabilityHandlerDeps,
+  pack_slug: string,
+  boundFamilies: ReadonlySet<KernelConnectionFamily>,
+): RunnabilityTransition[] => {
+  const out: RunnabilityTransition[] = [];
+  for (const recipe_id of deps.recipeStore.ids()) {
+    const recipe = deps.recipeStore.get(recipe_id);
+    if (recipe === null) continue;
+    const dependsOn = (recipe as { depends_on?: unknown }).depends_on;
+    if (!Array.isArray(dependsOn)) continue;
+    const namesPack = dependsOn.some((entry) =>
+      typeof entry === 'string' && entry.slice(entry.indexOf('.') + 1) === pack_slug);
+    if (!namesPack) continue;
+    const before = kernelStatusOf(recipe, boundFamilies);
+    // Already blocked for a connection reason → uninstalling does not WORSEN it.
+    if (before === 'blocked') continue;
+    out.push({ recipe_id, before, after: 'blocked' });
+  }
+  return out;
+};
+
 export const listRecipesWorsenedByPackUninstall = (
   deps: RecipeRunnabilityHandlerDeps,
   pack_slug: string,
 ): RunnabilityTransition[] => {
+  // The Tier-P arm runs FIRST and unconditionally — it must not sit behind the
+  // family walk's short-circuits, which is exactly the bug it fixes.
+  const boundNow = deriveBoundConventionFamilies(deps.connectionStore, liveRegistry(deps));
+  const blocked = listRecipesBlockedByPackUninstall(deps, pack_slug, boundNow);
+  const seen = new Set(blocked.map((t) => t.recipe_id));
+
   // The local composition catalogs uninstall would actually delete (refcount-aware).
   // No droppable catalog (or no manifest store to drop from) → the merged registry
   // is unchanged → no R1 family can become unbound → nothing worsens.
   const dropIds = new Set(deps.localCatalogDropIdsForPack?.(pack_slug) ?? []);
   const store = deps.localManifestStore;
-  if (dropIds.size === 0 || store === undefined) return [];
+  if (dropIds.size === 0 || store === undefined) return blocked;
 
   const beforeFamilies = deriveBoundConventionFamilies(deps.connectionStore, liveRegistry(deps));
   const afterFamilies = deriveBoundConventionFamilies(
@@ -270,11 +386,15 @@ export const listRecipesWorsenedByPackUninstall = (
   );
   // Removing registry vendors can only SHRINK the bound set; an unchanged set worsens
   // nothing (the dropped catalogs' vendors had no enrolled connection, or another
-  // connection still binds the same family).
-  if (afterFamilies.size === beforeFamilies.size) return [];
+  // connection still binds the same family). The Tier-P findings still stand.
+  if (afterFamilies.size === beforeFamilies.size) return blocked;
 
-  const out: RunnabilityTransition[] = [];
+  const out: RunnabilityTransition[] = [...blocked];
   for (const recipe_id of deps.recipeStore.ids()) {
+    // A recipe already reported by the Tier-P arm is at `blocked`, the worst
+    // rank — the family walk cannot worsen it further, and listing it twice
+    // would double-count the disclosure the surface renders.
+    if (seen.has(recipe_id)) continue;
     const recipe = deps.recipeStore.get(recipe_id);
     if (recipe === null) continue;
     const before = kernelStatusOf(recipe, beforeFamilies);

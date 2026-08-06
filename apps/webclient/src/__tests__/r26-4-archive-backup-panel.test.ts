@@ -32,6 +32,7 @@ import {
   ARCHIVE_BACKUP_RECHECK_BTN_ATTR,
   ARCHIVE_BACKUP_PROGRESS_ATTR,
   ARCHIVE_BACKUP_PATH_OUT_ATTR,
+  ARCHIVE_RESTORE_PATH_ATTR,
   ARCHIVE_RESTORE_MNEMONIC_ATTR,
   ARCHIVE_RESTORE_PREVIEW_BTN_ATTR,
   ARCHIVE_RESTORE_MANIFEST_ATTR,
@@ -395,6 +396,9 @@ describe('R26.4 Delta 2b — export', () => {
     mount.clickBackup();
     expect(mount.getView()).toBe('export-entry');
     expect(findByAttr(host, ARCHIVE_BACKUP_RUN_BTN_ATTR)).not.toBeNull();
+    const key = findByAttr(host, ARCHIVE_BACKUP_MNEMONIC_ATTR);
+    expect(key?.parent?.tagName).toBe('LABEL');
+    expect(textOf(key!.parent!)).toContain('24-word recovery key');
   });
 
   it('keeps a keyboard-owned export on its progress and hands completion to Download', async () => {
@@ -766,6 +770,17 @@ describe('R26.4 Delta 2b — restore preview', () => {
     expect(mount.getView()).toBe('restore-entry');
     expect(mount.getError()).toMatch(/path to the backup file/);
     expect(importLog).toHaveLength(0);
+  });
+
+  it('labels the restore path and archive recovery key independently', () => {
+    const { host, mount } = setupMount();
+    mount.clickRestore();
+    const path = findByAttr(host, ARCHIVE_RESTORE_PATH_ATTR);
+    const key = findByAttr(host, ARCHIVE_RESTORE_MNEMONIC_ATTR);
+    expect(path?.parent?.tagName).toBe('LABEL');
+    expect(textOf(path!.parent!)).toContain('path to a backup');
+    expect(key?.parent?.tagName).toBe('LABEL');
+    expect(textOf(key!.parent!)).toContain('Recovery key for this backup');
   });
 
   it('a client-side-invalid phrase never reaches the server', async () => {
@@ -1164,7 +1179,9 @@ describe('R26.4 M1 — restore: Q2 cross-realm gate', () => {
     const { host, mount } = await toCrossPreview(crossImport([]));
     expect(mount.getView()).toBe('restore-preview');
     expect(mount.getRestoreRealm()).toBe('cross');
-    expect(findByAttr(host, ARCHIVE_RESTORE_REALM_KEY_ATTR)).not.toBeNull();
+    const realmKey = findByAttr(host, ARCHIVE_RESTORE_REALM_KEY_ATTR);
+    expect(realmKey?.parent?.tagName).toBe('LABEL');
+    expect(textOf(realmKey!.parent!)).toContain('current recovery key');
     expect(textOf(host).toLowerCase()).toContain('re-pair');
   });
 
@@ -1259,6 +1276,8 @@ describe('R26.4 M1 — passport-only export', () => {
     expect(passportLog).toEqual([{ profile: 'support_redacted' }]);
     const ta = findByAttr(host, ARCHIVE_PASSPORT_JSON_ATTR);
     expect(ta?.value ?? '').toContain('support_redacted');
+    expect(ta?.parent?.tagName).toBe('LABEL');
+    expect(textOf(ta!.parent!)).toContain('Exported identity passport JSON');
     expect(mount.getPassportJson()).toContain('support_redacted');
     expect(findByAttr(host, ARCHIVE_PASSPORT_DOWNLOAD_BTN_ATTR)).not.toBeNull();
     mount.clickPassportDownload();
@@ -1518,7 +1537,9 @@ describe('M4b.2 restore upload', () => {
   it('shows the file picker on restore-entry only when the seam is wired', () => {
     const wired = setupMount({ archiveUpload: captureUpload().fn });
     wired.mount.clickRestore();
-    expect(findByAttr(wired.host, ARCHIVE_RESTORE_UPLOAD_INPUT_ATTR)).not.toBeNull();
+    const picker = findByAttr(wired.host, ARCHIVE_RESTORE_UPLOAD_INPUT_ATTR);
+    expect(picker?.parent?.tagName).toBe('LABEL');
+    expect(textOf(picker!.parent!)).toContain('Upload a backup file');
 
     const bare = setupMount(); // no archiveUpload
     bare.mount.clickRestore();

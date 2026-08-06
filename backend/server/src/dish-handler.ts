@@ -251,7 +251,7 @@ export const dishHistory = async (
       duration_ms: entry.duration_ms,
       commit_status: entry.commit_status,
       trigger_source: entry.trigger_source,
-      error: (entry.errors[0] as { message?: string } | undefined)?.message ?? null,
+      error: ((entry.errors ?? [])[0] as { message?: string } | undefined)?.message ?? null,
     })),
   };
 };

@@ -11,7 +11,11 @@
  *  vocabulary is one more copy to fall behind. `AUTH_TYPES` derives from
  *  `CONNECTION_AUTH_TYPES`. */
 
-import { CONNECTION_AUTH_TYPES, type ConnectionAuthType } from '@recued/contracts';
+import {
+  CONNECTION_AUTH_TYPES,
+  CONNECTION_SIGNING_SCHEMES,
+  type ConnectionAuthType,
+} from '@recued/contracts';
 
 import type { ConnectionSchema } from './types.js';
 
@@ -125,6 +129,38 @@ export const apiSchema: ConnectionSchema = {
       type: 'header-list',
       showWhen: ifAuth('header'),
       help: 'Sent on every call. Add one per credential header — most APIs need just one (e.g. X-API-Key).',
+    },
+    // Request signing — the only auth here whose credential is COMPUTED per
+    // call rather than stored and re-sent.
+    //
+    // ⛔ The scheme is a SELECT over a closed registry, never a free-text
+    // canonical string. A field an owner (or a pack) could type into would let
+    // whoever fills it choose which bytes Recued signs with the secret below,
+    // which is a signing oracle. `connection-signing.ts` carries the argument.
+    {
+      key: 'auth.scheme',
+      label: 'Signing scheme',
+      type: 'select',
+      options: [...CONNECTION_SIGNING_SCHEMES],
+      optionLabels: { binance_hmac_sha256: 'Binance (HMAC-SHA256)' },
+      showWhen: ifAuth('request_signature'),
+      help: 'Which vendor\u2019s signing rule to apply. Only listed schemes can be used.',
+    },
+    {
+      key: 'auth.api_key',
+      label: 'API key',
+      type: 'text',
+      showWhen: ifAuth('request_signature'),
+      help: 'The public half, sent as-is on every request.',
+    },
+    {
+      key: 'auth.secret_key',
+      label: 'Signing secret',
+      type: 'secret',
+      showWhen: ifAuth('request_signature'),
+      help: 'Keys the signature and is never transmitted. \u26a0 If calls fail auth, check '
+        + 'this value and your machine\u2019s clock \u2014 requests carry a timestamp the '
+        + 'provider rejects when it drifts more than a few seconds.',
     },
     // Query
     {

@@ -398,6 +398,7 @@ export const SERVER_SWITCHER_STYLES = `
 [${SERVER_SWITCHER_REMOVE_CONFIRM_ATTR}] h3 {
   margin: 0 0 4px;
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 [${SERVER_SWITCHER_SWITCH_CONFIRM_ATTR}] p,
 [${SERVER_SWITCHER_REMOVE_CONFIRM_ATTR}] p {
@@ -405,6 +406,7 @@ export const SERVER_SWITCHER_STYLES = `
   font-size: 11px;
   line-height: 1.4;
   opacity: 0.78;
+  overflow-wrap: anywhere;
 }
 [${SERVER_SWITCHER_REMOVE_STATUS_ATTR}] { opacity: 0.86; }
 [${SERVER_SWITCHER_REMOVE_ERROR_ATTR}] {

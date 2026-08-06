@@ -1013,12 +1013,24 @@ const WEBCLIENT_SHELL_STYLES = `
 [${WEBCLIENT_SHELL_TOPBAR_ATTR}] .webclient-shell-brand {
   display: inline-flex;
   align-items: center;
+  box-sizing: border-box;
+  min-height: 38px;
+  padding: 0 4px;
+  border-radius: 8px;
   gap: 10px;
   color: var(--fg-strong, var(--fg));
   font-size: 16px;
   font-weight: 750;
   letter-spacing: -0.025em;
   text-decoration: none;
+  transition: color 90ms ease;
+}
+[${WEBCLIENT_SHELL_TOPBAR_ATTR}] .webclient-shell-brand:hover {
+  color: var(--accent);
+}
+[${WEBCLIENT_SHELL_TOPBAR_ATTR}] .webclient-shell-brand:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 [${WEBCLIENT_SHELL_TOPBAR_ATTR}] .webclient-shell-brand::before {
   content: "";
@@ -1117,6 +1129,7 @@ const WEBCLIENT_SHELL_STYLES = `
   top: 0;
   left: 0;
   z-index: 70;
+  box-sizing: border-box;
   width: min(306px, 88vw);
   height: 100%;
   display: flex;
@@ -1158,8 +1171,8 @@ const WEBCLIENT_SHELL_STYLES = `
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 36px;
+  height: 36px;
   padding: 0;
   border: 0;
   border-radius: 7px;
@@ -1306,7 +1319,10 @@ interface WebclientShell {
   /** Topbar's rightmost slot — the account menu (trigger + badge + theme +
    *  settings + servers) mounts here. */
   readonly accountHost: HTMLElement;
-  readonly setActiveRoute: (route: WebclientRouteId) => void;
+  readonly setActiveRoute: (
+    route: WebclientRouteId,
+    segments?: readonly string[],
+  ) => void;
   readonly dispose: () => void;
 }
 
@@ -1329,6 +1345,7 @@ const createWebclientShell = (opts: {
   readonly root: HTMLElement;
   readonly document: Document;
   readonly activeRoute: WebclientRouteId;
+  readonly activeSegments?: readonly string[];
   /** Fired by the §D.L2 drawer "Create" action seat — opens the shared Create
    *  overlay (the same modal as the L1 composer button). */
   readonly onCreateSeat?: () => void;
@@ -1437,16 +1454,21 @@ const createWebclientShell = (opts: {
   // while the seats render below and is also the drawer's focus-loop source.
   const drawerFocusables: HTMLElement[] = [closeBtn];
 
-  // Track the highlight-owning seats only — a seat with `highlight: true` is
-  // the single row lit for its route (so the interim duplicate wirings light
-  // one row, not two).
-  const highlightLinks: Array<{ route: WebclientRouteId; link: HTMLElement }> =
-    [];
+  // Track every destination so exact sibling addresses (`#chat/new`,
+  // `#settings/account`) can own the current-page marker. A `highlight` seat
+  // remains the route fallback for deeper addresses without their own drawer
+  // row (`#chat/session/<id>`, `#settings/privacy`, and so on).
+  const destinationLinks: Array<{
+    readonly route: WebclientRouteId;
+    readonly segments: readonly string[];
+    readonly fallback: boolean;
+    readonly link: HTMLElement;
+  }> = [];
 
   // ── Open / close state (declared before the render loop so each seat's
   //    close-on-navigate handler can close it) ─────────────────────────
   let drawerOpen = false;
-  let activeDrawerRoute = opts.activeRoute;
+  let activeDrawerLink: HTMLElement | null = null;
   const setDrawerOpen = (
     open: boolean,
     behavior?: { readonly returnFocus?: boolean },
@@ -1478,8 +1500,8 @@ const createWebclientShell = (opts: {
       // keyboard users traverse the whole menu again. Routes without a drawer
       // seat retain the stable first-link fallback.
       focusShellElement(
-        highlightLinks.find((item) => item.route === activeDrawerRoute)?.link
-          ?? highlightLinks[0]?.link
+        activeDrawerLink
+          ?? destinationLinks.find((item) => item.fallback)?.link
           ?? closeBtn,
       );
     } else if (behavior?.returnFocus === true) {
@@ -1575,9 +1597,12 @@ const createWebclientShell = (opts: {
       labelEl.className = 'webclient-shell-drawer-label';
       labelEl.textContent = item.label;
       link.appendChild(labelEl);
-      if (item.highlight === true) {
-        highlightLinks.push({ route: item.route, link });
-      }
+      destinationLinks.push({
+        route: item.route,
+        segments: item.segments ?? [],
+        fallback: item.highlight === true,
+        link,
+      });
       sectionEl.appendChild(link);
     }
     drawer.appendChild(sectionEl);
@@ -1633,10 +1658,21 @@ const createWebclientShell = (opts: {
   };
   docEvents.addEventListener?.('keydown', onDocKeydown);
 
-  const setActiveRoute = (route: WebclientRouteId): void => {
-    activeDrawerRoute = route;
-    for (const item of highlightLinks) {
-      if (item.route === route) {
+  const setActiveRoute = (
+    route: WebclientRouteId,
+    segments: readonly string[] = [],
+  ): void => {
+    const exact = destinationLinks.find((item) =>
+      item.route === route
+      && item.segments.length === segments.length
+      && item.segments.every((segment, index) => segment === segments[index]),
+    );
+    const active = exact ?? destinationLinks.find(
+      (item) => item.route === route && item.fallback,
+    );
+    activeDrawerLink = active?.link ?? null;
+    for (const item of destinationLinks) {
+      if (item === active) {
         item.link.setAttribute('aria-current', 'page');
         item.link.setAttribute(WEBCLIENT_SHELL_DRAWER_ACTIVE_ATTR, '');
       } else {
@@ -1645,7 +1681,7 @@ const createWebclientShell = (opts: {
       }
     }
   };
-  setActiveRoute(opts.activeRoute);
+  setActiveRoute(opts.activeRoute, opts.activeSegments);
 
   return {
     root: shellRoot,
@@ -2858,6 +2894,7 @@ export const bootstrapWebclient = async (
     root: options.root,
     document: doc,
     activeRoute,
+    activeSegments: parseShellRoute(activeHash).segments,
     onCreateSeat: () => createSeatHandler?.(),
   });
 
@@ -8127,6 +8164,18 @@ export const bootstrapWebclient = async (
     options.enableHousekeepingPanel === false
       ? undefined
       : (args) => rpcConn.call('housekeeping.task.run_now', args);
+  // Server ▸ Maintenance storage read-out. ⚠ Gated on the SAME flag as the rest
+  // of the tab — a Storage section on a panel that is otherwise switched off
+  // would be the only thing rendering there.
+  const maintenanceServerStatusCaller =
+    options.enableHousekeepingPanel === false
+      ? undefined
+      : () => rpcConn.call('server.getStatus', undefined);
+  const maintenanceReclaimCaller =
+    options.enableHousekeepingPanel === false
+      ? undefined
+      : (args: { surface: string; force?: boolean }) =>
+        rpcConn.call('server.runPressureReclaim', args);
   const housekeepingPanelTrustReadCaller:
     | HousekeepingTrustReadCaller
     | undefined =
@@ -9290,6 +9339,8 @@ export const bootstrapWebclient = async (
       return withTrackedServerSwitchWork(mountDiscoverySurface({
         root: appShell.contentRoot,
         ...(options.document !== undefined ? { document: options.document } : {}),
+        idPrefix: 'recued-recipes-library',
+        tabListLabel: 'Recipe library sections',
         mountInstalled,
         mountDiscover: (host) => {
           recipeDiscover = mountRecipeDiscovery({
@@ -10322,6 +10373,16 @@ export const bootstrapWebclient = async (
           ? {
               housekeepingPanelRunNowCaller: switchWorkTracker.track(
                 housekeepingPanelRunNowCaller,
+              ),
+            }
+          : {}),
+        ...(maintenanceServerStatusCaller !== undefined
+          ? { maintenanceServerStatusCaller }
+          : {}),
+        ...(maintenanceReclaimCaller !== undefined
+          ? {
+              maintenanceReclaimCaller: switchWorkTracker.track(
+                maintenanceReclaimCaller,
               ),
             }
           : {}),
@@ -12323,6 +12384,7 @@ export const bootstrapWebclient = async (
           interruptRecoveryIntentExpiryReviewForNavigation(hash);
           markRecoveryReturnDeparted();
           activeHash = hash;
+          appShell.setActiveRoute(next, parseShellRoute(hash).segments);
           finishPendingRecoveryReturnAction(hash);
           return;
         }
@@ -12379,7 +12441,7 @@ export const bootstrapWebclient = async (
         mountedRouteHandle.dispose();
         activeRoute = next;
         activeHash = hash;
-        appShell.setActiveRoute(next);
+        appShell.setActiveRoute(next, parseShellRoute(hash).segments);
         mountedRouteHandle = mountRoute(next);
         finishPendingRecoveryReturnAction(hash);
       })

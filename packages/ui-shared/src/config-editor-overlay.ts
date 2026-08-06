@@ -75,21 +75,35 @@ const CONFIG_EDITOR_STYLES = `
 }
 .config-editor-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  min-width: 0;
   gap: 12px;
 }
-.config-editor-title { margin: 0; font-size: 15px; font-weight: 600; }
-.config-editor-copy { margin: 0; font-size: 12px; color: var(--muted); }
+.config-editor-title {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 15px;
+  font-weight: 600;
+}
+.config-editor-copy { margin: 0; overflow-wrap: anywhere; font-size: 12px; color: var(--muted); }
 .config-editor-error {
   margin: 0;
   font-size: 12px;
   color: var(--danger, #b42318);
 }
 .config-editor-error[hidden] { display: none; }
-.config-editor-fields { display: grid; gap: 12px; }
+.config-editor-fields { display: grid; min-width: 0; gap: 12px; }
 .config-editor-actions { display: flex; justify-content: flex-end; }
+.config-editor-header .config-editor-button { flex: 0 0 auto; }
 .config-editor-button {
+  box-sizing: border-box;
+  min-width: 36px;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
   font: inherit;
   padding: 6px 12px;
@@ -114,7 +128,7 @@ const CONFIG_EDITOR_STYLES = `
   font-size: 12px; font-weight: 600; color: var(--fg);
 }
 .config-editor-panel .var-row-inline > label {
-  display: flex; align-items: center; gap: 7px; font-weight: 500;
+  display: flex; align-items: center; min-height: 36px; gap: 7px; font-weight: 500;
 }
 .config-editor-panel .var-help { margin: 0; font-size: 11px; line-height: 1.4; color: var(--muted); }
 .config-editor-panel .var-optional {
@@ -125,7 +139,7 @@ const CONFIG_EDITOR_STYLES = `
 .config-editor-panel .var-row input[type="number"],
 .config-editor-panel .var-row input[type="password"],
 .config-editor-panel .var-row select {
-  box-sizing: border-box; width: 100%; border: 1px solid var(--border);
+  box-sizing: border-box; width: 100%; min-height: 36px; border: 1px solid var(--border);
   border-radius: 6px; padding: 7px 9px; background: var(--surface); color: var(--fg); font: inherit;
 }
 .config-editor-panel .var-row input:focus,
@@ -133,7 +147,25 @@ const CONFIG_EDITOR_STYLES = `
 .config-editor-panel .var-multi-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px;
 }
-.config-editor-panel .var-multi-opt { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg); }
+.config-editor-panel .var-multi-opt { display: flex; align-items: center; min-height: 36px; gap: 6px; font-size: 12px; color: var(--fg); }
+.config-editor-panel .ref-picker-input {
+  min-height: 36px;
+  padding-right: 40px;
+}
+.config-editor-panel .ref-picker-clear {
+  right: 0;
+  width: 36px;
+  height: 36px;
+}
+.config-editor-panel .ref-picker-option {
+  box-sizing: border-box;
+  min-height: 36px;
+  justify-content: center;
+}
+.config-editor-panel .var-file-refs-btn {
+  width: 36px;
+  height: 36px;
+}
 ${FILE_REF_ARRAY_STYLES}
 `;
 
@@ -381,10 +413,11 @@ export const wireConfigEditorOverlay = (
   // Escape closes only this overlay — stop it before it reaches a parent
   // modal's document-level keydown.
   overlay.addEventListener('keydown', (ev) => {
-    if ((ev as KeyboardEvent).key === 'Escape') {
-      ev.stopPropagation();
-      if (!confirming) destroy();
-    }
+    const event = ev as KeyboardEvent;
+    if (event.key !== 'Escape') return;
+    ev.stopPropagation();
+    if (event.isComposing) return;
+    if (!confirming) destroy();
   });
 
   doc.body.appendChild(overlay);

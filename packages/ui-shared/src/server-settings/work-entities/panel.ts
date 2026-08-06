@@ -39,15 +39,35 @@ import type { WorkEntitiesPanelState } from './state.js';
 
 export interface WorkEntitiesPanelProps extends WorkEntitiesPanelState {}
 
+const renderPanelFrame = (content: string): string => `
+  <div class="rx-work-entities-panel">
+    <header class="rx-work-entities-header">
+      <h2>Work Entities</h2>
+      <p class="rx-work-entities-summary">
+        Sources are entity providers per kind. Each Source can be
+        enabled / disabled and exposed to MCP independently. Disabled
+        Sources stay registered (so re-enabling preserves history)
+        but their rows are excluded from polymorphic
+        <code>data.&lt;kind&gt;</code> reads. The per-kind default
+        Source drives the create-dialog default + AI chat
+        default-confirm.
+      </p>
+    </header>
+    ${content}
+  </div>
+`;
+
 export const renderWorkEntitiesPanel = (
   props: WorkEntitiesPanelProps,
 ): string => {
   if (props.loading && props.sources.length === 0) {
-    return `<p class="rx-work-entities-loading">Loading Work Entity Sources…</p>`;
+    return renderPanelFrame(
+      '<p class="rx-work-entities-loading">Loading Work Entity Sources…</p>',
+    );
   }
 
   if (props.error) {
-    return inlineError(props.error);
+    return renderPanelFrame(inlineError(props.error));
   }
 
   const sectionsHtml = WORK_ENTITY_KINDS.map((kind: WorkEntityKind) => {
@@ -65,23 +85,7 @@ export const renderWorkEntitiesPanel = (
     return renderWorkEntityKindSection(sectionProps);
   }).join('');
 
-  return `
-    <div class="rx-work-entities-panel">
-      <header class="rx-work-entities-header">
-        <h2>Work Entities</h2>
-        <p class="rx-work-entities-summary">
-          Sources are entity providers per kind. Each Source can be
-          enabled / disabled and exposed to MCP independently. Disabled
-          Sources stay registered (so re-enabling preserves history)
-          but their rows are excluded from polymorphic
-          <code>data.&lt;kind&gt;</code> reads. The per-kind default
-          Source drives the create-dialog default + AI chat
-          default-confirm.
-        </p>
-      </header>
-      ${sectionsHtml}
-    </div>
-  `;
+  return renderPanelFrame(sectionsHtml);
 };
 
 /** Self-contained CSS for the work-entities panel. Concatenated into
@@ -115,7 +119,7 @@ ${WORK_ENTITIES_SOURCE_ROW_STYLES}
   font-size: 12px;
 }
 .rx-work-entities-loading {
-  padding: 16px;
+  margin: 0;
   color: var(--fg-muted, var(--fg));
   font-size: 13px;
 }

@@ -21,6 +21,7 @@ import {
   RECEPTION_RECORDS_ERROR_ATTR,
   RECEPTION_RECORDS_KIND_ATTR,
   RECEPTION_RECORDS_RETRY_ATTR,
+  RECEPTION_RECORDS_STYLES,
   RECEPTION_RECORDS_TRUNCATED_ATTR,
   RECEPTION_RECORDS_UNRESOLVED_ATTR,
   RECEPTION_RECORDS_UNRESOLVED_COPY,
@@ -150,6 +151,12 @@ const mount = (
 // ════════════════════════════════════════════════════════════════
 
 describe('mountReceptionRecordsPanel — what reaches the wire', () => {
+  it('keeps both filter groups large enough for frequent touch use', () => {
+    expect(RECEPTION_RECORDS_STYLES).toMatch(
+      /\.reception-records-chip\s*\{[^}]*min-height:\s*36px/s,
+    );
+  });
+
   it('loads unfiltered on mount', async () => {
     const { calls, panel } = mount([ok([booking()])]);
     await panel.refresh();

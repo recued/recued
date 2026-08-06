@@ -1685,12 +1685,23 @@ const buildChatTail = async (
   session_id: string,
 ): Promise<BuiltChatTail> => {
   try {
-    const messages = await chatStore.listMessages(session_id);
-    const conversational = messages.filter(
+    // Bounded read: the last CHAT_TAIL_LIMIT conversational rows, selected and
+    // role-filtered in SQL. This used to be `listMessages` + a JS slice, which
+    // read and DECRYPTED the whole session on every turn to use three rows —
+    // so per-turn cost grew with conversation length (12.3ms at 2000 turns).
+    //
+    // ⚠ The role filter below is kept as defence in depth, NOT as the
+    // guarantee: the SQL already restricts to user/assistant. It is here
+    // because `ChatMessage.role` is the wide type and narrowing it with a cast
+    // would silence exactly the check that would catch the query drifting.
+    // Three rows — the filter costs nothing.
+    const selected = (await chatStore.listRecentConversational(
+      session_id,
+      CHAT_TAIL_LIMIT,
+    )).filter(
       (m): m is ChatMessage & { role: 'user' | 'assistant' } =>
         m.role === 'user' || m.role === 'assistant',
     );
-    const selected = conversational.slice(-CHAT_TAIL_LIMIT);
     return {
       messages: selected.map((m) => ({
         role: m.role,
@@ -1707,6 +1718,14 @@ const buildChatTail = async (
       // since re-locked.
       throw e;
     }
+    // ⛔ A PROGRAMMING ERROR MUST NOT DEGRADE TO "no recent context". The
+    // degradation below is for DATA problems — a corrupt row, transient IO —
+    // where losing the tail beats losing the turn. A `TypeError` here means the
+    // store handed us something that is not the interface (a hand-rolled double
+    // missing `listRecentConversational`, a mis-wired dep), and swallowing that
+    // ships a chat where the model silently sees no history: every turn reads
+    // like the first one, and nothing anywhere reports it.
+    if (e instanceof TypeError) throw e;
     return { messages: [], item_ids: [] };
   }
 };

@@ -318,6 +318,11 @@ const formatRotatedAt = (rotated_at: number): string => {
   return formatClientDateTime(rotated_at, { invalidText: 'unknown' });
 };
 
+const focusIfSupported = (element: unknown): void => {
+  const focus = (element as { focus?: unknown } | null)?.focus;
+  if (typeof focus === 'function') focus.call(element);
+};
+
 /** Short label for a dependent/cascade key class in the done summary. */
 const labelForKeyClass = (key_class: KeyClass): string =>
   KEY_CLASS_INFO[key_class]?.label ?? key_class;
@@ -346,6 +351,7 @@ export const mountKeyHealthPanel = (
   let lastErrorCode: RotationErrorCode | null = null;
   let lastErrorMessage = '';
   let loadErrorMessage = '';
+  let pendingActionFocus: Readonly<{ attr: string; value: string }> | null = null;
   // D-212 §7.10 — posture state, independent of the page state machine.
   // `null` here means "no seam wired" (render nothing); every other value
   // is something we can honestly show.
@@ -406,6 +412,13 @@ export const mountKeyHealthPanel = (
       view = result;
       loadErrorMessage = '';
       transitionTo('idle');
+      if (pendingActionFocus !== null) {
+        focusIfSupported(findBtn(
+          pendingActionFocus.attr,
+          pendingActionFocus.value,
+        ));
+        pendingActionFocus = null;
+      }
     } catch (err) {
       if (disposed) return;
       loadErrorMessage = messageOf(err);
@@ -538,25 +551,42 @@ export const mountKeyHealthPanel = (
     if (availability === 'available') {
       const rotateOp = ROTATE_OP_FOR_CLASS[key_class];
       if (rotateOp !== undefined) {
-        actions.appendChild(
-          makeButton('Rotate now', KEY_HEALTH_ROTATE_BTN_ATTR, key_class, 'primary', () => {
+        const rotateButton = makeButton(
+          'Rotate now',
+          KEY_HEALTH_ROTATE_BTN_ATTR,
+          key_class,
+          'primary',
+          () => {
+            pendingActionFocus = {
+              attr: KEY_HEALTH_ROTATE_BTN_ATTR,
+              value: key_class,
+            };
             pendingAction = { op: rotateOp } as KeyRotateRequest;
             transitionTo('confirm');
-          }),
-        );
-      }
-      actions.appendChild(
-        makeButton(
-          'Mark compromised',
-          KEY_HEALTH_COMPROMISE_BTN_ATTR,
-          key_class,
-          'danger',
-          () => {
-            pendingAction = { op: 'mark_compromised', key_class };
-            transitionTo('confirm');
           },
-        ),
+        );
+        rotateButton.setAttribute('aria-label', `Rotate ${info.label} now`);
+        actions.appendChild(rotateButton);
+      }
+      const compromiseButton = makeButton(
+        'Mark compromised',
+        KEY_HEALTH_COMPROMISE_BTN_ATTR,
+        key_class,
+        'danger',
+        () => {
+          pendingActionFocus = {
+            attr: KEY_HEALTH_COMPROMISE_BTN_ATTR,
+            value: key_class,
+          };
+          pendingAction = { op: 'mark_compromised', key_class };
+          transitionTo('confirm');
+        },
       );
+      compromiseButton.setAttribute(
+        'aria-label',
+        `Mark ${info.label} compromised`,
+      );
+      actions.appendChild(compromiseButton);
     } else {
       const note = doc.createElement('p');
       note.className = 'key-health-card-note';
@@ -713,18 +743,29 @@ export const mountKeyHealthPanel = (
 
     const actions = doc.createElement('div');
     actions.className = 'key-health-actions';
-    actions.appendChild(
-      makeButton('Cancel', KEY_HEALTH_CANCEL_BTN_ATTR, '', 'secondary', () => {
+    const cancelButton = makeButton(
+      'Cancel',
+      KEY_HEALTH_CANCEL_BTN_ATTR,
+      '',
+      'secondary',
+      () => {
+        const focusTarget = pendingActionFocus;
         pendingAction = null;
         transitionTo('idle');
-      }),
+        if (focusTarget !== null) {
+          focusIfSupported(findBtn(focusTarget.attr, focusTarget.value));
+        }
+        pendingActionFocus = null;
+      },
     );
+    actions.appendChild(cancelButton);
     actions.appendChild(
       makeButton('Yes, continue', KEY_HEALTH_CONFIRM_BTN_ATTR, '', 'danger', () => {
         pendingRotatePromise = runRotate(action);
       }),
     );
     wrapper.appendChild(actions);
+    focusIfSupported(cancelButton);
   };
 
   const renderBusy = (): void => {
@@ -831,8 +872,13 @@ export const mountKeyHealthPanel = (
     actions.className = 'key-health-actions';
     actions.appendChild(
       makeButton('Back', KEY_HEALTH_BACK_BTN_ATTR, '', 'secondary', () => {
+        const focusTarget = pendingActionFocus;
         pendingAction = null;
         transitionTo('idle');
+        if (focusTarget !== null) {
+          focusIfSupported(findBtn(focusTarget.attr, focusTarget.value));
+        }
+        pendingActionFocus = null;
       }),
     );
     wrapper.appendChild(heading);

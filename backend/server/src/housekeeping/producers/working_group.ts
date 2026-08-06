@@ -64,6 +64,12 @@ import type {
 } from '../registry.js';
 import { canonicalOne, collectAddresses } from './_email-addresses.js';
 import { contactName } from './_contact-names.js';
+import { listCollectionDataTables } from '../../collections/table.js';
+import {
+  CALENDAR_ROW_SELECT,
+  calendarRowHotFields,
+  type CalendarScanRow,
+} from './_calendar-rows.js';
 
 // ────────────────────────────────────────────────────────────────
 // Constants
@@ -180,33 +186,21 @@ export const scanRecentEvents = (
   limit: number = MAX_EVENTS_SCANNED,
 ): ScannedEvent[] => {
   const earliest = now - CALENDAR_LOOKBACK_MS;
-  const tables = ctx.db
-    .prepare(
-      `SELECT name FROM sqlite_master
-        WHERE type='table' AND name LIKE 'collection_calendar_%'`,
-    )
-    .all() as Array<{ name: string }>;
+  const tables = listCollectionDataTables(ctx.db, 'calendar');
 
   const all: ScannedEvent[] = [];
-  for (const { name: table } of tables) {
+  for (const table of tables) {
     const rows = ctx.db
       .prepare(
-        `SELECT record_id, hot_fields FROM "${table}"
+        `SELECT ${CALENDAR_ROW_SELECT} FROM "${table}"
           WHERE received_at >= ?
           ORDER BY received_at DESC
           LIMIT ?`,
       )
-      .all(earliest, limit) as Array<{
-        record_id: string;
-        hot_fields: string;
-      }>;
+      .all(earliest, limit) as CalendarScanRow[];
     for (const row of rows) {
-      let parsed: Record<string, unknown>;
-      try {
-        parsed = JSON.parse(row.hot_fields) as Record<string, unknown>;
-      } catch {
-        continue;
-      }
+      const parsed = calendarRowHotFields(row);
+      if (parsed === null) continue;
       const startAt = parsed.start_at;
       if (typeof startAt !== 'number' || !Number.isFinite(startAt)) continue;
       const participants = extractParticipantSet(parsed);

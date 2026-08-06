@@ -76,7 +76,8 @@ export const renderWorkEntitySourceRow = (
           <input
             type="checkbox"
             data-action="set-source-enabled"
-            data-source-id="${e(props.source.id)}"${enabledChecked}${pendingAttr}
+            data-source-id="${e(props.source.id)}"
+            aria-label="Enabled for ${e(props.source.source_label)} (${e(props.source.id)})"${enabledChecked}${pendingAttr}
           />
           <span>Enabled</span>
         </label>
@@ -84,7 +85,8 @@ export const renderWorkEntitySourceRow = (
           <input
             type="checkbox"
             data-action="set-source-mcp-exposed"
-            data-source-id="${e(props.source.id)}"${mcpChecked}${pendingAttr}
+            data-source-id="${e(props.source.id)}"
+            aria-label="MCP exposed for ${e(props.source.source_label)} (${e(props.source.id)})"${mcpChecked}${pendingAttr}
           />
           <span>MCP exposed</span>
         </label>
@@ -144,8 +146,12 @@ export const WORK_ENTITIES_SOURCE_ROW_STYLES = `
   margin-top: 8px;
 }
 .rx-source-row-toggle {
+  box-sizing: border-box;
   display: inline-flex;
   align-items: center;
+  min-height: 36px;
+  padding: 6px 8px;
+  border-radius: 6px;
   gap: 6px;
   font-size: 12px;
   cursor: pointer;

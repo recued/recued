@@ -43,6 +43,12 @@ export const ensureExecutionReportSchema = (db: Database.Database): void => {
       server_finalized                INTEGER NOT NULL DEFAULT 0,
       pending_reason                  TEXT
     );
+
+    -- D-219 lookups and cascade deletes are BY ROOT, and this table carried no
+    -- index. Every one was a full scan; a retention pass removing N roots did
+    -- N scans -- the quadratic shape fixed in audit-retention. Grows with chat.
+    CREATE INDEX IF NOT EXISTS idx_execution_reports_root
+      ON execution_reports (root_request_id);
   `);
 };
 
@@ -117,6 +123,33 @@ export interface ExecutionReportStore {
    *  is the kind of unreachable-therefore-fine reasoning that stops being true
    *  without anything failing. */
   allReportIds(): string[];
+  /** ⛔ THE RETENTION SWEEP'S CANDIDATE SET, computed in SQL, sealed payloads
+   *  UNTOUCHED. Same rationale as `allReportIds` above, one function later:
+   *  `pruneSourcesOlderThan` built this set by calling `listAll()` — opening
+   *  four AEAD-sealed fields for EVERY report — plus `caseStore.listAll()` and
+   *  a `sourceReportIds()` call per case, then discarding all of it. It runs
+   *  daily and, on a healthy server, finds nothing: the cost was O(corpus)
+   *  every tick, forever, in exchange for no work. The horizon audit's
+   *  optimization pass flagged the idle tick full-scanning `execution_reports`.
+   *
+   *  Equivalent to the JS filter it replaces, term for term:
+   *    - `(closed_at ?? reported_at) < before`   → `COALESCE(...) < ?`. A report
+   *      that never closed cannot close later, so it ages from when it was
+   *      written.
+   *    - `!supporting.has(report_id)` where `supporting` came from every case in
+   *      `caseStore.listAll()` (which filters nothing) → `NOT IN` over the
+   *      source join.
+   *
+   *  ⚠ The join to `execution_cases` is DEFENCE IN DEPTH, not a gap fix — and
+   *  the distinction is worth stating because the first draft of this comment
+   *  claimed otherwise. Foreign keys ARE enforced here: inserting an orphaned
+   *  `execution_case_sources` row fails outright, so today the join and a bare
+   *  `IN (SELECT report_id FROM execution_case_sources)` return the same set.
+   *  The join covers the case where enforcement is off — a restored, migrated,
+   *  or externally-written database — where a stale source row would otherwise
+   *  protect a report forever. It costs a keyed lookup and removes a
+   *  dependency on a pragma this file does not set. */
+  unsupportedIdsOlderThan(before: number): string[];
   listForRoot(root_request_id: string): Promise<StoredExecutionReport[]>;
   close(
     report_id: string,
@@ -169,6 +202,16 @@ export const createExecutionReportStore = (
   const selectAllIds = db.prepare(`
     SELECT report_id FROM execution_reports ORDER BY report_id ASC
   `);
+  // ⛔ PREPARED LAZILY, and the reason is a real trap rather than style. This is
+  // the only statement in this file that names another store's tables
+  // (`execution_case_sources` / `execution_cases`). `better-sqlite3` validates
+  // at prepare time, so preparing it here would make `createExecutionReportStore`
+  // THROW whenever it runs before `createExecutionCaseStore` — a construction
+  // ORDER dependency between two stores that otherwise have none, failing at
+  // boot with "no such table" nowhere near its cause. Preparing on first call
+  // moves the requirement to "the case tables exist by the time retention
+  // runs", which composition already guarantees.
+  let selectUnsupportedOlderThan: Database.Statement | undefined;
   const selectClosedIds = db.prepare(`
     SELECT report_id
       FROM execution_reports
@@ -327,6 +370,20 @@ export const createExecutionReportStore = (
 
     allReportIds() {
       return (selectAllIds.all() as Array<{ report_id: string }>)
+        .map((row) => row.report_id);
+    },
+
+    unsupportedIdsOlderThan(before) {
+      selectUnsupportedOlderThan ??= db.prepare(`
+        SELECT report_id FROM execution_reports
+         WHERE COALESCE(closed_at, reported_at) < ?
+           AND report_id NOT IN (
+             SELECT source.report_id
+               FROM execution_case_sources source
+               JOIN execution_cases kase ON kase.case_id = source.case_id)
+         ORDER BY report_id ASC
+      `);
+      return (selectUnsupportedOlderThan.all(before) as Array<{ report_id: string }>)
         .map((row) => row.report_id);
     },
 

@@ -3,7 +3,7 @@ import { CANONICAL_SYSTEM_FIELDS, formatHint, interpolationText } from '@recued/
 import type { TransformFn, SortField, ReduceOp } from './types.js';
 import { getField, evaluateOp } from './evaluate.js';
 import { evaluateMathExpression } from './numeric.js';
-import { applyValueParam } from './schemas.js';
+import { applyValueParam, getTransformSchema } from './schemas.js';
 
 const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -142,13 +142,30 @@ export const map: TransformFn = (p, ctx) => {
         + ` foreach ingredient step (or D-162 batch mode for ai-*) instead`,
       );
     }
-    const outputField = p.output_field as string;
-    const { array: _, apply: __, output_field: ___, ...subParams } = p;
     // Inject the per-item value under the TARGET transform's value param
     // (shared table — see APPLY_VALUE_PARAM in schemas.ts). The legacy
     // field-present → `from` rule fed every non-date_diff target an
     // undefined value.
     const valueParam = applyValueParam(p.apply as string);
+    // A target whose schema never declares that param cannot RECEIVE the item
+    // value: it computes on undefined and returns its own empty case, once per
+    // row, with nothing raised. `join` did exactly that before it was added to
+    // the table — every row got `""` because join reads `array` and the value
+    // arrived as `input`. The recipe validator already refuses this at
+    // authoring time (`apply_target_incompatible`, derived from the same
+    // schema); this is the dynamic-shape half that the unregistered-target
+    // throw above already covers for its own case. A target with no schema
+    // entry at all is left alone rather than guessed at.
+    const targetSchema = getTransformSchema(p.apply as string);
+    if (targetSchema !== undefined && !(valueParam in targetSchema)) {
+      throw new Error(
+        `map apply: "${String(p.apply)}" has no "${valueParam}" parameter`
+        + ` — it cannot receive the per-item value and would compute on`
+        + ` undefined for every row; use expression mode or a different target`,
+      );
+    }
+    const outputField = p.output_field as string;
+    const { array: _, apply: __, output_field: ___, ...subParams } = p;
     return arr.map(item => {
       const input = { ...subParams, [valueParam]: getField(item, p.field as string) };
       const result = fn(input as Record<string, unknown>, ctx);
@@ -178,7 +195,20 @@ export const project: TransformFn = (p) => {
 };
 
 /** Regex used to both detect and substitute {{item.path}} references. */
-const ITEM_REF_RE = /\{\{\s*item\.([a-zA-Z_][\w.]*)\s*\}\}/g;
+/** ⛔ The character class includes `-` because JSON APIs use kebab-case constantly and
+ *  the omission failed SILENTLY. `{{item.first-release-date}}` did not match, fell through
+ *  to the "return as-is" branch, and the LITERAL TEMPLATE STRING was written into the
+ *  projected row — a column reading `{{item.first-release-date}}` instead of `1979-11-30`,
+ *  with nothing raised. Found while binding MusicBrainz, whose payload is kebab-case
+ *  throughout (`first-release-date`, `primary-type`, `artist-credit`, `release-groups`).
+ *
+ *  ⚠ Widening is safe and was measured: a hyphen INSIDE `{{item.…}}` is unambiguously part
+ *  of the key, because the ref cannot extend past its closing `}}` — so a math expression
+ *  like `"{{item.a}} - {{item.b}}"` is untouched. And it can only turn a passthrough into a
+ *  resolution: at the time of the change ZERO shipped recipes used a hyphenated `item` ref,
+ *  so no existing behaviour changes. Plain `{{step.x.a-b}}` refs already resolved — only
+ *  these six item-scoped patterns were narrow. */
+const ITEM_REF_RE = /\{\{\s*item\.([a-zA-Z_][\w.-]*)\s*\}\}/g;
 
 /** Hint-aware variant for the interpolation case: `{{item.path:currency}}`.
  *  The optional `:hint` group mirrors the engine value system — a hint
@@ -186,26 +216,26 @@ const ITEM_REF_RE = /\{\{\s*item\.([a-zA-Z_][\w.]*)\s*\}\}/g;
  *  ignores it and preserves type (Case 1). The math case stays hint-blind
  *  on the plain regex: a formatted string inside arithmetic is authoring
  *  nonsense, and degrading it to interpolation keeps the output readable. */
-const ITEM_REF_HINT_RE = /\{\{\s*item\.([a-zA-Z_][\w.]*)(?::([a-zA-Z_]+))?\s*\}\}/g;
+const ITEM_REF_HINT_RE = /\{\{\s*item\.([a-zA-Z_][\w.-]*)(?::([a-zA-Z_]+))?\s*\}\}/g;
 
 /** Single `{{item.path | number}}` numeric-coercion form. The `| number` filter
  *  sits INSIDE the braces, so this is deliberately invisible to `ITEM_REF_RE`
  *  (which requires `}}` straight after the path) — a coercion expression is never
  *  mistaken for a plain ref by the math / interpolation cases. See
  *  `resolveExpression` Case 1.5. */
-const ITEM_NUMERIC_COERCE_RE = /^\{\{\s*item\.([a-zA-Z_][\w.]*)\s*\|\s*number\s*\}\}$/;
+const ITEM_NUMERIC_COERCE_RE = /^\{\{\s*item\.([a-zA-Z_][\w.-]*)\s*\|\s*number\s*\}\}$/;
 
 /** Single `{{item.path | date_ms}}` date-coercion form (G2 datetime unify) — the
  *  sibling of `| number` for canonical `datetime` (`date_ms`) fields. Same
  *  inside-the-braces shape, so it is equally invisible to the plain-ref / math /
  *  interpolation regexes. See `resolveExpression` Case 1.6. */
-const ITEM_DATE_COERCE_RE = /^\{\{\s*item\.([a-zA-Z_][\w.]*)\s*\|\s*date_ms\s*\}\}$/;
+const ITEM_DATE_COERCE_RE = /^\{\{\s*item\.([a-zA-Z_][\w.-]*)\s*\|\s*date_ms\s*\}\}$/;
 
 /** D-190 — email local-part projection hint (`{{item.path | local_part}}`): the
  *  substring before the FIRST '@' of the resolved value. Same inside-the-braces
  *  shape as the number / date_ms coercions, invisible to the plain-ref / math /
  *  interpolation regexes. See `resolveExpression` Case 1.7. */
-const ITEM_LOCAL_PART_RE = /^\{\{\s*item\.([a-zA-Z_][\w.]*)\s*\|\s*local_part\s*\}\}$/;
+const ITEM_LOCAL_PART_RE = /^\{\{\s*item\.([a-zA-Z_][\w.-]*)\s*\|\s*local_part\s*\}\}$/;
 
 /** Boolean coercion for the `$ternary` condition. A vendor flag arrives as a real
  *  boolean (Salesforce `IsClosed`) OR a "true"/"false" STRING (HubSpot returns all
@@ -232,7 +262,7 @@ function resolveExpression(expr: unknown, item: unknown): unknown {
     // Case 1: single ref, entire string is {{item.path}} (an optional
     // `:hint` is accepted and IGNORED — the value-system rule: pure refs
     // preserve type, hints only format string interpolation).
-    const singleMatch = /^\{\{\s*item\.([a-zA-Z_][\w.]*)(?::[a-zA-Z_]+)?\s*\}\}$/.exec(expr);
+    const singleMatch = /^\{\{\s*item\.([a-zA-Z_][\w.-]*)(?::[a-zA-Z_]+)?\s*\}\}$/.exec(expr);
     if (singleMatch) return getField(item, singleMatch[1]);
 
     // Case 1.5: numeric coercion — `{{item.path | number}}`. Coerce the field to a

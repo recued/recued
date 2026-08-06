@@ -22,6 +22,7 @@ import {
   APPROVALS_ROUTE_HEADING_ATTR,
   APPROVALS_ROUTE_HOST_ATTR,
   APPROVALS_ROUTE_LIST_ATTR,
+  APPROVALS_ROUTE_LIST_HEADING_ATTR,
   APPROVALS_ROUTE_FOCUS_ATTR,
   APPROVALS_ROUTE_EMPTY_ATTR,
   APPROVALS_ROUTE_ERROR_ATTR,
@@ -394,6 +395,14 @@ describe('D-169 P2 — bootstrapApprovalsRoute: chrome', () => {
 
     const heading = firstByAttr(shell, APPROVALS_ROUTE_HEADING_ATTR);
     expect(heading?.textContent).toBe('Approvals');
+    const listHeading = firstByAttr(shell, APPROVALS_ROUTE_LIST_HEADING_ATTR);
+    expect(listHeading?.tagName).toBe('H2');
+    expect(listHeading?.textContent).toBe('Pending decisions');
+    const list = firstByAttr(shell, APPROVALS_ROUTE_LIST_ATTR);
+    expect(list?.getAttribute('role')).toBe('list');
+    expect(list?.getAttribute('aria-labelledby')).toBe(
+      listHeading?.getAttribute('id'),
+    );
 
     route.dispose();
   });
@@ -662,6 +671,12 @@ describe('D-174 — bootstrapApprovalsRoute: deep queue', () => {
       ),
     ).toEqual(['ap-1', 'ap-2']);
     const firstCard = collectByAttr(root, APPROVAL_CARD_ATTR)[0]!;
+    expect(firstCard.getAttribute('role')).toBe('listitem');
+    const firstTitle = firstCard.children.find(
+      (child) => child.className === 'rx-approval-card-title',
+    );
+    expect(firstTitle?.getAttribute('role')).toBe('heading');
+    expect(firstTitle?.getAttribute('aria-level')).toBe('3');
     const links = collectByAttr(firstCard, APPROVAL_CARD_LINK_ATTR);
     expect(links.map((link) => link.getAttribute(APPROVAL_CARD_LINK_ATTR))).toEqual([
       'recipe',
@@ -1551,6 +1566,12 @@ describe('D-169 P2 — bootstrapApprovalsRoute: style injection', () => {
     expect(APPROVALS_ROUTE_STYLES).toContain(ASKS_PANEL_STYLES);
     expect(APPROVALS_ROUTE_STYLES).toContain(APPROVAL_CARD_STYLES);
     expect(APPROVALS_ROUTE_STYLES).toContain(`[${APPROVALS_ROUTE_HOST_ATTR}]`);
+    expect(APPROVALS_ROUTE_STYLES).toMatch(
+      /\.approvals-refresh\s*\{[^}]*min-height:\s*36px/s,
+    );
+    expect(APPROVALS_ROUTE_STYLES).toMatch(
+      /\.approvals-plan-resolution-link,[^}]*min-height:\s*36px/s,
+    );
   });
 });
 

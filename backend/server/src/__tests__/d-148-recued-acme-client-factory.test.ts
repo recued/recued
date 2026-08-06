@@ -24,6 +24,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { TLSDomainCertChain, TLSDomainUploadResult } from '@recued/contracts';
 
 import {
+  ACME_ISSUANCE_TIMEOUT_MS,
   createRecuedAcmeClientFromRefs,
   selectProAuth,
   type ProAuthSnapshot,
@@ -375,7 +376,11 @@ describe('createRecuedAcmeClientFromRefs — cloud errors', () => {
     expect(cancel).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps the 30-second deadline active while reading the cloud body', async () => {
+  // ⚠ Asserts the BEHAVIOUR (the deadline covers the BODY READ, so a peer that
+  //   sends headers then stalls forever is still aborted — a slowloris defence),
+  //   against the REAL constant. It previously hardcoded 30_000 and went red on a
+  //   deliberate raise to 240s; the number was never the contract.
+  it('keeps the issuance deadline active while reading the cloud body', async () => {
     vi.useFakeTimers();
     try {
       let capturedSignal: AbortSignal | undefined;
@@ -404,7 +409,7 @@ describe('createRecuedAcmeClientFromRefs — cloud errors', () => {
       });
       const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
 
-      await vi.advanceTimersByTimeAsync(30_001);
+      await vi.advanceTimersByTimeAsync(ACME_ISSUANCE_TIMEOUT_MS + 1);
       await rejected;
       expect(capturedSignal?.aborted).toBe(true);
     } finally {

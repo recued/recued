@@ -35,6 +35,7 @@ import {
   RECEPTION_INBOX_HEADING_ATTR,
   RECEPTION_INBOX_REFRESH_ATTR,
   RECEPTION_INBOX_ROW_ATTR,
+  RECEPTION_INBOX_STYLES,
   RECEPTION_INBOX_VIEW_ATTR,
   mountReceptionInboxPanel,
   type ReceptionInboxConn,
@@ -332,6 +333,7 @@ const setup = (opts: {
   decisionGate?: Promise<void>;
   failListAfterDecision?: boolean;
   listGateAfterFirst?: Promise<void>;
+  headingLevel?: 2 | 3;
 }): Harness => {
   const calls: ConnCall[] = [];
   let items = [...opts.items];
@@ -405,6 +407,9 @@ const setup = (opts: {
     conn,
     document,
     now: () => NOW,
+    ...(opts.headingLevel !== undefined
+      ? { headingLevel: opts.headingLevel }
+      : {}),
   });
   const root = host.children[0]!;
   return {
@@ -448,6 +453,40 @@ beforeAll(() => {
 // ════════════════════════════════════════════════════════════════════
 
 describe('reception inbox panel — destination ref-picker', () => {
+  it('owns its narrow grid and long-text containment', () => {
+    expect(RECEPTION_INBOX_STYLES).toMatch(
+      /\.reception-inbox-shell\s*\{[^}]*width:\s*100%[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(RECEPTION_INBOX_STYLES).toContain(
+      'grid-template-columns: minmax(0, 1fr);',
+    );
+    expect(RECEPTION_INBOX_STYLES).toMatch(
+      /\.reception-inbox-row\s*\{[^}]*width:\s*100%[^}]*min-width:\s*0[^}]*max-width:\s*100%/s,
+    );
+  });
+
+  it('nests inbox sections below a caller-owned route heading', async () => {
+    const h = setup({
+      items: [item()],
+      headingLevel: 2,
+    });
+    await flush();
+
+    expect(h.root.querySelector(
+      `[${RECEPTION_INBOX_HEADING_ATTR}]`,
+    )?.tagName).toBe('H2');
+    const detailHeading = h.root.querySelector(
+      `[${RECEPTION_INBOX_DETAIL_HEADING_ATTR}="hold-1"]`,
+    );
+    expect(detailHeading?.tagName).toBe('H3');
+    expect(detailHeading?.getAttribute('id')).toBe(
+      'recued-reception-inbox-detail-hold-1-title',
+    );
+    expect(h.root.querySelector(
+      '[aria-labelledby="recued-reception-inbox-detail-hold-1-title"]',
+    )?.tagName).toBe('FORM');
+  });
+
   it('moves focus into a selected detail and preserves it through refresh', async () => {
     const h = setup({
       items: [

@@ -288,6 +288,7 @@ const COMPOSE_ROUTE_CHROME_STYLES = `
 [${COMPOSE_ROUTE_HOST_ATTR}] select {
   width: 100%;
   box-sizing: border-box;
+  min-height: 36px;
   padding: 8px 10px;
   border: 1px solid var(--border-strong);
   border-radius: 4px;
@@ -305,7 +306,7 @@ const COMPOSE_ROUTE_CHROME_STYLES = `
   gap: 8px;
 }
 [${COMPOSE_ROUTE_TARGET_CHIP_ATTR}] {
-  min-height: 32px;
+  min-height: 36px;
   padding: 6px 12px;
   border: 1px solid var(--border-strong);
   border-radius: 999px;
@@ -355,7 +356,7 @@ const COMPOSE_ROUTE_CHROME_STYLES = `
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 32px;
+  min-height: 36px;
   padding: 6px 12px;
   border: 1px solid var(--accent);
   border-radius: 4px;
@@ -924,6 +925,12 @@ export const bootstrapComposeRoute = (
     }
     control.setAttribute(COMPOSE_ROUTE_FIELD_ATTR, field.key);
     control.setAttribute('aria-label', field.label);
+    if (field.required === true) {
+      // Compose owns custom cross-field validation (Capture can seed several
+      // targets), so expose the requirement to assistive technology without
+      // opting the control into an unrelated native form-submit lifecycle.
+      control.setAttribute('aria-required', 'true');
+    }
     control.value = values[field.key] ?? '';
     control.disabled = disabled;
     control.addEventListener('input', () => {

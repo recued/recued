@@ -153,6 +153,18 @@ type ClearableSlotKey = LlmSlotKey | 'embeddings_slot';
 type LlmSlotRecord = Record<string, unknown>;
 type FreePoolEntryRecord = Record<string, unknown>;
 
+const MODEL_SOURCE_DISPLAY_NAME: Record<ChatModelSourceId, string> = {
+  slot_1: 'Slot 1: fast',
+  slot_2: 'Slot 2: quality / thinking',
+  free_pool: 'Free pool',
+};
+
+const CLEARABLE_SLOT_DISPLAY_NAME: Record<ClearableSlotKey, string> = {
+  slot_1: MODEL_SOURCE_DISPLAY_NAME.slot_1,
+  slot_2: MODEL_SOURCE_DISPLAY_NAME.slot_2,
+  embeddings_slot: 'Embeddings slot',
+};
+
 interface ByokSlotDraft {
   provider: string;
   model: string;
@@ -1238,6 +1250,10 @@ export const mountAiModelsPage = (
     appendText(doc, wrap, 'Chat tool catalog');
     const select = doc.createElement('select') as HTMLSelectElement;
     select.setAttribute(AI_MODELS_CATALOG_MODE_SELECT_ATTR, source);
+    select.setAttribute(
+      'aria-label',
+      `${MODEL_SOURCE_DISPLAY_NAME[source]} chat tool catalog`,
+    );
     const autoOption = doc.createElement('option') as HTMLOptionElement;
     autoOption.value = '';
     autoOption.textContent = 'Automatic (recommended)';
@@ -1321,7 +1337,7 @@ export const mountAiModelsPage = (
         asPositiveSafeInteger(slot?.context_window_tokens)?.toString() ?? '',
     };
     const fieldId = (field: string): string => `${slotKey}:${field}`;
-    const title = slotKey === 'slot_1' ? 'Slot 1: fast' : 'Slot 2: quality / thinking';
+    const title = MODEL_SOURCE_DISPLAY_NAME[slotKey];
     const card = doc.createElement('div');
     card.className = 'ai-models-slot';
     card.setAttribute(AI_MODELS_CONTROL_ATTR, slotKey);
@@ -1335,12 +1351,15 @@ export const mountAiModelsPage = (
     );
     const provider = appendInput(doc, card, 'Provider', draft.provider, [
       [AI_MODELS_SLOT_FIELD_ATTR, fieldId('provider')],
+      ['aria-label', `${title} provider`],
     ]);
     const model = appendInput(doc, card, 'Model', draft.model, [
       [AI_MODELS_SLOT_FIELD_ATTR, fieldId('model')],
+      ['aria-label', `${title} model`],
     ]);
     const baseUrl = appendInput(doc, card, 'Base URL', draft.baseUrl, [
       [AI_MODELS_SLOT_FIELD_ATTR, fieldId('base-url')],
+      ['aria-label', `${title} base URL`],
     ]);
     const apiKey = appendInput(
       doc,
@@ -1350,6 +1369,7 @@ export const mountAiModelsPage = (
       [
         ['placeholder', slot?.has_key === true ? 'Leave blank to keep existing key' : 'Required'],
         [AI_MODELS_SLOT_FIELD_ATTR, fieldId('api-key')],
+        ['aria-label', `${title} API key`],
       ],
     );
     // The key never round-trips to the browser (the server redacts it to
@@ -1368,6 +1388,7 @@ export const mountAiModelsPage = (
         ['placeholder', 'Blank = unlimited'],
         ['inputmode', 'numeric'],
         [AI_MODELS_SLOT_FIELD_ATTR, fieldId('daily-budget')],
+        ['aria-label', `${title} daily token budget`],
       ],
     );
     budget.type = 'number';
@@ -1383,6 +1404,7 @@ export const mountAiModelsPage = (
         ['inputmode', 'numeric'],
         ['min', '1'],
         ['step', '1'],
+        ['aria-label', `${title} context window (tokens)`],
       ],
     );
     contextWindow.type = 'number';
@@ -1428,7 +1450,10 @@ export const mountAiModelsPage = (
             : {}),
         });
       },
-      [[AI_MODELS_SLOT_SAVE_ATTR, slotKey]],
+      [
+        [AI_MODELS_SLOT_SAVE_ATTR, slotKey],
+        ['aria-label', `Save ${title}`],
+      ],
     );
     if (
       byokSlotSavePendingKey !== null
@@ -1452,7 +1477,10 @@ export const mountAiModelsPage = (
         slotClearNeedsConfirmFocus = false;
         render();
       },
-      [[AI_MODELS_SLOT_CLEAR_ATTR, slotKey]],
+      [
+        [AI_MODELS_SLOT_CLEAR_ATTR, slotKey],
+        ['aria-label', `Clear ${title}`],
+      ],
     );
     if (
       byokSlotSavePendingKey !== null
@@ -1516,11 +1544,7 @@ export const mountAiModelsPage = (
     const slotKey = slotClearDialogKey;
     if (slotKey === null) return;
     const clearingThis = slotClearPendingKey === slotKey;
-    const slotLabel = slotKey === 'slot_1'
-      ? 'Slot 1: fast'
-      : slotKey === 'slot_2'
-        ? 'Slot 2: quality / thinking'
-        : 'Embeddings slot';
+    const slotLabel = CLEARABLE_SLOT_DISPLAY_NAME[slotKey];
     const titleId = `recued-ai-models-${slotKey}-clear-title`;
     const bodyId = `recued-ai-models-${slotKey}-clear-body`;
 
@@ -1628,6 +1652,7 @@ export const mountAiModelsPage = (
     );
     const provider = appendInput(doc, card, 'Provider', draft.provider, [
       [AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'provider'],
+      ['aria-label', 'Embeddings slot provider'],
     ]);
     const model = appendInput(
       doc,
@@ -1637,10 +1662,12 @@ export const mountAiModelsPage = (
       [
         ['placeholder', 'e.g. text-embedding-3-small'],
         [AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'model'],
+        ['aria-label', 'Embeddings slot model'],
       ],
     );
     const baseUrl = appendInput(doc, card, 'Base URL', draft.baseUrl, [
       [AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'base-url'],
+      ['aria-label', 'Embeddings slot base URL'],
     ]);
     const apiKey = appendInput(
       doc,
@@ -1650,6 +1677,7 @@ export const mountAiModelsPage = (
       [
         ['placeholder', slot?.has_key === true ? 'Leave blank to keep existing key' : 'Required'],
         [AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'api-key'],
+        ['aria-label', 'Embeddings slot API key'],
       ],
     );
     // Same handling as the BYOK card: the key never round-trips (server
@@ -1679,7 +1707,10 @@ export const mountAiModelsPage = (
           base_url: baseUrl.value,
         });
       },
-      [[AI_MODELS_SLOT_SAVE_ATTR, 'embeddings_slot']],
+      [
+        [AI_MODELS_SLOT_SAVE_ATTR, 'embeddings_slot'],
+        ['aria-label', 'Save Embeddings slot'],
+      ],
     );
     const clear = appendButton(
       doc,
@@ -1693,7 +1724,10 @@ export const mountAiModelsPage = (
         slotClearNeedsConfirmFocus = false;
         render();
       },
-      [[AI_MODELS_SLOT_CLEAR_ATTR, 'embeddings_slot']],
+      [
+        [AI_MODELS_SLOT_CLEAR_ATTR, 'embeddings_slot'],
+        ['aria-label', 'Clear Embeddings slot'],
+      ],
     );
     if (embeddingsSlotSavePending || slotClearPendingKey !== null) {
       save.setAttribute('aria-disabled', 'true');
@@ -1919,6 +1953,10 @@ export const mountAiModelsPage = (
           },
           [[AI_MODELS_POOL_TOGGLE_ATTR, id]],
         );
+        toggle.setAttribute(
+          'aria-label',
+          `${enabling ? 'Enable' : 'Disable'} free-pool entry ${id}`,
+        );
         const remove = appendButton(
           doc,
           row,
@@ -1929,6 +1967,7 @@ export const mountAiModelsPage = (
           },
           [[AI_MODELS_POOL_REMOVE_ATTR, id]],
         );
+        remove.setAttribute('aria-label', `Remove free-pool entry ${id}`);
         if (togglePending) {
           toggle.setAttribute('aria-disabled', 'true');
           toggle.setAttribute('aria-busy', 'true');
@@ -1941,23 +1980,30 @@ export const mountAiModelsPage = (
     add.className = 'ai-models-add-pool';
     const id = appendInput(doc, add, 'ID', freePoolAddDraft.id, [
       [AI_MODELS_POOL_ADD_FIELD_ATTR, 'id'],
+      ['aria-label', 'New free-pool entry ID'],
     ]);
     const provider = appendInput(
       doc,
       add,
       'Provider',
       freePoolAddDraft.provider,
-      [[AI_MODELS_POOL_ADD_FIELD_ATTR, 'provider']],
+      [
+        [AI_MODELS_POOL_ADD_FIELD_ATTR, 'provider'],
+        ['aria-label', 'New free-pool entry provider'],
+      ],
     );
     const model = appendInput(doc, add, 'Model', freePoolAddDraft.model, [
       [AI_MODELS_POOL_ADD_FIELD_ATTR, 'model'],
+      ['aria-label', 'New free-pool entry model'],
     ]);
     const key = appendInput(doc, add, 'API key', freePoolAddDraft.apiKey, [
       [AI_MODELS_POOL_ADD_FIELD_ATTR, 'api-key'],
+      ['aria-label', 'New free-pool entry API key'],
     ]);
     key.type = 'password';
     const baseUrl = appendInput(doc, add, 'Base URL', freePoolAddDraft.baseUrl, [
       [AI_MODELS_POOL_ADD_FIELD_ATTR, 'base-url'],
+      ['aria-label', 'New free-pool entry base URL'],
     ]);
     const contextWindow = appendInput(
       doc,
@@ -1971,6 +2017,7 @@ export const mountAiModelsPage = (
         ['inputmode', 'numeric'],
         ['min', '1'],
         ['step', '1'],
+        ['aria-label', 'New free-pool entry context window (tokens)'],
       ],
     );
     contextWindow.type = 'number';
@@ -2005,7 +2052,10 @@ export const mountAiModelsPage = (
             : {}),
         });
       },
-      [[AI_MODELS_POOL_ADD_ATTR, '']],
+      [
+        [AI_MODELS_POOL_ADD_ATTR, ''],
+        ['aria-label', 'Add free-pool API entry'],
+      ],
     );
     if (freePoolAddPending) {
       addEntry.setAttribute('aria-disabled', 'true');
@@ -2124,10 +2174,13 @@ export const mountAiModelsPage = (
       const section = doc.createElement('section');
       section.className = 'ai-models-prompt';
       section.setAttribute(AI_MODELS_PROMPT_SECTION_ATTR, record.surface);
+      const titleId = `recued-ai-models-prompt-${record.surface}-title`;
+      section.setAttribute('aria-labelledby', titleId);
 
       const head = doc.createElement('div');
       head.className = 'ai-models-prompt-head';
-      appendHeading(doc, head, 'h3', copy.title);
+      const title = appendHeading(doc, head, 'h3', copy.title);
+      title.setAttribute('id', titleId);
       const badge = doc.createElement('span');
       badge.className = 'ai-models-prompt-badge';
       badge.setAttribute(
@@ -2146,6 +2199,7 @@ export const mountAiModelsPage = (
       const area = doc.createElement('textarea');
       area.className = 'ai-models-prompt-text';
       area.setAttribute(AI_MODELS_PROMPT_TEXT_ATTR, record.surface);
+      area.setAttribute('aria-label', `${copy.title} system prompt`);
       area.rows = 8;
       area.spellcheck = false;
       area.value = draft.role_instructions;
@@ -2168,6 +2222,10 @@ export const mountAiModelsPage = (
         appendText(doc, policyLabel, "Customer's own system prompt");
         const policySelect = doc.createElement('select');
         policySelect.setAttribute(AI_MODELS_PROMPT_POLICY_ATTR, record.surface);
+        policySelect.setAttribute(
+          'aria-label',
+          `${copy.title} customer system prompt policy`,
+        );
         for (const policy of CALLER_SYSTEM_POLICIES) {
           const option = doc.createElement('option');
           option.value = policy;
@@ -2199,6 +2257,7 @@ export const mountAiModelsPage = (
       appendText(doc, roleLabel, 'Delivered as');
       const roleSelect = doc.createElement('select');
       roleSelect.setAttribute(AI_MODELS_PROMPT_ROLE_ATTR, record.surface);
+      roleSelect.setAttribute('aria-label', `${copy.title} delivery role`);
       for (const role of PROMPT_ROLES) {
         const option = doc.createElement('option');
         option.value = role;
@@ -2232,7 +2291,10 @@ export const mountAiModelsPage = (
             () => api.saveLlmPrompt(record.surface, nextDraft),
           );
         },
-        [[AI_MODELS_PROMPT_SAVE_ATTR, record.surface]],
+        [
+          [AI_MODELS_PROMPT_SAVE_ATTR, record.surface],
+          ['aria-label', `Save ${copy.title} system prompt`],
+        ],
       );
       // Offered even on a Default record: the owner may have typed into the box
       // without saving, and "put it back" should not require them to have
@@ -2248,7 +2310,10 @@ export const mountAiModelsPage = (
             () => api.resetLlmPrompt(record.surface),
           );
         },
-        [[AI_MODELS_PROMPT_RESET_ATTR, record.surface]],
+        [
+          [AI_MODELS_PROMPT_RESET_ATTR, record.surface],
+          ['aria-label', `Reset ${copy.title} system prompt to default`],
+        ],
       );
       if (pendingMutation !== undefined) {
         save.setAttribute('aria-disabled', 'true');
@@ -2263,9 +2328,17 @@ export const mountAiModelsPage = (
       const always = doc.createElement('details');
       always.className = 'ai-models-prompt-always';
       always.setAttribute(AI_MODELS_PROMPT_ALWAYS_ATTR, record.surface);
+      always.setAttribute(
+        'aria-label',
+        `${copy.title} always-on prompt text`,
+      );
       const summary = doc.createElement('summary');
       summary.textContent =
         'Recued always adds this (not editable — it is how the engine works)';
+      summary.setAttribute(
+        'aria-label',
+        `Show ${copy.title} always-on prompt text`,
+      );
       always.appendChild(summary);
       const pre = doc.createElement('pre');
       pre.className = 'ai-models-prompt-always-text';
@@ -2721,6 +2794,7 @@ export const mountAiModelsPage = (
 
     const submitOnEnter = (event: KeyboardEvent): void => {
       if (event.key !== 'Enter') return;
+      if (event.isComposing) return;
       event.preventDefault();
       void saveNewChatSource();
     };
@@ -3825,6 +3899,8 @@ export const AI_MODELS_PAGE_STYLES = `
   margin-bottom: 4px;
 }
 [${AI_MODELS_PAGE_ATTR}] button.ai-models-tab {
+  box-sizing: border-box;
+  min-height: 36px;
   margin: 0 0 -1px;
   appearance: none;
   border: 0;
@@ -3865,7 +3941,7 @@ export const AI_MODELS_PAGE_STYLES = `
 }
 [${AI_MODELS_PAGE_ATTR}] .ai-models-choice-row button {
   margin: 0;
-  min-height: 32px;
+  min-height: 36px;
   padding: 0 12px;
   border: 1px solid var(--border-strong);
   border-radius: 6px;

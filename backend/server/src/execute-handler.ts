@@ -209,7 +209,7 @@ import {
   type CreatePlanAskInput,
   type CreatePlanNotifier,
 } from './work-entity-create-plan.js';
-import { buildPackOpResolution } from './pack-inventory.js';
+import { buildPackOpResolution, missingPackDependencies } from './pack-inventory.js';
 import type { ConnectionStoreSqlite } from './storage/connection-store.js';
 import {
   deriveBoundConventionFamilies,
@@ -229,6 +229,7 @@ import {
   observeCacheStatus,
 } from './commit-gateway-wiring.js';
 import type { SharedStore } from './storage/shared-store.js';
+import type { UserMemoryStore } from './user-memory-store.js';
 import type { AnnotationStore } from './storage/annotation-store.js';
 import type { ContactStore } from './storage/contact-store.js';
 import type { EnrichmentStore } from './storage/enrichment-store.js';
@@ -589,6 +590,11 @@ export interface ExecuteHandlerDeps {
    *  recipes referencing `{{data.shared.X}}` pre-fetch through here
    *  via the engine's shared-prefetch resolver. */
   sharedStore?: SharedStore;
+  /** D-231 — backs `{{data.memory.<memory_id>}}`: the OWNER'S CURATED
+   *  KNOWLEDGE (`user_memory`), not the audit log. Absent ⇒ the namespace
+   *  falls through to undefined, the same posture as an unwired
+   *  `sharedStore`. */
+  userMemoryStore?: UserMemoryStore;
   /** D-179 P1 — standing-dish store. When provided, a request carrying
    *  `dish_id` resolves the dish and merges its `config_overlay` OVER
    *  install config before dispatch (dish → install → defaults).
@@ -1579,6 +1585,34 @@ export const handleExecute = async (
       break; // 0 candidates — the generic resolve failure below owns the message
     }
     if (!dispatchResolve.ok) {
+      // A recipe naming a pack that is not installed is the COMMON reason this
+      // resolve fails, and it is the one with an action attached: install the
+      // pack. Surfacing it as the generic `bad_request` below buries the answer
+      // in prose a surface cannot act on — the pack slug ends up inside a
+      // sentence, so an install offer would have to parse an error message to
+      // find what to install.
+      //
+      // Typed instead, with the packs as DATA. `missing_packs` is the same list
+      // the uninstall disclosure and the scheduler gate compute
+      // (`missingPackDependencies`), so all three name the same packs — a user
+      // told "install officecli" here must not be told something else there.
+      //
+      // ⚠ ALL of them, not the first. The lowering throws on whichever op-step
+      // it reaches first, so its message names one pack; a caller who installs
+      // that and re-runs would then be told about the next. `depends_on` has the
+      // complete list up front, which is what makes a single offer possible.
+      const missingPacks = packOpResolution !== undefined
+        ? missingPackDependencies(recipe, packOpResolution)
+        : [];
+      if (missingPacks.length > 0) {
+        throw new RpcError(
+          'pack_not_installed',
+          `Recipe '${recipe.recipe_id}' needs ${missingPacks.length === 1 ? 'a pack' : 'packs'} that ${missingPacks.length === 1 ? 'is' : 'are'} not installed: ${missingPacks.join(', ')}. Install ${missingPacks.length === 1 ? 'it' : 'them'} and run again.`,
+          400,
+          undefined,
+          { missing_packs: missingPacks },
+        );
+      }
       throw new RpcError(
         'bad_request',
         `Recipe contains a canonical op-step (e.g. "deal.search") that could not be resolved at dispatch: ${dispatchResolve.reason}. Install it into a CRM-conformant pack, or supply its connection at run.`,
@@ -1885,8 +1919,34 @@ export const handleExecute = async (
           ...(annotationStore ? { annotationStore } : {}),
         })
       : undefined;
-  const sharedResolvers: SharedResolvers | undefined = sharedStore || annotationStore || deps.recordsStore
+  const userMemoryStore = deps.userMemoryStore;
+  const sharedResolvers: SharedResolvers | undefined =
+    sharedStore || annotationStore || deps.recordsStore || userMemoryStore
     ? {
+        ...(userMemoryStore
+          ? {
+              // D-231 — `data.memory.<memory_id>[.field]`. Returns the ROW plus
+              // the resolved body, so a recipe reads `.summary` / `.body` /
+              // `.kind` / `.origin_actor` without a second call. `get()` (not
+              // `getRow()`) because a > 64 KB body lives in CAS and the row
+              // alone carries only a preview.
+              //
+              // ⚠ READ-ONLY, and there is no write path to add: the owner
+              // writes via `memory.create` / `memory.import` and the chat
+              // `memory.write` tool. A recipe that could author here would let
+              // an installed pack forge the owner's own knowledge.
+              dataMemory: {
+                lookup: async (key: string) => {
+                  const resolved = await userMemoryStore.get(key);
+                  if (!resolved) return null;
+                  return {
+                    ...resolved.row,
+                    ...(resolved.body !== undefined ? { body: resolved.body } : {}),
+                  };
+                },
+              },
+            }
+          : {}),
         ...(sharedStore
           ? {
               dataShared: {

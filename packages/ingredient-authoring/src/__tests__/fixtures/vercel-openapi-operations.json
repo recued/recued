@@ -3,8 +3,8 @@
     "source": {
       "kind": "openapi",
       "url": "https://openapi.vercel.sh/",
-      "sha256": "0b0420c2223a6fb463e2576ba1c4cb4e42a302ecdb314b7dd95bf25f3332b4ea",
-      "bytes": 9884462,
+      "sha256": "16054de4df9375a8189337049ee98ccc4c04ed539423fb698180381ab38127f5",
+      "bytes": 9953753,
       "openapi": "3.0.3",
       "info_version": "0.0.1",
       "server": "https://api.vercel.com",

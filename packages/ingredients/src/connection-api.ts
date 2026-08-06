@@ -85,6 +85,7 @@ import {
   HTTP_CHUNKED_UPLOAD_MAX_BYTES_CEILING,
 } from '@recued/contracts';
 import { sha256Hex } from '@recued/crypto/hash';
+import { applyRequestSignature } from '@recued/contracts';
 import type {
   ConnectionAuth,
   ConnectionRow,
@@ -722,10 +723,15 @@ const requireAuthNameString = (
   return value;
 };
 
+/** ⚠ `method` and `body` were added for request signing and are unused by every
+ *  other member. They were already in scope at the call site — the block above
+ *  it builds all four — so this is a widened parameter list rather than the
+ *  restructure a signing scheme usually forces. */
 const injectAuth = (
   auth: ConnectionAuth,
   headers: Headers,
   url: URL,
+  req: { method: string; body?: string | undefined; nowMs: number },
 ): void => {
   switch (auth.type) {
     case 'none':
@@ -794,6 +800,23 @@ const injectAuth = (
       }
       headers.set('Authorization', `Bearer ${auth.current_access_token}`);
       return;
+    /** The first member whose credential is COMPUTED. Everything the signature
+     *  covers — the final query string, the body — is settled by the time this
+     *  runs, which is why the call sits last in the dispatch.
+     *
+     *  ⛔ `applyRequestSignature` MUTATES `url` and is idempotent by
+     *  construction (it strips prior signing material before recomputing). That
+     *  matters because this function is not guaranteed to run once per request:
+     *  the 401 re-auth path below calls it a second time on the same `url`. */
+    case 'request_signature': {
+      const signed = applyRequestSignature(
+        auth,
+        { method: req.method, url, body: req.body },
+        req.nowMs,
+      );
+      for (const [name, value] of Object.entries(signed)) headers.set(name, value);
+      return;
+    }
   }
   throw new IngredientError(
     'INGREDIENT_OUTPUT_VALIDATION_FAILED',
@@ -1939,7 +1962,11 @@ export const createConnectionApiHandler = (
       baseUrl = refreshed.runtime_base_url;
       ({ url, baseOrigin } = resolveRequestUrl(baseUrl));
     }
-    injectAuth(liveAuth, headers, url);
+    injectAuth(liveAuth, headers, url, {
+      method,
+      body: typeof body === 'string' ? body : undefined,
+      nowMs: deps.now?.() ?? Date.now(),
+    });
 
     // ────────────── fetch with timeout ──────────────
     const timeoutMs = resolveTimeoutMs(
@@ -2072,7 +2099,17 @@ export const createConnectionApiHandler = (
         // response instead of throwing on it.
         await response.body?.cancel().catch(() => {});
         pending.finish();
-        injectAuth(reauthed, headers, url);
+        // ⚠ The second call on an already-mutated `headers`/`url`. Harmless for
+        // a static credential, and NOT harmless for a signature — which is why
+        // `applyRequestSignature` strips prior signing material before it
+        // recomputes. This path is currently gated to `atproto_session` above,
+        // so a signing row never reaches it; the pin in the tests is what keeps
+        // that true if the gate is ever widened.
+        injectAuth(reauthed, headers, url, {
+          method,
+          body: typeof body === 'string' ? body : undefined,
+          nowMs: deps.now?.() ?? Date.now(),
+        });
         pending = await attempt();
         response = pending.response;
       }

@@ -22,6 +22,7 @@
  *  nothing otherwise. The busy/paused/attention states render correctly if a
  *  richer snapshot ever arrives (enriching the emitter is a separate slice). */
 
+import { pressureSurfaceRows } from '@recued/contracts';
 import type { ServerHeartbeatSnapshot } from '@recued/contracts';
 import {
   mountServerPill,
@@ -69,6 +70,10 @@ export const SERVER_CONTROL_TITLE_ATTR =
   'data-recued-webclient-server-control-title';
 export const SERVER_CONTROL_STATUS_ATTR =
   'data-recued-webclient-server-control-status';
+
+/** Stable hook for the storage read-out list. */
+export const SERVER_CONTROL_STORAGE_ATTR =
+  'data-recued-webclient-server-control-storage';
 
 const SERVER_CONTROL_TITLE_ID = 'recued-webclient-server-control-title';
 const SERVER_CONTROL_STATUS_ID = 'recued-webclient-server-control-status';
@@ -208,6 +213,53 @@ export const SERVER_PILL_STYLES = `
 /* Crash-halt is a FAULT, not a user pause — the info line reads in danger so it
    stands apart from the neutral running/paused status copy. */
 [${SERVER_PILL_HOST_ATTR}] .server-control-status--crash { color: var(--danger, #dc2626); }
+/* Storage read-out. Sized to sit under the status line without dominating the
+   popover — this is reference information, not an action. */
+[${SERVER_PILL_HOST_ATTR}] .server-control-storage { margin-top: 8px; }
+[${SERVER_PILL_HOST_ATTR}] .server-control-storage-title {
+  font-size: 11px;
+  opacity: 0.7;
+  margin-bottom: 3px;
+}
+[${SERVER_PILL_HOST_ATTR}] .server-control-storage-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+[${SERVER_PILL_HOST_ATTR}] .server-control-storage-row {
+  display: grid;
+  grid-template-columns: minmax(4.5em, auto) 1fr auto;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+[${SERVER_PILL_HOST_ATTR}] .server-control-storage-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[${SERVER_PILL_HOST_ATTR}] .server-control-storage-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-2, #e5e7eb);
+  overflow: hidden;
+}
+[${SERVER_PILL_HOST_ATTR}] .server-control-storage-bar > i {
+  display: block;
+  height: 100%;
+  background: var(--accent, #0e7490);
+}
+[${SERVER_PILL_HOST_ATTR}] .server-control-storage-size {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+/* A surface off the running state is the one the owner came to find. */
+[${SERVER_PILL_HOST_ATTR}] .server-control-storage-row--attention
+  .server-control-storage-bar > i { background: var(--danger, #dc2626); }
+[${SERVER_PILL_HOST_ATTR}] .server-control-storage-row--attention
+  .server-control-storage-size { color: var(--danger, #dc2626); opacity: 1; }
 `;
 
 /** Structural guard for a wire `server_heartbeat` payload before it reaches
@@ -661,6 +713,35 @@ export const mountWebclientServerPill = (
       detail = 'Running.';
       actions = button('pause-request', 'Pause server', ' server-control-btn--pause') + restart;
     }
+    // ⛔ THE STORAGE READ-OUT. `used_bytes` / `quota_bytes` / `pct` have been on
+    // the heartbeat envelope (and `server.getStatus`) since Phase B and NO
+    // client rendered them — the owner saw a coloured dot reading "pressure
+    // managed on one or more surfaces" with no way to learn WHICH surface, how
+    // full, or by how much. The pill already receives the snapshot and already
+    // opens on click, so this is the surface it belongs on.
+    //
+    // ⚠ Always shown, not only under pressure. A read-out that appears only
+    // once something is wrong cannot answer "am I heading for trouble", which
+    // is the question a quota raise (D-230: 5 GB per surface) makes worth
+    // asking BEFORE a write fails.
+    const storageHtml = ((): string => {
+      const rows = pressureSurfaceRows(latest?.pressure_details);
+      if (rows.length === 0) return '';
+      const body = rows.map((row) => {
+        const mark = row.attention ? ' server-control-storage-row--attention' : '';
+        return `<li class="server-control-storage-row${mark}">`
+          + `<span class="server-control-storage-name">${escapeHtml(row.surface)}</span>`
+          + `<span class="server-control-storage-bar" aria-hidden="true">`
+          + `<i style="width:${row.pct}%"></i></span>`
+          + `<span class="server-control-storage-size">${escapeHtml(row.size)}`
+          + ` (${escapeHtml(row.pctLabel)})</span>`
+          + `</li>`;
+      }).join('');
+      return `<div class="server-control-storage">`
+        + `<div class="server-control-storage-title">Storage</div>`
+        + `<ul class="server-control-storage-list" ${SERVER_CONTROL_STORAGE_ATTR}>${body}</ul>`
+        + `</div>`;
+    })();
     popoverHost.innerHTML =
       `<div class="server-control-popover-frame" ${SERVER_CONTROL_POPOVER_ATTR}`
       + ` role="dialog" aria-labelledby="${SERVER_CONTROL_TITLE_ID}"`
@@ -670,6 +751,7 @@ export const mountWebclientServerPill = (
       + `<div class="server-control-status${detailCls}" id="${SERVER_CONTROL_STATUS_ID}"`
       + ` ${SERVER_CONTROL_STATUS_ATTR}>${detail}</div>`
       + errorHtml
+      + storageHtml
       + (actions ? `<div class="server-control-actions">${actions}</div>` : '')
       + `</div>`;
     if (focusWasInside) {

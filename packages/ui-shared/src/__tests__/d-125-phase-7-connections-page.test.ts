@@ -115,6 +115,49 @@ describe('D-125 P7.1 — list view', () => {
   it('omits the back link in embedded layout', () => {
     const html = renderConnectionsPage({ ...baseState(), layout: 'embedded' });
     expect(html).not.toContain('data-action="connections-close-page"');
+    expect(html).toContain('role="region" aria-labelledby="connections-embedded-heading"');
+    expect(html).toContain(
+      '<h2 class="connections-embedded-title" id="connections-embedded-heading">Enrolled connections</h2>',
+    );
+    expect(CONNECTIONS_PAGE_STYLES).toMatch(
+      /\.connections-embedded-title\s*\{[^}]*clip-path:\s*inset\(50%\)/s,
+    );
+  });
+
+  it('stacks enrolled connection actions on narrow screens', () => {
+    expect(CONNECTIONS_PAGE_STYLES).toMatch(
+      /@media \(max-width: 560px\)\s*\{\s*\.connections-row\s*\{[^}]*flex-direction:\s*column/s,
+    );
+    expect(CONNECTIONS_PAGE_STYLES).toMatch(
+      /@media \(max-width: 560px\)[\s\S]*?\.connections-row-actions\s*\{[^}]*flex-wrap:\s*wrap/s,
+    );
+  });
+
+  it('contains long connection and pack identities through removal review', () => {
+    expect(CONNECTIONS_PAGE_STYLES).toContain(
+      '.connections-page {\n  box-sizing: border-box;\n  min-width: 0;\n  max-width: 100%;',
+    );
+    expect(CONNECTIONS_PAGE_STYLES).toContain(
+      '.connections-row {\n  box-sizing: border-box;\n  min-width: 0;\n  max-width: 100%;',
+    );
+    expect(CONNECTIONS_PAGE_STYLES).toContain(
+      '.connections-row-name {\n  min-width: 0;\n  overflow-wrap: anywhere;',
+    );
+    expect(CONNECTIONS_PAGE_STYLES).toContain(
+      '.connections-row-display {\n  min-width: 0;\n  overflow-wrap: anywhere;',
+    );
+    expect(CONNECTIONS_PAGE_STYLES).toContain(
+      '.connections-pack-usage-item {\n  min-width: 0;\n  overflow-wrap: anywhere;',
+    );
+    expect(CONNECTIONS_PAGE_STYLES).toContain(
+      '.connections-delete-confirm {\n  box-sizing: border-box;\n  min-width: 0;',
+    );
+    expect(CONNECTIONS_PAGE_STYLES).toContain(
+      '.connections-delete-title {\n  min-width: 0;\n  margin: 0 0 8px;\n  overflow-wrap: anywhere;',
+    );
+    expect(CONNECTIONS_PAGE_STYLES).toMatch(
+      /@media \(max-width: 560px\)[\s\S]*?\.connections-row-info\s*\{[^}]*flex-direction:\s*column/s,
+    );
   });
 });
 
@@ -130,6 +173,24 @@ describe('D-125 P7.1 — dialog stages', () => {
       expect(html).toContain(`data-kind="${choice.kind}"`);
       expect(html).toContain(choice.label);
     }
+  });
+
+  it('keeps repeatable credential headers usable on narrow screens', () => {
+    expect(CONNECTIONS_PAGE_STYLES).toContain(
+      '.connections-header-row {\n  min-width: 0;\n  display: flex;',
+    );
+    expect(CONNECTIONS_PAGE_STYLES).toContain(
+      '.connections-header-row .connections-header-name {\n  box-sizing: border-box; min-width: 0; width: 100%;',
+    );
+    expect(CONNECTIONS_PAGE_STYLES).toContain(
+      '.connections-header-row .connections-header-value {\n  box-sizing: border-box; min-width: 0; width: 100%;',
+    );
+    expect(CONNECTIONS_PAGE_STYLES).toMatch(
+      /@media \(max-width: 520px\)[\s\S]*?\.connections-header-row\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;/s,
+    );
+    expect(CONNECTIONS_PAGE_STYLES).toContain(
+      '.connections-header-row .connections-header-name { grid-column: 1 / -1; }',
+    );
   });
 
   it('subtype-picker for mcp lists three subtypes', () => {
@@ -1599,6 +1660,9 @@ describe('D-125 P7.2 — schemas', () => {
       // now, so a new type arrives here automatically; the pin is what makes
       // that arrival visible rather than silent.
       'atproto_session',
+      // Request signing. Arrived here automatically because the list derives —
+      // the pin is what makes the arrival a decision rather than a surprise.
+      'request_signature',
     ]);
   });
 

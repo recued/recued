@@ -643,8 +643,6 @@ export {
   BULK_INSTALL_PACK_VERSION,
   BULK_PACK_INSTALL_PERMISSION,
   BULK_PACK_MAX_RECIPES,
-  PACK_PAID_WORKFLOW_LIFECYCLE_ROLES,
-  PACK_PAID_WORKFLOW_OUTCOME_LABEL_MAX_CHARS,
   // D-139 P6.B — post-substrate canary fields
   BULK_PACK_BODY_VISIBILITY_GRANT_KEYS,
   BULK_PACK_MAX_BODY_VISIBILITY_GRANTS,
@@ -684,9 +682,6 @@ export type { UnstorableFinding, UnstorableKind } from './storable-encoding.js';
 export type {
   BulkPackManifest,
   BulkPackRecipeRef,
-  PackPaidWorkflowLifecycleRole,
-  PackPaidWorkflowLifecycle,
-  PackTransactionalOfferDescriptor,
   BulkPackIssue,
   BulkPackParseResult,
   // D-139 P6.B — post-substrate canary fields
@@ -847,6 +842,20 @@ export {
   validateConnectionHintShape,
   type ConnectionHint,
 } from './connection-hints.js';
+
+// D-125 / request signing — the auth shape whose credential is COMPUTED per
+// request, and the CLOSED registry of schemes that may compute it. A pack names
+// a scheme; it never describes what gets signed.
+export {
+  CONNECTION_SIGNING_SCHEMES,
+  applyRequestSignature,
+  isConnectionSigningScheme,
+  requestSignatureSecrets,
+  type ConnectionSigningScheme,
+  type RequestSignatureAuth,
+  type SignableRequest,
+  type SignatureHeaders,
+} from './connection-signing.js';
 
 // D-165 P0 — provider-catalog seed (minimal): catalog-form detection +
 // per-connection operation-profile policy resolution + gateway audit shape.
@@ -1647,7 +1656,10 @@ export {
   RECIPE_INSIGHT_FLATTENED_MAX_BYTES,
   CONTEXT_RECIPE_MAX_BYTES,
   MEMORY_DATA_SUBNAMESPACE,
+  AUDIT_DATA_SUBNAMESPACE,
   MEMORY_DATA_ALIAS_SUBNAMESPACE,
+  AUDIT_READ_PERMISSION,
+  memoryDataPermissionFor,
   MEMORY_DATA_SUBNAMESPACES,
   isMemoryDataSubnamespace,
   RUN_MODES,
@@ -2900,7 +2912,13 @@ export {
 export type { InstancePrefKey, InstancePrefs, InstancePrefSpec, InstancePrefValue } from './prefs.js';
 
 // Phase B — pressure details (heartbeat + server.getStatus shared shape).
-export { STORAGE_STATE_RANK, worstStorageState } from './pressure.js';
+export {
+  STORAGE_STATE_RANK,
+  formatPressureBytes,
+  pressureSurfaceRows,
+  worstStorageState,
+} from './pressure.js';
+export type { PressureSurfaceRow } from './pressure.js';
 export type {
   PressureDetails,
   PressureSurfaceDetail,

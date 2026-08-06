@@ -891,6 +891,83 @@ describe('handleConnectionProbe real health probes', () => {
     expect(storedHealth('api', name).last_error).toBe(health.last_error);
   });
 
+  it('⛔⛔ never echoes a SIGNING SECRET in a probe error', async () => {
+    // The same site, one member later, and the compiler was silent again. Every
+    // other place `request_signature` broke was caught by a missing return or a
+    // `Record` key; the redaction switch was caught by nothing, exactly as
+    // D-218 recorded. It now carries a `never` guard so the tenth member is a
+    // compile error here rather than a leak.
+    //
+    // ⚠ The secret is the worst thing in this file to leak: it is never sent on
+    // the wire in any scheme — it only keys a MAC — so the ONLY way it can
+    // escape is by being echoed, which is precisely what this redactor is for.
+    // ⚠ Deliberately short and self-describing. This test proves the REDACTOR
+    // scrubs an echoed credential; the value is arbitrary, so it has no reason
+    // to be credential-shaped. It previously held Binance's 64-char published
+    // example, which the secret scanner could not see here (the pattern wants
+    // `secret:` or `api_key:`, and these are camelCase) — so the one file whose
+    // comment calls the secret "the worst thing in this file to leak" was the
+    // one carrying a live-looking pair past the gate.
+    const secretKey = 'fixture-secret-xyz';
+    const apiKey = 'fixture-api-key-xyz';
+    const name = await enroll('api', {
+      name: 'binance-signed-probe',
+      config: { base_url: 'https://api.binance.com' },
+      auth: {
+        type: 'request_signature',
+        scheme: 'binance_hmac_sha256',
+        api_key: apiKey,
+        secret_key: secretKey,
+      } as ConnectionAuth,
+    });
+    const fetcher = vi.fn<HttpFetcher>(async () => {
+      throw new Error(`probe failed for key ${apiKey} secret ${secretKey}`);
+    });
+
+    const health = await probe('api', name, fetcher);
+
+    expect(health.last_error).not.toContain(secretKey);
+    expect(health.last_error).not.toContain(apiKey);
+    expect(health.last_error).toContain('***');
+    expect(storedHealth('api', name).last_error).toBe(health.last_error);
+  });
+
+  it('⛔ a signed probe SENDS a signature — it does not call the endpoint bare', async () => {
+    // The other uncaught site: the handler's own `applyAuth` also had no
+    // `default`, so a member falling through applies NO credential and the
+    // probe reports whatever an ANONYMOUS request earns. Against a public
+    // endpoint that is a green health check on a credential nobody verified.
+    const name = await enroll('api', {
+      name: 'binance-signed-applied',
+      config: { base_url: 'https://api.binance.com/api/v3/account' },
+      auth: {
+        type: 'request_signature',
+        scheme: 'binance_hmac_sha256',
+        api_key: 'pub-key',
+        secret_key: 'sec-key',
+      } as ConnectionAuth,
+    });
+    const seen: { url: string; headers: Record<string, string> }[] = [];
+    const fetcher = vi.fn<HttpFetcher>(async (url, init) => {
+      seen.push({
+        url: String(url),
+        headers: { ...(init?.headers as Record<string, string> | undefined) },
+      });
+      return new Response('{}', { status: 200 });
+    });
+
+    await probe('api', name, fetcher);
+
+    expect(seen.length).toBeGreaterThan(0);
+    const first = seen[0]!;
+    expect(first.headers['X-MBX-APIKEY']).toBe('pub-key');
+    const sent = new URL(first.url);
+    expect(sent.searchParams.get('signature')).toMatch(/^[0-9a-f]{64}$/u);
+    expect(sent.searchParams.get('timestamp')).toMatch(/^\d+$/u);
+    // ⛔ and the secret is not in the request it produced
+    expect(first.url).not.toContain('sec-key');
+  });
+
   it('D-218 creates and persists an AT Protocol session before the first probe', async () => {
     const name = await enroll('api', {
       name: 'bsky-create-probe',
@@ -1201,6 +1278,67 @@ describe('handleConnectionProbe real health probes', () => {
 
 describe('handleConnectionRotateCredentials', () => {
   const attempt_id = 'rotation-attempt-test-0001';
+
+  it('⛔ the signing negative control corrupts the SECRET, not the api key', async () => {
+    // A rotation proves the check DISCRIMINATES by re-running it with an
+    // intentionally wrong credential and requiring a rejection. Which half is
+    // corrupted decides what that proves.
+    //
+    // ⛔ Corrupting the api key would prove the endpoint validates KEYS — Binance
+    // rejects an unknown `X-MBX-APIKEY` before it ever looks at the signature,
+    // so the control would be refused for a reason unrelated to signing, and a
+    // provider that ignored signatures entirely would still pass. A valid key
+    // with a wrong secret fails at signature verification, which is the negative
+    // this control has to establish.
+    const name = await enroll('api', {
+      name: 'binance-negctl',
+      config: { base_url: 'https://api.binance.com/api/v3/account' },
+      auth: {
+        type: 'request_signature',
+        scheme: 'binance_hmac_sha256',
+        api_key: 'real-public-key',
+        secret_key: 'real-signing-secret',
+      } as ConnectionAuth,
+    });
+    const before = store.get('api', name)!;
+    const sent: { key: string | undefined; signature: string | null }[] = [];
+    const fetcher = vi.fn<HttpFetcher>(async (url, init) => {
+      const h = { ...(init?.headers as Record<string, string> | undefined) };
+      sent.push({
+        key: h['X-MBX-APIKEY'],
+        signature: new URL(String(url)).searchParams.get('signature'),
+      });
+      // candidate passes, control must be REJECTED for the probe to discriminate
+      return new Response('{}', { status: sent.length === 1 ? 200 : 401 });
+    });
+
+    await handleConnectionRotateCredentials(
+      { store, now: () => NOW + 500, getEncryptionKey, fetcher },
+      {
+        attempt_id: 'rotation-negctl-0001',
+        name,
+        kind: 'api',
+        expected_updated_at: before.updated_at,
+        patch: {
+          auth: {
+            type: 'request_signature',
+            scheme: 'binance_hmac_sha256',
+            api_key: 'real-public-key',
+            secret_key: 'real-signing-secret',
+          } as ConnectionAuth,
+        },
+      },
+    ).catch(() => undefined);
+
+    expect(sent.length).toBeGreaterThanOrEqual(2);
+    const [candidate, control] = sent;
+    // SAME public key on both — the control is not testing key validation
+    expect(control!.key).toBe(candidate!.key);
+    expect(control!.key).toBe('real-public-key');
+    // and a DIFFERENT signature, because the secret behind it was corrupted
+    expect(control!.signature).not.toBe(candidate!.signature);
+    expect(control!.signature).toMatch(/^[0-9a-f]{64}$/u);
+  });
 
   it('rejects a stale editor revision before claiming an attempt or contacting the provider', async () => {
     const name = await enroll('api', { name: 'stale-editor' });

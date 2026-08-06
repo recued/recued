@@ -27,6 +27,7 @@ import {
   CONTRACT_GRANTS_KIND_GROUP_ATTR,
   CONTRACT_GRANTS_OP_FILTER_ATTR,
   CONTRACT_GRANTS_OP_FILTER_STATUS_ATTR,
+  CONTRACT_GRANTS_PANEL_STYLES,
   CONTRACT_GRANTS_RISK_ATTR,
   CONTRACT_GRANTS_SOURCE_ATTR,
   CONTRACT_GRANTS_SUMMARY_ATTR,
@@ -619,6 +620,25 @@ describe('contract-grants panel — universe split across Ops / Entities', () =>
 });
 
 describe('contract-grants panel — write / reconcile + chrome', () => {
+  it('gives every grant checkbox a full-size label target', () => {
+    expect(CONTRACT_GRANTS_PANEL_STYLES).toContain(
+      '.cg-cell {\n  box-sizing: border-box;\n  width: 100%;\n'
+        + '  min-width: 0;\n  max-width: 100%;\n  min-height: 36px;',
+    );
+    expect(CONTRACT_GRANTS_PANEL_STYLES).toMatch(
+      /\.cg-cell-name\s*\{[^}]*min-width:\s*0[^}]*flex:\s*1 1 140px[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(CONTRACT_GRANTS_PANEL_STYLES).toMatch(
+      /\.cg-also-reads\s*\{[^}]*max-width:\s*100%[^}]*white-space:\s*normal[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(CONTRACT_GRANTS_PANEL_STYLES).toMatch(
+      /\.cg-filter-bar\s*\{[^}]*width:\s*100%[^}]*min-width:\s*0[^}]*flex-wrap:\s*wrap/s,
+    );
+    expect(CONTRACT_GRANTS_PANEL_STYLES).toMatch(
+      /\.cg-filter-status\s*\{[^}]*flex:\s*0 0 auto[^}]*white-space:\s*normal[^}]*overflow-wrap:\s*anywhere/s,
+    );
+  });
+
   it('keeps the active toggle focused through write and reconcile repaints', async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {

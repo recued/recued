@@ -36,6 +36,7 @@ import {
   AUTOMATION_ROUTE_STATUS_FILTER_ATTR,
   AUTOMATION_ROUTE_STYLES_MARKER,
   AUTOMATION_ROUTE_SUBNAV_ATTR,
+  AUTOMATION_ROUTE_SECTION_PANEL_ATTR,
   bootstrapAutomationRoute,
   type AutoRunListCaller,
   type AutoRunUpdateCaller,
@@ -459,7 +460,78 @@ describe('Automation route — rendering', () => {
     expect(routeStyles).toContain('.automation-filter > .ref-picker');
     expect(routeStyles).toContain('flex-wrap: wrap');
     expect(routeStyles).toContain('min-width: 220px');
+    expect(routeStyles).toContain('.automation-row-title a {');
+    expect(routeStyles).toContain('.automation-row-actions a {');
+    expect(routeStyles).toMatch(
+      /@media \(max-width: 560px\)[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\)/s,
+    );
+    expect(routeStyles).toMatch(
+      /@media \(max-width: 560px\)[\s\S]*?\.automation-row-actions\s*\{[^}]*flex-wrap:\s*wrap/s,
+    );
+    expect(routeStyles).toMatch(
+      /\.automation-subnav-tab\s*\{[^}]*min-height:\s*36px/s,
+    );
+    expect(routeStyles).toMatch(
+      /\.automation-subnav\s*\{[^}]*overflow-x:\s*auto/s,
+    );
+    expect(routeStyles).toMatch(
+      /\.automation-subnav-tab\s*\{[^}]*flex:\s*0 0 auto[^}]*white-space:\s*nowrap/s,
+    );
+    expect(routeStyles).toMatch(
+      /\.automation-row-meta > \*\s*\{[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(routeStyles).toMatch(
+      /\.automation-detail-facts\s*\{[^}]*grid-template-columns:\s*max-content minmax\(0, 1fr\)/s,
+    );
+    expect(routeStyles).toMatch(
+      /@media \(max-width: 360px\)[\s\S]*?\.automation-detail-facts\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s,
+    );
+    expect(routeStyles).toMatch(
+      /\.automation-detail-facts dd\s*\{[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(routeStyles).toMatch(
+      /\.automation-add-picker\s*\{[^}]*width:\s*100%[^}]*min-width:\s*0[^}]*max-width:\s*360px/s,
+    );
+    expect(routeStyles).toMatch(
+      /\.automation-load-error > span\s*\{[^}]*flex:\s*1 1 180px[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(routeStyles).toMatch(
+      /\.automation-poll > span\s*\{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(routeStyles).toMatch(
+      /\.automation-poll > button\s*\{[^}]*flex:\s*0 0 auto/s,
+    );
+    expect(routeStyles).toMatch(
+      new RegExp(`\\[${AUTOMATION_ROUTE_ERROR_ATTR}\\][\\s\\S]*?overflow-wrap:\\s*anywhere`),
+    );
+    expect(routeStyles).toContain(`[${AUTOMATION_ROUTE_HOST_ATTR}] a {`);
+    expect(routeStyles).toContain('min-width: 36px');
+    expect(routeStyles).toContain('min-height: 36px');
+    expect(rig.host.innerHTML).toContain(
+      '<a href="#logs">Logs<span aria-hidden="true">.</span></a>',
+    );
+    expect(rig.host.innerHTML).not.toContain('Logs</a>.');
     expect(rig.route.getActiveSection()).toBe('auto-run');
+    expect(rig.host.innerHTML).toMatch(
+      /data-recued-automation-subnav="auto-run"[\s\S]*?aria-selected="true"[\s\S]*?tabindex="0"/,
+    );
+    expect(rig.host.innerHTML).toContain(
+      'aria-controls="recued-automation-section-panel"',
+    );
+    expect(rig.host.innerHTML).toMatch(
+      new RegExp(
+        `${AUTOMATION_ROUTE_SECTION_PANEL_ATTR}[\\s\\S]*?role="tabpanel"`
+          + '[\\s\\S]*?aria-labelledby="recued-automation-section-tab-auto-run"',
+      ),
+    );
+    for (const token of ['triggers', 'schedules', 'dishes']) {
+      expect(rig.host.innerHTML).toMatch(
+        new RegExp(
+          `data-recued-automation-subnav="${token}"[\\s\\S]*?`
+          + 'aria-selected="false"[\\s\\S]*?tabindex="-1"',
+        ),
+      );
+    }
     expectOnlySection(rig.host.innerHTML, 'auto_run');
     expectSubnavCounts(rig.host.innerHTML, {
       autoRun: 1,
@@ -481,6 +553,12 @@ describe('Automation route — rendering', () => {
     expectOnlySection(rig.host.innerHTML, 'schedule');
     expect(rig.host.innerHTML).toContain('Daily at 9:00 AM');
     expect(rig.host.innerHTML).toContain('Daily brief');
+    expect(rig.host.innerHTML).toContain(
+      'aria-label="Pause Daily brief (sch_1)"',
+    );
+    expect(rig.host.innerHTML).toContain(
+      'aria-label="Details Daily brief (sch_1)"',
+    );
   });
 
   it('honors the initialSection option', async () => {
@@ -935,8 +1013,12 @@ describe('Automation route — mutations', () => {
     expect(rig.host.innerHTML).toContain('aria-disabled="true"');
     expect(rig.host.innerHTML).toContain('aria-busy="true"');
     expect(rig.host.innerHTML).not.toContain('data-rule-id="sch_1" disabled');
-    expect(rig.host.innerHTML).toContain(
-      `${AUTOMATION_ROUTE_SUBNAV_ATTR}="triggers"\n          aria-selected="false"\n          aria-disabled="true"`,
+    expect(rig.host.innerHTML).toMatch(
+      new RegExp(
+        `${AUTOMATION_ROUTE_SUBNAV_ATTR}="triggers"[\\s\\S]*?`
+          + 'aria-selected="false"[\\s\\S]*?tabindex="-1"[\\s\\S]*?'
+          + 'aria-disabled="true"',
+      ),
     );
     expect(rig.host.innerHTML).toContain(
       'class="automation-filter" inert aria-disabled="true"',
@@ -995,6 +1077,9 @@ describe('Automation route — detail view', () => {
     expect(rig.host.innerHTML).toContain('Daily brief');
     expect(rig.host.innerHTML).toContain('Cadence');
     expect(rig.host.innerHTML).toContain('Daily at 9:00 AM');
+    expect(rig.host.innerHTML).toContain(
+      '<a href="#logs">Logs<span aria-hidden="true">.</span></a>',
+    );
 
     clickBack(rig.host);
     expect(rig.route.getDetailId()).toBeNull();

@@ -131,6 +131,16 @@ describe('D-123 follow-on — Run Now dialog AI-availability warning', () => {
     });
     expect(html).toContain('Estimated cost');
     expect(html).not.toContain('Configure AI');
+    expect(html).toContain('role="dialog"');
+    expect(html).toContain(
+      'aria-labelledby="housekeeping-runnow-enrichment.summary-title"',
+    );
+    expect(html).toContain(
+      'aria-describedby="housekeeping-runnow-enrichment.summary-body"',
+    );
+    expect(html).toContain(
+      'id="housekeeping-runnow-enrichment.summary-title"',
+    );
     // Run Now button must NOT be disabled.
     expect(html).toMatch(/data-action="housekeeping-run-now-confirm"[^>]*>(?:[^<]*Run now[^<]*)<\/button>/);
   });
@@ -262,5 +272,21 @@ describe('D-123 P5 — renderHousekeepingTaskStatusTable', () => {
       now: NOW,
     });
     expect(html).toContain('housekeeping-task-empty');
+  });
+
+  it('names repeated core Run now actions by task id', () => {
+    const html = renderHousekeepingTaskStatusTable({
+      tasks: [
+        taskStatus('audit-compaction'),
+        taskStatus('cache-eviction-beyond-ttl'),
+      ],
+      kind: 'core',
+      now: NOW,
+      showRunNow: true,
+    });
+    expect(html).toContain('aria-label="Run audit-compaction now"');
+    expect(html).toContain(
+      'aria-label="Run cache-eviction-beyond-ttl now"',
+    );
   });
 });

@@ -28,6 +28,7 @@ import {
   REF_PICKER_INPUT_ATTR,
   REF_PICKER_OPTION_INDEX_ATTR,
   REF_PICKER_RESULTS_ATTR,
+  REF_PICKER_STYLES,
   REF_PICKER_VALUE_ATTR,
   renderRefPicker,
   renderRefPickerResultRows,
@@ -195,6 +196,27 @@ describe('ref-picker default filter', () => {
 // ════════════════════════════════════════════════════════════════════
 
 describe('ref-picker render', () => {
+  it('reserves usable targets for the input, clear action, and options', () => {
+    expect(REF_PICKER_STYLES).toContain(
+      '.ref-picker-input {\n  font: inherit;\n  min-height: 36px;',
+    );
+    expect(REF_PICKER_STYLES).toContain(
+      '.ref-picker-clear {\n  position: absolute;\n  right: 0;',
+    );
+    expect(REF_PICKER_STYLES).toContain(
+      'width: 36px;\n  height: 36px;',
+    );
+    expect(REF_PICKER_STYLES).toContain(
+      '.ref-picker-option {\n  box-sizing: border-box;\n  min-width: 0;\n  max-width: 100%;\n  min-height: 36px;',
+    );
+    expect(REF_PICKER_STYLES).toContain(
+      '.ref-picker-option-label {\n  min-width: 0;\n  overflow-wrap: anywhere;',
+    );
+    expect(REF_PICKER_STYLES).toContain(
+      '.ref-picker-option-sub {\n  min-width: 0;\n  overflow-wrap: anywhere;',
+    );
+  });
+
   it('emits the shell: combobox marker, input value, hidden clear, closed list', () => {
     const html = renderRefPicker(
       setQuery(initialRefPickerState(), 'be'),
@@ -575,6 +597,32 @@ describe('ref-picker wire', () => {
     expect(handle.getValue()).toEqual({ id: 'r-gamma', label: 'Gamma alert' });
     // The old shell's clear stayed where it was — proof we detached.
     expect(clear).not.toBe(fresh.clear);
+  });
+
+  it('restores post-commit focus without reopening the dismissed list', async () => {
+    const { root, input, results } = buildShell();
+    const handle = wireRefPicker(asParent(root), {
+      search: syncSearch,
+      config: CONFIG,
+      schedule: syncSchedule,
+    });
+    dispatch(input, 'focusin', {});
+    input.value = 'gamma';
+    dispatch(input, 'input', {});
+    await flush();
+    dispatch(materializeOption(results, 0), 'mousedown', {});
+    expect(input.getAttribute('aria-expanded')).toBe('false');
+
+    const fresh = buildShell();
+    fresh.input.focus = () => {
+      fresh.input.focusCount += 1;
+      dispatch(fresh.input, 'focusin', {});
+    };
+    handle.rewire(asParent(fresh.root));
+
+    expect(fresh.input.focusCount).toBe(1);
+    expect(fresh.input.getAttribute('aria-expanded')).toBe('false');
+    expect(fresh.results.getAttribute('hidden')).not.toBeNull();
   });
 
   it('writes the committed id through the hidden form-field mirror on pick + clear', async () => {

@@ -24,6 +24,7 @@ import {
   ACCOUNT_BINDING_FREE_HANDLE_ATTR,
   ACCOUNT_BINDING_LOADING_ATTR,
   ACCOUNT_BINDING_PANEL_STATE_ATTR,
+  ACCOUNT_BINDING_PANEL_STYLES,
   ACCOUNT_BINDING_PRO_ITEM_ATTR,
   ACCOUNT_BINDING_PRO_LIFECYCLE_ATTR,
   ACCOUNT_BINDING_PRO_SUBSCRIBE_ATTR,
@@ -638,6 +639,7 @@ describe('D-174 account binding panel — unbind and Pro status', () => {
     expect(findByAttr(host, ACCOUNT_BINDING_PRO_ITEM_ATTR, 'acme')).not.toBeNull();
     const cta = findByAttr(host, ACCOUNT_BINDING_PRO_SUBSCRIBE_ATTR);
     expect(cta?.getAttribute('href')).toBe('https://dashboard.example/');
+    expect(cta?.className).toContain('rx-btn-secondary');
     expect(textOf(host)).toContain('Subscribe in dashboard');
     // The handle that used to be a Pro item now lives in the Free-account card.
     expect(findByAttr(host, ACCOUNT_BINDING_FREE_HANDLE_ATTR)).not.toBeNull();
@@ -757,6 +759,10 @@ describe('R27 account panel — Free-account card', () => {
     const manage = findByAttr(host, ACCOUNT_BINDING_PUBLISHING_LINK_ATTR);
     expect(manage?.getAttribute('href')).toBe('https://dashboard.example/');
     expect(manage?.textContent).toBe('Manage in dashboard');
+    expect(manage?.className).toContain('account-bind-dashboard-inline');
+    expect(ACCOUNT_BINDING_PANEL_STYLES).toContain(
+      '.account-bind-dashboard-inline {\n  box-sizing: border-box;\n  min-height: 36px;',
+    );
     expect(findByAttr(host, ACCOUNT_BINDING_FREE_CLAIM_ATTR)).toBeNull();
     mount.dispose();
   });
@@ -772,6 +778,7 @@ describe('R27 account panel — Free-account card', () => {
     const link = findByAttr(host, ACCOUNT_BINDING_PUBLISHING_LINK_ATTR);
     expect(link?.textContent).toBe('Claim your handle in the dashboard');
     expect(link?.getAttribute('href')).toBe('https://dashboard.example/');
+    expect(link?.className).toContain('rx-btn-secondary');
     mount.dispose();
   });
 

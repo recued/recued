@@ -96,6 +96,8 @@ export interface ReceptionInboxPanelOptions {
   subscribe?: BroadcastSubscriber['on'];
   document?: Document;
   now?: () => number;
+  /** The panel is reusable below either a route h1 or a settings h2. */
+  headingLevel?: 2 | 3;
 }
 
 export interface ReceptionInboxPanelMount {
@@ -162,15 +164,26 @@ interface ReceptionInboxDestinationQueryDraft
 
 const errMessage = (err: unknown): string => resolveReceptionInboxErrorCopy(err);
 
-const RECEPTION_INBOX_STYLES = `
+export const RECEPTION_INBOX_STYLES = `
 .reception-inbox-shell {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   margin: 0;
   overflow: hidden;
+  overflow-wrap: anywhere;
   border: 1px solid var(--border);
   border-radius: 14px;
   background: var(--surface);
   color: var(--fg);
   box-shadow: 0 1px 2px rgba(24, 24, 27, 0.04), 0 14px 36px rgba(24, 24, 27, 0.045);
+}
+.reception-inbox-shell *,
+.reception-inbox-shell *::before,
+.reception-inbox-shell *::after {
+  box-sizing: border-box;
+  min-width: 0;
 }
 .reception-inbox-head,
 .reception-inbox-toolbar,
@@ -199,11 +212,17 @@ const RECEPTION_INBOX_STYLES = `
 }
 .reception-inbox-body {
   display: grid;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   grid-template-columns: minmax(270px, 0.82fr) minmax(320px, 1.4fr);
   gap: 0;
 }
 .reception-inbox-list,
 .reception-inbox-detail {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   padding: 16px;
 }
 .reception-inbox-list {
@@ -226,7 +245,10 @@ const RECEPTION_INBOX_STYLES = `
   letter-spacing: 0.07em;
 }
 .reception-inbox-row {
+  box-sizing: border-box;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   display: block;
   text-align: left;
   border: 1px solid transparent;
@@ -293,11 +315,13 @@ const RECEPTION_INBOX_STYLES = `
   border-radius: 10px;
   background: var(--surface-sunk);
 }
-.reception-inbox-history h4 { margin: 0 0 8px; font-size: 13px; }
+.reception-inbox-history-title { margin: 0 0 8px; font-size: 13px; }
 .reception-inbox-history ul { margin: 0; padding-left: 18px; }
 .reception-inbox-history li { margin-top: 5px; color: var(--fg-muted); font-size: 12px; }
 .reception-inbox-chip {
   display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
   align-items: center;
   min-height: 20px;
   padding: 2px 7px;
@@ -329,6 +353,9 @@ const RECEPTION_INBOX_STYLES = `
 }
 .reception-inbox-form {
   display: flex;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   flex-direction: column;
   gap: 14px;
   margin-top: 16px;
@@ -402,7 +429,7 @@ const RECEPTION_INBOX_STYLES = `
   border-radius: 10px;
   background: var(--surface-sunk);
 }
-.reception-inbox-response-summary h4 {
+.reception-inbox-response-title {
   margin: 0 0 9px;
   color: var(--fg-muted);
   font-size: 11px;
@@ -466,7 +493,7 @@ const RECEPTION_INBOX_STYLES = `
 }
 @media (max-width: 820px) {
   .reception-inbox-body {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .reception-inbox-list {
     border-right: 0;
@@ -663,6 +690,9 @@ export const mountReceptionInboxPanel = (
     );
   }
   const now = opts.now ?? (() => Date.now());
+  const titleTag = opts.headingLevel === 2 ? 'h2' : 'h3';
+  const sectionHeadingTag = opts.headingLevel === 2 ? 'h3' : 'h4';
+  const detailSubheadingTag = opts.headingLevel === 2 ? 'h4' : 'h5';
   const root = doc.createElement('div');
   root.setAttribute('data-recued-reception-inbox', '');
   opts.host.appendChild(root);
@@ -1065,7 +1095,7 @@ export const mountReceptionInboxPanel = (
 
     const titleWrap = doc.createElement('div');
     header.appendChild(titleWrap);
-    const title = doc.createElement('h3');
+    const title = doc.createElement(titleTag);
     title.className = 'reception-inbox-title';
     title.setAttribute(RECEPTION_INBOX_HEADING_ATTR, '');
     title.textContent = 'Reception Inbox';
@@ -1179,7 +1209,7 @@ export const mountReceptionInboxPanel = (
         const groupEl = doc.createElement('section');
         groupEl.className = 'reception-inbox-group';
         list.appendChild(groupEl);
-        const groupTitle = doc.createElement('h4');
+        const groupTitle = doc.createElement(sectionHeadingTag);
         groupTitle.className = 'reception-inbox-group-title';
         groupTitle.textContent = group.label;
         groupEl.appendChild(groupTitle);
@@ -1628,8 +1658,14 @@ export const mountReceptionInboxPanel = (
       parent.appendChild(empty);
       return;
     }
-    const title = doc.createElement('h4');
+    const title = doc.createElement(sectionHeadingTag);
+    const detailHeadingId = [
+      'recued-reception-inbox-detail',
+      encodeURIComponent(detail.item.hold_id),
+      'title',
+    ].join('-');
     title.className = 'reception-inbox-detail-title';
+    title.setAttribute('id', detailHeadingId);
     title.setAttribute(
       RECEPTION_INBOX_DETAIL_HEADING_ATTR,
       detail.item.hold_id,
@@ -1659,7 +1695,8 @@ export const mountReceptionInboxPanel = (
       const history = doc.createElement('section');
       history.className = 'reception-inbox-history';
       parent.appendChild(history);
-      const heading = doc.createElement('h4');
+      const heading = doc.createElement(detailSubheadingTag);
+      heading.className = 'reception-inbox-history-title';
       heading.textContent = `Previous bookings (${bookingHistory.total})`;
       history.appendChild(heading);
       if (bookingHistory.entries.length === 0) {
@@ -1733,7 +1770,8 @@ export const mountReceptionInboxPanel = (
       const summary = doc.createElement('section');
       summary.className = 'reception-inbox-response-summary';
       parent.appendChild(summary);
-      const heading = doc.createElement('h4');
+      const heading = doc.createElement(detailSubheadingTag);
+      heading.className = 'reception-inbox-response-title';
       heading.textContent = 'Submitted answers';
       summary.appendChild(heading);
       const body = doc.createElement('pre');
@@ -1744,6 +1782,7 @@ export const mountReceptionInboxPanel = (
 
     const form = doc.createElement('form');
     form.className = 'reception-inbox-form';
+    form.setAttribute('aria-labelledby', detailHeadingId);
     form.addEventListener('submit', (event) => {
       event.preventDefault();
       void approveSelected(detail);

@@ -37,6 +37,10 @@ import {
 } from '../housekeeping/producers/attendee_patterns.js';
 import type { HousekeepingContext } from '../housekeeping/registry.js';
 import type { SourceRecord } from '../housekeeping/source-walkers.js';
+import {
+  createCalendarFixtureTable,
+  insertCalendarFixtureRow,
+} from './_calendar-fixture.js';
 
 // ────────────────────────────────────────────────────────────────
 // Fixture infrastructure
@@ -47,26 +51,15 @@ let db: Database.Database;
 const NOW = 1_700_000_000_000;
 const ONE_DAY = 86_400_000;
 
-const CAL_TABLE = 'collection_calendar_test';
-const CAL_TABLE_2 = 'collection_calendar_other';
+const CAL_TABLE = 'collection_calendar_11111111aa';
+const CAL_TABLE_2 = 'collection_calendar_22222222bb';
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'd-131-ap-'));
   db = new Database(join(dir, 'test.db'));
   db.pragma('journal_mode = WAL');
   for (const t of [CAL_TABLE, CAL_TABLE_2]) {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS ${t} (
-        record_id   TEXT PRIMARY KEY,
-        received_at INTEGER NOT NULL,
-        modified_at INTEGER NOT NULL,
-        hot_fields  TEXT NOT NULL,
-        size_bytes  INTEGER NOT NULL,
-        source_id   TEXT NOT NULL,
-        body_inline TEXT,
-        blob_hash   TEXT
-      );
-    `);
+    createCalendarFixtureTable(db, t);
   }
 });
 
@@ -81,12 +74,7 @@ const insertCalendar = (
   hot: Record<string, unknown>,
   received_at = NOW,
 ): void => {
-  db.prepare(
-    `INSERT INTO ${table} (
-       record_id, received_at, modified_at, hot_fields,
-       size_bytes, source_id, body_inline, blob_hash
-     ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)`,
-  ).run(record_id, received_at, received_at, JSON.stringify(hot), 200, record_id);
+  insertCalendarFixtureRow(db, table, { record_id, hot, received_at });
 };
 
 const stubCtx = (now: number = NOW): HousekeepingContext => ({
@@ -172,19 +160,25 @@ describe('attendeePatternsProducer.produce — null / empty', () => {
     expect(out).toBeNull();
   });
 
-  it('skips calendar rows whose hot_fields fail JSON parse', async () => {
+  it('skips calendar rows whose record_payload fails JSON parse', async () => {
     insertCalendar(CAL_TABLE, 'e1', {
       summary: 'Sync',
       organizer: 'bob@example.com',
       attendees: ['user@example.com', 'bob@example.com'],
       start_at: NOW - 5 * ONE_DAY,
     });
+    // A row whose canonical payload will not parse. `record_payload` is the
+    // calendar analogue of mail's `hot_fields` blob — the column that actually
+    // exists on the table production creates.
     db.prepare(
       `INSERT INTO ${CAL_TABLE} (
-         record_id, received_at, modified_at, hot_fields,
-         size_bytes, source_id, body_inline, blob_hash
-       ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)`,
-    ).run('e_bad', NOW, NOW, '{not json}', 200, 'e_bad');
+         record_id, source_id, received_at, modified_at, size_bytes,
+         calendar_id, summary, start_at, end_at, status, organizer,
+         ical_uid, location, is_all_day, is_recurring,
+         body_inline, blob_hash, etag, record_payload, prior_payload
+       ) VALUES (?, ?, ?, ?, ?, 'primary', 'bad', ?, ?, 'confirmed', NULL,
+                 'uid-bad', NULL, 0, 0, NULL, NULL, NULL, '{not json}', NULL)`,
+    ).run('e_bad', 'e_bad', NOW, NOW, 200, NOW, NOW);
 
     const out = await attendeePatternsProducer.produce(
       stubCtx(),
@@ -373,25 +367,33 @@ describe('attendeePatternsProducer.produce — 90d window + last_event_at', () =
     expect((out?.value as AttendeePatternsValue).last_event_at).toBe(NOW - 5 * ONE_DAY);
   });
 
-  it('last_event_at is null when every event row is missing start_at', async () => {
-    insertCalendar(CAL_TABLE, 'e1', {
-      summary: 'NoStart',
-      organizer: 'bob@example.com',
-      attendees: ['user@example.com'],
-      // start_at missing
-    });
-
-    const out = await attendeePatternsProducer.produce(
-      stubCtx(),
-      sourceFor('bob@example.com'),
-    );
-    const v = out?.value as AttendeePatternsValue;
-    // The event still counts toward events_total + co-attendee map,
-    // but it can't contribute to events_window / last_event_at without a
-    // timestamp.
-    expect(v.events_total).toBe(1);
-    expect(v.events_window).toBe(0);
-    expect(v.last_event_at).toBeNull();
+  it('cannot store an event with no start_at — production declares it NOT NULL', () => {
+    // ⚠ This replaces a test that inserted a calendar row whose `hot_fields`
+    // JSON omitted `start_at`, and asserted the producer counted it toward
+    // events_total but not events_window / last_event_at.
+    //
+    // That input is NOT REPRESENTABLE. Production's calendar table declares
+    // `start_at INTEGER NOT NULL` (D-117 typed columns), so the producer's
+    // missing-timestamp branch is unreachable on any real server. The old
+    // test only passed because the fixture was mail-shaped and start_at lived
+    // inside a JSON blob where it could simply be absent.
+    //
+    // The knowledge is kept as an assertion about the schema rather than
+    // deleted: if start_at ever becomes nullable, this reddens and the
+    // defensive branch needs a real test again.
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO ${CAL_TABLE} (
+             record_id, source_id, received_at, modified_at, size_bytes,
+             calendar_id, summary, start_at, end_at, status, organizer,
+             ical_uid, location, is_all_day, is_recurring,
+             body_inline, blob_hash, etag, record_payload, prior_payload
+           ) VALUES (?, ?, ?, ?, ?, 'primary', 'NoStart', NULL, ?, 'confirmed',
+                     NULL, 'uid-nostart', NULL, 0, 0, NULL, NULL, NULL, '{}', NULL)`,
+        )
+        .run('e_nostart', 'e_nostart', NOW, NOW, 200, NOW),
+    ).toThrow(/NOT NULL/i);
   });
 });
 

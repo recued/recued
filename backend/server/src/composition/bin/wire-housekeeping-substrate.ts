@@ -115,6 +115,7 @@ import type { HousekeepingRpcDeps } from '../../housekeeping-handler.js';
 import type { HousekeepingScopeReadEntry } from '@recued/contracts';
 import type { LLMConfig, QuotaTracker } from '@recued/llm';
 import type { EnrichmentProducerEntry } from './housekeeping-scheduler-instance.js';
+import { listCollectionDataTables } from '../../collections/table.js';
 
 /**
  * STORE COMPOSER — Phase 1.
@@ -189,14 +190,9 @@ const countHousekeepingSourceRecords = (
   scope: string,
 ): number => {
   if (scope !== 'mail') return 0;
-  const tables = database
-    .prepare(
-      `SELECT name FROM sqlite_master
-        WHERE type='table' AND name LIKE 'collection_mail_%'`,
-    )
-    .all() as Array<{ name: string }>;
+  const tables = listCollectionDataTables(database, 'mail');
   let total = 0;
-  for (const { name } of tables) {
+  for (const name of tables) {
     const row = database
       .prepare(`SELECT COUNT(*) AS n FROM "${name}"`)
       .get() as { n: number };

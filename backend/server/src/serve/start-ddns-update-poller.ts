@@ -11,6 +11,14 @@ import { createHostnameRegistryStore } from '../storage/hostname-registry.js';
 import { fetchPublicIpv4 } from '../cli/url-enumerate.js';
 
 export interface StartDdnsUpdatePollerOptions {
+  /** D-148 § A.5.6 — lifecycle applier so a lapsed server can record 'grace'
+   *  and recover to 'active' by itself. Resolved lazily: the cert stack fills
+   *  its handle-state-machine ref after this runs. */
+  readonly applyLifecycle?: () => Pick<
+    import('../handle/index.js').HandleStateMachine,
+    'applyLifecycleUpdate'
+  > | undefined;
+
   db: Database.Database | undefined;
   backgroundServices: BackgroundServiceRegistry;
   cloudBaseUrl: string;
@@ -40,6 +48,7 @@ export const startDdnsUpdatePoller = (
     updateClient,
     ipStateStore,
     ddnsEnabled,
+    ...(options.applyLifecycle ? { applyLifecycle: options.applyLifecycle } : {}),
     hostnameRegistry,
     subscriptionState,
   });

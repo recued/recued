@@ -45,6 +45,9 @@ describe('renderDevicesPage — layout', () => {
   it('renders the section title + 4-column table scaffolding', () => {
     const html = renderDevicesPage(state());
     expect(html).toContain('Devices');
+    expect(html).toContain(
+      'class="account-devices-table-scroll" data-recued-scroll-rail',
+    );
     expect(html).toContain('account-devices-table');
     // Device | Status | Paired | Actions — no Mode column (D-148 P12),
     // no "Last seen" (it mislabeled the pairing time — R30 dropped it).
@@ -123,17 +126,20 @@ describe('renderDevicesPage — current row + self-revoke blocked', () => {
     expect(html).toContain('account-devices-action-placeholder');
   });
 
-  it('non-current devices get a Revoke button stamped with their instance_id', () => {
+  it('non-current device actions identify their row even when display names repeat', () => {
     const html = renderDevicesPage(
       state({
         rows: [
           row({ instance_id: 'self', isCurrent: true }),
           row({ instance_id: 'phone', display_name: 'Phone', isCurrent: false }),
+          row({ instance_id: 'phone-2', display_name: 'Phone', isCurrent: false }),
         ],
       }),
     );
     expect(html).toContain('data-action="revoke-device"');
     expect(html).toContain('data-instance-id="phone"');
+    expect(html).toContain('aria-label="Revoke Phone (phone)"');
+    expect(html).toContain('aria-label="Revoke Phone (phone-2)"');
   });
 });
 
@@ -266,6 +272,8 @@ describe('renderDevicesPage — inline revoke-confirm panel', () => {
     // Confirm button copy quotes the display_name for clarity.
     expect(html).toContain('Yes, revoke');
     expect(html).toContain('Phone');
+    expect(html).toContain('aria-label="Confirm revoke Phone (phone)"');
+    expect(html).toContain('aria-label="Cancel revoke Phone (phone)"');
     // Recovery-key reminder copy.
     expect(html).toContain('24-word recovery key');
     // Both action buttons stamp the instance_id so the host can route.
@@ -298,8 +306,10 @@ describe('renderDevicesPage — inline revoke-confirm panel', () => {
     const cancel = html.slice(cancelIdx, cancelIdx + 300);
     expect(confirm).toContain('aria-disabled="true"');
     expect(confirm).toContain('aria-busy="true"');
+    expect(confirm).toContain('aria-label="Revoking Phone (phone)"');
     expect(confirm).not.toContain(' disabled');
     expect(cancel).toContain('aria-disabled="true"');
+    expect(cancel).toContain('aria-label="Cancel revoke Phone (phone)"');
     expect(cancel).not.toContain(' disabled');
   });
 

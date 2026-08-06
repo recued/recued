@@ -166,12 +166,17 @@ export const renderHousekeepingRunNowConfirmDialog = (
   }
 
   const errorBlock = props.state.error ? inlineError(props.state.error) : '';
+  const dialogId = `housekeeping-runnow-${task.meta.id}`;
+  const titleId = `${dialogId}-title`;
+  const bodyId = `${dialogId}-body`;
 
   return `
-    <div class="housekeeping-runnow-dialog" role="dialog" aria-modal="true">
+    <div class="housekeeping-runnow-dialog" role="dialog" aria-modal="true"
+      aria-labelledby="${e(titleId)}" aria-describedby="${e(bodyId)}"
+      tabindex="-1"${props.state.running ? ' aria-busy="true"' : ''}>
       <div class="housekeeping-runnow-dialog-card">
-        <h3 class="housekeeping-runnow-dialog-title">Run "${e(task.meta.description)}"?</h3>
-        <div class="housekeeping-runnow-dialog-body">${body}</div>
+        <h3 class="housekeeping-runnow-dialog-title" id="${e(titleId)}">Run "${e(task.meta.description)}"?</h3>
+        <div class="housekeeping-runnow-dialog-body" id="${e(bodyId)}">${body}</div>
         ${errorBlock}
         <div class="housekeeping-runnow-dialog-actions">
           ${button({

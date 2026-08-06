@@ -538,3 +538,85 @@ describe('pruneOlderThan', () => {
     expect(byteDeltas).toEqual([-75]);
   });
 });
+
+describe('thread-id lookup index (D-123 producer hot path)', () => {
+  /** ⛔ WHY THE PLAN AND NOT THE RESULT. The D-123 producers look records up by
+   *  thread ONCE PER RECORD, so a full scan there makes a producer pass
+   *  quadratic in the mail corpus — measured at 100k mails, 21.8ms per lookup,
+   *  ~36 minutes of pure scanning for one pass. The answers were always
+   *  correct; only the plan was wrong, so only the plan can catch a
+   *  regression. */
+  const mkDb = (): Database.Database => {
+    const db = new Database(':memory:');
+    createCollectionTable({ db, platform: 'mail', slug: 'probe' });
+    return db;
+  };
+  const tableFor = (db: Database.Database): string =>
+    (db.prepare(
+      `SELECT name FROM sqlite_master WHERE type='table'
+        AND name LIKE 'collection_mail_%' AND name NOT LIKE '%_fts%'`,
+    ).get() as { name: string }).name;
+
+  it('SEARCHes by thread_id instead of scanning', () => {
+    const db = mkDb();
+    const t = tableFor(db);
+    const plan = (db
+      .prepare(
+        `EXPLAIN QUERY PLAN SELECT received_at, hot_fields FROM "${t}"
+          WHERE json_extract(hot_fields, '$.thread_id') = ?`,
+      )
+      .all('x') as Array<{ detail: string }>).map((r) => r.detail).join(' ; ');
+    expect(plan).toMatch(/SEARCH/);
+    expect(plan).not.toMatch(/^SCAN/);
+    db.close();
+  });
+
+  it('the index is PARTIAL, so rows without a thread_id are not indexed', () => {
+    // Calendar and file collections share this DDL and carry no thread_id.
+    // A full index would make every one of their rows pay for a column they
+    // do not have.
+    const db = mkDb();
+    const t = tableFor(db);
+    const ddl = (db
+      .prepare(`SELECT sql FROM sqlite_master WHERE type='index' AND name = ?`)
+      .get(`idx_${t}_thread_id`) as { sql: string } | undefined)?.sql ?? '';
+    expect(ddl).toMatch(/WHERE json_extract\(hot_fields, '\$\.thread_id'\) IS NOT NULL/);
+    db.close();
+  });
+
+  it('an EXISTING collection picks the index up without a migration', () => {
+    // `CREATE TABLE IF NOT EXISTS` skips a table that already exists, so a new
+    // index declared alongside it only reaches existing installs because the
+    // whole `db.exec` block re-runs on every `createCollectionTable` call.
+    // That is load-bearing and easy to break by moving the index into the
+    // create-only path.
+    const db = mkDb();
+    const t = tableFor(db);
+    // Second call against the now-existing table must still ensure the index.
+    db.exec(`DROP INDEX IF EXISTS idx_${t}_thread_id`);
+    createCollectionTable({ db, platform: 'mail', slug: 'probe' });
+    const idx = db
+      .prepare(`SELECT name FROM sqlite_master WHERE type='index' AND name = ?`)
+      .get(`idx_${t}_thread_id`);
+    expect(idx).toBeDefined();
+    db.close();
+  });
+
+  it('still returns exactly the rows of the requested thread', () => {
+    const db = mkDb();
+    const t = tableFor(db);
+    const ins = db.prepare(
+      `INSERT INTO "${t}" (record_id, received_at, modified_at, hot_fields, size_bytes, source_id)
+       VALUES (?, ?, ?, ?, 1, 's')`,
+    );
+    ins.run('a', 1, 1, JSON.stringify({ thread_id: 't1' }));
+    ins.run('b', 2, 2, JSON.stringify({ thread_id: 't2' }));
+    ins.run('c', 3, 3, JSON.stringify({ thread_id: 't1' }));
+    ins.run('d', 4, 4, JSON.stringify({ subject: 'no thread' }));
+    const rows = (db
+      .prepare(`SELECT record_id FROM "${t}" WHERE json_extract(hot_fields, '$.thread_id') = ? ORDER BY record_id`)
+      .all('t1') as Array<{ record_id: string }>).map((r) => r.record_id);
+    expect(rows).toEqual(['a', 'c']);
+    db.close();
+  });
+});

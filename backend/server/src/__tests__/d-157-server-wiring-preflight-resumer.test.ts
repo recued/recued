@@ -430,7 +430,7 @@ describe('PreflightResumer.resumeRun', () => {
     });
     const updated = await log.get('run-1');
     expect(updated?.commit_status).toBe('failed');
-    expect(updated?.errors[0]).toMatchObject({
+    expect(updated?.errors?.[0]).toMatchObject({
       code: 'RECIPE_POLICY_DENIED',
       details: { authority_reason: 'bearer_inactive' },
     });
@@ -740,7 +740,7 @@ describe('PreflightResumer.denyRun', () => {
     expect(updated!.run_id).toBe(anchor.run_id);
     expect(updated!.commit_status).toBe('failed');
     expect(updated!.errors).toHaveLength(1);
-    expect(updated!.errors[0]).toMatchObject({
+    expect(updated!.errors?.[0]).toMatchObject({
       code: 'RECIPE_POLICY_DENIED',
       source: {
         recipe_id: 'recipe-1',
@@ -787,7 +787,13 @@ describe('PreflightResumer.denyRun', () => {
     'no-ops for terminal commit_status %s',
     async (commit_status) => {
       const log = auditLog();
-      const anchor = await append(log, pausedAnchor({ commit_status }));
+      await append(log, pausedAnchor({ commit_status }));
+      // Read the row back BEFORE the call rather than comparing against the
+      // appended fixture: `errors` is optional since 2026-08-05 and the write
+      // path omits it when empty, so a fixture carrying `errors: []` no longer
+      // round-trips identically. The invariant under test is "denyRun changed
+      // nothing", which is exactly a before/after comparison of the STORED row.
+      const before = await log.get('run-1');
       const resumer = createPreflightResumer({
         auditLog: log,
         getExecuteDeps: () => undefined,
@@ -795,16 +801,19 @@ describe('PreflightResumer.denyRun', () => {
 
       await resumer.denyRun(checkpoint(), askContext());
 
-      expect(await log.get('run-1')).toEqual(anchor);
+      expect(await log.get('run-1')).toEqual(before);
     },
   );
 
   it('no-ops for stale or missing anchors', async () => {
     const staleLog = auditLog();
-    const stale = await append(
+    await append(
       staleLog,
       pausedAnchor({ checkpoint_id: 'newer-checkpoint' }),
     );
+    // Same reason as the terminal-status cases above — compare the stored row
+    // before and after, not the appended fixture.
+    const stale = await staleLog.get('run-1');
     const staleResumer = createPreflightResumer({
       auditLog: staleLog,
       getExecuteDeps: () => undefined,

@@ -19,7 +19,8 @@
  *  a documented limit. Phase B / C may revisit if needed. */
 
 import type Database from 'better-sqlite3';
-import { createFtsTable, indexRecord, deleteRecord as ftsDeleteRecord, deleteByPrefix as ftsDeleteByPrefix, search as ftsSearch, escapeLike } from '@recued/fts';
+import { prefixUpperBound } from './prefix-range.js';
+import { createFtsTable, indexRecord, deleteRecord as ftsDeleteRecord, deleteByPrefix as ftsDeleteByPrefix, search as ftsSearch } from '@recued/fts';
 import type { BlobStore } from './blob-store.js';
 
 /** Hard ceiling on a single value's serialized size, in bytes. Values
@@ -337,30 +338,37 @@ export const createSharedStore = (opts: CreateSharedStoreOptions): SharedStore =
     `UPDATE ${TABLE} SET last_read_at = ? WHERE key = ?`,
   );
 
-  // `ESCAPE '\'` + escapeLike() on the prefix so a key containing `_` (a
-  // SQL LIKE single-char wildcard, allowed by assertValidKey) can't widen
-  // the match to unrelated siblings — critical for the DELETE path, where a
-  // bare `_` would otherwise delete rows the caller never named.
+  // ⛔ RANGE, not `LIKE … ESCAPE`. The escaping was here for a real reason —
+  // a key may contain `_` (a LIKE single-char wildcard, allowed by
+  // `assertValidKey`), and on the DELETE path "a bare `_` would otherwise
+  // delete rows the caller never named". A half-open range has NO wildcard
+  // semantics, so that hazard stops existing rather than being escaped.
+  //
+  // It is also ~92x faster. SQLite cannot apply its LIKE-prefix optimisation
+  // to a BOUND pattern, so every one of these planned as
+  // `SCAN … USING COVERING INDEX shared_store_prefix_idx` — O(total keys) on a
+  // table of user data. Measured at 100k rows: 2.075ms → 0.023ms, same 200
+  // rows returned. See `prefix-range.ts`.
   const listStmt = db.prepare(
     `SELECT key, value_inline, blob_hash FROM ${TABLE}
-     WHERE key = ? OR key LIKE ? ESCAPE '\\'
+     WHERE key = ? OR (key >= ? AND key < ?)
      ORDER BY key`,
   );
 
   const listDescendantsStmt = db.prepare(
     `SELECT key, value_inline, blob_hash FROM ${TABLE}
-     WHERE key LIKE ? ESCAPE '\\'
+     WHERE key >= ? AND key < ?
      ORDER BY key`,
   );
 
   const deleteStmt = db.prepare(`DELETE FROM ${TABLE} WHERE key = ?`);
 
   const deleteByPrefixStmt = db.prepare(
-    `DELETE FROM ${TABLE} WHERE key = ? OR key LIKE ? ESCAPE '\\'`,
+    `DELETE FROM ${TABLE} WHERE key = ? OR (key >= ? AND key < ?)`,
   );
 
   const deleteDescendantsStmt = db.prepare(
-    `DELETE FROM ${TABLE} WHERE key LIKE ? ESCAPE '\\'`,
+    `DELETE FROM ${TABLE} WHERE key >= ? AND key < ?`,
   );
 
   const totalBytesStmt = db.prepare(
@@ -719,10 +727,14 @@ export const createSharedStore = (opts: CreateSharedStoreOptions): SharedStore =
 
     async list(prefix) {
       const { key: normalizedPrefix, descendantsOnly } = normalizeNamespacePrefix(prefix);
-      const descendantPattern = `${escapeLike(normalizedPrefix)}.%`;
+      // The descendant set is exactly the keys starting with `<prefix>.` — a
+      // half-open range over that, rather than a LIKE pattern.
+      const lo = `${normalizedPrefix}.`;
+      const hi = prefixUpperBound(lo);
+      if (hi === null) return [];
       const rows = (descendantsOnly
-        ? listDescendantsStmt.all(descendantPattern)
-        : listStmt.all(normalizedPrefix, descendantPattern)) as Array<{
+        ? listDescendantsStmt.all(lo, hi)
+        : listStmt.all(normalizedPrefix, lo, hi)) as Array<{
         key: string;
         value_inline: string | null;
         blob_hash: string | null;
@@ -788,23 +800,25 @@ export const createSharedStore = (opts: CreateSharedStoreOptions): SharedStore =
 
     async deleteByPrefix(prefix) {
       const { key: normalizedPrefix, descendantsOnly } = normalizeNamespacePrefix(prefix);
-      const descendantPattern = `${escapeLike(normalizedPrefix)}.%`;
+      const lo = `${normalizedPrefix}.`;
+      const hi = prefixUpperBound(lo);
+      if (hi === null) return 0;
       const apply = db.transaction(() => {
         const rows = (descendantsOnly
           ? db
             .prepare(
               `SELECT key, size_bytes, cas_revision
-                 FROM ${TABLE} WHERE key LIKE ? ESCAPE '\\'
+                 FROM ${TABLE} WHERE key >= ? AND key < ?
                  ORDER BY key`,
             )
-            .all(descendantPattern)
+            .all(lo, hi)
           : db
             .prepare(
               `SELECT key, size_bytes, cas_revision
-                 FROM ${TABLE} WHERE key = ? OR key LIKE ? ESCAPE '\\'
+                 FROM ${TABLE} WHERE key = ? OR (key >= ? AND key < ?)
                  ORDER BY key`,
             )
-            .all(normalizedPrefix, descendantPattern)) as Array<{
+            .all(normalizedPrefix, lo, hi)) as Array<{
               key: string;
               size_bytes: number;
               cas_revision: number | null;
@@ -815,8 +829,8 @@ export const createSharedStore = (opts: CreateSharedStoreOptions): SharedStore =
         }
 
         const result = descendantsOnly
-          ? deleteDescendantsStmt.run(descendantPattern)
-          : deleteByPrefixStmt.run(normalizedPrefix, descendantPattern);
+          ? deleteDescendantsStmt.run(lo, hi)
+          : deleteByPrefixStmt.run(normalizedPrefix, lo, hi);
         if (descendantsOnly) {
           for (const row of rows) ftsDeleteRecord(db, FTS_TABLE, row.key);
         } else {

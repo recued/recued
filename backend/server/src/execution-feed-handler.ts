@@ -322,7 +322,7 @@ const bucketLinksByRun = (
  *  attaches (never a message-match); undefined for a non-cli failure. The full
  *  stderr/exit detail rides the detail summary's `errors[].details.cli_failure`. */
 const cliFailureReasonOf = (entry: AuditEntry): CliFailureReason | undefined => {
-  for (const err of entry.errors) {
+  for (const err of entry.errors ?? []) {
     const detail = err.details?.cli_failure;
     if (isCliFailureDetail(detail)) return detail.reason;
   }
@@ -371,7 +371,7 @@ const projectAuditSummary = (entry: AuditEntry): RunAuditSummary => {
     origin: projectOrigin(entry),
     trigger_source: entry.trigger_source,
     instance_id: entry.instance_id,
-    errors: entry.errors,
+    errors: entry.errors ?? [],
   };
   if (entry.error_category !== undefined) out.error_category = entry.error_category;
   if (entry.output_string !== undefined) out.output_string = entry.output_string;
@@ -536,7 +536,7 @@ export const handleExecutionGet = async (
       ...(approvalOutcome !== undefined ? { outcome: approvalOutcome } : {}),
       ...(entry.output_string !== undefined ? { output_string: entry.output_string } : {}),
     },
-    errors: entry.errors,
+    errors: entry.errors ?? [],
     links: projectLinks(linkRows),
     gateway: {
       policy_result: policyResultFromCommits(entry, commits),

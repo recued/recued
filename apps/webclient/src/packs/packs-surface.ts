@@ -172,8 +172,9 @@ export const mountPacksSurface = (
     };
     submit.addEventListener('click', runAdd);
     input.addEventListener('keydown', (e) => {
-      if ((e as KeyboardEvent).key === 'Enter') {
-        (e as KeyboardEvent).preventDefault();
+      const event = e as KeyboardEvent;
+      if (event.key === 'Enter' && !event.isComposing) {
+        event.preventDefault();
         runAdd();
       }
     });
@@ -505,7 +506,15 @@ const ensureStyles = (doc: Document): void => {
 };
 
 export const PACKS_SURFACE_STYLES = `
-[${PACKS_SURFACE_HOST_ATTR}] { color: var(--fg); }
+[${PACKS_SURFACE_HOST_ATTR}] {
+  box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; color: var(--fg);
+}
+[${PACKS_SURFACE_LIST_ATTR}], [${PACKS_SURFACE_DETAIL_ATTR}] {
+  box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%;
+}
+[${PACKS_SURFACE_LIST_ATTR}] > *, [${PACKS_SURFACE_DETAIL_ATTR}] > * {
+  min-width: 0; max-width: 100%;
+}
 [${PACKS_SURFACE_LIST_ATTR}][hidden], [${PACKS_SURFACE_DETAIL_ATTR}][hidden] { display: none; }
 [${PACKS_SURFACE_HOST_ATTR}] .packs-surface-add {
   display: flex; gap: 8px; align-items: center; margin-bottom: 14px;

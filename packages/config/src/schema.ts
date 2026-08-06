@@ -75,16 +75,26 @@ export const RUNTIME_SCHEMA = [
     section: 'Shared data',
     label: 'Durable shared-data quota (bytes)',
     type: 'number',
-    default: 100 * 1024 * 1024, // 100 MB
+    // ⛔ SERVER SCALE. Was 100 MB — an extension-era budget. `data.shared` is
+    // the owner's own durable, recipe-authored data; the mirror collections
+    // were already re-scaled for the server (files 5 GB, mail 2 GB) while this
+    // was not, which is backwards: a collection re-syncs from its source and
+    // these rows have no source to re-sync from.
+    default: 5 * 1024 * 1024 * 1024, // 5 GB
     min: 0,
-    description: 'Quota for the durable data.shared.* SQLite table (+ CAS blobs).',
+    description:
+      'Quota for the durable data.shared.* SQLite table (+ CAS blobs). This is '
+      + 'owner-authored data with no upstream to re-sync from, so it is sized '
+      + 'for a server disk rather than a browser profile.',
   },
   {
     key: 'shared.max_bytes',
     section: 'Shared data',
     label: 'Memory-tier shared cap (bytes)',
     type: 'number',
-    default: 50 * 1024 * 1024, // 50 MB
+    // Raised with `data.shared`, but far less: this tier is VOLATILE cache
+    // (LRU + TTL), so eviction here loses nothing durable.
+    default: 500 * 1024 * 1024, // 500 MB
     min: 0,
     description: 'Memory-tier cap for shared.* volatile entries inside the cache layer.',
   },
@@ -110,10 +120,27 @@ export const RUNTIME_SCHEMA = [
   },
 
   // ─── Phase B — audit retention ────────────────────────────────
+  //
+  // ⛔ AUDIT IS AUDIT, MEMORY IS MEMORY — internal and external names match,
+  // and this block deliberately says "Audit" everywhere.
+  //
+  // These keys govern `audit_entries` / `audit_activities`: the run-provenance
+  // trail that ONLY the runtime appends to. They do NOT govern `user_memory`,
+  // the owner's curated knowledge store behind the Data → Memory lens and
+  // `memory.import` / `memory.create`, which takes no gate and is never pruned.
+  //
+  // ⚠ HISTORY, because the labels have moved twice and both moves were
+  // defensible at the time. D-120 Phase 7 renamed every "audit log" label to
+  // "Memory" — correct then, because audit WAS the memory substrate. D-198
+  // (2026-07-11) split them, creating `user_memory` as a purpose-built store
+  // and stating plainly that it is "NOT an `AuditEntry` extension — injecting
+  // hand-authored rows would corrupt the audit authority". That split made the
+  // Phase 7 rename stale in place: calling these knobs "Memory" now points the
+  // owner at the wrong store. Reverted to Audit.
   {
     key: 'audit.retention_days',
-    section: 'Memory',
-    label: 'Memory retention (days)',
+    section: 'Audit',
+    label: 'Audit retention (days)',
     type: 'number',
     // D-120 post-amendment — default flipped to `0` (no expiry). TOML
     // has no null type, so the wire format uses `0` as the no-expiry
@@ -131,7 +158,24 @@ export const RUNTIME_SCHEMA = [
     section: 'Audit',
     label: 'Audit log quota (bytes)',
     type: 'number',
-    default: 50 * 1024 * 1024,
+    // ⛔ SERVER SCALE. Was 50 MB. D-120 graduated the audit log to
+    // `data.memory.*` — a first-class read-only warehouse surface with
+    // provenance links — but its budget stayed at the extension-era figure.
+    //
+    // ⚠ SCOPE: this governs `audit_entries` / `audit_activities`, the
+    // machine-generated PROVENANCE TRAIL that only the runtime appends to. It
+    // does NOT govern `user_memory` — the owner's own knowledge store behind
+    // the Data → Memory lens and `memory.import` / `memory.create` — which
+    // takes no gate and is never pruned.
+    //
+    // ⚠ THIS IS THE ONE SURFACE HERE THAT EVICTS RATHER THAN REJECTS.
+    // Age-based prune is OFF by default (`audit.retention_days: 0`), so the
+    // SIZE pass is the only live policy and it deletes OLDEST-FIRST. At 50 MB a
+    // working server reached that routinely, discarding the oldest provenance
+    // as ordinary housekeeping. Raising the ceiling does not change the
+    // semantics — it makes eviction a genuine last resort rather than a weekly
+    // event.
+    default: 5 * 1024 * 1024 * 1024, // 5 GB
     min: 1 * 1024 * 1024,
     description:
       'Byte ceiling for the audit surface. Reserve rows (pressure-transition, kill-switch, quota-exceeded, audit-retention-prune, account-mismatch-rejected) are admitted up to the full quota; user-class entries stop at quota - reserve.',
@@ -645,9 +689,18 @@ export const RUNTIME_SCHEMA = [
     // `recued.com` serves marketing + marketplace + the webclient PWA +
     // free-tier endpoints (reachability probe, pair-blob relay,
     // marketplace API). Production override is unnecessary; staging /
-    // dev override via `RECUED_RUNTIME_CLOUD_BASE_URL` or the TOML key
-    // points at `api.test.recued.cloud` (test fixtures) or
+    // dev override points at `api.test.recued.cloud` (test fixtures) or
     // `api.recued2.com` (staging mirror).
+    //
+    // ⛔ There is NO env override. `RECUED_RUNTIME_*` was removed 2026-07-28
+    // (see `env.ts`), so `RECUED_RUNTIME_CLOUD_BASE_URL` — which this comment
+    // used to name — is DEAD and silently does nothing. Set this TOML key (or
+    // point `RECUED_CONFIG` at a file that does). Getting this wrong is
+    // invisible: the server falls back to the production default, its
+    // entitlement mint then fails against the wrong Worker, and the
+    // Pro-provisioning tick skips SILENTLY (`entitlement_unavailable` is not
+    // logged) — no reserve, no DDNS, no error. Cost a live-drive session
+    // 2026-08-05.
     default: 'https://api.recued.cloud',
     description:
       'Base URL for the Recued cloud API. Production is https://api.recued.cloud — the Pro-only endpoint family (DDNS update, ACME issue-cert, account sync). Override for staging / dev / test environments. Trailing slashes are stripped by each adapter.',

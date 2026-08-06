@@ -52,6 +52,7 @@ import type { HousekeepingContext } from '../registry.js';
 import type { SourceRecord } from '../source-walkers.js';
 import type { HousekeepingEnrichmentProducer } from '../enrichment-producer.js';
 import { canonicalOne, collectAddresses } from './_email-addresses.js';
+import { listCollectionDataTables } from '../../collections/table.js';
 
 /** D-136 P3 — producer-version hash. */
 const baseProducerVersionHash = computeProducerVersionHash({
@@ -193,12 +194,7 @@ export const findCandidateThreads = (
   now: number,
 ): CandidateThread[] => {
   if (attendees.length === 0) return [];
-  const tables = ctx.db
-    .prepare(
-      `SELECT name FROM sqlite_master
-        WHERE type='table' AND name LIKE 'collection_mail_%'`,
-    )
-    .all() as Array<{ name: string }>;
+  const tables = listCollectionDataTables(ctx.db, 'mail');
   const earliest = now - MAIL_LOOKBACK_MS;
   const threads = new Map<
     string,
@@ -212,7 +208,7 @@ export const findCandidateThreads = (
   >();
 
   for (const participant of attendees) {
-    for (const { name: table } of tables) {
+    for (const table of tables) {
       const rows = ctx.db
         .prepare(
           `SELECT received_at, hot_fields FROM "${table}"

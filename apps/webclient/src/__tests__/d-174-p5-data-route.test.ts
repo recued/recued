@@ -50,6 +50,8 @@ import {
   DATA_ROUTE_MIRROR_ATTR,
   DATA_ROUTE_STYLES_MARKER,
   DATA_ROUTE_TAB_ATTR,
+  DATA_ROUTE_TABLIST_ATTR,
+  DATA_ROUTE_TAB_PANEL_ATTR,
   DATA_ROUTE_VERIFICATION_ACTION_ATTR,
   DATA_ROUTE_VERIFICATION_NEXT_ATTR,
   DATA_ROUTE_WORK_ENTITY_LOAD_MORE_ATTR,
@@ -911,6 +913,9 @@ describe('D-174 P5 Data route', () => {
     await rig.route.whenLoaded();
 
     expect(rig.doc.styleElements[0]?.attrs.has(DATA_ROUTE_STYLES_MARKER)).toBe(true);
+    expect(rig.doc.styleElements[0]?.textContent).toMatch(
+      /\.data-tab\s*\{[^}]*min-height:\s*36px/s,
+    );
     const shell = rig.root.children[0]!;
     expect(shell.attrs.has(DATA_ROUTE_HOST_ATTR)).toBe(true);
     expect(shell.innerHTML).toContain(DATA_ROUTE_HEADING_ATTR);
@@ -918,6 +923,19 @@ describe('D-174 P5 Data route', () => {
     expect(shell.innerHTML).toContain(`${DATA_ROUTE_TAB_ATTR}="task"`);
     expect(shell.innerHTML).toContain(`${DATA_ROUTE_TAB_ATTR}="form_response"`);
     expect(shell.innerHTML).toContain(`${DATA_ROUTE_TAB_ATTR}="mail"`);
+    expect(shell.innerHTML).toContain(DATA_ROUTE_TABLIST_ATTR);
+    expect(shell.innerHTML).toContain('aria-label="Data collections"');
+    expect(shell.innerHTML).toContain(DATA_ROUTE_TAB_PANEL_ATTR);
+    expect(shell.innerHTML).toContain(
+      'aria-labelledby="recued-data-tab-contact"',
+    );
+    expect(shell.innerHTML).toMatch(
+      new RegExp(
+        `${DATA_ROUTE_TAB_ATTR}="contact"[\\s\\S]*?`
+          + 'aria-controls="recued-data-collection-panel"[\\s\\S]*?'
+          + 'aria-selected="true"[\\s\\S]*?tabindex="0"',
+      ),
+    );
     // Accepted visitor input has its own Received group between owner-authored
     // and connected mirror data.
     expect(shell.innerHTML).toContain('data-tab-group-label');
@@ -1001,7 +1019,9 @@ describe('D-174 P5 Data route', () => {
     });
     await Promise.resolve();
     await Promise.resolve();
-    expect(routeRoot.innerHTML).toContain('Edit memory');
+    expect(routeRoot.innerHTML).toContain(
+      'role="form" aria-label="Edit memory"',
+    );
     expect(routeRoot.innerHTML).toContain('Saved body');
 
     emitMemoryInput(routeRoot, 'body', 'Edited but unfinished');
@@ -1009,7 +1029,9 @@ describe('D-174 P5 Data route', () => {
     expect(routeRoot.innerHTML).toContain(MEMORY_COMPOSE_DISCARD_GUARD_ATTR);
     expect(routeRoot.innerHTML).toContain('Edited but unfinished');
     emitClick(routeRoot, MEMORY_COMPOSE_DISCARD_COMMIT_ACTION);
-    expect(routeRoot.innerHTML).not.toContain('Edit memory');
+    expect(routeRoot.innerHTML).not.toContain(
+      'role="form" aria-label="Edit memory"',
+    );
     expect(routeRoot.innerHTML).toContain('Saved memory');
     expect(memoryUpdateCaller).not.toHaveBeenCalled();
     rig.route.dispose();
@@ -2862,6 +2884,13 @@ describe('D-174 P5 Data route', () => {
     );
     // Reuses the mounted ui-shared entity-detail panel for the Activity section.
     expect(detailHtml).toContain('memory-entity-detail-panel');
+    expect(detailHtml).toContain(
+      '<h4 class="memory-entity-detail-title">About <code>sam@example.com</code></h4>',
+    );
+    expect(detailHtml).toContain(
+      '<h5 class="memory-entity-detail-section-title">Timeline</h5>',
+    );
+    expect(detailHtml).not.toContain('<h2 class="memory-entity-detail-title">');
     expect(detailHtml).toContain('Launch');
     expect(detailHtml).toContain('close-contact-detail');
 
@@ -5282,6 +5311,23 @@ describe('R18 — codex fold (stale-response guards + URL honesty)', () => {
       ...(dialog?.values ?? {}),
       title: 'Unfinished task edit',
     });
+
+    const composingPreventDefault = vi.fn();
+    const composingStopPropagation = vi.fn();
+    for (const listener of rig.root.children[0]?.listeners.get('keydown') ?? []) {
+      listener({
+        key: 'Escape',
+        isComposing: true,
+        preventDefault: composingPreventDefault,
+        stopPropagation: composingStopPropagation,
+      } as unknown as Event);
+    }
+    expect(composingPreventDefault).not.toHaveBeenCalled();
+    expect(composingStopPropagation).not.toHaveBeenCalled();
+    expect(rig.root.children[0]?.innerHTML ?? '')
+      .not.toContain('data-recued-data-work-entity-discard-guard');
+    expect(rig.route.workEntityState().dialog?.values.title)
+      .toBe('Unfinished task edit');
 
     emitClick(rig.root.children[0]!, 'close-work-entity-dialog');
     expect(rig.route.workEntityState().dialog?.values.title)

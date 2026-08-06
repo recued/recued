@@ -109,8 +109,12 @@ describe('D-120 Phase 4 — `read_memory` permission gating', () => {
     expect(err?.message).toContain('read_memory');
   });
 
-  it('hard-errors on the data.audit.* alias path too', () => {
+  it('⛔ D-231 — data.audit.* requires its OWN permission, not read_memory', () => {
+    // Intent preserved: an undeclared read of the audit trail must hard-error.
+    // What changed is WHICH permission — run history is a distinct disclosure
+    // from curated memory, and `read_memory` no longer covers it.
     const r = baseRecipe({
+      requires: ['read_memory'],
       steps: [
         {
           id: 'lookup',
@@ -120,7 +124,20 @@ describe('D-120 Phase 4 — `read_memory` permission gating', () => {
       ],
     });
     const result = validateRecipe(r);
-    expect(findIssue(result, 'memory_read_permission_missing')).toBeDefined();
+    const err = findIssue(result, 'audit_read_permission_missing');
+    expect(err?.severity).toBe('error');
+    // ...and declaring read_audit clears it.
+    const ok = validateRecipe(baseRecipe({
+      requires: ['read_audit'],
+      steps: [
+        {
+          id: 'lookup',
+          transform: 'count',
+          input: '{{data.audit.run_42}}',
+        } as unknown as RecipeDefinition['steps'][number],
+      ],
+    }));
+    expect(findIssue(ok, 'audit_read_permission_missing')).toBeUndefined();
   });
 
   it('passes when `read_memory` is declared alongside the reference', () => {
@@ -181,9 +198,12 @@ describe('D-120 Phase 4 — `read_memory` permission gating', () => {
 });
 
 describe('D-120 Phase 4 — `data.audit.*` deprecation alias', () => {
-  it('emits `data_audit_deprecated` warning on audit alias use', () => {
+  it('⛔ D-231 — no deprecation warning: data.audit.* is CANONICAL now', () => {
+    // It was a soft-warned alias for one release cycle. D-198 split the stores
+    // and D-231 promoted `audit` to name its own; warning authors away from it
+    // would now push them onto the wrong store.
     const r = baseRecipe({
-      requires: ['read_memory'],
+      requires: ['read_audit'],
       steps: [
         {
           id: 'lookup',
@@ -193,9 +213,8 @@ describe('D-120 Phase 4 — `data.audit.*` deprecation alias', () => {
       ],
     });
     const result = validateRecipe(r);
-    const warn = findIssue(result, 'data_audit_deprecated');
-    expect(warn?.severity).toBe('warn');
-    expect(warn?.message).toContain('data.memory');
+    expect(findIssue(result, 'data_audit_deprecated')).toBeUndefined();
+    expect(result.issues.filter((i) => i.severity === 'error')).toEqual([]);
   });
 
   it('does NOT emit the deprecation warning on data.memory.* references', () => {
@@ -213,27 +232,30 @@ describe('D-120 Phase 4 — `data.audit.*` deprecation alias', () => {
     expect(findIssue(result, 'data_audit_deprecated')).toBeUndefined();
   });
 
-  it('fires once even when the recipe has multiple data.audit.* refs', () => {
-    const r = baseRecipe({
-      requires: ['read_memory'],
-      steps: [
-        {
-          id: 'a',
-          transform: 'count',
-          input: '{{data.audit.run_1}}',
-        } as unknown as RecipeDefinition['steps'][number],
-        {
-          id: 'b',
-          transform: 'count',
-          input: '{{data.audit.run_2}}',
-        } as unknown as RecipeDefinition['steps'][number],
-      ],
-    });
-    const result = validateRecipe(r);
-    const warns = result.issues.filter(
-      (i) => i.code === 'data_audit_deprecated',
-    );
-    expect(warns).toHaveLength(1);
+  it('a recipe reading BOTH stores must declare BOTH permissions', () => {
+    // The end state the split exists for: two disclosures, two decisions the
+    // install dialog can surface separately.
+    const both = (requires: string[]): ReturnType<typeof validateRecipe> =>
+      validateRecipe(baseRecipe({
+        requires,
+        steps: [
+          {
+            id: 'a',
+            transform: 'count',
+            input: '{{data.audit.run_42}}',
+          } as unknown as RecipeDefinition['steps'][number],
+          {
+            id: 'b',
+            transform: 'count',
+            input: '{{data.memory.umem_1}}',
+          } as unknown as RecipeDefinition['steps'][number],
+        ],
+      }));
+    expect(findIssue(both(['read_memory']), 'audit_read_permission_missing')?.severity).toBe('error');
+    expect(findIssue(both(['read_audit']), 'memory_read_permission_missing')?.severity).toBe('error');
+    const ok = both(['read_memory', 'read_audit']);
+    expect(findIssue(ok, 'audit_read_permission_missing')).toBeUndefined();
+    expect(findIssue(ok, 'memory_read_permission_missing')).toBeUndefined();
   });
 
   it('does not flag data.memory.* / data.audit.* as `unknown_namespace`', () => {

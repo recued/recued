@@ -263,6 +263,11 @@ const CONNECTIONS_TABS = [
 
 type ConnectionsTabId = (typeof CONNECTIONS_TABS)[number]['id'];
 
+// Same-surface tab navigation remounts this route. Carry only the activated
+// tab across that short boundary, scoped to the owning document and consumed
+// by the next Connections mount so direct links never steal focus.
+const pendingTabFocusByDocument = new WeakMap<Document, ConnectionsTabId>();
+
 const isFoundationalLane = (tab: ConnectionsTabId): tab is AccountLaneId =>
   tab === 'mail' || tab === 'calendar' || tab === 'file';
 
@@ -622,6 +627,7 @@ export const bootstrapConnectionsRoute = (
   // ── Tab bar (anchors → hash → shell remount) ──
   const tabBar = doc.createElement('nav');
   tabBar.setAttribute(CONNECTIONS_ROUTE_TABS_ATTR, '');
+  tabBar.setAttribute('data-recued-scroll-rail', '');
   tabBar.setAttribute('aria-label', 'Connection types');
   let activeTabLink: HTMLElement | null = null;
   for (const tab of CONNECTIONS_TABS) {
@@ -631,6 +637,17 @@ export const bootstrapConnectionsRoute = (
       + (tab.id === activeTab ? ' connections-route-tab--active' : '');
     link.setAttribute('href', serializeShellRoute('connections', tab.id));
     link.textContent = tab.label;
+    link.addEventListener('click', (event) => {
+      const click = event as MouseEvent;
+      if (
+        (typeof click.button === 'number' && click.button !== 0)
+        || click.metaKey
+        || click.ctrlKey
+        || click.altKey
+        || click.shiftKey
+      ) return;
+      pendingTabFocusByDocument.set(doc, tab.id);
+    });
     if (tab.id === activeTab) {
       link.setAttribute('aria-current', 'page');
       activeTabLink = link;
@@ -983,6 +1000,16 @@ export const bootstrapConnectionsRoute = (
   }
 
   opts.root.appendChild(routeRoot);
+  const pendingTabFocus = pendingTabFocusByDocument.get(doc);
+  if (pendingTabFocus !== undefined) {
+    pendingTabFocusByDocument.delete(doc);
+    if (pendingTabFocus === activeTab) {
+      const focus = activeTabLink as (HTMLElement & {
+        focus?: (options?: FocusOptions) => void;
+      }) | null;
+      focus?.focus?.({ preventScroll: true });
+    }
+  }
   // The compact mobile tab strip scrolls horizontally. A direct deep link to
   // a trailing lane (especially Webhooks) otherwise mounts with its active tab
   // clipped outside the viewport, leaving the visible Mail tab looking like

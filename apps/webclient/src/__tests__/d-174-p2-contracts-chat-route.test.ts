@@ -44,12 +44,16 @@ import {
   CONTRACTS_ROUTE_ROW_ATTR,
   CONTRACTS_ROUTE_ROW_ID_ATTR,
   CONTRACTS_ROUTE_SNIPPET_ATTR,
+  CONTRACTS_ROUTE_STYLES,
   CONTRACTS_ROUTE_TAB_ATTR,
   CONTRACTS_ROUTE_TAB_BODY_ATTR,
   CONTRACTS_ROUTE_UNAVAILABLE_ATTR,
   mcpEndpointFromServerUrl,
 } from '../contracts/bootstrap-contracts-route.js';
-import type { PermissionsMintContractCaller } from '../settings/permissions-panel.js';
+import {
+  PERMISSIONS_PANEL_STYLES,
+  type PermissionsMintContractCaller,
+} from '../settings/permissions-panel.js';
 import type { ContractsListCaller } from '../contracts/contracts-panel.js';
 import {
   bootstrapChatRoute,
@@ -359,6 +363,54 @@ const tick = async (n = 4): Promise<void> => {
 };
 
 describe('D-174 contracts route — list → detail shell', () => {
+  it('bundles the shared credential editor styles for a cold Connect deep link', () => {
+    expect(CONTRACTS_ROUTE_STYLES).toContain(PERMISSIONS_PANEL_STYLES);
+    expect(CONTRACTS_ROUTE_STYLES).toContain(
+      `[${CONTRACTS_ROUTE_DOOR_TOGGLE_ATTR}] input {`,
+    );
+    expect(CONTRACTS_ROUTE_STYLES).toContain(
+      `[${CONTRACTS_ROUTE_BACK_ATTR}] {\n  box-sizing: border-box;\n  min-height: 36px;`,
+    );
+    expect(CONTRACTS_ROUTE_STYLES).toContain(
+      `[${CONTRACTS_ROUTE_TAB_ATTR}] {\n  box-sizing: border-box;\n  min-height: 36px;`,
+    );
+    expect(CONTRACTS_ROUTE_STYLES).toContain(
+      `[${CONTRACTS_ROUTE_DOOR_TOGGLE_ATTR}] {\n  box-sizing: border-box;\n  min-height: 36px;`,
+    );
+    expect(CONTRACTS_ROUTE_STYLES).toContain(
+      `[${CONTRACTS_ROUTE_PAGE_PREVIOUS_ATTR}],\n`
+      + `[${CONTRACTS_ROUTE_PAGE_NEXT_ATTR}] {\n`
+      + '  box-sizing: border-box;\n  min-height: 36px;',
+    );
+    expect(CONTRACTS_ROUTE_STYLES).toMatch(
+      /\[data-recued-contracts-route\]\s*\{[^}]*box-sizing:\s*border-box[^}]*min-width:\s*0[^}]*max-width:/s,
+    );
+    expect(CONTRACTS_ROUTE_STYLES).toMatch(
+      /\[data-recued-contracts-row\]\s*\{[^}]*width:\s*100%[^}]*min-width:\s*0[^}]*max-width:\s*100%/s,
+    );
+    expect(CONTRACTS_ROUTE_STYLES).toMatch(
+      /\.contracts-row-name\s*\{[^}]*flex:\s*1 1 180px[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(CONTRACTS_ROUTE_STYLES).toMatch(
+      /\.contracts-detail-name\s*\{[^}]*flex:\s*1 1 180px[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(CONTRACTS_ROUTE_STYLES).toMatch(
+      /\[data-recued-contracts-connect\]\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s,
+    );
+    expect(CONTRACTS_ROUTE_STYLES).toMatch(
+      /\[data-recued-contracts-head-error\]\s*\{[^}]*max-width:\s*100%[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(CONTRACTS_ROUTE_STYLES).toMatch(
+      /\[data-recued-contracts-new-form\]\s*\{[^}]*width:\s*100%[^}]*min-width:\s*0[^}]*max-width:\s*100%/s,
+    );
+    expect(CONTRACTS_ROUTE_STYLES).toMatch(
+      /\[data-recued-contracts-new-error\]\s*\{[^}]*max-width:\s*100%[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(CONTRACTS_ROUTE_STYLES).toMatch(
+      /\[data-recued-contracts-error\]\s*\{[^}]*max-width:\s*100%[^}]*overflow-wrap:\s*anywhere/s,
+    );
+  });
+
   const agentContract = (
     overrides: Partial<ContractDefinitionView> = {},
   ): ContractDefinitionView => ({
@@ -421,9 +473,22 @@ describe('D-174 contracts route — list → detail shell', () => {
       '#contracts/view/others',
     ]);
     expect(tabs[0]!.getAttribute('aria-selected')).toBe('true');
-    expect(
-      collectByAttr(root, CONTRACTS_ROUTE_LIST_PANEL_ATTR)[0]?.getAttribute('data-tab'),
-    ).toBe('built-in');
+    expect(tabs.map((tab) => tab.getAttribute('tabindex'))).toEqual([
+      '0',
+      '-1',
+      '-1',
+    ]);
+    expect(tabs.map((tab) => tab.getAttribute('aria-controls'))).toEqual([
+      'recued-contracts-list-panel',
+      'recued-contracts-list-panel',
+      'recued-contracts-list-panel',
+    ]);
+    const panel = collectByAttr(root, CONTRACTS_ROUTE_LIST_PANEL_ATTR)[0]!;
+    expect(panel.getAttribute('data-tab')).toBe('built-in');
+    expect(panel.getAttribute('role')).toBe('tabpanel');
+    expect(panel.getAttribute('aria-labelledby')).toBe(
+      'recued-contracts-list-tab-built-in',
+    );
 
     const rows = collectByAttr(root, CONTRACTS_ROUTE_ROW_ATTR);
     expect(rows.map((row) => row.getAttribute(CONTRACTS_ROUTE_ROW_ID_ATTR))).toEqual([
@@ -436,6 +501,22 @@ describe('D-174 contracts route — list → detail shell', () => {
     expect(allText(rows[1]!)).toContain('capped by its granted ops');
     expect(collectByAttr(root, CONTRACTS_ROUTE_PAGE_STATUS_ATTR)[0]?.textContent)
       .toBe('Showing 1–1 of 1 managed contracts');
+  });
+
+  it('never renders an inverted range when an older caller ignores category filters', async () => {
+    const contractsListCaller = vi.fn(async () => ({
+      contracts: [agentContract()],
+      total: 26,
+      next_cursor: 'older-caller-page-2',
+    }));
+    const { root, route } = mount({ contractsListCaller });
+    await route.whenLoaded();
+
+    const status = collectByAttr(root, CONTRACTS_ROUTE_PAGE_STATUS_ATTR)[0];
+    expect(status?.textContent).toBe(
+      'No managed access contracts on this page',
+    );
+    expect(status?.textContent).not.toContain('1–0');
   });
 
   it('lists broad ordinary contracts under Others, without agent-only framing', async () => {
@@ -1101,13 +1182,28 @@ describe('D-174 contracts route — list → detail shell', () => {
     await route.whenLoaded();
 
     // The action is present; the form stays hidden until the action is clicked.
-    expect(collectByAttr(root, CONTRACTS_ROUTE_NEW_BUTTON_ATTR)[0]?.textContent)
-      .toBe('+ New contract');
+    const opener = collectByAttr(root, CONTRACTS_ROUTE_NEW_BUTTON_ATTR)[0]!;
+    expect(opener.textContent).toBe('+ New contract');
+    expect(opener.getAttribute('aria-expanded')).toBe('false');
+    expect(opener.getAttribute('aria-controls')).toBe(
+      'recued-contracts-new-contract-form',
+    );
     expect(collectByAttr(root, CONTRACTS_ROUTE_NEW_FORM_ATTR)).toHaveLength(0);
-    collectByAttr(root, CONTRACTS_ROUTE_NEW_BUTTON_ATTR)[0]!.click();
-    expect(collectByAttr(root, CONTRACTS_ROUTE_NEW_FORM_ATTR)).toHaveLength(1);
+    opener.click();
+    const form = collectByAttr(root, CONTRACTS_ROUTE_NEW_FORM_ATTR)[0]!;
+    const name = collectByAttr(root, CONTRACTS_ROUTE_NEW_NAME_ATTR)[0]!;
+    expect(form.getAttribute('role')).toBe('group');
+    expect(form.getAttribute('aria-label')).toBe('New contract');
+    expect(opener.textContent).toBe('Cancel new contract');
+    expect(opener.getAttribute('aria-expanded')).toBe('true');
+    expect(name.focused).toBe(true);
+    opener.click();
+    expect(collectByAttr(root, CONTRACTS_ROUTE_NEW_FORM_ATTR)).toHaveLength(0);
+    expect(opener.textContent).toBe('+ New contract');
+    expect(opener.getAttribute('aria-expanded')).toBe('false');
+    opener.click();
 
-    collectByAttr(root, CONTRACTS_ROUTE_NEW_NAME_ATTR)[0]!.value = 'Codex bot';
+    name.value = 'Codex bot';
     const mcp = doorToggle(root, 'mcp');
     mcp.click();
     expect(mcp.getAttribute('data-checked')).toBe('true');
@@ -1125,6 +1221,55 @@ describe('D-174 contracts route — list → detail shell', () => {
     });
     // Stateless model: the flow only navigates; the shell re-mounts the route.
     expect(navigated).toEqual(['#contracts/door_new/connect']);
+    route.dispose();
+  });
+
+  it('keeps a slow contract mint focused, announced, and single-flight', async () => {
+    const minted = agentContract({
+      contract_id: 'door_slow',
+      display_name: 'Slow contract',
+    });
+    let resolveMint!: (value: ContractDefinitionView) => void;
+    const mint = new Promise<ContractDefinitionView>((resolve) => {
+      resolveMint = resolve;
+    });
+    const permissionsMintContractCaller = vi.fn<PermissionsMintContractCaller>(
+      () => mint,
+    );
+    const navigated: string[] = [];
+    const { doc, root, route } = mount({
+      contractsListCaller: vi.fn(async () => ({ contracts: [] })),
+      permissionsMintContractCaller,
+      navigate: (hash: string) => navigated.push(hash),
+      initialListTab: 'others',
+    });
+    await route.whenLoaded();
+
+    const opener = collectByAttr(root, CONTRACTS_ROUTE_NEW_BUTTON_ATTR)[0]!;
+    opener.click();
+    collectByAttr(root, CONTRACTS_ROUTE_NEW_NAME_ATTR)[0]!.value = 'Slow contract';
+    const submit = collectByAttr(root, CONTRACTS_ROUTE_NEW_SUBMIT_ATTR)[0]!;
+    submit.focus();
+    submit.click();
+    await tick();
+
+    expect(permissionsMintContractCaller).toHaveBeenCalledTimes(1);
+    expect(submit.textContent).toBe('Creating…');
+    expect(submit.disabled).toBe(false);
+    expect(submit.getAttribute('aria-disabled')).toBe('true');
+    expect(submit.getAttribute('aria-busy')).toBe('true');
+    expect(opener.getAttribute('aria-disabled')).toBe('true');
+    expect(doc.activeElement).toBe(submit);
+
+    submit.click();
+    opener.click();
+    await tick();
+    expect(permissionsMintContractCaller).toHaveBeenCalledTimes(1);
+    expect(collectByAttr(root, CONTRACTS_ROUTE_NEW_FORM_ATTR)).toHaveLength(1);
+
+    resolveMint(minted);
+    await tick();
+    expect(navigated).toEqual(['#contracts/door_slow/connect']);
     route.dispose();
   });
 
@@ -1191,6 +1336,10 @@ describe('D-174 contracts route — list → detail shell', () => {
     expect(
       collectByAttr(root, CONTRACTS_ROUTE_NEW_ERROR_ATTR)[0]!.textContent,
     ).toContain('name');
+    expect(collectByAttr(root, CONTRACTS_ROUTE_NEW_ERROR_ATTR)[0]!
+      .getAttribute('role')).toBe('alert');
+    expect(collectByAttr(root, CONTRACTS_ROUTE_NEW_NAME_ATTR)[0]!.focused)
+      .toBe(true);
     route.dispose();
   });
 
@@ -1218,6 +1367,9 @@ describe('D-174 contracts route — list → detail shell', () => {
       collectByAttr(root, CONTRACTS_ROUTE_NEW_ERROR_ATTR)[0]!.textContent,
     ).toContain('mint exploded');
     expect(submit.disabled).toBe(false);
+    expect(submit.getAttribute('aria-disabled')).toBeNull();
+    expect(submit.getAttribute('aria-busy')).toBeNull();
+    expect(submit.focused).toBe(true);
     route.dispose();
   });
 
@@ -1257,7 +1409,14 @@ describe('D-174 contracts route — list → detail shell', () => {
     expect(route.getViewMode()).toBe('detail');
     expect(route.getActiveTab()).toBe('connect');
     expect(collectByAttr(root, CONTRACTS_ROUTE_CONNECT_HOST_ATTR)).toHaveLength(1);
-    expect(collectByAttr(root, CONTRACTS_ROUTE_SNIPPET_ATTR).length).toBeGreaterThan(0);
+    const snippets = collectByAttr(root, CONTRACTS_ROUTE_SNIPPET_ATTR);
+    expect(snippets).toHaveLength(4);
+    expect(snippets.map((snippet) => snippet.children[0]?.tagName)).toEqual([
+      'H3',
+      'H3',
+      'H3',
+      'H3',
+    ]);
     // No inbound-token callers in this harness → the credential panel degrades
     // to a note (it mounts for real in the d-166 forwarding coverage).
     expect(collectByAttr(root, CONTRACTS_ROUTE_UNAVAILABLE_ATTR)).toHaveLength(1);
@@ -2289,7 +2448,12 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(calls.some((c) => c.method === 'chat.session.create')).toBe(false);
     const thread = collectByAttr(root, CHAT_ROUTE_THREAD_ATTR)[0]!;
     expect(thread.getAttribute('data-empty')).toBe('true');
-    expect(collectByAttr(root, CHAT_ROUTE_GREETING_ATTR)).toHaveLength(1);
+    expect(thread.getAttribute('aria-label')).toBe('Chat conversation');
+    const greeting = collectByAttr(root, CHAT_ROUTE_GREETING_ATTR);
+    expect(greeting).toHaveLength(1);
+    expect(greeting[0]!.tagName).toBe('H2');
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!
+      .getAttribute('aria-label')).toBe('Message to Recued');
     route.dispose();
   });
 
@@ -5043,8 +5207,12 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     const second = details.find(
       (row) => row.getAttribute(CHAT_ROUTE_SESSION_ACTIONS_ATTR) === 'chat_2',
     )!;
+    expect(first.getAttribute('aria-label')).toBe('Actions for First chat');
+    expect(second.getAttribute('aria-label')).toBe('Actions for Second chat');
     const firstTrigger = collectByTag(first, 'summary')[0]!;
     const secondTrigger = collectByTag(second, 'summary')[0]!;
+    expect(firstTrigger.getAttribute('aria-label')).toBe('Actions for First chat');
+    expect(secondTrigger.getAttribute('aria-label')).toBe('Actions for Second chat');
 
     firstTrigger.click();
     expect(first.open).toBe(true);
@@ -5099,6 +5267,10 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       CHAT_ROUTE_COMPOSER_MORE_ATTR,
     )[0]!;
     const composerTrigger = collectByTag(composerActions, 'summary')[0]!;
+    expect(composerActions.getAttribute('aria-label'))
+      .toBe('Chat composer actions');
+    expect(composerTrigger.getAttribute('aria-label'))
+      .toBe('More Chat composer actions');
     const historyActions = collectByAttr(
       root,
       CHAT_ROUTE_SESSION_ACTIONS_ATTR,
@@ -5165,6 +5337,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     ).find(
       (action) => action.getAttribute(CHAT_ROUTE_COMPOSER_ACTION_ATTR) === 'run',
     )!;
+    expect(run.getAttribute('aria-label')).toBe('Run a recipe');
     run.focus();
     run.click();
     await tick();
@@ -5740,6 +5913,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     await tick();
     const thread = collectByAttr(root, CHAT_ROUTE_THREAD_ATTR)[0]!;
     expect(thread.getAttribute('data-empty')).toBe('false');
+    expect(thread.getAttribute('aria-label')).toBe('Chat conversation');
     expect(collectByAttr(root, CHAT_ROUTE_GREETING_ATTR)).toHaveLength(0);
     route.dispose();
   });

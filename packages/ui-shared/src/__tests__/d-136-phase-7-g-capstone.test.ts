@@ -240,6 +240,8 @@ describe('D-136 P7.G — renderHousekeepingTopicResetModal', () => {
     });
     expect(html).toContain('Loading impact preview');
     expect(html).toContain('data-action="housekeeping-reset-cancel"');
+    expect(html).toContain('tabindex="-1"');
+    expect(html).toContain('aria-busy="true"');
   });
 
   it('renders the impact summary + token cost in preview phase', () => {
@@ -334,6 +336,7 @@ describe('D-136 P7.G — renderHousekeepingTopicResetModal', () => {
       now: NOW,
     });
     expect(html).toContain('Applying…');
+    expect(html).toContain('aria-busy="true"');
     expect(html).toMatch(/data-action="housekeeping-reset-confirm"[^>]*disabled/);
     expect(html).toMatch(/data-action="housekeeping-reset-cancel"[^>]*disabled/);
   });
@@ -377,6 +380,7 @@ describe('D-136 P7.G — renderHousekeepingTopicResetModal', () => {
     expect(html).toContain('role="dialog"');
     expect(html).toContain('aria-modal="true"');
     expect(html).toContain('aria-label="Reset enrichment topic summary"');
+    expect(html).toContain('tabindex="-1"');
   });
 });
 

@@ -50,7 +50,7 @@ const NOW = 1_700_000_000_000;
 const ONE_HOUR = 60 * 60 * 1000;
 const ONE_DAY = 24 * ONE_HOUR;
 
-const MAIL_TABLE = 'collection_mail_test';
+const MAIL_TABLE = 'collection_mail_11111111aa';
 
 const ATTENDEES = ['alice@example.com', 'bob@example.com'];
 const ORGANIZER = 'me@example.com';

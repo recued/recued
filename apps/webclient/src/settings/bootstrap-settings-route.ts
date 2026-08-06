@@ -702,6 +702,15 @@ export interface BootstrapSettingsRouteOptions {
   housekeepingPanelStatusReadCaller?: HousekeepingStatusReadCaller;
   housekeepingPanelTrustReadCaller?: HousekeepingTrustReadCaller;
   housekeepingPanelRunNowCaller?: HousekeepingRunNowCaller;
+  /** `server.getStatus` — the per-surface storage read-out rendered on
+   *  Server ▸ Maintenance. Optional; omitted → no Storage section. */
+  maintenanceServerStatusCaller?: () => Promise<{
+    pressure_details?: import('@recued/contracts').PressureDetails;
+  }>;
+  /** `server.runPressureReclaim` — the per-surface Reclaim now action.
+   *  Optional; omitted → the storage rows render read-only. */
+  maintenanceReclaimCaller?: (args: { surface: string; force?: boolean }) =>
+    Promise<{ ran: boolean; bytes_freed: number }>;
   housekeepingPanelTrustWriteCaller?: HousekeepingTrustWriteCaller;
   /** D-132/D-133/D-136 Commit 2 — promotion banner Don't-ask-again
    *  (`housekeeping.trust.dismiss_promotion`), coverage panel
@@ -947,6 +956,8 @@ export const SETTINGS_ROUTE_STYLES = `
   top: 16px;
 }
 [${SETTINGS_ROUTE_NAV_ITEM_ATTR}] {
+  box-sizing: border-box;
+  min-height: 36px;
   appearance: none;
   border: 0;
   background: transparent;
@@ -1085,6 +1096,8 @@ export const SETTINGS_ROUTE_STYLES = `
   margin-bottom: 2px;
 }
 [${SETTINGS_ROUTE_ROOT_ATTR}] .settings-subtab {
+  box-sizing: border-box;
+  min-height: 36px;
   appearance: none;
   border: 0;
   border-bottom: 2px solid transparent;
@@ -1278,6 +1291,7 @@ export const bootstrapSettingsRoute = (
   shell.className = 'settings-shell';
   const navEl = doc.createElement('nav');
   navEl.setAttribute(SETTINGS_ROUTE_NAV_ATTR, '');
+  navEl.setAttribute('data-recued-scroll-rail', '');
   navEl.setAttribute('aria-label', 'Settings sections');
   const viewsHost = doc.createElement('div');
   viewsHost.setAttribute(SETTINGS_ROUTE_VIEWS_ATTR, '');
@@ -1320,6 +1334,7 @@ export const bootstrapSettingsRoute = (
   const buildSectionTabs = (
     section: HTMLElement,
     tabs: ReadonlyArray<{ id: string; label: string }>,
+    tabListLabel: string,
     initialTabId?: string | null,
   ): Record<string, HTMLElement> => {
     const hosts: Record<string, HTMLElement> = {};
@@ -1333,6 +1348,7 @@ export const bootstrapSettingsRoute = (
     const strip = doc.createElement('nav');
     strip.className = 'settings-subtabs';
     strip.setAttribute('role', 'tablist');
+    strip.setAttribute('aria-label', tabListLabel);
     strip.setAttribute('aria-orientation', 'horizontal');
     const items: Array<{ id: string; btn: HTMLElement; panel: HTMLElement }> = [];
     const activate = (id: string): void => {
@@ -2255,6 +2271,7 @@ export const bootstrapSettingsRoute = (
           ? [{ id: 'maintenance', label: 'Maintenance' }]
           : []),
       ],
+      'Server sections',
       opts.initialServerTabId,
     );
 
@@ -2408,6 +2425,12 @@ export const bootstrapSettingsRoute = (
         runStatusRead: opts.housekeepingPanelStatusReadCaller as HousekeepingStatusReadCaller,
         ...(opts.housekeepingPanelRunNowCaller !== undefined
           ? { runRunNow: opts.housekeepingPanelRunNowCaller }
+          : {}),
+        ...(opts.maintenanceServerStatusCaller !== undefined
+          ? { runServerStatus: opts.maintenanceServerStatusCaller }
+          : {}),
+        ...(opts.maintenanceReclaimCaller !== undefined
+          ? { runReclaim: opts.maintenanceReclaimCaller }
           : {}),
         ...(opts.now !== undefined ? { now: opts.now } : {}),
         ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),

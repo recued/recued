@@ -4,8 +4,8 @@
       "support": {
         "kind": "openapi",
         "url": "https://developer.zendesk.com/zendesk/oas.yaml",
-        "sha256": "70ba1bca3285ab5c42d0b3d875deadbaf48c3f3b568fc2f04c53886f21799b97",
-        "bytes": 1702056,
+        "sha256": "8bd4282f3d16b146b6cbcb924e99d86112ed0e17758cc6123e555e87e6d195c0",
+        "bytes": 1701930,
         "openapi": "3.0.3",
         "info_title": "Support API",
         "info_version": "2.0.0",
@@ -45,7 +45,7 @@
       "articles": {
         "kind": "official_html",
         "url": "https://developer.zendesk.com/api-reference/help_center/help-center-api/articles/",
-        "sha256": "19943e08b40f7af45c89b0fb4f5fedeac9f569d5eadfe2bf483f9f41b406c2b0",
+        "sha256": "36bbb05f69f2e8ac263f5ba2977b94044c7fe780bd8e85c39ef6ea3b95a17eda",
         "bytes": 3834831,
         "operation_ids": [
           "ListArticles",
@@ -61,7 +61,7 @@
       "posts": {
         "kind": "official_html",
         "url": "https://developer.zendesk.com/api-reference/help_center/help-center-api/posts/",
-        "sha256": "71c140ad2f4deb526a2eab744d994ce6748da969e51a51bbea208bf9bb749a30",
+        "sha256": "a9a8e3fc61359bffacd464128538f7fb7f4a854408a97f1510269e4bac353998",
         "bytes": 1284675,
         "operation_ids": [
           "ListPosts",

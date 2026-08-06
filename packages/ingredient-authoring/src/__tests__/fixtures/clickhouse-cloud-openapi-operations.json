@@ -3,8 +3,8 @@
     "source": {
       "kind": "official_openapi",
       "url": "https://api.clickhouse.cloud/v1",
-      "bytes": 1173533,
-      "sha256": "18b081defb1b519cea672cf6d69934750685f5fe01ed10a16e164674d52659e0",
+      "bytes": 1175169,
+      "sha256": "f22dc7c3a6587f05f33c5b8474a163464278f52ca7ff2f63792345770e447348",
       "openapi": "3.1.2",
       "title": "OpenAPI spec for ClickHouse Cloud",
       "api_version": "1.0",
@@ -87,7 +87,7 @@
       "clickhouse-cloud-backups-observability": 23242,
       "clickhouse-cloud-clickpipes": 42913,
       "clickhouse-cloud-postgres": 39140,
-      "clickhouse-cloud-clickstack": 70157,
+      "clickhouse-cloud-clickstack": 70691,
       "clickhouse-cloud-udf": 28664
     },
     "body_mode_counts": {
@@ -9680,6 +9680,38 @@
           "integer_as_decimal_string": false,
           "repeated_query_array": false,
           "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": "query.limit",
+          "admitted_type": "number",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "offset",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": "query.offset",
+          "admitted_type": "number",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
         }
       ],
       "request_media": [],
@@ -10118,6 +10150,38 @@
           "integer_as_decimal_string": false,
           "repeated_query_array": false,
           "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": "query.limit",
+          "admitted_type": "number",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "offset",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": "query.offset",
+          "admitted_type": "number",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
         }
       ],
       "request_media": [],
@@ -10404,6 +10468,38 @@
           ],
           "admitted_key": "serviceId",
           "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": "query.limit",
+          "admitted_type": "number",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "offset",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": "query.offset",
+          "admitted_type": "number",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
           "dropped_pattern": false,

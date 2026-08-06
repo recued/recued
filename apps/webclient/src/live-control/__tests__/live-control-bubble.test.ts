@@ -335,6 +335,21 @@ afterEach(() => {
 });
 
 describe('live-control bubble — ambient visibility + count', () => {
+  it('keeps the narrow panel contained and every action at least 36px', () => {
+    const h = mountBubble();
+    const styles = h.doc.styleElements[0]?.textContent ?? '';
+    expect(styles).toContain(
+      `[${LIVE_CONTROL_BUBBLE_PANEL_ATTR}] {\n  pointer-events: auto;\n  box-sizing: border-box;`,
+    );
+    expect(styles).toContain(
+      `[${LIVE_CONTROL_BUBBLE_CLOSE_ATTR}] {\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  width: 36px;\n  height: 36px;`,
+    );
+    expect(styles).toContain(
+      `[${LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR}],\n[${LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR}] {\n  min-width: 36px;\n  min-height: 36px;`,
+    );
+    h.mount.dispose();
+  });
+
   it('treats a reduced document without activeElement as unfocused', () => {
     const doc = makeFakeDocument();
     const host = doc.createElement('div');
@@ -417,6 +432,11 @@ describe('live-control bubble — RUNNING section', () => {
     const actions = controls.map((c) => c.getAttribute(LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR));
     // a run → Kill; a queued call → Promote + Cancel
     expect(actions).toEqual(['kill', 'promote', 'cancel']);
+    expect(controls.map((control) => control.getAttribute('aria-label'))).toEqual([
+      'Kill docs/normalize · extract (run_1)',
+      'Promote media/transcode · ffmpeg (qc_1)',
+      'Cancel media/transcode · ffmpeg (qc_1)',
+    ]);
 
     const kill = controls.find((c) => c.getAttribute(LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR) === 'kill');
     kill!.click();
@@ -585,6 +605,9 @@ describe('live-control bubble — GRANTS section', () => {
     expect(grantRows).toHaveLength(2);
 
     const revoke = collectByAttr(h.host, LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR)[0]!;
+    expect(revoke.getAttribute('aria-label')).toBe(
+      'Revoke Batched approval — send-email (3 items) (sg_1)',
+    );
     revoke.click();
     await tick();
     expect(h.callers.revokeCaller).toHaveBeenCalledWith({ contract_id: 'sg_1' });

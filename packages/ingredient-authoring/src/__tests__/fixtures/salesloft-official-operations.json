@@ -9,12 +9,12 @@
         "sha256": "f171ee83bc786f6b1ba3f4f23b7857018d25bf681af54429dc1ce4408662d888"
       },
       "runtime_asset": {
-        "url": "https://developers.salesloft.com/assets/js/runtime~main.0ccd6790.js",
+        "url": "https://developers.salesloft.com/assets/js/runtime~main.f62b20df.js",
         "bytes": 23705,
-        "sha256": "0c45b1058907042e3545812e7f3e6b4585320ae1b533d23c71d3cb9dfcda9987"
+        "sha256": "23179a44d8e5b7be7153861f0c914afcf0d915141630c9acaefaa8eece16a12a"
       },
-      "v2_chunk_set_sha256": "219e280be52edb3950042abf081933acd5ce8a40992b69517ddb46d59c9fb3e5",
-      "v2_decoded_authority_sha256": "68a1820c3c1db73c964549207914f51d9bd343ba6b2d5ce46206d6366a8f4eb0",
+      "v2_chunk_set_sha256": "a84e28e73ba65d02e4242e010071738ec89c757a82f9f76620ba08351a44d581",
+      "v2_decoded_authority_sha256": "9e88d77f1f2f9e8d66616fde73c0923ae906305b8b79d95c2d4bdd2ddf894620",
       "retrieved_on": "2026-07-15",
       "monolithic_openapi_public": false,
       "note": "Salesloft publishes one compressed OpenAPI operation fragment per content-hashed reference chunk. The build-time api-spec/v2/v2.json is not served. This fixture stores derived route contracts and hashes, not a rehosted vendor specification."
@@ -23,12 +23,12 @@
       "request_format": {
         "url": "https://developers.salesloft.com/docs/platform/api-basics/request-response-format/",
         "bytes": 26146,
-        "sha256": "989f0045465a2a4151c681b02b676fb209a86272383022964e5dc475daccaa62"
+        "sha256": "3562f6b1349ea94b5d602413b9ae4415f71db7940c927a2857d1cde315c72e4d"
       },
       "pagination": {
         "url": "https://developers.salesloft.com/docs/platform/api-basics/filtering-paging-sorting/",
         "bytes": 29183,
-        "sha256": "370d7b3e75ceac128e94a740a441efe88dc881de600b33adfb796c9a349abd9b"
+        "sha256": "4f1ef586994d3d606675d13e784cef8fc2e8b6b8a3f19153f291a1ef8d530e1a"
       },
       "sent_request_media": "application/json",
       "list_page_parameter": "page",
@@ -866,9 +866,9 @@
       "tag": "Calendar Availabilities",
       "page": "https://developers.salesloft.com/docs/api/calendar-availabilities-index/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/bacaa36f.df0b150c.js",
-        "sha256": "8db601f8256facbe8676348e47dd06c483e34b5d326f8d5c086369c070053025",
-        "bytes": 10720
+        "url": "https://developers.salesloft.com/assets/js/bacaa36f.482c4e73.js",
+        "sha256": "03d4267481cc7cd7d6dd6c61a5c3de91bf87dce05252b72731117be85bebd5f1",
+        "bytes": 10712
       }
     },
     {
@@ -877,9 +877,9 @@
       "tag": "Calendar Events",
       "page": "https://developers.salesloft.com/docs/api/calendar-events-index/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/2ec51782.f022c2ac.js",
-        "sha256": "f6135d09df2126c0b8d8779064b5619d09f51ea8a6f750c6445153789f670a54",
-        "bytes": 19194
+        "url": "https://developers.salesloft.com/assets/js/2ec51782.3cf4e333.js",
+        "sha256": "df266aa5aa503a0d2f33b3f86fa7542072eb12cc198b219dea83a1ca9d11db2c",
+        "bytes": 19186
       }
     },
     {
@@ -888,9 +888,9 @@
       "tag": "Calendar Events with Recurring",
       "page": "https://developers.salesloft.com/docs/api/calendar-events-with-recurring-index/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/0a371333.cbb38c07.js",
-        "sha256": "00ceebe9f950c6e5eb41ea66dcf282388c1578987dc5fd05ca446e24ed3d2c6f",
-        "bytes": 19891
+        "url": "https://developers.salesloft.com/assets/js/0a371333.73769f5c.js",
+        "sha256": "e2c64d240a8d316fab12d33b1375def612fe67d1e06fdb4d8633e9cf35f5c0a6",
+        "bytes": 19883
       }
     },
     {
@@ -899,9 +899,9 @@
       "tag": "Call Data Records",
       "page": "https://developers.salesloft.com/docs/api/call-data-records-index/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/c77d0e67.37b8892e.js",
-        "sha256": "ad704d033fc48c0eabdeb4d0ad5afa9417733d79543b5681c718024b82e6e59b",
-        "bytes": 18646
+        "url": "https://developers.salesloft.com/assets/js/c77d0e67.ba67d370.js",
+        "sha256": "1eae4da5145a3a9416ab48176b9623a8e7b3043d9fdc6dd0a3616be7bfb4d41d",
+        "bytes": 18638
       }
     },
     {
@@ -910,9 +910,9 @@
       "tag": "Call Data Records",
       "page": "https://developers.salesloft.com/docs/api/call-data-records-show/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/ead3a56a.77753f00.js",
-        "sha256": "956714a0cf3064afcb38efbb26b00dc9f9768832ad6fe5f3d79b3295ddb8d78e",
-        "bytes": 11519
+        "url": "https://developers.salesloft.com/assets/js/ead3a56a.e1e2733f.js",
+        "sha256": "c6abd346f9b433aa2f2d43f7da4a13d877cdbeff8813cfe2e0c3eeff883bd21b",
+        "bytes": 11503
       }
     },
     {
@@ -1042,9 +1042,9 @@
       "tag": "Crm Activity Fields",
       "page": "https://developers.salesloft.com/docs/api/crm-activity-fields-index/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/d91b6843.e0edae2c.js",
-        "sha256": "a46c864948d5463a9c735af5c15f0f3d5c6fe417d281d9b6cc8862bfebdf0f07",
-        "bytes": 12983
+        "url": "https://developers.salesloft.com/assets/js/d91b6843.82eb40ba.js",
+        "sha256": "833e1c48c02bbece99e3e1c731b5bfcf5acdc58b87c31d55fc29152ce013903d",
+        "bytes": 13700
       }
     },
     {
@@ -1295,9 +1295,9 @@
       "tag": "Meetings",
       "page": "https://developers.salesloft.com/docs/api/meetings-index/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/af0be0eb.e9943bb1.js",
-        "sha256": "3c90827cb280b0ed4904e9c55586d632d80ee24e08c23e9474e33349a785d8aa",
-        "bytes": 33825
+        "url": "https://developers.salesloft.com/assets/js/af0be0eb.27fc2f57.js",
+        "sha256": "fbe2a244f2aaf9bc0baa46c96cef8ee26d1582dec82533a4b9a5021754471ecf",
+        "bytes": 33809
       }
     },
     {
@@ -1900,9 +1900,9 @@
       "tag": "Calendar Events",
       "page": "https://developers.salesloft.com/docs/api/calendar-events-create/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/056ae721.bac47aab.js",
-        "sha256": "ec0a1501b302fcf95d8007ffda295e4611a9410e652ad8c193da111ce2ac41bc",
-        "bytes": 27252
+        "url": "https://developers.salesloft.com/assets/js/056ae721.63b80455.js",
+        "sha256": "e1e53c8bda01d4b13121de36c9f39e76e1fa0aec7854ef7ccfcbae293b6c21ed",
+        "bytes": 27236
       }
     },
     {
@@ -1911,9 +1911,9 @@
       "tag": "Calendar Events",
       "page": "https://developers.salesloft.com/docs/api/calendar-events-upsert-create/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/73427099.48557eee.js",
-        "sha256": "6d0e08ef06bd6b14ac494398afb9f88d266d4442bd56fbecf5c8ac3084e46b18",
-        "bytes": 25511
+        "url": "https://developers.salesloft.com/assets/js/73427099.049aa105.js",
+        "sha256": "eb83b1f0a7aa99a0a28b48c08525c4b0e9d2cb59c440d4e275624385de2cf70a",
+        "bytes": 25503
       }
     },
     {
@@ -1922,9 +1922,9 @@
       "tag": "Call Data Records",
       "page": "https://developers.salesloft.com/docs/api/call-data-records-create/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/ddc61a3e.5149e859.js",
-        "sha256": "714b9674ef47d5ba656145828fe1b327a9fb7ae9522d76ef84f79433ccda3f01",
-        "bytes": 13939
+        "url": "https://developers.salesloft.com/assets/js/ddc61a3e.20a700eb.js",
+        "sha256": "66b6857246bbfd6c67ca5373d9b1474b28bc659dfb72e762b9f73bb75be61207",
+        "bytes": 13931
       }
     },
     {
@@ -2109,9 +2109,9 @@
       "tag": "Searches",
       "page": "https://developers.salesloft.com/docs/api/meetings-settings-searches-create/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/19e67a73.4b21b0ef.js",
-        "sha256": "fc029b5a7baf0d088ca4f08207d21c745d9a090f7a520789f6215a6595c13d97",
-        "bytes": 20967
+        "url": "https://developers.salesloft.com/assets/js/19e67a73.964a1c48.js",
+        "sha256": "b264aad9ba086192997f7a4b43394c072fcf0854356ab65f5f9640228cce3850",
+        "bytes": 20975
       }
     },
     {
@@ -2285,9 +2285,9 @@
       "tag": "Calendar Events",
       "page": "https://developers.salesloft.com/docs/api/calendar-events-update/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/8f3a7841.5a5c7b6f.js",
-        "sha256": "e3f4779e60954846e343dfbfb4c68117273729c27541cc270a34e161405c656f",
-        "bytes": 23265
+        "url": "https://developers.salesloft.com/assets/js/8f3a7841.b0484c3d.js",
+        "sha256": "ba1333842c0e545137a880c926ae8b290a0e0d7ab0d77436612772e07e6a9530",
+        "bytes": 23257
       }
     },
     {
@@ -2296,9 +2296,9 @@
       "tag": "Call Data Records",
       "page": "https://developers.salesloft.com/docs/api/call-data-records-update/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/6821d28c.70b4cd6d.js",
-        "sha256": "8be58bd37f539aa170f864d44312aad7d722fa810182305e51b0889ca0bc2e51",
-        "bytes": 13222
+        "url": "https://developers.salesloft.com/assets/js/6821d28c.861dbd1d.js",
+        "sha256": "06fa960fdedf58ac307024ac41e703695ec2d2e0b94a666b12e46a528b1983a1",
+        "bytes": 13214
       }
     },
     {
@@ -2362,9 +2362,9 @@
       "tag": "Meetings",
       "page": "https://developers.salesloft.com/docs/api/meetings-update/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/1bd41269.c1d1c24c.js",
-        "sha256": "656ef6295fe9455b61fedd1f4fd03eee8b8286df829a4df13a93cd47b9aa78db",
-        "bytes": 23194
+        "url": "https://developers.salesloft.com/assets/js/1bd41269.72b31ff4.js",
+        "sha256": "57daa010c69e1b3a5c80453e9aa8d7ae0ae51bd0c922a855a4eb2897f8dacc7b",
+        "bytes": 23178
       }
     },
     {
@@ -2373,9 +2373,9 @@
       "tag": "Settings",
       "page": "https://developers.salesloft.com/docs/api/meetings-settings-update/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/76273ffc.76bc7c3b.js",
-        "sha256": "ffe8d1284c6aae089360494e2e924900606e227cf0d27f7eb851b208b063100d",
-        "bytes": 20094
+        "url": "https://developers.salesloft.com/assets/js/76273ffc.77af66a6.js",
+        "sha256": "007da8e26460bc61633dc250a9009cbdf2396b74d3658d14b4cd3e602f68b9cf",
+        "bytes": 20102
       }
     },
     {
@@ -4446,9 +4446,9 @@
       "official_operation_id": "calendar_availabilities_index",
       "official_page": "https://developers.salesloft.com/docs/api/calendar-availabilities-index/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/bacaa36f.df0b150c.js",
-        "sha256": "8db601f8256facbe8676348e47dd06c483e34b5d326f8d5c086369c070053025",
-        "bytes": 10720
+        "url": "https://developers.salesloft.com/assets/js/bacaa36f.482c4e73.js",
+        "sha256": "03d4267481cc7cd7d6dd6c61a5c3de91bf87dce05252b72731117be85bebd5f1",
+        "bytes": 10712
       },
       "method": "GET",
       "path": "/v2/calendar_availabilities",
@@ -4504,9 +4504,9 @@
       "official_operation_id": "calendar_events_with_recurring_index",
       "official_page": "https://developers.salesloft.com/docs/api/calendar-events-with-recurring-index/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/0a371333.cbb38c07.js",
-        "sha256": "00ceebe9f950c6e5eb41ea66dcf282388c1578987dc5fd05ca446e24ed3d2c6f",
-        "bytes": 19891
+        "url": "https://developers.salesloft.com/assets/js/0a371333.73769f5c.js",
+        "sha256": "e2c64d240a8d316fab12d33b1375def612fe67d1e06fdb4d8633e9cf35f5c0a6",
+        "bytes": 19883
       },
       "method": "GET",
       "path": "/v2/calendar/events_with_recurring",
@@ -4589,9 +4589,9 @@
       "official_operation_id": "calendar_events_create",
       "official_page": "https://developers.salesloft.com/docs/api/calendar-events-create/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/056ae721.bac47aab.js",
-        "sha256": "ec0a1501b302fcf95d8007ffda295e4611a9410e652ad8c193da111ce2ac41bc",
-        "bytes": 27252
+        "url": "https://developers.salesloft.com/assets/js/056ae721.63b80455.js",
+        "sha256": "e1e53c8bda01d4b13121de36c9f39e76e1fa0aec7854ef7ccfcbae293b6c21ed",
+        "bytes": 27236
       },
       "method": "POST",
       "path": "/v2/calendar_events",
@@ -4941,9 +4941,9 @@
       "official_operation_id": "calendar_events_index",
       "official_page": "https://developers.salesloft.com/docs/api/calendar-events-index/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/2ec51782.f022c2ac.js",
-        "sha256": "f6135d09df2126c0b8d8779064b5619d09f51ea8a6f750c6445153789f670a54",
-        "bytes": 19194
+        "url": "https://developers.salesloft.com/assets/js/2ec51782.3cf4e333.js",
+        "sha256": "df266aa5aa503a0d2f33b3f86fa7542072eb12cc198b219dea83a1ca9d11db2c",
+        "bytes": 19186
       },
       "method": "GET",
       "path": "/v2/calendar/events",
@@ -5024,9 +5024,9 @@
       "official_operation_id": "calendar_events_update",
       "official_page": "https://developers.salesloft.com/docs/api/calendar-events-update/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/8f3a7841.5a5c7b6f.js",
-        "sha256": "e3f4779e60954846e343dfbfb4c68117273729c27541cc270a34e161405c656f",
-        "bytes": 23265
+        "url": "https://developers.salesloft.com/assets/js/8f3a7841.b0484c3d.js",
+        "sha256": "ba1333842c0e545137a880c926ae8b290a0e0d7ab0d77436612772e07e6a9530",
+        "bytes": 23257
       },
       "method": "PUT",
       "path": "/v2/calendar_events/{id}",
@@ -5127,9 +5127,9 @@
       "official_operation_id": "calendar_events_upsert_create",
       "official_page": "https://developers.salesloft.com/docs/api/calendar-events-upsert-create/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/73427099.48557eee.js",
-        "sha256": "6d0e08ef06bd6b14ac494398afb9f88d266d4442bd56fbecf5c8ac3084e46b18",
-        "bytes": 25511
+        "url": "https://developers.salesloft.com/assets/js/73427099.049aa105.js",
+        "sha256": "eb83b1f0a7aa99a0a28b48c08525c4b0e9d2cb59c440d4e275624385de2cf70a",
+        "bytes": 25503
       },
       "method": "POST",
       "path": "/v2/calendar/events/upsert",
@@ -5397,9 +5397,9 @@
       "official_operation_id": "call_data_records_create",
       "official_page": "https://developers.salesloft.com/docs/api/call-data-records-create/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/ddc61a3e.5149e859.js",
-        "sha256": "714b9674ef47d5ba656145828fe1b327a9fb7ae9522d76ef84f79433ccda3f01",
-        "bytes": 13939
+        "url": "https://developers.salesloft.com/assets/js/ddc61a3e.20a700eb.js",
+        "sha256": "66b6857246bbfd6c67ca5373d9b1474b28bc659dfb72e762b9f73bb75be61207",
+        "bytes": 13931
       },
       "method": "POST",
       "path": "/v2/call_data_records",
@@ -5609,9 +5609,9 @@
       "official_operation_id": "call_data_records_show",
       "official_page": "https://developers.salesloft.com/docs/api/call-data-records-show/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/ead3a56a.77753f00.js",
-        "sha256": "956714a0cf3064afcb38efbb26b00dc9f9768832ad6fe5f3d79b3295ddb8d78e",
-        "bytes": 11519
+        "url": "https://developers.salesloft.com/assets/js/ead3a56a.e1e2733f.js",
+        "sha256": "c6abd346f9b433aa2f2d43f7da4a13d877cdbeff8813cfe2e0c3eeff883bd21b",
+        "bytes": 11503
       },
       "method": "GET",
       "path": "/v2/call_data_records/{id}",
@@ -5645,9 +5645,9 @@
       "official_operation_id": "call_data_records_index",
       "official_page": "https://developers.salesloft.com/docs/api/call-data-records-index/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/c77d0e67.37b8892e.js",
-        "sha256": "ad704d033fc48c0eabdeb4d0ad5afa9417733d79543b5681c718024b82e6e59b",
-        "bytes": 18646
+        "url": "https://developers.salesloft.com/assets/js/c77d0e67.ba67d370.js",
+        "sha256": "1eae4da5145a3a9416ab48176b9623a8e7b3043d9fdc6dd0a3616be7bfb4d41d",
+        "bytes": 18638
       },
       "method": "GET",
       "path": "/v2/call_data_records",
@@ -5787,9 +5787,9 @@
       "official_operation_id": "call_data_records_update",
       "official_page": "https://developers.salesloft.com/docs/api/call-data-records-update/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/6821d28c.70b4cd6d.js",
-        "sha256": "8be58bd37f539aa170f864d44312aad7d722fa810182305e51b0889ca0bc2e51",
-        "bytes": 13222
+        "url": "https://developers.salesloft.com/assets/js/6821d28c.861dbd1d.js",
+        "sha256": "06fa960fdedf58ac307024ac41e703695ec2d2e0b94a666b12e46a528b1983a1",
+        "bytes": 13214
       },
       "method": "PUT",
       "path": "/v2/call_data_records/{id}",
@@ -8179,9 +8179,9 @@
       "official_operation_id": "meetings_index",
       "official_page": "https://developers.salesloft.com/docs/api/meetings-index/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/af0be0eb.e9943bb1.js",
-        "sha256": "3c90827cb280b0ed4904e9c55586d632d80ee24e08c23e9474e33349a785d8aa",
-        "bytes": 33825
+        "url": "https://developers.salesloft.com/assets/js/af0be0eb.27fc2f57.js",
+        "sha256": "fbe2a244f2aaf9bc0baa46c96cef8ee26d1582dec82533a4b9a5021754471ecf",
+        "bytes": 33809
       },
       "method": "GET",
       "path": "/v2/meetings",
@@ -8401,9 +8401,9 @@
       "official_operation_id": "meetings_update",
       "official_page": "https://developers.salesloft.com/docs/api/meetings-update/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/1bd41269.c1d1c24c.js",
-        "sha256": "656ef6295fe9455b61fedd1f4fd03eee8b8286df829a4df13a93cd47b9aa78db",
-        "bytes": 23194
+        "url": "https://developers.salesloft.com/assets/js/1bd41269.72b31ff4.js",
+        "sha256": "57daa010c69e1b3a5c80453e9aa8d7ae0ae51bd0c922a855a4eb2897f8dacc7b",
+        "bytes": 23178
       },
       "method": "PUT",
       "path": "/v2/meetings/{id}",
@@ -9245,9 +9245,9 @@
       "official_operation_id": "meetings_settings_searches_create",
       "official_page": "https://developers.salesloft.com/docs/api/meetings-settings-searches-create/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/19e67a73.4b21b0ef.js",
-        "sha256": "fc029b5a7baf0d088ca4f08207d21c745d9a090f7a520789f6215a6595c13d97",
-        "bytes": 20967
+        "url": "https://developers.salesloft.com/assets/js/19e67a73.964a1c48.js",
+        "sha256": "b264aad9ba086192997f7a4b43394c072fcf0854356ab65f5f9640228cce3850",
+        "bytes": 20975
       },
       "method": "POST",
       "path": "/v2/meetings/settings/searches",
@@ -9353,9 +9353,9 @@
       "official_operation_id": "meetings_settings_update",
       "official_page": "https://developers.salesloft.com/docs/api/meetings-settings-update/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/76273ffc.76bc7c3b.js",
-        "sha256": "ffe8d1284c6aae089360494e2e924900606e227cf0d27f7eb851b208b063100d",
-        "bytes": 20094
+        "url": "https://developers.salesloft.com/assets/js/76273ffc.77af66a6.js",
+        "sha256": "007da8e26460bc61633dc250a9009cbdf2396b74d3658d14b4cd3e602f68b9cf",
+        "bytes": 20102
       },
       "method": "PUT",
       "path": "/v2/meetings/settings/{id}",
@@ -12611,9 +12611,9 @@
       "official_operation_id": "crm_activity_fields_index",
       "official_page": "https://developers.salesloft.com/docs/api/crm-activity-fields-index/",
       "fragment": {
-        "url": "https://developers.salesloft.com/assets/js/d91b6843.e0edae2c.js",
-        "sha256": "a46c864948d5463a9c735af5c15f0f3d5c6fe417d281d9b6cc8862bfebdf0f07",
-        "bytes": 12983
+        "url": "https://developers.salesloft.com/assets/js/d91b6843.82eb40ba.js",
+        "sha256": "833e1c48c02bbece99e3e1c731b5bfcf5acdc58b87c31d55fc29152ce013903d",
+        "bytes": 13700
       },
       "method": "GET",
       "path": "/v2/crm_activity_fields",

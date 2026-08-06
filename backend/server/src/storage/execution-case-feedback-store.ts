@@ -31,6 +31,12 @@ export const ensureExecutionCaseFeedbackSchema = (
       source_plan_id   TEXT,
       recorded_at      INTEGER NOT NULL
     );
+
+    -- D-219 lookups and cascade deletes are BY ROOT, and this table carried no
+    -- index. Every one was a full scan; a retention pass removing N roots did
+    -- N scans -- the quadratic shape fixed in audit-retention. Grows with chat.
+    CREATE INDEX IF NOT EXISTS idx_exec_case_feedback_root
+      ON execution_case_feedback (root_request_id);
   `);
 };
 

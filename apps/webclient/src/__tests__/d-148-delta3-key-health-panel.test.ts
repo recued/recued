@@ -253,12 +253,44 @@ describe('R26.4 Delta 3 — Key Health panel: load + render', () => {
   it('server_identity_key (available) shows Rotate + Mark-compromised', async () => {
     const { host, mount } = setup();
     await mount.whenReady();
-    expect(findByAttr(host, KEY_HEALTH_ROTATE_BTN_ATTR)?.getAttribute(KEY_HEALTH_ROTATE_BTN_ATTR)).toBe(
+    const rotate = findByAttr(host, KEY_HEALTH_ROTATE_BTN_ATTR);
+    expect(rotate?.getAttribute(KEY_HEALTH_ROTATE_BTN_ATTR)).toBe(
       'server_identity_key',
     );
-    expect(
-      findByAttr(host, KEY_HEALTH_COMPROMISE_BTN_ATTR)?.getAttribute(KEY_HEALTH_COMPROMISE_BTN_ATTR),
-    ).toBe('server_identity_key');
+    expect(rotate?.getAttribute('aria-label')).toBe(
+      'Rotate Server identity key now',
+    );
+    const compromise = findByAttr(host, KEY_HEALTH_COMPROMISE_BTN_ATTR);
+    expect(compromise?.getAttribute(KEY_HEALTH_COMPROMISE_BTN_ATTR)).toBe(
+      'server_identity_key',
+    );
+    expect(compromise?.getAttribute('aria-label')).toBe(
+      'Mark Server identity key compromised',
+    );
+  });
+
+  it('names repeated actions by their available key class', async () => {
+    const { host, mount } = setup({
+      loadHealth: async () => selfHostView({
+        master_dek: 'available',
+        publisher_identity_key: 'available',
+      }),
+    });
+    await mount.whenReady();
+    const action = (attr: string, keyClass: string): FakeElement | undefined =>
+      findAllByAttr(host, attr).find(
+        (button) => button.getAttribute(attr) === keyClass,
+      );
+    expect(action(
+      KEY_HEALTH_ROTATE_BTN_ATTR,
+      'master_dek',
+    )?.getAttribute('aria-label')).toBe('Rotate Master encryption key now');
+    expect(action(
+      KEY_HEALTH_COMPROMISE_BTN_ATTR,
+      'publisher_identity_key',
+    )?.getAttribute('aria-label')).toBe(
+      'Mark Publisher identity key compromised',
+    );
   });
 
   it('unavailable classes render no action button', async () => {

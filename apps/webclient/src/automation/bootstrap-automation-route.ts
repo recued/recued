@@ -88,6 +88,8 @@ export const AUTOMATION_ROUTE_DETAIL_HEADING_ATTR =
  *  (`auto-run` / `triggers` / `schedules`); `data-active` marks the
  *  visible one. */
 export const AUTOMATION_ROUTE_SUBNAV_ATTR = 'data-recued-automation-subnav';
+export const AUTOMATION_ROUTE_SECTION_PANEL_ATTR =
+  'data-recued-automation-section-panel';
 /** R21 — a trigger row's inline backing-poll status line. Value = the
  *  backing `watch_key`. */
 export const AUTOMATION_ROUTE_POLL_ATTR = 'data-recued-automation-poll';
@@ -369,6 +371,9 @@ export interface AutomationRoute {
 
 const AUTOMATION_ROUTE_STYLES = `
 [${AUTOMATION_ROUTE_HOST_ATTR}] {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
   max-width: var(--wc-content-max, 1080px);
   margin: 0 auto;
   padding: 16px;
@@ -410,9 +415,17 @@ const AUTOMATION_ROUTE_STYLES = `
   margin-bottom: 22px;
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-section-title {
+  min-width: 0;
+  max-width: 100%;
   margin: 0 0 4px;
   font-size: 15px;
   font-weight: 650;
+  overflow-wrap: anywhere;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-section-title a {
+  max-width: 100%;
+  justify-content: flex-start;
+  overflow-wrap: anywhere;
 }
 [${AUTOMATION_ROUTE_DETAIL_HEADING_ATTR}]:focus-visible {
   outline: 2px solid var(--accent);
@@ -425,12 +438,16 @@ const AUTOMATION_ROUTE_STYLES = `
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-list {
   display: grid;
+  min-width: 0;
   gap: 8px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 [${AUTOMATION_ROUTE_ROW_ATTR}] {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   border: 1px solid var(--border);
   border-left: 2px solid var(--border);
   border-radius: 8px;
@@ -440,6 +457,9 @@ const AUTOMATION_ROUTE_STYLES = `
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   align-items: start;
+}
+[${AUTOMATION_ROUTE_ROW_ATTR}] > * {
+  min-width: 0;
 }
 [${AUTOMATION_ROUTE_ROW_ATTR}][data-armed="off"] {
   opacity: .72;
@@ -453,14 +473,32 @@ const AUTOMATION_ROUTE_STYLES = `
   font-weight: 650;
   overflow-wrap: anywhere;
 }
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-row-title a {
+  box-sizing: border-box;
+  min-height: 36px;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 4px 2px;
+  border-radius: 5px;
+}
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-row-detail,
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-row-meta {
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   flex-wrap: wrap;
   gap: 4px 10px;
   margin-top: 5px;
   color: var(--muted);
   font-size: 12px;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-row-detail > *,
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-row-meta > * {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-row-detail code {
   font-size: 12px;
@@ -483,6 +521,75 @@ const AUTOMATION_ROUTE_STYLES = `
   gap: 6px;
   align-items: center;
 }
+@media (max-width: 560px) {
+  [${AUTOMATION_ROUTE_ROW_ATTR}] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-row-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-row-actions a {
+  box-sizing: border-box;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  font-weight: 600;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-row-title a:hover,
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-row-actions a:hover {
+  background: var(--accent-weak);
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-row-title a:focus-visible,
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-row-actions a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail,
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail > * {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  min-width: 0;
+  max-width: 100%;
+  gap: 6px 12px;
+  margin: 12px 0;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-facts dt {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-facts dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-facts code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-note {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 360px) {
+  [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-facts {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-detail-facts dd {
+    margin-bottom: 8px;
+  }
+}
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-button {
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -504,16 +611,34 @@ const AUTOMATION_ROUTE_STYLES = `
   opacity: .65;
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] a {
+  box-sizing: border-box;
+  min-width: 36px;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--accent);
   font-size: 12px;
   text-decoration: none;
+  border-radius: 5px;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] a:hover {
+  background: var(--accent-weak);
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 [${AUTOMATION_ROUTE_ERROR_ATTR}],
 [${AUTOMATION_ROUTE_ADD_ERROR_ATTR}],
 [${AUTOMATION_ROUTE_EMPTY_ATTR}] {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   margin: 4px 0 0;
   font-size: 13px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 [${AUTOMATION_ROUTE_ERROR_ATTR}],
 [${AUTOMATION_ROUTE_ADD_ERROR_ATTR}] {
@@ -523,9 +648,20 @@ const AUTOMATION_ROUTE_STYLES = `
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-load-error {
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-load-error > span {
+  flex: 1 1 180px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-load-error > button {
+  flex: 0 0 auto;
 }
 [${AUTOMATION_ROUTE_EMPTY_ATTR}] {
   color: var(--muted);
@@ -544,11 +680,19 @@ const AUTOMATION_ROUTE_STYLES = `
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-subnav {
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   gap: 4px;
   margin: 12px 0 0;
   border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-subnav-tab {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  min-height: 36px;
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
@@ -556,6 +700,7 @@ const AUTOMATION_ROUTE_STYLES = `
   cursor: pointer;
   font-size: 13px;
   color: var(--fg-muted);
+  white-space: nowrap;
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-subnav-tab[data-active='true'] {
   color: var(--fg);
@@ -568,7 +713,10 @@ const AUTOMATION_ROUTE_STYLES = `
   font-variant-numeric: tabular-nums;
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-poll {
+  box-sizing: border-box;
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
@@ -577,6 +725,20 @@ const AUTOMATION_ROUTE_STYLES = `
   border-left: 2px solid var(--border);
   font-size: 12px;
   color: var(--fg-muted);
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-poll > span {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-poll > span:not(.automation-poll-state) {
+  flex: 1 1 180px;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-poll > .automation-row-error {
+  flex-basis: 100%;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-poll > button {
+  flex: 0 0 auto;
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-poll[data-armed='tripped'] {
   border-left-color: var(--danger);
@@ -593,13 +755,18 @@ const AUTOMATION_ROUTE_STYLES = `
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-section-actions {
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   flex-direction: column;
   align-items: flex-start;
   gap: 6px;
   margin: 4px 0 8px;
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-add-picker {
-  min-width: 260px;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 360px;
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-filter-select {
   font-size: 12px;
@@ -705,6 +872,8 @@ const renderRow = (args: {
     args.busy
       ? ` aria-disabled="true"${args.busyVerb === verb ? ' aria-busy="true"' : ''}`
       : '';
+  const actionName = (label: string): string =>
+    e(`${label} ${args.title} (${args.rule_id})`);
   const toggleLabel = args.busy && args.busyVerb === 'toggle'
     ? args.toggleLabel === 'Re-arm'
       ? 'Re-arming…'
@@ -712,6 +881,10 @@ const renderRow = (args: {
         ? 'Resuming…'
         : 'Pausing…'
     : args.toggleLabel;
+  const runLabel = args.busyVerb === 'run' ? 'Running…' : 'Run now';
+  const confirmDeleteLabel = args.busyVerb === 'delete-confirm'
+    ? 'Removing…'
+    : 'Confirm remove';
   return `
     <li ${AUTOMATION_ROUTE_ROW_ATTR}="${e(`${args.section}:${args.rule_id}`)}" data-armed="${args.armed}">
       <div>
@@ -727,28 +900,34 @@ const renderRow = (args: {
       <div class="automation-row-actions">
         ${args.toggleLabel !== undefined
           ? `<button type="button" class="automation-button"
+          aria-label="${actionName(toggleLabel ?? args.toggleLabel)}"
           ${ACTION_ATTR}="toggle:${e(args.section)}:${args.toggleTo ? 'on' : 'off'}"
           ${ROW_ID_ATTR}="${e(args.rule_id)}"${busyAttrs('toggle')}>${e(toggleLabel ?? args.toggleLabel)}</button>`
           : ''}
         ${args.canRunNow
           ? `<button type="button" class="automation-button"
+              aria-label="${actionName(runLabel)}"
               ${ACTION_ATTR}="run:${e(args.section)}"
-              ${ROW_ID_ATTR}="${e(args.rule_id)}"${busyAttrs('run')}>${args.busyVerb === 'run' ? 'Running…' : 'Run now'}</button>`
+              ${ROW_ID_ATTR}="${e(args.rule_id)}"${busyAttrs('run')}>${runLabel}</button>`
           : ''}
         ${args.canDelete
           ? args.confirmingDelete
             ? `<button type="button" class="automation-button automation-button--danger"
+                aria-label="${actionName(confirmDeleteLabel)}"
                 ${ACTION_ATTR}="delete-confirm:${e(args.section)}"
-                ${ROW_ID_ATTR}="${e(args.rule_id)}"${busyAttrs('delete-confirm')}>${args.busyVerb === 'delete-confirm' ? 'Removing…' : 'Confirm remove'}</button>
+                ${ROW_ID_ATTR}="${e(args.rule_id)}"${busyAttrs('delete-confirm')}>${confirmDeleteLabel}</button>
               <button type="button" class="automation-button"
+                aria-label="${actionName('Cancel')}"
                 ${ACTION_ATTR}="delete-cancel:${e(args.section)}"
                 ${ROW_ID_ATTR}="${e(args.rule_id)}"${busyAttrs('delete-cancel')}>Cancel</button>`
             : `<button type="button" class="automation-button automation-button--danger"
+                aria-label="${actionName('Remove')}"
                 ${ACTION_ATTR}="delete:${e(args.section)}"
                 ${ROW_ID_ATTR}="${e(args.rule_id)}">Remove</button>`
           : ''}
         ${args.canDetail
           ? `<button type="button" class="automation-button"
+              aria-label="${actionName('Details')}"
               ${ACTION_ATTR}="detail:${e(args.section)}"
               ${ROW_ID_ATTR}="${e(args.rule_id)}">Details</button>`
           : ''}
@@ -1470,25 +1649,34 @@ export const bootstrapAutomationRoute = (
       origin: { label: string; badge: string };
     },
   ): string => {
+    const title = dishTitle(d);
+    const actionName = (label: string): string =>
+      e(`${label} ${title} (${d.dish_id})`);
     if (ctx.renaming) {
       return `<div class="automation-row-actions">
         <input type="text" class="automation-input"
           ${DISH_RENAME_INPUT_ATTR}="${e(d.dish_id)}"
-          value="${e(d.name)}" aria-label="Rename dish" />
+          value="${e(d.name)}" aria-label="${actionName('Rename')}" />
         <button type="button" class="automation-button"
+          aria-label="${actionName('Save name for')}"
           ${ACTION_ATTR}="rename-save:dish" ${ROW_ID_ATTR}="${e(d.dish_id)}">Save name</button>
         <button type="button" class="automation-button"
+          aria-label="${actionName('Cancel renaming')}"
           ${ACTION_ATTR}="rename-cancel:dish" ${ROW_ID_ATTR}="${e(d.dish_id)}">Cancel</button>
       </div>`;
     }
+    const renaming = busyVerbFor('dish', d.dish_id) === 'rename';
+    const renameLabel = renaming ? 'Renaming…' : 'Rename';
     const parts = [
       ctx.canConfigure
         ? `<button type="button" class="automation-button"
+             aria-label="${actionName('Config')}"
              ${ACTION_ATTR}="configure:dish" ${ROW_ID_ATTR}="${e(d.dish_id)}"${mutationBusyAttrs('dish', d.dish_id, 'configure')}>Config</button>`
         : '',
       ctx.canRename
         ? `<button type="button" class="automation-button"
-             ${ACTION_ATTR}="rename:dish" ${ROW_ID_ATTR}="${e(d.dish_id)}"${mutationBusyAttrs('dish', d.dish_id, 'rename')}>Rename</button>`
+             aria-label="${actionName(renameLabel)}"
+             ${ACTION_ATTR}="rename:dish" ${ROW_ID_ATTR}="${e(d.dish_id)}"${mutationBusyAttrs('dish', d.dish_id, 'rename')}>${renameLabel}</button>`
         : '',
       ctx.target.kind === 'owner'
         ? `<a class="recipes-inline-link"
@@ -1500,6 +1688,24 @@ export const bootstrapAutomationRoute = (
     return parts.length === 0
       ? ''
       : `<div class="automation-row-actions">${parts.join('')}</div>`;
+  };
+
+  const focusDishRenameInput = (dish_id: string): void => {
+    const input = routeRoot.querySelector?.(
+      `[${DISH_RENAME_INPUT_ATTR}="${dish_id}"]`,
+    ) as HTMLElement | null | undefined;
+    input?.focus?.({ preventScroll: true });
+    input?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const focusDishRenameAction = (dish_id: string): void => {
+    const rename = findActionFocusTarget({
+      verb: 'rename',
+      section: 'dish',
+      rule_id: dish_id,
+    });
+    rename?.focus?.({ preventScroll: true });
+    rename?.scrollIntoView?.({ block: 'nearest' });
   };
 
   const dishRows = (): string[] =>
@@ -1906,11 +2112,15 @@ export const bootstrapAutomationRoute = (
   };
 
   const subNav = (): string => `
-    <nav class="automation-subnav" role="tablist" aria-label="Automation sections">
+    <nav class="automation-subnav" data-recued-scroll-rail role="tablist" aria-label="Automation sections"
+      aria-orientation="horizontal">
       ${AUTOMATION_SECTION_TOKENS.map((token) => `
         <button type="button" class="automation-subnav-tab" role="tab"
           ${AUTOMATION_ROUTE_SUBNAV_ATTR}="${token}"
+          id="recued-automation-section-tab-${token}"
+          aria-controls="recued-automation-section-panel"
           aria-selected="${activeSection === token ? 'true' : 'false'}"
+          tabindex="${activeSection === token ? '0' : '-1'}"
           ${busy.size > 0 ? 'aria-disabled="true"' : ''}
           data-active="${activeSection === token ? 'true' : 'false'}">
           ${e(SECTION_LABEL[token])}${loading ? '' : ` <span class="automation-subnav-count">${sectionCount(token)}</span>`}
@@ -2197,7 +2407,7 @@ export const bootstrapAutomationRoute = (
         ${body ?? (loading
           ? '<p>Loading…</p>'
           : '<p>This rule no longer exists — it may have been removed.</p>')}
-        <p class="automation-section-hint">Runs land in <a href="#logs">Logs</a>.</p>
+        <p class="automation-section-hint">Runs land in <a href="#logs">Logs<span aria-hidden="true">.</span></a></p>
       </section>`;
   };
 
@@ -2209,6 +2419,27 @@ export const bootstrapAutomationRoute = (
       '[data-recued-automation-back]',
     ) as HTMLElement | null | undefined;
     (heading ?? fallback)?.focus?.({ preventScroll: true });
+  };
+
+  /** Keep a deep-linked or repainted active tab visible inside the narrow
+   *  horizontal strip without moving the page vertically. `scrollIntoView`
+   *  can also scroll ancestor containers, so adjust only this nav's own
+   *  horizontal position from its painted geometry. */
+  const revealActiveSubnav = (): void => {
+    const nav = routeRoot.querySelector?.(
+      '.automation-subnav',
+    ) as HTMLElement | null | undefined;
+    const active = nav?.querySelector?.(
+      `[${AUTOMATION_ROUTE_SUBNAV_ATTR}][aria-selected="true"]`,
+    ) as HTMLElement | null | undefined;
+    if (nav == null || active == null) return;
+    const navRect = nav.getBoundingClientRect();
+    const activeRect = active.getBoundingClientRect();
+    if (activeRect.left < navRect.left) {
+      nav.scrollLeft -= navRect.left - activeRect.left;
+    } else if (activeRect.right > navRect.right) {
+      nav.scrollLeft += activeRect.right - navRect.right;
+    }
   };
 
   const render = (): void => {
@@ -2375,11 +2606,15 @@ export const bootstrapAutomationRoute = (
         <h1 class="automation-title" ${AUTOMATION_ROUTE_HEADING_ATTR}>Automation</h1>
         <p class="automation-subtitle">Every rule that runs without you — auto-run tickers,
         event triggers (and the poll loops feeding them), and schedules. Pause or
-        resume any of them here; runs land in <a href="#logs">Logs</a>.</p>
+        resume any of them here; runs land in <a href="#logs">Logs<span aria-hidden="true">.</span></a></p>
       </header>
       ${lockBanner()}
       ${subNav()}
-      ${detailId !== null ? renderDetail() : `${filterBar()}${activeSectionHtml()}`}
+      <div ${AUTOMATION_ROUTE_SECTION_PANEL_ATTR}
+        id="recued-automation-section-panel" role="tabpanel"
+        aria-labelledby="recued-automation-section-tab-${activeSection}">
+        ${detailId !== null ? renderDetail() : `${filterBar()}${activeSectionHtml()}`}
+      </div>
     `;
     if (focusedSection !== null) {
       const replacement = routeRoot.querySelector(
@@ -2436,6 +2671,17 @@ export const bootstrapAutomationRoute = (
     }
     if (focusedDetailHeading) focusRenderedDetailHeading();
     if (detailId === null) {
+      const focusedPickerReplacement = focusedRoutePickerId === null
+        ? null
+        : routeRoot.querySelector?.(
+            `[data-ref-picker="${focusedRoutePickerId}"] `
+            + `[${RefPicker.REF_PICKER_INPUT_ATTR}]`,
+          ) as HTMLInputElement | null | undefined;
+      // Restore focus before re-attaching the picker listeners. A committed
+      // selection closes its popup; focusing only after rewire would look like
+      // a fresh user focus and reopen the full inventory after every filter
+      // repaint. An already-open picker still repaints open from handle state.
+      focusedPickerReplacement?.focus?.({ preventScroll: true });
       // (Re-)attach the recipe-filter combobox to the freshly-painted shell.
       mountRecipePicker();
       // (Re-)attach / tear down the Add recipe picker (R21 create path).
@@ -2444,23 +2690,18 @@ export const bootstrapAutomationRoute = (
         const replacementHandle = focusedRoutePickerId === RECIPE_PICKER_CONFIG.pickerId
           ? recipePicker
           : addPicker;
-        const replacement = routeRoot.querySelector?.(
-          `[data-ref-picker="${focusedRoutePickerId}"] `
-          + `[${RefPicker.REF_PICKER_INPUT_ATTR}]`,
-        ) as HTMLInputElement | null | undefined;
         if (
           focusedPickerSelection !== null
           && focusedPickerSelection.query !== null
         ) {
           replacementHandle?.setQuery(focusedPickerSelection.query);
         }
-        replacement?.focus?.({ preventScroll: true });
         if (
           focusedPickerSelection !== null
           && focusedPickerSelection.start !== null
           && focusedPickerSelection.end !== null
         ) {
-          replacement?.setSelectionRange?.(
+          focusedPickerReplacement?.setSelectionRange?.(
             focusedPickerSelection.start,
             focusedPickerSelection.end,
           );
@@ -2512,6 +2753,7 @@ export const bootstrapAutomationRoute = (
       }
     }
     if (!loading && pendingRetryFocus !== null) pendingRetryFocus = null;
+    revealActiveSubnav();
   };
 
   const loadAll = async (): Promise<void> => {
@@ -2680,15 +2922,23 @@ export const bootstrapAutomationRoute = (
     focus?: AutomationActionFocus,
     fallbackFocus?: AutomationActionFocus | null,
     action?: AutomationActionFocus,
+    focusAfterInitialRender = false,
   ): Promise<void> => {
     if (busy.has(rule_id)) return;
-    if (focus !== undefined) {
+    if (focus !== undefined && !focusAfterInitialRender) {
       pendingActionFocus = focus;
       pendingActionFallbackFocus = fallbackFocus ?? null;
     }
     if (action !== undefined) busyActions.set(rule_id, action);
     busy.add(rule_id);
     render();
+    if (focus !== undefined && focusAfterInitialRender) {
+      pendingActionFocus = focus;
+      pendingActionFallbackFocus = fallbackFocus ?? null;
+      const replacement = findActionFocusTarget(focus);
+      replacement?.focus?.({ preventScroll: true });
+      replacement?.scrollIntoView?.({ block: 'nearest' });
+    }
     try {
       await mutate();
       const { [sectionErrorKey(section)]: _cleared, ...rest } = mutationErrors;
@@ -2944,6 +3194,60 @@ export const bootstrapAutomationRoute = (
     }
   };
 
+  const activateSection = (token: AutomationSectionToken): boolean => {
+    if (busy.size > 0) {
+      focusPendingMutationOwner();
+      return false;
+    }
+    if (token === activeSection) return true;
+    activeSection = token;
+    // Switching sections leaves any open detail (it belongs to the
+    // previous section), closes an open Add disclosure (per-section
+    // state — returning later shouldn't resurrect it; codex R21 LOW),
+    // and supersedes a pending legacy auto-pick.
+    detailId = null;
+    pendingDishHistoryRetryFocus = null;
+    pendingRecipeEntriesFocus = null;
+    addPickerFor = null;
+    deleteConfirmation = null;
+    pendingModalReturnFocus = null;
+    sectionAutoPickPending = false;
+    syncHash();
+    render();
+    return true;
+  };
+
+  const onSubnavKeyDown = (ev: Event): void => {
+    const event = ev as KeyboardEvent;
+    const tab = (event.target as (Element & {
+      closest?: (selector: string) => Element | null;
+    }) | null)?.closest?.(`[${AUTOMATION_ROUTE_SUBNAV_ATTR}]`);
+    if (tab === null || tab === undefined) return;
+    const token = tab.getAttribute(AUTOMATION_ROUTE_SUBNAV_ATTR);
+    if (token === null || !isAutomationSectionToken(token)) return;
+    const currentIndex = AUTOMATION_SECTION_TOKENS.indexOf(token);
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowRight') {
+      nextIndex = (currentIndex + 1) % AUTOMATION_SECTION_TOKENS.length;
+    } else if (event.key === 'ArrowLeft') {
+      nextIndex = (
+        currentIndex - 1 + AUTOMATION_SECTION_TOKENS.length
+      ) % AUTOMATION_SECTION_TOKENS.length;
+    } else if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = AUTOMATION_SECTION_TOKENS.length - 1;
+    }
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const next = AUTOMATION_SECTION_TOKENS[nextIndex]!;
+    if (!activateSection(next)) return;
+    const replacement = routeRoot.querySelector?.(
+      `[${AUTOMATION_ROUTE_SUBNAV_ATTR}="${next}"]`,
+    ) as HTMLElement | null | undefined;
+    replacement?.focus?.({ preventScroll: true });
+  };
+
   const onClick = (ev: Event): void => {
     const dishHistoryRetryButton = (ev.target as (Element & {
       closest?: (selector: string) => Element | null;
@@ -3075,21 +3379,8 @@ export const bootstrapAutomationRoute = (
         return;
       }
       const token = tab.getAttribute(AUTOMATION_ROUTE_SUBNAV_ATTR);
-      if (token !== null && isAutomationSectionToken(token) && token !== activeSection) {
-        activeSection = token;
-        // Switching sections leaves any open detail (it belongs to the
-        // previous section), closes an open Add disclosure (per-section
-        // state — returning later shouldn't resurrect it; codex R21 LOW),
-        // and supersedes a pending legacy auto-pick.
-        detailId = null;
-        pendingDishHistoryRetryFocus = null;
-        pendingRecipeEntriesFocus = null;
-        addPickerFor = null;
-        deleteConfirmation = null;
-        pendingModalReturnFocus = null;
-        sectionAutoPickPending = false;
-        syncHash();
-        render();
+      if (token !== null && isAutomationSectionToken(token)) {
+        activateSection(token);
       }
       return;
     }
@@ -3158,10 +3449,14 @@ export const bootstrapAutomationRoute = (
     } else if (verb === 'rename' && section === 'dish') {
       renamingDishId = ruleId;
       render();
+      focusDishRenameInput(ruleId);
     } else if (verb === 'rename-cancel' && section === 'dish') {
+      const ownsFocus = doc.activeElement === target;
       renamingDishId = null;
       render();
+      if (ownsFocus) focusDishRenameAction(ruleId);
     } else if (verb === 'rename-save' && section === 'dish') {
+      const ownsFocus = doc.activeElement === target;
       const input = routeRoot.querySelector?.(
         `[${DISH_RENAME_INPUT_ATTR}="${ruleId}"]`,
       ) as { value?: string } | null;
@@ -3173,9 +3468,21 @@ export const bootstrapAutomationRoute = (
       // `name: ''` is reserved for the invisible default dish (D-179 fork
       // (c)), so blanking a named dish would silently disguise it as one.
       if (caller !== undefined && next.length > 0 && next !== current?.name) {
-        void runMutation(ruleId, 'dish', () => caller({ dish_id: ruleId, name: next }));
+        const focus = ownsFocus
+          ? { verb: 'rename', section: 'dish', rule_id: ruleId } as const
+          : undefined;
+        void runMutation(
+          ruleId,
+          'dish',
+          () => caller({ dish_id: ruleId, name: next }),
+          focus,
+          undefined,
+          { verb: 'rename', section: 'dish', rule_id: ruleId },
+          true,
+        );
       } else {
         render();
+        if (ownsFocus) focusDishRenameAction(ruleId);
       }
     } else if (verb === 'configure' && section === 'dish') {
       const d = dishes.find((x) => x.dish_id === ruleId);
@@ -3217,6 +3524,7 @@ export const bootstrapAutomationRoute = (
 
   routeRoot.addEventListener('click', onClick);
   routeRoot.addEventListener('change', onFilterChange);
+  routeRoot.addEventListener('keydown', onSubnavKeyDown);
 
   const unsubscribers: Array<() => void> = [];
   if (opts.subscribe !== undefined) {
@@ -3270,6 +3578,7 @@ export const bootstrapAutomationRoute = (
       closeAutoRunConfigModal();
       routeRoot.removeEventListener('click', onClick);
       routeRoot.removeEventListener('change', onFilterChange);
+      routeRoot.removeEventListener('keydown', onSubnavKeyDown);
       try {
         while (routeRoot.firstChild) routeRoot.removeChild(routeRoot.firstChild);
         opts.root.removeChild(routeRoot);

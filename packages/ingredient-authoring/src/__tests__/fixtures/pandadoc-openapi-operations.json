@@ -4,56 +4,56 @@
       "kind": "openapi",
       "reference_url": "https://developers.pandadoc.com/reference",
       "repository_url": "https://github.com/PandaDoc/pandadoc-openapi-specification",
-      "url": "https://raw.githubusercontent.com/PandaDoc/pandadoc-openapi-specification/81beb8c87a80528882ff6dfa0b57fdf6b17f1c08/openapi.json",
+      "url": "https://raw.githubusercontent.com/PandaDoc/pandadoc-openapi-specification/d2896842e9e519aa36da5072dba83ef54fbe3c10/openapi.json",
       "current_url": "https://raw.githubusercontent.com/PandaDoc/pandadoc-openapi-specification/main/openapi.json",
-      "commit": "81beb8c87a80528882ff6dfa0b57fdf6b17f1c08",
-      "sha256": "462ae8088037e70e9c34f6953bb4c0ab811017d4422a77b6841dd08295c11aac",
-      "bytes": 872764,
+      "commit": "d2896842e9e519aa36da5072dba83ef54fbe3c10",
+      "sha256": "ac102f69684772e21225e5652eeada24f90966793aa996f01228e0980f72894a",
+      "bytes": 879075,
       "retrieved_on": "2026-07-20",
       "openapi": "3.0.3",
-      "info_version": "8.8.0",
+      "info_version": "8.9.0",
       "server": "https://api.pandadoc.com",
       "mutability": "The composition pins an immutable official repository commit. Generation also verifies that current main is byte-identical, so a new vendor revision fails closed until consciously upgraded."
     },
     "reference_fragment": {
       "url": "https://developers.pandadoc.com/reference/list-documents.md",
-      "sha256": "6ce37d0de20602f9f4e7c1a624abe4f3732beed62701108e21f43a0ffb696cff",
+      "sha256": "8bd0de8bc3e31e7633eb951f2ef3debd8b30d2e8b279a0c79462b4a282e4116e",
       "bytes": 20338,
       "openapi": "3.0.3",
-      "info_version": "8.8.0",
+      "info_version": "8.9.0",
       "path_count": 1,
       "operation_count": 1,
       "operation_id": "listDocuments",
       "reconciliation": "PandaDoc publishes per-operation reference fragments at v8.8.0, not one complete hashable v8.8.0 catalog. The official full repository document is also v8.8.0 as of the reviewed commit; its overlapping listDocuments route matches this fragment and is the pinned suite authority."
     },
-    "official_path_count": 96,
-    "official_operation_count": 127,
-    "admitted_operation_count": 116,
-    "declared_operation_count": 123,
+    "official_path_count": 97,
+    "official_operation_count": 129,
+    "admitted_operation_count": 118,
+    "declared_operation_count": 125,
     "excluded_operation_count": 11,
-    "unique_admitted_operation_id_count": 116,
-    "unique_admitted_method_path_count": 116,
-    "unique_declared_qualified_operation_count": 123,
+    "unique_admitted_operation_id_count": 118,
+    "unique_admitted_method_path_count": 118,
+    "unique_declared_qualified_operation_count": 125,
     "official_method_counts": {
       "POST": 40,
-      "GET": 56,
+      "GET": 57,
       "DELETE": 12,
       "PATCH": 16,
-      "PUT": 3
+      "PUT": 4
     },
     "admitted_method_counts": {
-      "GET": 54,
+      "GET": 55,
       "POST": 33,
       "DELETE": 11,
       "PATCH": 15,
-      "PUT": 3
+      "PUT": 4
     },
     "declared_method_counts": {
-      "GET": 59,
+      "GET": 60,
       "POST": 35,
       "DELETE": 11,
       "PATCH": 15,
-      "PUT": 3
+      "PUT": 4
     },
     "tag_counts": {
       "API Logs": 4,
@@ -77,7 +77,7 @@
       "OAuth 2.0 Authentication": 1,
       "Product catalog": 5,
       "Quotes": 1,
-      "Template Settings": 2,
+      "Template Settings": 4,
       "Templates": 9,
       "User and Workspace management": 10,
       "Webhook events": 2,
@@ -86,31 +86,31 @@
     "pack_operation_counts": {
       "pandadoc": 12,
       "pandadoc-document-workflows": 53,
-      "pandadoc-content-platform": 58
+      "pandadoc-content-platform": 60
     },
     "composition_bytes": {
       "pandadoc": 24908,
       "pandadoc-document-workflows": 76550,
-      "pandadoc-content-platform": 77748
+      "pandadoc-content-platform": 79711
     },
     "risk_counts": {
-      "read": 60,
-      "write": 36,
+      "read": 61,
+      "write": 37,
       "destructive": 19,
       "admin": 8
     },
     "approval_counts": {
-      "never": 60,
+      "never": 61,
       "ask": 2,
-      "always": 61
+      "always": 62
     },
     "idempotency_counts": {
-      "safe": 60,
+      "safe": 61,
       "non_idempotent": 38,
-      "idempotent": 25
+      "idempotent": 26
     },
     "pagination_counts": {
-      "none": 108,
+      "none": 110,
       "offset": 15
     },
     "paginated_operations": [
@@ -491,7 +491,7 @@
       "downloadDocumentAttachment",
       "downloadProtectedDocument"
     ],
-    "json_request_operation_count": 49,
+    "json_request_operation_count": 50,
     "requiredness_overrides": {
       "createDocumentAttachment": [
         "source"
@@ -593,7 +593,7 @@
     },
     "omitted_binary_request_fields": {},
     "omitted_credential_request_fields": {},
-    "lossless_integer_operation_count": 101,
+    "lossless_integer_operation_count": 103,
     "compatibility_operation_ids": [
       "contact.read",
       "contact.search",
@@ -624,7 +624,7 @@
         "apiKey",
         "oauth2"
       ],
-      "authenticated_operations": 126,
+      "authenticated_operations": 128,
       "unauthenticated_bootstrap_operation_ids": [
         "accessToken"
       ],
@@ -1207,6 +1207,16 @@
       },
       "patch": {
         "operationId": "templateSettingsUpdate",
+        "deprecated": false
+      }
+    },
+    "/public/v1/templates/{template_id}/shares": {
+      "get": {
+        "operationId": "getTemplateShares",
+        "deprecated": false
+      },
+      "put": {
+        "operationId": "updateTemplateSharingSettings",
         "deprecated": false
       }
     },
@@ -4292,6 +4302,109 @@
         "properties": {
           "language": {
             "type": "string"
+          }
+        }
+      },
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "pandadoc-content-platform.template.sharing.read": {
+      "pack": "pandadoc-content-platform",
+      "op": "template.sharing.read",
+      "operation_id": "getTemplateShares",
+      "tag": "Template Settings",
+      "method": "GET",
+      "path": "/public/v1/templates/{template_id}/shares",
+      "wire_path": "/public/v1/templates/{{template_id}}/shares",
+      "parameters": [
+        {
+          "name": "template_id",
+          "in": "path",
+          "admitted_name": "template_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "workspace_ids": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "pandadoc-content-platform.template.sharing.update": {
+      "pack": "pandadoc-content-platform",
+      "op": "template.sharing.update",
+      "operation_id": "updateTemplateSharingSettings",
+      "tag": "Template Settings",
+      "method": "PUT",
+      "path": "/public/v1/templates/{template_id}/shares",
+      "wire_path": "/public/v1/templates/{{template_id}}/shares",
+      "parameters": [
+        {
+          "name": "template_id",
+          "in": "path",
+          "admitted_name": "template_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "profile": null,
+        "required_properties": [
+          "workspace_ids"
+        ],
+        "writable_properties": [
+          "workspace_ids"
+        ],
+        "omitted_binary_properties": [],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "workspace_ids": {
+            "type": "array"
           }
         }
       },

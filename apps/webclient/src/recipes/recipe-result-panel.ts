@@ -64,6 +64,7 @@ import {
   dedupeOutputRowsById,
   initialOutputFilterState,
   isResolvedFilterDescriptor,
+  missingPackRefsFromRunnability,
   outputFilterKey,
   outputFilterInvocation,
   outputFilterPageConfig,
@@ -325,14 +326,203 @@ export const RECIPE_RESULT_PANEL_STYLES = `
   font-size: 12px;
   line-height: 1.45;
 }
+[${RECIPE_RESULT_HOST_ATTR}] .copyable-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .copyable-label {
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 650;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .copyable-content pre {
+  min-width: 0;
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.45 var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+[${RECIPE_RESULT_HOST_ATTR}] .copy-btn {
+  box-sizing: border-box;
+  appearance: none;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .copy-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .link-button-block {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .link-button {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .link-button-link {
+  box-sizing: border-box;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  align-items: center;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .link-button-link:hover {
+  border-color: var(--accent);
+}
+[${RECIPE_RESULT_HOST_ATTR}] .link-button-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .link-button-description {
+  min-width: 0;
+  margin: 0 2px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .json-block,
+[${RECIPE_RESULT_HOST_ATTR}] .json-details {
+  min-width: 0;
+  max-width: 100%;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .json-summary {
+  box-sizing: border-box;
+  min-height: 36px;
+  padding: 9px 4px;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 18px;
+  cursor: pointer;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .json-summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .json-content {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin: 6px 0 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.45 var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+[${RECIPE_RESULT_HOST_ATTR}] .ai-block {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+  font-size: 12px;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .ai-block p {
+  min-width: 0;
+  margin: 0;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .ai-row {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(90px, 140px) minmax(0, 1fr);
+  gap: 8px;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .ai-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .ai-label {
+  color: var(--fg-muted);
+  font-weight: 650;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .ai-points {
+  min-width: 0;
+  margin: 0;
+  padding-left: 20px;
+  overflow-wrap: anywhere;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .ai-json {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.45 var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
 /* Shared-block label/value list (\`packages/renderer\` summary + record_fields).
    This panel renders summary / table / checklist with its OWN
-   \`recipes-result-*\` markup, so it never needed these rules — but it DOES
-   delegate other kinds to the shared blocks, and an undelegated class renders
-   as an unstyled vertical stack. Reception carries the same rules
-   (\`static-assets.ts\`); a structure-and-text test cannot see the difference,
-   only a browser can. */
-[${RECIPE_RESULT_HOST_ATTR}] .summary-list { margin: 0; }
+   \`recipes-result-*\` markup, but delegates record_fields to the shared block.
+   These rules must therefore travel with the panel: route-scoped copies make
+   the exact same output a readable grid in Recipes and browser-default dt/dd
+   blocks in Packs. Reception carries its own copy in \`static-assets.ts\`. */
+[${RECIPE_RESULT_HOST_ATTR}] .summary-list {
+  min-width: 0;
+  margin: 0;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .summary-row {
+  display: grid;
+  grid-template-columns: minmax(100px, 180px) minmax(0, 1fr);
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .summary-row:last-child {
+  border-bottom: none;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .summary-row dt,
+[${RECIPE_RESULT_HOST_ATTR}] .summary-row dd {
+  min-width: 0;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .summary-row dt {
+  color: var(--fg-muted);
+}
+[${RECIPE_RESULT_HOST_ATTR}] .summary-row dd {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .record-field-unset,
+[${RECIPE_RESULT_HOST_ATTR}] .record-field-structured {
+  color: var(--fg-muted);
+  font-weight: 400;
+  font-style: italic;
+}
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-result-muted {
   color: var(--fg-muted);
 }
@@ -420,6 +610,7 @@ export const RECIPE_RESULT_PANEL_STYLES = `
 }
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-file-artifact {
   display: grid;
+  min-width: 0;
   gap: 10px;
   border: 1px solid var(--border-strong);
   border-radius: 8px;
@@ -431,13 +622,18 @@ export const RECIPE_RESULT_PANEL_STYLES = `
 }
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-file-artifact-header {
   display: flex;
+  min-width: 0;
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
 }
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-file-artifact-header > div {
+  min-width: 0;
+}
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-file-artifact-header h4,
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-file-artifact-header p {
   margin: 0;
+  overflow-wrap: anywhere;
 }
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-file-artifact-header h4 {
   font-size: 13px;
@@ -449,6 +645,7 @@ export const RECIPE_RESULT_PANEL_STYLES = `
 }
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-file-artifact-badge {
   flex: none;
+  max-width: 100%;
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 2px 7px;
@@ -474,6 +671,33 @@ export const RECIPE_RESULT_PANEL_STYLES = `
   [${RECIPE_RESULT_HOST_ATTR}] .recipes-result-row {
     grid-template-columns: 1fr;
     gap: 2px;
+  }
+  [${RECIPE_RESULT_HOST_ATTR}] .summary-row {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+  [${RECIPE_RESULT_HOST_ATTR}] .ai-row {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}
+@media (max-width: 520px) {
+  [${RECIPE_RESULT_HOST_ATTR}] .copy-btn {
+    min-height: 44px;
+  }
+  [${RECIPE_RESULT_HOST_ATTR}] .link-button-link {
+    min-height: 44px;
+    padding-block: 11px;
+  }
+  [${RECIPE_RESULT_HOST_ATTR}] .json-summary {
+    min-height: 44px;
+    padding-block: 13px;
+  }
+  [${RECIPE_RESULT_HOST_ATTR}] .recipes-file-artifact-header {
+    display: grid;
+  }
+  [${RECIPE_RESULT_HOST_ATTR}] .recipes-file-artifact-badge {
+    width: fit-content;
   }
 }
 ${RefPicker.REF_PICKER_STYLES}
@@ -646,6 +870,40 @@ export const resolvedFilterDescriptor = (
 ): ResolvedFilterDescriptor | null =>
   isResolvedFilterDescriptor(section.filter) ? section.filter : null;
 
+/** Locate the interactive control emitted by the shared copyable renderer.
+ * Every result host delegates clicks from its own stable root, so keeping the
+ * selector here prevents Recipes and Pack apps from drifting into different
+ * notions of which returned control is actionable. */
+export const findRecipeResultCopyTarget = (
+  target: EventTarget | null,
+): HTMLElement | null => {
+  if (target === null || typeof target !== 'object') return null;
+  const candidate = target as HTMLElement;
+  if (typeof candidate.closest !== 'function') return null;
+  return candidate.closest('[data-action="copy"]');
+};
+
+/** Copy one returned value and keep the outcome on the focused control. */
+export const copyRecipeResultValue = async (
+  target: HTMLElement,
+  doc: Document,
+): Promise<void> => {
+  const value = target.getAttribute('data-value');
+  if (value === null) return;
+  target.setAttribute('aria-live', 'polite');
+  const clipboard = doc.defaultView?.navigator?.clipboard;
+  if (clipboard?.writeText === undefined) {
+    target.textContent = 'Copy unavailable';
+    return;
+  }
+  try {
+    await clipboard.writeText(value);
+    target.textContent = 'Copied';
+  } catch {
+    target.textContent = 'Copy failed';
+  }
+};
+
 const isJsonCompatible = (
   value: unknown,
   ancestors: ReadonlySet<object> = new Set(),
@@ -771,7 +1029,15 @@ const normalizeResultAction = (
     return resultActionError(label, 'Target recipe runnability is unavailable.');
   }
   if (targetRunnability?.status === 'blocked') {
-    return resultActionError(label, 'Target recipe is blocked by missing providers.');
+    const missingPacks = missingPackRefsFromRunnability(targetRunnability);
+    return resultActionError(
+      label,
+      missingPacks.length === 0
+        ? 'Target recipe is blocked by missing providers.'
+        : missingPacks.length === 1
+          ? 'Target recipe needs a pack that is not installed.'
+          : 'Target recipe needs packs that are not installed.',
+    );
   }
   return {
     ok: true,
@@ -1552,7 +1818,7 @@ const renderTableResultSection = (
     ${editState.error === null ? '' : `<p role="alert" class="recipes-result-file-error">${e(editState.error)}</p>`}`;
 
   const table = `
-    <div class="recipes-result-table-wrap">
+    <div class="recipes-result-table-wrap" data-recued-scroll-rail>
       <table class="recipes-result-table">
         <thead>
           <tr>${columns.map((column) =>

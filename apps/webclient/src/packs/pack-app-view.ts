@@ -78,8 +78,10 @@ import {
   RECIPES_ROUTE_RESULT_GRID_ATTR,
   RECIPES_ROUTE_RESULT_GRID_ROW_ATTR,
   RECIPE_RESULT_HOST_ATTR,
+  copyRecipeResultValue,
   createResultActionRegistry,
   exactResultFileReadError,
+  findRecipeResultCopyTarget,
   findResultTableEdit,
   openResultPreviewWindow,
   renderRecipeResultPanel,
@@ -122,9 +124,15 @@ import {
 } from '../recipes/result-table-edit-host.js';
 
 import type { PackAppRecipe, PackAppSurface } from './pack-app-model.js';
+import {
+  PACK_INSTALL_OFFER_STYLES,
+  missingPacksFromError,
+  renderPackInstallOffer,
+} from '../shell/pack-install-offer.js';
 
 export const PACK_APP_ATTR = 'data-recued-pack-app';
 export const PACK_APP_VIEW_TAB_ATTR = 'data-recued-pack-app-view';
+export const PACK_APP_VIEW_PANEL_ATTR = 'data-recued-pack-app-view-panel';
 export const PACK_APP_OPERATION_ATTR = 'data-recued-pack-app-operation';
 export const PACK_APP_RESULT_ATTR = 'data-recued-pack-app-result';
 export const PACK_APP_STATUS_ATTR = 'data-recued-pack-app-status';
@@ -132,6 +140,10 @@ export const PACK_APP_MISSING_ATTR = 'data-recued-pack-app-missing';
 export const PACK_APP_EMPTY_ATTR = 'data-recued-pack-app-empty';
 export const PACK_APP_REFRESH_ATTR = 'data-recued-pack-app-refresh';
 export const PACK_APP_CONTEXT_ATTR = 'data-recued-pack-app-context';
+
+const PACK_APP_VIEW_PANEL_ID = 'recued-pack-app-view-panel';
+const packAppViewTabDomId = (recipeId: string): string =>
+  `recued-pack-app-view-tab-${encodeURIComponent(recipeId)}`;
 
 /** Execute one recipe. Same shape as the recipes route's caller so a host that
  *  already wires that can pass the identical closure through. */
@@ -255,6 +267,7 @@ export const mountPackAppView = (
     surface.views.find((v) => v.recipe_id === opts.initialViewId)?.recipe_id
     ?? surface.views[0]?.recipe_id
     ?? null;
+  let pendingViewTabFocus: string | null = null;
   /** Monotonic run token. A view switch during an in-flight run must not let
    *  the slower answer paint over the newer one — the classic stale-response
    *  overwrite, which here would show Customers under the Contracts tab. */
@@ -262,6 +275,9 @@ export const mountPackAppView = (
   let busy = false;
   let busyOwner: 'refresh' | null = null;
   let error: string | null = null;
+  /** Packs a `pack_not_installed` run named — rendered as the shared offer in
+   *  place of the bare message. Null for every other failure. */
+  let missingPacks: readonly string[] | null = null;
   /** The currently displayed run, including the bounded return chain used when
    *  an action opens a detail/receipt over a browse view. */
   let resultPanel: RecipesResultPanelSnapshot | null = null;
@@ -385,6 +401,7 @@ export const mountPackAppView = (
     busy = true;
     busyOwner = owner;
     error = null;
+    missingPacks = null;
     paint();
     void execute({
       recipe_id: recipeId,
@@ -406,6 +423,9 @@ export const mountPackAppView = (
         if (disposed || token !== runToken) return;
         resultPanel = null;
         resetResultScopedState(null);
+        // A missing pack has an action attached, so it renders as the shared
+        // offer; every other failure keeps the plain message.
+        missingPacks = missingPacksFromError(err);
         error = errMessage(err);
       })
       .finally(() => {
@@ -635,7 +655,7 @@ export const mountPackAppView = (
       && confirm.call(doc.defaultView, 'Discard the unsaved table changes?');
   };
 
-  const selectView = (recipeId: string): void => {
+  const selectView = (recipeId: string, focusActivatedTab = false): void => {
     if (!surface.views.some((v) => v.recipe_id === recipeId)) return;
     const alreadyShowingView = recipeId === activeViewId
       && resultPanel !== null
@@ -645,10 +665,12 @@ export const mountPackAppView = (
     if (alreadyShowingView) return;
     if ([...gridStates.values()].some((state) => state.busy)) return;
     if (!mayDiscardGridEdits()) return;
+    if (focusActivatedTab) pendingViewTabFocus = recipeId;
     activeViewId = recipeId;
     resultPanel = null;
     viewNeedsRefresh = false;
     error = null;
+    missingPacks = null;
     opts.onSelectView?.(recipeId);
     runActiveView();
   };
@@ -707,7 +729,10 @@ export const mountPackAppView = (
     const tabs = surface.views.map((view) => `
       <button type="button" role="tab"
         class="pack-app-view-tab"
+        id="${escapeHtml(packAppViewTabDomId(view.recipe_id))}"
+        aria-controls="${PACK_APP_VIEW_PANEL_ID}"
         aria-selected="${view.recipe_id === activeViewId ? 'true' : 'false'}"
+        tabindex="${view.recipe_id === activeViewId ? '0' : '-1'}"
         title="${escapeHtml(view.description)}"
         ${PACK_APP_VIEW_TAB_ATTR}="${escapeHtml(view.recipe_id)}">${escapeHtml(view.name)}</button>
     `).join('');
@@ -721,6 +746,9 @@ export const mountPackAppView = (
     }
     if (busy) {
       return `<p class="pack-app-note" ${PACK_APP_STATUS_ATTR}="busy" role="status" aria-live="polite">Loading…</p>`;
+    }
+    if (missingPacks !== null) {
+      return renderPackInstallOffer(missingPacks);
     }
     if (error !== null) {
       return `<p class="pack-app-error" ${PACK_APP_STATUS_ATTR}="error" role="alert">${escapeHtml(error)}</p>`;
@@ -822,6 +850,9 @@ export const mountPackAppView = (
 
   const paint = (): void => {
     if (disposed) return;
+    const focusedViewId = (
+      doc.activeElement as HTMLElement | null | undefined
+    )?.getAttribute?.(PACK_APP_VIEW_TAB_ATTR) ?? null;
     const focusedRefresh = (
       doc.activeElement as HTMLElement | null | undefined
     )?.hasAttribute?.(PACK_APP_REFRESH_ATTR) === true;
@@ -836,7 +867,15 @@ export const mountPackAppView = (
       ${renderMissing()}
       ${renderContext()}
       ${renderViewTabs()}
-      <div class="pack-app-body">${renderBody()}</div>
+      <div class="pack-app-body"
+        ${activeViewId === null
+          ? ''
+          : `${PACK_APP_VIEW_PANEL_ATTR}="" id="${PACK_APP_VIEW_PANEL_ID}"`
+            + ` role="tabpanel" aria-labelledby="${escapeHtml(
+              packAppViewTabDomId(activeViewId),
+            )}"`}>
+        ${renderBody()}
+      </div>
       ${renderOperations()}
     `;
     const buildSearch = opts.recordRefSearchCaller;
@@ -871,6 +910,21 @@ export const mountPackAppView = (
         `[${PACK_APP_REFRESH_ATTR}]`,
       ) as HTMLElement | null;
       refresh?.focus({ preventScroll: true });
+    }
+    const restoreViewId = pendingViewTabFocus ?? focusedViewId;
+    if (restoreViewId !== null) {
+      const queryable = root as HTMLElement & {
+        querySelectorAll?: (selector: string) => NodeListOf<HTMLElement>;
+      };
+      const replacement = (Array.from(
+        queryable.querySelectorAll?.(`[${PACK_APP_VIEW_TAB_ATTR}]`) ?? [],
+      ) as HTMLElement[]).find((tab) =>
+        tab.getAttribute(PACK_APP_VIEW_TAB_ATTR) === restoreViewId,
+      );
+      replacement?.focus?.({ preventScroll: true });
+      if (replacement !== undefined && pendingViewTabFocus === restoreViewId) {
+        pendingViewTabFocus = null;
+      }
     }
   };
 
@@ -908,6 +962,7 @@ export const mountPackAppView = (
       busy = false;
       busyOwner = null;
       error = null;
+    missingPacks = null;
       const previous = withoutRenderedRecipe(
         resultPanel ?? undefined,
         nextResult.recipe_id,
@@ -946,12 +1001,14 @@ export const mountPackAppView = (
     if (viewNeedsRefresh && returnsToBrowseView) {
       resultPanel = null;
       error = null;
+    missingPacks = null;
       runActiveView();
       return;
     }
     resultPanel = previous;
     resetResultScopedState(previous.result);
     error = null;
+    missingPacks = null;
     paint();
   };
 
@@ -984,6 +1041,13 @@ export const mountPackAppView = (
   const onClick = (ev: Event): void => {
     const target = ev.target as HTMLElement | null;
     if (target === null || typeof target.closest !== 'function') return;
+
+    const copy = findRecipeResultCopyTarget(target);
+    if (copy !== null) {
+      ev.preventDefault();
+      void copyRecipeResultValue(copy, doc);
+      return;
+    }
 
     const restore = target.closest(
       `[${RECIPES_ROUTE_ACTION_ATTR}="restore-result-panel"]`,
@@ -1073,7 +1137,7 @@ export const mountPackAppView = (
     const tab = target.closest(`[${PACK_APP_VIEW_TAB_ATTR}]`) as HTMLElement | null;
     if (tab !== null) {
       const id = tab.getAttribute(PACK_APP_VIEW_TAB_ATTR);
-      if (id !== null) selectView(id);
+      if (id !== null) selectView(id, true);
       return;
     }
     const refresh = target.closest(`[${PACK_APP_REFRESH_ATTR}]`) as HTMLElement | null;
@@ -1102,6 +1166,36 @@ export const mountPackAppView = (
         return;
       }
       openPackRecipe(entry);
+    }
+  };
+
+  const onKeyDown = (ev: Event): void => {
+    const event = ev as KeyboardEvent;
+    const target = event.target as HTMLElement | null;
+    if (target === null || typeof target.closest !== 'function') return;
+    const tab = target.closest(`[${PACK_APP_VIEW_TAB_ATTR}]`) as HTMLElement | null;
+    const currentId = tab?.getAttribute(PACK_APP_VIEW_TAB_ATTR) ?? null;
+    if (currentId === null) return;
+    const currentIndex = surface.views.findIndex(
+      (view) => view.recipe_id === currentId,
+    );
+    if (currentIndex < 0) return;
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowRight') {
+      nextIndex = (currentIndex + 1) % surface.views.length;
+    } else if (event.key === 'ArrowLeft') {
+      nextIndex = (currentIndex - 1 + surface.views.length)
+        % surface.views.length;
+    } else if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = surface.views.length - 1;
+    }
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const nextId = surface.views[nextIndex]?.recipe_id;
+    if (nextId !== undefined && nextId !== currentId) {
+      selectView(nextId, true);
     }
   };
 
@@ -1146,6 +1240,7 @@ export const mountPackAppView = (
   };
 
   root.addEventListener('click', onClick);
+  root.addEventListener('keydown', onKeyDown);
   root.addEventListener('input', onInput);
   root.addEventListener('change', onInput);
   opts.host.appendChild(root);
@@ -1187,6 +1282,7 @@ export const mountPackAppView = (
       }
       objectUrls.clear();
       root.removeEventListener('click', onClick);
+      root.removeEventListener('keydown', onKeyDown);
       root.removeEventListener('input', onInput);
       root.removeEventListener('change', onInput);
       try {
@@ -1199,6 +1295,7 @@ export const mountPackAppView = (
 };
 
 export const PACK_APP_STYLES = `
+${PACK_INSTALL_OFFER_STYLES}
 [${PACK_APP_ATTR}] { display: grid; gap: 16px; }
 [${PACK_APP_ATTR}] .pack-app-context {
   display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
@@ -1222,7 +1319,8 @@ export const PACK_APP_STYLES = `
   border-bottom: 1px solid var(--border);
 }
 [${PACK_APP_ATTR}] .pack-app-view-tab {
-  appearance: none; border: none; background: none; cursor: pointer;
+  box-sizing: border-box; appearance: none; min-height: 36px;
+  border: none; background: none; cursor: pointer;
   font: inherit; font-size: 13px; font-weight: 550; color: var(--fg-muted);
   padding: 8px 12px; border-bottom: 2px solid transparent; margin-bottom: -1px;
   border-radius: var(--wc-radius, 6px) var(--wc-radius, 6px) 0 0;
@@ -1273,7 +1371,9 @@ export const PACK_APP_STYLES = `
 }
 @media (max-width: 560px) {
   [${PACK_APP_ATTR}] .pack-app-context { padding: 12px; }
-  [${PACK_APP_ATTR}] .pack-app-view-tab { padding: 8px 9px; font-size: 12px; }
+  [${PACK_APP_ATTR}] .pack-app-view-tab {
+    min-height: 44px; padding: 8px 9px; font-size: 12px;
+  }
 }
 
 `;

@@ -137,6 +137,19 @@ export const RESTORE_GUARD_NON_USER_TABLES: ReadonlySet<string> = new Set<string
   'collection_instances',
   'audit_activities',
   'event_triggers',
+  // Boot-seeded 2026-08-05 by the O(1) audit byte-total counter: the hourly
+  // storage gate stopped summing the corpus and now reads a trigger-maintained
+  // running total, which `ensureAuditUsageCounter` initialises with one row per
+  // surface at first open. Pure derived bookkeeping — it holds byte counts, not
+  // content — so denylisting it removes no user-data signal.
+  //
+  // ⛔ Its absence made `isLiveWarehouseEmpty` return false on EVERY freshly
+  // composed server, which is the not-enrolled restore guard refusing a restore
+  // onto a fresh install — the exact 2026-06-27 wet-run failure, reintroduced by
+  // an unrelated performance change. A derived-bookkeeping table is the easiest
+  // kind to add without thinking about this guard, and nothing outside these
+  // tests connects the two.
+  'audit_usage',
   // 2. SERVER identity / config / networking / system state — populated by
   //    SETUP (identity, hostnames, TLS, exposure, operator config), never by user
   //    activity. Empty on the empty-config fresh-baseline yet non-empty on a

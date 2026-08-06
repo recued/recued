@@ -441,7 +441,12 @@ export const mountAccountBindingPanel = (
       });
     }
 
-    const dashboard = append(doc, actions, 'a', 'account-bind-dashboard-link');
+    const dashboard = append(
+      doc,
+      actions,
+      'a',
+      'account-bind-dashboard-link rx-btn rx-btn-secondary',
+    );
     dashboard.setAttribute('href', dashboardUrl);
     dashboard.setAttribute('target', '_blank');
     dashboard.setAttribute('rel', 'noopener noreferrer');
@@ -643,7 +648,12 @@ export const mountAccountBindingPanel = (
       pubKey.textContent = 'Publishing';
       const pubValue = append(doc, pubRow, 'span', 'account-bind-v');
       pubValue.textContent = 'Free';
-      const manage = append(doc, pubRow, 'a', 'account-bind-dashboard-link');
+      const manage = append(
+        doc,
+        pubRow,
+        'a',
+        'account-bind-dashboard-link account-bind-dashboard-inline',
+      );
       manage.setAttribute('href', dashboardUrl);
       manage.setAttribute('target', '_blank');
       manage.setAttribute('rel', 'noopener noreferrer');
@@ -653,7 +663,12 @@ export const mountAccountBindingPanel = (
       const claim = append(doc, card, 'p', 'account-bind-message');
       claim.setAttribute(ACCOUNT_BINDING_FREE_CLAIM_ATTR, '');
       claim.textContent = 'No marketplace handle reserved yet.';
-      const link = append(doc, card, 'a', 'account-bind-dashboard-link');
+      const link = append(
+        doc,
+        card,
+        'a',
+        'account-bind-dashboard-link rx-btn rx-btn-secondary',
+      );
       link.setAttribute('href', dashboardUrl);
       link.setAttribute('target', '_blank');
       link.setAttribute('rel', 'noopener noreferrer');
@@ -692,7 +707,12 @@ export const mountAccountBindingPanel = (
     // reflects status only. The CTA links out to the dashboard for billing —
     // "Subscribe" when not yet on Pro, "Manage billing" when active.
     const entitled = state.proStatus.entitlement === 'entitled';
-    const cta = append(doc, card, 'a', 'account-bind-dashboard-link');
+    const cta = append(
+      doc,
+      card,
+      'a',
+      'account-bind-dashboard-link rx-btn rx-btn-secondary',
+    );
     cta.setAttribute('href', dashboardUrl);
     cta.setAttribute('target', '_blank');
     cta.setAttribute('rel', 'noopener noreferrer');
@@ -1102,5 +1122,19 @@ export const ACCOUNT_BINDING_PANEL_STYLES = `
 }
 [${ACCOUNT_BINDING_PANEL_ATTR}] .account-bind-dashboard-link:hover {
   text-decoration: underline;
+}
+[${ACCOUNT_BINDING_PANEL_ATTR}] .account-bind-dashboard-link.rx-btn:hover {
+  text-decoration: none;
+}
+[${ACCOUNT_BINDING_PANEL_ATTR}] .account-bind-dashboard-link.rx-btn {
+  box-sizing: border-box;
+}
+[${ACCOUNT_BINDING_PANEL_ATTR}] .account-bind-dashboard-inline {
+  box-sizing: border-box;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 2px;
+  border-radius: 5px;
 }
 `;

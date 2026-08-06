@@ -39,7 +39,7 @@ let db: Database.Database;
 let store: EnrichmentStore;
 let now = 1_700_000_000_000;
 const ONE_DAY = 86_400_000;
-const mailTableName = 'collection_mail_test';
+const mailTableName = 'collection_mail_11111111aa';
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'd-123-p4-integration-'));

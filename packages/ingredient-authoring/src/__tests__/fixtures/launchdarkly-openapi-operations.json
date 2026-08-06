@@ -5,8 +5,8 @@
     "source": {
       "kind": "openapi",
       "url": "https://app.launchdarkly.com/api/v2/openapi.json",
-      "sha256": "d4a513f2e1dffbcb00fb7dba222704267564e55d18145cd2e5dd3633fdbae581",
-      "bytes": 2927645,
+      "sha256": "a5b7e5647e9164ae7b7879153f5725fe7e9e4d629ee35f5e77ee5b445574a925",
+      "bytes": 2930982,
       "openapi": "3.0.3",
       "info_version": "2.0"
     },
@@ -3658,6 +3658,12 @@
             "item_type": null,
             "item_format": null
           },
+          "_site": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "description": {
             "type": "string",
             "format": null,
@@ -3861,6 +3867,12 @@
             "item_format": null
           },
           "_links": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "_site": {
             "type": "object",
             "format": null,
             "item_type": null,
@@ -4081,6 +4093,12 @@
             "item_type": null,
             "item_format": null
           },
+          "_site": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "description": {
             "type": "string",
             "format": null,
@@ -4270,6 +4288,12 @@
               "item_type": null,
               "item_format": null
             },
+            "modelConfigVersion": {
+              "type": "integer",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
             "outputFormat": {
               "type": "object",
               "format": null,
@@ -4377,6 +4401,12 @@
           },
           "modelConfigKey": {
             "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "modelConfigVersion": {
+            "type": "integer",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -4679,6 +4709,12 @@
               "item_type": null,
               "item_format": null
             },
+            "modelConfigVersion": {
+              "type": "integer",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
             "name": {
               "type": "string",
               "format": null,
@@ -4804,6 +4840,12 @@
           },
           "modelConfigKey": {
             "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "modelConfigVersion": {
+            "type": "integer",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -6458,6 +6500,12 @@
             "item_type": null,
             "item_format": null
           },
+          "_site": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "_maintainer": {
             "type": null,
             "format": null,
@@ -6852,6 +6900,12 @@
             "item_type": null,
             "item_format": null
           },
+          "_site": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "_maintainer": {
             "type": null,
             "format": null,
@@ -7016,6 +7070,12 @@
             "item_format": null
           },
           "_links": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "_site": {
             "type": "object",
             "format": null,
             "item_type": null,
@@ -7297,6 +7357,12 @@
             "item_type": null,
             "item_format": null
           },
+          "_site": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "_maintainer": {
             "type": null,
             "format": null,
@@ -7462,6 +7528,12 @@
             "item_format": null
           },
           "_links": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "_site": {
             "type": "object",
             "format": null,
             "item_type": null,
@@ -7633,6 +7705,12 @@
             "item_format": null
           },
           "_links": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "_site": {
             "type": "object",
             "format": null,
             "item_type": null,
@@ -8968,6 +9046,12 @@
             "item_type": null,
             "item_format": null
           },
+          "_site": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "key": {
             "type": "string",
             "format": null,
@@ -9146,6 +9230,12 @@
             "item_type": null,
             "item_format": null
           },
+          "_site": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "key": {
             "type": "string",
             "format": null,
@@ -9312,6 +9402,12 @@
         ],
         "properties": {
           "_access": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "_site": {
             "type": "object",
             "format": null,
             "item_type": null,

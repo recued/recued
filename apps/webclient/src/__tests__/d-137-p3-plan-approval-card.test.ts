@@ -39,6 +39,7 @@ import {
   CHAT_ROUTE_PLAN_RELATED_ATTR,
   CHAT_ROUTE_PLAN_VERIFICATION_ATTR,
   CHAT_ROUTE_SEND_ATTR,
+  CHAT_ROUTE_STYLES,
   type ChatRoute,
   type ChatRouteConn,
 } from '../chat/bootstrap-chat-route.js';
@@ -881,6 +882,20 @@ describe('D-137 P3 plan-approval reducer', () => {
 });
 
 describe('D-137 P3 plan-approval chat route', () => {
+  it('keeps secondary detail navigation at the desktop control floor', () => {
+    expect(CHAT_ROUTE_STYLES).toMatch(
+      /\.chat-data-verification-run \{[\s\S]*?min-height: 36px;/,
+    );
+    expect(CHAT_ROUTE_STYLES).toMatch(
+      new RegExp(
+        `\\[${CHAT_ROUTE_PLAN_RUN_ATTR}\\] \\{[\\s\\S]*?min-height: 36px;`,
+      ),
+    );
+    expect(CHAT_ROUTE_STYLES).toMatch(
+      /chat-plan-card-technical summary \{[\s\S]*?min-height: 36px;/,
+    );
+  });
+
   it('renders stamped, in-flight, and orphan cards with status attributes and text args', async () => {
     expect(CHAT_ROUTE_PLAN_CARD_ATTR).toBe('data-recued-chat-route-plan-card');
     expect(CHAT_ROUTE_PLAN_APPROVE_ATTR).toBe('data-recued-chat-route-plan-approve');

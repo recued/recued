@@ -576,18 +576,55 @@ export const isChatCatalogDeliveryMode = (
  *  5 probes, incl. 3/3 vs 2/3 on the over-expansion guard) and `tools.search`
  *  stayed at 0 in index mode, so there is no extra-round tax.
  *
- *  ⚠ NOT `lean-core`, which is cheaper again (−51.2% vs full) but DROPS the
- *  Tier-2 listing: the model then substitutes a visible core tool instead of
- *  searching (81 open-commitments 2/3 here, 0/3 on qwen; 0/4 on 90). `index`
- *  lists every recipe, so nothing has to be discovered blind.
+ *  ⚠ That A/B was ONE pass per arm. The PII probes are unstable in BOTH modes
+ *  (full failed {69,70}, index {31,67,70}); a 2-task delta is inside the noise
+ *  band, so the pass-count difference was never the reason to move — the
+ *  −49.9% input was.
  *
- *  ⚠ Open: the A/B was ONE pass per arm. The PII probes are unstable in BOTH
- *  modes (full failed {69,70}, index {31,67,70}); a 2-task delta is inside the
- *  noise band. Settle with `run-llm-baseline.sh 3` per arm before treating the
- *  pass-count difference as real. */
+ *  ⛔ **`lean-core` EVERYWHERE as of 2026-08-05, superseding the above.** The
+ *  block above ends with an argument AGAINST lean-core: it "DROPS the Tier-2
+ *  listing: the model then substitutes a visible core tool instead of searching
+ *  (81 open-commitments 2/3, 0/3 on qwen; 0/4 on 90)". That was measured BEFORE
+ *  the discovery-framing tune that took reach from 18% to 92%, and the
+ *  proven-safe re-run on a deliberately WEAK model contradicts it point for
+ *  point (internal benchmarks
+ *  FINDING.md`, gemma-4-31b-it, 3 passes × 5 probes × 3 modes):
+ *
+ *    - discovery HOLDS — 79 and 90 reached `tools.search` 3/3, and there is
+ *      **zero `work.search` substitution in the whole run**; qwen's residual 90
+ *      hard case did not reproduce;
+ *    - the over-search guard HOLDS — probe 91 searched 0 times, every pass,
+ *      every mode;
+ *    - cost/success wins vs full: 90 −45%, 79 −37%, 30 −69%, 91 −75%;
+ *    - all 5 misses are a MODE-SYMMETRIC narration/empty-output noise floor —
+ *      the control probe (a visible core tool, no catalog dependency) fails
+ *      once in full, once in index, once in lean-core. That is a weak-model
+ *      tool-emission weakness, not a catalog-mode regression.
+ *
+ *  Measured on the live wire (2026-08-05, 2,146 recipes installed, BYOK slot):
+ *  catalog prefix 520,418 chars on `full`, 232,733 on `index`, **20,211 on
+ *  `lean-core`** — 110,210 / 49,091 / 5,140 input tokens per turn. At that
+ *  scale `full` alone can exceed a small model's context window before the user
+ *  has typed anything, and the cost is paid EVERY turn because the catalog is a
+ *  function of installed recipes, not of the conversation.
+ *
+ *  ⚠ THE CAVEATS FROM THAT FINDING STAND, and this default does not retire
+ *  them: 3 passes is a coarse rate (33% single-sample resolution), it is ONE
+ *  model at ONE scale, and a non-thinking weak model is still unverified. What
+ *  makes shipping it reasonable anyway is that the mode is PRESENTATION ONLY —
+ *  authorization and the searchable pool are identical in all three — and every
+ *  source keeps a free per-source override, so a user who sees worse routing
+ *  moves that one slot to `index` or `full` in Settings → AI / Models without
+ *  touching the others.
+ *
+ *  ⚠ `tools.search` must stay DISPATCHABLE for this default to be safe, since
+ *  lean-core is what makes discovery the only path to a Tier-2 recipe. It does:
+ *  `wire-chat-orchestrator` passes the full set of POSSIBLE modes to
+ *  `anyCatalogModeUsesToolsSearch`, so the recall wrapper is always installed
+ *  and a `full` turn still drops the tool from PRESENTATION. */
 export const CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE: Readonly<
   Record<ChatModelSourceId, ChatCatalogDeliveryMode>
-> = { free_pool: 'index', slot_1: 'index', slot_2: 'index' };
+> = { free_pool: 'lean-core', slot_1: 'lean-core', slot_2: 'lean-core' };
 
 /** § A.14 — the BYOK slot capability hint carried ALONGSIDE the routing
  *  layer so chat can target the user's FAST (slot_1) vs QUALITY/THINKING

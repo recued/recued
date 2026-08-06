@@ -7,6 +7,7 @@ import {
   CONNECTIONS_GRANT_PANEL_EMPTY_ATTR,
   CONNECTIONS_GRANT_PANEL_ERROR_ATTR,
   CONNECTIONS_GRANT_PANEL_LOADING_ATTR,
+  CONNECTIONS_GRANT_PANEL_STYLES,
   CONNECTIONS_GRANT_TOGGLE_ATTR,
   type ConnectionsGrantGroupCaller,
   type ConnectionsListCaller,
@@ -337,6 +338,33 @@ const toggleFor = (
 // ════════════════════════════════════════════════════════════════
 
 describe('D-165 Connections operation-group grant panel', () => {
+  it('gives operation decisions a full action target', () => {
+    expect(CONNECTIONS_GRANT_PANEL_STYLES).toMatch(
+      /\.conn-grant-toggle\s*\{[^}]*min-height:\s*36px/s,
+    );
+  });
+
+  it('contains long connection and operation identities without shrinking actions', () => {
+    expect(CONNECTIONS_GRANT_PANEL_STYLES).toContain(
+      '[data-recued-connections-grant-panel] {\n  box-sizing: border-box;\n  min-width: 0;\n  max-width: 100%;',
+    );
+    expect(CONNECTIONS_GRANT_PANEL_STYLES).toContain(
+      '.conn-grant-display {\n  min-width: 0;\n  overflow-wrap: anywhere;',
+    );
+    expect(CONNECTIONS_GRANT_PANEL_STYLES).toContain(
+      '.conn-grant-name {\n  min-width: 0;\n  max-width: 100%;\n  overflow-wrap: anywhere;',
+    );
+    expect(CONNECTIONS_GRANT_PANEL_STYLES).toContain(
+      '.conn-grant-group-id {\n  min-width: 0;\n  overflow-wrap: anywhere;',
+    );
+    expect(CONNECTIONS_GRANT_PANEL_STYLES).toContain(
+      '.conn-grant-group-ops {\n  min-width: 0;\n  overflow-wrap: anywhere;',
+    );
+    expect(CONNECTIONS_GRANT_PANEL_STYLES).toMatch(
+      /\.conn-grant-toggle\s*\{[^}]*flex:\s*0 0 auto/s,
+    );
+  });
+
   it('renders loading, then one card per api connection with resolved groups', async () => {
     const list = deferred<{ connections: ReadonlyArray<ConnectionView> }>();
     const hsA = connection('hs-a', { display_name: 'HubSpot A' });
@@ -420,7 +448,7 @@ describe('D-165 Connections operation-group grant panel', () => {
 
   it('renders read groups as always allowed and write groups as toggles', async () => {
     const { host, mount } = mountFor({
-      connections: [connection('hs')],
+      connections: [connection('hs', { display_name: 'HubSpot' })],
       groupsByName: {
         hs: grantView('hs', [
           group(DEALS_READ),
@@ -437,11 +465,17 @@ describe('D-165 Connections operation-group grant panel', () => {
 
     const grant = toggleFor(host, DEALS_WRITE)!;
     expect(grant.textContent).toBe('Grant');
+    expect(grant.getAttribute('aria-label')).toBe(
+      'Grant hubspot.deals.write for HubSpot (hs)',
+    );
     expect(grant.getAttribute('aria-pressed')).toBe('false');
     expect(grant.getAttribute('data-granted')).toBe('false');
 
     const revoke = toggleFor(host, CONTACTS_WRITE)!;
     expect(revoke.textContent).toBe('Revoke');
+    expect(revoke.getAttribute('aria-label')).toBe(
+      'Revoke hubspot.contacts.write for HubSpot (hs)',
+    );
     expect(revoke.getAttribute('aria-pressed')).toBe('true');
     expect(revoke.getAttribute('data-granted')).toBe('true');
     mount.dispose();
@@ -505,7 +539,7 @@ describe('D-165 Connections operation-group grant panel', () => {
   it('serializes mutations per connection while a grant is in flight', async () => {
     const grantDone = deferred<OperationGroupGrantView>();
     const { doc, host, mount, calls } = mountFor({
-      connections: [connection('hs')],
+      connections: [connection('hs', { display_name: 'HubSpot' })],
       groupsByName: {
         hs: grantView('hs', [group(DEALS_WRITE), group(CONTACTS_WRITE)]),
       },
@@ -526,7 +560,13 @@ describe('D-165 Connections operation-group grant panel', () => {
       'true',
     ]);
     expect(toggles[0]!.getAttribute('aria-busy')).toBe('true');
+    expect(toggles[0]!.getAttribute('aria-label')).toBe(
+      'Granting… hubspot.deals.write for HubSpot (hs)',
+    );
     expect(toggles[1]!.getAttribute('aria-busy')).toBeNull();
+    expect(toggles[1]!.getAttribute('aria-label')).toBe(
+      'Grant hubspot.contacts.write for HubSpot (hs)',
+    );
     expect(doc.activeElement).toBe(toggleFor(host, DEALS_WRITE));
     expect(mount.hasInFlightWork()).toBe(true);
     expect(calls.runGrant).toHaveBeenCalledTimes(1);

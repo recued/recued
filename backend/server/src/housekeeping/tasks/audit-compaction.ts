@@ -30,6 +30,7 @@
  *
  *  Spec: D-123 §3.1. */
 
+import { RUNTIME_SCHEMA_MAP } from '@recued/config';
 import type {
   HousekeepingCursor,
   HousekeepingStepResult,
@@ -40,13 +41,42 @@ import type {
   HousekeepingTaskInstance,
 } from '../registry.js';
 
-/** Compaction window — consecutive identical-`recipe_hash` runs of
- *  the same `recipe_id` arriving within this many ms collapse to
- *  the earliest. Two minutes balances "noisy reactive ticks
- *  collapse" against "operators want at least a sample of the
- *  cadence" — anything tighter starts erasing tick patterns the
- *  user installed the recipe to produce. */
-export const AUDIT_COMPACTION_WINDOW_MS = 2 * 60_000;
+/** The fastest cadence a user can actually schedule. Read from the schema so
+ *  the window below cannot drift away from it — a duplicated default is a rule
+ *  that goes stale in place, silently. */
+const SCHEDULER_FLOOR_MINUTES =
+  typeof RUNTIME_SCHEMA_MAP['scheduler.min_interval_minutes']?.default === 'number'
+    ? RUNTIME_SCHEMA_MAP['scheduler.min_interval_minutes'].default as number
+    : 5;
+
+/** Compaction window — consecutive identical-`recipe_hash` runs of the same
+ *  `recipe_id` arriving within this many ms collapse to the earliest.
+ *
+ *  ⛔ WAS TWO MINUTES, WHICH COULD NOT COLLAPSE A SCHEDULED RECIPE AT ALL.
+ *  `scheduler.min_interval_minutes` is 5, so the FASTEST cadence a user can
+ *  ask for produces runs five minutes apart — outside a two-minute window,
+ *  every time. The task's own description says it "collapses noisy reactive
+ *  ticks", and it could only ever reach sub-two-minute bursts; the scheduled
+ *  repetition that actually accumulates was untouched. A recipe at the floor
+ *  writes 288 runs/day ≈ 430 KB of audit.
+ *
+ *  Derived at 2× the scheduler floor rather than as a fresh constant:
+ *    - it must EXCEED the floor or scheduled runs never collapse;
+ *    - 2× absorbs tick jitter, so a run landing at 5m03s still collapses;
+ *    - it still SAMPLES the cadence — at the floor an operator keeps roughly
+ *      one row per window instead of one per tick, which is the balance the
+ *      previous comment was reaching for and missing.
+ *
+ *  ⚠ ONLY SUCCESSFUL RUNS ARE CANDIDATES (`commit_status = 'succeeded'` in the
+ *  select below), so widening cannot erase a failure — the rows an operator
+ *  most needs are out of scope by construction.
+ *
+ *  ⚠ AND IT ONLY COLLAPSES RUNS THAT ARE CONSECUTIVE IN TIME. The scan is
+ *  globally time-ordered, not grouped by recipe, so two recipes ticking in
+ *  parallel keep resetting each other's anchor. Widening helps the single
+ *  noisy recipe; it does not fix interleaving, which would need the anchor to
+ *  be per-recipe. Deliberately not changed here. */
+export const AUDIT_COMPACTION_WINDOW_MS = SCHEDULER_FLOOR_MINUTES * 2 * 60_000;
 
 /** Max rows pulled per inner loop. Bounds memory + lets the
  *  scheduler yield between batches when budget tightens. 1000 is
@@ -69,7 +99,8 @@ export const auditCompactionTask: HousekeepingTaskInstance = {
   meta: {
     id: 'audit-compaction',
     description:
-      'Dedupe same-recipe / same-hash audit rows within a 2-minute window — collapses noisy reactive ticks.',
+      'Dedupe consecutive same-recipe / same-hash successful runs that land '
+      + 'inside one window — collapses repeated ticks that reported nothing new.',
     interruptible: true,
     kind: 'core',
     tags: ['kind:core', 'domain:audit', 'surface:deterministic'],

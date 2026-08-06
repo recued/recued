@@ -1,4 +1,11 @@
-export type { Collection, EncryptedEntry, ConfigEntry } from './types.js';
+export type {
+  Collection,
+  EncryptedEntry,
+  ConfigEntry,
+  FieldQuery,
+  FieldQueryableCollection,
+} from './types.js';
+export { isFieldQueryable } from './types.js';
 export { createInMemoryCollection } from './in-memory.js';
 export {
   createIDBCollection,

@@ -22,6 +22,7 @@
  */
 
 import { AUTHORIZE_PARAM_RESERVED_KEYS, MICROSOFT_GRAPH_API_BASE } from './connection-vendor-providers.js';
+import type { ConnectionSigningScheme } from './connection-signing.js';
 import {
   CONNECTION_AUTH_TYPES,
   isValidOAuthEndpointUrl,
@@ -96,7 +97,16 @@ export type ConnectionAuthDescriptor =
    *  highest-value exfiltration primitive in the system, and one no reviewer
    *  would think to look for on an auth descriptor. Deriving it means the
    *  password can only ever reach the host the connection already talks to. */
-  | { type: 'atproto_session' };
+  | { type: 'atproto_session' }
+  /** Per-request signing. The pack declares WHICH scheme it needs; the owner
+   *  pastes the key pair at enroll.
+   *
+   *  ⛔ The scheme name is the whole of what a pack may say about signing. It
+   *  selects from a closed registry implemented in `connection-signing.ts` — a
+   *  pack cannot describe a canonical string, because that would let its author
+   *  choose which bytes Recued signs with the owner's secret. Same refusal, and
+   *  the same reason, as the missing endpoint field on `atproto_session` above. */
+  | { type: 'request_signature'; scheme: ConnectionSigningScheme };
 
 /** Closed list of `ConnectionAuthDescriptor` discriminants.
  *

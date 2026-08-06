@@ -88,6 +88,14 @@ export interface SharedResolvers extends AnnotationLinkResolvers {
   /** Resolves keys in the `data.shared.*` durable tier. Omit when no
    *  `data.shared` resolver is wired — refs fall through to undefined. */
   dataShared?: SharedKeyResolver;
+  /** D-231 — resolves `data.memory.<memory_id>` against the OWNER'S CURATED
+   *  KNOWLEDGE (`user_memory`), the store behind the Data → Memory lens.
+   *
+   *  ⛔ NOT the audit log. `data.audit.*` is the run-provenance trail and is a
+   *  separate namespace over a separate store; D-120's alias that collapsed
+   *  one onto the other is gone. Omit and `data.memory.*` falls through to
+   *  undefined, exactly as `dataShared` does. */
+  dataMemory?: SharedKeyResolver;
 }
 
 /** Set of `data.<collection>.*` collection names where annotation /
@@ -274,6 +282,7 @@ export const prefetchSharedRefs = async (
   if (
     !resolvers.shared
     && !resolvers.dataShared
+    && !resolvers.dataMemory
     && !resolvers.annotationsForRecord
     && !resolvers.linksForRecord
     && !resolvers.rollupsForRecord
@@ -299,6 +308,34 @@ export const prefetchSharedRefs = async (
           if (!match) return;
           if (!stores.shared) stores.shared = Object.create(null) as Record<string, unknown>;
           setPath(stores.shared as Record<string, unknown>, match.key.split('.'), match.value);
+        })(),
+      );
+      continue;
+    }
+    // D-231 — `data.memory.<memory_id>[.field]`. Same longest-match shape as
+    // `data.shared.*`: the resolver is asked for progressively shorter key
+    // prefixes, so a ref into a field of a memory resolves the memory and then
+    // walks into it.
+    if (
+      ref.ns === 'data'
+      && ref.path.startsWith('memory.')
+      && resolvers.dataMemory
+    ) {
+      const innerPath = ref.path.slice('memory.'.length);
+      tasks.push(
+        (async () => {
+          const match = await longestMatch(resolvers.dataMemory!, innerPath);
+          if (!match) return;
+          if (!stores.data) stores.data = Object.create(null) as Record<string, unknown>;
+          const dataStore = stores.data as Record<string, unknown>;
+          if (!dataStore.memory || typeof dataStore.memory !== 'object') {
+            dataStore.memory = Object.create(null);
+          }
+          setPath(
+            dataStore.memory as Record<string, unknown>,
+            match.key.split('.'),
+            match.value,
+          );
         })(),
       );
       continue;

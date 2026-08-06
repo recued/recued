@@ -1,6 +1,6 @@
 {
   "name": "recued",
-  "version": "26.8.4",
+  "version": "26.8.5",
   "private": true,
   "description": "Self-hosted Recued server and webclient",
   "license": "AGPL-3.0-only",
@@ -55,7 +55,7 @@
     "build": "tsc --build tsconfig.build.json",
     "build:server": "npm run build --workspace @recued/server",
     "build:webclient": "npm run build:bundle:prod --workspace @recued/webclient",
-    "typecheck:tests": "tsc -p tsconfig.test.json --noEmit",
+    "typecheck:tests": "node --max-old-space-size=8192 ./node_modules/typescript/bin/tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run --pool forks",
     "e2e:webclient": "node apps/webclient/e2e/harness/build-harness.mjs && playwright test -c apps/webclient/e2e/playwright.config.ts full-app.spec.ts",
     "start": "npm start --workspace @recued/server",

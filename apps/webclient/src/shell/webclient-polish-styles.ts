@@ -281,7 +281,7 @@ export const WEBCLIENT_POLISH_STYLES = `
    5 · Tabs — outlined active state (stop over-using accent fills)
    ════════════════════════════════════════════════════════════════ */
 [data-recued-webclient-shell] [data-recued-webclient-content] .data-tab {
-  min-height: 30px;
+  min-height: 36px;
   border-radius: var(--wc-radius);
 }
 [data-recued-webclient-shell] [data-recued-webclient-content] .data-tab[data-active="true"] {
@@ -432,6 +432,98 @@ export const WEBCLIENT_POLISH_STYLES = `
     [data-recued-recovery-intent-cue]:focus {
     --wc-recovery-intent-color: Highlight;
   }
+}
+
+/* ════════════════════════════════════════════════════════════════
+   11 · Containment floor — nothing overflows its column
+   ════════════════════════════════════════════════════════════════
+   Every rule here is a PURE FLOOR at specificity 0,0,0 (:where()
+   contributes nothing, * contributes nothing), so any route rule —
+   however loosely written — still wins. These are defaults the app
+   should always have had, not overrides.
+
+   Written as one layer because the failure is one failure: a long
+   unbreakable token (a contract id, a pack slug, an error payload, a
+   220-char request id) forces a flex/grid child's min-content width
+   past the viewport and the whole page scrolls sideways on a phone.
+   Fixing that per-selector needs three declarations on every element
+   in the chain from the token to the route root; fixing it here needs
+   none, because the chain no longer has a weak link. */
+
+/* Flex and grid children default to min-width: auto, which refuses to
+   shrink below content — the single most common cause of a route pushing
+   the page wider than the viewport. Block elements already compute 0, so
+   this only changes flex/grid children: exactly the intended target. A
+   site that genuinely needs intrinsic width declares min-width and wins. */
+:where([data-recued-webclient-content]) * {
+  min-width: 0;
+}
+
+/* Padding and border must never add to a declared width. */
+:where([data-recued-webclient-content]) *,
+:where([data-recued-webclient-content]) *::before,
+:where([data-recued-webclient-content]) *::after {
+  box-sizing: border-box;
+}
+
+/* anywhere rather than break-word: only anywhere also shrinks the
+   element's intrinsic min-content width, which is what actually stops a
+   flex parent from being pushed wide. Inherited, so one declaration on
+   the content root reaches every descendant. */
+:where([data-recued-webclient-content]) {
+  overflow-wrap: anywhere;
+}
+
+/* Replaced content never exceeds its column. */
+:where([data-recued-webclient-content]) :is(img, svg, video, canvas, iframe) {
+  max-width: 100%;
+}
+
+/* ── The one exception: containers that are SUPPOSED to overflow ──────
+   A horizontal scroll rail (a tab strip that scrolls the active section
+   into view, a wide data table) needs its children to KEEP intrinsic
+   width — that overflow is the feature, and scrollLeft is how the
+   surface reveals the active item. The min-width floor above would
+   shrink them to fit and silently delete the scroll.
+
+   Every intentional rail owns the shared data-recued-scroll-rail marker.
+   The marker is the review boundary: adding one means the local overflow
+   is deliberate and keyboard/pointer users have a way to reveal it.
+
+   Restoring min-width alone is NOT enough, and this is the subtle part:
+   the overflow-wrap: anywhere floor drops an element's min-content width
+   to roughly one character, so min-width: auto still resolves to almost
+   nothing and the rail keeps collapsing. A scroll rail has to opt out of
+   BOTH floors — rigid width and unbroken text — to overflow at all.
+
+   The scope differs by rail shape: a tab strip needs its direct children
+   rigid, while a scrolling table needs its cells rigid, because shrinking
+   those lets a width: 100% table consume the overflow internally. */
+:where([data-recued-webclient-content] [data-recued-scroll-rail]) {
+  overflow-wrap: normal;
+}
+:where(
+  [data-recued-webclient-content] [data-recued-scroll-rail] > *,
+  [data-recued-webclient-content] [data-recued-scroll-rail] :is(table, th, td)
+) {
+  min-width: auto;
+  overflow-wrap: normal;
+}
+
+/* Block-level preformatted text keeps its formatting and scrolls inside its
+   own box rather than widening the page.
+
+   INLINE code/kbd/samp deliberately do NOT get this treatment: they carry
+   exactly the long unbreakable tokens this layer exists to contain (ref
+   paths, ids, slugs) and they sit inside flowing prose, so they must break
+   like any other text. Exempting them was measurably wrong — it was the
+   sole cause of three Automation containment failures, where a
+   data.connection.api.* ref in an inline code span forced a 245px row to
+   1457px. Only pre gets the scroll-box treatment. */
+:where([data-recued-webclient-content]) pre {
+  max-width: 100%;
+  overflow-wrap: normal;
+  overflow-x: auto;
 }
 
 @media (max-width: 640px) {

@@ -25,6 +25,7 @@
  *    );
  *    CREATE INDEX cache_last_accessed ON cache_entries(last_accessed_at);
  *    CREATE INDEX cache_recipe_id     ON cache_entries(recipe_id);
+ *    CREATE INDEX cache_expires_at    ON cache_entries(expires_at);
  */
 
 import type Database from 'better-sqlite3';
@@ -34,6 +35,7 @@ import {
   encodeCiphertext, decodeCiphertext,
 } from '@recued/crypto';
 import type { BlobStore } from './blob-store.js';
+import { prefixUpperBound } from './prefix-range.js';
 
 /** 64 KB threshold. Values serialized larger than this go to the blob
  *  store; smaller stay inline. Chosen to keep SQLite rows small while
@@ -58,6 +60,17 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS cache_last_accessed ON cache_entries(last_accessed_at);
   CREATE INDEX IF NOT EXISTS cache_recipe_id     ON cache_entries(recipe_id);
   CREATE INDEX IF NOT EXISTS cache_created_at    ON cache_entries(created_at);
+  -- The one hot predicate that had no index. The TTL sweep
+  -- (housekeeping/tasks/cache-eviction-beyond-ttl.ts) runs on a cadence and
+  -- filters WHERE expires_at < ?, so without this every sweep SCANNED the
+  -- whole cache. It matters most in the case that happens most: a HEALTHY
+  -- cache with nothing expired, where the sweep previously read every row to
+  -- find none. Measured on a file-backed WAL db, nothing expired:
+  --   5k rows 0.08ms -> 0.02ms | 50k 0.62ms -> 0.02ms | 200k 2.43ms -> 0.02ms
+  -- flat, because the cost stops depending on the cache size.
+  -- IF NOT EXISTS, inside SCHEMA which is exec'd on every store construction,
+  -- so existing databases pick it up on the next boot without a migration.
+  CREATE INDEX IF NOT EXISTS cache_expires_at     ON cache_entries(expires_at);
 `;
 
 // In-place migration for pre-phase-5 databases: add the new columns if missing.
@@ -308,9 +321,17 @@ export const createSQLiteCacheStore = (
     },
 
     async deleteByPrefix(prefix) {
-      const rows = db
-        .prepare(`SELECT size_bytes FROM cache_entries WHERE key LIKE ? || '%'`)
-        .all(prefix) as Array<{ size_bytes: number }>;
+      // ⛔ RANGE, not `LIKE ? || '%'` — see `prefix-range.ts`. `LIKE` with a
+      // bound pattern cannot use the index, and it treats `_` / `%` in the
+      // caller's prefix as wildcards. This path is reachable from the
+      // `cache.invalidate(prefix)` rpc, and cache keys carry recipe ids and
+      // ingredient slugs, so an underscore here is ordinary rather than exotic.
+      const upper = prefixUpperBound(prefix);
+      const rows = (upper === null
+        ? db.prepare(`SELECT size_bytes FROM cache_entries`).all()
+        : db
+          .prepare(`SELECT size_bytes FROM cache_entries WHERE key >= ? AND key < ?`)
+          .all(prefix, upper)) as Array<{ size_bytes: number }>;
       const freed = rows.reduce((sum, r) => sum + r.size_bytes, 0);
       const changes = deleteCacheEntriesByPrefix(db, prefix);
       reportDelta(-freed);
@@ -328,12 +349,32 @@ export const createSQLiteCacheStore = (
 
       let freed = 0;
       const toFree = current - target_bytes;
-      const rows = listForEvictStmt.all() as { key: string; blob_hash: string | null; size_bytes: number }[];
-      for (const row of rows) {
+
+      // ⛔ STREAM, don't materialise. `.all()` pulled EVERY cache row into JS
+      // — key, blob_hash and size for the whole table — and then usually
+      // deleted a handful and `break`ed. `ORDER BY last_accessed_at ASC` plans
+      // as `SCAN … USING INDEX cache_last_accessed`, so rows already arrive in
+      // order with no sort barrier, which means an iterator can stop as soon as
+      // it has freed enough. Measured on a file-backed WAL db evicting ~10
+      // rows: 5k rows 1.22ms → 0.07ms, 50k rows 19.75ms → 0.08ms (254x) — and
+      // FLAT, because the cost is now the eviction, not the cache.
+      //
+      // ⚠ Keys are collected first and deleted after the loop. Deleting from a
+      // table while a cursor is walking it is exactly the case SQLite leaves
+      // unspecified ("a row that the query has not yet visited may or may not
+      // appear"), and an LRU that skips rows evicts the wrong ones.
+      const doomed: Array<{ key: string; size_bytes: number }> = [];
+      for (const row of listForEvictStmt.iterate() as Iterable<{
+        key: string; blob_hash: string | null; size_bytes: number;
+      }>) {
         if (freed >= toFree) break;
-        deleteStmt.run(row.key);
+        doomed.push({ key: row.key, size_bytes: row.size_bytes });
         freed += row.size_bytes;
       }
+      // One transaction, not one implicit commit per row.
+      db.transaction(() => {
+        for (const row of doomed) deleteStmt.run(row.key);
+      })();
       reportDelta(-freed);
     },
 
@@ -400,6 +441,15 @@ export const deleteCacheEntriesByPrefix = (
   db: Database.Database,
   prefix: string,
 ): number => {
-  const result = db.prepare(`DELETE FROM cache_entries WHERE key LIKE ? || '%'`).run(prefix);
+  // ⛔ RANGE — the `SELECT` in `deleteByPrefix` above MUST match this `DELETE`
+  // row-for-row, or the byte accounting it feeds (`reportDelta`) drifts from
+  // what was actually removed. Two different predicates over the same prefix is
+  // how a storage gate ends up believing in bytes that are gone.
+  const upper = prefixUpperBound(prefix);
+  const result = upper === null
+    ? db.prepare(`DELETE FROM cache_entries`).run()
+    : db
+      .prepare(`DELETE FROM cache_entries WHERE key >= ? AND key < ?`)
+      .run(prefix, upper);
   return result.changes;
 };

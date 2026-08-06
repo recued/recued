@@ -17,6 +17,7 @@ import type {
   ValidatedConnectionMcpAnnotationInput,
   WebChatTab,
 } from '@recued/contracts';
+import { CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE } from '@recued/contracts';
 import { TOOLS_SEARCH_TOOL_NAME } from '../chat-tools-search-name.js';
 import { RECALL_SEARCH_TOOL_NAME } from '../chat-recall-search-tool.js';
 import type { AuditLogStore } from '@recued/storage';
@@ -916,11 +917,17 @@ describe('composeChatOrchestrator — Lever-2 per-slot catalog modes (Phase 2)',
     expect(resolve('free_pool')).toEqual({ mode: 'full' });
   });
 
-  it('smart-defaults default ON (flag unset) → every KNOWN source leans to index', async () => {
-    // The proven-safe default flip (2026-07-03) put free_pool on `index`; the
-    // 2026-07-26 same-bundle A/B extended it to the BYOK slots (index measured
-    // 98% cache-served there, −49.9% input, discovery holding). With the flag
-    // UNSET the wire defaults smart-defaults ON. `=0` opts back out.
+  it('smart-defaults default ON (flag unset) → every KNOWN source thins', async () => {
+    // ⚠ THE MODE IS READ FROM THE MAP, NOT PINNED HERE. This test is about the
+    // FLAG — unset means smart-defaults ON, `=0` opts out — and it pinned the
+    // literal `index`, so the 2026-08-05 flip to `lean-core` reddened it for a
+    // correct change it does not govern. The shipped value has its own named
+    // test in `lever-2-index-mode-catalog.test.ts`, which is where changing it
+    // should show up.
+    //
+    // History for the flag itself: free_pool went to `index` on 2026-07-03,
+    // the BYOK slots followed on 2026-07-26, and every source moved to
+    // `lean-core` on 2026-08-05.
     delete process.env.RECUED_CHAT_CATALOG_SMART_DEFAULTS; // unset → default ON
     const { compose, createChatOrchestratorMock } = await importComposerWithOrchestratorSpy();
     compose(buildDeps({ getLlmConfig: () => undefined }));
@@ -929,9 +936,12 @@ describe('composeChatOrchestrator — Lever-2 per-slot catalog modes (Phase 2)',
         s: ChatModelSourceId | undefined,
       ) => { mode: ChatCatalogDeliveryMode };
     }).catalogProjectionForSource;
-    expect(resolve('free_pool')).toEqual({ mode: 'index' });
-    expect(resolve('slot_1')).toEqual({ mode: 'index' });
-    expect(resolve('slot_2')).toEqual({ mode: 'index' });
+    for (const source of ['free_pool', 'slot_1', 'slot_2'] as const) {
+      expect(resolve(source).mode, source)
+        .toBe(CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE[source]);
+      // ...and "thins" is the claim in the name: never `full`.
+      expect(resolve(source).mode, source).not.toBe('full');
+    }
     // An unknown/unpinned source never thins (can't predict the matched slot).
     expect(resolve(undefined)).toEqual({ mode: 'full' });
 

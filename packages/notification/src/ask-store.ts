@@ -15,7 +15,7 @@
  *  Spec: D-158 § A.2 / I-2.
  */
 
-import type { Collection } from '@recued/storage';
+import { isFieldQueryable, type Collection } from '@recued/storage';
 import type {
   Answer,
   ChannelName,
@@ -121,6 +121,22 @@ export const HANDLED_ASK_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const createAskStore = (
   backing: Collection<PendingAsk>,
 ): AskStore => {
+  /** ⛔ THE READ SHAPE. `listByStatus`, `countOpen` and `pruneHandled` all ask
+   *  "which rows have status X" — a question `Collection` can only answer by
+   *  reading and JSON-parsing EVERY row and filtering in JS. Measured against
+   *  the SQLite backing before this: `countOpen()` cost 1ms at 1k rows, 14ms at
+   *  10k, 51ms at 50k. That one is not a background sweep — it backs the
+   *  "N asks awaiting you" BADGE, so it is a UI read paying O(total asks).
+   *
+   *  A backing that can filter server-side does so (`isFieldQueryable`);
+   *  everything else keeps the original full-scan path unchanged. Both paths
+   *  are exercised by the test suite — a fast path covered only in production
+   *  is a fast path nobody has tested.
+   *
+   *  ⚠ The fallback is NOT dead code to be deleted later: the in-memory
+   *  collection backs every test in this package, and `packages/` may not
+   *  depend on the server's SQLite backing (public-boundary rule). */
+  const queryable = isFieldQueryable(backing) ? backing : undefined;
   /** Oldest-first — the boot sweep walks asks in creation order. */
   const byCreatedAsc = (a: PendingAsk, b: PendingAsk): number =>
     a.created_at - b.created_at;
@@ -189,21 +205,35 @@ export const createAskStore = (
     },
 
     async listByStatus(status) {
-      const all = await backing.list();
-      return all.filter((a) => a.status === status).sort(byCreatedAsc);
+      const matching = queryable
+        ? await queryable.queryByField({ equals: { status } })
+        : (await backing.list()).filter((a) => a.status === status);
+      // Sorted HERE in both paths, not in SQL: `byCreatedAsc` is the boot
+      // sweep's contract and must not depend on which backing is underneath.
+      return [...matching].sort(byCreatedAsc);
     },
 
     async countOpen() {
+      if (queryable) return queryable.countByField({ equals: { status: 'open' } });
       const all = await backing.list();
       return all.reduce((n, a) => (a.status === 'open' ? n + 1 : n), 0);
     },
 
     async pruneHandled(before) {
+      // ⛔ BOTH PREDICATES TRAVEL TOGETHER. The status check is the whole
+      // safety property (see the interface doc): `answered` is the retry
+      // queue, `open` is a live decision. Pushing the age bound down without
+      // the status bound — or vice versa — would delete either live decisions
+      // or the entire handled history. They are one query, never two.
+      if (queryable) {
+        return queryable.deleteByField({
+          equals: { status: 'handled' },
+          lessThan: { field: 'created_at', value: before },
+        });
+      }
       const all = await backing.list();
       let removed = 0;
       for (const ask of all) {
-        // The status check is the whole safety property — see the interface
-        // doc. `answered` is the retry queue, `open` is a live decision.
         if (ask.status !== 'handled') continue;
         if (ask.created_at >= before) continue;
         await backing.delete(ask.ask_id);

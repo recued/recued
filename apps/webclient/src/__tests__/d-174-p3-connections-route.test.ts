@@ -41,6 +41,7 @@ import {
 import type { FoundationalOAuthEnv } from '../connections/foundational-oauth-popup.js';
 import {
   WEBHOOKS_PANEL_ACTION_ATTR,
+  WEBHOOKS_PANEL_ATTR,
   WEBHOOKS_PANEL_CARD_ATTR,
   WEBHOOKS_PANEL_DELIVERIES_ATTR,
   WEBHOOKS_PANEL_DELIVERY_ATTR,
@@ -61,6 +62,7 @@ import {
   WEBHOOKS_PANEL_REJECTIONS_ATTR,
   WEBHOOKS_PANEL_REBIND_ATTR,
   WEBHOOKS_PANEL_RETENTION_ATTR,
+  WEBHOOKS_PANEL_STYLES,
   WEBHOOKS_PANEL_TEST_ATTR,
 } from '../connections/webhooks-panel.js';
 import {
@@ -465,6 +467,12 @@ const webhookList = (
 ) => ({ ingresses, profiles });
 
 describe('Connections route (R13–R16 restructure)', () => {
+  it('keeps every webhook button at the shared mobile target height', () => {
+    expect(WEBHOOKS_PANEL_STYLES).toContain(
+      `[${WEBHOOKS_PANEL_ATTR}] button { box-sizing:border-box; min-height:36px;`,
+    );
+  });
+
   it('round-trips only a valid non-secret connection identity for the server-update return', () => {
     expect(serializeConnectionsCredentialRotationRetry({
       kind: 'api',
@@ -1354,6 +1362,50 @@ describe('Connections route (R13–R16 restructure)', () => {
     expect(root.children).toHaveLength(0);
   });
 
+  it('distinguishes repeated webhook actions by their owning ingress', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const first = readyWebhook();
+    const second: WebhookIngressView = {
+      ...readyWebhook(),
+      ingress_id: 'whi_11111111111111111111111111111111',
+      public_id: 'opaquePublicId_1111111111111111',
+      display_name: 'Billing deliveries',
+      endpoint_url: 'https://hooks.example/v1/webhooks/opaquePublicId_1111111111111111',
+    };
+    const route = bootstrapConnectionsRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      initialTab: 'webhooks',
+      webhooksListCaller: vi.fn(async () => webhookList([first, second])),
+      webhooksCreateCaller: vi.fn(async () => ({ ingress: first })),
+      webhooksCredentialWriteCaller: vi.fn(async () => ({
+        ingress: first,
+        credential_version: first.active_credential_versions[0]!,
+      })),
+      webhooksCredentialRetireCaller: vi.fn(async () => ({ ingress: first })),
+      webhooksManualConfirmCaller: vi.fn(async () => ({ ingress: first })),
+      webhooksEnableCaller: vi.fn(async () => ({ ingress: first })),
+      webhooksDisableCaller: vi.fn(async () => ({ ingress: first })),
+    });
+    await route.webhooksPanel()!.refresh();
+
+    const actions = collectByAttr(root, WEBHOOKS_PANEL_ACTION_ATTR);
+    const labelsFor = (action: string): Array<string | null> => actions
+      .filter((candidate) => candidate.getAttribute(WEBHOOKS_PANEL_ACTION_ATTR) === action)
+      .map((candidate) => candidate.getAttribute('aria-label'));
+    expect(labelsFor('credentials')).toEqual([
+      `Rotate credentials for Signed deliveries (${first.ingress_id})`,
+      `Rotate credentials for Billing deliveries (${second.ingress_id})`,
+    ]);
+    expect(labelsFor('enable')).toEqual([
+      `Enable intake for Signed deliveries (${first.ingress_id})`,
+      `Enable intake for Billing deliveries (${second.ingress_id})`,
+    ]);
+
+    route.dispose();
+  });
+
   it('offers the bounded owner reconcile action only for the code-backed managed Stripe profile', async () => {
     const doc = makeFakeDocument();
     const root = doc.createElement('div');
@@ -1924,6 +1976,13 @@ describe('Connections route (R13–R16 restructure)', () => {
       cursor,
     });
     expect(collectByAttr(root, WEBHOOKS_PANEL_DELIVERY_ATTR)).toHaveLength(2);
+    expect(collectByAttr(root, WEBHOOKS_PANEL_ACTION_ATTR)
+      .filter((action) => action.getAttribute(WEBHOOKS_PANEL_ACTION_ATTR)
+        === 'delivery-open')
+      .map((action) => action.getAttribute('aria-label'))).toEqual([
+      `Inspect delivery ${delivery.delivery_id} for ${ingress.display_name} (${ingress.ingress_id})`,
+      `Inspect delivery ${olderDelivery.delivery_id} for ${ingress.display_name} (${ingress.ingress_id})`,
+    ]);
 
     findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'delivery-open')!.click();
     await tick();
@@ -1932,6 +1991,10 @@ describe('Connections route (R13–R16 restructure)', () => {
       delivery_id: delivery.delivery_id,
     });
     expect(collectByAttr(root, WEBHOOKS_PANEL_EVENT_ATTR)).toHaveLength(1);
+    expect(findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'event-open')
+      ?.getAttribute('aria-label')).toBe(
+      `View decoded payload for event ${event.event_id} in ${ingress.display_name} (${ingress.ingress_id})`,
+    );
 
     findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'event-open')!.click();
     await tick();

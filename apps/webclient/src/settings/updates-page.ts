@@ -760,6 +760,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   });
   const checkBtn = make('button', {
     text: 'Check for updates',
+    className: 'rx-btn rx-btn-secondary',
     attrs: { type: 'button', [UPDATES_CHECK_BTN_ATTR]: '' },
   });
   checkBtn.addEventListener('click', () => void doCheck());
@@ -773,7 +774,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
 
   const modeBlock = make('div');
   setHidden(modeBlock, true);
-  modeBlock.appendChild(make('label', { text: 'When updates are available' }));
+  const modeLabel = make('label', { text: 'When updates are available' });
   const modeSelect = doc.createElement('select') as HTMLSelectElement;
   modeSelect.setAttribute(UPDATES_MODE_SELECT_ATTR, '');
   for (const m of ['auto', 'notify', 'off'] as const) {
@@ -795,7 +796,8 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     }
     if (isUpdateMode(v)) void doSetMode(v);
   });
-  modeBlock.appendChild(modeSelect);
+  modeLabel.appendChild(modeSelect);
+  modeBlock.appendChild(modeLabel);
   const modeNoteEl = make('p', { attrs: { [UPDATES_MODE_NOTE_ATTR]: '' } });
   modeBlock.appendChild(modeNoteEl);
 
@@ -807,6 +809,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   );
   const rollbackBtn = make('button', {
     text: 'Roll back to previous version',
+    className: 'rx-btn rx-btn-danger',
     attrs: { type: 'button', [UPDATES_ROLLBACK_BTN_ATTR]: '' },
   });
   rollbackBtn.addEventListener('click', () => void doRollback());
@@ -1085,6 +1088,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
         : readServerUpdateProgress() !== null
           ? 'Update already in progress'
           : 'Update now',
+      className: 'rx-btn rx-btn-primary',
       attrs: { type: 'button', [UPDATES_APPLY_BTN_ATTR]: '' },
     });
     const localApplyPending = state.applying;
@@ -1106,6 +1110,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     if (state.applyResult?.status === 'major-blocked') {
       forceBtn = make('button', {
         text: 'Update anyway (major)',
+        className: 'rx-btn rx-btn-danger',
         attrs: { type: 'button', [UPDATES_FORCE_APPLY_BTN_ATTR]: '' },
       });
       setDisabled(

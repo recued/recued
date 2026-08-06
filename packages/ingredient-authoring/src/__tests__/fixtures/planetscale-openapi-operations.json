@@ -120,8 +120,8 @@
         "key": "service_tokens",
         "kind": "official_markdown",
         "url": "https://planetscale.com/docs/api/reference/service-tokens.md",
-        "bytes": 13133,
-        "sha256": "9256bcad984f04bd47237f5c68ac84d39c49f86c69be4f25d6747670ac077e2c",
+        "bytes": 13148,
+        "sha256": "a3a9ae648319d51d075bef29f6382d4e0635ed502f62837a0212bd6aeedd9d18",
         "proves": [
           "all_api_endpoints_require_service_token",
           "authorization_header_token_id_colon_token_secret",
@@ -132,8 +132,8 @@
         "key": "pagination",
         "kind": "official_markdown",
         "url": "https://planetscale.com/docs/api/reference/pagination.md",
-        "bytes": 2408,
-        "sha256": "b9efd8b54b5ccdd1a4455222cab9481482ac8c5897d283e42eb065f6540ce2b8",
+        "bytes": 2413,
+        "sha256": "1f3e5e8c9cc7fbf27501565c39ba2302c0f658d9aeba92e7d2206bb123578524",
         "proves": [
           "page_and_per_page_default_25_max_100",
           "cursor_start_cursor_end_has_next_has_prev",

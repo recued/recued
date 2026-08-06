@@ -1,16 +1,32 @@
-/** D-148 § A.5.3 / § A.6.5 — Node-side PKCS#10 CSR emitter for Ed25519.
+/** D-148 § A.5.3 / § A.6.5 — Node-side PKCS#10 CSR emitter for ECDSA P-256.
+ *
+ *  ⛔ WAS Ed25519, WHICH NO PUBLIC CA WILL SIGN (measured live 2026-08-05).
+ *     Every server-side issuance died at ACME finalize with
+ *     `urn:ietf:params:acme:error:badCSR — unsupported signature algorithm:
+ *     Ed25519`, the CA's own words. That blocked BOTH first issuance and
+ *     renewal (`issueAndUpload` backs both), so the server-side cert leg had
+ *     never worked on any server. It went unnoticed because the cloud-side
+ *     ACME drives mint their own RSA key and never touch this module, and
+ *     because ACME only checks the CSR at FINALIZE — a run whose DNS-01 authz
+ *     failed first reported `authorization_invalid` and never reached it.
+ *
+ *     P-256 rather than RSA-2048: all three CAs in the pool issue both, every
+ *     client that can reach a Recued server (webclient PWA, Browser Bridge,
+ *     MCP clients) has supported P-256 since ~2014, and the keys/signatures are
+ *     ~8x and ~4x smaller — which a self-hosted box on a home uplink notices.
+ *     RSA's compatibility edge is real but only covers pre-2010 clients that
+ *     cannot reach this server anyway.
  *
  *  Sole production implementation of the `generateCsr` seam consumed by
  *  `createAcmeDomainRenewer` (per-domain renewer, D-148 § A.6.5). Emits
  *  a PEM-wrapped `CertificationRequest` (RFC 2986) carrying a
  *  Subject (CN=<domain>) + Subject Alternative Name (DNS:<domain>) +
- *  Ed25519 SubjectPublicKeyInfo (RFC 8410) + Ed25519 signature over
- *  the `CertificationRequestInfo` DER.
+ *  ECDSA P-256 SubjectPublicKeyInfo (RFC 5480) + ecdsa-with-SHA256
+ *  signature over the `CertificationRequestInfo` DER.
  *
  *  Hand-rolled ASN.1 / DER. The alternative was a `node-forge`
- *  dependency, rejected because (a) forge's Ed25519 CSR support
- *  requires the same manual SPKI + signing detour we'd write here
- *  anyway, (b) forge adds a ~1 MB transitive surface for a 150-line
+ *  dependency, rejected because (a) Node already exports the SPKI DER
+ *  for us, leaving only an OID + a signature to wrap, (b) forge adds a ~1 MB transitive surface for a 150-line
  *  capability we already have via `node:crypto`, (c) every byte we
  *  sign should be controlled by code we audit. The encoding is
  *  straightforward DER per RFC 5280 / RFC 8410 / RFC 2986:
@@ -82,7 +98,7 @@ export const GENERATE_CSR_ERRORS = {
   DOMAIN_NOT_ASCII: 'generate_csr_domain_not_ascii',
   DOMAIN_TOO_LONG: 'generate_csr_domain_too_long',
   KEY_PARSE_FAILED: 'generate_csr_key_parse_failed',
-  KEY_NOT_ED25519: 'generate_csr_key_not_ed25519',
+  KEY_NOT_P256: 'generate_csr_key_not_p256',
   SPKI_EXPORT_FAILED: 'generate_csr_spki_export_failed',
 } as const;
 
@@ -91,10 +107,18 @@ export const GENERATE_CSR_ERRORS = {
  *  at upload time, but we don't trust transitive constraints here. */
 const MAX_DOMAIN_LENGTH = 253;
 
-/** RFC 8410 OID for Ed25519. Used in the algorithm identifier slot
- *  for both `signatureAlgorithm` (outer) and (implicitly, via Node's
- *  SPKI export) inside `SubjectPublicKeyInfo`. */
-const ED25519_OID = '1.3.101.112';
+/** RFC 5758 OID for `ecdsa-with-SHA256`. Goes in the outer
+ *  `signatureAlgorithm` slot. Per RFC 5758 § 3.2 the parameters field is
+ *  ABSENT (not NULL) for this algorithm, which is why the AlgorithmIdentifier
+ *  below is a SEQUENCE holding the OID alone — same shape Ed25519 used, for a
+ *  different reason.
+ *
+ *  The `SubjectPublicKeyInfo` carries its own pair of OIDs (id-ecPublicKey +
+ *  prime256v1); those come from Node's SPKI export and are never hand-built. */
+const ECDSA_WITH_SHA256_OID = '1.2.840.10045.4.3.2';
+
+/** Node's name for NIST P-256 / secp256r1. */
+const P256_CURVE = 'prime256v1';
 
 /** RFC 5280 OID for subject `commonName` attribute. */
 const COMMON_NAME_OID = '2.5.4.3';
@@ -139,27 +163,29 @@ export const generateCsr = (args: {
 
   // ── Load the private key ─────────────────────────────────────────
   // `createPrivateKey` accepts PEM in PKCS8 form (`-----BEGIN PRIVATE
-  // KEY-----`) which is what `generateEd25519Keypair` produces and
-  // what `SqliteTlsDomainStore` persists. Any other PEM marker (EC /
-  // RSA / encrypted) parses successfully but the `asymmetricKeyType`
-  // gate below rejects non-Ed25519 immediately.
+  // KEY-----`), which is what the renewer's key generator produces and what
+  // `SqliteTlsDomainStore` persists. Any other key type parses successfully
+  // but the gate below rejects it — including Ed25519, which parses fine and
+  // produces a CSR every CA refuses.
   let privateKey: ReturnType<typeof createPrivateKey>;
   try {
     privateKey = createPrivateKey(private_key_pem);
   } catch {
     throw new Error(GENERATE_CSR_ERRORS.KEY_PARSE_FAILED);
   }
-  if (privateKey.asymmetricKeyType !== 'ed25519') {
+  const curve = privateKey.asymmetricKeyDetails?.namedCurve;
+  if (privateKey.asymmetricKeyType !== 'ec' || curve !== P256_CURVE) {
     throw new Error(
-      `${GENERATE_CSR_ERRORS.KEY_NOT_ED25519}: got ${privateKey.asymmetricKeyType ?? 'unknown'}`,
+      `${GENERATE_CSR_ERRORS.KEY_NOT_P256}: got ${privateKey.asymmetricKeyType ?? 'unknown'}`
+        + `${curve === undefined ? '' : ` curve=${curve}`}`,
     );
   }
 
   // Export the public half as SPKI DER. The CSR carries this as the
-  // `subjectPKInfo` slot directly — Node's SPKI export for Ed25519
-  // already wraps the 32-byte raw public key in the RFC 8410 envelope
-  // (`SEQUENCE { AlgorithmIdentifier { OID 1.3.101.112 }, BIT STRING
-  // raw }`), so no manual SPKI construction is needed.
+  // `subjectPKInfo` slot directly — Node's SPKI export for an EC key already
+  // emits the RFC 5480 envelope (`SEQUENCE { AlgorithmIdentifier {
+  // id-ecPublicKey, prime256v1 }, BIT STRING uncompressed-point }`), so no
+  // manual SPKI construction is needed.
   let spkiDer: Buffer;
   try {
     const publicKey = createPublicKey(privateKey);
@@ -179,14 +205,15 @@ export const generateCsr = (args: {
   );
 
   // ── Sign the CRI ──────────────────────────────────────────────────
-  // Ed25519 in Node uses `null` algorithm parameter (per its
-  // protocol-baked hash discipline). The signature is exactly 64
-  // bytes for Ed25519; it goes into the outer BIT STRING with zero
-  // unused bits.
-  const signature = nodeSign(null, cri, privateKey);
+  // ECDSA needs an explicit digest (unlike Ed25519, whose hash is baked into
+  // the protocol and takes `null`). Node's default `dsaEncoding` is 'der', so
+  // this already returns the `SEQUENCE { INTEGER r, INTEGER s }` that PKCS#10
+  // expects — no raw-to-DER conversion. Length varies (~70-72 bytes) with r/s
+  // leading-zero stripping, which is why nothing here assumes a fixed size.
+  const signature = nodeSign('sha256', cri, privateKey);
 
   // ── Build the outer CertificationRequest ──────────────────────────
-  const signatureAlgorithm = derSequence(derOid(ED25519_OID));
+  const signatureAlgorithm = derSequence(derOid(ECDSA_WITH_SHA256_OID));
   const signatureBits = derBitString(Buffer.from(signature));
   const csr = derSequence(
     Buffer.concat([cri, signatureAlgorithm, signatureBits]),

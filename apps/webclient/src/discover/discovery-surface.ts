@@ -21,6 +21,10 @@ export const DISCOVERY_SURFACE_DISCOVER_ATTR = 'data-recued-discovery-discover';
 export interface MountDiscoverySurfaceOptions {
   root: HTMLElement;
   document?: Document;
+  /** Stable DOM id prefix for the composite tabs and their owned panels. */
+  idPrefix: string;
+  /** Accessible name for the tab group in its host route. */
+  tabListLabel: string;
   /** Mount the Installed tab (the existing route) into the given host. */
   mountInstalled: (host: HTMLElement) => DiscoverySurfaceChildMount;
   /** Mount the Discover tab (the browse panel) into the given host. Called at
@@ -73,6 +77,8 @@ export const mountDiscoverySurface = (
   const tabBar = doc.createElement('div');
   tabBar.className = 'discovery-tabbar';
   tabBar.setAttribute('role', 'tablist');
+  tabBar.setAttribute('aria-label', opts.tabListLabel);
+  tabBar.setAttribute('aria-orientation', 'horizontal');
 
   const makeTab = (tab: DiscoveryTab, label: string): HTMLButtonElement => {
     const btn = doc.createElement('button') as HTMLButtonElement;
@@ -80,6 +86,8 @@ export const mountDiscoverySurface = (
     btn.className = 'discovery-tab';
     btn.setAttribute(DISCOVERY_SURFACE_TAB_ATTR, tab);
     btn.setAttribute('role', 'tab');
+    btn.setAttribute('id', `${opts.idPrefix}-${tab}-tab`);
+    btn.setAttribute('aria-controls', `${opts.idPrefix}-${tab}-panel`);
     btn.textContent = label;
     btn.addEventListener('click', () => showTab(tab));
     btn.addEventListener('keydown', (ev) => onTabKeydown(ev, tab));
@@ -94,8 +102,20 @@ export const mountDiscoverySurface = (
   // ── Panes ─────────────────────────────────────────────────────────
   const installedHost = doc.createElement('div');
   installedHost.setAttribute(DISCOVERY_SURFACE_INSTALLED_ATTR, '');
+  installedHost.setAttribute('id', `${opts.idPrefix}-installed-panel`);
+  installedHost.setAttribute('role', 'tabpanel');
+  installedHost.setAttribute(
+    'aria-labelledby',
+    `${opts.idPrefix}-installed-tab`,
+  );
   const discoverHost = doc.createElement('div');
   discoverHost.setAttribute(DISCOVERY_SURFACE_DISCOVER_ATTR, '');
+  discoverHost.setAttribute('id', `${opts.idPrefix}-discover-panel`);
+  discoverHost.setAttribute('role', 'tabpanel');
+  discoverHost.setAttribute(
+    'aria-labelledby',
+    `${opts.idPrefix}-discover-tab`,
+  );
   root.appendChild(installedHost);
   root.appendChild(discoverHost);
 

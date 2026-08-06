@@ -3,8 +3,8 @@
     "source": {
       "kind": "official_openapi",
       "url": "https://docs.apollo.io/openapi/apollo-rest-api.json",
-      "bytes": 1084052,
-      "sha256": "6fb96643d9c0c3f60323bccd5f7f2aa77a8bac9725c0941e746c8957d8a5d6d0",
+      "bytes": 1098593,
+      "sha256": "701b51d2078419b89817027be7efee080b9c9f7faa784fc40fcc375d28aba661",
       "openapi": "3.1.0",
       "api_version": "1.0",
       "retrieved_on": "2026-07-15",
@@ -79,7 +79,7 @@
       "task.search": "unsupported body filters replaced by documented query parameters",
       "email_account.search": "unsupported page/per_page arguments removed"
     },
-    "composition_bytes": 131075,
+    "composition_bytes": 131187,
     "risk_counts": {
       "admin": 7,
       "destructive": 1,
@@ -490,6 +490,7 @@
         "error_message",
         "matches",
         "missing_records",
+        "phone_enrichment",
         "request_id",
         "status",
         "total_requested_enrichments",
@@ -2981,6 +2982,11 @@
         },
         {
           "name": "permissions",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "user_id",
           "required": false,
           "type": "string"
         },
@@ -8923,6 +8929,11 @@
         },
         {
           "key": "body.permissions",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "body.user_id",
           "type": "string",
           "affects_target": true
         },

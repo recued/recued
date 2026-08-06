@@ -433,6 +433,14 @@ const appendButton = (
   return btn;
 };
 
+const withAccessibleName = <T extends HTMLElement>(
+  element: T,
+  name: string,
+): T => {
+  element.setAttribute('aria-label', name);
+  return element;
+};
+
 const formatTimestamp = (value: number | null): string =>
   typeof value === 'number' && Number.isFinite(value)
     ? formatClientDateTime(value, { invalidText: 'Not set' })
@@ -547,6 +555,7 @@ const appendTable = <T>(
     return;
   }
   const wrap = append(doc, parent, 'div', 'seller-table-wrap');
+  wrap.setAttribute('data-recued-scroll-rail', '');
   const table = append(doc, wrap, 'table', opts.className);
   const thead = doc.createElement('thead');
   const headRow = doc.createElement('tr');
@@ -1202,6 +1211,10 @@ const renderOrders = (
             SELLER_COLLECTION_ITEM_LINK_ATTR,
             order.order_key,
           );
+          nameHost.setAttribute(
+            'aria-label',
+            `Open order ${order.order_key} for ${order.offer_id}`,
+          );
           td.appendChild(nameHost);
         }
         appendText(doc, nameHost, 'strong', order.offer_id);
@@ -1460,6 +1473,10 @@ const renderSellerOffers = (
           const href = sellerDetailRoute('offers', offer.offer_id);
           nameHost.setAttribute('href', href);
           nameHost.setAttribute(SELLER_COLLECTION_ITEM_LINK_ATTR, offer.offer_id);
+          nameHost.setAttribute(
+            'aria-label',
+            `Open offer ${offer.offer_id} (${offer.display_name})`,
+          );
           td.appendChild(nameHost);
         }
         appendText(doc, nameHost, 'strong', offer.display_name);
@@ -2067,6 +2084,10 @@ const renderTiers = (
             const href = sellerDetailRoute('tiers', tier.tier_id);
             nameHost.setAttribute('href', href);
             nameHost.setAttribute(SELLER_COLLECTION_ITEM_LINK_ATTR, tier.tier_id);
+            nameHost.setAttribute(
+              'aria-label',
+              `Open tier ${tier.tier_id} (${tier.display_name})`,
+            );
             td.appendChild(nameHost);
           }
           appendText(doc, nameHost, 'strong', tier.display_name);
@@ -2663,6 +2684,7 @@ const renderManualCustomerForm = (
 };
 
 const SELLER_MESSAGE_MODAL_STYLE_MARKER = 'data-recued-seller-message-modal-styles';
+let sellerConfirmModalSequence = 0;
 const SELLER_MESSAGE_MODAL_STYLES = `
 [${SELLER_MESSAGE_MODAL_ATTR}] {
   position: fixed;
@@ -2722,15 +2744,67 @@ const appendConfirmModal = (
     style.textContent = SELLER_MESSAGE_MODAL_STYLES;
     head.appendChild(style);
   }
+  const previouslyFocused = (doc as Document & {
+    readonly activeElement?: Element | null;
+  }).activeElement;
+  const focusIfSupported = (element: unknown): void => {
+    const focus = (element as { focus?: unknown } | null)?.focus;
+    if (typeof focus === 'function') focus.call(element);
+  };
   const backdrop = append(doc, parent, 'div', 'seller-modal-backdrop');
   backdrop.setAttribute(SELLER_MESSAGE_MODAL_ATTR, '');
   const dialog = append(doc, backdrop, 'div', 'seller-modal');
-  appendText(doc, dialog, 'h4', opts.title);
-  appendText(doc, dialog, 'p', opts.body).className = 'seller-modal-body';
+  const modalId = ++sellerConfirmModalSequence;
+  const titleId = `recued-seller-confirm-title-${modalId}`;
+  const bodyId = `recued-seller-confirm-body-${modalId}`;
+  dialog.setAttribute('role', 'dialog');
+  dialog.setAttribute('aria-modal', 'true');
+  dialog.setAttribute('aria-labelledby', titleId);
+  dialog.setAttribute('aria-describedby', bodyId);
+  dialog.tabIndex = -1;
+  const title = appendText(doc, dialog, 'h4', opts.title);
+  title.setAttribute('id', titleId);
+  const body = appendText(doc, dialog, 'p', opts.body);
+  body.setAttribute('id', bodyId);
+  body.className = 'seller-modal-body';
   const footer = append(doc, dialog, 'div', 'seller-modal-footer');
-  const close = (): void => backdrop.remove();
-  appendButton(doc, footer, 'Cancel', close, [[SELLER_MESSAGE_MODAL_CANCEL_ATTR, '']]);
-  appendButton(
+  let closed = false;
+  let cancelButton: HTMLButtonElement;
+  let confirmButton: HTMLButtonElement;
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    dialog.removeEventListener('keydown', onKeyDown);
+    backdrop.remove();
+    focusIfSupported(previouslyFocused);
+  };
+  const onKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const activeElement = (doc as Document & {
+      readonly activeElement?: Element | null;
+    }).activeElement;
+    if (event.shiftKey && (activeElement === cancelButton || activeElement === dialog)) {
+      event.preventDefault();
+      confirmButton.focus();
+    } else if (!event.shiftKey && activeElement === confirmButton) {
+      event.preventDefault();
+      cancelButton.focus();
+    }
+  };
+  cancelButton = appendButton(
+    doc,
+    footer,
+    'Cancel',
+    close,
+    [[SELLER_MESSAGE_MODAL_CANCEL_ATTR, '']],
+  );
+  confirmButton = appendButton(
     doc,
     footer,
     opts.confirmLabel,
@@ -2740,6 +2814,8 @@ const appendConfirmModal = (
     },
     [[SELLER_MESSAGE_MODAL_CONFIRM_ATTR, '']],
   );
+  dialog.addEventListener('keydown', onKeyDown);
+  focusIfSupported(cancelButton);
 };
 
 const renderManualCustomerLifecycleControls = (
@@ -2872,29 +2948,33 @@ const renderManualCustomerLifecycleControls = (
     const action = append(doc, section, 'details', 'seller-lifecycle-action');
     appendText(doc, action, 'summary', 'Extend');
     const fields = append(doc, action, 'div', 'seller-customer-lifecycle-grid');
-    const customerId = appendLifecycleSelect(
+    const customerId = withAccessibleName(appendLifecycleSelect(
       doc,
       fields,
       'Customer',
       'extend.customer_id',
       openCustomerOptions,
-    );
-    const email = appendLifecycleField(doc, fields, 'Email', 'extend.email', {
-      type: 'email',
-    });
-    const currentPeriodEnd = appendLifecycleField(
+    ), 'Customer to extend');
+    const email = withAccessibleName(appendLifecycleField(
+      doc,
+      fields,
+      'Email',
+      'extend.email',
+      { type: 'email' },
+    ), 'Extension email');
+    const currentPeriodEnd = withAccessibleName(appendLifecycleField(
       doc,
       fields,
       'Period end (Unix ms)',
       'extend.current_period_end',
       { type: 'number' },
-    );
-    const sourceStatus = appendLifecycleField(
+    ), 'Extension period end (Unix ms)');
+    const sourceStatus = withAccessibleName(appendLifecycleField(
       doc,
       fields,
       'Source status',
       'extend.source_status',
-    );
+    ), 'Extension source status');
     const footer = append(doc, action, 'div', 'seller-form-footer');
     const button = appendButton(
       doc,
@@ -2944,20 +3024,20 @@ const renderManualCustomerLifecycleControls = (
       'seller-table-detail',
     ).setAttribute(SELLER_SWAP_RESTAMP_HINT_ATTR, '');
     const fields = append(doc, action, 'div', 'seller-customer-lifecycle-grid');
-    const customerId = appendLifecycleSelect(
+    const customerId = withAccessibleName(appendLifecycleSelect(
       doc,
       fields,
       'Customer',
       'swap.customer_id',
       swapCustomerOptions,
-    );
-    const entitlementKey = appendLifecycleSelect(
+    ), 'Customer to swap');
+    const entitlementKey = withAccessibleName(appendLifecycleSelect(
       doc,
       fields,
       'Entitlement',
       'swap.entitlement_key',
       tierOptionsForCustomer(customerId.value),
-    );
+    ), 'Swap entitlement');
     customerId.addEventListener('change', () => {
       clearChildren(entitlementKey);
       for (const [value, label] of tierOptionsForCustomer(customerId.value)) {
@@ -2967,19 +3047,19 @@ const renderManualCustomerLifecycleControls = (
         ? (entitlementKey.children[0] as HTMLOptionElement).value
         : '';
     });
-    const currentPeriodEnd = appendLifecycleField(
+    const currentPeriodEnd = withAccessibleName(appendLifecycleField(
       doc,
       fields,
       'Period end (Unix ms)',
       'swap.current_period_end',
       { type: 'number' },
-    );
-    const sourceStatus = appendLifecycleField(
+    ), 'Swap period end (Unix ms)');
+    const sourceStatus = withAccessibleName(appendLifecycleField(
       doc,
       fields,
       'Source status',
       'swap.source_status',
-    );
+    ), 'Swap source status');
     const footer = append(doc, action, 'div', 'seller-form-footer');
     const button = appendButton(
       doc,
@@ -3013,14 +3093,14 @@ const renderManualCustomerLifecycleControls = (
     const action = append(doc, section, 'details', 'seller-lifecycle-action');
     appendText(doc, action, 'summary', 'Close');
     const fields = append(doc, action, 'div', 'seller-customer-lifecycle-grid');
-    const customerId = appendLifecycleSelect(
+    const customerId = withAccessibleName(appendLifecycleSelect(
       doc,
       fields,
       'Customer',
       'close.customer_id',
       customerOptions,
-    );
-    const reason = appendLifecycleSelect(
+    ), 'Customer to close');
+    const reason = withAccessibleName(appendLifecycleSelect(
       doc,
       fields,
       'Reason',
@@ -3029,14 +3109,14 @@ const renderManualCustomerLifecycleControls = (
         value,
         titleCase(value),
       ] as const),
-    );
+    ), 'Close reason');
     reason.value = 'seller_manual';
-    const sourceStatus = appendLifecycleField(
+    const sourceStatus = withAccessibleName(appendLifecycleField(
       doc,
       fields,
       'Source status',
       'close.source_status',
-    );
+    ), 'Close source status');
     const footer = append(doc, action, 'div', 'seller-form-footer');
     const button = appendButton(
       doc,
@@ -3068,13 +3148,13 @@ const renderManualCustomerLifecycleControls = (
     const action = append(doc, section, 'details', 'seller-lifecycle-action');
     appendText(doc, action, 'summary', 'Reissue token');
     const fields = append(doc, action, 'div', 'seller-customer-lifecycle-grid');
-    const customerId = appendLifecycleSelect(
+    const customerId = withAccessibleName(appendLifecycleSelect(
       doc,
       fields,
       'Customer',
       'reissue.customer_id',
       openCustomerOptions,
-    );
+    ), 'Customer to reissue');
     const footer = append(doc, action, 'div', 'seller-form-footer');
     const button = appendButton(
       doc,
@@ -3105,13 +3185,13 @@ const renderManualCustomerLifecycleControls = (
         + 'sender — no leaving Recued and no retyping their address.',
     ).className = 'seller-form-intro';
     const fields = append(doc, action, 'div', 'seller-customer-lifecycle-grid');
-    const customerId = appendLifecycleSelect(
+    const customerId = withAccessibleName(appendLifecycleSelect(
       doc,
       fields,
       'Customer',
       'message.customer_id',
       openCustomerOptions,
-    );
+    ), 'Customer to message');
     const footer = append(doc, action, 'div', 'seller-form-footer');
     if (!claimEmailReady) {
       appendText(
@@ -3204,6 +3284,10 @@ const renderCustomers = (
             nameHost.setAttribute(
               SELLER_COLLECTION_ITEM_LINK_ATTR,
               customer.customer_id,
+            );
+            nameHost.setAttribute(
+              'aria-label',
+              `Open customer ${customer.customer_id} (${customer.source_customer_id})`,
             );
             td.appendChild(nameHost);
           }
@@ -3324,6 +3408,11 @@ const renderUsage = (
           const link = doc.createElement('a');
           link.setAttribute('href', sellerDetailRoute('usage', itemId));
           link.setAttribute(SELLER_COLLECTION_ITEM_LINK_ATTR, itemId);
+          link.setAttribute(
+            'aria-label',
+            `Open ${titleCase(rollup.usage_kind)} usage for ${rollup.contract_id} `
+              + `(${rollup.period_granularity} ${rollup.period_start})`,
+          );
           link.textContent = rollup.contract_id;
           td.appendChild(link);
         },
@@ -3588,12 +3677,14 @@ export const mountSellerPage = (
         : `← Back to ${SELLER_SUBPAGE_META[subpage].label}`;
       heading.appendChild(back);
     }
-    appendText(
-      doc,
-      heading,
-      'h3',
-      subpage === null ? 'Seller' : SELLER_SUBPAGE_META[subpage].label,
-    );
+    if (subpage !== null) {
+      appendText(
+        doc,
+        heading,
+        'h3',
+        SELLER_SUBPAGE_META[subpage].label,
+      );
+    }
     appendText(
       doc,
       heading,
@@ -4197,14 +4288,25 @@ export const SELLER_PAGE_STYLES = `
   text-align: right;
 }
 [${SELLER_PAGE_ATTR}] [${SELLER_BACK_ATTR}] {
+  box-sizing: border-box;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
   width: fit-content;
+  padding: 4px;
+  border-radius: 6px;
   color: var(--accent);
   font-size: 12px;
   font-weight: 600;
   text-decoration: none;
 }
 [${SELLER_PAGE_ATTR}] [${SELLER_BACK_ATTR}]:hover {
+  background: var(--accent-weak);
   text-decoration: underline;
+}
+[${SELLER_PAGE_ATTR}] [${SELLER_BACK_ATTR}]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 [${SELLER_PAGE_ATTR}] [${SELLER_COLLECTION_LIST_ATTR}],
 [${SELLER_PAGE_ATTR}] [${SELLER_COLLECTION_DETAIL_ATTR}] {
@@ -4213,11 +4315,18 @@ export const SELLER_PAGE_STYLES = `
   min-width: 0;
 }
 [${SELLER_PAGE_ATTR}] [${SELLER_COLLECTION_ITEM_LINK_ATTR}] {
+  box-sizing: border-box;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 2px;
+  border-radius: 5px;
   color: var(--accent);
   font-weight: 600;
   text-decoration: none;
 }
 [${SELLER_PAGE_ATTR}] [${SELLER_COLLECTION_ITEM_LINK_ATTR}]:hover {
+  background: var(--accent-weak);
   text-decoration: underline;
 }
 [${SELLER_PAGE_ATTR}] [${SELLER_PAGER_ATTR}] {
@@ -4234,6 +4343,11 @@ export const SELLER_PAGE_STYLES = `
 }
 [${SELLER_PAGE_ATTR}] [${SELLER_PAGE_PREVIOUS_ATTR}],
 [${SELLER_PAGE_ATTR}] [${SELLER_PAGE_NEXT_ATTR}] {
+  box-sizing: border-box;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--border-strong);
   border-radius: 6px;
   color: var(--fg);
@@ -4292,7 +4406,7 @@ export const SELLER_PAGE_STYLES = `
   font: inherit;
   font-size: 12px;
   font-weight: 600;
-  min-height: 30px;
+  min-height: 36px;
   padding: 0 10px;
   display: inline-flex;
   align-items: center;
@@ -4319,6 +4433,10 @@ export const SELLER_PAGE_STYLES = `
   font-weight: 600;
 }
 [${SELLER_PAGE_ATTR}] .seller-action-disclosure > summary {
+  box-sizing: border-box;
+  min-height: 36px;
+  padding: 8px 4px;
+  border-radius: 6px;
   cursor: pointer;
   font-size: 14px;
   font-weight: 600;
@@ -4337,6 +4455,10 @@ export const SELLER_PAGE_STYLES = `
   background: var(--surface);
 }
 [${SELLER_PAGE_ATTR}] .seller-lifecycle-action > summary {
+  box-sizing: border-box;
+  min-height: 36px;
+  padding: 8px 4px;
+  border-radius: 6px;
   cursor: pointer;
   color: var(--fg);
   font-size: 13px;
@@ -4371,12 +4493,19 @@ export const SELLER_PAGE_STYLES = `
   gap: 8px;
 }
 [${SELLER_PAGE_ATTR}] .seller-related-links a {
+  box-sizing: border-box;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px;
+  border-radius: 5px;
   color: var(--accent);
   font-size: 12px;
   font-weight: 600;
   text-decoration: none;
 }
 [${SELLER_PAGE_ATTR}] .seller-related-links a:hover {
+  background: var(--accent-weak);
   text-decoration: underline;
 }
 [${SELLER_PAGE_ATTR}] .seller-offer-task-links {
@@ -4388,6 +4517,10 @@ export const SELLER_PAGE_STYLES = `
   gap: 6px;
 }
 [${SELLER_PAGE_ATTR}] .seller-offer-archive summary {
+  box-sizing: border-box;
+  min-height: 36px;
+  padding: 8px 4px;
+  border-radius: 6px;
   color: var(--danger);
   cursor: pointer;
   font-weight: 600;
@@ -4499,6 +4632,7 @@ export const SELLER_PAGE_STYLES = `
 [${SELLER_PAGE_ATTR}] .seller-form-field input,
 [${SELLER_PAGE_ATTR}] .seller-form-field select,
 [${SELLER_PAGE_ATTR}] .seller-form-field textarea {
+  min-height: 38px;
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
@@ -4527,6 +4661,10 @@ export const SELLER_PAGE_STYLES = `
   background: var(--surface);
 }
 [${SELLER_PAGE_ATTR}] .seller-advanced-settings summary {
+  box-sizing: border-box;
+  min-height: 36px;
+  padding: 8px 4px;
+  border-radius: 6px;
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
@@ -4535,12 +4673,23 @@ export const SELLER_PAGE_STYLES = `
   margin-bottom: 10px;
 }
 [${SELLER_PAGE_ATTR}] .seller-form-check {
+  box-sizing: border-box;
+  min-height: 36px;
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  padding: 4px 2px;
   color: var(--fg);
   font-size: 12px;
   font-weight: 600;
+  cursor: pointer;
+}
+[${SELLER_PAGE_ATTR}] .seller-form-check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: inherit;
 }
 [${SELLER_PAGE_ATTR}] .seller-form-status {
   min-height: 18px;
@@ -4556,21 +4705,46 @@ export const SELLER_PAGE_STYLES = `
   font-weight: 600;
 }
 [${SELLER_PAGE_ATTR}] .seller-contract-link {
+  box-sizing: border-box;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 2px;
+  border-radius: 5px;
   color: var(--accent);
   font-weight: 600;
   text-decoration: none;
 }
 [${SELLER_PAGE_ATTR}] .seller-contract-link:hover {
+  background: var(--accent-weak);
   text-decoration: underline;
 }
 [${SELLER_PAGE_ATTR}] .seller-paid-workflow-table a {
+  box-sizing: border-box;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 2px;
+  border-radius: 5px;
   color: var(--accent);
   font-weight: 600;
   text-decoration: none;
   white-space: nowrap;
 }
 [${SELLER_PAGE_ATTR}] .seller-paid-workflow-table a:hover {
+  background: var(--accent-weak);
   text-decoration: underline;
+}
+[${SELLER_PAGE_ATTR}] .seller-action-disclosure > summary:focus-visible,
+[${SELLER_PAGE_ATTR}] .seller-lifecycle-action > summary:focus-visible,
+[${SELLER_PAGE_ATTR}] .seller-offer-archive summary:focus-visible,
+[${SELLER_PAGE_ATTR}] .seller-advanced-settings summary:focus-visible,
+[${SELLER_PAGE_ATTR}] [${SELLER_COLLECTION_ITEM_LINK_ATTR}]:focus-visible,
+[${SELLER_PAGE_ATTR}] .seller-related-links a:focus-visible,
+[${SELLER_PAGE_ATTR}] .seller-contract-link:focus-visible,
+[${SELLER_PAGE_ATTR}] .seller-paid-workflow-table a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 [${SELLER_PAGE_ATTR}] .seller-table-wrap {
   overflow-x: auto;

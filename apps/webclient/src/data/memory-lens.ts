@@ -80,6 +80,7 @@ export const MEMORY_IMPORT_DISCARD_COMMIT_ATTR =
 export const MEMORY_EXPORT_ACTION = 'memory-export';
 export const MEMORY_ROW_ID_ATTR = 'data-memory-id';
 export const MEMORY_FIELD_ATTR = 'data-memory-field';
+const MEMORY_LENS_HEADING_ID = 'recued-memory-lens-heading';
 
 /** Compose (create/edit) form state, owned by the route, rendered here. */
 export interface MemoryComposeState {
@@ -125,7 +126,7 @@ export const renderLensSwitcher = (
         ? ' aria-disabled="true"'
         : ''}>${label}</button>`;
   };
-  return `<div class="data-lens-switch" role="tablist" aria-label="Data or Memory">${btn('data', 'Data')}${btn('memory', 'Memory')}</div>`;
+  return `<div class="data-lens-switch" role="group" aria-label="Data or Memory">${btn('data', 'Data')}${btn('memory', 'Memory')}</div>`;
 };
 
 const FILTER_LABEL: Record<MemoryOriginFilter, string> = {
@@ -212,6 +213,28 @@ const formatBytes = (bytes: number): string => {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 };
 
+type MemoryActionTarget = Pick<
+  MemoryListEntry,
+  'memory_id' | 'origin_actor' | 'kind' | 'summary'
+> & {
+  body_preview?: string;
+  body?: string;
+};
+
+const memoryActionSubject = (entry: MemoryActionTarget): string => {
+  const visible = entry.summary?.trim()
+    || entry.body_preview?.trim()
+    || entry.body?.trim()
+    || `${ORIGIN_LABEL[entry.origin_actor] ?? String(entry.origin_actor)} ${entry.kind}`;
+  const compact = visible.replace(/\s+/g, ' ');
+  return compact.length > 80 ? `${compact.slice(0, 79)}…` : compact;
+};
+
+const memoryActionName = (
+  label: string,
+  entry: MemoryActionTarget,
+): string => e(`${label} ${memoryActionSubject(entry)} (${entry.memory_id})`);
+
 const renderFilterChip = (
   filter: MemoryOriginFilter,
   active: MemoryOriginFilter,
@@ -249,10 +272,13 @@ const renderRowFoot = (
   const isOwn = entry.origin_actor === 'user_self';
   const isRedacted = entry.redacted === true;
   const idAttr = `${MEMORY_ROW_ID_ATTR}="${e(entry.memory_id)}"`;
+  const actionName = (label: string): string => memoryActionName(label, entry);
+  const destructiveVerb = isOwn ? 'deleting' : 'forgetting';
+  const destructiveProgress = isOwn ? 'Deleting…' : 'Forgetting…';
   const runLink =
     entry.run_id !== undefined && entry.run_id.length > 0
       ? `<a class="memory-row-run-link" href="${e(runHref(entry.run_id))}"
-          ${actionAttr}="${MEMORY_OPEN_RUN_ACTION}"${locked
+          ${actionAttr}="${MEMORY_OPEN_RUN_ACTION}" aria-label="${actionName('Open run for memory')}"${locked
             ? ' aria-disabled="true"'
             : ''}>Open run</a>`
       : '';
@@ -263,7 +289,7 @@ const renderRowFoot = (
     entry.has_body === true
       ? `<button type="button" class="memory-row-btn" ${actionAttr}="${MEMORY_OPEN_ACTION}" ${idAttr}${locked
         ? ' aria-disabled="true"'
-        : ''}>View</button>`
+        : ''} aria-label="${actionName('View memory')}">View</button>`
       : '';
   let controls = '';
   if (canWrite) {
@@ -276,11 +302,13 @@ const renderRowFoot = (
             ? ' aria-disabled="true" aria-busy="true"'
             : locked
               ? ' aria-disabled="true"'
-            : ''}>${deleting ? (isOwn ? 'Deleting…' : 'Forgetting…') : 'Confirm'}</button>
+            : ''} aria-label="${actionName(deleting
+              ? `${destructiveProgress} memory`
+              : `Confirm ${destructiveVerb} memory`)}">${deleting ? destructiveProgress : 'Confirm'}</button>
         <button type="button" class="memory-row-btn"
           ${actionAttr}="${MEMORY_DELETE_CANCEL_ACTION}" ${idAttr}${deleting || locked
             ? ' aria-disabled="true"'
-            : ''}>Cancel</button>
+            : ''} aria-label="${actionName(`Cancel ${destructiveVerb} memory`)}">Cancel</button>
         ${deleteError !== undefined
           ? `<span class="memory-row-delete-error" role="alert">${e(deleteError)}</span>`
           : ''}</span>`;
@@ -291,11 +319,11 @@ const renderRowFoot = (
             ? ' aria-disabled="true" aria-busy="true"'
             : locked
               ? ' aria-disabled="true"'
-            : ''}>${openingEdit ? 'Opening…' : 'Edit'}</button>
+            : ''} aria-label="${actionName(openingEdit ? 'Opening… memory' : 'Edit memory')}">${openingEdit ? 'Opening…' : 'Edit'}</button>
         <button type="button" class="memory-row-btn memory-row-btn--danger"
           ${actionAttr}="${MEMORY_DELETE_ACTION}" ${idAttr}${openingEdit || locked
             ? ' aria-disabled="true"'
-            : ''}>Delete</button>
+            : ''} aria-label="${actionName('Delete memory')}">Delete</button>
         ${editError?.memoryId === entry.memory_id
           ? `<span class="memory-row-edit-error" role="alert">${e(editError.message)}</span>`
           : ''}`;
@@ -303,7 +331,7 @@ const renderRowFoot = (
       // Others' rows are view + redact only (§3) — no edit.
       controls = `<button type="button" class="memory-row-btn memory-row-btn--danger" ${actionAttr}="${MEMORY_DELETE_ACTION}" ${idAttr}${locked
         ? ' aria-disabled="true"'
-        : ''}>Forget</button>`;
+        : ''} aria-label="${actionName('Forget memory')}">Forget</button>`;
     }
   }
   const inner = `${runLink}${openBtn}${controls}`;
@@ -512,6 +540,9 @@ const renderDetail = (
     const isOwn = entry.origin_actor === 'user_self';
     const isRedacted = entry.redacted === true;
     const idAttr = `${MEMORY_ROW_ID_ATTR}="${e(entry.memory_id)}"`;
+    const actionName = (label: string): string => memoryActionName(label, entry);
+    const destructiveVerb = isOwn ? 'deleting' : 'forgetting';
+    const destructiveProgress = isOwn ? 'Deleting…' : 'Forgetting…';
     let controls = '';
     if (canWrite && !isRedacted) {
       if (pendingDeleteId === entry.memory_id) {
@@ -521,11 +552,13 @@ const renderDetail = (
             <button type="button" class="memory-btn memory-btn--danger"
               ${actionAttr}="${MEMORY_DELETE_CONFIRM_ACTION}" ${idAttr}${deleting
                 ? ' aria-disabled="true" aria-busy="true"'
-                : ''}>${deleting ? (isOwn ? 'Deleting…' : 'Forgetting…') : 'Confirm'}</button>
+                : ''} aria-label="${actionName(deleting
+                  ? `${destructiveProgress} memory`
+                  : `Confirm ${destructiveVerb} memory`)}">${deleting ? destructiveProgress : 'Confirm'}</button>
             <button type="button" class="memory-btn"
               ${actionAttr}="${MEMORY_DELETE_CANCEL_ACTION}" ${idAttr}${deleting
                 ? ' aria-disabled="true"'
-                : ''}>Cancel</button>
+                : ''} aria-label="${actionName(`Cancel ${destructiveVerb} memory`)}">Cancel</button>
             ${deleteError !== undefined
               ? `<span class="memory-row-delete-error" role="alert">${e(deleteError)}</span>`
               : ''}</span>`;
@@ -534,17 +567,17 @@ const renderDetail = (
         controls = `<button type="button" class="memory-btn"
              ${actionAttr}="${MEMORY_EDIT_ACTION}" ${idAttr}${openingEdit
                ? ' aria-disabled="true" aria-busy="true"'
-               : ''}>${openingEdit ? 'Opening…' : 'Edit'}</button>
+               : ''} aria-label="${actionName(openingEdit ? 'Opening… memory' : 'Edit memory')}">${openingEdit ? 'Opening…' : 'Edit'}</button>
            <button type="button" class="memory-btn memory-btn--danger"
              ${actionAttr}="${MEMORY_DELETE_ACTION}" ${idAttr}${openingEdit
                ? ' aria-disabled="true"'
-               : ''}>Delete</button>
+               : ''} aria-label="${actionName('Delete memory')}">Delete</button>
            ${editError?.memoryId === entry.memory_id
              ? `<span class="memory-row-edit-error" role="alert">${e(editError.message)}</span>`
              : ''}`;
       } else {
         // Others' rows are view + redact only (§3).
-        controls = `<button type="button" class="memory-btn memory-btn--danger" ${actionAttr}="${MEMORY_DELETE_ACTION}" ${idAttr}>Forget</button>`;
+        controls = `<button type="button" class="memory-btn memory-btn--danger" ${actionAttr}="${MEMORY_DELETE_ACTION}" ${idAttr} aria-label="${actionName('Forget memory')}">Forget</button>`;
       }
     }
     const content = isRedacted
@@ -563,10 +596,17 @@ const renderDetail = (
   }
   return `<section class="memory-detail" aria-label="Memory detail">
     <div class="memory-detail-bar">${back}</div>
-    <h2 class="memory-detail-title" ${MEMORY_DETAIL_HEADING_ATTR} tabindex="-1">Memory detail</h2>
+    <h3 class="memory-detail-title" ${MEMORY_DETAIL_HEADING_ATTR} tabindex="-1">Memory detail</h3>
     ${body}
   </section>`;
 };
+
+const renderMemoryLensFrame = (content: string): string => `
+  <section class="memory-lens" data-recued-memory-lens
+    aria-labelledby="${MEMORY_LENS_HEADING_ID}">
+    <h2 class="memory-lens-title" id="${MEMORY_LENS_HEADING_ID}">Memory</h2>
+    ${content}
+  </section>`;
 
 export const renderMemoryLens = (props: MemoryLensProps): string => {
   const canWrite = props.canWrite ?? false;
@@ -575,7 +615,7 @@ export const renderMemoryLens = (props: MemoryLensProps): string => {
 
   // View stack: detail > compose > list.
   if (detail !== null) {
-    return `<section class="memory-lens" data-recued-memory-lens>${renderDetail(
+    return renderMemoryLensFrame(renderDetail(
       detail,
       props.now,
       props.actionAttr,
@@ -585,21 +625,21 @@ export const renderMemoryLens = (props: MemoryLensProps): string => {
       props.openingEditId,
       props.editError,
       canWrite,
-    )}</section>`;
+    ));
   }
   if (compose !== undefined && compose.open) {
-    return `<section class="memory-lens" data-recued-memory-lens>${renderComposeForm(
+    return renderMemoryLensFrame(renderComposeForm(
       compose,
       props.actionAttr,
       props.composeDiscardGuard === true,
-    )}</section>`;
+    ));
   }
   if (props.importPanel !== undefined && props.importPanel.open) {
-    return `<section class="memory-lens" data-recued-memory-lens>${renderImportPanel(
+    return renderMemoryLensFrame(renderImportPanel(
       props.importPanel,
       props.actionAttr,
       props.importDiscardGuard === true,
-    )}</section>`;
+    ));
   }
 
   const exporting = props.exporting === true;
@@ -662,28 +702,31 @@ export const renderMemoryLens = (props: MemoryLensProps): string => {
       .join('')}</ul>`;
   }
 
-  return `<section class="memory-lens" data-recued-memory-lens>
+  return renderMemoryLensFrame(`
     <div class="memory-lens-controls">
       <div class="memory-filter-chips" role="group" aria-label="Filter memory by origin">${chips}</div>
       ${addBtn}
     </div>
     ${body}
-  </section>`;
+  `);
 };
 
 export const MEMORY_LENS_STYLES = `
 .data-lens-switch { display: inline-flex; gap: 0.25rem; padding: 0.25rem; background: var(--surface-sunk); border-radius: 0.5rem; margin: 0.5rem 0; }
 .data-lens-btn {
+  box-sizing: border-box; min-height: 36px; display: inline-flex; align-items: center; justify-content: center;
   font: inherit; font-size: 0.875rem; font-weight: 600; padding: 0.3125rem 0.875rem;
   border: none; border-radius: 0.375rem; background: transparent; color: var(--fg-muted); cursor: pointer;
 }
 .data-lens-btn.is-active { background: var(--surface); color: var(--fg-strong); box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
-.memory-lens { display: flex; flex-direction: column; gap: 0.75rem; }
-.memory-lens-controls { display: flex; align-items: center; gap: 0.5rem; }
-.memory-filter-chips { display: flex; flex-wrap: wrap; gap: 0.375rem; }
-.memory-lens-actions { margin-left: auto; display: flex; gap: 0.375rem; }
-.memory-import-result { margin: 0; font-size: 0.8125rem; color: var(--fg-muted); }
+.memory-lens { display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; }
+.memory-lens-title { margin: 0; font-size: 15px; font-weight: 650; color: var(--fg-strong); }
+.memory-lens-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; min-width: 0; }
+.memory-filter-chips { display: flex; flex-wrap: wrap; gap: 0.375rem; min-width: 0; }
+.memory-lens-actions { margin-left: auto; display: flex; flex-wrap: wrap; gap: 0.375rem; min-width: 0; }
+.memory-import-result { margin: 0; font-size: 0.8125rem; color: var(--fg-muted); overflow-wrap: anywhere; }
 .memory-filter-chip {
+  box-sizing: border-box; min-height: 36px; display: inline-flex; align-items: center; justify-content: center;
   font: inherit; font-size: 0.8125rem; padding: 0.25rem 0.625rem; border-radius: 999px;
   border: 1px solid var(--border); background: transparent; color: var(--fg-muted);
   cursor: pointer;
@@ -691,9 +734,9 @@ export const MEMORY_LENS_STYLES = `
 .memory-filter-chip.is-active {
   background: var(--accent); border-color: var(--accent); color: var(--on-accent);
 }
-.memory-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
-.memory-row { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.625rem 0.75rem; }
-.memory-row-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.memory-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
+.memory-row { min-width: 0; border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.625rem 0.75rem; }
+.memory-row-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; min-width: 0; }
 .memory-origin-chip {
   font-size: 0.6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;
   padding: 0.125rem 0.5rem; border-radius: 0.375rem; background: var(--surface-sunk);
@@ -701,18 +744,23 @@ export const MEMORY_LENS_STYLES = `
 }
 .memory-origin-user_self { background: var(--accent-weak); color: var(--accent); }
 .memory-origin-contracted_user { background: #fef3c7; color: #92400e; }
-.memory-row-kind { font-size: 0.8125rem; color: var(--fg-muted); }
+.memory-row-kind { min-width: 0; font-size: 0.8125rem; color: var(--fg-muted); overflow-wrap: anywhere; }
 .memory-row-size { font-size: 0.75rem; color: var(--fg-muted); }
 .memory-row-time { font-size: 0.75rem; color: var(--fg-muted); margin-left: auto; }
-.memory-row-title { margin: 0.375rem 0 0; font-size: 0.875rem; font-weight: 500; color: var(--fg-strong); }
+.memory-row-title { margin: 0.375rem 0 0; font-size: 0.875rem; font-weight: 500; color: var(--fg-strong); overflow-wrap: anywhere; }
 .memory-row-preview {
   margin: 0.25rem 0 0; font-size: 0.8125rem; color: var(--fg-muted);
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere;
 }
-.memory-row-foot { margin-top: 0.375rem; display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; }
-.memory-row-run-link { font-size: 0.8125rem; color: var(--accent); text-decoration: none; }
-.memory-row-run-link:hover { text-decoration: underline; }
+.memory-row-foot { margin-top: 0.375rem; display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; min-width: 0; }
+.memory-row-run-link {
+  box-sizing: border-box; min-height: 36px; display: inline-flex; align-items: center;
+  font-size: 0.8125rem; padding: 0.1875rem 0.625rem; border: 1px solid var(--border-strong);
+  border-radius: 0.375rem; background: var(--surface); color: var(--accent); text-decoration: none;
+}
+.memory-row-run-link:hover { background: var(--surface-sunk); text-decoration: none; }
 .memory-row-btn, .memory-btn {
+  box-sizing: border-box; min-height: 36px; display: inline-flex; align-items: center; justify-content: center;
   font: inherit; font-size: 0.8125rem; padding: 0.1875rem 0.625rem; border-radius: 0.375rem;
   border: 1px solid var(--border-strong); background: var(--surface); color: var(--fg-strong); cursor: pointer;
 }
@@ -720,24 +768,24 @@ export const MEMORY_LENS_STYLES = `
 .memory-btn--primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .memory-btn--primary:hover { filter: brightness(0.95); background: var(--accent); }
 .memory-row-btn--danger, .memory-btn--danger { color: var(--danger); border-color: var(--danger); }
-.memory-row-confirm { font-size: 0.8125rem; color: var(--fg-muted); display: inline-flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; }
-.memory-row-delete-error { flex-basis: 100%; color: var(--danger); }
-.memory-row-edit-error { flex-basis: 100%; color: var(--danger); }
+.memory-row-confirm { max-width: 100%; min-width: 0; font-size: 0.8125rem; color: var(--fg-muted); display: inline-flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; overflow-wrap: anywhere; }
+.memory-row-delete-error { min-width: 0; flex-basis: 100%; color: var(--danger); overflow-wrap: anywhere; }
+.memory-row-edit-error { min-width: 0; flex-basis: 100%; color: var(--danger); overflow-wrap: anywhere; }
 .memory-row.is-redacted { opacity: 0.7; }
 .memory-row-redacted { margin: 0.375rem 0 0; font-size: 0.8125rem; font-style: italic; color: var(--fg-muted); }
-.memory-compose, .memory-detail { display: flex; flex-direction: column; gap: 0.625rem; }
-.memory-compose-editor, .memory-import-editor { display: flex; flex-direction: column; gap: 0.625rem; }
+.memory-compose, .memory-detail { display: flex; flex-direction: column; gap: 0.625rem; min-width: 0; }
+.memory-compose-editor, .memory-import-editor { display: flex; flex-direction: column; gap: 0.625rem; min-width: 0; }
 .memory-compose-title { margin: 0; font-size: 1rem; }
-.memory-field { display: flex; flex-direction: column; gap: 0.25rem; }
+.memory-field { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
 .memory-field-label { font-size: 0.8125rem; font-weight: 600; color: var(--fg-muted); }
 .memory-field-hint { font-weight: 400; color: var(--fg-muted); }
 .memory-input, .memory-textarea {
-  font: inherit; font-size: 0.875rem; padding: 0.4375rem 0.625rem; border-radius: 0.375rem;
+  box-sizing: border-box; width: 100%; min-width: 0; font: inherit; font-size: 0.875rem; padding: 0.4375rem 0.625rem; border-radius: 0.375rem;
   border: 1px solid var(--border-strong); background: var(--surface); color: var(--fg);
 }
 .memory-textarea { resize: vertical; min-height: 5rem; }
-.memory-compose-actions, .memory-detail-actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
-.memory-compose-error { color: var(--danger); font-size: 0.8125rem; margin: 0; }
+.memory-compose-actions, .memory-detail-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: flex-end; min-width: 0; }
+.memory-compose-error { color: var(--danger); font-size: 0.8125rem; margin: 0; overflow-wrap: anywhere; }
 [${MEMORY_COMPOSE_DISCARD_GUARD_ATTR}] {
   display: grid; gap: 0.625rem; padding: 0.875rem;
   border: 1px solid var(--danger); border-radius: 0.5rem; background: var(--danger-weak);
@@ -754,12 +802,18 @@ export const MEMORY_LENS_STYLES = `
 .memory-import-discard-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .memory-detail-bar { margin-bottom: 0.25rem; }
 .memory-detail-title { margin: 0; font-size: 1rem; color: var(--fg-strong); }
-.memory-detail-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
-.memory-detail-summary { margin: 0; font-size: 0.9375rem; font-weight: 600; color: var(--fg-strong); }
+.memory-detail-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; min-width: 0; }
+.memory-detail-summary { margin: 0; font-size: 0.9375rem; font-weight: 600; color: var(--fg-strong); overflow-wrap: anywhere; }
 .memory-detail-body {
-  margin: 0; font: inherit; font-size: 0.875rem; white-space: pre-wrap; word-break: break-word;
+  box-sizing: border-box; width: 100%; max-width: 100%; min-width: 0; margin: 0; font: inherit; font-size: 0.875rem; white-space: pre-wrap; overflow-wrap: anywhere;
   background: var(--surface-sunk); border-radius: 0.5rem; padding: 0.75rem; color: var(--fg);
 }
+.memory-field-hint, .memory-lens-empty, .memory-lens-loading, .memory-lens-error { overflow-wrap: anywhere; }
 .memory-lens-empty, .memory-lens-loading, .memory-lens-error { color: var(--fg-muted); font-size: 0.875rem; }
 .memory-lens-error { color: var(--danger); }
+@media (max-width: 520px) {
+  .memory-lens-controls { align-items: stretch; flex-direction: column; }
+  .memory-lens-actions { margin-left: 0; }
+  .memory-lens-actions .memory-btn { flex: 1 1 auto; }
+}
 `;

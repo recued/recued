@@ -197,7 +197,15 @@ export const mountNotifyToasts = (
     const dismiss = doc.createElement('button');
     dismiss.type = 'button';
     dismiss.setAttribute(NOTIFY_TOAST_DISMISS_ATTR, t.id);
-    dismiss.setAttribute('aria-label', 'Dismiss notification');
+    const dismissContext = title === undefined
+      ? t.text
+      : `${title} — ${t.text}`;
+    dismiss.setAttribute(
+      'aria-label',
+      dismissContext.trim() === ''
+        ? 'Dismiss notification'
+        : `Dismiss notification: ${dismissContext}`,
+    );
     dismiss.className = 'notify-toast-dismiss';
     dismiss.textContent = '×';
     dismiss.addEventListener('click', () => dismiss_(t.id));
@@ -357,6 +365,7 @@ export const NOTIFY_TOASTS_STYLES = `
   display: flex;
   flex-direction: column;
   gap: 8px;
+  width: min(320px, calc(100vw - 32px));
   max-width: 320px;
   pointer-events: none;
 }
@@ -383,6 +392,7 @@ export const NOTIFY_TOASTS_STYLES = `
 }
 [${NOTIFY_TOASTS_HOST_ATTR}] .notify-toast-title {
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 [${NOTIFY_TOASTS_HOST_ATTR}] .notify-toast-text {
   color: var(--fg-muted);
@@ -390,16 +400,34 @@ export const NOTIFY_TOASTS_STYLES = `
   word-break: break-word;
 }
 [${NOTIFY_TOASTS_HOST_ATTR}] .notify-toast-dismiss {
+  box-sizing: border-box;
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
   flex: none;
+  align-items: center;
+  justify-content: center;
   border: none;
+  border-radius: 6px;
   background: transparent;
   color: var(--fg-muted);
   font-size: 16px;
   line-height: 1;
   cursor: pointer;
-  padding: 0 2px;
+  padding: 0;
 }
 [${NOTIFY_TOASTS_HOST_ATTR}] .notify-toast-dismiss:hover {
   color: var(--fg);
+}
+[${NOTIFY_TOASTS_HOST_ATTR}] .notify-toast-dismiss:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  color: var(--fg);
+}
+@media (max-width: 520px) {
+  [${NOTIFY_TOASTS_HOST_ATTR}] .notify-toast-dismiss {
+    width: 44px;
+    height: 44px;
+  }
 }
 `;

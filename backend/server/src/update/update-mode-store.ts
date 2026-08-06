@@ -2,8 +2,8 @@
  *
  *  The user's chosen mode is a stored preference; the EFFECTIVE mode resolves
  *  it against `RECUED_SELF_UPDATE` (env wins inside containers — spec § Update
- *  machinery) and a channel-derived default (`auto` on the self-updating
- *  channels, `notify` on the delegated ones). Persistence shares the
+ *  machinery) and a channel-derived default (`auto` on `docker-thin` alone,
+ *  `notify` everywhere else — see `channelDefaultMode`). Persistence shares the
  *  `server_state` table (config-ish, not the ledger), mirroring
  *  `release-state-store.ts`.
  */
@@ -49,10 +49,23 @@ export const createUpdateModeStore = (db: Database.Database): UpdateModeStore =>
 /** The four distribution channels carry their apply-default at build (I-8). */
 export type DistributionChannel = 'binary' | 'docker-baked' | 'docker-thin' | 'source';
 
-/** Channel-derived default: `auto` where we own the swap, `notify` where apply
- *  is delegated to the ecosystem. */
+/** Channel-derived default.
+ *
+ *  ⛔ `binary` DEFAULTS TO `notify`, AND THAT IS THE POINT. A self-hosted binary
+ *  install holds the owner's warehouse on their own machine, and an apply runs
+ *  migrations against it on the next boot. Unattended is a reasonable thing to
+ *  WANT and an unreasonable thing to ASSUME: consent that arrives via a default
+ *  nobody was shown is not consent. `notify` still surfaces the update card the
+ *  moment a release lands — the owner just decides when it lands on their data.
+ *
+ *  ⚠ `docker-thin` keeps `auto`. It swaps its own image, and an operator who
+ *  chose a thin container has already opted into infrastructure that updates
+ *  itself; the same argument does not transfer.
+ *
+ *  `docker-baked` and `source` are `notify` because apply is delegated to the
+ *  ecosystem — the host rebuilds the image or pulls the source. */
 export const channelDefaultMode = (channel: DistributionChannel): UpdateMode =>
-  channel === 'binary' || channel === 'docker-thin' ? 'auto' : 'notify';
+  channel === 'docker-thin' ? 'auto' : 'notify';
 
 export interface ResolveModeInputs {
   channel: DistributionChannel;

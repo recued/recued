@@ -32,6 +32,7 @@ import {
 import type { InstallAudienceSelection, InstallScopeWho } from '@recued/contracts';
 import {
   PACKS_DIALOG_INSTALL_BTN_ATTR,
+  PACKS_PANEL_STYLES,
   mountPacksPanel,
   type PacksInstallCaller,
   type PacksListCaller,
@@ -820,6 +821,24 @@ describe('D-182 §7.1 (5b.2) — picker presentation contract', () => {
       '.igp-scope-row:has(.igp-scope-check:checked)',
     );
     expect(INSTALL_GRANT_PICKER_STYLES).toContain('@media (max-width: 640px)');
+  });
+
+  it('keeps catalog text and embedded picker tracks inside pack consent', () => {
+    expect(PACKS_PANEL_STYLES).toMatch(
+      /\[data-recued-packs-dialog\]\s*\{[^}]*box-sizing:\s*border-box[^}]*min-width:\s*0[^}]*max-width:\s*100%/s,
+    );
+    expect(PACKS_PANEL_STYLES).toContain(
+      '[data-recued-packs-dialog] > * {\n  min-width: 0;\n  max-width: 100%;',
+    );
+    expect(PACKS_PANEL_STYLES).toMatch(
+      /\.packs-dialog-heading\s*\{[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(PACKS_PANEL_STYLES).toMatch(
+      /\.packs-dialog-list > li\s*\{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(PACKS_PANEL_STYLES).toContain(
+      'grid-template-columns: repeat(auto-fit, minmax(min(176px, 100%), 1fr));',
+    );
   });
 });
 

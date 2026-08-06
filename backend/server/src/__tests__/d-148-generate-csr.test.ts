@@ -12,8 +12,8 @@
  *      DER is structurally valid.
  *    - CN + SAN both match the input domain (the cloud ACME helper
  *      validates both — § A.5.3).
- *    - The Ed25519 signature verifies against the embedded public key.
- *    - Non-Ed25519 keys (RSA / EC) reject with the typed code.
+ *    - The ECDSA P-256 signature verifies against the embedded public key.
+ *    - Non-P-256 keys (RSA / Ed25519) reject with the typed code.
  *    - Malformed PEM rejects.
  *    - Empty / non-ASCII / oversized domains reject.
  *    - Composing with `createAcmeDomainRenewer` exercises the full
@@ -47,6 +47,14 @@ import type { SqliteTlsDomainStore } from '../tls/domain-store.js';
 // Scaffolding
 // ────────────────────────────────────────────────────────────────
 
+const newP256PrivateKeyPem = (): string => {
+  const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  return privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
+};
+
+/** ⛔ Ed25519 was the PRODUCTION algorithm until 2026-08-05, when a live drive
+ *  proved no public CA will sign such a CSR (`badCSR: unsupported signature
+ *  algorithm: Ed25519`). It is kept here ONLY as a rejected input. */
 const newEd25519PrivateKeyPem = (): string => {
   const { privateKey } = generateKeyPairSync('ed25519');
   return privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
@@ -54,11 +62,6 @@ const newEd25519PrivateKeyPem = (): string => {
 
 const newRsaPrivateKeyPem = (): string => {
   const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
-  return privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
-};
-
-const newEcPrivateKeyPem = (): string => {
-  const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
   return privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
 };
 
@@ -132,7 +135,7 @@ interface CsrShape {
   commonName: string;
   /** SAN dNSName entries. */
   sanDnsNames: string[];
-  /** Outer signature bytes (Ed25519: 64 bytes). */
+  /** Outer signature bytes (ECDSA P-256: DER SEQUENCE, ~70-72 bytes). */
   signature: Buffer;
 }
 
@@ -238,7 +241,7 @@ const parseCsr = (pem: string): CsrShape => {
     outer.contentStart + criNode.totalLength + sigAlgNode.totalLength,
   );
   expect(sigBitsNode.tag).toBe(0x03);
-  // BIT STRING content starts with a `unusedBits` byte (0 for Ed25519)
+  // BIT STRING content starts with a `unusedBits` byte (0 for a DER signature)
   const unusedBits = csrDer[sigBitsNode.contentStart];
   expect(unusedBits).toBe(0);
   const signature = csrDer.subarray(
@@ -254,7 +257,7 @@ const parseCsr = (pem: string): CsrShape => {
 
 describe('generateCsr — output shape', () => {
   it('produces a PEM CERTIFICATE REQUEST block', () => {
-    const key_pem = newEd25519PrivateKeyPem();
+    const key_pem = newP256PrivateKeyPem();
     const csr_pem = generateCsr({
       domain: 'alice.recued.net',
       private_key_pem: key_pem,
@@ -264,7 +267,7 @@ describe('generateCsr — output shape', () => {
   });
 
   it('NEVER embeds a PRIVATE KEY block in the output', () => {
-    const key_pem = newEd25519PrivateKeyPem();
+    const key_pem = newP256PrivateKeyPem();
     const csr_pem = generateCsr({
       domain: 'alice.recued.net',
       private_key_pem: key_pem,
@@ -273,7 +276,7 @@ describe('generateCsr — output shape', () => {
   });
 
   it('wraps base64 body at 64 chars per RFC 7468', () => {
-    const key_pem = newEd25519PrivateKeyPem();
+    const key_pem = newP256PrivateKeyPem();
     const csr_pem = generateCsr({
       domain: 'alice.recued.net',
       private_key_pem: key_pem,
@@ -289,7 +292,7 @@ describe('generateCsr — output shape', () => {
   });
 
   it('parses as valid DER end-to-end', () => {
-    const key_pem = newEd25519PrivateKeyPem();
+    const key_pem = newP256PrivateKeyPem();
     const csr_pem = generateCsr({
       domain: 'alice.recued.net',
       private_key_pem: key_pem,
@@ -304,7 +307,7 @@ describe('generateCsr — output shape', () => {
 
 describe('generateCsr — CN + SAN matching', () => {
   it('sets CN to the input domain', () => {
-    const key_pem = newEd25519PrivateKeyPem();
+    const key_pem = newP256PrivateKeyPem();
     const csr_pem = generateCsr({
       domain: 'alice.recued.net',
       private_key_pem: key_pem,
@@ -314,7 +317,7 @@ describe('generateCsr — CN + SAN matching', () => {
   });
 
   it('sets SAN dNSName to the input domain', () => {
-    const key_pem = newEd25519PrivateKeyPem();
+    const key_pem = newP256PrivateKeyPem();
     const csr_pem = generateCsr({
       domain: 'alice.recued.net',
       private_key_pem: key_pem,
@@ -324,7 +327,7 @@ describe('generateCsr — CN + SAN matching', () => {
   });
 
   it('handles BYO domain (not under .recued.net)', () => {
-    const key_pem = newEd25519PrivateKeyPem();
+    const key_pem = newP256PrivateKeyPem();
     const csr_pem = generateCsr({
       domain: 'home.example.org',
       private_key_pem: key_pem,
@@ -335,7 +338,7 @@ describe('generateCsr — CN + SAN matching', () => {
   });
 
   it('handles long subdomain chains', () => {
-    const key_pem = newEd25519PrivateKeyPem();
+    const key_pem = newP256PrivateKeyPem();
     const csr_pem = generateCsr({
       domain: 'a.b.c.d.e.f.example.org',
       private_key_pem: key_pem,
@@ -352,20 +355,21 @@ describe('generateCsr — CN + SAN matching', () => {
 
 describe('generateCsr — signature verifies', () => {
   it('embedded SPKI matches the keypair public half', () => {
-    const key_pem = newEd25519PrivateKeyPem();
+    const key_pem = newP256PrivateKeyPem();
     const csr_pem = generateCsr({
       domain: 'alice.recued.net',
       private_key_pem: key_pem,
     });
     const shape = parseCsr(csr_pem);
     // Load the embedded SPKI as a Node KeyObject — proves it's a
-    // structurally-valid Ed25519 SubjectPublicKeyInfo.
+    // structurally-valid P-256 SubjectPublicKeyInfo.
     const csrPublicKey = createPublicKey({
       key: shape.spkiDer,
       format: 'der',
       type: 'spki',
     });
-    expect(csrPublicKey.asymmetricKeyType).toBe('ed25519');
+    expect(csrPublicKey.asymmetricKeyType).toBe('ec');
+    expect(csrPublicKey.asymmetricKeyDetails?.namedCurve).toBe('prime256v1');
 
     // Derive the same SPKI from the original private key — must match
     // byte-for-byte (the CSR's SPKI is the public half of the input
@@ -381,7 +385,7 @@ describe('generateCsr — signature verifies', () => {
   });
 
   it('outer signature verifies against the embedded public key', () => {
-    const key_pem = newEd25519PrivateKeyPem();
+    const key_pem = newP256PrivateKeyPem();
     const csr_pem = generateCsr({
       domain: 'alice.recued.net',
       private_key_pem: key_pem,
@@ -392,54 +396,92 @@ describe('generateCsr — signature verifies', () => {
       format: 'der',
       type: 'spki',
     });
-    const ok = nodeVerify(null, shape.criDer, publicKey, shape.signature);
+    // ECDSA needs the explicit digest Ed25519 did not.
+    const ok = nodeVerify('sha256', shape.criDer, publicKey, shape.signature);
     expect(ok).toBe(true);
   });
 
-  it('signature is 64 bytes (Ed25519)', () => {
-    const key_pem = newEd25519PrivateKeyPem();
+  it('signature is a DER SEQUENCE of two INTEGERs (ECDSA)', () => {
+    const key_pem = newP256PrivateKeyPem();
     const csr_pem = generateCsr({
       domain: 'alice.recued.net',
       private_key_pem: key_pem,
     });
     const shape = parseCsr(csr_pem);
-    expect(shape.signature.length).toBe(64);
+    // ⛔ Was `toBe(64)`. An ECDSA signature is DER `SEQUENCE { INTEGER r,
+    //    INTEGER s }` whose length VARIES (~70-72 bytes) because leading zeros
+    //    are stripped from r/s — so assert the STRUCTURE. A fixed byte count is
+    //    what tied this suite to Ed25519 in the first place.
+    expect(shape.signature[0]).toBe(0x30);                       // SEQUENCE
+    expect(shape.signature.length).toBe(shape.signature[1] + 2); // short-form len
+    expect(shape.signature[2]).toBe(0x02);                       // INTEGER r
+  });
+
+  /** ⛔ THE ASSERTION WHOSE ABSENCE LET THE Ed25519 BUG SHIP GREEN.
+   *
+   *  Every other test here is SELF-CONSISTENT: the fixture mints a key, the
+   *  emitter signs with it, and the test verifies with the same algorithm. That
+   *  can never catch "the algorithm is wrong for the CONSUMER" — and the
+   *  consumer is a public CA, which rejected the Ed25519 CSR at finalize with
+   *  `badCSR: unsupported signature algorithm`. 20 tests passed while
+   *  server-side issuance was impossible.
+   *
+   *  So assert the wire bytes against what CAs actually accept, and pin the old
+   *  value as forbidden so a revert cannot pass. */
+  it('signatureAlgorithm is ecdsa-with-SHA256 — the byte a CA reads', () => {
+    const csr_pem = generateCsr({
+      domain: 'alice.recued.net',
+      private_key_pem: newP256PrivateKeyPem(),
+    });
+    const shape = parseCsr(csr_pem);
+    // SEQUENCE { OID 1.2.840.10045.4.3.2 }, parameters ABSENT per RFC 5758 §3.2
+    const ECDSA_SHA256_DER = Buffer.from(
+      [0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02],
+    );
+    // SEQUENCE { OID 1.3.101.112 } — Ed25519, which no public CA signs.
+    const ED25519_DER = Buffer.from([0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70]);
+
+    expect(shape.csrDer.includes(ECDSA_SHA256_DER)).toBe(true);
+    expect(shape.csrDer.includes(ED25519_DER)).toBe(false);
   });
 
   it('different keypairs produce different signatures', () => {
     const csr_a = generateCsr({
       domain: 'alice.recued.net',
-      private_key_pem: newEd25519PrivateKeyPem(),
+      private_key_pem: newP256PrivateKeyPem(),
     });
     const csr_b = generateCsr({
       domain: 'alice.recued.net',
-      private_key_pem: newEd25519PrivateKeyPem(),
+      private_key_pem: newP256PrivateKeyPem(),
     });
     expect(csr_a).not.toBe(csr_b);
   });
 });
 
 // ────────────────────────────────────────────────────────────────
-// Input rejection — non-Ed25519, malformed PEM, bad domains
+// Input rejection — non-P-256, malformed PEM, bad domains
 // ────────────────────────────────────────────────────────────────
 
 describe('generateCsr — input rejection', () => {
-  it('rejects RSA private key with KEY_NOT_ED25519', () => {
+  it('rejects RSA private key with KEY_NOT_P256', () => {
     expect(() =>
       generateCsr({
         domain: 'alice.recued.net',
         private_key_pem: newRsaPrivateKeyPem(),
       }),
-    ).toThrow(GENERATE_CSR_ERRORS.KEY_NOT_ED25519);
+    ).toThrow(GENERATE_CSR_ERRORS.KEY_NOT_P256);
   });
 
-  it('rejects EC (P-256) private key with KEY_NOT_ED25519', () => {
+  // The regression that mattered: Ed25519 parses fine and produces a
+  // structurally-valid CSR that every CA refuses at finalize. Rejecting it here
+  // turns a remote `badCSR` into a local, named error.
+  it('rejects Ed25519 private key with KEY_NOT_P256', () => {
     expect(() =>
       generateCsr({
         domain: 'alice.recued.net',
-        private_key_pem: newEcPrivateKeyPem(),
+        private_key_pem: newEd25519PrivateKeyPem(),
       }),
-    ).toThrow(GENERATE_CSR_ERRORS.KEY_NOT_ED25519);
+    ).toThrow(GENERATE_CSR_ERRORS.KEY_NOT_P256);
   });
 
   it('rejects garbled PEM with KEY_PARSE_FAILED', () => {
@@ -455,7 +497,7 @@ describe('generateCsr — input rejection', () => {
     expect(() =>
       generateCsr({
         domain: '',
-        private_key_pem: newEd25519PrivateKeyPem(),
+        private_key_pem: newP256PrivateKeyPem(),
       }),
     ).toThrow(GENERATE_CSR_ERRORS.EMPTY_DOMAIN);
   });
@@ -464,7 +506,7 @@ describe('generateCsr — input rejection', () => {
     expect(() =>
       generateCsr({
         domain: 'café.example.com',
-        private_key_pem: newEd25519PrivateKeyPem(),
+        private_key_pem: newP256PrivateKeyPem(),
       }),
     ).toThrow(GENERATE_CSR_ERRORS.DOMAIN_NOT_ASCII);
   });
@@ -475,7 +517,7 @@ describe('generateCsr — input rejection', () => {
     expect(() =>
       generateCsr({
         domain: oversize,
-        private_key_pem: newEd25519PrivateKeyPem(),
+        private_key_pem: newP256PrivateKeyPem(),
       }),
     ).toThrow(GENERATE_CSR_ERRORS.DOMAIN_TOO_LONG);
   });
@@ -488,7 +530,7 @@ describe('generateCsr — input rejection', () => {
 describe('generateCsr — integration with createAcmeDomainRenewer', () => {
   /** Build a stub store + capture the CSR that lands at the issuer. */
   const captureIssuance = async () => {
-    const key_pem = newEd25519PrivateKeyPem();
+    const key_pem = newP256PrivateKeyPem();
     const chain: TLSDomainCertChain = {
       domain: 'alice.recued.net',
       cert_pem: 'OLD_CERT',
@@ -552,7 +594,8 @@ describe('generateCsr — integration with createAcmeDomainRenewer', () => {
     expect(shape.commonName).toBe('alice.recued.net');
     expect(shape.sanDnsNames).toEqual(['alice.recued.net']);
     const publicKey = createPublicKey(createPrivateKey(key_pem));
-    const ok = nodeVerify(null, shape.criDer, publicKey, shape.signature);
+    // ECDSA needs the explicit digest Ed25519 did not.
+    const ok = nodeVerify('sha256', shape.criDer, publicKey, shape.signature);
     expect(ok).toBe(true);
   });
 

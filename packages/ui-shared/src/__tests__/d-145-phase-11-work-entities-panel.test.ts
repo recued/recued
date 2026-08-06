@@ -19,6 +19,7 @@ import {
   renderWorkEntitiesPanel,
   renderWorkEntityKindSection,
   renderWorkEntitySourceRow,
+  WORK_ENTITIES_SOURCE_ROW_STYLES,
   type WorkEntitiesPanelState,
 } from '../server-settings/work-entities/index.js';
 
@@ -118,6 +119,34 @@ describe('PA11 source row render', () => {
     expect(html).toMatch(/data-action="set-source-mcp-exposed"[^>]*disabled/);
     expect(html).toMatch(/rpc failed/);
   });
+
+  it('names repeated row toggles by source label and stable id', () => {
+    const html = [
+      renderWorkEntitySourceRow({
+        source: buildBuiltinTask(),
+        is_default: true,
+      }),
+      renderWorkEntitySourceRow({
+        source: buildBuiltinNote(),
+        is_default: true,
+      }),
+    ].join('');
+    expect(html).toContain(
+      `aria-label="Enabled for Recued built-in (${RECUED_BUILTIN_SOURCE_ID('task')})"`,
+    );
+    expect(html).toContain(
+      `aria-label="Enabled for Recued built-in (${RECUED_BUILTIN_SOURCE_ID('note')})"`,
+    );
+    expect(html).toContain(
+      `aria-label="MCP exposed for Recued built-in (${RECUED_BUILTIN_SOURCE_ID('task')})"`,
+    );
+  });
+
+  it('gives each checkbox label a full configuration-action target', () => {
+    expect(WORK_ENTITIES_SOURCE_ROW_STYLES).toMatch(
+      /\.rx-source-row-toggle\s*\{[^}]*min-height:\s*36px/s,
+    );
+  });
 });
 
 // ────────────────────────────────────────────────────────────────
@@ -140,6 +169,7 @@ describe('PA11 kind section render', () => {
     );
     // The "(none)" option is not selected.
     expect(html).not.toMatch(/<option value=""[^>]*selected/);
+    expect(html).toContain('aria-label="Default Source for Tasks"');
   });
 
   it('renders empty-state hint when no Sources registered for the kind', () => {
@@ -197,11 +227,13 @@ describe('PA11 panel render', () => {
     const html = renderWorkEntitiesPanel(
       baseState({ loading: true, sources: [] }),
     );
+    expect(html).toContain('<h2>Work Entities</h2>');
     expect(html).toMatch(/Loading Work Entity Sources/);
   });
 
   it('renders inline error when state.error is set', () => {
     const html = renderWorkEntitiesPanel(baseState({ error: 'list rpc failed' }));
+    expect(html).toContain('<h2>Work Entities</h2>');
     expect(html).toMatch(/list rpc failed/);
   });
 

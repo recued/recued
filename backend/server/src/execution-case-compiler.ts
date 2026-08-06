@@ -302,23 +302,72 @@ const parseRecipeAuditEntry = (raw: string): ParsedRecipeAuditEntry | null => {
   }
 };
 
+/** ⛔ ANCHORS MUST BE PUSHED INTO SQL. This read used to select EVERY
+ *  chat-channel audit entry ever written, materialise all of them, and then
+ *  drop the non-anchored ones in JS — so compiling one case paid for the whole
+ *  chat history of the server.
+ *
+ *  ⚠ IT WAS INVISIBLE UNTIL D-230. The audit log's byte quota was 50 MB, which
+ *  put an accidental ceiling on the result set; raising it to server scale
+ *  (8 GiB) removed the only thing bounding this. **Raising a quota re-arms
+ *  every unbounded read of the table it governs** — the harness OOM'd at 3.1 GB
+ *  inside `Statement::JS_all` the first run after the raise, which is how this
+ *  surfaced.
+ *
+ *  🔑 The session equality is what makes it fast, not the pair test. With only
+ *  `channel = 'chat' AND (pairs…)` SQLite seeks the channel index and then
+ *  evaluates `json_extract` over every chat row; adding `chat_session_id IN
+ *  (…)` lets it use `audit_entries_chat_turn_idx`. Measured over 100k rows /
+ *  40k chat-channel, anchored to one root request's 5 turns:
+ *
+ *     current (all + JS filter)   165.00ms   40,000 rows   ~29 MB retained
+ *     channel + pairs              37.89ms       10 rows
+ *     + chat_session_id IN (…)      0.03ms       10 rows
+ *
+ *  ⚠ The JS anchor test is KEPT, not replaced. `parseRecipeAuditEntry` rejects
+ *  malformed rows and the SQL predicate reads raw JSON, so the two are not
+ *  interchangeable; the SQL narrows, the JS decides. */
 const listRecipeAuditEntries = (
   db: Database.Database,
   anchors?: ReadonlySet<string>,
 ): ParsedRecipeAuditEntry[] => {
   if (!tableExists(db, 'audit_entries')) return [];
+  // No anchors = the corpus-wide diagnostic read. Streamed, not materialised —
+  // see `runtimeCompositionDiagnostics`.
+  if (anchors === undefined) {
+    const out: ParsedRecipeAuditEntry[] = [];
+    for (const row of db.prepare(`
+      SELECT data FROM audit_entries
+       WHERE json_extract(data, '$.execution_source.channel') = 'chat'
+       ORDER BY json_extract(data, '$.started_at') ASC, key ASC
+    `).iterate() as Iterable<{ data: string }>) {
+      const entry = parseRecipeAuditEntry(row.data);
+      if (entry) out.push(entry);
+    }
+    return out;
+  }
+  if (anchors.size === 0) return [];
+
+  const pairs = [...anchors].map((anchor) => {
+    const separator = anchor.indexOf('\0');
+    return [anchor.slice(0, separator), anchor.slice(separator + 1)] as const;
+  });
+  const sessions = [...new Set(pairs.map(([session]) => session))];
   const rows = db.prepare(`
     SELECT data FROM audit_entries
      WHERE json_extract(data, '$.execution_source.channel') = 'chat'
+       AND json_extract(data, '$.execution_source.chat_session_id')
+           IN (${sessions.map(() => '?').join(', ')})
+       AND (${pairs.map(() =>
+         `(json_extract(data, '$.execution_source.chat_session_id') = ?`
+         + ` AND json_extract(data, '$.execution_source.turn_id') = ?)`,
+       ).join(' OR ')})
      ORDER BY json_extract(data, '$.started_at') ASC, key ASC
-  `).all() as Array<{ data: string }>;
+  `).all(...sessions, ...pairs.flat()) as Array<{ data: string }>;
   return rows.flatMap((row): ParsedRecipeAuditEntry[] => {
     const entry = parseRecipeAuditEntry(row.data);
     if (!entry) return [];
-    return anchors === undefined
-      || anchors.has(`${entry.session_id}\0${entry.turn_id}`)
-      ? [entry]
-      : [];
+    return anchors.has(`${entry.session_id}\0${entry.turn_id}`) ? [entry] : [];
   });
 };
 
@@ -1707,32 +1756,26 @@ export const createExecutionCaseCompiler = (
     },
     async pruneSourcesOlderThan(before) {
       while (replayInFlight) await replayInFlight;
-      const [reports, cases] = await Promise.all([
-        deps.reportStore.listAll(),
-        deps.caseStore.listAll(),
-      ]);
-      // Every report any materialized case still rests on. Collected BEFORE
-      // anything is deleted, because this is the set that must survive.
-      const supporting = new Set<string>();
-      for (const row of cases) {
-        for (const id of deps.caseStore.sourceReportIds(row.case_id)) {
-          supporting.add(id);
-        }
-      }
-      const doomed = reports.filter((stored) =>
-        !supporting.has(stored.report.report_id)
-        // A report that never closed cannot close later — its span was
-        // abandoned mid-flight — so age it from when it was written.
-        && (stored.closed_at ?? stored.report.reported_at) < before);
+      // ⛔ THE CANDIDATE SET IS COMPUTED IN SQL. This used to be
+      // `reportStore.listAll()` + `caseStore.listAll()` + a `sourceReportIds()`
+      // call per case, then a JS filter — so a DAILY tick opened four
+      // AEAD-sealed fields for every report in the corpus and listed every
+      // case, in order to find (usually) nothing. Cost was O(corpus) per tick,
+      // forever, in exchange for no work; the horizon audit's optimization pass
+      // flagged the idle tick full-scanning `execution_reports`.
+      //
+      // `unsupportedIdsOlderThan` carries the same two terms — the age test and
+      // the "supports no case" test — with the equivalence argued at its
+      // declaration. It decrypts nothing: every step below is keyed by id.
+      const doomedIds = deps.reportStore.unsupportedIdsOlderThan(before);
       // ⚠ Nothing to do means NOTHING TO DO. A rebuild here would be the most
       // expensive no-op in the system: it reads every observation and rebuilds
       // every case, which is precisely the cost this retention exists to bound.
-      if (doomed.length === 0) return { reports: 0, observations: 0 };
+      if (doomedIds.length === 0) return { reports: 0, observations: 0 };
       const work = (async () => {
         deps.caseStore.clearCompilerVersion();
         let observations = 0;
-        for (const stored of doomed) {
-          const reportId = stored.report.report_id;
+        for (const reportId of doomedIds) {
           observations += deps.caseStore.observationCount(reportId);
           // Removes the observations, the case-source join AND the compiled
           // marker in one transaction. ⛔ The marker matters: a compiled-report
@@ -1743,7 +1786,7 @@ export const createExecutionCaseCompiler = (
         }
         const materialized = await rebuildMaterialized();
         deps.caseStore.setCompilerVersion(EXECUTION_CASE_COMPILER_VERSION);
-        return { reports: doomed.length, observations, materialized };
+        return { reports: doomedIds.length, observations, materialized };
       })();
       // Serialised against every other corpus mutation through the SAME latch
       // the replay/compile paths use — a prune racing a compile would rebuild
@@ -1759,20 +1802,25 @@ export const createExecutionCaseCompiler = (
     },
 
     runtimeCompositionDiagnostics() {
-      const activityRows = tableExists(deps.db, 'audit_activities')
-        ? deps.db.prepare(`
+      // ⚠ CORPUS-WIDE ON PURPOSE — `corpus_roots`, `dispatches` and the
+      // recurrence counts are defined over the whole history, so narrowing this
+      // would silently change what the diagnostic MEANS. What it must not do is
+      // hold the whole history twice: `.all()` retained every raw JSON string
+      // for the lifetime of the parse, on a table D-230 sized to 8 GiB.
+      // `.iterate()` frees each row as it is parsed — same rows, same order,
+      // same result, peak memory down to the parsed objects alone.
+      const rawActivities: ParsedChatToolActivity[] = [];
+      if (tableExists(deps.db, 'audit_activities')) {
+        for (const row of deps.db.prepare(`
             SELECT data FROM audit_activities
              WHERE json_extract(data, '$.action') = 'chat_tool_call'
              ORDER BY json_extract(data, '$.timestamp') ASC,
                       json_extract(data, '$.activity_id') ASC
-          `).all() as Array<{ data: string }>
-        : [];
-      const rawActivities = activityRows.flatMap(
-        (row): ParsedChatToolActivity[] => {
+          `).iterate() as Iterable<{ data: string }>) {
           const parsed = parseToolActivity(row.data);
-          return parsed ? [parsed] : [];
-        },
-      );
+          if (parsed) rawActivities.push(parsed);
+        }
+      }
       const recipeRuns = listRecipeAuditEntries(deps.db);
       const paired = pairRecipeRuns(
         rawActivities,

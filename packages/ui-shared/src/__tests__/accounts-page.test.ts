@@ -7,6 +7,7 @@ import {
 import { e } from '../template.js';
 
 import {
+  ACCOUNTS_PANEL_STYLES,
   ACCOUNT_LANES,
   ACCOUNT_SLUG_REGEX,
   canSubmitAccountForm,
@@ -23,6 +24,38 @@ import {
   type AccountProvider,
   type AccountsPanelState,
 } from '../accounts/page.js';
+
+describe('ACCOUNTS_PANEL_STYLES', () => {
+  it('contains long account identities through list, detail, and removal review', () => {
+    expect(ACCOUNTS_PANEL_STYLES).toContain(
+      '.accounts-panel { min-width: 0; display: grid; gap: 14px; }',
+    );
+    expect(ACCOUNTS_PANEL_STYLES).toContain(
+      '.accounts-row-main {\n  box-sizing: border-box; min-width: 0; max-width: 100%;',
+    );
+    expect(ACCOUNTS_PANEL_STYLES).toContain(
+      '.accounts-row-name {\n  min-width: 0; overflow-wrap: anywhere;',
+    );
+    expect(ACCOUNTS_PANEL_STYLES).toContain(
+      '.accounts-row-sub {\n  min-width: 0; overflow-wrap: anywhere;',
+    );
+    expect(ACCOUNTS_PANEL_STYLES).toContain(
+      'grid-template-columns: max-content minmax(0, 1fr);',
+    );
+    expect(ACCOUNTS_PANEL_STYLES).toContain(
+      '.accounts-detail-grid dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }',
+    );
+    expect(ACCOUNTS_PANEL_STYLES).toContain(
+      '.accounts-delete-confirm {\n  box-sizing: border-box; min-width: 0; max-width: 100%;',
+    );
+    expect(ACCOUNTS_PANEL_STYLES).toContain(
+      '.accounts-delete-title {\n  min-width: 0; margin: 0; overflow-wrap: anywhere;',
+    );
+    expect(ACCOUNTS_PANEL_STYLES).toContain(
+      '.accounts-delete-body {\n  min-width: 0; margin: 0; overflow-wrap: anywhere;',
+    );
+  });
+});
 
 const imap = (): AccountProvider =>
   findAccountProvider(findAccountLane('mail')!, 'imap')!;
@@ -362,6 +395,13 @@ describe('renderAccountsPanel', () => {
     expect(html).toContain('can send');
     expect(html).toContain('fast&lt;x&gt;mail');
     expect(html).not.toContain('fast<x>mail');
+    expect(html).toContain(
+      '<h2 class="accounts-list-title">Mailboxes</h2>',
+    );
+    expect(html).toContain(
+      'Recued can search and use these mailboxes in your work.',
+    );
+    expect(html).not.toContain('Mailboxes Recued can');
     expect(html).toContain('+ Connect mailbox');
   });
 

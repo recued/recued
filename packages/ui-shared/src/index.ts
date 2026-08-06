@@ -48,6 +48,7 @@ export {
 // (shared by the #recipes route + the Settings → Packs panel).
 export {
   installDisclosureBlocks,
+  missingPackRefsFromRunnability,
   runnabilityDisclosureLines,
   uninstallDisclosureBlocks,
   type PackDisclosureBlock,

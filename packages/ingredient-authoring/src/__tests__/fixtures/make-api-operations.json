@@ -5,18 +5,18 @@
     "source": {
       "kind": "gitbook_openapi_fragments",
       "sitemap_url": "https://developers.make.com/api-documentation/sitemap-pages.xml",
-      "sitemap_sha256": "6c1ca7988a10a7c29ab144a5aef6d71a084769a3e5e9f89f5160c44d15025a24",
-      "sitemap_bytes": 15837,
-      "document_manifest_sha256": "8b65c0440fdf8b9bd10c777bd37e8abdc1ef170e867a438153c79e6c9c8ec4ac",
-      "document_bytes": 1551316,
-      "document_lastmod": "2026-07-13T07:31:49.000Z",
-      "document_count": 59,
-      "fragment_count": 379,
+      "sitemap_sha256": "d96fe677a28223de4bceaa7a1e854602bde2be56712e3a88ebcdd00bc24e2f2e",
+      "sitemap_bytes": 16587,
+      "document_manifest_sha256": "25323fa8c098f296fa1711bb168c0c1ee9a4062e0d561008152e502971562aaf",
+      "document_bytes": 1616880,
+      "document_lastmod": "2026-08-03T14:22:31.000Z",
+      "document_count": 63,
+      "fragment_count": 394,
       "documents": [
         {
           "page": "affiliate",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/affiliate.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "7d65cceeb684931869f9a45f760f6c16bc1206ef36632c5a7ebe5fdeddf727b2",
           "bytes": 12310,
           "fragments": 5
@@ -24,7 +24,7 @@
         {
           "page": "on-prem-agents",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/on-prem-agents.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "1c84e1c9c466224c137646ff12742bcd790f24756a922b8520fa0c5ba517899e",
           "bytes": 11801,
           "fragments": 5
@@ -32,7 +32,7 @@
         {
           "page": "ai-agents",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/ai-agents.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "ef4319c38a2d38f1aa18cea9aff30574c33e99408a3be3c7c396b3c163c53556",
           "bytes": 35347,
           "fragments": 7
@@ -40,7 +40,7 @@
         {
           "page": "ai-agents/context",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/ai-agents/context.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "7331026993e6c22edb3af7757d6b3fca7bca78c0437c3245dff7e3d34c28f150",
           "bytes": 7690,
           "fragments": 3
@@ -48,7 +48,7 @@
         {
           "page": "ai-agents/llm-providers",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/ai-agents/llm-providers.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "fc89b4d6eca870ced8cf89ed98d4168fd6eb6dca8f99013dbb9f642bf23b3a38",
           "bytes": 10241,
           "fragments": 3
@@ -56,7 +56,7 @@
         {
           "page": "analytics",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/analytics.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "befb58ed3a0aded7113cca889cbfa9131e5a38ec451ac6404f338f5d0a0e81dd",
           "bytes": 10463,
           "fragments": 1
@@ -64,7 +64,7 @@
         {
           "page": "audit-logs",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/audit-logs.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "0e262ba287d590fc74634acaa3492544ae700ed1cbdbc004be970aaacd854bf3",
           "bytes": 22478,
           "fragments": 5
@@ -72,7 +72,7 @@
         {
           "page": "cashier",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/cashier.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "7fb216cf294bf7ba813d14ea7e0dc2b2754eeaabf73c4388a10b35c6884b0e08",
           "bytes": 7991,
           "fragments": 3
@@ -80,15 +80,23 @@
         {
           "page": "connections",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/connections.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "53f2d33c361c97997b841f6951cb2f5e1f7e677ddf36b807cacf913027c609af",
           "bytes": 29933,
           "fragments": 9
         },
         {
+          "page": "connections/access-list",
+          "markdown_url": "https://developers.make.com/api-documentation/api-reference/connections/access-list.md",
+          "lastmod": "2026-08-03T14:22:31.000Z",
+          "sha256": "fc6f1afebeedb453f67d5ae45d418a2112f48e9e6825b29e532feab4f3461620",
+          "bytes": 5839,
+          "fragments": 1
+        },
+        {
           "page": "credential-requests",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/credential-requests.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "8181dc8937bdc4cf86703982e7ded63c1499bb1e7a163be3b54821aff4b72a25",
           "bytes": 59812,
           "fragments": 11
@@ -96,7 +104,7 @@
         {
           "page": "custom-properties",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/custom-properties.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "b5da58cf9fa2e31b595bdc89425d6a869b514445d921a0a86a25b85757262fb5",
           "bytes": 8975,
           "fragments": 2
@@ -104,7 +112,7 @@
         {
           "page": "custom-properties/structure-items",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/custom-properties/structure-items.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "01e1bb53ee1ebaa1fa5fbae5233a5171063405225ffd400d7cec511922232ca5",
           "bytes": 19411,
           "fragments": 4
@@ -112,7 +120,7 @@
         {
           "page": "data-stores",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/data-stores.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "9faac3d66af13a6ba9431453c019dc607f72e33e6b59ef2ebdec2c8dc1bd7bc9",
           "bytes": 17386,
           "fragments": 5
@@ -120,7 +128,7 @@
         {
           "page": "data-stores/data",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/data-stores/data.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "a09950ed9519cd903cc97ef784b6535f01d7144a9c3deab24802f361e3ed6336",
           "bytes": 17415,
           "fragments": 5
@@ -128,7 +136,7 @@
         {
           "page": "data-structures",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/data-structures.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "f89fc4f50ef9aa333a166c1a85404203402bd830b33e0d8accefa8def228a673",
           "bytes": 30766,
           "fragments": 6
@@ -136,7 +144,7 @@
         {
           "page": "devices",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/devices.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "b0dbdb59437561e9e4e3d3b1018225ba5a4b8b3782523d88349e6f674b174deb",
           "bytes": 11687,
           "fragments": 5
@@ -144,7 +152,7 @@
         {
           "page": "devices/incomings",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/devices/incomings.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "2d45f2554739b530a0cfd0db94af6404225f158216e38c7575157c6ae3723be7",
           "bytes": 10098,
           "fragments": 4
@@ -152,7 +160,7 @@
         {
           "page": "devices/outgoings",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/devices/outgoings.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "44de2f870d15607cf385482a6fdcb076229b37a7423f6e788a5149a22fcd610d",
           "bytes": 8448,
           "fragments": 3
@@ -160,15 +168,15 @@
         {
           "page": "incomplete-executions",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/incomplete-executions.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
-          "sha256": "07788188f2d3790013598c84b764952819e030d362f3874249d8deddec25eb20",
-          "bytes": 38588,
+          "lastmod": "2026-08-03T14:22:31.000Z",
+          "sha256": "340da1bf93500271a402073805ca3062ccd4727645bb062931d121928820e7a6",
+          "bytes": 40859,
           "fragments": 11
         },
         {
           "page": "enums",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/enums.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "c8b19b3e8e7c40ab3e7994038e65725b9c322ca9788cabe7a125a3e7e7ff1370",
           "bytes": 36611,
           "fragments": 16
@@ -176,7 +184,7 @@
         {
           "page": "custom-functions",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/custom-functions.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "0300f702191de6730970892ee7a87c71d4a1baab1154cb5218908ce441b04f71",
           "bytes": 27486,
           "fragments": 7
@@ -184,7 +192,7 @@
         {
           "page": "general",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/general.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "6d587cadea06933f992e5741a2af77d8498b7923cbecfc3ebcea3c239b36df21",
           "bytes": 3137,
           "fragments": 1
@@ -192,15 +200,15 @@
         {
           "page": "hooks",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/hooks.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
-          "sha256": "f0c0d6e225e53473a82bc9c7145f55c25971f645ff9f0b31f41cb0aba0cc8768",
-          "bytes": 33167,
+          "lastmod": "2026-08-03T14:22:31.000Z",
+          "sha256": "6ffb2538a89c9ee362b3a1394f2221358941af3a6c8e23b5654dedf75c7322e5",
+          "bytes": 33246,
           "fragments": 11
         },
         {
           "page": "hooks/incomings",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/hooks/incomings.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "ffd39f2fba4f2b1a71d784045335305c0749516109676235e0fc1716c71d5e91",
           "bytes": 14565,
           "fragments": 4
@@ -208,7 +216,7 @@
         {
           "page": "hooks/logs",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/hooks/logs.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "2df456596f7dbbb9c04020caec62c42b3af4cf20ea7198e63a3478d3b13af30c",
           "bytes": 11205,
           "fragments": 2
@@ -216,15 +224,23 @@
         {
           "page": "keys",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/keys.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "b6844c67317d7e544fdc5c50bfb6e1e3b8afb8682763741639e90d9fe7681219",
           "bytes": 17012,
           "fragments": 6
         },
         {
+          "page": "keys/access-list",
+          "markdown_url": "https://developers.make.com/api-documentation/api-reference/keys/access-list.md",
+          "lastmod": "2026-08-03T14:22:31.000Z",
+          "sha256": "79ebbded361100b0ca8fc9d5a43fe9de9cd557f17f148649cb0b5772e76a31cf",
+          "bytes": 5561,
+          "fragments": 1
+        },
+        {
           "page": "notifications",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/notifications.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "b04f0321c5d983c03ca36d2011c2213b9903d945422336fa4f44e9f11dca617a",
           "bytes": 13214,
           "fragments": 4
@@ -232,15 +248,15 @@
         {
           "page": "organizations",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/organizations.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
-          "sha256": "b012c90dfa9163cbbe1b04b2119e384437072a6ee21dc360a6b130160f835edc",
-          "bytes": 123135,
+          "lastmod": "2026-08-03T14:22:31.000Z",
+          "sha256": "249778ca9abd97708c398afae14daf328f15d69bb7e5eb4989801647545563e5",
+          "bytes": 125460,
           "fragments": 36
         },
         {
           "page": "organizations/user-organization-roles",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/organizations/user-organization-roles.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "e27c48d48da0d0a030dc986195a11b88fa24bc6d0d1bafce62f4ea7b31998329",
           "bytes": 11265,
           "fragments": 3
@@ -248,15 +264,23 @@
         {
           "page": "mms",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/mms.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "7ab934c207fb8a44365a04b571c4bd0bf451b76dea5f3b4de4731d116f8f4cf2",
           "bytes": 12848,
           "fragments": 4
         },
         {
+          "page": "private-spaces",
+          "markdown_url": "https://developers.make.com/api-documentation/api-reference/private-spaces.md",
+          "lastmod": "2026-08-03T14:22:31.000Z",
+          "sha256": "a6b842d4efe5cce7b51bc5245dae2a131350c6a77338ed4adc23320a38e64e29",
+          "bytes": 15366,
+          "fragments": 3
+        },
+        {
           "page": "remote-procedures",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/remote-procedures.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "b7e6a438e161f666060fcbfb00721117704ec216f0f83e646a8114ec3ee20480",
           "bytes": 5456,
           "fragments": 2
@@ -264,15 +288,15 @@
         {
           "page": "scenarios",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/scenarios.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
-          "sha256": "5a40353a0cec860aea7c73490724afe9ed20cb3e860f5a684f8f2facb0dc0a00",
-          "bytes": 107507,
+          "lastmod": "2026-08-03T14:22:31.000Z",
+          "sha256": "64c3be010a1518db88896139ee3276aa0e678b5d6c0f16ae196b6a6a1c985186",
+          "bytes": 107577,
           "fragments": 22
         },
         {
           "page": "scenarios/logs",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/scenarios/logs.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "03ea461be7a10b51a3c67d51e269007e6a72bda6fd8d328826c5ab78700f89e0",
           "bytes": 22703,
           "fragments": 6
@@ -280,7 +304,7 @@
         {
           "page": "scenarios/blueprints",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/scenarios/blueprints.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "31478b7127a95bc185f51f129c93fd17653c5731edcc8d436d8b829952bf2bf4",
           "bytes": 10753,
           "fragments": 2
@@ -288,7 +312,7 @@
         {
           "page": "scenarios/consumptions",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/scenarios/consumptions.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "3ea570703fee21c7a46edad38cc7d3839004c54ccc69ff194c92ac0daf65d64c",
           "bytes": 9469,
           "fragments": 1
@@ -296,7 +320,7 @@
         {
           "page": "scenarios/tools",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/scenarios/tools.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "ebde7f6d37c4e5e5379e834366df54180e1f5d331eaa41efd1147e713bc960da",
           "bytes": 5663,
           "fragments": 1
@@ -304,7 +328,7 @@
         {
           "page": "scenarios/custom-properties-data",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/scenarios/custom-properties-data.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "3c53c88f1c35cbf5f92e2d22eaa969fd2a7459e31d0283ca859083fef0150629",
           "bytes": 17313,
           "fragments": 5
@@ -312,15 +336,23 @@
         {
           "page": "scenarios-folders",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/scenarios-folders.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "0b38c8e538e12bfb65e23a47fb91b21a15db701f0927f905fc27992806d6a08e",
           "bytes": 24406,
           "fragments": 6
         },
         {
+          "page": "scenario-labels",
+          "markdown_url": "https://developers.make.com/api-documentation/api-reference/scenario-labels.md",
+          "lastmod": "2026-08-03T14:22:31.000Z",
+          "sha256": "73be769f650a0f31d6a450b3b2fb00abb37d9d59f56b617fa24e5af1b54bc4ac",
+          "bytes": 24889,
+          "fragments": 7
+        },
+        {
           "page": "sdk-apps",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/sdk-apps.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "8283e8b3f8ecc54a571a4c0ec3a7c515c4a938c2f672a06a33297adf49f42ae3",
           "bytes": 185196,
           "fragments": 28
@@ -328,7 +360,7 @@
         {
           "page": "sdk-apps/invites",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/sdk-apps/invites.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "2c4a73e6c6ac4573c867cb9e3d9496ceeae707f32bbd6e141b7d32e4599b9939",
           "bytes": 7760,
           "fragments": 2
@@ -336,7 +368,7 @@
         {
           "page": "sdk-apps/modules",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/sdk-apps/modules.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "7bc7a1bba95b4e944dd2803ca6f9d1840d509253a68777ffdadf926335523c6a",
           "bytes": 173639,
           "fragments": 16
@@ -344,7 +376,7 @@
         {
           "page": "sdk-apps/rpcs",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/sdk-apps/rpcs.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "4616a1b7f9a320d6cde3ed6036922280b6c815e7b839c0c8c4bbbc7d9acb00ec",
           "bytes": 16814,
           "fragments": 8
@@ -352,7 +384,7 @@
         {
           "page": "sdk-apps/functions",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/sdk-apps/functions.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "6ed84a1c849ad7ea76399f8e8d93ff0d0311de6561b22af39c8f96acdb120783",
           "bytes": 15805,
           "fragments": 8
@@ -360,7 +392,7 @@
         {
           "page": "sdk-apps/connections",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/sdk-apps/connections.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "5db1bde1ff3fb8f167a4dc4454c5ba1ccc1aabb16ccb2ce37c102d051c6b72d6",
           "bytes": 21338,
           "fragments": 10
@@ -368,7 +400,7 @@
         {
           "page": "sdk-apps/webhooks",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/sdk-apps/webhooks.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "c1002c80122137e5b1b7e4c770852213f9d1afebeac933f2c343b43f43d0c277",
           "bytes": 14088,
           "fragments": 7
@@ -376,7 +408,7 @@
         {
           "page": "sso-certificates",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/sso-certificates.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "4d66bf2de79e71a49e785cb912d4fa61e1211bb4c9f186fbf445e5fc751bd015",
           "bytes": 3321,
           "fragments": 1
@@ -384,15 +416,15 @@
         {
           "page": "teams",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/teams.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
-          "sha256": "dd3c55c912ad635ede38f2b499941e787c4a6e258f257f81375386f61b3d25fb",
-          "bytes": 52157,
+          "lastmod": "2026-08-03T14:22:31.000Z",
+          "sha256": "442043688323f619fb6dd40b12f00ae3f24f2a0518bf0879c202a1563b94b4d3",
+          "bytes": 52171,
           "fragments": 14
         },
         {
           "page": "teams/user-team-roles",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/teams/user-team-roles.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "9e61bea821558a8186bebc081f63a6e721a8aa27f1ee77fea0b3bc1574fb75b9",
           "bytes": 9336,
           "fragments": 2
@@ -400,7 +432,7 @@
         {
           "page": "templates",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/templates.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "eee625e22f48ab3af0d67ae8041556d74b6a0f7a39002841c96aa1313bea6823",
           "bytes": 39398,
           "fragments": 8
@@ -408,7 +440,7 @@
         {
           "page": "templates/public",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/templates/public.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "8d60e38895314b2ecfa6024b66029ff9b7db05be763515b71cc825f7fd8b030a",
           "bytes": 13822,
           "fragments": 3
@@ -416,7 +448,7 @@
         {
           "page": "users",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/users.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "05a654fc3c0d4003b79bee9e9c78271aba0364978244f01436593133c6a921c1",
           "bytes": 33385,
           "fragments": 9
@@ -424,7 +456,7 @@
         {
           "page": "users/me",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/users/me.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "5c8dd839a5e8c7d58eac54bce367d545e9f2c202d7d9fe6cf7519faeaec06f10",
           "bytes": 16303,
           "fragments": 5
@@ -432,7 +464,7 @@
         {
           "page": "users/api-tokens",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/users/api-tokens.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "880ab8c1f841e11b5f34cd06c15f932604e4e03e070ee10038f46e1b4d746868",
           "bytes": 8237,
           "fragments": 3
@@ -440,7 +472,7 @@
         {
           "page": "users/user-team-roles",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/users/user-team-roles.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "4fd3044f9a402fbc09e11d87367ecff4a192b5a829fb9a87501c98c29b391da7",
           "bytes": 9267,
           "fragments": 3
@@ -448,7 +480,7 @@
         {
           "page": "users/user-team-notifications",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/users/user-team-notifications.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "a94da2184bdfec0bbac080a99fc248d2165fdb0ad8faa34f67dcc722ea93830e",
           "bytes": 10703,
           "fragments": 3
@@ -456,7 +488,7 @@
         {
           "page": "users/user-organization-roles",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/users/user-organization-roles.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "6fe516f810ae037d2791c336336ec51be9f81765e46cae5e964f03c66114047c",
           "bytes": 15453,
           "fragments": 4
@@ -464,15 +496,15 @@
         {
           "page": "users/roles",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/users/roles.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
-          "sha256": "b16575d3a1e1f25454b68cbbebe2c569ebd3d9dfeb08a512870b70d66364bd45",
-          "bytes": 12015,
-          "fragments": 3
+          "lastmod": "2026-08-03T14:22:31.000Z",
+          "sha256": "70462e272635b86905967c72bf580295f7cd3c5da538d7850132b45b66a5b584",
+          "bytes": 21165,
+          "fragments": 6
         },
         {
           "page": "users/unread-notifications",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/users/unread-notifications.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "154ac7b9c41ade4e50e2d82af549e4c9893d9e182d66f297ab8df8eefdfb9783",
           "bytes": 3556,
           "fragments": 1
@@ -480,37 +512,37 @@
         {
           "page": "users/user-email-preferences-mailhub",
           "markdown_url": "https://developers.make.com/api-documentation/api-reference/users/user-email-preferences-mailhub.md",
-          "lastmod": "2026-07-13T07:31:49.000Z",
+          "lastmod": "2026-08-03T14:22:31.000Z",
           "sha256": "ec2873f6e4c1232233c3cd7e0912d1eb1c9984905ffae4b6330c18f720030a7d",
           "bytes": 11968,
           "fragments": 5
         }
       ]
     },
-    "official_operation_count": 378,
-    "admitted_operation_count": 377,
+    "official_operation_count": 393,
+    "admitted_operation_count": 392,
     "excluded_operation_count": 1,
-    "unique_admitted_method_path_count": 377,
+    "unique_admitted_method_path_count": 392,
     "method_counts": {
-      "DELETE": 38,
-      "GET": 180,
-      "PATCH": 39,
-      "POST": 96,
+      "DELETE": 41,
+      "GET": 185,
+      "PATCH": 42,
+      "POST": 100,
       "PUT": 25
     },
     "pack_operation_counts": {
       "make": 92,
-      "make-automation": 44,
+      "make-automation": 56,
       "make-intelligence": 18,
       "make-organization-admin": 70,
-      "make-identity-admin": 75,
+      "make-identity-admin": 78,
       "make-developer-platform": 78
     },
     "pagination_counts": {
-      "offset": 24,
-      "none": 353
+      "offset": 25,
+      "none": 367
     },
-    "unpaged_collection_count": 69,
+    "unpaged_collection_count": 72,
     "unpaged_collections": [
       {
         "pack": "make",
@@ -630,6 +662,27 @@
         "method": "GET",
         "path": "/dlqs/{dlqId}/logs",
         "result_path": "dlqLogs"
+      },
+      {
+        "pack": "make-automation",
+        "op": "scenario_labels.get_scenario_labels",
+        "method": "GET",
+        "path": "/scenario-labels",
+        "result_path": "labels"
+      },
+      {
+        "pack": "make-automation",
+        "op": "connections_access_list.get_teams_by_team_id_connections_by_connection_id_access_list",
+        "method": "GET",
+        "path": "/teams/{teamId}/connections/{connectionId}/access-list",
+        "result_path": "accessList"
+      },
+      {
+        "pack": "make-automation",
+        "op": "keys_access_list.get_teams_by_team_id_keys_by_key_id_access_list",
+        "method": "GET",
+        "path": "/teams/{teamId}/keys/{keyId}/access-list",
+        "result_path": "accessList"
       },
       {
         "pack": "make-intelligence",
@@ -1233,6 +1286,9 @@
     "/connections/{connectionId}/scoped": {
       "post": {}
     },
+    "/teams/{teamId}/connections/{connectionId}/access-list": {
+      "get": {}
+    },
     "/credential-requests/requests": {
       "get": {},
       "post": {}
@@ -1480,6 +1536,9 @@
       "delete": {},
       "patch": {}
     },
+    "/teams/{teamId}/keys/{keyId}/access-list": {
+      "get": {}
+    },
     "/notifications": {
       "get": {},
       "delete": {}
@@ -1597,6 +1656,13 @@
     "/organizations/{organizationId}/managed-organizations/{childOrganizationId}": {
       "patch": {}
     },
+    "/private-spaces": {
+      "get": {}
+    },
+    "/private-spaces/{privateSpaceId}": {
+      "get": {},
+      "patch": {}
+    },
     "/rpcs/{appName}/{appVersion}/{rpcName}": {
       "post": {}
     },
@@ -1702,6 +1768,21 @@
     "/scenarios-folders/{folderId}": {
       "delete": {},
       "patch": {}
+    },
+    "/scenario-labels": {
+      "get": {},
+      "post": {}
+    },
+    "/scenario-labels/{labelId}": {
+      "delete": {},
+      "patch": {}
+    },
+    "/scenario-labels/{labelId}/scenarios": {
+      "post": {}
+    },
+    "/scenario-labels/{labelId}/scenarios/{scenarioId}": {
+      "post": {},
+      "delete": {}
     },
     "/sdk/apps": {
       "get": {},
@@ -2014,6 +2095,11 @@
     },
     "/users/{userId}/user-organization-roles/{organizationId}/transfer": {
       "post": {}
+    },
+    "/users/custom-roles": {
+      "post": {},
+      "delete": {},
+      "patch": {}
     },
     "/users/roles": {
       "get": {}
@@ -2841,6 +2927,15 @@
           "name": "includeSubfolders",
           "in": "query",
           "type": "boolean",
+          "required": false,
+          "declared_required": false,
+          "exposed": true,
+          "pagination_owned": false
+        },
+        {
+          "name": "labelIds[]",
+          "in": "query",
+          "type": "array",
           "required": false,
           "declared_required": false,
           "exposed": true,
@@ -6384,6 +6479,11 @@
             "format": "uri",
             "item_type": null
           },
+          "teamId": {
+            "type": "integer",
+            "format": null,
+            "item_type": null
+          },
           "attached": {
             "type": "boolean",
             "format": null,
@@ -8618,6 +8718,96 @@
           "type": "number",
           "required": true,
           "declared_required": true,
+          "exposed": true,
+          "pagination_owned": false
+        },
+        {
+          "name": "idSearch",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "declared_required": false,
+          "exposed": true,
+          "pagination_owned": false
+        },
+        {
+          "name": "createdFrom",
+          "in": "query",
+          "type": "number",
+          "required": false,
+          "declared_required": false,
+          "exposed": true,
+          "pagination_owned": false
+        },
+        {
+          "name": "createdTo",
+          "in": "query",
+          "type": "number",
+          "required": false,
+          "declared_required": false,
+          "exposed": true,
+          "pagination_owned": false
+        },
+        {
+          "name": "sizeFrom",
+          "in": "query",
+          "type": "number",
+          "required": false,
+          "declared_required": false,
+          "exposed": true,
+          "pagination_owned": false
+        },
+        {
+          "name": "sizeTo",
+          "in": "query",
+          "type": "number",
+          "required": false,
+          "declared_required": false,
+          "exposed": true,
+          "pagination_owned": false
+        },
+        {
+          "name": "status",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "declared_required": false,
+          "exposed": true,
+          "pagination_owned": false
+        },
+        {
+          "name": "scheduledInFrom",
+          "in": "query",
+          "type": "number",
+          "required": false,
+          "declared_required": false,
+          "exposed": true,
+          "pagination_owned": false
+        },
+        {
+          "name": "scheduledInTo",
+          "in": "query",
+          "type": "number",
+          "required": false,
+          "declared_required": false,
+          "exposed": true,
+          "pagination_owned": false
+        },
+        {
+          "name": "attemptsFrom",
+          "in": "query",
+          "type": "number",
+          "required": false,
+          "declared_required": false,
+          "exposed": true,
+          "pagination_owned": false
+        },
+        {
+          "name": "attemptsTo",
+          "in": "query",
+          "type": "number",
+          "required": false,
+          "declared_required": false,
           "exposed": true,
           "pagination_owned": false
         }
@@ -11369,6 +11559,747 @@
       "approval": "never",
       "idempotency": "safe"
     },
+    "make-automation.private_spaces.get_private_spaces": {
+      "source_page": "private-spaces",
+      "source_url": "https://developers.make.com/api-documentation/api-reference/private-spaces",
+      "pack": "make-automation",
+      "op": "private_spaces.get_private_spaces",
+      "method": "GET",
+      "path": "/private-spaces",
+      "summary": "List private spaces",
+      "deprecated": false,
+      "scopes": [
+        "private-spaces:read"
+      ],
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "query",
+          "type": "number",
+          "required": true,
+          "declared_required": true,
+          "exposed": true,
+          "pagination_owned": false
+        },
+        {
+          "name": "externalId",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "declared_required": false,
+          "exposed": true,
+          "pagination_owned": false
+        },
+        {
+          "name": "cols[]",
+          "in": "query",
+          "type": "array",
+          "required": false,
+          "declared_required": false,
+          "exposed": true,
+          "pagination_owned": false
+        },
+        {
+          "name": "pg[sortBy]",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "declared_required": false,
+          "exposed": true,
+          "pagination_owned": false
+        },
+        {
+          "name": "pg[offset]",
+          "in": "query",
+          "type": "number",
+          "required": false,
+          "declared_required": false,
+          "exposed": false,
+          "pagination_owned": true
+        },
+        {
+          "name": "pg[sortDir]",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "declared_required": false,
+          "exposed": true,
+          "pagination_owned": false
+        },
+        {
+          "name": "pg[limit]",
+          "in": "query",
+          "type": "number",
+          "required": false,
+          "declared_required": false,
+          "exposed": false,
+          "pagination_owned": true
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [],
+        "properties": {
+          "privateSpaces": {
+            "type": "array",
+            "format": null,
+            "item_type": "object"
+          },
+          "pg": {
+            "type": "object",
+            "format": null,
+            "item_type": null
+          }
+        }
+      },
+      "result_path": "privateSpaces",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "pg[limit]",
+          "value": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "pg[offset]"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "response_capture": null,
+      "response_json": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "make-automation.private_spaces.get_private_spaces_by_private_space_id": {
+      "source_page": "private-spaces",
+      "source_url": "https://developers.make.com/api-documentation/api-reference/private-spaces",
+      "pack": "make-automation",
+      "op": "private_spaces.get_private_spaces_by_private_space_id",
+      "method": "GET",
+      "path": "/private-spaces/{privateSpaceId}",
+      "summary": "Get a private space",
+      "deprecated": false,
+      "scopes": [
+        "private-spaces:read"
+      ],
+      "parameters": [
+        {
+          "name": "privateSpaceId",
+          "in": "path",
+          "type": "number",
+          "required": true,
+          "declared_required": true,
+          "exposed": true,
+          "pagination_owned": false
+        },
+        {
+          "name": "cols[]",
+          "in": "query",
+          "type": "array",
+          "required": false,
+          "declared_required": false,
+          "exposed": true,
+          "pagination_owned": false
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [],
+        "properties": {
+          "privateSpace": {
+            "type": "object",
+            "format": null,
+            "item_type": null
+          }
+        }
+      },
+      "result_path": "privateSpace",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "make-automation.private_spaces.patch_private_spaces_by_private_space_id": {
+      "source_page": "private-spaces",
+      "source_url": "https://developers.make.com/api-documentation/api-reference/private-spaces",
+      "pack": "make-automation",
+      "op": "private_spaces.patch_private_spaces_by_private_space_id",
+      "method": "PATCH",
+      "path": "/private-spaces/{privateSpaceId}",
+      "summary": "Update a private space",
+      "deprecated": false,
+      "scopes": [
+        "private-spaces:write"
+      ],
+      "parameters": [
+        {
+          "name": "privateSpaceId",
+          "in": "path",
+          "type": "number",
+          "required": true,
+          "declared_required": true,
+          "exposed": true,
+          "pagination_owned": false
+        },
+        {
+          "name": "confirmed",
+          "in": "query",
+          "type": "boolean",
+          "required": false,
+          "declared_required": false,
+          "exposed": true,
+          "pagination_owned": false
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema": {
+          "type": "object",
+          "format": null,
+          "required": [],
+          "properties": {
+            "operationsLimit": {
+              "type": "integer",
+              "format": null,
+              "item_type": null
+            }
+          }
+        },
+        "raw_body": false,
+        "fields": [
+          {
+            "name": "operationsLimit",
+            "type": "number",
+            "required": false,
+            "exposed": true
+          }
+        ]
+      },
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [],
+        "properties": {
+          "privateSpace": {
+            "type": "object",
+            "format": null,
+            "item_type": null
+          }
+        }
+      },
+      "result_path": "privateSpace",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": null,
+      "risk": "write",
+      "approval": "ask",
+      "idempotency": "idempotent"
+    },
+    "make-automation.scenario_labels.get_scenario_labels": {
+      "source_page": "scenario-labels",
+      "source_url": "https://developers.make.com/api-documentation/api-reference/scenario-labels",
+      "pack": "make-automation",
+      "op": "scenario_labels.get_scenario_labels",
+      "method": "GET",
+      "path": "/scenario-labels",
+      "summary": "List team labels",
+      "deprecated": false,
+      "scopes": [
+        "scenarios:read"
+      ],
+      "parameters": [
+        {
+          "name": "teamId",
+          "in": "query",
+          "type": "number",
+          "required": true,
+          "declared_required": true,
+          "exposed": true,
+          "pagination_owned": false
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [],
+        "properties": {
+          "labels": {
+            "type": "array",
+            "format": null,
+            "item_type": "object"
+          }
+        }
+      },
+      "result_path": "labels",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "make-automation.scenario_labels.post_scenario_labels": {
+      "source_page": "scenario-labels",
+      "source_url": "https://developers.make.com/api-documentation/api-reference/scenario-labels",
+      "pack": "make-automation",
+      "op": "scenario_labels.post_scenario_labels",
+      "method": "POST",
+      "path": "/scenario-labels",
+      "summary": "Create team label",
+      "deprecated": false,
+      "scopes": [
+        "scenarios:write"
+      ],
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema": {
+          "type": "object",
+          "format": null,
+          "required": [
+            "teamId",
+            "name",
+            "colour"
+          ],
+          "properties": {
+            "teamId": {
+              "type": "integer",
+              "format": null,
+              "item_type": null
+            },
+            "name": {
+              "type": "string",
+              "format": null,
+              "item_type": null
+            },
+            "colour": {
+              "type": "string",
+              "format": null,
+              "item_type": null
+            },
+            "description": {
+              "type": "string",
+              "format": null,
+              "item_type": null
+            }
+          }
+        },
+        "raw_body": false,
+        "fields": [
+          {
+            "name": "teamId",
+            "type": "number",
+            "required": true,
+            "exposed": true
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "required": true,
+            "exposed": true
+          },
+          {
+            "name": "colour",
+            "type": "string",
+            "required": true,
+            "exposed": true
+          },
+          {
+            "name": "description",
+            "type": "string",
+            "required": false,
+            "exposed": true
+          }
+        ]
+      },
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [],
+        "properties": {
+          "label": {
+            "type": "object",
+            "format": null,
+            "item_type": null
+          }
+        }
+      },
+      "result_path": "label",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": null,
+      "risk": "write",
+      "approval": "ask",
+      "idempotency": "non_idempotent"
+    },
+    "make-automation.scenario_labels.delete_scenario_labels_by_label_id": {
+      "source_page": "scenario-labels",
+      "source_url": "https://developers.make.com/api-documentation/api-reference/scenario-labels",
+      "pack": "make-automation",
+      "op": "scenario_labels.delete_scenario_labels_by_label_id",
+      "method": "DELETE",
+      "path": "/scenario-labels/{labelId}",
+      "summary": "Delete team label",
+      "deprecated": false,
+      "scopes": [
+        "scenarios:write"
+      ],
+      "parameters": [
+        {
+          "name": "labelId",
+          "in": "path",
+          "type": "number",
+          "required": true,
+          "declared_required": true,
+          "exposed": true,
+          "pagination_owned": false
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [],
+        "properties": {
+          "label": {
+            "type": "object",
+            "format": null,
+            "item_type": null
+          }
+        }
+      },
+      "result_path": "label",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    "make-automation.scenario_labels.patch_scenario_labels_by_label_id": {
+      "source_page": "scenario-labels",
+      "source_url": "https://developers.make.com/api-documentation/api-reference/scenario-labels",
+      "pack": "make-automation",
+      "op": "scenario_labels.patch_scenario_labels_by_label_id",
+      "method": "PATCH",
+      "path": "/scenario-labels/{labelId}",
+      "summary": "Update team label",
+      "deprecated": false,
+      "scopes": [
+        "scenarios:write"
+      ],
+      "parameters": [
+        {
+          "name": "labelId",
+          "in": "path",
+          "type": "number",
+          "required": true,
+          "declared_required": true,
+          "exposed": true,
+          "pagination_owned": false
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema": {
+          "type": "object",
+          "format": null,
+          "required": [],
+          "properties": {
+            "name": {
+              "type": "string",
+              "format": null,
+              "item_type": null
+            },
+            "colour": {
+              "type": "string",
+              "format": null,
+              "item_type": null
+            },
+            "description": {
+              "type": "string",
+              "format": null,
+              "item_type": null
+            }
+          }
+        },
+        "raw_body": false,
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false,
+            "exposed": true
+          },
+          {
+            "name": "colour",
+            "type": "string",
+            "required": false,
+            "exposed": true
+          },
+          {
+            "name": "description",
+            "type": "string",
+            "required": false,
+            "exposed": true
+          }
+        ]
+      },
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [],
+        "properties": {
+          "label": {
+            "type": "object",
+            "format": null,
+            "item_type": null
+          }
+        }
+      },
+      "result_path": "label",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": null,
+      "risk": "write",
+      "approval": "ask",
+      "idempotency": "idempotent"
+    },
+    "make-automation.scenario_labels.post_scenario_labels_by_label_id_scenarios": {
+      "source_page": "scenario-labels",
+      "source_url": "https://developers.make.com/api-documentation/api-reference/scenario-labels",
+      "pack": "make-automation",
+      "op": "scenario_labels.post_scenario_labels_by_label_id_scenarios",
+      "method": "POST",
+      "path": "/scenario-labels/{labelId}/scenarios",
+      "summary": "Assign a label to multiple scenarios",
+      "deprecated": false,
+      "scopes": [
+        "scenarios:write"
+      ],
+      "parameters": [
+        {
+          "name": "labelId",
+          "in": "path",
+          "type": "number",
+          "required": true,
+          "declared_required": true,
+          "exposed": true,
+          "pagination_owned": false
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema": {
+          "type": "object",
+          "format": null,
+          "required": [
+            "scenarioIds"
+          ],
+          "properties": {
+            "scenarioIds": {
+              "type": "array",
+              "format": null,
+              "item_type": "integer"
+            }
+          }
+        },
+        "raw_body": false,
+        "fields": [
+          {
+            "name": "scenarioIds",
+            "type": "array",
+            "required": true,
+            "exposed": true
+          }
+        ]
+      },
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [
+          "results",
+          "summary"
+        ],
+        "properties": {
+          "results": {
+            "type": "array",
+            "format": null,
+            "item_type": null
+          },
+          "summary": {
+            "type": "object",
+            "format": null,
+            "item_type": null
+          }
+        }
+      },
+      "result_path": "results",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": null,
+      "risk": "write",
+      "approval": "ask",
+      "idempotency": "non_idempotent"
+    },
+    "make-automation.scenario_labels.delete_scenario_labels_by_label_id_scenarios_by_scenario_id": {
+      "source_page": "scenario-labels",
+      "source_url": "https://developers.make.com/api-documentation/api-reference/scenario-labels",
+      "pack": "make-automation",
+      "op": "scenario_labels.delete_scenario_labels_by_label_id_scenarios_by_scenario_id",
+      "method": "DELETE",
+      "path": "/scenario-labels/{labelId}/scenarios/{scenarioId}",
+      "summary": "Remove label from scenario",
+      "deprecated": false,
+      "scopes": [
+        "scenarios:write"
+      ],
+      "parameters": [
+        {
+          "name": "labelId",
+          "in": "path",
+          "type": "number",
+          "required": true,
+          "declared_required": true,
+          "exposed": true,
+          "pagination_owned": false
+        },
+        {
+          "name": "scenarioId",
+          "in": "path",
+          "type": "number",
+          "required": true,
+          "declared_required": true,
+          "exposed": true,
+          "pagination_owned": false
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [],
+        "properties": {
+          "scenarioLabel": {
+            "type": "object",
+            "format": null,
+            "item_type": null
+          }
+        }
+      },
+      "result_path": "scenarioLabel",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    "make-automation.scenario_labels.post_scenario_labels_by_label_id_scenarios_by_scenario_id": {
+      "source_page": "scenario-labels",
+      "source_url": "https://developers.make.com/api-documentation/api-reference/scenario-labels",
+      "pack": "make-automation",
+      "op": "scenario_labels.post_scenario_labels_by_label_id_scenarios_by_scenario_id",
+      "method": "POST",
+      "path": "/scenario-labels/{labelId}/scenarios/{scenarioId}",
+      "summary": "Assign label to scenario",
+      "deprecated": false,
+      "scopes": [
+        "scenarios:write"
+      ],
+      "parameters": [
+        {
+          "name": "labelId",
+          "in": "path",
+          "type": "number",
+          "required": true,
+          "declared_required": true,
+          "exposed": true,
+          "pagination_owned": false
+        },
+        {
+          "name": "scenarioId",
+          "in": "path",
+          "type": "number",
+          "required": true,
+          "declared_required": true,
+          "exposed": true,
+          "pagination_owned": false
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [],
+        "properties": {
+          "scenarioLabel": {
+            "type": "object",
+            "format": null,
+            "item_type": null
+          }
+        }
+      },
+      "result_path": "scenarioLabel",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": null,
+      "risk": "write",
+      "approval": "ask",
+      "idempotency": "non_idempotent"
+    },
     "make-automation.scenarios_folders.post_scenarios_folders_reorder": {
       "source_page": "scenarios-folders",
       "source_url": "https://developers.make.com/api-documentation/api-reference/scenarios-folders",
@@ -12289,6 +13220,118 @@
       "risk": "write",
       "approval": "ask",
       "idempotency": "idempotent"
+    },
+    "make-automation.connections_access_list.get_teams_by_team_id_connections_by_connection_id_access_list": {
+      "source_page": "connections/access-list",
+      "source_url": "https://developers.make.com/api-documentation/api-reference/connections/access-list",
+      "pack": "make-automation",
+      "op": "connections_access_list.get_teams_by_team_id_connections_by_connection_id_access_list",
+      "method": "GET",
+      "path": "/teams/{teamId}/connections/{connectionId}/access-list",
+      "summary": "List a connection's access list",
+      "deprecated": false,
+      "scopes": [
+        "connections:read"
+      ],
+      "parameters": [
+        {
+          "name": "teamId",
+          "in": "path",
+          "type": "number",
+          "required": true,
+          "declared_required": true,
+          "exposed": true,
+          "pagination_owned": false
+        },
+        {
+          "name": "connectionId",
+          "in": "path",
+          "type": "number",
+          "required": true,
+          "declared_required": true,
+          "exposed": true,
+          "pagination_owned": false
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [],
+        "properties": {
+          "accessList": {
+            "type": "array",
+            "format": null,
+            "item_type": "object"
+          }
+        }
+      },
+      "result_path": "accessList",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "make-automation.keys_access_list.get_teams_by_team_id_keys_by_key_id_access_list": {
+      "source_page": "keys/access-list",
+      "source_url": "https://developers.make.com/api-documentation/api-reference/keys/access-list",
+      "pack": "make-automation",
+      "op": "keys_access_list.get_teams_by_team_id_keys_by_key_id_access_list",
+      "method": "GET",
+      "path": "/teams/{teamId}/keys/{keyId}/access-list",
+      "summary": "List a key's access list",
+      "deprecated": false,
+      "scopes": [
+        "keys:read"
+      ],
+      "parameters": [
+        {
+          "name": "teamId",
+          "in": "path",
+          "type": "number",
+          "required": true,
+          "declared_required": true,
+          "exposed": true,
+          "pagination_owned": false
+        },
+        {
+          "name": "keyId",
+          "in": "path",
+          "type": "number",
+          "required": true,
+          "declared_required": true,
+          "exposed": true,
+          "pagination_owned": false
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [],
+        "properties": {
+          "accessList": {
+            "type": "array",
+            "format": null,
+            "item_type": "object"
+          }
+        }
+      },
+      "result_path": "accessList",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
     },
     "make-automation.templates.post_templates": {
       "source_page": "templates",
@@ -24189,6 +25232,304 @@
       "risk": "read",
       "approval": "never",
       "idempotency": "safe"
+    },
+    "make-identity-admin.users_roles.delete_users_custom_roles": {
+      "source_page": "users/roles",
+      "source_url": "https://developers.make.com/api-documentation/api-reference/users/roles",
+      "pack": "make-identity-admin",
+      "op": "users_roles.delete_users_custom_roles",
+      "method": "DELETE",
+      "path": "/users/custom-roles",
+      "summary": "Delete a custom role",
+      "deprecated": false,
+      "scopes": [
+        "user:write"
+      ],
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema": {
+          "type": "object",
+          "format": null,
+          "required": [
+            "id",
+            "organizationId"
+          ],
+          "properties": {
+            "id": {
+              "type": "integer",
+              "format": null,
+              "item_type": null
+            },
+            "organizationId": {
+              "type": "integer",
+              "format": null,
+              "item_type": null
+            }
+          }
+        },
+        "raw_body": false,
+        "fields": [
+          {
+            "name": "id",
+            "type": "number",
+            "required": true,
+            "exposed": true
+          },
+          {
+            "name": "organizationId",
+            "type": "number",
+            "required": true,
+            "exposed": true
+          }
+        ]
+      },
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [],
+        "properties": {
+          "roleId": {
+            "type": "integer",
+            "format": null,
+            "item_type": null
+          }
+        }
+      },
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "response_json": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    "make-identity-admin.users_roles.patch_users_custom_roles": {
+      "source_page": "users/roles",
+      "source_url": "https://developers.make.com/api-documentation/api-reference/users/roles",
+      "pack": "make-identity-admin",
+      "op": "users_roles.patch_users_custom_roles",
+      "method": "PATCH",
+      "path": "/users/custom-roles",
+      "summary": "Update a custom role",
+      "deprecated": false,
+      "scopes": [
+        "user:write"
+      ],
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema": {
+          "type": "object",
+          "format": null,
+          "required": [
+            "id",
+            "organizationId"
+          ],
+          "properties": {
+            "id": {
+              "type": "integer",
+              "format": null,
+              "item_type": null
+            },
+            "organizationId": {
+              "type": "integer",
+              "format": null,
+              "item_type": null
+            },
+            "name": {
+              "type": "string",
+              "format": null,
+              "item_type": null
+            },
+            "description": {
+              "type": "string",
+              "format": null,
+              "item_type": null
+            },
+            "permissions": {
+              "type": "array",
+              "format": null,
+              "item_type": "integer"
+            }
+          }
+        },
+        "raw_body": false,
+        "fields": [
+          {
+            "name": "id",
+            "type": "number",
+            "required": true,
+            "exposed": true
+          },
+          {
+            "name": "organizationId",
+            "type": "number",
+            "required": true,
+            "exposed": true
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "required": false,
+            "exposed": true
+          },
+          {
+            "name": "description",
+            "type": "string",
+            "required": false,
+            "exposed": true
+          },
+          {
+            "name": "permissions",
+            "type": "array",
+            "required": false,
+            "exposed": true
+          }
+        ]
+      },
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [],
+        "properties": {
+          "role": {
+            "type": "object",
+            "format": null,
+            "item_type": null
+          }
+        }
+      },
+      "result_path": "role",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    "make-identity-admin.users_roles.post_users_custom_roles": {
+      "source_page": "users/roles",
+      "source_url": "https://developers.make.com/api-documentation/api-reference/users/roles",
+      "pack": "make-identity-admin",
+      "op": "users_roles.post_users_custom_roles",
+      "method": "POST",
+      "path": "/users/custom-roles",
+      "summary": "Create a custom role",
+      "deprecated": false,
+      "scopes": [
+        "user:write"
+      ],
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema": {
+          "type": "object",
+          "format": null,
+          "required": [
+            "name",
+            "permissionType",
+            "organizationId"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "format": null,
+              "item_type": null
+            },
+            "permissionType": {
+              "type": "string",
+              "format": null,
+              "item_type": null
+            },
+            "organizationId": {
+              "type": "integer",
+              "format": null,
+              "item_type": null
+            },
+            "description": {
+              "type": "string",
+              "format": null,
+              "item_type": null
+            },
+            "permissions": {
+              "type": "array",
+              "format": null,
+              "item_type": "integer"
+            }
+          }
+        },
+        "raw_body": false,
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": true,
+            "exposed": true
+          },
+          {
+            "name": "permissionType",
+            "type": "string",
+            "required": true,
+            "exposed": true
+          },
+          {
+            "name": "organizationId",
+            "type": "number",
+            "required": true,
+            "exposed": true
+          },
+          {
+            "name": "description",
+            "type": "string",
+            "required": false,
+            "exposed": true
+          },
+          {
+            "name": "permissions",
+            "type": "array",
+            "required": false,
+            "exposed": true
+          }
+        ]
+      },
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [],
+        "properties": {
+          "role": {
+            "type": "object",
+            "format": null,
+            "item_type": null
+          }
+        }
+      },
+      "result_path": "role",
+      "pagination": null,
+      "response_capture": null,
+      "response_json": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent"
     },
     "make-identity-admin.users_me.get_users_me": {
       "source_page": "users/me",

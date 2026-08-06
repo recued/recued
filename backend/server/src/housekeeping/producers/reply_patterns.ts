@@ -66,6 +66,7 @@ import {
   sqlLikeAny,
 } from './_contact-addresses.js';
 import { percentile } from './_stats.js';
+import { listCollectionDataTables } from '../../collections/table.js';
 
 /** Rolling window for the 30-day rate. Forward-looking from `ctx.now()`,
  *  same convention `behavioral_signature` uses. */
@@ -104,13 +105,8 @@ interface MailScanRow {
  *  prefix-scan approach `thread_signals` and `behavioral_signature`
  *  use. */
 const listMailCollectionTables = (ctx: HousekeepingContext): string[] => {
-  const rows = ctx.db
-    .prepare(
-      `SELECT name FROM sqlite_master
-        WHERE type='table' AND name LIKE 'collection_mail_%'`,
-    )
-    .all() as Array<{ name: string }>;
-  return rows.map((r) => r.name);
+  const rows = listCollectionDataTables(ctx.db, 'mail');
+  return rows;
 };
 
 /** Pull every mail row whose canonical addresses involve ANY of the contact's

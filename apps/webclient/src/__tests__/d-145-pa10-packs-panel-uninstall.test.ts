@@ -50,6 +50,7 @@ import { describe, expect, it } from 'vitest';
 import {
   PACKS_DIALOG_ATTR,
   PACKS_DIALOG_INSTALL_BTN_ATTR,
+  PACKS_PANEL_STYLES,
   PACKS_RETRY_BTN_ATTR,
   PACKS_ROW_DELETE_BTN_ATTR,
   PACKS_ROW_DELETE_CANCEL_BTN_ATTR,
@@ -618,6 +619,18 @@ describe('D-145 PA10 follow-on Slice B — uninstall rpc', () => {
     const errChip = findByAttr(host, PACKS_ROW_DELETE_ERROR_ATTR);
     expect(errChip).not.toBeNull();
     expect(errChip!.textContent).toContain('socket exploded');
+  });
+
+  it('puts a long uninstall failure on its own contained action row', () => {
+    expect(PACKS_PANEL_STYLES).toMatch(
+      /\.packs-row-footer\s*\{[^}]*min-width:\s*0[^}]*flex-wrap:\s*wrap[^}]*align-items:\s*flex-start/s,
+    );
+    expect(PACKS_PANEL_STYLES).toMatch(
+      /\.packs-row-footer > \.rx-btn\s*\{[^}]*min-height:\s*40px[^}]*flex:\s*0 0 auto/s,
+    );
+    expect(PACKS_PANEL_STYLES).toMatch(
+      /\.packs-row-delete-error\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%[^}]*flex:\s*1 1 100%[^}]*overflow-wrap:\s*anywhere/s,
+    );
   });
 
   it('Confirm button stays focusable but aria-disabled while rpc is in flight', async () => {

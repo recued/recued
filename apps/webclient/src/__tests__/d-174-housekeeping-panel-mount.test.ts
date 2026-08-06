@@ -14,7 +14,10 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { mountHousekeepingPanel } from '../settings/housekeeping-panel-mount.js';
+import {
+  HOUSEKEEPING_PANEL_STYLES,
+  mountHousekeepingPanel,
+} from '../settings/housekeeping-panel-mount.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import type {
   EnrichmentTrustRow,
@@ -258,10 +261,37 @@ const makeDeps = () => {
 };
 
 describe('mountHousekeepingPanel — trust-core slice', () => {
+  it('gives producer and drawer controls full targets with mobile cards', () => {
+    expect(HOUSEKEEPING_PANEL_STYLES).toMatch(
+      /\.housekeeping-producer-cost-segment\s*\{[^}]*min-height:\s*36px/s,
+    );
+    expect(HOUSEKEEPING_PANEL_STYLES).toMatch(
+      /\.housekeeping-producer-runpolicy-seg\s*\{[^}]*min-height:\s*36px/s,
+    );
+    expect(HOUSEKEEPING_PANEL_STYLES).toContain(
+      '.housekeeping-drawer-toggle-button { box-sizing: border-box; '
+      + 'min-width: 36px; min-height: 36px; }',
+    );
+    expect(HOUSEKEEPING_PANEL_STYLES).toMatch(
+      /\.housekeeping-drawer-radio\s*\{[^}]*min-height:\s*36px/s,
+    );
+    expect(HOUSEKEEPING_PANEL_STYLES).toMatch(
+      /\.housekeeping-reset-psi-toggle\s*\{[^}]*min-height:\s*36px/s,
+    );
+    expect(HOUSEKEEPING_PANEL_STYLES).toContain(
+      '@media (max-width: 720px)',
+    );
+    expect(HOUSEKEEPING_PANEL_STYLES).toMatch(
+      /\.housekeeping-producer-table \.housekeeping-producer-row\s*\{[^}]*display:\s*grid/s,
+    );
+  });
+
   it('fires config + status + trust reads on mount and paints the panel', async () => {
     const fakeHost = makeFakeHost();
     const deps = makeDeps();
     const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+    expect(fakeHost.getHtml()).toContain('<h2>Housekeeping</h2>');
+    expect(fakeHost.getHtml()).toContain('Loading housekeeping…');
     await mount.whenLoaded();
     expect(deps.runConfigRead).toHaveBeenCalledTimes(1);
     expect(deps.runStatusRead).toHaveBeenCalledTimes(1);
@@ -276,6 +306,17 @@ describe('mountHousekeepingPanel — trust-core slice', () => {
     expect(html).not.toContain('housekeeping-drift-banner');
     // The reset modal is closed (no open click yet).
     expect(html).not.toContain('housekeeping-reset-modal');
+    mount.dispose();
+  });
+
+  it('keeps the Housekeeping heading when the initial read fails', async () => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    deps.runConfigRead.mockRejectedValueOnce(new Error('config read failed'));
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+    await mount.whenLoaded();
+    expect(fakeHost.getHtml()).toContain('<h2>Housekeeping</h2>');
+    expect(fakeHost.getHtml()).toContain('config read failed');
     mount.dispose();
   });
 
@@ -342,6 +383,9 @@ describe('mountHousekeepingPanel — trust-core slice', () => {
     );
     fakeHost.clickAction('housekeeping-run-now-open', { taskId: 'enrichment.summary' });
     expect(mount.getState().runNow.task_id).toBe('enrichment.summary');
+    expect(fakeHost.getHtml()).toContain(
+      'aria-labelledby="housekeeping-runnow-enrichment.summary-title"',
+    );
     fakeHost.clickAction('housekeeping-run-now-confirm');
     await flush();
     expect(deps.runRunNow).toHaveBeenCalledWith({ task_id: 'enrichment.summary' });

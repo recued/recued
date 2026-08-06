@@ -779,6 +779,7 @@ export const INGREDIENT_BUILDER_STYLES = `
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-advanced-subsection {
   display: grid;
   gap: 8px;
+  min-width: 0;
 }
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-advanced-subsection + .ingredient-builder-advanced-subsection {
   margin-top: 16px;
@@ -793,6 +794,7 @@ export const INGREDIENT_BUILDER_STYLES = `
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-arg-list {
   display: grid;
   gap: 8px;
+  min-width: 0;
 }
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-arg-row {
   display: grid;
@@ -863,6 +865,7 @@ export const INGREDIENT_BUILDER_STYLES = `
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-panel-body {
   display: grid;
   gap: 12px;
+  min-width: 0;
   padding: 16px;
 }
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-section-meta {
@@ -1016,6 +1019,7 @@ export const INGREDIENT_BUILDER_STYLES = `
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 12px;
   align-items: end;
+  min-width: 0;
 }
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-field-grid .span-full {
   grid-column: 1 / -1;
@@ -1024,7 +1028,7 @@ export const INGREDIENT_BUILDER_STYLES = `
   display: inline-flex;
   gap: 8px;
   align-items: center;
-  min-height: 34px;
+  min-height: 36px;
   color: var(--fg);
   font-size: 13px;
   font-weight: 600;
@@ -1052,7 +1056,7 @@ export const INGREDIENT_BUILDER_STYLES = `
   font-size: 11px;
   color: var(--fg-subtle);
 }
-[${INGREDIENT_BUILDER_ENTITY_TABLE_ATTR}] {
+[${INGREDIENT_BUILDER_ENTITY_TABLE_ATTR}] table {
   width: 100%;
   min-width: 980px;
   border-collapse: collapse;
@@ -1105,6 +1109,7 @@ export const INGREDIENT_BUILDER_STYLES = `
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
+  min-width: 0;
   font-size: 13px;
   padding-top: 2px;
 }
@@ -1129,7 +1134,10 @@ export const INGREDIENT_BUILDER_STYLES = `
   color: var(--danger);
 }
 [${INGREDIENT_BUILDER_STATUS_ATTR}] {
+  min-width: 0;
+  max-width: 100%;
   color: var(--fg-muted);
+  overflow-wrap: anywhere;
 }
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-review-detail {
   display: flex;
@@ -1317,6 +1325,23 @@ export const INGREDIENT_BUILDER_STYLES = `
   [${INGREDIENT_BUILDER_ROUTE_ATTR}] {
     padding: 16px 12px 24px;
   }
+  [${INGREDIENT_BUILDER_ROUTE_ATTR}] button.rx-btn {
+    min-width: 36px;
+    min-height: 36px;
+  }
+  [${INGREDIENT_BUILDER_ROUTE_ATTR}] summary,
+  [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-field-checkbox,
+  [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-arg-affects,
+  [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-pack-toggle {
+    min-height: 36px;
+  }
+  [${INGREDIENT_BUILDER_ENTITY_TABLE_ATTR}] .ingredient-builder-review-check {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 36px;
+    min-height: 36px;
+  }
   [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-topbar {
     grid-template-columns: 1fr;
     padding: 14px 14px 0;
@@ -1328,6 +1353,30 @@ export const INGREDIENT_BUILDER_STYLES = `
   [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-identity-card,
   [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-draft-picker {
     grid-template-columns: 1fr;
+  }
+  [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-card,
+  [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-field,
+  [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-op-card-body,
+  [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-panel,
+  [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-field-grid {
+    min-width: 0;
+  }
+  [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-field-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-arg-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-arg-row > :first-child,
+  [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-arg-row > select {
+    grid-column: 1 / -1;
+  }
+  [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-arg-affects {
+    grid-column: 1;
+    white-space: normal;
+  }
+  [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-arg-row > .rx-btn {
+    grid-column: 2;
   }
   [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-overview {
     grid-template-columns: 1fr 1fr;
@@ -1381,15 +1430,20 @@ export const INGREDIENT_BUILDER_STYLES = `
  * margin keeps revealIssues() clear of the sticky topbar; the measured
  * offsetHeight overrides this fallback at scroll time. */
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-review-host {
+  min-width: 0;
   margin-bottom: 16px;
   scroll-margin-top: 120px;
 }
 [${INGREDIENT_BUILDER_REVIEW_ISSUE_ATTR}] {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   padding: 6px 10px;
   border: 1px solid var(--danger);
   border-radius: 6px;
   background: var(--danger-weak);
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 [${INGREDIENT_BUILDER_REVIEW_ISSUE_ATTR}][data-severity="warn"],
 [${INGREDIENT_BUILDER_REVIEW_ISSUE_ATTR}][data-severity="info"] {
@@ -2925,6 +2979,9 @@ const addAdvancedField = (
     : 'ingredient-builder-field';
   const label = doc.createElement('label');
   label.textContent = labelText;
+  if (child.getAttribute('aria-label') === null) {
+    child.setAttribute('aria-label', labelText);
+  }
   field.appendChild(label);
   field.appendChild(child);
   grid.appendChild(field);
@@ -3016,8 +3073,11 @@ const renderOperationArgsSubsection = (
   focusTargets: OperationArgumentFocusTargets,
   rerenderOperationArgument: (rowId: string, argIndex: number | null) => void,
 ): void => {
+  const operationLabel = entry.operation.trim() || 'untitled';
   const section = doc.createElement('div');
   section.className = 'ingredient-builder-advanced-subsection';
+  section.setAttribute('role', 'group');
+  section.setAttribute('aria-label', `Arguments for operation ${operationLabel}`);
   const label = doc.createElement('div');
   label.className = 'ingredient-builder-subsection-label';
   label.textContent = 'Arguments';
@@ -3046,7 +3106,10 @@ const renderOperationArgsSubsection = (
         markDirty(state);
       },
     );
-    keyInput.setAttribute('aria-label', 'Argument key');
+    keyInput.setAttribute(
+      'aria-label',
+      `Argument ${argIdx + 1} key for operation ${operationLabel}`,
+    );
     keyInput.setAttribute('placeholder', 'arg_key');
     focusTargets.keyInputs.push(keyInput);
     argRow.appendChild(keyInput);
@@ -3062,7 +3125,10 @@ const renderOperationArgsSubsection = (
         markDirty(state);
       },
     );
-    typeSelect.setAttribute('aria-label', 'Argument type');
+    typeSelect.setAttribute(
+      'aria-label',
+      `Argument ${argIdx + 1} type for operation ${operationLabel}`,
+    );
     argRow.appendChild(typeSelect);
 
     const affectsLabel = doc.createElement('label');
@@ -3080,6 +3146,10 @@ const renderOperationArgsSubsection = (
         INGREDIENT_BUILDER_OPERATION_ARG_FIELD_ATTR,
         `${entry.id}:${argIdx}:affects_target`,
       ),
+    );
+    affectsBox.setAttribute(
+      'aria-label',
+      `Argument ${argIdx + 1} affects target for operation ${operationLabel}`,
     );
     affectsBox.addEventListener('change', () => {
       arg.affectsTarget = affectsBox.checked;
@@ -3102,7 +3172,10 @@ const renderOperationArgsSubsection = (
       INGREDIENT_BUILDER_OPERATION_ARG_REMOVE_ATTR,
       `${entry.id}:${argIdx}`,
     );
-    remove.setAttribute('aria-label', `Remove argument ${arg.key.trim() || String(argIdx + 1)}`);
+    remove.setAttribute(
+      'aria-label',
+      `Remove argument ${arg.key.trim() || String(argIdx + 1)} from operation ${operationLabel}`,
+    );
     argRow.appendChild(remove);
 
     list.appendChild(argRow);
@@ -3117,6 +3190,7 @@ const renderOperationArgsSubsection = (
     rerenderOperationArgument(entry.id, nextIndex);
   });
   add.setAttribute(INGREDIENT_BUILDER_OPERATION_ARG_ADD_ATTR, entry.id);
+  add.setAttribute('aria-label', `Add argument to operation ${operationLabel}`);
   focusTargets.addButton = add;
   section.appendChild(add);
 
@@ -3419,6 +3493,9 @@ const addCardField = (
     : 'ingredient-builder-field';
   const label = doc.createElement('label');
   label.textContent = labelText;
+  if (child.getAttribute('aria-label') === null) {
+    child.setAttribute('aria-label', labelText);
+  }
   field.appendChild(label);
   field.appendChild(child);
   grid.appendChild(field);
@@ -3462,9 +3539,12 @@ const renderOperationCard = (
   rerenderOperationArgument: (rowId: string, argIndex: number | null) => void,
 ): HTMLElement => {
   const idx = state.rows.indexOf(entry);
+  const operationName = entry.operation.trim();
+  const operationLabel = operationName || 'untitled';
   const card = doc.createElement('details');
   card.className = 'ingredient-builder-op-card';
   card.setAttribute(INGREDIENT_BUILDER_ROW_ATTR, entry.id);
+  card.setAttribute('aria-label', `Operation ${operationLabel}`);
   // Open by default for unreviewed / fresh rows so authoring starts expanded;
   // reviewed rows collapse to the summary glance. A user toggle overrides the
   // default and SURVIVES rerenders (state.opCardOpen) — without it every
@@ -3487,6 +3567,23 @@ const renderOperationCard = (
 
   const summary = doc.createElement('summary');
   summary.className = 'ingredient-builder-op-card-summary';
+  // Capture the disclosure intent synchronously. The native `toggle` event is
+  // queued after the click; an in-flight review can repaint and detach this
+  // card before that event runs, which otherwise loses the user's open/close
+  // action. Nested controls in the summary own their own clicks and must not
+  // change disclosure state.
+  summary.addEventListener('click', (event?: MouseEvent) => {
+    const target = event?.target as Element | null | undefined;
+    if (
+      target !== undefined
+      && target !== null
+      && target !== summary
+      && target.closest?.('button, input, select, textarea, a') !== null
+    ) {
+      return;
+    }
+    state.opCardOpen.set(entry.id, !card.hasAttribute('open'));
+  });
 
   const kindPill = doc.createElement('span');
   kindPill.className = 'ingredient-builder-kind-pill';
@@ -3494,7 +3591,6 @@ const renderOperationCard = (
   summary.appendChild(kindPill);
 
   const title = doc.createElement('span');
-  const operationName = entry.operation.trim();
   title.className = operationName.length > 0
     ? 'ingredient-builder-op-card-title'
     : 'ingredient-builder-op-card-title is-untitled';
@@ -3521,7 +3617,7 @@ const renderOperationCard = (
   );
   remove.disabled = state.rows.length <= 1;
   remove.setAttribute(INGREDIENT_BUILDER_REMOVE_ROW_ATTR, entry.id);
-  remove.setAttribute('aria-label', `Remove operation ${operationName || 'untitled'}`);
+  remove.setAttribute('aria-label', `Remove operation ${operationLabel}`);
   summary.appendChild(remove);
 
   card.appendChild(summary);
@@ -3591,6 +3687,7 @@ const renderOperationCard = (
     INGREDIENT_BUILDER_FOCUS_FIELD_ATTR,
     ingredientBuilderFocusFieldKey(INGREDIENT_BUILDER_FIELD_ATTR, 'reviewed'),
   );
+  checkbox.setAttribute('aria-label', `Reviewed for operation ${operationLabel}`);
   checkbox.addEventListener('change', () => {
     entry.reviewed = checkbox.checked;
     markDirty(state);
@@ -3606,6 +3703,10 @@ const renderOperationCard = (
 
   const advanced = doc.createElement('details');
   advanced.className = 'ingredient-builder-panel';
+  advanced.setAttribute(
+    'aria-label',
+    `Advanced options for operation ${operationLabel}`,
+  );
   if (state.opAdvancedOpen.get(entry.id) ?? false) {
     advanced.setAttribute('open', '');
   }
@@ -3756,7 +3857,10 @@ const addCheckboxCell = (
     ingredientBuilderFocusFieldKey(attrName, attrValue),
   );
   checkbox.addEventListener('change', () => onChange(checkbox.checked));
-  cell.appendChild(checkbox);
+  const target = doc.createElement('label');
+  target.className = 'ingredient-builder-review-check';
+  target.appendChild(checkbox);
+  cell.appendChild(target);
   row.appendChild(cell);
   return checkbox;
 };
@@ -3772,6 +3876,7 @@ const appendEntityExtrasRow = (
   state: IngredientBuilderState,
   entry: EntityFieldRowDraft,
 ): void => {
+  const fieldNumber = state.entityFields.indexOf(entry) + 1;
   const tr = doc.createElement('tr');
   tr.className = 'ingredient-builder-entity-extras-tr';
   const cell = doc.createElement('td');
@@ -3780,6 +3885,7 @@ const appendEntityExtrasRow = (
 
   const details = doc.createElement('details');
   details.className = 'ingredient-builder-panel';
+  details.setAttribute('aria-label', `Advanced options for data field ${fieldNumber}`);
   appendPanelSummary(doc, details, 'Advanced', 'label · reference · source op · derivation');
   const body = doc.createElement('div');
   body.className = 'ingredient-builder-panel-body';
@@ -3869,26 +3975,35 @@ const appendEntityFieldRow = (
     field: 'optional' | 'reviewed',
   ) => void,
 ): void => {
+  const fieldNumber = state.entityFields.indexOf(entry) + 1;
   const tr = doc.createElement('tr');
   tr.setAttribute(INGREDIENT_BUILDER_ENTITY_ROW_ATTR, entry.id);
+  tr.setAttribute('aria-label', `Data field ${fieldNumber}`);
 
   const entityInput = makeEntityTextInput(doc, entry.entity, 'entity', (next) => {
     entry.entity = next;
     markDirty(state);
   });
+  entityInput.setAttribute('aria-label', `Entity for data field ${fieldNumber}`);
   addCell(doc, tr, entityInput);
-  addCell(doc, tr, makeEntityTextInput(doc, entry.field_path, 'field_path', (next) => {
+  const fieldPathInput = makeEntityTextInput(doc, entry.field_path, 'field_path', (next) => {
     entry.field_path = next;
     markDirty(state);
-  }));
-  addCell(doc, tr, makeEntitySelect(doc, entry.type, META_FIELD_TYPES, 'type', (next) => {
+  });
+  fieldPathInput.setAttribute('aria-label', `Field path for data field ${fieldNumber}`);
+  addCell(doc, tr, fieldPathInput);
+  const typeSelect = makeEntitySelect(doc, entry.type, META_FIELD_TYPES, 'type', (next) => {
     entry.type = next;
     markDirty(state);
-  }));
-  addCell(doc, tr, makeEntityTextInput(doc, entry.maps_to, 'maps_to', (next) => {
+  });
+  typeSelect.setAttribute('aria-label', `Type for data field ${fieldNumber}`);
+  addCell(doc, tr, typeSelect);
+  const mapsToInput = makeEntityTextInput(doc, entry.maps_to, 'maps_to', (next) => {
     entry.maps_to = next;
     markDirty(state);
-  }));
+  });
+  mapsToInput.setAttribute('aria-label', `Maps to for data field ${fieldNumber}`);
+  addCell(doc, tr, mapsToInput);
   const optionalCheckbox = addCheckboxCell(
     doc,
     tr,
@@ -3901,18 +4016,25 @@ const appendEntityFieldRow = (
       rerenderEntityField(entry.id, 'optional');
     },
   );
-  addCell(doc, tr, makeEntitySelect(doc, entry.applies, ENTITY_FIELD_APPLIES, 'applies', (next) => {
+  optionalCheckbox.setAttribute('aria-label', `Optional for data field ${fieldNumber}`);
+  const appliesSelect = makeEntitySelect(doc, entry.applies, ENTITY_FIELD_APPLIES, 'applies', (next) => {
     entry.applies = next;
     markDirty(state);
-  }));
-  addCell(doc, tr, makeEntitySelect(doc, entry.pii, ENTITY_FIELD_PRIVACY_OPTIONS, 'pii', (next) => {
+  });
+  appliesSelect.setAttribute('aria-label', `Applies for data field ${fieldNumber}`);
+  addCell(doc, tr, appliesSelect);
+  const piiSelect = makeEntitySelect(doc, entry.pii, ENTITY_FIELD_PRIVACY_OPTIONS, 'pii', (next) => {
     entry.pii = next;
     markDirty(state);
-  }));
-  addCell(doc, tr, makeEntityTextInput(doc, entry.source, 'source', (next) => {
+  });
+  piiSelect.setAttribute('aria-label', `PII tag for data field ${fieldNumber}`);
+  addCell(doc, tr, piiSelect);
+  const sourceInput = makeEntityTextInput(doc, entry.source, 'source', (next) => {
     entry.source = next;
     markDirty(state);
-  }));
+  });
+  sourceInput.setAttribute('aria-label', `Source for data field ${fieldNumber}`);
+  addCell(doc, tr, sourceInput);
   const reviewedCheckbox = addCheckboxCell(
     doc,
     tr,
@@ -3925,6 +4047,7 @@ const appendEntityFieldRow = (
       rerenderEntityField(entry.id, 'reviewed');
     },
   );
+  reviewedCheckbox.setAttribute('aria-label', `Reviewed for data field ${fieldNumber}`);
 
   const removeCell = doc.createElement('td');
   const remove = makeButton(
@@ -3935,6 +4058,7 @@ const appendEntityFieldRow = (
     () => removeEntityField(entry),
   );
   remove.setAttribute(INGREDIENT_BUILDER_ENTITY_REMOVE_ROW_ATTR, entry.id);
+  remove.setAttribute('aria-label', `Remove data field ${fieldNumber}`);
   removeCell.appendChild(remove);
   tr.appendChild(removeCell);
 
@@ -3971,6 +4095,7 @@ const appendEntityAliasControl = (
       markDirty(state);
     },
   );
+  select.setAttribute('aria-label', `Cross-vendor alias for entity ${entityKey}`);
   field.appendChild(select);
   host.appendChild(field);
 };
@@ -4004,6 +4129,8 @@ const renderEntityGroup = (
 ): HTMLElement => {
   const groupEl = doc.createElement('div');
   groupEl.className = 'ingredient-builder-entity-group';
+  groupEl.setAttribute('role', 'group');
+  groupEl.setAttribute('aria-label', `Entity ${group.name}`);
 
   const header = doc.createElement('div');
   header.className = 'ingredient-builder-entity-group-header';
@@ -4016,7 +4143,9 @@ const renderEntityGroup = (
 
   const wrap = doc.createElement('div');
   wrap.className = 'ingredient-builder-table-wrap';
+  wrap.setAttribute('data-recued-scroll-rail', '');
   const table = doc.createElement('table');
+  table.setAttribute('aria-label', `${group.name} data fields`);
   const colgroup = doc.createElement('colgroup');
   for (const width of ENTITY_FIELD_COL_WIDTHS) {
     const col = doc.createElement('col');
@@ -5854,6 +5983,7 @@ export const bootstrapIngredientBuilderRoute = (
     // updates don't depend on the active view); only the active one is shown.
     const nav = doc.createElement('nav');
     nav.className = 'ingredient-builder-nav';
+    nav.setAttribute('data-recued-scroll-rail', '');
     nav.setAttribute('aria-label', 'Pack editor sections');
     nav.setAttribute('role', 'tablist');
     nav.setAttribute('aria-orientation', 'horizontal');
@@ -6237,6 +6367,7 @@ export const bootstrapIngredientBuilderRoute = (
   // in-progress field first (commit handlers run on 'change'/'input' blur),
   // and only when there is UNSAVED content (a clean reflex-save is a no-op).
   const onKeydown = (event: KeyboardEvent): void => {
+    if (event.isComposing) return;
     if (!(event.metaKey || event.ctrlKey)) return;
     if (event.key !== 's' && event.key !== 'S') return;
     const target = event.target as Node | null;

@@ -13,7 +13,11 @@ import type {
   ReceptionIpBlockEntry,
 } from '@recued/contracts';
 
-import { mountReceptionAbuseSection } from '../settings/reception-abuse-section.js';
+import {
+  mountReceptionAbuseSection,
+  RECEPTION_ABUSE_HEADING_ATTR,
+  RECEPTION_ABUSE_SECTION_ATTR,
+} from '../settings/reception-abuse-section.js';
 import {
   buildAbuseInboxSubviewModel,
   type AbuseInboxSubviewModel,
@@ -162,6 +166,10 @@ describe('R19 — mountReceptionAbuseSection', () => {
     const ctl = makeFakeShell();
     const mount = mountReceptionAbuseSection({ host: fakeHost.host, shell: ctl.shell });
     // abuse_inbox is null at mount → loading hint, no panel.
+    expect(fakeHost.getHtml()).toContain(RECEPTION_ABUSE_SECTION_ATTR);
+    expect(fakeHost.getHtml()).toContain('role="region"');
+    expect(fakeHost.getHtml()).toContain(RECEPTION_ABUSE_HEADING_ATTR);
+    expect(fakeHost.getHtml()).toContain('>Abuse signals</h2>');
     expect(fakeHost.getHtml()).toContain('Loading abuse signals');
     expect(fakeHost.getHtml()).not.toContain('Abuse Inbox');
     // Once the shell publishes the loaded inbox, the panel renders.

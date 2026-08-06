@@ -97,6 +97,7 @@ import { createSqliteProAuthStore } from '../../pro-auth/sqlite-store.js';
 import {
   createHttpProEntitlementSource,
   resolveProEntitlementMintUrl,
+  resolveProEntitlementPublicKey,
   type ProEntitlementSource,
 } from '../../pro-convenience/entitlement-source.js';
 
@@ -306,7 +307,11 @@ export const composeCertStack = async (
             override: env.RECUED_PRO_ENTITLEMENT_MINT_URL,
             cloudBaseUrl,
           }),
-        getPublicKeyB64: () => env.RECUED_PRO_ENTITLEMENT_PUBLIC_KEY_B64,
+        getPublicKeyB64: () =>
+          resolveProEntitlementPublicKey({
+            override: env.RECUED_PRO_ENTITLEMENT_PUBLIC_KEY_B64,
+            cloudBaseUrl,
+          }),
       })
     : undefined;
   const resolveBindingProAuth: ProAuthResolver = async () => {

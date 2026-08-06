@@ -350,6 +350,7 @@ describe('D-149 follow-on — bootstrapReceptionRoute: route chrome + sections (
     ]);
     const tabBar = routeRoot.childList[1]!;
     expect(tabBar.attrs.has('data-recued-reception-route-tabs')).toBe(true);
+    expect(tabBar.attrs.get('aria-label')).toBe('Reception sections');
     // Sections in frequency order: inbox · records · abuse · endpoints (D-210 §4c added
     // `records` second — see `r19-reception-sections.test.ts` for the vocabulary ratchet).
     expect(tabBar.childList.map((a) => a.attrs.get('href'))).toEqual([

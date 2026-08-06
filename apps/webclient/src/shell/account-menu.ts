@@ -814,7 +814,7 @@ export const ACCOUNT_MENU_STYLES = `
   cursor: pointer;
 }
 [${ACCOUNT_MENU_ADD_SERVER_ATTR}]:hover { background: var(--recued-surface-hover, rgba(127,127,127,0.12)); }
-[${ACCOUNT_MENU_SERVERS_ROW_ATTR}] h2 {
+[${ACCOUNT_MENU_SERVERS_ROW_ATTR}] h3 {
   margin: 0 6px 6px;
   font-size: 12px;
   font-weight: 600;
@@ -1325,7 +1325,7 @@ export const mountAccountMenu = (
   // Row 3 — servers.
   const serversRow = doc.createElement('div');
   serversRow.setAttribute(ACCOUNT_MENU_SERVERS_ROW_ATTR, '');
-  const serversTitle = doc.createElement('h2');
+  const serversTitle = doc.createElement('h3');
   serversTitle.setAttribute('id', ACCOUNT_MENU_SERVERS_TITLE_ID);
   serversTitle.textContent = 'Server profiles';
   serversRow.appendChild(serversTitle);
@@ -2948,7 +2948,7 @@ export const mountAccountMenu = (
   };
   const onKeydown = (event: KeyboardEvent): void => {
     if (!open) return;
-    if (event.key !== 'Escape') return;
+    if (event.key !== 'Escape' || event.isComposing) return;
     // The heartbeat-backed server controls are a nested, explicitly opened
     // surface. Let their Escape handler close back to the diagnosis outcome;
     // closing Account here in capture phase would skip that round-trip.

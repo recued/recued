@@ -6,6 +6,7 @@
  *  module header for the schema-fit deviation note). */
 
 import { mkdtempSync, rmSync } from 'node:fs';
+import { RUNTIME_SCHEMA_MAP } from '@recued/config';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -119,6 +120,39 @@ describe('auditCompactionTask.step — dedup behaviour', () => {
     // Anchor (r1) survives; r2..r5 are within the 2-min window.
     expect(countRows()).toBe(1);
     expect(db.prepare(`SELECT key FROM audit_entries`).get()).toEqual({ key: 'r1' });
+  });
+
+  it('⛔ the window EXCEEDS the fastest cadence a user can schedule', async () => {
+    // ⛔ THE DEFECT THIS REPLACED. The window was 2 minutes while
+    // `scheduler.min_interval_minutes` is 5 — so the FASTEST cadence a user
+    // can ask for produced runs five minutes apart, outside the window, every
+    // time. A task whose description says it "collapses noisy reactive ticks"
+    // could only ever reach sub-two-minute bursts, and the scheduled
+    // repetition that actually accumulates was untouched.
+    const floorMs =
+      (RUNTIME_SCHEMA_MAP['scheduler.min_interval_minutes']!.default as number)
+      * 60_000;
+    expect(AUDIT_COMPACTION_WINDOW_MS).toBeGreaterThan(floorMs);
+  });
+
+  it('⛔ collapses a recipe ticking at the SCHEDULER FLOOR', async () => {
+    // The behavioural half of the claim above. Five-minute ticks, identical
+    // recipe + hash, all successful — exactly a watch recipe that keeps
+    // finding nothing new. Under the old 2-minute window NONE of these
+    // collapsed.
+    const base = 1_000_000;
+    const floorMs =
+      (RUNTIME_SCHEMA_MAP['scheduler.min_interval_minutes']!.default as number)
+      * 60_000;
+    for (let i = 0; i < 6; i++) {
+      insertAudit(`t${i}`, 'recipe-a', 'h1', base + i * floorMs);
+    }
+
+    await stepWith(auditCompactionTask, { kind: 'complete' });
+
+    const kept = countRows();
+    expect(kept).toBeLessThan(6);          // the old window kept all six
+    expect(kept).toBeGreaterThan(0);       // ...and it still SAMPLES the cadence
   });
 
   it('preserves the earliest as anchor and re-anchors past the window', async () => {

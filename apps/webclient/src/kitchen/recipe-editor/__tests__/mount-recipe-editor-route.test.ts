@@ -795,6 +795,13 @@ describe('mountFormResponseRecipeSeedRoute — Data → Kitchen handoff', () => 
       template.recipe_id,
     );
     expect(use?.textContent).toBe('Use installed workflow template');
+    expect(use?.getAttribute('aria-label')).toBe(
+      'Use installed workflow template Start paid document fulfillment (start-paid-document-fulfillment)',
+    );
+    expect(doc.styleElements[0]?.textContent).toContain('.rx-btn-primary');
+    expect(doc.styleElements[0]?.textContent).toContain(
+      `[${FORM_RESPONSE_WORKFLOW_TEMPLATE_USE_ATTR}]`,
+    );
     expect(findByAttr(root, RECIPE_EDITOR_ROUTE_ATTR)).toBeUndefined();
 
     use?.click();

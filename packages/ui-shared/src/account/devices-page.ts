@@ -125,11 +125,13 @@ const renderActionsCell = (row: DevicesPageRow): string => {
   // (Apple/Google "remove from account" pattern). See spec § Behaviour
   // rules. The mount hard-guards the handler too (R30 defect #1).
   if (row.isCurrent) return '<span class="account-devices-action-placeholder" aria-hidden="true">—</span>';
+  const deviceLabel = `${row.display_name} (${row.instance_id})`;
   return `
     <button type="button"
       class="account-devices-action account-devices-action--revoke"
       data-action="revoke-device"
-      data-instance-id="${e(row.instance_id)}">
+      data-instance-id="${e(row.instance_id)}"
+      aria-label="Revoke ${e(deviceLabel)}">
       Revoke
     </button>
   `;
@@ -141,6 +143,7 @@ const renderConfirmPanel = (
 ): string => {
   if (state.confirmingInstanceId !== row.instance_id) return '';
   const revoking = state.revokingInstanceId === row.instance_id;
+  const deviceLabel = `${row.display_name} (${row.instance_id})`;
   const status = revoking
     ? `<p class="account-devices-confirm-status" role="status">Revoking…</p>`
     : '';
@@ -155,10 +158,13 @@ const renderConfirmPanel = (
   const confirmLabel = revoking
     ? 'Revoking…'
     : `Yes, revoke &ldquo;${e(row.display_name)}&rdquo;`;
+  const confirmAccessibleLabel = revoking
+    ? `Revoking ${deviceLabel}`
+    : `Confirm revoke ${deviceLabel}`;
   return `
     <tr class="account-devices-confirm-row" data-instance-id="${e(row.instance_id)}">
       <td colspan="${COLUMN_COUNT}" class="account-devices-confirm-cell">
-        <div class="account-devices-confirm-panel" role="alertdialog" aria-label="Confirm revoke ${e(row.display_name)}">
+        <div class="account-devices-confirm-panel" role="alertdialog" aria-label="Confirm revoke ${e(deviceLabel)}">
           <p class="account-devices-confirm-heading">⚠ Revoking this device will:</p>
           <ul class="account-devices-confirm-list">
             <li>Immediately disconnect it from your server</li>
@@ -173,13 +179,15 @@ const renderConfirmPanel = (
             <button type="button"
               class="account-devices-action account-devices-action--cancel"
               data-action="cancel-revoke"
-              data-instance-id="${e(row.instance_id)}"${inertAttr}>
+              data-instance-id="${e(row.instance_id)}"
+              aria-label="Cancel revoke ${e(deviceLabel)}"${inertAttr}>
               Cancel
             </button>
             <button type="button"
               class="account-devices-action account-devices-action--confirm-revoke"
               data-action="confirm-revoke"
-              data-instance-id="${e(row.instance_id)}"${confirmBusyAttr}>
+              data-instance-id="${e(row.instance_id)}"
+              aria-label="${e(confirmAccessibleLabel)}"${confirmBusyAttr}>
               ${confirmLabel}
             </button>
           </div>
@@ -240,19 +248,21 @@ export const renderDevicesPage = (state: DevicesPageState): string => {
   });
   const rows = sorted.map((r) => renderRow(r, state, nowMs)).join('');
   const body = `
-    <table class="account-devices-table" role="table" aria-label="Paired devices">
-      <thead>
-        <tr>
-          <th class="account-devices-th">Device</th>
-          <th class="account-devices-th">Status</th>
-          <th class="account-devices-th">Paired</th>
-          <th class="account-devices-th">Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${rows || `<tr><td colspan="${COLUMN_COUNT}" class="account-devices-empty">No paired devices yet.</td></tr>`}
-      </tbody>
-    </table>
+    <div class="account-devices-table-scroll" data-recued-scroll-rail>
+      <table class="account-devices-table" role="table" aria-label="Paired devices">
+        <thead>
+          <tr>
+            <th class="account-devices-th">Device</th>
+            <th class="account-devices-th">Status</th>
+            <th class="account-devices-th">Paired</th>
+            <th class="account-devices-th">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows || `<tr><td colspan="${COLUMN_COUNT}" class="account-devices-empty">No paired devices yet.</td></tr>`}
+        </tbody>
+      </table>
+    </div>
   `;
 
   return section({

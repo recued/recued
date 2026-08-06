@@ -151,6 +151,8 @@ const CHAT_MODEL_PICKER = 'data-recued-chat-route-model-picker';
 const CHAT_COMPOSER_MORE = 'data-recued-chat-route-composer-more';
 const CHAT_COMPOSER_ACTION = 'data-recued-chat-route-composer-action';
 const CHAT_MESSAGE = 'data-recued-chat-route-message';
+const CHAT_THREAD = 'data-recued-chat-route-thread';
+const CHAT_THREAD_TITLE = 'data-recued-chat-route-thread-title';
 const CHAT_SESSION_ROW = 'data-recued-chat-route-session-row';
 const CHAT_SESSION_ACTIONS = 'data-recued-chat-route-session-actions';
 const CHAT_SESSION_EXPORT = 'data-recued-chat-route-session-export';
@@ -189,6 +191,7 @@ const CHAT_DATA_DIAGNOSIS_ANSWER_ACTION =
   'data-recued-chat-route-data-diagnosis-answer-action';
 const CHAT_ANSWER_WAITING = 'data-recued-chat-answer-waiting';
 const CHAT_SETUP = 'data-recued-ai-models-chat-setup';
+const CHAT_SETUP_MODEL = 'data-recued-ai-models-chat-setup-model';
 const CHAT_SETUP_KEY = 'data-recued-ai-models-chat-setup-key';
 const CHAT_SETUP_SUBMIT = 'data-recued-ai-models-chat-setup-submit';
 const CONNECTIONS_ROUTE = 'data-recued-connections-route';
@@ -199,6 +202,14 @@ const CONNECTIONS_GRANT_TOGGLE = 'data-recued-conn-grant-toggle';
 const CONNECTIONS_PACK_INVENTORY = 'data-connections-pack-inventory';
 const CONNECTIONS_PACK_INVENTORY_RETRY =
   'data-connections-pack-inventory-retry';
+const WEBHOOKS_CARD = 'data-recued-webhooks-card';
+const WEBHOOKS_ACTION = 'data-recued-webhooks-action';
+const WEBHOOKS_DELIVERY = 'data-recued-webhooks-delivery';
+const WEBHOOKS_FIELD = 'data-recued-webhooks-field';
+const WEBHOOKS_NEW = 'data-recued-webhooks-new';
+const WEBHOOKS_PANEL = 'data-recued-webhooks-panel';
+const WEBHOOKS_PAYLOAD = 'data-recued-webhooks-payload';
+const WEBHOOKS_TEST_DELIVERY = 'data-recued-webhooks-test-delivery';
 const ACCOUNTS_EMPTY = 'data-accounts-empty';
 const ACCOUNT_CONNECTION_SUCCESS = 'data-accounts-connection-success';
 const OAUTH_APP_STATE = 'data-oauth-app-state';
@@ -257,6 +268,7 @@ const DATA_COLLECTION_SLUG = 'data-collection-slug';
 const DATA_COLLECTION_RECORD = 'data-collection-record';
 const DATA_DOWNLOAD_FILE = 'data-recued-data-download-file';
 const AUTOMATION_SUBNAV = 'data-recued-automation-subnav';
+const AUTOMATION_SECTION_PANEL = 'data-recued-automation-section-panel';
 const AUTOMATION_STATUS_FILTER = 'data-recued-automation-status-filter';
 const AUTOMATION_ORIGIN_FILTER = 'data-recued-automation-origin-filter';
 const AUTOMATION_ROW = 'data-recued-automation-row';
@@ -271,6 +283,7 @@ const DATA_VERIFICATION_ACTION =
 const CONTRACTS_DETAIL_HEADING = 'data-recued-contracts-detail-heading';
 const CONTRACTS_DETAIL_TAB = 'data-recued-contracts-tab';
 const CONTRACTS_DETAIL_TAB_BODY = 'data-recued-contracts-tab-body';
+const CONTRACTS_LIST_TAB = 'data-recued-contracts-list-tab';
 const LOGS_OUTCOME = 'data-recued-logs-outcome';
 const LOGS_AFFECTED_ITEMS = 'data-recued-logs-affected-items';
 const LOGS_DETAIL_HEADING = 'data-recued-logs-detail-heading';
@@ -299,6 +312,10 @@ const RECEPTION_RESPONSE_DETAIL_RETRY =
 const SETTINGS_NAV = 'data-recued-settings-nav';
 const SETTINGS_NAV_ITEM = 'data-recued-settings-nav-item';
 const SETTINGS_SUBTAB = 'data-recued-settings-subtab';
+const EXPOSURE_CELL = 'data-recued-exposure-cell';
+const EXPOSURE_PUBLIC_MCP = 'data-recued-exposure-public-mcp';
+const EXPOSURE_MODAL_CANCEL = 'data-recued-exposure-modal-cancel';
+const EXPOSURE_MODAL_SUBMIT = 'data-recued-exposure-modal-submit';
 const CLEAR_THIS_BROWSER_CLEAR = 'data-recued-clear-this-browser-clear';
 const CLEAR_THIS_BROWSER_CONFIRM = 'data-recued-clear-this-browser-confirm';
 const CLEAR_THIS_BROWSER_CANCEL = 'data-recued-clear-this-browser-cancel';
@@ -336,6 +353,7 @@ const UPDATES_STATUS = 'data-recued-updates-status';
 const UPDATES_ERROR = 'data-recued-updates-error';
 const UPDATES_APPLY = 'data-recued-updates-apply';
 const UPDATES_ROLLBACK = 'data-recued-updates-rollback';
+const UPDATES_MODE = 'data-recued-updates-mode';
 const AI_MODELS_TAB = 'data-recued-ai-models-tab';
 const AI_MODELS_PROMPT_TEXT = 'data-recued-ai-models-prompt-text';
 const AI_MODELS_PROMPT_ROLE = 'data-recued-ai-models-prompt-role';
@@ -350,6 +368,7 @@ const RUN_PALETTE_CLOSE = 'data-recued-run-palette-close';
 const RUN_PALETTE_ACTION = 'data-recued-run-palette-action';
 const RUN_PALETTE_RESULT = 'data-recued-run-palette-result';
 const RUN_PALETTE_RETRY = 'data-recued-run-palette-retry';
+const PACKS_ADD_INPUT = 'data-recued-packs-surface-add-input';
 const PACKS_INSTALLED_ONLY = 'data-recued-packs-surface-installed-only';
 const NOTIFY_TOAST = 'data-recued-notify-toast';
 const NOTIFY_TOAST_DISMISS = 'data-recued-notify-toast-dismiss';
@@ -479,6 +498,68 @@ test('boots the full app + mounts the persistent shell on the chat home', async 
   await expect(page.locator('[data-recued-chat-route]')).toBeVisible();
 });
 
+test('persistent brand exposes a full mobile home target', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  const brand = page.locator('.webclient-shell-brand');
+  await expect(brand).toHaveAttribute('href', '#chat');
+  const bounds = await brand.boundingBox();
+  expect(bounds?.height).toBeGreaterThanOrEqual(38);
+
+  await brand.focus();
+  await expect(brand).toBeFocused();
+});
+
+test('notification dismiss actions stay full-sized and contained', async ({ page }) => {
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'notification.notify',
+      title: 'Background_workspace_synchronization_that_must_wrap_on_a_phone',
+      text: 'Finished synchronizing the connected workspace.',
+      cursor: 1,
+    },
+  }));
+
+  const toast = page.locator(`[${NOTIFY_TOAST}="toast-1"]`);
+  const dismiss = page.locator(`[${NOTIFY_TOAST_DISMISS}="toast-1"]`);
+  await expect(toast).toBeVisible();
+  const desktopTarget = await dismiss.boundingBox();
+  expect(desktopTarget?.width).toBeGreaterThanOrEqual(36);
+  expect(desktopTarget?.height).toBeGreaterThanOrEqual(36);
+
+  await page.setViewportSize({ width: 280, height: 653 });
+  const mobileGeometry = await toast.evaluate((card) => {
+    const toastRect = card.getBoundingClientRect();
+    const button = card.querySelector<HTMLButtonElement>('button');
+    const buttonRect = button?.getBoundingClientRect();
+    return {
+      toastLeft: toastRect.left,
+      toastRight: toastRect.right,
+      buttonWidth: buttonRect?.width ?? 0,
+      buttonHeight: buttonRect?.height ?? 0,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(mobileGeometry.toastLeft).toBeGreaterThanOrEqual(-0.5);
+  expect(mobileGeometry.toastRight).toBeLessThanOrEqual(
+    mobileGeometry.viewportWidth + 0.5,
+  );
+  expect(await toast.evaluate((card) => card.scrollWidth))
+    .toBeLessThanOrEqual(await toast.evaluate((card) => card.clientWidth));
+  expect(mobileGeometry.buttonWidth).toBeGreaterThanOrEqual(44);
+  expect(mobileGeometry.buttonHeight).toBeGreaterThanOrEqual(44);
+  expect(mobileGeometry.documentWidth).toBeLessThanOrEqual(
+    mobileGeometry.viewportWidth,
+  );
+
+  await dismiss.focus();
+  await expect(dismiss).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(toast).toHaveCount(0);
+});
+
 test('a new notification preserves the focused existing toast action', async ({ page }) => {
   const notify = (text: string, cursor: number) => page.evaluate(
     ({ text: body, cursor: eventCursor }) => window.__app.fireMessage({
@@ -501,6 +582,13 @@ test('a new notification preserves the focused existing toast action', async ({ 
   await notify('Second finished', 2);
 
   await expect(page.locator(`[${NOTIFY_TOAST}]`)).toHaveCount(2);
+  await expect(firstDismiss).toHaveAccessibleName(
+    'Dismiss notification: Background work — First finished',
+  );
+  await expect(page.locator(`[${NOTIFY_TOAST_DISMISS}="toast-2"]`))
+    .toHaveAccessibleName(
+      'Dismiss notification: Background work — Second finished',
+    );
   await expect(firstDismiss).toBeFocused();
 });
 
@@ -606,6 +694,18 @@ test('the Attention bell is a focused, responsive queue with an exact handoff', 
   const dialog = page.locator(`[${ATTENTION_DIALOG}]`);
   await expect(dialog).toBeVisible();
   await expect(dialog).toHaveAccessibleName('Attention');
+  await expect(dialog.getByRole('heading', {
+    name: 'Attention',
+    level: 2,
+  })).toBeVisible();
+  await expect(dialog.getByRole('heading', {
+    name: 'Send the customer follow-up?',
+    level: 3,
+  })).toBeVisible();
+  await expect(dialog.getByRole('heading', {
+    name: "Update Acme's account owner in HubSpot",
+    level: 3,
+  })).toBeVisible();
   await expect(dialog).toContainText('2 items are waiting for you.');
   await expect(dialog).toContainText('Connected action · Answer to continue');
   await expect(dialog).toContainText(
@@ -622,6 +722,16 @@ test('the Attention bell is a focused, responsive queue with an exact handoff', 
     dialog.getByRole('link', { name: 'Open approvals' }),
   ).toBeVisible();
   await expect(page.locator(`[${ATTENTION_CLOSE}]`)).toBeFocused();
+  const targetSizes = await dialog.locator('button, a[href]').evaluateAll(
+    (targets) => targets.map((target) => {
+      const rect = target.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    }),
+  );
+  expect(Math.min(...targetSizes.map(({ width }) => width)))
+    .toBeGreaterThanOrEqual(36);
+  expect(Math.min(...targetSizes.map(({ height }) => height)))
+    .toBeGreaterThanOrEqual(36);
 
   const geometry = await dialog.evaluate((node) => {
     const rect = node.parentElement!.getBoundingClientRect();
@@ -871,6 +981,10 @@ test('the Account popover closes when keyboard focus leaves it', async ({ page }
 
   const dialog = page.locator(`[${ACCOUNT_MENU_POPOVER}]`);
   await expect(dialog).toBeVisible();
+  const theme = dialog.getByRole('button', {
+    name: 'Theme: System. Click to change.',
+  });
+  expect((await theme.boundingBox())?.height).toBeGreaterThanOrEqual(36);
   await trigger.click();
   await expect(dialog).toBeHidden();
   await trigger.click();
@@ -883,6 +997,62 @@ test('the Account popover closes when keyboard focus leaves it', async ({ page }
 
   await expect(dialog).toBeHidden();
   await expect(page.getByRole('button', { name: 'New chat' })).toBeFocused();
+});
+
+test('Account contains a maximum-length server name in switch review', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 480 });
+  await page.goto(`${HARNESS_URL}?server_profiles=multiple`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  await page.locator(`[${ACCOUNT_MENU_TRIGGER}]`).click();
+  const dialog = page.locator(`[${ACCOUNT_MENU_POPOVER}]`);
+  const office = dialog.locator(`[${SERVER_PROFILE_ITEM}]`).filter({
+    hasText: 'Office server',
+  });
+  const officeId = await office.getAttribute('data-profile-id');
+  expect(officeId).not.toBeNull();
+  const profileId = officeId!;
+  await dialog.locator(
+    `[${SERVER_PROFILE_RENAME}][data-profile-id="${profileId}"]`,
+  ).click();
+  const longName = 'X'.repeat(80);
+  await dialog.locator(`[${SERVER_PROFILE_RENAME_INPUT}]`).fill(longName);
+  await dialog.locator(`[${SERVER_PROFILE_RENAME_SAVE}]`).click();
+
+  const renamed = dialog.locator(
+    `[${SERVER_PROFILE_ITEM}][data-profile-id="${profileId}"]`,
+  );
+  await expect(renamed).toContainText(longName);
+  await renamed.click();
+  const confirmation = dialog.locator(`[${SERVER_PROFILE_SWITCH_CONFIRM}]`);
+  await expect(confirmation).toContainText(`Switch to ${longName}?`);
+
+  const geometry = await dialog.evaluate((node) => {
+    const selectors = [
+      '[data-recued-server-switcher-menu]',
+      '[data-recued-server-switcher-switch-confirm]',
+      '[data-recued-server-switcher-switch-confirm] h3',
+      '[data-recued-server-switcher-switch-confirm] p',
+    ];
+    const elements = [
+      node,
+      ...selectors.map((selector) => node.querySelector<HTMLElement>(selector)),
+    ].filter((element): element is HTMLElement => element !== null);
+    return elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      return {
+        left: rect.left,
+        right: rect.right,
+        scrollWidth: element.scrollWidth,
+        clientWidth: element.clientWidth,
+      };
+    });
+  });
+  for (const bounds of geometry) {
+    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds.right).toBeLessThanOrEqual(280.5);
+    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+  }
 });
 
 test('the connection banner preserves focus when recovery retires its action', async ({ page }) => {
@@ -2253,6 +2423,14 @@ test('Account server profiles own connection status, recovery, and the return on
   await expect(dialog).toHaveAttribute('role', 'dialog');
   await expect(dialog).toHaveAccessibleName('Account & servers');
   await expect(dialog).toBeFocused();
+  await expect(dialog.getByRole('heading', {
+    name: 'Account & servers',
+    level: 2,
+  })).toBeVisible();
+  await expect(dialog.getByRole('heading', {
+    name: 'Server profiles',
+    level: 3,
+  })).toBeVisible();
   const profiles = dialog.locator(`[${SERVER_PROFILE_ITEM}]`);
   await expect(profiles).toHaveCount(2);
   const currentProfile = dialog.locator(
@@ -2270,8 +2448,30 @@ test('Account server profiles own connection status, recovery, and the return on
   await officeRow.locator(`[${SERVER_PROFILE_RENAME}]`).click();
   const renameForm = dialog.locator(`[${SERVER_PROFILE_RENAME_FORM}]`);
   await expect(renameForm).toBeVisible();
-  await expect(renameForm.locator(`[${SERVER_PROFILE_RENAME_INPUT}]`)).toBeFocused();
-  await renameForm.locator(`[${SERVER_PROFILE_RENAME_INPUT}]`).fill('Work server');
+  const renameInput = renameForm.locator(`[${SERVER_PROFILE_RENAME_INPUT}]`);
+  await expect(renameInput).toBeFocused();
+  await renameInput.fill('作業サーバー');
+  const composingEscape = await renameInput.evaluate((input) => {
+    const event = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      code: 'Escape',
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    const dispatched = input.dispatchEvent(event);
+    return { dispatched, defaultPrevented: event.defaultPrevented };
+  });
+  expect(composingEscape).toEqual({
+    dispatched: true,
+    defaultPrevented: false,
+  });
+  await expect(dialog).toBeVisible();
+  await expect(renameForm).toBeVisible();
+  await expect(renameInput).toHaveValue('作業サーバー');
+  await expect(renameInput).toBeFocused();
+
+  await renameInput.fill('Work server');
   await renameForm.locator(`[${SERVER_PROFILE_RENAME_SAVE}]`).click();
   await expect(renameForm).toHaveCount(0);
   const renamedProfile = profiles.filter({ hasText: 'Work server' });
@@ -3452,6 +3652,87 @@ test("insecure HTTP resumes pairing at the chosen page's own secure origin", asy
     end: 'https://alice.recued.cloud:8443'.length,
     length: 'https://alice.recued.cloud:8443'.length,
   });
+});
+
+test('pairing inputs stay full-sized across desktop and narrow screens', async ({ page }) => {
+  const target =
+    `${HARNESS_URL}?journey=multi-tab-pair&code=PAIR5678`
+    + '&recued_pair_resume=same-origin#connections';
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(target);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const form = page.getByRole('form', { name: 'Pair this browser' });
+  await expect(form).toBeVisible();
+  const inputs = form.locator('input:visible');
+  await expect(inputs).toHaveCount(26);
+  const desktopHeights = await inputs.evaluateAll((fields) => fields.map(
+    (field) => field.getBoundingClientRect().height,
+  ));
+  expect(Math.min(...desktopHeights)).toBeGreaterThanOrEqual(36);
+
+  await page.setViewportSize({ width: 280, height: 653 });
+  const mobileGeometry = await form.evaluate((surface) => {
+    const rect = surface.getBoundingClientRect();
+    const heights = [...surface.querySelectorAll<HTMLInputElement>('input')]
+      .filter((field) => field.getBoundingClientRect().height > 0)
+      .map((field) => field.getBoundingClientRect().height);
+    return {
+      left: rect.left,
+      right: rect.right,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+      minimumInputHeight: Math.min(...heights),
+    };
+  });
+  expect(mobileGeometry.left).toBeGreaterThanOrEqual(-0.5);
+  expect(mobileGeometry.right).toBeLessThanOrEqual(
+    mobileGeometry.viewportWidth + 0.5,
+  );
+  expect(mobileGeometry.documentWidth).toBeLessThanOrEqual(
+    mobileGeometry.viewportWidth,
+  );
+  expect(mobileGeometry.minimumInputHeight).toBeGreaterThanOrEqual(44);
+});
+
+test('recovery generation keeps every action full-sized', async ({ page }) => {
+  const target =
+    `${HARNESS_URL}?journey=multi-tab-pair&code=PAIR5678`
+    + '&recued_pair_resume=same-origin#connections';
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(target);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const form = page.getByRole('form', { name: 'Pair this browser' });
+  await form.getByRole('button', {
+    name: 'Generate a new one',
+    exact: true,
+  }).click();
+  const generate = form.getByRole('button', {
+    name: 'Generate a new recovery key',
+  });
+  expect((await generate.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+  await generate.click();
+
+  const generationActions = form.getByRole('button', {
+    name: /^(Start over|I've written it down — continue)$/,
+  });
+  await expect(generationActions).toHaveCount(2);
+  const desktopHeights = await generationActions.evaluateAll(
+    (buttons) => buttons.map((button) => button.getBoundingClientRect().height),
+  );
+  expect(Math.min(...desktopHeights)).toBeGreaterThanOrEqual(36);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileGeometry = await generationActions.evaluateAll((buttons) => ({
+    heights: buttons.map((button) => button.getBoundingClientRect().height),
+    documentWidth: document.documentElement.scrollWidth,
+    viewportWidth: window.innerWidth,
+  }));
+  expect(Math.min(...mobileGeometry.heights)).toBeGreaterThanOrEqual(44);
+  expect(mobileGeometry.documentWidth).toBeLessThanOrEqual(
+    mobileGeometry.viewportWidth,
+  );
 });
 
 test('successful secure pairing stays clean through reload, Back, and Forward', async ({ page }) => {
@@ -7332,6 +7613,7 @@ test('the first-run Chat landing offers outcomes and seeds a prompt without send
   await page.setViewportSize({ width: 390, height: 844 });
   await activation.locator(`[${CHAT_ACTIVATION_ACTION}="ask"]`).click();
   const input = page.locator(`[${CHAT_INPUT}]`);
+  await expect(input).toHaveAccessibleName('Message to Recued');
   await expect(input).toHaveValue('Help me decide what to focus on today.');
   await expect(input).toBeFocused();
 
@@ -7383,7 +7665,30 @@ test('Set up Chat saves a model, returns to Chat, and focuses the starter prompt
   });
   await page.locator(`[${CHAT_SETUP_KEY}]`).fill('sk-test-only');
 
-  await expect(page.locator(`[${CHAT_SETUP_SUBMIT}="new"]`)).toBeEnabled();
+  const model = page.locator(`[${CHAT_SETUP_MODEL}]`);
+  await model.fill('会話モデル');
+  await model.focus();
+  const composingEnter = await model.evaluate((input) => {
+    const event = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      code: 'Enter',
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    const dispatched = input.dispatchEvent(event);
+    return { dispatched, defaultPrevented: event.defaultPrevented };
+  });
+  expect(composingEnter).toEqual({
+    dispatched: true,
+    defaultPrevented: false,
+  });
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.setLLMSlot'),
+  )).toBe(0);
+
+  const submit = page.locator(`[${CHAT_SETUP_SUBMIT}="new"]`);
+  await expect(submit).toBeEnabled();
   await page.keyboard.press('Enter');
   await expect(page).toHaveURL(/#chat\/start$/);
   const input = page.locator(`[${CHAT_INPUT}]`);
@@ -7703,12 +8008,128 @@ test('a returning user can find, continue, reload, and leave an exact chat', asy
   await expect(newChat).toHaveAttribute('href', '#chat/new');
   await newChat.click();
   await expect(page).toHaveURL(/#chat\/new$/);
+  await expect(newChat).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator(`[${DRAWER_LINK}="chats"]`))
+    .not.toHaveAttribute('aria-current', 'page');
   await expect(page.locator(`[${CHAT_INPUT}]`)).toBeFocused();
 
   await page.goBack();
   await expect(page).toHaveURL(/#chat\/session\/chat_1$/);
+  await expect(page.locator(`[${DRAWER_LINK}="chats"]`))
+    .toHaveAttribute('aria-current', 'page');
   await expect(page.locator(`[${CHAT_SESSION_ROW}="chat_1"]`))
     .toHaveAttribute('aria-current', 'page');
+});
+
+test('Chat contains long session titles and message tokens on a narrow phone', async ({ page }) => {
+  const longTitle = `QuarterlyLaunchReadiness${'A'.repeat(120)}`;
+  const longMessage = `https://example.test/${'B'.repeat(420)}`;
+  await page.setViewportSize({ width: 280, height: 480 });
+  await page.goto(
+    `${HARNESS_URL}?chat=session&chat_title=${encodeURIComponent(longTitle)}#chat`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const landingTitle = page.locator('.chat-history-landing-title');
+  await expect(landingTitle).toContainText(longTitle);
+  const landingGeometry = await landingTitle.evaluate((node) => {
+    const route = node.closest<HTMLElement>('[data-recued-chat-route]');
+    return {
+      right: node.getBoundingClientRect().right,
+      scrollWidth: node.scrollWidth,
+      clientWidth: node.clientWidth,
+      routeScrollWidth: route?.scrollWidth ?? 0,
+      routeClientWidth: route?.clientWidth ?? 0,
+    };
+  });
+  expect(landingGeometry.right).toBeLessThanOrEqual(280.5);
+  expect(landingGeometry.scrollWidth)
+    .toBeLessThanOrEqual(landingGeometry.clientWidth);
+  expect(landingGeometry.routeScrollWidth)
+    .toBeLessThanOrEqual(landingGeometry.routeClientWidth);
+
+  await page.locator(`[${CHAT_SESSION_ROW}="chat_1"]`).click();
+  await page.evaluate((content) => {
+    window.__app.fireMessage({
+      type: 'server_event',
+      event: {
+        kind: 'chat.message_complete',
+        session_id: 'chat_1',
+        turn_id: 'turn_long_content_1',
+        final: {
+          id: 'msg_long_content_1',
+          session_id: 'chat_1',
+          role: 'assistant',
+          content,
+          target_server: 'self',
+          picker_at_send: {
+            display_name: 'This server',
+            signature: {
+              server_kind: 'recued',
+              version: 'test',
+              instance_id: 'server-long-content',
+            },
+          },
+          model_used: {
+            provider: 'openai',
+            model_id: 'gpt-4.1-mini',
+          },
+          contributor: 'model',
+          ts: 1_700_000_000_010,
+        },
+        cursor: 1,
+      },
+    });
+  }, longMessage);
+
+  const threadTitle = page.locator(`[${CHAT_THREAD_TITLE}]`);
+  const message = page.locator(
+    `[${CHAT_MESSAGE}="msg_long_content_1"] .chat-message-content`,
+  );
+  await expect(threadTitle).toHaveText(longTitle);
+  await expect(message).toHaveText(longMessage);
+  const threadGeometry = await page.locator(`[${CHAT_THREAD}]`).evaluate(
+    (thread) => {
+      const route = thread.closest<HTMLElement>(
+        '[data-recued-chat-route]',
+      );
+      const title = thread.querySelector('.chat-thread-title');
+      const content = thread.querySelector('.chat-message-content');
+      const send = thread.querySelector('[data-recued-chat-route-send]');
+      const bounds = (node: Element | null) => {
+        if (node === null) return null;
+        const rect = node.getBoundingClientRect();
+        const element = node as HTMLElement;
+        return {
+          left: rect.left,
+          right: rect.right,
+          scrollWidth: element.scrollWidth,
+          clientWidth: element.clientWidth,
+        };
+      };
+      return {
+        thread: bounds(thread),
+        title: bounds(title),
+        content: bounds(content),
+        send: bounds(send),
+        routeScrollWidth: route?.scrollWidth ?? 0,
+        routeClientWidth: route?.clientWidth ?? 0,
+      };
+    },
+  );
+  for (const bounds of [
+    threadGeometry.thread,
+    threadGeometry.title,
+    threadGeometry.content,
+    threadGeometry.send,
+  ]) {
+    expect(bounds).not.toBeNull();
+    expect(bounds!.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds!.right).toBeLessThanOrEqual(280.5);
+    expect(bounds!.scrollWidth).toBeLessThanOrEqual(bounds!.clientWidth);
+  }
+  expect(threadGeometry.routeScrollWidth)
+    .toBeLessThanOrEqual(threadGeometry.routeClientWidth);
 });
 
 test('Chat preserves history search focus through a live session refresh', async ({ page }) => {
@@ -7772,6 +8193,7 @@ test('Chat preserves an open history action through a live session refresh', asy
   await page.waitForFunction(() => window.__app?.ready === true);
 
   const actions = page.locator(`[${CHAT_SESSION_ACTIONS}="chat_1"]`);
+  await expect(actions).toHaveAccessibleName('Actions for Planning chat');
   await actions.locator('summary').click();
   const deleteAction = actions.getByRole('button', { name: 'Delete chat' });
   await deleteAction.focus();
@@ -8053,6 +8475,15 @@ test('New chat on a blank draft returns focus to the composer', async ({ page })
   await page.goto(`${HARNESS_URL}?chat=session#chat/new`);
   await page.waitForFunction(() => window.__app?.ready === true);
 
+  const conversation = page.getByRole('region', {
+    name: 'Chat conversation',
+  });
+  await expect(conversation).toBeVisible();
+  await expect(conversation.getByRole('heading', {
+    name: 'What can Recued help you with?',
+    level: 2,
+  })).toBeVisible();
+
   const input = page.locator(`[${CHAT_INPUT}]`);
   const newChat = page.locator(`[${CHAT_NEW_SESSION}]`);
   await newChat.focus();
@@ -8271,6 +8702,9 @@ test('Chat sends from the keyboard without stealing multiline entry', async ({ p
   await page.goto(`${HARNESS_URL}?chat=session#chat/session/chat_1`);
   await page.waitForFunction(() => window.__app?.ready === true);
 
+  const conversation = page.getByRole('region', {
+    name: 'Chat conversation',
+  });
   const input = page.locator(`[${CHAT_INPUT}]`);
   const send = page.locator(`[${CHAT_SEND}]`);
   await expect(send).toHaveAttribute(
@@ -8288,6 +8722,10 @@ test('Chat sends from the keyboard without stealing multiline entry', async ({ p
   await expect.poll(async () => page.evaluate(() =>
     window.__app.rpcCallCount('chat.send'))).toBe(1);
   await expect(send).toHaveText('Sending...');
+  await expect(conversation.getByRole('heading', {
+    name: 'Planning chat',
+    level: 2,
+  })).toBeVisible();
   await expect(input).toHaveValue('');
   await expect(input).toBeFocused();
 
@@ -8417,6 +8855,74 @@ test('Chat preserves its Activity disclosure through owner and live repaints', a
     .toContainText('used mail.search');
 });
 
+test('Chat contains long live Activity text on a narrow phone', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 480 });
+  await page.goto(`${HARNESS_URL}?chat=session#chat/session/chat_1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const note = `Inspecting${'N'.repeat(420)}`;
+  const toolName = `community.${'T'.repeat(420)}`;
+  await page.evaluate(({ note, toolName }) => {
+    window.__app.fireMessage({
+      type: 'server_event',
+      event: {
+        kind: 'chat.transparency',
+        session_id: 'chat_1',
+        turn_id: 'turn_long_activity_1',
+        event: { kind: 'chat.channel_note', note },
+        cursor: 1,
+      },
+    });
+    window.__app.fireMessage({
+      type: 'server_event',
+      event: {
+        kind: 'chat.tool_call_started',
+        session_id: 'chat_1',
+        turn_id: 'turn_long_activity_1',
+        tool_name: toolName,
+        tier: 1,
+        args: {},
+        cursor: 2,
+      },
+    });
+  }, { note, toolName });
+
+  const activity = page.locator('[data-recued-chat-route-activity]');
+  const rows = activity.locator('[data-recued-chat-route-activity-row]');
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0)).toHaveText(note);
+  await expect(rows.nth(1)).toContainText(toolName);
+  const geometry = await activity.evaluate((node) => {
+    const route = node.closest<HTMLElement>('[data-recued-chat-route]');
+    const elements = [
+      node,
+      ...node.querySelectorAll<HTMLElement>(
+        '[data-recued-chat-route-activity-row]',
+      ),
+    ];
+    return {
+      elements: elements.map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          left: rect.left,
+          right: rect.right,
+          scrollWidth: element.scrollWidth,
+          clientWidth: element.clientWidth,
+        };
+      }),
+      routeScrollWidth: route?.scrollWidth ?? 0,
+      routeClientWidth: route?.clientWidth ?? 0,
+    };
+  });
+  for (const bounds of geometry.elements) {
+    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds.right).toBeLessThanOrEqual(280.5);
+    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+  }
+  expect(geometry.routeScrollWidth)
+    .toBeLessThanOrEqual(geometry.routeClientWidth);
+});
+
 test('the docked Chat composer action menu dismisses predictably', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(
@@ -8425,17 +8931,37 @@ test('the docked Chat composer action menu dismisses predictably', async ({ page
   await page.waitForFunction(() => window.__app?.ready === true);
 
   const input = page.locator(`[${CHAT_INPUT}]`);
+  const expandedActions = page.locator(`[${CHAT_COMPOSER_ACTION}]`);
+  const expandedHeights = await expandedActions.evaluateAll((actions) =>
+    actions.map((action) => action.getBoundingClientRect().height)
+  );
+  expect(Math.min(...expandedHeights)).toBeGreaterThanOrEqual(36);
   await input.fill('Check the composer actions');
   await page.locator(`[${CHAT_SEND}]`).click();
 
   const more = page.locator(`[${CHAT_COMPOSER_MORE}]`);
   const trigger = more.locator('summary');
   await expect(more).toBeVisible();
+  await expect(more).toHaveAccessibleName('Chat composer actions');
+  await expect(trigger).toHaveAccessibleName('More Chat composer actions');
+  expect((await trigger.boundingBox())?.height).toBeGreaterThanOrEqual(36);
   await expect(more).toContainText('Run a recipe');
   await expect(more).toContainText('Create');
 
   await trigger.click();
   await expect(more).toHaveJSProperty('open', true);
+  await expect(more.getByRole('button', {
+    name: 'Run a recipe',
+    exact: true,
+  })).toHaveCount(1);
+  await expect(more.getByRole('button', {
+    name: 'Create',
+    exact: true,
+  })).toHaveCount(1);
+  const menuHeights = await more.getByRole('button').evaluateAll((actions) =>
+    actions.map((action) => action.getBoundingClientRect().height)
+  );
+  expect(Math.min(...menuHeights)).toBeGreaterThanOrEqual(36);
   await page.keyboard.press('Escape');
   await expect(more).toHaveJSProperty('open', false);
   await expect(trigger).toBeFocused();
@@ -8471,6 +8997,112 @@ test('a docked Chat child overlay returns focus to the visible action trigger', 
   await expect(overlay).toHaveCount(0);
   await expect(more).toHaveJSProperty('open', false);
   await expect(trigger).toBeFocused();
+});
+
+test('Chat contains long reviewed-action identifiers on a narrow phone', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 480 });
+  await page.goto(`${HARNESS_URL}?chat=session#chat/session/chat_1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const tool = `community.${'x'.repeat(400)}`;
+  const argumentKey = `destination_${'identifier'.repeat(30)}`;
+  const argumentValue = `https://example.test/${'V'.repeat(420)}`;
+  await page.evaluate(({ tool, argumentKey, argumentValue }) => {
+    window.__app.fireMessage({
+      type: 'server_event',
+      event: {
+        kind: 'chat.plan_proposed',
+        session_id: 'chat_1',
+        turn_id: 'turn_long_plan_1',
+        plan_id: 'plan_long_identifiers_1',
+        tool,
+        tier: 2,
+        args: { [argumentKey]: argumentValue },
+        cursor: 1,
+      },
+    });
+    window.__app.fireMessage({
+      type: 'server_event',
+      event: {
+        kind: 'chat.message_complete',
+        session_id: 'chat_1',
+        turn_id: 'turn_long_plan_1',
+        final: {
+          id: 'msg_long_plan_1',
+          session_id: 'chat_1',
+          role: 'assistant',
+          content: 'Please review this action.',
+          target_server: 'self',
+          picker_at_send: {
+            display_name: 'This server',
+            signature: {
+              server_kind: 'recued',
+              version: 'test',
+              instance_id: 'server-long-plan',
+            },
+          },
+          model_used: {
+            provider: 'openai',
+            model_id: 'gpt-4.1-mini',
+          },
+          contributor: 'model',
+          ts: 1_700_000_000_010,
+        },
+        cursor: 2,
+      },
+    });
+  }, { tool, argumentKey, argumentValue });
+
+  const card = page.locator(
+    `[${CHAT_PLAN_CARD}][data-plan-id="plan_long_identifiers_1"]`,
+  );
+  await expect(card).toContainText('Review required');
+  await card.locator('.chat-plan-card-technical summary').click();
+  const geometry = await card.evaluate((node) => {
+    const route = node.closest<HTMLElement>('[data-recued-chat-route]');
+    const bounds = (selector: string) => {
+      const element = node.querySelector<HTMLElement>(selector);
+      if (element === null) return null;
+      const rect = element.getBoundingClientRect();
+      return {
+        left: rect.left,
+        right: rect.right,
+        scrollWidth: element.scrollWidth,
+        clientWidth: element.clientWidth,
+      };
+    };
+    const cardRect = node.getBoundingClientRect();
+    return {
+      card: {
+        left: cardRect.left,
+        right: cardRect.right,
+        scrollWidth: node.scrollWidth,
+        clientWidth: node.clientWidth,
+      },
+      tool: bounds('.chat-plan-card-tool'),
+      details: bounds('.chat-plan-card-details'),
+      key: bounds('.chat-plan-card-detail-key'),
+      value: bounds('.chat-plan-card-detail-value'),
+      technical: bounds('.chat-plan-card-technical-meta'),
+      routeScrollWidth: route?.scrollWidth ?? 0,
+      routeClientWidth: route?.clientWidth ?? 0,
+    };
+  });
+  for (const bounds of [
+    geometry.card,
+    geometry.tool,
+    geometry.details,
+    geometry.key,
+    geometry.value,
+    geometry.technical,
+  ]) {
+    expect(bounds).not.toBeNull();
+    expect(bounds!.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds!.right).toBeLessThanOrEqual(280.5);
+    expect(bounds!.scrollWidth).toBeLessThanOrEqual(bounds!.clientWidth);
+  }
+  expect(geometry.routeScrollWidth)
+    .toBeLessThanOrEqual(geometry.routeClientWidth);
 });
 
 test('a reviewed write stays explicit from approval through the Chat handoff', async ({ page }) => {
@@ -8545,10 +9177,17 @@ test('a reviewed write stays explicit from approval through the Chat handoff', a
   await expect(card).toContainText('mary@example.com');
   await expect(card).toContainText('Quarterly planning follow-up');
   await expect(card.locator('details')).not.toHaveAttribute('open', '');
-  const technicalSummary = await card
-    .locator('.chat-plan-card-technical summary')
-    .boundingBox();
-  expect(technicalSummary?.height).toBeGreaterThanOrEqual(32);
+  const technical = card.locator('.chat-plan-card-technical');
+  const technicalTrigger = technical.locator('summary');
+  const technicalSummary = await technicalTrigger.boundingBox();
+  expect(technicalSummary?.height).toBeGreaterThanOrEqual(36);
+  await technicalTrigger.focus();
+  await page.keyboard.press('Enter');
+  await expect(technical).toHaveAttribute('open', '');
+  await expect(technicalTrigger).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(technical).not.toHaveAttribute('open', '');
+  await expect(technicalTrigger).toBeFocused();
   await expect(card).toContainText('Tool: mail.send · Tier 2');
   await expect(card.getByRole('button', { name: 'Approve once' })).toBeVisible();
   await expect(
@@ -8733,6 +9372,68 @@ test('Data keeps keyboard focus on a collection tab through its repaint', async 
   await expect(page).toHaveURL(/#data\/task$/);
   await expect(tasks).toHaveAttribute('data-active', 'true');
   await expect(tasks).toBeFocused();
+});
+
+test('Data collection tabs form one arrow-key keyboard stop', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.setHash('#data'));
+
+  const tablist = page.getByRole('tablist', { name: 'Data collections' });
+  const tabs = tablist.getByRole('tab');
+  const contacts = page.locator(`[${DATA_TAB}="contact"]`);
+  const tasks = page.locator(`[${DATA_TAB}="task"]`);
+  const records = page.locator(`[${DATA_TAB}="records"]`);
+  await expect(tablist).toBeVisible();
+  await expect(tabs).toHaveCount(16);
+  await expect(tablist.locator('[tabindex="0"]')).toHaveCount(1);
+  await expect(contacts).toHaveAttribute('aria-selected', 'true');
+  await expect(contacts).toHaveAccessibleDescription('Owned');
+  await expect(records).toHaveAccessibleDescription('Records');
+  await expect(page.getByRole('tabpanel', { name: 'Contacts' })).toBeVisible();
+
+  await contacts.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(page).toHaveURL(/#data\/task$/);
+  await expect(tasks).toHaveAttribute('aria-selected', 'true');
+  await expect(tasks).toBeFocused();
+  await expect(tablist.locator('[tabindex="0"]')).toHaveCount(1);
+
+  await page.keyboard.press('End');
+  await expect(page).toHaveURL(/#data\/records$/);
+  await expect(records).toHaveAttribute('aria-selected', 'true');
+  await expect(records).toBeFocused();
+
+  await page.keyboard.press('Home');
+  await expect(page).toHaveURL(/#data\/contact$/);
+  await expect(contacts).toHaveAttribute('aria-selected', 'true');
+  await expect(contacts).toBeFocused();
+  await expect(tablist.locator('[tabindex="0"]')).toHaveCount(1);
+});
+
+test('Data exposes full mobile targets for its persistent navigation', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.setHash('#data'));
+
+  const switcher = page.getByRole('group', { name: 'Data or Memory' });
+  const lenses = switcher.getByRole('button');
+  await expect(lenses).toHaveCount(2);
+  const heights = await lenses.evaluateAll((buttons) =>
+    buttons.map((button) => button.getBoundingClientRect().height)
+  );
+  expect(Math.min(...heights)).toBeGreaterThanOrEqual(36);
+
+  const collectionTabs = page.getByRole('tablist', {
+    name: 'Data collections',
+  }).getByRole('tab');
+  await expect(collectionTabs).toHaveCount(16);
+  const tabHeights = await collectionTabs.evaluateAll((tabs) =>
+    tabs.map((tab) => tab.getBoundingClientRect().height)
+  );
+  expect(Math.min(...tabHeights)).toBeGreaterThanOrEqual(36);
+
+  const memory = switcher.getByRole('button', { name: 'Memory' });
+  await memory.focus();
+  await expect(memory).toBeFocused();
 });
 
 test('Data keeps a contact file apply visible, owned, and single-flight', async ({ page }) => {
@@ -8950,6 +9651,13 @@ test('Data task search accepts continuous keyboard input', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.evaluate(() => window.__app.setHash('#data/task'));
 
+  const dataRoute = page.locator('[data-recued-data-route]');
+  await expect(dataRoute.getByRole('heading', { level: 1 })).toHaveCount(1);
+  await expect(dataRoute.getByRole('heading', { name: 'Tasks', level: 2 }))
+    .toBeVisible();
+  await expect(dataRoute.getByRole('region', { name: 'Tasks' })).toBeVisible();
+  await expect(dataRoute.locator('main')).toHaveCount(0);
+
   const search = page.locator(
     'input[data-action="search-work-entities"][data-kind="task"]',
   );
@@ -8965,6 +9673,26 @@ test('Data task search accepts continuous keyboard input', async ({ page }) => {
   await page.keyboard.type('X');
   await expect(search).toHaveValue('budgXet');
   await expect(search).toBeFocused();
+});
+
+test('Data task source selection retains refresh ownership', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=work-entities-paged#data/task`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const source = page.locator('select[data-action="select-source"]');
+  await expect(source).toHaveAccessibleName('Source');
+  const callsBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('work_entity.list'),
+  );
+  await source.focus();
+  await source.selectOption('recued.task');
+
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('work_entity.list')),
+  ).toBe(callsBefore + 1);
+  await expect(source).toHaveValue('recued.task');
+  await expect(source).toBeFocused();
 });
 
 test('Data booking search coalesces server reads while typing', async ({ page }) => {
@@ -8996,6 +9724,7 @@ test('Data moves focus into New Task and restores its opener on Escape', async (
   await page.evaluate(() => window.__app.setHash('#data/task'));
 
   const trigger = page.getByRole('button', { name: '+ New Task', exact: true });
+  expect((await trigger.boundingBox())?.height).toBeGreaterThanOrEqual(36);
   await trigger.focus();
   await page.keyboard.press('Enter');
 
@@ -9019,10 +9748,31 @@ test('Data protects an unfinished task create from Escape', async ({ page }) => 
   await trigger.click();
   const dialog = page.getByRole('dialog', { name: 'New Task' });
   const title = dialog.getByLabel('Title');
+  const guard = page.locator(`[${DATA_WORK_ENTITY_DISCARD_GUARD}]`);
+  await title.fill('未完了のタスク');
+  await title.focus();
+  const composingEscape = await title.evaluate((input) => {
+    const event = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      code: 'Escape',
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    const dispatched = input.dispatchEvent(event);
+    return { dispatched, defaultPrevented: event.defaultPrevented };
+  });
+  expect(composingEscape).toEqual({
+    dispatched: true,
+    defaultPrevented: false,
+  });
+  await expect(guard).toHaveCount(0);
+  await expect(title).toHaveValue('未完了のタスク');
+  await expect(title).toBeFocused();
+
   await title.fill('Unfinished new task');
   await page.keyboard.press('Escape');
 
-  const guard = page.locator(`[${DATA_WORK_ENTITY_DISCARD_GUARD}]`);
   await expect(guard).toBeFocused();
   await page.locator(`[${DATA_WORK_ENTITY_DISCARD_KEEP}]`).click();
   await expect(guard).toHaveCount(0);
@@ -9514,6 +10264,109 @@ test('Data restores failed Contact save focus and draft', async ({ page }) => {
     window.__app.rpcCallCount('contact.upsert'))).toBe(1);
 });
 
+test('Data contains long Contact identity text on a narrow phone', async ({ page }) => {
+  const longName = `Contact${'Identity'.repeat(30)}`;
+  const longEmail = `${'contact'.repeat(8)}@example.test`;
+  const longCompany = `Company${'Identifier'.repeat(24)}`;
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=contacts&contact_text=long`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  const row = page.locator(`[${DATA_CONTACT_ROW}]`).first();
+  await expect(row.locator('.data-row-title')).toHaveText(longName);
+  await expect(row.locator('.data-row-meta')).toHaveText(
+    `${longEmail} - ${longCompany}`,
+  );
+  const listGeometry = await row.evaluate((node) => {
+    const route = node.closest<HTMLElement>('[data-recued-data-route]');
+    const elements = [
+      node,
+      node.querySelector<HTMLElement>('.data-contact-row-button'),
+      node.querySelector<HTMLElement>('.data-contact-text'),
+    ].filter((element): element is HTMLElement => element !== null);
+    return {
+      routeScrollWidth: route?.scrollWidth ?? 0,
+      routeClientWidth: route?.clientWidth ?? 0,
+      elements: elements.map((element) => ({
+        left: element.getBoundingClientRect().left,
+        right: element.getBoundingClientRect().right,
+        scrollWidth: element.scrollWidth,
+        clientWidth: element.clientWidth,
+      })),
+    };
+  });
+  expect(listGeometry.routeScrollWidth)
+    .toBeLessThanOrEqual(listGeometry.routeClientWidth);
+  for (const bounds of listGeometry.elements) {
+    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds.right).toBeLessThanOrEqual(280.5);
+    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+  }
+
+  await row.getByRole('button').click();
+  const heading = page.locator(`[${DATA_CONTACT_DETAIL_HEADING}]`);
+  await expect(heading).toHaveText(longName);
+  await expect(page.locator('.data-contact-detail-heading .data-row-meta'))
+    .toHaveText(longEmail);
+  const detailGeometry = await page.locator(
+    '[data-recued-data-contact-detail]',
+  ).evaluate((detail) => {
+    const route = detail.closest<HTMLElement>('[data-recued-data-route]');
+    const elements = [
+      detail,
+      detail.querySelector<HTMLElement>('.data-contact-detail-header'),
+      detail.querySelector<HTMLElement>('.data-contact-detail-heading'),
+      detail.querySelector<HTMLElement>(
+        '[data-recued-data-contact-detail-heading]',
+      ),
+      detail.querySelector<HTMLElement>(
+        '.data-contact-detail-heading .data-row-meta',
+      ),
+      detail.querySelector<HTMLElement>(
+        '.data-contact-detail-heading .data-row-subtle',
+      ),
+      ...detail.querySelectorAll<HTMLElement>('.data-contact-value-text'),
+    ].filter((element): element is HTMLElement => element !== null);
+    return {
+      routeScrollWidth: route?.scrollWidth ?? 0,
+      routeClientWidth: route?.clientWidth ?? 0,
+      elements: elements.map((element) => ({
+        left: element.getBoundingClientRect().left,
+        right: element.getBoundingClientRect().right,
+        scrollWidth: element.scrollWidth,
+        clientWidth: element.clientWidth,
+      })),
+    };
+  });
+  expect(detailGeometry.routeScrollWidth)
+    .toBeLessThanOrEqual(detailGeometry.routeClientWidth);
+  for (const bounds of detailGeometry.elements) {
+    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds.right).toBeLessThanOrEqual(280.5);
+    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+  }
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Edit contact' });
+  await expect(dialog.getByLabel('Email')).toHaveValue(longEmail);
+  await expect(dialog.getByLabel('Name')).toHaveValue(longName);
+  await expect(dialog.getByLabel('Company')).toHaveValue(longCompany);
+  const dialogGeometry = await dialog.evaluate((node) => ({
+    left: node.getBoundingClientRect().left,
+    right: node.getBoundingClientRect().right,
+    scrollWidth: node.scrollWidth,
+    clientWidth: node.clientWidth,
+  }));
+  expect(dialogGeometry.left).toBeGreaterThanOrEqual(-0.5);
+  expect(dialogGeometry.right).toBeLessThanOrEqual(280.5);
+  expect(dialogGeometry.scrollWidth).toBeLessThanOrEqual(
+    dialogGeometry.clientWidth,
+  );
+});
+
 test('Data hands keyboard focus from a contact row to its loaded detail', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?data=contacts`);
@@ -9531,6 +10384,14 @@ test('Data hands keyboard focus from a contact row to its loaded detail', async 
   const heading = page.locator(`[${DATA_CONTACT_DETAIL_HEADING}]`);
   await expect(heading).toHaveText('Mary Rivera');
   await expect(heading).toBeFocused();
+  await expect(page.locator('.memory-entity-detail-title')).toHaveJSProperty(
+    'tagName',
+    'H4',
+  );
+  const activitySectionHeadings = await page
+    .locator('.memory-entity-detail-section-title')
+    .evaluateAll((elements) => elements.map((element) => element.tagName));
+  expect(new Set(activitySectionHeadings)).toEqual(new Set(['H5']));
 });
 
 test('Data renders a prior in-page hash after opening contact detail', async ({ page }) => {
@@ -9635,6 +10496,114 @@ test('Data guards contact pagination and advances focus on the final page', asyn
   await expect(final).toBeVisible();
   await expect(page.locator(`[${DATA_CONTACT_LOAD_MORE}]`)).toHaveCount(0);
   await expect(final).toBeFocused();
+});
+
+test('Data keeps narrow Booking filters usable', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=work-entities-paged#data/booking`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const search = page.getByRole('searchbox', { name: 'Search bookings' });
+  const filter = page.getByRole('combobox', {
+    name: 'Filter bookings by status',
+  });
+  const geometry = await Promise.all([search, filter].map((control) =>
+    control.evaluate((node) => ({
+      left: node.getBoundingClientRect().left,
+      right: node.getBoundingClientRect().right,
+      top: node.getBoundingClientRect().top,
+      bottom: node.getBoundingClientRect().bottom,
+      width: node.getBoundingClientRect().width,
+    }))
+  ));
+  for (const bounds of geometry) {
+    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds.right).toBeLessThanOrEqual(280.5);
+    expect(bounds.width).toBeGreaterThanOrEqual(200);
+  }
+  expect(geometry[1]!.top).toBeGreaterThanOrEqual(geometry[0]!.bottom);
+});
+
+test('Data contains long work-entity text on a narrow phone', async ({ page }) => {
+  const longTitle = `WorkEntity${'Identity'.repeat(30)}`;
+  const longBody = `Details${'Provider'.repeat(30)}`;
+  const longSource = `Source${'Provider'.repeat(30)}`;
+  const longRelationship = `task-${'Related'.repeat(30)}`;
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=work-entities-paged&work_entity_text=long#data/task`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const row = page.locator(
+    '[data-action="open-edit-work-entity"][data-entity-id="task-0"]',
+  );
+  await expect(row.locator('.work-entity-list-row-primary'))
+    .toHaveText(longTitle);
+  await expect(row.locator('.work-entity-list-row-secondary'))
+    .toContainText(longBody.slice(0, 40));
+  await expect(row.locator('.work-entity-list-row-source'))
+    .toHaveText(longSource);
+  const listGeometry = await page.locator('.work-entity-page').evaluate(
+    (surface) => {
+      const route = surface.closest<HTMLElement>('[data-recued-data-route]');
+      const elements = [
+        surface,
+        surface.querySelector<HTMLElement>('.work-entity-page-source-row'),
+        surface.querySelector<HTMLElement>('.work-entity-source-dropdown'),
+        surface.querySelector<HTMLElement>(
+          '.work-entity-source-dropdown-select',
+        ),
+        surface.querySelector<HTMLElement>('.work-entity-list-row'),
+        surface.querySelector<HTMLElement>('.work-entity-list-row-button'),
+        surface.querySelector<HTMLElement>('.work-entity-list-row-primary'),
+        surface.querySelector<HTMLElement>('.work-entity-list-row-secondary'),
+        surface.querySelector<HTMLElement>('.work-entity-list-row-source'),
+      ].filter((element): element is HTMLElement => element !== null);
+      return {
+        routeScrollWidth: route?.scrollWidth ?? 0,
+        routeClientWidth: route?.clientWidth ?? 0,
+        elements: elements.map((element) => ({
+          left: element.getBoundingClientRect().left,
+          right: element.getBoundingClientRect().right,
+        })),
+      };
+    },
+  );
+  expect(listGeometry.routeScrollWidth)
+    .toBeLessThanOrEqual(listGeometry.routeClientWidth);
+  for (const bounds of listGeometry.elements) {
+    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds.right).toBeLessThanOrEqual(280.5);
+  }
+
+  await row.click();
+  const dialog = page.getByRole('dialog', { name: 'Edit Task' });
+  await expect(dialog.getByLabel('Title')).toHaveValue(longTitle);
+  await expect(dialog.getByLabel('Body')).toHaveValue(longBody);
+  await expect(dialog.locator('.work-entity-dialog-source-value'))
+    .toHaveText(longSource);
+  await expect(dialog.getByRole('textbox', { name: 'Blocks task 1' }))
+    .toHaveValue(longRelationship);
+  const dialogGeometry = await dialog.evaluate((surface) => {
+    const elements = [
+      surface,
+      surface.querySelector<HTMLElement>('.work-entity-dialog-form'),
+      surface.querySelector<HTMLElement>('.work-entity-dialog-source-static'),
+      surface.querySelector<HTMLElement>('.work-entity-dialog-source-value'),
+    ].filter((element): element is HTMLElement => element !== null);
+    return elements.map((element) => ({
+      left: element.getBoundingClientRect().left,
+      right: element.getBoundingClientRect().right,
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+    }));
+  });
+  for (const bounds of dialogGeometry) {
+    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds.right).toBeLessThanOrEqual(280.5);
+    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+  }
 });
 
 test('Data guards task pagination and advances focus on the final page', async ({ page }) => {
@@ -9761,6 +10730,10 @@ test('Data protects an unfinished task edit from dismissal', async ({ page }) =>
   await expect(guard).toHaveAttribute('role', 'alertdialog');
   await expect(guard).toBeFocused();
   await expect(guard).toContainText('Discard your task changes?');
+  const guardActionHeights = await guard.getByRole('button').evaluateAll(
+    (buttons) => buttons.map((button) => button.getBoundingClientRect().height),
+  );
+  expect(Math.min(...guardActionHeights)).toBeGreaterThanOrEqual(36);
 
   await page.keyboard.press('Escape');
   await expect(guard).toHaveCount(0);
@@ -9795,13 +10768,11 @@ test('Data focuses a newly added task relationship without losing the draft', as
   const dialog = page.getByRole('dialog', { name: 'Edit Task' });
   const title = dialog.getByLabel('Title');
   await title.fill('Draft survives repaint');
-  const add = dialog.locator('[data-form-array-add="blocks_task"]');
+  const add = dialog.getByRole('button', { name: 'Add Blocks task' });
   await add.focus();
   await page.keyboard.press('Enter');
 
-  const entry = dialog.locator(
-    '[data-form-array-item="blocks_task"][data-form-array-index="0"]',
-  );
+  const entry = dialog.getByRole('textbox', { name: 'Blocks task 1' });
   await expect(entry).toHaveCount(1);
   await expect(entry).toBeFocused();
   await expect(entry).toBeInViewport();
@@ -9820,32 +10791,26 @@ test('Data restores task relationship removal focus to a survivor or Add', async
   const dialog = page.getByRole('dialog', { name: 'Edit Task' });
   const title = dialog.getByLabel('Title');
   await title.fill('Removal draft survives');
-  const add = dialog.locator('[data-form-array-add="blocks_task"]');
+  const add = dialog.getByRole('button', { name: 'Add Blocks task' });
   await add.click();
-  await dialog.locator(
-    '[data-form-array-item="blocks_task"][data-form-array-index="0"]',
-  ).fill('task-a');
+  await dialog.getByRole('textbox', { name: 'Blocks task 1' }).fill('task-a');
   await add.click();
-  await dialog.locator(
-    '[data-form-array-item="blocks_task"][data-form-array-index="1"]',
-  ).fill('task-b');
+  await dialog.getByRole('textbox', { name: 'Blocks task 2' }).fill('task-b');
 
-  const firstRemove = dialog.locator(
-    '[data-form-array-remove="blocks_task"][data-form-array-index="0"]',
-  );
+  const firstRemove = dialog.getByRole('button', {
+    name: 'Remove Blocks task 1',
+  });
   await firstRemove.focus();
   await page.keyboard.press('Enter');
-  const survivor = dialog.locator(
-    '[data-form-array-item="blocks_task"][data-form-array-index="0"]',
-  );
+  const survivor = dialog.getByRole('textbox', { name: 'Blocks task 1' });
   await expect(survivor).toHaveValue('task-b');
   await expect(survivor).toBeFocused();
   await expect(survivor).toBeInViewport();
   await expect(title).toHaveValue('Removal draft survives');
 
-  const lastRemove = dialog.locator(
-    '[data-form-array-remove="blocks_task"][data-form-array-index="0"]',
-  );
+  const lastRemove = dialog.getByRole('button', {
+    name: 'Remove Blocks task 1',
+  });
   await lastRemove.focus();
   await page.keyboard.press('Enter');
   await expect(survivor).toHaveCount(0);
@@ -9934,6 +10899,85 @@ test('Data moves task validation ownership to the first invalid field', async ({
   await expect.poll(
     () => page.evaluate(() => window.__app.rpcCallCount('work_entity.upsert')),
   ).toBe(writesBefore);
+});
+
+test('Data contains long form-response text on a narrow phone', async ({ page }) => {
+  const longEmail = `${'visitor'.repeat(8)}@example.test`;
+  const longEndpoint = `Endpoint${'Identifier'.repeat(24)}`;
+  const longDefinition = `Form${'Definition'.repeat(24)}`;
+  const longSource = `Template${'Provider'.repeat(24)}`;
+  const longFieldLabel = `Question${'Identifier'.repeat(24)}`;
+  const longValue = `Answer${'Provider'.repeat(30)}`;
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=form-responses-paged&form_response_text=long`
+      + '#data/form_response',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const row = page.locator('[data-recued-data-form-response-row]').first();
+  await expect(row.locator('.data-row-title')).toHaveText(longEmail);
+  await expect(row.locator('.data-row-meta')).toHaveText(longSource);
+  expect(await page.locator('[data-recued-data-route]').evaluate((route) => (
+    route.scrollWidth <= route.clientWidth
+  ))).toBe(true);
+
+  await row.getByRole('button').click();
+  const detail = page.locator('[data-recued-data-form-response-detail]');
+  await expect(page.locator(`[${DATA_FORM_RESPONSE_DETAIL_HEADING}]`))
+    .toHaveText(longEmail);
+  await expect(detail.locator('.data-response-field dt'))
+    .toHaveText(longFieldLabel);
+  await expect(detail.locator('.data-response-field dd'))
+    .toHaveText(longValue);
+  await expect(detail.locator('.data-response-meta')).toContainText(
+    longDefinition,
+  );
+  await expect(detail.locator('.data-response-meta')).toContainText(
+    longEndpoint,
+  );
+  await expect(page.locator(`[${DATA_FORM_RESPONSE_EMAIL}]`))
+    .toHaveValue(longEmail);
+  await expect(page.locator(`[${DATA_FORM_RESPONSE_VALUES}]`))
+    .toContainText(longValue);
+
+  const detailGeometry = await detail.evaluate((surface) => {
+    const route = surface.closest<HTMLElement>('[data-recued-data-route]');
+    const elements = [
+      surface,
+      surface.querySelector<HTMLElement>(
+        '.data-form-response-detail-content',
+      ),
+      surface.querySelector<HTMLElement>('.data-response-header'),
+      surface.querySelector<HTMLElement>(
+        '[data-recued-data-form-response-detail-heading]',
+      ),
+      ...surface.querySelectorAll<HTMLElement>('.data-response-meta > div'),
+      ...surface.querySelectorAll<HTMLElement>('.data-response-meta dd'),
+      surface.querySelector<HTMLElement>('.data-response-fields'),
+      surface.querySelector<HTMLElement>('.data-response-field'),
+      surface.querySelector<HTMLElement>('.data-response-field dt'),
+      surface.querySelector<HTMLElement>('.data-response-field dd'),
+      surface.querySelector<HTMLElement>('.data-response-editor'),
+    ].filter((element): element is HTMLElement => element !== null);
+    return {
+      routeScrollWidth: route?.scrollWidth ?? 0,
+      routeClientWidth: route?.clientWidth ?? 0,
+      elements: elements.map((element) => ({
+        left: element.getBoundingClientRect().left,
+        right: element.getBoundingClientRect().right,
+        scrollWidth: element.scrollWidth,
+        clientWidth: element.clientWidth,
+      })),
+    };
+  });
+  expect(detailGeometry.routeScrollWidth)
+    .toBeLessThanOrEqual(detailGeometry.routeClientWidth);
+  for (const bounds of detailGeometry.elements) {
+    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds.right).toBeLessThanOrEqual(280.5);
+    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+  }
 });
 
 test('Data guards form-response pagination and advances focus on the final page', async ({ page }) => {
@@ -10178,6 +11222,79 @@ test('Data advances owned focus into form-response automation discovery', async 
   await expect(heading).toHaveText('Run this response now');
   await expect(heading).toBeFocused();
   await expect(heading).toBeInViewport();
+});
+
+test('Data distinguishes form-response run actions and retains modal ownership', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=form-responses-paged&recipe_execute_delay_ms=750`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/form_response'));
+  await page.locator(
+    '[data-recued-data-form-response-row="submission-0"] button',
+  ).click();
+  await page.locator(`[${DATA_FORM_RESPONSE_RUN}]`).click();
+
+  const exactForm = page.getByRole('button', {
+    name: 'Review and run Review project intake (project-intake-review)',
+    exact: true,
+  });
+  const allForms = page.getByRole('button', {
+    name: 'Review and run Review every intake (all-intakes-review)',
+    exact: true,
+  });
+  await expect(exactForm).toHaveCount(1);
+  await expect(allForms).toHaveCount(1);
+
+  await allForms.focus();
+  await page.keyboard.press('Enter');
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await expect(dialog).toBeFocused();
+  await expect(dialog).toContainText('Review every intake');
+  const context = dialog.locator('[data-recued-run-modal-context]');
+  await expect(context).toContainText('"submission_id": "submission-0"');
+  await expect(context).toContainText('"form_definition_id": "project-intake"');
+  await expect(context).not.toContainText('visitor-0@example.test');
+  await expect(context).not.toContainText('Project 0');
+
+  const runsBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('execute'),
+  );
+  const run = dialog.locator(
+    '[data-recued-run-modal-action="confirm-run"]',
+  );
+  await run.focus();
+  await page.keyboard.press('Enter');
+  await expect(run).toHaveAttribute('aria-disabled', 'true');
+  await expect(run).toHaveAttribute('aria-busy', 'true');
+  await expect(run).not.toHaveAttribute('disabled');
+  await expect(run).toBeFocused();
+  await run.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await dialog.getByRole('button', { name: 'Close' }).evaluate((button) => {
+    button.click();
+  });
+  await expect(dialog).toBeVisible();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('execute')),
+  ).toBe(runsBefore + 1);
+  await expect(run).not.toHaveAttribute('aria-busy');
+  await expect(run).toBeFocused();
+  await expect(dialog.getByRole('status')).toContainText('Run completed');
+
+  await dialog.getByRole('button', { name: 'Close' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(allForms).toBeFocused();
+
+  await exactForm.focus();
+  await page.keyboard.press('Enter');
+  await expect(dialog).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(exactForm).toBeFocused();
 });
 
 test('Data preserves form-response drafts and save ownership', async ({ page }) => {
@@ -10455,7 +11572,10 @@ test('Data owns Memory Delete and Forget from review through completion', async 
   const ownRow = page.locator('.memory-row').filter({
     hasText: 'Concise answers',
   });
-  const remove = ownRow.getByRole('button', { name: 'Delete', exact: true });
+  const remove = ownRow.getByRole('button', {
+    name: 'Delete memory Concise answers (memory-own-1)',
+    exact: true,
+  });
   await remove.focus();
   await page.keyboard.press('Enter');
   const confirm = ownRow.locator(
@@ -10496,7 +11616,10 @@ test('Data owns Memory Delete and Forget from review through completion', async 
 
   const systemRow = page.locator('.memory-row[data-origin="system"]');
   await expect(systemRow).toContainText('Recipe execution remembered');
-  const forget = systemRow.getByRole('button', { name: 'Forget', exact: true });
+  const forget = systemRow.getByRole('button', {
+    name: 'Forget memory Recipe execution remembered (memory-system-1)',
+    exact: true,
+  });
   await forget.focus();
   await page.keyboard.press('Enter');
   const forgetConfirm = systemRow.locator(
@@ -10522,7 +11645,10 @@ test('Data keeps a failed Memory Delete retryable and focused', async ({ page })
   await page.evaluate(() => window.__app.setHash('#data/memory'));
 
   const row = page.locator('.memory-row').filter({ hasText: 'Concise answers' });
-  await row.getByRole('button', { name: 'Delete', exact: true }).click();
+  await row.getByRole('button', {
+    name: 'Delete memory Concise answers (memory-own-1)',
+    exact: true,
+  }).click();
   const confirm = row.locator(
     'button[data-recued-data-action="memory-delete-confirm"]',
   );
@@ -10559,7 +11685,10 @@ test('Data owns Memory detail loading and returns Back to the exact row', async 
   await page.evaluate(() => window.__app.setHash('#data/memory'));
 
   const row = page.locator('.memory-row').filter({ hasText: 'Concise answers' });
-  const view = row.getByRole('button', { name: 'View', exact: true });
+  const view = row.getByRole('button', {
+    name: 'View memory Concise answers (memory-own-1)',
+    exact: true,
+  });
   await view.focus();
   await page.keyboard.press('Enter');
   const detail = page.getByRole('region', { name: 'Memory detail' });
@@ -10596,7 +11725,10 @@ test('Data keeps a failed Memory detail owned through a successful retry', async
   await page.evaluate(() => window.__app.setHash('#data/memory'));
 
   const row = page.locator('.memory-row').filter({ hasText: 'Concise answers' });
-  const view = row.getByRole('button', { name: 'View', exact: true });
+  const view = row.getByRole('button', {
+    name: 'View memory Concise answers (memory-own-1)',
+    exact: true,
+  });
   await view.click();
   const detail = page.getByRole('region', { name: 'Memory detail' });
   const heading = detail.locator(`[${DATA_MEMORY_DETAIL_HEADING}]`);
@@ -10693,6 +11825,231 @@ test('Data keeps a failed Memory Edit prefill local and retryable', async ({ pag
   ).toBe(2);
 });
 
+test('Data gives every visible Memory control full mobile targets', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=memory-rows#data/memory`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const memory = page.getByRole('region', { name: 'Memory', exact: true });
+  await expect(memory.getByRole('heading', {
+    name: 'Memory',
+    level: 2,
+  })).toBeVisible();
+
+  const controls = page.locator(
+    '.memory-filter-chip, .memory-row-foot button, .memory-row-foot a',
+  );
+  const heights = await controls.evaluateAll((elements) =>
+    elements.map((element) => element.getBoundingClientRect().height)
+  );
+  expect(heights.length).toBeGreaterThan(0);
+  expect(Math.min(...heights)).toBeGreaterThanOrEqual(36);
+
+  const lens = page.locator('[data-recued-memory-lens]');
+  expect(await lens.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+
+  await page.locator('[data-recued-data-action="memory-add"]').click();
+  const compose = page.getByRole('form', { name: 'New memory' });
+  await expect(compose).toBeVisible();
+  await expect(compose.getByRole('heading', {
+    name: 'New memory',
+    level: 3,
+  })).toBeVisible();
+  const composeHeights = await compose.locator(
+    'button, input, textarea',
+  ).evaluateAll((elements) =>
+    elements.map((element) => element.getBoundingClientRect().height)
+  );
+  expect(Math.min(...composeHeights)).toBeGreaterThanOrEqual(36);
+  await compose.getByRole('button', { name: 'Cancel', exact: true }).click();
+
+  await page.locator('[data-recued-data-action="memory-import"]').click();
+  const importForm = page.getByRole('form', { name: 'Import memory' });
+  await expect(importForm).toBeVisible();
+  await expect(importForm.getByRole('heading', {
+    name: 'Import memory',
+    level: 3,
+  })).toBeVisible();
+  const importHeights = await importForm.locator(
+    'button, textarea',
+  ).evaluateAll((elements) =>
+    elements.map((element) => element.getBoundingClientRect().height)
+  );
+  expect(Math.min(...importHeights)).toBeGreaterThanOrEqual(36);
+  await importForm.getByRole('button', { name: 'Close', exact: true }).click();
+
+  await page.locator(
+    '[data-recued-data-action="memory-open"][data-memory-id="memory-own-1"]',
+  ).click();
+  const detail = page.getByRole('region', { name: 'Memory detail' });
+  await expect(detail).toBeVisible();
+  await expect(detail.getByRole('heading', {
+    name: 'Memory detail',
+    level: 3,
+  })).toBeVisible();
+  const detailHeights = await detail.locator('button').evaluateAll((buttons) =>
+    buttons.map((button) => button.getBoundingClientRect().height)
+  );
+  expect(Math.min(...detailHeights)).toBeGreaterThanOrEqual(36);
+});
+
+test('Data contains long Memory content and controls on a narrow phone', async ({ page }) => {
+  const longOwnId = `memory-${'identifier'.repeat(30)}`;
+  const longOwnKind = `preference_${'kind'.repeat(24)}`;
+  const longOwnSummary = `summary-${'identity'.repeat(24)}`;
+  const longOwnPreview = `preview-${'provider'.repeat(28)}`;
+  const longOwnBody = `body-${'provider'.repeat(40)}`;
+  const longSystemKind = `run_${'kind'.repeat(24)}`;
+  const longSystemSummary = `remembered-${'execution'.repeat(26)}`;
+  const longGetError = `memory-${'unavailable'.repeat(28)}`;
+  const longDeleteError = `delete-${'unavailable'.repeat(28)}`;
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=memory-rows&memory_text=long`
+      + '&memory_get_response=fail-once-slow-retry'
+      + '&memory_delete_response=fail-once-slow-retry#data/memory',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const route = page.locator('[data-recued-data-route]');
+  const expectRouteContained = async (): Promise<void> => {
+    expect(await route.evaluate((node) => (
+      node.scrollWidth <= node.clientWidth
+    ))).toBe(true);
+  };
+  const expectViewportBounds = async (selector: string): Promise<void> => {
+    const bounds = await page.locator(selector).evaluateAll((elements) => (
+      elements.map((element) => ({
+        left: element.getBoundingClientRect().left,
+        right: element.getBoundingClientRect().right,
+      }))
+    ));
+    expect(bounds.length).toBeGreaterThan(0);
+    for (const bound of bounds) {
+      expect(bound.left).toBeGreaterThanOrEqual(-0.5);
+      expect(bound.right).toBeLessThanOrEqual(280.5);
+    }
+  };
+
+  const ownRow = page.locator('.memory-row[data-origin="user_self"]');
+  const systemRow = page.locator('.memory-row[data-origin="system"]');
+  await expect(ownRow.locator('.memory-row-kind')).toHaveText(longOwnKind);
+  await expect(ownRow.locator('.memory-row-title')).toHaveText(longOwnSummary);
+  await expect(ownRow.locator('.memory-row-preview'))
+    .toHaveText(longOwnPreview);
+  await expect(systemRow.locator('.memory-row-kind'))
+    .toHaveText(longSystemKind);
+  await expect(systemRow.locator('.memory-row-title'))
+    .toHaveText(longSystemSummary);
+  const controlsGeometry = await page.locator(
+    '.memory-filter-chips, .memory-lens-actions',
+  ).evaluateAll((elements) => elements.map((element) => ({
+    top: element.getBoundingClientRect().top,
+    bottom: element.getBoundingClientRect().bottom,
+  })));
+  expect(controlsGeometry).toHaveLength(2);
+  expect(controlsGeometry[1]!.top)
+    .toBeGreaterThanOrEqual(controlsGeometry[0]!.bottom);
+  await expectRouteContained();
+  await expectViewportBounds(
+    '.memory-lens-controls, .memory-filter-chips, .memory-lens-actions,'
+      + ' .memory-row, .memory-row-head, .memory-row-title,'
+      + ' .memory-row-preview',
+  );
+
+  const view = ownRow.locator('[data-recued-data-action="memory-open"]');
+  await expect(view).toHaveAttribute('data-memory-id', longOwnId);
+  await view.click();
+  let detail = page.getByRole('region', { name: 'Memory detail' });
+  await expect(detail.getByRole('alert')).toHaveText(longGetError);
+  await expectRouteContained();
+  await expectViewportBounds('.memory-detail, .memory-lens-error');
+
+  await detail.getByRole('button', { name: '← Back', exact: true }).click();
+  await view.click();
+  detail = page.getByRole('region', { name: 'Memory detail' });
+  await expect(detail.locator('.memory-row-kind')).toHaveText(longOwnKind);
+  await expect(detail.locator('.memory-detail-summary'))
+    .toHaveText(longOwnSummary);
+  await expect(detail.locator('.memory-detail-body')).toHaveText(longOwnBody);
+  await expectRouteContained();
+  await expectViewportBounds(
+    '.memory-detail, .memory-detail-head, .memory-row-kind,'
+      + ' .memory-detail-summary, .memory-detail-body,'
+      + ' .memory-detail-actions',
+  );
+  expect(await detail.locator('.memory-detail-body').evaluate((node) => (
+    node.scrollWidth <= node.clientWidth
+  ))).toBe(true);
+
+  await detail.getByRole('button', { name: '← Back', exact: true }).click();
+  await ownRow.locator('[data-recued-data-action="memory-delete"]').click();
+  const confirm = ownRow.locator(
+    '[data-recued-data-action="memory-delete-confirm"]',
+  );
+  await confirm.click();
+  await expect(ownRow.getByRole('alert')).toHaveText(longDeleteError);
+  await expectRouteContained();
+  await expectViewportBounds(
+    '.memory-row-confirm, .memory-row-delete-error,'
+      + ' [data-recued-data-action="memory-delete-confirm"],'
+      + ' [data-recued-data-action="memory-delete-cancel"]',
+  );
+  await ownRow.locator(
+    '[data-recued-data-action="memory-delete-cancel"]',
+  ).click();
+
+  await page.locator('[data-recued-data-action="memory-add"]').click();
+  const compose = page.getByRole('form', { name: 'New memory' });
+  await compose.getByLabel('Kind').fill(longOwnKind);
+  await compose.getByLabel('Summary').fill(longOwnSummary);
+  await compose.getByLabel('Body').fill(longOwnBody);
+  await expectRouteContained();
+  await expectViewportBounds(
+    '.memory-compose, .memory-compose-editor, .memory-field,'
+      + ' .memory-input, .memory-textarea, .memory-compose-actions',
+  );
+  await compose.getByRole('button', { name: 'Cancel', exact: true }).click();
+  const composeGuard = page.getByRole('alertdialog', {
+    name: 'Discard your memory changes?',
+  });
+  await expect(composeGuard).toBeVisible();
+  await expectRouteContained();
+  await expectViewportBounds(
+    '[data-recued-memory-compose-discard-guard],'
+      + ' .memory-compose-discard-actions',
+  );
+  await composeGuard.getByRole('button', {
+    name: 'Discard changes',
+    exact: true,
+  }).click();
+
+  await page.locator('[data-recued-data-action="memory-import"]').click();
+  const importForm = page.getByRole('form', { name: 'Import memory' });
+  await importForm.getByLabel('JSON').fill(JSON.stringify([{
+    kind: longOwnKind,
+    summary: longOwnSummary,
+    body: longOwnBody,
+  }]));
+  await expectRouteContained();
+  await expectViewportBounds(
+    '.memory-import-editor, .memory-field-hint, .memory-textarea,'
+      + ' .memory-compose-actions',
+  );
+  await importForm.getByRole('button', { name: 'Close', exact: true }).click();
+  const importGuard = page.getByRole('alertdialog', {
+    name: 'Discard this import draft?',
+  });
+  await expect(importGuard).toBeVisible();
+  await expectRouteContained();
+  await expectViewportBounds(
+    '[data-recued-memory-import-discard-guard],'
+      + ' .memory-import-discard-actions',
+  );
+});
+
 test('Data keeps Memory Export visible, focused, and single-flight', async ({ page }) => {
   await page.goto(
     `${HARNESS_URL}?data=memory-rows&memory_get_response=slow`,
@@ -10713,7 +12070,10 @@ test('Data keeps Memory Export visible, focused, and single-flight', async ({ pa
   const memoryLens = page.getByRole('button', { name: 'Memory', exact: true });
   const allFilter = page.getByRole('button', { name: 'All', exact: true });
   const youFilter = page.getByRole('button', { name: 'You', exact: true });
-  const openRun = page.getByRole('link', { name: 'Open run', exact: true });
+  const openRun = page.getByRole('link', {
+    name: 'Open run for memory Recipe execution remembered (memory-system-1)',
+    exact: true,
+  });
   const download = page.waitForEvent('download');
 
   await exportButton.focus();
@@ -10894,6 +12254,155 @@ test('Data retries the selected Memory origin after a failed refresh', async ({ 
   await expect.poll(
     () => page.evaluate(() => window.__app.rpcCallCount('memory.list')),
   ).toBe(3);
+});
+
+test('Data gives every visible Records control a mobile-sized target', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=records`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/records'));
+  await expect(page.getByRole('button', {
+    name: 'Open record job-1',
+    exact: true,
+  })).toBeVisible();
+  await expect(page.getByRole('region', {
+    name: 'Record contents',
+  })).toBeVisible();
+  await expect(page.locator(
+    '[data-recued-webclient-content] main',
+  )).toHaveCount(0);
+
+  const controls = page.locator(
+    '.records-explorer button:visible, .records-explorer summary:visible, .records-explorer input:visible',
+  );
+  const targets = await controls.evaluateAll((elements) => elements.map((element) => ({
+    name: element.getAttribute('aria-label') ?? element.textContent?.trim() ?? '',
+    height: element.getBoundingClientRect().height,
+  })));
+  expect(targets.length).toBeGreaterThan(0);
+  expect(targets.filter((target) => target.height < 36)).toEqual([]);
+
+  const records = page.locator('.records-explorer');
+  expect(await records.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+});
+
+test('Data contains long Records identities and diagnostics on a narrow phone', async ({ page }) => {
+  const longPublisher = `publisher-${'identity'.repeat(10)}`;
+  const longPack = `pack-${'identifier'.repeat(10)}`;
+  const longKind = `entity_${'kind'.repeat(18)}`;
+  const longField = `field_${'identifier'.repeat(18)}`;
+  const longRecordId = `record-${'identifier'.repeat(30)}`;
+  const longSourceId = `source-${'identifier'.repeat(30)}`;
+  const longTitle = `title-${'value'.repeat(40)}`;
+  const longRelationshipField = `relationship_${'field'.repeat(28)}`;
+  const longEventType = `record.${'delivery'.repeat(24)}`;
+  const longDeliveryRecipe = `recipe-${'identifier'.repeat(28)}`;
+  const longDeliveryError = `delivery-${'failure'.repeat(32)}`;
+  const longPackRef = `${longPublisher}/${longPack}`;
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=records&records_text=long#data/records`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const route = page.locator('[data-recued-data-route]');
+  const expectRouteContained = async (): Promise<void> => {
+    expect(await route.evaluate((node) => (
+      node.scrollWidth <= node.clientWidth
+    ))).toBe(true);
+  };
+  const expectViewportBounds = async (selector: string): Promise<void> => {
+    const bounds = await page.locator(selector).evaluateAll((elements) => (
+      elements.map((element) => ({
+        left: element.getBoundingClientRect().left,
+        right: element.getBoundingClientRect().right,
+      }))
+    ));
+    for (const bound of bounds) {
+      expect(bound.left).toBeGreaterThanOrEqual(-0.5);
+      expect(bound.right).toBeLessThanOrEqual(280.5);
+    }
+  };
+
+  const namespace = page.locator('.records-namespace');
+  await expect(namespace.locator('strong')).toHaveText(longPack);
+  await expect(namespace.locator('span')).toHaveText(longPublisher);
+  await expect(page.locator('.records-pack-summary h3')).toHaveText(longPack);
+  await expect(page.locator('[data-action="records-select-kind"]'))
+    .toContainText(longKind);
+  await expect(page.locator(`td[data-field="${longField}"]`))
+    .toHaveText(longTitle);
+  await expect(page.locator('td[data-field="id"]')).toHaveText(longRecordId);
+  await expectRouteContained();
+  await expectViewportBounds(
+    '.records-explorer, .records-namespace, .records-pack-summary,'
+      + ' .records-kind-nav button, .records-table-scroll',
+  );
+  const tableScroll = page.locator('.records-table-scroll');
+  expect(await tableScroll.evaluate((node) => (
+    node.scrollWidth > node.clientWidth
+  ))).toBe(true);
+
+  await page.locator('.records-outbox > summary').click();
+  const event = page.locator('.records-outbox-events > li');
+  await expect(event.locator('strong')).toHaveText(longEventType);
+  await expect(event.getByRole('alert')).toHaveText(longDeliveryError);
+  await event.locator('details > summary').click();
+  await expect(event.locator('code')).toHaveText(longDeliveryRecipe);
+  await expect(event).toContainText(longDeliveryError);
+  await expectRouteContained();
+  await expectViewportBounds(
+    '.records-outbox, .records-outbox > summary, .records-outbox-events > li,'
+      + ' .records-outbox-events strong, .records-outbox-events .records-ref-link,'
+      + ' .records-outbox-events details, .records-outbox-events code',
+  );
+
+  await page.locator('.records-row-open').click();
+  const detail = page.locator('.records-detail');
+  await expect(page.locator('#records-detail-title')).toHaveText(longRecordId);
+  await expect(detail.locator('header small')).toContainText(longPackRef);
+  await expect(detail.locator('dt').filter({ hasText: longField }))
+    .toHaveText(longField);
+  await expect(detail.locator('dd').filter({ hasText: longTitle }))
+    .toHaveText(longTitle);
+  await expect(detail.locator('.records-relationship-impact .records-ref-link'))
+    .toContainText(longSourceId);
+  await expect(detail.locator('.records-relationship-impact code'))
+    .toHaveText(longRelationshipField);
+  await detail.locator(':scope > details > summary').click();
+  const diagnostics = detail.locator(':scope > details > pre');
+  await expect(diagnostics).toContainText(longRecordId);
+  await detail.getByRole('button', { name: 'Delete record…' }).click();
+  await expect(detail.locator('.records-delete-confirm')).toBeVisible();
+  await expectRouteContained();
+  await expectViewportBounds(
+    '.records-detail, .records-detail header, #records-detail-title,'
+      + ' .records-detail dl, .records-detail dl > div,'
+      + ' .records-relationship-impact, .records-detail > details,'
+      + ' .records-detail > details > pre, .records-delete-confirm',
+  );
+  expect(await diagnostics.evaluate((node) => (
+    node.scrollWidth > node.clientWidth
+  ))).toBe(true);
+
+  await page.goto(
+    `${HARNESS_URL}?data=records-orphaned&records_text=long#data/records`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator('[data-action="records-purge"]').click();
+  const purge = page.locator('.records-purge-confirm');
+  await expect(purge.locator('strong')).toHaveText(longPackRef);
+  await expect(purge.locator('input')).toHaveAttribute(
+    'placeholder',
+    longPackRef,
+  );
+  await expectRouteContained();
+  await expectViewportBounds(
+    '.records-purge-confirm, .records-purge-confirm label,'
+      + ' .records-purge-confirm input',
+  );
 });
 
 test('Data opens Records with the keyboard and returns focus to the exact row', async ({ page }) => {
@@ -11363,14 +12872,33 @@ test('Data keeps Records namespace and kind switching focused and single-flight'
   const jobKind = page.locator(
     '[data-action="records-select-kind"][data-records-kind="job"]',
   );
+  const kindPanel = page.locator('[data-records-kind-panel]');
+  await expect(page.getByRole('tablist', { name: 'Record kinds' })).toBeVisible();
+  await expect(page.locator(
+    '[data-action="records-select-kind"][tabindex="0"]',
+  )).toHaveCount(1);
+  await expect(invoiceKind).toHaveAttribute('aria-selected', 'true');
+  await expect(invoiceKind).toHaveAttribute('tabindex', '0');
+  await expect(invoiceKind).toHaveAttribute(
+    'aria-controls',
+    'recued-records-kind-panel',
+  );
+  await expect(jobKind).toHaveAttribute('tabindex', '-1');
+  await expect(kindPanel).toHaveAttribute(
+    'aria-labelledby',
+    'recued-records-kind-tab-invoice',
+  );
   const searches = await page.evaluate(
     () => window.__app.rpcCallCount('records.search'),
   );
-  await jobKind.focus();
-  await page.keyboard.press('Enter');
+  await invoiceKind.focus();
+  await page.keyboard.press('ArrowRight');
   await expect(jobKind).toHaveAttribute('aria-disabled', 'true');
   await expect(jobKind).toHaveAttribute('aria-busy', 'true');
   await expect(jobKind).not.toHaveAttribute('disabled');
+  await expect(jobKind).toHaveAttribute('aria-selected', 'true');
+  await expect(jobKind).toHaveAttribute('tabindex', '0');
+  await expect(invoiceKind).toHaveAttribute('tabindex', '-1');
   await expect(jobKind).toBeFocused();
   await expect(invoiceKind).toHaveAttribute('aria-disabled', 'true');
   await expect(invoiceKind).not.toHaveAttribute('aria-busy');
@@ -11388,6 +12916,13 @@ test('Data keeps Records namespace and kind switching focused and single-flight'
   await expect(jobKind).not.toHaveAttribute('aria-disabled');
   await expect(jobKind).not.toHaveAttribute('aria-busy');
   await expect(jobKind).toBeFocused();
+  await expect(kindPanel).toHaveAttribute(
+    'aria-labelledby',
+    'recued-records-kind-tab-job',
+  );
+  await expect(page.locator(
+    '[data-action="records-select-kind"][tabindex="0"]',
+  )).toHaveCount(1);
 
   const settledSearches = await page.evaluate(
     () => window.__app.rpcCallCount('records.search'),
@@ -11459,7 +12994,10 @@ test('Data keeps file download visible, focused, and single-flight', async ({ pa
   );
   await record.focus();
   await page.keyboard.press('Enter');
+  const detail = page.getByRole('region', { name: 'Record detail' });
   await expect(page.locator(`[${DATA_DETAIL_HEADING}]`)).toBeFocused();
+  await expect(detail.locator('dt').filter({ hasText: /^Size$/ }))
+    .toHaveCount(1);
 
   const download = page.locator(`[${DATA_DOWNLOAD_FILE}]`);
   const before = await page.evaluate(
@@ -11534,6 +13072,97 @@ test('Data preserves calendar reschedule ownership', async ({ page }) => {
   await cancel.focus();
   await page.keyboard.press('Enter');
   await expect(open).toBeFocused();
+});
+
+test('Data contains long collection records on a narrow phone', async ({ page }) => {
+  const longMethod = `POST${'Method'.repeat(30)}`;
+  const longRemoteIp = `Remote${'Address'.repeat(30)}`;
+  const longRecordId = `Webhook${'Identifier'.repeat(24)}`;
+  const longSourceId = `Source${'Identifier'.repeat(24)}`;
+  const longBody = `Payload${'Value'.repeat(40)}`;
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(`${HARNESS_URL}?collection_text=long#data/webhook`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const route = page.locator('[data-recued-data-route]');
+  const instances = page.locator(`[${DATA_COLLECTION_SLUG}]`);
+  await expect(instances).toHaveCount(2);
+  const instanceGeometry = await instances.evaluateAll((controls) =>
+    controls.map((control) => ({
+      left: control.getBoundingClientRect().left,
+      right: control.getBoundingClientRect().right,
+      scrollWidth: control.scrollWidth,
+      clientWidth: control.clientWidth,
+      borderRadius: getComputedStyle(control).borderRadius,
+    })),
+  );
+  expect(await route.evaluate((node) => node.scrollWidth <= node.clientWidth))
+    .toBe(true);
+  for (const bounds of instanceGeometry) {
+    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds.right).toBeLessThanOrEqual(280.5);
+    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+    expect(bounds.borderRadius).toBe('8px');
+  }
+
+  await instances.first().click();
+  const row = page.locator(`[${DATA_COLLECTION_RECORD}="${longRecordId}"]`);
+  await expect(row.locator('.col-explorer-row-title')).toHaveText(longMethod);
+  await expect(row.locator('.col-explorer-row-summary'))
+    .toContainText(longRemoteIp);
+  const rowGeometry = await row.evaluate((control) => {
+    const elements = [
+      control,
+      control.querySelector<HTMLElement>('.col-explorer-row-summary'),
+      ...control.querySelectorAll<HTMLElement>('.col-explorer-field'),
+    ].filter((element): element is HTMLElement => element !== null);
+    return elements.map((element) => ({
+      left: element.getBoundingClientRect().left,
+      right: element.getBoundingClientRect().right,
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+    }));
+  });
+  expect(await route.evaluate((node) => node.scrollWidth <= node.clientWidth))
+    .toBe(true);
+  for (const bounds of rowGeometry) {
+    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds.right).toBeLessThanOrEqual(280.5);
+    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+  }
+
+  await row.click();
+  const detail = page.getByRole('region', { name: 'Record detail' });
+  await expect(page.locator(`[${DATA_DETAIL_HEADING}]`)).toHaveText(longMethod);
+  await expect(detail.getByText(longRemoteIp, { exact: true })).toBeVisible();
+  await expect(detail.getByText(longSourceId, { exact: true })).toBeVisible();
+  await expect(detail.getByText(longRecordId, { exact: true })).toBeVisible();
+  await expect(detail.locator('.col-explorer-detail-body')).toHaveText(longBody);
+  await detail.locator('.col-explorer-detail-raw summary').click();
+  const detailGeometry = await detail.evaluate((surface) => {
+    const elements = [
+      surface,
+      surface.querySelector<HTMLElement>('.col-explorer-detail-head'),
+      surface.querySelector<HTMLElement>('.col-explorer-detail-title'),
+      surface.querySelector<HTMLElement>('.col-explorer-detail-fields'),
+      ...surface.querySelectorAll<HTMLElement>('.col-explorer-detail-field dd'),
+      surface.querySelector<HTMLElement>('.col-explorer-detail-body'),
+      surface.querySelector<HTMLElement>('.col-explorer-detail-raw pre'),
+    ].filter((element): element is HTMLElement => element !== null);
+    return elements.map((element) => ({
+      left: element.getBoundingClientRect().left,
+      right: element.getBoundingClientRect().right,
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+    }));
+  });
+  expect(await route.evaluate((node) => node.scrollWidth <= node.clientWidth))
+    .toBe(true);
+  for (const bounds of detailGeometry) {
+    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds.right).toBeLessThanOrEqual(280.5);
+    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+  }
 });
 
 test('Data keeps keyboard focus on a collection source through record loading', async ({ page }) => {
@@ -11697,6 +13326,8 @@ test('Data hands keyboard focus from a record row to its loaded detail', async (
   const heading = page.locator(`[${DATA_DETAIL_HEADING}]`);
   await expect(heading).toHaveText('Quarterly planning');
   await expect(heading).toBeFocused();
+  await expect(page.getByRole('region', { name: 'Record detail' })
+    .locator('dt').filter({ hasText: /^Received$/ })).toHaveCount(1);
 });
 
 test('Data returns keyboard focus from record detail to its exact row', async ({ page }) => {
@@ -11733,6 +13364,232 @@ test('Automation keeps keyboard focus on a section tab through its repaint', asy
   await expect(page).toHaveURL(/#automation\/triggers$/);
   await expect(triggers).toHaveAttribute('aria-selected', 'true');
   await expect(triggers).toBeFocused();
+});
+
+test('Automation contains narrow section navigation and long rule text', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?automation=rules&automation_text=long#automation/dishes`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const route = page.locator('[data-recued-automation-route]');
+  const subnav = route.locator('.automation-subnav');
+  const dishes = page.locator(`[${AUTOMATION_SUBNAV}="dishes"]`);
+  await expect(dishes).toHaveAttribute('aria-selected', 'true');
+  expect(await subnav.evaluate(
+    (element) => element.scrollWidth > element.clientWidth,
+  )).toBe(true);
+  expect(await subnav.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+  expect(await dishes.evaluate((element) => {
+    const nav = element.parentElement;
+    if (nav === null) return false;
+    const navBox = nav.getBoundingClientRect();
+    const tabBox = element.getBoundingClientRect();
+    return tabBox.left >= navBox.left - 1 && tabBox.right <= navBox.right + 1;
+  })).toBe(true);
+  expect(await route.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+
+  await page.evaluate(() => window.__app.setHash('#automation/triggers'));
+  const row = route.locator(
+    '[data-recued-automation-row^="event_trigger:"]',
+  );
+  await expect(row).toBeVisible();
+  expect(await row.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+  const textOwners = row.locator(
+    '.automation-row-title a, .automation-row-detail > *, .automation-row-meta > *',
+  );
+  expect(await textOwners.evaluateAll((elements) => elements.every(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  ))).toBe(true);
+  expect(await route.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+});
+
+test('Automation contains long rule facts in narrow detail views', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?automation=rules&automation_text=long#automation/triggers`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const route = page.locator('[data-recued-automation-route]');
+  const row = route.locator(
+    '[data-recued-automation-row^="event_trigger:"]',
+  );
+  await row.getByRole('button', { name: /^Details / }).click();
+
+  const detail = route.locator('[data-recued-automation-detail]');
+  await expect(detail).toBeVisible();
+  const textOwners = detail.locator(
+    '[data-recued-automation-detail-heading] a, .automation-detail-facts, '
+    + '.automation-detail-facts dd',
+  );
+  expect(await textOwners.evaluateAll((elements) => elements.every(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  ))).toBe(true);
+  expect(await detail.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+  expect(await route.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+});
+
+test('Automation contains its narrow authoring picker and modal header', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?automation=rules&automation_text=long#automation/schedules`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  await page.getByRole('button', { name: 'Add schedule' }).click();
+  const actions = page.locator('.automation-section-actions');
+  const picker = actions.locator('.automation-add-picker');
+  const option = picker.locator('.ref-picker-option').first();
+  await expect(option).toBeVisible();
+  expect(await actions.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+  expect(await picker.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+
+  await option.click();
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await expect(dialog).toBeVisible();
+  const headerOwners = dialog.locator(
+    '.run-modal-header, .run-modal-title, .run-modal-recipe-id, '
+    + '.run-modal-close',
+  );
+  expect(await headerOwners.evaluateAll((elements) => elements.every(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  ))).toBe(true);
+  const closeTarget = await dialog.getByRole('button', { name: 'Close' })
+    .boundingBox();
+  expect(closeTarget?.width).toBeGreaterThanOrEqual(36);
+  expect(closeTarget?.height).toBeGreaterThanOrEqual(36);
+  const dialogGeometry = await dialog.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return { left: box.left, right: box.right };
+  });
+  expect(dialogGeometry.left).toBeGreaterThanOrEqual(15.5);
+  expect(dialogGeometry.right).toBeLessThanOrEqual(264.5);
+});
+
+test('Automation contains long recovery messages with a usable retry', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?automation=rules&automation_text=long`
+    + '&automation_list_response=fail-twice-slow-retry#automation/schedules',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const route = page.locator('[data-recued-automation-route]');
+  const error = route.locator('[data-recued-automation-error="schedule"]');
+  await expect(error).toHaveAttribute('role', 'alert');
+  expect(await error.evaluate((element) => {
+    const message = element.querySelector('span');
+    return element.scrollWidth <= element.clientWidth + 1
+      && message !== null
+      && message.scrollWidth <= message.clientWidth + 1;
+  })).toBe(true);
+  const retryTarget = await error.getByRole('button', { name: 'Retry' })
+    .boundingBox();
+  expect(retryTarget?.width).toBeGreaterThanOrEqual(36);
+  expect(retryTarget?.height).toBeGreaterThanOrEqual(36);
+  expect(await route.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+});
+
+test('Automation contains long inline poll status and controls', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?automation=rules&automation_text=long`
+    + '&automation_watch_response=slow#automation/triggers',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const route = page.locator('[data-recued-automation-route]');
+  const poll = route.locator('.automation-poll');
+  await expect(poll).toBeVisible();
+  expect(await poll.evaluate((element) => [
+    element,
+    ...element.querySelectorAll('span'),
+  ].every((owner) => owner.scrollWidth <= owner.clientWidth + 1))).toBe(true);
+  const targets = await poll.getByRole('button').evaluateAll(
+    (buttons) => buttons.map((button) => {
+      const box = button.getBoundingClientRect();
+      return {
+        width: box.width,
+        height: box.height,
+        clientWidth: button.clientWidth,
+        scrollWidth: button.scrollWidth,
+      };
+    }),
+  );
+  for (const target of targets) {
+    expect(target.width).toBeGreaterThanOrEqual(36);
+    expect(target.height).toBeGreaterThanOrEqual(36);
+    expect(target.scrollWidth).toBeLessThanOrEqual(target.clientWidth + 1);
+  }
+  expect(await route.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+});
+
+test('Automation section tabs form one arrow-key keyboard stop', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.setHash('#automation'));
+
+  const tabs = page.locator(`[${AUTOMATION_SUBNAV}]`);
+  const autoRun = page.locator(`[${AUTOMATION_SUBNAV}="auto-run"]`);
+  const triggers = page.locator(`[${AUTOMATION_SUBNAV}="triggers"]`);
+  const dishes = page.locator(`[${AUTOMATION_SUBNAV}="dishes"]`);
+  const panel = page.locator(`[${AUTOMATION_SECTION_PANEL}]`);
+  const tabHeights = await tabs.evaluateAll((nodes) => nodes.map(
+    (node) => node.getBoundingClientRect().height,
+  ));
+  expect(Math.min(...tabHeights)).toBeGreaterThanOrEqual(36);
+  await expect(panel).toHaveAttribute(
+    'aria-labelledby',
+    'recued-automation-section-tab-auto-run',
+  );
+  await expect(page.getByRole('tabpanel', { name: /Auto-run/ })).toBeVisible();
+  await expect(autoRun).toHaveAttribute('aria-selected', 'true');
+  await expect(autoRun).toHaveAttribute('tabindex', '0');
+  expect(await tabs.evaluateAll((nodes) => nodes.filter(
+    (node) => node.getAttribute('tabindex') === '0',
+  ).length)).toBe(1);
+
+  await autoRun.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(triggers).toHaveAttribute('aria-selected', 'true');
+  await expect(triggers).toHaveAttribute('tabindex', '0');
+  await expect(triggers).toBeFocused();
+  await expect(panel).toHaveAttribute(
+    'aria-labelledby',
+    'recued-automation-section-tab-triggers',
+  );
+  await expect(page).toHaveURL(/#automation\/triggers$/);
+
+  await page.keyboard.press('End');
+  await expect(dishes).toHaveAttribute('aria-selected', 'true');
+  await expect(dishes).toBeFocused();
+  await expect(page).toHaveURL(/#automation\/dishes$/);
+
+  await page.keyboard.press('Home');
+  await expect(autoRun).toHaveAttribute('aria-selected', 'true');
+  await expect(autoRun).toBeFocused();
+  await page.keyboard.press('ArrowLeft');
+  await expect(dishes).toHaveAttribute('aria-selected', 'true');
+  await expect(dishes).toBeFocused();
 });
 
 test('Automation keeps keyboard focus on its status filter through repaint', async ({ page }) => {
@@ -11796,8 +13653,10 @@ test('Automation keeps a failed Schedules Retry focused and single-flight', asyn
   ).toBe(before + 1);
 
   await expect(error).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Details', exact: true }))
-    .toBeVisible();
+  await expect(page.locator(
+    '[data-recued-automation-action="detail:schedule"]'
+    + '[data-rule-id="schedule-e2e-1"]',
+  )).toBeVisible();
   await expect(page.locator(`[${AUTOMATION_SUBNAV}="schedules"]`))
     .toBeFocused();
 });
@@ -11823,6 +13682,55 @@ test('Automation returns a failed Schedules Retry to its alert action', async ({
     .toHaveAttribute('role', 'alert');
 });
 
+test('Automation gives standalone row navigation a full mobile target', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?automation=dishes`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#automation/dishes'));
+
+  const recipe = page.locator('.automation-row-title a', {
+    hasText: 'Morning digest',
+  });
+  await expect(recipe).toBeVisible();
+  expect((await recipe.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+
+  const route = page.locator('[data-recued-automation-route]');
+  expect(await route.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+});
+
+test('Automation gives list and detail handoffs full mobile targets', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?automation=rules`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#automation/schedules'));
+
+  const route = page.locator('[data-recued-automation-route]');
+  const listHandoffs = route.locator('a:visible');
+  await expect(listHandoffs).toHaveCount(2);
+  for (const link of await listHandoffs.all()) {
+    const target = await link.boundingBox();
+    expect(target?.width).toBeGreaterThanOrEqual(36);
+    expect(target?.height).toBeGreaterThanOrEqual(36);
+  }
+
+  await page.locator(
+    '[data-recued-automation-action="detail:schedule"]'
+    + '[data-rule-id="schedule-e2e-1"]',
+  ).click();
+  const detailHandoffs = route.locator('a:visible');
+  await expect(detailHandoffs).toHaveCount(3);
+  for (const link of await detailHandoffs.all()) {
+    const target = await link.boundingBox();
+    expect(target?.width).toBeGreaterThanOrEqual(36);
+    expect(target?.height).toBeGreaterThanOrEqual(36);
+  }
+  expect(await route.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+});
+
 test('Automation recovers a failed dish history read without losing focus', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(
@@ -11832,7 +13740,9 @@ test('Automation recovers a failed dish history read without losing focus', asyn
   await page.evaluate(() => window.__app.setHash('#automation/dishes'));
 
   const dish = page.locator(`[${AUTOMATION_ROW}="dish:dish-e2e-1"]`);
-  const details = dish.getByRole('button', { name: 'Details', exact: true });
+  const details = dish.locator(
+    '[data-recued-automation-action="detail:dish"]',
+  );
   await details.focus();
   await page.keyboard.press('Enter');
 
@@ -11874,12 +13784,81 @@ test('Automation recovers a failed dish history read without losing focus', asyn
   await expect(heading).toBeFocused();
 });
 
-test('Automation keeps focus on its recipe filter after keyboard selection', async ({ page }) => {
+test('Automation keeps dish rename focus through cancel and save reconciliation', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?automation=dishes&automation_dish_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#automation/dishes'));
+
+  const rename = page.getByRole('button', {
+    name: 'Rename Morning digest (dish-e2e-1)',
+    exact: true,
+  });
+  await rename.focus();
+  await page.keyboard.press('Enter');
+
+  const input = page.getByRole('textbox', {
+    name: 'Rename Morning digest (dish-e2e-1)',
+    exact: true,
+  });
+  await expect(input).toHaveValue('Morning digest');
+  await expect(input).toBeFocused();
+  const cancel = page.getByRole('button', {
+    name: 'Cancel renaming Morning digest (dish-e2e-1)',
+    exact: true,
+  });
+  await cancel.focus();
+  await page.keyboard.press('Enter');
+  await expect(input).toHaveCount(0);
+  await expect(rename).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(input).toBeFocused();
+  await input.fill('Evening digest');
+  const save = page.getByRole('button', {
+    name: 'Save name for Morning digest (dish-e2e-1)',
+    exact: true,
+  });
+  const updatesBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('dishes.update'),
+  );
+  await save.focus();
+  await page.keyboard.press('Enter');
+
+  const renaming = page.getByRole('button', {
+    name: 'Renaming… Morning digest (dish-e2e-1)',
+    exact: true,
+  });
+  await expect(renaming).toHaveText('Renaming…');
+  await expect(renaming).toHaveAttribute('aria-disabled', 'true');
+  await expect(renaming).toHaveAttribute('aria-busy', 'true');
+  await expect(renaming).not.toHaveAttribute('disabled');
+  await expect(renaming).toBeFocused();
+  await renaming.dispatchEvent('click');
+  await renaming.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('dishes.update')),
+  ).toBe(updatesBefore + 1);
+
+  const renamed = page.getByRole('button', {
+    name: 'Rename Evening digest (dish-e2e-1)',
+    exact: true,
+  });
+  await expect(renamed).toBeVisible();
+  await expect(renamed).toBeFocused();
+});
+
+test('Automation keeps focus on its recipe filter after keyboard selection', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
   await page.goto(`${HARNESS_URL}?automation=rules`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#automation/schedules'));
-  await expect(page.getByRole('button', { name: 'Details', exact: true })).toBeVisible();
+  await expect(page.locator(
+    '[data-recued-automation-action="detail:schedule"]'
+    + '[data-rule-id="schedule-e2e-1"]',
+  )).toBeVisible();
 
   const picker = page.getByRole('combobox', {
     name: 'Filter automation by recipe',
@@ -11905,14 +13884,27 @@ test('Automation keeps focus on its recipe filter after keyboard selection', asy
   await expect(picker).toHaveValue('');
   await expect(page.getByRole('option', { name: 'daily-brief', exact: true }))
     .toBeVisible();
+  expect((await page.getByRole('option', {
+    name: 'daily-brief',
+    exact: true,
+  }).boundingBox())?.height).toBeGreaterThanOrEqual(36);
   await page.keyboard.press('Enter');
 
   await expect(picker).toHaveValue('daily-brief');
   await expect(picker).toBeFocused();
+  await expect(picker).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.getByRole('option', {
+    name: 'daily-brief',
+    exact: true,
+  })).toHaveCount(0);
+  expect((await picker.boundingBox())?.height).toBeGreaterThanOrEqual(36);
 
   await page.keyboard.press('Tab');
   const clear = page.getByRole('button', { name: 'Clear selection' });
   await expect(clear).toBeFocused();
+  const clearTarget = await clear.boundingBox();
+  expect(clearTarget?.width).toBeGreaterThanOrEqual(36);
+  expect(clearTarget?.height).toBeGreaterThanOrEqual(36);
   await page.keyboard.press('Enter');
   await expect(picker).toHaveValue('');
   await expect(picker).toBeFocused();
@@ -11923,7 +13915,10 @@ test('Automation preserves a recipe query and caret through live refresh', async
   await page.goto(`${HARNESS_URL}?automation=rules`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#automation/schedules'));
-  await expect(page.getByRole('button', { name: 'Details', exact: true })).toBeVisible();
+  await expect(page.locator(
+    '[data-recued-automation-action="detail:schedule"]'
+    + '[data-rule-id="schedule-e2e-1"]',
+  )).toBeVisible();
 
   const picker = page.getByRole('combobox', {
     name: 'Filter automation by recipe',
@@ -12148,7 +14143,10 @@ test('Automation restores the exact schedule toggle after mutation re-list', asy
     () => page.evaluate(() => window.__app.rpcCallCount('schedules.update')),
   ).toBe(before + 1);
 
-  const resume = page.getByRole('button', { name: 'Resume', exact: true });
+  const resume = page.locator(
+    '[data-recued-automation-action="toggle:schedule:on"]'
+    + '[data-rule-id="schedule-e2e-1"]',
+  );
   await expect(resume).toBeVisible();
   await expect(resume).toBeFocused();
   await expect(page.locator('[data-recued-automation-state]')).toHaveText('Paused');
@@ -12305,13 +14303,75 @@ test('Automation restores failed manual watch runs for retry', async ({ page }) 
   ).toBe(2);
 });
 
+test('Automation gives repeated schedule actions exact accessible owners', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 700 });
+  await page.goto(`${HARNESS_URL}?automation=delete`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#automation/schedules'));
+
+  const actionNames = [
+    'Pause daily-brief (schedule-e2e-1)',
+    'Pause weekly-report (schedule-e2e-2)',
+    'Remove daily-brief (schedule-e2e-1)',
+    'Remove weekly-report (schedule-e2e-2)',
+    'Details daily-brief (schedule-e2e-1)',
+    'Details weekly-report (schedule-e2e-2)',
+  ];
+  for (const name of actionNames) {
+    await expect(page.getByRole('button', { name, exact: true })).toHaveCount(1);
+  }
+
+  const rowLayout = await page.locator(
+    `[${AUTOMATION_ROW}="schedule:schedule-e2e-1"]`,
+  ).evaluate((row) => {
+    const content = row.firstElementChild?.getBoundingClientRect();
+    const actions = row.querySelector('.automation-row-actions')
+      ?.getBoundingClientRect();
+    const bounds = row.getBoundingClientRect();
+    return {
+      rowWidth: bounds.width,
+      contentWidth: content?.width ?? 0,
+      contentBottom: content?.bottom ?? Number.POSITIVE_INFINITY,
+      actionsTop: actions?.top ?? Number.NEGATIVE_INFINITY,
+    };
+  });
+  expect(rowLayout.contentWidth).toBeGreaterThanOrEqual(
+    rowLayout.rowWidth - 25,
+  );
+  expect(rowLayout.actionsTop).toBeGreaterThanOrEqual(
+    rowLayout.contentBottom,
+  );
+
+  const weeklyDetails = page.getByRole('button', {
+    name: 'Details weekly-report (schedule-e2e-2)',
+    exact: true,
+  });
+  await weeklyDetails.focus();
+  await page.keyboard.press('Enter');
+
+  const heading = page.getByRole('heading', {
+    name: 'weekly-report',
+    exact: true,
+  });
+  await expect(heading).toBeFocused();
+  const back = page.getByRole('button', { name: 'Back to Schedules' });
+  await back.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(weeklyDetails).toBeVisible();
+  await expect(weeklyDetails).toBeFocused();
+});
+
 test('Automation focuses schedule details and restores the exact row', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?automation=rules`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#automation/schedules'));
 
-  const details = page.getByRole('button', { name: 'Details', exact: true });
+  const details = page.locator(
+    '[data-recued-automation-action="detail:schedule"]'
+    + '[data-rule-id="schedule-e2e-1"]',
+  );
   await expect(details).toBeVisible();
   await details.focus();
   await page.keyboard.press('Enter');
@@ -12364,7 +14424,9 @@ test('Automation advances focus after removing a schedule', async ({ page }) => 
     `[${AUTOMATION_ROW}="schedule:schedule-e2e-2"]`,
   );
   await expect(removed).toBeVisible();
-  const remove = removed.getByRole('button', { name: 'Remove', exact: true });
+  const remove = removed.locator(
+    '[data-recued-automation-action="delete:schedule"]',
+  );
   const before = await page.evaluate(
     () => window.__app.rpcCallCount('schedules.delete'),
   );
@@ -12379,7 +14441,9 @@ test('Automation advances focus after removing a schedule', async ({ page }) => 
   await expect.poll(
     () => page.evaluate(() => window.__app.rpcCallCount('schedules.delete')),
   ).toBe(before);
-  const cancel = removed.getByRole('button', { name: 'Cancel', exact: true });
+  const cancel = removed.locator(
+    '[data-recued-automation-action="delete-cancel:schedule"]',
+  );
   await cancel.focus();
   await page.keyboard.press('Enter');
   await expect(remove).toBeFocused();
@@ -12403,9 +14467,9 @@ test('Automation advances focus after removing a schedule', async ({ page }) => 
 
   await expect(removed).toHaveCount(0);
   await expect(successor).toBeVisible();
-  await expect(
-    successor.getByRole('button', { name: 'Details', exact: true }),
-  ).toBeFocused();
+  await expect(successor.locator(
+    '[data-recued-automation-action="detail:schedule"]',
+  )).toBeFocused();
 });
 
 test('Automation keeps failed schedule removal confirmed and focused', async ({ page }) => {
@@ -12419,7 +14483,9 @@ test('Automation keeps failed schedule removal confirmed and focused', async ({ 
   const removed = page.locator(
     `[${AUTOMATION_ROW}="schedule:schedule-e2e-1"]`,
   );
-  const remove = removed.getByRole('button', { name: 'Remove', exact: true });
+  const remove = removed.locator(
+    '[data-recued-automation-action="delete:schedule"]',
+  );
   await remove.focus();
   await page.keyboard.press('Enter');
   const confirm = removed.locator(
@@ -12437,13 +14503,46 @@ test('Automation keeps failed schedule removal confirmed and focused', async ({ 
   await expect(confirm).toHaveText('Confirm remove');
   await expect(confirm).toBeFocused();
   await expect(removed).toBeVisible();
-  const cancel = removed.getByRole('button', { name: 'Cancel', exact: true });
+  const cancel = removed.locator(
+    '[data-recued-automation-action="delete-cancel:schedule"]',
+  );
   await cancel.focus();
   await page.keyboard.press('Enter');
   await expect(remove).toBeFocused();
   await expect.poll(
     () => page.evaluate(() => window.__app.rpcCallCount('schedules.delete')),
   ).toBe(1);
+});
+
+test('Packs Add preserves a slug while its IME composition is active', async ({ page }) => {
+  await page.evaluate(() => window.__app.setHash('#packs'));
+
+  const input = page.locator(`[${PACKS_ADD_INPUT}]`);
+  await input.fill('日本語パック');
+  await input.focus();
+  const composingEnter = await input.evaluate((field) => {
+    const event = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      code: 'Enter',
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    const dispatched = field.dispatchEvent(event);
+    return { dispatched, defaultPrevented: event.defaultPrevented };
+  });
+  expect(composingEnter).toEqual({
+    dispatched: true,
+    defaultPrevented: false,
+  });
+  await expect(page).toHaveURL(/#packs$/);
+  await expect(input).toHaveValue('日本語パック');
+
+  await page.keyboard.press('Enter');
+  await expect.poll(
+    () => page.evaluate(() => location.hash),
+  ).toBe(`#packs/${encodeURIComponent('日本語パック')}`);
+  await expect(input).toHaveValue('');
 });
 
 test('Packs keeps the Installed only source toggle keyboard-owned', async ({ page }) => {
@@ -12616,6 +14715,872 @@ test('Packs recovers its Use roster without retrying or losing focus on its own'
   await expect(
     page.locator('[data-recued-packs-detail-tab-panel="use"]'),
   ).toBeVisible();
+});
+
+test('Packs detail tabs name, own, and expose full mobile targets', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?packs=installed#packs/installed-mail`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const use = page.locator(
+    '[data-recued-packs-detail-tab-group="primary"]'
+      + '[data-recued-packs-detail-tab="use"]',
+  );
+  const manage = page.locator(
+    '[data-recued-packs-detail-tab-group="primary"]'
+      + '[data-recued-packs-detail-tab="detail"]',
+  );
+  const panel = page.locator('[data-recued-packs-detail-tab-panel]');
+  await expect(use).toHaveAttribute(
+    'aria-controls',
+    'recued-packs-detail-tab-panel',
+  );
+  await expect(panel).toHaveAttribute(
+    'aria-labelledby',
+    'recued-packs-detail-primary-use-tab',
+  );
+  await expect(page.getByRole('tabpanel', { name: 'Use' })).toBeVisible();
+
+  await use.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(manage).toHaveAttribute('aria-selected', 'true');
+  await expect(manage).toBeFocused();
+  const detail = page.locator(
+    '[data-recued-packs-detail-tab-group="manage"]'
+      + '[data-recued-packs-detail-tab="detail"]',
+  );
+  const permissions = page.locator(
+    '[data-recued-packs-detail-tab-group="manage"]'
+      + '[data-recued-packs-detail-tab="permissions"]',
+  );
+  await expect(detail).toHaveAttribute('aria-selected', 'true');
+  await expect(panel).toHaveAttribute(
+    'aria-labelledby',
+    'recued-packs-detail-primary-detail-tab '
+      + 'recued-packs-detail-manage-detail-tab',
+  );
+  await expect(page.getByRole('tabpanel', { name: 'Manage Detail' })).toBeVisible();
+
+  await detail.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(permissions).toHaveAttribute('aria-selected', 'true');
+  await expect(permissions).toBeFocused();
+  await expect(panel).toHaveAttribute(
+    'aria-labelledby',
+    'recued-packs-detail-primary-detail-tab '
+      + 'recued-packs-detail-manage-permissions-tab',
+  );
+  await expect(page.getByRole('tabpanel', {
+    name: 'Manage Permissions',
+  })).toBeVisible();
+
+  const visibleTabs = page.locator('[data-recued-packs-detail-tab]:visible');
+  await expect(visibleTabs).toHaveCount(5);
+  const tabHeights = await visibleTabs.evaluateAll((tabs) =>
+    tabs.map((tab) => tab.getBoundingClientRect().height)
+  );
+  expect(Math.min(...tabHeights)).toBeGreaterThanOrEqual(44);
+
+  await page.keyboard.press('ArrowRight');
+  const contractsHandoff = page.getByRole('link', { name: 'Open Contracts →' });
+  await expect(contractsHandoff).toHaveAttribute('href', '#contracts');
+  expect((await contractsHandoff.boundingBox())?.height)
+    .toBeGreaterThanOrEqual(44);
+  await contractsHandoff.focus();
+  await expect(contractsHandoff).toBeFocused();
+});
+
+test('Packs contains long installed identity throughout its narrow detail', async ({ page }) => {
+  const slug = `pack-${'identity'.repeat(7)}`;
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&connection_text=long#packs/${slug}`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const route = page.locator('[data-recued-packs-route]');
+  const surface = route.locator('[data-recued-packs-surface]');
+  const panel = surface.locator('[data-recued-packs-panel]');
+  const facts = panel.locator('.packs-detail-facts');
+  await expect(facts).toContainText(slug);
+  const owners = panel.locator(
+    ':scope, [data-recued-packs-detail-section="identity"], '
+    + '.packs-detail-header, .packs-detail-name, .packs-detail-facts, '
+    + '[data-recued-packs-detail-tab-panel], .packs-detail-section',
+  );
+  expect(await owners.evaluateAll((elements) => elements.every(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  ))).toBe(true);
+  expect(await surface.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  )).toBe(true);
+  expect(await route.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  )).toBe(true);
+  expect(await page.evaluate(
+    () => document.documentElement.scrollWidth <= window.innerWidth,
+  )).toBe(true);
+  const tabs = panel.locator('[data-recued-packs-detail-tabs]').first();
+  const tabBounds = await tabs.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const owner = element.closest('[data-recued-packs-panel]')
+      ?.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      ownerLeft: owner?.left ?? Number.NEGATIVE_INFINITY,
+      ownerRight: owner?.right ?? Number.POSITIVE_INFINITY,
+    };
+  });
+  expect(tabBounds.left).toBeGreaterThanOrEqual(tabBounds.ownerLeft - 1);
+  expect(tabBounds.right).toBeLessThanOrEqual(tabBounds.ownerRight + 1);
+  expect((await panel.locator('[data-recued-packs-detail-back]').boundingBox())?.height)
+    .toBeGreaterThanOrEqual(36);
+});
+
+test('Packs contains long Manage readiness throughout its narrow detail', async ({ page }) => {
+  const slug = `pack-${'identity'.repeat(7)}`;
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&connection_text=long#packs/${slug}`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const route = page.locator('[data-recued-packs-route]');
+  const surface = route.locator('[data-recued-packs-surface]');
+  const panel = surface.locator('[data-recued-packs-panel]');
+  await panel.locator(
+    '[data-recued-packs-detail-tab-group="primary"]'
+    + '[data-recued-packs-detail-tab="detail"]',
+  ).click();
+  const readiness = panel.locator('[data-recued-connections-readiness]');
+  await expect(readiness).toContainText('crm.objects.deals.write');
+  const owners = panel.locator(
+    ':scope, [data-recued-packs-detail-tab-panel], .packs-detail-section, '
+    + '[data-recued-connections-readiness], .packs-connection-row, '
+    + '.packs-connection-status',
+  );
+  expect(await owners.evaluateAll((elements) => elements.every(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  ))).toBe(true);
+  for (const owner of [surface, route]) {
+    expect(await owner.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth + 1,
+    )).toBe(true);
+  }
+  expect(await page.evaluate(
+    () => document.documentElement.scrollWidth <= window.innerWidth,
+  )).toBe(true);
+  const recovery = readiness.getByRole('link', { name: 'Re-authorize →' });
+  expect((await recovery.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+  const recoveryBounds = await recovery.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const owner = element.closest('[data-recued-packs-panel]')
+      ?.getBoundingClientRect();
+    return { right: rect.right, ownerRight: owner?.right ?? 0 };
+  });
+  expect(recoveryBounds.right).toBeLessThanOrEqual(recoveryBounds.ownerRight + 1);
+});
+
+test('Pack app views form one keyboard stop and retain focus through load', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&recipe_result=paged-filter`
+      + '&packs_app_views=multi#packs/installed-mail',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const app = page.locator('[data-recued-pack-app="installed-mail"]');
+  const tabs = app.locator('[data-recued-pack-app-view]');
+  const digest = app.locator(
+    '[data-recued-pack-app-view="installed-mail-digest"]',
+  );
+  const archive = app.locator(
+    '[data-recued-pack-app-view="installed-mail-archive"]',
+  );
+  const panel = app.locator('[data-recued-pack-app-view-panel]');
+  const busy = app.locator('[data-recued-pack-app-status="busy"]');
+
+  await expect(tabs).toHaveCount(2);
+  await expect(app.getByRole('tablist', {
+    name: 'Installed Mail views',
+  })).toBeVisible();
+  await expect(busy).toHaveCount(0);
+  await expect(app.getByText('page-one-row', { exact: true })).toBeVisible();
+  await expect(app.locator(
+    '[data-recued-pack-app-view][tabindex="0"]',
+  )).toHaveCount(1);
+  await expect(digest).toHaveAttribute('aria-selected', 'true');
+  await expect(digest).toHaveAttribute('tabindex', '0');
+  await expect(archive).toHaveAttribute('tabindex', '-1');
+  await expect(panel).toHaveAttribute(
+    'aria-labelledby',
+    'recued-pack-app-view-tab-installed-mail-digest',
+  );
+  await expect(page.getByRole('tabpanel', { name: 'Mail digest' })).toBeVisible();
+
+  const desktopTabHeights = await tabs.evaluateAll((items) =>
+    items.map((tab) => tab.getBoundingClientRect().height)
+  );
+  expect(Math.min(...desktopTabHeights)).toBeGreaterThanOrEqual(36);
+  await page.setViewportSize({ width: 390, height: 844 });
+  const phoneTabHeights = await tabs.evaluateAll((items) =>
+    items.map((tab) => tab.getBoundingClientRect().height)
+  );
+  expect(Math.min(...phoneTabHeights)).toBeGreaterThanOrEqual(44);
+
+  await digest.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(archive).toHaveAttribute('aria-selected', 'true');
+  await expect(archive).toHaveAttribute('tabindex', '0');
+  await expect(digest).toHaveAttribute('tabindex', '-1');
+  await expect(archive).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('execute')),
+  ).toBe(2);
+  await expect(busy).toHaveCount(0);
+  await expect(archive).toBeFocused();
+  await expect(panel).toHaveAttribute(
+    'aria-labelledby',
+    'recued-pack-app-view-tab-installed-mail-archive',
+  );
+  await expect(page.getByRole('tabpanel', { name: 'Mail archive' })).toBeVisible();
+
+  await page.keyboard.press('Home');
+  await expect(digest).toHaveAttribute('aria-selected', 'true');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('execute')),
+  ).toBe(3);
+  await expect(busy).toHaveCount(0);
+  await expect(digest).toBeFocused();
+  await expect(app.locator(
+    '[data-recued-pack-app-view][tabindex="0"]',
+  )).toHaveCount(1);
+
+  await page.setViewportSize({ width: 280, height: 720 });
+  const narrowTabs = await app.getByRole('tablist', {
+    name: 'Installed Mail views',
+  }).evaluate((tablist) => ({
+    contained: tablist.scrollWidth <= tablist.clientWidth,
+    documentWidth: document.documentElement.scrollWidth,
+    viewportWidth: window.innerWidth,
+  }));
+  expect(narrowTabs.contained).toBe(true);
+  expect(narrowTabs.documentWidth).toBeLessThanOrEqual(narrowTabs.viewportWidth);
+});
+
+test('copyable run results stay usable across Packs and Recipes', async ({ page }) => {
+  await page.context().grantPermissions(
+    ['clipboard-read', 'clipboard-write'],
+    { origin: new URL(HARNESS_URL).origin },
+  );
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&recipe_result=copyable`
+      + '#packs/installed-mail',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const packApp = page.locator('[data-recued-pack-app="installed-mail"]');
+  await packApp.locator(
+    '[data-recued-pack-app-operation="installed-mail-digest"]',
+  ).click();
+  const runDialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await runDialog.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect(runDialog.getByRole('status')).toContainText('Run completed');
+  await runDialog.getByRole('button', { name: 'Close' }).click();
+  await expect(runDialog).toHaveCount(0);
+  const packCopy = packApp.locator('.copy-btn');
+  await expect(packCopy).toBeVisible();
+  await expect(packCopy).toHaveAccessibleName('Copy');
+  expect((await packCopy.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const packGeometry = await packApp.evaluate((surface) => {
+    const button = surface.querySelector<HTMLButtonElement>('.copy-btn');
+    const buttonRect = button?.getBoundingClientRect();
+    return {
+      contained: surface.scrollWidth <= surface.clientWidth,
+      buttonHeight: buttonRect?.height ?? 0,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(packGeometry.contained).toBe(true);
+  expect(packGeometry.buttonHeight).toBeGreaterThanOrEqual(44);
+  expect(packGeometry.documentWidth).toBeLessThanOrEqual(
+    packGeometry.viewportWidth,
+  );
+  await packCopy.focus();
+  await page.keyboard.press('Enter');
+  await expect(packCopy).toHaveText('Copied');
+  await expect(packCopy).toBeFocused();
+
+  await page.goto(
+    `${HARNESS_URL}?recipes=installed&recipe_default_run=1`
+      + '&recipe_result=copyable#recipes',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
+    .getByRole('button', { name: /Open .+ details/ })
+    .click();
+  const detail = page.locator(
+    '[data-recued-recipes-detail="autorun-live-1"]',
+  );
+  await detail.locator('[data-recued-recipes-action="run-defaults"]')
+    .click();
+
+  const recipeCopy = detail.locator('.copy-btn');
+  await expect(recipeCopy).toBeVisible();
+  await expect(recipeCopy).toHaveAccessibleName('Copy');
+  expect((await recipeCopy.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+  expect(await detail.evaluate((surface) => (
+    surface.scrollWidth <= surface.clientWidth
+  ))).toBe(true);
+  await recipeCopy.focus();
+  await page.keyboard.press('Enter');
+  await expect(recipeCopy).toHaveText('Copied');
+  await expect(recipeCopy).toBeFocused();
+});
+
+test('JSON run results stay operable and contained across Packs and Recipes', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&recipe_result=json`
+      + '#packs/installed-mail',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const packApp = page.locator('[data-recued-pack-app="installed-mail"]');
+  await packApp.locator(
+    '[data-recued-pack-app-operation="installed-mail-digest"]',
+  ).click();
+  const runDialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await runDialog.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect(runDialog.getByRole('status')).toContainText('Run completed');
+  await runDialog.getByRole('button', { name: 'Close' }).click();
+  await expect(runDialog).toHaveCount(0);
+
+  const packDetails = packApp.locator('.json-details');
+  const packSummary = packDetails.locator('.json-summary');
+  await expect(packApp.locator('.recipes-result-card h3'))
+    .toHaveText('Provider payload');
+  await expect(packSummary).toHaveText('Data');
+  expect((await packSummary.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect((await packSummary.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+  await packSummary.focus();
+  await page.keyboard.press('Enter');
+  await expect(packDetails).toHaveAttribute('open', '');
+  await expect(packSummary).toBeFocused();
+  const packGeometry = await packApp.evaluate((surface) => {
+    const surfaceRect = surface.getBoundingClientRect();
+    const payload = surface.querySelector<HTMLElement>('.json-content');
+    return {
+      surfaceRight: surfaceRect.right,
+      payloadContained: payload !== null
+        && payload.scrollWidth <= payload.clientWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(packGeometry.surfaceRight).toBeLessThanOrEqual(
+    packGeometry.viewportWidth,
+  );
+  expect(packGeometry.payloadContained).toBe(true);
+  expect(packGeometry.documentWidth).toBeLessThanOrEqual(
+    packGeometry.viewportWidth,
+  );
+
+  await page.goto(
+    `${HARNESS_URL}?recipes=installed&recipe_default_run=1`
+      + '&recipe_result=json#recipes',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
+    .getByRole('button', { name: /Open .+ details/ })
+    .click();
+  const detail = page.locator(
+    '[data-recued-recipes-detail="autorun-live-1"]',
+  );
+  await detail.locator('[data-recued-recipes-action="run-defaults"]')
+    .click();
+
+  const recipeDetails = detail.locator('.json-details');
+  const recipeSummary = recipeDetails.locator('.json-summary');
+  await expect(detail.locator('.recipes-result-card h3'))
+    .toHaveText('Provider payload');
+  await expect(recipeSummary).toHaveText('Data');
+  expect((await recipeSummary.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+  await recipeSummary.focus();
+  await page.keyboard.press('Enter');
+  await expect(recipeDetails).toHaveAttribute('open', '');
+  await expect(recipeSummary).toBeFocused();
+  const recipeGeometry = await detail.evaluate((surface) => {
+    const surfaceRect = surface.getBoundingClientRect();
+    const payload = surface.querySelector<HTMLElement>('.json-content');
+    return {
+      surfaceRight: surfaceRect.right,
+      payloadContained: payload !== null
+        && payload.scrollWidth <= payload.clientWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(recipeGeometry.surfaceRight).toBeLessThanOrEqual(
+    recipeGeometry.viewportWidth,
+  );
+  expect(recipeGeometry.payloadContained).toBe(true);
+  expect(recipeGeometry.documentWidth).toBeLessThanOrEqual(
+    recipeGeometry.viewportWidth,
+  );
+});
+
+test('record-field run results stay readable and contained across Packs and Recipes', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&recipe_result=record-fields`
+      + '#packs/installed-mail',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const packApp = page.locator('[data-recued-pack-app="installed-mail"]');
+  const packFields = packApp.locator('.record-fields-block');
+  await expect(packFields).toBeVisible();
+  await expect(packApp.locator('.recipes-result-card h3'))
+    .toHaveText('Work order');
+  const packTitleRow = packFields.locator(
+    '[data-recued-output-record-field="title"]',
+  );
+  const packDesktopLayout = await packTitleRow.evaluate((row) => {
+    const label = row.querySelector('dt')?.getBoundingClientRect();
+    const value = row.querySelector('dd')?.getBoundingClientRect();
+    return {
+      display: getComputedStyle(row).display,
+      aligned: label !== undefined && value !== undefined
+        && Math.abs(label.top - value.top) < 1,
+    };
+  });
+  expect(packDesktopLayout).toEqual({ display: 'grid', aligned: true });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const packGeometry = await packFields.evaluate((block) => {
+    const host = block.closest<HTMLElement>('[data-recued-result-host]');
+    const hostRect = host?.getBoundingClientRect();
+    const row = block.querySelector<HTMLElement>(
+      '[data-recued-output-record-field="external_reference"]',
+    );
+    const label = row?.querySelector('dt')?.getBoundingClientRect();
+    const value = row?.querySelector<HTMLElement>('dd');
+    const valueRect = value?.getBoundingClientRect();
+    return {
+      hostRight: hostRect?.right ?? Number.POSITIVE_INFINITY,
+      stacked: label !== undefined && valueRect !== undefined
+        && valueRect.top >= label.bottom,
+      valueContained: value !== null && value !== undefined
+        && value.scrollWidth <= value.clientWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(packGeometry.hostRight).toBeLessThanOrEqual(packGeometry.viewportWidth);
+  expect(packGeometry.stacked).toBe(true);
+  expect(packGeometry.valueContained).toBe(true);
+  expect(packGeometry.documentWidth).toBeLessThanOrEqual(
+    packGeometry.viewportWidth,
+  );
+  await expect(packFields.locator('.record-field-unset'))
+    .toHaveCSS('font-style', 'italic');
+
+  await page.goto(
+    `${HARNESS_URL}?recipes=installed&recipe_default_run=1`
+      + '&recipe_result=record-fields#recipes',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
+    .getByRole('button', { name: /Open .+ details/ })
+    .click();
+  const detail = page.locator(
+    '[data-recued-recipes-detail="autorun-live-1"]',
+  );
+  await detail.locator('[data-recued-recipes-action="run-defaults"]')
+    .click();
+
+  const recipeFields = detail.locator('.record-fields-block');
+  await expect(recipeFields).toBeVisible();
+  await expect(detail.locator('.recipes-result-card h3'))
+    .toHaveText('Work order');
+  const recipeGeometry = await recipeFields.evaluate((block) => {
+    const host = block.closest<HTMLElement>('[data-recued-result-host]');
+    const hostRect = host?.getBoundingClientRect();
+    const row = block.querySelector<HTMLElement>(
+      '[data-recued-output-record-field="external_reference"]',
+    );
+    const label = row?.querySelector('dt')?.getBoundingClientRect();
+    const value = row?.querySelector<HTMLElement>('dd');
+    const valueRect = value?.getBoundingClientRect();
+    return {
+      display: row === null ? '' : getComputedStyle(row).display,
+      hostRight: hostRect?.right ?? Number.POSITIVE_INFINITY,
+      stacked: label !== undefined && valueRect !== undefined
+        && valueRect.top >= label.bottom,
+      valueContained: value !== null && value !== undefined
+        && value.scrollWidth <= value.clientWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(recipeGeometry.display).toBe('grid');
+  expect(recipeGeometry.hostRight).toBeLessThanOrEqual(
+    recipeGeometry.viewportWidth,
+  );
+  expect(recipeGeometry.stacked).toBe(true);
+  expect(recipeGeometry.valueContained).toBe(true);
+  expect(recipeGeometry.documentWidth).toBeLessThanOrEqual(
+    recipeGeometry.viewportWidth,
+  );
+});
+
+test('AI-analysis run results stay structured and contained across Packs and Recipes', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&recipe_result=ai-analysis`
+      + '#packs/installed-mail',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const packApp = page.locator('[data-recued-pack-app="installed-mail"]');
+  await packApp.locator(
+    '[data-recued-pack-app-operation="installed-mail-digest"]',
+  ).click();
+  const runDialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await runDialog.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect(runDialog.getByRole('status')).toContainText('Run completed');
+  await runDialog.getByRole('button', { name: 'Close' }).click();
+  await expect(runDialog).toHaveCount(0);
+
+  const packAnalysis = packApp.locator('.ai-block');
+  await expect(packAnalysis).toHaveCount(2);
+  await expect(packAnalysis.first().locator('.ai-points li')).toHaveCount(2);
+  const packDesktopRow = await packAnalysis.first().locator('.ai-row').first()
+    .evaluate((row) => {
+      const label = row.querySelector('.ai-label')?.getBoundingClientRect();
+      const value = row.querySelector('.ai-label + span')?.getBoundingClientRect();
+      return {
+        display: getComputedStyle(row).display,
+        aligned: label !== undefined && value !== undefined
+          && Math.abs(label.top - value.top) < 1,
+      };
+    });
+  expect(packDesktopRow).toEqual({ display: 'grid', aligned: true });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const packGeometry = await packAnalysis.first().evaluate((analysis) => {
+    const host = analysis.closest<HTMLElement>('[data-recued-result-host]');
+    const hostRect = host?.getBoundingClientRect();
+    const row = analysis.querySelector<HTMLElement>('.ai-row');
+    const label = row?.querySelector('.ai-label')?.getBoundingClientRect();
+    const value = row?.querySelector<HTMLElement>('.ai-label + span');
+    const valueRect = value?.getBoundingClientRect();
+    const reasoning = analysis.querySelector<HTMLElement>('.ai-reasoning');
+    const raw = host?.querySelector<HTMLElement>('.ai-json');
+    return {
+      hostRight: hostRect?.right ?? Number.POSITIVE_INFINITY,
+      rowStacked: label !== undefined && valueRect !== undefined
+        && valueRect.top >= label.bottom,
+      reasoningContained: reasoning !== null
+        && reasoning.scrollWidth <= reasoning.clientWidth,
+      rawContained: raw !== null && raw.scrollWidth <= raw.clientWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(packGeometry.hostRight).toBeLessThanOrEqual(packGeometry.viewportWidth);
+  expect(packGeometry.rowStacked).toBe(true);
+  expect(packGeometry.reasoningContained).toBe(true);
+  expect(packGeometry.rawContained).toBe(true);
+  expect(packGeometry.documentWidth).toBeLessThanOrEqual(
+    packGeometry.viewportWidth,
+  );
+
+  await page.goto(
+    `${HARNESS_URL}?recipes=installed&recipe_default_run=1`
+      + '&recipe_result=ai-analysis#recipes',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
+    .getByRole('button', { name: /Open .+ details/ })
+    .click();
+  const detail = page.locator(
+    '[data-recued-recipes-detail="autorun-live-1"]',
+  );
+  await detail.locator('[data-recued-recipes-action="run-defaults"]')
+    .click();
+
+  const recipeAnalysis = detail.locator('.ai-block');
+  await expect(recipeAnalysis).toHaveCount(2);
+  await expect(recipeAnalysis.first().locator('.ai-points li')).toHaveCount(2);
+  const recipeGeometry = await recipeAnalysis.first().evaluate((analysis) => {
+    const host = analysis.closest<HTMLElement>('[data-recued-result-host]');
+    const hostRect = host?.getBoundingClientRect();
+    const row = analysis.querySelector<HTMLElement>('.ai-row');
+    const label = row?.querySelector('.ai-label')?.getBoundingClientRect();
+    const value = row?.querySelector<HTMLElement>('.ai-label + span');
+    const valueRect = value?.getBoundingClientRect();
+    const reasoning = analysis.querySelector<HTMLElement>('.ai-reasoning');
+    const raw = host?.querySelector<HTMLElement>('.ai-json');
+    return {
+      display: getComputedStyle(analysis).display,
+      hostRight: hostRect?.right ?? Number.POSITIVE_INFINITY,
+      rowStacked: label !== undefined && valueRect !== undefined
+        && valueRect.top >= label.bottom,
+      reasoningContained: reasoning !== null
+        && reasoning.scrollWidth <= reasoning.clientWidth,
+      rawContained: raw !== null && raw.scrollWidth <= raw.clientWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(recipeGeometry.display).toBe('grid');
+  expect(recipeGeometry.hostRight).toBeLessThanOrEqual(
+    recipeGeometry.viewportWidth,
+  );
+  expect(recipeGeometry.rowStacked).toBe(true);
+  expect(recipeGeometry.reasoningContained).toBe(true);
+  expect(recipeGeometry.rawContained).toBe(true);
+  expect(recipeGeometry.documentWidth).toBeLessThanOrEqual(
+    recipeGeometry.viewportWidth,
+  );
+});
+
+test('link-button run results stay safe and usable across Packs and Recipes', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&recipe_result=link-buttons`
+      + '#packs/installed-mail',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const packApp = page.locator('[data-recued-pack-app="installed-mail"]');
+  await packApp.locator(
+    '[data-recued-pack-app-operation="installed-mail-digest"]',
+  ).click();
+  const runDialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await runDialog.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect(runDialog.getByRole('status')).toContainText('Run completed');
+  await runDialog.getByRole('button', { name: 'Close' }).click();
+  await expect(runDialog).toHaveCount(0);
+
+  const packLinks = packApp.locator('.link-button-link');
+  await expect(packLinks).toHaveCount(2);
+  const packPrimaryLink = packLinks.first();
+  await expect(packPrimaryLink).toHaveAttribute(
+    'href',
+    'https://example.com/work/job_1',
+  );
+  await expect(packPrimaryLink).toHaveAttribute('rel', 'noopener noreferrer');
+  expect((await packPrimaryLink.boundingBox())?.height)
+    .toBeGreaterThanOrEqual(36);
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect((await packPrimaryLink.boundingBox())?.height)
+    .toBeGreaterThanOrEqual(44);
+  const packGeometry = await packApp.locator('.link-button-block')
+    .evaluate((block) => {
+      const host = block.closest<HTMLElement>('[data-recued-result-host]');
+      const hostRect = host?.getBoundingClientRect();
+      const links = [...block.querySelectorAll<HTMLElement>('.link-button-link')];
+      const descriptions = [
+        ...block.querySelectorAll<HTMLElement>('.link-button-description'),
+      ];
+      return {
+        hostRight: hostRect?.right ?? Number.POSITIVE_INFINITY,
+        linksContained: links.every((link) => (
+          link.scrollWidth <= link.clientWidth
+        )),
+        descriptionsContained: descriptions.every((description) => (
+          description.scrollWidth <= description.clientWidth
+        )),
+        documentWidth: document.documentElement.scrollWidth,
+        viewportWidth: window.innerWidth,
+      };
+    });
+  expect(packGeometry.hostRight).toBeLessThanOrEqual(packGeometry.viewportWidth);
+  expect(packGeometry.linksContained).toBe(true);
+  expect(packGeometry.descriptionsContained).toBe(true);
+  expect(packGeometry.documentWidth).toBeLessThanOrEqual(
+    packGeometry.viewportWidth,
+  );
+  await packPrimaryLink.focus();
+  await expect(packPrimaryLink).toBeFocused();
+
+  await page.goto(
+    `${HARNESS_URL}?recipes=installed&recipe_default_run=1`
+      + '&recipe_result=link-buttons#recipes',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
+    .getByRole('button', { name: /Open .+ details/ })
+    .click();
+  const detail = page.locator(
+    '[data-recued-recipes-detail="autorun-live-1"]',
+  );
+  await detail.locator('[data-recued-recipes-action="run-defaults"]')
+    .click();
+
+  const recipeLinks = detail.locator('.link-button-link');
+  await expect(recipeLinks).toHaveCount(2);
+  const recipePrimaryLink = recipeLinks.first();
+  await expect(recipePrimaryLink).toHaveAttribute(
+    'href',
+    'https://example.com/work/job_1',
+  );
+  await expect(recipePrimaryLink).toHaveAttribute('rel', 'noopener noreferrer');
+  expect((await recipePrimaryLink.boundingBox())?.height)
+    .toBeGreaterThanOrEqual(44);
+  const recipeGeometry = await detail.locator('.link-button-block')
+    .evaluate((block) => {
+      const host = block.closest<HTMLElement>('[data-recued-result-host]');
+      const hostRect = host?.getBoundingClientRect();
+      const links = [...block.querySelectorAll<HTMLElement>('.link-button-link')];
+      const descriptions = [
+        ...block.querySelectorAll<HTMLElement>('.link-button-description'),
+      ];
+      return {
+        hostRight: hostRect?.right ?? Number.POSITIVE_INFINITY,
+        linksContained: links.every((link) => (
+          link.scrollWidth <= link.clientWidth
+        )),
+        descriptionsContained: descriptions.every((description) => (
+          description.scrollWidth <= description.clientWidth
+        )),
+        documentWidth: document.documentElement.scrollWidth,
+        viewportWidth: window.innerWidth,
+      };
+    });
+  expect(recipeGeometry.hostRight).toBeLessThanOrEqual(
+    recipeGeometry.viewportWidth,
+  );
+  expect(recipeGeometry.linksContained).toBe(true);
+  expect(recipeGeometry.descriptionsContained).toBe(true);
+  expect(recipeGeometry.documentWidth).toBeLessThanOrEqual(
+    recipeGeometry.viewportWidth,
+  );
+  await recipePrimaryLink.focus();
+  await expect(recipePrimaryLink).toBeFocused();
+});
+
+test('file-artifact run results keep exact identity contained across Packs and Recipes', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&recipe_result=file-artifact`
+      + '#packs/installed-mail',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const packApp = page.locator('[data-recued-pack-app="installed-mail"]');
+  await packApp.locator(
+    '[data-recued-pack-app-operation="installed-mail-digest"]',
+  ).click();
+  const runDialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await runDialog.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect(runDialog.getByRole('status')).toContainText('Run completed');
+  await runDialog.getByRole('button', { name: 'Close' }).click();
+  await expect(runDialog).toHaveCount(0);
+
+  const packArtifact = packApp.locator('.recipes-file-artifact');
+  await expect(packArtifact).toBeVisible();
+  await expect(packArtifact.locator('.recipes-file-artifact-badge'))
+    .toHaveText('Exact immutable file');
+  const packPreview = packArtifact.getByRole('button', {
+    name: 'Preview exact PDF',
+  });
+  expect((await packPreview.boundingBox())?.height).toBeGreaterThanOrEqual(38);
+  await page.setViewportSize({ width: 390, height: 844 });
+  const packGeometry = await packArtifact.evaluate((card) => {
+    const host = card.closest<HTMLElement>('[data-recued-result-host]');
+    const hostRect = host?.getBoundingClientRect();
+    const title = card.querySelector<HTMLElement>('h4');
+    const filename = card.querySelector<HTMLElement>(
+      '.recipes-file-artifact-header p',
+    );
+    const header = card.querySelector<HTMLElement>(
+      '.recipes-file-artifact-header',
+    );
+    return {
+      hostRight: hostRect?.right ?? Number.POSITIVE_INFINITY,
+      cardContained: card.scrollWidth <= card.clientWidth,
+      titleContained: title !== null && title.scrollWidth <= title.clientWidth,
+      filenameContained: filename !== null
+        && filename.scrollWidth <= filename.clientWidth,
+      headerDisplay: header === null ? '' : getComputedStyle(header).display,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(packGeometry.hostRight).toBeLessThanOrEqual(packGeometry.viewportWidth);
+  expect(packGeometry.cardContained).toBe(true);
+  expect(packGeometry.titleContained).toBe(true);
+  expect(packGeometry.filenameContained).toBe(true);
+  expect(packGeometry.headerDisplay).toBe('grid');
+  expect(packGeometry.documentWidth).toBeLessThanOrEqual(
+    packGeometry.viewportWidth,
+  );
+  await packPreview.focus();
+  await expect(packPreview).toBeFocused();
+
+  await page.goto(
+    `${HARNESS_URL}?recipes=installed&recipe_default_run=1`
+      + '&recipe_result=file-artifact#recipes',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
+    .getByRole('button', { name: /Open .+ details/ })
+    .click();
+  const detail = page.locator(
+    '[data-recued-recipes-detail="autorun-live-1"]',
+  );
+  await detail.locator('[data-recued-recipes-action="run-defaults"]')
+    .click();
+
+  const recipeArtifact = detail.locator('.recipes-file-artifact');
+  await expect(recipeArtifact).toBeVisible();
+  await expect(recipeArtifact.locator('.recipes-file-artifact-badge'))
+    .toHaveText('Exact immutable file');
+  const recipePreview = recipeArtifact.getByRole('button', {
+    name: 'Preview exact PDF',
+  });
+  const recipeGeometry = await recipeArtifact.evaluate((card) => {
+    const host = card.closest<HTMLElement>('[data-recued-result-host]');
+    const hostRect = host?.getBoundingClientRect();
+    const title = card.querySelector<HTMLElement>('h4');
+    const filename = card.querySelector<HTMLElement>(
+      '.recipes-file-artifact-header p',
+    );
+    const header = card.querySelector<HTMLElement>(
+      '.recipes-file-artifact-header',
+    );
+    return {
+      hostRight: hostRect?.right ?? Number.POSITIVE_INFINITY,
+      cardContained: card.scrollWidth <= card.clientWidth,
+      titleContained: title !== null && title.scrollWidth <= title.clientWidth,
+      filenameContained: filename !== null
+        && filename.scrollWidth <= filename.clientWidth,
+      headerDisplay: header === null ? '' : getComputedStyle(header).display,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(recipeGeometry.hostRight).toBeLessThanOrEqual(
+    recipeGeometry.viewportWidth,
+  );
+  expect(recipeGeometry.cardContained).toBe(true);
+  expect(recipeGeometry.titleContained).toBe(true);
+  expect(recipeGeometry.filenameContained).toBe(true);
+  expect(recipeGeometry.headerDisplay).toBe('grid');
+  expect(recipeGeometry.documentWidth).toBeLessThanOrEqual(
+    recipeGeometry.viewportWidth,
+  );
+  await recipePreview.focus();
+  await expect(recipePreview).toBeFocused();
 });
 
 test('Pack Use keeps editable result Save focused through its repaint', async ({ page }) => {
@@ -12853,6 +15818,290 @@ test('Packs hands a failed post-uninstall relist to Retry', async ({ page }) => 
   ).toHaveCount(0);
 });
 
+test('Packs install keeps account customization touch-sized and keyboard-owned', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 760 });
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&packs_installed=0&settle_reads=1`
+      + '&packs_install_connection=reuse#packs/installed-mail',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const install = page.locator(
+    '[data-recued-packs-row-install="installed-mail"]',
+  );
+  await expect(install).toBeVisible();
+  await install.focus();
+  await page.keyboard.press('Enter');
+
+  const customize = page.locator(
+    '[data-recued-install-connect-customize]',
+  );
+  await expect(customize).toBeVisible();
+  const box = await customize.boundingBox();
+  expect(box?.height).toBeGreaterThanOrEqual(36);
+
+  await customize.focus();
+  await page.keyboard.press('Enter');
+  const candidate = page.locator(
+    '[data-recued-install-connect-candidate="work-onedrive"]',
+  );
+  await expect(candidate).toBeVisible();
+  await expect(candidate).toBeChecked();
+  await expect(candidate).toBeFocused();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth))
+    .toBeLessThanOrEqual(320);
+});
+
+test('Packs contains long install consent throughout its narrow detail', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&packs_installed=0&pack_text=long`
+    + '&packs_install_connection=reuse&settle_reads=1#packs/installed-mail',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const panel = page.locator('[data-recued-packs-panel]');
+  await expect(panel.locator('.packs-detail-name')).toContainText('PackNN');
+  await panel.locator('[data-recued-packs-row-install="installed-mail"]').click();
+  const dialog = panel.locator('[data-recued-packs-dialog]');
+  await expect(dialog.locator('.packs-dialog-heading')).toContainText('PackNN');
+  await expect(dialog.locator('.packs-dialog-list > li')).toContainText(
+    'recipe-identity',
+  );
+  await expect(dialog.locator('.packs-dialog-perm-label', {
+    hasText: 'permission-identity',
+  })).toBeVisible();
+  await expect(dialog.locator('[data-recued-install-connect]')).toBeVisible();
+  await dialog.locator('[data-recued-install-connect-customize]').click();
+  await expect(dialog.locator(
+    '[data-recued-install-connect-candidate="work-onedrive"]',
+  )).toBeChecked();
+  const owners = dialog.locator(
+    ':scope, :scope > *, .packs-dialog-list, .packs-dialog-list > li, '
+    + '.packs-dialog-perm-list, .packs-dialog-perm-row, '
+    + '.packs-dialog-perm-row label, .packs-dialog-perm-label, '
+    + '[data-recued-install-grant-picker], .igp-access-list, '
+    + '.igp-access-row, .igp-scope-list, .igp-scope-row, '
+    + '[data-recued-install-connect], .packs-dialog-connect-list, '
+    + '.packs-dialog-connect-row, .packs-dialog-connect-row label, '
+    + '.packs-dialog-actions',
+  );
+  expect(await owners.evaluateAll((elements) => elements.every(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  ))).toBe(true);
+  expect(await panel.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  )).toBe(true);
+  expect(await page.evaluate(
+    () => document.documentElement.scrollWidth <= window.innerWidth,
+  )).toBe(true);
+  const actions = dialog.locator('.packs-dialog-actions .rx-btn');
+  const actionSizes = await actions.evaluateAll((buttons) => buttons.map((button) => {
+    const rect = button.getBoundingClientRect();
+    return { width: rect.width, height: rect.height };
+  }));
+  expect(actionSizes).toHaveLength(2);
+  expect(Math.min(...actionSizes.map(({ width }) => width)))
+    .toBeGreaterThanOrEqual(36);
+  expect(Math.min(...actionSizes.map(({ height }) => height)))
+    .toBeGreaterThanOrEqual(40);
+});
+
+test('Packs contains long removal disclosure and retains keyboard ownership', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&pack_text=long#packs/installed-mail`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const route = page.locator('[data-recued-packs-route]');
+  const surface = route.locator('[data-recued-packs-surface]');
+  const panel = surface.locator('[data-recued-packs-panel]');
+  await panel.locator('[data-recued-packs-row-delete="installed-mail"]').click();
+  const footer = panel.locator('.packs-row-footer');
+  expect(await footer.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  )).toBe(true);
+  const confirmActions = footer.getByRole('button');
+  const confirmSizes = await confirmActions.evaluateAll((buttons) =>
+    buttons.map((button) => {
+      const rect = button.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    })
+  );
+  expect(confirmSizes).toHaveLength(2);
+  expect(Math.min(...confirmSizes.map(({ width }) => width)))
+    .toBeGreaterThanOrEqual(36);
+  expect(Math.min(...confirmSizes.map(({ height }) => height)))
+    .toBeGreaterThanOrEqual(40);
+
+  await panel.locator(
+    '[data-recued-packs-row-delete-confirm="installed-mail"]',
+  ).click();
+  const notice = panel.locator('[data-recued-packs-disclosure]');
+  await expect(notice).toBeVisible();
+  await expect(notice.locator('.packs-disclosure-title')).toContainText('PackNN');
+  await expect(notice.locator('[data-recued-packs-disclosure-block]'))
+    .toHaveCount(2);
+  await expect(notice.locator('[data-recued-packs-disclosure-item]').first())
+    .toContainText('dependent-identity');
+  await expect(notice.locator('[data-recued-packs-disclosure-item]').last())
+    .toContainText('optional-capability');
+
+  const owners = notice.locator(
+    ':scope, :scope > *, .packs-disclosure-head, .packs-disclosure-title, '
+    + '.packs-disclosure-block, .packs-disclosure-headline, '
+    + '.packs-disclosure-list, .packs-disclosure-list > li',
+  );
+  expect(await owners.evaluateAll((elements) => elements.every(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  ))).toBe(true);
+  for (const owner of [panel, surface, route]) {
+    expect(await owner.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth + 1,
+    )).toBe(true);
+  }
+  expect(await page.evaluate(
+    () => document.documentElement.scrollWidth <= window.innerWidth,
+  )).toBe(true);
+
+  const dismiss = notice.locator('[data-recued-packs-disclosure-dismiss]');
+  const dismissSize = await dismiss.boundingBox();
+  expect(dismissSize?.width).toBeGreaterThanOrEqual(36);
+  expect(dismissSize?.height).toBeGreaterThanOrEqual(44);
+  await dismiss.focus();
+  await page.keyboard.press('Enter');
+  await expect(notice).toHaveCount(0);
+  await expect(panel.locator(
+    '[data-recued-packs-row-install="installed-mail"]',
+  )).toBeFocused();
+});
+
+test('Packs keeps long uninstall failures readable and retry-owned', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&pack_text=long`
+    + '&packs_uninstall_response=cleanup-required#packs/installed-mail',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const route = page.locator('[data-recued-packs-route]');
+  const surface = route.locator('[data-recued-packs-surface]');
+  const panel = surface.locator('[data-recued-packs-panel]');
+  await panel.locator('[data-recued-packs-row-delete="installed-mail"]').click();
+  const confirm = panel.locator(
+    '[data-recued-packs-row-delete-confirm="installed-mail"]',
+  );
+  await confirm.focus();
+  await page.keyboard.press('Enter');
+
+  const footer = panel.locator('.packs-row-footer');
+  const error = panel.locator('[data-recued-packs-row-delete-error]');
+  await expect(error).toContainText('must remain installed');
+  await expect(error).toContainText('no cleanup-completion proof');
+  await expect(error).toHaveAttribute('role', 'alert');
+  await expect(confirm).toBeFocused();
+  expect(await footer.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  )).toBe(true);
+  const footerGeometry = await footer.evaluate((element) => {
+    const errorElement = element.querySelector<HTMLElement>(
+      '[data-recued-packs-row-delete-error]',
+    );
+    const footerRect = element.getBoundingClientRect();
+    const errorRect = errorElement?.getBoundingClientRect();
+    return {
+      footerWidth: footerRect.width,
+      errorWidth: errorRect?.width ?? 0,
+    };
+  });
+  expect(footerGeometry.errorWidth).toBeGreaterThanOrEqual(
+    footerGeometry.footerWidth - 1,
+  );
+  const actionSizes = await footer.getByRole('button').evaluateAll((buttons) =>
+    buttons.map((button) => {
+      const rect = button.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    })
+  );
+  expect(actionSizes).toHaveLength(2);
+  expect(Math.min(...actionSizes.map(({ width }) => width)))
+    .toBeGreaterThanOrEqual(36);
+  expect(Math.min(...actionSizes.map(({ height }) => height)))
+    .toBeGreaterThanOrEqual(40);
+  expect(Math.max(...actionSizes.map(({ height }) => height)))
+    .toBeLessThanOrEqual(44);
+  for (const owner of [error, panel, surface, route]) {
+    expect(await owner.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth + 1,
+    )).toBe(true);
+  }
+
+  await page.keyboard.press('Enter');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('packs.uninstall')),
+  ).toBe(2);
+  await expect(error).toBeVisible();
+  await expect(confirm).toBeFocused();
+});
+
+test('Packs contains marketplace resolve retry and preserves keyboard ownership', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&pack_text=long`
+    + '&packs_resolve_response=fail-once-slow-retry#packs',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const slug = `market-${'identity'.repeat(30)}`;
+  const route = page.locator('[data-recued-packs-route]');
+  const surface = route.locator('[data-recued-packs-surface]');
+  const input = surface.locator('[data-recued-packs-surface-add-input]');
+  await input.fill(slug);
+  await input.focus();
+  await page.keyboard.press('Enter');
+
+  const panel = surface.locator('[data-recued-packs-panel]');
+  const error = panel.locator('[data-recued-packs-detail-resolve-error]');
+  await expect(error).toContainText(
+    'Marketplace pack resolution is temporarily unavailable',
+  );
+  expect(await error.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  )).toBe(true);
+  const retry = panel.locator('[data-recued-packs-detail-resolve-retry]');
+  expect((await retry.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('packs.resolveBySlug')),
+  ).toBe(1);
+
+  await retry.focus();
+  await page.keyboard.press('Enter');
+  await expect(retry).toHaveText('Retrying…');
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry).not.toHaveAttribute('disabled');
+  await expect(retry).toBeFocused();
+  await retry.dispatchEvent('click');
+  await retry.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('packs.resolveBySlug')),
+  ).toBe(2);
+
+  const install = panel.locator(
+    `[data-recued-packs-row-install="${slug}"]`,
+  );
+  await expect(install).toBeVisible();
+  await expect(install).toBeFocused();
+  await expect(retry).toHaveCount(0);
+  await expect(panel.locator('.packs-detail-name')).toContainText('PackNN');
+  for (const owner of [panel, surface, route]) {
+    expect(await owner.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth + 1,
+    )).toBe(true);
+  }
+});
+
 test('Recipes hands focus into detail and back to the exact card', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?recipes=installed`);
   await page.waitForFunction(() => window.__app?.ready === true);
@@ -12862,8 +16111,9 @@ test('Recipes hands focus into detail and back to the exact card', async ({ page
   await expect(card).toBeVisible();
   const recipeId = await card.getAttribute('data-recued-recipes-card');
   expect(recipeId).not.toBeNull();
+  const open = card.getByRole('button', { name: /Open .+ details/ });
 
-  await card.focus();
+  await open.focus();
   await page.keyboard.press('Enter');
   const detail = page.locator(`[data-recued-recipes-detail="${recipeId}"]`);
   await expect(detail).toBeVisible();
@@ -12884,7 +16134,7 @@ test('Recipes hands focus into detail and back to the exact card', async ({ page
   await back.focus();
   await page.keyboard.press('Enter');
   await expect(detail).toHaveCount(0);
-  await expect(card).toBeFocused();
+  await expect(open).toBeFocused();
 
   await page.evaluate(() => window.__app.fireMessage({
     type: 'server_event',
@@ -12894,7 +16144,421 @@ test('Recipes hands focus into detail and back to the exact card', async ({ page
       cursor: 62,
     },
   }));
-  await expect(card).toBeFocused();
+  await expect(open).toBeFocused();
+});
+
+test('Recipes gives mobile navigation full-size targets', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?recipes=installed`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+
+  const card = page.locator('[data-recued-recipes-card]').first();
+  await expect(card).toBeVisible();
+  const listLinks = page.locator(
+    '[data-recued-recipes-route] .recipes-actions > .recipes-inline-link',
+  );
+  const listHeights = await listLinks.evaluateAll((links) => links.map(
+    (link) => link.getBoundingClientRect().height,
+  ));
+  expect(listHeights.length).toBeGreaterThan(0);
+  expect(Math.min(...listHeights)).toBeGreaterThanOrEqual(36);
+
+  await card.getByRole('button', { name: /Open .+ details/ }).click();
+  const detail = page.locator('[data-recued-recipes-detail]');
+  await expect(detail).toBeVisible();
+  const detailLinks = detail.locator('a:visible');
+  const detailHeights = await detailLinks.evaluateAll((links) => links.map(
+    (link) => link.getBoundingClientRect().height,
+  ));
+  expect(detailHeights.length).toBeGreaterThan(0);
+  expect(Math.min(...detailHeights)).toBeGreaterThanOrEqual(36);
+  const definition = detail.locator('[data-recued-recipes-definition]');
+  const definitionSummary = definition.locator('summary');
+  expect((await definitionSummary.boundingBox())?.height)
+    .toBeGreaterThanOrEqual(44);
+  await definitionSummary.focus();
+  await page.keyboard.press('Enter');
+  await expect(definition).toHaveAttribute('open', '');
+  await expect(definitionSummary).toBeFocused();
+  expect(await detail.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+});
+
+test('Recipes contains long installed cards at a narrow viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(`${HARNESS_URL}?recipes=installed&run_palette=long#recipes`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const route = page.locator('[data-recued-recipes-route]');
+  const section = route.locator('[data-recued-recipes-section]');
+  const grid = route.locator('.recipes-card-grid');
+  const card = route.locator('[data-recued-recipes-card]').first();
+  await expect(card.locator('.recipe-card-name')).toContainText('RecipeNN');
+  const owners = [route, section, grid, card];
+  for (const owner of owners) {
+    expect(await owner.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth + 1,
+    )).toBe(true);
+  }
+  const textOwners = card.locator(
+    '.recipe-card, .recipe-card-header, .recipe-card-name, '
+    + '.recipe-card-footer, .recipe-card-footer > *',
+  );
+  expect(await textOwners.evaluateAll((elements) => elements.every(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  ))).toBe(true);
+  const targets = await card.getByRole('button').evaluateAll(
+    (buttons) => buttons.map((button) => button.getBoundingClientRect().height),
+  );
+  expect(Math.min(...targets)).toBeGreaterThanOrEqual(36);
+});
+
+test('Recipes contains long identity throughout its narrow detail view', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(`${HARNESS_URL}?recipes=installed&run_palette=long#recipes`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const route = page.locator('[data-recued-recipes-route]');
+  await route.locator('[data-recued-recipes-card]').first()
+    .getByRole('button', { name: /^Open / }).click();
+  const detail = route.locator('[data-recued-recipes-detail]');
+  await expect(detail.locator('.recipes-detail-name')).toContainText('RecipeNN');
+  expect(await detail.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  )).toBe(true);
+  const owners = detail.locator(
+    '.recipes-detail-header, .recipes-detail-title, '
+    + '.recipes-detail-name, .recipes-detail-meta, .recipes-detail-section',
+  );
+  expect(await owners.evaluateAll((elements) => elements.every(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  ))).toBe(true);
+  expect(await route.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+
+  const definition = detail.locator('[data-recued-recipes-definition]');
+  await definition.locator('summary').click();
+  const definitionGeometry = await definition.evaluate((element) => {
+    const code = element.querySelector('pre');
+    return {
+      ownerContained: element.scrollWidth <= element.clientWidth + 1,
+      codeContained: code !== null
+        && code.getBoundingClientRect().right
+          <= element.getBoundingClientRect().right + 1,
+      codeScrollable: code !== null && code.scrollWidth > code.clientWidth,
+    };
+  });
+  expect(definitionGeometry).toEqual({
+    ownerContained: true,
+    codeContained: true,
+    codeScrollable: true,
+  });
+});
+
+test('Recipes contains long live status disclosures on list and detail', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(`${HARNESS_URL}?recipes=installed&run_palette=long#recipes`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const route = page.locator('[data-recued-recipes-route]');
+  const card = route.locator('[data-recued-recipes-card]').first();
+  const recipeId = await card.getAttribute('data-recued-recipes-card');
+  expect(recipeId).not.toBeNull();
+  await page.evaluate((id) => {
+    const operation = `operation-${'identity'.repeat(35)}`;
+    window.__app.fireMessage({
+      type: 'server_event',
+      event: {
+        kind: 'recipe_runnability_changed',
+        cursor: 99,
+        recipes: [{
+          recipe_id: id,
+          status: 'blocked',
+          dependencies: [{
+            capability: 'crm',
+            ops: [operation],
+            optional: false,
+            satisfied: false,
+            providers: [],
+            unprovided_ops: [operation],
+          }],
+        }],
+      },
+    });
+  }, recipeId);
+
+  const cardStatus = card.locator('[data-recued-recipes-runnability]');
+  await expect(cardStatus).toHaveAttribute('data-recued-recipes-runnability', 'blocked');
+  expect(await cardStatus.evaluate((element) => [
+    element,
+    ...element.querySelectorAll('.recipes-runnability-detail'),
+  ].every((owner) => owner.scrollWidth <= owner.clientWidth + 1))).toBe(true);
+  expect(await route.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+
+  await card.getByRole('button', { name: /^Open / }).click();
+  const detail = route.locator('[data-recued-recipes-detail]');
+  const detailStatus = detail.locator('[data-recued-recipes-runnability]');
+  await expect(detailStatus).toBeVisible();
+  expect(await detailStatus.evaluate((element) => [
+    element,
+    ...element.querySelectorAll('.recipes-runnability-detail'),
+  ].every((owner) => owner.scrollWidth <= owner.clientWidth + 1))).toBe(true);
+  expect(await detail.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+  expect(await route.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+});
+
+test('Kitchen recipe editor contains mobile authoring controls', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.goto(`${HARNESS_URL}?recipes=installed`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(
+    () => window.__app.setHash('#kitchen/recipe/autorun-live-1'),
+  );
+
+  const editor = page.locator('[data-recued-recipe-editor-route]');
+  await expect(editor).toBeVisible();
+  await expect(editor.getByRole('heading', { name: 'Recipe editor' }))
+    .toBeFocused();
+  await expect.poll(() => page.evaluate(
+    () => window.__app.rpcCallCount('webhook.ingress.list'),
+  )).toBe(1);
+  await expect.poll(() => page.evaluate(
+    () => window.__app.rpcCallCount('recipe.webhook.status'),
+  )).toBe(1);
+
+  const contained = await editor.evaluate((node) => (
+    node.scrollWidth <= node.clientWidth
+    && [...node.querySelectorAll<HTMLElement>('.recipe-editor-section')]
+      .every((section) => section.scrollWidth <= section.clientWidth)
+  ));
+  expect(contained).toBe(true);
+
+  const targets = editor.locator(
+    'button:visible, input:visible, select:visible, textarea:visible, summary:visible',
+  );
+  const sizes = await targets.evaluateAll((nodes) => nodes.map((node) => {
+    const rect = node.getBoundingClientRect();
+    return { width: rect.width, height: rect.height };
+  }));
+  expect(sizes.length).toBeGreaterThan(10);
+  expect(Math.min(...sizes.map(({ width }) => width)))
+    .toBeGreaterThanOrEqual(36);
+  expect(Math.min(...sizes.map(({ height }) => height)))
+    .toBeGreaterThanOrEqual(36);
+});
+
+test('Kitchen recipe steps keep desktop row actions full-sized', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(
+    `${HARNESS_URL}?recipes=installed&settle_reads=1`
+      + '#kitchen/recipe/autorun-live-1',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const editor = page.locator('[data-recued-recipe-editor-route]');
+  await expect(editor.getByRole('heading', { name: 'Recipe editor' }))
+    .toBeFocused();
+  const add = editor.getByRole('button', { name: 'Add step' });
+  await add.click();
+
+  const rowActions = editor.locator('.recipe-editor-step-actions .rx-btn');
+  const sizes = await rowActions.evaluateAll((buttons) => buttons.map((button) => {
+    const rect = button.getBoundingClientRect();
+    return { width: rect.width, height: rect.height };
+  }));
+  expect(sizes).toHaveLength(3);
+  expect(Math.min(...sizes.map(({ width }) => width)))
+    .toBeGreaterThanOrEqual(36);
+  expect(Math.min(...sizes.map(({ height }) => height)))
+    .toBeGreaterThanOrEqual(36);
+
+  const remove = editor.getByRole('button', { name: 'Remove step filter' });
+  await remove.focus();
+  await page.keyboard.press('Enter');
+  await expect(editor.locator('.recipe-editor-step-card')).toHaveCount(0);
+  await expect(add).toBeFocused();
+});
+
+test('Kitchen pack data fields keep wide editing inside their scroller', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.goto(`${HARNESS_URL}?settle_reads=1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#kitchen/pack'));
+
+  const builder = page.locator('[data-recued-ingredient-builder-route]');
+  await expect(builder.getByRole('combobox', { name: 'Draft' })).toBeEnabled();
+  await builder.getByRole('tab', { name: 'Data fields' }).click();
+
+  const groups = builder.locator('[data-recued-ingredient-entity-field-table]');
+  await expect(groups).toContainText('No entity fields');
+  expect(await builder.evaluate((node) => node.scrollWidth <= node.clientWidth))
+    .toBe(true);
+
+  await builder.getByRole('button', { name: 'Add field' }).click();
+  const entity = builder.getByRole('textbox', { name: 'Entity for data field 1' });
+  await expect(entity).toBeFocused();
+  const table = builder.getByRole('table', { name: 'Ungrouped data fields' });
+  await expect(table).toBeVisible();
+
+  const containment = await builder.evaluate((node) => {
+    const wrap = node.querySelector<HTMLElement>('.ingredient-builder-table-wrap');
+    if (wrap === null) return null;
+    const rect = wrap.getBoundingClientRect();
+    return {
+      routeContained: node.scrollWidth <= node.clientWidth,
+      wrapContained: rect.left >= 0 && rect.right <= window.innerWidth,
+      locallyScrollable: wrap.scrollWidth > wrap.clientWidth,
+      overflowX: getComputedStyle(wrap).overflowX,
+    };
+  });
+  expect(containment).toEqual({
+    routeContained: true,
+    wrapContained: true,
+    locallyScrollable: true,
+    overflowX: 'auto',
+  });
+});
+
+test('Kitchen pack review keeps its desktop checkbox row full-sized', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(`${HARNESS_URL}?settle_reads=1#kitchen/pack`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const builder = page.locator('[data-recued-ingredient-builder-route]');
+  await expect(builder.getByRole('combobox', { name: 'Draft' })).toBeEnabled();
+  await builder.getByRole('tab', { name: 'Operations' }).click();
+  const reviewed = builder.getByRole('checkbox', {
+    name: 'Reviewed for operation untitled',
+  });
+  await expect(reviewed).not.toBeChecked();
+  const targetBox = await reviewed.locator('..').boundingBox();
+  expect(targetBox?.height).toBeGreaterThanOrEqual(36);
+
+  await reviewed.focus();
+  await page.keyboard.press('Space');
+  const reviewedField = builder.locator(
+    '[data-recued-ingredient-operation-field="reviewed"]',
+  );
+  await expect(reviewedField).toBeChecked();
+  const operationRow = builder.locator(
+    '[data-recued-ingredient-operation-row="row-0"]',
+  );
+  await expect(operationRow).not.toHaveAttribute('open', '');
+  await expect(operationRow.locator(':scope > summary')).toBeFocused();
+});
+
+test('Recipes gives list Open and Run separate focus ownership', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=installed`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+
+  const card = page.locator(
+    '[data-recued-recipes-card="autorun-live-1"]',
+  );
+  await expect(card).not.toHaveAttribute('role');
+  await expect(card).not.toHaveAttribute('tabindex');
+  await expect(card.getByRole('button', {
+    name: 'Open Watch pipeline details',
+    exact: true,
+  })).toHaveCount(1);
+  const run = card.getByRole('button', {
+    name: 'Run Watch pipeline',
+    exact: true,
+  });
+  await run.focus();
+  await page.keyboard.press('Enter');
+
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(run).toBeFocused();
+});
+
+test('Recipes offers a missing pack before Run and recovers live', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=installed&recipe_default_run=1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+
+  const card = page.locator('[data-recued-recipes-card="autorun-live-1"]');
+  await expect(card).toBeVisible();
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'recipe_runnability_changed',
+      recipes: [{
+        recipe_id: 'autorun-live-1',
+        status: 'blocked',
+        dependencies: [{
+          capability: 'recued-core.officecli',
+          ops: [],
+          optional: false,
+          satisfied: false,
+          providers: [],
+          unprovided_ops: [],
+        }],
+      }],
+      cursor: 63,
+    },
+  }));
+
+  await expect(card.locator('.recipes-runnability-pill')).toHaveText(
+    'Blocked — install a pack',
+  );
+  await expect(card).toContainText(
+    'Install the officecli pack to make this recipe work.',
+  );
+  await expect(card.locator('[data-recued-recipes-run-button]')).toBeDisabled();
+
+  await card.getByRole('button', {
+    name: 'Open Watch pipeline details',
+    exact: true,
+  }).focus();
+  await page.keyboard.press('Enter');
+  const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
+  await expect(detail).toBeVisible();
+  const offer = detail.locator('[data-recued-pack-install-offer]');
+  await expect(offer).toContainText(
+    'This recipe needs a pack you don’t have installed yet.',
+  );
+  await expect(offer.getByRole('link', { name: 'Get officecli' }))
+    .toHaveAttribute('href', '#packs/officecli');
+  await expect(detail.locator('[data-recued-recipes-run-button]')).toBeDisabled();
+  await expect(detail.getByRole('button', { name: 'Run with overrides' }))
+    .toBeDisabled();
+
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'recipe_runnability_changed',
+      recipes: [{
+        recipe_id: 'autorun-live-1',
+        status: 'runnable',
+        dependencies: [],
+      }],
+      cursor: 64,
+    },
+  }));
+
+  await expect(offer).toHaveCount(0);
+  const recoveredRun = detail.locator('[data-recued-recipes-run-button]');
+  await expect(recoveredRun).toBeEnabled();
+  await expect(recoveredRun).toHaveAttribute(
+    'data-recued-recipes-action',
+    'run-defaults',
+  );
+  await expect(detail.getByRole('button', { name: 'Run with overrides' }))
+    .toBeEnabled();
 });
 
 test('Recipes preserves direct default Run focus through execution', async ({ page }) => {
@@ -13182,6 +16846,41 @@ test('Recipes owns result search and paging through every repaint', async ({ pag
   await expect(html).toHaveAttribute('data-audit-confirm-count', '2');
 });
 
+test('the shared Run modal leaves composing Escape to its config editor', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=installed`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+
+  const opener = page.locator('[data-recued-recipes-run-button]').first();
+  await opener.click();
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const config = dialog.locator('[data-recued-run-modal-config]');
+  await config.fill('{"名前":"レポート"}');
+  await config.focus();
+  const composingEscape = await config.evaluate((field) => {
+    const event = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      code: 'Escape',
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    const dispatched = field.dispatchEvent(event);
+    return { dispatched, defaultPrevented: event.defaultPrevented };
+  });
+  expect(composingEscape).toEqual({
+    dispatched: true,
+    defaultPrevented: false,
+  });
+  await expect(dialog).toBeVisible();
+  await expect(config).toHaveValue('{"名前":"レポート"}');
+  await expect(config).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(opener).toBeFocused();
+});
+
 test('the shared Run modal preserves focus across execution repaints', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?recipes=installed`);
   await page.waitForFunction(() => window.__app?.ready === true);
@@ -13335,6 +17034,56 @@ test('Recipes keeps Config owned while loading its editor', async ({ page }) => 
   await expect(config).toBeFocused();
 });
 
+test('the shared config editor keeps usable mobile targets', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 480 });
+  await page.goto(`${HARNESS_URL}?recipes=installed&recipe_default_run=1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+
+  await page.locator('[data-recued-recipes-card]').first().click();
+  const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
+  await detail.locator(
+    '[data-recued-recipes-action="open-recipe-config"]'
+    + '[data-recipe-id="autorun-live-1"]',
+  ).click();
+
+  const editor = page.getByRole('dialog', { name: 'Edit config' });
+  // Recipe metadata owns this heading; a single unbroken pack-provided name
+  // must not push Close or Save outside the modal.
+  await editor.locator('.config-editor-title').evaluate((title) => {
+    title.textContent =
+      'UNBROKEN_RECIPE_CONFIGURATION_TITLE_THAT_EXCEEDS_A_PHONE_VIEWPORT_123456789';
+  });
+  const geometry = await editor.evaluate((node) => {
+    const rect = node.getBoundingClientRect();
+    const close = node.querySelector(
+      '[data-recued-config-editor-action="cancel"]',
+    )?.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      viewportWidth: window.innerWidth,
+      clientWidth: node.clientWidth,
+      scrollWidth: node.scrollWidth,
+      closeRight: close?.right ?? Number.POSITIVE_INFINITY,
+    };
+  });
+  expect(geometry.left).toBeGreaterThanOrEqual(23.5);
+  expect(geometry.right).toBeLessThanOrEqual(geometry.viewportWidth - 23.5);
+  expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth);
+  expect(geometry.closeRight).toBeLessThanOrEqual(geometry.right);
+  const targets = editor.locator('button:visible, input:visible, select:visible');
+  const sizes = await targets.evaluateAll((nodes) => nodes.map((node) => {
+    const rect = node.getBoundingClientRect();
+    return { width: rect.width, height: rect.height };
+  }));
+  expect(sizes).toHaveLength(3);
+  expect(Math.min(...sizes.map(({ width }) => width)))
+    .toBeGreaterThanOrEqual(36);
+  expect(Math.min(...sizes.map(({ height }) => height)))
+    .toBeGreaterThanOrEqual(36);
+});
+
 test('Recipes returns a failed Config read to its action with a retryable error', async ({ page }) => {
   await page.goto(
     `${HARNESS_URL}?recipes=installed&recipe_default_run=1&recipe_config_response=fail-slow`,
@@ -13470,6 +17219,21 @@ test('Recipes preserves related auto-run action ownership', async ({ page }) => 
   const pause = row.locator(
     '[data-recued-recipes-action="toggle-auto-run:off"]',
   );
+  await expect(row.getByRole('link', {
+    name: 'Open Close action (close-action)',
+    exact: true,
+  })).toHaveCount(1);
+  await expect(row.getByRole('link', {
+    name: 'Automation for Close action (close-action)',
+    exact: true,
+  })).toHaveCount(1);
+  await expect(row.getByRole('link', {
+    name: 'Logs for Close action (close-action)',
+    exact: true,
+  })).toHaveCount(1);
+  await expect(pause).toHaveAccessibleName(
+    'Pause auto-run Close action (close-action)',
+  );
   const callsBefore = await page.evaluate(
     () => window.__app.rpcCallCount('auto_run.update'),
   );
@@ -13477,6 +17241,9 @@ test('Recipes preserves related auto-run action ownership', async ({ page }) => 
   await page.keyboard.press('Enter');
 
   await expect(pause).toHaveText('Pausing auto-run…');
+  await expect(pause).toHaveAccessibleName(
+    'Pausing auto-run… Close action (close-action)',
+  );
   await expect(pause).toHaveAttribute('aria-disabled', 'true');
   await expect(pause).toHaveAttribute('aria-busy', 'true');
   await expect(pause).not.toHaveAttribute('disabled');
@@ -13521,6 +17288,9 @@ test('Recipes preserves related auto-run action ownership', async ({ page }) => 
     '[data-recued-recipes-action="toggle-auto-run:on"]',
   );
   await expect(resume).toHaveText('Resume auto-run');
+  await expect(resume).toHaveAccessibleName(
+    'Resume auto-run Close action (close-action)',
+  );
   await expect(resume).toBeFocused();
 
   await page.keyboard.press('Enter');
@@ -13674,6 +17444,64 @@ test('the shared Run modal tabs form one arrow-key keyboard stop', async ({ page
   await expect(run).toBeFocused();
 });
 
+test('the shared Run modal stays contained with usable mobile targets', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 480 });
+  await page.goto(`${HARNESS_URL}?recipes=installed&recipe_default_run=1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+  await page.locator('[data-recued-recipes-run-button]').first().click();
+
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const geometry = await dialog.evaluate((node) => {
+    const rect = node.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(geometry.left).toBeGreaterThanOrEqual(15.5);
+  expect(geometry.right).toBeLessThanOrEqual(geometry.viewportWidth - 15.5);
+
+  const runTargetHeights = await dialog.getByRole('button').evaluateAll(
+    (buttons) => buttons.map((button) => button.getBoundingClientRect().height),
+  );
+  expect(Math.min(...runTargetHeights)).toBeGreaterThanOrEqual(36);
+  const advanced = dialog.locator('.run-modal-advanced > summary');
+  await expect(advanced).toBeVisible();
+  expect((await advanced.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+
+  await dialog.getByRole('tab', { name: 'Schedule' }).click();
+  const preset = dialog.getByRole('combobox', { name: 'Run on a schedule' });
+  expect((await preset.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+  const repeatTargetHeight = await dialog.getByRole('checkbox', {
+    name: 'Repeat',
+  }).evaluate((checkbox) => checkbox.closest('label')!
+    .getBoundingClientRect().height);
+  expect(repeatTargetHeight).toBeGreaterThanOrEqual(36);
+  const scheduleTargetHeights = await dialog.getByRole('button').evaluateAll(
+    (buttons) => buttons.map((button) => button.getBoundingClientRect().height),
+  );
+  expect(Math.min(...scheduleTargetHeights)).toBeGreaterThanOrEqual(36);
+
+  const add = dialog.getByRole('button', { name: 'Add schedule' });
+  await add.click();
+  await expect(dialog.locator('.run-modal-rule-row')).toHaveCount(1);
+  const contained = await dialog.evaluate((node) => {
+    const panel = node.getBoundingClientRect();
+    const row = node.querySelector('.run-modal-rule-row')
+      ?.getBoundingClientRect();
+    return {
+      panelRight: panel.right,
+      rowRight: row?.right ?? Number.POSITIVE_INFINITY,
+      clientWidth: node.clientWidth,
+      scrollWidth: node.scrollWidth,
+    };
+  });
+  expect(contained.scrollWidth).toBeLessThanOrEqual(contained.clientWidth);
+  expect(contained.rowRight).toBeLessThanOrEqual(contained.panelRight - 13.5);
+});
+
 test('the shared Run modal preserves Repeat focus while cadence controls swap', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?recipes=installed`);
   await page.waitForFunction(() => window.__app?.ready === true);
@@ -13740,6 +17568,50 @@ test('the shared Run modal keeps Add schedule focused while creating', async ({ 
   await expect(add).toBeFocused();
 });
 
+test('the shared Run modal distinguishes repeated schedule actions', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=installed`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+  await page.locator('[data-recued-recipes-run-button]').first().click();
+
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await dialog.getByRole('tab', { name: 'Schedule' }).click();
+  const add = dialog.getByRole('button', { name: 'Add schedule' });
+  await add.click();
+  await expect(dialog.locator('.run-modal-rule-row')).toHaveCount(1);
+  await add.click();
+  await expect(dialog.locator('.run-modal-rule-row')).toHaveCount(2);
+
+  const names = [
+    'Pause schedule Every 5 minutes (schedule-run-modal-1)',
+    'Pause schedule Every 5 minutes (schedule-run-modal-2)',
+    'Remove schedule Every 5 minutes (schedule-run-modal-1)',
+    'Remove schedule Every 5 minutes (schedule-run-modal-2)',
+  ];
+  for (const name of names) {
+    await expect(dialog.getByRole('button', { name, exact: true })).toHaveCount(1);
+  }
+
+  const secondPause = dialog.getByRole('button', {
+    name: 'Pause schedule Every 5 minutes (schedule-run-modal-2)',
+    exact: true,
+  });
+  await secondPause.focus();
+  await page.keyboard.press('Enter');
+  await expect(secondPause).toHaveAttribute('aria-disabled', 'true');
+  await expect(secondPause).toHaveAttribute('aria-busy', 'true');
+  await expect(secondPause).toBeFocused();
+
+  await expect(dialog.getByRole('button', {
+    name: 'Resume schedule Every 5 minutes (schedule-run-modal-2)',
+    exact: true,
+  })).toBeFocused();
+  await expect(dialog.getByRole('button', {
+    name: 'Pause schedule Every 5 minutes (schedule-run-modal-1)',
+    exact: true,
+  })).toBeVisible();
+});
+
 test('the shared Run modal preserves schedule row action ownership', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?recipes=installed`);
   await page.waitForFunction(() => window.__app?.ready === true);
@@ -13752,18 +17624,24 @@ test('the shared Run modal preserves schedule row action ownership', async ({ pa
   await add.click();
   await expect(dialog.locator('.run-modal-rule-row')).toHaveCount(1);
 
-  const pause = dialog.getByRole('button', { name: 'Pause', exact: true });
+  const pause = dialog.locator(
+    '[data-recued-run-modal-action="toggle-schedule:off"]',
+  );
   await pause.click();
   await expect(pause).toHaveAttribute('aria-disabled', 'true');
   await expect(pause).toHaveAttribute('aria-busy', 'true');
   await expect(pause).toBeFocused();
 
-  const resume = dialog.getByRole('button', { name: 'Resume', exact: true });
+  const resume = dialog.locator(
+    '[data-recued-run-modal-action="toggle-schedule:on"]',
+  );
   await expect(resume).toBeFocused();
   await resume.click();
   await expect(pause).toBeFocused();
 
-  const remove = dialog.getByRole('button', { name: 'Remove', exact: true });
+  const remove = dialog.locator(
+    '[data-recued-run-modal-action="remove-schedule"]',
+  );
   await remove.click();
   await expect(remove).toHaveAttribute('aria-disabled', 'true');
   await expect(remove).toBeFocused();
@@ -13802,21 +17680,29 @@ test('the shared Run modal preserves trigger action ownership', async ({ page })
   await expect(add).not.toHaveAttribute('aria-busy');
   await expect(add).toBeFocused();
 
-  const pause = row.getByRole('button', { name: 'Pause' });
+  const pause = row.locator(
+    '[data-recued-run-modal-action="toggle-trigger:off"]',
+  );
   await pause.click();
   await expect(pause).toHaveAttribute('aria-disabled', 'true');
   await expect(pause).toHaveAttribute('aria-busy', 'true');
   await expect(pause).toBeFocused();
 
-  const resume = row.getByRole('button', { name: 'Resume' });
+  const resume = row.locator(
+    '[data-recued-run-modal-action="toggle-trigger:on"]',
+  );
   await expect(resume).toBeFocused();
   await resume.click();
   await expect(resume).toHaveAttribute('aria-disabled', 'true');
   await expect(resume).toHaveAttribute('aria-busy', 'true');
   await expect(resume).toBeFocused();
-  await expect(row.getByRole('button', { name: 'Pause' })).toBeFocused();
+  await expect(row.locator(
+    '[data-recued-run-modal-action="toggle-trigger:off"]',
+  )).toBeFocused();
 
-  const remove = row.getByRole('button', { name: 'Remove' });
+  const remove = row.locator(
+    '[data-recued-run-modal-action="remove-trigger"]',
+  );
   await remove.click();
   await expect(remove).toHaveAttribute('aria-disabled', 'true');
   await expect(remove).toHaveAttribute('aria-busy', 'true');
@@ -13841,12 +17727,36 @@ test('the shared Run modal returns nested trigger config focus', async ({ page }
   await dialog.getByRole('button', { name: 'Add trigger' }).click();
   const row = dialog.locator('.run-modal-rule-row');
   await expect(row).toHaveCount(1);
-  const config = row.getByRole('button', { name: 'Config' });
+  const config = row.locator(
+    '[data-recued-run-modal-action="config-trigger"]',
+  );
 
   await config.click();
   const editor = page.getByRole('dialog', { name: 'Edit config' });
   await expect(editor).toBeFocused();
-  await editor.getByRole('button', { name: 'Close' }).click();
+  const topic = editor.getByRole('textbox', { name: 'Topic' });
+  await topic.fill('障害対応');
+  await topic.focus();
+  const composingEscape = await topic.evaluate((input) => {
+    const event = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      code: 'Escape',
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    const dispatched = input.dispatchEvent(event);
+    return { dispatched, defaultPrevented: event.defaultPrevented };
+  });
+  expect(composingEscape).toEqual({
+    dispatched: true,
+    defaultPrevented: false,
+  });
+  await expect(editor).toBeVisible();
+  await expect(topic).toHaveValue('障害対応');
+  await expect(topic).toBeFocused();
+
+  await page.keyboard.press('Escape');
   await expect(editor).toHaveCount(0);
   await expect(config).toBeFocused();
 
@@ -13904,6 +17814,7 @@ test('Recipes preserves an installed filter chip through repaints', async ({ pag
 
   const chip = page.getByRole('group', { name: 'Filter by type' })
     .getByRole('button', { name: 'Manual', exact: true });
+  expect((await chip.boundingBox())?.height).toBeGreaterThanOrEqual(36);
   await chip.focus();
   await page.keyboard.press('Enter');
   await expect(chip).toHaveAttribute('aria-pressed', 'true');
@@ -14021,6 +17932,7 @@ test('Recipes Discover keeps focus on a facet chip through query repaints', asyn
 
   const gmail = page.locator('[data-facet="platform"][data-value="gmail"]');
   await expect(gmail).toBeVisible();
+  expect((await gmail.boundingBox())?.height).toBeGreaterThanOrEqual(36);
   await gmail.focus();
   await expect(gmail).toBeFocused();
   await page.keyboard.press('Enter');
@@ -14028,6 +17940,64 @@ test('Recipes Discover keeps focus on a facet chip through query repaints', asyn
   await expect(gmail).toHaveAttribute('aria-pressed', 'true');
   await expect(gmail).toBeFocused();
   await expect(page.locator('[data-recued-discover-card]')).toHaveCount(1);
+});
+
+test('Recipes Discover contains long facets and results at a narrow viewport', async ({ page }) => {
+  const longIdentity = 'identity'.repeat(28);
+  const longPublisher = `publisher-${'identity'.repeat(20)}`;
+  const longPlatform = `platform-${'identity'.repeat(18)}`;
+  const longTag = `tag-${'identity'.repeat(18)}`;
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.route('https://recued.com/catalog/search?**', async (route) => {
+    await route.fulfill({
+      json: {
+        rows: [{
+          recipe_id: `discover-${longIdentity}`,
+          publisher_id: longPublisher,
+          name: `Discover${'N'.repeat(240)}`,
+          description: `description-${'content'.repeat(35)}`,
+          version: 1,
+          platforms: [longPlatform],
+          tags: [longTag],
+          depends_on: [`pack-${'identity'.repeat(20)}`],
+        }],
+        total: 1,
+        totalPages: 1,
+        page: 1,
+        facets: {
+          platform: [{ value: longPlatform, count: 1 }],
+          tag: [{ value: longTag, count: 1 }],
+        },
+      },
+    });
+  });
+  await page.goto(`${HARNESS_URL}?recipes=installed#recipes`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator('[data-recued-discovery-tab="discover"]').click();
+
+  const panel = page.locator('[data-recued-discover-panel]');
+  const card = panel.locator('[data-recued-discover-card]');
+  await expect(card.locator('.discover-card-title')).toContainText('DiscoverNN');
+  const owners = panel.locator(
+    ':scope, .discover-controls, .discover-filters, .discover-chip-group, '
+    + '.discover-grid, [data-recued-discover-card], .discover-card-head, '
+    + '.discover-card-title, .discover-badge, .discover-card-foot, '
+    + '.discover-card-meta',
+  );
+  expect(await owners.evaluateAll((elements) => elements.every(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  ))).toBe(true);
+  expect(await panel.evaluate((element) => {
+    const parent = element.parentElement;
+    return parent !== null && parent.scrollWidth <= parent.clientWidth + 1;
+  })).toBe(true);
+  const facetHeights = await panel.locator('.discover-chip').evaluateAll(
+    (chips) => chips.map((chip) => chip.getBoundingClientRect().height),
+  );
+  expect(facetHeights).toHaveLength(2);
+  expect(Math.min(...facetHeights)).toBeGreaterThanOrEqual(44);
+  expect((await card.locator('[data-recued-discover-action]').boundingBox())?.height)
+    .toBeGreaterThanOrEqual(36);
 });
 
 test('Recipes Discover keeps dependency install ownership through a slow failure', async ({ page }) => {
@@ -14112,6 +18082,129 @@ test('Recipes Discover keeps dependency install ownership through a slow failure
   await expect(action).toBeFocused();
 });
 
+test('Recipes gives a missing dependency a named mobile install target', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.route('https://recued.com/catalog/**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith('/catalog/versions')) {
+      await route.fulfill({ json: { versions: {} } });
+      return;
+    }
+    if (url.pathname.endsWith('/catalog/search')) {
+      await route.fulfill({
+        json: {
+          rows: [{
+            recipe_id: 'mail-digest',
+            publisher_id: 'recued-core',
+            name: 'Mail digest',
+            description: 'Summarize unread mail.',
+            version: 1,
+            platforms: ['gmail'],
+            tags: ['mail'],
+            depends_on: ['recued-core.installed-mail'],
+          }],
+          total: 1,
+          totalPages: 1,
+          page: 1,
+          facets: {},
+        },
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 503,
+      json: { error: 'Marketplace catalogue unavailable.' },
+    });
+  });
+  await page.goto(
+    `${HARNESS_URL}?recipes=installed&packs=installed&packs_installed=0`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+  await page.locator('[data-recued-discovery-tab="discover"]').click();
+  await page.locator(
+    '[data-recued-discover-action][data-id="mail-digest"]',
+  ).click();
+
+  const dialog = page.getByRole('dialog', { name: 'Install Mail digest' });
+  const dependency = dialog.getByRole('checkbox', {
+    name: 'Install Installed Mail',
+  });
+  await expect(dependency).toBeChecked();
+  const labelHeight = await dependency.evaluate((node) => (
+    node.closest('label')?.getBoundingClientRect().height ?? 0
+  ));
+  expect(labelHeight).toBeGreaterThanOrEqual(36);
+  expect(await dialog.evaluate((node) => node.scrollWidth <= node.clientWidth))
+    .toBe(true);
+
+  await dependency.focus();
+  await page.keyboard.press('Space');
+  await expect(dependency).not.toBeChecked();
+  await expect(dependency).toBeFocused();
+});
+
+test('Recipes contains long dependency consent content at a narrow viewport', async ({ page }) => {
+  const longPackSlug = `pack-${'identity'.repeat(7)}`;
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.route('https://recued.com/catalog/search?**', async (route) => {
+    await route.fulfill({
+      json: {
+        rows: [{
+          recipe_id: `dialog-${'identity'.repeat(28)}`,
+          publisher_id: `publisher-${'identity'.repeat(24)}`,
+          name: `Install${'N'.repeat(240)}`,
+          description: 'Open the dependency consent surface.',
+          version: 123456789,
+          platforms: ['mail'],
+          tags: ['workflow'],
+          depends_on: [`recued-core.${longPackSlug}`],
+        }],
+        total: 1,
+        totalPages: 1,
+        page: 1,
+        facets: {},
+      },
+    });
+  });
+  await page.goto(
+    `${HARNESS_URL}?recipes=installed&packs=installed`
+    + '&packs_installed=0&connection_text=long#recipes',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator('[data-recued-discovery-tab="discover"]').click();
+  await page.locator('[data-recued-discover-action]').click();
+
+  const dialog = page.getByRole('dialog', { name: /^Install InstallN/ });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('.recipe-dialog-meta')).toContainText('publisher-identity');
+  const owners = dialog.locator(
+    ':scope, :scope > *, .recipe-dialog-deps, '
+    + '[data-recued-recipe-dialog-dep], .recipe-dialog-dep-head, '
+    + '.recipe-dialog-dep-select, .recipe-dialog-dep-name, '
+    + '[data-recued-install-grant-picker], .igp-access-list, '
+    + '.igp-access-row, .igp-scope-list, .igp-scope-row, .recipe-dialog-foot',
+  );
+  expect(await owners.evaluateAll((elements) => elements.every(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  ))).toBe(true);
+  const frame = await dialog.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(frame.left).toBeGreaterThanOrEqual(9.5);
+  expect(frame.right).toBeLessThanOrEqual(frame.viewportWidth - 9.5);
+  const dependency = dialog.getByRole('checkbox', { name: 'Install Installed Mail' });
+  const install = dialog.locator('[data-recued-recipe-dialog-install]');
+  expect((await dependency.locator('..').boundingBox())?.height)
+    .toBeGreaterThanOrEqual(36);
+  expect((await install.boundingBox())?.height).toBeGreaterThanOrEqual(40);
+});
+
 test('Recipes Discover keeps marketplace recovery focused and single-flight', async ({ page }) => {
   let searchCalls = 0;
   await page.route('https://recued.com/catalog/**', async (route) => {
@@ -14162,6 +18255,7 @@ test('Recipes Discover keeps marketplace recovery focused and single-flight', as
   await expect(status).toHaveAttribute('role', 'alert');
   const retry = page.locator('[data-recued-discover-retry]');
   await expect(retry).toHaveText('Retry');
+  expect((await retry.boundingBox())?.height).toBeGreaterThanOrEqual(36);
   await retry.focus();
   await page.keyboard.press('Enter');
 
@@ -14198,6 +18292,14 @@ test('Recipes discovery tabs form one arrow-key keyboard stop', async ({ page })
 
   const installed = page.locator('[data-recued-discovery-tab="installed"]');
   const discover = page.locator('[data-recued-discovery-tab="discover"]');
+  await expect(page.getByRole('tablist', {
+    name: 'Recipe library sections',
+  })).toBeVisible();
+  await expect(installed).toHaveAttribute(
+    'aria-controls',
+    'recued-recipes-library-installed-panel',
+  );
+  await expect(page.getByRole('tabpanel', { name: 'Installed' })).toBeVisible();
   await expect(installed).toHaveAttribute('tabindex', '0');
   await expect(discover).toHaveAttribute('tabindex', '-1');
   await installed.focus();
@@ -14206,10 +18308,175 @@ test('Recipes discovery tabs form one arrow-key keyboard stop', async ({ page })
   await expect(discover).toHaveAttribute('aria-selected', 'true');
   await expect(discover).toHaveAttribute('tabindex', '0');
   await expect(discover).toBeFocused();
+  await expect(page.getByRole('tabpanel', { name: 'Discover' })).toBeVisible();
   await page.keyboard.press('ArrowLeft');
   await expect(installed).toHaveAttribute('aria-selected', 'true');
   await expect(installed).toHaveAttribute('tabindex', '0');
   await expect(installed).toBeFocused();
+});
+
+test('Logs contains long run identifiers in mobile history and detail', async ({ page }) => {
+  const longName = `Run${'N'.repeat(240)}`;
+  const longRecipeId = `calendar/${'recipe'.repeat(40)}`;
+  await page.setViewportSize({ width: 280, height: 480 });
+  await page.goto(
+    `${HARNESS_URL}?journey=verification&logs_text=long#logs`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const row = page.locator(`[${LOGS_ROW}="run-verify"]`);
+  await expect(row.locator('.logs-cell-title')).toHaveText(longName);
+  await expect(row.locator('.logs-cell-sub')).toHaveText(longRecipeId);
+  const historyGeometry = await row.evaluate((node) => {
+    const route = node.closest<HTMLElement>('[data-recued-logs-route]');
+    const selectors = [
+      'td[data-label="Run"]',
+      '.logs-cell-title',
+      '.logs-cell-sub',
+    ];
+    const elements = [
+      node,
+      ...selectors.map((selector) => node.querySelector<HTMLElement>(selector)),
+    ].filter((element): element is HTMLElement => element !== null);
+    return {
+      elements: elements.map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          left: rect.left,
+          right: rect.right,
+          scrollWidth: element.scrollWidth,
+          clientWidth: element.clientWidth,
+        };
+      }),
+      routeScrollWidth: route?.scrollWidth ?? 0,
+      routeClientWidth: route?.clientWidth ?? 0,
+    };
+  });
+  for (const bounds of historyGeometry.elements) {
+    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds.right).toBeLessThanOrEqual(280.5);
+    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+  }
+  expect(historyGeometry.routeScrollWidth)
+    .toBeLessThanOrEqual(historyGeometry.routeClientWidth);
+
+  await row.locator(`[${LOGS_ACTION}="open-detail"]`).click();
+  const heading = page.locator(`[${LOGS_DETAIL_HEADING}="run-verify"]`);
+  await expect(heading).toHaveText(longRecipeId);
+  const detail = page.locator('[data-recued-logs-detail="run-verify"]');
+  const detailGeometry = await detail.evaluate((node) => {
+    const route = node.closest<HTMLElement>('[data-recued-logs-route]');
+    const elements = [
+      node,
+      node.querySelector<HTMLElement>('[data-recued-logs-detail-heading]'),
+      node.querySelector<HTMLElement>('.logs-detail-meta'),
+      ...node.querySelectorAll<HTMLElement>('.logs-detail-meta > span'),
+      ...node.querySelectorAll<HTMLElement>('.logs-detail-row'),
+      ...node.querySelectorAll<HTMLElement>('.logs-row-links a'),
+    ].filter((element): element is HTMLElement => element !== null);
+    return {
+      elements: elements.map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          left: rect.left,
+          right: rect.right,
+          scrollWidth: element.scrollWidth,
+          clientWidth: element.clientWidth,
+        };
+      }),
+      routeScrollWidth: route?.scrollWidth ?? 0,
+      routeClientWidth: route?.clientWidth ?? 0,
+    };
+  });
+  for (const bounds of detailGeometry.elements) {
+    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds.right).toBeLessThanOrEqual(280.5);
+    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+  }
+  expect(detailGeometry.routeScrollWidth)
+    .toBeLessThanOrEqual(detailGeometry.routeClientWidth);
+});
+
+test('Logs contains long live-run and pass labels on a narrow phone', async ({ page }) => {
+  const recipeId = `recipe-${'R'.repeat(240)}`;
+  const stepId = `step-${'S'.repeat(240)}`;
+  const passName = `Pass${'P'.repeat(240)}`;
+  await page.setViewportSize({ width: 280, height: 480 });
+  await page.goto(
+    `${HARNESS_URL}?live=running&logs_passes=active&logs_text=long#logs`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const peekTitle = page.locator('.logs-peek-title').first();
+  await expect(peekTitle).toHaveText(`${recipeId} · ${stepId}`);
+  const peekGeometry = await page.locator('[data-recued-logs-route]').evaluate(
+    (route) => ({
+      routeScrollWidth: route.scrollWidth,
+      routeClientWidth: route.clientWidth,
+      elements: [
+        ...route.querySelectorAll<HTMLElement>(
+          '.logs-peek-title, .logs-peek-sub',
+        ),
+      ].map((element) => ({
+        scrollWidth: element.scrollWidth,
+        clientWidth: element.clientWidth,
+        right: element.getBoundingClientRect().right,
+      })),
+    }),
+  );
+  expect(peekGeometry.routeScrollWidth)
+    .toBeLessThanOrEqual(peekGeometry.routeClientWidth);
+  for (const bounds of peekGeometry.elements) {
+    expect(bounds.right).toBeLessThanOrEqual(280.5);
+    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+  }
+
+  await page.evaluate(() => window.__app.setHash('#logs/active'));
+  const activeRow = page.locator(`[${LOGS_ACTIVE_ROW}]`).first();
+  const passRow = page.locator(`[${LOGS_PASS_ROW}]`).first();
+  await expect(activeRow.locator('.logs-active-title'))
+    .toHaveText(`${recipeId} · ${stepId}`);
+  await expect(passRow.locator('.logs-active-title')).toHaveText(passName);
+  await expect(activeRow.locator('.logs-active-meta')).toContainText(
+    `lane-${'L'.repeat(240)}`,
+  );
+  await expect(passRow.locator('.logs-active-meta')).toContainText(
+    `operation.${'O'.repeat(240)}`,
+  );
+  const activeGeometry = await page.locator(
+    '[data-recued-logs-route]',
+  ).evaluate((route) => {
+    const elements = [
+      ...route.querySelectorAll<HTMLElement>(
+        '[data-recued-logs-active-row], '
+        + '[data-recued-logs-pass-row], '
+        + '.logs-active-title, '
+        + '.logs-active-meta, '
+        + '.logs-active-meta > span, '
+        + '.logs-active-controls',
+      ),
+    ];
+    return {
+      routeScrollWidth: route.scrollWidth,
+      routeClientWidth: route.clientWidth,
+      elements: elements.map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          left: rect.left,
+          right: rect.right,
+          scrollWidth: element.scrollWidth,
+          clientWidth: element.clientWidth,
+        };
+      }),
+    };
+  });
+  expect(activeGeometry.routeScrollWidth)
+    .toBeLessThanOrEqual(activeGeometry.routeClientWidth);
+  for (const bounds of activeGeometry.elements) {
+    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds.right).toBeLessThanOrEqual(280.5);
+    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+  }
 });
 
 test('Logs moves focus into an opened run detail and preserves it through a feed repaint', async ({ page }) => {
@@ -14218,7 +18485,10 @@ test('Logs moves focus into an opened run detail and preserves it through a feed
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#logs'));
 
-  const openRun = page.getByRole('button', { name: 'Open run detail' });
+  const openRun = page.getByRole('button', {
+    name: 'Open run detail for Schedule customer review (run-verify)',
+    exact: true,
+  });
   await expect(openRun).toBeVisible();
   await openRun.focus();
   await page.keyboard.press('Enter');
@@ -14257,7 +18527,10 @@ test('Logs renders bare History after opening an in-page run detail', async ({ p
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#logs'));
 
-  const openRun = page.getByRole('button', { name: 'Open run detail' });
+  const openRun = page.getByRole('button', {
+    name: 'Open run detail for Schedule customer review (run-verify)',
+    exact: true,
+  });
   await openRun.click();
   const heading = page.locator(`[${LOGS_DETAIL_HEADING}="run-verify"]`);
   await expect(heading).toHaveText('calendar/schedule-review');
@@ -14285,6 +18558,9 @@ test('Logs keeps failed run-detail recovery keyboard-owned and single-flight', a
   await opener.focus();
   await page.keyboard.press('Enter');
 
+  await expect(opener).toHaveAccessibleName(
+    'Opening run detail for Schedule customer review (run-verify)',
+  );
   await expect(opener).toHaveAttribute('aria-disabled', 'true');
   await expect(opener).toHaveAttribute('aria-busy', 'true');
   await expect(opener).not.toHaveAttribute('disabled');
@@ -14405,6 +18681,62 @@ test('Logs preserves filter focus and caret through feed repaints', async ({ pag
     (input as HTMLInputElement).selectionStart)).toBe(3);
 });
 
+test('Logs gives history, detail, and live controls full mobile targets', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const expectFullTargets = async (): Promise<void> => {
+    const route = page.locator('[data-recued-logs-route]');
+    const dimensions = await route.locator(
+      'a:visible, button:visible, input:visible, select:visible, textarea:visible',
+    ).evaluateAll((elements) => elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    }));
+    expect(dimensions.length).toBeGreaterThan(0);
+    expect(Math.min(...dimensions.map(({ width }) => width)))
+      .toBeGreaterThanOrEqual(36);
+    expect(Math.min(...dimensions.map(({ height }) => height)))
+      .toBeGreaterThanOrEqual(36);
+    expect(await route.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth,
+    )).toBe(true);
+  };
+
+  await page.goto(`${HARNESS_URL}?journey=verification&logs=paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#logs'));
+  await expect(page.locator(`[${LOGS_ROW}="run-verify"]`)).toBeVisible();
+  expect(await page.locator(
+    `[${LOGS_ROW}="run-verify"] .logs-cell-status, `
+      + `[${LOGS_ROW}="run-verify"] .logs-cell-policy`,
+  ).evaluateAll((cells) => cells.map((cell) => {
+    const style = getComputedStyle(cell);
+    return { display: style.display, columnGap: style.columnGap };
+  }))).toEqual([
+    { display: 'flex', columnGap: '8px' },
+    { display: 'flex', columnGap: '8px' },
+  ]);
+  const detail = page.getByRole('complementary', {
+    name: 'Run detail',
+  });
+  await expect(detail).toBeVisible();
+  await expectFullTargets();
+
+  await page.locator(
+    `[${LOGS_ROW}="run-verify"] [${LOGS_ACTION}="open-detail"]`,
+  ).click();
+  await expect(page.locator(`[${LOGS_DETAIL_HEADING}="run-verify"]`))
+    .toBeVisible();
+  await expect(detail).toBeVisible();
+  await expectFullTargets();
+
+  await page.goto(`${HARNESS_URL}?live=running&logs_passes=active`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#logs/active'));
+  await expect(page.locator(`[${LOGS_ACTIVE_ROW}]`)).toHaveCount(2);
+  await expect(page.locator(`[${LOGS_PASS_ROW}]`)).toHaveCount(2);
+  await expectFullTargets();
+});
+
 test('Logs guards pagination and focuses the first appended run', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?journey=verification&logs=paged`);
@@ -14431,8 +18763,33 @@ test('Logs guards pagination and focuses the first appended run', async ({ page 
     ),
   ).toBe(before + 1);
   await expect(
-    appended.getByRole('button', { name: 'Open run detail' }),
+    appended.getByRole('button', {
+      name: 'Open run detail for Sync customer account (run-verify-older)',
+      exact: true,
+    }),
   ).toBeFocused();
+  await expect(page.getByRole('button', {
+    name: 'Open run detail for Schedule customer review (run-verify)',
+    exact: true,
+  })).toHaveCount(1);
+});
+
+test('Logs gives repeated live controls exact accessible owners', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?live=running&logs_passes=active`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#logs/active'));
+
+  const names = [
+    'Refresh active runs',
+    'Refresh active passes',
+    'Kill daily-brief · summarize (run-live-control-1)',
+    'Kill weekly-review · collect (run-live-control-2)',
+    'Revoke Send reviewed mail (pass-live-control-1)',
+    'Revoke Update reviewed contact (pass-live-control-2)',
+  ];
+  for (const name of names) {
+    await expect(page.getByRole('button', { name, exact: true })).toHaveCount(1);
+  }
 });
 
 test('Logs keeps a kill action focused until its run retires', async ({ page }) => {
@@ -14464,6 +18821,9 @@ test('Logs keeps a kill action focused until its run retires', async ({ page }) 
   await page.keyboard.press('Enter');
 
   await expect(firstKill).toHaveText('Killing…');
+  await expect(firstKill).toHaveAccessibleName(
+    'Killing… daily-brief · summarize (run-live-control-1)',
+  );
   await page.evaluate(() => window.__app.setHash('#data'));
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
@@ -14547,6 +18907,9 @@ test('Logs keeps a pass revocation focused until its row retires', async ({ page
   await page.keyboard.press('Enter');
 
   await expect(firstRevoke).toHaveText('Revoking…');
+  await expect(firstRevoke).toHaveAccessibleName(
+    'Revoking… Send reviewed mail (pass-live-control-1)',
+  );
   await expect(firstRevoke).toBeFocused();
   await expect(firstRevoke).not.toHaveAttribute('disabled');
   await expect(firstRevoke).toHaveAttribute('aria-disabled', 'true');
@@ -14586,6 +18949,7 @@ test('Logs keeps manual refreshes focused, visible, and single-flight', async ({
   await activeRefresh.focus();
   await page.keyboard.press('Enter');
   await expect(activeRefresh).toHaveText('Refreshing…');
+  await expect(activeRefresh).toHaveAccessibleName('Refreshing… active runs');
   await expect(activeRefresh).toHaveAttribute('aria-disabled', 'true');
   await expect(activeRefresh).toHaveAttribute('aria-busy', 'true');
   await expect(activeRefresh).not.toHaveAttribute('disabled');
@@ -14605,6 +18969,9 @@ test('Logs keeps manual refreshes focused, visible, and single-flight', async ({
   await passesRefresh.focus();
   await page.keyboard.press('Enter');
   await expect(passesRefresh).toHaveText('Refreshing…');
+  await expect(passesRefresh).toHaveAccessibleName(
+    'Refreshing… active passes',
+  );
   await expect(passesRefresh).toHaveAttribute('aria-disabled', 'true');
   await expect(passesRefresh).toHaveAttribute('aria-busy', 'true');
   await expect(passesRefresh).not.toHaveAttribute('disabled');
@@ -14671,6 +19038,8 @@ test('Approvals keeps queue Refresh focused and single-flight', async ({ page })
   await expect(error).toContainText('Approval queue is temporarily unavailable.');
   const refresh = page.locator(`[${APPROVALS_REFRESH}]`);
   await expect(refresh).toHaveText('Refresh');
+  const refreshBox = await refresh.boundingBox();
+  expect(refreshBox?.height).toBeGreaterThanOrEqual(36);
   const before = await page.evaluate(
     () => window.__app.rpcCallCount('approval.list'),
   );
@@ -14697,6 +19066,127 @@ test('Approvals keeps queue Refresh focused and single-flight', async ({ page })
   await expect(refresh).toBeFocused();
 });
 
+test('Approvals gives repeated decision and handoff actions exact owners', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?attention=pending`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#approvals'));
+
+  const decisions = page.getByRole('list', {
+    name: 'Pending decisions',
+  });
+  await expect(page.getByRole('heading', {
+    name: 'Pending decisions',
+    level: 2,
+  })).toBeAttached();
+  await expect(decisions.getByRole('listitem')).toHaveCount(2);
+  for (const name of [
+    'Send the customer follow-up?',
+    "Update Acme's account owner in HubSpot",
+  ]) {
+    await expect(decisions.getByRole('heading', {
+      name,
+      level: 3,
+    })).toHaveCount(1);
+  }
+
+  const expectedButtons = [
+    'Approve: Send the customer follow-up?',
+    'Reject: Send the customer follow-up?',
+    "Approve: Update Acme's account owner in HubSpot",
+    "Reject: Update Acme's account owner in HubSpot",
+  ];
+  for (const name of expectedButtons) {
+    await expect(page.getByRole('button', { name, exact: true })).toHaveCount(1);
+  }
+
+  const subject = "Update Acme's account owner in HubSpot";
+  for (const name of [
+    `Recipe for ${subject}`,
+    `Connection for ${subject}`,
+    `Run audit for ${subject}`,
+  ]) {
+    await expect(page.getByRole('link', { name, exact: true })).toHaveCount(1);
+  }
+
+  const handoffHeights = await page.locator('.rx-approval-card-links a')
+    .evaluateAll((links) => links.map(
+      (link) => link.getBoundingClientRect().height,
+    ));
+  expect(handoffHeights.length).toBeGreaterThan(0);
+  expect(Math.min(...handoffHeights)).toBeGreaterThanOrEqual(36);
+
+  const decisionHeights = await page.locator('.rx-approval-card-actions button')
+    .evaluateAll((buttons) => buttons.map(
+      (button) => button.getBoundingClientRect().height,
+    ));
+  expect(decisionHeights.length).toBeGreaterThan(0);
+  expect(Math.min(...decisionHeights)).toBeGreaterThanOrEqual(36);
+});
+
+test('Approvals contains long decisions through both confirmation states', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 900 });
+  await page.goto(
+    `${HARNESS_URL}?attention=destructive&approvals_text=long`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#approvals'));
+
+  const route = page.locator('[data-recued-approvals-route]');
+  const gate = page.locator(
+    '[data-recued-approvals-focus="approval-attention-1"]',
+  );
+  const ask = page.locator(
+    '[data-recued-approvals-focus="ask-attention-1"]',
+  );
+  await expect(gate).toBeVisible();
+  await expect(ask).toBeVisible();
+
+  const expectContained = async (): Promise<void> => {
+    const measurements = await route.evaluate((root) => ({
+      clientWidth: root.clientWidth,
+      scrollWidth: root.scrollWidth,
+      cards: Array.from(root.querySelectorAll<HTMLElement>('[role="listitem"]'))
+        .map((card) => ({
+          clientWidth: card.clientWidth,
+          scrollWidth: card.scrollWidth,
+          right: card.getBoundingClientRect().right,
+          widestRight: Math.max(
+            card.getBoundingClientRect().right,
+            ...Array.from(card.querySelectorAll<HTMLElement>('*'))
+              .map((node) => node.getBoundingClientRect().right),
+          ),
+        })),
+    }));
+    expect(measurements.scrollWidth).toBeLessThanOrEqual(
+      measurements.clientWidth + 1,
+    );
+    expect(measurements.cards).toHaveLength(2);
+    for (const card of measurements.cards) {
+      expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth + 1);
+      expect(card.widestRight).toBeLessThanOrEqual(card.right + 1);
+    }
+  };
+
+  await expectContained();
+
+  await gate.locator('[data-recued-approval-action="arm"]').click();
+  await expect(
+    gate.locator('[data-recued-approval-caution]'),
+  ).toBeVisible();
+  await expect(
+    gate.locator('[data-recued-approval-action="confirm"]'),
+  ).toBeVisible();
+  await expectContained();
+
+  await ask.locator('[data-recued-ask-option="approve"]').click();
+  await expect(ask.locator('[data-recued-ask-confirm]')).toBeVisible();
+  await expect(
+    ask.locator('[data-recued-ask-option="approve"]'),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await expectContained();
+});
+
 test('Approvals moves focus to the next card after resolving a gate', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?attention=pending`);
@@ -14710,7 +19200,10 @@ test('Approvals moves focus to the next card after resolving a gate', async ({ p
     '[data-recued-approvals-focus="ask-attention-1"]',
   );
   await expect(gate).toBeVisible();
-  const approve = gate.getByRole('button', { name: 'Approve', exact: true });
+  const approve = gate.getByRole('button', {
+    name: "Approve: Update Acme's account owner in HubSpot",
+    exact: true,
+  });
   await approve.focus();
   await page.keyboard.press('Enter');
 
@@ -14734,12 +19227,21 @@ test('Approvals keeps a slow gate decision focus-owned and attached', async ({ p
   const ask = page.locator(
     '[data-recued-approvals-focus="ask-attention-1"]',
   );
-  const approve = gate.getByRole('button', { name: 'Approve', exact: true });
+  const approve = gate.getByRole('button', {
+    name: "Approve: Update Acme's account owner in HubSpot",
+    exact: true,
+  });
   await approve.focus();
   await page.keyboard.press('Enter');
 
-  const approving = gate.getByRole('button', { name: 'Approving…', exact: true });
-  const reject = gate.getByRole('button', { name: 'Reject', exact: true });
+  const approving = gate.getByRole('button', {
+    name: "Approving…: Update Acme's account owner in HubSpot",
+    exact: true,
+  });
+  const reject = gate.getByRole('button', {
+    name: "Reject: Update Acme's account owner in HubSpot",
+    exact: true,
+  });
   await expect(approving).toHaveAttribute('aria-disabled', 'true');
   await expect(approving).toHaveAttribute('aria-busy', 'true');
   await expect(approving).not.toHaveAttribute('disabled');
@@ -14797,7 +19299,10 @@ test('Approvals keeps a slow ask answer focus-owned and attached', async ({ page
   const pendingReads = await page.evaluate(
     () => window.__app.rpcCallCount('notification.pending_asks'),
   );
-  await ask.getByRole('button', { name: 'Approve', exact: true }).focus();
+  await ask.getByRole('button', {
+    name: 'Approve: Send the customer follow-up?',
+    exact: true,
+  }).focus();
   await page.keyboard.press('Enter');
   await expect.poll(
     () => page.evaluate(
@@ -14822,10 +19327,13 @@ test('Approvals keeps a slow ask answer focus-owned and attached', async ({ page
     pendingReads,
   );
   const approving = ask.getByRole('button', {
-    name: 'Approving…',
+    name: 'Approving…: Send the customer follow-up?',
     exact: true,
   });
-  const reject = ask.getByRole('button', { name: 'Reject', exact: true });
+  const reject = ask.getByRole('button', {
+    name: 'Reject: Send the customer follow-up?',
+    exact: true,
+  });
   await expect(approving).toHaveAttribute('aria-disabled', 'true');
   await expect(approving).toHaveAttribute('aria-busy', 'true');
   await expect(approving).not.toHaveAttribute('disabled');
@@ -14879,14 +19387,20 @@ test('Approvals keeps a slow Chat plan decision focus-owned and attached', async
   const plan = page.locator(
     '[data-recued-approvals-focus="plan-attention-1"]',
   );
-  await plan.getByRole('button', { name: 'Approve', exact: true }).focus();
+  await plan.getByRole('button', {
+    name: 'Approve: mail.send',
+    exact: true,
+  }).focus();
   await page.keyboard.press('Enter');
 
   const approving = plan.getByRole('button', {
-    name: 'Approving…',
+    name: 'Approving…: mail.send',
     exact: true,
   });
-  const reject = plan.getByRole('button', { name: 'Reject', exact: true });
+  const reject = plan.getByRole('button', {
+    name: 'Reject: mail.send',
+    exact: true,
+  });
   await expect(approving).toHaveAttribute('aria-disabled', 'true');
   await expect(approving).toHaveAttribute('aria-busy', 'true');
   await expect(approving).not.toHaveAttribute('disabled');
@@ -14924,8 +19438,15 @@ test('Approvals keeps a slow Chat plan decision focus-owned and attached', async
     name: 'Continue in Chat',
     exact: true,
   });
+  const planReceipt = page.locator('.approvals-plan-resolution');
+  const planActions = planReceipt.locator('a, button');
   await expect(continuation).toBeVisible();
   await expect(continuation).toBeFocused();
+  await expect(planActions).toHaveCount(2);
+  const planActionHeights = await planActions.evaluateAll((actions) =>
+    actions.map((action) => action.getBoundingClientRect().height)
+  );
+  expect(Math.min(...planActionHeights)).toBeGreaterThanOrEqual(36);
   await page.evaluate(() => window.__app.setHash('#chat'));
   await expect(page).toHaveURL(/#chat$/);
   await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
@@ -14942,7 +19463,10 @@ test('Approvals returns a rejected decision to its exact retry action', async ({
   const gate = page.locator(
     '[data-recued-approvals-focus="approval-attention-1"]',
   );
-  const reject = gate.getByRole('button', { name: 'Reject', exact: true });
+  const reject = gate.getByRole('button', {
+    name: "Reject: Update Acme's account owner in HubSpot",
+    exact: true,
+  });
   await reject.focus();
   await page.keyboard.press('Enter');
 
@@ -14971,7 +19495,10 @@ test('Approvals moves focus to the next card after answering an ask', async ({ p
     '[data-recued-approvals-focus="approval-attention-1"]',
   );
   await expect(ask).toBeVisible();
-  const approve = ask.getByRole('button', { name: 'Approve', exact: true });
+  const approve = ask.getByRole('button', {
+    name: 'Approve: Send the customer follow-up?',
+    exact: true,
+  });
   await approve.focus();
   await page.keyboard.press('Enter');
 
@@ -14998,7 +19525,10 @@ test('Approvals keeps an acknowledged ask retired when reconciliation fails', as
   const pendingReadsBefore = await page.evaluate(
     () => window.__app.rpcCallCount('notification.pending_asks'),
   );
-  const approve = ask.getByRole('button', { name: 'Approve', exact: true });
+  const approve = ask.getByRole('button', {
+    name: 'Approve: Send the customer follow-up?',
+    exact: true,
+  });
   await approve.focus();
   await page.keyboard.press('Enter');
 
@@ -15034,7 +19564,10 @@ test('Approvals returns a rejected ask answer to its exact retry option', async 
   const ask = page.locator(
     '[data-recued-approvals-focus="ask-attention-1"]',
   );
-  const reject = ask.getByRole('button', { name: 'Reject', exact: true });
+  const reject = ask.getByRole('button', {
+    name: 'Reject: Send the customer follow-up?',
+    exact: true,
+  });
   await reject.focus();
   await page.keyboard.press('Enter');
 
@@ -15062,7 +19595,10 @@ test('Approvals returns a rejected Chat plan to its exact retry action', async (
   const plan = page.locator(
     '[data-recued-approvals-focus="plan-attention-1"]',
   );
-  const approve = plan.getByRole('button', { name: 'Approve', exact: true });
+  const approve = plan.getByRole('button', {
+    name: 'Approve: mail.send',
+    exact: true,
+  });
   await approve.focus();
   await page.keyboard.press('Enter');
 
@@ -15088,11 +19624,17 @@ test('Approvals keeps focus on destructive confirmation controls', async ({ page
   const gate = page.locator(
     '[data-recued-approvals-focus="approval-attention-1"]',
   );
-  const approve = gate.getByRole('button', { name: 'Approve', exact: true });
+  const approve = gate.getByRole('button', {
+    name: "Approve: Update Acme's account owner in HubSpot",
+    exact: true,
+  });
   await approve.focus();
   await page.keyboard.press('Enter');
 
-  const confirm = gate.getByRole('button', { name: 'Confirm', exact: true });
+  const confirm = gate.getByRole('button', {
+    name: "Confirm: Update Acme's account owner in HubSpot",
+    exact: true,
+  });
   await expect(confirm).toBeVisible();
   await expect(confirm).toBeFocused();
 
@@ -15116,11 +19658,110 @@ test('Approvals keeps focus on destructive confirmation controls', async ({ page
   );
   await expect(confirm).toBeFocused();
 
-  const cancel = gate.getByRole('button', { name: 'Cancel', exact: true });
+  const cancel = gate.getByRole('button', {
+    name: "Cancel confirmation: Update Acme's account owner in HubSpot",
+    exact: true,
+  });
   await cancel.focus();
   await page.keyboard.press('Enter');
   await expect(approve).toBeVisible();
   await expect(approve).toBeFocused();
+});
+
+test('Reception distinguishes its section navigation from the app drawer', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?reception=pending`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#reception'));
+
+  const route = page.locator('[data-recued-reception-route]');
+  await expect(route.getByRole('heading', {
+    name: 'Reception Inbox',
+    level: 2,
+  })).toBeVisible();
+  await expect(route.getByRole('heading', {
+    name: 'Commitments',
+    level: 3,
+  })).toBeVisible();
+  await expect(route.getByRole('heading', {
+    name: 'Follow up with Morgan',
+    level: 3,
+  })).toBeVisible();
+
+  const sections = page.getByRole('navigation', {
+    name: 'Reception sections',
+  });
+  await expect(sections).toHaveCount(1);
+  await expect(sections.getByRole('link')).toHaveText([
+    'Inbox',
+    'Records',
+    'Abuse',
+    'Endpoints',
+  ]);
+  await expect(page.locator('nav[aria-label="Primary navigation"]'))
+    .toHaveCount(1);
+
+  await sections.getByRole('link', { name: 'Abuse' }).click();
+  const abuse = page.getByRole('region', { name: 'Abuse signals' });
+  await expect(abuse.getByRole('heading', {
+    name: 'Abuse signals',
+    level: 2,
+  })).toBeAttached();
+
+  await sections.getByRole('link', { name: 'Endpoints' }).click();
+  await expect(page.getByRole('heading', {
+    name: 'Endpoints',
+    level: 2,
+  })).toBeVisible();
+  await expect(page.getByRole('heading', {
+    name: 'Endpoint inventory',
+    level: 3,
+  })).toBeVisible();
+});
+
+test('Reception contains long inbox identities across list and detail', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?reception=pending&reception_text=long#reception`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const longTitle = `Follow${'T'.repeat(240)}`;
+  const route = page.locator('[data-recued-reception-route]');
+  const row = route.locator(
+    '[data-recued-reception-inbox-row="hold-reception-1"]',
+  );
+  const heading = route.locator(
+    '[data-recued-reception-inbox-detail-heading="hold-reception-1"]',
+  );
+  await expect(row.locator('.reception-inbox-row-title')).toHaveText(longTitle);
+  await expect(heading).toHaveText(longTitle);
+  await expect(row).toHaveAttribute('aria-selected', 'true');
+
+  const owners = route.locator(
+    ':scope, [data-recued-reception-route-content], '
+      + '[data-recued-reception-route-tabs], .reception-inbox-shell, '
+      + '.reception-inbox-head, .reception-inbox-body, '
+      + '.reception-inbox-list, .reception-inbox-group, '
+      + '.reception-inbox-row, .reception-inbox-row-title, '
+      + '.reception-inbox-row-subtitle, .reception-inbox-detail, '
+      + '.reception-inbox-detail-title, .reception-inbox-detail-subtitle, '
+      + '.reception-inbox-toolbar, .reception-inbox-chip, '
+      + '.reception-inbox-form, .reception-inbox-field',
+  );
+  expect(await owners.evaluateAll((elements) => elements.every(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  ))).toBe(true);
+  expect(await page.evaluate(
+    () => document.documentElement.scrollWidth <= window.innerWidth,
+  )).toBe(true);
+
+  const tabs = route.locator(
+    '[data-recued-reception-route-tabs] .reception-route-tab',
+  );
+  expect(await tabs.evaluateAll((elements) => elements.every((element) => {
+    const rect = element.getBoundingClientRect();
+    return rect.left >= 0 && rect.right <= window.innerWidth + 1;
+  }))).toBe(true);
 });
 
 test('Reception recovers destination inventory without losing query ownership', async ({ page }) => {
@@ -15192,6 +19833,9 @@ test('Reception moves focus into a selected inbox detail and preserves it throug
   await expect(heading).toHaveText('Prepare the launch brief');
   await expect(heading).toHaveAttribute('tabindex', '-1');
   await expect(heading).toBeFocused();
+  await expect(page.getByRole('form', {
+    name: 'Prepare the launch brief',
+  })).toBeVisible();
 
   const listCalls = await page.evaluate(
     () => window.__app.rpcCallCount('reception.inbox.list'),
@@ -15433,11 +20077,17 @@ test('Reception keeps inbox view switches focused, selected, and single-flight',
   await expect(open).toHaveAttribute('aria-pressed', 'false');
 });
 
-test('Reception Records lenses form one arrow-key keyboard stop', async ({ page }) => {
+test('Reception Records lenses form one full-size arrow-key keyboard stop', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?data=form-responses-paged`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#reception/records'));
+
+  const records = page.getByRole('region', { name: 'Reception records' });
+  await expect(records.getByRole('heading', {
+    name: 'Reception records',
+    level: 2,
+  })).toBeAttached();
 
   const lenses = page.locator('[data-recued-reception-records-lens]');
   const requests = page.locator(
@@ -15452,6 +20102,10 @@ test('Reception Records lenses form one arrow-key keyboard stop', async ({ page 
   expect(await lenses.evaluateAll((nodes) => nodes.filter(
     (node) => node.getAttribute('tabindex') === '0',
   ).length)).toBe(1);
+  const lensHeights = await lenses.evaluateAll((nodes) =>
+    nodes.map((node) => node.getBoundingClientRect().height)
+  );
+  expect(Math.min(...lensHeights)).toBeGreaterThanOrEqual(36);
 
   await requests.focus();
   await page.keyboard.press('ArrowRight');
@@ -15481,6 +20135,15 @@ test('Reception Records filters retain focus and expose their selection', async 
   );
   await expect(allKinds).toHaveAttribute('aria-pressed', 'true');
   await expect(bookings).toHaveAttribute('aria-pressed', 'false');
+
+  const filters = page.locator(
+    `[${RECEPTION_RECORDS_KIND}], [data-recued-reception-records-outcome]`,
+  );
+  await expect(filters).toHaveCount(5);
+  const filterHeights = await filters.evaluateAll((nodes) =>
+    nodes.map((node) => node.getBoundingClientRect().height)
+  );
+  expect(Math.min(...filterHeights)).toBeGreaterThanOrEqual(36);
 
   await bookings.click();
   await expect(bookings).toHaveAttribute('aria-pressed', 'true');
@@ -15567,9 +20230,68 @@ test('Reception Responses moves focus into detail and back to its row', async ({
   const heading = detail.getByRole('heading', { level: 2 });
   await expect(heading).toHaveText('visitor-0@example.test');
   await expect(heading).toBeFocused();
+  const detailActions = detail.locator('button, a[href]');
+  await expect(detailActions).toHaveCount(3);
+  const detailActionHeights = await detailActions.evaluateAll((nodes) =>
+    nodes.map((node) => node.getBoundingClientRect().height)
+  );
+  expect(Math.min(...detailActionHeights)).toBeGreaterThanOrEqual(36);
 
   await detail.getByRole('button', { name: 'Back to form responses' }).click();
   await expect(row).toBeFocused();
+});
+
+test('Reception Responses contains long identities without splitting status', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=form-responses-paged&form_response_text=long`
+      + '#reception/records',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(
+    '[data-recued-reception-records-lens="responses"]',
+  ).click();
+
+  const visitor = `${'visitor'.repeat(8)}@example.test`;
+  const route = page.locator('[data-recued-reception-route]');
+  const responses = route.locator('[data-recued-reception-responses]');
+  const row = responses.locator(
+    '[data-recued-reception-response-row="submission-0"]',
+  );
+  await expect(row.locator('strong')).toHaveText(visitor);
+  expect(await row.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  )).toBe(true);
+  await row.locator('button').click();
+
+  const detail = responses.locator(
+    '[data-recued-reception-response-detail="submission-0"]',
+  );
+  const heading = detail.getByRole('heading', { level: 2 });
+  const status = detail.locator(
+    '.reception-responses-header .reception-responses-pill',
+  );
+  await expect(heading).toHaveText(visitor);
+  await expect(heading).toBeFocused();
+  await expect(status).toHaveText('Accepted');
+  expect(await status.evaluate(
+    (element) => getComputedStyle(element).whiteSpace,
+  )).toBe('nowrap');
+  expect((await status.boundingBox())?.height).toBeLessThan(28);
+
+  const owners = detail.locator(
+    ':scope, .reception-responses-header, .reception-responses-header > *, '
+      + '.reception-responses-meta, .reception-responses-meta > *, '
+      + '.reception-responses-automation, '
+      + '.reception-responses-automation-actions, '
+      + '.reception-responses-fields, .reception-responses-fields > *',
+  );
+  expect(await owners.evaluateAll((elements) => elements.every(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  ))).toBe(true);
+  expect(await page.evaluate(
+    () => document.documentElement.scrollWidth <= window.innerWidth,
+  )).toBe(true);
 });
 
 test('Reception Responses pagination keeps a useful focus owner', async ({ page }) => {
@@ -15582,6 +20304,8 @@ test('Reception Responses pagination keeps a useful focus owner', async ({ page 
   ).click();
 
   const loadMore = page.getByRole('button', { name: 'Load more' });
+  const loadMoreBox = await loadMore.boundingBox();
+  expect(loadMoreBox?.height).toBeGreaterThanOrEqual(36);
   await loadMore.click();
   await expect(page.locator(
     '[data-recued-reception-response-row="submission-1"]',
@@ -15638,6 +20362,59 @@ test('Reception Responses advances focus into the automation picker', async ({ p
   ).getByRole('heading', { level: 3 });
   await expect(pickerHeading).toHaveText('Run this response now');
   await expect(pickerHeading).toBeFocused();
+});
+
+test('Reception Responses distinguishes automation actions and restores their focus', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=form-responses-paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#reception/records'));
+  await page.locator(
+    '[data-recued-reception-records-lens="responses"]',
+  ).click();
+  await page.locator(
+    '[data-recued-reception-response-row="submission-0"] button',
+  ).click();
+  await page.locator(
+    '.reception-responses-automation-actions '
+      + '[data-recued-reception-response-action="discover"]',
+  ).click();
+
+  const exactForm = page.getByRole('button', {
+    name: 'Review and run Review project intake (project-intake-review)',
+    exact: true,
+  });
+  const allForms = page.getByRole('button', {
+    name: 'Review and run Review every intake (all-intakes-review)',
+    exact: true,
+  });
+  await expect(exactForm).toHaveCount(1);
+  await expect(allForms).toHaveCount(1);
+  const pickerActions = page.locator(
+    '[data-recued-reception-responses] button:visible, '
+      + '[data-recued-reception-responses] a[href]:visible',
+  );
+  const pickerActionHeights = await pickerActions.evaluateAll((nodes) =>
+    nodes.map((node) => node.getBoundingClientRect().height)
+  );
+  expect(Math.min(...pickerActionHeights)).toBeGreaterThanOrEqual(36);
+
+  await allForms.focus();
+  await page.keyboard.press('Enter');
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await expect(dialog).toBeFocused();
+  await expect(dialog).toContainText('Review every intake');
+  await dialog.getByRole('button', { name: 'Close' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(allForms).toBeFocused();
+
+  await exactForm.focus();
+  await page.keyboard.press('Enter');
+  await expect(dialog).toBeFocused();
+  await expect(dialog).toContainText('Review project intake');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(exactForm).toBeFocused();
 });
 
 test('Reception Responses keeps list Retry focused and single-flight', async ({ page }) => {
@@ -15791,10 +20568,22 @@ test('Reception Responses returns a failed detail Retry to its alert action', as
 test('Settings Backup & Recovery hands focus into and back from each entry flow', async ({ page }) => {
   await page.evaluate(() => window.__app.setHash('#settings/backup'));
 
+  const backupSection = page.locator(
+    '[data-recued-settings-section="backup"]',
+  );
+  await expect(backupSection.getByRole('heading', {
+    name: 'Backup & Recovery',
+    exact: true,
+  })).toHaveCount(1);
+
   const backup = page.locator(`[${ARCHIVE_BACKUP_START}]`);
   await backup.focus();
   await page.keyboard.press('Enter');
-  await expect(page.locator(`[${ARCHIVE_BACKUP_MNEMONIC}]`)).toBeFocused();
+  const backupKey = page.getByRole('textbox', {
+    name: '24-word recovery key',
+  });
+  await expect(backupKey).toHaveAttribute(ARCHIVE_BACKUP_MNEMONIC, '');
+  await expect(backupKey).toBeFocused();
 
   let cancel = page.locator(`[${ARCHIVE_BACKUP_CANCEL}]`);
   await cancel.focus();
@@ -15808,6 +20597,14 @@ test('Settings Backup & Recovery hands focus into and back from each entry flow'
     `[${ARCHIVE_RESTORE_UPLOAD_INPUT}], [${ARCHIVE_RESTORE_PATH}]`,
   ).first();
   await expect(restoreEntry).toBeFocused();
+  await expect(page.getByLabel('Upload a backup file from this device'))
+    .toHaveAttribute(ARCHIVE_RESTORE_UPLOAD_INPUT, '');
+  await expect(page.getByRole('textbox', {
+    name: 'Or path to a backup already on your server',
+  })).toHaveAttribute(ARCHIVE_RESTORE_PATH, '');
+  await expect(page.getByRole('textbox', {
+    name: 'Recovery key for this backup',
+  })).toHaveAttribute(ARCHIVE_RESTORE_MNEMONIC, '');
 
   cancel = page.locator(`[${ARCHIVE_BACKUP_CANCEL}]`);
   await cancel.focus();
@@ -15960,6 +20757,24 @@ test('Settings Transparency retains its pending preference on route leave', asyn
   ).toBe(writesBefore + 1);
 });
 
+test('Settings Privacy gives every mobile checkbox a full label target', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?privacy=learning-cases-multiple`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/privacy'));
+
+  const section = page.locator('[data-recued-settings-section="privacy"]');
+  const targets = section.locator('label:has(input[type="checkbox"])');
+  const heights = await targets.evaluateAll((labels) => labels.map(
+    (label) => label.getBoundingClientRect().height,
+  ));
+  expect(heights.length).toBeGreaterThan(0);
+  expect(Math.min(...heights)).toBeGreaterThanOrEqual(36);
+  expect(await section.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+});
+
 test('Settings Learning keeps its pending preference truthful, focused, and single-flight', async ({ page }) => {
   await page.evaluate(() => window.__app.setHash('#settings/privacy'));
 
@@ -15987,6 +20802,36 @@ test('Settings Learning keeps its pending preference truthful, focused, and sing
   ).toBe(writesBefore + 1);
 });
 
+test('Settings Learning identifies repeated case actions by their owning case', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?privacy=learning-cases-multiple`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/privacy'));
+
+  const firstDraft = page.locator(`[${LEARNING_DRAFT}="learning-case-1"]`);
+  const secondDraft = page.locator(`[${LEARNING_DRAFT}="learning-case-2"]`);
+  await expect(firstDraft).toHaveAccessibleName(
+    'Make a recipe from learned case: send the quarterly report (learning-case-1)',
+  );
+  await expect(secondDraft).toHaveAccessibleName(
+    'Make a recipe from learned case: schedule the weekly inventory digest (learning-case-2)',
+  );
+  await expect(page.locator(`[${LEARNING_FORGET}="learning-case-1"]`))
+    .toHaveAccessibleName(
+      'Forget learned case: send the quarterly report (learning-case-1)',
+    );
+  await expect(page.locator(`[${LEARNING_FORGET}="learning-case-2"]`))
+    .toHaveAccessibleName(
+      'Forget learned case: schedule the weekly inventory digest (learning-case-2)',
+    );
+  const actionHeights = await page
+    .locator(`[${LEARNING_DRAFT}], [${LEARNING_FORGET}]`)
+    .evaluateAll((actions) =>
+      actions.map((action) => action.getBoundingClientRect().height)
+    );
+  expect(Math.min(...actionHeights)).toBeGreaterThanOrEqual(36);
+});
+
 test('Settings Learning owns a keyboard Forget through confirmation and removal', async ({ page }) => {
   await page.goto(
     `${HARNESS_URL}?privacy=learning-cases&learning_forget_response=slow`,
@@ -16010,10 +20855,16 @@ test('Settings Learning owns a keyboard Forget through confirmation and removal'
   await page.keyboard.press('Enter');
 
   await expect(forget).toHaveText('Tap again to forget');
+  await expect(forget).toHaveAccessibleName(
+    'Confirm forgetting learned case: send the quarterly report (learning-case-1)',
+  );
   await expect(forget).toBeFocused();
   await page.keyboard.press('Enter');
 
   await expect(forget).toHaveText('Forgetting...');
+  await expect(forget).toHaveAccessibleName(
+    'Forgetting learned case: send the quarterly report (learning-case-1)',
+  );
   await expect(forget).toHaveAttribute('aria-disabled', 'true');
   await expect(forget).toHaveAttribute('aria-busy', 'true');
   await expect(forget).not.toHaveAttribute('disabled');
@@ -16078,6 +20929,9 @@ test('Settings Learning keeps a failed Forget beside its focused case', async ({
     .toBeVisible();
   await expect(page.locator(`[${LEARNING_CASES_ERROR}]`)).toHaveCount(0);
   await expect(forget).toHaveText('Tap again to forget');
+  await expect(forget).toHaveAccessibleName(
+    'Confirm forgetting learned case: send the quarterly report (learning-case-1)',
+  );
   await expect(forget).toBeFocused();
   await expect.poll(
     () => page.evaluate(
@@ -16098,14 +20952,23 @@ test('Settings Learning retains a keyboard-owned recipe draft through failure', 
   await page.keyboard.press('Enter');
   await expect(page.locator(`[${LEARNING_DRAFT_CONFIRM}]`)).toBeVisible();
   await expect(draft).toHaveText('Yes, write the draft');
+  await expect(draft).toHaveAccessibleName(
+    'Confirm recipe draft from learned case: send the quarterly report (learning-case-1)',
+  );
   await expect(draft).toBeFocused();
 
   const prompt = page.locator(`[${LEARNING_DRAFT_PROMPT}]`);
+  await expect(prompt).toHaveAccessibleName(
+    'Recipe instructions for learned case: send the quarterly report (learning-case-1)',
+  );
   await prompt.fill('Run it every Monday');
   await draft.focus();
   await page.keyboard.press('Enter');
 
   await expect(draft).toHaveText('Asking your AI...');
+  await expect(draft).toHaveAccessibleName(
+    'Asking your AI to draft a recipe from learned case: send the quarterly report (learning-case-1)',
+  );
   await expect(draft).toHaveAttribute('aria-disabled', 'true');
   await expect(draft).toHaveAttribute('aria-busy', 'true');
   await expect(draft).not.toHaveAttribute('disabled');
@@ -16139,6 +21002,9 @@ test('Settings Learning retains a keyboard-owned recipe draft through failure', 
     'Recipe drafting is temporarily unavailable.',
   );
   await expect(draft).toHaveText('Yes, write the draft');
+  await expect(draft).toHaveAccessibleName(
+    'Confirm recipe draft from learned case: send the quarterly report (learning-case-1)',
+  );
   await expect(draft).toBeFocused();
   await expect(prompt).toHaveValue('Run it every Monday');
 });
@@ -16159,6 +21025,9 @@ test('Settings Learning retries a finished draft handoff without asking AI again
     'finished draft',
   );
   await expect(draft).toHaveText('Open finished draft');
+  await expect(draft).toHaveAccessibleName(
+    'Open finished draft from learned case: send the quarterly report (learning-case-1)',
+  );
   await expect(draft).toBeFocused();
   await expect.poll(
     () => page.evaluate(
@@ -16268,6 +21137,10 @@ test('Settings reveals the active section in its mobile overflow rail', async ({
 
   const nav = page.locator(`[${SETTINGS_NAV}]`);
   const server = page.locator(`[${SETTINGS_NAV_ITEM}="server"]`);
+  const targetHeights = await nav.locator('button').evaluateAll((items) =>
+    items.map((item) => item.getBoundingClientRect().height)
+  );
+  expect(Math.min(...targetHeights)).toBeGreaterThanOrEqual(36);
   await expect(server).toHaveAttribute('aria-current', 'page');
   await expect.poll(async () => server.evaluate((item, navAttr) => {
     const rail = item.closest(`[${navAttr}]`);
@@ -16281,6 +21154,549 @@ test('Settings reveals the active section in its mobile overflow rail', async ({
   expect(await nav.evaluate((rail) => rail.scrollLeft)).toBeGreaterThan(0);
 });
 
+test('Settings Housekeeping identifies repeated producer actions', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?housekeeping=ready`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/housekeeping'));
+
+  const summaryRun = page.locator(
+    '[data-action="housekeeping-run-now-open"]'
+      + '[data-task-id="enrichment.summary"]',
+  );
+  const signalsRun = page.locator(
+    '[data-action="housekeeping-run-now-open"]'
+      + '[data-task-id="enrichment.thread_signals"]',
+  );
+  await expect(summaryRun).toHaveAccessibleName('Run enrichment.summary now');
+  await expect(signalsRun).toHaveAccessibleName(
+    'Run enrichment.thread_signals now',
+  );
+  await expect(page.getByRole('button', {
+    name: 'Expand summary details',
+  })).toBeVisible();
+  await expect(page.getByRole('button', {
+    name: 'Expand thread_signals details',
+  })).toBeVisible();
+  const filterHeights = await page
+    .locator('.housekeeping-producer-cost-segment')
+    .evaluateAll((segments) =>
+      segments.map((segment) => segment.getBoundingClientRect().height)
+  );
+  expect(Math.min(...filterHeights)).toBeGreaterThanOrEqual(36);
+});
+
+test('Settings Housekeeping keeps every mobile control full-size and in bounds', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?housekeeping=ready&settle_reads=1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/housekeeping'));
+
+  await expect(page.getByRole('heading', {
+    name: 'Housekeeping',
+    level: 2,
+  })).toBeVisible();
+
+  const assertTargets = async (): Promise<void> => {
+    const panel = page.locator('[data-recued-housekeeping-panel-host]');
+    const targets = panel.locator([
+      'a:visible',
+      'button:visible',
+      'input:not([type="checkbox"]):not([type="radio"]):visible',
+      'select:visible',
+      'textarea:visible',
+      'summary:visible',
+      'label:visible:has(input[type="checkbox"])',
+      'label:visible:has(input[type="radio"])',
+    ].join(', '));
+    const dimensions = await targets.evaluateAll((elements) => elements.map(
+      (element) => {
+        const rect = element.getBoundingClientRect();
+        return { width: rect.width, height: rect.height };
+      },
+    ));
+    expect(dimensions.length).toBeGreaterThan(0);
+    expect(Math.min(...dimensions.map(({ width }) => width)))
+      .toBeGreaterThanOrEqual(36);
+    expect(Math.min(...dimensions.map(({ height }) => height)))
+      .toBeGreaterThanOrEqual(36);
+    expect(await panel.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth,
+    )).toBe(true);
+  };
+
+  await expect(page.getByRole('button', {
+    name: 'Expand summary details',
+  })).toBeVisible();
+  await assertTargets();
+
+  await page.getByRole('button', { name: 'Expand summary details' }).click();
+  await expect(page.getByRole('link', {
+    name: 'Manage read access in Contracts →',
+  })).toBeVisible();
+  await assertTargets();
+
+  await page.getByRole('button', { name: 'Reset topic…' }).click();
+  await expect(page.getByRole('dialog', {
+    name: 'Reset enrichment topic summary',
+  })).toBeVisible();
+  await assertTargets();
+});
+
+test('Settings Housekeeping Run-now dialog owns keyboard focus', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?housekeeping=ready&settle_reads=1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/housekeeping'));
+
+  const trigger = page.getByRole('button', {
+    name: 'Run enrichment.summary now',
+  });
+  await trigger.click();
+
+  const dialog = page.getByRole('dialog', {
+    name: 'Run "Mail summary digest"?',
+  });
+  const cancel = dialog.getByRole('button', { name: 'Cancel' });
+  const confirm = dialog.getByRole('button', { name: 'Run now' });
+  await expect(dialog).toBeVisible();
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(confirm).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+
+  await trigger.click();
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Enter');
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('housekeeping.task.run_now'))).toBe(1);
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
+test('Settings Housekeeping Reset dialog owns keyboard focus', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?housekeeping=ready&settle_reads=1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/housekeeping'));
+
+  await page.getByRole('button', { name: 'Expand summary details' }).click();
+  const trigger = page.getByRole('button', { name: 'Reset topic…' });
+  await trigger.click();
+
+  const dialog = page.getByRole('dialog', {
+    name: 'Reset enrichment topic summary',
+  });
+  const toggle = dialog.getByRole('checkbox', {
+    name: 'Also drop confidence-drift baselines for this topic',
+  });
+  const confirm = dialog.getByRole('button', { name: 'Confirm reset' });
+  const cancel = dialog.getByRole('button', { name: 'Cancel' });
+  await expect(dialog).toHaveAttribute('data-phase', 'preview');
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(toggle).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(cancel).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+
+  await trigger.click();
+  await expect(dialog).toHaveAttribute('data-phase', 'preview');
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(dialog).toHaveAttribute('data-phase', 'applied');
+  const done = dialog.getByRole('button', { name: 'Done' });
+  await expect(done).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('housekeeping.topic.reset'))).toBe(3);
+});
+
+test('Settings Work Entities identifies repeated source controls', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?work_entities=multiple-sources`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/work-entities'));
+
+  await expect(page.getByRole('heading', {
+    name: 'Work Entities',
+    level: 2,
+  })).toBeVisible();
+
+  const enabled = (sourceId: string) => page.locator(
+    `[data-action="set-source-enabled"][data-source-id="${sourceId}"]`,
+  );
+  const exposed = (sourceId: string) => page.locator(
+    `[data-action="set-source-mcp-exposed"][data-source-id="${sourceId}"]`,
+  );
+  await expect(enabled('recued.task')).toHaveAccessibleName(
+    'Enabled for Recued built-in (recued.task)',
+  );
+  await expect(enabled('recued.note')).toHaveAccessibleName(
+    'Enabled for Recued built-in (recued.note)',
+  );
+  await expect(exposed('connection.hubspot.conn-42.task'))
+    .toHaveAccessibleName(
+      'MCP exposed for HubSpot Tasks (connection.hubspot.conn-42.task)',
+    );
+  await expect(page.locator(
+    '[data-action="set-default-source"][data-kind="task"]',
+  )).toHaveAccessibleName('Default Source for Tasks');
+  await expect(page.locator(
+    '[data-action="set-default-source"][data-kind="note"]',
+  )).toHaveAccessibleName('Default Source for Notes');
+  const sourceToggles = page.locator('.rx-source-row-toggle');
+  await expect(sourceToggles).toHaveCount(6);
+  for (let index = 0; index < await sourceToggles.count(); index += 1) {
+    const box = await sourceToggles.nth(index).boundingBox();
+    expect(box?.height).toBeGreaterThanOrEqual(36);
+  }
+  await expect(page.locator('html')).toHaveJSProperty(
+    'scrollWidth',
+    await page.locator('html').evaluate((element) => element.clientWidth),
+  );
+});
+
+test('Settings Seller directory does not repeat its page heading', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?settle_reads=1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/seller'));
+
+  await expect(page.getByRole('heading', {
+    name: 'Seller tools',
+    exact: true,
+  })).toBeVisible();
+  await expect(page.getByRole('heading', {
+    name: 'Seller',
+    exact: true,
+  })).toHaveCount(1);
+});
+
+test('Settings Seller keeps mobile navigation and disclosures full-size', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  for (const hash of [
+    '#settings/seller/orders',
+    '#settings/seller/offers',
+    '#settings/seller/tiers',
+    '#settings/seller/customers/detail/customer-1',
+  ]) {
+    await page.goto(`${HARNESS_URL}?settle_reads=1${hash}`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await expect(page.locator(
+      '[data-recued-seller-page-state="ready"]',
+    )).toBeVisible();
+
+    const links = page.locator([
+      '[data-recued-seller-back]:visible',
+      '[data-recued-seller-collection-item-link]:visible',
+      '[data-recued-seller-page-previous]:visible',
+      '[data-recued-seller-page-next]:visible',
+      '[data-recued-seller-contract-link]:visible',
+      '.seller-related-links a:visible',
+    ].join(', '));
+    const linkHeights = await links.evaluateAll((targets) => targets.map(
+      (target) => target.getBoundingClientRect().height,
+    ));
+    expect(linkHeights.length).toBeGreaterThan(0);
+    expect(Math.min(...linkHeights)).toBeGreaterThanOrEqual(36);
+
+    const buttonHeights = await page.locator(
+      '[data-recued-seller-page] button:visible',
+    ).evaluateAll((buttons) => buttons.map(
+      (button) => button.getBoundingClientRect().height,
+    ));
+    expect(buttonHeights.length).toBeGreaterThan(0);
+    expect(Math.min(...buttonHeights)).toBeGreaterThanOrEqual(36);
+
+    const summaryHeights = await page.locator(
+      '[data-recued-seller-page] summary:visible',
+    ).evaluateAll((summaries) => summaries.map(
+      (summary) => summary.getBoundingClientRect().height,
+    ));
+    expect(summaryHeights.every((height) => height >= 36)).toBe(true);
+
+    const seller = page.locator('[data-recued-seller-page]');
+    expect(await seller.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth,
+    )).toBe(true);
+  }
+});
+
+test('Settings Seller Orders distinguishes repeated offer links', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?settle_reads=1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/seller/orders'));
+
+  const orderLink = (orderKey: string) => page.locator(
+    `[data-recued-seller-collection-item-link="${orderKey}"]`,
+  );
+  await expect(orderLink('ord:access:claim-mail-1')).toHaveAccessibleName(
+    'Open order ord:access:claim-mail-1 for offer-1',
+  );
+  await expect(orderLink('ord:access:claim-mail-2')).toHaveAccessibleName(
+    'Open order ord:access:claim-mail-2 for offer-1',
+  );
+});
+
+test('Settings Seller Usage distinguishes rollups for one contract', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?settle_reads=1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/seller/usage'));
+
+  const usageLink = (itemId: string) => page.locator(
+    `[data-recued-seller-collection-item-link="${itemId}"]`,
+  );
+  await expect(usageLink(
+    'door_paged_01:tool_call:day:1700000000000',
+  )).toHaveAccessibleName(
+    'Open Tool Call usage for door_paged_01 (day 1700000000000)',
+  );
+  await expect(usageLink(
+    'door_paged_01:chat_turn:day:1700000000000',
+  )).toHaveAccessibleName(
+    'Open Chat Turn usage for door_paged_01 (day 1700000000000)',
+  );
+});
+
+test('Settings Seller Offers distinguishes duplicate display names', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?settle_reads=1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/seller/offers'));
+
+  const offerLink = (offerId: string) => page.locator(
+    `[data-recued-seller-collection-item-link="${offerId}"]`,
+  );
+  await expect(offerLink('offer-1')).toHaveAccessibleName(
+    'Open offer offer-1 (Consultation)',
+  );
+  await expect(offerLink('offer-2')).toHaveAccessibleName(
+    'Open offer offer-2 (Consultation)',
+  );
+});
+
+test('Settings Seller Tiers distinguishes duplicate display names', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?settle_reads=1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/seller/tiers'));
+
+  const tierLink = (tierId: string) => page.locator(
+    `[data-recued-seller-collection-item-link="${tierId}"]`,
+  );
+  await expect(tierLink('tier-standard')).toHaveAccessibleName(
+    'Open tier tier-standard (Standard)',
+  );
+  await expect(tierLink('tier-standard-annual')).toHaveAccessibleName(
+    'Open tier tier-standard-annual (Standard)',
+  );
+});
+
+test('Settings Seller Customers distinguishes shared provider ids', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?settle_reads=1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/seller/customers'));
+
+  const customerLink = (customerId: string) => page.locator(
+    `[data-recued-seller-collection-item-link="${customerId}"]`,
+  );
+  await expect(customerLink('customer-1')).toHaveAccessibleName(
+    'Open customer customer-1 (customer-shared)',
+  );
+  await expect(customerLink('customer-2')).toHaveAccessibleName(
+    'Open customer customer-2 (customer-shared)',
+  );
+});
+
+test('Settings Seller customer lifecycle distinguishes repeated fields', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?settle_reads=1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => {
+    window.__app.setHash('#settings/seller/customers/detail/customer-1');
+  });
+  await expect(page.getByRole('heading', {
+    name: 'Manage customer access',
+  })).toBeVisible();
+  await page.locator(
+    '[data-recued-seller-collection-detail="customer-1"] details',
+  ).evaluateAll((details) => {
+    for (const detail of details) detail.open = true;
+  });
+
+  const field = (name: string) => page.locator(
+    `[data-recued-seller-customer-lifecycle-field="${name}"]`,
+  );
+  for (const [name, accessibleName] of [
+    ['extend.customer_id', 'Customer to extend'],
+    ['swap.customer_id', 'Customer to swap'],
+    ['close.customer_id', 'Customer to close'],
+    ['reissue.customer_id', 'Customer to reissue'],
+    ['message.customer_id', 'Customer to message'],
+    ['extend.current_period_end', 'Extension period end (Unix ms)'],
+    ['swap.current_period_end', 'Swap period end (Unix ms)'],
+    ['extend.source_status', 'Extension source status'],
+    ['swap.source_status', 'Swap source status'],
+    ['close.source_status', 'Close source status'],
+  ] as const) {
+    await expect(field(name)).toHaveAccessibleName(accessibleName);
+  }
+});
+
+test('Settings Seller confirmation dialog owns keyboard focus', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?settle_reads=1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => {
+    window.__app.setHash(
+      '#settings/seller/orders/detail/ord%3Aaccess%3Aclaim-mail-1',
+    );
+  });
+
+  const trigger = page.locator(
+    '[data-recued-seller-order-close="ord:access:claim-mail-1"]',
+  );
+  await trigger.click();
+  const dialog = page.getByRole('dialog', { name: 'Close this order?' });
+  const cancel = dialog.getByRole('button', { name: 'Cancel' });
+  const confirm = dialog.getByRole('button', { name: 'Confirm & close' });
+  await expect(dialog).toBeVisible();
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
+test('Settings Server Key Health distinguishes repeated key actions', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?settle_reads=1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/server/key-health'));
+
+  const keyAction = (action: 'rotate' | 'compromise', keyClass: string) =>
+    page.locator(`[data-recued-key-health-${action}="${keyClass}"]`);
+  await expect(keyAction('rotate', 'server_identity_key')).toHaveAccessibleName(
+    'Rotate Server identity key now',
+  );
+  await expect(keyAction('compromise', 'server_identity_key'))
+    .toHaveAccessibleName('Mark Server identity key compromised');
+  await expect(keyAction('rotate', 'master_dek')).toHaveAccessibleName(
+    'Rotate Master encryption key now',
+  );
+  await expect(keyAction('compromise', 'master_dek')).toHaveAccessibleName(
+    'Mark Master encryption key compromised',
+  );
+  await expect(keyAction('rotate', 'publisher_identity_key'))
+    .toHaveAccessibleName('Rotate Publisher identity key now');
+  await expect(keyAction('compromise', 'publisher_identity_key'))
+    .toHaveAccessibleName('Mark Publisher identity key compromised');
+});
+
+test('Settings Server Key Health states the unsealed backup boundary', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?settle_reads=1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/server/key-health'));
+
+  const posture = page.locator('[data-recued-keyfile-posture]');
+  await expect(posture).toHaveAttribute(
+    'data-recued-keyfile-posture-tone',
+    'unsealed',
+  );
+  const consequence = posture.getByRole('alert');
+  await expect(consequence).toContainText(
+    'anyone who copies that whole directory gets everything in it',
+  );
+  await expect(consequence).toContainText(
+    'Only copies that omit the keyfile',
+  );
+  await expect(consequence).toContainText('database-only backup');
+});
+
+test('Settings Server Key Health retains confirmation focus', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?settle_reads=1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/server/key-health'));
+
+  const trigger = page.locator(
+    '[data-recued-key-health-rotate="master_dek"]',
+  );
+  await trigger.click();
+  const cancel = page.locator('[data-recued-key-health-cancel]');
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.locator(
+    '[data-recued-key-health-panel-state="idle"]',
+  )).toBeVisible();
+  await expect(trigger).toBeFocused();
+});
+
+test('Settings Server Maintenance dialog owns keyboard focus', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?settle_reads=1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/server/maintenance'));
+
+  const trigger = page.getByRole('button', {
+    name: 'Run audit-compaction now',
+  });
+  await trigger.click();
+
+  const dialog = page.getByRole('dialog', {
+    name: 'Run "Compact repetitive audit rows"?',
+  });
+  const cancel = dialog.getByRole('button', { name: 'Cancel' });
+  const confirm = dialog.getByRole('button', { name: 'Run now' });
+  await expect(dialog).toBeVisible();
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(confirm).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+
+  await trigger.click();
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Enter');
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('housekeeping.task.run_now'))).toBe(1);
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
 test('Settings Updates Check stays owned through failure and retry', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?updates=fail-once-slow-retry`);
@@ -16292,6 +21708,10 @@ test('Settings Updates Check stays owned through failure and retry', async ({ pa
   const error = page.locator(`[${UPDATES_ERROR}]`);
   await expect(check).toHaveText('Check for updates');
   await expect(status).toContainText('latest version');
+  await expect(page.locator(`[${UPDATES_MODE}]`)).toHaveAccessibleName(
+    'When updates are available',
+  );
+  expect((await check.boundingBox())?.height).toBeGreaterThanOrEqual(36);
   const checksBefore = await page.evaluate(
     () => window.__app.rpcCallCount('update.check'),
   );
@@ -16331,6 +21751,7 @@ test('Settings Updates retains a pending rollback when navigation is declined', 
   await page.evaluate(() => window.__app.setHash('#settings/updates'));
 
   const rollback = page.locator(`[${UPDATES_ROLLBACK}]`);
+  expect((await rollback.boundingBox())?.height).toBeGreaterThanOrEqual(36);
   const html = page.locator('html');
   await page.evaluate(() => {
     document.documentElement.setAttribute('data-audit-confirm-count', '0');
@@ -16412,6 +21833,32 @@ test('Settings Updates retains focus and ownership through a deferred apply', as
   await page.evaluate(() => window.__app.setHash('#chat'));
   await expect(page).toHaveURL(/#chat$/);
   await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Settings Account gives dashboard handoffs full mobile targets', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?account=bound#settings/account`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const links = page.locator('.account-bind-dashboard-link');
+  await expect(links).toHaveCount(3);
+  const targets = await links.evaluateAll((elements) =>
+    elements.map((element) => ({
+      width: element.getBoundingClientRect().width,
+      height: element.getBoundingClientRect().height,
+      target: element.getAttribute('target'),
+      rel: element.getAttribute('rel'),
+    }))
+  );
+  expect(Math.min(...targets.map((target) => target.width)))
+    .toBeGreaterThanOrEqual(36);
+  expect(Math.min(...targets.map((target) => target.height)))
+    .toBeGreaterThanOrEqual(36);
+  expect(Math.max(...targets.map((target) => target.height)))
+    .toBeLessThanOrEqual(44);
+  expect(targets.every((target) => target.target === '_blank')).toBe(true);
+  expect(targets.every((target) => target.rel === 'noopener noreferrer'))
+    .toBe(true);
 });
 
 test('Settings Account Connect owns its pending command and refreshed binding', async ({ page }) => {
@@ -16863,15 +22310,26 @@ test('Settings device revoke confirmation starts safely and returns to its row',
   const revoke = page.locator(
     '[data-action="revoke-device"][data-instance-id="device-laptop"]',
   );
+  await expect(revoke).toHaveAccessibleName(
+    'Revoke Travel laptop (device-laptop)',
+  );
+  await expect(page.locator(
+    '[data-action="revoke-device"][data-instance-id="device-desktop"]',
+  )).toHaveAccessibleName('Revoke Office desktop (device-desktop)');
   await revoke.focus();
   await page.keyboard.press('Enter');
 
   const dialog = page.getByRole('alertdialog', {
-    name: 'Confirm revoke Travel laptop',
+    name: 'Confirm revoke Travel laptop (device-laptop)',
   });
-  const cancel = dialog.getByRole('button', { name: 'Cancel' });
+  const cancel = dialog.getByRole('button', {
+    name: 'Cancel revoke Travel laptop (device-laptop)',
+  });
   await expect(dialog).toBeVisible();
   await expect(cancel).toBeFocused();
+  await expect(dialog.getByRole('button', {
+    name: 'Confirm revoke Travel laptop (device-laptop)',
+  })).toBeVisible();
 
   await page.keyboard.press('Enter');
   await expect(dialog).toHaveCount(0);
@@ -16907,6 +22365,9 @@ test('Settings device revoke owns its pending command and success receipt', asyn
   await page.keyboard.press('Enter');
 
   await expect(confirm).toHaveText('Revoking…');
+  await expect(confirm).toHaveAccessibleName(
+    'Revoking Travel laptop (device-laptop)',
+  );
   await expect(confirm).toHaveAttribute('aria-disabled', 'true');
   await expect(confirm).toHaveAttribute('aria-busy', 'true');
   await expect(confirm).not.toHaveAttribute('disabled');
@@ -17022,10 +22483,10 @@ test('Settings notification switches retain exact mutation ownership', async ({ 
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#settings/notifications'));
 
-  const toggle = page.locator(
-    '[data-recued-notifications-row-toggle="bridge"]'
-      + '[data-recued-notifications-axis="notification"]',
-  );
+  const toggle = page.getByRole('switch', {
+    name: 'Browser Bridge OS notifications',
+    exact: true,
+  });
   await expect(toggle).toHaveText('Off');
   await toggle.focus();
   await page.keyboard.press('Enter');
@@ -17127,10 +22588,10 @@ test('Settings per-browser notification switches retain mutation ownership', asy
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#settings/notifications'));
 
-  const toggle = page.locator(
-    '[data-recued-notifications-bridge-mode-btn="bridge-main"]'
-      + '[data-recued-notifications-bridge-mode="notification"]',
-  );
+  const toggle = page.getByRole('switch', {
+    name: 'Main browser notifications (bridge-main)',
+    exact: true,
+  });
   await expect(toggle).toHaveText('Notifications Off');
   await toggle.focus();
   await page.keyboard.press('Enter');
@@ -17189,8 +22650,18 @@ test('Settings notification phrase Save retains mutation ownership', async ({ pa
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#settings/notifications'));
 
-  const input = page.locator('[data-recued-notifications-phrase-input]');
-  const save = page.locator('[data-recued-notifications-phrase-save]');
+  await expect(page.getByRole('heading', {
+    name: 'Anti-phishing phrase',
+    level: 3,
+  })).toBeVisible();
+  const input = page.getByRole('textbox', {
+    name: 'Anti-phishing phrase',
+    exact: true,
+  });
+  const save = page.getByRole('button', {
+    name: 'Save anti-phishing phrase',
+    exact: true,
+  });
   await input.fill('green fox');
   await save.focus();
   await page.keyboard.press('Enter');
@@ -17320,7 +22791,7 @@ test('Settings notification Retry owns loading and advances into recovered contr
   await expect(firstSwitch).toBeFocused();
 });
 
-test('Settings Server tabs form one arrow-key keyboard stop', async ({ page }) => {
+test('Settings Server tabs form one full-size arrow-key keyboard stop', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.evaluate(() => window.__app.setHash('#settings/server'));
 
@@ -17328,10 +22799,17 @@ test('Settings Server tabs form one arrow-key keyboard stop', async ({ page }) =
   const exposure = page.locator(`[${SETTINGS_SUBTAB}="exposure"]`);
   const reachability = page.locator(`[${SETTINGS_SUBTAB}="reachability"]`);
   const maintenance = page.locator(`[${SETTINGS_SUBTAB}="maintenance"]`);
+  await expect(page.getByRole('tablist', {
+    name: 'Server sections',
+  })).toBeVisible();
   await expect(exposure).toHaveAttribute('tabindex', '0');
   expect(await tabs.evaluateAll((nodes) => nodes.filter(
     (node) => node.getAttribute('tabindex') === '0',
   ).length)).toBe(1);
+  const tabHeights = await tabs.evaluateAll((nodes) =>
+    nodes.map((node) => node.getBoundingClientRect().height)
+  );
+  expect(Math.min(...tabHeights)).toBeGreaterThanOrEqual(36);
 
   await exposure.focus();
   await page.keyboard.press('ArrowRight');
@@ -17347,8 +22825,75 @@ test('Settings Server tabs form one arrow-key keyboard stop', async ({ page }) =
   await expect(exposure).toBeFocused();
 });
 
-test('Settings AI Models tabs form one arrow-key keyboard stop', async ({ page }) => {
+test('Settings Exposure confirmations own keyboard focus', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?settle_reads=1#settings/server/exposure`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const cellInputs = page.locator('.exposure-cell-checkbox');
+  const cellTargets = page.locator('.exposure-cell-target');
+  const cellCount = await cellInputs.count();
+  expect(cellCount).toBeGreaterThan(0);
+  await expect(cellTargets).toHaveCount(cellCount);
+  for (let index = 0; index < await cellTargets.count(); index += 1) {
+    const box = await cellTargets.nth(index).boundingBox();
+    expect(box?.width).toBeGreaterThanOrEqual(36);
+    expect(box?.height).toBeGreaterThanOrEqual(36);
+  }
+  await expect(page.locator('html')).toHaveJSProperty(
+    'scrollWidth',
+    await page.locator('html').evaluate((element) => element.clientWidth),
+  );
+
+  const trigger = page.locator(`[${EXPOSURE_PUBLIC_MCP}]`);
+  await trigger.click();
+
+  const dialog = page.getByRole('dialog', { name: 'Enable public MCP?' });
+  const phrase = dialog.getByRole('textbox', {
+    name: 'Type "enable public MCP" to confirm',
+  });
+  const cancel = dialog.locator(`[${EXPOSURE_MODAL_CANCEL}]`);
+  const submit = dialog.locator(`[${EXPOSURE_MODAL_SUBMIT}]`);
+  await expect(dialog).toBeVisible();
+  await expect(phrase).toBeFocused();
+
+  // Every keystroke replaces the modal DOM from its state machine. Focus and
+  // the caret must follow the replacement input instead of dropping to body.
+  await page.keyboard.type('enable public MCP');
+  await expect(phrase).toHaveValue('enable public MCP');
+  await expect(phrase).toBeFocused();
+  await expect(submit).toBeEnabled();
+
+  await page.keyboard.press('Tab');
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(submit).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(phrase).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(submit).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+
+  const wsTrigger = page.locator(`[${EXPOSURE_CELL}="ws.lan"]`);
+  await wsTrigger.click();
+  const wsDialog = page.getByRole('dialog', {
+    name: 'Disconnect this webclient?',
+  });
+  await expect(wsDialog.getByRole('textbox', {
+    name: 'Type "disconnect webclients" to confirm',
+  })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(wsDialog).toHaveCount(0);
+  await expect(wsTrigger).toBeFocused();
+});
+
+test('Settings AI Models controls form full-size keyboard navigation', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?ai=two&ai_pool=entry`);
+  await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
 
   const tabs = page.locator(`[${AI_MODELS_TAB}]`);
@@ -17360,6 +22905,20 @@ test('Settings AI Models tabs form one arrow-key keyboard stop', async ({ page }
   expect(await tabs.evaluateAll((nodes) => nodes.filter(
     (node) => node.getAttribute('tabindex') === '0',
   ).length)).toBe(1);
+  const navHeights = await page.locator(`[${SETTINGS_NAV_ITEM}]`).evaluateAll(
+    (nodes) => nodes.map((node) => node.getBoundingClientRect().height),
+  );
+  expect(Math.min(...navHeights)).toBeGreaterThanOrEqual(36);
+  const tabHeights = await tabs.evaluateAll((nodes) =>
+    nodes.map((node) => node.getBoundingClientRect().height)
+  );
+  expect(Math.min(...tabHeights)).toBeGreaterThanOrEqual(36);
+  const modelChoices = page.locator('[data-recued-ai-models-model-pref]');
+  await expect(modelChoices).toHaveCount(3);
+  const choiceHeights = await modelChoices.evaluateAll((nodes) =>
+    nodes.map((node) => node.getBoundingClientRect().height)
+  );
+  expect(Math.min(...choiceHeights)).toBeGreaterThanOrEqual(36);
 
   await preference.focus();
   await page.keyboard.press('ArrowRight');
@@ -17382,6 +22941,42 @@ test('Settings AI Models tabs form one arrow-key keyboard stop', async ({ page }
   await page.keyboard.press('ArrowRight');
   await expect(providers).toBeFocused();
   await expect(providerDraft).toHaveValue('draft-model-id');
+});
+
+test('Settings AI Models provider controls expose their owning source', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?ai=two&ai_pool=entry`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="providers"]`).click();
+
+  for (const name of [
+    'Slot 1: fast provider',
+    'Slot 2: quality / thinking provider',
+    'Embeddings slot provider',
+    'New free-pool entry provider',
+  ]) {
+    await expect(page.getByRole('textbox', { name, exact: true })).toHaveCount(1);
+  }
+  for (const name of [
+    'Save Slot 1: fast',
+    'Clear Slot 1: fast',
+    'Save Slot 2: quality / thinking',
+    'Clear Slot 2: quality / thinking',
+    'Save Embeddings slot',
+    'Clear Embeddings slot',
+    'Disable free-pool entry groq',
+    'Remove free-pool entry groq',
+    'Add free-pool API entry',
+  ]) {
+    await expect(page.getByRole('button', { name, exact: true })).toHaveCount(1);
+  }
+  for (const name of [
+    'Slot 1: fast chat tool catalog',
+    'Slot 2: quality / thinking chat tool catalog',
+    'Free pool chat tool catalog',
+  ]) {
+    await expect(page.getByRole('combobox', { name, exact: true })).toHaveCount(1);
+  }
 });
 
 test('Settings AI Models preference keeps the selected source focused', async ({ page }) => {
@@ -17807,7 +23402,10 @@ test('Settings AI Models prompt editing preserves focus and caret', async ({ pag
   await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
 
   await page.locator(`[${AI_MODELS_TAB}="prompts"]`).click();
-  const prompt = page.locator(`[${AI_MODELS_PROMPT_TEXT}="chat"]`);
+  const prompt = page.getByRole('textbox', {
+    name: 'Chat system prompt',
+    exact: true,
+  });
   await expect(prompt).toBeVisible();
   const initial = await prompt.inputValue();
   await prompt.focus();
@@ -17817,13 +23415,19 @@ test('Settings AI Models prompt editing preserves focus and caret', async ({ pag
   await expect(prompt).toBeFocused();
   expect(await prompt.evaluate((element) => element.selectionStart)).toBe(5);
 
-  const role = page.locator(`[${AI_MODELS_PROMPT_ROLE}="chat"]`);
+  const role = page.getByRole('combobox', {
+    name: 'Chat delivery role',
+    exact: true,
+  });
   await role.focus();
   await role.selectOption('user');
   await expect(role).toBeFocused();
   await expect(prompt).toHaveValue(`${initial.slice(0, 3)}XY${initial.slice(3)}`);
 
-  const save = page.locator(`[${AI_MODELS_PROMPT_SAVE}="chat"]`);
+  const save = page.getByRole('button', {
+    name: 'Save Chat system prompt',
+    exact: true,
+  });
   await save.focus();
   await page.keyboard.press('Enter');
   await page.waitForFunction(
@@ -18160,9 +23764,15 @@ test('Settings AI Models pool actions preserve drafts and action focus', async (
     '[data-recued-ai-models-control="free_pool"]',
   );
   const add = pool.locator('.ai-models-add-pool');
-  const draftId = add.getByRole('textbox', { name: 'ID', exact: true });
-  const draftModel = add.getByRole('textbox', { name: 'Model', exact: true });
-  const draftKey = add.getByLabel('API key', { exact: true });
+  const draftId = add.locator(
+    '[data-recued-ai-models-pool-add-field="id"]',
+  );
+  const draftModel = add.locator(
+    '[data-recued-ai-models-pool-add-field="model"]',
+  );
+  const draftKey = add.locator(
+    '[data-recued-ai-models-pool-add-field="api-key"]',
+  );
   await draftId.fill('draft-entry');
   await draftModel.fill('draft-model');
   await draftKey.fill('draft-secret');
@@ -18374,9 +23984,13 @@ test('Settings AI Models pool Add failures preserve the exact secret draft', asy
   await page.locator(`[${AI_MODELS_TAB}="providers"]`).click();
 
   const add = page.locator('.ai-models-add-pool');
-  const id = add.getByRole('textbox', { name: 'ID', exact: true });
-  const model = add.getByRole('textbox', { name: 'Model', exact: true });
-  const key = add.getByLabel('API key', { exact: true });
+  const id = add.locator('[data-recued-ai-models-pool-add-field="id"]');
+  const model = add.locator(
+    '[data-recued-ai-models-pool-add-field="model"]',
+  );
+  const key = add.locator(
+    '[data-recued-ai-models-pool-add-field="api-key"]',
+  );
   await id.fill('retry-entry');
   await model.fill('retry-model');
   await key.fill('retry-secret');
@@ -18415,7 +24029,9 @@ test('Settings AI Models embeddings draft survives sibling actions and saves', a
   );
   const provider = embeddings.getByRole('textbox', { name: 'Provider' });
   const model = embeddings.getByRole('textbox', { name: 'Model' });
-  const key = embeddings.getByLabel('API key', { exact: true });
+  const key = embeddings.locator(
+    '[data-recued-ai-models-embeddings-field="api-key"]',
+  );
   const baseUrl = embeddings.getByRole('textbox', { name: 'Base URL' });
   await provider.fill('openai-compatible');
   await model.fill('text-embedding-demo');
@@ -18484,7 +24100,9 @@ test('Settings AI Models embeddings save failures preserve the exact retry draft
     '[data-recued-ai-models-control="embeddings_slot"]',
   );
   const model = embeddings.getByRole('textbox', { name: 'Model' });
-  const key = embeddings.getByLabel('API key', { exact: true });
+  const key = embeddings.locator(
+    '[data-recued-ai-models-embeddings-field="api-key"]',
+  );
   await model.fill('retry-embedding-model');
   await key.fill('retry-embedding-secret');
   const save = embeddings.locator(
@@ -18522,7 +24140,9 @@ test('Settings AI Models embeddings Clear is confirmed and mutation-owned', asyn
   await embeddings.getByRole('textbox', { name: 'Provider' }).fill('openai');
   await embeddings.getByRole('textbox', { name: 'Model' })
     .fill('text-embedding-3-small');
-  await embeddings.getByLabel('API key', { exact: true }).fill('embedding-key');
+  await embeddings.locator(
+    '[data-recued-ai-models-embeddings-field="api-key"]',
+  ).fill('embedding-key');
   await embeddings.locator(
     '[data-recued-ai-models-slot-save="embeddings_slot"]',
   ).click();
@@ -18602,7 +24222,9 @@ test('Settings AI Models failed embeddings Clear stays owned and retryable', asy
   await embeddings.getByRole('textbox', { name: 'Provider' }).fill('openai');
   await embeddings.getByRole('textbox', { name: 'Model' })
     .fill('text-embedding-3-small');
-  await embeddings.getByLabel('API key', { exact: true }).fill('embedding-key');
+  await embeddings.locator(
+    '[data-recued-ai-models-embeddings-field="api-key"]',
+  ).fill('embedding-key');
   await embeddings.locator(
     '[data-recued-ai-models-slot-save="embeddings_slot"]',
   ).click();
@@ -18655,7 +24277,9 @@ test('Settings AI Models pool removal is confirmed and keyboard-owned', async ({
   const row = page.locator(
     '[data-recued-ai-models-control="free_pool:groq"]',
   );
-  const remove = row.getByRole('button', { name: 'Remove', exact: true });
+  const remove = row.locator(
+    '[data-recued-ai-models-pool-remove="groq"]',
+  );
   await remove.focus();
   await page.keyboard.press('Enter');
 
@@ -18693,7 +24317,8 @@ test('Settings AI Models pool removal is confirmed and keyboard-owned', async ({
 
   await expect(row).toHaveCount(0);
   await expect(page.getByRole('button', {
-    name: 'Add API entry',
+    name: 'Add free-pool API entry',
+    exact: true,
   })).toBeFocused();
 });
 
@@ -18742,6 +24367,228 @@ test('Contracts restores the exact inventory row after Back', async ({ page }) =
   await expect(owner).toBeFocused();
 });
 
+test('Contracts category tabs form one arrow-key keyboard stop', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?contracts=paged#contracts/view/others`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const tabs = page.locator(`[${CONTRACTS_LIST_TAB}]`);
+  const builtIn = page.locator(
+    `[${CONTRACTS_LIST_TAB}][data-tab="built-in"]`,
+  );
+  const customer = page.locator(
+    `[${CONTRACTS_LIST_TAB}][data-tab="customer"]`,
+  );
+  const others = page.locator(
+    `[${CONTRACTS_LIST_TAB}][data-tab="others"]`,
+  );
+  await expect(tabs).toHaveCount(3);
+  await expect(others).toHaveAttribute('aria-selected', 'true');
+  await expect(others).toHaveAttribute('tabindex', '0');
+  await expect(page.locator(
+    `[${CONTRACTS_LIST_TAB}][tabindex="0"]`,
+  )).toHaveCount(1);
+
+  await others.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(page).toHaveURL(/#contracts\/view\/built-in$/);
+  await expect(builtIn).toHaveAttribute('aria-selected', 'true');
+  await expect(builtIn).toHaveAttribute('tabindex', '0');
+  await expect(builtIn).toBeFocused();
+  await expect(page.locator('[data-recued-contracts-page-status]')).toHaveText(
+    'No managed access contracts on this page',
+  );
+
+  await page.keyboard.press('End');
+  await expect(page).toHaveURL(/#contracts\/view\/others$/);
+  await expect(others).toBeFocused();
+
+  await page.keyboard.press('Home');
+  await expect(page).toHaveURL(/#contracts\/view\/built-in$/);
+  await expect(builtIn).toBeFocused();
+
+  await page.keyboard.press('ArrowRight');
+  await expect(page).toHaveURL(/#contracts\/view\/customer$/);
+  await expect(customer).toHaveAttribute('aria-selected', 'true');
+  await expect(customer).toBeFocused();
+  await expect(page.locator(
+    `[${CONTRACTS_LIST_TAB}][tabindex="0"]`,
+  )).toHaveCount(1);
+});
+
+test('Contracts keeps new-contract disclosure and slow creation keyboard-owned', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?contracts=paged&contracts_mint_response=slow#contracts/view/others`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const opener = page.locator('[data-recued-contracts-new]');
+  await expect(opener).toHaveText('+ New contract');
+  await expect(opener).toHaveAttribute('aria-expanded', 'false');
+  await expect(opener).toHaveAttribute(
+    'aria-controls',
+    'recued-contracts-new-contract-form',
+  );
+  await opener.focus();
+  await page.keyboard.press('Enter');
+
+  const form = page.getByRole('group', { name: 'New contract' });
+  const name = form.getByRole('textbox', { name: 'Contract name' });
+  await expect(form).toBeVisible();
+  await expect(opener).toHaveText('Cancel new contract');
+  await expect(opener).toHaveAttribute('aria-expanded', 'true');
+  await expect(name).toBeFocused();
+  await name.fill('Browser-created contract');
+
+  const submit = form.locator('[data-recued-contracts-new-submit]');
+  await submit.focus();
+  await page.keyboard.press('Enter');
+  await expect(submit).toHaveText('Creating…');
+  await expect(submit).toHaveAttribute('aria-disabled', 'true');
+  await expect(submit).toHaveAttribute('aria-busy', 'true');
+  await expect(submit).not.toHaveAttribute('disabled');
+  await expect(submit).toBeFocused();
+  await expect(opener).toHaveAttribute('aria-disabled', 'true');
+
+  await submit.dispatchEvent('click');
+  await submit.dispatchEvent('click');
+  await opener.dispatchEvent('click');
+  await expect(form).toBeVisible();
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('collection.contract.mintContract'),
+    ),
+  ).toBe(1);
+
+  await expect(page).toHaveURL(/#contracts\/door_paged_new\/connect$/);
+  await expect(page.locator(
+    `[${CONTRACTS_DETAIL_HEADING}="door_paged_new"]`,
+  )).toHaveText('Browser-created contract');
+});
+
+test('Contracts contains creation failures and preserves the form retry', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?contracts=paged`
+      + '&contracts_mint_response=fail-once-slow-retry'
+      + '#contracts/view/others',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const route = page.locator('[data-recued-contracts-route]');
+  const opener = page.locator('[data-recued-contracts-new]');
+  await opener.click();
+  const form = page.locator('[data-recued-contracts-new-form]');
+  const name = form.getByRole('textbox', { name: 'Contract name' });
+  await name.fill('Retry contract');
+  const submit = form.locator('[data-recued-contracts-new-submit]');
+  await submit.click();
+
+  await expect(submit).toHaveText('Creating…');
+  await expect(submit).toHaveAttribute('aria-disabled', 'true');
+  await expect(submit).toHaveAttribute('aria-busy', 'true');
+  await expect(submit).toBeFocused();
+  await expect(opener).toHaveAttribute('aria-disabled', 'true');
+  await submit.dispatchEvent('click');
+  await submit.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('collection.contract.mintContract'),
+    ),
+  ).toBe(1);
+
+  const failureId = `mint_${'M'.repeat(220)}`;
+  const error = form.locator('[data-recued-contracts-new-error]');
+  await expect(error).toHaveText(
+    `Contract mint unavailable for request ${failureId}. `
+      + 'Check limits and retry.',
+  );
+  await expect(name).toHaveValue('Retry contract');
+  await expect(submit).toHaveText('Create contract');
+  await expect(submit).not.toHaveAttribute('aria-disabled');
+  await expect(submit).not.toHaveAttribute('aria-busy');
+  await expect(submit).toBeFocused();
+  await expect(opener).not.toHaveAttribute('aria-disabled');
+  for (const owner of [error, form, route]) {
+    expect(await owner.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth + 1,
+    )).toBe(true);
+  }
+
+  await submit.click();
+  await expect(submit).toHaveText('Creating…');
+  await expect(submit).toBeFocused();
+  await submit.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('collection.contract.mintContract'),
+    ),
+  ).toBe(2);
+  await expect(page).toHaveURL(/#contracts\/door_paged_new\/connect$/);
+  await expect(page.locator(
+    `[${CONTRACTS_DETAIL_HEADING}="door_paged_new"]`,
+  )).toHaveText('Retry contract');
+  await expect(page.locator(
+    `[${CONTRACTS_DETAIL_HEADING}="door_paged_new"]`,
+  )).toBeFocused();
+});
+
+test('Contracts contains a long created identity across detail and inventory', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(`${HARNESS_URL}?contracts=paged#contracts/view/others`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const contractName = `Contract${'N'.repeat(240)}`;
+  await page.locator('[data-recued-contracts-new]').click();
+  await page.getByRole('textbox', { name: 'Contract name' }).fill(contractName);
+  await page.locator('[data-recued-contracts-new-submit]').click();
+
+  const route = page.locator('[data-recued-contracts-route]');
+  const body = route.locator('[data-recued-contracts-body]');
+  const detail = body.locator('[data-recued-contracts-detail]');
+  const heading = detail.locator(
+    `[${CONTRACTS_DETAIL_HEADING}="door_paged_new"]`,
+  );
+  await expect(heading).toHaveText(contractName);
+  const detailOwners = detail.locator(
+    ':scope, .contracts-detail-head, .contracts-detail-name, '
+    + '.contracts-detail-limits, .contracts-tabs, '
+    + '[data-recued-contracts-tab-body], [data-recued-contracts-connect], '
+    + '.contracts-snippet-grid, [data-recued-contracts-snippet], '
+    + '[data-recued-permissions-panel]',
+  );
+  expect(await detailOwners.evaluateAll((elements) => elements.every(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  ))).toBe(true);
+  for (const owner of [body, route]) {
+    expect(await owner.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth + 1,
+    )).toBe(true);
+  }
+
+  await detail.locator('[data-recued-contracts-back]').click();
+  const list = body.locator('[data-recued-contracts-list]');
+  const row = list.locator(
+    '[data-recued-contracts-row][data-contract-id="door_paged_new"]',
+  );
+  await expect(row.locator('.contracts-row-name')).toHaveText(contractName);
+  const listOwners = body.locator(
+    '[data-recued-contracts-list-panel], [data-recued-contracts-list], '
+    + '[data-recued-contracts-list] > li, '
+    + '[data-recued-contracts-row][data-contract-id="door_paged_new"], '
+    + '[data-recued-contracts-row][data-contract-id="door_paged_new"] > *',
+  );
+  expect(await listOwners.evaluateAll((elements) => elements.every(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  ))).toBe(true);
+  for (const owner of [body, route]) {
+    expect(await owner.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth + 1,
+    )).toBe(true);
+  }
+});
+
 test('Contracts keeps paging controls reachable at a cursor boundary', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?contracts=paged`);
@@ -18752,6 +24599,8 @@ test('Contracts keeps paging controls reachable at a cursor boundary', async ({ 
   const next = page.locator('[data-recued-contracts-page-next]');
   const previous = page.locator('[data-recued-contracts-page-previous]');
   await expect(status).toHaveText('Showing 1–25 of 26');
+  expect((await next.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+  expect((await previous.boundingBox())?.height).toBeGreaterThanOrEqual(36);
 
   await next.focus();
   await page.keyboard.press('Enter');
@@ -18799,6 +24648,71 @@ test('Contracts keeps slow paging focused, visible, and single-flight', async ({
   await expect(previous).toBeFocused();
 });
 
+test('Contracts contains page failures and preserves the exact retry', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?contracts=paged`
+      + '&contracts_page_response=fail-once-slow-retry'
+      + '#contracts/view/others',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const route = page.locator('[data-recued-contracts-route]');
+  const body = route.locator('[data-recued-contracts-body]');
+  const panel = body.locator('[data-recued-contracts-list-panel]');
+  const status = panel.locator('[data-recued-contracts-page-status]');
+  const next = panel.locator('[data-recued-contracts-page-next]');
+  const previous = panel.locator('[data-recued-contracts-page-previous]');
+  await expect(status).toHaveText('Showing 1–25 of 26');
+  const readsBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('collection.contract.listContracts'),
+  );
+
+  await next.click();
+  await expect(next).toHaveText('Loading…');
+  await expect(next).toHaveAttribute('aria-disabled', 'true');
+  await expect(next).toHaveAttribute('aria-busy', 'true');
+  await expect(next).toBeFocused();
+  await next.dispatchEvent('click');
+  await next.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('collection.contract.listContracts'),
+    ),
+  ).toBe(readsBefore + 1);
+
+  const failureId = `page_${'P'.repeat(220)}`;
+  const error = body.locator('[data-recued-contracts-error]');
+  await expect(error).toHaveText(
+    `Some contracts could not be loaded: Contract page unavailable for cursor `
+      + `${failureId}. Retry this page.`,
+  );
+  await expect(status).toHaveText('Showing 1–25 of 26');
+  await expect(panel.locator('[data-recued-contracts-row]')).toHaveCount(25);
+  await expect(next).toHaveText('Next');
+  await expect(next).toBeFocused();
+  for (const owner of [error, panel, body, route]) {
+    expect(await owner.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth + 1,
+    )).toBe(true);
+  }
+
+  const readsBeforeRetry = await page.evaluate(
+    () => window.__app.rpcCallCount('collection.contract.listContracts'),
+  );
+  await next.click();
+  await expect(next).toHaveText('Loading…');
+  await expect(next).toBeFocused();
+  await expect(error).toBeVisible();
+  await next.dispatchEvent('click');
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('collection.contract.listContracts'),
+  )).toBe(readsBeforeRetry + 1);
+  await expect(status).toHaveText('Showing 26–26 of 26');
+  await expect(error).toHaveCount(0);
+  await expect(previous).toBeFocused();
+});
+
 test('Contracts keeps revoke confirmation keyboard-owned', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?contracts=paged`);
@@ -18815,6 +24729,8 @@ test('Contracts keeps revoke confirmation keyboard-owned', async ({ page }) => {
   const confirm = page.locator('[data-recued-contracts-revoke-confirm]');
   await expect(confirm).toBeFocused();
   const cancel = page.locator('[data-recued-contracts-revoke-cancel]');
+  expect((await confirm.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+  expect((await cancel.boundingBox())?.height).toBeGreaterThanOrEqual(36);
   await cancel.focus();
   await page.keyboard.press('Enter');
   await expect(revoke).toHaveText('Revoke');
@@ -18835,6 +24751,70 @@ test('Contracts keeps revoke confirmation keyboard-owned', async ({ page }) => {
   ))).toBe(1);
 });
 
+test('Contracts contains revoke failures and preserves a safe retry', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?contracts=paged`
+      + '&contracts_revoke_response=fail-once-slow-retry'
+      + '#contracts/door_paged_01',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const route = page.locator('[data-recued-contracts-route]');
+  const detail = page.locator('[data-recued-contracts-detail]');
+  const heading = detail.locator(
+    `[${CONTRACTS_DETAIL_HEADING}="door_paged_01"]`,
+  );
+  const revoke = detail.locator('[data-recued-contracts-revoke]');
+  await revoke.click();
+  let confirm = detail.locator('[data-recued-contracts-revoke-confirm]');
+  await confirm.click();
+
+  await expect(revoke).toHaveText('Revoking…');
+  await expect(revoke).toHaveAttribute('aria-disabled', 'true');
+  await expect(revoke).toHaveAttribute('aria-busy', 'true');
+  await expect(revoke).toBeFocused();
+  await revoke.dispatchEvent('click');
+  await revoke.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('collection.contract.revokeContract'),
+    ),
+  ).toBe(1);
+
+  const failureId = `revoke_${'E'.repeat(220)}`;
+  const error = detail.locator('[data-recued-contracts-head-error]');
+  await expect(error).toHaveText(
+    `Could not revoke: Contract revoke unavailable for request ${failureId}. `
+      + 'Retry from this contract.',
+  );
+  await expect(revoke).toHaveText('Revoke');
+  await expect(revoke).toBeFocused();
+  for (const owner of [error, detail.locator('.contracts-detail-head'), detail, route]) {
+    expect(await owner.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth + 1,
+    )).toBe(true);
+  }
+
+  await revoke.click();
+  confirm = detail.locator('[data-recued-contracts-revoke-confirm]');
+  await expect(confirm).toBeFocused();
+  await confirm.click();
+  await expect(revoke).toHaveText('Revoking…');
+  await expect(revoke).toBeFocused();
+  await revoke.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('collection.contract.revokeContract'),
+    ),
+  ).toBe(2);
+
+  await expect(error).toHaveCount(0);
+  await expect(revoke).toHaveCount(0);
+  await expect(detail).toContainText('Revoked');
+  await expect(heading).toBeFocused();
+});
+
 test('Contracts preserves a door toggle through its write repaint', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?contracts=paged`);
@@ -18852,6 +24832,114 @@ test('Contracts preserves a door toggle through its write repaint', async ({ pag
   expect(await page.evaluate(() => window.__app.rpcCallCount(
     'collection.contract.setDoorTypes',
   ))).toBe(1);
+});
+
+test('Contracts Connect renders a full-size mobile credential editor', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?contracts=paged#contracts/door_paged_01/connect`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  await expect(page.locator(
+    '[data-recued-contracts-connect]',
+  ).getByRole('heading', { level: 3 })).toHaveText([
+    'Claude Desktop',
+    'Cursor',
+    'Codex',
+    'Custom MCP client',
+  ]);
+
+  const form = page.locator('[data-recued-permissions-create]');
+  const save = form.locator('[data-recued-permissions-create-save]');
+  await expect(save).toHaveText('Add override');
+  expect(await form.evaluate(
+    (element) => getComputedStyle(element).flexDirection,
+  )).toBe('column');
+  expect((await save.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+
+  const denyTarget = form.locator(
+    'label:has([data-recued-permissions-create-denied])',
+  );
+  expect((await denyTarget.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+
+  const doorTargets = page.locator('[data-recued-contracts-door-toggle]');
+  expect(await doorTargets.count()).toBe(3);
+  const doorHeights = await doorTargets.evaluateAll((targets) => targets.map(
+    (target) => target.getBoundingClientRect().height,
+  ));
+  expect(Math.min(...doorHeights)).toBeGreaterThanOrEqual(36);
+
+  const detail = page.locator('[data-recued-contracts-detail]');
+  const tabs = detail.locator(`[${CONTRACTS_DETAIL_TAB}]`);
+  const tabHeights = await tabs.evaluateAll((targets) => targets.map(
+    (target) => target.getBoundingClientRect().height,
+  ));
+  expect(Math.min(...tabHeights)).toBeGreaterThanOrEqual(36);
+  expect((await detail.locator(
+    '[data-recued-contracts-revoke]',
+  ).boundingBox())?.height).toBeGreaterThanOrEqual(36);
+
+  expect(await detail.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+
+  for (const link of [
+    detail.locator('[data-recued-contracts-back]'),
+    detail.locator('[data-recued-contracts-activity-link]'),
+  ]) {
+    expect((await link.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+  }
+});
+
+test('Contracts grants contain long operation labels and keep full mobile targets', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?contracts=paged#contracts/door_paged_01/ops`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const assertGrantTargets = async (): Promise<void> => {
+    const route = page.locator('[data-recued-contracts-route]');
+    const detail = page.locator('[data-recued-contracts-detail]');
+    const tabBody = page.locator('[data-recued-contracts-tab-body]');
+    const panel = page.locator('[data-recued-contract-grants]');
+    const targets = page.locator('[data-recued-contract-grants-cell]');
+    await expect(targets.first()).toBeVisible();
+    const heights = await targets.evaluateAll((labels) => labels.map(
+      (label) => label.getBoundingClientRect().height,
+    ));
+    expect(heights.length).toBeGreaterThan(0);
+    expect(Math.min(...heights)).toBeGreaterThanOrEqual(36);
+    const owners = panel.locator(
+      ':scope, .cg-filter-results, .cg-kind, .cg-op-ingredient, .cg-cell, '
+        + '.cg-cell-name, .cg-also-reads, .cg-source',
+    );
+    expect(await owners.evaluateAll((elements) => elements.every(
+      (element) => element.scrollWidth <= element.clientWidth + 1,
+    ))).toBe(true);
+    for (const owner of [tabBody, detail, route]) {
+      expect(await owner.evaluate(
+        (element) => element.scrollWidth <= element.clientWidth + 1,
+      )).toBe(true);
+    }
+  };
+
+  await assertGrantTargets();
+  const longOperation = page.locator(
+    '[data-recued-contract-grants-cell]'
+      + '[data-entry="core.contact.engagements.read"]',
+  );
+  await expect(longOperation).toBeVisible();
+  await expect(longOperation.locator('.cg-cell-name')).toHaveText(
+    'core.contact.engagements.read',
+  );
+  await expect(longOperation.locator('.cg-source')).toHaveText('default');
+  await page.locator(
+    `[${CONTRACTS_DETAIL_TAB}][data-tab="entities"]`,
+  ).click();
+  await assertGrantTargets();
+
 });
 
 test('Contracts detail tabs form one arrow-key keyboard stop', async ({ page }) => {
@@ -18955,7 +25043,10 @@ test('an uncertain run lands on its exact record with readable dark-theme next s
   await expect(outcome).toBeVisible();
   await expect(outcome).toContainText('Outcome needs verification');
   await expect(outcome).toBeFocused();
-  const openRun = page.getByRole('button', { name: 'Open run detail' });
+  const openRun = page.getByRole('button', {
+    name: 'Open run detail for Schedule customer review (run-verify)',
+    exact: true,
+  });
   const openRunBox = await openRun.boundingBox();
   expect(openRunBox?.width).toBeGreaterThanOrEqual(32);
   expect(openRunBox?.height).toBeGreaterThanOrEqual(32);
@@ -19062,17 +25153,31 @@ test('an uncertain run lands on its exact record with readable dark-theme next s
     expect(theme.action).toBeGreaterThanOrEqual(4.5);
   }
   expect(contrast.pageWidth).toBeLessThanOrEqual(contrast.viewport);
+  const rawDetails = page.locator('.col-explorer-detail-raw');
   const rawSummary = page.locator('.col-explorer-detail-raw summary');
-  expect((await rawSummary.boundingBox())?.height).toBeGreaterThanOrEqual(32);
+  expect((await rawSummary.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+  await rawSummary.focus();
+  await page.keyboard.press('Enter');
+  await expect(rawDetails).toHaveAttribute('open', '');
+  await expect(rawSummary).toBeFocused();
+  expect(await page.evaluate(
+    () => document.documentElement.scrollWidth <= window.innerWidth,
+  )).toBe(true);
 
   await primary.click();
   await expect(page).toHaveURL(
     /#chat\/session\/chat_1\/plan\/plan_email_1/,
   );
   await expect(page.locator('[data-recued-chat-route]')).toBeVisible();
+  const runOutcome = page.locator('.chat-data-verification-run');
+  await expect(runOutcome).toHaveText('View run outcome →');
+  expect((await runOutcome.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+  await runOutcome.focus();
+  await expect(runOutcome).toBeFocused();
 });
 
 test('the first-run recipe handoff traps focus and recovers an empty inventory', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   const automate = page.locator(
     `[${CHAT_ACTIVATION_ACTION}="automate"]`,
   );
@@ -19087,12 +25192,152 @@ test('the first-run recipe handoff traps focus and recovers an empty inventory',
   await expect(dialog.getByRole('link', { name: /Browse starter packs/ }))
     .toHaveAttribute('href', '#packs');
 
+  const close = page.locator(`[${RUN_PALETTE_CLOSE}]`);
+  expect((await close.boundingBox())?.height).toBeGreaterThanOrEqual(36);
   await page.keyboard.press('Tab');
-  await expect(page.locator(`[${RUN_PALETTE_CLOSE}]`)).toBeFocused();
+  await expect(close).toBeFocused();
   await page.keyboard.press('Shift+Tab');
   expect(await overlay.evaluate((node) => node.contains(document.activeElement)))
     .toBe(true);
 
+  await page.keyboard.press('Escape');
+  await expect(overlay).toHaveCount(0);
+  await expect(automate).toBeFocused();
+});
+
+test('the Run palette stays contained with usable mobile targets', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 480 });
+  await page.goto(`${HARNESS_URL}?run_palette=autorun`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${CHAT_ACTIVATION_ACTION}="automate"]`).click();
+
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const geometry = await dialog.evaluate((node) => {
+    const rect = node.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(geometry.left).toBeGreaterThanOrEqual(15.5);
+  expect(geometry.right).toBeLessThanOrEqual(geometry.viewportWidth - 15.5);
+
+  const close = page.locator(`[${RUN_PALETTE_CLOSE}]`);
+  const picker = dialog.getByRole('combobox', { name: 'Recipe' });
+  expect((await close.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+  expect((await picker.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+
+  await picker.fill('Watch pipeline');
+  const option = page.getByRole('option', { name: /Watch pipeline/ });
+  await expect(option).toBeVisible();
+  expect((await option.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+  const optionRow = dialog.locator('.ref-picker-option').first();
+  await optionRow.locator('.ref-picker-option-label').evaluate((label) => {
+    label.textContent =
+      'UNBROKEN_REFERENCE_LABEL_THAT_IS_MUCH_LONGER_THAN_THE_AVAILABLE_PHONE_PICKER_WIDTH_123456789';
+  });
+  await optionRow.locator('.ref-picker-option-sub').evaluate((sublabel) => {
+    sublabel.textContent =
+      'publisher/pack/entity/UNBROKEN_REFERENCE_IDENTIFIER_ABCDEFGHIJKLMNOPQRSTUVWXYZ_123456789';
+  });
+  const resultWidths = await dialog.locator('.ref-picker-results')
+    .evaluate((results) => ({
+      client: results.clientWidth,
+      scroll: results.scrollWidth,
+    }));
+  expect(resultWidths.scroll).toBeLessThanOrEqual(resultWidths.client);
+  await optionRow.click();
+
+  const clear = dialog.getByRole('button', { name: 'Clear selection' });
+  const pause = page.locator(`[${RUN_PALETTE_ACTION}]`, { hasText: 'Pause' });
+  const clearTarget = await clear.boundingBox();
+  expect(clearTarget?.width).toBeGreaterThanOrEqual(36);
+  expect(clearTarget?.height).toBeGreaterThanOrEqual(36);
+  expect((await pause.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+});
+
+test('the Run palette contains a long installed recipe after selection', async ({ page }) => {
+  const longName = `Recipe${'N'.repeat(240)}`;
+  const longId = `autorun-${'I'.repeat(240)}`;
+  await page.setViewportSize({ width: 280, height: 480 });
+  await page.goto(`${HARNESS_URL}?run_palette=long`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${CHAT_ACTIVATION_ACTION}="automate"]`).click();
+
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const picker = dialog.getByRole('combobox', { name: 'Recipe' });
+  await picker.fill('RecipeNN');
+  const option = dialog.locator('.ref-picker-option').first();
+  await expect(option.locator('.ref-picker-option-label')).toHaveText(longName);
+  await expect(option.locator('.ref-picker-option-sub')).toHaveText(longId);
+  await option.click();
+
+  const selected = dialog.locator('.run-palette-selected');
+  await expect(selected).toHaveText(longName);
+  await expect(dialog.locator(`[${RUN_PALETTE_ACTION}]`, { hasText: 'Pause' }))
+    .toBeVisible();
+  const geometry = await dialog.evaluate((node) => {
+    const elements = [
+      node,
+      node.querySelector<HTMLElement>('.run-palette-actions'),
+      node.querySelector<HTMLElement>('.run-palette-selected'),
+      node.querySelector<HTMLElement>('.run-palette-state'),
+      ...node.querySelectorAll<HTMLElement>(
+        '[data-recued-run-palette-action]',
+      ),
+    ].filter((element): element is HTMLElement => element !== null);
+    return elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      return {
+        left: rect.left,
+        right: rect.right,
+        scrollWidth: element.scrollWidth,
+        clientWidth: element.clientWidth,
+      };
+    });
+  });
+  for (const bounds of geometry) {
+    expect(bounds.left).toBeGreaterThanOrEqual(15.5);
+    expect(bounds.right).toBeLessThanOrEqual(264.5);
+    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+  }
+});
+
+test('the Run palette leaves composing Escape to its recipe picker', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?run_palette=autorun`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const automate = page.locator(
+    `[${CHAT_ACTIVATION_ACTION}="automate"]`,
+  );
+  await automate.click();
+
+  const overlay = page.locator(`[${RUN_PALETTE}]`);
+  const picker = page.getByRole('combobox', { name: 'Recipe' });
+  await picker.fill('監視レシピ');
+  await picker.focus();
+  const composingEscape = await picker.evaluate((input) => {
+    const event = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      code: 'Escape',
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    const dispatched = input.dispatchEvent(event);
+    return { dispatched, defaultPrevented: event.defaultPrevented };
+  });
+  expect(composingEscape).toEqual({
+    dispatched: true,
+    defaultPrevented: false,
+  });
+  await expect(overlay).toBeVisible();
+  await expect(picker).toHaveValue('監視レシピ');
+  await expect(picker).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(overlay).toBeVisible();
+  await expect(picker).toHaveAttribute('aria-expanded', 'false');
   await page.keyboard.press('Escape');
   await expect(overlay).toHaveCount(0);
   await expect(automate).toBeFocused();
@@ -19361,8 +25606,12 @@ test('the Connections landing explains the choices and starts with one clear act
   await route.getByRole('button', { name: 'Cancel' }).click();
   await expect(connect).toBeFocused();
 
-  await tabs.getByRole('link', { name: 'Calendar' }).click();
+  const calendarTab = tabs.getByRole('link', { name: 'Calendar' });
+  await calendarTab.focus();
+  await page.keyboard.press('Enter');
   await expect(page).toHaveURL(/#connections\/calendar$/);
+  await expect(calendarTab).toHaveAttribute('aria-current', 'page');
+  await expect(calendarTab).toBeFocused();
   await expect(route.locator(`[${ACCOUNTS_EMPTY}]`)).toContainText(
     'Connect your first calendar',
   );
@@ -19370,8 +25619,12 @@ test('the Connections landing explains the choices and starts with one clear act
     route.getByRole('button', { name: 'Connect calendar' }),
   ).toBeVisible();
 
-  await route.getByRole('link', { name: 'Files' }).click();
+  const filesTab = route.getByRole('link', { name: 'Files' });
+  await filesTab.focus();
+  await page.keyboard.press('Enter');
   await expect(page).toHaveURL(/#connections\/file$/);
+  await expect(filesTab).toHaveAttribute('aria-current', 'page');
+  await expect(filesTab).toBeFocused();
   await expect(route.locator(`[${ACCOUNTS_EMPTY}]`)).toContainText(
     'Add your first file source',
   );
@@ -19417,6 +25670,12 @@ test('a Connections account detail returns focus to its exact row', async ({ pag
     '[data-action="accounts-open-detail"][data-slug="work"]',
   );
   await expect(account).toBeVisible();
+  await expect(route.getByRole('heading', { name: 'Mailboxes', level: 2 }))
+    .toBeVisible();
+  await expect(route.locator('.accounts-blurb')).toHaveText(
+    'Recued can search and use these mailboxes in your work. '
+      + 'Sending stays optional.',
+  );
   await account.focus();
   await page.keyboard.press('Enter');
 
@@ -19427,6 +25686,252 @@ test('a Connections account detail returns focus to its exact row', async ({ pag
   await route.getByRole('button', { name: 'Back' }).focus();
   await page.keyboard.press('Enter');
   await expect(account).toBeFocused();
+});
+
+test('Connections contains long account identities through removal review', async ({ page }) => {
+  const longSlug = `mailbox-${'identity'.repeat(7)}`;
+  const longEmail = `${'account'.repeat(8)}@example.test`;
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?connection=source-ready&account_text=long#connections`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const route = page.locator(`[${CONNECTIONS_ROUTE}]`);
+  const account = route.locator('[data-action="accounts-open-detail"]').first();
+  await expect(account.locator('.accounts-row-name')).toHaveText(longSlug);
+  await expect(account.locator('.accounts-row-sub')).toHaveText(longEmail);
+  const listGeometry = await route.locator('.accounts-panel').evaluate((panel) => {
+    const routeHost = panel.closest<HTMLElement>('[data-recued-connections-route]');
+    const elements = [
+      panel,
+      panel.querySelector<HTMLElement>('.accounts-rows'),
+      panel.querySelector<HTMLElement>('.accounts-row'),
+      panel.querySelector<HTMLElement>('.accounts-row-main'),
+      panel.querySelector<HTMLElement>('.accounts-row-name'),
+      panel.querySelector<HTMLElement>('.accounts-row-sub'),
+    ].filter((element): element is HTMLElement => element !== null);
+    return {
+      routeScrollWidth: routeHost?.scrollWidth ?? 0,
+      routeClientWidth: routeHost?.clientWidth ?? 0,
+      elements: elements.map((element) => ({
+        left: element.getBoundingClientRect().left,
+        right: element.getBoundingClientRect().right,
+        scrollWidth: element.scrollWidth,
+        clientWidth: element.clientWidth,
+      })),
+    };
+  });
+  expect(listGeometry.routeScrollWidth)
+    .toBeLessThanOrEqual(listGeometry.routeClientWidth);
+  for (const bounds of listGeometry.elements) {
+    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds.right).toBeLessThanOrEqual(280.5);
+    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+  }
+
+  await account.click();
+  const heading = route.locator('[data-accounts-detail-heading]');
+  await expect(heading).toHaveText(longSlug);
+  await expect(route.locator('.accounts-detail-grid')).toContainText(longEmail);
+  const detailGeometry = await route.locator('.accounts-detail').evaluate((detail) => {
+    const routeHost = detail.closest<HTMLElement>('[data-recued-connections-route]');
+    const elements = [
+      detail,
+      detail.querySelector<HTMLElement>('.accounts-detail-title'),
+      detail.querySelector<HTMLElement>('.accounts-detail-grid'),
+      ...detail.querySelectorAll<HTMLElement>('.accounts-detail-grid dd'),
+    ].filter((element): element is HTMLElement => element !== null);
+    return {
+      routeScrollWidth: routeHost?.scrollWidth ?? 0,
+      routeClientWidth: routeHost?.clientWidth ?? 0,
+      elements: elements.map((element) => ({
+        left: element.getBoundingClientRect().left,
+        right: element.getBoundingClientRect().right,
+        scrollWidth: element.scrollWidth,
+        clientWidth: element.clientWidth,
+      })),
+    };
+  });
+  expect(detailGeometry.routeScrollWidth)
+    .toBeLessThanOrEqual(detailGeometry.routeClientWidth);
+  for (const bounds of detailGeometry.elements) {
+    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds.right).toBeLessThanOrEqual(280.5);
+    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+  }
+
+  await route.getByRole('button', { name: 'Remove', exact: true }).click();
+  const dialog = page.locator('[data-accounts-delete-dialog]');
+  await expect(dialog).toHaveAttribute('aria-label', `Remove account ${longSlug}`);
+  await expect(dialog.locator('.accounts-delete-title')).toHaveText(
+    `Remove ${longSlug}?`,
+  );
+  await expect(dialog.locator('.accounts-delete-body')).toContainText('Gmail');
+  const dialogGeometry = await dialog.evaluate((surface) => {
+    const elements = [
+      surface,
+      surface.querySelector<HTMLElement>('.accounts-delete-title'),
+      surface.querySelector<HTMLElement>('.accounts-delete-body'),
+      surface.querySelector<HTMLElement>('.accounts-delete-actions'),
+    ].filter((element): element is HTMLElement => element !== null);
+    return elements.map((element) => ({
+      left: element.getBoundingClientRect().left,
+      right: element.getBoundingClientRect().right,
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+    }));
+  });
+  for (const bounds of dialogGeometry) {
+    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds.right).toBeLessThanOrEqual(280.5);
+    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+  }
+});
+
+test('Connections webhook writes retain their exact action focus and stay single-flight', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?connection=webhooks&webhook_test_response=slow#connections/webhooks`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const card = page.locator(`[${WEBHOOKS_CARD}]`);
+  await expect(card).toContainText('Signed test deliveries');
+  const actions = card.locator(`[${WEBHOOKS_ACTION}]`);
+  await expect(actions).toHaveCount(7);
+  const actionHeights = await actions.evaluateAll((targets) => targets.map(
+    (target) => target.getBoundingClientRect().height,
+  ));
+  expect(Math.min(...actionHeights)).toBeGreaterThanOrEqual(36);
+  const sendTest = card.locator(`[${WEBHOOKS_ACTION}="test-delivery"]`);
+  const callsBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('webhook.ingress.test.deliver'),
+  );
+
+  await sendTest.focus();
+  await page.keyboard.press('Enter');
+  await expect(sendTest).toBeFocused();
+  await expect(sendTest).toHaveAttribute('aria-disabled', 'true');
+  await expect(sendTest).toHaveAttribute('aria-busy', 'true');
+  await expect(sendTest).not.toHaveAttribute('disabled');
+
+  await sendTest.evaluate((button) => {
+    (button as HTMLButtonElement).click();
+    (button as HTMLButtonElement).click();
+  });
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('webhook.ingress.test.deliver'),
+    ),
+  ).toBe(callsBefore + 1);
+
+  await expect(card.locator(`[${WEBHOOKS_TEST_DELIVERY}]`)).toContainText(
+    'was durably accepted',
+  );
+  await expect(sendTest).toBeFocused();
+  await expect(sendTest).not.toHaveAttribute('aria-disabled');
+  await expect(sendTest).not.toHaveAttribute('aria-busy');
+  await expect(sendTest).not.toHaveAttribute('disabled');
+});
+
+test('Connections webhook disclosures hand focus to their logical destination', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?connection=webhooks#connections/webhooks`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const card = page.locator(`[${WEBHOOKS_CARD}]`);
+  const rotate = card.locator(`[${WEBHOOKS_ACTION}="credentials"]`);
+  await rotate.click();
+  await expect(card.locator(`[${WEBHOOKS_FIELD}]`).first()).toBeFocused();
+  await card.locator(`[${WEBHOOKS_ACTION}="credential-cancel"]`).click();
+  await expect(rotate).toBeFocused();
+
+  const newWebhook = page.locator(`[${WEBHOOKS_NEW}]`);
+  await newWebhook.click();
+  await expect(page.locator(`[${WEBHOOKS_FIELD}="display_name"]`)).toBeFocused();
+  await page.locator(`[${WEBHOOKS_ACTION}="create-cancel"]`).click();
+  await expect(newWebhook).toBeFocused();
+
+  const deliveries = card.locator(`[${WEBHOOKS_ACTION}="deliveries"]`);
+  await deliveries.click();
+  await expect(deliveries).toHaveText('Hide accepted deliveries');
+  await expect(deliveries).toBeFocused();
+
+  const deliveriesList = card.locator(`[${WEBHOOKS_DELIVERY}]`);
+  await expect(deliveriesList).toHaveCount(2);
+  const delivery = deliveriesList.nth(1);
+  const inspect = delivery.locator(`[${WEBHOOKS_ACTION}="delivery-open"]`);
+  await inspect.click();
+  const back = card.locator(`[${WEBHOOKS_ACTION}="deliveries-back"]`);
+  await expect(back).toBeFocused();
+
+  await card.locator(`[${WEBHOOKS_ACTION}="event-open"]`).click();
+  const payload = card.locator(`[${WEBHOOKS_PAYLOAD}]`);
+  await expect(payload).toContainText('accepted');
+  await expect(payload).toBeFocused();
+
+  await back.click();
+  await expect(inspect).toBeFocused();
+});
+
+test('Connections webhook terminal writes hand focus to durable context', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?connection=webhooks&webhook_terminal_response=slow#connections/webhooks`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const panel = page.locator(`[${WEBHOOKS_PANEL}]`);
+  const newWebhook = page.locator(`[${WEBHOOKS_NEW}]`);
+  await newWebhook.click();
+  await page.locator(`[${WEBHOOKS_FIELD}="display_name"]`).fill('Browser-created webhook');
+  await page.locator(`[${WEBHOOKS_FIELD}="signature_header"]`).fill('X-Signature');
+  await page.locator(`[${WEBHOOKS_FIELD}="signing_secret"]`).fill('browser-secret');
+  const create = page.locator(`[${WEBHOOKS_ACTION}="create-submit"]`);
+  await create.focus();
+  await page.keyboard.press('Enter');
+  await expect(create).toBeFocused();
+  await expect(create).toHaveAttribute('aria-disabled', 'true');
+  await expect(create).toHaveAttribute('aria-busy', 'true');
+
+  const createdCard = page.locator(`[${WEBHOOKS_CARD}]`, {
+    hasText: 'Browser-created webhook',
+  });
+  await expect(createdCard.locator('h3')).toBeFocused();
+  await expect(createdCard).toContainText('manual_pending · draft');
+
+  const originalCard = page.locator(`[${WEBHOOKS_CARD}]`, {
+    hasText: 'Signed test deliveries',
+  });
+  await expect(originalCard.locator(`[${WEBHOOKS_ACTION}="credentials"]`))
+    .toHaveAccessibleName(
+      /^Rotate credentials for Signed test deliveries \(whi_/,
+    );
+  await expect(createdCard.locator(`[${WEBHOOKS_ACTION}="credentials"]`))
+    .toHaveAccessibleName(
+      /^Rotate credentials for Browser-created webhook \(whi_/,
+    );
+  await expect(originalCard.locator(`[${WEBHOOKS_ACTION}="deliveries"]`))
+    .toHaveAccessibleName(
+      /^View accepted deliveries for Signed test deliveries \(whi_/,
+    );
+  await expect(createdCard.locator(`[${WEBHOOKS_ACTION}="deliveries"]`))
+    .toHaveAccessibleName(
+      /^View accepted deliveries for Browser-created webhook \(whi_/,
+    );
+  await originalCard.locator(`[${WEBHOOKS_ACTION}="disable"]`).click();
+  await expect(originalCard.locator(`[${WEBHOOKS_ACTION}="enable"]`)).toBeFocused();
+  await originalCard.locator(`[${WEBHOOKS_ACTION}="retire"]`).click();
+  const confirmRetire = originalCard.locator(
+    `[${WEBHOOKS_ACTION}="retire-confirm"]`,
+  );
+  await expect(confirmRetire).toBeFocused();
+  await confirmRetire.click();
+  await expect(confirmRetire).toBeFocused();
+  await expect(confirmRetire).toHaveAttribute('aria-disabled', 'true');
+  await expect(confirmRetire).toHaveAttribute('aria-busy', 'true');
+
+  await expect(originalCard).toHaveCount(0);
+  await expect(panel.locator('h2')).toBeFocused();
+  await expect(createdCard).toBeVisible();
 });
 
 test('Connections account lifecycle writes keep their exact action focused and single-flight', async ({ page }) => {
@@ -19486,11 +25991,41 @@ test('Connections account lifecycle writes keep their exact action focused and s
 });
 
 test('Connections keeps operation grant ownership through writes', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 700 });
   await page.goto(`${HARNESS_URL}?connection=grants`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#connections/others'));
 
   const grants = page.locator(`[${CONNECTIONS_GRANTS}]`);
+  const enrolled = page.getByRole('region', { name: 'Enrolled connections' });
+  await expect(enrolled.getByRole('heading', {
+    name: 'Enrolled connections',
+    level: 2,
+  })).toBeAttached();
+  await expect(enrolled.getByRole('heading', {
+    name: 'API (1)',
+    level: 3,
+  })).toBeVisible();
+  const enrolledRow = enrolled.locator('.connections-row').first();
+  const actionBounds = await enrolledRow.locator(
+    '.connections-row-actions',
+  ).evaluate((actions) => {
+    const row = actions.closest('.connections-row')?.getBoundingClientRect();
+    const controls = [...actions.querySelectorAll('button')].map((button) => {
+      const rect = button.getBoundingClientRect();
+      return { right: rect.right, bottom: rect.bottom };
+    });
+    return {
+      rowRight: row?.right ?? Number.NEGATIVE_INFINITY,
+      rowBottom: row?.bottom ?? Number.NEGATIVE_INFINITY,
+      controls,
+    };
+  });
+  expect(actionBounds.controls).toHaveLength(4);
+  expect(Math.max(...actionBounds.controls.map(({ right }) => right)))
+    .toBeLessThanOrEqual(actionBounds.rowRight + 0.5);
+  expect(Math.max(...actionBounds.controls.map(({ bottom }) => bottom)))
+    .toBeLessThanOrEqual(actionBounds.rowBottom + 0.5);
   const deals = grants.locator(
     `[${CONNECTIONS_GRANT_TOGGLE}][data-group-id="recued-core/hubspot.deals.write"]`,
   );
@@ -19498,6 +26033,14 @@ test('Connections keeps operation grant ownership through writes', async ({ page
     `[${CONNECTIONS_GRANT_TOGGLE}][data-group-id="recued-core/hubspot.contacts.write"]`,
   );
   await expect(deals).toHaveText('Grant');
+  await expect(deals).toHaveAccessibleName(
+    'Grant hubspot.deals.write for HubSpot work (hubspot-work)',
+  );
+  await expect(contacts).toHaveAccessibleName(
+    'Grant hubspot.contacts.write for HubSpot work (hubspot-work)',
+  );
+  expect((await deals.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+  expect((await contacts.boundingBox())?.height).toBeGreaterThanOrEqual(36);
 
   await page.evaluate(() => {
     document.documentElement.setAttribute('data-audit-confirm-count', '0');
@@ -19522,17 +26065,29 @@ test('Connections keeps operation grant ownership through writes', async ({ page
   await expect(page).toHaveURL(/#connections\/others$/);
   await expect(deals).toHaveAttribute('aria-disabled', 'true');
   await expect(deals).toHaveAttribute('aria-busy', 'true');
+  await expect(deals).toHaveAccessibleName(
+    'Granting… hubspot.deals.write for HubSpot work (hubspot-work)',
+  );
   await expect(deals).toBeFocused();
   await expect(contacts).toHaveAttribute('aria-disabled', 'true');
   await expect(contacts).not.toHaveAttribute('aria-busy');
+  await expect(contacts).toHaveAccessibleName(
+    'Grant hubspot.contacts.write for HubSpot work (hubspot-work)',
+  );
 
   await expect(deals).toHaveText('Revoke');
+  await expect(deals).toHaveAccessibleName(
+    'Revoke hubspot.deals.write for HubSpot work (hubspot-work)',
+  );
   await expect(deals).toHaveAttribute('aria-pressed', 'true');
   await expect(deals).toBeFocused();
   await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
 
   await page.keyboard.press('Enter');
   await expect(deals).toHaveText('Revoking…');
+  await expect(deals).toHaveAccessibleName(
+    'Revoking… hubspot.deals.write for HubSpot work (hubspot-work)',
+  );
   await expect(deals).toHaveAttribute('aria-busy', 'true');
   await expect(deals).toBeFocused();
   await expect(deals).toHaveText('Grant');
@@ -19542,6 +26097,229 @@ test('Connections keeps operation grant ownership through writes', async ({ page
   await page.evaluate(() => window.__app.setHash('#data'));
   await expect(page).toHaveURL(/#data$/);
   await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Connections contains long operation-grant identities on a narrow phone', async ({ page }) => {
+  const longName = `service-${'identity'.repeat(5)}`;
+  const longDisplayName = `Connection${'Identity'.repeat(24)}`;
+  const longOperation = `hubspot.${'deal'.repeat(12)}.write`;
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?connection=grants&connection_text=long#connections/others`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const route = page.locator(`[${CONNECTIONS_ROUTE}]`);
+  const grants = route.locator(`[${CONNECTIONS_GRANTS}]`);
+  const card = grants.locator('[data-recued-conn-grant-card]').first();
+  await expect(card.locator('.conn-grant-display')).toHaveText(longDisplayName);
+  await expect(card.locator('.conn-grant-name')).toHaveText(longName);
+  const group = card.locator('.conn-grant-group').first();
+  await expect(group.locator('.conn-grant-group-id')).toHaveText(longOperation);
+  await expect(group.locator('.conn-grant-group-ops')).toHaveText(
+    `Unlocks: ${longOperation}`,
+  );
+  const toggle = group.locator(`[${CONNECTIONS_GRANT_TOGGLE}]`);
+  await expect(toggle).toHaveAccessibleName(
+    `Grant ${longOperation} for ${longDisplayName} (${longName})`,
+  );
+
+  const geometry = await grants.evaluate((surface) => {
+    const routeHost = surface.closest<HTMLElement>('[data-recued-connections-route]');
+    const selectors = [
+      '[data-recued-connections-grant-panel]',
+      '[data-recued-conn-grant-card]',
+      '.conn-grant-header',
+      '.conn-grant-display',
+      '.conn-grant-name',
+      '.conn-grant-group',
+      '.conn-grant-group-info',
+      '.conn-grant-group-id',
+      '.conn-grant-group-ops',
+      '.conn-grant-toggle',
+    ];
+    const elements = [
+      surface,
+      ...selectors.map((selector) => surface.querySelector<HTMLElement>(selector)),
+    ].filter((element): element is HTMLElement => element !== null);
+    return {
+      routeScrollWidth: routeHost?.scrollWidth ?? 0,
+      routeClientWidth: routeHost?.clientWidth ?? 0,
+      elements: elements.map((element) => ({
+        left: element.getBoundingClientRect().left,
+        right: element.getBoundingClientRect().right,
+        scrollWidth: element.scrollWidth,
+        clientWidth: element.clientWidth,
+      })),
+    };
+  });
+  expect(geometry.routeScrollWidth).toBeLessThanOrEqual(geometry.routeClientWidth);
+  for (const bounds of geometry.elements) {
+    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds.right).toBeLessThanOrEqual(280.5);
+    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+  }
+
+  await toggle.click();
+  await expect(toggle).toHaveText('Revoke');
+  await expect(toggle).toBeFocused();
+});
+
+test('Connections contains long enrolled identities through removal review', async ({ page }) => {
+  const longName = `service-${'identity'.repeat(5)}`;
+  const longDisplayName = `Connection${'Identity'.repeat(24)}`;
+  const longEndpoint = `https://${'endpoint'.repeat(7)}.example.test/v1`;
+  const longPackSlug = `pack-${'identity'.repeat(7)}`;
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&connection_text=long#connections/others`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const route = page.locator(`[${CONNECTIONS_ROUTE}]`);
+  const row = route.locator('.connections-row').first();
+  await expect(row.locator('.connections-row-name')).toHaveText(longName);
+  await expect(row.locator('.connections-row-display')).toHaveText(
+    longDisplayName,
+  );
+  await expect(row.locator('.connections-row-summary')).toHaveText(longEndpoint);
+  const usage = route.locator('.connections-pack-usage');
+  await expect(usage.locator('.connections-pack-usage-name')).toHaveText(
+    longPackSlug,
+  );
+  await expect(usage.locator('.connections-pack-usage-status')).toContainText(
+    'missing crm.objects.deals.write',
+  );
+
+  const listGeometry = await route.locator('.connections-page').evaluate((page) => {
+    const routeHost = page.closest<HTMLElement>('[data-recued-connections-route]');
+    const selectors = [
+      '.connections-group',
+      '.connections-group-rows',
+      '.connections-row-wrap',
+      '.connections-row',
+      '.connections-row-info',
+      '.connections-row-name',
+      '.connections-row-summary',
+      '.connections-row-display',
+      '.connections-row-actions',
+      '.connections-pack-usage',
+      '.connections-pack-usage-item',
+      '.connections-pack-usage-name',
+      '.connections-pack-usage-status',
+    ];
+    const elements = [
+      page,
+      ...selectors.map((selector) => page.querySelector<HTMLElement>(selector)),
+    ].filter((element): element is HTMLElement => element !== null);
+    return {
+      routeScrollWidth: routeHost?.scrollWidth ?? 0,
+      routeClientWidth: routeHost?.clientWidth ?? 0,
+      elements: elements.map((element) => ({
+        left: element.getBoundingClientRect().left,
+        right: element.getBoundingClientRect().right,
+        scrollWidth: element.scrollWidth,
+        clientWidth: element.clientWidth,
+        localEllipsis: element.matches('.connections-row-summary'),
+        overflow: getComputedStyle(element).overflow,
+      })),
+    };
+  });
+  expect(listGeometry.routeScrollWidth)
+    .toBeLessThanOrEqual(listGeometry.routeClientWidth);
+  for (const bounds of listGeometry.elements) {
+    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds.right).toBeLessThanOrEqual(280.5);
+    if (bounds.localEllipsis) {
+      expect(bounds.overflow).toBe('hidden');
+    } else {
+      expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+    }
+  }
+
+  await row.getByRole('button', { name: 'Delete', exact: true }).click();
+  const dialog = route.getByRole('dialog', {
+    name: `Remove connection ${longName}`,
+  });
+  await expect(dialog.locator('.connections-delete-title')).toHaveText(
+    `Remove ${longName}?`,
+  );
+  const dialogGeometry = await dialog.evaluate((surface) => {
+    const elements = [
+      surface,
+      surface.querySelector<HTMLElement>('.connections-delete-title'),
+      surface.querySelector<HTMLElement>('.connections-delete-body'),
+      surface.querySelector<HTMLElement>('.connections-delete-actions'),
+    ].filter((element): element is HTMLElement => element !== null);
+    return elements.map((element) => ({
+      left: element.getBoundingClientRect().left,
+      right: element.getBoundingClientRect().right,
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+    }));
+  });
+  for (const bounds of dialogGeometry) {
+    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds.right).toBeLessThanOrEqual(280.5);
+    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+  }
+});
+
+test('Connections keeps custom credential headers usable on a narrow phone', async ({ page }) => {
+  const longName = `service-${'identity'.repeat(5)}`;
+  const longDisplayName = `Connection${'Identity'.repeat(24)}`;
+  const longEndpoint = `https://${'endpoint'.repeat(7)}.example.test/v1`;
+  const longHeaderName = `X-${'Credential'.repeat(10)}`;
+  const longHeaderValue = 'secret'.repeat(40);
+  await page.setViewportSize({ width: 280, height: 844 });
+  await page.goto(`${HARNESS_URL}?settle_reads=1#connections/others`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const route = page.locator(`[${CONNECTIONS_ROUTE}]`);
+  await route.getByRole('button', { name: /Add Connection/ }).click();
+  await route.getByRole('button', { name: /HTTP API/ }).click();
+  await route.locator('[data-conn-field="name"]').fill(longName);
+  await route.locator('[data-conn-field="display_name"]').fill(longDisplayName);
+  await route.locator('[data-conn-field="config.base_url"]').fill(longEndpoint);
+  await route.locator('[data-conn-field="auth.type"]').selectOption('header');
+
+  const headerName = route.getByRole('textbox', { name: 'Header 1 name' });
+  const headerValue = route.getByLabel('Header 1 value');
+  await headerName.fill(longHeaderName);
+  await headerValue.fill(longHeaderValue);
+  await expect(headerName).toHaveValue(longHeaderName);
+  await expect(headerValue).toHaveValue(longHeaderValue);
+
+  const geometry = await route.locator('.connections-header-list').evaluate((list) => {
+    const routeHost = list.closest<HTMLElement>('[data-recued-connections-route]');
+    const dialog = list.closest<HTMLElement>('.connections-dialog');
+    const row = list.querySelector<HTMLElement>('.connections-header-row');
+    const name = list.querySelector<HTMLElement>('.connections-header-name');
+    const value = list.querySelector<HTMLElement>('.connections-header-value');
+    const remove = list.querySelector<HTMLElement>('.connections-header-remove');
+    const elements = [list, row, name, value, remove]
+      .filter((element): element is HTMLElement => element !== null);
+    return {
+      routeScrollWidth: routeHost?.scrollWidth ?? 0,
+      routeClientWidth: routeHost?.clientWidth ?? 0,
+      dialogScrollWidth: dialog?.scrollWidth ?? 0,
+      dialogClientWidth: dialog?.clientWidth ?? 0,
+      nameWidth: name?.getBoundingClientRect().width ?? 0,
+      valueWidth: value?.getBoundingClientRect().width ?? 0,
+      elements: elements.map((element) => ({
+        left: element.getBoundingClientRect().left,
+        right: element.getBoundingClientRect().right,
+      })),
+    };
+  });
+  expect(geometry.routeScrollWidth).toBeLessThanOrEqual(geometry.routeClientWidth);
+  expect(geometry.dialogScrollWidth).toBeLessThanOrEqual(geometry.dialogClientWidth);
+  expect(geometry.nameWidth).toBeGreaterThan(150);
+  expect(geometry.valueWidth).toBeGreaterThan(95);
+  for (const bounds of geometry.elements) {
+    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bounds.right).toBeLessThanOrEqual(280.5);
+  }
 });
 
 test('Connections recovers pack usage and setup context explicitly', async ({ page }) => {
@@ -20524,21 +27302,65 @@ test('the navigation drawer opens on the current route', async ({ page }) => {
   await page.locator(`[${DRAWER_TOGGLE}]`).click();
 
   const current = page.locator(`[${DRAWER_LINK}="data"]`);
+  const close = page.getByRole('navigation', {
+    name: 'Primary navigation',
+  }).getByRole('button', { name: 'Close navigation' });
+  const closeTarget = await close.boundingBox();
+  expect(closeTarget?.width).toBeGreaterThanOrEqual(36);
+  expect(closeTarget?.height).toBeGreaterThanOrEqual(36);
   await expect(current).toHaveAttribute('aria-current', 'page');
   await expect(current).toBeFocused();
+});
+
+test('the navigation drawer stays inside a short narrow viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 480 });
+  await page.locator(`[${DRAWER_TOGGLE}]`).click();
+
+  const drawer = page.locator(`[${DRAWER}]`);
+  await expect(drawer).toHaveCSS(
+    'transform',
+    'matrix(1, 0, 0, 1, 0, 0)',
+  );
+  const drawerBounds = await drawer.boundingBox();
+  expect(drawerBounds?.width).toBeLessThanOrEqual(280);
+  expect(drawerBounds?.height).toBeLessThanOrEqual(480);
+
+  const accountBounds = await drawer.evaluate((node, linkAttr) => {
+    node.scrollTop = node.scrollHeight;
+    const account = node.querySelector(
+      `[${linkAttr}="account"]`,
+    );
+    if (account === null) throw new Error('Account drawer seat is missing');
+    const bounds = account.getBoundingClientRect();
+    return {
+      left: bounds.left,
+      right: bounds.right,
+      bottom: bounds.bottom,
+    };
+  }, DRAWER_LINK);
+  expect(accountBounds.left).toBeGreaterThanOrEqual(-0.5);
+  expect(accountBounds.right).toBeLessThanOrEqual(280.5);
+  expect(accountBounds.bottom).toBeLessThanOrEqual(480.5);
 });
 
 test('the navigation drawer Account seat opens Account settings directly', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.locator(`[${DRAWER_TOGGLE}]`).click();
 
-  await page.locator(`[${DRAWER_LINK}="account"]`).click();
+  const accountSeat = page.locator(`[${DRAWER_LINK}="account"]`);
+  await accountSeat.click();
 
   await expect(page).toHaveURL(/#settings\/account$/);
+  await expect(accountSeat).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator(`[${DRAWER_LINK}="settings"]`))
+    .not.toHaveAttribute('aria-current', 'page');
   const account = page.locator(`[${SETTINGS_NAV_ITEM}="account"]`);
   await expect(account).toHaveAttribute('aria-current', 'page');
   await expect(account).toHaveAttribute('data-active', 'true');
   await expect(page.locator('[data-recued-account-binding-panel]')).toBeVisible();
+
+  await page.locator(`[${DRAWER_TOGGLE}]`).click();
+  await expect(accountSeat).toBeFocused();
 });
 
 test('live control moves focus into its panel and back to its trigger', async ({ page }) => {
@@ -20559,6 +27381,54 @@ test('live control moves focus into its panel and back to its trigger', async ({
   await page.keyboard.press('Enter');
   await expect(panel).toHaveCount(0);
   await expect(toggle).toBeFocused();
+});
+
+test('live control stays on-screen with usable actions at 320px', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.goto(`${HARNESS_URL}?live=running`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  await page.locator(`[${LIVE_CONTROL_TOGGLE}]`).click();
+  const panel = page.locator(`[${LIVE_CONTROL_PANEL}]`);
+  await expect(panel).toBeVisible();
+  const geometry = await panel.evaluate((node) => {
+    const rect = node.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(geometry.left).toBeGreaterThanOrEqual(-0.5);
+  expect(geometry.right).toBeLessThanOrEqual(geometry.viewportWidth + 0.5);
+
+  const actionSizes = await page.locator(
+    `[data-recued-live-control-bubble] button:visible`,
+  ).evaluateAll((buttons) => buttons.map((button) => {
+    const rect = button.getBoundingClientRect();
+    return { width: rect.width, height: rect.height };
+  }));
+  expect(actionSizes).toHaveLength(4);
+  expect(Math.min(...actionSizes.map(({ width }) => width)))
+    .toBeGreaterThanOrEqual(36);
+  expect(Math.min(...actionSizes.map(({ height }) => height)))
+    .toBeGreaterThanOrEqual(36);
+});
+
+test('live control gives repeated actions exact accessible owners', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?live=running&logs_passes=active`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${LIVE_CONTROL_TOGGLE}]`).click();
+
+  const names = [
+    'Kill daily-brief · summarize (run-live-control-1)',
+    'Kill weekly-review · collect (run-live-control-2)',
+    'Revoke Send reviewed mail (pass-live-control-1)',
+    'Revoke Update reviewed contact (pass-live-control-2)',
+  ];
+  for (const name of names) {
+    await expect(page.getByRole('button', { name, exact: true })).toHaveCount(1);
+  }
 });
 
 test('live control preserves exact action focus through a running refresh', async ({ page }) => {
@@ -20614,6 +27484,9 @@ test('live control advances focus after a running action retires', async ({ page
   await page.keyboard.press('Enter');
 
   await expect(firstKill).toHaveText('Killing…');
+  await expect(firstKill).toHaveAccessibleName(
+    'Killing… daily-brief · summarize (run-live-control-1)',
+  );
   await expect(firstKill).toHaveAttribute('aria-disabled', 'true');
   await expect(firstKill).toHaveAttribute('aria-busy', 'true');
   await expect(firstKill).not.toHaveAttribute('disabled');
@@ -20647,6 +27520,70 @@ test('drawer Create returns focus to the stable navigation toggle', async ({ pag
   await expect(overlay).toHaveCount(0);
   await page.waitForTimeout(250);
   await expect(toggle).toBeFocused();
+});
+
+test('Create exposes one dialog heading without the embedded route title', async ({ page }) => {
+  await page.locator(`[${DRAWER_TOGGLE}]`).click();
+  await page.locator(`[${DRAWER_ACTION}="create"]`).click();
+
+  const overlay = page.locator(`[${CREATE_OVERLAY}]`);
+  await expect(overlay.getByRole('heading', {
+    name: 'Create',
+    level: 2,
+  })).toBeVisible();
+  await expect(overlay.locator('.compose-header')).toBeHidden();
+  await expect(overlay.getByRole('heading', { name: 'Compose' })).toHaveCount(0);
+});
+
+test('Create keeps every action target usable on a narrow viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.locator(`[${DRAWER_TOGGLE}]`).click();
+  await page.locator(`[${DRAWER_ACTION}="create"]`).click();
+
+  const overlay = page.locator(`[${CREATE_OVERLAY}]`);
+  const actionSizes = await overlay.locator('button:visible').evaluateAll(
+    (buttons) => buttons.map((button) => {
+      const rect = button.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    }),
+  );
+  expect(actionSizes).toHaveLength(7);
+  expect(Math.min(...actionSizes.map(({ width }) => width)))
+    .toBeGreaterThanOrEqual(36);
+  expect(Math.min(...actionSizes.map(({ height }) => height)))
+    .toBeGreaterThanOrEqual(36);
+
+  await page.locator('[data-recued-compose-field="email"]')
+    .fill('unfinished@example.test');
+  await overlay.getByRole('button', { name: 'Close', exact: true }).click();
+  const guard = page.locator(`[${CREATE_OVERLAY_DISCARD_GUARD}]`);
+  await expect(guard).toBeVisible();
+  const guardSizes = await guard.locator('button').evaluateAll(
+    (buttons) => buttons.map((button) => {
+      const rect = button.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    }),
+  );
+  expect(guardSizes).toHaveLength(2);
+  expect(Math.min(...guardSizes.map(({ width }) => width)))
+    .toBeGreaterThanOrEqual(36);
+  expect(Math.min(...guardSizes.map(({ height }) => height)))
+    .toBeGreaterThanOrEqual(36);
+});
+
+test('Create keeps desktop form fields full-sized', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await page.locator(`[${DRAWER_TOGGLE}]`).click();
+  await page.locator(`[${DRAWER_ACTION}="create"]`).click();
+
+  const email = page.locator('[data-recued-compose-field="email"]');
+  const emailBounds = await email.boundingBox();
+  expect(emailBounds?.height).toBeGreaterThanOrEqual(36);
+
+  await page.locator('[data-recued-compose-target="task"]').click();
+  const priority = page.locator('[data-recued-compose-field="priority"]');
+  const priorityBounds = await priority.boundingBox();
+  expect(priorityBounds?.height).toBeGreaterThanOrEqual(36);
 });
 
 test('Create fields preserve native keyboard and select focus', async ({ page }) => {
@@ -20707,13 +27644,35 @@ test('Create protects unfinished capture from dismissal', async ({ page }) => {
 
   const overlay = page.locator(`[${CREATE_OVERLAY}]`);
   const email = page.locator('[data-recued-compose-field="email"]');
+  const name = page.locator('[data-recued-compose-field="name"]');
   const close = overlay.getByRole('button', { name: 'Close', exact: true });
+  const guard = page.locator(`[${CREATE_OVERLAY_DISCARD_GUARD}]`);
   await email.fill('unfinished@example.test');
+  await name.fill('企画担当');
+  await name.focus();
+  const composingEscape = await name.evaluate((input) => {
+    const event = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      code: 'Escape',
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    const dispatched = input.dispatchEvent(event);
+    return { dispatched, defaultPrevented: event.defaultPrevented };
+  });
+  expect(composingEscape).toEqual({
+    dispatched: true,
+    defaultPrevented: false,
+  });
+  await expect(guard).toHaveCount(0);
+  await expect(name).toHaveValue('企画担当');
+  await expect(name).toBeFocused();
+
   await page.locator('[data-recued-compose-target="task"]').click();
   await close.focus();
   await page.keyboard.press('Enter');
 
-  const guard = page.locator(`[${CREATE_OVERLAY_DISCARD_GUARD}]`);
   await expect(overlay).toBeVisible();
   await expect(guard).toHaveAttribute('role', 'alertdialog');
   await expect(guard).toBeFocused();
@@ -20750,11 +27709,19 @@ test('Create exposes its selected target as a named toggle group', async ({ page
   const task = types.getByRole('button', { name: 'Task' });
   await expect(contact).toHaveAttribute('aria-pressed', 'true');
   await expect(task).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByRole('textbox', { name: 'Email' }))
+    .toHaveAttribute('aria-required', 'true');
+  await expect(page.getByRole('textbox', { name: 'Name' }))
+    .not.toHaveAttribute('aria-required');
 
   await task.click();
 
   await expect(contact).toHaveAttribute('aria-pressed', 'false');
   await expect(task).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('textbox', { name: 'Title' }))
+    .toHaveAttribute('aria-required', 'true');
+  await expect(page.getByRole('textbox', { name: 'Body' }))
+    .not.toHaveAttribute('aria-required');
 });
 
 test('Create Commit retains action focus through confirmation', async ({ page }) => {

@@ -31,6 +31,7 @@ import {
   RECIPES_ROUTE_PAGER_ATTR,
   RECIPES_ROUTE_PAGER_CONTROL_ATTR,
   RECIPES_ROUTE_RECIPE_CARD_ATTR,
+  RECIPES_ROUTE_RECIPE_OPEN_ATTR,
   RECIPES_ROUTE_RECIPE_TRIGGER_ATTR,
   RECIPES_ROUTE_RELATED_ATTR,
   RECIPES_ROUTE_RELATED_ROW_ATTR,
@@ -537,6 +538,46 @@ describe('R24 — Recipes route: list view', () => {
     expect(rig.toolCatalogCaller).toHaveBeenCalledTimes(1);
     expect(rig.doc.styleElements[0]?.attrs.has(RECIPES_ROUTE_STYLES_MARKER))
       .toBe(true);
+    expect(rig.doc.styleElements[0]?.textContent).toContain(
+      `.recipes-actions > .recipes-inline-link,\n[${RECIPES_ROUTE_DETAIL_ATTR}] > .recipes-inline-link`,
+    );
+    expect(rig.doc.styleElements[0]?.textContent).toContain('min-height: 36px');
+    expect(rig.doc.styleElements[0]?.textContent).toContain(
+      '.recipes-chip {\n  min-height: 36px;',
+    );
+    expect(rig.doc.styleElements[0]?.textContent).toContain(
+      `[${RECIPES_ROUTE_DEFINITION_ATTR}] summary {\n  box-sizing: border-box;\n  min-height: 36px;`,
+    );
+    expect(rig.doc.styleElements[0]?.textContent).toContain(
+      `min-height: 44px;\n    padding-block: 13px;`,
+    );
+    expect(rig.doc.styleElements[0]?.textContent).toContain(
+      `[${RECIPES_ROUTE_DEFINITION_ATTR}] {\n  min-width: 0;`,
+    );
+    expect(rig.doc.styleElements[0]?.textContent).toContain(
+      `width: 100%;\n  max-width: 100%;\n  margin: 8px 0 0;`,
+    );
+    expect(rig.doc.styleElements[0]?.textContent).toContain(
+      'grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));',
+    );
+    expect(rig.doc.styleElements[0]?.textContent).toMatch(
+      /\.recipe-card-name\s*\{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(rig.doc.styleElements[0]?.textContent).toMatch(
+      /\.recipe-card-footer\s*\{[^}]*flex-wrap:\s*wrap/s,
+    );
+    expect(rig.doc.styleElements[0]?.textContent).toMatch(
+      new RegExp(`\\[${RECIPES_ROUTE_DETAIL_ATTR}\\]\\s*\\{[^}]*min-width:\\s*0[^}]*max-width:\\s*100%`, 's'),
+    );
+    expect(rig.doc.styleElements[0]?.textContent).toMatch(
+      /\.recipes-detail-name\s*\{[^}]*flex:\s*1 1 180px[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(rig.doc.styleElements[0]?.textContent).toMatch(
+      /\.recipes-runnability-detail\s*\{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(rig.doc.styleElements[0]?.textContent).toMatch(
+      /\.recipes-pii-detail\s*\{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/s,
+    );
 
     const shell = rig.root.children[0]!;
     expect(shell.attrs.has(RECIPES_ROUTE_HOST_ATTR)).toBe(true);
@@ -547,6 +588,25 @@ describe('R24 — Recipes route: list view', () => {
     expect(shell.innerHTML).not.toContain('Installed packs');
     expect(shell.innerHTML).not.toContain('Exposed tools');
     expect(rig.route.selectedRecipe()).toBeNull();
+
+    rig.route.dispose();
+  });
+
+  it('separates each card opener from its contextual Run action', async () => {
+    const rig = mountRoute();
+    await rig.route.whenLoaded();
+
+    const html = shellHtml(rig.root);
+    const card = html.match(
+      new RegExp(`<div ${RECIPES_ROUTE_RECIPE_CARD_ATTR}="daily-brief"[^>]*>`),
+    )?.[0] ?? '';
+    expect(card).not.toContain('role="button"');
+    expect(card).not.toContain('tabindex=');
+    expect(html).toContain(
+      `${RECIPES_ROUTE_RECIPE_OPEN_ATTR}="daily-brief"`,
+    );
+    expect(html).toContain('aria-label="Open Daily brief details"');
+    expect(html).toContain('aria-label="Run Daily brief"');
 
     rig.route.dispose();
   });
@@ -1336,9 +1396,20 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     expect(html).toContain('data-recipe-id="reply-action">Schedule</button>');
     expect(html).toContain('href="#automation/reply-action"');
     expect(html).toContain('href="#logs/recipe/reply-action"');
+    expect(html).toContain('aria-label="Open Reply action (reply-action)"');
+    expect(html).toContain('aria-label="Run Reply action (reply-action)"');
+    expect(html).toContain('aria-label="Config Reply action (reply-action)"');
+    expect(html).toContain('aria-label="Schedule Reply action (reply-action)"');
+    expect(html).toContain(
+      'aria-label="Automation for Reply action (reply-action)"',
+    );
+    expect(html).toContain('aria-label="Logs for Reply action (reply-action)"');
     expect(html).toContain('auto-run');
     expect(html).toContain('data-recued-recipes-action="toggle-auto-run:off"');
     expect(html).toContain('data-recipe-id="close-action">Pause auto-run</button>');
+    expect(html).toContain(
+      'aria-label="Pause auto-run Close action (close-action)"',
+    );
     expect(html).toContain('data-recued-recipes-bundle-pack="outbound-follow-up-response"');
     expect(html).toContain('href="#packs/outbound-follow-up-response"');
     expect(html).toContain('View workflow pack');
@@ -3782,6 +3853,11 @@ describe('R24 — Recipes route: run + schedule modal', () => {
               },
               {
                 kind: 'recipe.run',
+                label: 'Missing pack target',
+                recipe_id: 'pack-blocked-action',
+              },
+              {
+                kind: 'recipe.run',
                 label: 'Forged caller',
                 recipe_id: 'reply-action',
                 context: { caller: { contract_id: 'ct_forged' } },
@@ -3804,6 +3880,7 @@ describe('R24 — Recipes route: run + schedule modal', () => {
           recipeEntry('daily-brief'),
           recipeEntry('reply-action'),
           recipeEntry('blocked-action'),
+          recipeEntry('pack-blocked-action'),
         ],
       })),
       runnabilityCaller: vi.fn<RecipesRunnabilityCaller>(async () => ({
@@ -3818,6 +3895,18 @@ describe('R24 — Recipes route: run + schedule modal', () => {
             status: 'blocked' as RunnabilityStatus,
             dependencies: [],
           },
+          {
+            recipe_id: 'pack-blocked-action',
+            status: 'blocked' as RunnabilityStatus,
+            dependencies: [{
+              capability: 'recued-core.officecli',
+              ops: [],
+              optional: false,
+              satisfied: false,
+              providers: [],
+              unprovided_ops: [],
+            }],
+          },
         ],
       })),
     });
@@ -3830,6 +3919,7 @@ describe('R24 — Recipes route: run + schedule modal', () => {
     expect(html).toContain('Action context cannot set reserved key &quot;event&quot;.');
     expect(html).toContain('Action context cannot set reserved key &quot;caller&quot;.');
     expect(html).toContain('Target recipe is blocked by missing providers.');
+    expect(html).toContain('Target recipe needs a pack that is not installed.');
     expect(html).toContain('<option value="result-action-0">Author context</option>');
     expect(html).not.toContain('is not a visible target for this recipe');
 
@@ -3991,13 +4081,22 @@ describe('R24 — Recipes route detail → connection needs (UX flow-10)', () =>
 const unsatisfiedDep = (
   overrides: Partial<DependencyResolution> = {},
 ): DependencyResolution => ({
-  capability: 'deal',
+  capability: 'crm',
   ops: ['search'],
   optional: false,
   satisfied: false,
   providers: [],
   unprovided_ops: ['search'],
   ...overrides,
+});
+
+const missingPackDep = (packRef: string): DependencyResolution => ({
+  capability: packRef,
+  ops: [],
+  optional: false,
+  satisfied: false,
+  providers: [],
+  unprovided_ops: [],
 });
 
 const runnabilityEntry = (
@@ -4014,7 +4113,7 @@ describe('R24 — Recipes route runnability consumer', () => {
         runnabilityEntry('deal-watch', 'blocked', [unsatisfiedDep()]),
         runnabilityEntry('contact-enrich', 'degraded', [
           unsatisfiedDep({
-            capability: 'contact',
+            capability: 'acct',
             ops: ['enrich'],
             optional: true,
             unprovided_ops: ['enrich'],
@@ -4040,9 +4139,9 @@ describe('R24 — Recipes route runnability consumer', () => {
     expect(html).toContain(`${RECIPES_ROUTE_RUNNABILITY_ATTR}="runnable"`);
     expect(html).toContain(`${RECIPES_ROUTE_RUNNABILITY_ATTR}="blocked"`);
     expect(html).toContain(`${RECIPES_ROUTE_RUNNABILITY_ATTR}="degraded"`);
-    expect(html).toContain('Add a provider for deal.search.');
+    expect(html).toContain('Add a provider for crm.search.');
     expect(html).toContain(
-      'Add a provider for contact.enrich (optional — those steps skip).',
+      'Add a provider for acct.enrich (optional — those steps skip).',
     );
     // Exactly the three snapshot-covered recipes carry a pill.
     expect(html.split(`${RECIPES_ROUTE_RUNNABILITY_ATTR}="`).length - 1).toBe(3);
@@ -4074,7 +4173,65 @@ describe('R24 — Recipes route runnability consumer', () => {
     expect(runnabilityCaller).toHaveBeenCalledTimes(1);
     const html = shellHtml(rig.root);
     expect(html).toContain(`${RECIPES_ROUTE_RUNNABILITY_ATTR}="blocked"`);
-    expect(html).toContain('Add a provider for deal.search.');
+    expect(html).toContain('Add a provider for crm.search.');
+
+    rig.route.dispose();
+  });
+
+  it('offers the missing pack before Run and recovers from the live snapshot', async () => {
+    const listeners = new Map<string, (event: unknown) => void>();
+    const subscribe = ((kind: string, listener: (event: unknown) => void) => {
+      listeners.set(kind, listener);
+      return () => {};
+    }) as RecipesRouteSubscribe;
+    const recipe = recipeEntry('pack-blocked', {
+      recipe: recipeDefinition('pack-blocked', { variables: { limit: 25 } }),
+    });
+    const rig = mountRoute({
+      initialRecipeId: 'pack-blocked',
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({ recipes: [recipe] })),
+      runnabilityCaller: vi.fn<RecipesRunnabilityCaller>(async () => ({
+        recipes: [runnabilityEntry(
+          'pack-blocked',
+          'blocked',
+          [missingPackDep('recued-core.officecli')],
+        )],
+      })),
+      subscribe,
+    });
+    await rig.route.whenLoaded();
+
+    let html = shellHtml(rig.root);
+    expect(html).toContain('Blocked — install a pack');
+    expect(html).toContain('Install the officecli pack to make this recipe work.');
+    expect(html).toContain('data-recued-pack-install-offer');
+    expect(html).toContain('href="#packs/officecli"');
+    expect(html).toContain('Get officecli');
+    const blockedPrimary = html.match(
+      /<button type="button" class="recipes-button recipes-button--primary"[\s\S]*?<\/button>/,
+    )?.[0];
+    const blockedOverride = html.match(
+      /<button type="button" class="recipes-button"[\s\S]*?>Run with overrides<\/button>/,
+    )?.[0];
+    expect(blockedPrimary).toContain(' disabled');
+    expect(blockedOverride).toContain(' disabled');
+    expect(blockedPrimary).toContain('Install the missing pack before running.');
+    expect(blockedOverride).toContain('Install the missing pack before running.');
+
+    listeners.get('recipe_runnability_changed')!({
+      kind: 'recipe_runnability_changed',
+      recipes: [runnabilityEntry('pack-blocked', 'runnable')],
+      cursor: 8,
+    });
+
+    html = shellHtml(rig.root);
+    expect(html).toContain('data-recued-recipes-action="run-defaults"');
+    expect(html).not.toContain('Blocked — install a pack');
+    expect(html).not.toContain('data-recued-pack-install-offer');
+    const recoveredPrimary = html.match(
+      /<button type="button" class="recipes-button recipes-button--primary"[\s\S]*?<\/button>/,
+    )?.[0];
+    expect(recoveredPrimary).not.toContain(' disabled');
 
     rig.route.dispose();
   });

@@ -226,7 +226,11 @@ describe('Phase B runtime schema additions', () => {
     // D-120 post-amendment — default flipped to 0 (wire sentinel for
     // "no expiry"; bin.ts collapses 0 → null before the pruner sees it).
     expect(store.get('audit.retention_days')).toBe(0);
-    expect(store.get('audit.quota.bytes')).toBe(50 * 1024 * 1024);
+    // Server scale, not the extension-era 50 MB. This surface is `data.memory.*`
+    // (D-120) and it EVICTS oldest-first when full, with age-prune off by
+    // default — so the ceiling is what decides how much of the owner's memory
+    // survives, and 50 MB was reached as routine housekeeping.
+    expect(store.get('audit.quota.bytes')).toBe(5 * 1024 * 1024 * 1024);
     expect(store.get('audit.prune_at_pct')).toBe(70);
     expect(store.get('audit.prune_interval_s')).toBe(3600);
     expect(store.get('audit.prune_max_rows_per_run')).toBe(1000);

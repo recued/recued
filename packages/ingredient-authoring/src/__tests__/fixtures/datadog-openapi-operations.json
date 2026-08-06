@@ -27,8 +27,8 @@
     "documentary_compatibility": {
       "monitor.mute": {
         "url": "https://docs.datadoghq.com/api/latest/monitors/mute-a-monitor.md",
-        "sha256": "f10b32a5e04e3655a12f52b7a3a51c7cf162e28fc1c2cfdb097a3e27ee875ed3",
-        "bytes": 241416,
+        "sha256": "9c6da86f677c1583bb105c61b4734dc73072ac4724575743b967c2e7c495dc8c",
+        "bytes": 244846,
         "method": "POST",
         "path": "/api/v1/monitor/{monitor_id}/mute",
         "requiredText": [
@@ -38,8 +38,8 @@
       },
       "monitor.unmute": {
         "url": "https://docs.datadoghq.com/api/latest/monitors/unmute-a-monitor.md",
-        "sha256": "3ff6cd827b65b8082e4baede4704c62c448e8501f2fedf1c8d754f3bb65bb7ad",
-        "bytes": 241475,
+        "sha256": "451973034f0ee170be6d8f711db80f5800ddcd54da973a39e351f3abd20e337e",
+        "bytes": 244905,
         "method": "POST",
         "path": "/api/v1/monitor/{monitor_id}/unmute",
         "requiredText": [
@@ -69922,7 +69922,7 @@
       "pack": "datadog",
       "op": "monitor.mute",
       "url": "https://docs.datadoghq.com/api/latest/monitors/mute-a-monitor.md",
-      "sha256": "f10b32a5e04e3655a12f52b7a3a51c7cf162e28fc1c2cfdb097a3e27ee875ed3"
+      "sha256": "9c6da86f677c1583bb105c61b4734dc73072ac4724575743b967c2e7c495dc8c"
     },
     "documentary:monitor.unmute": {
       "operation_id": "monitor.unmute",
@@ -69932,7 +69932,7 @@
       "pack": "datadog",
       "op": "monitor.unmute",
       "url": "https://docs.datadoghq.com/api/latest/monitors/unmute-a-monitor.md",
-      "sha256": "3ff6cd827b65b8082e4baede4704c62c448e8501f2fedf1c8d754f3bb65bb7ad"
+      "sha256": "451973034f0ee170be6d8f711db80f5800ddcd54da973a39e351f3abd20e337e"
     }
   }
 }

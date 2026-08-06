@@ -18,14 +18,21 @@ import type {
 
 import {
   installDisclosureBlocks,
+  missingPackRefsFromRunnability,
   runnabilityDisclosureLines,
   uninstallDisclosureBlocks,
 } from '../install/pack-runnability-disclosure.js';
 
+/** ⚠ `capability` is a CONNECTION FAMILY, not an entity. `synthesizeDependencies`
+ *  emits `capability: family` and nothing else in production does — the two
+ *  producers are the family arm (`crm`/`acct`) and the pack arm (a pack_ref).
+ *  This fixture said `'deal'`, an entity name left over from before R1 dropped
+ *  the capability-DI model, so it asserted a shape the server cannot emit. That
+ *  mattered once the disclosure began telling families and packs apart. */
 const dep = (
   overrides: Partial<DependencyResolution> = {},
 ): DependencyResolution => ({
-  capability: 'deal',
+  capability: 'crm',
   ops: ['search'],
   optional: false,
   satisfied: false,
@@ -63,12 +70,12 @@ describe('runnabilityDisclosureLines', () => {
       entry('r', [
         dep({ capability: 'mail', ops: ['read'], satisfied: true, unprovided_ops: [] }),
         dep(),
-        dep({ capability: 'contact', ops: ['enrich'], optional: true, unprovided_ops: ['enrich'] }),
+        dep({ capability: 'acct', ops: ['enrich'], optional: true, unprovided_ops: ['enrich'] }),
       ]),
     );
     expect(lines).toEqual([
-      'Add a provider for deal.search.',
-      'Add a provider for contact.enrich (optional — those steps skip).',
+      'Add a provider for crm.search.',
+      'Add a provider for acct.enrich (optional — those steps skip).',
     ]);
   });
 
@@ -77,7 +84,7 @@ describe('runnabilityDisclosureLines', () => {
       entry('r', [dep({ ops: ['search', 'update'], unprovided_ops: [] })]),
     );
     expect(lines).toEqual([
-      'No single connected provider covers all of deal.search, deal.update.',
+      'No single connected provider covers all of crm.search, crm.update.',
     ]);
   });
 });
@@ -98,7 +105,7 @@ describe('installDisclosureBlocks', () => {
       'This pack added 1 recipe that cannot run until a provider is connected:',
     );
     expect(blocks[0]!.items).toEqual([
-      { recipe_id: 'a', detail: 'Add a provider for deal.search.' },
+      { recipe_id: 'a', detail: 'Add a provider for crm.search.' },
     ]);
     expect(blocks[1]!.headline).toBe(
       '2 recipes will run with an optional capability skipped:',
@@ -110,7 +117,7 @@ describe('installDisclosureBlocks', () => {
       okInstall({ born_blocked: [entry('a', [])] }),
     );
     expect(blocks[0]!.items[0]!.detail).toBe(
-      'a declared dependency has no provider.',
+      'a declared dependency is unavailable.',
     );
   });
 
@@ -135,7 +142,7 @@ describe('uninstallDisclosureBlocks', () => {
     expect(blocks).toHaveLength(1);
     expect(blocks[0]!.kind).toBe('would-disable');
     expect(blocks[0]!.headline).toBe(
-      'This disabled 2 recipes that lost their last provider — they stay installed and recover when a provider is connected:',
+      'This disabled 2 recipes by removing a required dependency — they stay installed and recover when it is restored:',
     );
     expect(blocks[0]!.items).toEqual([
       { recipe_id: 'a', detail: '' },
@@ -189,5 +196,80 @@ describe('uninstallDisclosureBlocks', () => {
       }),
     );
     expect(blocks.map((b) => b.kind)).toEqual(['would-disable']);
+  });
+});
+
+/** Pack dependencies get install copy, not provider copy.
+ *
+ *  The backend reuses `DependencyResolution` for a declared pack it cannot
+ *  resolve — `capability` holds the pack_ref. Telling the two apart matters for
+ *  the remedy, not the wording: "add a provider for recued-core.officecli" sends
+ *  the owner to Connections, which has nothing for them.
+ */
+describe('runnabilityDisclosureLines — pack dependencies', () => {
+  const packDep = (capability: string): DependencyResolution => ({
+    capability,
+    ops: [],
+    optional: false,
+    satisfied: false,
+    providers: [],
+    unprovided_ops: [],
+  });
+
+  it('tells the owner to install the pack, by its own name', () => {
+    const [line] = runnabilityDisclosureLines(
+      entry('r', [packDep('recued-core.officecli')]));
+    expect(line).toBe('Install the officecli pack to make this recipe work.');
+    // Never the provider phrasing — a pack has no provider to add.
+    expect(line).not.toMatch(/provider/i);
+  });
+
+  // ⚠ Discriminated against the CLOSED family list, not against punctuation.
+  // "capability contains a dot" would pass today and break silently the first
+  // time a family name gained one.
+  it('still uses provider copy for a real connection family', () => {
+    const [line] = runnabilityDisclosureLines(entry('r', [dep()]));
+    expect(line).toMatch(/Add a provider for crm\.search/);
+    expect(line).not.toMatch(/Install the/);
+  });
+
+  it('renders one line per missing pack', () => {
+    const lines = runnabilityDisclosureLines(entry('r', [
+      packDep('recued-core.officecli'),
+      packDep('recued-core.libreoffice'),
+    ]));
+    expect(lines).toEqual([
+      'Install the officecli pack to make this recipe work.',
+      'Install the libreoffice pack to make this recipe work.',
+    ]);
+  });
+
+  it('returns unique unsatisfied pack refs for action-oriented consumers', () => {
+    const recipe = entry('r', [
+      packDep('recued-core.officecli'),
+      packDep('recued-core.officecli'),
+      { ...packDep('recued-core.libreoffice'), satisfied: true },
+      dep(),
+    ]);
+    expect(missingPackRefsFromRunnability(recipe)).toEqual([
+      'recued-core.officecli',
+    ]);
+  });
+
+  it('keeps a born-blocked headline honest when the remedy is a pack install', () => {
+    const blocks = installDisclosureBlocks(okInstall({
+      born_blocked: [entry('r', [packDep('recued-core.officecli')])],
+    }));
+    expect(blocks[0]!.headline).toBe(
+      'This pack added 1 recipe that cannot run until its missing dependencies are resolved:',
+    );
+    expect(blocks[0]!.items[0]!.detail).toContain('Install the officecli pack');
+  });
+
+  it('mixes pack and family lines in the order given', () => {
+    const lines = runnabilityDisclosureLines(
+      entry('r', [packDep('recued-core.officecli'), dep()]));
+    expect(lines[0]).toMatch(/Install the officecli pack/);
+    expect(lines[1]).toMatch(/Add a provider/);
   });
 });

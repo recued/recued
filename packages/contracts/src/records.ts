@@ -24,9 +24,29 @@ export const RECORDS_MAX_ID_BYTES = 512;
 export const RECORDS_MAX_INDEXED_STRING_BYTES = 4 * 1024;
 export const RECORDS_MAX_TEXT_BYTES = 1024 * 1024;
 export const RECORDS_MAX_ROW_BYTES = 2 * 1024 * 1024;
-export const RECORDS_DEFAULT_ROW_QUOTA = 100_000;
-export const RECORDS_DEFAULT_BYTE_QUOTA = 100 * 1024 * 1024;
-export const RECORDS_DEFAULT_OUTBOX_QUOTA = 100_000;
+/** Per-namespace defaults for a NEW Records namespace.
+ *
+ *  ⛔ SERVER SCALE, NOT EXTENSION SCALE. These were 100_000 rows / 100 MB,
+ *  budgets sized when the product lived in a browser extension against
+ *  IndexedDB. Records is now where a pack keeps the owner's actual business
+ *  data — a ledger, a rental book, a job board — on a self-hosted server with a
+ *  real disk, and a 100 MB ceiling stopped that data long before the disk did.
+ *  The mirror collections were already re-scaled for the server
+ *  (`collection.file` 5 GB, `collection.mail` 2 GB); the owner's OWN authored
+ *  data had been left behind, which is backwards: a collection can be
+ *  re-synced from its source, and these rows cannot.
+ *
+ *  ⚠ Records REJECTS at the limit (`records_quota_exceeded`) rather than
+ *  evicting, so the old ceiling cost the owner writes, never silent loss.
+ *
+ *  ⚠ DEFAULTS FOR NEW NAMESPACES ONLY. `store.ts` reads these as the fallback
+ *  when a namespace has no stored limit, so an existing install keeps whatever
+ *  it was created with until the owner raises it via `records.quota.set`. */
+export const RECORDS_DEFAULT_ROW_QUOTA = 5_000_000;
+export const RECORDS_DEFAULT_BYTE_QUOTA = 5 * 1024 * 1024 * 1024;
+/** Outbox is BACKPRESSURE, not storage — it drains. Raised in step so a bulk
+ *  import cannot wedge on the queue while well inside the row/byte budget. */
+export const RECORDS_DEFAULT_OUTBOX_QUOTA = 1_000_000;
 export const RECORDS_MAX_CAUSAL_DEPTH = 16;
 export const RECORDS_MAX_CAUSAL_FANOUT = 1_000;
 

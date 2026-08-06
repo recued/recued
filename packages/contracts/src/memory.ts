@@ -37,6 +37,22 @@ export const MEMORY_RETENTION_DEFAULT_DAYS: number | null = null;
  *  at install. Default deny. Wired through the validator in Phase 4. */
 export const MEMORY_READ_PERMISSION = 'read_memory';
 
+/** D-231 — staged-trust permission for `data.audit.*`. Split from
+ *  `read_memory` when the namespaces separated: run history reveals the
+ *  owner's automation activity, which is a different disclosure from their
+ *  curated notes, and the MCP door has gated them separately since D-198
+ *  (`core.memory.audit.read` vs `core.memory.read`). A recipe wanting both
+ *  declares both. */
+export const AUDIT_READ_PERMISSION = 'read_audit';
+
+/** Which staged-trust permission a `data.<sub>.*` reference requires. */
+export const memoryDataPermissionFor = (sub: string): string | undefined =>
+  sub === MEMORY_DATA_SUBNAMESPACE
+    ? MEMORY_READ_PERMISSION
+    : sub === AUDIT_DATA_SUBNAMESPACE
+      ? AUDIT_READ_PERMISSION
+      : undefined;
+
 /** D-128 P6 — permission slug requested by recipes that write into
  *  the enrichment substrate via `enrichment-upsert` (or any future
  *  kernel ingredient that lands on `data_enrichment`). Same staged-
@@ -102,32 +118,45 @@ export const RECIPE_INSIGHT_FLATTENED_MAX_BYTES = 16_384;
  *  notice and trim. */
 export const CONTEXT_RECIPE_MAX_BYTES = 16_384;
 
-/** D-120 Phase 4 — sub-namespace under `data.*` that exposes the
- *  audit log to recipes as a read-only warehouse surface. The runtime
- *  appends entries via the existing audit emitter; recipe code cannot
- *  write here. */
+/** D-231 — `data.memory.*` reads the OWNER'S CURATED KNOWLEDGE (`user_memory`),
+ *  the store behind the Data → Memory lens and `memory.import` /
+ *  `memory.create`. Read-only at the recipe layer; the owner and the chat
+ *  `memory.write` tool are the writers.
+ *
+ *  ⛔ THIS IS A CHANGE OF MEANING, AND IT WAS SAFE ONLY BECAUSE THE OLD
+ *  MEANING NEVER RAN. D-120 Phase 4 pointed this name at the AUDIT LOG and
+ *  shipped the namespace, the validator check, the `read_memory` permission and
+ *  the `data.audit.*` deprecation alias — but no runtime read path. There is no
+ *  memory resolver in `SharedResolvers` and the server wired none, so every
+ *  `{{data.memory.…}}` resolved to `undefined`. Measured before changing it: 0
+ *  recipes and 0 packs referenced either name. So this is net-new capability
+ *  rather than a migration — nothing to preserve, nothing to break. */
 export const MEMORY_DATA_SUBNAMESPACE = 'memory';
 
-/** D-120 Phase 4 — deprecation alias resolving to the same store as
- *  `data.memory.*`. Carried for one release cycle so the marketplace
- *  corpus migrates without a hard break; the validator emits a soft
- *  warning whenever a recipe references `data.audit.*`. Hard removal
- *  is queued for a later release once usage drops below the
- *  marketplace-review threshold. */
-export const MEMORY_DATA_ALIAS_SUBNAMESPACE = 'audit';
+/** D-231 — `data.audit.*` reads the RUN-PROVENANCE TRAIL (`audit_entries` /
+ *  `audit_activities`). Runtime-append only; recipe code cannot write here.
+ *
+ *  ⛔ PROMOTED FROM DEPRECATED ALIAS TO CANONICAL. D-120 Phase 4 made this a
+ *  soft-warned alias that the resolver rewrote to `data.memory.*`, because at
+ *  that time audit WAS the memory substrate. D-198 (2026-07-11) split them —
+ *  `user_memory` is "NOT an `AuditEntry` extension — injecting hand-authored
+ *  rows would corrupt the audit authority" — which left the alias pointing the
+ *  wrong way. Audit is audit and memory is memory, internally and externally;
+ *  the alias rewrite is gone and the soft warning with it. */
+export const AUDIT_DATA_SUBNAMESPACE = 'audit';
 
-/** Sub-namespaces under `data.*` that resolve to the audit/memory
- *  surface. Membership drives the validator's `read_memory`
- *  permission check and the resolver's namespace alias. */
+/** @deprecated D-231 — kept as a spelling of {@link AUDIT_DATA_SUBNAMESPACE}
+ *  so no import breaks mid-refactor. `audit` is no longer an alias FOR
+ *  anything: it names its own store. */
+export const MEMORY_DATA_ALIAS_SUBNAMESPACE = AUDIT_DATA_SUBNAMESPACE;
+
+/** Sub-namespaces under `data.*` that resolve to one of the two stores.
+ *  Membership drives the validator's permission check. */
 export const MEMORY_DATA_SUBNAMESPACES: ReadonlySet<string> = new Set([
   MEMORY_DATA_SUBNAMESPACE,
-  MEMORY_DATA_ALIAS_SUBNAMESPACE,
+  AUDIT_DATA_SUBNAMESPACE,
 ]);
 
-/** True when a `data.<sub>.<…>` ref points at the memory surface
- *  (memory or its audit alias). Used by the validator (permission
- *  enforcement + alias deprecation warning) and the resolver
- *  (namespace alias collapse onto a single store). */
 export const isMemoryDataSubnamespace = (sub: string): boolean =>
   MEMORY_DATA_SUBNAMESPACES.has(sub);
 

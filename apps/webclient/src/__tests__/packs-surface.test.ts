@@ -387,6 +387,36 @@ describe('mountPacksSurface — list↔detail composition', () => {
 });
 
 describe('mountPacksSurface — Add by slug / URL header', () => {
+  it('does not open or clear a pack slug while its IME composition is active', () => {
+    const h = setup({ enableAdd: true });
+    const input = findByAttr(h.root, 'data-recued-packs-surface-add-input')!;
+    input.value = '日本語パック';
+
+    const composingPreventDefault = vi.fn();
+    for (const listener of input.listeners.get('keydown') ?? []) {
+      listener({
+        key: 'Enter',
+        isComposing: true,
+        preventDefault: composingPreventDefault,
+      });
+    }
+    expect(composingPreventDefault).not.toHaveBeenCalled();
+    expect(input.value).toBe('日本語パック');
+    expect(h.surface.activeSlug()).toBeNull();
+
+    const submitPreventDefault = vi.fn();
+    for (const listener of input.listeners.get('keydown') ?? []) {
+      listener({
+        key: 'Enter',
+        isComposing: false,
+        preventDefault: submitPreventDefault,
+      });
+    }
+    expect(submitPreventDefault).toHaveBeenCalledTimes(1);
+    expect(input.value).toBe('');
+    expect(h.surface.activeSlug()).toBe('日本語パック');
+  });
+
   it('a bare slug navigates to that pack’s detail', () => {
     const h = setup({ enableAdd: true });
     const input = findByAttr(h.root, 'data-recued-packs-surface-add-input')!;

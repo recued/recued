@@ -263,6 +263,8 @@ describe('D-212 §7.10 — describeKeyfilePosture', () => {
     expect(view.status).toContain('UNSEALED');
     expect(view.consequence).not.toBeNull();
     expect(view.consequence).toMatch(/data directory/i);
+    expect(view.consequence).toMatch(/only copies that omit the keyfile/i);
+    expect(view.consequence).toMatch(/database-only backup/i);
     expect(view.remediation).not.toBeNull();
   });
 

@@ -70,6 +70,7 @@ import {
 } from './_contact-addresses.js';
 import { FREE_MAIL_DOMAINS } from './_free-mail-domains.js';
 import { truncateForLlm } from './_mail-body.js';
+import { listCollectionDataTables } from '../../collections/table.js';
 
 /** Minimum body length for which signature parsing is worth running.
  *  Sub-100-char messages rarely carry a signature block; below the
@@ -188,16 +189,11 @@ const findRecentInboundBody = async (
   addresses: readonly string[],
 ): Promise<string | null> => {
   if (addresses.length === 0 || !ctx.blobs) return null;
-  const tables = ctx.db
-    .prepare(
-      `SELECT name FROM sqlite_master
-        WHERE type='table' AND name LIKE 'collection_mail_%'`,
-    )
-    .all() as Array<{ name: string }>;
+  const tables = listCollectionDataTables(ctx.db, 'mail');
   let best:
     | { received_at: number; body_inline: string | null; blob_hash: string | null }
     | null = null;
-  for (const { name: table } of tables) {
+  for (const table of tables) {
     const rows = ctx.db
       .prepare(
         `SELECT received_at, hot_fields, body_inline, blob_hash FROM "${table}"

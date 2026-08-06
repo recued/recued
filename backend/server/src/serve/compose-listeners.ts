@@ -98,7 +98,11 @@ import {
   makeRecipeRunnabilityBroadcaster,
   type RecipeRunnabilityHandlerDeps,
 } from '../recipe-runnability-handler.js';
-import { privateByoDropIds } from '../pack-inventory.js';
+import {
+  buildPackOpResolution,
+  missingPackDependencies,
+  privateByoDropIds,
+} from '../pack-inventory.js';
 import type { ContractBroadcastEvent } from '../contract-handler.js';
 import type { HistoryDeps } from '../history-handler.js';
 import type { WsServerHandle } from '../ws-server.js';
@@ -1518,6 +1522,17 @@ export const composeListeners = async (
             ? {
                 localCatalogDropIdsForPack: (pack_slug: string) =>
                   privateByoDropIds(contractStore, pack_slug),
+                // The pack arm of the disclosure. Built from the SAME
+                // `buildPackOpResolution` the run path lowers through, so the
+                // detail cannot advertise a recipe runnable that the run then
+                // refuses for a missing pack — the property the whole
+                // disclosure exists to hold.
+                installedPackRefs: () => new Set(
+                  buildPackOpResolution(
+                    () => contractStore.scan('installed_pack', []),
+                    (slug: string) => execution.executorConfig.manifests.get(slug),
+                  ).keys(),
+                ),
               }
             : {}),
         }
@@ -1939,7 +1954,30 @@ export const composeListeners = async (
     ...(app.keys ? { keys: app.keys } : {}),
     ...(app.keys ? { database: storage.db } : {}),
     getServerKeyStore: () => storage.signingIdentity?.keyStore,
-    scheduleDeps,
+    // Schedule-creation pack refusal. Augmented HERE rather than where
+    // `scheduleDeps` is built: the maintenance composer holds neither the
+    // contract store nor the manifest registry, and threading both through it
+    // to reach one predicate would widen a deliberately narrow context.
+    //
+    // ⚠ Only the pack dep is added — `recipeStore` is left off on purpose. It
+    // would switch on the dormant existence check as a side effect, and that
+    // dormancy is documented as deliberate for the legacy UI path.
+    scheduleDeps: scheduleDeps && contractStore
+      ? {
+          ...scheduleDeps,
+          missingPackDepsForRecipe: (recipe_id: string) => {
+            const recipe = storage.recipeStore.get(recipe_id);
+            if (recipe === null) return [];
+            return missingPackDependencies(
+              recipe,
+              buildPackOpResolution(
+                () => contractStore.scan('installed_pack', []),
+                (slug: string) => execution.executorConfig.manifests.get(slug),
+              ),
+            );
+          },
+        }
+      : scheduleDeps,
     ...(dishDeps ? { dishDeps } : {}),
     ...(eventTriggersBundle
       ? { triggersDeps: eventTriggersBundle.triggersDeps }

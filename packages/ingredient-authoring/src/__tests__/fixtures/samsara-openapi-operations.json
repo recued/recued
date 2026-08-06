@@ -3,8 +3,8 @@
     "vendor": "Samsara",
     "product": "Samsara API",
     "url": "https://developers.samsara.com/openapi/samsara-api.json",
-    "bytes": 4023832,
-    "sha256": "777b3bd3a58b5403bf3039cb6912c8666c574e708c805789ebb60fb844454e9b",
+    "bytes": 4021497,
+    "sha256": "2ae4a795fb0da91607355fc252a2bb0e9ba116bbdb03b53ca81f5288a881649a",
     "openapi_version": "3.0.1",
     "api_version": "2025-10-23",
     "retrieved_on": "2026-08-03",
@@ -40,9 +40,9 @@
       "PUT": 6
     },
     "by_release_stage": {
-      "beta": 104,
+      "beta": 108,
       "legacy": 41,
-      "preview": 12,
+      "preview": 8,
       "stable": 199
     },
     "by_risk": {
@@ -99,7 +99,7 @@
       "kind": "task",
       "eligible": true,
       "declared": false,
-      "evidence": "Samsara Issues and Work Orders are plausible task Sources with stable identifiers and update surfaces. Declaration is deferred because D-192 requires a separate human field-path verification gate before commit."
+      "evidence": "Samsara Issues and Work Orders are plausible task Sources with stable identifiers and update surfaces. Declaration is deferred because the authoring process requires a separate human field-path verification gate before commit."
     },
     {
       "kind": "note",
@@ -37938,6 +37938,625 @@
       "idempotency": "idempotent"
     },
     {
+      "method": "DELETE",
+      "path": "/maintenance/purchase-orders",
+      "operation_id": "deletePurchaseOrder",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "delete_purchase_order",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Purchase Orders"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [],
+      "selected_response_media": null,
+      "response_type": null,
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.id"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.id": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "query.id"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": null,
+      "pagination": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    {
+      "method": "GET",
+      "path": "/maintenance/purchase-orders",
+      "operation_id": "listPurchaseOrders",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "list_purchase_orders",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Read Purchase Orders"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data[].parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration"
+      ],
+      "parameters": [
+        {
+          "name": "ids",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.ids"
+        },
+        {
+          "name": "poNumbers",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.poNumbers"
+        },
+        {
+          "name": "vendorIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.vendorIds"
+        },
+        {
+          "name": "endTime",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.endTime"
+        },
+        {
+          "name": "startTime",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.startTime"
+        },
+        {
+          "name": "after",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.ids",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.poNumbers",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.vendorIds",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.endTime",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.startTime",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.ids": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.poNumbers": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.vendorIds": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.endTime": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.startTime": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "query.startTime"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100,
+          "max": 200
+        },
+        "token_from": "pagination.endCursor",
+        "token_to": {
+          "placement": "query",
+          "param": "after"
+        },
+        "done_when": {
+          "path": "pagination.hasNextPage",
+          "equals": false
+        }
+      },
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    {
+      "method": "PATCH",
+      "path": "/maintenance/purchase-orders",
+      "operation_id": "updatePurchaseOrder",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "update_purchase_order",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Purchase Orders"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "raw_required_optional_object",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [
+        "parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data.parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration"
+      ],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.id"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.id": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body_raw": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 1048576,
+            "pattern": "^\\s*\\{[\\s\\S]*\\}\\s*$"
+          }
+        },
+        "required": [
+          "query.id",
+          "body_raw"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    {
+      "method": "POST",
+      "path": "/maintenance/purchase-orders",
+      "operation_id": "createPurchaseOrder",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "create_purchase_order",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Purchase Orders"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "projected_top_level",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [
+        "parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data.parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration"
+      ],
+      "parameters": [],
+      "emitted_args": [
+        {
+          "key": "body.glCode",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.invoiceNumber",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.notes",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.orderStatus",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.otherCost",
+          "type": "object",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.parts",
+          "type": "array",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.poNumberPrefix",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.poNumberSuffix",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.trackingNumber",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.vendorId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "body.glCode": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.invoiceNumber": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.notes": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.orderStatus": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.otherCost": {
+            "type": "object",
+            "properties": {
+              "amount": {
+                "type": "string"
+              },
+              "currency": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "amount",
+              "currency"
+            ],
+            "additionalProperties": true
+          },
+          "body.parts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "batchNumber": {
+                  "type": "string"
+                },
+                "coreCharge": {
+                  "type": "object",
+                  "properties": {
+                    "coreChargeStatus": {
+                      "type": "string"
+                    },
+                    "corePartSamsaraId": {
+                      "type": "string"
+                    },
+                    "recoverabilityPolicy": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "returnRecipientVendorId": {
+                      "type": "string"
+                    },
+                    "unitCoreAmount": {
+                      "type": "object",
+                      "additionalProperties": true
+                    }
+                  },
+                  "required": [
+                    "coreChargeStatus"
+                  ],
+                  "additionalProperties": true
+                },
+                "description": {
+                  "type": "string"
+                },
+                "lineItemId": {
+                  "type": "string"
+                },
+                "partSamsaraId": {
+                  "type": "string"
+                },
+                "placeId": {
+                  "type": "string"
+                },
+                "quantityOrdered": {
+                  "type": "number",
+                  "format": "double"
+                },
+                "quantityReceived": {
+                  "type": "number",
+                  "format": "double"
+                },
+                "unitCost": {
+                  "type": "object",
+                  "properties": {
+                    "amount": {
+                      "type": "string"
+                    },
+                    "currency": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "amount",
+                    "currency"
+                  ],
+                  "additionalProperties": true
+                },
+                "unitOfMeasureType": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "partSamsaraId",
+                "quantityOrdered",
+                "quantityReceived",
+                "unitOfMeasureType"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "body.poNumberPrefix": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.poNumberSuffix": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.trackingNumber": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.vendorId": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "body.orderStatus",
+          "body.vendorId"
+        ],
+        "additionalProperties": true
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    {
       "method": "GET",
       "path": "/maintenance/service-tasks",
       "operation_id": "getServiceTasks",
@@ -42807,625 +43426,6 @@
       "risk": "read",
       "approval": "ask",
       "idempotency": "safe"
-    },
-    {
-      "method": "DELETE",
-      "path": "/preview/maintenance/purchase-orders",
-      "operation_id": "deletePurchaseOrder",
-      "tag": "Preview APIs",
-      "release_stage": "preview",
-      "selected": true,
-      "exclusion_reason": null,
-      "pack": "samsara-maintenance-work-orders",
-      "op": "delete_purchase_order",
-      "security": [
-        "AccessTokenHeader"
-      ],
-      "scopes": [
-        "Write Purchase Orders"
-      ],
-      "request_media": [],
-      "selected_request_media": null,
-      "request_body_mode": null,
-      "request_body_required": false,
-      "request_body_type": null,
-      "request_read_only_paths": [],
-      "request_int64_paths": [],
-      "response_media": [],
-      "selected_response_media": null,
-      "response_type": null,
-      "response_int64_paths": [],
-      "parameters": [
-        {
-          "name": "id",
-          "in": "query",
-          "required": true,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": null,
-          "explode": null,
-          "serialization": "scalar",
-          "pagination_owned": false,
-          "emitted_key": "query.id"
-        }
-      ],
-      "emitted_args": [
-        {
-          "key": "query.id",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        }
-      ],
-      "request_schema": {
-        "type": "object",
-        "properties": {
-          "query.id": {
-            "type": "string",
-            "maxLength": 65536
-          }
-        },
-        "required": [
-          "query.id"
-        ],
-        "additionalProperties": false
-      },
-      "request_json": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "result_path": null,
-      "pagination": null,
-      "risk": "destructive",
-      "approval": "always",
-      "idempotency": "idempotent"
-    },
-    {
-      "method": "GET",
-      "path": "/preview/maintenance/purchase-orders",
-      "operation_id": "listPurchaseOrders",
-      "tag": "Preview APIs",
-      "release_stage": "preview",
-      "selected": true,
-      "exclusion_reason": null,
-      "pack": "samsara-maintenance-work-orders",
-      "op": "list_purchase_orders",
-      "security": [
-        "AccessTokenHeader"
-      ],
-      "scopes": [
-        "Read Purchase Orders"
-      ],
-      "request_media": [],
-      "selected_request_media": null,
-      "request_body_mode": null,
-      "request_body_required": false,
-      "request_body_type": null,
-      "request_read_only_paths": [],
-      "request_int64_paths": [],
-      "response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_type": "object",
-      "response_int64_paths": [
-        "data[].parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration"
-      ],
-      "parameters": [
-        {
-          "name": "ids",
-          "in": "query",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": null,
-          "explode": null,
-          "serialization": "scalar",
-          "pagination_owned": false,
-          "emitted_key": "query.ids"
-        },
-        {
-          "name": "poNumbers",
-          "in": "query",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": null,
-          "explode": null,
-          "serialization": "scalar",
-          "pagination_owned": false,
-          "emitted_key": "query.poNumbers"
-        },
-        {
-          "name": "vendorIds",
-          "in": "query",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": null,
-          "explode": null,
-          "serialization": "scalar",
-          "pagination_owned": false,
-          "emitted_key": "query.vendorIds"
-        },
-        {
-          "name": "endTime",
-          "in": "query",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": null,
-          "explode": null,
-          "serialization": "scalar",
-          "pagination_owned": false,
-          "emitted_key": "query.endTime"
-        },
-        {
-          "name": "startTime",
-          "in": "query",
-          "required": true,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": null,
-          "explode": null,
-          "serialization": "scalar",
-          "pagination_owned": false,
-          "emitted_key": "query.startTime"
-        },
-        {
-          "name": "after",
-          "in": "query",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": null,
-          "explode": null,
-          "serialization": "scalar",
-          "pagination_owned": true,
-          "emitted_key": null
-        },
-        {
-          "name": "limit",
-          "in": "query",
-          "required": false,
-          "schema_type": "number",
-          "schema_format": null,
-          "style": null,
-          "explode": null,
-          "serialization": "scalar",
-          "pagination_owned": true,
-          "emitted_key": null
-        }
-      ],
-      "emitted_args": [
-        {
-          "key": "query.ids",
-          "type": "string",
-          "required": false,
-          "affects_target": true
-        },
-        {
-          "key": "query.poNumbers",
-          "type": "string",
-          "required": false,
-          "affects_target": true
-        },
-        {
-          "key": "query.vendorIds",
-          "type": "string",
-          "required": false,
-          "affects_target": true
-        },
-        {
-          "key": "query.endTime",
-          "type": "string",
-          "required": false,
-          "affects_target": true
-        },
-        {
-          "key": "query.startTime",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        }
-      ],
-      "request_schema": {
-        "type": "object",
-        "properties": {
-          "query.ids": {
-            "type": "string",
-            "maxLength": 65536
-          },
-          "query.poNumbers": {
-            "type": "string",
-            "maxLength": 65536
-          },
-          "query.vendorIds": {
-            "type": "string",
-            "maxLength": 65536
-          },
-          "query.endTime": {
-            "type": "string",
-            "maxLength": 65536
-          },
-          "query.startTime": {
-            "type": "string",
-            "maxLength": 65536
-          }
-        },
-        "required": [
-          "query.startTime"
-        ],
-        "additionalProperties": false
-      },
-      "request_json": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "result_path": "data",
-      "pagination": {
-        "style": "query_token",
-        "page_size": {
-          "placement": "query",
-          "param": "limit",
-          "value": 100,
-          "max": 200
-        },
-        "token_from": "pagination.endCursor",
-        "token_to": {
-          "placement": "query",
-          "param": "after"
-        },
-        "done_when": {
-          "path": "pagination.hasNextPage",
-          "equals": false
-        }
-      },
-      "risk": "read",
-      "approval": "ask",
-      "idempotency": "safe"
-    },
-    {
-      "method": "PATCH",
-      "path": "/preview/maintenance/purchase-orders",
-      "operation_id": "updatePurchaseOrder",
-      "tag": "Preview APIs",
-      "release_stage": "preview",
-      "selected": true,
-      "exclusion_reason": null,
-      "pack": "samsara-maintenance-work-orders",
-      "op": "update_purchase_order",
-      "security": [
-        "AccessTokenHeader"
-      ],
-      "scopes": [
-        "Write Purchase Orders"
-      ],
-      "request_media": [
-        "application/json"
-      ],
-      "selected_request_media": "application/json",
-      "request_body_mode": "raw_required_optional_object",
-      "request_body_required": true,
-      "request_body_type": "object",
-      "request_read_only_paths": [],
-      "request_int64_paths": [
-        "parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_type": "object",
-      "response_int64_paths": [
-        "data.parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration"
-      ],
-      "parameters": [
-        {
-          "name": "id",
-          "in": "query",
-          "required": true,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": null,
-          "explode": null,
-          "serialization": "scalar",
-          "pagination_owned": false,
-          "emitted_key": "query.id"
-        }
-      ],
-      "emitted_args": [
-        {
-          "key": "query.id",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "body_raw",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        }
-      ],
-      "request_schema": {
-        "type": "object",
-        "properties": {
-          "query.id": {
-            "type": "string",
-            "maxLength": 65536
-          },
-          "body_raw": {
-            "type": "string",
-            "minLength": 2,
-            "maxLength": 1048576,
-            "pattern": "^\\s*\\{[\\s\\S]*\\}\\s*$"
-          }
-        },
-        "required": [
-          "query.id",
-          "body_raw"
-        ],
-        "additionalProperties": false
-      },
-      "request_json": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "result_path": "data",
-      "pagination": null,
-      "risk": "write",
-      "approval": "always",
-      "idempotency": "idempotent"
-    },
-    {
-      "method": "POST",
-      "path": "/preview/maintenance/purchase-orders",
-      "operation_id": "createPurchaseOrder",
-      "tag": "Preview APIs",
-      "release_stage": "preview",
-      "selected": true,
-      "exclusion_reason": null,
-      "pack": "samsara-maintenance-work-orders",
-      "op": "create_purchase_order",
-      "security": [
-        "AccessTokenHeader"
-      ],
-      "scopes": [
-        "Write Purchase Orders"
-      ],
-      "request_media": [
-        "application/json"
-      ],
-      "selected_request_media": "application/json",
-      "request_body_mode": "projected_top_level",
-      "request_body_required": true,
-      "request_body_type": "object",
-      "request_read_only_paths": [],
-      "request_int64_paths": [
-        "parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_type": "object",
-      "response_int64_paths": [
-        "data.parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration"
-      ],
-      "parameters": [],
-      "emitted_args": [
-        {
-          "key": "body.glCode",
-          "type": "string",
-          "required": false,
-          "affects_target": true
-        },
-        {
-          "key": "body.invoiceNumber",
-          "type": "string",
-          "required": false,
-          "affects_target": true
-        },
-        {
-          "key": "body.notes",
-          "type": "string",
-          "required": false,
-          "affects_target": true
-        },
-        {
-          "key": "body.orderStatus",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "body.otherCost",
-          "type": "object",
-          "required": false,
-          "affects_target": true
-        },
-        {
-          "key": "body.parts",
-          "type": "array",
-          "required": false,
-          "affects_target": true
-        },
-        {
-          "key": "body.poNumberPrefix",
-          "type": "string",
-          "required": false,
-          "affects_target": true
-        },
-        {
-          "key": "body.poNumberSuffix",
-          "type": "string",
-          "required": false,
-          "affects_target": true
-        },
-        {
-          "key": "body.trackingNumber",
-          "type": "string",
-          "required": false,
-          "affects_target": true
-        },
-        {
-          "key": "body.vendorId",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        }
-      ],
-      "request_schema": {
-        "type": "object",
-        "properties": {
-          "body.glCode": {
-            "type": "string",
-            "maxLength": 65536
-          },
-          "body.invoiceNumber": {
-            "type": "string",
-            "maxLength": 65536
-          },
-          "body.notes": {
-            "type": "string",
-            "maxLength": 65536
-          },
-          "body.orderStatus": {
-            "type": "string",
-            "maxLength": 65536
-          },
-          "body.otherCost": {
-            "type": "object",
-            "properties": {
-              "amount": {
-                "type": "string"
-              },
-              "currency": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "amount",
-              "currency"
-            ],
-            "additionalProperties": true
-          },
-          "body.parts": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "batchNumber": {
-                  "type": "string"
-                },
-                "coreCharge": {
-                  "type": "object",
-                  "properties": {
-                    "coreChargeStatus": {
-                      "type": "string"
-                    },
-                    "corePartSamsaraId": {
-                      "type": "string"
-                    },
-                    "recoverabilityPolicy": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
-                    "returnRecipientVendorId": {
-                      "type": "string"
-                    },
-                    "unitCoreAmount": {
-                      "type": "object",
-                      "additionalProperties": true
-                    }
-                  },
-                  "required": [
-                    "coreChargeStatus"
-                  ],
-                  "additionalProperties": true
-                },
-                "description": {
-                  "type": "string"
-                },
-                "lineItemId": {
-                  "type": "string"
-                },
-                "partSamsaraId": {
-                  "type": "string"
-                },
-                "placeId": {
-                  "type": "string"
-                },
-                "quantityOrdered": {
-                  "type": "number",
-                  "format": "double"
-                },
-                "quantityReceived": {
-                  "type": "number",
-                  "format": "double"
-                },
-                "unitCost": {
-                  "type": "object",
-                  "properties": {
-                    "amount": {
-                      "type": "string"
-                    },
-                    "currency": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "amount",
-                    "currency"
-                  ],
-                  "additionalProperties": true
-                },
-                "unitOfMeasureType": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "partSamsaraId",
-                "quantityOrdered",
-                "quantityReceived",
-                "unitOfMeasureType"
-              ],
-              "additionalProperties": true
-            }
-          },
-          "body.poNumberPrefix": {
-            "type": "string",
-            "maxLength": 65536
-          },
-          "body.poNumberSuffix": {
-            "type": "string",
-            "maxLength": 65536
-          },
-          "body.trackingNumber": {
-            "type": "string",
-            "maxLength": 65536
-          },
-          "body.vendorId": {
-            "type": "string",
-            "maxLength": 65536
-          }
-        },
-        "required": [
-          "body.orderStatus",
-          "body.vendorId"
-        ],
-        "additionalProperties": true
-      },
-      "request_json": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "result_path": "data",
-      "pagination": null,
-      "risk": "write",
-      "approval": "always",
-      "idempotency": "non_idempotent"
     },
     {
       "method": "DELETE",
@@ -55424,7 +55424,7 @@
     {
       "slug": "samsara-assets-organization",
       "operations": 42,
-      "composition_bytes": 109650
+      "composition_bytes": 109656
     },
     {
       "slug": "samsara-vehicles-equipment",
@@ -55449,7 +55449,7 @@
     {
       "slug": "samsara-maintenance-work-orders",
       "operations": 43,
-      "composition_bytes": 141324
+      "composition_bytes": 139671
     },
     {
       "slug": "samsara-forms-documents",

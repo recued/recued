@@ -1,9 +1,5 @@
 import type { Namespace } from './namespaces.js';
 import { NS } from './namespaces.js';
-import {
-  MEMORY_DATA_ALIAS_SUBNAMESPACE,
-  MEMORY_DATA_SUBNAMESPACE,
-} from './memory.js';
 import { tryRewriteVendorEnrichmentAlias } from './connection-vendor-aliases.js';
 import { tryRewriteCrmAlias } from './connection-vendor-crm-aliases.js';
 import { activeVendorAliasRegistry } from './vendor-alias-registry.js';
@@ -64,28 +60,17 @@ export const walkPath = (obj: unknown, path: string): unknown => {
   return current;
 };
 
-/** D-120 Phase 4 — `data.audit.*` ↔ `data.memory.*` alias. The audit
- *  sub-namespace is preserved for one release cycle so the published
- *  marketplace corpus migrates without a hard break; the validator
- *  emits a soft-warn on `data.audit.*` use. The alias collapse here
- *  is a pure path rewrite — hosts only ever populate
- *  `stores.data.memory`, and `walkPath` traverses the same backing
- *  object for both names without any extra plumbing.
+/** D-231 — THE ALIAS IS GONE. `data.audit.*` and `data.memory.*` are two
+ *  namespaces over two stores, so neither rewrites to the other:
  *
- *  `audit` already resolves to null inside `parseDataEntityRef`
- *  (`packages/contracts/src/links.ts`) so engine link emission also
- *  treats both names identically. */
-const aliasDataMemoryPath = (path: string): string => {
-  const dot = path.indexOf('.');
-  if (dot === -1) {
-    return path === MEMORY_DATA_ALIAS_SUBNAMESPACE
-      ? MEMORY_DATA_SUBNAMESPACE
-      : path;
-  }
-  return path.slice(0, dot) === MEMORY_DATA_ALIAS_SUBNAMESPACE
-    ? MEMORY_DATA_SUBNAMESPACE + path.slice(dot)
-    : path;
-};
+ *    data.audit.*  → audit_entries / audit_activities (run provenance)
+ *    data.memory.* → user_memory (the owner's curated knowledge)
+ *
+ *  D-120 Phase 4 collapsed `audit` onto `memory` as a pure path rewrite,
+ *  correct while audit WAS the memory substrate. D-198 split the stores and
+ *  left the rewrite pointing at the wrong one; removing it is what lets each
+ *  name reach its own backing object. Hosts now populate `stores.data.memory`
+ *  and `stores.data.audit` independently.
 
 /** Parse "ns.path" or "ns.path:hint" into parts. Applies the canonical
  *  path rewrites (the `data.audit` → `data.memory` alias collapse + the
@@ -118,7 +103,6 @@ export const parseRef = (inner: string): { ns: string; path: string; hint?: RefH
   // the canonical D-128 path via the registry's `crm_alias` annotation
   // and the `<full_target_id>`'s vendor-prefix discriminator.
   if (ns === 'data') {
-    path = aliasDataMemoryPath(path);
     // D-192 unit-3 — dispatch both alias rewrites against the LIVE merged
     // registry (server binds it via `setVendorAliasRegistryResolver`) so a
     // pack-declared CRM's refs rewrite; unbound → frozen builtin.

@@ -74,6 +74,7 @@ import {
   isByokAllowedForBackground,
   type TrustStore,
 } from '../trust-store.js';
+import { listCollectionDataTables } from '../../collections/table.js';
 
 /** D-136 P3 — producer-version hash. */
 const baseProducerVersionHash = computeProducerVersionHash({
@@ -491,15 +492,10 @@ export const scanRecentMail = (
   limit: number = MAX_MESSAGES_SCANNED,
 ): MailScanRow[] => {
   const earliest = now - MAIL_LOOKBACK_MS;
-  const tables = ctx.db
-    .prepare(
-      `SELECT name FROM sqlite_master
-        WHERE type='table' AND name LIKE 'collection_mail_%'`,
-    )
-    .all() as Array<{ name: string }>;
+  const tables = listCollectionDataTables(ctx.db, 'mail');
 
   const all: MailScanRow[] = [];
-  for (const { name: table } of tables) {
+  for (const table of tables) {
     const rows = ctx.db
       .prepare(
         `SELECT record_id, received_at, hot_fields FROM "${table}"

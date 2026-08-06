@@ -19,20 +19,13 @@
 import type Database from 'better-sqlite3';
 import type { CollectionRecord } from '@recued/contracts';
 import type { CollectionTable } from '../table.js';
+import { listCollectionDataTables } from '../table.js';
 import type { MailTwinResolver } from '../../storage/engagement-store.js';
 import { createMailTwinResolver } from './mail-twin-resolver.js';
 
 /** Filter key allowed into the `json_extract` path — identifier-only,
  *  matching `CollectionTable.findByHotFieldIn`'s `FILTER_KEY_PATTERN`. */
 const FILTER_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-/** Exact base mail data-table name: `collection_mail_<10-hex slug hash>`
- *  (`slugHash` = `sha256(slug).hex.slice(0,10)`, table.ts:196). Validating
- *  against this — rather than a loose `_fts`-exclusion on a `LIKE` result —
- *  excludes every FTS5 artifact AND any unexpected schema-drift table, so
- *  the table name interpolated into SQL below is provably a real mail
- *  table (Codex LOW fold). */
-const MAIL_DATA_TABLE_PATTERN = /^collection_mail_[0-9a-f]{10}$/;
 
 interface MailUnionRow {
   record_id: string;
@@ -46,15 +39,13 @@ interface MailUnionRow {
 /** Enumerate the base `data.mail` data tables, excluding FTS5 artifacts
  *  (the virtual table + its `_data` / `_idx` / `_docsize` / `_config`
  *  shadows) and any other schema-drift table by matching the EXACT base
- *  name shape `collection_mail_<10-hex-hash>`. */
-const listMailDataTables = (db: Database.Database): string[] => {
-  const rows = db
-    .prepare(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'collection_mail_%'`,
-    )
-    .all() as Array<{ name: string }>;
-  return rows.map((r) => r.name).filter((n) => MAIL_DATA_TABLE_PATTERN.test(n));
-};
+ *  name shape `collection_mail_<10-hex-hash>`.
+ *
+ *  This file had that predicate right while twenty-two other call sites
+ *  open-coded the loose `LIKE` scan; it now shares the one helper so there is
+ *  a single place to be right. */
+const listMailDataTables = (db: Database.Database): string[] =>
+  listCollectionDataTables(db, 'mail');
 
 export const createMailUnionTwinResolver = (
   db: Database.Database,

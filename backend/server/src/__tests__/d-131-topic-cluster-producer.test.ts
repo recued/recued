@@ -79,8 +79,8 @@ const NOW = 1_700_000_000_000;
 const ONE_HOUR = 60 * 60 * 1000;
 const ONE_DAY = 24 * ONE_HOUR;
 
-const MAIL_TABLE_A = 'collection_mail_a';
-const MAIL_TABLE_B = 'collection_mail_b';
+const MAIL_TABLE_A = 'collection_mail_55555555ee';
+const MAIL_TABLE_B = 'collection_mail_66666666ff';
 
 let dir: string;
 let db: Database.Database;

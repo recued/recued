@@ -3,13 +3,13 @@
     "source": {
       "reference_index": {
         "url": "https://documentation.onesignal.com/llms.txt",
-        "bytes": 80239,
-        "sha256": "818fc1c980febeab3befbf4128a7632d184e547d9a57ca95865e4acc7eb0f259"
+        "bytes": 81023,
+        "sha256": "9ddb90c1b71fbab291ac36ce3cc92ace48413b858bc07e848abef33b6a04e51b"
       },
       "reference_pages": {
         "count": 59,
-        "bytes": 1475700,
-        "bundle_sha256": "184b584bf4e4e52b447051148423f58263ebebf5b97f7f430994ea84216565f1",
+        "bytes": 1541193,
+        "bundle_sha256": "316914c762d889f3ba55ac6dcc378050418d554fbd6fbe5a87e19019d634875a",
         "entries": [
           {
             "slug": "add-a-device",
@@ -22,32 +22,32 @@
           {
             "slug": "cancel-message",
             "url": "https://documentation.onesignal.com/reference/cancel-message.md",
-            "bytes": 18782,
-            "sha256": "4208023d6a7a651c3e5860920c3bcd8bc226d1f839205e6c20a70375a9c2b7f0",
+            "bytes": 18582,
+            "sha256": "9ea54b33d6f300b0ff2c3f115f1ef82c97dedf3e4487c78c75608b6bf1989600",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "copy-template-to-another-app",
             "url": "https://documentation.onesignal.com/reference/copy-template-to-another-app.md",
-            "bytes": 22695,
-            "sha256": "aabeccfc331bf7449227cc639519077485bcceec26314e26260bb823bcb8db15",
+            "bytes": 22495,
+            "sha256": "061ab1e0f920806dbbbb456afaf7f96e536ee93e126bc896f3c13f6b36ae6c47",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "create-alias-by-subscription",
             "url": "https://documentation.onesignal.com/reference/create-alias-by-subscription.md",
-            "bytes": 21835,
-            "sha256": "b483fc3ef297a16c5fc55d4a930c99c9f025ea8a786592124cb092df74b77580",
+            "bytes": 21635,
+            "sha256": "6b011ed9186b07321a11d751a153075fc4c64a7de17eac032eedb1ee89bad868",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "create-alias",
             "url": "https://documentation.onesignal.com/reference/create-alias.md",
-            "bytes": 24492,
-            "sha256": "94a8f8a5060752eeee9b9e2b775cd2cab2a68038874ef94954cf61cb9a89f3fa",
+            "bytes": 24292,
+            "sha256": "ac580a60712875e284d800707fd3300936e8010db7ce115219d420bad6b12d7b",
             "has_openapi": true,
             "kind": "operation"
           },
@@ -62,16 +62,16 @@
           {
             "slug": "create-api-key",
             "url": "https://documentation.onesignal.com/reference/create-api-key.md",
-            "bytes": 23297,
-            "sha256": "a241aed2dd3d21d5fee26ac455d8e4e950d99209f107cc50f4195eb136acb476",
+            "bytes": 23097,
+            "sha256": "0a88223bb98284d2e81be28f4979b15c28a49b0bc59f9627e06036fd906cff31",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "create-custom-events",
             "url": "https://documentation.onesignal.com/reference/create-custom-events.md",
-            "bytes": 25535,
-            "sha256": "40717114b5fb2c83502142ebc4b281dba8ba523d019dd08e812e07816992303f",
+            "bytes": 25434,
+            "sha256": "668c112d00b288f4fc5e5a4cde8a260b0d7696b72db6445eb7cb820dde9a1ab1",
             "has_openapi": true,
             "kind": "operation"
           },
@@ -86,16 +86,16 @@
           {
             "slug": "create-segments",
             "url": "https://documentation.onesignal.com/reference/create-segments.md",
-            "bytes": 33349,
-            "sha256": "19efaff8bbbd067abd99872896e3c05d41c825d859a1486dd9171d7d7b937c92",
+            "bytes": 33133,
+            "sha256": "f4de926c0284ea0813b4a634e124bda5529357f3b9d7fd46494c7bbdf4f1fecc",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "create-subscription",
             "url": "https://documentation.onesignal.com/reference/create-subscription.md",
-            "bytes": 34931,
-            "sha256": "5a81a118fd5e50e9175761f58f7ba25b462d7654c5bc87810a9d667df90ab709",
+            "bytes": 34883,
+            "sha256": "4a407779966302aff36fde7611e531b7a8e93b2ad1d4ff105cdc15f5314434d4",
             "has_openapi": true,
             "kind": "operation"
           },
@@ -110,56 +110,56 @@
           {
             "slug": "create-user",
             "url": "https://documentation.onesignal.com/reference/create-user.md",
-            "bytes": 38931,
-            "sha256": "6355ae30dab807f65f0a352f66bfe4aa9c617398316d4f4b36753bbcddd635a6",
+            "bytes": 38815,
+            "sha256": "21f3972d629b80d2536c4af0ce00fe4e189c1ebdfee35b8893da4660187b58b5",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "csv-export",
             "url": "https://documentation.onesignal.com/reference/csv-export.md",
-            "bytes": 29442,
-            "sha256": "e8d7a1f8bb39bb4626d2722086818957d6352a7c092039010979fbd9d1c60fcb",
+            "bytes": 29242,
+            "sha256": "bce045ef243245e2cf4f6824a66bdce273a4d3b94777d960201be71bcfa46c09",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "delete-alias",
             "url": "https://documentation.onesignal.com/reference/delete-alias.md",
-            "bytes": 21646,
-            "sha256": "561dba9ad5cf22105080956f3cd2eb22520fa5c75333bbac584a0c9017259e22",
+            "bytes": 21446,
+            "sha256": "b7959997b24822ea48d385f8e481c905560f90009754e7f0419157f3b6886553",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "delete-api-key",
             "url": "https://documentation.onesignal.com/reference/delete-api-key.md",
-            "bytes": 19227,
-            "sha256": "bb831a3cdd3c3fbb0d6629d88402355613e78c8786df956743eeada2aafd757a",
+            "bytes": 19027,
+            "sha256": "412044e094ff2feceba3eb478043a70a56becdc62d87390c9f441f4f7b3e3578",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "delete-segments",
             "url": "https://documentation.onesignal.com/reference/delete-segments.md",
-            "bytes": 21036,
-            "sha256": "c1a347d51bb3ef2df3e6faab719e7f683344aefabfeb37288319e0cd323988b3",
+            "bytes": 20836,
+            "sha256": "756c95b0c85b9c9c03942e854f26b329985c71c7cf438ac71e54123cb5f19bd8",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "delete-subscription",
             "url": "https://documentation.onesignal.com/reference/delete-subscription.md",
-            "bytes": 19816,
-            "sha256": "de440509ff926aeab198eb8e3fa6975c9af03e7ccaa4569167faeb894a86d376",
+            "bytes": 19616,
+            "sha256": "c4465e35b06d5452c3c88bba2769a3ad37d144b1de30852e7c13e4677fb93a39",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "delete-template",
             "url": "https://documentation.onesignal.com/reference/delete-template.md",
-            "bytes": 20396,
-            "sha256": "8a9bf687da0360ea6329e3182610f6652e5401fcaaa577429bd8d2a40cd8dfe9",
+            "bytes": 20196,
+            "sha256": "9f41184cf68d39a6fd8e0426d2496d893c9053d75bbc6c3340b998ca82983d13",
             "has_openapi": true,
             "kind": "operation"
           },
@@ -174,8 +174,8 @@
           {
             "slug": "delete-user",
             "url": "https://documentation.onesignal.com/reference/delete-user.md",
-            "bytes": 20714,
-            "sha256": "d26bdd1aee00a2fd00c4ea9b40715db4aea1fb608c9cc1515865b5735150bd18",
+            "bytes": 20514,
+            "sha256": "c1155675abe8f3cb3ed817971fda8491739df044a1da7a3a039e5f137448240d",
             "has_openapi": true,
             "kind": "operation"
           },
@@ -206,24 +206,24 @@
           {
             "slug": "export-csv-of-events",
             "url": "https://documentation.onesignal.com/reference/export-csv-of-events.md",
-            "bytes": 21210,
-            "sha256": "4a151ffa60e83804e47c02cb02c269c74cade21b7b17ca0a008e95671c583601",
+            "bytes": 21010,
+            "sha256": "e1220986f0d1b0d4a97f85d7b8980fcb9dac77741c4136ce2f27ff1a98258f46",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "fetch-aliases",
             "url": "https://documentation.onesignal.com/reference/fetch-aliases.md",
-            "bytes": 21090,
-            "sha256": "4e2e6060fcc9431e87826fd265f732a2617c9592f8482c3038e012d6236132e6",
+            "bytes": 20890,
+            "sha256": "d2e813826c998d661b4a483147b17ef4abb792a684f2b54bb87f80e0665480df",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "fetch-identity-by-subscription",
             "url": "https://documentation.onesignal.com/reference/fetch-identity-by-subscription.md",
-            "bytes": 20543,
-            "sha256": "735c0ffb7fbe25078fd7e71d04d580e342d88df230102b7a24479c71b7c008ac",
+            "bytes": 20343,
+            "sha256": "c6d7e5f63f92c9c3e84908f3c995b07ecadc49e3bdcec0af84cfb63a701951b8",
             "has_openapi": true,
             "kind": "operation"
           },
@@ -238,8 +238,8 @@
           {
             "slug": "list-audit-logs",
             "url": "https://documentation.onesignal.com/reference/list-audit-logs.md",
-            "bytes": 16843,
-            "sha256": "1a8d5ada3a4265a6442b7524deda2c859273cd8e5daa44440e29b3511911e6b6",
+            "bytes": 46069,
+            "sha256": "cebc5520f7921bf0a9150d835c2e3ac373cf20ea173f7687d044529395008452",
             "has_openapi": true,
             "kind": "operation"
           },
@@ -254,8 +254,8 @@
           {
             "slug": "push-notification",
             "url": "https://documentation.onesignal.com/reference/push-notification.md",
-            "bytes": 81256,
-            "sha256": "406c10b316efffcca3f362910ea2e2e3a08ae29f207a2ae93cb0e7bf9062958d",
+            "bytes": 82242,
+            "sha256": "65b48c37a48a1b56527cdb1bd827eda4470736afca5aff28922eba7b980bed6f",
             "has_openapi": true,
             "kind": "operation"
           },
@@ -278,8 +278,8 @@
           {
             "slug": "rotate-api-key",
             "url": "https://documentation.onesignal.com/reference/rotate-api-key.md",
-            "bytes": 21754,
-            "sha256": "03e6ef2f7378c32eb810e30292c39df2007fdf3a2b32c2a63911d9eb48c77e17",
+            "bytes": 21554,
+            "sha256": "590ba055ef66ddffd3d64ffc5fd5a1045801f70d03814eeeff9807b5538d2db4",
             "has_openapi": true,
             "kind": "operation"
           },
@@ -294,112 +294,112 @@
           {
             "slug": "start-live-activity",
             "url": "https://documentation.onesignal.com/reference/start-live-activity.md",
-            "bytes": 45201,
-            "sha256": "795482d2b791bea231d65cf5c7a1f7dcbab5d6cb6e1e00998b2303994f0900e8",
+            "bytes": 44917,
+            "sha256": "f1ac1330bc0e7e226c56753df9cda53dc03bf867aa066b633a97024a9df3c251",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "transfer-subscription",
             "url": "https://documentation.onesignal.com/reference/transfer-subscription.md",
-            "bytes": 23189,
-            "sha256": "3d8e4a692bdc695630e7b4f9a536ffbe0fd5b4fdd86c19811dcb801a80d19cd7",
+            "bytes": 22989,
+            "sha256": "433506c7491d30dffde97037b6197c47b55cb3e6761c37c607b2ef0962949d51",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "unsubscribe-with-token",
             "url": "https://documentation.onesignal.com/reference/unsubscribe-with-token.md",
-            "bytes": 25123,
-            "sha256": "2a6b71a34bea3cbb0f7f54247a499f9ea44009657e95b1ff43303adb64a94579",
+            "bytes": 24923,
+            "sha256": "4ff5ddb212056e011ae7334cd6cbfc05f4529cc060be26d884d9effe5e95780c",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "update-an-app",
             "url": "https://documentation.onesignal.com/reference/update-an-app.md",
-            "bytes": 33703,
-            "sha256": "8de9421b3781f3fe5951a0d75e8c1acdbc71344dc224f39f7b49132ea43c0083",
+            "bytes": 33491,
+            "sha256": "eafd9d4eacff99b51c79557de035f13df1045c3234589c9116d2eaf77235ef67",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "update-api-key",
             "url": "https://documentation.onesignal.com/reference/update-api-key.md",
-            "bytes": 21971,
-            "sha256": "c0a508681c925bac5b89cd7836f4c81869eb1f164c88ac57c8d5d265e960c2fd",
+            "bytes": 21771,
+            "sha256": "8d1fc29225ad1e5f7a1d3f35c486d67976a22b759e5d1d9cf1deed52eefbe0dc",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "update-live-activity-api",
             "url": "https://documentation.onesignal.com/reference/update-live-activity-api.md",
-            "bytes": 35277,
-            "sha256": "72e4fd9aa57b71ce6441206873694a3cb8e305bbe6829e0df29c896b63040344",
+            "bytes": 35077,
+            "sha256": "14ad40e65f29155b09842db4a49734789b5c39b4eb34a927cebdd7abf232e81b",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "update-segment",
             "url": "https://documentation.onesignal.com/reference/update-segment.md",
-            "bytes": 13956,
-            "sha256": "5d36f3d0c5a611ff2bad08f4b1bf68565179da00f45df1c163ccdecde4ee316c",
+            "bytes": 30339,
+            "sha256": "9889487ff27bd1d7adf23f66bb45c6b5bfcf3ed975cc45771d9fc3a0e379c629",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "update-subscription-by-token",
             "url": "https://documentation.onesignal.com/reference/update-subscription-by-token.md",
-            "bytes": 30223,
-            "sha256": "0f3c0a825e2209161d7b1b510a0c63a8b790dcc56f8f86d4e30634cbdecc864f",
+            "bytes": 30175,
+            "sha256": "16b0d62f6825bd59bee03a44ceac340ec058af5b1cb9e0d366bf6595726b4b35",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "update-subscription",
             "url": "https://documentation.onesignal.com/reference/update-subscription.md",
-            "bytes": 27343,
-            "sha256": "85abe7454d52335a960bacb2655644cb05829f1b0e6212687537c74ca51c5210",
+            "bytes": 27295,
+            "sha256": "312171f38519cb7f7734de5586c1d15865773ea0cbd182da5170defe75652f39",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "update-template",
             "url": "https://documentation.onesignal.com/reference/update-template.md",
-            "bytes": 40654,
-            "sha256": "8c475648462db9d233c423c8d71d3b81812a393fd02476b27ddea69c1426315c",
+            "bytes": 40454,
+            "sha256": "bbd6116aebbefe0e0d8351567ccb710858a223254cb733e7ca67f75b2097afa2",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "update-user",
             "url": "https://documentation.onesignal.com/reference/update-user.md",
-            "bytes": 32187,
-            "sha256": "e54f78c33145a71f0fd76327ffe8f3e65c025927e5c8261b25b70067c0bd8570",
+            "bytes": 31901,
+            "sha256": "0f4411572023c095c220cda95df68fe1b0aadf06046bd4b536c08df80403d1de",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "view-an-app",
             "url": "https://documentation.onesignal.com/reference/view-an-app.md",
-            "bytes": 21293,
-            "sha256": "e310635ca3b70b4a82703bc0a2fbe63c149caaf7ddbe2b0752dea0a89020fc3d",
+            "bytes": 25741,
+            "sha256": "775440df25b43426611b38d0c26300cc96f25b4abc83721b0ce07769fe34a99b",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "view-api-keys",
             "url": "https://documentation.onesignal.com/reference/view-api-keys.md",
-            "bytes": 20215,
-            "sha256": "6f1dc6bfb91df229652c37d936aeede251686fc8d575a73be3eff55af99896f1",
+            "bytes": 20015,
+            "sha256": "b07c70479f6a875048f019ad6abff82c3f7a66c8a7145c4f32b04dd893d7bf14",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "view-apps",
             "url": "https://documentation.onesignal.com/reference/view-apps.md",
-            "bytes": 18409,
-            "sha256": "14eea4844400fe1d1930a490165046e7938a4f80a53f9dfd60db9cff0d47e725",
+            "bytes": 24082,
+            "sha256": "fb4039b188ab8c786d2e952dc09edcd3341628cb7863c3138bb2f5852d846c60",
             "has_openapi": true,
             "kind": "operation"
           },
@@ -422,64 +422,64 @@
           {
             "slug": "view-message",
             "url": "https://documentation.onesignal.com/reference/view-message.md",
-            "bytes": 27492,
-            "sha256": "a9b50ddf4bafb70ba76edd3fe0eeaf540d4991521630162d799ea80c0ecb3ad3",
+            "bytes": 27292,
+            "sha256": "9301d8b995606a95958dfa92026cd0a053d9130c98d8f8c5ba26c1971f78e219",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "view-messages",
             "url": "https://documentation.onesignal.com/reference/view-messages.md",
-            "bytes": 39497,
-            "sha256": "4069263415d17190c945dd4e90f447e4e94c3b104411fac8e730f9486e40b5b5",
+            "bytes": 39297,
+            "sha256": "c3a22b6a6ea8fd776f972ff9c4e9071925ef0b7b4dd4cc3363135661e1edf535",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "view-outcomes",
             "url": "https://documentation.onesignal.com/reference/view-outcomes.md",
-            "bytes": 35409,
-            "sha256": "dea73faa8471b0dc2bda24a998b9072f2c57303e4d266db5557b2881bc1e491b",
+            "bytes": 35209,
+            "sha256": "014aca080322aa9e46905ee1ecaf5df5ce1a6ef837dc6062467e710a82b7abab",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "view-segment",
             "url": "https://documentation.onesignal.com/reference/view-segment.md",
-            "bytes": 17873,
-            "sha256": "4d2a722e771b73ae497b129b764b8a2adcadd2bac518c429ca192444eec0b172",
+            "bytes": 33242,
+            "sha256": "6edae0cbb9390c12d0b1516f4a32587da052de4e5184c928b687828fedb3a051",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "view-segments",
             "url": "https://documentation.onesignal.com/reference/view-segments.md",
-            "bytes": 24625,
-            "sha256": "9fedfe836c8547461341dec1266fe9fd0de3c3c526aeae33e7d165ab704e6ca0",
+            "bytes": 24425,
+            "sha256": "7d264be13a0e0f420778c324ffa5a2301eec1c81e7c4a9d5e365b40baf33d224",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "view-template",
             "url": "https://documentation.onesignal.com/reference/view-template.md",
-            "bytes": 30761,
-            "sha256": "b0de26e709bfbd86e83d091db971f438fcdcb2249c8f1f51657556d11df94913",
+            "bytes": 30561,
+            "sha256": "7ef3aa107104c9f32b89076a05c18f2d9f65440b015174907d9b3ea6961edcc9",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "view-templates",
             "url": "https://documentation.onesignal.com/reference/view-templates.md",
-            "bytes": 26239,
-            "sha256": "ecd1c931c6668c5606bb572f6b7f3175ed8f4f85c8bfacf0db12c7a6976e0f61",
+            "bytes": 26039,
+            "sha256": "893b6bcd97297df03fbf5eec5de910b69ee046446efda5766ccccd9ea6851fa1",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "view-user",
             "url": "https://documentation.onesignal.com/reference/view-user.md",
-            "bytes": 27684,
-            "sha256": "8a484a62ecd02ef4627d25741efab4766a454af65c4e1778ba2cdaa49909cd84",
+            "bytes": 28051,
+            "sha256": "6ff5c5dd25c75a000f7abd41e66dca53109505f0f22d11063cb321f1e2789e27",
             "has_openapi": true,
             "kind": "operation"
           }
@@ -4008,6 +4008,13 @@
           "required": true,
           "type": "string",
           "exposed": false
+        },
+        {
+          "name": "view",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "exposed": true
         }
       ],
       "request": null,
@@ -4041,10 +4048,19 @@
             "organization_id": {
               "type": "string"
             },
+            "additional_data_is_root_payload": {
+              "type": "boolean"
+            },
+            "gcm_key": {
+              "type": "string"
+            },
             "fcm_v1_service_account_json": {
               "type": "string"
             },
             "fcm_sender_id": {
+              "type": "string"
+            },
+            "chrome_key": {
               "type": "string"
             },
             "chrome_web_key": {
@@ -4080,8 +4096,47 @@
             "apns_bundle_id": {
               "type": "string"
             },
+            "safari_apns_certificate": {
+              "type": "string"
+            },
+            "safari_site_origin": {
+              "type": "string"
+            },
+            "safari_push_id": {
+              "type": "string"
+            },
+            "safari_icon_16_16": {
+              "type": "string"
+            },
+            "safari_icon_32_32": {
+              "type": "string"
+            },
+            "safari_icon_64_64": {
+              "type": "string"
+            },
+            "safari_icon_128_128": {
+              "type": "string"
+            },
+            "safari_icon_256_256": {
+              "type": "string"
+            },
             "site_name": {
               "type": "string"
+            },
+            "conversion_attribution_window_push": {
+              "type": "integer"
+            },
+            "conversion_attribution_window_iam": {
+              "type": "integer"
+            },
+            "conversion_attribution_window_email": {
+              "type": "integer"
+            },
+            "conversion_attribution_window_sms": {
+              "type": "integer"
+            },
+            "channels": {
+              "type": "object"
             }
           },
           "item_properties": {}
@@ -4194,6 +4249,81 @@
               "type": "string"
             },
             "organization_id": {
+              "type": "string"
+            },
+            "additional_data_is_root_payload": {
+              "type": "boolean"
+            },
+            "gcm_key": {
+              "type": "string"
+            },
+            "fcm_v1_service_account_json": {
+              "type": "string"
+            },
+            "fcm_sender_id": {
+              "type": "string"
+            },
+            "chrome_key": {
+              "type": "string"
+            },
+            "chrome_web_key": {
+              "type": "string"
+            },
+            "chrome_web_origin": {
+              "type": "string"
+            },
+            "chrome_web_gcm_sender_id": {
+              "type": "string"
+            },
+            "chrome_web_default_notification_icon": {
+              "type": "string"
+            },
+            "chrome_web_sub_domain": {
+              "type": "string"
+            },
+            "apns_env": {
+              "type": "string"
+            },
+            "apns_certificates": {
+              "type": "string"
+            },
+            "apns_p8": {
+              "type": "string"
+            },
+            "apns_team_id": {
+              "type": "string"
+            },
+            "apns_key_id": {
+              "type": "string"
+            },
+            "apns_bundle_id": {
+              "type": "string"
+            },
+            "safari_apns_certificate": {
+              "type": "string"
+            },
+            "safari_site_origin": {
+              "type": "string"
+            },
+            "safari_push_id": {
+              "type": "string"
+            },
+            "safari_icon_16_16": {
+              "type": "string"
+            },
+            "safari_icon_32_32": {
+              "type": "string"
+            },
+            "safari_icon_64_64": {
+              "type": "string"
+            },
+            "safari_icon_128_128": {
+              "type": "string"
+            },
+            "safari_icon_256_256": {
+              "type": "string"
+            },
+            "site_name": {
               "type": "string"
             }
           }
@@ -10075,6 +10205,81 @@
             "type": "string"
           },
           "organization_id": {
+            "type": "string"
+          },
+          "additional_data_is_root_payload": {
+            "type": "boolean"
+          },
+          "gcm_key": {
+            "type": "string"
+          },
+          "fcm_v1_service_account_json": {
+            "type": "string"
+          },
+          "fcm_sender_id": {
+            "type": "string"
+          },
+          "chrome_key": {
+            "type": "string"
+          },
+          "chrome_web_key": {
+            "type": "string"
+          },
+          "chrome_web_origin": {
+            "type": "string"
+          },
+          "chrome_web_gcm_sender_id": {
+            "type": "string"
+          },
+          "chrome_web_default_notification_icon": {
+            "type": "string"
+          },
+          "chrome_web_sub_domain": {
+            "type": "string"
+          },
+          "apns_env": {
+            "type": "string"
+          },
+          "apns_certificates": {
+            "type": "string"
+          },
+          "apns_p8": {
+            "type": "string"
+          },
+          "apns_team_id": {
+            "type": "string"
+          },
+          "apns_key_id": {
+            "type": "string"
+          },
+          "apns_bundle_id": {
+            "type": "string"
+          },
+          "safari_apns_certificate": {
+            "type": "string"
+          },
+          "safari_site_origin": {
+            "type": "string"
+          },
+          "safari_push_id": {
+            "type": "string"
+          },
+          "safari_icon_16_16": {
+            "type": "string"
+          },
+          "safari_icon_32_32": {
+            "type": "string"
+          },
+          "safari_icon_64_64": {
+            "type": "string"
+          },
+          "safari_icon_128_128": {
+            "type": "string"
+          },
+          "safari_icon_256_256": {
+            "type": "string"
+          },
+          "site_name": {
             "type": "string"
           }
         }

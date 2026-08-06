@@ -30,7 +30,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { Actor } from '@recued/contracts';
-import type { Collection } from '@recued/storage';
+import { isFieldQueryable, type Collection } from '@recued/storage';
 import {
   createFtsTable,
   indexRecord,
@@ -251,6 +251,24 @@ export const createUserMemoryStore = (
   const db = options.db;
   if (db) createFtsTable(db, USER_MEMORY_FTS_TABLE);
 
+  /** D-230 + D-231 made the orphan check O(total memories) matter.
+   *
+   *  ⛔ WHY THIS INDEX EXISTS NOW AND DID NOT BEFORE. `freeBlobIfOrphan` runs
+   *  on every delete/update that frees a blob, and it used to answer "is this
+   *  hash still referenced?" by `list()`-ing the WHOLE table and filtering in
+   *  JS. That was defensible while this store was small and unreachable from
+   *  recipes. Two changes on 2026-08-04 removed both premises: D-230 left
+   *  `user_memory` with NO quota (owner-authored knowledge is never pruned), and
+   *  D-231 made it recipe-reachable through `data.memory.*`. Measured on a
+   *  file-backed WAL db, one orphan check:
+   *      5k memories  3.41ms -> 0.006ms | 50k 40.6ms -> 0.008ms
+   *    500k memories  559.85ms -> 0.007ms  (76,000x, and FLAT)
+   *
+   *  ⚠ Feature-detected, so the in-memory collection that backs tests keeps
+   *  working through the `list()` fallback below. */
+  const queryable = isFieldQueryable(collection) ? collection : undefined;
+  queryable?.ensureFieldIndexes(['blob_hash']);
+
   /** Resolve a row's full body (inline OR the > 64 KB CAS blob). Shared by
    *  `get`, the FTS indexer, and the no-db fallback search — all three need the
    *  WHOLE body, not the 280-char preview. */
@@ -316,7 +334,13 @@ export const createUserMemoryStore = (
    *  unlinks. Best-effort — a failed unlink leaves a harmless orphan the store
    *  never re-reads (and the dedicated store keeps it off the shared sweep). */
   const freeBlobIfOrphan = async (hash: string, excludeId: string): Promise<void> => {
-    const rows = await collection.list();
+    // Bounded by rows SHARING the hash (normally 0 or 1), not by the store.
+    // The `excludeId` filter is kept on both paths: callers invoke this both
+    // before and after the owning row goes, so "any OTHER row references it"
+    // is the semantic, not "any row".
+    const rows = queryable
+      ? await queryable.queryByField({ equals: { blob_hash: hash } })
+      : await collection.list();
     const stillReferenced = rows.some(
       (r) => r.memory_id !== excludeId && r.blob_hash === hash,
     );

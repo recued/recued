@@ -155,6 +155,8 @@ export interface ComposeExecutionContextOptions {
     | 'clientTokensRef'
     | 'keys'
     | 'sharedStoreRef'
+    // D-231 — the owner's curated knowledge behind {{data.memory.*}}.
+    | 'userMemoryStore'
     | 'contactStoreRef'
     | 'crmRecordMirrorStoreRef'
     | 'annotationDeps'
@@ -613,6 +615,8 @@ export const composeExecutionContext = async (
     warehouseBus: app.warehouseBus,
     auditLog: storage.auditLog,
     sharedStore: app.sharedStoreRef,
+    // D-231 — `{{data.memory.*}}`; undefined on db-less paths.
+    userMemoryStore: app.userMemoryStore,
     db: storage.db,
     enrichmentStore: app.enrichmentStoreRef,
     commitStore: storage.commitStore,

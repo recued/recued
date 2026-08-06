@@ -234,7 +234,7 @@ export const sweepAwaitingCheckpoints = async (
         recipe_hash: anchor.recipe_hash,
         commit_status: 'awaiting_approval',
         duration_ms: anchor.duration_ms,
-        errors: anchor.errors,
+        errors: anchor.errors ?? [],
         config_snapshot: anchor.config_snapshot,
         trigger_url: anchor.trigger_url,
         trigger_source: anchor.trigger_source,

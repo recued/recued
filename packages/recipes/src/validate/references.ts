@@ -19,6 +19,8 @@ import {
   MEMORY_DATA_ALIAS_SUBNAMESPACE,
   MEMORY_DATA_SUBNAMESPACE,
   MEMORY_READ_PERMISSION,
+  AUDIT_READ_PERMISSION,
+  AUDIT_DATA_SUBNAMESPACE,
   CRM_ALIAS_VALUES,
   activeVendorAliasRegistry,
   isEnrichmentScopeSupported,
@@ -64,7 +66,7 @@ export const validateReferences = (
     : new Set<string>();
   let memoryRefSeen = false;
   let memoryRefSample = '';
-  let auditAliasSampleRef: string | null = null;
+  let auditRefSample: string | null = null;
 
   // `metadata.readme` is prose, not a resolved field. It is `RecipeMetadata`'s
   // "detail page explainer", rendered as markdown by the marketplace; no
@@ -168,13 +170,16 @@ export const validateReferences = (
           `{{data.${path}}} is not a recipe namespace — call the installed Records pack operation instead`);
         continue;
       }
+      // D-231 — two namespaces, two stores, two permissions. `data.memory.*`
+      // is the owner's curated knowledge (`user_memory`); `data.audit.*` is the
+      // run-provenance trail. Neither aliases the other any more, so each is
+      // tracked and gated on its own.
       if (isMemoryDataSubnamespace(sub)) {
-        if (!memoryRefSeen) {
+        if (sub === AUDIT_DATA_SUBNAMESPACE) {
+          if (auditRefSample === null) auditRefSample = `{{${ns}.${path}}}`;
+        } else if (!memoryRefSeen) {
           memoryRefSeen = true;
           memoryRefSample = `{{${ns}.${path}}}`;
-        }
-        if (sub === MEMORY_DATA_ALIAS_SUBNAMESPACE && auditAliasSampleRef === null) {
-          auditAliasSampleRef = `{{${ns}.${path}}}`;
         }
       }
       // Other data sub-namespaces are warehouse collections (mail,
@@ -303,31 +308,33 @@ export const validateReferences = (
     platformScopesRead.add(`connection.api.${aliased.vendor}.${aliased.entity}`);
   }
 
-  // D-120 Phase 4 — `read_memory` permission gate. The install dialog
-  // surfaces declared `requires` to the user as part of the staged-
-  // trust flow; default-deny means recipes that read memory without
-  // declaring the permission shouldn't reach the marketplace. Hard
+  // D-120 Phase 4 / D-231 — staged-trust permission gates. The install dialog
+  // surfaces declared `requires` to the owner, so a recipe reading either store
+  // without declaring the permission shouldn't reach the marketplace. Hard
   // error so authors notice immediately.
+  //
+  // ⛔ SEPARATE PERMISSIONS, because they are separate disclosures. Run history
+  // reveals the owner's automation activity; curated memory reveals their
+  // notes. The MCP door has gated them apart since D-198
+  // (`core.memory.audit.read` vs `core.memory.read`); the recipe layer now
+  // matches. A recipe wanting both declares both.
   if (memoryRefSeen && !requires.has(MEMORY_READ_PERMISSION)) {
     add(
       'error',
       'memory_read_permission_missing',
       'requires',
-      `recipe references ${memoryRefSample} (\`data.${MEMORY_DATA_SUBNAMESPACE}.*\` / \`data.${MEMORY_DATA_ALIAS_SUBNAMESPACE}.*\`) ` +
+      `recipe references ${memoryRefSample} (\`data.${MEMORY_DATA_SUBNAMESPACE}.*\`) ` +
         `but does not declare \`requires: ["${MEMORY_READ_PERMISSION}"]\` — add the permission so the install dialog can surface it for approval`,
     );
   }
 
-  // D-120 Phase 4 — soft-warn on `data.audit.*` references. The
-  // namespace stays for one release cycle as a deprecation alias for
-  // `data.memory.*`; emitting a warn (not error) lets the existing
-  // marketplace corpus migrate without blocking submissions.
-  if (auditAliasSampleRef !== null) {
+  if (auditRefSample !== null && !requires.has(AUDIT_READ_PERMISSION)) {
     add(
-      'warn',
-      'data_audit_deprecated',
-      '',
-      `${auditAliasSampleRef} uses the deprecated \`data.${MEMORY_DATA_ALIAS_SUBNAMESPACE}.*\` alias — rename to \`data.${MEMORY_DATA_SUBNAMESPACE}.*\` before the alias is retired in a future release`,
+      'error',
+      'audit_read_permission_missing',
+      'requires',
+      `recipe references ${auditRefSample} (\`data.${AUDIT_DATA_SUBNAMESPACE}.*\`) ` +
+        `but does not declare \`requires: ["${AUDIT_READ_PERMISSION}"]\` — run history is a distinct disclosure from curated memory, so it carries its own permission`,
     );
   }
 

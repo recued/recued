@@ -76,6 +76,13 @@ export interface StartPostHousekeepingTailOptions {
    *  so a staged release that reached a serving state commits. Best-effort
    *  (the thunk swallows its own errors); undefined on a delegated channel. */
   readonly runUpdateBootReconcile?: (() => Promise<void>) | undefined;
+  /** D-148 § A.5.6 — threaded to the DDNS poller so a lapsed subscription
+   *  records 'grace' through the state machine (never a direct store write —
+   *  `persist()` fires the cert stack's snapshot refresh). */
+  readonly applyLifecycle?: () => Pick<
+    import('../handle/index.js').HandleStateMachine,
+    'applyLifecycleUpdate'
+  > | undefined;
 }
 
 export const startPostHousekeepingTail = (
@@ -111,6 +118,7 @@ export const startPostHousekeepingTail = (
     backgroundServices: options.backgroundServices,
     cloudBaseUrl: options.cloudBaseUrl,
     getSigningIdentity: options.getSigningIdentity,
+    ...(options.applyLifecycle ? { applyLifecycle: options.applyLifecycle } : {}),
   });
 
   startHostnameReconciliationRunner({

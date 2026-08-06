@@ -78,6 +78,7 @@ import type { HousekeepingContext } from '../registry.js';
 import type { SourceRecord } from '../source-walkers.js';
 import type { HousekeepingEnrichmentProducer } from '../enrichment-producer.js';
 import { TASK_TABLE } from '../../storage/work-entity-store.js';
+import { listCollectionDataTables } from '../../collections/table.js';
 
 // ────────────────────────────────────────────────────────────────
 // Constants
@@ -153,12 +154,7 @@ export const countMailSiblingsInThread = (
   thread_id: string,
 ): number => {
   if (thread_id === '') return 0;
-  const tables = (ctx.db
-    .prepare(
-      `SELECT name FROM sqlite_master
-        WHERE type='table' AND name LIKE 'collection_mail_%'`,
-    )
-    .all() as Array<{ name: string }>).map((r) => r.name);
+  const tables = listCollectionDataTables(ctx.db, 'mail');
 
   let total = 0;
   for (const table of tables) {

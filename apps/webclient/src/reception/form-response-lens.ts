@@ -205,7 +205,9 @@ const renderPicker = (state: PickerState): string => {
           return `<li>
             <div><strong>${e(name)}</strong> <code>${e(match.entry.recipe_id)}</code></div>
             <span class="reception-responses-pill">${e(scope)}</span>
-            <button type="button" ${FR_LENS_ACTION_ATTR}="review"
+            <button type="button"
+              aria-label="${e(`Review and run ${name} (${match.entry.recipe_id})`)}"
+              ${FR_LENS_ACTION_ATTR}="review"
               ${FR_LENS_RECIPE_ATTR}="${e(match.entry.recipe_id)}">Review and run</button>
           </li>`;
         }).join('')}</ul>`}
@@ -288,21 +290,63 @@ const renderList = (
 `;
 
 export const RECEPTION_RESPONSES_STYLES = `
-[${FR_LENS_ROOT_ATTR}] { display: grid; gap: 14px; color: var(--fg); }
+[${FR_LENS_ROOT_ATTR}] {
+  box-sizing: border-box;
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  gap: 14px;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+[${FR_LENS_ROOT_ATTR}] *,
+[${FR_LENS_ROOT_ATTR}] *::before,
+[${FR_LENS_ROOT_ATTR}] *::after {
+  box-sizing: border-box;
+  min-width: 0;
+}
 [${FR_LENS_ROOT_ATTR}] h2 { font-size: 15px; font-weight: 680; margin: 0; }
 [${FR_LENS_ROOT_ATTR}] h3 { font-size: 13px; font-weight: 660; margin: 14px 0 6px; }
-.reception-responses-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--surface-sunk); color: var(--fg-muted); font-size: 11px; font-weight: 640; }
+[${FR_LENS_ROOT_ATTR}] [${FR_LENS_ACTION_ATTR}]:not([${FR_LENS_ACTION_ATTR}="open"]),
+[${FR_LENS_ROOT_ATTR}] .reception-responses-automation-actions a {
+  box-sizing: border-box;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+}
+[${FR_LENS_ROOT_ATTR}] [${FR_LENS_ACTION_ATTR}]:not([${FR_LENS_ACTION_ATTR}="open"]):hover,
+[${FR_LENS_ROOT_ATTR}] .reception-responses-automation-actions a:hover {
+  background: var(--surface-sunk);
+  text-decoration: none;
+}
+[${FR_LENS_ROOT_ATTR}] [${FR_LENS_ACTION_ATTR}="load-more"] { margin-top: 10px; }
+.reception-responses-pill { display: inline-block; max-width: 100%; flex: 0 0 auto; padding: 2px 8px; border-radius: 999px; background: var(--surface-sunk); color: var(--fg-muted); font-size: 11px; font-weight: 640; white-space: nowrap; }
 .reception-responses-list { display: grid; gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
 .reception-responses-list li { border: 1px solid var(--border); border-radius: 11px; background: var(--surface); }
-.reception-responses-list button { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; width: 100%; padding: 12px 14px; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.reception-responses-list button { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; width: 100%; max-width: 100%; padding: 12px 14px; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .reception-responses-list span { color: var(--fg-muted); font-size: 12px; }
-.reception-responses-header { display: flex; align-items: center; gap: 10px; }
+.reception-responses-header { display: flex; width: 100%; min-width: 0; max-width: 100%; align-items: center; flex-wrap: wrap; gap: 10px; }
+.reception-responses-header h2 { min-width: 0; max-width: 100%; flex: 1 1 180px; overflow-wrap: anywhere; }
 .reception-responses-meta, .reception-responses-fields { display: grid; gap: 8px; margin: 12px 0; }
 .reception-responses-meta dt, .reception-responses-fields dt { color: var(--fg-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
 .reception-responses-meta dd, .reception-responses-fields dd { margin: 2px 0 0; font-size: 13px; }
 .reception-responses-automation { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; padding: 12px 14px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface-sunk); }
 .reception-responses-automation span { display: block; color: var(--fg-muted); font-size: 12px; }
-.reception-responses-automation-actions { display: flex; gap: 8px; align-items: center; }
+.reception-responses-automation-actions { display: flex; max-width: 100%; flex-wrap: wrap; gap: 8px; align-items: center; }
 [${FR_LENS_ROOT_ATTR}] pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
 `;
 
@@ -696,10 +740,16 @@ export const mountReceptionFormResponseLens = (
   const onClick = (ev: Event): void => {
     const target = ev.target as HTMLElement | null;
     if (target === null || typeof target.getAttribute !== 'function') return;
-    const action = target.getAttribute(FR_LENS_ACTION_ATTR);
+    const actionTarget = target.getAttribute(FR_LENS_ACTION_ATTR) !== null
+      ? target
+      : typeof target.closest === 'function'
+        ? target.closest(`[${FR_LENS_ACTION_ATTR}]`) as HTMLElement | null
+        : null;
+    if (actionTarget === null) return;
+    const action = actionTarget.getAttribute(FR_LENS_ACTION_ATTR);
     if (action === null) return;
     if (action === 'open') {
-      const id = target.getAttribute(FR_LENS_RECIPE_ATTR);
+      const id = actionTarget.getAttribute(FR_LENS_RECIPE_ATTR);
       if (id !== null) void open(id, true);
       return;
     }
@@ -715,7 +765,7 @@ export const mountReceptionFormResponseLens = (
     if (action === 'load-more') return void loadMore();
     if (action === 'discover') return void discover();
     if (action === 'review') {
-      const recipeId = target.getAttribute(FR_LENS_RECIPE_ATTR);
+      const recipeId = actionTarget.getAttribute(FR_LENS_RECIPE_ATTR);
       if (recipeId !== null) review(recipeId);
     }
   };

@@ -66,6 +66,7 @@ import {
 } from './contract-grants-panel.js';
 import {
   mountPermissionsPanel,
+  PERMISSIONS_PANEL_STYLES,
   type PermissionsPanelMount,
 } from '../settings/permissions-panel.js';
 import type {
@@ -261,10 +262,32 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
 [${CONTRACTS_ROUTE_HOST_ATTR}] {
   /* Inherit the shell's light/dark tokens (index.html :root) instead of
      hard-pinning light values. */
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
   max-width: var(--wc-content-max, 1080px);
   margin: 0 auto;
   padding: 16px;
   color: var(--fg);
+}
+[${CONTRACTS_ROUTE_BODY_ATTR}],
+[${CONTRACTS_ROUTE_LIST_PANEL_ATTR}],
+[${CONTRACTS_ROUTE_LIST_ATTR}],
+[${CONTRACTS_ROUTE_DETAIL_ATTR}],
+[${CONTRACTS_ROUTE_TAB_BODY_ATTR}],
+[${CONTRACTS_ROUTE_CONNECT_HOST_ATTR}] {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+[${CONTRACTS_ROUTE_BODY_ATTR}] > *,
+[${CONTRACTS_ROUTE_LIST_PANEL_ATTR}] > *,
+[${CONTRACTS_ROUTE_DETAIL_ATTR}] > *,
+[${CONTRACTS_ROUTE_TAB_BODY_ATTR}] > *,
+[${CONTRACTS_ROUTE_CONNECT_HOST_ATTR}] > * {
+  min-width: 0;
+  max-width: 100%;
 }
 [${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-header {
   display: flex;
@@ -278,12 +301,23 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
   font-weight: 650;
 }
 [${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-link {
+  box-sizing: border-box;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px;
+  border-radius: 6px;
   font-size: 13px;
   color: var(--accent);
   text-decoration: none;
 }
 [${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-link:hover {
+  background: var(--accent-weak);
   text-decoration: underline;
+}
+[${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 [${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-section-copy {
   margin: 0;
@@ -331,9 +365,13 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
 }
 [${CONTRACTS_ROUTE_LOADING_ATTR}],
 [${CONTRACTS_ROUTE_ERROR_ATTR}] {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   font-size: 13px;
   color: var(--muted);
   padding: 10px 0;
+  overflow-wrap: anywhere;
 }
 [${CONTRACTS_ROUTE_ERROR_ATTR}] {
   color: var(--danger, #b3261e);
@@ -347,8 +385,16 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
   padding: 0;
   list-style: none;
 }
+[${CONTRACTS_ROUTE_LIST_ATTR}] > li {
+  min-width: 0;
+  max-width: 100%;
+}
 [${CONTRACTS_ROUTE_ROW_ATTR}] {
+  box-sizing: border-box;
   display: flex;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   align-items: center;
   gap: 10px;
   padding: 12px 14px;
@@ -358,17 +404,28 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
   text-decoration: none;
   color: var(--fg);
 }
+[${CONTRACTS_ROUTE_ROW_ATTR}] > * {
+  min-width: 0;
+  max-width: 100%;
+}
 [${CONTRACTS_ROUTE_ROW_ATTR}]:hover {
   border-color: var(--accent);
 }
 [${CONTRACTS_ROUTE_ROW_ATTR}] .contracts-row-name {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 180px;
   font-size: 14px;
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 [${CONTRACTS_ROUTE_ROW_ATTR}] .contracts-row-meta {
+  min-width: 0;
+  max-width: 100%;
   margin-left: auto;
   font-size: 12px;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 [${CONTRACTS_ROUTE_ANONYMOUS_ATTR}] {
   cursor: pointer;
@@ -427,6 +484,11 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
 }
 [${CONTRACTS_ROUTE_PAGE_PREVIOUS_ATTR}],
 [${CONTRACTS_ROUTE_PAGE_NEXT_ATTR}] {
+  box-sizing: border-box;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   appearance: none;
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -445,31 +507,56 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
 
 /* ── DETAIL ─────────────────────────────────────────────────────── */
 [${CONTRACTS_ROUTE_BACK_ATTR}] {
-  display: inline-block;
+  box-sizing: border-box;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
   margin-bottom: 12px;
+  padding: 4px;
+  border-radius: 6px;
   font-size: 13px;
   color: var(--accent);
   text-decoration: none;
 }
 [${CONTRACTS_ROUTE_BACK_ATTR}]:hover {
+  background: var(--accent-weak);
   text-decoration: underline;
 }
+[${CONTRACTS_ROUTE_BACK_ATTR}]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 [${CONTRACTS_ROUTE_DETAIL_ATTR}] .contracts-detail-head {
+  box-sizing: border-box;
   display: flex;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
   padding-bottom: 10px;
   border-bottom: 1px solid var(--border);
 }
+[${CONTRACTS_ROUTE_DETAIL_ATTR}] .contracts-detail-head > * {
+  min-width: 0;
+  max-width: 100%;
+}
 [${CONTRACTS_ROUTE_DETAIL_ATTR}] .contracts-detail-name {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 180px;
   margin: 0;
   font-size: 17px;
   font-weight: 650;
+  overflow-wrap: anywhere;
 }
 [${CONTRACTS_ROUTE_DETAIL_ATTR}] .contracts-detail-limits {
+  min-width: 0;
+  max-width: 100%;
   font-size: 12px;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 [${CONTRACTS_ROUTE_DETAIL_ATTR}] .contracts-detail-spacer {
   margin-left: auto;
@@ -481,6 +568,8 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
   border-bottom: 1px solid var(--border);
 }
 [${CONTRACTS_ROUTE_TAB_ATTR}] {
+  box-sizing: border-box;
+  min-height: 36px;
   appearance: none;
   background: none;
   border: none;
@@ -517,10 +606,25 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
   font-weight: 600;
 }
 [${CONTRACTS_ROUTE_DOOR_TOGGLE_ATTR}] {
+  box-sizing: border-box;
+  min-height: 36px;
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  padding: 4px 5px;
+  border-radius: 6px;
   cursor: pointer;
+}
+[${CONTRACTS_ROUTE_DOOR_TOGGLE_ATTR}]:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+[${CONTRACTS_ROUTE_DOOR_TOGGLE_ATTR}] input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: inherit;
 }
 [${CONTRACTS_ROUTE_DOOR_TOGGLE_ATTR}] input[disabled],
 [${CONTRACTS_ROUTE_DOOR_TOGGLE_ATTR}] input[aria-disabled="true"] {
@@ -533,12 +637,17 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
 }
 [${CONTRACTS_ROUTE_DETAIL_ATTR}] .contracts-revoke-wrap {
   display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
 }
 [${CONTRACTS_ROUTE_REVOKE_ATTR}],
 [${CONTRACTS_ROUTE_REVOKE_CONFIRM_ATTR}],
 [${CONTRACTS_ROUTE_REVOKE_CANCEL_ATTR}] {
+  box-sizing: border-box;
+  min-height: 36px;
   appearance: none;
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -564,15 +673,22 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
   color: var(--muted);
 }
 [${CONTRACTS_ROUTE_HEAD_ERROR_ATTR}] {
+  min-width: 0;
+  max-width: 100%;
   flex-basis: 100%;
   margin: 0;
   font-size: 12px;
   color: var(--danger, #b3261e);
+  overflow-wrap: anywhere;
 }
 
 /* ── New-contract flow ──────────────────────────────────────────── */
 [${CONTRACTS_ROUTE_HOST_ATTR}] .contracts-new-wrap {
+  box-sizing: border-box;
   display: grid;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   gap: 10px;
   margin: 4px 0 12px;
 }
@@ -592,20 +708,34 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 [${CONTRACTS_ROUTE_NEW_FORM_ATTR}] {
+  box-sizing: border-box;
   display: grid;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   gap: 10px;
   padding: 14px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface-subtle);
 }
+[${CONTRACTS_ROUTE_NEW_FORM_ATTR}] > * {
+  min-width: 0;
+  max-width: 100%;
+}
 [${CONTRACTS_ROUTE_NEW_FORM_ATTR}] .contracts-new-field {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   gap: 4px;
   font-size: 12px;
   color: var(--muted);
 }
 [${CONTRACTS_ROUTE_NEW_FORM_ATTR}] input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   font: inherit;
   font-size: 13px;
   padding: 7px 9px;
@@ -616,6 +746,8 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
 }
 [${CONTRACTS_ROUTE_NEW_FORM_ATTR}] .contracts-new-doors {
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   flex-wrap: wrap;
   gap: 8px;
 }
@@ -652,9 +784,12 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
   cursor: default;
 }
 [${CONTRACTS_ROUTE_NEW_ERROR_ATTR}] {
+  min-width: 0;
+  max-width: 100%;
   margin: 0;
   font-size: 12px;
   color: var(--danger, #b3261e);
+  overflow-wrap: anywhere;
 }
 [${CONTRACTS_ROUTE_NEW_ERROR_ATTR}]:empty {
   display: none;
@@ -663,7 +798,21 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
 /* ── Connect tab ────────────────────────────────────────────────── */
 [${CONTRACTS_ROUTE_CONNECT_HOST_ATTR}] {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
+}
+[${CONTRACTS_ROUTE_CONNECT_HOST_ATTR}] [data-recued-permissions-panel],
+[${CONTRACTS_ROUTE_CONNECT_HOST_ATTR}] [data-recued-permissions-panel] > * {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+[${CONTRACTS_ROUTE_CONNECT_HOST_ATTR}] [data-recued-permissions-panel] :is(
+  input, select, textarea
+) {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
 }
 [${CONTRACTS_ROUTE_CONNECT_HOST_ATTR}] .contracts-snippet-grid {
   display: grid;
@@ -723,6 +872,10 @@ export const CONTRACTS_ROUTE_STYLES = [
   SUGGESTED_RULES_PANEL_STYLES,
   CONTRACT_GRANTS_PANEL_STYLES,
   CONTRACTS_ROUTE_CHROME_STYLES,
+  // The Connect tab mounts the shared credential / override editor directly.
+  // Bundle its scoped CSS here so a cold Contracts deep link does not render
+  // the editor as native controls in one collapsed line.
+  PERMISSIONS_PANEL_STYLES,
 ].join('\n');
 
 // ════════════════════════════════════════════════════════════════
@@ -731,6 +884,18 @@ export const CONTRACTS_ROUTE_STYLES = [
 
 export const CONTRACTS_LIST_TABS = ['built-in', 'customer', 'others'] as const;
 export type ContractsListTab = (typeof CONTRACTS_LIST_TABS)[number];
+
+const CONTRACTS_LIST_PANEL_ID = 'recued-contracts-list-panel';
+const listTabId = (tab: ContractsListTab): string =>
+  `recued-contracts-list-tab-${tab}`;
+
+// Category navigation remounts this route through the shell hash. Carry only
+// the user-activated category across that short boundary so the replacement
+// tab owns focus; direct deep links still land without stealing it.
+const pendingListTabFocusByDocument = new WeakMap<
+  Document,
+  ContractsListTab
+>();
 
 export const isContractsListTab = (value: unknown): value is ContractsListTab =>
   typeof value === 'string'
@@ -1078,7 +1243,7 @@ const appendSnippet = (
 ): void => {
   const card = doc.createElement('section');
   card.setAttribute(CONTRACTS_ROUTE_SNIPPET_ATTR, snippet.id);
-  const label = makeEl(doc, 'h4', 'contracts-snippet-label', snippet.label);
+  const label = makeEl(doc, 'h3', 'contracts-snippet-label', snippet.label);
   card.appendChild(label);
   const pre = doc.createElement('pre');
   pre.textContent = snippet.body;
@@ -1186,6 +1351,13 @@ export const bootstrapContractsRoute = (
     };
   };
 
+  const hasContractsInFlightWork = (): boolean =>
+    routeOwnedMutationCount > 0
+    || suggestedRulesPanel?.hasInFlightWork() === true
+    || scopedGrantPanel?.hasInFlightWork() === true
+    || connectPanel?.hasInFlightWork() === true
+    || detailGrantPanel?.hasInFlightWork() === true;
+
   const clearBody = (): void => {
     if (suggestedRulesPanel !== null) {
       suggestedRulesPanel.dispose();
@@ -1272,11 +1444,16 @@ export const bootstrapContractsRoute = (
     );
     button.setAttribute('type', 'button');
     button.setAttribute(CONTRACTS_ROUTE_NEW_BUTTON_ATTR, '');
+    button.setAttribute('aria-expanded', 'false');
+    button.setAttribute('aria-controls', 'recued-contracts-new-contract-form');
     wrap.appendChild(button);
 
     const form = makeEl(doc, 'div', 'contracts-new-form');
     form.setAttribute(CONTRACTS_ROUTE_NEW_FORM_ATTR, '');
     form.setAttribute('data-kind', 'contract');
+    form.setAttribute('id', 'recued-contracts-new-contract-form');
+    form.setAttribute('role', 'group');
+    form.setAttribute('aria-label', 'New contract');
 
     const nameField = makeEl(doc, 'label', 'contracts-new-field');
     nameField.appendChild(makeEl(doc, 'span', undefined, 'Contract name'));
@@ -1336,6 +1513,8 @@ export const bootstrapContractsRoute = (
 
     const error = makeEl(doc, 'p');
     error.setAttribute(CONTRACTS_ROUTE_NEW_ERROR_ATTR, '');
+    error.setAttribute('role', 'alert');
+    error.setAttribute('aria-live', 'polite');
     form.appendChild(error);
 
     const submit = makeEl(doc, 'button', 'contracts-new-submit', 'Create contract');
@@ -1350,9 +1529,16 @@ export const bootstrapContractsRoute = (
     let submitting = false;
     let formOpen = false;
     button.addEventListener('click', () => {
+      if (submitting) return;
       formOpen = !formOpen;
-      if (formOpen) wrap.appendChild(form);
-      else form.remove();
+      button.setAttribute('aria-expanded', formOpen ? 'true' : 'false');
+      button.textContent = formOpen ? 'Cancel new contract' : '+ New contract';
+      if (formOpen) {
+        wrap.appendChild(form);
+        nameInput.focus({ preventScroll: true });
+      } else {
+        form.remove();
+      }
     });
 
     const doSubmit = async (): Promise<void> => {
@@ -1360,6 +1546,7 @@ export const bootstrapContractsRoute = (
       const name = nameInput.value.trim();
       if (name.length === 0) {
         setError('Enter a name for the contract.');
+        nameInput.focus({ preventScroll: true });
         return;
       }
       const doorTypes = AUTHORABLE_DOOR_TYPES.filter((dt) => doorDraft[dt]);
@@ -1369,6 +1556,7 @@ export const bootstrapContractsRoute = (
         cap = Number(capRaw);
         if (!Number.isInteger(cap) || cap <= 0) {
           setError('Usage cap must be a positive whole number.');
+          capInput.focus({ preventScroll: true });
           return;
         }
       }
@@ -1378,6 +1566,7 @@ export const bootstrapContractsRoute = (
         const parsed = Date.parse(expiryRaw);
         if (Number.isNaN(parsed)) {
           setError('Enter a valid expiry date.');
+          expiryInput.focus({ preventScroll: true });
           return;
         }
         expiry = parsed;
@@ -1385,8 +1574,10 @@ export const bootstrapContractsRoute = (
 
       setError(null);
       submitting = true;
-      submit.disabled = true;
       submit.textContent = 'Creating…';
+      submit.setAttribute('aria-disabled', 'true');
+      submit.setAttribute('aria-busy', 'true');
+      button.setAttribute('aria-disabled', 'true');
       const releaseOwnership = beginRouteOwnedMutation();
       try {
         const request: MintContractRequest = {
@@ -1405,9 +1596,12 @@ export const bootstrapContractsRoute = (
       } catch (err) {
         if (disposed) return;
         submitting = false;
-        submit.disabled = false;
         submit.textContent = 'Create contract';
+        submit.removeAttribute('aria-disabled');
+        submit.removeAttribute('aria-busy');
+        button.removeAttribute('aria-disabled');
         setError(errMessage(err));
+        submit.focus({ preventScroll: true });
       } finally {
         releaseOwnership();
       }
@@ -1437,20 +1631,66 @@ export const bootstrapContractsRoute = (
     const listTabs = makeEl(doc, 'nav', 'contracts-list-tabs');
     listTabs.setAttribute('role', 'tablist');
     listTabs.setAttribute('aria-label', 'Contract categories');
+    listTabs.setAttribute('aria-orientation', 'horizontal');
     const tabLabels: Record<ContractsListTab, string> = {
       'built-in': 'Built-in',
       customer: 'Customer',
       others: 'Others',
     };
+    const tabLinks: Array<{
+      id: ContractsListTab;
+      link: HTMLAnchorElement;
+    }> = [];
     for (const tab of CONTRACTS_LIST_TABS) {
       const link = doc.createElement('a');
       link.setAttribute(CONTRACTS_ROUTE_LIST_TAB_ATTR, '');
       link.setAttribute('data-tab', tab);
       link.setAttribute('role', 'tab');
+      link.setAttribute('id', listTabId(tab));
+      link.setAttribute('aria-controls', CONTRACTS_LIST_PANEL_ID);
       link.setAttribute('href', listTabRoute(tab));
       link.setAttribute('aria-selected', tab === activeListTab ? 'true' : 'false');
+      link.setAttribute('tabindex', tab === activeListTab ? '0' : '-1');
       if (tab === activeListTab) link.setAttribute('aria-current', 'page');
       link.textContent = tabLabels[tab];
+      link.addEventListener('click', (event) => {
+        const click = event as MouseEvent | undefined;
+        if (
+          tab === activeListTab
+          || hasContractsInFlightWork()
+          || (
+            click !== undefined
+            && (
+              click.button !== 0
+              || click.metaKey
+              || click.ctrlKey
+              || click.altKey
+              || click.shiftKey
+            )
+          )
+        ) {
+          return;
+        }
+        pendingListTabFocusByDocument.set(doc, tab);
+      });
+      link.addEventListener('keydown', (event) => {
+        const currentIndex = tabLinks.findIndex((entry) => entry.id === tab);
+        if (currentIndex < 0) return;
+        let nextIndex: number | null = null;
+        if (event.key === 'ArrowRight') {
+          nextIndex = (currentIndex + 1) % tabLinks.length;
+        } else if (event.key === 'ArrowLeft') {
+          nextIndex = (currentIndex - 1 + tabLinks.length) % tabLinks.length;
+        } else if (event.key === 'Home') {
+          nextIndex = 0;
+        } else if (event.key === 'End') {
+          nextIndex = tabLinks.length - 1;
+        }
+        if (nextIndex === null) return;
+        event.preventDefault();
+        tabLinks[nextIndex]!.link.click();
+      });
+      tabLinks.push({ id: tab, link });
       listTabs.appendChild(link);
     }
     body.appendChild(listTabs);
@@ -1499,6 +1739,9 @@ export const bootstrapContractsRoute = (
     const panel = makeEl(doc, 'section', 'contracts-inventory-section');
     panel.setAttribute(CONTRACTS_ROUTE_LIST_PANEL_ATTR, '');
     panel.setAttribute('data-tab', activeListTab);
+    panel.setAttribute('id', CONTRACTS_LIST_PANEL_ID);
+    panel.setAttribute('role', 'tabpanel');
+    panel.setAttribute('aria-labelledby', listTabId(activeListTab));
 
     const appendPager = (
       host: HTMLElement,
@@ -1510,9 +1753,15 @@ export const bootstrapContractsRoute = (
       const status = makeEl(doc, 'span');
       status.setAttribute(CONTRACTS_ROUTE_PAGE_STATUS_ATTR, '');
       const pageStart = previousListCursors.length * CONTRACTS_ROUTE_PAGE_SIZE;
-      status.textContent = totalContractsOnTab === 0
-        ? emptyStatus
-        : `Showing ${pageStart + 1}–${pageStart + rows.length} of ${totalContractsOnTab}${itemSuffix}`;
+      const pageEnd = pageStart + rows.length;
+      const hasPageNavigation = previousListCursors.length > 0
+        || nextListCursor !== null;
+      status.textContent = rows.length === 0
+        ? `${emptyStatus}${hasPageNavigation ? ' on this page' : ''}`
+        : `Showing ${pageStart + 1}–${pageEnd} of ${Math.max(
+            totalContractsOnTab,
+            pageEnd,
+          )}${itemSuffix}`;
       pager.appendChild(status);
 
       const previousOwnsLoad = listPageBusy && pendingPageFocus === 'previous';
@@ -1648,6 +1897,17 @@ export const bootstrapContractsRoute = (
     // Staged-trust proposals are user decisions, not contract inventory. Keep
     // their existing dormant-when-empty behavior after the active inventory.
     mountProposals();
+
+    const requestedTabFocus = pendingListTabFocusByDocument.get(doc);
+    if (requestedTabFocus !== undefined) {
+      pendingListTabFocusByDocument.delete(doc);
+    }
+    if (requestedTabFocus === activeListTab) {
+      tabLinks.find((entry) => entry.id === activeListTab)?.link.focus({
+        preventScroll: true,
+      });
+      return;
+    }
 
     const returnFocusId = pendingListFocusByDocument.get(doc);
     if (returnFocusId !== undefined) {
@@ -2412,13 +2672,6 @@ export const bootstrapContractsRoute = (
       if (!disposed) renderList();
     }
   };
-
-  const hasContractsInFlightWork = (): boolean =>
-    routeOwnedMutationCount > 0
-    || suggestedRulesPanel?.hasInFlightWork() === true
-    || scopedGrantPanel?.hasInFlightWork() === true
-    || connectPanel?.hasInFlightWork() === true
-    || detailGrantPanel?.hasInFlightWork() === true;
 
   return {
     getContracts: () =>

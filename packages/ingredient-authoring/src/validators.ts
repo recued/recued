@@ -1618,6 +1618,17 @@ const validateIngredients = (
  *  the ingredient's kind — connector binding for `cli`, api binding for
  *  `http` / `connection`), `risk` + `approval`, `out`, optional `args` +
  *  `required_scopes` + `pagination`. Returns the declared op-id set. */
+/** Every field `PackOperationRow` declares. Derived by hand from the interface rather than
+ *  from the type system, which cannot enumerate its own keys at runtime — so a field added to
+ *  the type without being added here is refused, which is the safe direction: a new key fails
+ *  loudly at authoring rather than shipping unnoticed. */
+const PACK_OPERATION_ROW_KEYS = new Set([
+  'op', 'ingredient', 'risk', 'approval', 'approval_reason', 'args', 'bind', 'description',
+  'required_scopes', 'operation_bound_webhook', 'idempotency', 'accepts_media', 'produces_media',
+  'request_schema', 'response_schema', 'editable_args', 'result_path', 'pagination',
+  'timeout_ms', 'cache_ttl_ms', 'tags',
+]);
+
 const validateOperations = (
   raw: Record<string, unknown>,
   ingredientSlugs: Set<string>,
@@ -1644,6 +1655,19 @@ const validateOperations = (
       return;
     }
     const row = entry;
+    // ⛔ AN UNDECLARED KEY IS AN ERROR, BECAUSE INERTNESS IS HOW ONE SURVIVES. Three keys were
+    // shipping that `PackOperationRow` does not admit and nothing objected: `result_shape` on
+    // 78 n8n operations (in no contract, read by no code, referenced by no recipe), the `out`
+    // field on 4 reception operations — RETIRED by D-185 "deleted outright, no shim", where the
+    // type was deleted and the data was not — and `tags` on 3,703, which turned out to be real
+    // and is now declared. A field that costs nothing to carry spreads from whatever pack a
+    // future author copies.
+    for (const key of Object.keys(row)) {
+      if (!PACK_OPERATION_ROW_KEYS.has(key)) {
+        add('error', 'composition_operation_unknown_key', `${path}.${key}`,
+          `operation declares '${key}', which is not a PackOperationRow field`);
+      }
+    }
     if (!isNonEmptyString(row.op)) {
       add('error', 'composition_operation_op_required', `${path}.op`, 'op must be a non-empty string');
     } else {
@@ -2120,11 +2144,36 @@ export const validatePackStructure = (pack: unknown): CompositionValidationIssue
       ) continue;
       for (const ingredient of content.composition.ingredients) {
         if (!isPlainObject(ingredient)) continue;
-        const http = ingredient.http;
-        if (isPlainObject(http) && typeof http.connection === 'string' && http.connection.length > 0) {
-          declared.add(http.connection);
+        // ⛔ ALL THREE SLOT KINDS, because that is what the rest of the system means by
+        // "declared". `connection-scope-coverage.ts` resolves an ingredient's slot as
+        // `http ?? connection ?? mcp`; reading only `http` here made this gate and the
+        // readiness surface disagree about the same word, and a pack binding through
+        // `connection.connection` could not describe its own connection form.
+        for (const kind of ['http', 'connection', 'mcp'] as const) {
+          const block = ingredient[kind];
+          if (isPlainObject(block) && typeof block.connection === 'string' && block.connection.length > 0) {
+            declared.add(block.connection);
+          }
         }
       }
+    }
+    // ⛔ A FRONT DOOR DECLARES ITS CONNECTION IN `connection_requirements`, NOT IN AN
+    // INGREDIENT. Forty packs in this corpus are front doors: no composition of their own,
+    // operations living in the leaves they depend on, and a `connection_requirements[]` that
+    // is precisely the pack saying "installing me needs a connection called X". That is the
+    // same claim an ingredient binding makes, and it is the screen a user actually lands on
+    // to install — so refusing the hint there sent them to a blank form at the one moment the
+    // pack could have filled it in.
+    //
+    // ⚠ Vendors are underscored (`adobe_sign`) and slots hyphenated (`adobe-sign`); both
+    // spellings are admitted rather than guessing which side is canonical.
+    for (const requirement of Array.isArray(pack.connection_requirements) ? pack.connection_requirements : []) {
+      if (!isPlainObject(requirement) || typeof requirement.vendor !== 'string') continue;
+      const vendor = requirement.vendor.trim();
+      if (vendor.length === 0) continue;
+      declared.add(vendor);
+      declared.add(vendor.replace(/_/gu, '-'));
+      declared.add(vendor.replace(/-/gu, '_'));
     }
     (pack as { connection_hints: unknown[] }).connection_hints.forEach((entry, idx) => {
       if (!isPlainObject(entry) || typeof entry.connection !== 'string') return;
@@ -2133,7 +2182,7 @@ export const validatePackStructure = (pack: unknown): CompositionValidationIssue
           severity: 'error',
           code: 'pack_connection_hint_connection_unused',
           path: `connection_hints[${idx}].connection`,
-          message: `connection hint targets '${entry.connection}', which no ingredient in this pack uses`
+          message: `connection hint targets '${entry.connection}', which this pack neither binds in an ingredient nor declares in connection_requirements`
             + (declared.size > 0 ? `; declared: ${[...declared].sort().join(', ')}` : ''),
         });
       }

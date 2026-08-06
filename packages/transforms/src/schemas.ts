@@ -550,7 +550,23 @@ export const getTransformSchema = (name: string): TransformSchema | undefined =>
  *  which only `date_diff` reads — every other field-carrying apply target
  *  (`compare` → left, `switch`/`math`-classic → input, `is_past` /
  *  `is_future` / `date_format` / `date_add` → date) silently computed on
- *  undefined and attached null / a wrong constant. */
+ *  undefined and attached null / a wrong constant.
+ *
+ *  ⚠ ADDING AN ENTRY HERE UNBLOCKS A TARGET — `apply_target_incompatible`
+ *  rejects any target whose schema lacks the injected param, so a transform
+ *  is unusable in apply mode until it appears here (or already reads
+ *  `input`). Two conditions have to hold before adding one:
+ *
+ *    1. The value param is unambiguous — the target takes exactly one
+ *       "the thing being operated on" parameter.
+ *    2. The target's schema does NOT declare `field`. Apply mode spreads
+ *       every non-(array|apply|output_field) key of the map step into the
+ *       target, so the step's `field` — which apply mode ALREADY uses to
+ *       extract the per-item value — would arrive as the target's `field`
+ *       too and mean something different. `sum`, `unique`, `pluck`,
+ *       `min_by`, `filter`, `sort` and friends all collide that way: you
+ *       cannot say "extract item.rows, then sum .amount inside it" with one
+ *       `field`. They stay blocked deliberately, not by oversight. */
 export const APPLY_VALUE_PARAM: Record<string, string> = {
   date_diff: 'from',
   date_add: 'date',
@@ -558,6 +574,12 @@ export const APPLY_VALUE_PARAM: Record<string, string> = {
   is_past: 'date',
   is_future: 'date',
   compare: 'left',
+  // {array, separator} — no `field`, so no collision. Turning a per-row array
+  // into a testable string is the common shape (`pubTypeList.pubType` →
+  // "Retracted Publication; Journal Article"), and `contains` is string-only,
+  // so without this there is no way to test membership of a nested array from
+  // a condition at all.
+  join: 'array',
 };
 
 /** Resolve the apply-mode value parameter for a transform name. */

@@ -81,6 +81,10 @@ describe('apply-mode value-param injection (the heal pins)', () => {
       is_past: 'date',
       is_future: 'date',
       compare: 'left',
+      // ADDING an entry unblocks a target, so it belongs in this pin too:
+      // `join` reads `array` and was receiving the item value as `input`,
+      // writing "" into every row until it was listed.
+      join: 'array',
     });
     for (const [target, param] of Object.entries(APPLY_VALUE_PARAM)) {
       expect(TRANSFORM_SCHEMAS[target], `schema for ${target}`).toBeDefined();
@@ -142,5 +146,70 @@ describe('expression-string format hints (Case 1 / Case 2.5)', () => {
       expression: '{{item.amount}} * 2',
     } as never, ctx) as number[];
     expect(second[0]).toBe(42);
+  });
+});
+
+/** `join` in apply mode, and the guard that makes the rest of the class loud.
+ *
+ *  `join` reads `p.array`; apply mode injected under `input`, so every row got
+ *  `""` — the same silent-param-mismatch shape the tests above pin, still live
+ *  in one target because the table listed only the six that had bitten. The
+ *  recipe validator refused it at authoring time (`apply_target_incompatible`),
+ *  so nothing shipped broken; the runtime simply had no matching defence.
+ */
+describe('apply-mode: join, and the incompatible-target guard', () => {
+  const rows = [
+    { tags: ['Retracted Publication', 'Journal Article'] },
+    { tags: ['Preprint'] },
+    { tags: [] },
+  ];
+
+  it('join receives the value as `array` and produces a joined string per row', () => {
+    const r = map({
+      array: rows, apply: 'join', field: 'tags', separator: '; ', output_field: 'label',
+    } as never, ctx) as { label: string }[];
+    expect(r.map((x) => x.label))
+      .toEqual(['Retracted Publication; Journal Article', 'Preprint', '']);
+  });
+
+  it('⛔ the empty-array row is the one that hides the bug', () => {
+    // The pre-fix behaviour was `""` for EVERY row. A fixture with only
+    // populated rows distinguishes the two; one with only empty rows does not.
+    const r = map({
+      array: [{ tags: [] }], apply: 'join', field: 'tags', separator: '; ', output_field: 'l',
+    } as never, ctx) as { l: string }[];
+    expect(r[0].l).toBe('');
+  });
+
+  it('the joined string is testable by `contains`, which is string-only', () => {
+    // The reason this target matters: a nested array cannot be membership-tested
+    // from a recipe condition at all until it is a string.
+    const r = map({
+      array: rows, apply: 'join', field: 'tags', separator: '; ', output_field: 'label',
+    } as never, ctx) as { label: string }[];
+    expect(r[0].label.includes('Retracted')).toBe(true);
+    expect(r[1].label.includes('Retracted')).toBe(false);
+  });
+
+  it('⛔ a target that cannot receive the value THROWS rather than computing on undefined', () => {
+    // `sum` reads `array` + `field`, and apply mode already owns `field` — the
+    // collision is why it is not in the table. Before the guard this returned
+    // 0 for every row.
+    expect(() => map({
+      array: rows, apply: 'sum', field: 'tags', output_field: 'n',
+    } as never, ctx)).toThrow(/has no "input" parameter/u);
+  });
+
+  it('the throw names the target and the parameter it would have needed', () => {
+    expect(() => map({
+      array: rows, apply: 'template', field: 'tags', output_field: 'n',
+    } as never, ctx)).toThrow(/"template" has no "input" parameter/u);
+  });
+
+  it('the default `input` convention still resolves for an unlisted target', () => {
+    const r = map({
+      array: rows, apply: 'count', field: 'tags', output_field: 'n',
+    } as never, ctx) as { n: number }[];
+    expect(r.map((x) => x.n)).toEqual([2, 1, 0]);
   });
 });

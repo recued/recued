@@ -61,7 +61,25 @@ import { RecuedAcmeClient } from '@recued/server-network';
 import { makeBoundedOriginApiFetch } from '../../bounded-origin-http-fetcher.js';
 import type { AcmeCertIssuer } from './acme-domain-renewer.js';
 
-const ACME_CONTROL_TIMEOUT_MS = 30_000;
+/** ⛔ WAS 30s, WHICH MADE SERVER-SIDE ISSUANCE IMPOSSIBLE (measured 2026-08-05).
+ *
+ *  `/v1/acme/issue-cert` is a BLOCKING call — it returns the finished
+ *  `cert_pem`, so the request is held open for the entire ACME flow: DNS-01
+ *  TXT write → propagation wait (~30s by itself) → CA validation → finalize →
+ *  download. Real issuances measured on this stack took **49s** (LE staging)
+ *  and **85s** (production ZeroSSL), so a 30s bound aborted every one of them
+ *  before the CA had even validated. A live drive hit it on the first attempt;
+ *  it had never been observed because nothing drove the server-initiated path
+ *  end to end, and the `AbortError` was swallowed into a bare
+ *  `helper_unavailable` with no reason attached.
+ *
+ *  The name was the tell: `CONTROL` timeout, sized for a control-plane call,
+ *  applied to the one long-running data-plane call in the module.
+ *
+ *  240s leaves headroom above the observed 85s for a slower CA and for the
+ *  multi-CA failover cascade, which can spend a full attempt on CA #1 before
+ *  succeeding on CA #2 inside the same request. */
+export const ACME_ISSUANCE_TIMEOUT_MS = 240_000;
 const ACME_RESPONSE_MAX_BYTES = 1024 * 1024;
 
 /** Snapshot of the Pro subscription state — the bearer token the
@@ -150,7 +168,7 @@ export const createRecuedAcmeClientFromRefs = (
 ): AcmeCertIssuer => {
   const boundedFetch = makeBoundedOriginApiFetch({
     ...(options.fetch ? { fetchImpl: options.fetch } : {}),
-    timeoutMs: ACME_CONTROL_TIMEOUT_MS,
+    timeoutMs: ACME_ISSUANCE_TIMEOUT_MS,
     maxResponseBytes: ACME_RESPONSE_MAX_BYTES,
     // Issuance is a credentialed write to one canonical cloud endpoint. Do not
     // replay the CSR or bearer through a redirect, even on the same origin.

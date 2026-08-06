@@ -14,6 +14,7 @@
 
 import type { AdapterKey, LLMProvider, LLMSlot } from '../types.js';
 import { LLMError } from '../types.js';
+import { joinApiBase } from '../base-url.js';
 import {
   LLMProviderResponseTooLargeError,
   readBoundedProviderJson,
@@ -149,7 +150,7 @@ export const createOpenAITranscriptionAdapter = (
 ): TranscriptionAdapter => ({
   provider,
   async transcribe(slot, request, options) {
-    const baseUrl = (slot.base_url ?? DEFAULT_OPENAI_BASE_URL).replace(/\/+$/, '');
+    const baseUrl = joinApiBase(slot.base_url ?? DEFAULT_OPENAI_BASE_URL, 'v1');
     const url = `${baseUrl}/v1/audio/transcriptions`;
     const form = new FormData();
     form.append('model', options.model);
@@ -182,7 +183,7 @@ export const createGoogleTranscriptionAdapter = (
 ): TranscriptionAdapter => ({
   provider: 'google',
   async transcribe(slot, request, options) {
-    const baseUrl = (slot.base_url ?? DEFAULT_GOOGLE_BASE_URL).replace(/\/+$/, '');
+    const baseUrl = joinApiBase(slot.base_url ?? DEFAULT_GOOGLE_BASE_URL, GOOGLE_API_VERSION);
     const url = `${baseUrl}/${GOOGLE_API_VERSION}/models/${encodeURIComponent(options.model)}:generateContent`;
     const body = {
       contents: [

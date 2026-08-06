@@ -85,15 +85,24 @@ export interface AuditEntry {
    *  copy it into every retained audit row). Same verbatim-capture
    *  sensitivity note as `config_snapshot`. */
   context_snapshot?: Record<string, unknown>;
-  errors: RecipeError[];
+  /** ⚠ OPTIONAL SINCE 2026-08-05 — the write path omits it when empty, which
+   *  it was on 8/8 measured rows (12 B/row of key name for "no errors"). An
+   *  absent `errors` and `errors: []` mean the same thing; rows written before
+   *  the change still carry the empty array, so every reader must coalesce. */
+  errors?: RecipeError[];
   /** Post-execution observability degradation. The run may have
    *  succeeded while a follow-on audit/provenance write failed, so this
    *  marker lets memory/timeline/Runs render the incomplete record. */
   degraded?: RunDegradation[];
   /** Optional trigger info for context recipes — what page the recipe
    *  ran on, so the user can review "which recipes ran on which pages".
-   *  May be omitted for scheduled/manual runs. */
-  trigger_url: string | null;
+   *  May be omitted for scheduled/manual runs.
+   *
+   *  ⚠ OPTIONAL SINCE 2026-08-05, and rows written before then still carry an
+   *  explicit `null`. Readers must treat absent and `null` identically — the
+   *  write path now OMITS the key when it would be `null`, because measured on
+   *  real rows it was `null` on 8/8 and cost 19 B/row of pure key name. */
+  trigger_url?: string | null;
   /** How the execution was triggered. Used to filter audit entries by
    *  source (manual, auto_run, scheduled, server_command). */
   trigger_source: string | null;
@@ -1228,11 +1237,34 @@ export const createAuditLogStore = (
       // override the entry-level default (incl. forcing reserve=false).
       const reserve =
         options && hasOwn(options, 'reserve') ? options.reserve : entry.reserve;
-      const stored: AuditEntry =
+      const base: AuditEntry =
         reserve === undefined ? entry : { ...entry, reserve };
+      // ⛔ OMIT THE TWO FIELDS THAT ARE EMPTY ON ESSENTIALLY EVERY ROW. Measured
+      // on real runs: `trigger_url` was `null` on 8/8 (19 B/row) and `errors`
+      // was `[]` on 8/8 (12 B/row) — 4.4% of the entry, spent entirely on key
+      // names to say "nothing here". Absent and empty are the same fact, and
+      // both fields are now optional with every reader coalescing.
+      //
+      // ⚠ NOTHING ELSE IS STRIPPED. `config_snapshot: {}`, `commit_status` and
+      // the rest stay required, so a generic "drop all empties" pass would
+      // write rows that violate their own declared type. The strip is a closed
+      // list for exactly that reason.
+      //
+      // ⚠ `false` and `0` are NOT empty. Only a null `trigger_url` and a
+      // zero-length `errors` qualify; a `trigger_url: ''` would be a real (if
+      // odd) value and is kept.
+      const stored: AuditEntry = { ...base };
+      if (stored.trigger_url === null || stored.trigger_url === undefined) {
+        delete stored.trigger_url;
+      }
+      if (stored.errors !== undefined && stored.errors.length === 0) {
+        delete stored.errors;
+      }
       const prev = await backing.get(entry.run_id);
       const prevBytes = prev ? entrySize(prev) : 0;
       await backing.set(entry.run_id, stored);
+      // ⚠ Sized on the STRIPPED object — the gate and the trigger-maintained
+      // counter must both agree with what actually landed on disk.
       reportDelta(entrySize(stored) - prevBytes);
       // Non-blocking auto-trim — don't block the recipe run on cleanup
       autoTrim().catch(() => {});

@@ -25,6 +25,7 @@ import type {
   WebhookIngressBindingSelection,
   WebhookIngressView,
 } from '@recued/contracts';
+import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
 
 import { serializeShellRoute } from '../../shell/route.js';
 import { humanizeRpcError } from '../../shell/rpc-error-copy.js';
@@ -194,6 +195,18 @@ const MOUNT_STYLES = `
 [${FORM_RESPONSE_WORKFLOW_TEMPLATE_ATTR}] code { overflow: hidden; text-overflow: ellipsis; }
 [${FORM_RESPONSE_WORKFLOW_TEMPLATE_ATTR}] code { color: var(--fg-muted); font-size: 12px; }
 [${FORM_RESPONSE_WORKFLOW_TEMPLATE_USE_ATTR}] { grid-column: 2; grid-row: 1 / span 2; }
+@media (max-width: 640px) {
+  [${FORM_RESPONSE_WORKFLOW_TEMPLATE_ATTR}] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  [${FORM_RESPONSE_WORKFLOW_TEMPLATE_USE_ATTR}] {
+    grid-column: 1;
+    grid-row: auto;
+    width: 100%;
+    margin-top: 6px;
+  }
+  [${FORM_RESPONSE_AUTOMATION_CREATE_ATTR}] { width: 100%; }
+}
 `;
 
 const injectStyles = (doc: Document): void => {
@@ -203,7 +216,10 @@ const injectStyles = (doc: Document): void => {
   ) {
     const style = doc.createElement('style');
     style.setAttribute(MOUNT_STYLES_MARKER, '');
-    style.textContent = MOUNT_STYLES;
+    // Discovery and loader failures render before either full editor has a
+    // chance to inject its own route bundle. Ship the shared button primitives
+    // here so a cold deep link never falls back to native browser controls.
+    style.textContent = [PRIMITIVE_STYLES, MOUNT_STYLES].join('\n');
     doc.head.appendChild(style);
   }
 };
@@ -469,6 +485,20 @@ export const mountFormResponseRecipeSeedRoute = (
   let disposed = false;
   let editor: RecipeEditorRoute | undefined;
 
+  /** Discovery replaces an asynchronous loading shell. Own focus only while
+   *  this route still owns the keyboard; a person who moved into persistent
+   *  Kitchen chrome during the read must not be pulled back. */
+  const ownsTransitionFocus = (): boolean => {
+    const active = doc.activeElement as HTMLElement | null | undefined;
+    const body = (doc as Partial<Pick<Document, 'body'>>).body;
+    if (active === null || active === undefined || active === body) return true;
+    try {
+      return host.contains(active);
+    } catch {
+      return false;
+    }
+  };
+
   const renderDraftFailure = (error: unknown): void => {
     clearChildren(host);
     const line = doc.createElement('p');
@@ -523,6 +553,7 @@ export const mountFormResponseRecipeSeedRoute = (
     matches: ReadonlyArray<FormResponseAutomationMatch>,
     templates: ReadonlyArray<FormResponseWorkflowTemplateMatch>,
   ): void => {
+    const focusHeading = ownsTransitionFocus();
     clearChildren(host);
     const panel = doc.createElement('div');
     panel.setAttribute(FORM_RESPONSE_AUTOMATION_DISCOVERY_ATTR, '');
@@ -533,6 +564,7 @@ export const mountFormResponseRecipeSeedRoute = (
     panel.appendChild(eyebrow);
 
     const heading = doc.createElement('h1');
+    heading.tabIndex = -1;
     heading.textContent = 'Automations for this form';
     panel.appendChild(heading);
 
@@ -590,9 +622,10 @@ export const mountFormResponseRecipeSeedRoute = (
     for (const template of templates) {
       const row = doc.createElement('div');
       row.setAttribute(FORM_RESPONSE_WORKFLOW_TEMPLATE_ATTR, template.entry.recipe_id);
-      const name = doc.createElement('strong');
-      name.textContent = template.entry.recipe.metadata.name
+      const templateName = template.entry.recipe.metadata.name
         || template.entry.recipe_id;
+      const name = doc.createElement('strong');
+      name.textContent = templateName;
       row.appendChild(name);
       const bundle = doc.createElement('code');
       bundle.textContent = template.bundle_key;
@@ -601,6 +634,10 @@ export const mountFormResponseRecipeSeedRoute = (
       use.type = 'button';
       use.className = 'rx-btn rx-btn-primary rx-btn-sm';
       use.setAttribute(FORM_RESPONSE_WORKFLOW_TEMPLATE_USE_ATTR, template.entry.recipe_id);
+      use.setAttribute(
+        'aria-label',
+        `Use installed workflow template ${templateName} (${template.entry.recipe_id})`,
+      );
       use.textContent = 'Use installed workflow template';
       use.addEventListener('click', () => mountFreshDraft(template.entry));
       row.appendChild(use);
@@ -611,15 +648,20 @@ export const mountFormResponseRecipeSeedRoute = (
       matches.length > 0 ? 'Create another automation' : 'Start blank automation',
     ));
     host.appendChild(panel);
+    if (focusHeading) heading.focus?.({ preventScroll: true });
   };
 
   const renderDiscoveryFailure = (error: unknown): void => {
+    const focusRecovery = ownsTransitionFocus();
     clearChildren(host);
     const line = doc.createElement('p');
     line.setAttribute(MOUNT_RECIPE_EDITOR_STATUS_ATTR, 'error');
+    line.setAttribute('role', 'alert');
     line.textContent = `Couldn’t check existing automations: ${humanizeRpcError(error)}`;
     host.appendChild(line);
-    host.appendChild(makeCreateButton('Create a new automation anyway'));
+    const recovery = makeCreateButton('Create a new automation anyway');
+    host.appendChild(recovery);
+    if (focusRecovery) recovery.focus?.({ preventScroll: true });
   };
 
   const loading = doc.createElement('p');

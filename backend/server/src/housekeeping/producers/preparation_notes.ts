@@ -57,6 +57,7 @@ import {
 } from '../llm-result-cache-store.js';
 import { canonicalOne, collectAddresses } from './_email-addresses.js';
 import { truncateForLlm } from './_mail-body.js';
+import { listCollectionDataTables } from '../../collections/table.js';
 
 /** D-136 P3 — producer-version hash. */
 const baseProducerVersionHash = computeProducerVersionHash({
@@ -205,12 +206,7 @@ const findRecentMailForParticipants = async (
   now: number,
 ): Promise<MailSnippet[]> => {
   if (participants.length === 0 || !ctx.blobs) return [];
-  const tables = ctx.db
-    .prepare(
-      `SELECT name FROM sqlite_master
-        WHERE type='table' AND name LIKE 'collection_mail_%'`,
-    )
-    .all() as Array<{ name: string }>;
+  const tables = listCollectionDataTables(ctx.db, 'mail');
   const earliest = now - MAIL_LOOKBACK_MS;
   const snippets: MailSnippet[] = [];
   for (const participant of participants) {
@@ -220,7 +216,7 @@ const findRecentMailForParticipants = async (
       body_inline: string | null;
       blob_hash: string | null;
     }> = [];
-    for (const { name: table } of tables) {
+    for (const table of tables) {
       const rows = ctx.db
         .prepare(
           `SELECT received_at, hot_fields, body_inline, blob_hash FROM "${table}"

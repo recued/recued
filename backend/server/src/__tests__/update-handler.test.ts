@@ -123,7 +123,12 @@ describe('makeUpdateHandlers', () => {
     const slice = makeUpdateHandlers(handlerDeps());
     if (!slice) throw new Error('expected slice');
     const res = (await call(slice, 'update.mode', undefined, REG)) as { mode: string; source: string };
-    expect(res).toMatchObject({ mode: 'auto', source: 'default' });
+    // `stubModeDeps` installs as `binary`, and D-178 moved every channel except
+    // `docker-thin` to `notify` — a binary install stages a new server and runs
+    // migrations against the owner's warehouse, so it asks rather than decides.
+    // This asserted `auto`, which was the pre-D-178 default; the sibling
+    // `update-mode-store.test.ts` was re-pinned at the time and this was missed.
+    expect(res).toMatchObject({ mode: 'notify', source: 'default' });
   });
 
   it('update.set_mode persists a valid override', async () => {

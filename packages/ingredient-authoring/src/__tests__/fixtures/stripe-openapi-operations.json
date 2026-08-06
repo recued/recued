@@ -30,7 +30,7 @@
     "compatibility_operation_count": 36,
     "root_feature_operation_count": 60,
     "root_operation_count": 96,
-    "root_composition_bytes": 239567,
+    "root_composition_bytes": 240293,
     "leaf_operation_count": 514,
     "official_method_counts": {
       "DELETE": 34,
@@ -154,7 +154,7 @@
       "stripe-v2-core": 32
     },
     "composition_bytes": {
-      "stripe": 239567,
+      "stripe": 240293,
       "stripe-payments-checkout": 102252,
       "stripe-billing-invoices": 116521,
       "stripe-subscriptions-catalog": 114898,
@@ -192,10 +192,9 @@
       "never": 269
     },
     "idempotency_counts": {
-      "idempotent": 331,
+      "idempotent": 340,
       "non_idempotent": 1,
-      "safe": 246,
-      "unspecified": 32
+      "safe": 269
     },
     "pagination": {
       "automatic_operation_count": 104,
@@ -348,8 +347,8 @@
       "compatibility_api_version_posture": "The 36 established operations retain their existing account-version behavior as part of the byte-for-byte compatibility contract; all 574 new operations pin the audited schema version explicitly."
     },
     "compatibility": {
-      "operation_sha256": "eb6a09c8c37e25c091b86c5d8d7838afe4d0406cdf04ef628049ca9a554d87e7",
-      "hardened_operation_sha256": "0778b2a7b075d6a9517fa4e77fd32a040c1c56e0dc00ae62d3cec851fd7042b0",
+      "operation_sha256": "1f3a2693d7b1d26a429ede6a096a7e8f3a51d44c321d6d364f84d014a27404d8",
+      "hardened_operation_sha256": "695f1ca8a2e41d0ac5f982c77b5fa3f992a3b88a05b444b6338828070275c1de",
       "entities_sha256": "3faaecb59e6c07deca09ab404a5cbf20049973cdd51e796246ff1c9205e871ad",
       "operation_ids": [
         "balance.read",
@@ -14793,7 +14792,7 @@
       "secret_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [],
       "request_media": [
         "application/x-www-form-urlencoded"
@@ -14820,7 +14819,7 @@
       "secret_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "query.currency",
         "query.type",
@@ -14873,7 +14872,7 @@
       "secret_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "balance_transaction_id"
       ],
@@ -14915,7 +14914,7 @@
       "secret_response_fields_sha256": "7d0c945135183d0f723beb8240c1f27732d590e208a8d383da78fd752459d3f7",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [],
       "request_media": [
         "application/x-www-form-urlencoded"
@@ -14976,7 +14975,7 @@
       "secret_response_fields_sha256": "e65690b3466cb17014d72ae54e6a0367bbab94942acc2f9b929af68e95010395",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "payment_id"
       ],
@@ -15110,7 +15109,7 @@
       "secret_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "query.charge",
         "query.payment_intent"
@@ -15161,7 +15160,7 @@
       "secret_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "refund_id"
       ],
@@ -15219,7 +15218,7 @@
       "secret_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "destructive",
       "approval": "always",
-      "idempotency": null,
+      "idempotency": "idempotent",
       "arg_keys": [
         "body.payment_intent",
         "body.amount",
@@ -15263,7 +15262,7 @@
       "secret_response_fields_sha256": "579d1a640d1a1fe6343b2abcf326e0c65810c22c6f0a0c136ee34cf2bc9f88ce",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [],
       "request_media": [
         "application/x-www-form-urlencoded"
@@ -15324,7 +15323,7 @@
       "secret_response_fields_sha256": "8bdaab3244ad70c067fe830b08346823ef60414aae74606a57d6397746f10ac2",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "invoice_id"
       ],
@@ -15366,7 +15365,7 @@
       "secret_response_fields_sha256": "8bdaab3244ad70c067fe830b08346823ef60414aae74606a57d6397746f10ac2",
       "risk": "write",
       "approval": "ask",
-      "idempotency": null,
+      "idempotency": "idempotent",
       "arg_keys": [
         "body.customer",
         "body.description",
@@ -15410,7 +15409,7 @@
       "secret_response_fields_sha256": "8bdaab3244ad70c067fe830b08346823ef60414aae74606a57d6397746f10ac2",
       "risk": "write",
       "approval": "ask",
-      "idempotency": null,
+      "idempotency": "idempotent",
       "arg_keys": [
         "invoice_id"
       ],
@@ -15452,7 +15451,7 @@
       "secret_response_fields_sha256": "8bdaab3244ad70c067fe830b08346823ef60414aae74606a57d6397746f10ac2",
       "risk": "destructive",
       "approval": "always",
-      "idempotency": null,
+      "idempotency": "idempotent",
       "arg_keys": [
         "invoice_id"
       ],
@@ -15481,7 +15480,7 @@
       "secret_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "query.customer",
         "query.invoice",
@@ -15533,7 +15532,7 @@
       "secret_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "invoice_item_id"
       ],
@@ -15562,7 +15561,7 @@
       "secret_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "write",
       "approval": "ask",
-      "idempotency": null,
+      "idempotency": "idempotent",
       "arg_keys": [
         "body.customer",
         "body.invoice",
@@ -15609,7 +15608,7 @@
       "secret_response_fields_sha256": "8bdaab3244ad70c067fe830b08346823ef60414aae74606a57d6397746f10ac2",
       "risk": "write",
       "approval": "ask",
-      "idempotency": null,
+      "idempotency": "idempotent",
       "arg_keys": [
         "invoice_id",
         "body.auto_advance"
@@ -15650,7 +15649,7 @@
       "secret_response_fields_sha256": "79f2c476e08073f9feecbc3cc04e26fc15669cb9460e0e3dd2e3b28053f846a3",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [],
       "request_media": [
         "application/x-www-form-urlencoded"
@@ -15709,7 +15708,7 @@
       "secret_response_fields_sha256": "b556e42d434b48c9803494f4f04391a3fae37481fc88fa42c1836e335200e198",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "customer_id"
       ],
@@ -15749,7 +15748,7 @@
       "secret_response_fields_sha256": "b556e42d434b48c9803494f4f04391a3fae37481fc88fa42c1836e335200e198",
       "risk": "write",
       "approval": "ask",
-      "idempotency": null,
+      "idempotency": "idempotent",
       "arg_keys": [
         "customer_id",
         "body.email",
@@ -15780,7 +15779,7 @@
       "secret_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "query.active"
       ],
@@ -15830,7 +15829,7 @@
       "secret_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "product_id"
       ],
@@ -15859,7 +15858,7 @@
       "secret_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "query.product",
         "query.active",
@@ -15912,7 +15911,7 @@
       "secret_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "price_id"
       ],
@@ -15941,7 +15940,7 @@
       "secret_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [],
       "request_media": [
         "application/x-www-form-urlencoded"
@@ -15989,7 +15988,7 @@
       "secret_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "query.customer"
       ],
@@ -16039,7 +16038,7 @@
       "secret_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "query.customer",
         "query.status",
@@ -16092,7 +16091,7 @@
       "secret_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "subscription_id"
       ],
@@ -16121,7 +16120,7 @@
       "secret_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "destructive",
       "approval": "always",
-      "idempotency": null,
+      "idempotency": "idempotent",
       "arg_keys": [
         "subscription_id"
       ],
@@ -16150,7 +16149,7 @@
       "secret_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "query.status",
         "query.destination"
@@ -16201,7 +16200,7 @@
       "secret_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "payout_id"
       ],
@@ -16230,7 +16229,7 @@
       "secret_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "destructive",
       "approval": "always",
-      "idempotency": null,
+      "idempotency": "idempotent",
       "arg_keys": [
         "body.amount",
         "body.currency"

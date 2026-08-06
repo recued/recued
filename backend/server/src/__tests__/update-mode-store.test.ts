@@ -7,8 +7,12 @@ import {
 } from '../update/update-mode-store.js';
 
 describe('channelDefaultMode', () => {
-  it('auto on self-updating channels, notify on delegated', () => {
-    expect(channelDefaultMode('binary')).toBe('auto');
+  it('⛔ only docker-thin auto-applies by default — a binary install must be asked', () => {
+    // `binary` is the owner's own machine with their warehouse on it, and an
+    // apply runs migrations against that on the next boot. It defaults to
+    // `notify` so the update card appears and the owner picks the moment.
+    // docker-thin swaps its own image and its operator chose that.
+    expect(channelDefaultMode('binary')).toBe('notify');
     expect(channelDefaultMode('docker-thin')).toBe('auto');
     expect(channelDefaultMode('docker-baked')).toBe('notify');
     expect(channelDefaultMode('source')).toBe('notify');
@@ -28,7 +32,7 @@ describe('createUpdateModeStore', () => {
 describe('resolveUpdateMode', () => {
   it('env wins and locks', () => {
     const r = resolveUpdateMode({ channel: 'binary', userMode: 'off', envMode: 'notify' });
-    expect(r).toMatchObject({ mode: 'notify', source: 'env', env_locked: true, channel_default: 'auto' });
+    expect(r).toMatchObject({ mode: 'notify', source: 'env', env_locked: true, channel_default: 'notify' });
   });
   it('user override beats channel default', () => {
     const r = resolveUpdateMode({ channel: 'binary', userMode: 'off' });

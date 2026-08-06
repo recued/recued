@@ -387,7 +387,7 @@ const renderStatusHeader = (
     <header class="reception-status-header">
       <div class="reception-status-line">
         ${statusDot(serving ? 'ok' : 'off')}
-        <h2 class="reception-status-title">Reception</h2>
+        <h2 class="reception-status-title">Endpoints</h2>
         ${badge({ label, tone: serving ? 'ok' : 'off' })}
         ${counts}
         <span class="reception-status-spacer"></span>
@@ -1033,7 +1033,7 @@ export const renderReceptionPage = (
   } else {
     body = panel({
       tone: 'info',
-      title: 'Reception',
+      title: 'Endpoint inventory',
       body: `
         <p class="reception-cta-body">
           Load the Reception page to manage your public-facing endpoints.

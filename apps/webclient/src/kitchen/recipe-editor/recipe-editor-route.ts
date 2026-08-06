@@ -474,6 +474,7 @@ export const RECIPE_EDITOR_STYLES = `
 }
 [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-statusbar {
   flex-basis: 100%;
+  min-width: 0;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -708,8 +709,8 @@ export const RECIPE_EDITOR_STYLES = `
   margin-left: auto;
 }
 [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-actions .rx-btn {
-  min-width: 30px;
-  min-height: 30px;
+  min-width: 36px;
+  min-height: 36px;
 }
 [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-id {
   flex: 0 1 200px;
@@ -947,8 +948,11 @@ export const RECIPE_EDITOR_STYLES = `
   align-items: center;
 }
 [${RECIPE_EDITOR_STATUS_ATTR}] {
+  min-width: 0;
+  max-width: 100%;
   color: var(--fg-muted);
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 [${RECIPE_EDITOR_STATUS_ATTR}][data-state="error"] {
   color: var(--danger);
@@ -966,6 +970,7 @@ export const RECIPE_EDITOR_STYLES = `
   font-weight: 600;
 }
 [${RECIPE_EDITOR_ISSUES_ATTR}] {
+  min-width: 0;
   display: grid;
   gap: 6px;
   margin-top: 12px;
@@ -974,6 +979,7 @@ export const RECIPE_EDITOR_STYLES = `
   scroll-margin-top: 120px;
 }
 [${RECIPE_EDITOR_ISSUE_ATTR}] {
+  min-width: 0;
   display: flex;
   gap: 8px;
   padding: 6px 10px;
@@ -981,6 +987,10 @@ export const RECIPE_EDITOR_STYLES = `
   border-radius: 6px;
   background: var(--surface);
   font-size: 12px;
+}
+[${RECIPE_EDITOR_ISSUE_ATTR}] > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 [${RECIPE_EDITOR_ISSUE_ATTR}][data-severity="error"] {
   border-color: var(--danger);
@@ -1024,13 +1034,35 @@ export const RECIPE_EDITOR_STYLES = `
     flex-basis: 100%;
   }
   [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-header .recipe-editor-field {
+    min-width: 0;
     max-width: none;
   }
   [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-actions {
     flex: 1 1 100%;
   }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] button.rx-btn {
+    min-height: 36px;
+  }
   [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-section {
+    min-width: 0;
     padding: 16px;
+  }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-field,
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-field-grid,
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-trigger-fields {
+    min-width: 0;
+  }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-field-grid,
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-trigger-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  [${RECIPE_EDITOR_WEBHOOKS_ATTR}] .recipe-editor-webhook-row {
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  [${RECIPE_EDITOR_WEBHOOKS_ATTR}] .recipe-editor-webhook-row > *,
+  [${RECIPE_EDITOR_WEBHOOKS_ATTR}] .recipe-editor-webhook-actions {
+    min-width: 0;
   }
   [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-add {
     grid-template-columns: 1fr;
@@ -1057,8 +1089,8 @@ export const RECIPE_EDITOR_STYLES = `
     grid-row: 1;
   }
   [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-actions .rx-btn {
-    min-width: 34px;
-    min-height: 34px;
+    min-width: 36px;
+    min-height: 36px;
   }
   [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-id {
     grid-column: 2 / -1;
@@ -1066,19 +1098,49 @@ export const RECIPE_EDITOR_STYLES = `
     width: 100%;
     min-width: 0;
   }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-id input {
+    min-height: 36px;
+  }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-field-checkbox {
+    min-height: 36px;
+  }
   [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-disc {
     grid-column: 2 / -1;
     grid-row: 3;
     white-space: normal;
   }
   [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-condition-row {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-arg-row {
-    grid-template-columns: 1fr auto;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-arg-add .recipe-editor-field {
+    flex: 1 1 100%;
+    min-width: 0;
   }
   [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-trigger-row {
     grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 340px) {
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-summary {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-actions {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-end;
+  }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-id {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-disc {
+    grid-column: 1 / -1;
+    grid-row: 4;
   }
 }
 `;
@@ -1697,13 +1759,14 @@ export const bootstrapRecipeEditorRoute = (
   ): void => {
     const raw = (step as Record<string, unknown>)[field];
     const current = conditionFieldString(raw);
+    const conditionLabel = field === 'skip_when' ? 'Skip when' : 'Fail on';
 
     // Object-form condition → show read-only JSON with an "edit as JSON" hint.
     if (isObjectCondition(raw)) {
       const wrap = doc.createElement('div');
       wrap.className = 'recipe-editor-field span-full';
       const label = doc.createElement('label');
-      label.textContent = field === 'skip_when' ? 'Skip when' : 'Fail on';
+      label.textContent = conditionLabel;
       wrap.appendChild(label);
       const ro = doc.createElement('code');
       ro.className = 'recipe-editor-readonly';
@@ -1754,7 +1817,7 @@ export const bootstrapRecipeEditorRoute = (
     const section = doc.createElement('div');
     section.className = 'recipe-editor-field span-full';
     const label = doc.createElement('label');
-    label.textContent = field === 'skip_when' ? 'Skip when' : 'Fail on';
+    label.textContent = conditionLabel;
     section.appendChild(label);
 
     const row = doc.createElement('div');
@@ -1763,6 +1826,10 @@ export const bootstrapRecipeEditorRoute = (
     const fieldInput = makeTextInput(doc, parts.field, field, (next) => {
       parts.field = next;
     });
+    fieldInput.setAttribute(
+      'aria-label',
+      `${conditionLabel} source for step ${step.id}`,
+    );
     fieldInput.setAttribute('placeholder', '{{step.x}}');
     fieldInput.addEventListener('change', () => applyCondition(false));
     row.appendChild(fieldInput);
@@ -1774,6 +1841,10 @@ export const bootstrapRecipeEditorRoute = (
       const nextUnary = UNARY_OPS.has(parts.operator as ConditionOp);
       applyCondition(priorUnary !== nextUnary);
     });
+    opSelect.setAttribute(
+      'aria-label',
+      `${conditionLabel} operator for step ${step.id}`,
+    );
     row.appendChild(opSelect);
 
     const unary = UNARY_OPS.has(parts.operator as ConditionOp);
@@ -1781,6 +1852,10 @@ export const bootstrapRecipeEditorRoute = (
       const valueInput = makeTextInput(doc, parts.value, `${field}_value`, (next) => {
         parts.value = next;
       });
+      valueInput.setAttribute(
+        'aria-label',
+        `${conditionLabel} value for step ${step.id}`,
+      );
       valueInput.setAttribute('placeholder', 'value');
       valueInput.addEventListener('change', () => applyCondition(false));
       row.appendChild(valueInput);
@@ -2041,6 +2116,10 @@ export const bootstrapRecipeEditorRoute = (
       const valueInput = isBlockValue(value, serialized)
         ? makeTextArea(doc, serialized, `arg:${name}`, applyArg)
         : makeTextInput(doc, serialized, `arg:${name}`, applyArg);
+      valueInput.setAttribute(
+        'aria-label',
+        `Argument ${name} value for step ${step.id}`,
+      );
       row.appendChild(valueInput);
 
       const removeArg = makeButton(doc, 'Remove', 'danger-text', 'xs', () => {
@@ -2067,7 +2146,10 @@ export const bootstrapRecipeEditorRoute = (
         mutateAndRerender({ ...state.recipe, [listKey]: nextList } as RecipeDefinition);
       });
       removeArg.setAttribute(RECIPE_EDITOR_OP_ARG_REMOVE_ATTR, name);
-      removeArg.setAttribute('aria-label', `Remove arg ${name}`);
+      removeArg.setAttribute(
+        'aria-label',
+        `Remove argument ${name} from step ${step.id}`,
+      );
       row.appendChild(removeArg);
       renderedOpArgFocusTargets.set(
         `${step.id}\u0000${name}`,
@@ -2092,6 +2174,7 @@ export const bootstrapRecipeEditorRoute = (
       argDraft.name = next;
     });
     nameInput.setAttribute(RECIPE_EDITOR_OP_ARG_NAME_ATTR, '');
+    nameInput.setAttribute('aria-label', `New argument name for step ${step.id}`);
     nameInput.setAttribute('placeholder', 'arg name');
     renderedOpArgDraftTargets.set(step.id, nameInput);
     nameField.appendChild(nameInput);
@@ -2113,6 +2196,7 @@ export const bootstrapRecipeEditorRoute = (
       mutateAndRerender({ ...state.recipe, [listKey]: nextList } as RecipeDefinition);
     });
     addArg.setAttribute(RECIPE_EDITOR_OP_ARG_ADD_ATTR, '');
+    addArg.setAttribute('aria-label', `Add argument to step ${step.id}`);
     addWrap.appendChild(addArg);
     grid.appendChild(addWrap);
 
@@ -2148,6 +2232,7 @@ export const bootstrapRecipeEditorRoute = (
     card.className = 'recipe-editor-step-card';
     card.setAttribute(RECIPE_EDITOR_ROW_ATTR, step.id);
     card.setAttribute('data-step-kind', kind);
+    card.setAttribute('aria-label', `Step ${step.id}`);
     // Open unless the user collapsed this card — the summary (kind + id +
     // discriminator) is the collapsed overview, and the choice survives
     // rerenders via state.collapsed keyed on the step id.
@@ -2360,6 +2445,10 @@ export const bootstrapRecipeEditorRoute = (
           },
         );
         reveal.setAttribute(RECIPE_EDITOR_COND_ADD_ATTR, `${step.id}:${field}`);
+        reveal.setAttribute(
+          'aria-label',
+          `Add ${field === 'skip_when' ? 'Skip when' : 'Fail on'} condition for step ${step.id}`,
+        );
         condControls.appendChild(reveal);
       }
     }
@@ -3951,6 +4040,7 @@ export const bootstrapRecipeEditorRoute = (
   // only save DIRTY work — recipe.save mints a new version per call, so a
   // clean reflex-save must be a no-op, not a version bump.
   const onKeydown = (event: KeyboardEvent): void => {
+    if (event.isComposing) return;
     if (!(event.metaKey || event.ctrlKey)) return;
     if (event.key !== 's' && event.key !== 'S') return;
     const target = event.target as Node | null;

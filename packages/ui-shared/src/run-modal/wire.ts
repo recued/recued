@@ -921,6 +921,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
 
   function onKeydown(ev: KeyboardEvent): void {
     if (ev.key === 'Escape') {
+      if (ev.isComposing) return;
       close();
       return;
     }

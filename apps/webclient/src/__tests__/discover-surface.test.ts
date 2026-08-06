@@ -2,7 +2,11 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { mountDiscoverySurface } from '../discover/discovery-surface.js';
+import {
+  DISCOVERY_SURFACE_DISCOVER_ATTR,
+  DISCOVERY_SURFACE_INSTALLED_ATTR,
+  mountDiscoverySurface,
+} from '../discover/discovery-surface.js';
 import {
   mountRecipeDiscovery,
   recipeBadges,
@@ -126,6 +130,8 @@ describe('mountDiscoverySurface', () => {
     const surface = mountDiscoverySurface({
       root: root as unknown as HTMLElement,
       document: fakeDoc(),
+      idPrefix: 'recued-recipes-library',
+      tabListLabel: 'Recipe library sections',
       mountInstalled,
       mountDiscover,
       onReactivate,
@@ -142,6 +148,38 @@ describe('mountDiscoverySurface', () => {
     surface.showTab('discover');
     expect(mountDiscover).toHaveBeenCalledTimes(1);
     expect(surface.activeTab()).toBe('discover');
+  });
+
+  it('names the tab group and ties each tab to its panel', () => {
+    const { root } = setup();
+    const host = root.children[0];
+    const tabBar = host.children[0];
+    const installed = findTab(root, 'installed');
+    const discover = findTab(root, 'discover');
+    const installedPane = host.children.find(
+      (child: any) => child.getAttribute(DISCOVERY_SURFACE_INSTALLED_ATTR) !== null,
+    );
+    const discoverPane = host.children.find(
+      (child: any) => child.getAttribute(DISCOVERY_SURFACE_DISCOVER_ATTR) !== null,
+    );
+
+    expect(tabBar.getAttribute('role')).toBe('tablist');
+    expect(tabBar.getAttribute('aria-label')).toBe('Recipe library sections');
+    expect(tabBar.getAttribute('aria-orientation')).toBe('horizontal');
+    expect(installed.getAttribute('aria-controls')).toBe(
+      'recued-recipes-library-installed-panel',
+    );
+    expect(discover.getAttribute('aria-controls')).toBe(
+      'recued-recipes-library-discover-panel',
+    );
+    expect(installedPane.getAttribute('role')).toBe('tabpanel');
+    expect(installedPane.getAttribute('aria-labelledby')).toBe(
+      'recued-recipes-library-installed-tab',
+    );
+    expect(discoverPane.getAttribute('role')).toBe('tabpanel');
+    expect(discoverPane.getAttribute('aria-labelledby')).toBe(
+      'recued-recipes-library-discover-tab',
+    );
   });
 
   it('mounts Discover only once across repeat switches', () => {
@@ -220,6 +258,8 @@ describe('mountDiscoverySurface', () => {
     const surface = mountDiscoverySurface({
       root: root as unknown as HTMLElement,
       document: fakeDoc(),
+      idPrefix: 'recued-recipes-library',
+      tabListLabel: 'Recipe library sections',
       mountInstalled: () => ({
         dispose: vi.fn(),
         hasInFlightWork: () => pending,
@@ -245,6 +285,8 @@ describe('mountDiscoverySurface', () => {
     const surface = mountDiscoverySurface({
       root: root as unknown as HTMLElement,
       document: fakeDoc(),
+      idPrefix: 'recued-recipes-library',
+      tabListLabel: 'Recipe library sections',
       mountInstalled: () => ({
         dispose: vi.fn(),
         hasUnsavedChanges: () => dirty,

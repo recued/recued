@@ -25,6 +25,8 @@ import {
   MESSENGER_AUTH_KIND_CONNECTION_TYPES,
   MESSENGER_VENDOR_SLUGS,
 } from './messenger-vendors.js';
+import type { RequestSignatureAuth } from './connection-signing.js';
+
 
 /** Three kinds. Subtypes fold under each (`mcp.sse|websocket|stdio`,
  *  `notification.<chat vendor>|email|in-app`). One handler per
@@ -191,7 +193,17 @@ export type ConnectionAuth =
       scope?: string;
       current_access_token?: string;
       expires_at?: number;
-    };
+    }
+  /** Per-request signing — the first member whose credential is COMPUTED rather
+   *  than stored. Every type above sends a value fixed at enrollment; a signing
+   *  vendor needs a value derived from the request itself, which is why
+   *  `header` looks like it should cover Binance and cannot.
+   *
+   *  ⛔ The scheme is a name from a CLOSED registry, never a template. See
+   *  `connection-signing.ts` — the rationale is that a pack-authored canonical
+   *  string would make this a signing oracle, which is the same class of
+   *  mistake as the configurable endpoint D-218 refused two members above. */
+  | RequestSignatureAuth;
 
 /** Validate an owner-supplied OAuth authorization/token endpoint before any
  * credential can be sent to it. This is the shared authority for webclient
@@ -280,6 +292,7 @@ export const CONNECTION_AUTH_TYPES = [
   'oauth2_refresh',
   'oauth2_client_credentials',
   'atproto_session',
+  'request_signature',
 ] as const satisfies readonly ConnectionAuth['type'][];
 
 export type ConnectionAuthType = (typeof CONNECTION_AUTH_TYPES)[number];
@@ -527,7 +540,9 @@ export type ConnectionCredentialCorrectionFieldKey =
   | 'auth.token_endpoint'
   | 'auth.scope'
   | 'auth.identifier'
-  | 'auth.app_password';
+  | 'auth.app_password'
+  | 'auth.api_key'
+  | 'auth.secret_key';
 
 /** Secret-free correction handoff attached only to an authoritative provider
  * rejection. `field_keys[0]` is the first review target; the remaining keys
@@ -603,6 +618,15 @@ export const connectionCredentialRejectionCorrection = (
       break;
     case 'atproto_session':
       fieldKeys = ['auth.identifier', 'auth.app_password'];
+      break;
+    /** ⚠ Both halves, and the SECRET first. A rejected signature is far more
+     *  often a wrong or mistyped secret than a wrong api key — a bad api key
+     *  usually earns a distinct "invalid API-key" message, while a bad secret
+     *  produces a signature mismatch that reads like a generic auth failure.
+     *  The clock is the other common cause and is not a field, so it cannot be
+     *  offered here; the enroll form says so instead. */
+    case 'request_signature':
+      fieldKeys = ['auth.secret_key', 'auth.api_key'];
       break;
     case 'none':
       fieldKeys = [];

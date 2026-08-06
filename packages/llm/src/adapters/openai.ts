@@ -2,6 +2,7 @@ import type { LLMAdapter, LLMFinishReason, LLMMessage, LLMProvider } from '../ty
 import { LLMError } from '../types.js';
 import { callProvider } from './anthropic.js';
 import { hasNonTextPart, joinTextParts, toOpenAIContent } from './content-parts.js';
+import { joinApiBase } from '../base-url.js';
 
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com';
 
@@ -22,7 +23,7 @@ const renderOpenAIMessageContent = (m: LLMMessage): string | unknown[] => {
 export const createOpenAIAdapter = (provider: LLMProvider = 'openai'): LLMAdapter => ({
   provider,
   async complete(slot, messages, options) {
-    const baseUrl = (slot.base_url ?? DEFAULT_OPENAI_BASE_URL).replace(/\/+$/, '');
+    const baseUrl = joinApiBase(slot.base_url ?? DEFAULT_OPENAI_BASE_URL, 'v1');
     const url = `${baseUrl}/v1/chat/completions`;
 
     const body: Record<string, unknown> = {

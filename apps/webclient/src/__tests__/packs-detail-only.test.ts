@@ -20,8 +20,10 @@ import {
   PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR,
   PACKS_DETAIL_BACK_ATTR,
   PACKS_DETAIL_RESOLVE_ERROR_ATTR,
+  PACKS_DETAIL_RESOLVE_RETRY_ATTR,
   PACKS_DETAIL_RESOLVING_ATTR,
   PACKS_DETAIL_SECTION_ATTR,
+  PACKS_PANEL_STYLES,
   PACKS_ROW_DELETE_BTN_ATTR,
   PACKS_ROW_INSTALL_BTN_ATTR,
   PACKS_SECTION_ATTR,
@@ -335,6 +337,61 @@ describe('packs panel — detail (marketplace resolve + install/uninstall)', () 
     expect(resolve).toHaveBeenCalledTimes(1);
     // Still shows a resolving state? No — the error replaced it.
     expect(findByAttr(host, PACKS_DETAIL_RESOLVING_ATTR)).toBeNull();
+  });
+
+  it('keeps resolve Retry busy and mounted, then hands off to Install', async () => {
+    let releaseRetry: (() => void) | null = null;
+    const retryGate = new Promise<void>((resolveGate) => {
+      releaseRetry = resolveGate;
+    });
+    let calls = 0;
+    const resolve = vi.fn<PacksResolveCaller>(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          manifest: null,
+          failure: { code: 'unresolved', message: 'Marketplace unavailable.' },
+        };
+      }
+      await retryGate;
+      return { manifest: manifest() };
+    });
+    const { host, mount: m } = mount({
+      initialSlug: 'mkt-pack',
+      roster: () => ({ packs: [] }),
+      resolve,
+    });
+    await m.whenLoaded();
+    await tick();
+
+    const retry = findByAttr(host, PACKS_DETAIL_RESOLVE_RETRY_ATTR);
+    expect(retry).not.toBeNull();
+    retry!.click();
+    retry!.click();
+    await tick();
+
+    const busyRetry = findByAttr(host, PACKS_DETAIL_RESOLVE_RETRY_ATTR);
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(busyRetry).not.toBeNull();
+    expect(busyRetry!.textContent).toBe('Retrying…');
+    expect(busyRetry!.getAttribute('aria-disabled')).toBe('true');
+    expect(busyRetry!.getAttribute('aria-busy')).toBe('true');
+    expect(findByAttr(host, PACKS_DETAIL_RESOLVING_ATTR)).toBeNull();
+
+    releaseRetry!();
+    await tick();
+    expect(findByAttr(host, PACKS_DETAIL_RESOLVE_RETRY_ATTR)).toBeNull();
+    expect(findByAttrValue(host, PACKS_ROW_INSTALL_BTN_ATTR, 'mkt-pack'))
+      .not.toBeNull();
+  });
+
+  it('contains long resolve errors and keeps Retry touch-sized', () => {
+    expect(PACKS_PANEL_STYLES).toMatch(
+      /\.packs-add-error\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(PACKS_PANEL_STYLES).toMatch(
+      /@media \(max-width: 640px\)[\s\S]*?\[data-recued-packs-detail-resolve-retry\]\.packs-detail-resolve-retry\.rx-btn\s*\{[^}]*min-height:\s*44px/s,
+    );
   });
 
   it('a non-roster slug with NO resolver wired shows a terminal Unavailable state, not an endless spinner', async () => {

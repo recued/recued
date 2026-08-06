@@ -134,30 +134,46 @@ const PACKS_ROUTE_CHROME_STYLES = `
   /* Inherit the shell's light/dark tokens instead of hard-pinning light
      values, which would leave inner --surface-sunk elements dark-on-dark
      in dark mode (mirrors the connections route's visual-UX fix). */
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
   max-width: var(--wc-content-max, 1080px);
   margin: 0 auto;
   padding: clamp(18px, 3vw, 30px);
   color: var(--fg);
 }
+[${PACKS_ROUTE_HOST_ATTR}] > * { min-width: 0; max-width: 100%; }
 [${PACKS_ROUTE_HOST_ATTR}] .packs-route-header {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   gap: 6px;
   margin-bottom: 22px;
 }
 [${PACKS_ROUTE_HOST_ATTR}] .packs-route-title {
   margin: 0;
+  overflow-wrap: anywhere;
 }
 [${PACKS_ROUTE_HOST_ATTR}] .packs-route-subtitle {
-  max-width: 660px;
+  min-width: 0;
+  max-width: min(660px, 100%);
   margin: 0;
   color: var(--fg-muted);
   font-size: 13px;
   line-height: 1.55;
+  overflow-wrap: anywhere;
 }
 [${PACKS_ROUTE_HOST_ATTR}] .packs-route-section {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   margin: 18px 0;
+}
+[${PACKS_ROUTE_HOST_ATTR}] .packs-route-section > * {
+  min-width: 0;
+  max-width: 100%;
 }
 [${PACKS_ROUTE_HOST_ATTR}] .packs-route-section-title {
   margin: 0;
@@ -165,12 +181,16 @@ const PACKS_ROUTE_CHROME_STYLES = `
   font-weight: 650;
 }
 [${PACKS_ROUTE_UNAVAILABLE_ATTR}] {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px 12px;
   background: var(--surface-subtle);
   color: var(--muted);
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 @media (max-width: 720px) {
   [${PACKS_ROUTE_HOST_ATTR}] {

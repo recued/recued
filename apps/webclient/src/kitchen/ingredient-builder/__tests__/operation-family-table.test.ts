@@ -31,6 +31,7 @@ import {
   INGREDIENT_BUILDER_ENTITY_ALIAS_ATTR,
   INGREDIENT_BUILDER_ENTITY_FIELD_ATTR,
   INGREDIENT_BUILDER_ENTITY_REMOVE_ROW_ATTR,
+  INGREDIENT_BUILDER_ENTITY_ROW_ATTR,
   INGREDIENT_BUILDER_ENTITY_TABLE_ATTR,
   INGREDIENT_BUILDER_FIELD_PRIVACY_ATTR,
   INGREDIENT_BUILDER_FIELD_ATTR,
@@ -60,6 +61,7 @@ import {
   INGREDIENT_BUILDER_SERVICE_KIND_ATTR,
   INGREDIENT_BUILDER_SLUG_ATTR,
   INGREDIENT_BUILDER_STATUS_ATTR,
+  INGREDIENT_BUILDER_STYLES,
   INGREDIENT_BUILDER_TABLE_ATTR,
   INGREDIENT_BUILDER_TITLE_ATTR,
   bootstrapIngredientBuilderRoute,
@@ -406,6 +408,42 @@ const makeConn = (options: {
 };
 
 describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
+  it('keeps every mobile Pack editor action and checkbox target full-sized', () => {
+    expect(INGREDIENT_BUILDER_STYLES).toContain(
+      '.ingredient-builder-field-checkbox {\n'
+        + '  display: inline-flex;\n  gap: 8px;\n  align-items: center;\n'
+        + '  min-height: 36px;',
+    );
+    expect(INGREDIENT_BUILDER_STYLES).toContain(
+      `[${INGREDIENT_BUILDER_ROUTE_ATTR}] button.rx-btn {\n`
+        + '    min-width: 36px;\n    min-height: 36px;',
+    );
+    expect(INGREDIENT_BUILDER_STYLES).toContain(
+      `[${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-arg-affects,`,
+    );
+    expect(INGREDIENT_BUILDER_STYLES).toContain(
+      `[${INGREDIENT_BUILDER_ENTITY_TABLE_ATTR}] .ingredient-builder-review-check {`,
+    );
+    expect(INGREDIENT_BUILDER_STYLES).toContain(
+      `[${INGREDIENT_BUILDER_ENTITY_TABLE_ATTR}] table {\n`
+        + '  width: 100%;\n  min-width: 980px;',
+    );
+    expect(INGREDIENT_BUILDER_STYLES).toContain(
+      `[${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-field-grid {\n`
+        + '    grid-template-columns: minmax(0, 1fr);',
+    );
+    expect(INGREDIENT_BUILDER_STYLES).toContain(
+      `[${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-arg-row {\n`
+        + '    grid-template-columns: minmax(0, 1fr) auto;',
+    );
+    expect(INGREDIENT_BUILDER_STYLES).toContain(
+      `[${INGREDIENT_BUILDER_REVIEW_ISSUE_ATTR}] {\n`
+        + '  box-sizing: border-box;\n'
+        + '  min-width: 0;\n'
+        + '  max-width: 100%;',
+    );
+  });
+
   it('mounts operation and entity-field tables with a pending server review banner', () => {
     const doc = makeFakeDocument();
     const root = makeFakeElement('main');
@@ -641,6 +679,27 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
       findByAttrValue(root, INGREDIENT_BUILDER_ENTITY_FIELD_ATTR, 'reviewed'),
     );
     expect(doc.activeElement).not.toBe(reviewed);
+    expect(findByAttrValue(root, INGREDIENT_BUILDER_ENTITY_ROW_ATTR, 'field-0')?.getAttribute(
+      'aria-label',
+    )).toBe('Data field 1');
+    expect(findByAttrValue(root, INGREDIENT_BUILDER_ENTITY_FIELD_ATTR, 'entity')?.getAttribute(
+      'aria-label',
+    )).toBe('Entity for data field 1');
+    expect(findByAttrValue(root, INGREDIENT_BUILDER_ENTITY_FIELD_ATTR, 'pii')?.getAttribute(
+      'aria-label',
+    )).toBe('PII tag for data field 1');
+    expect(findByAttr(root, INGREDIENT_BUILDER_ENTITY_REMOVE_ROW_ATTR)?.getAttribute(
+      'aria-label',
+    )).toBe('Remove data field 1');
+    expect(findByAttrValue(root, 'aria-label', 'Entity Contact')?.getAttribute('role'))
+      .toBe('group');
+    expect(findByAttrValue(root, 'aria-label', 'Contact data fields')?.tagName)
+      .toBe('TABLE');
+    expect(findByAttrValue(
+      root,
+      'aria-label',
+      'Advanced options for data field 1',
+    )?.tagName).toBe('DETAILS');
 
     expect(route.buildDraftBody().ingredients[0]!.entities).toEqual({
       Contact: {
@@ -1213,6 +1272,34 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
       .toBe('number');
     expect(findByAttrValue(root, INGREDIENT_BUILDER_OPERATION_ARG_FIELD_ATTR, 'row-0:2:affects_target')?.checked)
       .toBe(true);
+    expect(findByAttrValue(root, INGREDIENT_BUILDER_ROW_ATTR, 'row-0')?.getAttribute(
+      'aria-label',
+    )).toBe('Operation contact.read');
+    expect(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'family')?.getAttribute(
+      'aria-label',
+    )).toBe('Family');
+    expect(findByAttrValue(
+      root,
+      INGREDIENT_BUILDER_OPERATION_ADVANCED_FIELD_ATTR,
+      'row-0:rest_method',
+    )?.getAttribute('aria-label')).toBe('REST method');
+    expect(findByAttrValue(
+      root,
+      INGREDIENT_BUILDER_OPERATION_ARG_FIELD_ATTR,
+      'row-0:0:key',
+    )?.getAttribute('aria-label')).toBe(
+      'Argument 1 key for operation contact.read',
+    );
+    expect(findByAttrValue(
+      root,
+      'aria-label',
+      'Arguments for operation contact.read',
+    )?.getAttribute('role')).toBe('group');
+    expect(findByAttrValue(
+      root,
+      INGREDIENT_BUILDER_OPERATION_ARG_ADD_ATTR,
+      'row-0',
+    )?.getAttribute('aria-label')).toBe('Add argument to operation contact.read');
 
     // Save re-compacts: a plain required-string arg (incl. the explicit
     // `{ key, type: 'string' }`) collapses back to a bare string; the typed and
@@ -3491,9 +3578,10 @@ describe('pack editor polish — feedback correctness', () => {
     const row = findAllByAttr(root, INGREDIENT_BUILDER_ROW_ATTR)[0];
     expect(row?.hasAttribute('open')).toBe(true);
 
-    // User collapses it (fake toggle: set open then dispatch).
-    (row as unknown as { open: boolean }).open = false;
-    row!.dispatch('toggle');
+    // The click intent lands synchronously, before the browser's later native
+    // toggle event. This is what survives a review repaint that detaches the
+    // old card in that gap.
+    findAllByClass(root, 'ingredient-builder-op-card-summary')[0]?.click();
 
     // A structural rerender (add a second operation) keeps it collapsed.
     findByAttr(root, INGREDIENT_BUILDER_ADD_ROW_ATTR)?.click();

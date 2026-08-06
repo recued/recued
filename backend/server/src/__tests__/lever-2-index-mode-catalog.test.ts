@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { CHAT_CATALOG_DELIVERY_MODES } from '@recued/contracts';
+import { CHAT_CATALOG_DELIVERY_MODES, CHAT_MODEL_SOURCE_IDS } from '@recued/contracts';
 import {
   anyCatalogModeUsesToolsSearch,
   catalogModeUsesToolsSearch,
@@ -152,14 +152,37 @@ describe('Lever-2 truncateForIndex', () => {
 describe('Lever-2 resolveCatalogModeForSource (per-slot precedence)', () => {
   const smart = CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE;
 
-  it('smart-default map: every source thins to index', () => {
-    // Rationale lock (2026-07-26): the old split kept BYOK on `full` because
-    // "the prefix is nearly free after call 1" — true, but that compares
-    // full-cached to full-UNCACHED, never to `index`, which ALSO caches. A
-    // same-bundle A/B over the 33-task llm lane measured index at 98%
-    // cache-served on a BYOK slot (36,852 input/call vs full's ~82,014),
-    // −49.9% input lane-wide, with discovery holding and `tools.search` at 0.
-    expect(smart).toEqual({ free_pool: 'index', slot_1: 'index', slot_2: 'index' });
+  it('smart-default map: every source thins, and none is left on full', () => {
+    // ⚠ THE NAME USED TO SAY "thins to index" AND THE ASSERTION PINNED THE
+    // LITERAL. That was the rationale lock for the 2026-07-26 flip; on the
+    // 2026-08-05 flip to `lean-core` it failed for a correct change, which is
+    // what a value-pinned default does every time the default moves.
+    //
+    // The DURABLE claim is the one the name now makes: no source is left on
+    // `full`, i.e. thinning is the shipped posture rather than an opt-in. The
+    // specific mode is pinned once, below, where changing it is the point.
+    for (const source of CHAT_MODEL_SOURCE_IDS) {
+      expect(smart[source], source).not.toBe('full');
+    }
+    expect(Object.keys(smart).sort()).toEqual([...CHAT_MODEL_SOURCE_IDS].sort());
+  });
+
+  it('⛔ ships lean-core on every source (2026-08-05)', () => {
+    // The one place the literal IS the point, so a change to the shipped
+    // default is deliberate and shows up in exactly one diff.
+    //
+    // Evidence (`leancore-discovery-weakmodel-FINDING.md`, gemma-4-31b-it,
+    // 3 passes × 5 probes × 3 modes): discovery holds — the dropped targets
+    // reached `tools.search` 3/3 with ZERO `work.search` substitution; the
+    // over-search guard holds (probe 91 searched 0 every pass, every mode);
+    // cost/success −37% to −75% vs full. All misses are a mode-SYMMETRIC
+    // narration floor — the control probe fails once in each mode alike.
+    //
+    // Live wire at 2,146 installed recipes: catalog prefix 520,418 chars on
+    // full, 232,733 on index, 20,211 on lean-core.
+    expect(smart).toEqual({
+      free_pool: 'lean-core', slot_1: 'lean-core', slot_2: 'lean-core',
+    });
   });
 
   it('explicit per-source override wins over everything', () => {
@@ -172,9 +195,12 @@ describe('Lever-2 resolveCatalogModeForSource (per-slot precedence)', () => {
   });
 
   it('smart default applies for a KNOWN source only when the flag is on', () => {
+    // ⚠ Reads the MAP, not a literal: what this test is about is the FLAG
+    // gating, and pinning the mode here made it fail on a default change it
+    // does not govern.
     expect(
       resolveCatalogModeForSource('free_pool', undefined, { smartDefaults: true }),
-    ).toBe('index'); // smart default
+    ).toBe(smart.free_pool); // smart default
     expect(
       resolveCatalogModeForSource('free_pool', undefined, {
         smartDefaults: false,
@@ -183,7 +209,7 @@ describe('Lever-2 resolveCatalogModeForSource (per-slot precedence)', () => {
     ).toBe('full'); // flag off → env-global, NOT the smart default
     expect(
       resolveCatalogModeForSource('slot_1', undefined, { smartDefaults: true }),
-    ).toBe('index'); // BYOK now thins too — a REAL assertion since 2026-07-26
+    ).toBe(smart.slot_1); // BYOK thins too — a REAL assertion since 2026-07-26
     expect(
       resolveCatalogModeForSource('slot_1', undefined, {
         smartDefaults: false,
@@ -222,19 +248,29 @@ describe('Lever-2 resolveCatalogModeForSource (per-slot precedence)', () => {
 
 describe('Lever-2 resolveCatalogProjectionForSource', () => {
   it('wraps the resolved mode into a projection; index-desc-cap only for index', () => {
+    // ⚠ `index` is no longer any source's smart default, so it has to be
+    // reached through an explicit override — otherwise this stops asserting
+    // the cap rule at all and quietly becomes a test of the default.
     expect(
-      resolveCatalogProjectionForSource('free_pool', undefined, {
+      resolveCatalogProjectionForSource('free_pool', { free_pool: 'index' }, {
         smartDefaults: true,
         indexDescriptionMaxChars: 120,
       }),
     ).toEqual({ mode: 'index', indexDescriptionMaxChars: 120 });
-    // A BYOK slot now ALSO smart-defaults to index, cap included.
+    expect(
+      resolveCatalogProjectionForSource('slot_1', { slot_1: 'index' }, {
+        smartDefaults: true,
+        indexDescriptionMaxChars: 120,
+      }),
+    ).toEqual({ mode: 'index', indexDescriptionMaxChars: 120 });
+    // The shipped default carries NO cap — lean-core has no Tier-2
+    // descriptions to truncate.
     expect(
       resolveCatalogProjectionForSource('slot_1', undefined, {
         smartDefaults: true,
         indexDescriptionMaxChars: 120,
       }),
-    ).toEqual({ mode: 'index', indexDescriptionMaxChars: 120 });
+    ).toEqual({ mode: 'lean-core' });
     // full / lean-core carry no desc cap even if one is passed. `full` is no
     // longer any source's default, so reach it through an explicit override —
     // otherwise this stops asserting the cap rule at all.

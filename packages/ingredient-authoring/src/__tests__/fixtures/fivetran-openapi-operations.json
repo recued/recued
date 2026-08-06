@@ -4,8 +4,8 @@
       "openapi": {
         "kind": "official_openapi",
         "url": "https://fivetran.com/assets-docs/openapi/file_v1.json",
-        "bytes": 3126798,
-        "sha256": "8638aefbba4b806a28325ba7d44bcd158c38c49d2f5c7220d2e324ccde00fca3",
+        "bytes": 3127039,
+        "sha256": "b7e3be2dd5b2ecfb14ed51ddb848e817d21dcbfb655526f404a539b70e1d810f",
         "retrieved_on": "2026-07-20",
         "evidence": [
           "170 method/path operations",

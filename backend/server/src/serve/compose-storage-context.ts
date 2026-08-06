@@ -4,6 +4,7 @@ import {
   type Commit,
   type RecuedPlan,
 } from '@recued/contracts';
+import { RUNTIME_SCHEMA_MAP } from '@recued/config';
 import type { RuntimeConfigStore } from '@recued/config';
 import {
   createAuditLogStore,
@@ -61,6 +62,7 @@ import {
 import {
   createHttpProEntitlementSource,
   resolveProEntitlementMintUrl,
+  resolveProEntitlementPublicKey,
 } from '../pro-convenience/entitlement-source.js';
 import { createSqliteHandleStateStore } from '../handle/sqlite-store.js';
 import type { HandleStateStore } from '../handle/index.js';
@@ -108,6 +110,7 @@ import {
   mergeVault,
 } from '../server-executor.js';
 import { ensureAuditIndexes } from '../audit-indexes.js';
+import { readAuditUsageBytes } from '../audit-usage-counter.js';
 import { createSQLiteCollection } from '../sqlite-collection.js';
 import {
   computeInitialUsage,
@@ -508,7 +511,11 @@ export const composeStorageContext = async (
             override: process.env.RECUED_PRO_ENTITLEMENT_MINT_URL,
             cloudBaseUrl: readCloudBaseUrl(runtimeConfig),
           }),
-        getPublicKeyB64: () => process.env.RECUED_PRO_ENTITLEMENT_PUBLIC_KEY_B64,
+        getPublicKeyB64: () =>
+          resolveProEntitlementPublicKey({
+            override: process.env.RECUED_PRO_ENTITLEMENT_PUBLIC_KEY_B64,
+            cloudBaseUrl: readCloudBaseUrl(runtimeConfig),
+          }),
       }),
     });
 
@@ -654,6 +661,17 @@ export const composeStorageContext = async (
   gateRegistry = createGateRegistry({
     config: runtimeConfig,
     initialUsage: computeInitialUsage({ db }),
+    // ⛔ AUDIT PULLS ITS OWN TOTAL. `audit-compaction` deletes audit rows
+    // through raw SQL and reports nothing to the gate, so the pushed counter
+    // over-reported until the hourly retention pass re-anchored it — and the
+    // pressure read-out surfaces `used_bytes` to the owner, so that staleness
+    // was visible. Threading a gate into every deleter would relocate the
+    // obligation; this removes it.
+    //
+    // ⚠ Affordable only because `readAuditUsageBytes` is an O(1) indexed read
+    // over the trigger-maintained counter. Against the old
+    // `SUM(length(data))` this would have been a full scan per gate read.
+    usageProviders: { audit: () => readAuditUsageBytes(db) },
   });
   const GATE_CONFIG_KEYS = new Set<string>([
     'vault.quota.total_bytes',
@@ -668,6 +686,25 @@ export const composeStorageContext = async (
     if (GATE_CONFIG_KEYS.has(key)) gateRegistry!.reconfigureFromConfig();
   });
 
+  /** ⛔ THE FALLBACKS MUST COME FROM THE SCHEMA, NOT BE RETYPED HERE. These
+   *  were literal copies of the schema defaults, correct on the day they were
+   *  written. D-230 raised `audit.quota.bytes` 50 MB -> 5 GB and this copy
+   *  stayed at 50 MB — so any server whose config read threw would have had its
+   *  audit trail pruned to a hundredth of its configured ceiling, silently and
+   *  oldest-first, on a surface with no upstream to re-sync from.
+   *
+   *  🔑 A DUPLICATED DEFAULT IS A RULE THAT GOES STALE IN PLACE. Nothing fails
+   *  when the schema moves and the copy does not; the copy simply starts
+   *  disagreeing. Reading `RUNTIME_SCHEMA_MAP` makes the schema the single
+   *  writer, so the next re-scale cannot leave a straggler behind.
+   *
+   *  ⚠ `retentionDays` keeps its own constant deliberately —
+   *  `MEMORY_RETENTION_DEFAULT_DAYS` is the contract for the no-expiry
+   *  sentinel, not a copy of a schema number. */
+  const schemaFallback = (key: string, ifMissing: number): number => {
+    const entry = RUNTIME_SCHEMA_MAP[key];
+    return typeof entry?.default === 'number' ? entry.default : ifMissing;
+  };
   const auditRetentionConfig = (): AuditRetentionConfig => ({
     retentionDays: (() => {
       try {
@@ -678,19 +715,19 @@ export const composeStorageContext = async (
     })(),
     quotaBytes: (() => {
       try { return runtimeConfig.get('audit.quota.bytes') as number; }
-      catch { return 50 * 1024 * 1024; }
+      catch { return schemaFallback('audit.quota.bytes', 5 * 1024 * 1024 * 1024); }
     })(),
     pruneAtPct: (() => {
       try { return runtimeConfig.get('audit.prune_at_pct') as number; }
-      catch { return 70; }
+      catch { return schemaFallback('audit.prune_at_pct', 70); }
     })(),
     pruneMaxRowsPerRun: (() => {
       try { return runtimeConfig.get('audit.prune_max_rows_per_run') as number; }
-      catch { return 1000; }
+      catch { return schemaFallback('audit.prune_max_rows_per_run', 1000); }
     })(),
     reservePct: (() => {
       try { return runtimeConfig.get('audit.reserve_pct') as number; }
-      catch { return 4; }
+      catch { return schemaFallback('audit.reserve_pct', 4); }
     })(),
   });
   const auditRetention: AuditRetention | undefined = createAuditRetention({

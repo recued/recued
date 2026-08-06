@@ -1669,9 +1669,24 @@ describe('D-214 retrieval and storage mechanism guards', () => {
     `).all() as Array<{ type: string; name: string; sql: string | null }>;
     expect(objects.some((row) =>
       /fts|virtual table|tokenize/i.test(row.sql ?? ''))).toBe(false);
-    expect(objects.filter((row) =>
-      row.type === 'index' && !row.name.startsWith('sqlite_autoindex')))
-      .toEqual([]);
+
+    // ⚠ THIS USED TO ASSERT "no indexes at all", and that was too strong for
+    // what the test is named after. The claim is that D-213 scan works with no
+    // SEARCH structure — no FTS, nothing indexing the text it matches on. It
+    // proved that by observing the tables carried no indexes whatsoever, which
+    // was true until D-219's by-root/by-report lookup indexes landed; those are
+    // identifier B-trees for cascade deletes and say nothing about search.
+    //
+    // Re-expecting to the observed index list would have written those five
+    // names down as the contract and stopped guarding anything. What the test
+    // actually needs to forbid is an index over the ENCRYPTED TEXT columns —
+    // `representative_prompt_encrypted` / `payload_encrypted` — since indexing
+    // either is what a search structure would look like here.
+    const searchIndexes = objects.filter((row) =>
+      row.type === 'index'
+      && !row.name.startsWith('sqlite_autoindex')
+      && /prompt|payload|_encrypted/i.test(row.sql ?? ''));
+    expect(searchIndexes).toEqual([]);
   });
 
   it('round-trips Japanese text through candidate generation, slot fit, and card rendering', async () => {

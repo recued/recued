@@ -472,6 +472,46 @@ describe('createAnnotationStore', () => {
       ).rejects.toBeInstanceOf(AnnotationKeyInvalidError);
     });
 
+    it('⛔ an evicted annotation leaves NO orphan in the FTS index', async () => {
+      // The row delete and its FTS delete used to be two separate implicit
+      // transactions, and nothing asserted they agreed — every existing
+      // eviction test checks the ROW is gone and stops there, so a search hit
+      // pointing at a deleted row would have passed the whole suite.
+      const { store } = mkStore();
+      await store.annotate({
+        target_collection: 'mail', target_id: 'm-fts', key: 'summary',
+        value: 'Zzyzx quarterly briefing',
+        authored_by_recipe_id: 'r-fts',
+        source_record_hash: 's-1', recipe_hash: 'rec-1',
+      });
+      await expect(store.searchAnnotations({ query: 'Zzyzx' }))
+        .resolves.toHaveLength(1);
+
+      const evicted = await store.evictStaleAnnotations(
+        { authored_by_recipe_id: 'r-fts' },
+        { recipe_hash: 'rec-2' },
+      );
+      expect(evicted).toBe(1);
+
+      expect(await store.listAnnotations({ authored_by_recipe_id: 'r-fts' }))
+        .toHaveLength(0);
+
+      // ⚠ ASSERTED AGAINST THE FTS TABLE DIRECTLY, not through
+      // `searchAnnotations`. Search takes the FTS hits and joins them against
+      // the annotation table, so a dangling entry yields no row and the API
+      // looks perfectly healthy — the first version of this test checked the
+      // search result and passed with the FTS delete deleted. The orphan is
+      // real and accumulates; it is just only visible from underneath.
+      const ftsRows = (db
+        .prepare(`SELECT key FROM annotation_fts`)
+        .all() as Array<{ key: string }>).map((r) => r.key);
+      const tableRows = (db
+        .prepare(`SELECT id FROM annotation`)
+        .all() as Array<{ id: string }>).map((r) => r.id);
+      expect(ftsRows.filter((k) => !tableRows.includes(k))).toEqual([]);
+      await expect(store.searchAnnotations({ query: 'Zzyzx' })).resolves.toHaveLength(0);
+    });
+
     it('source_record_hash drift triggers eviction', async () => {
       const { store } = mkStore();
       await store.annotate({
@@ -623,6 +663,34 @@ describe('createAnnotationStore', () => {
       // Loser row dropped.
       const loser = await store.annotationsForRecord('contact', 'loser@x.com');
       expect(loser).toHaveLength(0);
+    });
+
+    it('⛔ grows the survivor size_bytes by the extras it absorbed', async () => {
+      // Nothing asserted the merge's byte accounting. `reportDelta` feeds the
+      // storage gate, so getting it wrong makes the gate believe in space that
+      // is not there — silently, since no result changes. Proved by mutation:
+      // passing a 0 delta instead of the real one left every other test green.
+      const { store } = mkStore();
+      await seedContactAnnotation(store, 'survivor@x.com', 'note', 'survivor-note');
+      await seedContactAnnotation(store, 'loser@x.com', 'note', 'loser-note');
+
+      const before = (db
+        .prepare(`SELECT size_bytes FROM annotation WHERE target_id = ?`)
+        .get('survivor@x.com') as { size_bytes: number }).size_bytes;
+
+      await store.rewriteRecordId('contact', 'loser@x.com', 'survivor@x.com');
+
+      const after = (db
+        .prepare(`SELECT size_bytes FROM annotation WHERE target_id = ?`)
+        .get('survivor@x.com') as { size_bytes: number }).size_bytes;
+      const extras = (db
+        .prepare(`SELECT extras FROM annotation WHERE target_id = ?`)
+        .get('survivor@x.com') as { extras: string }).extras;
+
+      // The survivor grew by exactly the bytes of the extras blob it now
+      // carries — the loser's value is RE-HOMED, not freed.
+      expect(after - before).toBe(Buffer.byteLength(extras, 'utf8'));
+      expect(after).toBeGreaterThan(before);
     });
 
     it('rewrites the loser onto the survivor without extras when there is no collision', async () => {

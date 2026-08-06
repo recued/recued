@@ -27,6 +27,8 @@ import {
 } from '@recued/storage-gate';
 import type { RuntimeConfigStore } from '@recued/config';
 
+import { readAuditUsageBytes } from './audit-usage-counter.js';
+
 /** The six Phase B gated surfaces. Adding one here also requires a
  *  quota lookup + reserve multiplier below AND a new entry in
  *  `SurfaceUsageMap` so the boot-time initial-usage pass is
@@ -51,6 +53,21 @@ export interface CreateGateRegistryOptions {
    *  `setUsed(initialUsage[surface])` so its state is correct before
    *  the first write. */
   initialUsage: SurfaceUsageMap;
+  /** ⛔ AUTHORITATIVE USAGE PER SURFACE, pulled instead of pushed. A surface
+   *  listed here never consults its caller-maintained counter — the gate asks
+   *  this function instead, so a mutation that bypasses `addUsed` cannot
+   *  desynchronise it.
+   *
+   *  Only `audit` supplies one today, and only because
+   *  `audit-compaction` deletes audit rows through raw SQL and reports nothing
+   *  — the gate over-reported until the hourly retention pass re-anchored it,
+   *  and the pressure read-out then showed the owner that stale number.
+   *
+   *  ⚠ Each provider is called on every read and every state recompute, so it
+   *  must be O(1). `readAuditUsageBytes` qualifies only because the
+   *  trigger-maintained counter exists; against a `SUM(length(data))` this
+   *  would be far worse than the drift it fixes. */
+  usageProviders?: Partial<Record<GatedSurface, () => number>>;
   /** Time source — injectable for deterministic tests. */
   now?: () => number;
 }
@@ -203,11 +220,18 @@ const QUOTA_KEY: Readonly<Record<GatedSurface, string>> = {
 export const createGateRegistry = (
   opts: CreateGateRegistryOptions,
 ): GateRegistry => {
-  const { config, initialUsage, now } = opts;
+  const { config, initialUsage, now, usageProviders } = opts;
 
   const buildGate = (surface: GatedSurface): StorageGate => {
     const { quota, reservePct } = resolveSurfaceConfig(config, surface);
-    const gate = createStorageGate({ quota, reservePct, surface, now });
+    const usageProvider = usageProviders?.[surface];
+    const gate = createStorageGate({
+      quota, reservePct, surface, now,
+      ...(usageProvider ? { usageProvider } : {}),
+    });
+    // ⚠ Still primed: `setUsed` recomputes state, and on a provider-backed
+    // surface the write itself is skipped while the recompute reads the
+    // provider — so the gate lands on the right state at boot either way.
     const used = initialUsage[surface];
     if (typeof used === 'number' && used >= 0) {
       gate.setUsed(used);
@@ -362,9 +386,17 @@ export const computeInitialUsage = (
     // Cache uses a `size_bytes` column too; the blob filesystem's
     // contribution is the blob's byte count stored in that column.
     cache: tableSizeColumn(db, 'cache_entries'),
-    audit:
-      tableDataBytes(db, 'audit_entries') +
-      tableDataBytes(db, 'audit_activities'),
+    // ⚠ THE ONLY SURFACE HERE WITH A MAINTAINED COUNTER, so it does not pay a
+    // boot-time scan. `readAuditUsageBytes` returns the trigger-maintained
+    // total and falls back to the same `SUM(length(data))` this used to do if
+    // the counter row is absent — so the value is identical either way, and a
+    // pre-migration database still boots with a correct number rather than a
+    // zero. Ordering is safe: `ensureAuditIndexes` (which creates the counter)
+    // runs earlier in `compose-storage-context`, well before this.
+    //
+    // The other surfaces keep their scans: they are read ONCE at boot, and
+    // `shared_store` / `cache` already read a maintained `size_bytes` column.
+    audit: readAuditUsageBytes(db),
     schedules: tableDataBytes(db, 'schedules'),
   };
 };

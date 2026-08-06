@@ -14,6 +14,7 @@ import {
   DISCOVER_PANEL_FACET_MORE_ATTR,
   DISCOVER_PANEL_FACET_SEARCH_ATTR,
   DISCOVER_PANEL_PAGE_ATTR,
+  DISCOVER_PANEL_STYLES,
   DISCOVER_PANEL_SUMMARY_ATTR,
   mountDiscoverPanel,
   type MountDiscoverPanelOptions,
@@ -159,6 +160,33 @@ const mount = (over: Partial<MountDiscoverPanelOptions<PackRow>> = {}) => {
 };
 
 describe('mountDiscoverPanel', () => {
+  it('keeps frequent facet controls at the desktop control floor', () => {
+    expect(DISCOVER_PANEL_STYLES).toContain(
+      '.discover-chip {\n  box-sizing: border-box; min-width: 0; max-width: 100%; min-height: 36px;',
+    );
+    expect(DISCOVER_PANEL_STYLES).toContain(
+      'font-weight: 650;\n  min-height: 36px; padding: 4px 11px;',
+    );
+  });
+
+  it('contains unbroken catalogue text within narrow facets and cards', () => {
+    expect(DISCOVER_PANEL_STYLES).toContain(
+      'box-sizing: border-box; display: grid; width: 100%; min-width: 0;',
+    );
+    expect(DISCOVER_PANEL_STYLES).toContain(
+      'grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));',
+    );
+    expect(DISCOVER_PANEL_STYLES).toContain(
+      'padding: 5px 11px; border: 1px solid var(--border); white-space: normal;',
+    );
+    expect(DISCOVER_PANEL_STYLES).toContain(
+      'color: var(--fg); letter-spacing: -.01em; overflow-wrap: anywhere;',
+    );
+    expect(DISCOVER_PANEL_STYLES).toContain(
+      'color: var(--fg-subtle); overflow-wrap: anywhere;',
+    );
+  });
+
   it('loads the corpus, renders cards, and derives install state per row', async () => {
     const { host, panel } = mount();
     await panel.whenLoaded();

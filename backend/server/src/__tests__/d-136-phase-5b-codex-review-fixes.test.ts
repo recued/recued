@@ -354,11 +354,18 @@ describe('[P2] drain walks FULL pending-discard queue (not just plan.leaves)', (
   const buildCtx = (
     overrides?: Partial<HousekeepingContext>,
   ): HousekeepingContext => {
-    db.exec(
-      `CREATE TABLE IF NOT EXISTS audit_entries (key TEXT PRIMARY KEY, data TEXT NOT NULL)`,
-    );
+    // ⛔ THE DOUBLE MUST WRITE WHERE THE PRODUCT WRITES. `emitAuditRow` goes
+    // through `logActivity` — an ActivityEntry in `audit_activities` carrying
+    // `timestamp` and a JSON-STRINGIFIED `detail`. Writing an AuditEntry into
+    // `audit_entries` made this fixture agree with the very bug
+    // `readLatestDrainSummary` had, and left the drain path reading a table
+    // that does not exist here at all.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS audit_entries    (key TEXT PRIMARY KEY, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS audit_activities (key TEXT PRIMARY KEY, data TEXT NOT NULL);
+    `);
     const insertAudit = db.prepare(
-      `INSERT INTO audit_entries (key, data) VALUES (?, ?)`,
+      `INSERT INTO audit_activities (key, data) VALUES (?, ?)`,
     );
     let auditN = 0;
     const ctx: HousekeepingContext = {
@@ -374,12 +381,13 @@ describe('[P2] drain walks FULL pending-discard queue (not just plan.leaves)', (
         insertAudit.run(
           `audit_${auditN}`,
           JSON.stringify({
+            activity_id: `audit_${auditN}`,
             action: row.action,
             target: row.target,
             run_mode: row.run_mode,
-            started_at: row.ts,
+            timestamp: row.ts,
             success: 1,
-            detail: row.detail,
+            detail: JSON.stringify(row.detail),
           }),
         );
       },

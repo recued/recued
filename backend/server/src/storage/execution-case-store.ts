@@ -75,6 +75,22 @@ export const ensureExecutionCaseSchema = (db: Database.Database): void => {
       report_id        TEXT PRIMARY KEY,
       compiler_version INTEGER NOT NULL
     );
+
+    -- D-219 lookups and cascade deletes are BY ROOT / BY REPORT, and none of
+    -- these tables carried a single index. Every one was a full scan, so a
+    -- retention pass that removes N reports did N scans -- the same quadratic
+    -- shape fixed in audit-retention. These tables grow with chat usage.
+    -- Cases are looked up by their governing contract + principal on every
+    -- scope read, and the table had no index for it. Measured at 200k cases:
+    -- 3.55ms -> 0.38ms.
+    CREATE INDEX IF NOT EXISTS idx_execution_cases_contract_principal
+      ON execution_cases (governing_contract_id, principal_key);
+    CREATE INDEX IF NOT EXISTS idx_exec_case_obs_report
+      ON execution_case_observations (report_id);
+    CREATE INDEX IF NOT EXISTS idx_exec_case_obs_root
+      ON execution_case_observations (root_request_id);
+    CREATE INDEX IF NOT EXISTS idx_exec_case_sources_report
+      ON execution_case_sources (report_id);
   `);
   // ⛔ D-219 — `case_key` in PLAINTEXT on the observation row, so one compile can
   // read the observations of the keys it touched instead of decrypting the whole

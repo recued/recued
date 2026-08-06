@@ -6,6 +6,7 @@ import type {
   LLMSlot,
 } from '../types.js';
 import { LLMError } from '../types.js';
+import { joinApiBase } from '../base-url.js';
 import {
   LLMProviderResponseTooLargeError,
   readBoundedProviderJson,
@@ -26,7 +27,7 @@ const DEFAULT_BASE_URL = 'https://api.anthropic.com';
 export const createAnthropicAdapter = (): LLMAdapter => ({
   provider: 'anthropic',
   async complete(slot, messages, options) {
-    const baseUrl = (slot.base_url ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
+    const baseUrl = joinApiBase(slot.base_url ?? DEFAULT_BASE_URL, 'v1');
     const url = `${baseUrl}/v1/messages`;
 
     const { system, chat } = splitSystem(messages);

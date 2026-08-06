@@ -212,7 +212,7 @@ export const RECEPTION_RECORDS_STYLES = `
 .reception-records-intro { max-width: 660px; margin: 0; color: var(--fg-muted); font-size: 13px; line-height: 1.55; }
 .reception-records-filters { display: flex; flex-wrap: wrap; gap: 10px; }
 .reception-records-chipset { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-sunk); }
-.reception-records-chip { appearance: none; min-height: 30px; padding: 5px 12px; border: 0; border-radius: 7px; background: transparent; color: var(--fg-muted); font-size: 12px; font-weight: 640; cursor: pointer; }
+.reception-records-chip { box-sizing: border-box; appearance: none; min-height: 36px; padding: 5px 12px; border: 0; border-radius: 7px; background: transparent; color: var(--fg-muted); font-size: 12px; font-weight: 640; cursor: pointer; }
 .reception-records-chip:hover { color: var(--fg); }
 .reception-records-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .reception-records-chip--active { background: var(--surface); color: var(--fg); box-shadow: 0 1px 3px rgba(24, 24, 27, 0.10); }

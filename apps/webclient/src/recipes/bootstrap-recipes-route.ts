@@ -79,6 +79,7 @@ import {
   readWidgetValue,
   renderRecipeCard,
   renderVariableWidget,
+  missingPackRefsFromRunnability,
   runnabilityDisclosureLines,
   setOutputFilterDraftValue,
   toWidgetShape,
@@ -140,6 +141,7 @@ import {
   RECIPES_ROUTE_RESULT_GRID_ATTR,
   RECIPES_ROUTE_RESULT_GRID_ROW_ATTR,
   RECIPE_RESULT_PANEL_STYLES,
+  copyRecipeResultValue,
   createResultActionRegistry,
   exactResultFileReadError,
   openResultPreviewWindow,
@@ -187,6 +189,11 @@ import type {
   RecipesResultOrigin,
   RecipesResultPanelSnapshot,
 } from './recipe-result-panel.js';
+import {
+  PACK_INSTALL_OFFER_STYLES,
+  missingPacksFromError,
+  renderPackInstallOffer,
+} from '../shell/pack-install-offer.js';
 
 export const RECIPES_ROUTE_STYLES_MARKER =
   'data-recued-recipes-route-styles';
@@ -194,6 +201,8 @@ export const RECIPES_ROUTE_HOST_ATTR = 'data-recued-recipes-route';
 export const RECIPES_ROUTE_HEADING_ATTR = 'data-recued-recipes-route-heading';
 export const RECIPES_ROUTE_SECTION_ATTR = 'data-recued-recipes-section';
 export const RECIPES_ROUTE_RECIPE_CARD_ATTR = 'data-recued-recipes-card';
+export const RECIPES_ROUTE_RECIPE_OPEN_ATTR =
+  'data-recued-recipes-open-button';
 export const RECIPES_ROUTE_RECIPE_SUMMARY_ATTR =
   'data-recued-recipes-grant-summary';
 // Installed-recipes search + filter + bounded paging. Filtering happens over
@@ -573,6 +582,9 @@ const RECIPES_ROUTE_STYLES = `
      shell --warn doesn't provide). */
   --warn: #b54708;
   --warn-subtle: #fff4e5;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
   max-width: var(--wc-content-max, 1080px);
   margin: 0 auto;
   padding: 16px;
@@ -590,12 +602,33 @@ const RECIPES_ROUTE_STYLES = `
   font-weight: 650;
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-inline-link {
+  box-sizing: border-box;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 0;
+  border-radius: 6px;
   color: var(--accent);
   font-size: 13px;
   text-decoration: none;
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-inline-link:hover {
   text-decoration: underline;
+}
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-actions > .recipes-inline-link,
+[${RECIPES_ROUTE_DETAIL_ATTR}] > .recipes-inline-link,
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-section > .recipes-inline-link {
+  width: fit-content;
+  padding: 4px;
+}
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-actions > .recipes-inline-link:hover,
+[${RECIPES_ROUTE_DETAIL_ATTR}] > .recipes-inline-link:hover,
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-section > .recipes-inline-link:hover {
+  background: var(--accent-weak);
+}
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-inline-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-actions {
   display: flex;
@@ -664,7 +697,7 @@ const RECIPES_ROUTE_STYLES = `
   gap: 6px;
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-chip {
-  min-height: 34px;
+  min-height: 36px;
   padding: 5px 11px;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -711,6 +744,8 @@ const RECIPES_ROUTE_STYLES = `
 }
 [${RECIPES_ROUTE_SECTION_ATTR}] {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   gap: 10px;
   margin: 14px 0;
 }
@@ -740,14 +775,18 @@ const RECIPES_ROUTE_STYLES = `
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  min-width: 0;
+  max-width: 100%;
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
   gap: 12px;
   /* Each card sizes to its own content — a verbose card no longer
      stretches every sibling in its row to match. */
   align-items: start;
 }
 [${RECIPES_ROUTE_RECIPE_CARD_ATTR}] {
+  box-sizing: border-box;
   min-width: 0;
+  max-width: 100%;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
@@ -757,8 +796,7 @@ const RECIPES_ROUTE_STYLES = `
 [${RECIPES_ROUTE_RECIPE_CARD_ATTR}]:hover {
   border-color: var(--accent);
 }
-[${RECIPES_ROUTE_RECIPE_CARD_ATTR}]:focus-visible {
-  outline: none;
+[${RECIPES_ROUTE_RECIPE_CARD_ATTR}]:focus-within {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-weak);
 }
@@ -805,18 +843,23 @@ const RECIPES_ROUTE_STYLES = `
 }
 [${RECIPES_ROUTE_RUNNABILITY_ATTR}] {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   gap: 3px;
   justify-items: start;
   margin-top: 8px;
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-runnability-pill {
   display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
   align-items: center;
   min-height: 18px;
   border-radius: 999px;
   padding: 1px 7px;
   font-size: 11px;
   font-weight: 650;
+  overflow-wrap: anywhere;
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-runnability-pill--runnable {
   background: var(--ok-bg);
@@ -831,17 +874,23 @@ const RECIPES_ROUTE_STYLES = `
   color: var(--danger);
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-runnability-detail {
+  min-width: 0;
+  max-width: 100%;
   font-size: 12px;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-pii-pill {
   display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
   align-items: center;
   min-height: 18px;
   border-radius: 999px;
   padding: 1px 7px;
   font-size: 11px;
   font-weight: 650;
+  overflow-wrap: anywhere;
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-pii-pill--auto {
   background: var(--ok-bg);
@@ -857,13 +906,18 @@ const RECIPES_ROUTE_STYLES = `
 }
 [${RECIPES_ROUTE_PII_ATTR}] {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   gap: 3px;
   justify-items: start;
   margin-top: 6px;
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-pii-detail {
+  min-width: 0;
+  max-width: 100%;
   font-size: 12px;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 @media (max-width: 720px) {
   [${RECIPES_ROUTE_HOST_ATTR}] .recipes-header {
@@ -872,10 +926,14 @@ const RECIPES_ROUTE_STYLES = `
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipe-card {
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   flex-direction: column;
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipe-card-header {
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   flex-direction: row;
   justify-content: space-between;
   /* Top-align so the badge keeps its natural height next to a title that
@@ -884,8 +942,11 @@ const RECIPES_ROUTE_STYLES = `
   gap: 8px;
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipe-card-name {
+  min-width: 0;
+  max-width: 100%;
   font-weight: 600;
   color: var(--fg-strong);
+  overflow-wrap: anywhere;
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipe-card-badges {
   display: flex;
@@ -924,13 +985,22 @@ const RECIPES_ROUTE_STYLES = `
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipe-card-footer {
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   flex-direction: row;
+  flex-wrap: wrap;
   justify-content: flex-start;
   align-items: center;
   gap: 8px;
   margin-top: 8px;
   color: var(--fg-muted);
   font-size: 0.75rem;
+}
+[${RECIPES_ROUTE_HOST_ATTR}] .recipe-card-footer > *,
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-card-meta > * {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipe-card-author,
 [${RECIPES_ROUTE_HOST_ATTR}] .recipe-card-version {
@@ -943,30 +1013,49 @@ const RECIPES_ROUTE_STYLES = `
 /* ── R24 detail view ─────────────────────────────────────────────── */
 [${RECIPES_ROUTE_DETAIL_ATTR}] {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   gap: 16px;
+}
+[${RECIPES_ROUTE_DETAIL_ATTR}] > * {
+  min-width: 0;
+  max-width: 100%;
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-header {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   gap: 8px;
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-title {
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   align-items: baseline;
   flex-wrap: wrap;
   gap: 10px;
   margin: 0;
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-name {
+  flex: 1 1 180px;
+  min-width: 0;
+  max-width: 100%;
   font-size: 20px;
   font-weight: 700;
+  overflow-wrap: anywhere;
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-meta {
+  min-width: 0;
+  max-width: 100%;
   margin: 0;
   font-size: 12px;
   color: var(--fg-muted);
+  overflow-wrap: anywhere;
 }
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-detail-section {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   gap: 6px;
   border-top: 1px solid var(--border-subtle);
   padding-top: 12px;
@@ -981,82 +1070,31 @@ const RECIPES_ROUTE_STYLES = `
   font-size: 12px;
   color: var(--fg-muted);
   line-height: 1.45;
-}
-[${RECIPES_ROUTE_HOST_ATTR}] .copyable-content {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 8px;
-}
-[${RECIPES_ROUTE_HOST_ATTR}] .copyable-label {
-  margin-bottom: 6px;
-  font-size: 12px;
-  font-weight: 650;
-}
-[${RECIPES_ROUTE_HOST_ATTR}] .copyable-content pre,
-[${RECIPES_ROUTE_HOST_ATTR}] .ai-json {
-  margin: 0;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font: 12px/1.45 var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
 }
-[${RECIPES_ROUTE_HOST_ATTR}] .summary-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 7px 0;
-  border-bottom: 1px solid var(--border);
-}
-[${RECIPES_ROUTE_HOST_ATTR}] .summary-row:last-child { border-bottom: none; }
-[${RECIPES_ROUTE_HOST_ATTR}] .summary-row dt { color: var(--fg-muted); }
-[${RECIPES_ROUTE_HOST_ATTR}] .summary-row dd { margin: 0; font-weight: 600; }
-[${RECIPES_ROUTE_HOST_ATTR}] .record-field-unset,
-[${RECIPES_ROUTE_HOST_ATTR}] .record-field-structured {
-  color: var(--fg-subtle);
-  font-weight: 400;
-  font-style: italic;
-}
-[${RECIPES_ROUTE_HOST_ATTR}] .copy-btn {
-  appearance: none;
-  min-height: 32px;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface);
-  color: var(--fg);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-[${RECIPES_ROUTE_HOST_ATTR}] .ai-block {
-  display: grid;
-  gap: 7px;
-  font-size: 12px;
-}
-[${RECIPES_ROUTE_HOST_ATTR}] .ai-block p {
-  margin: 0;
-  line-height: 1.45;
-}
-[${RECIPES_ROUTE_HOST_ATTR}] .ai-row {
-  display: grid;
-  grid-template-columns: minmax(90px, 140px) minmax(0, 1fr);
-  gap: 8px;
-}
-[${RECIPES_ROUTE_HOST_ATTR}] .ai-label {
-  color: var(--fg-muted);
-  font-weight: 650;
-}
-[${RECIPES_ROUTE_HOST_ATTR}] .ai-points {
-  margin: 0;
-  padding-left: 20px;
+[${RECIPES_ROUTE_DEFINITION_ATTR}] {
+  min-width: 0;
 }
 [${RECIPES_ROUTE_DEFINITION_ATTR}] summary {
+  box-sizing: border-box;
+  min-height: 36px;
+  padding: 9px 0;
   cursor: pointer;
   font-size: 13px;
   font-weight: 650;
+  line-height: 18px;
+}
+@media (max-width: 560px) {
+  [${RECIPES_ROUTE_DEFINITION_ATTR}] summary {
+    min-height: 44px;
+    padding-block: 13px;
+  }
 }
 [${RECIPES_ROUTE_DEFINITION_ATTR}] pre {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
   margin: 8px 0 0;
   max-height: 360px;
   overflow: auto;
@@ -1392,6 +1430,22 @@ const RUNNABILITY_PILL_COPY: Record<RunnabilityStatus, string> = {
   blocked: 'Blocked — add a provider',
 };
 
+const runnabilityPillCopy = (entry: RecipeRunnabilityEntry): string => {
+  if (entry.status !== 'blocked') return RUNNABILITY_PILL_COPY[entry.status] ?? entry.status;
+  const missingPacks = missingPackRefsFromRunnability(entry);
+  if (missingPacks.length === 0) return RUNNABILITY_PILL_COPY.blocked;
+  return missingPacks.length === 1
+    ? 'Blocked — install a pack'
+    : 'Blocked — install packs';
+};
+
+const missingPackRunAttrs = (missingPacks: readonly string[]): string =>
+  missingPacks.length === 0
+    ? ''
+    : ` disabled title="${missingPacks.length === 1
+      ? 'Install the missing pack before running.'
+      : 'Install the missing packs before running.'}"`;
+
 /** The per-recipe derived-runnability line: status pill + per-dependency
  *  detail. Empty when the recipe has no runnability entry. */
 const renderRunnabilityLine = (
@@ -1402,7 +1456,7 @@ const renderRunnabilityLine = (
     .map((line) => `<span class="recipes-runnability-detail">${e(line)}</span>`)
     .join('');
   // Defensive raw-status fallback for server version skew.
-  const pillCopy = RUNNABILITY_PILL_COPY[entry.status] ?? entry.status;
+  const pillCopy = runnabilityPillCopy(entry);
   return `
     <div ${RECIPES_ROUTE_RUNNABILITY_ATTR}="${e(entry.status)}">
       <span class="recipes-runnability-pill recipes-runnability-pill--${e(entry.status)}">${e(pillCopy)}</span>
@@ -1608,29 +1662,40 @@ const renderRecipeListCard = (
   const name = recipeDisplayName(entry);
   const searchText = recipeListSearchText(entry);
   const packs = recipePackRefs(entry.recipe);
+  const targetRunnability = runnability?.get(entry.recipe_id);
+  const missingPacks = targetRunnability === undefined
+    ? []
+    : missingPackRefsFromRunnability(targetRunnability);
   return `
-    <article ${RECIPES_ROUTE_RECIPE_CARD_ATTR}="${e(entry.recipe_id)}"
+    <div ${RECIPES_ROUTE_RECIPE_CARD_ATTR}="${e(entry.recipe_id)}"
       ${RECIPES_ROUTE_ACTION_ATTR}="open-recipe"
       ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"
       ${RECIPES_ROUTE_RECIPE_TRIGGER_ATTR}="${e(deriveTriggerKind(entry))}"
       ${RECIPES_ROUTE_RECIPE_PACKS_ATTR}="${e(packs.map((ref) => ref.pack_ref).join(' '))}"
-      ${RECIPES_ROUTE_RECIPE_SEARCH_ATTR}="${e(searchText)}"
-      role="button" tabindex="0" aria-label="Open ${e(name)}">
+      ${RECIPES_ROUTE_RECIPE_SEARCH_ATTR}="${e(searchText)}">
       ${renderRecipeCard(projectRecipeCardState(entry, catalog))}
       <div class="recipes-card-meta">
         ${renderFromPack(packs)}
       </div>
-      ${renderRunnabilityLine(runnability?.get(entry.recipe_id))}
+      ${renderRunnabilityLine(targetRunnability)}
       ${renderPiiLine(pii?.get(entry.recipe_id))}
       <div class="recipes-actions">
+        <button type="button" class="recipes-button"
+          ${RECIPES_ROUTE_RECIPE_OPEN_ATTR}="${e(entry.recipe_id)}"
+          ${RECIPES_ROUTE_ACTION_ATTR}="open-recipe"
+          ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"
+          aria-label="Open ${e(name)} details">
+          Open
+        </button>
         <button type="button" class="recipes-button recipes-button--primary"
           ${RECIPES_ROUTE_RUN_BUTTON_ATTR}="${e(entry.recipe_id)}"
           ${RECIPES_ROUTE_ACTION_ATTR}="open-run"
-          ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">
+          ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"
+          aria-label="Run ${e(name)}"${missingPackRunAttrs(missingPacks)}>
           Run
         </button>
       </div>
-    </article>
+    </div>
   `;
 };
 
@@ -1861,6 +1926,8 @@ const renderRelatedRecipeRow = (
   configErrors: ReadonlyMap<string, string>,
 ): string => {
   const name = recipeDisplayName(entry);
+  const actionName = (label: string): string =>
+    e(`${label} ${name} (${entry.recipe_id})`);
   const automationText = recipeAutomationSummaryText(automation, entry.recipe_id);
   const autoRun = recipeAutoRun(automation, entry.recipe_id);
   const hasVariables = Object.keys(entry.recipe.variables ?? {}).length > 0;
@@ -1898,6 +1965,7 @@ const renderRelatedRecipeRow = (
           : actionLabel;
         return `<button type="button" class="recipes-button"
           ${RECIPES_ROUTE_ACTION_ATTR}="toggle-auto-run:${nextEnabled ? 'on' : 'off'}"
+          aria-label="${actionName(label)}"
           ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${busy
             ? ' aria-disabled="true" aria-busy="true"'
             : ''}>${e(label)}</button>`;
@@ -1913,27 +1981,33 @@ const renderRelatedRecipeRow = (
         <a class="recipes-button"
           href="${serializeShellRoute('recipes', entry.recipe_id)}"
           ${RECIPES_ROUTE_ACTION_ATTR}="open-recipe"
+          aria-label="${actionName('Open')}"
           ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Open</a>
         ${canRun ? `<button type="button" class="recipes-button recipes-button--primary"
           ${RECIPES_ROUTE_RUN_BUTTON_ATTR}="${e(entry.recipe_id)}"
           ${RECIPES_ROUTE_ACTION_ATTR}="open-run"
+          aria-label="${actionName('Run')}"
           ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Run</button>` : ''}
         ${canConfig && hasVariables
           ? `<button type="button" class="recipes-button"
           ${RECIPES_ROUTE_ACTION_ATTR}="open-recipe-config"
+          aria-label="${actionName(configBusyRecipeId === entry.recipe_id ? 'Loading config…' : 'Config')}"
           ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${configBusyRecipeId === entry.recipe_id
             ? ' aria-disabled="true" aria-busy="true"'
             : ''}>${configBusyRecipeId === entry.recipe_id ? 'Loading config…' : 'Config'}</button>`
           : ''}
         ${canSchedule ? `<button type="button" class="recipes-button"
           ${RECIPES_ROUTE_ACTION_ATTR}="open-schedule"
+          aria-label="${actionName('Schedule')}"
           ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Schedule</button>` : ''}
         ${hasAutomationSurface ? `<a class="recipes-button"
           href="${serializeShellRoute('automation', entry.recipe_id)}"
+          aria-label="${actionName('Automation for')}"
           ${RECIPES_ROUTE_AUTOMATION_LINK_ATTR}>Automation</a>` : ''}
         ${autoRunToggle}
         <a class="recipes-button"
           href="${serializeShellRoute('logs', 'recipe', entry.recipe_id)}"
+          aria-label="${actionName('Logs for')}"
           ${RECIPES_ROUTE_RUNS_LINK_ATTR}>Logs</a>
       </div>
       ${configError === undefined
@@ -2053,6 +2127,9 @@ const renderRecipeDetail = (
   resultFilterStates: ReadonlyMap<string, RecipesResultFilterState>,
   defaultRunBusy: boolean,
   defaultRunError: string | null,
+  /** Packs a `pack_not_installed` run failure named — rendered as the shared
+   *  offer instead of the bare message. Null for every other failure. */
+  defaultRunMissingPacks: readonly string[] | null,
   resultGridStates: ReadonlyMap<string, OutputTableEditState> = new Map(),
   recordRefPickers = false,
 ): string => {
@@ -2066,9 +2143,13 @@ const renderRecipeDetail = (
   const variableDefs = Object.values(entry.recipe.variables ?? {});
   const defaultPrimitiveOnly = variableDefs.length > 0
     && variableDefs.every((definition) => !isInvocationVariable(definition));
+  const targetRunnability = runnability?.get(entry.recipe_id);
+  const missingPacks = targetRunnability === undefined
+    ? []
+    : missingPackRefsFromRunnability(targetRunnability);
   const canRunDefaultsDirectly = defaultPrimitiveOnly
     && canExecute
-    && runnability?.get(entry.recipe_id)?.status !== 'blocked';
+    && targetRunnability?.status !== 'blocked';
   const configError = configErrors.get(entry.recipe_id);
   return `
     <div ${RECIPES_ROUTE_DETAIL_ATTR}="${e(entry.recipe_id)}">
@@ -2086,10 +2167,10 @@ const renderRecipeDetail = (
             ${RECIPES_ROUTE_ACTION_ATTR}="${canRunDefaultsDirectly ? 'run-defaults' : 'open-run'}"
             ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${defaultRunBusy
               ? ' aria-disabled="true" aria-busy="true"'
-              : ''}>${defaultRunBusy ? 'Running…' : 'Run'}</button>
+              : ''}${missingPackRunAttrs(missingPacks)}>${defaultRunBusy ? 'Running…' : 'Run'}</button>
           ${defaultPrimitiveOnly ? `<button type="button" class="recipes-button"
             ${RECIPES_ROUTE_ACTION_ATTR}="open-run"
-            ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Run with overrides</button>` : ''}
+            ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${missingPackRunAttrs(missingPacks)}>Run with overrides</button>` : ''}
           <button type="button" class="recipes-button"
             ${RECIPES_ROUTE_ACTION_ATTR}="open-schedule"
             ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Schedule</button>
@@ -2104,9 +2185,11 @@ const renderRecipeDetail = (
             href="${serializeShellRoute('kitchen', 'recipe', entry.recipe_id)}"
             ${RECIPES_ROUTE_EDIT_LINK_ATTR}>Edit in Kitchen</a>
         </div>
-        ${defaultRunError !== null
-          ? `<p role="alert" class="recipes-result-file-error">${e(defaultRunError)}</p>`
-          : ''}
+        ${defaultRunMissingPacks !== null
+          ? renderPackInstallOffer(defaultRunMissingPacks)
+          : defaultRunError !== null
+            ? `<p role="alert" class="recipes-result-file-error">${e(defaultRunError)}</p>`
+            : ''}
         ${configError === undefined
           ? ''
           : `<p role="alert" class="recipes-config-error" ${RECIPES_ROUTE_CONFIG_ERROR_ATTR}="${e(entry.recipe_id)}">${e(configError)}</p>`}
@@ -2116,7 +2199,8 @@ const renderRecipeDetail = (
         <h2 class="recipes-detail-section-title">Exposed as a tool</h2>
         <p class="recipes-detail-note">Whether the AI can call this recipe is granted per contract — it can be exposed through one contract and not another. <a class="recipes-inline-link" href="#contracts" ${RECIPES_ROUTE_CONTRACTS_LINK_ATTR}>Manage in Contracts →</a></p>
       </section>
-      ${renderRunnabilityLine(runnability?.get(entry.recipe_id))}
+      ${renderRunnabilityLine(targetRunnability)}
+      ${defaultRunMissingPacks === null ? renderPackInstallOffer(missingPacks) : ''}
       ${renderPiiLine(pii?.get(entry.recipe_id))}
       ${description !== '' ? `<section class="recipes-detail-section"><h2 class="recipes-detail-section-title">About</h2><p class="recipes-detail-note">${e(description)}</p>${repo !== undefined ? `<a class="recipes-inline-link" href="${e(repo)}" target="_blank" rel="noopener noreferrer">Issues &amp; support</a>` : ''}</section>` : ''}
       <section class="recipes-detail-section">
@@ -2182,7 +2266,7 @@ export const bootstrapRecipesRoute = (
     // The panel's own rules travel WITH it now — scoped to
     // `RECIPE_RESULT_HOST_ATTR`, not to this route's host, so the same sheet
     // serves `#packs/<slug>`.
-    style.textContent = `${RECIPES_ROUTE_STYLES}\n${RECIPE_RESULT_PANEL_STYLES}`;
+    style.textContent = `${RECIPES_ROUTE_STYLES}\n${RECIPE_RESULT_PANEL_STYLES}\n${PACK_INSTALL_OFFER_STYLES}`;
     doc.head.appendChild(style);
   }
 
@@ -2280,6 +2364,7 @@ export const bootstrapRecipesRoute = (
   let resultFilterStates = new Map<string, RecipesResultFilterState>();
   let defaultRunBusy = false;
   let defaultRunError: string | null = null;
+  let defaultRunMissingPacks: readonly string[] | null = null;
   let resultActions = new Map<string, RecipeOutputAction>();
   let resultFiles = new Map<string, RegisteredResultFile>();
   let resultFileBusy = new Set<string>();
@@ -2428,7 +2513,7 @@ export const bootstrapRecipesRoute = (
       }
     }
     const focusedListCardRecipeId = activeElement?.getAttribute?.(
-      RECIPES_ROUTE_RECIPE_CARD_ATTR,
+      RECIPES_ROUTE_RECIPE_OPEN_ATTR,
     ) ?? null;
     const focusedSearch = activeElement?.hasAttribute?.(
       RECIPES_ROUTE_SEARCH_ATTR,
@@ -2505,6 +2590,7 @@ export const bootstrapRecipesRoute = (
         resultFilterStates,
         defaultRunBusy,
         defaultRunError,
+        defaultRunMissingPacks,
         resultGridStates,
         resultRecordSearch !== undefined,
       );
@@ -2660,10 +2746,10 @@ export const bootstrapRecipesRoute = (
       const isNavigation = pendingListCardFocusRecipeId === listFocusRecipeId;
       if (isNavigation) pendingListCardFocusRecipeId = null;
       const card = routeRoot.querySelector?.(
-        `[${RECIPES_ROUTE_RECIPE_CARD_ATTR}="${listFocusRecipeId}"]`,
+        `[${RECIPES_ROUTE_RECIPE_OPEN_ATTR}="${listFocusRecipeId}"]`,
       ) as HTMLElement | null | undefined;
       if (
-        card?.getAttribute?.(RECIPES_ROUTE_RECIPE_CARD_ATTR)
+        card?.getAttribute?.(RECIPES_ROUTE_RECIPE_OPEN_ATTR)
           === listFocusRecipeId
       ) {
         card.focus?.({ preventScroll: !isNavigation });
@@ -2722,7 +2808,7 @@ export const bootstrapRecipesRoute = (
         control.focus?.({ preventScroll: true });
       } else {
         const firstCard = routeRoot.querySelector?.(
-          `[${RECIPES_ROUTE_RECIPE_CARD_ATTR}]`,
+          `[${RECIPES_ROUTE_RECIPE_OPEN_ATTR}]`,
         ) as HTMLElement | null | undefined;
         const heading = routeRoot.querySelector?.(
           `[${RECIPES_ROUTE_HEADING_ATTR}]`,
@@ -3130,6 +3216,7 @@ export const bootstrapRecipesRoute = (
       resultGridStates = new Map();
       defaultRunBusy = false;
       defaultRunError = null;
+      defaultRunMissingPacks = null;
       resultFileBusy = new Set();
       resultFileErrors = new Map();
       resultFileVerified = new Set();
@@ -3176,6 +3263,7 @@ export const bootstrapRecipesRoute = (
     resultGridStates = new Map();
     defaultRunBusy = false;
     defaultRunError = null;
+    defaultRunMissingPacks = null;
     resultFileBusy = new Set();
     resultFileErrors = new Map();
     resultFileVerified = new Set();
@@ -3203,6 +3291,7 @@ export const bootstrapRecipesRoute = (
     const panelAtDispatch = resultPanel;
     defaultRunBusy = true;
     defaultRunError = null;
+    defaultRunMissingPacks = null;
     render();
     try {
       const result = await execute({ recipe_id: recipeId, config: {} });
@@ -3226,7 +3315,12 @@ export const bootstrapRecipesRoute = (
       resultFileVerified = new Set();
       resultFileGeneration += 1;
     } catch (error) {
-      if (stillOwnsVisit()) defaultRunError = errMessage(error);
+      if (stillOwnsVisit()) {
+        // A missing pack has an action attached, so it renders as the shared
+        // offer rather than as text. Every other failure keeps the plain message.
+        defaultRunMissingPacks = missingPacksFromError(error);
+        defaultRunError = errMessage(error);
+      }
     } finally {
       if (stillOwnsVisit()) {
         defaultRunBusy = false;
@@ -3788,23 +3882,6 @@ export const bootstrapRecipesRoute = (
     return null;
   };
 
-  const copyResultValue = async (target: HTMLElement): Promise<void> => {
-    const value = target.getAttribute('data-value');
-    if (value === null) return;
-    target.setAttribute('aria-live', 'polite');
-    const clipboard = doc.defaultView?.navigator?.clipboard;
-    if (clipboard?.writeText === undefined) {
-      target.textContent = 'Copy unavailable';
-      return;
-    }
-    try {
-      await clipboard.writeText(value);
-      target.textContent = 'Copied';
-    } catch {
-      target.textContent = 'Copy failed';
-    }
-  };
-
   const onClick = (ev: Event): void => {
     const target = findActionTarget(ev.target);
     if (target === null) return;
@@ -3824,7 +3901,7 @@ export const bootstrapRecipesRoute = (
     }
     ev.preventDefault();
     if (action === 'copy') {
-      void copyResultValue(target);
+      void copyRecipeResultValue(target, doc);
       return;
     }
     if (action === 'refresh') {
@@ -3953,23 +4030,6 @@ export const bootstrapRecipesRoute = (
     // delegation (its Close + Run buttons), not this route's innerHTML.
   };
 
-  const onKeydown = (ev: Event): void => {
-    const ke = ev as KeyboardEvent;
-    if (ke.key !== 'Enter' && ke.key !== ' ') return;
-    const node = ev.target as HTMLElement | null;
-    // Only the card itself (role=button) — never a focused child control.
-    if (
-      node === null
-      || typeof node.getAttribute !== 'function'
-      || node.getAttribute(RECIPES_ROUTE_ACTION_ATTR) !== 'open-recipe'
-    ) {
-      return;
-    }
-    ev.preventDefault();
-    const recipeId = node.getAttribute(RECIPES_ROUTE_RECIPE_ID_ATTR);
-    if (recipeId !== null) openRecipe(recipeId);
-  };
-
   const onInput = (ev: Event): void => {
     const target0 = ev.target as
       | (HTMLElement & { value?: string })
@@ -4037,7 +4097,6 @@ export const bootstrapRecipesRoute = (
 
   routeRoot.addEventListener('click', onClick);
   routeRoot.addEventListener('input', onInput);
-  routeRoot.addEventListener('keydown', onKeydown);
 
   const unsubscribers: Array<() => void> = [];
   if (opts.subscribe !== undefined) {
@@ -4156,7 +4215,6 @@ export const bootstrapRecipesRoute = (
       resultObjectUrls.clear();
       routeRoot.removeEventListener('click', onClick);
       routeRoot.removeEventListener('input', onInput);
-      routeRoot.removeEventListener('keydown', onKeydown);
       for (const unsubscribe of unsubscribers.splice(0)) {
         try {
           unsubscribe();

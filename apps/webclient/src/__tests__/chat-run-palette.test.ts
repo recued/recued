@@ -161,7 +161,7 @@ interface FakeDoc {
   createElement(tag: string): FakeEl;
   addEventListener(t: string, fn: (ev: unknown) => void): void;
   removeEventListener(t: string, fn: (ev: unknown) => void): void;
-  fireKeydown(key: string): void;
+  fireKeydown(key: string, isComposing?: boolean): void;
 }
 
 const makeDoc = (): FakeDoc => {
@@ -197,8 +197,8 @@ const makeDoc = (): FakeDoc => {
       const i = keydown.indexOf(fn);
       if (i >= 0) keydown.splice(i, 1);
     },
-    fireKeydown(key) {
-      for (const fn of [...keydown]) fn({ key });
+    fireKeydown(key, isComposing = false) {
+      for (const fn of [...keydown]) fn({ key, isComposing });
     },
   };
 };
@@ -341,6 +341,27 @@ const mount = (
 };
 
 describe('run-palette wire', () => {
+  it('injects contained mobile chrome with usable picker and action targets', () => {
+    const { doc, handle } = mount();
+    const styles = doc.styles[0]?.textContent ?? '';
+    expect(styles).toContain(
+      `[${RUN_PALETTE_OVERLAY_ATTR}] .run-palette-panel {\n  box-sizing: border-box;`,
+    );
+    expect(styles).toContain(
+      `[${RUN_PALETTE_CLOSE_ATTR}] {\n  margin-left: auto;\n  appearance: none;\n  min-height: 36px;`,
+    );
+    expect(styles).toContain(
+      `[${RUN_PALETTE_ACTION_ATTR}] {\n  appearance: none;\n  min-width: 36px;\n  min-height: 36px;`,
+    );
+    expect(styles).toContain(
+      `[${RUN_PALETTE_OVERLAY_ATTR}] .ref-picker-input {\n  min-height: 36px;`,
+    );
+    expect(styles).toContain(
+      `[${RUN_PALETTE_OVERLAY_ATTR}] .ref-picker-clear {\n  right: 0;\n  width: 36px;\n  height: 36px;`,
+    );
+    handle.destroy();
+  });
+
   it('selecting a manual recipe offers Run + Schedule and opens the Run modal', async () => {
     const execute = vi.fn(async () => executeResponse());
     const { doc, handle } = mount({ execute });
@@ -557,6 +578,17 @@ describe('run-palette wire', () => {
   it('Escape closes the palette', async () => {
     const { doc, handle } = mount();
     await tick();
+    doc.fireKeydown('Escape');
+    expect(collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)).toHaveLength(0);
+    handle.destroy();
+  });
+
+  it('leaves a composing Escape to the active IME', async () => {
+    const { doc, handle } = mount();
+    await tick();
+    doc.fireKeydown('Escape', true);
+    expect(collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)).toHaveLength(1);
+
     doc.fireKeydown('Escape');
     expect(collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)).toHaveLength(0);
     handle.destroy();

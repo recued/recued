@@ -71,21 +71,46 @@ describe('D-120 Phase 4 — resolver alias (data.audit.* → data.memory.*)', ()
     });
   });
 
-  it('resolves data.audit.<id> to the same entry as data.memory.<id>', () => {
-    expect(resolveRef('{{data.audit.run-1}}', stores))
-      .toEqual(resolveRef('{{data.memory.run-1}}', stores));
+  it('⛔ D-231 — data.audit.* reads its OWN store, not data.memory.*', () => {
+    // The intent of the retired alias test was "both names reach the audit
+    // log", which was right while audit WAS the memory substrate. D-198 split
+    // the stores; D-231 removed the rewrite. The assertion inverts: a
+    // `data.audit.*` ref must NOT fall through to `data.memory.*`, or a recipe
+    // asking for run history silently gets the owner's private notes.
+    expect(resolveRef('{{data.audit.run-1}}', stores)).toBeUndefined();
+
+    const withAudit: NamespaceStores = {
+      ...stores,
+      data: {
+        ...(stores.data as Record<string, unknown>),
+        audit: { 'run-1': { recipe_id: 'r1', commit_status: 'succeeded', started_at: 100 } },
+      },
+    };
+    expect(resolveRef('{{data.audit.run-1.commit_status}}', withAudit)).toBe('succeeded');
   });
 
-  it('resolves nested fields uniformly across both names', () => {
+  it('the two namespaces hold DIFFERENT values under the same key', () => {
+    // The sharpest statement of the split: same id, two stores, two answers.
+    // Under the alias these were provably equal; now they must not be.
+    const both: NamespaceStores = {
+      ...stores,
+      data: {
+        memory: { 'k1': { kind: 'note', summary: 'owner note' } },
+        audit: { 'k1': { recipe_id: 'r1', commit_status: 'failed' } },
+      },
+    };
+    expect(resolveRef('{{data.memory.k1.summary}}', both)).toBe('owner note');
+    expect(resolveRef('{{data.audit.k1.commit_status}}', both)).toBe('failed');
+    expect(resolveRef('{{data.memory.k1.commit_status}}', both)).toBeUndefined();
+  });
+
+  it('resolves nested fields under each name independently', () => {
     expect(resolveRef('{{data.memory.run-1.commit_status}}', stores)).toBe('succeeded');
-    expect(resolveRef('{{data.audit.run-1.commit_status}}', stores)).toBe('succeeded');
     expect(resolveRef('{{data.memory.run-2.started_at}}', stores)).toBe(200);
-    expect(resolveRef('{{data.audit.run-2.started_at}}', stores)).toBe(200);
   });
 
-  it('returns undefined for missing entries through both names', () => {
+  it('returns undefined for missing entries', () => {
     expect(resolveRef('{{data.memory.run-99}}', stores)).toBeUndefined();
-    expect(resolveRef('{{data.audit.run-99}}', stores)).toBeUndefined();
   });
 
   it('does not alias other data sub-namespaces (mail / calendar untouched)', () => {
@@ -104,29 +129,28 @@ describe('D-120 Phase 4 — resolver alias (data.audit.* → data.memory.*)', ()
 });
 
 describe('D-120 Phase 4 — collectRefs alias collapse', () => {
-  it('rewrites data.audit.* onto data.memory.* during ref collection', () => {
+  it('⛔ D-231 — ref collection keeps the two namespaces DISTINCT', () => {
+    // Under the alias these deduped to one entry. They must not now: a
+    // prefetcher that saw one ref would fetch one store and leave the other
+    // silently undefined.
     const refs = collectRefs({
       a: '{{data.audit.run-1.commit_status}}',
       b: '{{data.memory.run-1.commit_status}}',
     });
-    // Both refs collapse onto the same {ns, path} entry — the second
-    // ref dedupes and we get exactly one result.
-    expect(refs).toHaveLength(1);
-    expect(refs[0]).toEqual({ ns: 'data', path: 'memory.run-1.commit_status' });
+    expect(refs).toHaveLength(2);
+    expect(refs).toContainEqual({ ns: 'data', path: 'audit.run-1.commit_status' });
+    expect(refs).toContainEqual({ ns: 'data', path: 'memory.run-1.commit_status' });
   });
 
-  it('preserves other ref shapes unchanged after alias rewrite', () => {
+  it('preserves other ref shapes unchanged', () => {
     const refs = collectRefs({
       a: '{{data.audit.run-1}}',
       b: '{{config.threshold}}',
       c: '{{step.score}}',
     });
-    const sorted = refs.map((r) => `${r.ns}.${r.path}`).sort();
-    expect(sorted).toEqual([
-      'config.threshold',
-      'data.memory.run-1',
-      'step.score',
-    ]);
+    expect(refs).toContainEqual({ ns: 'data', path: 'audit.run-1' });
+    expect(refs).toContainEqual({ ns: 'config', path: 'threshold' });
+    expect(refs).toContainEqual({ ns: 'step', path: 'score' });
   });
 });
 

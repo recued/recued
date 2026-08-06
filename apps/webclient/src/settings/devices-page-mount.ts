@@ -552,6 +552,11 @@ export const mountDevicesPage = (
  *  `--wc-*` cascade from the shell host with literal fallbacks for
  *  non-shell (test / standalone) contexts. */
 export const DEVICES_PAGE_STYLES = `
+.account-devices-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
 .account-devices-table {
   width: 100%;
   border-collapse: collapse;

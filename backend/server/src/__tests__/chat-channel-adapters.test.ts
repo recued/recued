@@ -99,6 +99,16 @@ const createFakeChatStore = (): ChatStore & {
       messages.push(row);
       return row;
     }),
+    // Mirrors the real store's SQL: conversational roles only, last `limit`,
+    // returned oldest-first. Implemented rather than stubbed to `[]` — a fake
+    // that returns nothing would make `buildChatTail` look like it works on an
+    // empty tail, which is the state this double exists to avoid.
+    listRecentConversational: vi.fn(async (session_id: string, limit: number) =>
+      messages
+        .filter((row) => row.session_id === session_id)
+        .filter((row) => row.role === 'user' || row.role === 'assistant')
+        .slice(-Math.max(0, limit)),
+    ),
     listMessages: vi.fn(async (session_id: string) =>
       messages.filter((row) => row.session_id === session_id),
     ),

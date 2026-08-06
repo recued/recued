@@ -511,6 +511,19 @@ describe('D-132 P5 — renderHousekeepingEnrichmentProducerSection (reshaped)', 
     expect(html).not.toMatch(/data-action="housekeeping-run-now-open"[^>]*disabled/);
   });
 
+  it('names repeated Run now actions by their producer task', () => {
+    const html = renderHousekeepingEnrichmentProducerSection(
+      baseSectionProps([
+        aiTask('enrichment.summary'),
+        deterministicTask('enrichment.thread_signals'),
+      ]),
+    );
+    expect(html).toContain('aria-label="Run enrichment.summary now"');
+    expect(html).toContain(
+      'aria-label="Run enrichment.thread_signals now"',
+    );
+  });
+
   it('reflects the run policy inline per row from the persisted state + default', () => {
     // R25 — Run policy is an inline segmented control on the row (was the
     // "Trust" label + drawer radios). Each row's selected radio carries

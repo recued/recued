@@ -67,12 +67,23 @@ let store: EnrichmentStore;
 
 const buildCtx = (overrides?: Partial<HousekeepingContext>): HousekeepingContext => {
   const audit: Array<{ ts: number; action: string; detail: Record<string, unknown> }> = [];
-  // Audit mocking — we wire `audit_entries` table for `readLatestDrainSummary`.
-  db.exec(`CREATE TABLE IF NOT EXISTS audit_entries (
-    key  TEXT PRIMARY KEY,
-    data TEXT NOT NULL
-  )`);
-  const insertAudit = db.prepare(`INSERT INTO audit_entries (key, data) VALUES (?, ?)`);
+  // ⛔ THE DOUBLE MUST WRITE WHERE THE PRODUCT WRITES. `emitAuditRow` goes
+  // through `logActivity`, i.e. an ActivityEntry in `audit_activities` with a
+  // `timestamp` field. This fixture wrote an AuditEntry-shaped row into
+  // `audit_entries` with `started_at` — the same two mistakes the read side
+  // made — so the fixture and the bug agreed and `readLatestDrainSummary`
+  // returning null forever was invisible here.
+  //
+  // ⚠ Both tables are created: `ensureAuditIndexes` (which production runs)
+  // indexes the pair, and a fixture holding one makes a migration throw rather
+  // than an assertion fail.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS audit_entries    (key TEXT PRIMARY KEY, data TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS audit_activities (key TEXT PRIMARY KEY, data TEXT NOT NULL);
+  `);
+  const insertAudit = db.prepare(
+    `INSERT INTO audit_activities (key, data) VALUES (?, ?)`,
+  );
   const ctx: HousekeepingContext = {
     db,
     bus: {
@@ -86,13 +97,16 @@ const buildCtx = (overrides?: Partial<HousekeepingContext>): HousekeepingContext
     now: () => NOW,
     emitAuditRow: (row): void => {
       audit.push({ ts: row.ts, action: row.action, detail: row.detail });
+      // ActivityEntry shape, matching `logActivity`: `timestamp` (not
+      // `started_at`) and a JSON-STRINGIFIED `detail`.
       insertAudit.run(`audit_${audit.length}`, JSON.stringify({
+        activity_id: `audit_${audit.length}`,
         action: row.action,
         target: row.target,
         run_mode: row.run_mode,
-        started_at: row.ts,
+        timestamp: row.ts,
         success: 1,
-        detail: row.detail,
+        detail: JSON.stringify(row.detail),
       }));
     },
     ...overrides,
@@ -346,7 +360,7 @@ describe('lifecycle-queue-drain — audit emission', () => {
     await lifecycleQueueDrainTask.step(ctx, { kind: 'complete' }, 60_000);
     const rows = db
       .prepare(
-        `SELECT key FROM audit_entries
+        `SELECT key FROM audit_activities
            WHERE json_extract(data, '$.action') = 'lifecycle_queue_drain'`,
       )
       .all() as Array<{ key: string }>;

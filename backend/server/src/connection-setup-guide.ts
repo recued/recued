@@ -127,6 +127,17 @@ export const CONNECTION_SETUP_GUIDE_FIELDS = {
     label: 'Scopes',
     description: 'Space-separated least-privilege OAuth scopes requested at consent.',
   },
+  'auth.api_key': {
+    label: 'API key',
+    description: 'The public half of the signing pair, sent as-is on every request.',
+  },
+  'auth.secret_key': {
+    label: 'Signing secret',
+    description:
+      'Keys the signature and is never transmitted. ⚠ A rejected signature is most often '
+      + 'a mistyped secret or a CLOCK more than a few seconds out — the request carries a '
+      + 'timestamp the provider checks, and no field on this form can fix a wrong clock.',
+  },
 } as const satisfies Record<string, GuideField>;
 
 export type ConnectionSetupGuideFieldKey =
@@ -146,6 +157,7 @@ const AUTH_FIELDS: Record<AuthType, readonly ConnectionSetupGuideFieldKey[]> = {
   basic: ['auth.username', 'auth.password'],
   header: ['auth.headers'],
   query: ['auth.param_name', 'auth.value'],
+  request_signature: ['auth.api_key', 'auth.secret_key'],
   oauth2_refresh: [
     'auth.refresh_token',
     'auth.client_id',

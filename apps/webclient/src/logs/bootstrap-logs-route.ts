@@ -395,9 +395,22 @@ const LOGS_ROUTE_STYLES = `
 [${LOGS_ROUTE_HOST_ATTR}] .logs-row-links a,
 [${LOGS_ROUTE_HOST_ATTR}] .logs-detail-meta a {
   box-sizing: border-box;
-  min-height: 24px;
+  min-height: 36px;
   display: inline-flex;
   align-items: center;
+  padding: 4px 2px;
+  border-radius: 5px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-inline-link:hover,
+[${LOGS_ROUTE_HOST_ATTR}] .logs-row-links a:hover,
+[${LOGS_ROUTE_HOST_ATTR}] .logs-detail-meta a:hover {
+  background: var(--accent-weak);
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-inline-link:focus-visible,
+[${LOGS_ROUTE_HOST_ATTR}] .logs-row-links a:focus-visible,
+[${LOGS_ROUTE_HOST_ATTR}] .logs-detail-meta a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 [${LOGS_ROUTE_HOST_ATTR}] .logs-layout {
   display: grid;
@@ -433,6 +446,7 @@ const LOGS_ROUTE_STYLES = `
   font-size: 13px;
 }
 [${LOGS_ROUTE_HOST_ATTR}] .logs-button {
+  min-height: 36px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
@@ -485,14 +499,18 @@ const LOGS_ROUTE_STYLES = `
   box-shadow: inset 2px 0 0 var(--danger);
 }
 [${LOGS_ROUTE_HOST_ATTR}] .logs-cell-title {
+  min-width: 0;
   display: block;
   font-weight: 650;
+  overflow-wrap: anywhere;
 }
 [${LOGS_ROUTE_HOST_ATTR}] .logs-cell-sub {
+  min-width: 0;
   display: block;
   margin-top: 2px;
   color: var(--muted);
   font-size: 11px;
+  overflow-wrap: anywhere;
 }
 [${LOGS_ROUTE_HOST_ATTR}] .logs-cell-status,
 [${LOGS_ROUTE_HOST_ATTR}] .logs-cell-policy {
@@ -507,8 +525,8 @@ const LOGS_ROUTE_STYLES = `
   white-space: nowrap;
 }
 [${LOGS_ROUTE_HOST_ATTR}] .logs-row-open {
-  min-width: 32px;
-  min-height: 32px;
+  min-width: 36px;
+  min-height: 36px;
   padding: 2px 9px;
   font-size: 14px;
   line-height: 1.2;
@@ -529,9 +547,18 @@ const LOGS_ROUTE_STYLES = `
   display: flex;
   flex-wrap: wrap;
   gap: 6px 10px;
+  min-width: 0;
+  max-width: 100%;
   margin-top: 6px;
   color: var(--muted);
   font-size: 12px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-row-links a,
+[${LOGS_ROUTE_HOST_ATTR}] .logs-detail-meta a,
+[${LOGS_ROUTE_HOST_ATTR}] .logs-detail-meta > span {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 /* R17 — Status / Policy = single color-coded chips (near-monochrome: one
    accent, one danger). The ok tone keeps the default fg; the rest tint. */
@@ -562,6 +589,7 @@ const LOGS_ROUTE_STYLES = `
   text-align: center;
 }
 [${LOGS_ROUTE_DETAIL_ATTR}] {
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
@@ -571,6 +599,7 @@ const LOGS_ROUTE_STYLES = `
 [${LOGS_ROUTE_DETAIL_ATTR}] h3 {
   margin: 0 0 8px;
   font-size: 15px;
+  overflow-wrap: anywhere;
 }
 [${LOGS_ROUTE_DETAIL_ATTR}] h3 {
   margin-top: 14px;
@@ -721,9 +750,11 @@ const LOGS_ROUTE_STYLES = `
   list-style: none;
 }
 [${LOGS_ROUTE_HOST_ATTR}] .logs-detail-row {
+  min-width: 0;
   border-top: 1px solid var(--border-subtle);
   padding-top: 8px;
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 [${LOGS_ROUTE_DEGRADED_ATTR}],
 [${LOGS_ROUTE_REDACTED_IO_ATTR}],
@@ -732,6 +763,7 @@ const LOGS_ROUTE_STYLES = `
   margin: 8px 0 0;
   font-size: 13px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 [${LOGS_ROUTE_DEGRADED_ATTR}] {
   border-left: 2px solid var(--accent);
@@ -805,9 +837,12 @@ const LOGS_ROUTE_STYLES = `
   font-size: 12px;
 }
 [${LOGS_ROUTE_LANES_ATTR}] .logs-lane {
+  min-width: 0;
+  max-width: 100%;
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  overflow-wrap: anywhere;
 }
 [${LOGS_ROUTE_LANES_ATTR}] .logs-lane[data-saturated="true"] {
   color: var(--fg);
@@ -823,6 +858,7 @@ const LOGS_ROUTE_STYLES = `
 }
 [${LOGS_ROUTE_ACTIVE_ROW_ATTR}],
 [${LOGS_ROUTE_PASS_ROW_ATTR}] {
+  min-width: 0;
   border: 1px solid var(--border);
   border-left: 2px solid var(--accent);
   border-radius: 8px;
@@ -833,23 +869,36 @@ const LOGS_ROUTE_STYLES = `
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
 }
+[${LOGS_ROUTE_ACTIVE_ROW_ATTR}] > div:first-child,
+[${LOGS_ROUTE_PASS_ROW_ATTR}] > div:first-child {
+  min-width: 0;
+}
 [${LOGS_ROUTE_ACTIVE_ROW_ATTR}][data-stalled="true"] {
   border-left-color: var(--danger);
 }
 [${LOGS_ROUTE_ACTIVE_ROW_ATTR}] .logs-active-title,
 [${LOGS_ROUTE_PASS_ROW_ATTR}] .logs-active-title {
+  min-width: 0;
   margin: 0;
   font-size: 14px;
   font-weight: 650;
+  overflow-wrap: anywhere;
 }
 [${LOGS_ROUTE_ACTIVE_ROW_ATTR}] .logs-active-meta,
 [${LOGS_ROUTE_PASS_ROW_ATTR}] .logs-active-meta {
+  min-width: 0;
   display: flex;
   flex-wrap: wrap;
   gap: 6px 10px;
   margin-top: 6px;
   color: var(--muted);
   font-size: 12px;
+}
+[${LOGS_ROUTE_ACTIVE_ROW_ATTR}] .logs-active-meta > span,
+[${LOGS_ROUTE_PASS_ROW_ATTR}] .logs-active-meta > span {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 [${LOGS_ROUTE_ACTIVE_ROW_ATTR}] .logs-active-controls,
 [${LOGS_ROUTE_PASS_ROW_ATTR}] .logs-active-controls {
@@ -895,11 +944,17 @@ const LOGS_ROUTE_STYLES = `
   font-size: 13px;
 }
 [${LOGS_ROUTE_HOST_ATTR}] .logs-peek-title {
+  min-width: 0;
+  max-width: 100%;
   font-weight: 650;
+  overflow-wrap: anywhere;
 }
 [${LOGS_ROUTE_HOST_ATTR}] .logs-peek-sub {
+  min-width: 0;
+  max-width: 100%;
   color: var(--muted);
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 [${LOGS_ROUTE_HOST_ATTR}] .logs-peek-row[data-stalled="true"] .logs-peek-sub {
   color: var(--danger);
@@ -963,12 +1018,35 @@ const LOGS_ROUTE_STYLES = `
     border-bottom: 0;
     padding: 4px 10px;
   }
+  /* The block-table rule above is more specific than the base Status / Policy
+     flex rule. Reassert flex here so their generated label and value keep the
+     intended gap instead of collapsing into strings such as "Policyreleased". */
+  [${LOGS_ROUTE_HOST_ATTR}] .logs-table td.logs-cell-status,
+  [${LOGS_ROUTE_HOST_ATTR}] .logs-table td.logs-cell-policy {
+    display: flex;
+  }
   /* Simple cells: label left, value right. Status / Policy keep their own
      left-flowing chip layout (set above) — only the label is prefixed. */
   [${LOGS_ROUTE_HOST_ATTR}] .logs-table td[data-label]:not(.logs-cell-status):not(.logs-cell-policy) {
     display: flex;
     justify-content: space-between;
     gap: 12px;
+  }
+  [${LOGS_ROUTE_HOST_ATTR}] .logs-table td[data-label="Run"]:not(.logs-cell-status):not(.logs-cell-policy) {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 2px 12px;
+    justify-content: stretch;
+  }
+  [${LOGS_ROUTE_HOST_ATTR}] .logs-table td[data-label="Run"]::before {
+    grid-row: 1 / span 2;
+    align-self: start;
+  }
+  [${LOGS_ROUTE_HOST_ATTR}] .logs-table td[data-label="Run"] .logs-cell-title,
+  [${LOGS_ROUTE_HOST_ATTR}] .logs-table td[data-label="Run"] .logs-cell-sub {
+    grid-column: 2;
+    margin-top: 0;
+    text-align: right;
   }
   [${LOGS_ROUTE_HOST_ATTR}] .logs-table td[data-label]::before {
     content: attr(data-label);
@@ -1858,27 +1936,31 @@ const renderHistoryRow = (
   row: RunFeedRow,
   selected: boolean,
   opening: boolean,
-): string => `
-  <tr ${LOGS_ROUTE_ROW_ATTR}="${e(row.run_id)}" data-risk="${rowRisk(row)}"${selected ? ' data-selected="true"' : ''}
-    ${LOGS_ROUTE_ACTION_ATTR}="open-detail" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(row.run_id)}">
-    <td data-label="Run">
-      <span class="logs-cell-title">${e(row.name || row.recipe_id)}</span>
-      <span class="logs-cell-sub">${e(row.recipe_id)}</span>
-    </td>
-    <td data-label="Origin">${e(originLabel(row.origin))}</td>
-    <td data-label="Started">${e(formatDateTime(row.started_at))}</td>
-    <td data-label="Duration">${e(formatDuration(row.duration_ms))}</td>
-    <td data-label="Status" class="logs-cell-status">${renderHistoryStatusCell(row)}</td>
-    <td data-label="Policy" class="logs-cell-policy">${row.policy_result !== 'allowed' ? renderPolicy(row.policy_result) : ''}</td>
-    <td class="logs-cell-open">
-      <button type="button" class="logs-button logs-row-open"
-        ${LOGS_ROUTE_ACTION_ATTR}="open-detail" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(row.run_id)}"
-        aria-label="${opening ? 'Opening run detail' : 'Open run detail'}"${opening
-          ? ' aria-disabled="true" aria-busy="true"'
-          : ''}>${opening ? '…' : '▸'}</button>
-    </td>
-  </tr>
-`;
+): string => {
+  const subject = row.name || row.recipe_id;
+  const actionLabel = `${opening ? 'Opening' : 'Open'} run detail for ${subject} (${row.run_id})`;
+  return `
+    <tr ${LOGS_ROUTE_ROW_ATTR}="${e(row.run_id)}" data-risk="${rowRisk(row)}"${selected ? ' data-selected="true"' : ''}
+      ${LOGS_ROUTE_ACTION_ATTR}="open-detail" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(row.run_id)}">
+      <td data-label="Run">
+        <span class="logs-cell-title">${e(subject)}</span>
+        <span class="logs-cell-sub">${e(row.recipe_id)}</span>
+      </td>
+      <td data-label="Origin">${e(originLabel(row.origin))}</td>
+      <td data-label="Started">${e(formatDateTime(row.started_at))}</td>
+      <td data-label="Duration">${e(formatDuration(row.duration_ms))}</td>
+      <td data-label="Status" class="logs-cell-status">${renderHistoryStatusCell(row)}</td>
+      <td data-label="Policy" class="logs-cell-policy">${row.policy_result !== 'allowed' ? renderPolicy(row.policy_result) : ''}</td>
+      <td class="logs-cell-open">
+        <button type="button" class="logs-button logs-row-open"
+          ${LOGS_ROUTE_ACTION_ATTR}="open-detail" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(row.run_id)}"
+          aria-label="${e(actionLabel)}"${opening
+            ? ' aria-disabled="true" aria-busy="true"'
+            : ''}>${opening ? '…' : '▸'}</button>
+      </td>
+    </tr>
+  `;
+};
 
 const renderFeed = (
   runs: ReadonlyArray<RunFeedRow>,
@@ -1966,10 +2048,11 @@ const renderActiveControls = (
         : ''}`;
   if (entry.entry_kind === 'queued-call' && entry.queued_call_id !== undefined) {
     const id = e(entry.queued_call_id);
+    const subject = e(activeEntryTitle(entry));
     return `
       <div class="logs-active-controls">
-        <button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="promote-call" ${LOGS_ROUTE_QUEUED_CALL_ID_ATTR}="${id}"${pendingAttrs('promote-call')}>${pendingAction === 'promote-call' ? 'Promoting…' : 'Promote'}</button>
-        <button type="button" class="logs-button logs-button--danger" ${LOGS_ROUTE_ACTION_ATTR}="cancel-call" ${LOGS_ROUTE_QUEUED_CALL_ID_ATTR}="${id}"${pendingAttrs('cancel-call')}>${pendingAction === 'cancel-call' ? 'Cancelling…' : 'Cancel'}</button>
+        <button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="promote-call" ${LOGS_ROUTE_QUEUED_CALL_ID_ATTR}="${id}" aria-label="${pendingAction === 'promote-call' ? 'Promoting…' : 'Promote'} ${subject} (${id})"${pendingAttrs('promote-call')}>${pendingAction === 'promote-call' ? 'Promoting…' : 'Promote'}</button>
+        <button type="button" class="logs-button logs-button--danger" ${LOGS_ROUTE_ACTION_ATTR}="cancel-call" ${LOGS_ROUTE_QUEUED_CALL_ID_ATTR}="${id}" aria-label="${pendingAction === 'cancel-call' ? 'Cancelling…' : 'Cancel'} ${subject} (${id})"${pendingAttrs('cancel-call')}>${pendingAction === 'cancel-call' ? 'Cancelling…' : 'Cancel'}</button>
       </div>
     `;
   }
@@ -1977,9 +2060,10 @@ const renderActiveControls = (
   // a threaded run_id (rare, queue feed before the descriptor lands) gets no
   // control — `cancel`/`promote` need the queued_call_id which it also lacks.
   if (entry.run_id !== undefined && entry.run_id.length > 0) {
+    const label = pendingAction === 'kill-run' ? 'Killing…' : 'Kill';
     return `
       <div class="logs-active-controls">
-        <button type="button" class="logs-button logs-button--danger" ${LOGS_ROUTE_ACTION_ATTR}="kill-run" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(entry.run_id)}"${pendingAttrs('kill-run')}>${pendingAction === 'kill-run' ? 'Killing…' : 'Kill'}</button>
+        <button type="button" class="logs-button logs-button--danger" ${LOGS_ROUTE_ACTION_ATTR}="kill-run" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(entry.run_id)}" aria-label="${e(`${label} ${activeEntryTitle(entry)} (${entry.run_id})`)}"${pendingAttrs('kill-run')}>${label}</button>
       </div>
     `;
   }
@@ -2099,7 +2183,7 @@ const renderActive = (
     <section ${LOGS_ROUTE_ACTIVE_ATTR}>
       <div class="logs-active-head">
         <h2>Active</h2>
-        <button type="button" class="logs-inline-link" ${LOGS_ROUTE_ACTION_ATTR}="refresh-active"${refreshAttrs}>${refreshLabel}</button>
+        <button type="button" class="logs-inline-link" ${LOGS_ROUTE_ACTION_ATTR}="refresh-active" aria-label="${refreshLabel} active runs"${refreshAttrs}>${refreshLabel}</button>
       </div>
       ${renderLanes(lanes)}
       ${notice !== undefined ? `<p ${LOGS_ROUTE_DEGRADED_ATTR}>${e(notice)}</p>` : ''}
@@ -2165,7 +2249,7 @@ const renderPassControls = (grant: SessionGrantView, busy: boolean): string => {
     : '';
   return `
     <div class="logs-active-controls">
-      <button type="button" class="logs-button logs-button--danger" ${LOGS_ROUTE_ACTION_ATTR}="revoke-grant" ${LOGS_ROUTE_GRANT_ID_ATTR}="${e(grant.contract_id)}"${pending}>${busy ? 'Revoking…' : 'Revoke'}</button>
+      <button type="button" class="logs-button logs-button--danger" ${LOGS_ROUTE_ACTION_ATTR}="revoke-grant" ${LOGS_ROUTE_GRANT_ID_ATTR}="${e(grant.contract_id)}" aria-label="${e(`${busy ? 'Revoking…' : 'Revoke'} ${grant.display_name} (${grant.contract_id})`)}"${pending}>${busy ? 'Revoking…' : 'Revoke'}</button>
     </div>
   `;
 };
@@ -2219,7 +2303,7 @@ const renderPasses = (
     <section ${LOGS_ROUTE_PASSES_ATTR}>
       <div class="logs-active-head">
         <h2>Active passes</h2>
-        <button type="button" class="logs-inline-link" ${LOGS_ROUTE_ACTION_ATTR}="refresh-passes"${refreshAttrs}>${refreshLabel}</button>
+        <button type="button" class="logs-inline-link" ${LOGS_ROUTE_ACTION_ATTR}="refresh-passes" aria-label="${refreshLabel} active passes"${refreshAttrs}>${refreshLabel}</button>
       </div>
       ${notice !== undefined ? `<p ${LOGS_ROUTE_DEGRADED_ATTR}>${e(notice)}</p>` : ''}
       ${errorLine}${body}
@@ -2420,17 +2504,17 @@ const renderDetail = (
   returnToChat?: ChatPlanAddress,
 ): string => {
   if (error !== undefined) {
-    return `<aside ${LOGS_ROUTE_DETAIL_ATTR}><h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="${e(selectedRunId ?? '')}" tabindex="-1">Run detail</h2><p ${LOGS_ROUTE_ERROR_ATTR} role="alert">${e(error)}</p>${selectedRunId === null
+    return `<aside ${LOGS_ROUTE_DETAIL_ATTR} aria-label="Run detail"><h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="${e(selectedRunId ?? '')}" tabindex="-1">Run detail</h2><p ${LOGS_ROUTE_ERROR_ATTR} role="alert">${e(error)}</p>${selectedRunId === null
       ? ''
       : `<button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="retry-detail" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(selectedRunId)}">Retry</button>`}</aside>`;
   }
   if (loading) {
-    return `<aside ${LOGS_ROUTE_DETAIL_ATTR}><h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="${e(selectedRunId ?? '')}" tabindex="-1">Run detail</h2><p ${LOGS_ROUTE_EMPTY_ATTR}>Loading ${e(selectedRunId ?? 'run')}...</p>${retrying && selectedRunId !== null
+    return `<aside ${LOGS_ROUTE_DETAIL_ATTR} aria-label="Run detail"><h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="${e(selectedRunId ?? '')}" tabindex="-1">Run detail</h2><p ${LOGS_ROUTE_EMPTY_ATTR}>Loading ${e(selectedRunId ?? 'run')}...</p>${retrying && selectedRunId !== null
       ? `<button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="retry-detail" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(selectedRunId)}" aria-disabled="true" aria-busy="true">Retrying…</button>`
       : ''}</aside>`;
   }
   if (detail === null) {
-    return `<aside ${LOGS_ROUTE_DETAIL_ATTR}><h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="" tabindex="-1">Run detail</h2><p ${LOGS_ROUTE_EMPTY_ATTR}>Select a run to see its activity, approvals, errors, and permission decisions.</p></aside>`;
+    return `<aside ${LOGS_ROUTE_DETAIL_ATTR} aria-label="Run detail"><h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="" tabindex="-1">Run detail</h2><p ${LOGS_ROUTE_EMPTY_ATTR}>Select a run to see its activity, approvals, errors, and permission decisions.</p></aside>`;
   }
 
   const audit = detail.audit;
@@ -2439,7 +2523,7 @@ const renderDetail = (
   // approvals summary's id, fall back to the audit row's.
   const askId = detail.approvals.ask_id ?? audit.ask_id;
   return `
-    <aside ${LOGS_ROUTE_DETAIL_ATTR}="${e(audit.run_id)}">
+    <aside ${LOGS_ROUTE_DETAIL_ATTR}="${e(audit.run_id)}" aria-label="Run detail">
       <h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="${e(audit.run_id)}" tabindex="-1">${e(audit.recipe_id)}</h2>
       ${renderOutcome(detail)}
       ${renderAffectedItems(detail, returnToChat)}

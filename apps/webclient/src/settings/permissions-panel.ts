@@ -3962,14 +3962,27 @@ export const PERMISSIONS_PANEL_STYLES = `
   font-size: 12px;
 }
 [data-recued-permissions-panel] .perm-create-check {
+  box-sizing: border-box;
+  min-height: 36px;
   flex-direction: row;
   align-items: center;
   gap: 6px;
+  padding: 4px 2px;
+  cursor: pointer;
+}
+[data-recued-permissions-panel] .perm-create-check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: inherit;
 }
 [data-recued-permissions-panel] .perm-create-label {
   color: var(--muted);
 }
 [data-recued-permissions-panel] .perm-create-save {
+  box-sizing: border-box;
+  min-height: 36px;
   align-self: flex-start;
   font-size: 13px;
   padding: 6px 14px;

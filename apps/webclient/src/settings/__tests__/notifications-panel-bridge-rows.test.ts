@@ -288,6 +288,17 @@ describe('D-169 P1 notifications panel bridge rows', () => {
       'true',
       'false',
     ]);
+    const modeButtonNames = findAllByAttr(
+      host,
+      NOTIFICATIONS_BRIDGE_MODE_BTN_ATTR,
+    ).map((b) => b.getAttribute('aria-label'));
+    expect(modeButtonNames).toEqual([
+      'Bridge1 Chrome on macOS notifications (bridge-1)',
+      'Bridge1 Chrome on macOS approvals (bridge-1)',
+      'Bridge2 Edge on Windows notifications (bridge-2)',
+      'Bridge2 Edge on Windows approvals (bridge-2)',
+    ]);
+    expect(new Set(modeButtonNames).size).toBe(modeButtonNames.length);
   });
 
   it('clicking notification and approval mode buttons sends the expected set_bridge_mode payloads', async () => {

@@ -683,9 +683,10 @@ const CHAT_ROUTE_CHROME_STYLES = `
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-history-landing-title {
   margin: 0;
-  max-width: 24ch;
+  max-width: min(24ch, 100%);
   font-size: clamp(24px, 4vw, 36px);
   line-height: 1.1;
+  overflow-wrap: anywhere;
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-history-landing-detail {
   margin: 0;
@@ -727,9 +728,11 @@ const CHAT_ROUTE_CHROME_STYLES = `
   padding: 10px 12px;
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-thread-title {
+  min-width: 0;
   margin: 0;
   font-size: 14px;
   font-weight: 650;
+  overflow-wrap: anywhere;
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-thread-messages {
   display: grid;
@@ -768,7 +771,9 @@ const CHAT_ROUTE_CHROME_STYLES = `
   text-transform: uppercase;
 }
 [${CHAT_ROUTE_MESSAGE_ATTR}] .chat-message-content {
+  min-width: 0;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   font-size: 13px;
   line-height: 1.45;
 }
@@ -931,6 +936,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   padding: 0;
 }
 [${CHAT_ROUTE_GREETING_ATTR}] {
+  margin: 0;
   font-size: 20px;
   font-weight: 650;
   color: var(--fg);
@@ -1470,6 +1476,8 @@ const CHAT_ROUTE_CHROME_STYLES = `
   display: grid;
   gap: 2px;
   justify-items: start;
+  min-width: 0;
+  max-width: 100%;
 }
 [${CHAT_ROUTE_ACTIVITY_TOGGLE_ATTR}] {
   border: none;
@@ -1481,9 +1489,12 @@ const CHAT_ROUTE_CHROME_STYLES = `
   cursor: pointer;
 }
 [${CHAT_ROUTE_ACTIVITY_ROW_ATTR}] {
+  min-width: 0;
+  max-width: 100%;
   font-size: 12px;
   line-height: 1.4;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 [${CHAT_ROUTE_ACTIVITY_ROW_ATTR}][data-status="error"] {
   color: var(--fail);
@@ -1574,9 +1585,11 @@ const CHAT_ROUTE_CHROME_STYLES = `
   color: var(--warning, #b87b00);
 }
 [${CHAT_ROUTE_PLAN_CARD_ATTR}] .chat-plan-card-tool {
+  min-width: 0;
   color: var(--fg);
   font-size: 14px;
   font-weight: 720;
+  overflow-wrap: anywhere;
 }
 [${CHAT_ROUTE_PLAN_CARD_ATTR}] .chat-plan-card-scope {
   width: max-content;
@@ -1633,7 +1646,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   align-items: center;
   width: max-content;
   max-width: 100%;
-  min-height: 32px;
+  min-height: 36px;
   color: var(--accent);
   font-size: 11px;
   font-weight: 700;
@@ -1813,7 +1826,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   align-items: center;
   width: max-content;
   max-width: 100%;
-  min-height: 32px;
+  min-height: 36px;
   margin-top: 2px;
   color: var(--accent);
   font-size: 11px;
@@ -1892,9 +1905,11 @@ const CHAT_ROUTE_CHROME_STYLES = `
   border-top: 1px solid var(--border-subtle);
 }
 [${CHAT_ROUTE_PLAN_CARD_ATTR}] .chat-plan-card-detail-key {
+  min-width: 0;
   color: var(--muted);
   font-size: 11px;
   font-weight: 650;
+  overflow-wrap: anywhere;
 }
 [${CHAT_ROUTE_PLAN_CARD_ATTR}] .chat-plan-card-detail-value {
   margin: 0;
@@ -1908,7 +1923,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   font-size: 11px;
 }
 [${CHAT_ROUTE_PLAN_CARD_ATTR}] .chat-plan-card-technical summary {
-  min-height: 32px;
+  min-height: 36px;
   display: inline-flex;
   align-items: center;
   width: max-content;
@@ -1927,6 +1942,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
 }
 [${CHAT_ROUTE_PLAN_CARD_ATTR}] .chat-plan-card-technical-meta {
   margin: 7px 0 5px;
+  overflow-wrap: anywhere;
 }
 [${CHAT_ROUTE_PLAN_CARD_ATTR}] .chat-plan-card-args {
   margin: 0;
@@ -2020,8 +2036,9 @@ const CHAT_ROUTE_CHROME_STYLES = `
   justify-content: center;
 }
 [${CHAT_ROUTE_COMPOSER_ACTION_ATTR}] {
+  box-sizing: border-box;
   appearance: none;
-  min-height: 30px;
+  min-height: 36px;
   padding: 5px 12px;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -2041,13 +2058,14 @@ const CHAT_ROUTE_CHROME_STYLES = `
   margin-left: auto;
 }
 [${CHAT_ROUTE_COMPOSER_MORE_ATTR}] > summary {
+  box-sizing: border-box;
   list-style: none;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 36px;
+  height: 36px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
@@ -5185,6 +5203,7 @@ export const bootstrapChatRoute = (
   interface ComposerAction {
     id: string;
     label: string;
+    accessibleLabel: string;
     title: string;
     run: () => void;
   }
@@ -5279,6 +5298,7 @@ export const bootstrapChatRoute = (
       actions.push({
         id: 'run',
         label: '▶ Run a recipe',
+        accessibleLabel: 'Run a recipe',
         title: 'Run, schedule, or arm a recipe',
         run: openRunPalette,
       });
@@ -5290,6 +5310,7 @@ export const bootstrapChatRoute = (
       actions.push({
         id: 'create',
         label: '✎ Create',
+        accessibleLabel: 'Create',
         title: 'Capture a contact, task, note, or commitment',
         run: openCreateOverlay,
       });
@@ -5305,6 +5326,7 @@ export const bootstrapChatRoute = (
     button.type = 'button';
     button.className = 'chat-composer-action';
     button.setAttribute(CHAT_ROUTE_COMPOSER_ACTION_ATTR, action.id);
+    button.setAttribute('aria-label', action.accessibleLabel);
     button.setAttribute('title', action.title);
     button.textContent = action.label;
     button.addEventListener('click', () => {
@@ -5323,8 +5345,9 @@ export const bootstrapChatRoute = (
       const details = doc.createElement('details');
       details.className = 'chat-composer-more';
       details.setAttribute(CHAT_ROUTE_COMPOSER_MORE_ATTR, '');
+      details.setAttribute('aria-label', 'Chat composer actions');
       const summary = doc.createElement('summary');
-      summary.setAttribute('aria-label', 'More actions');
+      summary.setAttribute('aria-label', 'More Chat composer actions');
       summary.textContent = '+';
       details.appendChild(summary);
       const menu = doc.createElement('div');
@@ -6319,6 +6342,11 @@ export const bootstrapChatRoute = (
     inputRow.className = 'chat-composer-input-row';
     const input = doc.createElement('textarea');
     input.setAttribute(CHAT_ROUTE_INPUT_ATTR, '');
+    // The placeholder changes with source/action context and disappears
+    // visually once drafting starts. Keep one stable programmatic name for
+    // the app's primary message control; contextual detail remains in the
+    // existing aria-describedby relationship below.
+    input.setAttribute('aria-label', 'Message to Recued');
     input.setAttribute(
       'placeholder',
       dataVerificationDiagnosisDraft !== null
@@ -6862,8 +6890,13 @@ export const bootstrapChatRoute = (
 
             const actionDetails = doc.createElement('details');
             actionDetails.setAttribute(CHAT_ROUTE_SESSION_ACTIONS_ATTR, session.id);
+            const actionLabel = `Actions for ${sessionTitle(session)}`;
+            // Native details exposes its own group in the accessibility tree;
+            // naming only the summary leaves repeated groups announced as
+            // the visible ellipsis rather than the chat they operate on.
+            actionDetails.setAttribute('aria-label', actionLabel);
             const summary = doc.createElement('summary');
-            summary.setAttribute('aria-label', `Actions for ${sessionTitle(session)}`);
+            summary.setAttribute('aria-label', actionLabel);
             summary.textContent = '•••';
             actionDetails.appendChild(summary);
             const menu = doc.createElement('div');
@@ -7027,6 +7060,7 @@ export const bootstrapChatRoute = (
 
     const thread = doc.createElement('section');
     thread.setAttribute(CHAT_ROUTE_THREAD_ATTR, '');
+    thread.setAttribute('aria-label', 'Chat conversation');
     // Centered → docked (§D.L1): an empty thread (no messages, no in-flight
     // turn) centers a greeting + composer; the first send docks the composer
     // to the bottom and lets the conversation fill above.
@@ -7127,7 +7161,7 @@ export const bootstrapChatRoute = (
         } else if (showFirstRunActivation) {
           hero.appendChild(buildFirstRunActivation());
         } else {
-          const greeting = doc.createElement('div');
+          const greeting = doc.createElement('h2');
           greeting.className = 'chat-thread-greeting';
           greeting.setAttribute(CHAT_ROUTE_GREETING_ATTR, '');
           greeting.textContent = 'What can Recued help you with?';

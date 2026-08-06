@@ -51,6 +51,10 @@ import {
   describeHeaderAuthIssue,
   MESSAGE_MATCH_CONFIG_KEY,
   validateMessageMatchPatterns,
+  requestSignatureSecrets,
+  applyRequestSignature,
+  isConnectionSigningScheme,
+  CONNECTION_SIGNING_SCHEMES,
   CONNECTION_AUTH_TYPES,
   CONNECTION_CREDENTIAL_ROTATION_ATTEMPT_ID_REGEX,
   CONNECTION_CREDENTIAL_SAFE_STOP_TOKEN_REGEX,
@@ -753,6 +757,30 @@ const ensureOptionalTokenAuthStyleField = (
   }
 };
 
+/** ⛔ Request signing is an `api`-kind concept and must be refused elsewhere.
+ *
+ *  `VALID_AUTH_TYPES` is DERIVED from `CONNECTION_AUTH_TYPES`, which is what
+ *  keeps the vocabulary from drifting — but it also means a new member becomes
+ *  enrollable on every kind the moment it is added. An `mcp` or `notification`
+ *  row carrying a signing credential would enroll green and then fail on every
+ *  use: neither adapter can sign, and both refuse unknown auth shapes at
+ *  dispatch. Refusing at enroll turns that into an answerable error.
+ *
+ *  ⚠ Called on the UPDATE path too, for the reason the messenger gate beside it
+ *  records: otherwise a row enrolls as `bearer` and is patched into the
+ *  unusable shape through the back door. */
+const ensureSigningAuthKind = (
+  where: string,
+  kind: ConnectionKind,
+  auth: ConnectionAuth | undefined,
+): void => {
+  if (auth?.type !== 'request_signature' || kind === 'api') return;
+  throw new RpcError(
+    'bad_request',
+    `${where}: auth.type 'request_signature' is only valid on an api connection (got ${kind})`,
+  );
+};
+
 const ensureAuth = (where: string, auth: unknown): ConnectionAuth => {
   if (!isRecord(auth) || typeof auth.type !== 'string') {
     throw new RpcError(
@@ -790,6 +818,19 @@ const ensureAuth = (where: string, auth: unknown): ConnectionAuth => {
     case 'query':
       requireSafeAuthNameField(where, auth, 'param_name');
       requireStringField(where, auth, 'value');
+      break;
+    case 'request_signature':
+      requireStringField(where, auth, 'api_key');
+      requireStringField(where, auth, 'secret_key');
+      // ⛔ The scheme must be one this build can actually produce. An unknown
+      // name would enroll cleanly and then fail on every call, which turns a
+      // typo into a dead connection instead of a rejected form.
+      if (!isConnectionSigningScheme((auth as Record<string, unknown>).scheme)) {
+        throw new RpcError(
+          'bad_request',
+          `${where}: auth.scheme must be one of ${CONNECTION_SIGNING_SCHEMES.join(', ')}`,
+        );
+      }
       break;
     case 'oauth2_refresh':
       requireStringField(where, auth, 'refresh_token');
@@ -1293,6 +1334,7 @@ export const handleConnectionEnroll = async (
   );
   ensureValidMatchPatterns('collection.connection.enroll', config);
   const auth = ensureAuth('collection.connection.enroll', a.auth);
+  ensureSigningAuthKind('collection.connection.enroll', kind, auth);
   ensureMessengerAuthDeliverable('collection.connection.enroll', subtype, auth);
   ensureMessengerIngressCredentials('collection.connection.enroll', subtype, config, auth);
   if (Object.prototype.hasOwnProperty.call(
@@ -1458,6 +1500,7 @@ export const handleConnectionUpdate = async (
     patch.auth !== undefined
       ? ensureAuth('collection.connection.update', patch.auth)
       : undefined;
+  ensureSigningAuthKind('collection.connection.update', kind, auth);
   // The same gate on the patch path — otherwise a row enrolls as `bearer` and is
   // then patched to an undeliverable shape through the back door, landing in
   // exactly the green-ready-and-mute state the enroll gate exists to prevent.
@@ -1915,6 +1958,31 @@ export const handleConnectionProbe = async (
       case 'atproto_session':
         headers.Authorization = `Bearer ${authString(auth, 'current_access_token')}`;
         return;
+      // ⛔ Signed for GET, because that is the only method whose result this
+      // probe reads. The API probe tries HEAD first and falls back to GET, and
+      // it signs ONCE before either — which is correct for every scheme in the
+      // registry today, since `binance_hmac_sha256` signs the query string and
+      // the body, not the method. ⚠ A future scheme that signs the METHOD
+      // (Robinhood's does) cannot be added without moving this call inside the
+      // per-attempt path; that is a real constraint on the registry, recorded
+      // here rather than discovered later.
+      case 'request_signature':
+        Object.assign(headers, applyRequestSignature(
+          auth,
+          { method: 'GET', url },
+          deps.now?.() ?? Date.now(),
+        ));
+        return;
+      // ⛔ Same `never` guard, same reason, as the redaction switch below: this
+      // one has no default either, and a member that falls through here applies
+      // NO credential — so the probe would call the endpoint unauthenticated
+      // and report whatever an anonymous request earns. For a public endpoint
+      // that is a green health check on a credential nobody verified.
+      default: {
+        const unreachable: never = auth;
+        void unreachable;
+        return;
+      }
     }
   };
   /** Strip every credential this connection holds out of a probe error before
@@ -1978,8 +2046,30 @@ export const handleConnectionProbe = async (
         add(authRecord.current_access_token);
         add(authRecord.refresh_token);
         break;
+      // ⛔ The signing secret, and the api key beside it. The secret NEVER goes
+      // on the wire in any scheme — it only keys a MAC — so it cannot leak by
+      // being sent. It leaks by being ECHOED, which is what this function
+      // exists to stop. Delegated to `requestSignatureSecrets` so the list
+      // lives next to the shape it describes rather than here.
+      case 'request_signature':
+        for (const secret of requestSignatureSecrets(auth)) add(secret);
+        break;
       case 'none':
         break;
+      // ⛔⛔ THE GUARD THIS SWITCH DID NOT HAVE, AND THE REASON IT NOW DOES.
+      // D-218 recorded this site as "the one that would have leaked": no
+      // `default`, no exhaustiveness check, so a widened `ConnectionAuth` fell
+      // through collecting NOTHING and that member's credentials went
+      // unredacted into probe output. The compiler said nothing then, and it
+      // said nothing about `request_signature` either — every other site this
+      // change broke was caught by a missing return or a `Record` key, and
+      // this one was not. `never` makes the next member a compile error here
+      // instead of a silent leak.
+      default: {
+        const unreachable: never = auth;
+        void unreachable;
+        break;
+      }
     }
     const renderings = new Set<string>();
     for (const secret of secrets) {
@@ -2989,6 +3079,17 @@ const credentialCandidateFromOwnerInput = (auth: ConnectionAuth): ConnectionAuth
         identifier: auth.identifier,
         app_password: auth.app_password,
       };
+    /** Both halves are owner-typed and neither is server-derived: a signature is
+     *  recomputed from scratch on every call, so unlike the token-bearing types
+     *  there is no cached state here that could make a stale credential look
+     *  verified. Rebuilt anyway, to drop surplus fields before encryption. */
+    case 'request_signature':
+      return {
+        type: 'request_signature',
+        scheme: auth.scheme,
+        api_key: auth.api_key,
+        secret_key: auth.secret_key,
+      };
   }
 };
 
@@ -3011,6 +3112,14 @@ const invalidCredentialControlFor = (auth: ConnectionAuth): ConnectionAuth | nul
       };
     case 'query':
       return { type: 'query', param_name: auth.param_name, value: invalid };
+    /** ⚠ Corrupt the SECRET, not the api key. Binance rejects an unknown
+     *  `X-MBX-APIKEY` with a distinct error before it ever checks the
+     *  signature, so a wrong key would prove the endpoint validates keys — not
+     *  that it validates SIGNATURES, which is the thing this control has to
+     *  discriminate. A valid key with a wrong secret fails at signature
+     *  verification, which is the negative this probe needs. */
+    case 'request_signature':
+      return { ...auth, secret_key: invalid };
     case 'none':
     case 'oauth2_refresh':
     case 'oauth2_client_credentials':
@@ -3323,6 +3432,12 @@ export const handleConnectionRotateCredentials = async (
   // Validate before constructing the candidate so malformed auth and unsafe
   // OAuth destinations fail without ever entering a network path.
   const auth = credentialCandidateFromOwnerInput(ensureAuth(method, a.patch.auth));
+  // ⚠ NO kind gate here, deliberately. An earlier draft added one and no
+  // mutation could make it bite: this handler reaches the credential store
+  // through `handleConnectionUpdate`, which already runs `ensureSigningAuthKind`
+  // — and it does so BEFORE the provider is contacted, so the earlier check
+  // bought nothing but a second place to keep in step. One chokepoint, on the
+  // path every credential write goes through.
   const expectedUpdatedAt = ensureExpectedConnectionUpdatedAt(
     method,
     a.expected_updated_at,

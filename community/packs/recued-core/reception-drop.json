@@ -65,7 +65,7 @@
             "ingredient": "reception-drop",
             "risk": "write",
             "approval": "ask",
-            "out": "result",
+            "idempotency": "non_idempotent",
             "args": [
               "title",
               "body",

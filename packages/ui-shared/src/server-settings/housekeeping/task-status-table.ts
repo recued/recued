@@ -77,6 +77,7 @@ const renderRow = (
       ${showRunNow
         ? `<td class="housekeeping-task-action">${button({
             label: 'Run now',
+            ariaLabel: `Run ${status.meta.id} now`,
             size: 'xs',
             action: 'housekeeping-run-now-open',
             data: { 'task-id': status.meta.id },

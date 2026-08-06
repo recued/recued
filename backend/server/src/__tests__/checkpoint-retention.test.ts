@@ -131,7 +131,7 @@ describe('checkpoint-retention — staleness guard', () => {
     let h: Harness;
     const onExpired = vi.fn(async (entry: AuditEntry) => {
       expect(entry.commit_status).toBe('failed');
-      expect(entry.errors[0]?.code).toBe('RECIPE_APPROVAL_TIMEOUT');
+      expect(entry.errors?.[0]?.code).toBe('RECIPE_APPROVAL_TIMEOUT');
       expect(await h.checkpointStore.get('cp-1')).toBeNull();
       expect((await h.auditLog.get('run-1'))?.commit_status).toBe('failed');
     });
@@ -162,9 +162,9 @@ describe('checkpoint-retention — staleness guard', () => {
 
     const retired = await h.auditLog.get('run-1');
     expect(retired?.commit_status).toBe('failed');
-    expect(retired?.errors[0]?.code).toBe('RECIPE_APPROVAL_TIMEOUT');
-    expect(retired?.errors[0]?.retryable).toBe(false);
-    expect(retired?.errors[0]?.details).toMatchObject({
+    expect(retired?.errors?.[0]?.code).toBe('RECIPE_APPROVAL_TIMEOUT');
+    expect(retired?.errors?.[0]?.retryable).toBe(false);
+    expect(retired?.errors?.[0]?.details).toMatchObject({
       checkpoint_id: 'cp-1',
       ask_id: 'ask-1',
       stale_after_days: WINDOW_DAYS,
@@ -289,7 +289,12 @@ describe('checkpoint-retention — staleness guard', () => {
     expect(h.cancelAsk).not.toHaveBeenCalled();
     const retired = await h.auditLog.get('run-1');
     expect(retired?.commit_status).toBe('failed');
-    expect(retired?.errors[0]?.details).not.toHaveProperty('ask_id');
+    // `errors` is optional since 2026-08-05 (the write path omits it when
+    // empty), so assert the retirement error EXISTS before asserting what its
+    // details lack — a bare `?.details` would satisfy `.not.toHaveProperty`
+    // against `undefined` and pass with no error recorded at all.
+    expect(retired?.errors?.[0]).toBeDefined();
+    expect(retired?.errors?.[0]?.details).not.toHaveProperty('ask_id');
   });
 
   it('D-210 Phase C — a PARTY-OWNED (notify-mode reception) hold expires the same way', async () => {

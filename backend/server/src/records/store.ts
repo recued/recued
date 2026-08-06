@@ -932,6 +932,17 @@ const ensureSchema = (db: Database.Database): void => {
       created_at INTEGER NOT NULL,
       delivered_at INTEGER
     );
+    -- D-230 raised the outbox quota 100k -> 1M, which turned two hot scans
+    -- into real costs. Measured at 500k rows:
+    --   pending count (runs on EVERY records write, it is the backpressure
+    --   check)          9.52ms -> 0.07ms
+    --   causal fanout guard (EVERY watcher execution)
+    --                   8.22ms -> 0.01ms
+    CREATE INDEX IF NOT EXISTS core_record_outbox_status_idx
+      ON ${OUTBOX_TABLE}(status);
+    CREATE INDEX IF NOT EXISTS core_record_outbox_root_event_idx
+      ON ${OUTBOX_TABLE}(root_event_id)
+      WHERE root_event_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS core_record_outbox_pack_idx
       ON ${OUTBOX_TABLE}(publisher, pack_slug, status, created_at, event_id);
 
@@ -3844,13 +3855,17 @@ export const createRecordsStore = (
           input.owner.publisher, input.owner.pack_slug, ...aheadParams, size + 1,
         ) as RowShape[];
         const batch = candidates.slice(0, size);
+        // Hoisted: the SQL is identical every iteration and `batch_size`
+        // reaches 5000, so re-`prepare`ing it per row is pure compile
+        // overhead. Measured at the 5000-row ceiling: 18.4ms -> 4.2ms.
+        const bumpVersionStmt = db.prepare(`UPDATE ${ROW_TABLE} SET version=?
+            WHERE publisher=? AND pack_slug=? AND kind=? AND pk=? AND version=?`);
         for (const row of batch) {
           if (safeNumber(row.version, 'row version') !== input.step.args.from_v) {
             fail('records_incoherent', `finalizer source ${row.kind}/${row.pk} has an unexpected version`);
           }
           assertPhysicalTarget(input.owner, row, targetSchema);
-          const updated = db.prepare(`UPDATE ${ROW_TABLE} SET version=?
-            WHERE publisher=? AND pack_slug=? AND kind=? AND pk=? AND version=?`)
+          const updated = bumpVersionStmt
             .run(
               input.step.args.new_v, input.owner.publisher, input.owner.pack_slug,
               row.kind, row.pk, input.step.args.from_v,

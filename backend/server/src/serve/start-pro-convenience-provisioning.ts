@@ -54,6 +54,10 @@ export const startProConvenienceProvisioning = (
   const entitlement = options.certStack.getBindingEntitlementSource();
   if (!options.getSigningIdentity() || !handle || !entitlement) return;
 
+  // Last reason emitted, so a steady state (e.g. `unbound` on every free
+  // server) logs once rather than every cadence.
+  let lastSkipReason: string | undefined;
+
   const tick = async (): Promise<void> => {
     // Re-read the identity each tick so an unbind / rotation mid-life is
     // observed; the handle machine + entitlement source are stable refs.
@@ -78,6 +82,26 @@ export const startProConvenienceProvisioning = (
           `[pro-convenience-provision] reserve rejected: ${outcome.reason}`,
           outcome.message ? `(${outcome.message})` : '',
         );
+      } else if (outcome.outcome === 'skipped') {
+        // Every skip reason was previously SILENT, which makes a
+        // non-provisioning Pro server indistinguishable from a healthy one:
+        // no handle reserved, no DDNS published, no error, nothing to grep.
+        // A live drive spent hours unable to tell "the tick never registered"
+        // from "it ran and skipped" — and `entitlement_unavailable` (the
+        // shape a mis-pointed `cloud.base_url` produces) looked identical to
+        // a broken provisioner. The reason is already computed; not emitting
+        // it was the whole cost.
+        //
+        // `unbound` is the steady state for every FREE server, so it would be
+        // per-tick noise forever — log each reason ONCE per process, and let
+        // a changed reason speak again.
+        if (lastSkipReason !== outcome.reason) {
+          lastSkipReason = outcome.reason;
+          console.info(
+            `[pro-convenience-provision] skipped: ${outcome.reason}` +
+              ` (repeats suppressed until the reason changes)`,
+          );
+        }
       } else if (outcome.outcome === 'corrected') {
         // A stale persisted handle state self-healed — a rebind
         // (`via: 'change'`) or a `server_identity_key` rotation

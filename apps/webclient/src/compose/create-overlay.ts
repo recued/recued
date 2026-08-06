@@ -20,6 +20,7 @@ import { wireFocusTrap, type FocusTrapHandle } from '@recued/ui-shared';
 
 import {
   bootstrapComposeRoute,
+  COMPOSE_ROUTE_HOST_ATTR,
   type ComposeContactUpsertCaller,
   type ComposeRouteState,
   type ComposeWorkEntityUpsertCaller,
@@ -75,7 +76,7 @@ const CREATE_OVERLAY_STYLES = `
 [${CREATE_OVERLAY_CLOSE_ATTR}] {
   margin-left: auto;
   appearance: none;
-  min-height: 30px;
+  min-height: 36px;
   padding: 5px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -109,7 +110,7 @@ const CREATE_OVERLAY_STYLES = `
   gap: 8px;
 }
 [${CREATE_OVERLAY_DISCARD_GUARD_ATTR}] button {
-  min-height: 34px;
+  min-height: 36px;
   padding: 6px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -121,7 +122,7 @@ const CREATE_OVERLAY_STYLES = `
 }
 /* The compose route brings its own "Compose" header — hide it; the overlay
    supplies the "Create" title (the §D.L1 Compose→Create rename). */
-[${CREATE_OVERLAY_ATTR}] .compose-header {
+[${CREATE_OVERLAY_ATTR}] [${COMPOSE_ROUTE_HOST_ATTR}] .compose-header {
   display: none;
 }
 `;
@@ -324,7 +325,7 @@ export const openCreateOverlay = (
   };
 
   keyHandler = (ev: KeyboardEvent): void => {
-    if (ev.key !== 'Escape') return;
+    if (ev.key !== 'Escape' || ev.isComposing) return;
     if (discardGuard !== null) {
       ev.preventDefault?.();
       ev.stopPropagation?.();

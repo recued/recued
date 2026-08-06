@@ -30,6 +30,10 @@ export interface LoadResult extends LoadedConfig {
   /** Unknown `runtime.*` keys encountered in the user config. Surfaced
    *  for logging — the loader itself never throws on them. */
   unknownKeys: string[];
+  /** Settings written OUTSIDE `[runtime]` / `[bootstrap]` that resolve to a
+   *  REAL schema key — valid TOML that applies nothing. Each entry names the
+   *  key and the table it belongs under. See `parseToml`. */
+  misplacedKeys: string[];
   /** List of env var names that contributed overrides — useful when
    *  `--print-config` wants to annotate each field with its source. */
   envApplied: string[];
@@ -69,11 +73,13 @@ export const loadConfig = (opts: LoadOptions): LoadResult => {
 
   let source: string | null = null;
   let unknownKeys: string[] = [];
+  let misplacedKeys: string[] = [];
   const resolvedPath = expandHome(configPath, env.HOME ?? undefined);
   if (existsSync(resolvedPath)) {
     const text = readFileSync(resolvedPath, 'utf8');
-    const { parsed, unknown } = parseToml(text);
+    const { parsed, unknown, misplaced } = parseToml(text);
     unknownKeys = unknown;
+    misplacedKeys = misplaced;
     if (parsed.bootstrap) Object.assign(bootstrap, parsed.bootstrap);
     if (parsed.runtime) Object.assign(runtime, parsed.runtime);
     source = resolvedPath;
@@ -104,6 +110,7 @@ export const loadConfig = (opts: LoadOptions): LoadResult => {
     source,
     distribution: opts.distribution,
     unknownKeys,
+    misplacedKeys,
     envApplied,
   };
 };

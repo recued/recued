@@ -1146,17 +1146,33 @@ export const createAnnotationStore = (
       let collided = 0;
       let freedBytes = 0;
       let preservedBytes = 0;
+      // Hoisted out of the loop: all four are identical SQL every iteration
+      // (only the binds change), and `loserRows` is every annotation belonging
+      // to the merged-away contact — unbounded in practice. Six prepares per
+      // row at ~5.5us each is ~330ms of pure compile overhead on a 10k-row
+      // merge, before any work happens.
+      const findSurvivorStmt = db.prepare(
+        `SELECT id, extras FROM ${ANNOTATION_TABLE}
+          WHERE target_collection = ? AND target_id = ? AND key = ?
+          ORDER BY authored_at DESC, id DESC LIMIT 1`,
+      );
+      const deleteLoserStmt = db.prepare(
+        `DELETE FROM ${ANNOTATION_TABLE}
+          WHERE id = ? AND target_collection = ? AND target_id = ?`,
+      );
+      const absorbExtrasStmt = db.prepare(
+        `UPDATE ${ANNOTATION_TABLE} SET extras = ?, size_bytes = size_bytes + ? WHERE id = ?`,
+      );
+      const rewriteTargetStmt = db.prepare(
+        `UPDATE ${ANNOTATION_TABLE} SET target_id = ?
+          WHERE id = ? AND target_collection = ? AND target_id = ?`,
+      );
       for (const row of loserRows) {
         // Survivor's CANONICAL row for this key = the latest by authored_at —
         // matches `annotationsForRecord`'s `PARTITION BY key ORDER BY
         // authored_at DESC` dedup, so `extras` lands on the row a per-record
         // read surfaces rather than a superseded duplicate.
-        const existing = db
-          .prepare(
-            `SELECT id, extras FROM ${ANNOTATION_TABLE}
-              WHERE target_collection = ? AND target_id = ? AND key = ?
-              ORDER BY authored_at DESC, id DESC LIMIT 1`,
-          )
+        const existing = findSurvivorStmt
           .get(collection, toId, row.key) as
             | { id: string; extras: string | null }
             | undefined;
@@ -1164,12 +1180,7 @@ export const createAnnotationStore = (
           // Drop the loser row — guarded on the loser predicate (a concurrent
           // rewrite may have already moved it to the survivor side) AND on
           // `.changes` (an already-gone row must not be absorbed or counted).
-          const delRes = db
-            .prepare(
-              `DELETE FROM ${ANNOTATION_TABLE}
-                WHERE id = ? AND target_collection = ? AND target_id = ?`,
-            )
-            .run(row.id, collection, fromId);
+          const delRes = deleteLoserStmt.run(row.id, collection, fromId);
           if (delRes.changes === 0) continue;
           ftsDeleteRecord(db, ANNOTATION_FTS_TABLE, row.id);
           freedBytes += row.size_bytes;
@@ -1196,20 +1207,13 @@ export const createAnnotationStore = (
           // The survivor's stored footprint grows by the extras delta; the
           // loser row's bytes were freed above. Keep the warehouse byte
           // accounting honest — the loser value is re-homed, not freed.
-          db.prepare(
-            `UPDATE ${ANNOTATION_TABLE} SET extras = ?, size_bytes = size_bytes + ? WHERE id = ?`,
-          ).run(newExtras, afterBytes - beforeBytes, existing.id);
+          absorbExtrasStmt.run(newExtras, afterBytes - beforeBytes, existing.id);
           preservedBytes += afterBytes - beforeBytes;
         } else {
           // No collision — rewrite the loser row onto the survivor, guarded on
           // the loser predicate so a row a concurrent rewrite already moved
           // isn't re-counted.
-          const updRes = db
-            .prepare(
-              `UPDATE ${ANNOTATION_TABLE} SET target_id = ?
-                WHERE id = ? AND target_collection = ? AND target_id = ?`,
-            )
-            .run(toId, row.id, collection, fromId);
+          const updRes = rewriteTargetStmt.run(toId, row.id, collection, fromId);
           if (updRes.changes > 0) rewritten++;
         }
       }
@@ -1251,28 +1255,49 @@ export const createAnnotationStore = (
     }
     const rows = await listAnnotations({ ...filter, limit: 1000 });
     let evicted = 0;
-    for (const row of rows) {
-      const stale =
-        row.recipe_hash !== current.recipe_hash
-        || (current.source_record_hash !== undefined
-          && row.source_record_hash !== current.source_record_hash)
-        || (row.model_used !== undefined
-          && current.model_used !== undefined
-          && row.model_used !== current.model_used);
-      if (!stale) continue;
-      // Delete by exact row id rather than re-running compileFilter so
-      // we never widen the eviction beyond what the freshness check
-      // approved.
-      const deleted = db
-        .prepare(`DELETE FROM ${ANNOTATION_TABLE} WHERE id = ?`)
-        .run(row._id).changes;
-      if (deleted > 0) {
-        ftsDeleteRecord(db, ANNOTATION_FTS_TABLE, row._id);
-        // size_bytes lookup for gate accounting — best-effort
-        // (eviction is rare; the cost is negligible).
-        evicted++;
+    // ⛔ ONE TRANSACTION. The row delete and its FTS delete were two separate
+    // implicit transactions, so a crash between them left an ORPHAN in the FTS
+    // index — an entry for a row that no longer exists.
+    //
+    // ⚠ That orphan is INVISIBLE through the API and therefore accumulates
+    // silently: `searchAnnotations` takes the FTS hits and joins them against
+    // the annotation table (`WHERE id IN (…)`), so a dangling entry simply
+    // yields no row. Nothing is wrong with any answer; the index just grows
+    // forever. Worth stating precisely, because "the table and the index
+    // diverge" sounds like it should produce a wrong result and does not.
+    //
+    // The singular `deleteAnnotation` below has always wrapped both writes
+    // together; this path simply never did.
+    //
+    // ⚠ Safe to wrap because the body is fully synchronous: `listAnnotations`
+    // is awaited BEFORE the loop, and every call inside is better-sqlite3,
+    // which is sync by construction. An `await` in here would silently break
+    // atomicity rather than fail.
+    //
+    // The statement is hoisted for the same reason as `audit-retention`:
+    // re-`prepare`ing per row is pure waste. Measured on a file-backed WAL db
+    // at the 1000-row pass ceiling: 66.2ms -> 31.4ms (200 rows: 10.2 -> 2.3).
+    const deleteStmt = db.prepare(`DELETE FROM ${ANNOTATION_TABLE} WHERE id = ?`);
+    db.transaction(() => {
+      for (const row of rows) {
+        const stale =
+          row.recipe_hash !== current.recipe_hash
+          || (current.source_record_hash !== undefined
+            && row.source_record_hash !== current.source_record_hash)
+          || (row.model_used !== undefined
+            && current.model_used !== undefined
+            && row.model_used !== current.model_used);
+        if (!stale) continue;
+        // Delete by exact row id rather than re-running compileFilter so
+        // we never widen the eviction beyond what the freshness check
+        // approved.
+        const deleted = deleteStmt.run(row._id).changes;
+        if (deleted > 0) {
+          ftsDeleteRecord(db, ANNOTATION_FTS_TABLE, row._id);
+          evicted++;
+        }
       }
-    }
+    })();
     return evicted;
   };
 

@@ -264,7 +264,7 @@ describe('handleExecute D-157 slice 4 audit anchor invariant', () => {
     expect(result.success).toBe(false);
     expect(result.errors[0]).toMatchObject({ code: 'CHECKPOINT_WRITE_FAILED' });
     expect(entry.commit_status).toBe('failed');
-    expect(entry.errors[0]).toMatchObject({ code: 'CHECKPOINT_WRITE_FAILED' });
+    expect(entry.errors?.[0]).toMatchObject({ code: 'CHECKPOINT_WRITE_FAILED' });
     expect(entry.checkpoint_id).toBeUndefined();
     expect(entry.ask_id).toBeUndefined();
     expect(checkpoints.write).toHaveBeenCalledTimes(1);
@@ -283,7 +283,7 @@ describe('handleExecute D-157 slice 4 audit anchor invariant', () => {
       code: 'CHECKPOINT_STORE_UNAVAILABLE',
     });
     expect(entry.commit_status).toBe('failed');
-    expect(entry.errors[0]).toMatchObject({
+    expect(entry.errors?.[0]).toMatchObject({
       code: 'CHECKPOINT_STORE_UNAVAILABLE',
     });
     expect(entry.checkpoint_id).toBeUndefined();

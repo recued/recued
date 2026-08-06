@@ -78,6 +78,18 @@ export const ensureCaseInterventionSchema = (db: Database.Database): void => {
       last_failure   TEXT,
       updated_at     INTEGER NOT NULL
     );
+
+    -- D-219 lookups and cascade deletes are BY ROOT, and this table carried no
+    -- index. Every one was a full scan; a retention pass removing N roots did
+    -- N scans -- the quadratic shape fixed in audit-retention. Grows with chat.
+    CREATE INDEX IF NOT EXISTS idx_case_interventions_root
+      ON case_interventions (root_request_id);
+    CREATE INDEX IF NOT EXISTS idx_case_exp_assignments_root
+      ON case_experiment_assignments (root_request_id);
+    CREATE INDEX IF NOT EXISTS idx_case_exp_invalid_roots_root
+      ON case_experiment_invalid_roots (root_request_id);
+    CREATE INDEX IF NOT EXISTS idx_case_exp_turn_metrics_root
+      ON case_experiment_turn_metrics (root_request_id);
   `);
   const interventionColumns = new Set(
     (db.prepare(`PRAGMA table_info(${CASE_INTERVENTIONS_TABLE})`).all() as

@@ -794,6 +794,10 @@ describe('bootstrapSettingsRoute: Privacy directory + Server in-section sub-tabs
     );
     expect(reachabilityTab).not.toBeNull();
     expect(certsTab).not.toBeNull();
+    expect(reachabilityTab!.parent?.getAttribute('role')).toBe('tablist');
+    expect(reachabilityTab!.parent?.getAttribute('aria-label')).toBe(
+      'Server sections',
+    );
     expect(reachabilityTab!.getAttribute('tabindex')).toBe('0');
     expect(certsTab!.getAttribute('tabindex')).toBe('-1');
 
@@ -929,6 +933,12 @@ describe('D-148 § A.4.1 — bootstrapSettingsRoute: style injection', () => {
     expect(style.textContent).toContain(CLEAR_THIS_BROWSER_PANEL_STYLES.trim());
     expect(style.textContent).toContain(SELLER_PAGE_STYLES.trim());
     expect(style.textContent).toContain(UPDATES_PAGE_STYLES.trim());
+    expect(SETTINGS_ROUTE_STYLES).toMatch(
+      /data-recued-settings-nav-item\]\s*\{[^}]*min-height:\s*36px/s,
+    );
+    expect(SETTINGS_ROUTE_STYLES).toMatch(
+      /\.settings-subtab\s*\{[^}]*min-height:\s*36px/s,
+    );
     // ⛔ D-219 — the panel's own test proves its rules are complete and
     // host-scoped; only THIS proves they reach the document. The Learning
     // section shipped unstyled because the constant did not exist at all, and

@@ -26,6 +26,7 @@ export const RUN_MODAL_STYLES = `
   background: rgba(24, 33, 36, .28);
 }
 .run-modal-panel {
+  box-sizing: border-box;
   width: min(720px, 100%);
   max-height: calc(100vh - 80px);
   overflow: auto;
@@ -37,23 +38,30 @@ export const RUN_MODAL_STYLES = `
 }
 .run-modal-header {
   display: flex;
+  min-width: 0;
   align-items: baseline;
   gap: 10px;
   margin-bottom: 10px;
 }
 .run-modal-title {
+  min-width: 0;
+  max-width: 100%;
   margin: 0;
   font-size: 16px;
   font-weight: 650;
+  overflow-wrap: anywhere;
 }
 .run-modal-recipe-id {
+  min-width: 0;
   font-size: 11px;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 .run-modal-recipe-id code {
   font: 11px/1.4 var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
 }
 .run-modal-close {
+  flex: 0 0 auto;
   margin-left: auto;
 }
 .run-modal-tabs {
@@ -63,6 +71,8 @@ export const RUN_MODAL_STYLES = `
   margin-bottom: 12px;
 }
 .run-modal-tab {
+  box-sizing: border-box;
+  min-height: 36px;
   appearance: none;
   border: none;
   background: none;
@@ -85,6 +95,7 @@ export const RUN_MODAL_STYLES = `
 }
 .run-modal-body {
   display: grid;
+  min-width: 0;
   gap: 10px;
 }
 .run-modal-copy {
@@ -104,8 +115,10 @@ export const RUN_MODAL_STYLES = `
   color: var(--muted);
 }
 .run-modal-button {
+  box-sizing: border-box;
   appearance: none;
-  min-height: 32px;
+  min-width: 36px;
+  min-height: 36px;
   padding: 6px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -127,7 +140,9 @@ export const RUN_MODAL_STYLES = `
   color: var(--on-accent);
 }
 .run-modal-select {
-  min-height: 32px;
+  box-sizing: border-box;
+  max-width: 100%;
+  min-height: 36px;
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px 9px;
@@ -146,6 +161,10 @@ export const RUN_MODAL_STYLES = `
   font: 12px/1.45 var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
 }
 .run-modal-context-review > summary {
+  box-sizing: border-box;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
   cursor: pointer;
   font-size: 12px;
   color: var(--muted);
@@ -187,6 +206,10 @@ export const RUN_MODAL_STYLES = `
   font-size: 13px;
 }
 .run-modal-advanced > summary {
+  box-sizing: border-box;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
   cursor: pointer;
   font-size: 12px;
   color: var(--muted);
@@ -194,12 +217,16 @@ export const RUN_MODAL_STYLES = `
 }
 .run-modal-rule-list {
   list-style: none;
+  min-width: 0;
   margin: 0;
   padding: 0;
   display: grid;
   gap: 8px;
 }
 .run-modal-rule-row {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -209,7 +236,11 @@ export const RUN_MODAL_STYLES = `
   padding: 8px 10px;
 }
 .run-modal-rule-row code {
+  overflow-wrap: anywhere;
   font: 11px/1.4 var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+.run-modal-rule-row > div {
+  min-width: 0;
 }
 [${RUN_MODAL_OVERLAY_ATTR}] [${RUN_MODAL_RESULT_ATTR}] {
   margin-top: 4px;
@@ -238,6 +269,7 @@ export const RUN_MODAL_STYLES = `
 .run-modal-panel .var-row-inline > label {
   display: flex;
   align-items: center;
+  min-height: 36px;
   gap: 7px;
   font-weight: 500;
 }
@@ -261,6 +293,7 @@ export const RUN_MODAL_STYLES = `
 .run-modal-panel .var-row select {
   box-sizing: border-box;
   width: 100%;
+  min-height: 36px;
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 7px 9px;
@@ -281,8 +314,61 @@ export const RUN_MODAL_STYLES = `
 .run-modal-panel .var-multi-opt {
   display: flex;
   align-items: center;
+  min-height: 36px;
   gap: 6px;
   font-size: 12px;
   color: var(--fg);
+}
+.run-modal-actions > label.run-modal-copy {
+  box-sizing: border-box;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+}
+.run-modal-panel .ref-picker-input {
+  min-height: 36px;
+  padding-right: 40px;
+}
+.run-modal-panel .ref-picker-clear {
+  right: 0;
+  width: 36px;
+  height: 36px;
+}
+.run-modal-panel .ref-picker-option {
+  box-sizing: border-box;
+  min-height: 36px;
+  justify-content: center;
+}
+.run-modal-panel .var-file-refs-btn {
+  width: 36px;
+  height: 36px;
+}
+@media (max-width: 520px) {
+  .run-modal-header {
+    align-items: flex-start;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 10px;
+  }
+  .run-modal-title,
+  .run-modal-recipe-id {
+    grid-column: 1;
+  }
+  .run-modal-close {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    margin-left: 0;
+  }
+  .run-modal-actions {
+    min-width: 0;
+  }
+  .run-modal-actions > .run-modal-select {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .run-modal-rule-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }
 `;

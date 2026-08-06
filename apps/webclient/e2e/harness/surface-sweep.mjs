@@ -83,6 +83,8 @@ const BOOT_TIMEOUT_MS = 25_000;
 const MAX_DEPTH = Number(process.env.SWEEP_MAX_DEPTH ?? 3);
 const MAX_STATES = Number(process.env.SWEEP_MAX_STATES ?? 60);
 const WORKERS = Number(process.env.SWEEP_WORKERS ?? 4);
+const OVERFLOW_VIEWPORT_WIDTHS = [280, 390];
+const OVERFLOW_VIEWPORT_HEIGHT = 844;
 // Typed input, on by default. `SWEEP_FILL_INPUTS=0` reverts to a press-only
 // sweep — useful when attributing a change, since filling alters which controls
 // are enabled and therefore which get pressed at all.
@@ -178,7 +180,7 @@ const SURFACES = [
   { id: 'chat-source-mail', hash: 'chat/source/mail/gmail/work', query: 'ai=empty&connection=source-ready', reach: 'demo' },
   { id: 'approvals-detail', hash: 'approvals/approval-attention-1', query: 'attention=pending', reach: 'demo' },
   { id: 'connections-others', hash: 'connections/others', query: 'connection=grants', reach: 'demo' },
-  { id: 'connections-webhooks', hash: 'connections/webhooks', query: 'connection=grants', reach: 'demo' },
+  { id: 'connections-webhooks', hash: 'connections/webhooks', query: 'connection=webhooks', reach: 'demo' },
   { id: 'connections-calendar', hash: 'connections/calendar/work-calendar', query: 'connection=source-ready', reach: 'demo' },
   { id: 'contracts-user', hash: 'contracts/user', query: 'contracts=paged', reach: 'demo' },
   { id: 'contracts-view-others', hash: 'contracts/view/others', query: 'contracts=paged', reach: 'demo' },
@@ -301,6 +303,9 @@ window.__sweep = (() => {
   // ⛔ Kept in module scope, NOT in capture(): the driver JSON round-trips the
   // capture through page.evaluate, and a DOM element cannot survive that.
   let activeBefore = null;
+  let pressedSemanticBefore = null;
+  let pressedIdentity = null;
+  let pressedIdentityOrdinal = -1;
   const nativeCreate = document.createElement.bind(document);
   document.createElement = function (tag, options) {
     const el = nativeCreate(tag, options);
@@ -334,6 +339,108 @@ window.__sweep = (() => {
     textHash: hashOf(visibleText()),
     elements: document.querySelectorAll('*').length,
   });
+
+  /** Local horizontal overflow at the current viewport.
+   *
+   * The shell itself scrolls/clips, so documentElement can remain exactly the
+   * viewport width while a route child is hundreds of pixels too wide. Inspect
+   * every visible owner in the content subtree. Exclusions are explicit
+   * containment contracts: named scroll rails, native form-control internals,
+   * pre's own scroll box, deliberate ellipsis, and visually-hidden text. */
+  const horizontalOverflow = () => {
+    const root = document.documentElement;
+    const clientWidth = root.clientWidth;
+    const scrollWidth = root.scrollWidth;
+    const content = document.querySelector('[data-recued-webclient-content]')
+      || document.body;
+    const offenders = [content, ...content.querySelectorAll('*')]
+      .map((el) => {
+        const rect = el.getBoundingClientRect();
+        const style = getComputedStyle(el);
+        return {
+          el,
+          rect,
+          style,
+          visible: rect.width > 0 && rect.height > 0
+            && style.display !== 'none' && style.visibility !== 'hidden',
+        };
+      })
+      .filter(({ el, rect, style, visible }) => {
+        if (!visible || el.clientWidth <= 0 || el.scrollWidth <= el.clientWidth) {
+          return false;
+        }
+        if (el.matches('input, select, textarea, pre')
+          || el.closest('[data-recued-scroll-rail]') !== null) {
+          return false;
+        }
+        const clipsAnEllipsis = style.textOverflow === 'ellipsis'
+          && (style.overflowX === 'hidden' || style.overflowX === 'clip');
+        const visuallyHidden = rect.width <= 2 && rect.height <= 2
+          && (style.overflow === 'hidden' || style.overflowX === 'hidden');
+        if (clipsAnEllipsis || visuallyHidden) return false;
+
+        // clientWidth rounds the content box down, while scrollWidth rounds up.
+        // A bordered/fractional box can therefore read 214 -> 216 even when
+        // every child is visibly inside it. Require either a direct child that
+        // crosses the border box or direct text whose own scroll span exceeds
+        // that box. Direct children are intentional: a nested overflow:auto
+        // rail contains its descendants and must not taint every ancestor.
+        const childCrossesBox = [...el.children].some((child) => {
+          const childRect = child.getBoundingClientRect();
+          const childStyle = getComputedStyle(child);
+          if (childRect.width <= 0 || childRect.height <= 0
+            || childStyle.display === 'none' || childStyle.visibility === 'hidden') {
+            return false;
+          }
+          return childRect.left < rect.left - 1 || childRect.right > rect.right + 1;
+        });
+        const hasDirectText = [...el.childNodes].some((node) =>
+          node.nodeType === Node.TEXT_NODE && (node.textContent || '').trim().length > 0
+        );
+        const directTextCrossesBox = hasDirectText
+          && el.scrollWidth > Math.ceil(rect.width) + 1;
+        return childCrossesBox || directTextCrossesBox;
+      })
+      .sort((a, b) => (b.el.scrollWidth - b.el.clientWidth)
+        - (a.el.scrollWidth - a.el.clientWidth))
+      .slice(0, 8)
+      .map(({ el, rect }) => {
+        const crossingChildren = [...el.children].flatMap((child) => {
+          const childRect = child.getBoundingClientRect();
+          const childStyle = getComputedStyle(child);
+          if (childRect.width <= 0 || childRect.height <= 0
+            || childStyle.display === 'none' || childStyle.visibility === 'hidden'
+            || (childRect.left >= rect.left - 1 && childRect.right <= rect.right + 1)) {
+            return [];
+          }
+          return [{
+            tag: child.tagName.toLowerCase(),
+            id: child.id || '',
+            classes: [...child.classList].slice(0, 4),
+            recued: [...child.attributes].map((a) => a.name)
+              .filter((name) => name.startsWith('data-recued-')).slice(0, 4),
+            left: Math.round(childRect.left),
+            right: Math.round(childRect.right),
+            width: Math.round(childRect.width),
+          }];
+        });
+        return {
+          tag: el.tagName.toLowerCase(),
+          id: el.id || '',
+          classes: [...el.classList].slice(0, 4),
+          recued: [...el.attributes].map((a) => a.name)
+            .filter((name) => name.startsWith('data-recued-')).slice(0, 4),
+          clientWidth: el.clientWidth,
+          scrollWidth: el.scrollWidth,
+          left: Math.round(rect.left),
+          right: Math.round(rect.right),
+          width: Math.round(rect.width),
+          crossingChildren,
+        };
+      });
+    const overflowing = offenders.length > 0;
+    return { overflowing, clientWidth, scrollWidth, offenders };
+  };
 
   /** A sibling carrying the same data-recued-* attribute and aria-pressed
    *  "false" — the mark of a mutually-exclusive choice rather than a toggle. */
@@ -432,6 +539,62 @@ window.__sweep = (() => {
     return base + '|#' + n;
   };
 
+  /** State owned by the pressed control itself, excluding focus/class churn.
+   *
+   * A facet repaint can preserve the complete page text and element count while
+   * changing aria-pressed on the replacement chip. Likewise, the theme control
+   * changes its own preference attribute. Those are strong user-visible states,
+   * including on a background-noisy surface, and must not be called unjudged. */
+  const semanticState = (el) => JSON.stringify({
+    text: (el.textContent || '').replace(/\s+/g, ' ').trim(),
+    label: el.getAttribute('aria-label'),
+    title: el.getAttribute('title'),
+    pressed: el.getAttribute('aria-pressed'),
+    selected: el.getAttribute('aria-selected'),
+    checkedAria: el.getAttribute('aria-checked'),
+    expanded: el.getAttribute('aria-expanded'),
+    current: el.getAttribute('aria-current'),
+    disabled: el.disabled === true || el.getAttribute('aria-disabled') === 'true',
+    hidden: el.hidden === true || el.hasAttribute('hidden'),
+    checked: typeof el.checked === 'boolean' ? el.checked : null,
+    value: 'value' in el ? String(el.value) : null,
+    themePreference: el.getAttribute('data-theme-pref'),
+  });
+
+  /** Identity that survives an in-place control repaint. Values matter here:
+   * data-facet=tag/data-value=codex must not resolve to a sibling facet chip. */
+  const semanticIdentity = (el) => {
+    const attrs = [...el.attributes]
+      .filter((a) => a.name === 'id' || a.name === 'name'
+        || a.name === 'data-facet' || a.name === 'data-value'
+        || a.name.startsWith('data-recued-'))
+      .map((a) => a.name + '=' + a.value)
+      .sort();
+    return [
+      el.tagName.toLowerCase(),
+      el.getAttribute('role') || '',
+      el.getAttribute('type') || '',
+      attrs.join(','),
+    ].join('|');
+  };
+
+  const rememberPressed = (el) => {
+    pressedEl = el;
+    pressedSemanticBefore = semanticState(el);
+    pressedIdentity = semanticIdentity(el);
+    const peers = [...document.querySelectorAll(PRESSABLE)]
+      .filter((candidate) => semanticIdentity(candidate) === pressedIdentity);
+    pressedIdentityOrdinal = peers.indexOf(el);
+  };
+
+  const semanticTargetAfterPress = () => {
+    if (pressedEl?.isConnected) return pressedEl;
+    if (pressedIdentity === null || pressedIdentityOrdinal < 0) return null;
+    const peers = [...document.querySelectorAll(PRESSABLE)]
+      .filter((candidate) => semanticIdentity(candidate) === pressedIdentity);
+    return peers[pressedIdentityOrdinal] ?? null;
+  };
+
   const describe = () => {
     const seen = new Map();
     return [...document.querySelectorAll(PRESSABLE)].map((el, index) => ({
@@ -524,11 +687,15 @@ window.__sweep = (() => {
       }
       return [...out];
     },
+    horizontalOverflow,
     capture,
     begin: () => {
       records = [];
       born = [];
       pressedEl = null;
+      pressedSemanticBefore = null;
+      pressedIdentity = null;
+      pressedIdentityOrdinal = -1;
       activeBefore = document.activeElement;
       watching = true;
       observer.observe(document.documentElement, {
@@ -571,6 +738,10 @@ window.__sweep = (() => {
         .filter((o) => o.descendants > attachedMax);
       born = [];
       const after = capture();
+      const semanticTarget = semanticTargetAfterPress();
+      const pressedSemanticAfter = semanticTarget === null
+        ? null
+        : semanticState(semanticTarget);
       // A dead button still takes focus, so focus/hover attribute churn on the
       // pressed element is not an outcome.
       const FOCUS_ATTRS = new Set(['data-focus-visible', 'data-focus', 'class', 'style']);
@@ -600,6 +771,9 @@ window.__sweep = (() => {
           dialogs: after.dialogs - before.dialogs,
           text: before.textHash !== after.textHash,
           elements: after.elements - before.elements,
+          controlState: pressedSemanticBefore !== null
+            && pressedSemanticAfter !== null
+            && pressedSemanticBefore !== pressedSemanticAfter,
         },
       };
     },
@@ -607,7 +781,7 @@ window.__sweep = (() => {
       const seen = new Map();
       const els = [...document.querySelectorAll(PRESSABLE)];
       for (const el of els) {
-        if (signature(el, seen) === sig) { pressedEl = el; return pressEl(el); }
+        if (signature(el, seen) === sig) { rememberPressed(el); return pressEl(el); }
       }
       return { pressed: false, reason: 'not-found' };
     },
@@ -655,6 +829,64 @@ const waitForQuiet = async (page) => {
     if (Date.now() - started > QUIET_CAP_MS) return false;
     await page.waitForTimeout(100);
   }
+};
+
+/** Measure the same reached DOM state at both supported narrow widths, then
+ * restore the traversal viewport before any idle/press signal is collected. */
+const measureHorizontalOverflow = async (page) => {
+  const original = page.viewportSize() ?? { width: 1280, height: 720 };
+  const measurements = [];
+  for (const width of OVERFLOW_VIEWPORT_WIDTHS) {
+    await page.setViewportSize({ width, height: OVERFLOW_VIEWPORT_HEIGHT });
+    await page.evaluate(() => new Promise((resolveFrame) => {
+      requestAnimationFrame(() => requestAnimationFrame(resolveFrame));
+    }));
+    measurements.push({
+      width,
+      ...await page.evaluate('window.__sweep.horizontalOverflow()'),
+    });
+  }
+  await page.setViewportSize(original);
+  await page.evaluate(() => new Promise((resolveFrame) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolveFrame));
+  }));
+  return measurements;
+};
+
+/** Collapse repeated BFS measurements into stable DOM-owner identities while
+ * retaining widths, sizes, occurrence count, and the first replay path. */
+const summarizeOverflowOwners = (overflows) => {
+  const owners = new Map();
+  for (const overflow of overflows) {
+    for (const offender of overflow.offenders ?? []) {
+      const signature = [
+        offender.tag,
+        offender.id,
+        offender.classes.join('.'),
+        offender.recued.join(','),
+      ].join('|');
+      const current = owners.get(signature) ?? {
+        signature,
+        tag: offender.tag,
+        id: offender.id,
+        classes: offender.classes,
+        recued: offender.recued,
+        widths: new Set(),
+        sizes: new Set(),
+        occurrences: 0,
+        firstPath: overflow.path,
+      };
+      current.widths.add(overflow.width);
+      current.sizes.add(`${offender.clientWidth}->${offender.scrollWidth}`);
+      current.occurrences += 1;
+      owners.set(signature, current);
+    }
+  }
+  return [...owners.values()].map((owner) => ({
+    ...owner,
+    widths: [...owner.widths].sort((a, b) => a - b),
+    sizes: [...owner.sizes].sort(),
+  }));
 };
 
 /**
@@ -710,13 +942,34 @@ const bootAt = async (browser, surface, path) => {
   await page.evaluate(`window.__app.setHash(${JSON.stringify('#' + surface.hash)})`);
   await page.waitForTimeout(SETTLE_MS);
   await page.evaluate(PRESS_HARNESS);
+  // Replays must start from the same settled state the original traversal
+  // observed. A fixed delay was enough to queue slow Packs/Recipes controls,
+  // then miss them on the fresh boot used to audit the revealed state.
+  await waitForQuiet(page);
   for (const step of path) {
-    const res = await page.evaluate(`window.__sweep.pressSig(${JSON.stringify(step)})`);
+    // A queued step can exist only after the containing state was filled. The
+    // Connections Verify-and-replace action, for example, appears after Edit
+    // reveals a form and fillInputs unlocks it. Reconstruct that same safe fake
+    // state before looking up every replayed signature.
+    const replayStarted = Date.now();
+    let res;
+    for (;;) {
+      if (FILL_INPUTS) {
+        await page.evaluate('window.__sweep.fillInputs()');
+      }
+      res = await page.evaluate(`window.__sweep.pressSig(${JSON.stringify(step)})`);
+      if (res.pressed || Date.now() - replayStarted >= QUIET_CAP_MS) break;
+      // A route can be mutation-quiet while a deliberately slow transport call
+      // is still pending. Keep the exact signature (including ordinal) and wait
+      // for it; never fall back to a different repeated Install/Delete action.
+      await page.waitForTimeout(100);
+    }
     if (!res.pressed) {
       await page.close();
       return { page: null, errors, dialogs, replayFailed: step };
     }
     await page.waitForTimeout(SETTLE_MS);
+    await waitForQuiet(page);
   }
   return { page, errors, dialogs, replayFailed: null };
 };
@@ -759,7 +1012,8 @@ const judge = (result, noisy) => {
   if (orphansWorthReporting(result).length > 0) return 'orphan';
   const c = result.changed;
   const strong = c.hash || c.bodyChildren !== 0 || c.dialogs !== 0 || c.text
-    || c.elements !== 0 || c.focusMoved === true || c.nativeDialog === true;
+    || c.elements !== 0 || c.focusMoved === true || c.controlState === true
+    || c.nativeDialog === true;
   if (strong) return 'alive';
   if (noisy) return 'unjudged';
   return result.mutations > 0 ? 'alive' : 'inert';
@@ -793,7 +1047,7 @@ const sweepSurface = async (browser, surface) => {
     const entry = {
       ...surface, states: [], findings: [], mounted: false, routeStamps: [],
       error: null, controlsPressed: 0, attrsSeen: [], unreplayable: [],
-      harnessArtifactCount: 0, selectsNotJudged: 0,
+      harnessArtifactCount: 0, selectsNotJudged: 0, overflows: [],
     };
     const attrsSeen = new Set();
     const queue = [[]];
@@ -836,10 +1090,20 @@ const sweepSurface = async (browser, surface) => {
       if (FILL_INPUTS) {
         state.inputsFilled = (await page.evaluate('window.__sweep.fillInputs()')).length;
       }
+      // Measure the settled state, not an intermediate async repaint. Under the
+      // four-worker sweep Settings could still be replacing a just-activated
+      // panel here; measuring first attributed that transient child's width to
+      // `.settings-shell`, while an immediate isolated replay was clean.
+      state.wentQuiet = await waitForQuiet(page);
+      state.overflow = await measureHorizontalOverflow(page);
+      for (const measurement of state.overflow) {
+        if (measurement.overflowing) {
+          entry.overflows.push({ ...measurement, path });
+        }
+      }
       // ── Saturation guard: one settle window with NO press. ────────────────
       // Wait for the route's async bursts to land first, or the baseline just
       // measures them and the whole state is written off as unjudgeable.
-      state.wentQuiet = await waitForQuiet(page);
       const idleBefore = await page.evaluate('window.__sweep.begin()');
       await page.waitForTimeout(SETTLE_MS);
       const idle = await page.evaluate(`window.__sweep.end(${JSON.stringify(idleBefore)})`);
@@ -939,26 +1203,17 @@ const sweepSurface = async (browser, surface) => {
           entry.harnessArtifactCount += artifacts.length;
         }
         if (realErrors.length > 0) { record.verdict = 'threw'; record.errors = realErrors; }
-        // ⛔ A <select> that shows no outcome is NOT a finding. Two reasons,
-        // both structural: the logs filters stage their value behind an
-        // explicit Apply button (a legitimate and common pattern), and a
-        // programmatic `el.value = …` changes a PROPERTY, which a
-        // MutationObserver cannot see at all. So this method simply cannot
-        // judge a select — say that, rather than bank three false findings on
-        // #logs. These are listed as needing a semantic assertion instead.
-        // ⛔ Same argument extends to a checkbox/radio: toggling sets the
-        // `checked` PROPERTY, and a MutationObserver cannot see a property. A
-        // seller tier form's checkbox reported INERT for toggling correctly.
-        // If the app re-renders on change the mutation shows up and the control
-        // is judged normally; it is only the no-re-render case that is
-        // unjudgeable, and saying so beats banking it as a defect.
+        // ⛔ A form control that shows no outcome is NOT automatically a finding.
+        // The semantic target snapshot above now sees value/checked changes when
+        // the control (or its stable replacement) remains identifiable. But some
+        // selects legitimately stage a value behind an explicit Apply button,
+        // and a host can replace a property-only control without a stable marker.
+        // Those no-signal cases still require a route assertion; say that rather
+        // than bank a false dead-control finding.
         const propertyOnly = control.tag === 'select'
           || (control.tag === 'input' && /^(checkbox|radio)$/.test(control.type ?? ''));
-        // ⛔ Both verdicts, not just `inert`. A select's outcome is invisible to
-        // a MutationObserver whether the state was quiet (→ inert) or noisy
-        // (→ unjudged) — the reason this method cannot judge it does not change
-        // with the surface's noise. Typed input reached the compose overlay's
-        // four selects on noisy states and they were reported as findings.
+        // ⛔ Both verdicts, not just `inert`: absence of a semantic target signal
+        // is equally inconclusive on a quiet or noisy state.
         if ((record.verdict === 'inert' || record.verdict === 'unjudged') && propertyOnly) {
           record.verdict = 'property-change-no-signal';
           entry.selectsNotJudged += 1;
@@ -1030,6 +1285,7 @@ const sweepSurface = async (browser, surface) => {
 
     entry.attrsSeen = [...attrsSeen].sort();
     entry.statesSwept = statesDone;
+    entry.overflowOwners = summarizeOverflowOwners(entry.overflows);
     return entry;
 };
 
@@ -1049,7 +1305,12 @@ const run = async () => {
     const [i, n] = sliceArg.split('/').map(Number);
     surfaces = surfaces.filter((_, idx) => idx % n === (i - 1));
   }
-  const report = { generated: new Date().toISOString(), settleMs: SETTLE_MS, surfaces: [] };
+  const report = {
+    generated: new Date().toISOString(),
+    settleMs: SETTLE_MS,
+    overflowViewportWidths: OVERFLOW_VIEWPORT_WIDTHS,
+    surfaces: [],
+  };
 
   // `browser.newPage()` opens each page in its own context, so surfaces swept
   // concurrently cannot see each other's storage or state.
@@ -1068,6 +1329,7 @@ const run = async () => {
           ...surface,
           error: String(e && e.stack ? e.stack.split('\n').slice(0, 2).join(' | ') : e).slice(0, 300),
           findings: [], states: [], controlsPressed: 0, attrsSeen: [],
+          overflows: [], overflowOwners: [],
         };
       }
       report.surfaces.push(entry);
@@ -1080,11 +1342,20 @@ const run = async () => {
       const unaudited = entry.error !== null && entry.error !== undefined
         ? true
         : !entry.mounted || entry.controlsPressed === 0;
-      const mark = unaudited ? '✖' : entry.findings.length > 0 ? '⚠' : '✓';
+      const overflowCount = entry.overflowOwners?.length ?? 0;
+      const overflowStateCount = entry.overflows?.length ?? 0;
+      const unreplayableCount = entry.unreplayable?.length ?? 0;
+      const mark = unaudited
+        ? '✖'
+        : entry.findings.length > 0 || overflowCount > 0 || unreplayableCount > 0
+          ? '⚠'
+          : '✓';
       console.log(
         `${mark} ${surface.id.padEnd(24)} mounted=${entry.mounted ? 'y' : 'N'} `
         + `states=${String(entry.statesSwept ?? 0).padStart(2)} pressed=${String(entry.controlsPressed).padStart(3)} `
-        + `findings=${String(entry.findings.length).padStart(2)} `
+        + `findings=${String(entry.findings.length).padStart(2)} overflow=${String(overflowCount).padStart(2)} `
+        + `overflow-states=${String(overflowStateCount).padStart(3)} `
+        + `unreplayable=${String(unreplayableCount).padStart(2)} `
         + `${(entry.states ?? []).some((s) => s.noisy) ? 'NOISY ' : ''}`
         + `${(entry.states ?? []).reduce((n, s) => n + (s.bootErrors?.length ?? 0), 0) ? 'BOOT-ERRORS ' : ''}`
         + `${entry.error ? entry.error : ''}`,
@@ -1092,6 +1363,17 @@ const run = async () => {
       if (verbose) {
         for (const f of entry.findings) {
           console.log(`     · ${f.verdict.toUpperCase()} ${f.tag} [${f.attrs.join(',') || '—'}] "${f.text}" depth=${f.path.length}`);
+        }
+        for (const owner of entry.overflowOwners ?? []) {
+          console.log(
+            `     · OVERFLOW ${owner.widths.join('/')}px `
+            + `${owner.tag}${owner.id ? '#' + owner.id : ''} `
+            + `${owner.sizes.join(',')} occurrences=${owner.occurrences} `
+            + `depth=${owner.firstPath.length}`,
+          );
+        }
+        for (const replay of entry.unreplayable ?? []) {
+          console.log(`     · UNREPLAYABLE ${replay}`);
         }
       }
     }
@@ -1103,6 +1385,20 @@ const run = async () => {
   server.kill();
 
   const totalFindings = report.surfaces.reduce((n, s) => n + s.findings.length, 0);
+  const totalOverflowStates = report.surfaces.reduce(
+    (n, s) => n + (s.overflows?.length ?? 0),
+    0,
+  );
+  const totalUnreplayable = report.surfaces.reduce(
+    (n, s) => n + (s.unreplayable?.length ?? 0),
+    0,
+  );
+  const uniqueOverflowOwners = new Set(report.surfaces.flatMap(
+    (surface) => (surface.overflowOwners ?? []).map((owner) => owner.signature),
+  ));
+  report.overflowStateCount = totalOverflowStates;
+  report.overflowOwnerCount = uniqueOverflowOwners.size;
+  report.unreplayablePathCount = totalUnreplayable;
   const totalPressed = report.surfaces.reduce((n, s) => n + s.controlsPressed, 0);
   const unaudited = report.surfaces.filter(
     (s) => s.error || !s.mounted || s.controlsPressed === 0,
@@ -1110,7 +1406,9 @@ const run = async () => {
   report.unauditedSurfaces = unaudited.map((s) => s.id);
   console.log(
     `\n── ${report.surfaces.length} surfaces · ${totalPressed} presses · `
-    + `${totalFindings} findings · ${unaudited.length} UNAUDITED`,
+    + `${totalFindings} findings · ${uniqueOverflowOwners.size} overflow owners `
+    + `across ${totalOverflowStates} states · ${totalUnreplayable} unreplayable · `
+    + `${unaudited.length} UNAUDITED`,
   );
   if (unaudited.length > 0) {
     // Loud, and above the report path so it cannot be skimmed past. An
@@ -1121,13 +1419,23 @@ const run = async () => {
       + unaudited.map((s) => s.id).join(', '),
     );
   }
+  if (totalUnreplayable > 0) {
+    console.log(
+      `\n⛔ ${totalUnreplayable} queued state path(s) could not be replayed — their `
+      + 'findings and overflow counts are incomplete.',
+    );
+  }
   if (jsonOut) {
     writeFileSync(resolve(process.cwd(), jsonOut), JSON.stringify(report, null, 2));
     console.log(`── report → ${jsonOut}`);
   }
-  // Non-zero for EITHER a finding or an unaudited surface: a run that could not
-  // look is not a run that found nothing.
-  process.exitCode = totalFindings > 0 || unaudited.length > 0 ? 1 : 0;
+  // Non-zero for a press finding, an overflow owner, an unreplayable state, or
+  // an unaudited surface:
+  // a run that could not look is not a run that found nothing.
+  process.exitCode = totalFindings > 0 || uniqueOverflowOwners.size > 0
+    || totalUnreplayable > 0 || unaudited.length > 0
+    ? 1
+    : 0;
 };
 
 await run();

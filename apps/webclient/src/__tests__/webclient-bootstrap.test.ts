@@ -1105,9 +1105,22 @@ describe('D-148 § A.4 — bootstrapWebclient: pair-state hydration', () => {
     );
     expect(shellStyle?.textContent).toContain('height: 100dvh');
     expect(shellStyle?.textContent).toContain('backdrop-filter: blur(14px)');
+    expect(shellStyle?.textContent).toContain(
+      '.webclient-shell-brand:focus-visible',
+    );
+    expect(shellStyle?.textContent).toContain('min-height: 38px');
+    expect(shellStyle?.textContent).toMatch(
+      /\.webclient-shell-drawer-close\s*\{[^}]*width:\s*36px;[^}]*height:\s*36px/s,
+    );
+    expect(shellStyle?.textContent).toMatch(
+      /\[data-recued-webclient-drawer\]\s*\{[^}]*box-sizing:\s*border-box;/s,
+    );
     expect(WEBCLIENT_POLISH_STYLES).toContain('--wc-content-max: 1160px');
     expect(WEBCLIENT_POLISH_STYLES).toContain(
       '@media (prefers-reduced-motion: reduce)',
+    );
+    expect(WEBCLIENT_POLISH_STYLES).toMatch(
+      /\.data-tab\s*\{[^}]*min-height:\s*36px/s,
     );
     await handle.dispose();
   });
@@ -1598,19 +1611,41 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     await handle.dispose();
   });
 
-  it('lights exactly one seat per route despite the interim duplicate wirings', async () => {
+  it('prefers exact sibling destinations and falls back to their route seat', async () => {
     const fixture = buildOpts();
     const handle = await bootstrapWebclient(fixture.opts);
     const activeSeatIds = (): Array<string | null> =>
       findChildrenByAttr(fixture.root, WEBCLIENT_SHELL_DRAWER_ACTIVE_ATTR).map(
         (link) => link.getAttribute(WEBCLIENT_SHELL_DRAWER_LINK_ATTR),
       );
-    // #settings lights "Settings" only — never the "Account" seat (both wire
-    // to #settings).
+    // Bare Settings owns its parent seat; the exact Account address owns the
+    // sibling seat, while a deeper Settings section falls back to Settings.
     fixture.hashSource.setHash('#settings');
     expect(activeSeatIds()).toEqual(['settings']);
-    // #chat lights "Chats" only — never the same-surface "New chat" seat.
+    fixture.hashSource.setHash('#settings/account');
+    expect(activeSeatIds()).toEqual(['account']);
+    const accountLink = findChildrenByAttr(
+      fixture.root,
+      WEBCLIENT_SHELL_DRAWER_LINK_ATTR,
+    ).find((link) =>
+      link.getAttribute(WEBCLIENT_SHELL_DRAWER_LINK_ATTR) === 'account');
+    const toggle = findChildByAttr(
+      fixture.root,
+      WEBCLIENT_SHELL_DRAWER_TOGGLE_ATTR,
+    );
+    toggle!.click();
+    expect(accountLink?.focusCallCount).toBe(1);
+    toggle!.click();
+    fixture.hashSource.setHash('#settings/privacy');
+    expect(activeSeatIds()).toEqual(['settings']);
+
+    // New chat is also an exact sibling. Durable session addresses still
+    // fall back to Chats because they have no dedicated drawer row.
     fixture.hashSource.setHash('#chat');
+    expect(activeSeatIds()).toEqual(['chats']);
+    fixture.hashSource.setHash('#chat/new');
+    expect(activeSeatIds()).toEqual(['new-chat']);
+    fixture.hashSource.setHash('#chat/session/chat_1');
     expect(activeSeatIds()).toEqual(['chats']);
     // A route with NO drawer seat (Kitchen → reached via Recipes/Packs
     // [Author/Edit]) lights nothing — and the "Create" action seat never

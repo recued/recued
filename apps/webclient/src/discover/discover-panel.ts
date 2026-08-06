@@ -1206,14 +1206,18 @@ export const mountDiscoverPanel = <Row>(
 /** Scoped styles — mirrors the `#recipes` route's chips / search / card grid so
  *  Discovery reads as one surface. Injected once by the route host. */
 export const DISCOVER_PANEL_STYLES = `
-[${DISCOVER_PANEL_HOST_ATTR}] { display: grid; gap: 16px; }
+[${DISCOVER_PANEL_HOST_ATTR}] {
+  box-sizing: border-box; display: grid; width: 100%; min-width: 0;
+  max-width: 100%; gap: 16px;
+}
+[${DISCOVER_PANEL_HOST_ATTR}] > * { min-width: 0; max-width: 100%; }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-controls {
-  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  box-sizing: border-box; display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
   padding: 10px; border: 1px solid var(--border); border-radius: 12px;
   background: var(--surface);
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-search {
-  box-sizing: border-box; flex: 1 1 240px; min-width: 0; font: inherit;
+  box-sizing: border-box; flex: 1 1 240px; min-width: 0; max-width: 100%; font: inherit;
   font-size: 13px; color: var(--fg); background: var(--surface);
   border: 1px solid var(--border-strong); border-radius: var(--wc-radius, 6px);
   min-height: 40px; padding: 8px 11px;
@@ -1223,26 +1227,31 @@ export const DISCOVER_PANEL_STYLES = `
   outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak);
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-sort {
-  font: inherit; font-size: 13px; color: var(--fg); background: var(--surface);
+  box-sizing: border-box; min-width: 0; max-width: 100%; font: inherit;
+  font-size: 13px; color: var(--fg); background: var(--surface);
   border: 1px solid var(--border-strong); border-radius: var(--wc-radius, 6px);
   min-height: 40px; padding: 8px 11px;
 }
 [${DISCOVER_PANEL_SUMMARY_ATTR}] {
-  font-size: 12px; font-weight: 650; color: var(--fg-muted);
+  box-sizing: border-box; max-width: 100%; font-size: 12px; font-weight: 650;
+  color: var(--fg-muted); overflow-wrap: anywhere;
   border: 1px solid var(--border); background: var(--surface);
   border-radius: 999px; padding: 6px 12px; justify-self: start;
 }
+[${DISCOVER_PANEL_FILTERS_ATTR}] { min-width: 0; max-width: 100%; }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-chip-group {
-  display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px;
+  display: flex; flex-wrap: wrap; min-width: 0; max-width: 100%;
+  gap: 6px; align-items: center; margin-bottom: 6px;
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-chip-label {
   font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
-  color: var(--fg-subtle); margin-right: 2px;
+  color: var(--fg-subtle); margin-right: 2px; overflow-wrap: anywhere;
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-chip {
-  min-height: 34px; padding: 5px 11px; border: 1px solid var(--border);
+  box-sizing: border-box; min-width: 0; max-width: 100%; min-height: 36px;
+  padding: 5px 11px; border: 1px solid var(--border); white-space: normal;
   border-radius: 999px; background: var(--surface); color: var(--fg-muted);
-  font: inherit; font-size: 12px; cursor: pointer;
+  font: inherit; font-size: 12px; cursor: pointer; overflow-wrap: anywhere;
   transition: border-color 90ms ease, background 90ms ease, color 90ms ease;
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-chip:hover { border-color: var(--border-strong); color: var(--fg); }
@@ -1253,12 +1262,13 @@ export const DISCOVER_PANEL_STYLES = `
   border-style: dashed; color: var(--fg);
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-facet-finder {
-  flex: 1 0 100%; box-sizing: border-box; display: grid; gap: 8px;
+  flex: 1 0 100%; box-sizing: border-box; display: grid; min-width: 0;
+  max-width: 100%; gap: 8px;
   margin-top: 2px; padding: 10px; border: 1px solid var(--border);
   border-radius: 10px; background: var(--surface-sunk);
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-facet-search {
-  box-sizing: border-box; width: min(100%, 360px); min-height: 40px;
+  box-sizing: border-box; width: min(100%, 360px); max-width: 100%; min-height: 40px;
   padding: 8px 11px; border: 1px solid var(--border-strong);
   border-radius: var(--wc-radius, 6px); background: var(--surface);
   color: var(--fg); font: inherit; font-size: 13px;
@@ -1267,15 +1277,21 @@ export const DISCOVER_PANEL_STYLES = `
   outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak);
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-facet-status {
-  font-size: 12px; color: var(--fg-subtle);
+  min-width: 0; max-width: 100%; font-size: 12px; color: var(--fg-subtle);
+  overflow-wrap: anywhere;
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-facet-results {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  display: flex; flex-wrap: wrap; min-width: 0; max-width: 100%;
+  align-items: center; gap: 6px;
   max-height: 220px; overflow: auto; overscroll-behavior: contain;
 }
 [${DISCOVER_PANEL_STATUS_ATTR}] {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  box-sizing: border-box; display: flex; flex-wrap: wrap; min-width: 0;
+  max-width: 100%; align-items: center; gap: 10px;
   font-size: 13px; color: var(--fg-muted);
+}
+[${DISCOVER_PANEL_HOST_ATTR}] .discover-status-text {
+  flex: 1 1 180px; min-width: 0; max-width: 100%; overflow-wrap: anywhere;
 }
 [${DISCOVER_PANEL_STATUS_ATTR}][hidden] { display: none; }
 [${DISCOVER_PANEL_STATUS_ATTR}].discover-status--error {
@@ -1289,7 +1305,8 @@ export const DISCOVER_PANEL_STYLES = `
   border-left: 3px solid var(--border-strong); padding-left: 8px; color: var(--fg-muted);
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-retry {
-  font: inherit; font-size: 12px; font-weight: 650; min-height: 30px; padding: 4px 11px;
+  flex: 0 0 auto; font: inherit; font-size: 12px; font-weight: 650;
+  min-height: 36px; padding: 4px 11px;
   border-radius: var(--wc-radius, 6px); border: 1px solid var(--border-strong);
   background: var(--surface); color: var(--fg); cursor: pointer;
 }
@@ -1301,18 +1318,22 @@ export const DISCOVER_PANEL_STYLES = `
    above the paged grid, outside the pager, with its own heading so the group
    explains itself rather than looking like page 1 in an odd order. */
 [${DISCOVER_PANEL_PINNED_ATTR}] {
-  grid-column: 1 / -1; display: grid; gap: 10px; padding-bottom: 4px;
+  box-sizing: border-box; grid-column: 1 / -1; display: grid; min-width: 0;
+  max-width: 100%; gap: 10px; padding-bottom: 4px;
   border-bottom: 1px solid var(--border); margin-bottom: 4px;
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-pinned-label {
-  font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--fg-subtle);
+  font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--fg-subtle); overflow-wrap: anywhere;
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  display: grid; min-width: 0; max-width: 100%;
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
   gap: 12px; align-items: start;
 }
 [${DISCOVER_PANEL_CARD_ATTR}] {
-  min-width: 0; border: 1px solid var(--border); border-radius: 12px;
+  box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%;
+  border: 1px solid var(--border); border-radius: 12px;
   background: var(--surface); padding: 16px; display: grid; gap: 10px;
   box-shadow: 0 1px 2px rgba(24,24,27,.035);
 }
@@ -1323,25 +1344,36 @@ export const DISCOVER_PANEL_STYLES = `
   outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak);
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-card-head {
-  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px;
+  display: flex; flex-wrap: wrap; min-width: 0; max-width: 100%;
+  align-items: baseline; gap: 6px;
 }
-[${DISCOVER_PANEL_HOST_ATTR}] .discover-card-title { font-size: 15px; font-weight: 700; color: var(--fg); letter-spacing: -.01em; }
+[${DISCOVER_PANEL_HOST_ATTR}] .discover-card-title {
+  min-width: 0; max-width: 100%; font-size: 15px; font-weight: 700;
+  color: var(--fg); letter-spacing: -.01em; overflow-wrap: anywhere;
+}
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-badge {
-  font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border);
-  color: var(--fg-muted);
+  box-sizing: border-box; min-width: 0; max-width: 100%; font-size: 11px;
+  padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border);
+  color: var(--fg-muted); overflow-wrap: anywhere;
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-badge--accent { border-color: var(--accent); color: var(--accent); }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-badge--danger { border-color: var(--danger); color: var(--danger); }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-card-desc {
-  margin: 0; font-size: 13px; line-height: 1.45; color: var(--fg-muted);
+  min-width: 0; max-width: 100%; margin: 0; font-size: 13px;
+  line-height: 1.45; color: var(--fg-muted); overflow-wrap: anywhere;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-card-foot {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  display: flex; min-width: 0; max-width: 100%; align-items: center;
+  justify-content: space-between; gap: 8px;
 }
-[${DISCOVER_PANEL_HOST_ATTR}] .discover-card-meta { font-size: 12px; color: var(--fg-subtle); min-width: 0; }
+[${DISCOVER_PANEL_HOST_ATTR}] .discover-card-meta {
+  flex: 1 1 180px; min-width: 0; max-width: 100%; font-size: 12px;
+  color: var(--fg-subtle); overflow-wrap: anywhere;
+}
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-action {
-  min-height: 36px; font: inherit; font-size: 12px; font-weight: 650; padding: 7px 13px;
+  box-sizing: border-box; flex: 0 0 auto; max-width: 100%; min-height: 36px;
+  font: inherit; font-size: 12px; font-weight: 650; padding: 7px 13px;
   border-radius: var(--wc-radius, 6px); border: 1px solid var(--accent);
   background: var(--accent); color: var(--on-accent); cursor: pointer; white-space: nowrap;
 }
@@ -1354,7 +1386,8 @@ export const DISCOVER_PANEL_STYLES = `
   opacity: .65; cursor: progress;
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-pager {
-  display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 4px;
+  display: flex; flex-wrap: wrap; min-width: 0; max-width: 100%;
+  align-items: center; justify-content: center; gap: 12px; margin-top: 4px;
 }
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-page-btn {
   font: inherit; font-size: 13px; padding: 5px 12px; border-radius: var(--wc-radius, 6px);
@@ -1365,7 +1398,7 @@ export const DISCOVER_PANEL_STYLES = `
 @media (max-width: 560px) {
   [${DISCOVER_PANEL_HOST_ATTR}] .discover-controls { padding: 8px; }
   [${DISCOVER_PANEL_HOST_ATTR}] .discover-sort { flex: 1 1 150px; }
-  [${DISCOVER_PANEL_HOST_ATTR}] .discover-grid { grid-template-columns: 1fr; }
+  [${DISCOVER_PANEL_HOST_ATTR}] .discover-grid { grid-template-columns: minmax(0, 1fr); }
   [${DISCOVER_PANEL_HOST_ATTR}] .discover-chip,
   [${DISCOVER_PANEL_HOST_ATTR}] .discover-page-btn { min-height: 44px; }
 }

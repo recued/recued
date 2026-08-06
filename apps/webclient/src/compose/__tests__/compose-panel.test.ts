@@ -251,6 +251,15 @@ describe('D-174 P5 Compose local draft route', () => {
     );
     expect(doc.styleElements).toHaveLength(1);
     expect(doc.styleElements[0]?.attrs.has(COMPOSE_ROUTE_STYLES_MARKER)).toBe(true);
+    expect(doc.styleElements[0]?.textContent).toContain(
+      `[${COMPOSE_ROUTE_TARGET_CHIP_ATTR}] {\n  min-height: 36px;`,
+    );
+    expect(doc.styleElements[0]?.textContent).toMatch(
+      /textarea,\n[^}]*input,\n[^}]*select\s*\{[^}]*min-height:\s*36px;/s,
+    );
+    expect(doc.styleElements[0]?.textContent).toContain(
+      `[${COMPOSE_ROUTE_COMMIT_ATTR}] {\n  justify-self: start;\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  min-height: 36px;`,
+    );
 
     route.dispose();
   });
@@ -283,6 +292,26 @@ describe('D-174 P5 Compose local draft route', () => {
       'target_completion_at',
       'state',
     ]);
+
+    route.dispose();
+  });
+
+  it('exposes every visually required field to assistive technology', () => {
+    const { root, route } = mountFor();
+    const requiredFieldKeys = (): string[] =>
+      collectByAttr(root, 'aria-required').map((field) =>
+        field.getAttribute(COMPOSE_ROUTE_FIELD_ATTR) ?? '',
+      );
+
+    expect(requiredFieldKeys()).toEqual(['email']);
+    route.selectTarget('task');
+    expect(requiredFieldKeys()).toEqual(['title']);
+    route.selectTarget('note');
+    expect(requiredFieldKeys()).toEqual(['body']);
+    route.selectTarget('commitment');
+    expect(requiredFieldKeys()).toEqual(['statement']);
+    route.selectTarget('project');
+    expect(requiredFieldKeys()).toEqual(['title']);
 
     route.dispose();
   });

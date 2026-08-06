@@ -55,8 +55,8 @@ const NOW = 1_700_000_000_000;
 
 // One mail collection table for the simple-thread tests + a second
 // table for the multi-account sibling-sum case.
-const MAIL_TABLE_PRIMARY = 'collection_mail_primary';
-const MAIL_TABLE_SECONDARY = 'collection_mail_secondary';
+const MAIL_TABLE_PRIMARY = 'collection_mail_33333333cc';
+const MAIL_TABLE_SECONDARY = 'collection_mail_44444444dd';
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'd-145-pa9-task-density-'));

@@ -147,7 +147,9 @@ export const handleExecutionRecent = async (
         status: e.commit_status,
         started_at: e.started_at,
         duration_ms: e.duration_ms,
-        ...(e.errors.length > 0 ? { error_category: e.errors[0].code } : {}),
+        ...((e.errors ?? []).length > 0
+          ? { error_category: (e.errors ?? [])[0]!.code }
+          : {}),
         // D-161 P3 — the run's lane, derived from the audit row's write-actor
         // (`execution_source.actor`; absent → `'system'`). Lets the client
         // badge / group lanes it reached via an explicit `origin_actors`.

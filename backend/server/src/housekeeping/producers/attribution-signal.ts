@@ -80,6 +80,7 @@ import type {
   HousekeepingTaskInstance,
 } from '../registry.js';
 import { canonicalOne } from './_email-addresses.js';
+import { listCollectionDataTables } from '../../collections/table.js';
 
 // ────────────────────────────────────────────────────────────────
 // Constants
@@ -215,14 +216,9 @@ const collectMailInWindow = (
   start_at: number,
   end_at: number,
 ): MailWindowRow[] => {
-  const tables = ctx.db
-    .prepare(
-      `SELECT name FROM sqlite_master
-        WHERE type='table' AND name LIKE 'collection_mail_%'`,
-    )
-    .all() as Array<{ name: string }>;
+  const tables = listCollectionDataTables(ctx.db, 'mail');
   const out: MailWindowRow[] = [];
-  for (const { name: table } of tables) {
+  for (const table of tables) {
     const rows = ctx.db
       .prepare(
         `SELECT received_at, hot_fields FROM "${table}"
@@ -254,14 +250,9 @@ const collectMeetingsInWindow = (
   start_at: number,
   end_at: number,
 ): CalendarWindowRow[] => {
-  const tables = ctx.db
-    .prepare(
-      `SELECT name FROM sqlite_master
-        WHERE type='table' AND name LIKE 'collection_calendar_%'`,
-    )
-    .all() as Array<{ name: string }>;
+  const tables = listCollectionDataTables(ctx.db, 'calendar');
   const out: CalendarWindowRow[] = [];
-  for (const { name: table } of tables) {
+  for (const table of tables) {
     const rows = ctx.db
       .prepare(
         `SELECT start_at FROM "${table}"

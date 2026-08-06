@@ -268,6 +268,13 @@ export const ensureWorkEntitySchema = (db: Database.Database): void => {
       ON ${TASK_TABLE} (assigned_contact_id, done);
     CREATE INDEX IF NOT EXISTS idx_task_project_done
       ON ${TASK_TABLE} (parent_project_id, done);
+    -- countTasksLinkedToThread() is called ONCE PER THREAD by the D-123
+    -- task-signal-density producer; without this it scanned every task row on
+    -- every call. Same quadratic shape as the mail thread lookup, one table
+    -- over.
+    CREATE INDEX IF NOT EXISTS idx_task_linked_thread
+      ON ${TASK_TABLE} (linked_mail_thread_id)
+      WHERE linked_mail_thread_id IS NOT NULL;
     ${sourceRowIdentityIndexes('task', TASK_TABLE)}
   `);
 

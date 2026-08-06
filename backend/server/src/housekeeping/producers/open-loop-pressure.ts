@@ -86,6 +86,7 @@ import {
   sqlInList,
   sqlLikeAny,
 } from './_contact-addresses.js';
+import { listCollectionDataTables } from '../../collections/table.js';
 
 // ────────────────────────────────────────────────────────────────
 // Constants
@@ -219,13 +220,8 @@ export const aggregateOpenTasksForContact = (
 };
 
 const listMailCollectionTables = (ctx: HousekeepingContext): string[] => {
-  const rows = ctx.db
-    .prepare(
-      `SELECT name FROM sqlite_master
-        WHERE type='table' AND name LIKE 'collection_mail_%'`,
-    )
-    .all() as Array<{ name: string }>;
-  return rows.map((r) => r.name);
+  const rows = listCollectionDataTables(ctx.db, 'mail');
+  return rows;
 };
 
 /** Aggregate unread mails involving the contact across every mail

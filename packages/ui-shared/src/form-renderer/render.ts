@@ -414,6 +414,8 @@ const renderArray = (
       : '';
   return `<div
     class="form-renderer-array"
+    role="group"
+    aria-label="${e(field.label)}"
     data-form-field="${e(field.name)}"
     data-form-type="array"
     data-form-item-type="${e(itemType ?? 'text')}"${refTarget ? ` data-form-ref-target="${e(refTarget)}"` : ''}${invalidAttrs(field, error)}
@@ -424,9 +426,20 @@ const renderArray = (
       type="button"
       class="form-renderer-array-add"
       data-form-array-add="${e(field.name)}"
+      aria-label="${e(`Add ${field.label}`)}"
     >Add</button>
   </div>`;
 };
+
+const arrayItemAccessibleName = (
+  field: FormField,
+  index: number,
+): string => `${field.label} ${index + 1}`;
+
+const arrayRemoveAccessibleName = (
+  field: FormField,
+  index: number,
+): string => `Remove ${arrayItemAccessibleName(field, index)}`;
 
 const renderArrayItem = (
   field: FormField,
@@ -450,6 +463,8 @@ const renderArrayItem = (
     const subHtml = renderFieldGroup(subFields, subValues, options);
     return `<div
       class="form-renderer-array-item form-renderer-array-item-composite"
+      role="group"
+      aria-label="${e(arrayItemAccessibleName(field, index))}"
       data-form-array-item="${e(field.name)}"
       data-form-array-index="${index}"
       data-form-type="object"
@@ -460,6 +475,7 @@ const renderArrayItem = (
         class="form-renderer-array-remove"
         data-form-array-remove="${e(field.name)}"
         data-form-array-index="${index}"
+        aria-label="${e(arrayRemoveAccessibleName(field, index))}"
       >Remove</button>
     </div>`;
   }
@@ -483,6 +499,8 @@ const renderArrayItem = (
     );
     return `<div
       class="form-renderer-array-item form-renderer-array-item-composite"
+      role="group"
+      aria-label="${e(arrayItemAccessibleName(field, index))}"
       data-form-array-item="${e(field.name)}"
       data-form-array-index="${index}"
       data-form-type="discriminated_union"
@@ -493,6 +511,7 @@ const renderArrayItem = (
         class="form-renderer-array-remove"
         data-form-array-remove="${e(field.name)}"
         data-form-array-index="${index}"
+        aria-label="${e(arrayRemoveAccessibleName(field, index))}"
       >Remove</button>
     </div>`;
   }
@@ -509,6 +528,7 @@ const renderArrayItem = (
       .join('');
     inputHtml = `<select
       class="form-renderer-select"
+      aria-label="${e(arrayItemAccessibleName(field, index))}"
       data-form-array-item="${e(field.name)}"
       data-form-array-index="${index}"
       data-form-type="enum"
@@ -518,12 +538,13 @@ const renderArrayItem = (
       ? renderRefPicker(refPickerSeedState(value), {
           pickerId: refPickerArrayItemId(field.name, index),
           placeholder: 'Search contacts…',
-          ariaLabel: field.label,
+          ariaLabel: arrayItemAccessibleName(field, index),
           arrayMirror: { field: field.name, index },
         })
       : `<input
       class="form-renderer-input"
       type="text"
+      aria-label="${e(arrayItemAccessibleName(field, index))}"
       data-form-array-item="${e(field.name)}"
       data-form-array-index="${index}"
       data-form-type="ref"
@@ -536,6 +557,7 @@ const renderArrayItem = (
     inputHtml = `<input
       class="form-renderer-input"
       type="number"
+      aria-label="${e(arrayItemAccessibleName(field, index))}"
       data-form-array-item="${e(field.name)}"
       data-form-array-index="${index}"
       data-form-type="number"
@@ -545,19 +567,21 @@ const renderArrayItem = (
     inputHtml = `<input
       class="form-renderer-input"
       type="text"
+      aria-label="${e(arrayItemAccessibleName(field, index))}"
       data-form-array-item="${e(field.name)}"
       data-form-array-index="${index}"
       data-form-type="${e(itemType ?? 'text')}"
       value="${e(display)}"
     />`;
   }
-  return `<div class="form-renderer-array-item">
+  return `<div class="form-renderer-array-item" role="group" aria-label="${e(arrayItemAccessibleName(field, index))}">
     ${inputHtml}
     <button
       type="button"
       class="form-renderer-array-remove"
       data-form-array-remove="${e(field.name)}"
       data-form-array-index="${index}"
+      aria-label="${e(arrayRemoveAccessibleName(field, index))}"
     >Remove</button>
   </div>`;
 };

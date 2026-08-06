@@ -169,6 +169,15 @@ const findByAttr = (root: FakeElement, attr: string): FakeElement | null => {
   return null;
 };
 
+const findByClass = (root: FakeElement, className: string): FakeElement | null => {
+  if (root.className.split(' ').includes(className)) return root;
+  for (const c of root.children) {
+    const hit = findByClass(c, className);
+    if (hit) return hit;
+  }
+  return null;
+};
+
 const findAxisToggle = (
   root: FakeElement,
   channel: NotificationChannelName,
@@ -503,6 +512,50 @@ describe('mountNotificationsPanel', () => {
     expect(updated?.notification).toBe(true);
     expect(panel.getTogglingAxes().has('bridge::notification')).toBe(false);
     expect(panel.getRowError('bridge')).toBeUndefined();
+  });
+
+  it('gives matrix switches and verification controls stable contextual names', async () => {
+    const host = makeFakeElement('div');
+    const slackReadyRow: NotificationChannelToggleView = {
+      ...slackNotReadyRow,
+      ready: true,
+    };
+    const panel = mountNotificationsPanel({
+      host: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      runDescribe: async () => ({
+        rows: [uiRow, bridgeReadyRow, slackReadyRow],
+        verification_phrase: 'purple otter',
+      }),
+      runSetChannel: async () => ({ ok: false, reason: 'ui_fixed' }),
+      runSetVerificationPhrase: async () => ({
+        ok: false,
+        reason: 'too_long',
+        max: 80,
+      }),
+    });
+    await panel.whenLoaded();
+
+    expect(
+      findAxisToggle(host, 'bridge', 'notification')?.getAttribute('aria-label'),
+    ).toBe('Browser Bridge OS notifications');
+    expect(
+      findAxisToggle(host, 'slack', 'notification')?.getAttribute('aria-label'),
+    ).toBe('Slack notifications');
+    expect(
+      findAxisToggle(host, 'slack', 'approval')?.getAttribute('aria-label'),
+    ).toBe('Slack approvals');
+    expect(
+      findByAttr(host, NOTIFICATIONS_PHRASE_INPUT_ATTR)?.getAttribute(
+        'aria-label',
+      ),
+    ).toBe('Anti-phishing phrase');
+    expect(
+      findByAttr(host, NOTIFICATIONS_PHRASE_SAVE_ATTR)?.getAttribute(
+        'aria-label',
+      ),
+    ).toBe('Save anti-phishing phrase');
+    expect(findByClass(host, 'notif-phrase-heading')?.tagName).toBe('H3');
   });
 
   it('R31 — a ready inline channel sends an approval-axis patch (independent of notify)', async () => {

@@ -1290,7 +1290,7 @@ export const projectAuditEntryForMcp = (
   ...(entry.event_at !== undefined ? { event_at: entry.event_at } : {}),
   ...(entry.run_mode !== undefined ? { run_mode: entry.run_mode } : {}),
   ...(entry.backfill !== undefined ? { backfill: entry.backfill } : {}),
-  errors: entry.errors.map(projectRecipeErrorForMcp),
+  errors: (entry.errors ?? []).map(projectRecipeErrorForMcp),
 });
 
 /** D-198 §3 — the `core.memory.read` grant op governing the shared-read half of

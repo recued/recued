@@ -102,6 +102,25 @@ export const composeBaseContext = (
   );
   bootTrace.mark('config-loaded', loadedConfig.source ? 'file' : 'defaults');
 
+  // Surface the loader's config diagnostics. Until now BOTH were computed and
+  // discarded — `unknownKeys` had no consumer anywhere in the tree, so a
+  // misspelled setting under `[runtime]` was detected, unit-tested, and never
+  // shown to the operator. A silently-ignored setting is indistinguishable
+  // from an applied one, which is the worst possible failure for a config file
+  // someone edited by hand expecting an effect.
+  for (const key of loadedConfig.misplacedKeys) {
+    console.warn(
+      `[config] IGNORED — setting is outside its table: ${key}` +
+        (loadedConfig.source ? ` (${loadedConfig.source})` : ''),
+    );
+  }
+  if (loadedConfig.unknownKeys.length > 0) {
+    console.warn(
+      `[config] unrecognised setting(s), ignored: ${loadedConfig.unknownKeys.join(', ')}` +
+        (loadedConfig.source ? ` (${loadedConfig.source})` : ''),
+    );
+  }
+
   // Wire the auto-PII seam to the owner's setting, at the EARLIEST point the
   // store exists — housekeeping and reactive fires can dispatch recipes well
   // before the listener starts, and each one consults this. A live closure, not

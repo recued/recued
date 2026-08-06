@@ -63,6 +63,7 @@ import type { RecipeStore } from '../../recipe-store.js';
 import type { RecordsStore } from '../../records/index.js';
 import type { ServerExecutorConfig } from '../../server-executor.js';
 import type { SharedStore } from '../../storage/shared-store.js';
+import type { UserMemoryStore } from '../../user-memory-store.js';
 import type { EnrichmentStore } from '../../storage/enrichment-store.js';
 import type { AnnotationStore } from '../../storage/annotation-store.js';
 import type { ContactStore } from '../../storage/contact-store.js';
@@ -146,6 +147,9 @@ export interface ComposeExecuteDepsDeps {
   warehouseBus?: Pick<import('@recued/warehouse-events').WarehouseEventBus, 'emit'>;
   auditLog: AuditLogStore | undefined;
   sharedStore: SharedStore | undefined;
+  /** D-231 — backs `{{data.memory.<memory_id>}}`. Undefined on db-less
+   *  daemon paths; the namespace then reads undefined, like `sharedStore`. */
+  userMemoryStore?: UserMemoryStore | undefined;
   db: Database.Database | undefined;
   enrichmentStore: EnrichmentStore | undefined;
   commitStore: CommitStore | undefined;
@@ -768,6 +772,12 @@ export const composeExecuteDeps = (
     instanceId: deps.serverInstanceId,
     serverName: deps.serverDisplayName,
     sharedStore: deps.sharedStore,
+    // D-231 — the owner's curated knowledge behind `{{data.memory.*}}`.
+    // ⛔ THREADING THIS IS THE WHOLE FEATURE. The resolver in
+    // `execute-handler` is dead code without it, and D-120 Phase 4 shipped
+    // exactly that shape — a declared namespace nothing wired — for its entire
+    // life. Asserted by `d-231-execute-deps-wiring.test.ts`.
+    ...(deps.userMemoryStore ? { userMemoryStore: deps.userMemoryStore } : {}),
     // D-120 Phase 3 — provenance link emission. When db is wired,
     // execute-handler resolves recipe_insights.id pre-run, buffers
     // EmittedLinks via the engine's linkSink, and writes them to the

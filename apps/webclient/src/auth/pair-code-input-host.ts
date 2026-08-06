@@ -996,7 +996,7 @@ interface DelegatedEventTarget {
 
 const PAIR_CODE_INPUT_STYLES_MARKER = 'data-recued-pair-code-input-styles';
 
-const PAIR_CODE_INPUT_STYLES = `
+export const PAIR_CODE_INPUT_STYLES = `
 .pair-code-input-form {
   width: min(420px, calc(100vw - 32px));
   margin: 0 auto;
@@ -1111,6 +1111,7 @@ const PAIR_CODE_INPUT_STYLES = `
 .pair-code-input-form input {
   width: 100%;
   box-sizing: border-box;
+  min-height: 36px;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1501,6 +1502,7 @@ const PAIR_CODE_INPUT_STYLES = `
   margin-top: 12px;
 }
 .pair-code-input-secondary-btn {
+  min-height: 36px;
   padding: 8px 12px;
   font: inherit;
   font-size: 12px;
@@ -1512,6 +1514,7 @@ const PAIR_CODE_INPUT_STYLES = `
   cursor: pointer;
 }
 .pair-code-input-linkbtn {
+  min-height: 36px;
   padding: 4px 0;
   font: inherit;
   font-size: 12px;
@@ -1555,6 +1558,13 @@ const PAIR_CODE_INPUT_STYLES = `
   color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
+}
+@media (max-width: 520px) {
+  .pair-code-input-form input,
+  .pair-code-input-secondary-btn,
+  .pair-code-input-linkbtn {
+    min-height: 44px;
+  }
 }
 @media (max-width: 340px) {
   .pair-code-input-recovery-triage-paths {

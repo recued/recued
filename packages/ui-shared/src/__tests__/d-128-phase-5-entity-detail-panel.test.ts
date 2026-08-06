@@ -115,6 +115,34 @@ describe('D-128 P5 — entity-detail panel header', () => {
     expect(html).toContain('About <code>unk-1</code>');
     expect(html).not.toContain('About this');
   });
+
+  it('moves every heading below a nested host section', () => {
+    const html = renderEntityDetailPanel({
+      scope: 'connection.api.hubspot.deal',
+      target_id: 'hubspot_deal_47291',
+      vendorEntity: HUBSPOT_DEAL_ENTITY,
+      metaSnapshot: SAMPLE_META,
+      enrichments: [baseDealHealth],
+      timelineEntries: [],
+      now: NOW,
+      headingLevel: 4,
+    });
+
+    expect(html).toContain(
+      '<h4 class="memory-entity-detail-title">About this HubSpot Deal</h4>',
+    );
+    expect(html).toContain(
+      '<h5 class="memory-entity-detail-section-title">Snapshot</h5>',
+    );
+    expect(html).toContain(
+      '<h6 class="memory-enrichment-card-title">Deal health score</h6>',
+    );
+    expect(html).toContain(
+      '<h5 class="memory-entity-detail-section-title">Timeline</h5>',
+    );
+    expect(html).not.toContain('<h2 class="memory-entity-detail-title">');
+    expect(html).not.toContain('<h3 class="memory-entity-detail-section-title">');
+  });
 });
 
 // ────────────────────────────────────────────────────────────────

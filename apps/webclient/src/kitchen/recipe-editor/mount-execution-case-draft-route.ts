@@ -35,10 +35,119 @@ export const EXECUTION_CASE_DRAFT_BACK_ATTR =
 /** D-219 — the refine control: ask the model to revise the draft on screen. */
 export const EXECUTION_CASE_DRAFT_REFINE_ATTR =
   'data-recued-execution-case-draft-refine';
+export const EXECUTION_CASE_DRAFT_REFINE_PANEL_ATTR =
+  'data-recued-execution-case-draft-refine-panel';
 export const EXECUTION_CASE_DRAFT_REFINE_PROMPT_ATTR =
   'data-recued-execution-case-draft-refine-prompt';
 export const EXECUTION_CASE_DRAFT_REFINE_ERROR_ATTR =
   'data-recued-execution-case-draft-refine-error';
+
+const EXECUTION_CASE_DRAFT_STYLES_MARKER =
+  'data-recued-execution-case-draft-styles';
+
+const EXECUTION_CASE_DRAFT_STYLES = `
+[${EXECUTION_CASE_DRAFT_HOST_ATTR}] .execution-case-refine {
+  display: grid;
+  gap: 14px;
+  margin: 0 0 20px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, var(--accent-weak), transparent 42%),
+    var(--surface);
+  box-shadow: 0 1px 2px rgba(24, 24, 27, 0.04);
+}
+[${EXECUTION_CASE_DRAFT_HOST_ATTR}] .execution-case-refine-header {
+  display: grid;
+  gap: 4px;
+}
+[${EXECUTION_CASE_DRAFT_HOST_ATTR}] .execution-case-refine-eyebrow {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+[${EXECUTION_CASE_DRAFT_HOST_ATTR}] .execution-case-refine h2 {
+  margin: 0;
+  color: var(--fg-strong);
+  font-size: 17px;
+  letter-spacing: -0.01em;
+}
+[${EXECUTION_CASE_DRAFT_HOST_ATTR}] .execution-case-refine-copy,
+[${EXECUTION_CASE_DRAFT_HOST_ATTR}] .execution-case-refine-status {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+[${EXECUTION_CASE_DRAFT_HOST_ATTR}] .execution-case-refine-field {
+  display: grid;
+  gap: 6px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+[${EXECUTION_CASE_DRAFT_HOST_ATTR}] .execution-case-refine textarea {
+  width: 100%;
+  min-height: 76px;
+  box-sizing: border-box;
+  resize: vertical;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  padding: 10px 11px;
+  background: var(--surface);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+}
+[${EXECUTION_CASE_DRAFT_HOST_ATTR}] .execution-case-refine textarea:focus-visible,
+[${EXECUTION_CASE_DRAFT_HOST_ATTR}] .execution-case-refine button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+[${EXECUTION_CASE_DRAFT_HOST_ATTR}] .execution-case-refine-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+[${EXECUTION_CASE_DRAFT_HOST_ATTR}] .execution-case-refine button {
+  min-height: 38px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 8px 14px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+[${EXECUTION_CASE_DRAFT_HOST_ATTR}] .execution-case-refine button:hover:not([aria-disabled="true"]) {
+  filter: brightness(1.05);
+}
+[${EXECUTION_CASE_DRAFT_HOST_ATTR}] .execution-case-refine button[aria-disabled="true"] {
+  cursor: progress;
+  opacity: 0.7;
+}
+[${EXECUTION_CASE_DRAFT_HOST_ATTR}] .execution-case-refine-status {
+  flex: 1 1 240px;
+  min-height: 1.45em;
+}
+`;
+
+const injectExecutionCaseDraftStyles = (doc: Document): void => {
+  if (doc.head.querySelector(
+    `style[${EXECUTION_CASE_DRAFT_STYLES_MARKER}]`,
+  ) !== null) return;
+  const style = doc.createElement('style');
+  style.setAttribute(EXECUTION_CASE_DRAFT_STYLES_MARKER, '');
+  style.textContent = EXECUTION_CASE_DRAFT_STYLES;
+  doc.head.appendChild(style);
+};
 
 export interface MountExecutionCaseDraftRouteOptions {
   root: HTMLElement;
@@ -159,6 +268,19 @@ export const mountExecutionCaseDraftRoute = (
   /** ⛔ A refinement that lands after the owner has left must still be SAVED but
    *  must not drag them back — the same rule the first draft follows. */
   let disposed = false;
+  const canRefine = options.runDraftRecipe !== undefined
+    && options.onRefined !== undefined;
+  const refineBlock = canRefine ? doc.createElement('section') : undefined;
+  if (refineBlock !== undefined) {
+    injectExecutionCaseDraftStyles(doc);
+    refineBlock.className = 'execution-case-refine';
+    refineBlock.setAttribute(EXECUTION_CASE_DRAFT_REFINE_PANEL_ATTR, '');
+    refineBlock.setAttribute('aria-label', 'Refine AI draft');
+    // Keep the revision affordance discoverable before a potentially enormous
+    // recipe. It still sends editor.getRecipe() at click time, so manual edits
+    // made below are included even though this panel precedes the editor.
+    host.appendChild(refineBlock);
+  }
   try {
     editor = bootstrapRecipeEditorRoute({
       root: host,
@@ -186,6 +308,7 @@ export const mountExecutionCaseDraftRoute = (
       },
     });
   } catch (error) {
+    refineBlock?.remove();
     const line = doc.createElement('p');
     line.setAttribute(EXECUTION_CASE_DRAFT_MISSING_ATTR, '');
     line.textContent =
@@ -204,18 +327,33 @@ export const mountExecutionCaseDraftRoute = (
   //
   //  ⛔ TWO PRESSES, like the first draft: this is the same slow, quota-spending
   //  call, and an accidental click must not make it.
-  if (
-    options.runDraftRecipe !== undefined
-    && options.onRefined !== undefined
-    && editor !== undefined
-  ) {
+  if (canRefine && editor !== undefined && refineBlock !== undefined) {
     const draft = options.draft;
-    const block = doc.createElement('div');
+    const block = refineBlock;
     let armed = false;
     let busy = false;
 
+    const header = doc.createElement('div');
+    header.className = 'execution-case-refine-header';
+    const eyebrow = doc.createElement('span');
+    eyebrow.className = 'execution-case-refine-eyebrow';
+    eyebrow.textContent = 'AI draft';
+    header.appendChild(eyebrow);
+    const heading = doc.createElement('h2');
+    heading.textContent = 'Refine this draft';
+    header.appendChild(heading);
+    const copy = doc.createElement('p');
+    copy.className = 'execution-case-refine-copy';
+    copy.textContent =
+      'Describe a focused change. Your current manual edits are included, and '
+      + 'Recued asks for confirmation before spending model quota.';
+    header.appendChild(copy);
+    block.appendChild(header);
+
     const instruction = doc.createElement('textarea');
     instruction.setAttribute(EXECUTION_CASE_DRAFT_REFINE_PROMPT_ATTR, '');
+    instruction.setAttribute('aria-label', 'What should change?');
+    instruction.rows = 3;
     instruction.setAttribute(
       'placeholder',
       'What should be different? (e.g. only my own meetings, and send it on Mondays)',
@@ -227,6 +365,9 @@ export const mountExecutionCaseDraftRoute = (
 
     const note = doc.createElement('p');
     note.setAttribute(EXECUTION_CASE_DRAFT_REFINE_ERROR_ATTR, '');
+    note.className = 'execution-case-refine-status';
+    note.setAttribute('role', 'status');
+    note.setAttribute('aria-live', 'polite');
 
     const paint = (): void => {
       button.textContent = busy
@@ -304,10 +445,18 @@ export const mountExecutionCaseDraftRoute = (
     });
 
     paint();
-    block.appendChild(instruction);
-    block.appendChild(button);
-    block.appendChild(note);
-    host.appendChild(block);
+    const field = doc.createElement('label');
+    field.className = 'execution-case-refine-field';
+    const fieldLabel = doc.createElement('span');
+    fieldLabel.textContent = 'What should change?';
+    field.appendChild(fieldLabel);
+    field.appendChild(instruction);
+    block.appendChild(field);
+    const actions = doc.createElement('div');
+    actions.className = 'execution-case-refine-actions';
+    actions.appendChild(button);
+    actions.appendChild(note);
+    block.appendChild(actions);
     refineSettled = () => pending ?? Promise.resolve();
   }
 

@@ -85,7 +85,8 @@ const renderDefaultSourceDropdown = (
         id="rx-work-entities-default-${e(kind)}"
         class="rx-work-entities-default-select"
         data-action="set-default-source"
-        data-kind="${e(kind)}"${disabledAttr}
+        data-kind="${e(kind)}"
+        aria-label="Default Source for ${e(KIND_DISPLAY_LABEL[kind])}"${disabledAttr}
       >
         <option value=""${noneSelected}>(none — pick at write time)</option>
         ${options}

@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 import type { FormResponse, FormResponseListItem } from '@recued/contracts';
 
 import {
+  RECEPTION_RECORDS_HEADING_ATTR,
   RECEPTION_RECORDS_LENS_ATTR,
   mountReceptionRecordsSection,
   type ReceptionRecordsSectionConn,
@@ -23,6 +24,7 @@ import {
   FR_LENS_DETAIL_RETRY_ATTR,
   FR_LENS_ERROR_ATTR,
   FR_LENS_RETRY_ATTR,
+  RECEPTION_RESPONSES_STYLES,
   formResponseFields,
   type ReceptionFormResponseLensMount,
 } from './form-response-lens.js';
@@ -129,10 +131,18 @@ describe('mountReceptionRecordsSection — lenses', () => {
   it('renders one roving tab stop with a labelled tabpanel', () => {
     const { host } = mount();
     const root = host.children[0] as FakeEl;
+    const style = root.children.find((child) => child.tagName === 'style');
+    const heading = root.children.find(
+      (child) => child.attrs.has(RECEPTION_RECORDS_HEADING_ATTR),
+    );
     const nav = root.children.find((c) => c.className === 'reception-records-lenses')!;
     const content = root.children.at(-1)!;
     const [requests, responses] = nav.children;
 
+    expect(root.getAttribute('role')).toBe('region');
+    expect(root.getAttribute('aria-labelledby')).toBe(heading?.getAttribute('id'));
+    expect(heading?.tagName).toBe('h2');
+    expect(heading?.textContent).toBe('Reception records');
     expect(nav.getAttribute('role')).toBe('tablist');
     expect(requests?.getAttribute('role')).toBe('tab');
     expect(requests?.getAttribute('aria-selected')).toBe('true');
@@ -142,6 +152,27 @@ describe('mountReceptionRecordsSection — lenses', () => {
     expect(content.getAttribute('role')).toBe('tabpanel');
     expect(content.getAttribute('aria-labelledby')).toBe(
       requests?.getAttribute('id'),
+    );
+    expect(style?.textContent).toMatch(
+      /\.reception-records-lens\s*\{[^}]*min-height:\s*36px/s,
+    );
+  });
+
+  it('styles every response action as a full-size control', () => {
+    expect(RECEPTION_RESPONSES_STYLES).toMatch(
+      /data-recued-reception-response-action[^}]*min-height:\s*36px/s,
+    );
+    expect(RECEPTION_RESPONSES_STYLES).toMatch(
+      /\.reception-responses-automation-actions a\s*\{[^}]*min-height:\s*36px/s,
+    );
+    expect(RECEPTION_RESPONSES_STYLES).toMatch(
+      /data-recued-reception-responses\]\s*\{[^}]*width:\s*100%[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(RECEPTION_RESPONSES_STYLES).toMatch(
+      /\.reception-responses-header\s*\{[^}]*width:\s*100%[^}]*flex-wrap:\s*wrap/s,
+    );
+    expect(RECEPTION_RESPONSES_STYLES).toMatch(
+      /\.reception-responses-pill\s*\{[^}]*flex:\s*0 0 auto[^}]*white-space:\s*nowrap/s,
     );
   });
 

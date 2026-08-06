@@ -1,6 +1,10 @@
 /** D-174 D14 — Settings -> AI / Models consolidated LLM config page. */
 
 import { describe, expect, it, vi } from 'vitest';
+import {
+  CHAT_CATALOG_DELIVERY_MODES,
+  CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE,
+} from '@recued/contracts';
 
 import type {
   HousekeepingConfigRow,
@@ -53,6 +57,7 @@ import {
   AI_MODELS_SLOT_SAVE_ATTR,
   AI_MODELS_TAB_ATTR,
   AI_MODELS_TAB_PANEL_ATTR,
+  AI_MODELS_PAGE_STYLES,
   mountAiModelsPage,
 } from '../settings/ai-models-page.js';
 
@@ -373,6 +378,15 @@ const mountFixture = (overrides: Partial<Parameters<typeof mountAiModelsPage>[0]
 };
 
 describe('D-174 D14 — AI / Models initial load', () => {
+  it('keeps internal tabs and model choices large enough for frequent touch use', () => {
+    expect(AI_MODELS_PAGE_STYLES).toMatch(
+      /button\.ai-models-tab\s*\{[^}]*min-height:\s*36px/s,
+    );
+    expect(AI_MODELS_PAGE_STYLES).toMatch(
+      /\.ai-models-choice-row button\s*\{[^}]*min-height:\s*36px/s,
+    );
+  });
+
   it('reads the existing RPCs and renders pending stubs for missing backend seams', async () => {
     const { host, mount, opts } = mountFixture();
     await mount.whenLoaded();
@@ -391,6 +405,46 @@ describe('D-174 D14 — AI / Models initial load', () => {
     expect(findByAttrValue(host, AI_MODELS_PENDING_CONTROL_ATTR, 'embeddings')).toBeNull();
     expect(findByAttrValue(host, AI_MODELS_PENDING_CONTROL_ATTR, 'require_local')).toBeNull();
     expect(mount.getState().failLoud).toBeNull();
+    mount.dispose();
+  });
+
+  it('names every provider field and action by its owning source', async () => {
+    const { host, mount } = mountFixture();
+    await mount.whenLoaded();
+
+    const named = (attr: string, value: string): string | null =>
+      findByAttrValue(host, attr, value)?.getAttribute('aria-label') ?? null;
+
+    expect(named(AI_MODELS_SLOT_FIELD_ATTR, 'slot_1:provider'))
+      .toBe('Slot 1: fast provider');
+    expect(named(AI_MODELS_SLOT_FIELD_ATTR, 'slot_2:model'))
+      .toBe('Slot 2: quality / thinking model');
+    expect(named(AI_MODELS_SLOT_SAVE_ATTR, 'slot_1'))
+      .toBe('Save Slot 1: fast');
+    expect(named(AI_MODELS_SLOT_CLEAR_ATTR, 'slot_2'))
+      .toBe('Clear Slot 2: quality / thinking');
+    expect(named(AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'provider'))
+      .toBe('Embeddings slot provider');
+    expect(named(AI_MODELS_SLOT_SAVE_ATTR, 'embeddings_slot'))
+      .toBe('Save Embeddings slot');
+    expect(named(AI_MODELS_SLOT_CLEAR_ATTR, 'embeddings_slot'))
+      .toBe('Clear Embeddings slot');
+
+    expect(named(AI_MODELS_CATALOG_MODE_SELECT_ATTR, 'slot_1'))
+      .toBe('Slot 1: fast chat tool catalog');
+    expect(named(AI_MODELS_CATALOG_MODE_SELECT_ATTR, 'slot_2'))
+      .toBe('Slot 2: quality / thinking chat tool catalog');
+    expect(named(AI_MODELS_CATALOG_MODE_SELECT_ATTR, 'free_pool'))
+      .toBe('Free pool chat tool catalog');
+
+    expect(named(AI_MODELS_POOL_TOGGLE_ATTR, 'groq'))
+      .toBe('Disable free-pool entry groq');
+    expect(named(AI_MODELS_POOL_REMOVE_ATTR, 'groq'))
+      .toBe('Remove free-pool entry groq');
+    expect(named(AI_MODELS_POOL_ADD_FIELD_ATTR, 'provider'))
+      .toBe('New free-pool entry provider');
+    expect(named(AI_MODELS_POOL_ADD_ATTR, ''))
+      .toBe('Add free-pool API entry');
     mount.dispose();
   });
 
@@ -504,6 +558,45 @@ describe('Set up Chat — focused first-run journey', () => {
     ).not.toBeNull();
     expect(findByTagText(host, 'a', 'Start chatting')?.getAttribute('href'))
       .toBe('#chat/session/chat%2Fone');
+    mount.dispose();
+  });
+
+  it('does not submit a model while its IME composition is active', async () => {
+    const { host, mount, opts } = mountFixture({
+      initialView: 'chat-setup',
+      runGetDefaultModelPref: vi.fn(async () => ({
+        source_id: null,
+        updated_at: 0,
+      })),
+      runGetLLMConfig: vi.fn(async () => ({ config: {} })),
+    });
+    await mount.whenLoaded();
+
+    inputByAttr(host, AI_MODELS_CHAT_SETUP_MODEL_ATTR, '会話モデル');
+    inputByAttr(host, AI_MODELS_CHAT_SETUP_KEY_ATTR, 'sk-ime-test');
+    const model = findByAttr(host, AI_MODELS_CHAT_SETUP_MODEL_ATTR)!;
+    const composingPreventDefault = vi.fn();
+    for (const listener of model.listeners.get('keydown') ?? []) {
+      listener({
+        key: 'Enter',
+        isComposing: true,
+        preventDefault: composingPreventDefault,
+      });
+    }
+    expect(composingPreventDefault).not.toHaveBeenCalled();
+    expect(opts.runSetLLMSlot).not.toHaveBeenCalled();
+
+    const submitPreventDefault = vi.fn();
+    for (const listener of model.listeners.get('keydown') ?? []) {
+      listener({
+        key: 'Enter',
+        isComposing: false,
+        preventDefault: submitPreventDefault,
+      });
+    }
+    expect(submitPreventDefault).toHaveBeenCalledTimes(1);
+    expect(opts.runSetLLMSlot).toHaveBeenCalledTimes(1);
+    await flush();
     mount.dispose();
   });
 
@@ -2115,14 +2208,33 @@ describe('Lever-2 per-slot (Phase 3) — chat catalog mode', () => {
     mount.dispose();
   });
 
-  it('the Automatic hint states the shipped default per source (both → Index)', async () => {
+  it('the Automatic hint states the shipped default per source', async () => {
     const { host, mount } = mountFixture();
     await mount.whenLoaded();
-    // The hint renders `CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE`, so it cannot
-    // drift from what the server serves. Since 2026-07-26 every source thins.
-    expect(hasText(host, 'Automatic uses Index for the free pool')).toBe(true);
-    expect(hasText(host, 'Automatic uses Index for a BYOK slot')).toBe(true);
-    expect(hasText(host, 'Automatic uses Full for a BYOK slot')).toBe(false);
+    // ⚠ THE HINT IS DERIVED FROM THE MAP, so this asserts AGREEMENT rather than
+    // a literal. The previous version hard-coded "Index" (and said so in its
+    // name), which failed on the 2026-08-05 flip to `lean-core` — a correct
+    // change reddening a test that was only ever meant to prove the UI and the
+    // server read ONE map.
+    const shortLabel: Record<string, string> = {
+      full: 'Full', index: 'Index', 'lean-core': 'Lean core',
+    };
+    for (const [source, phrase] of [
+      ['free_pool', 'the free pool'],
+      ['slot_1', 'a BYOK slot'],
+    ] as const) {
+      const mode = CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE[source];
+      expect(
+        hasText(host, `Automatic uses ${shortLabel[mode]} for ${phrase}`),
+        `${source} hint`,
+      ).toBe(true);
+    }
+    // ...and it is not vacuous: a mode the map does NOT carry must be absent.
+    const absent = CHAT_CATALOG_DELIVERY_MODES.find(
+      (m) => m !== CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE.slot_1,
+    );
+    expect(hasText(host, `Automatic uses ${shortLabel[absent!]} for a BYOK slot`))
+      .toBe(false);
     mount.dispose();
   });
 
@@ -2261,6 +2373,59 @@ describe('Lever-2 per-slot (Phase 3) — chat catalog mode', () => {
  *  is told, because a fence you cannot read is indistinguishable from a fence
  *  that is not there. */
 describe('System prompts — the box holds the role, not the whole prompt', () => {
+  it('names each editor and action by its prompt surface', async () => {
+    const { host, mount } = mountFixture();
+    await mount.whenLoaded();
+
+    for (const [surface, title] of [
+      ['chat', 'Chat'],
+      ['llm_gateway', 'LLM gateway'],
+    ] as const) {
+      const section = findByAttrValue(
+        host,
+        AI_MODELS_PROMPT_SECTION_ATTR,
+        surface,
+      )!;
+      const titleId = `recued-ai-models-prompt-${surface}-title`;
+      expect(section.getAttribute('aria-labelledby')).toBe(titleId);
+      expect(findByAttrValue(host, 'id', titleId)).not.toBeNull();
+      expect(findByAttrValue(
+        host,
+        AI_MODELS_PROMPT_TEXT_ATTR,
+        surface,
+      )?.getAttribute('aria-label')).toBe(`${title} system prompt`);
+      expect(findByAttrValue(
+        host,
+        AI_MODELS_PROMPT_ROLE_ATTR,
+        surface,
+      )?.getAttribute('aria-label')).toBe(`${title} delivery role`);
+      expect(findByAttrValue(
+        host,
+        AI_MODELS_PROMPT_SAVE_ATTR,
+        surface,
+      )?.getAttribute('aria-label')).toBe(`Save ${title} system prompt`);
+      expect(findByAttrValue(
+        host,
+        AI_MODELS_PROMPT_RESET_ATTR,
+        surface,
+      )?.getAttribute('aria-label'))
+        .toBe(`Reset ${title} system prompt to default`);
+      expect(findByAttrValue(
+        host,
+        AI_MODELS_PROMPT_ALWAYS_ATTR,
+        surface,
+      )?.getAttribute('aria-label'))
+        .toBe(`${title} always-on prompt text`);
+    }
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_PROMPT_POLICY_ATTR,
+      'llm_gateway',
+    )?.getAttribute('aria-label'))
+      .toBe('LLM gateway customer system prompt policy');
+    mount.dispose();
+  });
+
   it('pre-fills each surface with the role block in force', async () => {
     const { host, mount } = mountFixture();
     await mount.whenLoaded();

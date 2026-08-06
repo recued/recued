@@ -30,6 +30,7 @@ import {
 import {
   COMPOSE_ROUTE_COMMIT_ATTR,
   COMPOSE_ROUTE_FIELD_ATTR,
+  COMPOSE_ROUTE_HOST_ATTR,
   COMPOSE_ROUTE_TARGET_CHIP_ATTR,
 } from '../compose-route.js';
 
@@ -244,6 +245,16 @@ describe('Shell-frame Step 5 — shared Create overlay opener', () => {
     expect(
       collectByAttr(overlays[0]!, COMPOSE_ROUTE_TARGET_CHIP_ATTR).length,
     ).toBeGreaterThanOrEqual(4);
+    const styles = doc.styles.map((style) => style.textContent).join('\n');
+    expect(styles).toContain(
+      `[${CREATE_OVERLAY_CLOSE_ATTR}] {\n  margin-left: auto;\n  appearance: none;\n  min-height: 36px;`,
+    );
+    expect(styles).toContain(
+      `[${CREATE_OVERLAY_DISCARD_GUARD_ATTR}] button {\n  min-height: 36px;`,
+    );
+    expect(styles).toContain(
+      `[${CREATE_OVERLAY_ATTR}] [${COMPOSE_ROUTE_HOST_ATTR}] .compose-header {\n  display: none;`,
+    );
   });
 
   it('portals to an explicit portal when provided', () => {

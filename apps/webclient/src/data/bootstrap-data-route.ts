@@ -289,6 +289,8 @@ export const DATA_ROUTE_VERIFICATION_ACTION_ATTR =
 export const DATA_ROUTE_VERIFICATION_NEXT_ATTR =
   'data-recued-data-route-verification-next';
 export const DATA_ROUTE_TAB_ATTR = 'data-recued-data-route-tab';
+export const DATA_ROUTE_TABLIST_ATTR = 'data-recued-data-route-tablist';
+export const DATA_ROUTE_TAB_PANEL_ATTR = 'data-recued-data-route-tab-panel';
 export const DATA_ROUTE_CONTACT_ROW_ATTR = 'data-recued-data-contact-row';
 /** D-226 — a per-pack rollup chip on a contact LIST row. Value is the pack's
  *  label, so a test can assert WHICH pack spoke, not merely that something did. */
@@ -411,6 +413,7 @@ const DATA_ROUTE_IMPORT_SOURCE_ATTR = 'data-import-source';
 
 const DATA_ROUTE_ACTION_ATTR = 'data-recued-data-action';
 const DATA_ROUTE_TAB_ID_ATTR = 'data-data-tab';
+const DATA_ROUTE_TAB_PANEL_ID = 'recued-data-collection-panel';
 const DATA_ROUTE_CONTACT_EMAIL_ATTR = 'data-contact-email';
 const DATA_ROUTE_FORM_RESPONSE_ID_ATTR = 'data-form-response-id';
 const DATA_ROUTE_CONTACT_FIELD_ATTR = 'data-recued-data-contact-field';
@@ -1250,6 +1253,10 @@ const DATA_ROUTE_STYLES = `
   margin: 0;
 }
 [${DATA_ROUTE_HOST_ATTR}] .data-tab {
+  box-sizing: border-box;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
@@ -1393,6 +1400,7 @@ const DATA_ROUTE_STYLES = `
   display: flex;
   gap: 8px;
   align-items: stretch;
+  min-width: 0;
 }
 [${DATA_ROUTE_HOST_ATTR}] .data-form-response-list .data-row-button {
   display: grid;
@@ -1416,6 +1424,7 @@ const DATA_ROUTE_STYLES = `
   grid-row: 1 / span 2;
 }
 [${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}] .data-response-header {
+  min-width: 0;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1423,7 +1432,9 @@ const DATA_ROUTE_STYLES = `
   margin: 12px 0;
 }
 [${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}] .data-response-header h2 {
+  min-width: 0;
   margin: 0;
+  overflow-wrap: anywhere;
   font-size: 18px;
 }
 [${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}] .data-response-meta {
@@ -1549,6 +1560,7 @@ const DATA_ROUTE_STYLES = `
 }
 [${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}] .data-response-meta div,
 [${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}] .data-response-field {
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
@@ -1557,6 +1569,7 @@ const DATA_ROUTE_STYLES = `
 [${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}] .data-response-meta dt,
 [${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}] .data-response-field dt {
   margin-bottom: 5px;
+  overflow-wrap: anywhere;
   color: var(--muted);
   font-size: 11px;
   font-weight: 650;
@@ -1573,8 +1586,17 @@ const DATA_ROUTE_STYLES = `
 }
 [${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}] .data-response-fields {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   margin: 0;
+}
+[${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}] .data-form-response-detail-content,
+[${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}] .data-response-editor {
+  min-width: 0;
+}
+[${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}] .data-response-editor .data-row-subtle,
+[${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}] .data-response-editor [role="alert"] {
+  overflow-wrap: anywhere;
 }
 [${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}] .data-response-field pre {
   margin: 0;
@@ -1661,6 +1683,7 @@ const DATA_ROUTE_STYLES = `
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 [${DATA_ROUTE_HOST_ATTR}] .data-contact-detail-heading .data-section-title {
   margin: 0;
@@ -2553,6 +2576,7 @@ const renderTabButton = (
   tab: DataTabId,
   active: DataTabId,
   locked: boolean,
+  groupLabelId: string,
 ): string => `
   <button
     type="button"
@@ -2561,30 +2585,43 @@ const renderTabButton = (
     ${DATA_ROUTE_TAB_ATTR}="${e(tab)}"
     ${DATA_ROUTE_ACTION_ATTR}="select-tab"
     ${DATA_ROUTE_TAB_ID_ATTR}="${e(tab)}"
+    id="recued-data-tab-${e(tab)}"
+    aria-controls="${DATA_ROUTE_TAB_PANEL_ID}"
+    aria-describedby="${e(groupLabelId)}"
     aria-selected="${tab === active ? 'true' : 'false'}"
+    tabindex="${tab === active ? '0' : '-1'}"
     ${locked && tab !== active ? 'aria-disabled="true"' : ''}
     ${tab === active ? 'data-active="true"' : ''}
   >${e(tabLabel(tab))}</button>
 `;
 
-// R18 — one labelled tab cluster (Owned = editable lists · Connected = read-only
-// search index). The two groups make the LIST's nature legible at a glance.
+// Keep the collection rail as one keyboard composite while preserving its
+// visible ownership/storage group labels as descriptions for each tab.
 const renderTabGroup = (
   label: string,
   tabs: readonly DataTabId[],
   active: DataTabId,
   locked: boolean,
-): string => `
-  <div class="data-tab-group">
-    <span class="data-tab-group-label">${e(label)}</span>
-    <div class="data-tabs" role="tablist" aria-label="${e(label)} collections">
-      ${tabs.map((tab) => renderTabButton(tab, active, locked)).join('')}
+): string => {
+  const labelId = `recued-data-tab-group-${label.toLowerCase()}-label`;
+  return `
+  <div class="data-tab-group" role="presentation">
+    <span class="data-tab-group-label" id="${e(labelId)}">${e(label)}</span>
+    <div class="data-tabs" role="presentation">
+      ${tabs.map((tab) => renderTabButton(
+        tab,
+        active,
+        locked,
+        labelId,
+      )).join('')}
     </div>
   </div>
 `;
+};
 
 const renderTabs = (active: DataTabId, locked = false): string => `
-  <div class="data-tab-groups">
+  <div class="data-tab-groups" ${DATA_ROUTE_TABLIST_ATTR}
+    role="tablist" aria-label="Data collections" aria-orientation="horizontal">
     ${renderTabGroup('Owned', DATA_OWN_IT_TABS, active, locked)}
     ${renderTabGroup('Received', DATA_RECEIVED_CLUSTER, active, locked)}
     ${renderTabGroup('Connected', DATA_MIRROR_TABS, active, locked)}
@@ -3039,9 +3076,13 @@ const renderContactDetailView = (
     ? '<p class="data-loading">Loading timeline...</p>'
     : state.response === null
       ? `<p ${DATA_ROUTE_UNAVAILABLE_ATTR}>No timeline available for this contact yet.</p>`
-      : renderEntityDetailPanel(
-          deriveEntityDetailProps(state.response, 'contact', state.email, now),
-        );
+      : renderEntityDetailPanel({
+          ...deriveEntityDetailProps(state.response, 'contact', state.email, now),
+          // The contact title is h2 and the visible Activity section is h3.
+          // Keep the shared panel below both instead of promoting its title
+          // back to h2 (and its child sections back to h3).
+          headingLevel: 4,
+        });
   return `
     <section ${DATA_ROUTE_CONTACT_DETAIL_ATTR}="${e(state.email)}">
       <div class="data-contact-toolbar">
@@ -4035,6 +4076,7 @@ const renderFormResponseAutomationPicker = (
               </div>
               <span class="data-pill">${e(scope)}</span>
               <button type="button" class="data-button data-button--primary"
+                aria-label="${e(`Review and run ${name} (${match.entry.recipe_id})`)}"
                 ${DATA_ROUTE_ACTION_ATTR}="review-form-response-automation"
                 ${DATA_ROUTE_FORM_RESPONSE_RUN_RECIPE_ATTR}="${e(match.entry.recipe_id)}">Review and run</button>
             </li>`;
@@ -4694,7 +4736,9 @@ const targetWithAttr = (ev: Event, attr: string): HTMLElement | null => {
   const rawTarget = ev.target as (Element & {
     closest?: (selector: string) => Element | null;
   }) | null;
-  return rawTarget?.closest?.(`[${attr}]`) as HTMLElement | null;
+  return (
+    rawTarget?.closest?.(`[${attr}]`) as HTMLElement | null | undefined
+  ) ?? null;
 };
 
 export const bootstrapDataRoute = (
@@ -4800,6 +4844,10 @@ export const bootstrapDataRoute = (
   // repaint, so comparing this with `activeTab` prevents a focused source chip
   // from one collection from claiming a same-named chip on another tab.
   let renderedActiveTab = activeTab;
+  // Arrow-key activation repaints the whole route synchronously. Carry the
+  // destination through that first paint so the old focused tab cannot reclaim
+  // focus before the new collection's async load settles.
+  let pendingCollectionTabFocus: DataTabId | null = null;
   // A run-verification handoff belongs to the exact item that was addressed.
   // Retire it as soon as the owner navigates away so an in-memory route cannot
   // accidentally carry "reviewed" choices onto a different tab or item after
@@ -5669,8 +5717,8 @@ export const bootstrapDataRoute = (
   const render = (): void => {
     if (disposed) return;
     // This route repaints with `innerHTML` as reads settle. Preserve ownership
-    // when a collection tab, collection source, work-entity search, response
-    // editor control, or timeline/reschedule control has focus: the replacement
+    // when a collection tab/source, work-entity source/search, response editor
+    // control, or timeline/reschedule control has focus: the replacement
     // otherwise strands focus on
     // <body> (and an uncontrolled field can lose its draft). A later repaint
     // captures the live owner again, so moving to another control while a read
@@ -5755,6 +5803,13 @@ export const bootstrapDataRoute = (
             kind: activeTab,
             id: activeElement.getAttribute('data-entity-id')!,
           }
+        : null;
+    const focusedWorkEntitySource =
+      activeLens === 'data'
+      && renderedActiveTab === activeTab
+      && isWorkEntityTab(activeTab)
+      && activeElement?.getAttribute?.(SHARED_ACTION_ATTR) === 'select-source'
+        ? activeTab
         : null;
     const focusedWorkEntityDialogSubmit =
       workEntityState.dialog !== null
@@ -6314,7 +6369,12 @@ export const bootstrapDataRoute = (
           )}
       ${loading && activeLens !== 'memory' ? '<p class="data-loading">Loading data...</p>' : ''}
       ${renderErrors(errors)}
-      ${lensBody}
+      ${activeLens === 'memory'
+        ? lensBody
+        : `<div ${DATA_ROUTE_TAB_PANEL_ATTR} id="${DATA_ROUTE_TAB_PANEL_ID}"
+            role="tabpanel" aria-labelledby="recued-data-tab-${e(activeTab)}">
+            ${lensBody}
+          </div>`}
       ${verificationNext}
     `;
     renderedActiveTab = activeTab;
@@ -6362,7 +6422,17 @@ export const bootstrapDataRoute = (
     if (contactScan !== null && focusedContactMergeOwner !== null) {
       focusContactMergeOwner(focusedContactMergeOwner);
     }
-    if (focusedTab !== null && activeLens === 'data') {
+    if (
+      pendingCollectionTabFocus !== null
+      && activeLens === 'data'
+      && activeTab === pendingCollectionTabFocus
+    ) {
+      const replacement = routeRoot.querySelector(
+        `[${DATA_ROUTE_TAB_ATTR}="${pendingCollectionTabFocus}"]`,
+      ) as HTMLElement | null;
+      replacement?.focus?.({ preventScroll: true });
+      if (replacement !== null) pendingCollectionTabFocus = null;
+    } else if (focusedTab !== null && activeLens === 'data') {
       const replacement = routeRoot.querySelector(
         `[${DATA_ROUTE_TAB_ATTR}="${focusedTab}"]`,
       ) as HTMLElement | null;
@@ -6407,6 +6477,16 @@ export const bootstrapDataRoute = (
           candidate.getAttribute('data-kind') === focusedWorkEntityRow.kind
           && candidate.getAttribute('data-entity-id') === focusedWorkEntityRow.id,
       ) ?? null;
+      replacement?.focus?.({ preventScroll: true });
+    }
+    if (
+      focusedWorkEntitySource !== null
+      && activeLens === 'data'
+      && activeTab === focusedWorkEntitySource
+    ) {
+      const replacement = routeRoot.querySelector(
+        `select[${SHARED_ACTION_ATTR}="select-source"]`,
+      ) as HTMLSelectElement | null;
       replacement?.focus?.({ preventScroll: true });
     }
     if (
@@ -8584,7 +8664,10 @@ export const bootstrapDataRoute = (
     pendingContactEditFocusEmail = null;
   };
 
-  const selectTab = async (tab: DataTabId): Promise<void> => {
+  const selectTab = async (
+    tab: DataTabId,
+    focusActivatedTab = false,
+  ): Promise<void> => {
     if (activeTab === tab) return;
     if (hasRecordsInFlightWork()) {
       focusRecordsInFlightOwner();
@@ -8606,6 +8689,7 @@ export const bootstrapDataRoute = (
       showFormResponseDiscardGuard(tab);
       return;
     }
+    if (focusActivatedTab) pendingCollectionTabFocus = tab;
     navigationGeneration += 1;
     timelineLoadGeneration += 1;
     loadingTimeline = false;
@@ -12889,6 +12973,70 @@ export const bootstrapDataRoute = (
   };
 
   const onKeyDown = (ev: KeyboardEvent): void => {
+    const collectionTab = targetWithAttr(ev, DATA_ROUTE_TAB_ATTR);
+    if (
+      collectionTab !== null
+      && collectionTab.getAttribute('aria-disabled') !== 'true'
+    ) {
+      const currentTab = collectionTab.getAttribute(DATA_ROUTE_TAB_ID_ATTR);
+      if (currentTab !== null && isDataTab(currentTab)) {
+        const tabs = Array.from(routeRoot.querySelectorAll<HTMLElement>(
+          `[${DATA_ROUTE_TAB_ATTR}]`,
+        )).filter((tab) => tab.getAttribute('aria-disabled') !== 'true');
+        const currentIndex = tabs.indexOf(collectionTab);
+        let nextIndex: number | null = null;
+        if (ev.key === 'ArrowRight') {
+          nextIndex = (currentIndex + 1) % tabs.length;
+        } else if (ev.key === 'ArrowLeft') {
+          nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+        } else if (ev.key === 'Home') {
+          nextIndex = 0;
+        } else if (ev.key === 'End') {
+          nextIndex = tabs.length - 1;
+        }
+        if (currentIndex >= 0 && nextIndex !== null) {
+          const nextTab = tabs[nextIndex]?.getAttribute(DATA_ROUTE_TAB_ID_ATTR);
+          if (nextTab !== null && nextTab !== undefined && isDataTab(nextTab)) {
+            ev.preventDefault();
+            void selectTab(nextTab, true);
+            return;
+          }
+        }
+      }
+    }
+    const recordsKindTab = targetWithAttr(ev, RECORDS_KIND_ATTR);
+    if (
+      activeLens === 'data'
+      && activeTab === 'records'
+      && recordsKindTab?.getAttribute(SHARED_ACTION_ATTR)
+        === RECORDS_SELECT_KIND_ACTION
+      && recordsKindTab.getAttribute('aria-disabled') !== 'true'
+    ) {
+      const tabs = Array.from(routeRoot.querySelectorAll<HTMLElement>(
+        `[${SHARED_ACTION_ATTR}="${RECORDS_SELECT_KIND_ACTION}"]`,
+      )).filter((tab) => tab.getAttribute('aria-disabled') !== 'true');
+      const currentIndex = tabs.indexOf(recordsKindTab);
+      let nextIndex: number | null = null;
+      if (ev.key === 'ArrowRight') {
+        nextIndex = (currentIndex + 1) % tabs.length;
+      } else if (ev.key === 'ArrowLeft') {
+        nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+      } else if (ev.key === 'Home') {
+        nextIndex = 0;
+      } else if (ev.key === 'End') {
+        nextIndex = tabs.length - 1;
+      }
+      if (currentIndex >= 0 && nextIndex !== null) {
+        const nextTab = tabs[nextIndex];
+        const nextKind = nextTab?.getAttribute(RECORDS_KIND_ATTR);
+        if (nextTab !== undefined && nextKind !== null && nextKind !== undefined) {
+          ev.preventDefault();
+          nextTab.focus({ preventScroll: true });
+          void selectRecordsKind(nextKind);
+          return;
+        }
+      }
+    }
     if (
       !memoryImportDiscardGuardOpen
       && !memoryComposeDiscardGuardOpen
@@ -12896,6 +13044,7 @@ export const bootstrapDataRoute = (
       && contactDialog === null
       && workEntityState.dialog === null
     ) return;
+    if (ev.key === 'Escape' && ev.isComposing) return;
     const queryable = routeRoot as unknown as {
       querySelector?: (selector: string) => HTMLElement | null;
     };

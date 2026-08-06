@@ -41,6 +41,35 @@ const walkJson = (dir) => {
  *  against the committed constants (catches ANY drift: slug set, pack body,
  *  recipe set, recipe body). Deterministic order (packs by slug, recipes by
  *  key) so the compare is stable. Throws on a missing referenced recipe file. */
+/** Every recipe a foundation pack references, across BOTH manifest shapes.
+ *
+ *  ⛔ manifest_version 2 moved recipe references out of the top-level
+ *  `recipes[]` into `contents[]` entries typed `recipe`. Reading only
+ *  `recipes[]` does not throw on a v2 pack — it returns nothing, so the pack
+ *  still bundles while its recipe BODIES silently stop being embedded. That is
+ *  how the foundation pack's 10 recipes left this bundle after `81e73a6b8`,
+ *  leaving a manifest that names them and no bodies to resolve. `missing` could
+ *  not catch it either: it only reports refs that were walked, and none were.
+ *
+ *  The corpus is MIXED — `personal-organizer-foundation` is v2 with 10 refs in
+ *  `contents[]`, `reception-scheduling` is v2 with 3 still in `recipes[]` — so
+ *  this unions both and dedupes by slug.
+ *
+ *  ⚠ Keep this identical to `deriveFoundationClosure` in
+ *  `release/lib/public-export.mjs`. The two are required to agree; drift means
+ *  the public repo ships recipe JSON that disagrees with what the server
+ *  bundles. */
+export const foundationRecipeRefs = (manifest) => {
+  const bySlug = new Map();
+  for (const ref of manifest.recipes ?? []) {
+    if (ref?.slug) bySlug.set(ref.slug, ref);
+  }
+  for (const entry of manifest.contents ?? []) {
+    if (entry?.type === 'recipe' && entry.slug) bySlug.set(entry.slug, entry);
+  }
+  return [...bySlug.values()];
+};
+
 export const deriveFoundationBundle = (repoRoot) => {
   const packsDir = join(repoRoot, 'community', 'packs');
   const recipesDir = join(repoRoot, 'community', 'recipes');
@@ -63,7 +92,7 @@ export const deriveFoundationBundle = (repoRoot) => {
   const recipesById = {};
   const missing = [];
   for (const pack of packs) {
-    for (const ref of pack.recipes ?? []) {
+    for (const ref of foundationRecipeRefs(pack)) {
       const path = join(recipesDir, `${ref.slug}.json`);
       if (!existsSync(path)) {
         missing.push(`${pack.slug}:${ref.slug}`);

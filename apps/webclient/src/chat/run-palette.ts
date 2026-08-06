@@ -149,6 +149,8 @@ const RUN_PALETTE_CHROME_STYLES = `
   background: rgba(24, 33, 36, .28);
 }
 [${RUN_PALETTE_OVERLAY_ATTR}] .run-palette-panel {
+  box-sizing: border-box;
+  min-width: 0;
   width: min(560px, 100%);
   max-height: calc(100vh - 80px);
   overflow: auto;
@@ -173,7 +175,7 @@ const RUN_PALETTE_CHROME_STYLES = `
 [${RUN_PALETTE_CLOSE_ATTR}] {
   margin-left: auto;
   appearance: none;
-  min-height: 30px;
+  min-height: 36px;
   padding: 5px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -191,20 +193,27 @@ const RUN_PALETTE_CHROME_STYLES = `
 [${RUN_PALETTE_OVERLAY_ATTR}] .run-palette-actions {
   display: grid;
   gap: 8px;
+  min-width: 0;
   min-height: 24px;
 }
 [${RUN_PALETTE_OVERLAY_ATTR}] .run-palette-selected {
+  min-width: 0;
   font-size: 13px;
   font-weight: 600;
   color: var(--fg);
+  overflow-wrap: anywhere;
 }
 [${RUN_PALETTE_OVERLAY_ATTR}] .run-palette-state {
+  min-width: 0;
   font-size: 12px;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 [${RUN_PALETTE_RESULT_ATTR}] {
+  min-width: 0;
   font-size: 12px;
   color: var(--fail);
+  overflow-wrap: anywhere;
 }
 [${RUN_PALETTE_OVERLAY_ATTR}] .run-palette-buttons {
   display: flex;
@@ -213,7 +222,8 @@ const RUN_PALETTE_CHROME_STYLES = `
 }
 [${RUN_PALETTE_ACTION_ATTR}] {
   appearance: none;
-  min-height: 32px;
+  min-width: 36px;
+  min-height: 36px;
   padding: 6px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -238,9 +248,25 @@ const RUN_PALETTE_CHROME_STYLES = `
   background: var(--accent);
   color: var(--on-accent);
 }
+[${RUN_PALETTE_OVERLAY_ATTR}] .ref-picker-input {
+  min-height: 36px;
+  padding-right: 40px;
+}
+[${RUN_PALETTE_OVERLAY_ATTR}] .ref-picker-clear {
+  right: 0;
+  width: 36px;
+  height: 36px;
+}
+[${RUN_PALETTE_OVERLAY_ATTR}] .ref-picker-option {
+  box-sizing: border-box;
+  min-height: 36px;
+  justify-content: center;
+}
 [${RUN_PALETTE_OVERLAY_ATTR}] .run-palette-empty {
+  min-width: 0;
   font-size: 13px;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 `;
 
@@ -670,7 +696,11 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
 
   const onKey = (ev: KeyboardEvent): void => {
     // When a Run modal is stacked above, let IT own Escape.
-    if (ev.key !== 'Escape' || childRunModal !== null) return;
+    if (
+      ev.key !== 'Escape'
+      || ev.isComposing
+      || childRunModal !== null
+    ) return;
     if (autoRunMutationPending) {
       ev.preventDefault?.();
       return;

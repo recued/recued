@@ -223,6 +223,10 @@ const ACTION_RESET_DONE = 'housekeeping-reset-done';
 const ACTION_RESET_RETRY = 'housekeeping-reset-retry';
 const ACTION_RESET_TOGGLE_PSI = 'housekeeping-reset-toggle-psi';
 
+type HousekeepingFocusIntent =
+  | { kind: 'action'; action: string; taskId?: string; topic?: string }
+  | { kind: 'dialog'; dialog: 'run-now' | 'reset' };
+
 export const mountHousekeepingPanel = (
   opts: MountHousekeepingPanelOptions,
 ): HousekeepingPanelMount => {
@@ -253,15 +257,35 @@ export const mountHousekeepingPanel = (
   opts.host.setAttribute(HOUSEKEEPING_PANEL_HOST_ATTR, '');
 
   // ── Render ───────────────────────────────────────────────────────
+  const renderPanelFrame = (content: string): string => `
+    <div class="housekeeping-panel">
+      <header class="housekeeping-header">
+        <h2>Housekeeping</h2>
+        <p class="housekeeping-summary">
+          Idle-driven maintenance. AI producers never run on their own
+          until you set a topic's Run policy to Auto below.
+        </p>
+      </header>
+
+      ${content}
+    </div>
+  `;
+
   const renderPanel = (): string => {
     if (state.loading && !state.config) {
-      return `<p class="housekeeping-loading">Loading housekeeping…</p>`;
+      return renderPanelFrame(
+        `<p class="housekeeping-loading">Loading housekeeping…</p>`,
+      );
     }
     if (state.error) {
-      return `<p class="housekeeping-error">${e(state.error)}</p>`;
+      return renderPanelFrame(
+        `<p class="housekeeping-error">${e(state.error)}</p>`,
+      );
     }
     if (!state.config) {
-      return `<p class="housekeeping-error">Housekeeping config unavailable.</p>`;
+      return renderPanelFrame(
+        '<p class="housekeeping-error">Housekeeping config unavailable.</p>',
+      );
     }
     const config = state.config;
     const draftPreset = state.draftPreset ?? config.preset;
@@ -277,16 +301,7 @@ export const mountHousekeepingPanel = (
     // R25 — ONE page, no tabs: idle schedule on top, then the AI-producer
     // list. The 11 core maintenance tasks graduated to Settings ▸ Server ▸
     // Maintenance (ops/status), so the panel is config-only.
-    return `
-      <div class="housekeeping-panel">
-        <header class="housekeeping-header">
-          <h2>Housekeeping</h2>
-          <p class="housekeeping-summary">
-            Idle-driven maintenance. AI producers never run on their own
-            until you set a topic's Run policy to Auto below.
-          </p>
-        </header>
-
+    return renderPanelFrame(`
         ${renderHousekeepingPromotionBanner({
           suggestions: state.promotionSuggestions,
           writing: state.promotionWriting,
@@ -369,12 +384,91 @@ export const mountHousekeepingPanel = (
           state: state.reset,
           now: now(),
         })}
-      </div>
-    `;
+    `);
   };
 
-  const render = (): void => {
+  const findAction = (
+    action: string,
+    taskId?: string,
+    topic?: string,
+  ): HTMLElement | null => {
+    const nodes = (opts.host as HTMLElement & {
+      querySelectorAll?: (selector: string) => ArrayLike<HTMLElement>;
+    }).querySelectorAll?.('[data-action]');
+    if (!nodes) return null;
+    for (let i = 0; i < nodes.length; i += 1) {
+      const node = nodes[i] as HTMLElement;
+      if (node.getAttribute('data-action') !== action) continue;
+      if (node.classList?.contains('housekeeping-reset-modal-backdrop')) {
+        continue;
+      }
+      if (
+        (taskId === undefined
+          || node.getAttribute('data-task-id') === taskId)
+        && (topic === undefined
+          || node.getAttribute('data-topic') === topic
+          || node.closest?.('[data-topic]')?.getAttribute('data-topic') === topic)
+      ) {
+        return node;
+      }
+    }
+    return null;
+  };
+
+  const dialogElement = (
+    dialog: Extract<HousekeepingFocusIntent, { kind: 'dialog' }>['dialog'],
+  ): HTMLElement | null =>
+    (opts.host as HTMLElement & {
+      querySelector?: (selector: string) => HTMLElement | null;
+    }).querySelector?.(
+      dialog === 'run-now'
+        ? '.housekeeping-runnow-dialog'
+        : '.housekeeping-reset-modal',
+    ) ?? null;
+
+  const focusElement = (element: HTMLElement | null): void => {
+    (element as (HTMLElement & {
+      focus?: (options?: FocusOptions) => void;
+    }) | null)?.focus?.({ preventScroll: true });
+  };
+
+  const modalFocusIntentFromActiveElement = (): HousekeepingFocusIntent | null => {
+    const host = opts.host as HTMLElement & {
+      contains?: (node: Node | null) => boolean;
+      ownerDocument?: Document;
+    };
+    const active = host.ownerDocument?.activeElement as HTMLElement | null;
+    if (!active || host.contains?.(active) !== true) return null;
+    const resetDialog = active.closest?.('.housekeeping-reset-modal');
+    const runNowDialog = active.closest?.('.housekeeping-runnow-dialog');
+    if (!resetDialog && !runNowDialog) return null;
+    const action = active.closest?.('[data-action]')?.getAttribute('data-action');
+    if (action) {
+      const topic = resetDialog?.getAttribute('data-topic');
+      return {
+        kind: 'action',
+        action,
+        ...(topic ? { topic } : {}),
+      };
+    }
+    return {
+      kind: 'dialog',
+      dialog: resetDialog ? 'reset' : 'run-now',
+    };
+  };
+
+  const applyFocusIntent = (intent: HousekeepingFocusIntent | null): void => {
+    if (intent === null) return;
+    focusElement(
+      intent.kind === 'dialog'
+        ? dialogElement(intent.dialog)
+        : findAction(intent.action, intent.taskId, intent.topic),
+    );
+  };
+
+  const render = (focusIntent?: HousekeepingFocusIntent): void => {
     if (disposed) return;
+    const intent = focusIntent ?? modalFocusIntentFromActiveElement();
     opts.host.innerHTML = renderPanel();
     // Restore focus + caret to the search box after a keystroke-driven
     // re-render (full innerHTML rewrite drops focus otherwise).
@@ -398,13 +492,18 @@ export const mountHousekeepingPanel = (
         }
       }
       searchCaret = null;
+      return;
     }
+    applyFocusIntent(intent);
   };
 
-  const setState = (patch: Partial<HousekeepingPanelState>): void => {
+  const setState = (
+    patch: Partial<HousekeepingPanelState>,
+    focusIntent?: HousekeepingFocusIntent,
+  ): void => {
     if (disposed) return;
     state = { ...state, ...patch };
-    render();
+    render(focusIntent);
   };
 
   /** Update the AI-producer search string (mount-local). Pure re-render
@@ -524,18 +623,46 @@ export const mountHousekeepingPanel = (
 
   const doRunNow = async (taskId: string): Promise<void> => {
     if (disposed || !opts.runRunNow) return;
-    setState({ runNow: { task_id: taskId, running: true, error: null } });
+    setState(
+      { runNow: { task_id: taskId, running: true, error: null } },
+      { kind: 'dialog', dialog: 'run-now' },
+    );
     try {
       await opts.runRunNow({ task_id: taskId });
       if (disposed) return;
-      setState({ runNow: { task_id: null, running: false, error: null } });
+      const returnFocus: HousekeepingFocusIntent = {
+        kind: 'action',
+        action: ACTION_RUN_NOW_OPEN,
+        taskId,
+      };
+      setState(
+        { runNow: { task_id: null, running: false, error: null } },
+        returnFocus,
+      );
       await doRefreshStatus();
+      applyFocusIntent(returnFocus);
     } catch (err) {
       if (disposed) return;
-      setState({
-        runNow: { task_id: taskId, running: false, error: messageOf(err) },
-      });
+      setState(
+        {
+          runNow: {
+            task_id: taskId,
+            running: false,
+            error: messageOf(err),
+          },
+        },
+        { kind: 'action', action: ACTION_RUN_NOW_CONFIRM },
+      );
     }
+  };
+
+  const cancelRunNow = (): void => {
+    const taskId = state.runNow.task_id;
+    if (taskId === null || state.runNow.running) return;
+    setState(
+      { runNow: { task_id: null, running: false, error: null } },
+      { kind: 'action', action: ACTION_RUN_NOW_OPEN, taskId },
+    );
   };
 
   const doTrustWrite = async (
@@ -636,14 +763,17 @@ export const mountHousekeepingPanel = (
     resetPsiBaselines: boolean | null,
   ): Promise<void> => {
     if (disposed || !opts.runTopicReset) return;
-    setState({
-      reset: {
-        ...initialHousekeepingResetModalState(),
-        topic,
-        phase: 'previewing',
-        resetPsiBaselines,
+    setState(
+      {
+        reset: {
+          ...initialHousekeepingResetModalState(),
+          topic,
+          phase: 'previewing',
+          resetPsiBaselines,
+        },
       },
-    });
+      { kind: 'action', action: ACTION_RESET_CANCEL },
+    );
     try {
       const res = await opts.runTopicReset({
         topic,
@@ -652,23 +782,29 @@ export const mountHousekeepingPanel = (
           : {}),
       });
       if (disposed || state.reset.topic !== topic) return;
-      setState({
-        reset: {
-          topic,
-          phase: 'preview',
-          impact: res.impact,
-          appliedSummary: null,
-          confirmation_token: res.confirmation_token,
-          expires_at: res.expires_at,
-          resetPsiBaselines: res.reset_psi_baselines,
-          error: null,
+      setState(
+        {
+          reset: {
+            topic,
+            phase: 'preview',
+            impact: res.impact,
+            appliedSummary: null,
+            confirmation_token: res.confirmation_token,
+            expires_at: res.expires_at,
+            resetPsiBaselines: res.reset_psi_baselines,
+            error: null,
+          },
         },
-      });
+        { kind: 'action', action: ACTION_RESET_CANCEL },
+      );
     } catch (err) {
       if (disposed || state.reset.topic !== topic) return;
-      setState({
-        reset: { ...state.reset, phase: 'error', error: messageOf(err) },
-      });
+      setState(
+        {
+          reset: { ...state.reset, phase: 'error', error: messageOf(err) },
+        },
+        { kind: 'action', action: ACTION_RESET_RETRY, topic },
+      );
     }
   };
 
@@ -676,7 +812,10 @@ export const mountHousekeepingPanel = (
     if (disposed || !opts.runTopicReset) return;
     const { topic, confirmation_token, resetPsiBaselines } = state.reset;
     if (!topic || !confirmation_token) return;
-    setState({ reset: { ...state.reset, phase: 'confirming', error: null } });
+    setState(
+      { reset: { ...state.reset, phase: 'confirming', error: null } },
+      { kind: 'dialog', dialog: 'reset' },
+    );
     try {
       const res = await opts.runTopicReset({
         topic,
@@ -686,28 +825,40 @@ export const mountHousekeepingPanel = (
           : {}),
       });
       if (disposed || state.reset.topic !== topic) return;
-      setState({
-        reset: {
-          ...state.reset,
-          phase: 'applied',
-          appliedSummary: res.applied_summary,
-          confirmation_token: null,
-          error: null,
+      setState(
+        {
+          reset: {
+            ...state.reset,
+            phase: 'applied',
+            appliedSummary: res.applied_summary,
+            confirmation_token: null,
+            error: null,
+          },
         },
-      });
+        { kind: 'action', action: ACTION_RESET_DONE },
+      );
       // The reset enqueued recomputes — refresh the task table so the
       // affected producer's status reflects the pending work.
       await doRefreshStatus();
     } catch (err) {
       if (disposed || state.reset.topic !== topic) return;
-      setState({
-        reset: { ...state.reset, phase: 'error', error: messageOf(err) },
-      });
+      setState(
+        {
+          reset: { ...state.reset, phase: 'error', error: messageOf(err) },
+        },
+        { kind: 'action', action: ACTION_RESET_RETRY, topic },
+      );
     }
   };
 
   const closeReset = (): void => {
-    setState({ reset: initialHousekeepingResetModalState() });
+    const topic = state.reset.topic;
+    setState(
+      { reset: initialHousekeepingResetModalState() },
+      topic === null
+        ? undefined
+        : { kind: 'action', action: ACTION_RESET_OPEN, topic },
+    );
   };
 
   // ── Click delegation ─────────────────────────────────────────────
@@ -731,7 +882,10 @@ export const mountHousekeepingPanel = (
         if (!opts.runRunNow) return;
         const taskId = actionEl.getAttribute('data-task-id');
         if (!taskId) return;
-        setState({ runNow: { task_id: taskId, running: false, error: null } });
+        setState(
+          { runNow: { task_id: taskId, running: false, error: null } },
+          { kind: 'action', action: ACTION_RUN_NOW_CANCEL },
+        );
         return;
       }
       case ACTION_RUN_NOW_CONFIRM: {
@@ -741,9 +895,7 @@ export const mountHousekeepingPanel = (
         return;
       }
       case ACTION_RUN_NOW_CANCEL:
-        if (!state.runNow.running) {
-          setState({ runNow: { task_id: null, running: false, error: null } });
-        }
+        cancelRunNow();
         return;
       case ACTION_DRAWER_TOGGLE: {
         const topic = topicOf(actionEl);
@@ -890,9 +1042,57 @@ export const mountHousekeepingPanel = (
     }
   };
 
+  const onKeyDown = (ev: KeyboardEvent): void => {
+    if (disposed) return;
+    const target = ev.target as HTMLElement | null;
+    const resetDialog = target?.closest?.('.housekeeping-reset-modal') as
+      | HTMLElement
+      | null;
+    const runNowDialog = target?.closest?.('.housekeeping-runnow-dialog') as
+      | HTMLElement
+      | null;
+    const dialog = resetDialog ?? runNowDialog;
+    if (!dialog) return;
+
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (resetDialog) {
+        if (state.reset.phase !== 'confirming') closeReset();
+      } else {
+        cancelRunNow();
+      }
+      return;
+    }
+    if (ev.key !== 'Tab') return;
+
+    const controls = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled])',
+      ),
+    );
+    if (controls.length === 0) {
+      ev.preventDefault();
+      focusElement(dialog);
+      return;
+    }
+    const currentIndex = controls.indexOf(
+      dialog.ownerDocument.activeElement as HTMLElement,
+    );
+    const wrapsBackward = ev.shiftKey && currentIndex <= 0;
+    const wrapsForward = !ev.shiftKey
+      && (currentIndex < 0 || currentIndex === controls.length - 1);
+    if (!wrapsBackward && !wrapsForward) return;
+    ev.preventDefault();
+    focusElement(
+      wrapsBackward ? controls[controls.length - 1]! : controls[0]!,
+    );
+  };
+
   opts.host.addEventListener('click', onClick);
   opts.host.addEventListener('change', onChange);
   opts.host.addEventListener('input', onInput);
+  opts.host.addEventListener('keydown', onKeyDown);
 
   // Fire the main load + the non-fatal coverage meta load together.
   // The meta load never gates `whenLoaded()` — it's secondary — but it
@@ -969,6 +1169,7 @@ export const mountHousekeepingPanel = (
       opts.host.removeEventListener('click', onClick);
       opts.host.removeEventListener('change', onChange);
       opts.host.removeEventListener('input', onInput);
+      opts.host.removeEventListener('keydown', onKeyDown);
       try {
         opts.host.innerHTML = '';
       } catch {
@@ -1051,6 +1252,18 @@ const topicOf = (el: HTMLElement & {
 // ════════════════════════════════════════════════════════════════
 
 export const HOUSEKEEPING_PANEL_STYLES = `
+/* Server ▸ Maintenance storage read-out. Reuses \`housekeeping-task-table\` for
+   the grid; these rules only add what a usage row needs beyond a task row. */
+.maintenance-storage-size { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.maintenance-storage-receipt { color: var(--fg-muted); font-size: 11px; }
+/* A surface off the running state is the one the owner opened this tab to find,
+   so the row is marked rather than left to be read off the state column. */
+.maintenance-storage-row--attention th[scope="row"],
+.maintenance-storage-row--attention .maintenance-storage-size {
+  color: var(--danger, #dc2626);
+  font-weight: 600;
+}
+
 .housekeeping-panel { display: flex; flex-direction: column; gap: 18px; color: var(--fg); font-size: 13px; }
 .housekeeping-loading, .housekeeping-error { margin: 0; }
 .housekeeping-error { color: var(--danger); }
@@ -1082,7 +1295,7 @@ export const HOUSEKEEPING_PANEL_STYLES = `
 .housekeeping-producer-filter-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .housekeeping-producer-search { flex: 1 1 200px; min-width: 160px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--fg); font: inherit; font-size: 12px; }
 .housekeeping-producer-cost-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
-.housekeeping-producer-cost-segment { appearance: none; border: 0; background: var(--surface); color: var(--fg-muted); font: inherit; font-size: 12px; padding: 5px 12px; cursor: pointer; border-left: 1px solid var(--border); }
+.housekeeping-producer-cost-segment { box-sizing: border-box; min-height: 36px; display: inline-flex; align-items: center; justify-content: center; appearance: none; border: 0; background: var(--surface); color: var(--fg-muted); font: inherit; font-size: 12px; padding: 5px 12px; cursor: pointer; border-left: 1px solid var(--border); }
 .housekeeping-producer-cost-segment:first-child { border-left: 0; }
 .housekeeping-producer-cost-segment:hover { color: var(--fg); }
 .housekeeping-producer-cost-segment[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
@@ -1104,20 +1317,21 @@ export const HOUSEKEEPING_PANEL_STYLES = `
 .housekeeping-producer-llm-badge { font-size: 10px; font-weight: 600; letter-spacing: 0.04em; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 4px; }
 .housekeeping-producer-status-flag { font-size: 10px; font-weight: 600; }
 .housekeeping-producer-runpolicy { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; margin: 0; padding: 0; }
-.housekeeping-producer-runpolicy-seg { display: inline-flex; }
-.housekeeping-producer-runpolicy-seg span { padding: 4px 10px; font-size: 11px; color: var(--fg-muted); cursor: pointer; border-left: 1px solid var(--border); }
+.housekeeping-producer-runpolicy-seg { box-sizing: border-box; min-height: 36px; display: inline-flex; }
+.housekeeping-producer-runpolicy-seg span { box-sizing: border-box; min-height: 36px; display: inline-flex; align-items: center; padding: 4px 10px; font-size: 11px; color: var(--fg-muted); cursor: pointer; border-left: 1px solid var(--border); }
 .housekeeping-producer-runpolicy-seg:first-child span { border-left: 0; }
 .housekeeping-producer-runpolicy-seg input { position: absolute; opacity: 0; width: 0; height: 0; }
 .housekeeping-producer-runpolicy-seg[data-active="true"] span { background: var(--accent); color: var(--on-accent); font-weight: 600; }
 .housekeeping-producer-runpolicy-seg input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: -2px; }
 .housekeeping-producer-runpolicy-seg input:disabled + span { cursor: not-allowed; opacity: 0.5; }
 .housekeeping-producer-runpolicy-error { margin-top: 4px; }
+.housekeeping-drawer-toggle-button { box-sizing: border-box; min-width: 36px; min-height: 36px; }
 
 .housekeeping-drawer { padding: 12px 14px; background: var(--surface-sunk); border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 14px; }
 .housekeeping-drawer-section h4 { margin: 0 0 6px; font-size: 12px; font-weight: 600; }
 .housekeeping-drawer-description { color: var(--fg-muted); margin: 0 0 8px; }
 .housekeeping-drawer-radios { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; border: 0; }
-.housekeeping-drawer-radio { display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 2px 8px; }
+.housekeeping-drawer-radio { box-sizing: border-box; min-height: 36px; display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 2px 8px; }
 .housekeeping-drawer-radio input { grid-row: span 2; }
 .housekeeping-drawer-radio-label { font-weight: 600; }
 .housekeeping-drawer-radio-desc { grid-column: 2; color: var(--fg-muted); font-size: 11px; }
@@ -1166,12 +1380,12 @@ export const HOUSEKEEPING_PANEL_STYLES = `
 .housekeeping-drawer-coverage-stats { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0; font-size: 11px; }
 .housekeeping-drawer-coverage-stats dt { color: var(--fg-muted); }
 .housekeeping-drawer-coverage-stats dd { margin: 0; font-variant-numeric: tabular-nums; }
-.housekeeping-drawer-coverage-bias summary { cursor: pointer; color: var(--fg-muted); font-size: 11px; }
+.housekeeping-drawer-coverage-bias summary { box-sizing: border-box; min-height: 36px; display: flex; align-items: center; cursor: pointer; color: var(--fg-muted); font-size: 11px; }
 
 /* ── R25 — drawer read-access cross-link (replaces the MCP toggle) ── */
 .housekeeping-drawer-read-access { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
 .housekeeping-drawer-read-access-note { color: var(--fg-muted); font-size: 11px; margin: 0; }
-.housekeeping-drawer-read-access-link { color: var(--accent); font-size: 12px; text-decoration: none; }
+.housekeeping-drawer-read-access-link { box-sizing: border-box; min-height: 36px; display: inline-flex; align-items: center; color: var(--accent); font-size: 12px; text-decoration: none; }
 .housekeeping-drawer-read-access-link:hover { text-decoration: underline; }
 
 /* ── Commit 2 — drawer reset entry-point (D-136 §A.12) ───────────── */
@@ -1190,9 +1404,61 @@ export const HOUSEKEEPING_PANEL_STYLES = `
 .housekeeping-reset-impact dt, .housekeeping-reset-applied dt { color: var(--fg-muted); }
 .housekeeping-reset-impact dd, .housekeeping-reset-applied dd { margin: 0; font-variant-numeric: tabular-nums; }
 .housekeeping-reset-impact-tokens { grid-column: 1 / -1; color: var(--fg-muted); }
-.housekeeping-reset-psi-toggle { display: flex; align-items: baseline; gap: 8px; }
+.housekeeping-reset-psi-toggle { box-sizing: border-box; min-height: 36px; display: flex; align-items: center; gap: 8px; }
 .housekeeping-reset-applied-headline, .housekeeping-reset-applied-followup { margin: 0; line-height: 1.45; }
 .housekeeping-reset-applied-followup { color: var(--fg-muted); font-size: 12px; }
 .housekeeping-reset-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
 .housekeeping-reset-token-expiry { color: var(--fg-muted); font-size: 11px; }
+
+@media (max-width: 720px) {
+  .housekeeping-producer-table,
+  .housekeeping-producer-table tbody,
+  .housekeeping-producer-table tr,
+  .housekeeping-producer-table td {
+    box-sizing: border-box;
+    display: block;
+    width: 100%;
+  }
+  .housekeeping-producer-table thead { display: none; }
+  .housekeeping-producer-row-group { margin-bottom: 8px; }
+  .housekeeping-producer-table .housekeeping-producer-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 10px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+  }
+  .housekeeping-producer-row td {
+    min-width: 0;
+    padding: 0;
+    border-bottom: 0;
+  }
+  .housekeeping-producer-topic { grid-column: 1 / -1; }
+  .housekeeping-producer-runpolicy-cell { grid-column: 1; }
+  .housekeeping-producer-last-run {
+    grid-column: 2;
+    align-self: center;
+    color: var(--fg-muted);
+  }
+  .housekeeping-producer-action {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  .housekeeping-producer-row-group[data-expanded="true"] .housekeeping-producer-row {
+    border-bottom: 0;
+    border-radius: 8px 8px 0 0;
+  }
+  .housekeeping-producer-drawer-cell {
+    padding: 10px 0 0;
+    border: 1px solid var(--border);
+    border-top: 0;
+    border-radius: 0 0 8px 8px;
+    overflow: hidden;
+  }
+  .housekeeping-producer-cost-line { padding: 0 14px 10px; }
+}
 `;

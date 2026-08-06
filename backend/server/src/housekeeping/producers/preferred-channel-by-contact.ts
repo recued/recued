@@ -52,6 +52,13 @@ import {
   matchesAnyAddress,
   sqlLikeAny,
 } from './_contact-addresses.js';
+import { listCollectionDataTables } from '../../collections/table.js';
+import {
+  CALENDAR_LIKE_COLUMN,
+  CALENDAR_ROW_SELECT,
+  calendarRowHotFields,
+  type CalendarScanRow as CalendarRawRow,
+} from './_calendar-rows.js';
 
 // ────────────────────────────────────────────────────────────────
 // Constants
@@ -160,23 +167,13 @@ export const decidePreferredChannel = (
 // ────────────────────────────────────────────────────────────────
 
 const listMailCollectionTables = (ctx: HousekeepingContext): string[] => {
-  const rows = ctx.db
-    .prepare(
-      `SELECT name FROM sqlite_master
-        WHERE type='table' AND name LIKE 'collection_mail_%'`,
-    )
-    .all() as Array<{ name: string }>;
-  return rows.map((r) => r.name);
+  const rows = listCollectionDataTables(ctx.db, 'mail');
+  return rows;
 };
 
 const listCalendarCollectionTables = (ctx: HousekeepingContext): string[] => {
-  const rows = ctx.db
-    .prepare(
-      `SELECT name FROM sqlite_master
-        WHERE type='table' AND name LIKE 'collection_calendar_%'`,
-    )
-    .all() as Array<{ name: string }>;
-  return rows.map((r) => r.name);
+  const rows = listCollectionDataTables(ctx.db, 'calendar');
+  return rows;
 };
 
 /** Count mail rows involving `email` whose `received_at` falls inside
@@ -251,17 +248,13 @@ export const countCalendarMentionsInWindow = (
   for (const table of listCalendarCollectionTables(ctx)) {
     const rows = ctx.db
       .prepare(
-        `SELECT hot_fields FROM "${table}"
-          WHERE ${sqlLikeAny('hot_fields', addresses.length)}`,
+        `SELECT ${CALENDAR_ROW_SELECT} FROM "${table}"
+          WHERE ${sqlLikeAny(CALENDAR_LIKE_COLUMN, addresses.length)}`,
       )
-      .all(...likeAnyParams(addresses)) as Array<{ hot_fields: string }>;
+      .all(...likeAnyParams(addresses)) as CalendarRawRow[];
     for (const row of rows) {
-      let parsed: Record<string, unknown>;
-      try {
-        parsed = JSON.parse(row.hot_fields) as Record<string, unknown>;
-      } catch {
-        continue;
-      }
+      const parsed = calendarRowHotFields(row);
+      if (parsed === null) continue;
       const startAtRaw = parsed[CAL_START_AT_KEY];
       if (typeof startAtRaw !== 'number' || !Number.isFinite(startAtRaw)) continue;
       if (startAtRaw < since || startAtRaw >= now) continue;

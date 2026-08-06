@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { RpcError, type ServerHeartbeatSnapshot } from '@recued/contracts';
 
 import {
+  SERVER_CONTROL_STORAGE_ATTR,
   isServerHeartbeatSnapshot,
   mountWebclientServerPill,
 } from '../shell/server-pill-host.js';
@@ -330,6 +331,64 @@ describe('webclient server pill — master pause control (D-188)', () => {
     });
     mount.noteSnapshot(runningSnapshot());
     expect(parts().pillHost?.innerHTML).toContain('data-action="server-pill-click"');
+    mount.dispose();
+  });
+
+  it('⛔ the popover shows the STORAGE read-out, most-constrained first', () => {
+    // ⛔ THE SEAM A PURE TEST CANNOT COVER. `pressureSurfaceRows` is unit-tested
+    // in contracts; that proves the row MODEL and says nothing about whether
+    // any client renders it — which was the entire defect. `used_bytes` /
+    // `quota_bytes` / `pct` reached every client on the heartbeat since Phase B
+    // and no surface displayed them.
+    const status = buildFakeStatus('connected');
+    const { host, parts } = makeControllableHost();
+    const mount = mountWebclientServerPill({
+      host: host as unknown as HTMLElement,
+      status: status.status,
+      onStatus: status.onStatus,
+      now: () => NOW,
+      runSetPaused: vi.fn(async () => ({ ok: true, active_since: null })),
+    });
+    mount.noteSnapshot(runningSnapshot({
+      pressure_details: {
+        worst_state: 'pressure_managed',
+        per_surface: [
+          { surface: 'audit', state: 'running', used_bytes: 104857600, quota_bytes: 5368709120, pct: 2 },
+          { surface: 'cache', state: 'pressure_managed', used_bytes: 188743680, quota_bytes: 209715200, pct: 90 },
+        ],
+      },
+    }));
+    parts().pillHost?.fire('click', pillClick);
+    const html = parts().popoverHost?.innerHTML ?? '';
+
+    expect(html).toContain(SERVER_CONTROL_STORAGE_ATTR);
+    expect(html).toContain('Storage');
+    expect(html).toContain('5.00 GB');
+    expect(html).toContain('(90%)');
+    // Most-constrained first: cache must precede audit in the DOM.
+    expect(html.indexOf('cache')).toBeLessThan(html.indexOf('audit'));
+    // ...and the pressured surface is marked.
+    expect(html).toContain('server-control-storage-row--attention');
+    mount.dispose();
+  });
+
+  it('a snapshot with no pressure block renders no storage section', () => {
+    // Absence must read as absence, not as an empty "Storage" heading that
+    // looks like a server holding nothing.
+    const status = buildFakeStatus('connected');
+    const { host, parts } = makeControllableHost();
+    const mount = mountWebclientServerPill({
+      host: host as unknown as HTMLElement,
+      status: status.status,
+      onStatus: status.onStatus,
+      now: () => NOW,
+      runSetPaused: vi.fn(async () => ({ ok: true, active_since: null })),
+    });
+    mount.noteSnapshot(runningSnapshot());
+    parts().pillHost?.fire('click', pillClick);
+    const html = parts().popoverHost?.innerHTML ?? '';
+    expect(html).toContain('Pause server');           // the popover DID render
+    expect(html).not.toContain(SERVER_CONTROL_STORAGE_ATTR);
     mount.dispose();
   });
 

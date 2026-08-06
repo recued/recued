@@ -112,6 +112,8 @@ export interface AccountProvider {
 export interface AccountLane {
   id: AccountLaneId;
   label: string;
+  /** Visible section title when this lane already has connected accounts. */
+  listTitle: string;
   blurb: string;
   /** Outcome-led first-run copy and action. Kept on the lane so the empty
    *  state stays truthful as provider support changes. */
@@ -525,7 +527,8 @@ export const ACCOUNT_LANES: readonly AccountLane[] = [
   {
     id: 'mail',
     label: 'Mail',
-    blurb: 'Mailboxes Recued can search and use in your work. Sending stays optional.',
+    listTitle: 'Mailboxes',
+    blurb: 'Recued can search and use these mailboxes in your work. Sending stays optional.',
     emptyTitle: 'Connect your first mailbox',
     emptyDescription:
       'Find messages in Chat and let Recued help with inbox work. You choose whether Recued can send.',
@@ -535,7 +538,8 @@ export const ACCOUNT_LANES: readonly AccountLane[] = [
   {
     id: 'calendar',
     label: 'Calendar',
-    blurb: 'Calendars Recued can use to understand your schedule and help with events.',
+    listTitle: 'Calendars',
+    blurb: 'Recued can use these calendars to understand your schedule and help with events.',
     emptyTitle: 'Connect your first calendar',
     emptyDescription:
       'Bring upcoming work into context and let Recued help with calendar tasks.',
@@ -549,7 +553,8 @@ export const ACCOUNT_LANES: readonly AccountLane[] = [
   {
     id: 'file',
     label: 'Files',
-    blurb: 'Approved folders and buckets Recued can search and use for file tasks.',
+    listTitle: 'File sources',
+    blurb: 'Recued can search approved folders and buckets for file tasks.',
     emptyTitle: 'Add your first file source',
     emptyDescription:
       'Make a local folder or S3-compatible bucket available to Recued when you need it.',
@@ -1437,7 +1442,12 @@ const renderList = (lane: AccountLane, state: AccountsPanelState): string => {
   return `
     ${renderOAuthReloadRecovery(state)}
     ${renderConnectionSuccess(lane, state)}
-    ${isEmpty || state.rows.length === 0 ? '' : `<p class="accounts-blurb">${e(lane.blurb)}</p>`}
+    ${isEmpty || state.rows.length === 0
+      ? ''
+      : `<header class="accounts-list-header">
+          <h2 class="accounts-list-title">${e(lane.listTitle)}</h2>
+          <p class="accounts-blurb">${e(lane.blurb)}</p>
+        </header>`}
     ${body}
     ${addRow}
     ${pending}
@@ -1696,23 +1706,37 @@ export const renderAccountsPanel = (props: AccountsPanelProps): string => {
 // ════════════════════════════════════════════════════════════════
 
 export const ACCOUNTS_PANEL_STYLES = `
-.accounts-panel { display: grid; gap: 14px; }
+.accounts-panel { min-width: 0; display: grid; gap: 14px; }
 .accounts-delete-backdrop {
+  box-sizing: border-box; min-width: 0; max-width: 100%;
   position: fixed; inset: 0; z-index: 40;
   display: grid; place-items: center;
   padding: 24px; background: rgba(24, 24, 27, 0.45);
 }
 .accounts-delete-confirm {
+  box-sizing: border-box; min-width: 0; max-width: 100%;
   width: min(420px, 100%);
   display: grid; gap: 12px; padding: 20px;
   border: 1px solid var(--border); border-radius: 14px;
   background: var(--surface);
   box-shadow: 0 12px 32px rgba(24, 24, 27, 0.18);
 }
-.accounts-delete-title { margin: 0; font-size: 15px; }
-.accounts-delete-body { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
-.accounts-delete-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.accounts-delete-title {
+  min-width: 0; margin: 0; overflow-wrap: anywhere; font-size: 15px;
+}
+.accounts-delete-body {
+  min-width: 0; margin: 0; overflow-wrap: anywhere;
+  color: var(--muted); font-size: 13px; line-height: 1.5;
+}
+.accounts-delete-actions {
+  min-width: 0; display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap;
+}
 .accounts-stage { min-width: 0; }
+.accounts-list-header { margin: 0 0 10px; }
+.accounts-list-title {
+  margin: 0 0 3px; color: var(--fg-strong, var(--fg));
+  font-size: 16px; line-height: 1.3; font-weight: 680;
+}
 .accounts-blurb { margin: 0; color: var(--muted); font-size: 13px; }
 .accounts-empty {
   position: relative; overflow: hidden;
@@ -1861,18 +1885,24 @@ export const ACCOUNTS_PANEL_STYLES = `
 .accounts-success-actions {
   display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-top: 14px;
 }
-.accounts-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.accounts-row { border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.accounts-rows { min-width: 0; list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.accounts-row { min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .accounts-row-main {
+  box-sizing: border-box; min-width: 0; max-width: 100%;
   appearance: none; width: 100%; text-align: left; background: transparent;
   border: 0; padding: 12px 14px; font: inherit; color: var(--fg);
   cursor: pointer; display: grid; gap: 4px;
 }
 .accounts-row-main:hover { background: var(--surface-subtle); }
-.accounts-row-name { font-weight: 650; font-size: 14px; }
-.accounts-row-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.accounts-row-sub { color: var(--muted); font-size: 12px; }
+.accounts-row-name {
+  min-width: 0; overflow-wrap: anywhere; font-weight: 650; font-size: 14px;
+}
+.accounts-row-meta { min-width: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.accounts-row-sub {
+  min-width: 0; overflow-wrap: anywhere; color: var(--muted); font-size: 12px;
+}
 .accounts-badge {
+  min-width: 0; max-width: 100%; overflow-wrap: anywhere;
   font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 999px;
   background: var(--surface-sunk); color: var(--muted); border: 1px solid var(--border);
 }
@@ -1996,10 +2026,17 @@ export const ACCOUNTS_PANEL_STYLES = `
   margin: 10px 0 2px; padding-left: 20px; display: grid; gap: 8px;
   color: var(--muted); font-size: 12px; line-height: 1.5;
 }
-.accounts-detail-title { margin: 0 0 10px; font-size: 16px; font-weight: 650; }
-.accounts-detail-grid { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; font-size: 13px; }
+.accounts-detail { min-width: 0; }
+.accounts-detail-title {
+  min-width: 0; margin: 0 0 10px; overflow-wrap: anywhere;
+  font-size: 16px; font-weight: 650;
+}
+.accounts-detail-grid {
+  min-width: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 16px; margin: 0; font-size: 13px;
+}
 .accounts-detail-grid dt { color: var(--muted); }
-.accounts-detail-grid dd { margin: 0; }
+.accounts-detail-grid dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .accounts-loading { color: var(--muted); font-size: 13px; }
 @media (max-width: 640px) {
   .accounts-empty {

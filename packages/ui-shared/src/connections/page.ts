@@ -630,6 +630,7 @@ const renderRecentProbe = (
           basic: 'Username and password',
           header: 'Header credential',
           query: 'Query credential',
+          request_signature: 'Signing key pair',
           oauth2_refresh: 'OAuth refresh credential',
           oauth2_client_credentials: 'OAuth client credential',
           atproto_session: 'AT Protocol app password',
@@ -3293,7 +3294,12 @@ const renderDialog = (props: ConnectionsPageProps): string => {
 };
 
 const renderHeader = (props: ConnectionsPageProps): string => {
-  if (props.layout === 'embedded') return '';
+  if (props.layout === 'embedded') {
+    const heading = props.dialog.stage === 'closed'
+      ? 'Enrolled connections'
+      : 'Connection setup';
+    return `<h2 class="connections-embedded-title" id="connections-embedded-heading">${heading}</h2>`;
+  }
   return `
     <header class="connections-page-header">
       <button type="button"
@@ -3366,8 +3372,11 @@ const renderDeleteConfirm = (props: ConnectionsPageProps): string => {
 
 export const renderConnectionsPage = (props: ConnectionsPageProps): string => {
   const dialogOpen = props.dialog.stage !== 'closed';
+  const embeddedRegion = props.layout === 'embedded'
+    ? ' role="region" aria-labelledby="connections-embedded-heading"'
+    : '';
   return `
-    <div class="connections-page${dialogOpen ? ' connections-page--dialog-open' : ''}">
+    <div class="connections-page${dialogOpen ? ' connections-page--dialog-open' : ''}"${embeddedRegion}>
       ${renderHeader(props)}
       ${renderCredentialRotationRecovery(props)}
       ${renderPostSafeStopProfileHandoff(props)}
@@ -3384,6 +3393,9 @@ export const renderConnectionsPage = (props: ConnectionsPageProps): string => {
  *  stylesheet so we only add page-specific rules here. */
 export const CONNECTIONS_PAGE_STYLES = `
 .connections-page {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -3398,6 +3410,17 @@ export const CONNECTIONS_PAGE_STYLES = `
   font-size: 16px;
   font-weight: 600;
   margin: 0;
+}
+.connections-embedded-title {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 .connections-page-subtitle {
   font-size: 12px;
@@ -3456,6 +3479,7 @@ export const CONNECTIONS_PAGE_STYLES = `
   .connections-credential-recovery-action { justify-content: flex-start; }
 }
 .connections-group {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -3468,11 +3492,13 @@ export const CONNECTIONS_PAGE_STYLES = `
   margin: 0 0 4px;
 }
 .connections-group-rows {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 .connections-pack-usage {
+  min-width: 0;
   margin: 4px 0 2px 12px;
   padding-top: 4px;
   border-top: 1px solid var(--border, #e5e5e5);
@@ -3494,10 +3520,12 @@ export const CONNECTIONS_PAGE_STYLES = `
   gap: 2px;
 }
 .connections-pack-usage-item {
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 12px;
 }
-.connections-pack-usage-name { font-weight: 600; }
-.connections-pack-usage-status { color: var(--fg-muted); }
+.connections-pack-usage-name { min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+.connections-pack-usage-status { min-width: 0; overflow-wrap: anywhere; color: var(--fg-muted); }
 /* D-225 — the generated-pack badge. "attention" is the ONLY tone that pulls the
    eye: if every state were emphasised the badge would be noise and the one that
    matters would be ignored. "unknown" earns it because silence there reads as
@@ -3545,6 +3573,9 @@ export const CONNECTIONS_PAGE_STYLES = `
   color: var(--danger, #b3261e);
 }
 .connections-row {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3562,6 +3593,8 @@ export const CONNECTIONS_PAGE_STYLES = `
   min-width: 0;
 }
 .connections-row-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 13px;
   color: var(--fg);
 }
@@ -3571,6 +3604,8 @@ export const CONNECTIONS_PAGE_STYLES = `
   text-transform: lowercase;
 }
 .connections-row-summary {
+  min-width: 0;
+  max-width: 100%;
   font-size: 12px;
   color: var(--fg-muted);
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
@@ -3579,13 +3614,34 @@ export const CONNECTIONS_PAGE_STYLES = `
   text-overflow: ellipsis;
 }
 .connections-row-display {
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 11px;
   color: var(--fg-muted);
 }
 .connections-row-actions {
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   gap: 4px;
   flex-shrink: 0;
+}
+@media (max-width: 560px) {
+  .connections-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .connections-row-info {
+    width: 100%;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .connections-row-summary { width: 100%; }
+  .connections-row-summary:empty { display: none; }
+  .connections-row-actions {
+    flex-wrap: wrap;
+  }
 }
 .connections-add-row {
   display: flex;
@@ -4580,12 +4636,17 @@ export const CONNECTIONS_PAGE_STYLES = `
   gap: 6px;
 }
 .connections-header-row {
+  min-width: 0;
   display: flex;
   gap: 6px;
   align-items: center;
 }
-.connections-header-row .connections-header-name { flex: 1 1 40%; }
-.connections-header-row .connections-header-value { flex: 1 1 60%; }
+.connections-header-row .connections-header-name {
+  box-sizing: border-box; min-width: 0; width: 100%; flex: 1 1 40%;
+}
+.connections-header-row .connections-header-value {
+  box-sizing: border-box; min-width: 0; width: 100%; flex: 1 1 60%;
+}
 .connections-header-row .connections-header-remove { flex: 0 0 auto; }
 .connections-header-add { margin-top: 6px; align-self: flex-start; }
 .connections-matchpattern-rows {
@@ -4611,10 +4672,14 @@ export const CONNECTIONS_PAGE_STYLES = `
   margin-top: 12px;
 }
 .connections-row-wrap {
+  min-width: 0;
   display: flex;
   flex-direction: column;
 }
 .connections-delete-backdrop {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   position: fixed;
   inset: 0;
   z-index: 50;
@@ -4625,6 +4690,8 @@ export const CONNECTIONS_PAGE_STYLES = `
   background: rgba(0, 0, 0, 0.45);
 }
 .connections-delete-confirm {
+  box-sizing: border-box;
+  min-width: 0;
   width: 100%;
   max-width: 380px;
   padding: 20px;
@@ -4634,9 +4701,21 @@ export const CONNECTIONS_PAGE_STYLES = `
   color: var(--fg);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.24);
 }
-.connections-delete-title { margin: 0 0 8px; font-size: 15px; }
-.connections-delete-body { margin: 0 0 12px; font-size: 13px; color: var(--fg-muted); }
+.connections-delete-title {
+  min-width: 0;
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+  font-size: 15px;
+}
+.connections-delete-body {
+  min-width: 0;
+  margin: 0 0 12px;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
 .connections-delete-optin {
+  min-width: 0;
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -4645,17 +4724,29 @@ export const CONNECTIONS_PAGE_STYLES = `
 }
 .connections-delete-optin input { margin-top: 2px; }
 .connections-delete-note {
+  min-width: 0;
   margin: 6px 0 0 24px;
+  overflow-wrap: anywhere;
   font-size: 12px;
   color: var(--fg-muted);
 }
 .connections-delete-actions {
+  min-width: 0;
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  flex-wrap: wrap;
   margin-top: 16px;
 }
 @media (max-width: 520px) {
+  .connections-header-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+  .connections-header-row .connections-header-name { grid-column: 1 / -1; }
+  .connections-header-row .connections-header-value { grid-column: 1; }
+  .connections-header-row .connections-header-remove { grid-column: 2; }
   .connections-oauth-heading,
   .connections-oauth-callback-value {
     align-items: stretch;

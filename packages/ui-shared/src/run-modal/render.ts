@@ -270,6 +270,18 @@ const cadenceLine = (s: ServerSchedule): string =>
       )}`
     : `${e(describeCron(s.cron_expression))} <code>${e(s.cron_expression)}</code>`;
 
+const scheduleActionName = (
+  action: string,
+  schedule: ServerSchedule,
+): string => {
+  const cadence = schedule.mode === 'one_shot'
+    ? `Once — ${typeof schedule.run_at === 'number'
+      ? new Date(schedule.run_at).toLocaleString()
+      : 'time not set'}`
+    : describeCron(schedule.cron_expression);
+  return e(`${action} schedule ${cadence} (${schedule.schedule_id})`);
+};
+
 const renderScheduleRow = (
   schedule: ServerSchedule,
   enabled: boolean,
@@ -292,14 +304,17 @@ const renderScheduleRow = (
     </div>
     <div class="run-modal-actions">
       ${showConfig ? `<button type="button" class="run-modal-button"
+        aria-label="${scheduleActionName('Config', schedule)}"
         ${RUN_MODAL_ACTION_ATTR}="config-schedule"
         ${RUN_MODAL_RULE_ID_ATTR}="${e(scheduleId)}"${busyAttrs}>Config</button>` : ''}
       <button type="button" class="run-modal-button"
+        aria-label="${scheduleActionName(enabled ? 'Pause' : 'Resume', schedule)}"
         ${RUN_MODAL_ACTION_ATTR}="toggle-schedule:${enabled ? 'off' : 'on'}"
         ${RUN_MODAL_RULE_ID_ATTR}="${e(scheduleId)}"${busyAttrs}>${
           enabled ? 'Pause' : 'Resume'
         }</button>
       <button type="button" class="run-modal-button"
+        aria-label="${scheduleActionName('Remove', schedule)}"
         ${RUN_MODAL_ACTION_ATTR}="remove-schedule"
         ${RUN_MODAL_RULE_ID_ATTR}="${e(scheduleId)}"${busyAttrs}>Remove</button>
     </div>
@@ -398,7 +413,10 @@ const renderTriggerTab = (
     ? ' aria-disabled="true" aria-busy="true"'
     : '';
   const rows = state.triggers
-    .map((t) => `
+    .map((t) => {
+      const actionName = (action: string): string =>
+        e(`${action} trigger ${t.pattern} (${t.trigger_id})`);
+      return `
   <li class="run-modal-rule-row">
     <div>
       <div>on <code>${e(t.pattern)}</code>${t.enabled ? '' : ' — paused'}${t.origin === 'recipe' ? ' · from recipe' : ''}</div>
@@ -408,9 +426,11 @@ const renderTriggerTab = (
     </div>
     <div class="run-modal-actions">
       ${hasVars ? `<button type="button" class="run-modal-button"
+        aria-label="${actionName('Config')}"
         ${RUN_MODAL_ACTION_ATTR}="config-trigger"
         ${RUN_MODAL_RULE_ID_ATTR}="${e(t.trigger_id)}"${busyAttrs}>Config</button>` : ''}
       <button type="button" class="run-modal-button"
+        aria-label="${actionName(t.enabled ? 'Pause' : 'Resume')}"
         ${RUN_MODAL_ACTION_ATTR}="toggle-trigger:${t.enabled ? 'off' : 'on'}"
         ${RUN_MODAL_RULE_ID_ATTR}="${e(t.trigger_id)}"${busyAttrs}>${
           t.enabled ? 'Pause' : 'Resume'
@@ -418,10 +438,12 @@ const renderTriggerTab = (
       ${t.origin === 'recipe'
         ? ''
         : `<button type="button" class="run-modal-button"
+        aria-label="${actionName('Remove')}"
         ${RUN_MODAL_ACTION_ATTR}="remove-trigger"
         ${RUN_MODAL_RULE_ID_ATTR}="${e(t.trigger_id)}"${busyAttrs}>Remove</button>`}
     </div>
-  </li>`)
+  </li>`;
+    })
     .join('');
   const list = state.triggers.length === 0
     ? '<p class="run-modal-meta">No event triggers for this recipe yet.</p>'

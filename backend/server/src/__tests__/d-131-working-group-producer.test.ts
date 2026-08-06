@@ -52,6 +52,10 @@ import {
   type EnrichmentStore,
 } from '../storage/enrichment-store.js';
 import type { HousekeepingContext } from '../housekeeping/registry.js';
+import {
+  createCalendarFixtureTable,
+  insertCalendarFixtureRow,
+} from './_calendar-fixture.js';
 
 // ────────────────────────────────────────────────────────────────
 // Fixture infrastructure
@@ -61,8 +65,8 @@ const NOW = 1_700_000_000_000;
 const ONE_HOUR = 60 * 60 * 1000;
 const ONE_DAY = 24 * ONE_HOUR;
 
-const CAL_TABLE_A = 'collection_calendar_a';
-const CAL_TABLE_B = 'collection_calendar_b';
+const CAL_TABLE_A = 'collection_calendar_55555555ee';
+const CAL_TABLE_B = 'collection_calendar_66666666ff';
 
 let dir: string;
 let db: Database.Database;
@@ -73,18 +77,7 @@ beforeEach(() => {
   db = new Database(join(dir, 'test.db'));
   db.pragma('journal_mode = WAL');
   for (const t of [CAL_TABLE_A, CAL_TABLE_B]) {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS ${t} (
-        record_id   TEXT PRIMARY KEY,
-        received_at INTEGER NOT NULL,
-        modified_at INTEGER NOT NULL,
-        hot_fields  TEXT NOT NULL,
-        size_bytes  INTEGER NOT NULL,
-        source_id   TEXT NOT NULL,
-        body_inline TEXT,
-        blob_hash   TEXT
-      );
-    `);
+    createCalendarFixtureTable(db, t);
   }
   store = createEnrichmentStore(db);
 });
@@ -117,21 +110,11 @@ const insertEvent = (e: InsertedEvent): void => {
     location: '',
     timezone: 'UTC',
   };
-  db.prepare(
-    `INSERT INTO ${table} (
-       record_id, received_at, modified_at, hot_fields,
-       size_bytes, source_id, body_inline, blob_hash
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    e.record_id,
-    e.received_at ?? NOW,
-    e.received_at ?? NOW,
-    JSON.stringify(hot),
-    200,
-    e.record_id,
-    null,
-    null,
-  );
+  insertCalendarFixtureRow(db, table, {
+    record_id: e.record_id,
+    hot,
+    received_at: e.received_at ?? NOW,
+  });
 };
 
 const buildCtx = (now: number = NOW): HousekeepingContext => ({
@@ -499,31 +482,31 @@ describe('scanRecentCalendarEventsForWorkingGroup', () => {
     expect(events.map((e) => e.record_id)).toEqual(['team']);
   });
 
-  it('drops events without a numeric start_at', () => {
-    db.prepare(
-      `INSERT INTO ${CAL_TABLE_A} (
-         record_id, received_at, modified_at, hot_fields,
-         size_bytes, source_id, body_inline, blob_hash
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      'no-start',
-      NOW,
-      NOW,
-      JSON.stringify({
-        organizer: 'a@x',
-        attendees: ['b@x', 'c@x'],
-      }),
-      200,
-      'no-start',
-      null,
-      null,
-    );
-    insertEvent({
-      record_id: 'with-start',
-      attendees: ['b@x', 'c@x'],
-    });
-    const events = scanRecentCalendarEventsForWorkingGroup(buildCtx(), NOW);
-    expect(events.map((e) => e.record_id)).toEqual(['with-start']);
+  it('cannot store an event with no start_at — production declares it NOT NULL', () => {
+    // ⚠ This replaces a test that inserted a calendar row whose `hot_fields`
+    // JSON omitted (or non-numerically typed) `start_at`, and asserted the
+    // producer dropped it.
+    //
+    // That input is NOT REPRESENTABLE. Production's calendar table declares
+    // `start_at INTEGER NOT NULL` (D-117 typed columns), so the branch is
+    // unreachable on any real server; the old test only passed because the
+    // fixture was mail-shaped and start_at lived in a JSON blob.
+    //
+    // Kept as an assertion about the schema rather than deleted: if start_at
+    // ever becomes nullable, this reddens and the branch needs a real test.
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO ${CAL_TABLE_A} (
+             record_id, source_id, received_at, modified_at, size_bytes,
+             calendar_id, summary, start_at, end_at, status, organizer,
+             ical_uid, location, is_all_day, is_recurring,
+             body_inline, blob_hash, etag, record_payload, prior_payload
+           ) VALUES (?, ?, ?, ?, ?, 'primary', 'NoStart', NULL, ?, 'confirmed',
+                     NULL, 'uid-nostart', NULL, 0, 0, NULL, NULL, NULL, '{}', NULL)`,
+        )
+        .run('e_nostart', 'e_nostart', NOW, NOW, 200, NOW),
+    ).toThrow(/NOT NULL/i);
   });
 
   it('respects the limit parameter', () => {

@@ -275,7 +275,30 @@ describe('startPostListenerRuntime', () => {
       webclientServed: options.webclientServed,
       notificationBlock: options.notificationBlock,
       runUpdateBootReconcile: options.runUpdateBootReconcile,
+      // D-148 § A.5.6 lapse-recovery hop. Matched by SHAPE because the runtime
+      // builds a closure here rather than forwarding a value.
+      applyLifecycle: expect.any(Function),
     });
+
+    // ...and the closure has to stay LAZY. `composeLate` fills the cert stack's
+    // handle-state-machine ref, which can land AFTER this call, so a version
+    // that read the ref eagerly would pin `undefined` and disable lapse
+    // recovery while remaining fully typed and green — the failure mode
+    // start-post-listener-runtime.ts:602-606 exists to warn about. Asserting
+    // only `expect.any(Function)` above would not tell those two apart.
+    const tailCall = runtimeMocks.startPostHousekeepingTail.mock.calls[0]?.[0] as
+      { applyLifecycle: () => unknown };
+    // Counted rather than compared by identity: it needs no stand-in
+    // `HandleStateMachine` (a whole-object cast would silence the very
+    // missing-member check that keeps this fixture honest), and it measures the
+    // property that matters — the ref is read WHEN THE CLOSURE RUNS. An eager
+    // version reads it once at wiring time and never again, so the count does
+    // not move here and this reddens.
+    let refReads = 0;
+    options.certStack.getHandleStateMachineRef = () => { refReads += 1; return undefined; };
+    const before = refReads;
+    tailCall.applyLifecycle();
+    expect(refReads).toBe(before + 1);
   });
 
   it('returns undefined vendor refs when housekeeping startup publishes none', async () => {

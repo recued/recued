@@ -325,6 +325,27 @@ describe('D-145 PA5 — typed-input renderers', () => {
     expect(html).toContain('data-form-array-remove="tags"');
   });
 
+  it('gives repeated array inputs and actions contextual accessible names', () => {
+    const html = renderField(
+      baseField({
+        type: 'array',
+        name: 'blocks_task',
+        label: 'Blocks task',
+        item_type: 'ref',
+        ref_target: 'data.task',
+        required: false,
+      }),
+      { values: { blocks_task: ['task-a', 'task-b'] } },
+    );
+    expect(html).toContain('role="group"');
+    expect(html).toContain('aria-label="Blocks task"');
+    expect(html).toContain('aria-label="Blocks task 1"');
+    expect(html).toContain('aria-label="Blocks task 2"');
+    expect(html).toContain('aria-label="Remove Blocks task 1"');
+    expect(html).toContain('aria-label="Remove Blocks task 2"');
+    expect(html).toContain('aria-label="Add Blocks task"');
+  });
+
   it('array empty + visible → "No entries." placeholder', () => {
     const html = renderField(
       baseField({

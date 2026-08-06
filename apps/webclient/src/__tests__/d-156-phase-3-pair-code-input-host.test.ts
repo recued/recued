@@ -34,6 +34,7 @@ import {
   mountPairCodeInputHost,
   submitPairCodeInput,
   PAIR_CODE_INPUT_ERROR_COPY,
+  PAIR_CODE_INPUT_STYLES,
   PAIR_CODE_INPUT_FORM_ID,
   PAIR_CODE_INPUT_SERVER_URL_ID,
   PAIR_CODE_INPUT_CODE_ID,
@@ -700,6 +701,27 @@ describe('submitPairCodeInput — server errors', () => {
 // ════════════════════════════════════════════════════════════════
 
 describe('mountPairCodeInputHost — initial render', () => {
+  it('keeps pairing inputs full-sized on desktop and narrow screens', () => {
+    expect(PAIR_CODE_INPUT_STYLES).toMatch(
+      /\.pair-code-input-form input\s*\{[^}]*min-height:\s*36px;/s,
+    );
+    expect(PAIR_CODE_INPUT_STYLES).toMatch(
+      /@media \(max-width: 520px\)[\s\S]*?\.pair-code-input-form input,[\s\S]*?\{[^}]*min-height:\s*44px;/s,
+    );
+  });
+
+  it('keeps recovery-generation actions full-sized', () => {
+    expect(PAIR_CODE_INPUT_STYLES).toMatch(
+      /\.pair-code-input-secondary-btn\s*\{[^}]*min-height:\s*36px;/s,
+    );
+    expect(PAIR_CODE_INPUT_STYLES).toMatch(
+      /\.pair-code-input-linkbtn\s*\{[^}]*min-height:\s*36px;/s,
+    );
+    expect(PAIR_CODE_INPUT_STYLES).toMatch(
+      /@media \(max-width: 520px\)[\s\S]*?\.pair-code-input-secondary-btn,[\s\S]*?\.pair-code-input-linkbtn\s*\{[^}]*min-height:\s*44px;/s,
+    );
+  });
+
   it('renders the form id + 3 fields + status + submit', () => {
     const fake = makeFakeSplash();
     mountPairCodeInputHost({

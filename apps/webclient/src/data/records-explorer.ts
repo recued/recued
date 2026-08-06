@@ -31,6 +31,7 @@ export const RECORDS_CONFIRM_PURGE_ACTION = 'records-confirm-purge';
 export const RECORDS_CANCEL_PURGE_ACTION = 'records-cancel-purge';
 export const RECORDS_NAMESPACE_ATTR = 'data-records-namespace';
 export const RECORDS_KIND_ATTR = 'data-records-kind';
+export const RECORDS_KIND_PANEL_ATTR = 'data-records-kind-panel';
 export const RECORDS_ID_ATTR = 'data-records-id';
 export const RECORDS_EVENT_ID_ATTR = 'data-records-event-id';
 export const RECORDS_PURGE_CONFIRMATION_ATTR = 'data-records-purge-confirmation';
@@ -75,6 +76,10 @@ export interface RecordsExplorerState {
 
 const namespaceKey = (ns: RecordsNamespaceView): string =>
   `${ns.owner.publisher}/${ns.owner.pack_slug}`;
+
+const RECORDS_KIND_PANEL_ID = 'recued-records-kind-panel';
+const recordsKindTabId = (kind: string): string =>
+  `recued-records-kind-tab-${encodeURIComponent(kind)}`;
 
 const recordsControlsLocked = (state: RecordsExplorerState): boolean =>
   state.deleting
@@ -154,15 +159,23 @@ const renderGlobalQuota = (quota: RecordsGlobalQuotaSnapshot | null): string => 
   </dl>`;
 };
 
-const renderKindNav = (state: RecordsExplorerState): string => `<div class="records-kind-nav" role="tablist" aria-label="Record kinds">
-  ${state.kinds.map((kind) => `<button type="button" role="tab"
-    data-action="${RECORDS_SELECT_KIND_ACTION}" ${RECORDS_KIND_ATTR}="${e(kind.kind)}"
-    ${recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}
-    ${state.loadingKind === kind.kind ? 'aria-busy="true"' : ''}
-    aria-selected="${kind.kind === state.selectedKind ? 'true' : 'false'}">
-    ${e(kind.kind)} <span>${kind.rows.toLocaleString()}</span>
-  </button>`).join('')}
-</div>`;
+const renderKindNav = (state: RecordsExplorerState): string => {
+  const tabStop = state.kinds.some((kind) => kind.kind === state.selectedKind)
+    ? state.selectedKind
+    : state.kinds[0]?.kind ?? null;
+  return `<div class="records-kind-nav" role="tablist" aria-label="Record kinds">
+    ${state.kinds.map((kind) => `<button type="button" role="tab"
+      id="${e(recordsKindTabId(kind.kind))}"
+      ${state.selectedKind === null ? '' : `aria-controls="${RECORDS_KIND_PANEL_ID}"`}
+      data-action="${RECORDS_SELECT_KIND_ACTION}" ${RECORDS_KIND_ATTR}="${e(kind.kind)}"
+      ${recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}
+      ${state.loadingKind === kind.kind ? 'aria-busy="true"' : ''}
+      aria-selected="${kind.kind === state.selectedKind ? 'true' : 'false'}"
+      tabindex="${kind.kind === tabStop ? '0' : '-1'}">
+      ${e(kind.kind)} <span>${kind.rows.toLocaleString()}</span>
+    </button>`).join('')}
+  </div>`;
+};
 
 const referenceTarget = (value: unknown): { entity: string; id: string } | null => {
   if (typeof value !== 'string') return null;
@@ -205,7 +218,7 @@ const renderList = (state: RecordsExplorerState): string => {
   if (entity === undefined) return '<p role="alert">The installed schema no longer contains this kind.</p>';
   const fields = entity.fields.slice(0, 6);
   if (state.records.length === 0) return '<p class="records-empty">No records in this kind.</p>';
-  return `<div class="records-table-scroll"><table class="records-table">
+  return `<div class="records-table-scroll" data-recued-scroll-rail><table class="records-table">
     <thead><tr>${fields.map((field) => `<th>${e(field.key)}${field.privacy ? `<small>${e(field.privacy)}</small>` : ''}</th>`).join('')}<th>Revision</th></tr></thead>
     <tbody>${state.records.map((record) => `<tr data-action="${RECORDS_OPEN_RECORD_ACTION}"
       ${RECORDS_ID_ATTR}="${e(record.id)}">${fields.map((field) => renderCell(record, field)).join('')}
@@ -285,7 +298,7 @@ const renderOutbox = (state: RecordsExplorerState): string => {
       const pending = item.status === 'pending';
       const confirming = state.retiringEventId === item.event.event_id;
       const retiring = confirming && state.retiringEventBusy;
-      return `<li data-status="${e(item.status)}"><div><strong>${e(item.event.type)}</strong> · ${renderReference(`${item.event.entity}/${encodeURIComponent(item.event.id)}`, recordsControlsLocked(state))}
+      return `<li data-status="${e(item.status)}"><div><div class="records-outbox-event-heading"><strong>${e(item.event.type)}</strong><span><span aria-hidden="true">·</span> ${renderReference(`${item.event.entity}/${encodeURIComponent(item.event.id)}`, recordsControlsLocked(state))}</span></div>
         <small>${e(item.status)} · ${item.retry_count} retries · ${new Date(item.event.created_at).toISOString()}</small>
         ${item.error ? `<p role="alert">${e(item.error)}</p>` : ''}</div>
         ${item.deliveries.length ? `<details><summary>${item.deliveries.length} delivery target${item.deliveries.length === 1 ? '' : 's'}</summary><ul>${item.deliveries.map((delivery) =>
@@ -342,23 +355,30 @@ export const renderRecordsExplorer = (state: RecordsExplorerState): string => {
     ${state.error && state.detail === null ? `<p role="alert">${e(state.error)}</p>` : ''}
     ${state.loading ? '<p aria-live="polite">Loading Records…</p>' : ''}
     <div class="records-layout">${renderNamespaceNav(state)}
-      <main>${namespace === null ? '' : `<section class="records-pack-summary"><div><h3>${e(namespace.owner.pack_slug)}</h3><p>${e(namespace.owner.publisher)} · ${e(stateLabel(namespace))}</p>${renderPurge(state, namespace)}</div>${renderQuota(namespace)}</section>
+      <section class="records-content" aria-label="Record contents">${namespace === null ? '' : `<section class="records-pack-summary"><div><h3>${e(namespace.owner.pack_slug)}</h3><p>${e(namespace.owner.publisher)} · ${e(stateLabel(namespace))}</p>${renderPurge(state, namespace)}</div>${renderQuota(namespace)}</section>
         ${renderOutbox(state)}
         ${renderKindNav(state)}
-        ${state.selectedKind ? `<div class="records-kind-toolbar"><span>Retention: ${e(policy?.mode ?? 'keep')}${policy?.days ? ` · ${policy.days} days` : ''}${policy?.legal_hold ? ' · legal hold' : ''}</span>
-          ${state.canExport ? `<div class="records-export-actions">${renderExportButton(state, RECORDS_EXPORT_KIND_ACTION, 'Export kind JSON')}
-            ${renderExportButton(state, RECORDS_EXPORT_KIND_CSV_ACTION, 'Export kind CSV')}</div>` : ''}</div>` : ''}
-        ${state.detail ? renderDetail(state) : renderList(state)}`}</main>
+        ${state.selectedKind === null
+          ? renderList(state)
+          : `<div class="records-kind-panel" ${RECORDS_KIND_PANEL_ATTR}=""
+              id="${RECORDS_KIND_PANEL_ID}" role="tabpanel"
+              aria-labelledby="${e(recordsKindTabId(state.selectedKind))}">
+              <div class="records-kind-toolbar"><span>Retention: ${e(policy?.mode ?? 'keep')}${policy?.days ? ` · ${policy.days} days` : ''}${policy?.legal_hold ? ' · legal hold' : ''}</span>
+                ${state.canExport ? `<div class="records-export-actions">${renderExportButton(state, RECORDS_EXPORT_KIND_ACTION, 'Export kind JSON')}
+                  ${renderExportButton(state, RECORDS_EXPORT_KIND_CSV_ACTION, 'Export kind CSV')}</div>` : ''}</div>
+              ${state.detail ? renderDetail(state) : renderList(state)}
+            </div>`}`}</section>
     </div>
   </section>`;
 };
 
 export const RECORDS_EXPLORER_STYLES = `
-  .records-explorer{display:grid;gap:18px}.records-heading{display:flex;justify-content:space-between;gap:20px;align-items:end}.records-heading h2{margin:2px 0}.records-heading p{max-width:760px;margin:6px 0;color:var(--muted,#667085)}
-  .records-layout{display:grid;grid-template-columns:minmax(190px,260px) 1fr;gap:18px}.records-namespace-nav{display:grid;gap:8px;align-content:start}.records-namespace{text-align:left;display:grid;gap:2px;padding:10px;border:1px solid var(--border,#d0d5dd);border-radius:8px;background:transparent}.records-namespace[data-active=true]{border-color:var(--accent,#315efb);background:var(--surface-subtle,#f5f7ff)}.records-namespace span,.records-namespace small{overflow-wrap:anywhere;color:var(--muted,#667085)}
-  .records-pack-summary{display:flex;justify-content:space-between;gap:16px;align-items:start}.records-pack-summary h3{margin:0}.records-pack-summary p{margin:4px 0}.records-quota{display:flex;gap:14px;margin:0;flex-wrap:wrap}.records-quota div{display:grid}.records-quota dt,.records-quota small{color:var(--muted,#667085);font-size:12px}.records-quota dd{margin:0}
-  .records-kind-nav{display:flex;gap:6px;flex-wrap:wrap;margin:16px 0}.records-kind-nav button[aria-selected=true]{border-color:var(--accent,#315efb)}.records-kind-nav span{opacity:.7}.records-kind-toolbar{display:flex;justify-content:space-between;align-items:center;margin:8px 0}.records-export-actions{display:flex;gap:6px;flex-wrap:wrap}.records-ref-link{border:0;padding:0;background:transparent;color:var(--accent,#315efb);text-decoration:underline;cursor:pointer;text-align:left}.records-danger{color:#b42318;border-color:#fda29b}
-  .records-table-scroll{overflow:auto}.records-table{width:100%;border-collapse:collapse}.records-table th,.records-table td{text-align:left;padding:9px;border-bottom:1px solid var(--border,#e4e7ec);vertical-align:top;max-width:240px}.records-table th small{display:block;font-weight:400}.records-table tbody tr{cursor:pointer}.records-table tbody tr:hover{background:var(--surface-subtle,#f7f8fa)}.records-row-open{margin-left:8px}.records-pii-tag{display:inline-block;margin-left:5px;padding:1px 4px;border-radius:4px;background:#fff0cc;color:#7a4c00;font-size:10px}.records-empty{color:var(--muted,#667085)}
-  .records-explorer button[aria-disabled=true]{cursor:wait;opacity:.7}.records-detail{display:grid;gap:14px}.records-detail header{display:flex;justify-content:space-between}.records-detail h3{margin:2px 0}.records-detail dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px}.records-detail dl div{padding:10px;border:1px solid var(--border,#e4e7ec);border-radius:7px}.records-detail dt{font-weight:600}.records-detail dd{margin:5px 0;white-space:pre-wrap;overflow-wrap:anywhere}.records-detail-meta{color:var(--muted,#667085);font-size:13px}.records-detail pre{overflow:auto;max-height:340px}.records-delete-confirm{border:1px solid #d92d20;padding:12px;border-radius:8px}.records-delete-confirm button+button{margin-left:8px}.records-relationship-impact ul,.records-outbox-events{margin:6px 0;padding-left:22px}.records-outbox{margin:14px 0;padding:10px;border:1px solid var(--border,#e4e7ec);border-radius:8px}.records-outbox-summary{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px}.records-outbox-events{display:grid;gap:8px}.records-outbox-events>li{padding:8px;border-bottom:1px solid var(--border,#e4e7ec)}.records-outbox-events>li>div:first-child{display:grid;gap:3px}.records-outbox-events small,.records-help{color:var(--muted,#667085)}.records-purge-confirm{margin-top:10px}.records-purge-confirm label{display:grid;gap:4px;margin:8px 0}.records-purge-confirm input{min-width:min(100%,360px)}
+  .records-explorer{display:grid;gap:18px;min-width:0}.records-heading{display:flex;justify-content:space-between;gap:20px;align-items:end}.records-heading>*{min-width:0}.records-heading h2{margin:2px 0}.records-heading p{max-width:760px;margin:6px 0;color:var(--muted,#667085)}
+  .records-explorer button{box-sizing:border-box;min-height:36px;padding:7px 10px;border:1px solid var(--border,#d0d5dd);border-radius:6px;background:var(--surface,#fff);color:var(--fg,#101828);font:inherit;font-size:13px;line-height:1.2;cursor:pointer}.records-explorer button:hover:not([aria-disabled=true]){border-color:var(--border-strong,var(--border,#98a2b3));background:var(--surface-sunk,var(--surface-subtle,#f7f8fa))}.records-explorer button:focus-visible,.records-explorer summary:focus-visible{outline:2px solid var(--accent,#315efb);outline-offset:1px}.records-explorer summary{box-sizing:border-box;min-height:36px;padding:8px 4px;border-radius:6px;cursor:pointer}.records-explorer input{box-sizing:border-box;min-height:38px;padding:7px 9px;border:1px solid var(--border,#d0d5dd);border-radius:6px;background:var(--surface,#fff);color:var(--fg,#101828);font:inherit}
+  .records-layout{display:grid;grid-template-columns:minmax(190px,260px) minmax(0,1fr);gap:18px;min-width:0}.records-layout>.records-content{min-width:0}.records-namespace-nav{display:grid;gap:8px;align-content:start;min-width:0}.records-namespace{text-align:left;display:grid;gap:2px;min-width:0;padding:10px;border:1px solid var(--border,#d0d5dd);border-radius:8px;background:transparent}.records-namespace[data-active=true]{border-color:var(--accent,#315efb);background:var(--surface-subtle,#f5f7ff)}.records-namespace strong,.records-namespace span,.records-namespace small{overflow-wrap:anywhere}.records-namespace span,.records-namespace small{color:var(--muted,#667085)}
+  .records-pack-summary{display:flex;justify-content:space-between;gap:16px;align-items:start;min-width:0}.records-pack-summary>*{min-width:0}.records-pack-summary h3{margin:0}.records-pack-summary p{margin:4px 0}.records-pack-summary h3,.records-pack-summary p{overflow-wrap:anywhere}.records-quota{display:flex;gap:14px;margin:0;flex-wrap:wrap}.records-quota div{display:grid}.records-quota dt,.records-quota small{color:var(--muted,#667085);font-size:12px}.records-quota dd{margin:0}
+  .records-kind-nav{display:flex;gap:6px;flex-wrap:wrap;margin:16px 0}.records-kind-nav button{max-width:100%;min-width:0;overflow-wrap:anywhere}.records-kind-nav button[aria-selected=true]{border-color:var(--accent,#315efb)}.records-kind-nav span{opacity:.7}.records-kind-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;min-width:0;margin:8px 0}.records-kind-toolbar>*{min-width:0}.records-kind-toolbar>span{overflow-wrap:anywhere}.records-export-actions{display:flex;gap:6px;flex-wrap:wrap;min-width:0}.records-explorer .records-ref-link,.records-explorer .records-ref-link:hover:not([aria-disabled=true]){border:0;padding:0;max-width:100%;min-width:0;background:transparent;color:var(--accent,#315efb);text-decoration:underline;overflow-wrap:anywhere;cursor:pointer;text-align:left}.records-danger{color:#b42318;border-color:#fda29b}
+  .records-table-scroll{max-width:100%;min-width:0;overflow:auto}.records-table{width:100%;border-collapse:collapse}.records-table th,.records-table td{text-align:left;padding:9px;border-bottom:1px solid var(--border,#e4e7ec);vertical-align:top;max-width:240px}.records-table th small{display:block;font-weight:400}.records-table tbody tr{cursor:pointer}.records-table tbody tr:hover{background:var(--surface-subtle,#f7f8fa)}.records-row-open{margin-left:8px}.records-pii-tag{display:inline-block;margin-left:5px;padding:1px 4px;border-radius:4px;background:#fff0cc;color:#7a4c00;font-size:10px}.records-empty{color:var(--muted,#667085)}
+  .records-explorer button[aria-disabled=true]{cursor:wait;opacity:.7}.records-detail{display:grid;gap:14px;min-width:0}.records-detail>*{min-width:0}.records-detail header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;min-width:0}.records-detail header>div{min-width:0}.records-detail header>button{flex:0 0 auto}.records-detail header small,.records-detail h3{overflow-wrap:anywhere}.records-detail h3{margin:2px 0}.records-detail dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:8px;min-width:0}.records-detail dl div{min-width:0;padding:10px;border:1px solid var(--border,#e4e7ec);border-radius:7px}.records-detail dt{font-weight:600}.records-detail dt,.records-detail dl div>small{overflow-wrap:anywhere}.records-detail dd{margin:5px 0;white-space:pre-wrap;overflow-wrap:anywhere}.records-detail-meta{color:var(--muted,#667085);font-size:13px;overflow-wrap:anywhere}.records-detail details{min-width:0}.records-detail pre{box-sizing:border-box;max-width:100%;min-width:0;overflow:auto;max-height:340px}.records-delete-confirm{min-width:0;border:1px solid #d92d20;padding:12px;border-radius:8px;overflow-wrap:anywhere}.records-delete-confirm button+button{margin-left:8px}.records-relationship-impact li,.records-relationship-impact code{overflow-wrap:anywhere}.records-relationship-impact ul,.records-outbox-events{margin:6px 0;padding-left:22px}.records-outbox{min-width:0;margin:14px 0;padding:10px;border:1px solid var(--border,#e4e7ec);border-radius:8px}.records-outbox>*{min-width:0}.records-outbox summary{overflow-wrap:anywhere}.records-outbox-summary{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px}.records-outbox-events{display:grid;gap:8px;min-width:0}.records-outbox-events>li{min-width:0;padding:8px;border-bottom:1px solid var(--border,#e4e7ec);overflow-wrap:anywhere}.records-outbox-events>li>*{min-width:0}.records-outbox-events>li>div:first-child{display:grid;gap:3px}.records-outbox-event-heading{display:flex;align-items:baseline;gap:4px;flex-wrap:wrap;min-width:0}.records-outbox-event-heading>*{min-width:0}.records-outbox-event-heading>span{display:inline-flex;align-items:baseline;gap:4px;max-width:100%}.records-outbox-events details{min-width:0}.records-outbox-events small,.records-help{color:var(--muted,#667085)}.records-outbox-events strong,.records-outbox-events small,.records-outbox-events p,.records-outbox-events code{overflow-wrap:anywhere}.records-purge-confirm{margin-top:10px}.records-purge-confirm label{display:grid;gap:4px;margin:8px 0}.records-purge-confirm input{width:100%;max-width:360px;min-width:0}
   @media(max-width:760px){.records-layout{grid-template-columns:1fr}.records-heading,.records-pack-summary{display:grid}.records-quota{display:grid}}
 `;

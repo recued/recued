@@ -20,6 +20,7 @@ import type { HousekeepingContext } from '../registry.js';
 import type { SourceRecord } from '../source-walkers.js';
 import type { HousekeepingEnrichmentProducer } from '../enrichment-producer.js';
 import { resolvedContactPairs } from './_contact-names.js';
+import { listCollectionDataTables } from '../../collections/table.js';
 
 /** Aggregated value shape persisted under `data.enrichment.mail.<id>.thread_signals`.
  *  Re-exported from `@recued/contracts` so existing backend importers
@@ -151,12 +152,7 @@ const collectThreadSiblings = (
   // for the prefix. Using SQL directly keeps the producer free of
   // collection-registry plumbing — same approach the P3 link-discovery
   // task uses against the provenance links table.
-  const tables = (ctx.db
-    .prepare(
-      `SELECT name FROM sqlite_master
-        WHERE type='table' AND name LIKE 'collection_mail_%'`,
-    )
-    .all() as Array<{ name: string }>).map((r) => r.name);
+  const tables = listCollectionDataTables(ctx.db, 'mail');
 
   const siblings: Array<{ received_at: number; hot_fields: Record<string, unknown> }> = [];
   for (const table of tables) {

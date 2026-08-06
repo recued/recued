@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { RpcError } from '@recued/contracts';
+import { PACK_INSTALL_OFFER_ATTR } from '../shell/pack-install-offer.js';
 import type {
   PackListEntry,
   ServerExecuteResponse,
@@ -11,12 +13,17 @@ import {
   PACK_APP_REFRESH_ATTR,
   PACK_APP_STATUS_ATTR,
   PACK_APP_RESULT_ATTR,
+  PACK_APP_VIEW_PANEL_ATTR,
+  PACK_APP_VIEW_TAB_ATTR,
+  PACK_APP_STYLES,
   mountPackAppView,
   type PackAppExecuteCaller,
   type MountPackAppViewOptions,
 } from '../packs/pack-app-view.js';
 import type { PackAppSurface } from '../packs/pack-app-model.js';
 import {
+  RECIPE_RESULT_HOST_ATTR,
+  RECIPE_RESULT_PANEL_STYLES,
   RECIPES_ROUTE_RESULT_GRID_ATTR,
   RECIPES_ROUTE_RESULT_GRID_CELL_ATTR,
 } from '../recipes/recipe-result-panel.js';
@@ -163,6 +170,115 @@ const tableResult = (
   }] },
 } as unknown as ServerExecuteResponse);
 
+const copyableResult = (): ServerExecuteResponse => ({
+  recipe_id: 'sheet', recipe_hash: 'execution-hash', success: true,
+  steps: [], errors: [],
+  output: { render: [{
+    type: 'copyable',
+    label: 'Customer follow-up',
+    data: { content: 'Send the customer the signed agreement.' },
+  }] },
+} as unknown as ServerExecuteResponse);
+
+const jsonResult = (): ServerExecuteResponse => ({
+  recipe_id: 'sheet', recipe_hash: 'execution-hash', success: true,
+  steps: [], errors: [],
+  output: { render: [{
+    type: 'json',
+    label: 'Provider payload',
+    data: {
+      status: 'ready',
+      external_reference: 'provider-reference-with-a-long-unbroken-value',
+    },
+  }] },
+} as unknown as ServerExecuteResponse);
+
+const recordFieldsResult = (): ServerExecuteResponse => ({
+  recipe_id: 'sheet', recipe_hash: 'execution-hash', success: true,
+  steps: [], errors: [],
+  output: { render: [{
+    type: 'record_fields',
+    label: 'Work order',
+    data: { record: { id: 'job_1' } },
+    record_fields: {
+      entity: 'job',
+      fields: [
+        {
+          key: 'title', label: 'Title', kind: 'string', present: true,
+          value: 'Replace the circulation pump',
+        },
+        {
+          key: 'contact_name', label: 'Contact name', kind: 'string',
+          present: false, value: undefined,
+        },
+      ],
+    },
+  }] },
+} as unknown as ServerExecuteResponse);
+
+const aiAnalysisResult = (): ServerExecuteResponse => ({
+  recipe_id: 'sheet', recipe_hash: 'execution-hash', success: true,
+  steps: [], errors: [],
+  output: { render: [
+    {
+      type: 'ai_analysis',
+      label: 'Triage analysis',
+      data: {
+        summary: 'The request is ready for owner review.',
+        category: 'Customer follow-up',
+        confidence: 0.91,
+        reasoning: 'Matched the provider reference to the active work order.',
+        key_points: ['Document supplied', 'Dispatch confirmation pending'],
+      },
+    },
+    {
+      type: 'ai_analysis',
+      label: 'Raw model metadata',
+      data: { providerreference: '0123456789abcdefghijklmnopqrstuvwxyz' },
+    },
+  ] },
+} as unknown as ServerExecuteResponse);
+
+const linkButtonResult = (): ServerExecuteResponse => ({
+  recipe_id: 'sheet', recipe_hash: 'execution-hash', success: true,
+  steps: [], errors: [],
+  output: { render: [{
+    type: 'link_button',
+    label: 'Next steps',
+    data: [
+      {
+        label: 'Open provider work item',
+        url: 'https://example.com/work/job_1',
+        description: 'Review the provider work item.',
+      },
+      {
+        label: 'View signed receipt',
+        url: 'https://example.com/receipts/job_1',
+      },
+    ],
+  }] },
+} as unknown as ServerExecuteResponse);
+
+const fileArtifactResult = (): ServerExecuteResponse => ({
+  recipe_id: 'sheet', recipe_hash: 'execution-hash', success: true,
+  steps: [], errors: [],
+  output: { render: [{
+    type: 'file_artifact',
+    label: 'Generated documents',
+    data: [{
+      title: 'Signed customer agreement',
+      record_id: 'file:abcdef0123456789abcdef0123456789',
+      filename: 'customer-agreement.pdf',
+      mime_type: 'application/pdf',
+      size_bytes: 1_234,
+      sha256: 'a'.repeat(64),
+      generated_at: Date.UTC(2026, 7, 3, 12, 0, 0),
+      generation_mode: 'static',
+      origin: { submission_id: 'submission-1' },
+    }],
+  }] },
+} as unknown as ServerExecuteResponse);
+
 const mount = (
   execute: PackAppExecuteCaller,
   options: Partial<Pick<
@@ -171,9 +287,13 @@ const mount = (
   >> = {},
 ) => {
   const host = fakeElement();
+  const clipboardWrite = vi.fn(async (_value: string) => undefined);
   const doc = {
     createElement: () => fakeElement(),
-    defaultView: { confirm: () => true },
+    defaultView: {
+      confirm: () => true,
+      navigator: { clipboard: { writeText: clipboardWrite } },
+    },
   } as unknown as Document;
   const view = mountPackAppView({
     host: host as unknown as HTMLElement,
@@ -186,7 +306,7 @@ const mount = (
       ? { openRunModal: options.openRunModal }
       : {}),
   });
-  return { host, root: host.children[0]!, view };
+  return { host, root: host.children[0]!, view, clipboardWrite };
 };
 
 const emitPackControl = (
@@ -221,6 +341,27 @@ const emitAction = (
   for (const listener of root.listeners.get('click') ?? []) {
     listener({ target } as unknown as Event);
   }
+};
+
+const emitCopyAction = (root: FakeElement) => {
+  const attrs = new Map<string, string>([
+    ['data-action', 'copy'],
+    ['data-value', 'Send the customer the signed agreement.'],
+  ]);
+  const control = {
+    textContent: 'Copy',
+    getAttribute: (name: string) => attrs.get(name) ?? null,
+    setAttribute: (name: string, value: string) => attrs.set(name, value),
+  };
+  const target = {
+    closest: (selector: string) => selector === '[data-action="copy"]'
+      ? control
+      : null,
+  };
+  for (const listener of root.listeners.get('click') ?? []) {
+    listener({ target, preventDefault: vi.fn() } as unknown as Event);
+  }
+  return { attrs, control };
 };
 
 const typeGridCell = (
@@ -266,6 +407,246 @@ const typeGridCell = (
   }
   return { submit, status };
 };
+
+describe('pack app shared copyable results', () => {
+  it('ships its layout and full-sized Copy action with the shared panel', () => {
+    expect(RECIPE_RESULT_PANEL_STYLES).toContain(
+      `[${RECIPE_RESULT_HOST_ATTR}] .copyable-content {`,
+    );
+    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
+      /\.copy-btn\s*\{[^}]*min-height:\s*36px;/s,
+    );
+    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
+      /@media \(max-width: 520px\)[\s\S]*?\.copy-btn\s*\{[^}]*min-height:\s*44px;/s,
+    );
+  });
+
+  it('copies the returned value through the Pack host', async () => {
+    const rig = mount(async () => copyableResult());
+    await settle();
+
+    expect(rig.root.innerHTML).toContain('class="copy-btn"');
+    const { attrs, control } = emitCopyAction(rig.root);
+    await settle();
+
+    expect(rig.clipboardWrite).toHaveBeenCalledWith(
+      'Send the customer the signed agreement.',
+    );
+    expect(attrs.get('aria-live')).toBe('polite');
+    expect(control.textContent).toBe('Copied');
+    rig.view.dispose();
+  });
+});
+
+describe('pack app shared JSON results', () => {
+  it('ships a full-sized disclosure and wrapping payload with the shared panel', () => {
+    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
+      /\.json-summary\s*\{[^}]*min-height:\s*36px;/s,
+    );
+    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
+      /\.json-content\s*\{[^}]*max-width:\s*100%;[^}]*white-space:\s*pre-wrap;[^}]*overflow-wrap:\s*anywhere;/s,
+    );
+    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
+      /@media \(max-width: 520px\)[\s\S]*?\.json-summary\s*\{[^}]*min-height:\s*44px;/s,
+    );
+  });
+
+  it('renders the labelled raw payload through the Pack host', async () => {
+    const rig = mount(async () => jsonResult());
+    await settle();
+
+    expect(rig.root.innerHTML).toContain('class="json-summary"');
+    expect(rig.root.innerHTML).toContain('Provider payload');
+    expect(rig.root.innerHTML).toContain(
+      'provider-reference-with-a-long-unbroken-value',
+    );
+    rig.view.dispose();
+  });
+});
+
+describe('pack app shared record-field results', () => {
+  it('ships the field grid, bounded values, and phone stacking with the panel', () => {
+    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
+      /\.summary-row\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(100px, 180px\) minmax\(0, 1fr\);/s,
+    );
+    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
+      /\.summary-row dd\s*\{[^}]*margin:\s*0;[^}]*overflow-wrap:\s*anywhere;/s,
+    );
+    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
+      /@media \(max-width: 720px\)[\s\S]*?\.summary-row\s*\{[^}]*grid-template-columns:\s*1fr;/s,
+    );
+  });
+
+  it('renders resolved and absent fields through the Pack host', async () => {
+    const rig = mount(async () => recordFieldsResult());
+    await settle();
+
+    expect(rig.root.innerHTML).toContain('data-recued-output-record-fields="job"');
+    expect(rig.root.innerHTML).toContain('Replace the circulation pump');
+    expect(rig.root.innerHTML).toContain('class="record-field-unset"');
+    expect(rig.root.innerHTML).toContain('Not set');
+    rig.view.dispose();
+  });
+});
+
+describe('pack app shared AI-analysis results', () => {
+  it('ships structured rows and bounded long-text fallbacks with the panel', () => {
+    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
+      /\.ai-block\s*\{[^}]*display:\s*grid;[^}]*min-width:\s*0;/s,
+    );
+    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
+      /\.ai-block p\s*\{[^}]*overflow-wrap:\s*anywhere;/s,
+    );
+    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
+      /\.ai-json\s*\{[^}]*max-width:\s*100%;[^}]*white-space:\s*pre-wrap;[^}]*overflow-wrap:\s*anywhere;/s,
+    );
+    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
+      /@media \(max-width: 720px\)[\s\S]*?\.ai-row\s*\{[^}]*grid-template-columns:\s*1fr;/s,
+    );
+  });
+
+  it('renders curated analysis and raw fallback data through the Pack host', async () => {
+    const rig = mount(async () => aiAnalysisResult());
+    await settle();
+
+    expect(rig.root.innerHTML.match(/class="block ai-block"/g)).toHaveLength(2);
+    expect(rig.root.innerHTML).toContain('Customer follow-up');
+    expect(rig.root.innerHTML).toContain('class="ai-points"');
+    expect(rig.root.innerHTML).toContain('class="ai-json"');
+    rig.view.dispose();
+  });
+});
+
+describe('pack app shared link-button results', () => {
+  it('ships full-sized, wrapping anchors and descriptions with the panel', () => {
+    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
+      /\.link-button-block\s*\{[^}]*display:\s*grid;[^}]*gap:\s*10px;/s,
+    );
+    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
+      /\.link-button-link\s*\{[^}]*min-height:\s*36px;[^}]*overflow-wrap:\s*anywhere;/s,
+    );
+    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
+      /\.link-button-description\s*\{[^}]*font-size:\s*12px;[^}]*overflow-wrap:\s*anywhere;/s,
+    );
+    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
+      /@media \(max-width: 520px\)[\s\S]*?\.link-button-link\s*\{[^}]*min-height:\s*44px;/s,
+    );
+  });
+
+  it('renders safe external anchors through the Pack host', async () => {
+    const rig = mount(async () => linkButtonResult());
+    await settle();
+
+    expect(rig.root.innerHTML.match(/class="link-button-link"/g)).toHaveLength(2);
+    expect(rig.root.innerHTML).toContain(
+      'href="https://example.com/work/job_1"',
+    );
+    expect(rig.root.innerHTML).toContain('rel="noopener noreferrer"');
+    expect(rig.root.innerHTML).toContain('Review the provider work item.');
+    rig.view.dispose();
+  });
+});
+
+describe('pack app shared file-artifact results', () => {
+  it('ships a bounded header and phone-stacked identity with the panel', () => {
+    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
+      /\.recipes-file-artifact\s*\{[^}]*min-width:\s*0;/s,
+    );
+    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
+      /\.recipes-file-artifact-header > div\s*\{[^}]*min-width:\s*0;/s,
+    );
+    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
+      /\.recipes-file-artifact-header h4,[\s\S]*?\.recipes-file-artifact-header p\s*\{[^}]*overflow-wrap:\s*anywhere;/s,
+    );
+    expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
+      /@media \(max-width: 520px\)[\s\S]*?\.recipes-file-artifact-header\s*\{[^}]*display:\s*grid;/s,
+    );
+  });
+
+  it('renders exact-file identity and read controls through the Pack host', async () => {
+    const rig = mount(async () => fileArtifactResult());
+    await settle();
+
+    expect(rig.root.innerHTML).toContain('Signed customer agreement');
+    expect(rig.root.innerHTML).toContain('customer-agreement.pdf');
+    expect(rig.root.innerHTML).toContain('Exact immutable file');
+    expect(rig.root.innerHTML).toContain('Preview exact PDF');
+    expect(rig.root.innerHTML).toContain('Download exact PDF');
+    rig.view.dispose();
+  });
+});
+
+describe('pack app view tabs', () => {
+  it('ships full-sized desktop and phone tab targets', () => {
+    expect(PACK_APP_STYLES).toMatch(
+      /\.pack-app-view-tab\s*\{[^}]*min-height:\s*36px;/s,
+    );
+    expect(PACK_APP_STYLES).toMatch(
+      /@media \(max-width: 560px\)[\s\S]*?\.pack-app-view-tab\s*\{[^}]*min-height:\s*44px;/s,
+    );
+  });
+
+  it('forms one controlled tab stop and switches the named panel', async () => {
+    const execute = vi.fn<PackAppExecuteCaller>(async ({ recipe_id }) => ({
+      ...tableResult(),
+      recipe_id,
+      recipe_hash: `hash-${recipe_id}`,
+    }));
+    const rig = mount(execute, {
+      surface: {
+        ...surface,
+        views: [
+          surface.views[0]!,
+          {
+            recipe_id: lookupEntry.recipe_id,
+            name: 'Find entry',
+            description: 'Review one entry.',
+            entry: lookupEntry,
+          },
+        ],
+      },
+      installedRecipes: [entry, lookupEntry],
+    });
+    await settle();
+
+    expect(rig.root.innerHTML).toMatch(
+      new RegExp(
+        `aria-selected="true"\\s+tabindex="0"[^>]+${PACK_APP_VIEW_TAB_ATTR}="sheet"`,
+      ),
+    );
+    expect(rig.root.innerHTML).toMatch(
+      new RegExp(
+        `aria-selected="false"\\s+tabindex="-1"[^>]+${PACK_APP_VIEW_TAB_ATTR}="find-entry"`,
+      ),
+    );
+    expect(rig.root.innerHTML).toContain(
+      'aria-controls="recued-pack-app-view-panel"',
+    );
+    expect(rig.root.innerHTML).toContain(
+      `${PACK_APP_VIEW_PANEL_ATTR}="" id="recued-pack-app-view-panel"`
+        + ' role="tabpanel" aria-labelledby="recued-pack-app-view-tab-sheet"',
+    );
+
+    emitPackControl(rig.root, PACK_APP_VIEW_TAB_ATTR, 'find-entry');
+    await settle();
+
+    expect(execute).toHaveBeenNthCalledWith(2, {
+      recipe_id: 'find-entry',
+      config: {},
+    });
+    expect(rig.view.activeViewId()).toBe('find-entry');
+    expect(rig.root.innerHTML).toMatch(
+      new RegExp(
+        `aria-selected="true"\\s+tabindex="0"[^>]+${PACK_APP_VIEW_TAB_ATTR}="find-entry"`,
+      ),
+    );
+    expect(rig.root.innerHTML).toContain(
+      'role="tabpanel"'
+        + ' aria-labelledby="recued-pack-app-view-tab-find-entry"',
+    );
+    rig.view.dispose();
+  });
+});
 
 describe('pack app shared editable tables', () => {
   it('edits and saves through the same config + invocation boundary as Recipes', async () => {
@@ -626,5 +1007,51 @@ describe('pack app — a press that cannot open says why', () => {
     emitPackControl(rig.root, PACK_APP_OPERATION_ATTR, taskEntry.recipe_id);
     expect(openRunModal).toHaveBeenCalledTimes(1);
     expect(rig.root.innerHTML).not.toContain(`${PACK_APP_STATUS_ATTR}="error"`);
+  });
+});
+
+/** The shared install-offer, on the pack-app surface.
+ *
+ *  ⛔ WIRED HERE FOR THE REASON IT WAS MADE SHARED. This view has its own
+ *  execute path, so an offer wired only into the recipes route would leave a
+ *  pack app printing `pack not installed: recued-core.docling` as bare text —
+ *  the exact inconsistency the component exists to prevent.
+ *
+ *  Only the VIEW-LEVEL run is wired. The filter and grid-edit re-runs land in a
+ *  per-cell error slot where a multi-line card does not structurally fit, and
+ *  they re-run a recipe that just succeeded — reaching them needs the pack
+ *  uninstalled between two clicks. Their plain message already names it.
+ */
+describe('pack app view — missing pack offer', () => {
+  const packError = (packs: string[]): RpcError =>
+    new RpcError('pack_not_installed', 'needs packs', 400, undefined, {
+      missing_packs: packs,
+    });
+
+  it('renders the offer instead of the bare message', async () => {
+    const execute = vi.fn<PackAppExecuteCaller>(async () => {
+      throw packError(['recued-core.docling', 'recued-core.whisper']);
+    });
+    const rig = mount(execute);
+    await settle();
+
+    expect(rig.root.innerHTML).toContain(PACK_INSTALL_OFFER_ATTR);
+    expect(rig.root.innerHTML).toContain('href="#packs/docling"');
+    expect(rig.root.innerHTML).toContain('href="#packs/whisper"');
+    // …and NOT the raw text it replaced.
+    expect(rig.root.innerHTML).not.toContain('pack-app-error');
+  });
+
+  it('keeps the plain message for every other failure', async () => {
+    // The offer must not swallow errors it cannot act on.
+    const execute = vi.fn<PackAppExecuteCaller>(async () => {
+      throw new RpcError('bad_request', 'something else went wrong', 400);
+    });
+    const rig = mount(execute);
+    await settle();
+
+    expect(rig.root.innerHTML).not.toContain(PACK_INSTALL_OFFER_ATTR);
+    expect(rig.root.innerHTML).toContain('pack-app-error');
+    expect(rig.root.innerHTML).toContain('something else went wrong');
   });
 });

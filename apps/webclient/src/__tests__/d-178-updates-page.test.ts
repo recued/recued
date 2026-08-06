@@ -1359,6 +1359,10 @@ describe('mountUpdatesPage', () => {
     expect(find(h.el, UPDATES_PAGE_STATE_ATTR)?.getAttribute(UPDATES_PAGE_STATE_ATTR)).toBe('checked');
     expect(find(h.el, UPDATES_STATUS_ATTR)?.textContent).toMatch(/latest/i);
     expect(find(h.el, UPDATES_AVAILABLE_ATTR)?.hasAttribute('hidden')).toBe(true);
+    expect(find(h.el, UPDATES_CHECK_BTN_ATTR)?.className)
+      .toContain('rx-btn-secondary');
+    expect(find(h.el, UPDATES_ROLLBACK_BTN_ATTR)?.className)
+      .toContain('rx-btn-danger');
     expect(onAvailabilityChanged).toHaveBeenLastCalledWith(false);
     m.dispose();
   });
@@ -1461,6 +1465,8 @@ describe('mountUpdatesPage', () => {
     const avail = find(h.el, UPDATES_AVAILABLE_ATTR);
     expect(avail?.hasAttribute('hidden')).toBe(false);
     expect(allText(avail as FE)).toContain('26.8.0');
+    expect(find(h.el, UPDATES_APPLY_BTN_ATTR)?.className)
+      .toContain('rx-btn-primary');
     expect(onAvailabilityChanged).toHaveBeenLastCalledWith(true);
     fire(find(h.el, UPDATES_APPLY_BTN_ATTR) as FE, 'click');
     await flush();
@@ -1488,6 +1494,7 @@ describe('mountUpdatesPage', () => {
     expect(runApply).toHaveBeenNthCalledWith(1, {});
     const forceBtn = find(h.el, UPDATES_FORCE_APPLY_BTN_ATTR);
     expect(forceBtn).not.toBeNull();
+    expect(forceBtn?.className).toContain('rx-btn-danger');
     fire(forceBtn as FE, 'click');
     await flush();
     expect(runApply).toHaveBeenNthCalledWith(2, { force: true });
@@ -1513,6 +1520,8 @@ describe('mountUpdatesPage', () => {
     const sel = find(h.el, UPDATES_MODE_SELECT_ATTR) as FE;
     expect(sel.value).toBe('auto');
     expect(sel.hasAttribute('disabled')).toBe(false);
+    expect(sel.parent?.tagName).toBe('LABEL');
+    expect(allText(sel.parent!)).toContain('When updates are available');
     sel.value = 'off';
     fire(sel, 'change');
     await flush();

@@ -4,13 +4,13 @@
     "product": "Public API v2",
     "official_index": {
       "url": "https://developer.personio.de/llms.txt",
-      "bytes": 23820,
-      "sha256": "87b528f6220c7f260fabad791bac6df4b26a76fb8ee160bc29958e4d48669306"
+      "bytes": 24601,
+      "sha256": "0c9158037809c4cf0ddcb15b4f8e5d8e90abc308ec7484d26d0e2ec799bc3690"
     },
     "reference_documents": {
       "count": 78,
       "openapi_count": 72,
-      "aggregate_sha256": "f0769111169565f2cf4aeef3e715ecc2046b7e7b35356ea9d0220a256abfadcf",
+      "aggregate_sha256": "ecc11ef0920079780f5a265864ae0aeab0071d8eb3077d899c16e0519ff5063e",
       "aggregate_algorithm": "sha256 of sorted lines: url, markdown byte count, markdown sha256",
       "server": "https://api.personio.de",
       "versions": [
@@ -22,64 +22,64 @@
     "overview_pages": [
       {
         "url": "https://developer.personio.de/reference/absence-periods.md",
-        "bytes": 490,
-        "sha256": "3efa9996be3fed410b9585255a46fc5656915bf30c2799d04974c98f763b19b6"
+        "bytes": 691,
+        "sha256": "2b00a78690ff6315ebd5da82dbfd5ae412a0d3ac91bcbc3f93a4a7d56e6efe74"
       },
       {
         "url": "https://developer.personio.de/reference/authentication.md",
-        "bytes": 1196,
-        "sha256": "cfcb65ed669dc95af768f59b91b02c355a0f1390cbe6a3f08ee95f566f58650a"
+        "bytes": 1397,
+        "sha256": "5e6e4fb05632db1c600446a6e0e827b135b10cae8de99ac2431ccd84c30bede0"
       },
       {
         "url": "https://developer.personio.de/reference/document-management.md",
-        "bytes": 122,
-        "sha256": "58726e93587b30d20c0457246ad1562bc187bae82c70c747cc8fb500b2fe23e5"
+        "bytes": 323,
+        "sha256": "d0752fae192e976b4bb9fd759834957e6d825bb4286d49a679849fd9c3c28b3f"
       },
       {
         "url": "https://developer.personio.de/reference/include-our-headers-in-your-requests.md",
-        "bytes": 1759,
-        "sha256": "9e1d526700ccdaf603db9100dc0bb9e85b31cab071701eab2fcabb5e17a84dfb"
+        "bytes": 1960,
+        "sha256": "57c0aa3a716c66ddccaf6988edb451b30967f35c929bfb641fd2e329bad75969"
       },
       {
         "url": "https://developer.personio.de/reference/introduction.md",
-        "bytes": 360,
-        "sha256": "977f9f215e0847ca5f4640c978e0f00a5aaaf18efc1ef4205bb7bf275c8ae0b4"
+        "bytes": 561,
+        "sha256": "ad91eb8520709fb8c7d6ab97ed250af72a90ed1bde0aa02c0cab2169c0615b56"
       },
       {
         "url": "https://developer.personio.de/reference/webhooks.md",
-        "bytes": 14296,
-        "sha256": "bbfe93a58dd554fd29356acc483a985d82fe2e285f246423939da317d4486464"
+        "bytes": 14497,
+        "sha256": "a25ab5c8e68dd68b6fc891eb47aac7e4d750c392391678b9a05aa8d03e39d6d2"
       }
     ],
     "supplemental_guides": [
       {
         "url": "https://developer.personio.de/reference/authentication.md",
-        "bytes": 1196,
-        "sha256": "cfcb65ed669dc95af768f59b91b02c355a0f1390cbe6a3f08ee95f566f58650a",
+        "bytes": 1397,
+        "sha256": "5e6e4fb05632db1c600446a6e0e827b135b10cae8de99ac2431ccd84c30bede0",
         "purpose": "24-hour personnel bearer lifecycle and personnel-versus-recruiting boundary"
       },
       {
         "url": "https://developer.personio.de/reference/include-our-headers-in-your-requests.md",
-        "bytes": 1759,
-        "sha256": "9e1d526700ccdaf603db9100dc0bb9e85b31cab071701eab2fcabb5e17a84dfb",
+        "bytes": 1960,
+        "sha256": "57c0aa3a716c66ddccaf6988edb451b30967f35c929bfb641fd2e329bad75969",
         "purpose": "recommended X-Personio-App-ID request attribution"
       },
       {
         "url": "https://developer.personio.de/reference/webhooks.md",
-        "bytes": 14296,
-        "sha256": "bbfe93a58dd554fd29356acc483a985d82fe2e285f246423939da317d4486464",
+        "bytes": 14497,
+        "sha256": "a25ab5c8e68dd68b6fc891eb47aac7e4d750c392391678b9a05aa8d03e39d6d2",
         "purpose": "webhook delivery, retries, event payloads, and HTTPS callback behavior"
       },
       {
         "url": "https://developer.personio.de/docs/getting-started-with-the-personio-api.md",
-        "bytes": 12559,
-        "sha256": "85217435e7512a5aca4eace8cb3454e755befde9e2b0c2e956e1ede3c1bc3d1f",
+        "bytes": 13112,
+        "sha256": "58a7c9f46e136147e34e7d08736e191b48d4cd46b76ffaee6a0086ba202ce0e7",
         "purpose": "credential enrollment, attribute allowlisting, and separate recruiting access token"
       },
       {
         "url": "https://developer.personio.de/docs/event-driven-data-from-personio.md",
-        "bytes": 4362,
-        "sha256": "d89c910dcf2fc4c07cb13d38544e0f629bf2f33c51446844eef3c70796a32fa8",
+        "bytes": 4563,
+        "sha256": "e941310510d4699516b5bc6280e390e0cbb3179fe0d102b980d88f8fe5a85082",
         "purpose": "event-driven synchronization guidance"
       }
     ],
@@ -180,14 +180,14 @@
       "kind": "project",
       "eligible": true,
       "declared": false,
-      "evidence": "GET /v2/projects and GET /v2/projects/{id} document a genuine time-tracking Project with stable id, name, status, description, and updated_at fields. Declaration is deferred because the D-192 work-entity-sources authoring brief requires a separate human field-path verification gate before commit, and the user requested an autonomous committed pack."
+      "evidence": "GET /v2/projects and GET /v2/projects/{id} document a genuine time-tracking Project with stable id, name, status, description, and updated_at fields. Declaration is deferred because the authoring process requires a separate human field-path verification gate before commit."
     }
   ],
   "operations": [
     {
       "source_url": "https://developer.personio.de/reference/delete_v2-absence-periods-id.md",
-      "source_markdown_bytes": 6372,
-      "source_markdown_sha256": "947d3e7c52ca2c7c8276e4f4ef181a0ee650c3154f297092e5991b551f6f70d1",
+      "source_markdown_bytes": 6573,
+      "source_markdown_sha256": "f2e7b5dbaeff8922cca637d3b6dd415f45d3dd2c7cdd534960f8018bb573b36e",
       "source_openapi_bytes": 6268,
       "source_openapi_sha256": "92785d1864df30a15ae34a3ed1f2aff88ee7d44a6f8617a38a7234b8b478c239",
       "source_operation_count": 1,
@@ -270,10 +270,10 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/delete_v2-attendance-periods-id.md",
-      "source_markdown_bytes": 5884,
-      "source_markdown_sha256": "7270bf5b93b67204b2a8b9a7cae4242fd67fbdf6775a484a85be10e096c26d4b",
-      "source_openapi_bytes": 5775,
-      "source_openapi_sha256": "be62f8bd988e6f685bb6a1222f0ccef24d31f77c472e388d2b7b50c87664f691",
+      "source_markdown_bytes": 7128,
+      "source_markdown_sha256": "6b464e1115b899773810a62d474d5e5979083e270324d53ade2da100196d442b",
+      "source_openapi_bytes": 6818,
+      "source_openapi_sha256": "138ff0a5e5f6dc215980b16c11f3abddca8baadb38384c07aff08b6b551cf6b8",
       "source_operation_count": 1,
       "page": "delete_v2-attendance-periods-id",
       "tag": "Attendances",
@@ -354,8 +354,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/delete_v2-document-management-documents-document-id.md",
-      "source_markdown_bytes": 5141,
-      "source_markdown_sha256": "6c2d68b1b896082a80d456ffc1ad48fd7ed4e6ce287df3d643453e72bc527e23",
+      "source_markdown_bytes": 5342,
+      "source_markdown_sha256": "7009f19f8d705a8c6942704b4a67497763f0b6f40999f64c941dceec3ccdc40e",
       "source_openapi_bytes": 5034,
       "source_openapi_sha256": "55a3038cf53377d549da0462a93ab40893ea6922eb58bb7f9730225cdc434742",
       "source_operation_count": 1,
@@ -438,8 +438,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/delete_v2-persons-person-id.md",
-      "source_markdown_bytes": 5635,
-      "source_markdown_sha256": "fb71ecefcf979bfb576155eca82f6a22a2103aa983c2daefab797f40718ea0fd",
+      "source_markdown_bytes": 5836,
+      "source_markdown_sha256": "e9427adfdc5eb5ae2ba945a71359da0d101909fc410aff929c79c317d7f6aea8",
       "source_openapi_bytes": 5462,
       "source_openapi_sha256": "04e86d262ef24d5f21d600db46aada4d6f848516066045a85dec3c232e2983a8",
       "source_operation_count": 1,
@@ -524,10 +524,10 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/delete_v2-projects-id-members.md",
-      "source_markdown_bytes": 8513,
-      "source_markdown_sha256": "67ba2b16d7a19f854797be495337804172250276e9a59c417d16a12fb341d3c5",
-      "source_openapi_bytes": 8122,
-      "source_openapi_sha256": "9ce8f4d8df52097501aee8b27bc78d5dd65efd5b37f4a7db8d8d9a672198999d",
+      "source_markdown_bytes": 8248,
+      "source_markdown_sha256": "7dc541ad21319d26b2c6ff8cd1fbf2797314d4f493884d490101b0f7e64cc902",
+      "source_openapi_bytes": 7656,
+      "source_openapi_sha256": "7a3cb09c4086935a90029cd769066f87b90057478558572fa54510b232445757",
       "source_operation_count": 1,
       "page": "delete_v2-projects-id-members",
       "tag": "Project Members",
@@ -629,8 +629,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/delete_v2-projects-id.md",
-      "source_markdown_bytes": 7172,
-      "source_markdown_sha256": "3c846c49b435a59097cc35f39c61669fc5711ed86ab5984e84499ba2e7544721",
+      "source_markdown_bytes": 7373,
+      "source_markdown_sha256": "c7a8c1f7420e0f35495a4916b1945ea4af45687aae34f33069c6185bf7853939",
       "source_openapi_bytes": 6929,
       "source_openapi_sha256": "035e83de5812c81136b4c7e11a07e61f3663795081ee01c8f9358602c6ada742",
       "source_operation_count": 1,
@@ -713,8 +713,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/delete_v2-webhooks-id.md",
-      "source_markdown_bytes": 6199,
-      "source_markdown_sha256": "c7798249840f169fde24652b1e7343f032c5cea609bd6df69ab915d95fb32bdb",
+      "source_markdown_bytes": 6400,
+      "source_markdown_sha256": "b8f4b91cf028bbff0ccf6831a9c42003d4c074bdeb69bd76705b0b4b49e45829",
       "source_openapi_bytes": 6065,
       "source_openapi_sha256": "13c709218b72dbcbdc7c6ea1f3db5becd92b1ef63d82891cb6229fc6cc61d8a9",
       "source_operation_count": 1,
@@ -799,8 +799,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-absence-periods-id-breakdowns.md",
-      "source_markdown_bytes": 12081,
-      "source_markdown_sha256": "594f27cc275d80d9f9ffb1452d2f893ad394d4d0b1d956301e66b621e6e80a6f",
+      "source_markdown_bytes": 12282,
+      "source_markdown_sha256": "f315f2eab87ba1e14ec79235239a5121f1f6f154a6547627228264697340bf9e",
       "source_openapi_bytes": 11903,
       "source_openapi_sha256": "12fca60b07ba7c135e87d74ba59844d9db54e1f4dd90e37076777a546186a9ae",
       "source_operation_count": 1,
@@ -955,8 +955,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-absence-periods-id.md",
-      "source_markdown_bytes": 13579,
-      "source_markdown_sha256": "1fce540c5aa27edd9b83413b90e700cc950634fdaa16a701462661b9ba9f4d85",
+      "source_markdown_bytes": 13780,
+      "source_markdown_sha256": "ec64da2caf0e1624eb85931bfccd3d14fcb18452f6eef4d1db522846f1a75043",
       "source_openapi_bytes": 13471,
       "source_openapi_sha256": "b23f14e435590cde60188e41bf3da9eaeedc8d749f35ce46ac0c0f0d8e2ab4bb",
       "source_operation_count": 1,
@@ -1140,8 +1140,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-absence-periods.md",
-      "source_markdown_bytes": 24298,
-      "source_markdown_sha256": "0351cd6ded5af841fa274f5077f4074a377c1ea521d1b90adf7b5a45d7b3c28d",
+      "source_markdown_bytes": 24499,
+      "source_markdown_sha256": "35a9b0afee1d37f94eb416ce9674ef1005f7b6060cbff25827d67e2096051517",
       "source_openapi_bytes": 23819,
       "source_openapi_sha256": "5ddaeaccefe3bb35f4865f049f09a8bcbd971c91de0df27e6a4b05b36b826562",
       "source_operation_count": 1,
@@ -1494,8 +1494,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-absence-types-id.md",
-      "source_markdown_bytes": 8148,
-      "source_markdown_sha256": "7d2d0f03e4bea455f5da41cb8c82cd1181c477f8f607e92353d672e0d2048594",
+      "source_markdown_bytes": 8349,
+      "source_markdown_sha256": "082e0a50504fbbebce10cd97395a89ecda212c8f16d0807d8214115667c473ae",
       "source_openapi_bytes": 8044,
       "source_openapi_sha256": "df4aed3139bbdc27e5bdf3a9947371b1eb97bab7c1311c0f1e6fa370d7c9e910",
       "source_operation_count": 1,
@@ -1603,8 +1603,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-absence-types.md",
-      "source_markdown_bytes": 10238,
-      "source_markdown_sha256": "d64a888b566fa5ebec2c608e5cbf5a86a74c533c5ca89cbd717669cf99c90629",
+      "source_markdown_bytes": 10439,
+      "source_markdown_sha256": "0e99638cedd519eaa5e6c3371e85f67ae7d727a9a03bcd6b2112ce43177c68a7",
       "source_openapi_bytes": 10161,
       "source_openapi_sha256": "b69437cc14692cffeeb1b8e1076caa03acbad54fe1b7aa039c0c83c1744280a6",
       "source_operation_count": 1,
@@ -1737,10 +1737,10 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-attendance-periods-id.md",
-      "source_markdown_bytes": 11742,
-      "source_markdown_sha256": "eedd3d863cddc32927b1db9f4b481b8a678c5a280e996bb432a9ca12b5e84a91",
-      "source_openapi_bytes": 11614,
-      "source_openapi_sha256": "aa8980bfe66240fa22c6a556738486d5ce048708145175811346a361f6fcf90b",
+      "source_markdown_bytes": 13377,
+      "source_markdown_sha256": "24af4e5c4822ce4f7d4a36611e1b1c82edf7bde78123eed2d6073e457543c93a",
+      "source_openapi_bytes": 13048,
+      "source_openapi_sha256": "2a87822817ee2ec53ad10ec8228c0b449cf13ce41f5af4999ad50c91f9c84024",
       "source_operation_count": 1,
       "page": "get_v2-attendance-periods-id",
       "tag": "Attendances",
@@ -1850,6 +1850,7 @@
           },
           "start": {
             "type": "object",
+            "nullable": true,
             "properties": {
               "date_time": {
                 "type": "string"
@@ -1873,6 +1874,11 @@
             ],
             "additionalProperties": false
           },
+          "duration": {
+            "type": "string",
+            "nullable": true,
+            "format": "duration"
+          },
           "attribution_date": {
             "type": "string",
             "format": "date"
@@ -1890,6 +1896,9 @@
             "nullable": true,
             "maxLength": 1000
           },
+          "legacy_break": {
+            "type": "number"
+          },
           "project": {
             "type": "object",
             "nullable": true,
@@ -1904,6 +1913,18 @@
             "additionalProperties": false
           }
         },
+        "required": [
+          "id",
+          "person",
+          "type",
+          "approval",
+          "start",
+          "end",
+          "duration",
+          "attribution_date",
+          "created_at",
+          "updated_at"
+        ],
         "additionalProperties": false
       },
       "response_json": {
@@ -1927,10 +1948,10 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-attendance-periods.md",
-      "source_markdown_bytes": 40582,
-      "source_markdown_sha256": "0b4c7b49a15112ba925976418860576c5d88e78860014ccf94bbdded1203f405",
-      "source_openapi_bytes": 40477,
-      "source_openapi_sha256": "10327cd7cf0b2ce88b5dd6c7f4c47e478b3c6db192e736e223940346bf4cb426",
+      "source_markdown_bytes": 43265,
+      "source_markdown_sha256": "799ce60c4a67826787bea93df4818f3015ad5aef5ba16237f1f9bb08b198f194",
+      "source_openapi_bytes": 42959,
+      "source_openapi_sha256": "430739d5a776d1d129b11ebfd20e675801f19f4fa6ebb6431ba4148af0de7a0f",
       "source_operation_count": 1,
       "page": "get_v2-attendance-periods",
       "tag": "Attendances",
@@ -2301,12 +2322,18 @@
                 },
                 "start": {
                   "type": "object",
+                  "nullable": true,
                   "additionalProperties": true
                 },
                 "end": {
                   "type": "object",
                   "nullable": true,
                   "additionalProperties": true
+                },
+                "duration": {
+                  "type": "string",
+                  "nullable": true,
+                  "format": "duration"
                 },
                 "attribution_date": {
                   "type": "string",
@@ -2325,12 +2352,27 @@
                   "nullable": true,
                   "maxLength": 1000
                 },
+                "legacy_break": {
+                  "type": "number"
+                },
                 "project": {
                   "type": "object",
                   "nullable": true,
                   "additionalProperties": true
                 }
               },
+              "required": [
+                "id",
+                "person",
+                "type",
+                "approval",
+                "start",
+                "end",
+                "duration",
+                "attribution_date",
+                "created_at",
+                "updated_at"
+              ],
               "additionalProperties": false
             }
           },
@@ -2382,8 +2424,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-compensations-types.md",
-      "source_markdown_bytes": 6954,
-      "source_markdown_sha256": "54af3c7c636fa153875b6593f54248d20ee94933eb4133291b16117049650b80",
+      "source_markdown_bytes": 7155,
+      "source_markdown_sha256": "cfd5dbc5c5ea034e127eb99e8426d816cf7313105c3f23f02b0cd5297c564a24",
       "source_openapi_bytes": 6717,
       "source_openapi_sha256": "f0ce4b6214863b74c703ec73340c7bb151b1def5465aa34196c86ab19e0b5107",
       "source_operation_count": 1,
@@ -2520,8 +2562,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-compensations.md",
-      "source_markdown_bytes": 20399,
-      "source_markdown_sha256": "e633e76f1449263ff64ca15af59769c81f84ff7afcce895507c9f8a6966239ab",
+      "source_markdown_bytes": 20600,
+      "source_markdown_sha256": "7e468d73e9bf76e9f6f058bee16d55d7d7b72ecf1f081047ddd0e8a09d5d60cb",
       "source_openapi_bytes": 20131,
       "source_openapi_sha256": "dcf13e20d3656c7c355555537c5f1002ea00e8387840b3952cb9cbc31c5d826b",
       "source_operation_count": 1,
@@ -2771,8 +2813,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-document-management-documents-document-id-download.md",
-      "source_markdown_bytes": 6766,
-      "source_markdown_sha256": "30f5510a595f0acb3a7b0e1914402394d9aecbf29865408cd88585c26b9cd704",
+      "source_markdown_bytes": 6967,
+      "source_markdown_sha256": "cfb9c1f798b78c90c8a5e723e579c45e6de959adba703d9ccdff29fe96d64678",
       "source_openapi_bytes": 6643,
       "source_openapi_sha256": "907a1f6da7ca9884bf88c17274185d28cdbfe017c199ae1acd54429fa31165a7",
       "source_operation_count": 1,
@@ -2863,8 +2905,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-document-management-documents.md",
-      "source_markdown_bytes": 33283,
-      "source_markdown_sha256": "47f744faf2ca135170a77f436f68ca7c489d3b03573123e92af70718851e81db",
+      "source_markdown_bytes": 33484,
+      "source_markdown_sha256": "e2a6bffea31e6aeafd0b81b03b1c9b2f78e9d0932ce512964e69b07b21a4dc15",
       "source_openapi_bytes": 33153,
       "source_openapi_sha256": "87082a3705ea309a25ba3bfe9b54f98e66bddbe9f755378f17d22c5f8b3b8923",
       "source_operation_count": 1,
@@ -3112,8 +3154,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-persons-id.md",
-      "source_markdown_bytes": 10449,
-      "source_markdown_sha256": "8e997fd786c54324d0459e6d3547362ae39d6ad7234610fbe4c95d6ab9d5a474",
+      "source_markdown_bytes": 10650,
+      "source_markdown_sha256": "f94010e5e4086a95e23da66534c62f105a506da19ec75102ef1e3c18d2d410aa",
       "source_openapi_bytes": 10265,
       "source_openapi_sha256": "2db835c90c0493f76a2f31def8a29a3a83a806b745c409637f2fe78054e16e46",
       "source_operation_count": 1,
@@ -3330,8 +3372,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-persons-person-id-employments-id.md",
-      "source_markdown_bytes": 13650,
-      "source_markdown_sha256": "0da355d1e81c78b226de89783b0486f61c3f253055faee09a3b79b3e5d6584b3",
+      "source_markdown_bytes": 13851,
+      "source_markdown_sha256": "e96a3c32269998cb20e4cde95fe723a91f480f3a7b6175d93fd418828a6e90b4",
       "source_openapi_bytes": 13543,
       "source_openapi_sha256": "e4a0c8a1905ffcd3da9cc6e0a0dd642a7ce96c953749ef47f5cd2bd687598944",
       "source_operation_count": 1,
@@ -3636,8 +3678,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-persons-person-id-employments.md",
-      "source_markdown_bytes": 30035,
-      "source_markdown_sha256": "87954ee98186de4bbcec31a4beb193b40f6229189bbe7a4d0602c2d734b184e1",
+      "source_markdown_bytes": 30236,
+      "source_markdown_sha256": "9bb286e09ba0a0900c4712cc3670f4431e841ebd5942967cfa0d67f8299fdab8",
       "source_openapi_bytes": 29816,
       "source_openapi_sha256": "87ec11ccf71a844aa001d0409e5cbe20f28a1f28afa5c0172e85ea6c25fd9d8e",
       "source_operation_count": 1,
@@ -3965,8 +4007,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-persons.md",
-      "source_markdown_bytes": 26704,
-      "source_markdown_sha256": "2596fd403670ed52a0618a91761532c7c18c069d6cd426b766568ebf24b4e9e0",
+      "source_markdown_bytes": 26905,
+      "source_markdown_sha256": "1bacabde6c7baaa918e640cceba294e7551ca41f94d11ff5e74c5424bd146d52",
       "source_openapi_bytes": 26278,
       "source_openapi_sha256": "a3e9f61487a573313b447c9295644af8bd7dc249784fc89517acbbd26bbee175",
       "source_operation_count": 1,
@@ -4410,8 +4452,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-projects-id-members.md",
-      "source_markdown_bytes": 13269,
-      "source_markdown_sha256": "e76ae775ec9fefc7d034b213333241a14744cc6fc4f458ddf40d7cf30e44385d",
+      "source_markdown_bytes": 13470,
+      "source_markdown_sha256": "8f6552169899e88974fe271ccff8dd2d59e62fba2e926632c3125d07496957a3",
       "source_openapi_bytes": 13163,
       "source_openapi_sha256": "3c394e61f4bea96bbcd26a9b735c9416944830ba78bc27225477ae031a2bf738",
       "source_operation_count": 1,
@@ -4565,8 +4607,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-projects-id.md",
-      "source_markdown_bytes": 14782,
-      "source_markdown_sha256": "6c03a00d773ffd3da3c0e54eab9a7d7e79e007c176465805d4b7192b591528d6",
+      "source_markdown_bytes": 14983,
+      "source_markdown_sha256": "f0134824354bf77c5271f36984810cc4112cddaf47a9fde976f826d84b6604ec",
       "source_openapi_bytes": 14688,
       "source_openapi_sha256": "f3d9eca743f743fa2256ca10d2ec6ef64a435239639ab1100619a3447423e6b8",
       "source_operation_count": 1,
@@ -4796,8 +4838,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-projects.md",
-      "source_markdown_bytes": 28173,
-      "source_markdown_sha256": "1567122685e117ab8a36632f5f4e08ad0432ffd2efa5224bc9cc0378e102f451",
+      "source_markdown_bytes": 28374,
+      "source_markdown_sha256": "3ed30cf93767c9b3b6c54e06e1b2fe4faa38783b9489ef276947559e9ede6eb5",
       "source_openapi_bytes": 28084,
       "source_openapi_sha256": "222da6726a52e3e4263c1af999df35a3027fb9dbdc78770cd1f5916f2851fa99",
       "source_operation_count": 1,
@@ -5153,8 +5195,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-recruiting-applications-id-stage-transitions.md",
-      "source_markdown_bytes": 11670,
-      "source_markdown_sha256": "6c93350665361653ce2befd23ee0a8e223c555e1e8a6a01ebe1f0894eb7c8faf",
+      "source_markdown_bytes": 11871,
+      "source_markdown_sha256": "fac809d3571718e754dd2547c71b28b6d7abf9c83e0ef24049bce55780349def",
       "source_openapi_bytes": 11198,
       "source_openapi_sha256": "d9262c3d7260ac1f0b6fa03f8e5e90986b67678055f41b1e20040d63efd53d69",
       "source_operation_count": 1,
@@ -5287,8 +5329,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-recruiting-applications-id.md",
-      "source_markdown_bytes": 19432,
-      "source_markdown_sha256": "ce72a02cc3f1b37214582c31d9684f68efef9d0fa0c70f6485a42cfcef6975f7",
+      "source_markdown_bytes": 19633,
+      "source_markdown_sha256": "35f86a18c654314b30f72ba14748657169aa700defad71fab06f7eac227d88ca",
       "source_openapi_bytes": 18876,
       "source_openapi_sha256": "bed5d6e1a3b3993d3e6bad102dffc7556e370530987a6ab3bb6d17e966bf9c8f",
       "source_operation_count": 1,
@@ -5646,8 +5688,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-recruiting-applications.md",
-      "source_markdown_bytes": 27252,
-      "source_markdown_sha256": "25228c2dc53579d03951053f335bce5575fa7960114f97947a81501f4fef98b5",
+      "source_markdown_bytes": 27453,
+      "source_markdown_sha256": "de483aaa3da7da77bf4bf48d6a74a1881cca6766caafb0fd548e82b19ea96612",
       "source_openapi_bytes": 26627,
       "source_openapi_sha256": "e25331dc1010325916907ac1a4a7b4059ec0387ab640dbba86f49237e828aa5f",
       "source_operation_count": 1,
@@ -5904,8 +5946,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-recruiting-candidates-id.md",
-      "source_markdown_bytes": 13452,
-      "source_markdown_sha256": "3c074f6b5121deabf740aed699a19029b5dc6354c89f9a6abb1d06bd17782425",
+      "source_markdown_bytes": 13653,
+      "source_markdown_sha256": "484a85967b667241214dd120f489f41b231e341bf24943a83d09e6cd1fd63c32",
       "source_openapi_bytes": 12916,
       "source_openapi_sha256": "b4eababb4b2dd78e6c9cda6b4bd42eabff15bddb2a2be8ce9607fe7ecc3d85ab",
       "source_operation_count": 1,
@@ -6106,8 +6148,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-recruiting-candidates.md",
-      "source_markdown_bytes": 22167,
-      "source_markdown_sha256": "636090c91bd9975b7448855b323ab28c0a7e109844638fe8eb26befa7fa84907",
+      "source_markdown_bytes": 22368,
+      "source_markdown_sha256": "b9f0c574169b5e355ab39100cb00b678751364fa3030e07544930f89c1b592d8",
       "source_openapi_bytes": 21546,
       "source_openapi_sha256": "bcfeafbfe06776407dd02c0454679f95e94a36b1ef025672815b975bff30442a",
       "source_operation_count": 1,
@@ -6374,8 +6416,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-recruiting-categories-id.md",
-      "source_markdown_bytes": 11468,
-      "source_markdown_sha256": "6cc7e0fb03a414b36e0aecc2ca4d7dd0dcd8ecdcb80ec16867c75efb6a3cb910",
+      "source_markdown_bytes": 11669,
+      "source_markdown_sha256": "718c8b7fe9ee0b0cc06bdb72ba5679f6ec930127de39684febf538a73bc90b50",
       "source_openapi_bytes": 11074,
       "source_openapi_sha256": "125d2d91b3dd9255f598649b51509659293a286657701042a175a1a63459fd5f",
       "source_operation_count": 1,
@@ -6566,8 +6608,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-recruiting-categories.md",
-      "source_markdown_bytes": 11987,
-      "source_markdown_sha256": "80934a66f741560b423fe4b2e912ee87d342ed799c66be3d934937efb48c8d24",
+      "source_markdown_bytes": 12188,
+      "source_markdown_sha256": "aa8ab015ad8369b70b71fa2c7dd5b6eb519c7c5cd38bb3a8c2f786ab4c73d41f",
       "source_openapi_bytes": 11598,
       "source_openapi_sha256": "3f5c410df5259f43163d55452d243a9500c5db98a73f91b577ec44335ecde777",
       "source_operation_count": 1,
@@ -6689,8 +6731,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-recruiting-jobs-id.md",
-      "source_markdown_bytes": 11637,
-      "source_markdown_sha256": "12a6a4e5e837e14fffb04b5fd1b8a841c368868d4d3f8e060f25e12807b2d41a",
+      "source_markdown_bytes": 11838,
+      "source_markdown_sha256": "8dfb51f5f2820fa56797763433742b2fa84cf1f50cf7a084b0d291bbb5af8fb1",
       "source_openapi_bytes": 11268,
       "source_openapi_sha256": "294c73f98f5962541313c5c38b954a9bc4dd5442855e386268fb918fb14d80fa",
       "source_operation_count": 1,
@@ -6944,8 +6986,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-recruiting-jobs.md",
-      "source_markdown_bytes": 20551,
-      "source_markdown_sha256": "1bebefacff22e7cafc4b2646c3e9e2666df48c1484efe350cb65250f1cc2ee52",
+      "source_markdown_bytes": 20752,
+      "source_markdown_sha256": "460221ba4488bd57c02d87281815f6251be5d36f4731076c00242e7752329618",
       "source_openapi_bytes": 20105,
       "source_openapi_sha256": "fa9e33efd9f6c1ed978c65319fa1807814c227484cf1995ba6c3869553dbb78c",
       "source_operation_count": 1,
@@ -7166,8 +7208,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-webhooks-id-activity.md",
-      "source_markdown_bytes": 17965,
-      "source_markdown_sha256": "7a0c00110cfa3511f3ca3607574769af7af041f49fb09fa6974538eaedf4a78f",
+      "source_markdown_bytes": 18166,
+      "source_markdown_sha256": "b883fcf1217ee8437dbc810915a4b82d538e8fa0007db340fbb4daab1a97d46a",
       "source_openapi_bytes": 17733,
       "source_openapi_sha256": "acfded4822cfa75a6193fcf355a4203067e5d121dbbcb5b6453d1c68876b0024",
       "source_operation_count": 1,
@@ -7446,8 +7488,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-webhooks-id-events.md",
-      "source_markdown_bytes": 15651,
-      "source_markdown_sha256": "057dfe83bdc959ab06c1a46eb5c3b31f35dcc17d7350e02edddb6d4bd055fced",
+      "source_markdown_bytes": 15852,
+      "source_markdown_sha256": "d02c010d725fe08c83799dcd7cc2ddf5e2e562c0c54c63d9b48979d025783d96",
       "source_openapi_bytes": 15445,
       "source_openapi_sha256": "ad892f3dae42b42e959a767dcfc2b4155676533d0e15159c3a1f692b53943652",
       "source_operation_count": 1,
@@ -7683,8 +7725,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-webhooks-id.md",
-      "source_markdown_bytes": 12806,
-      "source_markdown_sha256": "758bc10884aea1286d8f15f3beb2eecb9a2c526706a7ae5229c16effd72e783f",
+      "source_markdown_bytes": 13007,
+      "source_markdown_sha256": "3b7c964ecb90d066546e50e9fac5e44a8c1f0d4af69efd19e5f732831c568ba5",
       "source_openapi_bytes": 12679,
       "source_openapi_sha256": "543aa2e347e6626038f310f07bfb00c2998605aa9a2d716cc654003b99ec6dcf",
       "source_operation_count": 1,
@@ -7866,8 +7908,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/get_v2-webhooks.md",
-      "source_markdown_bytes": 19939,
-      "source_markdown_sha256": "983e579fc070978b2cea1a46a15dffc2ce68d6c04f9209e76aec452f73343d0b",
+      "source_markdown_bytes": 20140,
+      "source_markdown_sha256": "f73b3b065699050cf5d5d2077f2bb1232d8b6b08626b46b74853dcc9a944c055",
       "source_openapi_bytes": 19799,
       "source_openapi_sha256": "1febd10b5e22959226a77237d43a4d2007458eb274e2c05fe11f91cea8f45ae0",
       "source_operation_count": 1,
@@ -8095,8 +8137,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/getjob.md",
-      "source_markdown_bytes": 10696,
-      "source_markdown_sha256": "5253cba308b815308e7db70657f0863b2f9cc9e715a0c1e342a4e67ee6e670b7",
+      "source_markdown_bytes": 10897,
+      "source_markdown_sha256": "47bded4ac45cf1c09cdb85a3bebd368bb39b29a23b50fba25a9e3d785884a79b",
       "source_openapi_bytes": 10579,
       "source_openapi_sha256": "cf98284319b5921d82c7d49e126d8fdbb57aa0a9c99154e7822de6a425f3c000",
       "source_operation_count": 1,
@@ -8297,8 +8339,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/getlegalentitybyid.md",
-      "source_markdown_bytes": 17766,
-      "source_markdown_sha256": "00a5478e1159bde5710cae23f45ed0d68b32909be72d525e5c88a5fb2e814ce2",
+      "source_markdown_bytes": 17967,
+      "source_markdown_sha256": "76f10497c516e4d293874fb44f9411c7d6aa2c9d71ee922f10f585a8cbb98e5a",
       "source_openapi_bytes": 17658,
       "source_openapi_sha256": "43c273dfe392ecd322a186c7a8f38ae5f370ce25195c8bef5a9a040d4b6afdd0",
       "source_operation_count": 1,
@@ -8717,8 +8759,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/getorgunit.md",
-      "source_markdown_bytes": 11202,
-      "source_markdown_sha256": "b224c270265473f5d0c270e859cb15595864e76ab020a483a585f76d9204b648",
+      "source_markdown_bytes": 11403,
+      "source_markdown_sha256": "43bc7e5e19ef56971df6d076889ff9a288bb32458b0c01934b2e8116239f344c",
       "source_openapi_bytes": 11010,
       "source_openapi_sha256": "2b06202d854e35a820a6f1b6bda12d98f3d405b74afa6487814a13621661b409",
       "source_operation_count": 1,
@@ -8938,8 +8980,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/getreport.md",
-      "source_markdown_bytes": 35914,
-      "source_markdown_sha256": "d355db1754ad7eb61b96ae326b35d282e3c8e75174ae52448ea9c8e96599f92d",
+      "source_markdown_bytes": 36115,
+      "source_markdown_sha256": "8c269b733409b83d3c78e8c71b8a33a79e6591a0999d8afd216eca4f0f774a73",
       "source_openapi_bytes": 35816,
       "source_openapi_sha256": "84d1ea88f4f3d3fb113ca7481e5b6c763306f30cb477c5287ee379611ff6fafc",
       "source_operation_count": 1,
@@ -9269,8 +9311,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/getsalaryband.md",
-      "source_markdown_bytes": 8356,
-      "source_markdown_sha256": "5be1470fdcb3180364348cf42504fa0e4b1981be964aa9bef2fe470d088c3906",
+      "source_markdown_bytes": 8557,
+      "source_markdown_sha256": "f8e230134a39d74fc38bf3d7ddb1a241755d54144d23542dd5a8c7e662207455",
       "source_openapi_bytes": 8216,
       "source_openapi_sha256": "01cadd4817cfe28fbeafca7b76d2d1339da8b056cd59e58e53e70322db6196d3",
       "source_operation_count": 1,
@@ -9414,8 +9456,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/listcompanyreports.md",
-      "source_markdown_bytes": 14459,
-      "source_markdown_sha256": "7cd56e63b727a4518c64afe3c2aab490008e5f6d621b814fe50113497a5621ae",
+      "source_markdown_bytes": 14660,
+      "source_markdown_sha256": "f6736bddbc98a3b8d84d80d97862b0de4e2a00c7963af78e6c1e3a303b8adb78",
       "source_openapi_bytes": 14253,
       "source_openapi_sha256": "49a35a9c367ead324599e33a18c505ae22fe88ef7e3b592f78b860bf28c32b63",
       "source_operation_count": 1,
@@ -9608,8 +9650,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/listcostcenters.md",
-      "source_markdown_bytes": 15746,
-      "source_markdown_sha256": "1189ada21b1d1eb934c8c9ef93efc2e3d3aee3ddcb2306ce197e286db40c4506",
+      "source_markdown_bytes": 15947,
+      "source_markdown_sha256": "3a14a5c20b9bf7b2738f7f48198aee7d572cd26d444746da784a9bf7fe21acdf",
       "source_openapi_bytes": 15346,
       "source_openapi_sha256": "900624e67da5dcc0a63d24618f622b9aad05c81e552e1cc231bb8a5b6fa8439c",
       "source_operation_count": 1,
@@ -9809,8 +9851,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/listjobs.md",
-      "source_markdown_bytes": 28050,
-      "source_markdown_sha256": "55805e99c152efea75a36345cbd093d5360a79947fd49895b3d220ccab9bcabd",
+      "source_markdown_bytes": 28251,
+      "source_markdown_sha256": "c22ce9c5d80b909c2b9ff3da1ee56f388dcc446ffd12a462bc6ac7ef994bb36f",
       "source_openapi_bytes": 27648,
       "source_openapi_sha256": "2634090900672c468ead9a420c170b6b3fc1977e2a20da46c1e8265d638d0a1b",
       "source_operation_count": 1,
@@ -10036,8 +10078,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/listlegalentities.md",
-      "source_markdown_bytes": 34931,
-      "source_markdown_sha256": "6bb2c901e693d896b4929f2825890862f52eb73815016d1327b4c6c0eb07d727",
+      "source_markdown_bytes": 35132,
+      "source_markdown_sha256": "e4f945ac3cea8eb32ad78771ca098da74d68200e68cb31b18c39ef98f7a807d8",
       "source_openapi_bytes": 34528,
       "source_openapi_sha256": "e991320f092e1bc62b2e856395d8559276d21ebcc78e60e56ddafedcc6aba148",
       "source_operation_count": 1,
@@ -10404,8 +10446,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/listorgunits.md",
-      "source_markdown_bytes": 24372,
-      "source_markdown_sha256": "b60651e5ef63dbab9b3111d7abe907bcac9aa473e25bc48cf7ef848680d8774a",
+      "source_markdown_bytes": 24573,
+      "source_markdown_sha256": "b4ca068e01a3c28d5a94ee3865f351f31b6f5c51de3b051401e4183005b6ad54",
       "source_openapi_bytes": 23901,
       "source_openapi_sha256": "681c8f3cb2eaee8209eb929cf9732f151a50d9ad0d439199a8f83e6d954886f0",
       "source_operation_count": 1,
@@ -10640,8 +10682,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/listreportsattributes.md",
-      "source_markdown_bytes": 6287,
-      "source_markdown_sha256": "06ce1046bafb1098462d3b5f30e0079dcec2ab2316ef7f6f997e5673161bea17",
+      "source_markdown_bytes": 6488,
+      "source_markdown_sha256": "903b5a847a9991c3e688e959bb9bab219f30cc8ac95cc39e70018eb62d715a9b",
       "source_openapi_bytes": 6056,
       "source_openapi_sha256": "d047033baa577aadae155443d568625cadf88428d74048df1a4211c46a70d0f8",
       "source_operation_count": 1,
@@ -10776,8 +10818,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/listsalarybands.md",
-      "source_markdown_bytes": 13944,
-      "source_markdown_sha256": "c71790ed04dbb9a62cd66efae3670853f71a296bbb7bb0679394d3f59147bdfc",
+      "source_markdown_bytes": 14145,
+      "source_markdown_sha256": "0daacd6d40b3fa71600d7f066bbb75c3b4be30432815ce8cc86fe386e8f88de7",
       "source_openapi_bytes": 13646,
       "source_openapi_sha256": "94988e04814b56c692657a55336b232a6b92b24f828e8b404dbfda20de91e33c",
       "source_operation_count": 1,
@@ -10957,8 +10999,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/listworkplaces.md",
-      "source_markdown_bytes": 15648,
-      "source_markdown_sha256": "87b8554848cd264864295d6349e2ad4321d0473353ac89070ec27dd22ec6403a",
+      "source_markdown_bytes": 15849,
+      "source_markdown_sha256": "26378ee95775c68dd2fb6b4a490082c2ac7721adef40ad2d20e9c92c101e2494",
       "source_openapi_bytes": 15252,
       "source_openapi_sha256": "0e351de14f87f54fdae59a00b1e74fe5ce8c0fd54d47e2a4fb7d92581ae16a98",
       "source_operation_count": 1,
@@ -11158,8 +11200,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/patch_v2-absence-periods-id.md",
-      "source_markdown_bytes": 17422,
-      "source_markdown_sha256": "4a1dc8dce9e07e9598433e6a4409e0b0389269296b1bef845399aee09b089129",
+      "source_markdown_bytes": 17623,
+      "source_markdown_sha256": "979adbec5fd370f1483ce7c175780af5f673e72b38dd4be49ba3782b3428ab91",
       "source_openapi_bytes": 17318,
       "source_openapi_sha256": "cb301da5c78e669615d81e4cce155896cb4541b8322c478ab20f9d4b74391193",
       "source_operation_count": 1,
@@ -11284,10 +11326,10 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/patch_v2-attendance-periods-id.md",
-      "source_markdown_bytes": 16633,
-      "source_markdown_sha256": "d89b33f42453fe339e718521bd701560b9f2cd51ae2b03a8aa54e252964c0763",
-      "source_openapi_bytes": 16471,
-      "source_openapi_sha256": "b8c09ca231caf5675fe8d788fbe51f48e9a7dd9d1632b149f916d4f4d76ba41f",
+      "source_markdown_bytes": 18627,
+      "source_markdown_sha256": "82564df9d2c02f375bff2393e3ae250ac343e0416eb422d5cac8cfc45ebda5c3",
+      "source_openapi_bytes": 18264,
+      "source_openapi_sha256": "cfa816eb229a68996fee9da2f52d528d5b760591d8418d5141de8dcc35b812ad",
       "source_operation_count": 1,
       "page": "patch_v2-attendance-periods-id",
       "tag": "Attendances",
@@ -11408,8 +11450,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/patch_v2-document-management-documents-document-id.md",
-      "source_markdown_bytes": 20933,
-      "source_markdown_sha256": "d923951323c48a6953612b4230cf23de83df7a278eeee480341086c7d88af412",
+      "source_markdown_bytes": 21134,
+      "source_markdown_sha256": "169490f593e4deab5bdd7e5267ac1b794a9e146b1fb6e48427d38eb0531275ba",
       "source_openapi_bytes": 20801,
       "source_openapi_sha256": "306163817e9883b96c94ca81d6c11e9f58d7f3202089688c5b38b84379e6e3f1",
       "source_operation_count": 1,
@@ -11551,8 +11593,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/patch_v2-persons-person-id-employments-employment-id.md",
-      "source_markdown_bytes": 14331,
-      "source_markdown_sha256": "dfaf34c21976c859ce82ae344bff4e2fe135e60311df8ca5c4c545992dc7b7b5",
+      "source_markdown_bytes": 14532,
+      "source_markdown_sha256": "73b47a5e46dbdf435048d86b53805e4141ba3695050a26b1ab50012807aae41e",
       "source_openapi_bytes": 14150,
       "source_openapi_sha256": "278c82384bc36531a2f3106a5feb73cc9d3f99b337d061ed2e7472e1604e22ff",
       "source_operation_count": 1,
@@ -11688,8 +11730,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/patch_v2-persons-person-id.md",
-      "source_markdown_bytes": 9439,
-      "source_markdown_sha256": "ed5747742552434d0c1207c9bc05ef49dd075105741bb3e18f8b5efa438256f6",
+      "source_markdown_bytes": 9640,
+      "source_markdown_sha256": "7f37f809c1de75ca1cac14bd499341586abbbe0768ca6e8583a4974f588ed96b",
       "source_openapi_bytes": 9268,
       "source_openapi_sha256": "df8238cf18f51d646db30801dc5eb25b6021c32819a94fc32eb37135246c47a1",
       "source_operation_count": 1,
@@ -11792,10 +11834,10 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/patch_v2-projects-id.md",
-      "source_markdown_bytes": 20795,
-      "source_markdown_sha256": "434bbc5a923c991633ed46b0572e0904615b0f3e0279c6df63fc5afc09804066",
-      "source_openapi_bytes": 20701,
-      "source_openapi_sha256": "16f872780d53a99895625a06701c2df3e6f004c4bebc0891c699bd27c524c238",
+      "source_markdown_bytes": 19774,
+      "source_markdown_sha256": "6bcadf8e8b3287cb7e946542cea0dd19caf3784b6112bba5582b6f27536a478e",
+      "source_openapi_bytes": 19479,
+      "source_openapi_sha256": "4cb5d79a1b4d6002da53ffc9c64a6c8625fd1d73fe6942f9385213532a5a931c",
       "source_operation_count": 1,
       "page": "patch_v2-projects-id",
       "tag": "Projects",
@@ -11907,8 +11949,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/patch_v2-webhooks-id.md",
-      "source_markdown_bytes": 21418,
-      "source_markdown_sha256": "67819ca73826c15671f642713e6b34ee91a66302f9c81e2416feff937cb03b44",
+      "source_markdown_bytes": 21619,
+      "source_markdown_sha256": "3379080455b09cd8f3b621803c0d9384234f9bf77e5395b5cae9af592c2c170c",
       "source_openapi_bytes": 21284,
       "source_openapi_sha256": "694d595f91c914ebc09cf3716b2790d26bb023629c5a19f5d68d1ffaf3a2e3ea",
       "source_operation_count": 1,
@@ -12099,8 +12141,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/post_v2-absence-periods.md",
-      "source_markdown_bytes": 21352,
-      "source_markdown_sha256": "8ff91a5ec4a77d04359b1f3db090f1de80e6293df02f8effaeadf616ea6d88e5",
+      "source_markdown_bytes": 21553,
+      "source_markdown_sha256": "9e3482c834d481dc402d571b7cc9a6de80dccf6b3f61fcd0d51065833c53b2bd",
       "source_openapi_bytes": 21254,
       "source_openapi_sha256": "87309a2b077d754fd82300c66cbff8f83c618cb6769e1923258689db75de7cc5",
       "source_operation_count": 1,
@@ -12225,10 +12267,10 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/post_v2-attendance-periods.md",
-      "source_markdown_bytes": 23321,
-      "source_markdown_sha256": "d6806ad67be5ecc8c785cec0954046cfbe4da464b4da3e133c9a43d9a2084410",
-      "source_openapi_bytes": 23179,
-      "source_openapi_sha256": "acb5080f90c542f72bd221e20de436440662ad4f7d053ee04185f69ab2dce5a4",
+      "source_markdown_bytes": 28023,
+      "source_markdown_sha256": "3e0e8f7196302fae3eb6e4b9721598347d5fd37e932f257104cd530b4974682e",
+      "source_openapi_bytes": 27680,
+      "source_openapi_sha256": "32509dea012e2aea6c7f17227611dfacc369b25788dc44916d72decac51f29a1",
       "source_operation_count": 1,
       "page": "post_v2-attendance-periods",
       "tag": "Attendances",
@@ -12340,12 +12382,18 @@
                 },
                 "start": {
                   "type": "object",
+                  "nullable": true,
                   "additionalProperties": true
                 },
                 "end": {
                   "type": "object",
                   "nullable": true,
                   "additionalProperties": true
+                },
+                "duration": {
+                  "type": "string",
+                  "nullable": true,
+                  "format": "duration"
                 },
                 "attribution_date": {
                   "type": "string",
@@ -12364,12 +12412,27 @@
                   "nullable": true,
                   "maxLength": 1000
                 },
+                "legacy_break": {
+                  "type": "number"
+                },
                 "project": {
                   "type": "object",
                   "nullable": true,
                   "additionalProperties": true
                 }
               },
+              "required": [
+                "id",
+                "person",
+                "type",
+                "approval",
+                "start",
+                "end",
+                "duration",
+                "attribution_date",
+                "created_at",
+                "updated_at"
+              ],
               "additionalProperties": false
             }
           }
@@ -12402,8 +12465,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/post_v2-auth-revoke.md",
-      "source_markdown_bytes": 2130,
-      "source_markdown_sha256": "605db78b73392330edf9c87a7129911a2a485be1efe0646a67895408c84aaff3",
+      "source_markdown_bytes": 2331,
+      "source_markdown_sha256": "1577829c60eeb59f79f403962a12acc3a1be901fcf14f820dc8cf21eab3c416c",
       "source_openapi_bytes": 1940,
       "source_openapi_sha256": "3a9dcfc313beec1dc5e060dd9d46c43a19ebf7fccb5db5278d22f7785300e81a",
       "source_operation_count": 1,
@@ -12451,8 +12514,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/post_v2-auth-token.md",
-      "source_markdown_bytes": 15644,
-      "source_markdown_sha256": "81a4d8b58706f72c0692c799d746ec6a7f5a626313ebac10449c70038072c279",
+      "source_markdown_bytes": 15845,
+      "source_markdown_sha256": "2bae8861db197582677a23928908be6098f8d7c8189753c66cdddbc82504bf0e",
       "source_openapi_bytes": 15321,
       "source_openapi_sha256": "c753cc679e3921d2035eb15926617115abd30d3d05866d4f7e64305f9cfc17da",
       "source_operation_count": 1,
@@ -12502,8 +12565,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/post_v2-compensations-types.md",
-      "source_markdown_bytes": 7785,
-      "source_markdown_sha256": "d766ad4d8fcf43579d0f1b270f31759462c50eaef8e0e3386a434448c86aa18e",
+      "source_markdown_bytes": 7986,
+      "source_markdown_sha256": "dd2e5c0864acd08fc2133a4543940c10bb12979d432e567ac0428c8f6fcd64e7",
       "source_openapi_bytes": 7424,
       "source_openapi_sha256": "32ad0ebc62751cd8e019da66023b76513328ca9f7848fa9e46712a9fbf33328b",
       "source_operation_count": 1,
@@ -12627,8 +12690,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/post_v2-compensations.md",
-      "source_markdown_bytes": 26937,
-      "source_markdown_sha256": "24530c1c2d2d0f8e774853e2141ce552081ea7daad5bd4be56df4fb3a394bd5e",
+      "source_markdown_bytes": 27138,
+      "source_markdown_sha256": "923947786cba9c67ec8e48f345c3d22728879c526688a1ed97c92338b7bcdab2",
       "source_openapi_bytes": 26604,
       "source_openapi_sha256": "55dc0c0e5d149c61fc5c4d287a495034cdcb1eac4aaa02a212735d375772279c",
       "source_operation_count": 2,
@@ -12842,8 +12905,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/post_v2-persons.md",
-      "source_markdown_bytes": 18610,
-      "source_markdown_sha256": "70d4cf45f3b23f4c5f179c7ef5991296ef6e9a514dab563d5316162c8b62c692",
+      "source_markdown_bytes": 18811,
+      "source_markdown_sha256": "6a512fe590942835511f44dbecb23466e54d0580580baa45b4a47e8b93fda09e",
       "source_openapi_bytes": 18380,
       "source_openapi_sha256": "849e31430a899637093a0221247d440dd88f5d847dc693e57b6399fd681e3709",
       "source_operation_count": 1,
@@ -12975,8 +13038,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/post_v2-projects-id-members.md",
-      "source_markdown_bytes": 14878,
-      "source_markdown_sha256": "c0cc55ae81b811929d5fe27508b2db2d81debdc3926d84b05fb08e89fb2e8e6b",
+      "source_markdown_bytes": 15079,
+      "source_markdown_sha256": "6b24cc216ca1652160eca4b22cc2ad61f5ca900d9422386a65c54385ca44faa3",
       "source_openapi_bytes": 14367,
       "source_openapi_sha256": "e13ac33e6ea49eaa40eac9fcd644b2aedb6b0527c79dc86368c96d2d18aa6159",
       "source_operation_count": 1,
@@ -13100,8 +13163,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/post_v2-projects.md",
-      "source_markdown_bytes": 25548,
-      "source_markdown_sha256": "982929fce8c63d758e2f4f9eeaee4f29e658c91bce489f4802805ff8c4777eff",
+      "source_markdown_bytes": 25749,
+      "source_markdown_sha256": "6a9ab90c98670088aef40d4d8868a3ad0f214d6171cca8ee0c095d666bf97c07",
       "source_openapi_bytes": 25434,
       "source_openapi_sha256": "aa3bde893d1a818aac4f5a62b78b5afbe4922f516d9baeaf5eb77ae2bc1ef83e",
       "source_operation_count": 1,
@@ -13209,8 +13272,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/post_v2-webhooks-id-ping.md",
-      "source_markdown_bytes": 7876,
-      "source_markdown_sha256": "e14a3badb220e217876efca32beca271198c1ee761e11dd94e6004b9d44d3054",
+      "source_markdown_bytes": 8077,
+      "source_markdown_sha256": "e5186898c7f6e50dc2ddf28d84fa020dcfa1c0180abc636a84deb0ea97009ab5",
       "source_openapi_bytes": 7604,
       "source_openapi_sha256": "e110ab6264319c6e18dd362fef3332df38af16d40a519aec184592ee771e8bed",
       "source_operation_count": 1,
@@ -13321,8 +13384,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/post_v2-webhooks-id-redelivery.md",
-      "source_markdown_bytes": 13952,
-      "source_markdown_sha256": "8bf3b7998b936ffcf26663d676dcfe785989f0b7cdb0bae20df44d5b2dea36c0",
+      "source_markdown_bytes": 14153,
+      "source_markdown_sha256": "e5d86849f9c653e465d5fb8422e5e8232616be9e32ea905ae408e764e2b2eb74",
       "source_openapi_bytes": 13518,
       "source_openapi_sha256": "58af33bb7a3dde4ff5225c9d75a23b97936de51c548055a9bc2bf120b88c72d2",
       "source_operation_count": 1,
@@ -13450,8 +13513,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/post_v2-webhooks-id-signing-secret.md",
-      "source_markdown_bytes": 8794,
-      "source_markdown_sha256": "0f3c7868a54471a602364b7d5261455f75caa3afc6627e8b9e0df56f6351edac",
+      "source_markdown_bytes": 8995,
+      "source_markdown_sha256": "d3175009c5ff402822bb06cdd1a95accd6234e54c8c0e278f9a16eebc30a48ca",
       "source_openapi_bytes": 8429,
       "source_openapi_sha256": "4b112ba43a7936008942a1479a6d1baef20819dc3d09855d5d067958218490e3",
       "source_operation_count": 1,
@@ -13515,8 +13578,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/post_v2-webhooks-id-test-event.md",
-      "source_markdown_bytes": 10777,
-      "source_markdown_sha256": "aca8ca0009f823433d0a8f20c09f6c6f45b1f8fa1c49e6febcc6362a77f4c74f",
+      "source_markdown_bytes": 10978,
+      "source_markdown_sha256": "215f4af84bb7374e46c06b28bef91496c9a735c7390b7b2877de1c3942ebdaa2",
       "source_openapi_bytes": 10522,
       "source_openapi_sha256": "ef3f8ffedefcfcf679fd4304394b60ee04e83652ef0ffb2bafd793b9b286f8ce",
       "source_operation_count": 1,
@@ -13651,8 +13714,8 @@
     },
     {
       "source_url": "https://developer.personio.de/reference/post_v2-webhooks.md",
-      "source_markdown_bytes": 22759,
-      "source_markdown_sha256": "c17d0aaf4ff82515e3f18ce1831c1dddd3750007c7031ba53a39dbebf39bca9e",
+      "source_markdown_bytes": 22960,
+      "source_markdown_sha256": "38651df6df3f35b03c0e9fbe1f45a850b4c4a725ecad8c88f24c19c2a44997c4",
       "source_openapi_bytes": 22619,
       "source_openapi_sha256": "ba81194e6f028f03e7236d4e1254e5c61dd845bb999e27002342b6ddd55b69c2",
       "source_operation_count": 1,

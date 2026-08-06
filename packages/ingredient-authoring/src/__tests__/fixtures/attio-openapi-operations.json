@@ -3,8 +3,8 @@
     "source": {
       "kind": "official_openapi",
       "url": "https://api.attio.com/openapi/api",
-      "bytes": 770609,
-      "sha256": "c9696abec45c3577a299d8e78ea29b650689f6b729f2b89d2c9e19e65ee91a0d",
+      "bytes": 773110,
+      "sha256": "25904e7bc1ce4a551a12a8108c8dd48b07c505c084b2e234f764f2f638f956e6",
       "openapi": "3.1.0",
       "api_version": "2.0.0",
       "retrieved_on": "2026-08-03",

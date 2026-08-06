@@ -316,6 +316,15 @@ describe('D-187 §6 packs route', () => {
     expect(doc.styleElements[0]?.attrs.has(PACKS_ROUTE_STYLES_MARKER)).toBe(true);
     expect(PACKS_ROUTE_STYLES).toContain('[data-recued-install-connect]');
     expect(PACKS_ROUTE_STYLES).toContain('[data-recued-install-grant-picker]');
+    expect(PACKS_ROUTE_STYLES).toContain(
+      'grid-template-columns: minmax(0, 1fr);',
+    );
+    expect(PACKS_ROUTE_STYLES).toContain(
+      'box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; color: var(--fg);',
+    );
+    expect(PACKS_ROUTE_STYLES).toContain(
+      '[data-recued-packs-surface-detail] > * {\n  min-width: 0; max-width: 100%;',
+    );
     expect(route.packsPanel()).not.toBeNull();
     // The route hosts exactly ONE section, and it is the Packs one. Asserted
     // structurally (tag count + the live-imported attr) rather than by a

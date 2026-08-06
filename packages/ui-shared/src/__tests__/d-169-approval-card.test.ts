@@ -17,6 +17,7 @@ import {
   renderApprovalCard,
   renderAskCard,
   renderChatPlanCard,
+  APPROVAL_CARD_STYLES,
   APPROVAL_CARD_ACTION_ATTR,
   APPROVAL_CARD_ATTR,
   APPROVAL_CARD_ERROR_ATTR,
@@ -24,6 +25,7 @@ import {
   APPROVAL_CARD_STATUS_ATTR,
   type ApprovalCardModel,
   ASK_CARD_ATTR,
+  ASK_CARD_STYLES,
   ASK_CARD_CONFIRM_ATTR,
   ASK_CARD_DETAILS_ATTR,
   ASK_CARD_OPTION_ATTR,
@@ -36,6 +38,37 @@ import {
   type ChatPlanCardModel,
   type ChatPlanCardOptions,
 } from '../approval-card/card.js';
+
+describe('approval-card interaction styling', () => {
+  it('gives handoff links and decision buttons full-size targets', () => {
+    expect(APPROVAL_CARD_STYLES).toContain(
+      '.rx-approval-card-links a {\n  box-sizing: border-box;\n  min-height: 36px;',
+    );
+    expect(APPROVAL_CARD_STYLES).toContain(
+      '.rx-approval-card-btn {\n  box-sizing: border-box;\n  min-height: 36px;',
+    );
+  });
+
+  it('contains long server-controlled card copy and option labels', () => {
+    expect(ASK_CARD_STYLES).toContain(
+      '.rx-ask-card {\n  box-sizing: border-box;\n  min-width: 0;\n  max-width: 100%;',
+    );
+    expect(ASK_CARD_STYLES).toContain(
+      '.rx-ask-card-title {\n  min-width: 0;',
+    );
+    expect(ASK_CARD_STYLES).toContain('overflow-wrap: anywhere;');
+    expect(ASK_CARD_STYLES).toContain(
+      '.rx-ask-card-btn {\n  box-sizing: border-box;\n  min-width: 0;\n  max-width: 100%;',
+    );
+    expect(APPROVAL_CARD_STYLES).toContain(
+      '.rx-approval-card {\n  box-sizing: border-box;\n  min-width: 0;\n  max-width: 100%;',
+    );
+    expect(APPROVAL_CARD_STYLES).toContain(
+      '.rx-approval-card-title {\n  min-width: 0;',
+    );
+    expect(APPROVAL_CARD_STYLES).toContain('overflow-wrap: anywhere;');
+  });
+});
 
 // ── Interactive fake DOM ─────────────────────────────────────────────
 interface FakeEl {
@@ -241,6 +274,10 @@ describe('D-169 P2 Slice 3 — renderAskCard', () => {
       'no',
     ]);
     expect(buttons.map((b) => b.textContent)).toEqual(['Send', 'Discard']);
+    expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual([
+      'Send: Approval needed',
+      'Discard: Approval needed',
+    ]);
     // Title + body both rendered.
     const texts = collectByAttr(card, '__never__'); // none — sanity that helper is depth-first
     expect(texts).toHaveLength(0);
@@ -285,7 +322,11 @@ describe('D-169 P2 Slice 3 — renderAskCard', () => {
     }), () => {});
 
     expect(collectByAttr(card, ASK_CARD_SUMMARY_ATTR)).toHaveLength(1);
-    expect(collectByAttr(card, ASK_CARD_DETAILS_ATTR)).toHaveLength(1);
+    const details = collectByAttr(card, ASK_CARD_DETAILS_ATTR);
+    expect(details).toHaveLength(1);
+    expect(details[0]?.children[0]?.getAttribute('aria-label')).toBe(
+      'Technical details for Approve mail-send (write) (7)',
+    );
     const renderedText: string[] = [];
     const walk = (el: FakeEl): void => {
       if (el.textContent) renderedText.push(el.textContent);
@@ -331,6 +372,9 @@ describe('D-169 P2 Slice 3 — renderAskCard', () => {
     buttons[0]!.click();
     expect(onAnswer).not.toHaveBeenCalled();
     expect(buttons[0]!.textContent).toBe('Confirm Send');
+    expect(buttons[0]!.getAttribute('aria-label')).toBe(
+      'Confirm Send: Approve mail-send (write)',
+    );
     expect(confirm.hidden).toBe(false);
 
     buttons[0]!.click();
@@ -341,6 +385,9 @@ describe('D-169 P2 Slice 3 — renderAskCard', () => {
     )).toBe(true);
     expect(buttons[0]!.getAttribute('aria-busy')).toBe('true');
     expect(buttons[0]!.textContent).toBe('Approving…');
+    expect(buttons[0]!.getAttribute('aria-label')).toBe(
+      'Approving…: Approve mail-send (write)',
+    );
     expect(buttons[1]!.className).toContain('rx-ask-card-btn--reject');
   });
 
@@ -496,6 +543,11 @@ describe('D-174 — renderApprovalCard', () => {
     expect(card.getAttribute(APPROVAL_CARD_ATTR)).toBe('ap-1');
     expect(approvalButtons(card).map((b) => b.getAttribute(APPROVAL_CARD_ACTION_ATTR)))
       .toEqual(['reject', 'approve']);
+    expect(approvalButtons(card).map((b) => b.getAttribute('aria-label')))
+      .toEqual([
+        'Reject: Send the customer follow-up',
+        'Approve: Send the customer follow-up',
+      ]);
     const links = collectByAttr(card, APPROVAL_CARD_LINK_ATTR);
     expect(links.map((l) => l.getAttribute(APPROVAL_CARD_LINK_ATTR))).toEqual([
       'recipe',
@@ -506,6 +558,11 @@ describe('D-174 — renderApprovalCard', () => {
       '#recipes?recipe_id=recipe-1',
       '#connections',
       '#runs',
+    ]);
+    expect(links.map((l) => l.getAttribute('aria-label'))).toEqual([
+      'Recipe for Send the customer follow-up',
+      'Connection for Send the customer follow-up',
+      'Run audit for Send the customer follow-up',
     ]);
   });
 
@@ -552,6 +609,9 @@ describe('D-174 — renderApprovalCard', () => {
     )).toBe(true);
     expect(approvalButton(card, 'approve')?.getAttribute('aria-busy')).toBe('true');
     expect(approvalButton(card, 'approve')?.textContent).toBe('Approving…');
+    expect(approvalButton(card, 'approve')?.getAttribute('aria-label')).toBe(
+      'Approving…: Send the customer follow-up',
+    );
     approvalButton(card, 'reject')!.click();
     expect(onResolve).toHaveBeenCalledTimes(1);
   });
@@ -639,7 +699,9 @@ describe('R20 — renderChatPlanCard', () => {
     )).toBe(true);
     expect(approve.getAttribute('aria-busy')).toBe('true');
     expect(approve.textContent).toBe('Approving…');
+    expect(approve.getAttribute('aria-label')).toBe('Approving…: mail.send');
     expect(reject.getAttribute('aria-busy')).toBeNull();
+    expect(reject.getAttribute('aria-label')).toBe('Reject: mail.send');
     expect(doc.activeElement).toBe(approve);
     reject.click();
     expect(onResolve).toHaveBeenCalledTimes(1);

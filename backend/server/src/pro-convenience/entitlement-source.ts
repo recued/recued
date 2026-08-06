@@ -125,6 +125,47 @@ export const resolveProEntitlementMintUrl = (
   return `${origin}${PRO_ENTITLEMENT_MINT_PATH}`;
 };
 
+/** The trust anchor for `proent.v1` claims: the Ed25519 SPKI-DER public half
+ *  (standard base64) of the auth-Worker's `PRO_ENTITLEMENT_SIGNING_PRIVATE_KEY_B64`.
+ *
+ *  These are CONSTANTS, not secrets and not operator config. A public key is
+ *  safe to ship, and it MUST ship: `resolveClaim` returns null when it has no
+ *  key, which fails closed SILENTLY (entitlement `unavailable` → no reserve, no
+ *  DDNS, no ACME, no error surfaced). Leaving this to an env var would mean
+ *  every self-hosted server needs a hand-set variable or Pro simply never works.
+ *
+ *  Keyed per environment and selected by the SAME `isRecued2CloudHost` switch
+ *  `resolveProEntitlementMintUrl` uses, so the key a server verifies with always
+ *  belongs to the Worker it actually minted from — the two can never disagree.
+ *
+ *  ⚠ ROTATION is a two-sided change: `wrangler secret put
+ *  PRO_ENTITLEMENT_SIGNING_PRIVATE_KEY_B64 --env <env>` AND the matching
+ *  constant here, shipped together. A mismatch fails closed (claims stop
+ *  verifying), never open. Generated 2026-08-05; see
+ *  D-175. */
+const PRO_ENTITLEMENT_PUBLIC_KEY_PROD =
+  'MCowBQYDK2VwAyEAc7SOi3TcGaYFCutsbVZzNEkJDsmWFBILqPp/HxRhp40=';
+const PRO_ENTITLEMENT_PUBLIC_KEY_STAGING =
+  'MCowBQYDK2VwAyEAhGQbD0X9QKJUaC0u1hkGcMYJxYKw9dYJOzCeU0sQ4j8=';
+
+export interface ResolveProEntitlementPublicKeyOptions {
+  /** `RECUED_PRO_ENTITLEMENT_PUBLIC_KEY_B64` — wins when set. Kept so a local
+   *  rig / a private deployment can point at its own signer without a rebuild. */
+  override?: string;
+  /** The configured `cloud.base_url`; a `*.recued2.com` host selects staging. */
+  cloudBaseUrl?: string;
+}
+
+export const resolveProEntitlementPublicKey = (
+  options: ResolveProEntitlementPublicKeyOptions = {},
+): string => {
+  const override = options.override?.trim();
+  if (override) return override;
+  return isRecued2CloudHost(options.cloudBaseUrl)
+    ? PRO_ENTITLEMENT_PUBLIC_KEY_STAGING
+    : PRO_ENTITLEMENT_PUBLIC_KEY_PROD;
+};
+
 const base64UrlToBytes = (value: string): Uint8Array => {
   const padded = value.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((value.length + 3) % 4);
   return new Uint8Array(Buffer.from(padded, 'base64'));

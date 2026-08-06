@@ -1206,6 +1206,26 @@ export interface ChatStore {
   deleteSession(session_id: string): boolean;
   appendMessage(input: AppendMessageInput): Promise<ChatMessage>;
   listMessages(session_id: string): Promise<ChatMessage[]>;
+  /** The most recent `limit` conversational messages, oldest-first.
+   *
+   *  ⛔ WHY THIS EXISTS AS A SEPARATE READ. `buildChatTail` runs on EVERY turn
+   *  and needs the last `CHAT_TAIL_LIMIT` (3) user/assistant messages — but it
+   *  got them by calling `listMessages`, which reads AND DECRYPTS every message
+   *  in the session. Per-turn cost therefore grew with conversation length:
+   *  measured on an encrypted realm, 0.2ms at 10 turns, 3.2ms at 500, 12.3ms at
+   *  2000 — all to use three of them.
+   *
+   *  Role filtering happens in SQL too: the tail wants only user/assistant
+   *  rows, so a session heavy in tool/system rows would otherwise need a much
+   *  larger fetch to find three conversational ones.
+   *
+   *  ⚠ Returns OLDEST-FIRST, matching `listMessages`, so callers keep the same
+   *  ordering contract. The `DESC` in the query is only how the tail is
+   *  selected. */
+  listRecentConversational(
+    session_id: string,
+    limit: number,
+  ): Promise<ChatMessage[]>;
   /** Complete the crash-visible pending user source and atomically advance the
    * store-owned session content revision. */
   finalizeMessageSource?(
@@ -1873,6 +1893,25 @@ export const createChatStore = (
     return Promise.all(rows.map((row) => messageFromRow(row, getKey)));
   };
 
+  const listRecentConversationalStmt = db.prepare<{ session_id: string; limit: number }>(
+    `SELECT * FROM chat_messages
+      WHERE session_id = @session_id AND role IN ('user', 'assistant')
+      ORDER BY ts DESC, message_id DESC
+      LIMIT @limit`,
+  );
+
+  const listRecentConversational = async (
+    session_id: string,
+    limit: number,
+  ): Promise<ChatMessage[]> => {
+    if (limit <= 0) return [];
+    const rows = (listRecentConversationalStmt.all({ session_id, limit }) as MessageRow[])
+      // Selected newest-first by the query; returned oldest-first so the
+      // ordering contract matches `listMessages`.
+      .reverse();
+    return Promise.all(rows.map((row) => messageFromRow(row, getKey)));
+  };
+
   const finalizeMessageSource = async (
     input: {
       readonly session_id: string;
@@ -2334,6 +2373,7 @@ export const createChatStore = (
     deleteSession,
     appendMessage,
     listMessages,
+    listRecentConversational,
     finalizeMessageSource,
     failMessageSource,
     harvestPiiSources,

@@ -24,6 +24,7 @@ import {
   PACKS_DETAIL_TAB_ATTR,
   PACKS_DETAIL_TAB_PANEL_ATTR,
   PACKS_DETAIL_TABS_ATTR,
+  PACKS_PANEL_STYLES,
   PACKS_DIALOG_ATTR,
   PACKS_DIALOG_CANCEL_BTN_ATTR,
   PACKS_DIALOG_PERMISSION_ATTR,
@@ -36,6 +37,7 @@ import {
   type PacksListCaller,
 } from '../settings/packs-panel.js';
 import {
+  CONNECTIONS_READINESS_STYLES,
   CONNECTIONS_READINESS_SECTION_ATTR,
   CONNECTIONS_READINESS_ROW_ATTR,
 } from '../settings/connections-readiness-controls.js';
@@ -322,6 +324,57 @@ const flush = async (turns = 12): Promise<void> => {
 // ──────────────────────────────────────────────────────────────────
 
 describe('Packs R1.3 — detail section layout', () => {
+  it('contains long pack identity fields within the detail panel', () => {
+    expect(PACKS_PANEL_STYLES).toMatch(
+      /\[data-recued-packs-panel\]\s*\{[^}]*box-sizing:\s*border-box[^}]*min-width:\s*0[^}]*max-width:\s*100%/s,
+    );
+    expect(PACKS_PANEL_STYLES).toContain(
+      '.packs-detail-section > * { min-width: 0; max-width: 100%; }',
+    );
+    expect(PACKS_PANEL_STYLES).toMatch(
+      /\.packs-detail-name\s*\{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(PACKS_PANEL_STYLES).toMatch(
+      /\.packs-detail-note\s*\{[^}]*max-width:\s*100%[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(PACKS_PANEL_STYLES).toMatch(
+      /\[data-recued-packs-detail-tabs\]\s*\{[^}]*max-width:\s*100%[^}]*overflow-x:\s*auto/s,
+    );
+  });
+
+  it('wraps connection readiness without shrinking its recovery target', () => {
+    expect(CONNECTIONS_READINESS_STYLES).toMatch(
+      /\.packs-connection-row\s*\{[^}]*min-width:\s*0[^}]*flex-wrap:\s*wrap/s,
+    );
+    expect(CONNECTIONS_READINESS_STYLES).toMatch(
+      /\.packs-connection-status\s*\{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(CONNECTIONS_READINESS_STYLES).toMatch(
+      /\.packs-connection-cta\s*\{[^}]*min-height:\s*36px/s,
+    );
+    expect(CONNECTIONS_READINESS_STYLES).toMatch(
+      /@media \(max-width: 640px\)[\s\S]*?\.packs-connection-cta\s*\{[^}]*min-height:\s*44px/s,
+    );
+  });
+
+  it('keeps both detail-tab levels large enough for frequent touch navigation', () => {
+    expect(PACKS_PANEL_STYLES).toMatch(
+      /\[data-recued-packs-detail-tab\]\s*\{[^}]*min-height:\s*36px/s,
+    );
+    expect(PACKS_PANEL_STYLES).toMatch(
+      /@media \(max-width: 640px\)[\s\S]*?\[data-recued-packs-detail-tab\]\s*\{[^}]*min-height:\s*44px/s,
+    );
+  });
+
+  it('gives the Access fallback handoff a full desktop and phone target', () => {
+    expect(PACKS_PANEL_STYLES).toMatch(
+      /\.packs-detail-access-link\s*\{[^}]*min-height:\s*36px/s,
+    );
+    expect(PACKS_PANEL_STYLES).toMatch(
+      /@media \(max-width: 640px\)[\s\S]*?\.packs-detail-access-link\s*\{[^}]*min-height:\s*44px/s,
+    );
+  });
+
   it('renders Detail / Permissions / Access tabs with one active content pane', async () => {
     const { host, mount } = setupMount([entry()]);
     await mount.whenLoaded();
@@ -345,6 +398,12 @@ describe('Packs R1.3 — detail section layout', () => {
         PACKS_DETAIL_TAB_PANEL_ATTR,
       ),
     ).toBe('detail');
+    const detailTab = findByAttrValue(host, PACKS_DETAIL_TAB_ATTR, 'detail')!;
+    const detailPanel = findByAttr(host, PACKS_DETAIL_TAB_PANEL_ATTR)!;
+    expect(detailTab.getAttribute('aria-controls')).toBe(detailPanel.getAttribute('id'));
+    expect(detailPanel.getAttribute('aria-labelledby')).toBe(
+      detailTab.getAttribute('id'),
+    );
     expect(
       findAllByAttr(host, PACKS_DETAIL_SECTION_ATTR).map(
         (s) => s.getAttribute(PACKS_DETAIL_SECTION_ATTR),
@@ -362,6 +421,11 @@ describe('Packs R1.3 — detail section layout', () => {
         'aria-selected',
       ),
     ).toBe('true');
+    expect(
+      findByAttr(host, PACKS_DETAIL_TAB_PANEL_ATTR)?.getAttribute(
+        'aria-labelledby',
+      ),
+    ).toBe('recued-packs-detail-manage-permissions-tab');
 
     findByAttrValue(host, PACKS_DETAIL_TAB_ATTR, 'access')!.click();
     expect(

@@ -79,7 +79,7 @@
       "paypal-vault": 4
     },
     "composition_bytes": {
-      "paypal": 162394,
+      "paypal": 162875,
       "paypal-billing-subscriptions": 3683,
       "paypal-catalog-products": 3306,
       "paypal-checkout-orders": 2399,
@@ -107,9 +107,8 @@
     },
     "idempotency_counts": {
       "idempotent": 27,
-      "non_idempotent": 34,
-      "safe": 27,
-      "unspecified": 21
+      "non_idempotent": 38,
+      "safe": 44
     },
     "request_body_mode_counts": {
       "none": 37,
@@ -2924,7 +2923,7 @@
       "sensitive_response_fields_sha256": "8dc9c54e9650f04b82837d7b02463a2218bb3742f469f83e2fd38ce995382254",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "authorization_id"
       ],
@@ -2977,7 +2976,7 @@
       "sensitive_response_fields_sha256": "dbbff0268a6e7adfea02dabbed38ab870a991de1fa7d57955700d2c0565dc9e0",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "query.as_of_time",
         "query.currency_code"
@@ -3043,7 +3042,7 @@
       "sensitive_response_fields_sha256": "a74ebc2c04efbb4f28ecac6a80d21ac2ea695d1f87a5a3db19d7699cbd4f3c75",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "capture_id"
       ],
@@ -3130,7 +3129,7 @@
       "sensitive_response_fields_sha256": "cbcfa3ce28cb8c21dda3bab98e370cd809d6140ecb55feb56b202fcf6225dd41",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "id"
       ],
@@ -3201,7 +3200,7 @@
       "sensitive_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "query.disputed_transaction_id",
         "query.dispute_state",
@@ -3257,7 +3256,7 @@
       "sensitive_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "write",
       "approval": "ask",
-      "idempotency": null,
+      "idempotency": "non_idempotent",
       "arg_keys": [
         "invoice_id",
         "body.subject",
@@ -3358,7 +3357,7 @@
       "sensitive_response_fields_sha256": "3ad8d08b96605e6b403383da7abdb6f883145e1e7072ad818a2085102085536f",
       "risk": "write",
       "approval": "ask",
-      "idempotency": null,
+      "idempotency": "non_idempotent",
       "arg_keys": [
         "body.detail",
         "body.invoicer",
@@ -3443,7 +3442,7 @@
       "sensitive_response_fields_sha256": "cbb5be7a3abfec7c4a739b29c21fd61d5b07d70c4eba23f672f86390f0a0f5df",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "query.page",
         "query.page_size",
@@ -3525,7 +3524,7 @@
       "sensitive_response_fields_sha256": "3ad8d08b96605e6b403383da7abdb6f883145e1e7072ad818a2085102085536f",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "invoice_id"
       ],
@@ -3576,7 +3575,7 @@
       "sensitive_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "write",
       "approval": "ask",
-      "idempotency": null,
+      "idempotency": "non_idempotent",
       "arg_keys": [
         "invoice_id",
         "body.subject",
@@ -3654,7 +3653,7 @@
       "sensitive_response_fields_sha256": "cbb5be7a3abfec7c4a739b29c21fd61d5b07d70c4eba23f672f86390f0a0f5df",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "query.page",
         "query.page_size",
@@ -3711,7 +3710,7 @@
       "sensitive_response_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
       "risk": "write",
       "approval": "ask",
-      "idempotency": null,
+      "idempotency": "non_idempotent",
       "arg_keys": [
         "invoice_id",
         "body.subject",
@@ -3798,7 +3797,7 @@
       "sensitive_response_fields_sha256": "1ddb999bd428569e8eb5f07333d29ef1dbde4fc2732f0a7191ff632e6d243e90",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "id"
       ],
@@ -7238,7 +7237,7 @@
       "sensitive_response_fields_sha256": "1c429aa3f7749956917a7a20d9cdb4d0d7f4d9f1a8cd86db1248731238332c44",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "plan_id"
       ],
@@ -7296,7 +7295,7 @@
       "sensitive_response_fields_sha256": "3190167d4625d576a746d71ef77e57f5614e8c57968958141fa6ff74c32ee77a",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "query.product_id",
         "query.page_size",
@@ -7352,7 +7351,7 @@
       "sensitive_response_fields_sha256": "1c429aa3f7749956917a7a20d9cdb4d0d7f4d9f1a8cd86db1248731238332c44",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "product_id"
       ],
@@ -7405,7 +7404,7 @@
       "sensitive_response_fields_sha256": "953846b5636de7a6ad4ee6ce0dccbf05e46cff3e41d9469383f0f4c58e7b8b31",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "query.page_size",
         "query.page",
@@ -7473,7 +7472,7 @@
       "sensitive_response_fields_sha256": "5de5a4ee9eddf7773541a97276f8efa497a4fa72716801252bcc82d548ccffd6",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "refund_id"
       ],
@@ -7545,7 +7544,7 @@
       "sensitive_response_fields_sha256": "3ce0f121422bea6eac91fc96da113fdb0dc597d41729a2d10c452affaedee577",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "subscription_id"
       ],
@@ -7604,7 +7603,7 @@
       "sensitive_response_fields_sha256": "c06ebc382eccd3de2a5fa5c46d4124443f3ab27c006cde9b906a0cea15a23362",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "subscription_id",
         "query.start_time",
@@ -7678,7 +7677,7 @@
       "sensitive_response_fields_sha256": "98bed7a792e4ba885f690702ab4f1277d391f9818406cebe5f6dea57ba73b818",
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "query.start_date",
         "query.end_date",

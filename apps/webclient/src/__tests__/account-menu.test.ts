@@ -70,6 +70,7 @@ interface FakeEvent {
   type: string;
   target: FakeEl | null;
   key?: string;
+  isComposing?: boolean;
 }
 type FakeListener = (event: FakeEvent) => void;
 
@@ -166,9 +167,20 @@ const buildFakeDocument = () => {
     document: doc as unknown as Document,
     activeElement: () => active,
     create: makeEl,
-    fire(type: string, init?: { target?: FakeEl; key?: string }) {
+    fire(type: string, init?: {
+      target?: FakeEl;
+      key?: string;
+      isComposing?: boolean;
+    }) {
       for (const l of [...(documentListeners.get(type) ?? [])]) {
-        l({ type, target: init?.target ?? null, ...(init?.key !== undefined ? { key: init.key } : {}) });
+        l({
+          type,
+          target: init?.target ?? null,
+          ...(init?.key !== undefined ? { key: init.key } : {}),
+          ...(init?.isComposing !== undefined
+            ? { isComposing: init.isComposing }
+            : {}),
+        });
       }
     },
     listenerCount: (type: string) => documentListeners.get(type)?.size ?? 0,
@@ -270,12 +282,15 @@ describe('mountAccountMenu', () => {
     findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
     expect(mount.isOpen()).toBe(true);
     expect(dom.activeElement()).toBe(popover);
-    expect(findByAttr(popover, ACCOUNT_MENU_TITLE_ATTR)?.children[0]?.textContent)
-      .toBe('Account & servers');
+    const dialogTitle = findByAttr(popover, ACCOUNT_MENU_TITLE_ATTR)?.children[0];
+    expect(dialogTitle?.tagName).toBe('H2');
+    expect(dialogTitle?.textContent).toBe('Account & servers');
     const quick = findByAttr(host, ACCOUNT_MENU_QUICK_ROW_ATTR)!;
     const servers = findByAttr(host, ACCOUNT_MENU_SERVERS_ROW_ATTR)!;
     expect(quick).not.toBeNull();
     expect(servers).not.toBeNull();
+    expect(servers.children[0]?.tagName).toBe('H3');
+    expect(servers.children[0]?.textContent).toBe('Server profiles');
     // Quick actions and profiles share one dialog instead of separate status
     // and account popovers.
     expect(findByAttr(quick, ACCOUNT_MENU_THEME_SLOT_ATTR)).not.toBeNull();
@@ -2487,6 +2502,9 @@ describe('mountAccountMenu', () => {
     expect(dom.activeElement()).toBe(outside);
 
     trigger.click();
+    dom.fire('keydown', { key: 'Escape', isComposing: true });
+    expect(mount.isOpen()).toBe(true);
+    expect(dom.activeElement()).not.toBe(trigger);
     dom.fire('keydown', { key: 'Escape' });
     expect(mount.isOpen()).toBe(false);
     expect(dom.activeElement()).toBe(trigger); // focus returns to the trigger

@@ -39,7 +39,7 @@ import {
   type HostnameProjection,
 } from '@recued/contracts';
 import type { BackgroundServiceRegistry } from './wire-background-services.js';
-import type { HandleStateStore } from '../../handle/index.js';
+import type { HandleState, HandleStateMachine, HandleStateStore } from '../../handle/index.js';
 import type { DdnsUpdateClient } from '../../ddns/update-client.js';
 import type { DdnsEnabledStore } from '../../ddns/ddns-enabled-store.js';
 import type {
@@ -77,6 +77,11 @@ export interface ComposeDdnsUpdatePollerDeps {
   /** Per-hostname Pro subscription mirror. Supplies publisher_id for
    *  registry-managed DDNS rows. */
   subscriptionState?: Pick<ProSubscriptionStateStore, 'get'>;
+  /** D-148 § A.5.6 — the handle state machine's lifecycle applier, resolved
+   *  lazily because the cert stack fills its ref after this composer runs.
+   *  Absent (db-less / test harnesses) → the poller still backs off, it just
+   *  cannot record the state transition. */
+  applyLifecycle?: () => Pick<HandleStateMachine, 'applyLifecycleUpdate'> | undefined;
   /** Polling cadence. Defaults to `DDNS_UPDATE_INTERVAL_MS` (5 min). */
   intervalMs?: number;
   /** Clock override for tests. Defaults to `Date.now`. */
@@ -135,9 +140,131 @@ export const composeDdnsUpdatePoller = (
   const intervalMs = deps.intervalMs ?? DDNS_UPDATE_INTERVAL_MS;
   const now = deps.now ?? Date.now;
 
-  const loadTargets = async (): Promise<ReadonlyArray<DdnsUpdateTarget>> => {
+  // ── first-publish warm-up ───────────────────────────────────────────
+  //
+  // ⛔ MEASURED 2026-08-05 on a fresh Pro server, left untouched after boot:
+  //      reserve landed  ~26s
+  //      first publish  +315s   ← one whole DDNS_UPDATE_INTERVAL_MS later
+  //
+  // Both this poller and the sibling provisioning timer register post-listener
+  // and both `fireImmediate`, milliseconds apart in the same synchronous boot
+  // path. The provisioner's reserve is an in-flight HTTP call at the moment
+  // this tick runs, so `loadTargets()` legitimately returns empty — and the one
+  // immediate fire is spent on a tick that COULD NOT have succeeded. Nothing
+  // re-triggers it when the handle lands a second later, so a job that takes
+  // ~1s waits out a full cadence. It self-heals (measured: slow, not stuck),
+  // but a new Pro user's hostname does not resolve for five minutes after
+  // setup — the least forgiving moment for a paid feature.
+  //
+  // So: an empty target list is NOT-STARTED-YET rather than NOTHING-TO-DO,
+  // until the first time targets actually appear.
+  //
+  // Safe to run on a free server that will never have a handle: `loadTargets`
+  // is purely local (SQLite handle-state + hostname registry) and the tick
+  // returns before `fetchPublicIpv4`, so a warm-up poll costs two local reads —
+  // no network, no cloud call, no rate token. Bounded anyway, so a handle-less
+  // server settles onto the normal cadence quickly.
+  const WARMUP_INTERVAL_MS = 2_000;
+  const WARMUP_WINDOW_MS = 90_000;
+  const warmupDeadline = now() + WARMUP_WINDOW_MS;
+  let sawTargets = false;
+  let warmupTimer: ReturnType<typeof setTimeout> | undefined;
+  let stopped = false;
+
+  const clearWarmup = (): void => {
+    if (warmupTimer !== undefined) {
+      clearTimeout(warmupTimer);
+      warmupTimer = undefined;
+    }
+  };
+
+  /** Re-run soon while the precondition is still being produced by boot.
+   *  Never stacks, never outlives the window, and is unref'd + cleared on stop
+   *  so it cannot hold the process open or fire against torn-down stores. */
+  const scheduleWarmup = (): void => {
+    if (stopped || sawTargets || warmupTimer !== undefined) return;
+    if (now() >= warmupDeadline) return;
+    warmupTimer = setTimeout(() => {
+      warmupTimer = undefined;
+      if (stopped || sawTargets) return;
+      void tick();
+    }, WARMUP_INTERVAL_MS);
+    warmupTimer.unref?.();
+  };
+
+  // ── lapse recovery (D-148 § A.5.6 deferral, closed 2026-08-05) ──────
+  //
+  // ⛔ MEASURED live: a cancelled subscription left `subscription_state` at
+  //    'active' FOREVER. The handle stayed a publish target, so the poller
+  //    issued one update per tick that the cloud refused with
+  //    `ddns_subscription_lapsed` — 288 rejected requests/day, per lapsed
+  //    server, indefinitely. Fail-closed (the zone stayed correct only because
+  //    the CLOUD refused), but the server never stood down and its own state
+  //    was user-visibly wrong after a cancellation.
+  //
+  // Two things must be true at once, which is what makes this more than a
+  // "stop publishing" flag:
+  //   1. STOP HAMMERING — bounded probes, not one per tick.
+  //   2. STILL RECOVER UNATTENDED — a user who re-subscribes must not have to
+  //      touch the server. The original note said "until the operator takes
+  //      action"; for a paid product that is not an acceptable resting state.
+  //
+  // So: on a lapse we record 'grace' through the STATE MACHINE (never a direct
+  // store write — `persist()` fires `onStateChanged`, which refreshes the cert
+  // stack's publisher_id + DDNS-host snapshots; bypassing it would leave those
+  // stale) and back off exponentially. A probe that succeeds transitions back
+  // to 'active'.
+  //
+  // 🔑 The backoff is PER-PROCESS on purpose. The persisted 'grace' survives a
+  //    restart but the timer does not, so a reboot always re-probes
+  //    immediately — a restarted server recovers at once, while a long-running
+  //    one recovers within the window. That is also why the cost is "at most
+  //    one rejected request per boot", not zero: the probe IS the recovery
+  //    mechanism.
+  //
+  // ⚠ 'released' is deliberately NOT written here. The cloud is the authority
+  //   over active ↔ grace ↔ released, and 'released' is destructive
+  //   (`applyLifecycleUpdate` closes the history row and clears
+  //   `current_handle`). Inferring it from an error code could strand a handle
+  //   the user still owns. 'grace' is the reversible half.
+  const LAPSE_BACKOFF_START_MS = 60 * 60 * 1000;      // 1h
+  const LAPSE_BACKOFF_MAX_MS = 6 * 60 * 60 * 1000;    // 6h
+  let lapseProbeAfter = 0;   // 0 → probe on the next tick (fresh process)
+  let lapseBackoffMs = 0;
+
+  const recordLapse = async (): Promise<void> => {
+    lapseBackoffMs = lapseBackoffMs === 0
+      ? LAPSE_BACKOFF_START_MS
+      : Math.min(lapseBackoffMs * 2, LAPSE_BACKOFF_MAX_MS);
+    lapseProbeAfter = now() + lapseBackoffMs;
+    const lifecycle = deps.applyLifecycle?.();
+    if (!lifecycle) return;
+    try {
+      await lifecycle.applyLifecycleUpdate({ state: 'grace', now: now() });
+    } catch (err) {
+      // Never let a bookkeeping failure abort the tick — the backoff above
+      // has already bounded the damage this exists to prevent.
+      console.warn('[ddns-update-poll] could not record lapse state', err);
+    }
+  };
+
+  const recordRecovery = async (): Promise<void> => {
+    lapseBackoffMs = 0;
+    lapseProbeAfter = 0;
+    const lifecycle = deps.applyLifecycle?.();
+    if (!lifecycle) return;
+    try {
+      await lifecycle.applyLifecycleUpdate({ state: 'active', now: now() });
+      console.info('[ddns-update-poll] subscription recovered — resuming publishes');
+    } catch (err) {
+      console.warn('[ddns-update-poll] could not record recovery state', err);
+    }
+  };
+
+  const loadTargets = async (
+    handleState: HandleState | null,
+  ): Promise<ReadonlyArray<DdnsUpdateTarget>> => {
     const byHandle = new Map<string, DdnsUpdateTarget>();
-    const handleState = await deps.handleStateStore.load();
     if (handleState && activeHandleState.has(handleState.subscription_state)) {
       const handle = canonicalizeHandle(handleState.current_handle);
       if (handle.length > 0) {
@@ -187,8 +314,31 @@ export const composeDdnsUpdatePoller = (
       // (the cloud already pulled it when ddns.setEnabled fired). Skip the
       // whole tick so the poller neither re-publishes nor burns a rate token.
       if (deps.ddnsEnabled && !deps.ddnsEnabled.isEnabled()) return;
-      const targets = await loadTargets();
-      if (targets.length === 0) return;
+
+      const handleState = await deps.handleStateStore.load();
+      // A lapsed handle stays a publish TARGET ('grace' is in
+      // `activeHandleState`, because the handle is still the user's) — so the
+      // gate has to be here, not in `loadTargets`.
+      //
+      // ⛔ The gate must NOT depend on the persisted state alone. Without a
+      //    lifecycle applier (db-less / harness boots) — or if the write
+      //    throws — the state stays 'active', the gate never engages, and the
+      //    server hammers exactly as before. The rate limiting cannot be
+      //    contingent on the bookkeeping succeeding; the in-process timer is
+      //    the authority for THIS process.
+      const inBackoff = lapseProbeAfter > 0;
+      const lapsed = handleState?.subscription_state === 'grace' || inBackoff;
+      if (lapsed && now() < lapseProbeAfter) return;
+
+      const targets = await loadTargets(handleState);
+      if (targets.length === 0) {
+        // Not "nothing to do" until we have proof there is something to do —
+        // see the warm-up note above.
+        scheduleWarmup();
+        return;
+      }
+      sawTargets = true;
+      clearWarmup();
 
       const ipv4 = await deps.fetchPublicIpv4();
       if (!ipv4) return;
@@ -219,18 +369,37 @@ export const composeDdnsUpdatePoller = (
         });
 
         if (result.ok) {
+          // A publish that succeeds while we believed we were lapsed IS the
+          // recovery signal — the cloud only accepts an entitled handle.
+          if (lapsed) await recordRecovery();
           publishedKeys.add(targetKey(target));
           deps.ipStateStore.save({
             ip_v4: ipv4,
             last_published_at: result.data.ddns_record_updated_at,
             published_targets: publishedTargetsFromKeys(publishedKeys),
           });
+          // A SUCCESSFUL publish was the only outcome here that logged
+          // nothing, which made a working DDNS server and a silently-gated
+          // one indistinguishable from the outside: the dedup `continue`
+          // above, the `ddnsEnabled` pause, an empty target list and a
+          // healthy no-op all produced the same empty log. An operator
+          // asking "is my hostname still updating?" had only the zone to
+          // look at — and the zone is shared with the cloud, which dedups,
+          // so it cannot answer the question either. Volume is bounded by
+          // the dedup check: steady state is zero lines, not one per tick.
+          console.info(
+            `[ddns-update-poll] published ${target.handle} → ${ipv4}` +
+              ` (source ${target.source})`,
+          );
           continue;
         }
 
         // Failure → log + retry next tick. The poller does NOT update
         // the IP state on failure; the next tick re-detects the change
         // + retries.
+        if (result.error === 'ddns_subscription_lapsed') {
+          await recordLapse();
+        }
         console.warn(
           `[ddns-update-poll] cloud rejected update for ${target.handle}: ${result.error}`,
           result.message ? `(${result.message})` : '',
@@ -252,5 +421,11 @@ export const composeDdnsUpdatePoller = (
     // in flight before its stores and signing identity are torn down.
     tick,
     fireImmediate: true,
+    // The warm-up timer is detached from the registry's promise tracking, so
+    // cancel it explicitly rather than let it fire into closed stores.
+    onStop: () => {
+      stopped = true;
+      clearWarmup();
+    },
   });
 };

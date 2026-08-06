@@ -75,10 +75,21 @@ describe('AuditLogStore', () => {
   });
 
   it('append → get roundtrip', async () => {
+    // ⚠ Compared MINUS the two fields the write path omits when empty
+    // (`trigger_url: null`, `errors: []` — 4.4% of a real row, spent entirely
+    // on key names to say "nothing here"). Absent and empty are the same fact,
+    // so the round trip is intact; the omission itself is pinned separately in
+    // `audit-entry-omits-empties.test.ts`, including that a REAL url or error
+    // survives.
     const entry = mkEntry({ run_id: 'run-1' });
     await store.append(entry);
     const fetched = await store.get('run-1');
-    expect(fetched).toEqual(entry);
+
+    const { trigger_url: _url, errors: _errs, ...meaningful } = entry;
+    expect(fetched).toEqual(meaningful);
+    // ...and the omitted pair reads back as its empty equivalent.
+    expect(fetched?.trigger_url ?? null).toBeNull();
+    expect(fetched?.errors ?? []).toEqual([]);
   });
 
   it('append throws when run_id is missing', async () => {

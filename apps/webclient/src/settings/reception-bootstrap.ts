@@ -257,6 +257,7 @@ export const bootstrapReceptionRoute = (
   // the hash, the shell re-mounts this route with the new section.
   const tabBar = doc.createElement('nav');
   tabBar.setAttribute(RECEPTION_ROUTE_TABS_ATTR, '');
+  tabBar.setAttribute('aria-label', 'Reception sections');
   for (const tab of RECEPTION_SECTIONS) {
     const link = doc.createElement('a');
     link.className =
@@ -503,6 +504,7 @@ export const bootstrapReceptionRoute = (
     mount = mountReceptionInboxPanel({
       host: content,
       conn: opts.conn,
+      headingLevel: 2,
       ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
       ...(opts.document !== undefined ? { document: opts.document } : {}),
       ...(opts.now !== undefined ? { now: opts.now } : {}),

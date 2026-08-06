@@ -195,7 +195,7 @@ export const THEME_TOGGLE_STYLES = `
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 30px;
+  min-height: 36px;
   padding: 0 10px;
   font: inherit;
   font-size: 12px;

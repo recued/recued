@@ -61,6 +61,10 @@ import {
   type EnrichmentStore,
 } from '../storage/enrichment-store.js';
 import type { HousekeepingContext } from '../housekeeping/registry.js';
+import {
+  createCalendarFixtureTable,
+  insertCalendarFixtureRow,
+} from './_calendar-fixture.js';
 
 // ────────────────────────────────────────────────────────────────
 // Test harness
@@ -214,15 +218,15 @@ const seedCalendarRow = (
   hot_fields: Record<string, unknown>,
 ): void => {
   const table = `collection_calendar_${table_suffix}`;
-  db.exec(`CREATE TABLE IF NOT EXISTS "${table}" (
-    record_id TEXT PRIMARY KEY,
-    start_at INTEGER NOT NULL,
-    hot_fields TEXT NOT NULL
-  )`);
-  db.prepare(
-    `INSERT INTO "${table}" (record_id, start_at, hot_fields)
-       VALUES (?, ?, ?)`,
-  ).run(`c-${start_at}-${Math.random().toString(36).slice(2, 6)}`, start_at, JSON.stringify(hot_fields));
+  // ⛔ The PRODUCTION calendar shape. This fixture used to declare
+  // `hot_fields TEXT NOT NULL`, a column `createCalendarTable` has never
+  // created — which is why the producer's calendar read passed here and threw
+  // `no such column` on every real server.
+  createCalendarFixtureTable(db, table);
+  insertCalendarFixtureRow(db, table, {
+    record_id: `c-${start_at}-${Math.random().toString(36).slice(2, 6)}`,
+    hot: { ...hot_fields, start_at },
+  });
 };
 
 const seedBehavioralSignature = (
@@ -513,7 +517,7 @@ describe('D-129 P6 — attribution_signal cycle', () => {
       owner: 'alice@acme.com',
     });
     // Inbound mail before deal creation
-    seedMailRow('work', created_at - 2 * 24 * 60 * 60 * 1000, {
+    seedMailRow('aaaaaaaaaa', created_at - 2 * 24 * 60 * 60 * 1000, {
       from: 'prospect@external.com', to: 'alice@acme.com',
     });
     const out = runAttributionSignalCycle(ctx());
@@ -581,7 +585,7 @@ describe('D-129 P6 — attribution_signal cycle', () => {
     const created_at = now - 365 * 24 * 60 * 60 * 1000; // a year ago
     seedDealMeta('hubspot_deal_old', { key_dates: { created_at } });
     // Mail one year before deal creation (well outside window).
-    seedMailRow('work', created_at - 2 * ATTRIBUTION_WINDOW_MS, {
+    seedMailRow('aaaaaaaaaa', created_at - 2 * ATTRIBUTION_WINDOW_MS, {
       from: 'prospect@external.com',
     });
     runAttributionSignalCycle(ctx());
@@ -689,12 +693,12 @@ describe('D-129 P6 — engagement_score cycle', () => {
     });
     // Recent activity (last 30d): 5 mail + 2 meetings
     for (let i = 0; i < 5; i += 1) {
-      seedMailRow('work', now - (i + 1) * 86400_000, {
+      seedMailRow('aaaaaaaaaa', now - (i + 1) * 86400_000, {
         from: 'alice@external.com', subject: `note ${i}`,
       });
     }
     for (let i = 0; i < 2; i += 1) {
-      seedCalendarRow('work', now - (i + 2) * 86400_000, {
+      seedCalendarRow('aaaaaaaaaa', now - (i + 2) * 86400_000, {
         attendees: ['alice@external.com', 'me@acme.com'],
       });
     }
@@ -738,9 +742,9 @@ describe('D-129 P6 — engagement_score cycle', () => {
       recent_activity_at: now,
     });
     // Recent 30d: 1 mail. Baseline 30-90d: 8 mails.
-    seedMailRow('work', now - 5 * 86400_000, { from: 'drop@external.com' });
+    seedMailRow('aaaaaaaaaa', now - 5 * 86400_000, { from: 'drop@external.com' });
     for (let i = 0; i < 8; i += 1) {
-      seedMailRow('work', now - (40 + i) * 86400_000, { from: 'drop@external.com' });
+      seedMailRow('aaaaaaaaaa', now - (40 + i) * 86400_000, { from: 'drop@external.com' });
     }
     runEngagementScoreCycle(ctx());
 

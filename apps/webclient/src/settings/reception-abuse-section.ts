@@ -31,6 +31,11 @@ import {
 } from './reception-page-render.js';
 import type { ReceptionPageShell } from './reception-page-shell.js';
 
+export const RECEPTION_ABUSE_SECTION_ATTR =
+  'data-recued-reception-abuse-section';
+export const RECEPTION_ABUSE_HEADING_ATTR =
+  'data-recued-reception-abuse-heading';
+
 // ════════════════════════════════════════════════════════════════
 // Actions
 // ════════════════════════════════════════════════════════════════
@@ -112,7 +117,17 @@ export const mountReceptionAbuseSection = (
       state.abuse_inbox !== null
         ? renderAbuseInboxPanel(state.abuse_inbox)
         : emptyHint({ message: 'Loading abuse signals…' });
-    const html = `<div class="reception-page reception-abuse-section">${loading}${error}${body}</div>`;
+    const html = `
+      <section class="reception-page reception-abuse-section"
+        ${RECEPTION_ABUSE_SECTION_ATTR}
+        role="region"
+        aria-labelledby="recued-reception-abuse-heading">
+        <h2 class="reception-section-heading"
+          ${RECEPTION_ABUSE_HEADING_ATTR}
+          id="recued-reception-abuse-heading">Abuse signals</h2>
+        ${loading}${error}${body}
+      </section>
+    `;
     if (html === lastHtml) return;
     host.innerHTML = html;
     lastHtml = html;

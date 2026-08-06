@@ -757,23 +757,39 @@ export const composeChatOrchestrator = (
   // Lever-2 — the ENV-global catalog projection (the per-source fallback +
   // back-compat for existing `RECUED_CHAT_CATALOG_MODE` deployments).
   const catalogProjection = parseChatCatalogProjectionEnv(process.env);
-  // Lever-2 per-slot — the smart auto-default (`free_pool → index`, BYOK slots
-  // stay `full`). ON by default as of 2026-07-03: the "proven-safe" gate cleared
-  // both qwen3.7-plus (discovery 92%) and a weak reasoning model (gemma-4-31b-it,
-  // 3-pass: free_pool→index holds routing, over-search guard intact,
-  // reports/leancore-discovery-weakmodel-FINDING.md). Set the value to the
-  // literal `0` to opt out; ONLY `0` disables (any other value, incl. unset,
-  // enables — the symmetric inversion of the prior `=== '1'`). A per-source
-  // override in Settings → AI/Models still wins over the smart default either way.
+  // Lever-2 per-slot — the smart auto-default. ON by default as of 2026-07-03:
+  // the "proven-safe" gate cleared both qwen3.7-plus (discovery 92%) and a weak
+  // reasoning model (gemma-4-31b-it, 3-pass: free_pool→index holds routing,
+  // over-search guard intact, reports/leancore-discovery-weakmodel-FINDING.md).
+  // Set the value to the literal `0` to opt out; ONLY `0` disables (any other
+  // value, incl. unset, enables — the symmetric inversion of the prior
+  // `=== '1'`). A per-source override in Settings → AI/Models still wins over
+  // the smart default either way.
+  //
+  // ⚠ THE MAP IS `index` FOR EVERY SOURCE — see
+  // `CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE`: `{ free_pool, slot_1, slot_2 }` all
+  // resolve to `'index'`. This comment used to say "`free_pool → index`, BYOK
+  // slots stay `full`", and that a deployment thinning everything via
+  // `RECUED_CHAT_CATALOG_MODE=index` would see "its BYOK slots revert to `full`
+  // on upgrade". Both were true of an earlier map and are now the opposite of
+  // what ships. Measured against the live wire (2026-08-05, bench seed, 2,146
+  // recipes, BYOK slot_1) — catalog prefix, and the input tokens it costs:
+  //
+  //     smart default (ships)  ->  index       232,733 chars   49,091 tok
+  //     SMART_DEFAULTS=0       ->  full        520,418 chars  110,210 tok
+  //     ...=0 + MODE=lean-core ->  lean-core    20,211 chars    5,140 tok
+  //
+  // ⚠ A stale comment here is expensive in a specific way: it makes the DEFAULT
+  // look like the costly branch, so a reader goes hunting for a knob that is
+  // already on. Quote the map, don't restate it.
   //
   // ⚠ Precedence (resolveCatalogModeForSource): explicit override → smart
-  // default (known source) → env-global `RECUED_CHAT_CATALOG_MODE` → full. So
-  // with smart-defaults ON, the per-source default now takes precedence over an
-  // env-global mode for a KNOWN source: a deployment that thinned EVERYTHING via
-  // `RECUED_CHAT_CATALOG_MODE=index` sees its BYOK slots revert to `full` on
-  // upgrade (free_pool stays index). A local BYOK slot (Ollama/vLLM — no prompt
-  // cache) that wants thinning must set `RECUED_CHAT_CATALOG_SMART_DEFAULTS=0`
-  // (restores the env-global/full resolution) or a per-source `index` override.
+  // default (known source) → env-global `RECUED_CHAT_CATALOG_MODE` → full. With
+  // smart-defaults ON the per-source default takes precedence over an env-global
+  // mode for a KNOWN source, so `RECUED_CHAT_CATALOG_MODE` alone is INERT on a
+  // pinned turn — thinning further (or at all, for an unpinned turn) needs
+  // `RECUED_CHAT_CATALOG_SMART_DEFAULTS=0` alongside it, or a per-source
+  // override.
   const catalogSmartDefaults = process.env.RECUED_CHAT_CATALOG_SMART_DEFAULTS !== '0';
   // Per-turn projection resolver bound into the orchestrator: each turn's mode
   // comes from its LLM source, resolved LIVE against the persisted per-source

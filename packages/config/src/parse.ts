@@ -24,16 +24,37 @@ export class ConfigValidationError extends Error {
   }
 }
 
+/** Bootstrap field names, for misplaced-key detection. Mirrors the closed set
+ *  `assignBootstrap` accepts (and `env.ts`'s `BOOTSTRAP_KEYS`). */
+const BOOTSTRAP_FIELDS: ReadonlySet<string> = new Set([
+  'data_path', 'bind_host', 'bind_port', 'mcp_port', 'webhook_port', 'log_path',
+]);
+
 /** Parse a TOML string into the narrower `{ bootstrap, runtime }` shape.
  *
  *  Unknown top-level sections are preserved as-is in memory but ignored
  *  by the loader; this lets plugins or later phases add sections without
  *  the Phase A parser rejecting them. Unknown keys inside a recognized
  *  section are flagged via the returned `unknown` array — callers decide
- *  whether to warn or fail. */
+ *  whether to warn or fail.
+ *
+ *  ⛔ `misplaced` exists because that tolerance has a sharp edge. A setting
+ *  written OUTSIDE `[runtime]` — `"cloud.base_url" = …` at top level, or a
+ *  `[cloud]` section — is valid TOML, resolves to a REAL schema key, applies
+ *  NOTHING, and was reported by nothing: `unknown` only ever inspected keys
+ *  already inside `[runtime]`, so a top-level key came back as clean as a
+ *  correct file. Editing a config by hand and losing the `[runtime]` header is
+ *  an easy slip, and the result is a server silently running on defaults — it
+ *  cost a live-drive session hours (the server stayed on the production cloud
+ *  URL, so its entitlement mint failed and Pro provisioning skipped, all
+ *  without a single diagnostic).
+ *
+ *  Deliberately NARROW: only entries that resolve to a key the schema actually
+ *  knows are reported. A genuinely unrecognised top-level section is still
+ *  tolerated in silence, which is the plugin/forward-compat behaviour above. */
 export const parseToml = (
   src: string,
-): { parsed: ParsedToml; unknown: string[] } => {
+): { parsed: ParsedToml; unknown: string[]; misplaced: string[] } => {
   let raw: Record<string, unknown>;
   try {
     raw = toml.parse(src) as Record<string, unknown>;
@@ -64,7 +85,22 @@ export const parseToml = (
     }
   }
 
-  return { parsed: { bootstrap, runtime }, unknown };
+  // Everything OUTSIDE the two recognised tables. An unrecognised section is
+  // fine (see the doc above); an entry resolving to a known schema key is a
+  // setting the author meant to apply and which silently will not.
+  const misplaced: string[] = [];
+  for (const [key, value] of Object.entries(raw)) {
+    if (key === 'bootstrap' || key === 'runtime') continue;
+    for (const [flatKey] of flattenDotted(key, value)) {
+      if (getRuntimeSchemaEntry(flatKey)) {
+        misplaced.push(`${flatKey} → move under [runtime]`);
+      } else if (BOOTSTRAP_FIELDS.has(flatKey)) {
+        misplaced.push(`${flatKey} → move under [bootstrap]`);
+      }
+    }
+  }
+
+  return { parsed: { bootstrap, runtime }, unknown, misplaced };
 };
 
 /** Given a possibly-nested TOML key (native TOML dotted keys flatten

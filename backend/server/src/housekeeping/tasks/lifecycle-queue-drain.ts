@@ -368,15 +368,31 @@ export const lifecycleQueueDrainStep = async (
 /** Read the most-recent drain summary off the audit feed for
  *  Settings → Housekeeping. Returns null when no drain has run yet.
  *  Looks at the latest `lifecycle_queue_drain` action row in
- *  `audit_entries`. */
+ *  `audit_activities`.
+ *
+ *  ⛔ THIS READ THE WRONG TABLE AND THE WRONG SORT FIELD, so it always returned
+ *  null and Settings → Housekeeping showed "no drain has run yet" forever —
+ *  indistinguishable from a drain that had genuinely never run. Both halves
+ *  were wrong in the same direction:
+ *
+ *    - `emitAuditRow` writes through `logActivity`, i.e. into
+ *      `audit_activities`. It queried `audit_entries`, whose rows carry no
+ *      `$.action` at all (that field is on `ActivityEntry`).
+ *    - It ordered by `$.started_at`, an `AuditEntry` field. Activities carry
+ *      `$.timestamp`.
+ *
+ *  ⚠ And it paid for the mistake: filtering a field that does not exist on
+ *  that table is a full scan of the audit log — 126ms at 700k rows, on a
+ *  surface D-230 raised to a ~7.5M-row ceiling — to find nothing, every time
+ *  the panel is read. */
 export const readLatestDrainSummary = (
   ctx: HousekeepingContext,
 ): LifecycleQueueDrainResult | null => {
   const row = ctx.db
     .prepare(
-      `SELECT json_extract(data, '$.detail') AS detail FROM audit_entries
+      `SELECT json_extract(data, '$.detail') AS detail FROM audit_activities
          WHERE json_extract(data, '$.action') = 'lifecycle_queue_drain'
-         ORDER BY json_extract(data, '$.started_at') DESC
+         ORDER BY json_extract(data, '$.timestamp') DESC
          LIMIT 1`,
     )
     .get() as { detail: string | null } | undefined;

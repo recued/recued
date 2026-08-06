@@ -21,6 +21,7 @@ import {
 } from './contact-derive.js';
 import type { ContactStore } from '../storage/contact-store.js';
 import type { CanonicalMessage } from '../collections/mail/provider.js';
+import { listCollectionDataTables } from '../collections/table.js';
 
 export interface BackfillProgress {
   table: string;
@@ -68,22 +69,13 @@ interface CalendarRow {
 const defaultYield = (): Promise<void> => new Promise((r) => setImmediate(r));
 
 const listMailTables = (db: Database.Database): string[] => {
-  const rows = db
-    .prepare(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'collection_mail_%'`,
-    )
-    .all() as Array<{ name: string }>;
-  return rows.map((r) => r.name);
+  const rows = listCollectionDataTables(db, 'mail');
+  return rows;
 };
 
 const listCalendarTables = (db: Database.Database): string[] => {
-  const rows = db
-    .prepare(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'collection_calendar_%'`,
-    )
-    .all() as Array<{ name: string }>;
-  // Calendar FTS companion tables also match — strip them out.
-  return rows.map((r) => r.name).filter((n) => !n.endsWith('_fts'));
+  const rows = listCollectionDataTables(db, 'calendar');
+  return rows;
 };
 
 /** Reconstitute the subset of `CanonicalMessage` the deriver needs

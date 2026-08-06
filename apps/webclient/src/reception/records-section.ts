@@ -52,6 +52,7 @@ export const RECEPTION_RECORDS_LENSES: ReadonlyArray<{
 
 export const RECEPTION_RECORDS_LENS_ATTR = 'data-recued-reception-records-lens';
 export const RECEPTION_RECORDS_SECTION_ATTR = 'data-recued-reception-records-section';
+export const RECEPTION_RECORDS_HEADING_ATTR = 'data-recued-reception-records-heading';
 
 export type ReceptionRecordsSectionConn = ReceptionRecordsConn & ReceptionFormResponseConn;
 
@@ -74,12 +75,16 @@ export interface ReceptionRecordsSectionMount {
 
 const LENS_NAV_STYLES = `
 [${RECEPTION_RECORDS_SECTION_ATTR}] { display: grid; gap: 16px; }
+[${RECEPTION_RECORDS_SECTION_ATTR}] .reception-records-heading {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+}
 [${RECEPTION_RECORDS_SECTION_ATTR}] .reception-records-lenses {
   display: inline-flex; gap: 4px; width: fit-content; padding: 4px;
   border: 1px solid var(--border); border-radius: 10px; background: var(--surface-sunk);
 }
 [${RECEPTION_RECORDS_SECTION_ATTR}] .reception-records-lens {
-  appearance: none; min-height: 32px; padding: 6px 14px; border: 0; border-radius: 7px;
+  box-sizing: border-box; appearance: none; min-height: 36px; padding: 6px 14px; border: 0; border-radius: 7px;
   background: transparent; color: var(--fg-muted); font-size: 13px; font-weight: 650; cursor: pointer;
 }
 [${RECEPTION_RECORDS_SECTION_ATTR}] .reception-records-lens:hover { color: var(--fg); }
@@ -103,11 +108,20 @@ export const mountReceptionRecordsSection = (
 
   const root = doc.createElement('div');
   root.setAttribute(RECEPTION_RECORDS_SECTION_ATTR, '');
+  root.setAttribute('role', 'region');
+  root.setAttribute('aria-labelledby', 'recued-reception-records-heading');
   opts.host.appendChild(root);
 
   const style = doc.createElement('style');
   style.textContent = LENS_NAV_STYLES;
   root.appendChild(style);
+
+  const heading = doc.createElement('h2');
+  heading.className = 'reception-records-heading';
+  heading.setAttribute(RECEPTION_RECORDS_HEADING_ATTR, '');
+  heading.setAttribute('id', 'recued-reception-records-heading');
+  heading.textContent = 'Reception records';
+  root.appendChild(heading);
 
   const nav = doc.createElement('div');
   nav.className = 'reception-records-lenses';

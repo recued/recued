@@ -12,53 +12,74 @@ import type { BulkPackManifest, RecipeDefinition } from '@recued/contracts';
 export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
   [
   {
-    "manifest_version": 1,
+    "manifest_version": 2,
     "slug": "personal-organizer-foundation",
     "publisher": "recued-core",
     "name": "Personal Organizer Foundation",
     "description": "Day-1 personal-organizer pack per D-145 § A.6. Pre-installs on first server init and composes built-in work entities (`task` / `note` / `commitment` / `project`) with PA9 enrichment producers (`open_loop_pressure` / `project_stall_signal` / `project_next_action_gap` / `commitment_reliability_band` / `note_relevance_decay`) into ten recipes: 4 Layer-2 visible views (today / open-commitments / stalled-projects / recent-notes-by-topic), 2 Layer-1 silent producers reactive on inbound mail (extract-commitments-from-mail / extract-tasks-from-mail), 1 Layer-2 visible alert reactive on inbound mail (triage-inbox), D-193 reminders (chat capture plus hidden due notifier), and the schedule-recipe control for installed recipes. Ships three canonical Standing Instructions as conservative safety defaults: an approval gate on composing email to contacts the substrate has only ever seen mentioned (never sent / received-from); a `min_tier: mid` floor for `schedule_meeting` so timezone-sensitive proposals don't ride the cheapest tier; and a `ban_omission_class: permission_scope` clause for `recipe_invoke` so foundation-pack views surface permission gaps instead of silently truncating. The substrate is provided by D-145 PA1-PA9 + the existing kernel ingredients; this pack is the consumer that turns the substrate into Day-1 value.",
     "version": 4,
     "pre_install": true,
-    "recipes": [
+    "recipes": [],
+    "contents": [
       {
+        "type": "recipe",
         "slug": "today",
-        "version": 1
+        "version": 1,
+        "visible": true
       },
       {
+        "type": "recipe",
         "slug": "open-commitments",
-        "version": 1
+        "version": 1,
+        "visible": true
       },
       {
+        "type": "recipe",
         "slug": "stalled-projects",
-        "version": 1
+        "version": 1,
+        "visible": true
       },
       {
+        "type": "recipe",
         "slug": "recent-notes-by-topic",
-        "version": 1
+        "version": 1,
+        "visible": true
       },
       {
+        "type": "recipe",
         "slug": "extract-commitments-from-mail",
-        "version": 1
+        "version": 1,
+        "visible": true
       },
       {
+        "type": "recipe",
         "slug": "extract-tasks-from-mail",
-        "version": 1
+        "version": 1,
+        "visible": true
       },
       {
+        "type": "recipe",
         "slug": "triage-inbox",
-        "version": 1
+        "version": 1,
+        "visible": true
       },
       {
+        "type": "recipe",
         "slug": "remind-me-of",
-        "version": 1
+        "version": 1,
+        "visible": true
       },
       {
+        "type": "recipe",
         "slug": "reminder-due-notifier",
-        "version": 1
+        "version": 1,
+        "visible": true
       },
       {
+        "type": "recipe",
         "slug": "schedule-recipe",
-        "version": 1
+        "version": 1,
+        "visible": true
       }
     ],
     "requires": [
@@ -76,7 +97,8 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
       "calendar",
       "mail"
     ],
-    "service_kind": "workflow"
+    "service_kind": "workflow",
+    "pack_kind": "foundation_pack"
   },
   {
     "manifest_version": 2,
@@ -138,7 +160,7 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
               "ingredient": "reception-approval",
               "risk": "write",
               "approval": "ask",
-              "out": "result",
+              "idempotency": "non_idempotent",
               "args": [
                 "title",
                 "body",
@@ -287,7 +309,7 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
               "ingredient": "reception-drop",
               "risk": "write",
               "approval": "ask",
-              "out": "result",
+              "idempotency": "non_idempotent",
               "args": [
                 "title",
                 "body",
@@ -426,7 +448,7 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
               "ingredient": "reception-intake",
               "risk": "write",
               "approval": "ask",
-              "out": "result",
+              "idempotency": "non_idempotent",
               "args": [
                 "title",
                 "body",
@@ -571,7 +593,7 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
               "ingredient": "reception-scheduling",
               "risk": "write",
               "approval": "ask",
-              "out": "result",
+              "idempotency": "non_idempotent",
               "args": [
                 "title",
                 "body",

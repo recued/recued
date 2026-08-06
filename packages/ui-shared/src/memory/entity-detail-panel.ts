@@ -70,6 +70,20 @@ export interface EnrichmentSummary {
   description?: string;
 }
 
+export type EntityDetailPanelHeadingLevel = 2 | 3 | 4;
+type EntityDetailSectionHeadingLevel = 3 | 4 | 5;
+type EntityDetailCardHeadingLevel = 4 | 5 | 6;
+type EntityDetailHeadingLevel =
+  | EntityDetailPanelHeadingLevel
+  | EntityDetailSectionHeadingLevel
+  | EntityDetailCardHeadingLevel;
+
+const renderHeading = (
+  level: EntityDetailHeadingLevel,
+  className: string,
+  content: string,
+): string => `<h${level} class="${className}">${content}</h${level}>`;
+
 export interface EntityDetailPanelProps {
   /** Canonical scope (closed-list `mail` / `contact` / `calendar` /
    *  `file` OR a four-segment `connection.api.<vendor>.<entity>`).
@@ -99,6 +113,10 @@ export interface EntityDetailPanelProps {
   /** Wall-clock now for relative-time formatting. Tests pass a fixed
    *  timestamp so renders stay deterministic. */
   now: number;
+  /** Heading level for the panel title. Defaults to 2 for standalone route
+   *  use. Nested hosts can pass 3 or 4; section and card headings move down
+   *  with it so the panel never promotes content above its host section. */
+  headingLevel?: EntityDetailPanelHeadingLevel;
   /** When false, the Snapshot (meta) section is omitted entirely.
    *  Meta is the platform-reference compute slot (D-128 §A.2), so hosts
    *  drilling native closed-list warehouse scopes (`mail` / `calendar` /
@@ -128,11 +146,16 @@ const renderHeader = (
   scope: string,
   target_id: string,
   vendorEntity: ConnectionVendorEntity | null,
+  headingLevel: EntityDetailPanelHeadingLevel,
 ): string => {
   if (vendorEntity !== null) {
     return `
       <header class="memory-entity-detail-header">
-        <h2 class="memory-entity-detail-title">About this ${e(vendorEntity.display_name)}</h2>
+        ${renderHeading(
+          headingLevel,
+          'memory-entity-detail-title',
+          `About this ${e(vendorEntity.display_name)}`,
+        )}
         <p class="memory-entity-detail-subtitle">
           <code class="memory-entity-detail-scope">${e(vendorEntity.scope)}</code>
           ·
@@ -146,7 +169,11 @@ const renderHeader = (
   // why the rich card is missing.
   return `
     <header class="memory-entity-detail-header memory-entity-detail-header--unregistered">
-      <h2 class="memory-entity-detail-title">About <code>${e(target_id)}</code></h2>
+      ${renderHeading(
+        headingLevel,
+        'memory-entity-detail-title',
+        `About <code>${e(target_id)}</code>`,
+      )}
       <p class="memory-entity-detail-subtitle">
         <code class="memory-entity-detail-scope">${e(scope)}</code>
       </p>
@@ -291,6 +318,7 @@ const renderMetaSection = (
   scope: string,
   vendorEntity: ConnectionVendorEntity | null,
   metaSnapshot: EnrichmentMeta | null,
+  headingLevel: EntityDetailSectionHeadingLevel,
 ): string => {
   const body =
     vendorEntity !== null
@@ -298,7 +326,7 @@ const renderMetaSection = (
       : renderMetaCardUnregistered(scope, metaSnapshot);
   return `
     <section class="memory-entity-detail-section memory-entity-detail-section--meta">
-      <h3 class="memory-entity-detail-section-title">Snapshot</h3>
+      ${renderHeading(headingLevel, 'memory-entity-detail-section-title', 'Snapshot')}
       ${body}
     </section>
   `;
@@ -353,6 +381,7 @@ const formatRelativeTime = (epochMs: number, now: number): string => {
 const renderEnrichmentCard = (
   enrichment: EnrichmentSummary,
   now: number,
+  headingLevel: EntityDetailCardHeadingLevel,
 ): string => {
   const summary = summarizeEnrichmentValue(enrichment.value);
   const label = enrichment.display_name ?? enrichment.topic;
@@ -376,7 +405,7 @@ const renderEnrichmentCard = (
   return `
     <article class="memory-enrichment-card" data-topic="${e(enrichment.topic)}">
       <header class="memory-enrichment-card-header">
-        <h4 class="memory-enrichment-card-title">${e(label)}</h4>
+        ${renderHeading(headingLevel, 'memory-enrichment-card-title', e(label))}
         <div class="memory-enrichment-card-badges">${staleBadge}${modelBadge}</div>
       </header>
       ${description}
@@ -392,21 +421,23 @@ const renderEnrichmentCard = (
 const renderEnrichmentsSection = (
   enrichments: ReadonlyArray<EnrichmentSummary>,
   now: number,
+  headingLevel: EntityDetailSectionHeadingLevel,
+  cardHeadingLevel: EntityDetailCardHeadingLevel,
 ): string => {
   if (enrichments.length === 0) {
     return `
       <section class="memory-entity-detail-section memory-entity-detail-section--enrichments">
-        <h3 class="memory-entity-detail-section-title">Enrichments</h3>
+        ${renderHeading(headingLevel, 'memory-entity-detail-section-title', 'Enrichments')}
         <p class="memory-entity-detail-empty">No enrichments yet.</p>
       </section>
     `;
   }
   const cards = enrichments
-    .map((enrichment) => renderEnrichmentCard(enrichment, now))
+    .map((enrichment) => renderEnrichmentCard(enrichment, now, cardHeadingLevel))
     .join('');
   return `
     <section class="memory-entity-detail-section memory-entity-detail-section--enrichments">
-      <h3 class="memory-entity-detail-section-title">Enrichments</h3>
+      ${renderHeading(headingLevel, 'memory-entity-detail-section-title', 'Enrichments')}
       <div class="memory-enrichment-card-grid">${cards}</div>
     </section>
   `;
@@ -486,6 +517,8 @@ const renderTimelineEntry = (
  *  work: the declaration IS the registration, server-side and here. */
 export const renderRollupsSection = (
   rollups: ReadonlyArray<TimelineRollup> | undefined,
+  headingLevel: EntityDetailSectionHeadingLevel = 3,
+  cardHeadingLevel: EntityDetailCardHeadingLevel = 4,
 ): string => {
   // Absent (the collection has no rollup surface) renders NOTHING; an empty
   // array (nothing declares onto this identity) says so. Same distinction the
@@ -494,7 +527,7 @@ export const renderRollupsSection = (
   if (rollups.length === 0) {
     return `
       <section class="memory-entity-detail-section memory-entity-detail-section--rollups">
-        <h3 class="memory-entity-detail-section-title">Where things stand</h3>
+        ${renderHeading(headingLevel, 'memory-entity-detail-section-title', 'Where things stand')}
         <p class="memory-entity-detail-empty">No installed pack tracks anything for this contact.</p>
       </section>
     `;
@@ -515,7 +548,7 @@ export const renderRollupsSection = (
     return `
       <article class="memory-rollup-card${rollup.complete ? '' : ' memory-rollup-card--partial'}">
         <header class="memory-rollup-card-header">
-          <h4 class="memory-rollup-card-title">${e(label)}</h4>
+          ${renderHeading(cardHeadingLevel, 'memory-rollup-card-title', e(label))}
           ${rollup.complete ? '' : '<span class="memory-rollup-badge">floor</span>'}
         </header>
         ${rows === '' ? '<p class="memory-entity-detail-empty">Nothing yet.</p>' : `<div class="memory-rollup-rows">${rows}</div>`}
@@ -526,7 +559,7 @@ export const renderRollupsSection = (
   }).join('');
   return `
     <section class="memory-entity-detail-section memory-entity-detail-section--rollups">
-      <h3 class="memory-entity-detail-section-title">Where things stand</h3>
+      ${renderHeading(headingLevel, 'memory-entity-detail-section-title', 'Where things stand')}
       <div class="memory-rollup-grid">${cards}</div>
     </section>
   `;
@@ -542,11 +575,12 @@ export const renderTimelineSection = (
   now: number,
   runHref?: (entry: TimelineEntry) => string | null,
   summarizePayload?: (entry: TimelineEntry) => string | null,
+  headingLevel: EntityDetailSectionHeadingLevel = 3,
 ): string => {
   if (entries.length === 0) {
     return `
       <section class="memory-entity-detail-section memory-entity-detail-section--timeline">
-        <h3 class="memory-entity-detail-section-title">Timeline</h3>
+        ${renderHeading(headingLevel, 'memory-entity-detail-section-title', 'Timeline')}
         <p class="memory-entity-detail-empty">No timeline events yet.</p>
       </section>
     `;
@@ -556,7 +590,7 @@ export const renderTimelineSection = (
     .join('');
   return `
     <section class="memory-entity-detail-section memory-entity-detail-section--timeline">
-      <h3 class="memory-entity-detail-section-title">Timeline</h3>
+      ${renderHeading(headingLevel, 'memory-entity-detail-section-title', 'Timeline')}
       <ol class="memory-timeline-feed">${items}</ol>
     </section>
   `;
@@ -566,19 +600,40 @@ export const renderTimelineSection = (
 // Top-level render
 // ────────────────────────────────────────────────────────────────
 
-export const renderEntityDetailPanel = (props: EntityDetailPanelProps): string => `
-  <article class="memory-entity-detail-panel"
-           data-scope="${e(props.scope)}"
-           data-target-id="${e(props.target_id)}">
-    ${renderHeader(props.scope, props.target_id, props.vendorEntity)}
-    ${props.showMetaSection === false
-      ? ''
-      : renderMetaSection(props.scope, props.vendorEntity, props.metaSnapshot)}
-    ${renderEnrichmentsSection(props.enrichments, props.now)}
-    ${renderRollupsSection(props.rollups)}
-    ${renderTimelineSection(props.timelineEntries, props.now, props.runHref, props.summarizePayload)}
-  </article>
-`;
+export const renderEntityDetailPanel = (props: EntityDetailPanelProps): string => {
+  const headingLevel = props.headingLevel ?? 2;
+  const sectionHeadingLevel = (headingLevel + 1) as EntityDetailSectionHeadingLevel;
+  const cardHeadingLevel = (headingLevel + 2) as EntityDetailCardHeadingLevel;
+  return `
+    <article class="memory-entity-detail-panel"
+             data-scope="${e(props.scope)}"
+             data-target-id="${e(props.target_id)}">
+      ${renderHeader(props.scope, props.target_id, props.vendorEntity, headingLevel)}
+      ${props.showMetaSection === false
+        ? ''
+        : renderMetaSection(
+            props.scope,
+            props.vendorEntity,
+            props.metaSnapshot,
+            sectionHeadingLevel,
+          )}
+      ${renderEnrichmentsSection(
+        props.enrichments,
+        props.now,
+        sectionHeadingLevel,
+        cardHeadingLevel,
+      )}
+      ${renderRollupsSection(props.rollups, sectionHeadingLevel, cardHeadingLevel)}
+      ${renderTimelineSection(
+        props.timelineEntries,
+        props.now,
+        props.runHref,
+        props.summarizePayload,
+        sectionHeadingLevel,
+      )}
+    </article>
+  `;
+};
 
 // ────────────────────────────────────────────────────────────────
 // Derivation helpers — exported so hosts can collapse raw rpc rows
@@ -629,11 +684,11 @@ export const collapseToFreshestPerTopic = <T extends { topic: string; authored_a
 // ────────────────────────────────────────────────────────────────
 
 export const ENTITY_DETAIL_PANEL_STYLES = `
-.memory-entity-detail-panel { display: flex; flex-direction: column; gap: 18px; color: var(--fg); font-size: 13px; }
-.memory-entity-detail-header { display: flex; flex-direction: column; gap: 2px; }
-.memory-entity-detail-title { margin: 0; font-size: 16px; font-weight: 600; }
-.memory-entity-detail-subtitle { margin: 0; color: var(--fg-muted); font-size: 12px; display: flex; gap: 6px; flex-wrap: wrap; }
-.memory-entity-detail-scope, .memory-entity-detail-target { font-variant-numeric: tabular-nums; }
+.memory-entity-detail-panel { min-width: 0; display: flex; flex-direction: column; gap: 18px; color: var(--fg); font-size: 13px; }
+.memory-entity-detail-header { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.memory-entity-detail-title { margin: 0; overflow-wrap: anywhere; font-size: 16px; font-weight: 600; }
+.memory-entity-detail-subtitle { min-width: 0; margin: 0; color: var(--fg-muted); font-size: 12px; display: flex; gap: 6px; flex-wrap: wrap; }
+.memory-entity-detail-scope, .memory-entity-detail-target { min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .memory-entity-detail-section { display: flex; flex-direction: column; gap: 8px; }
 .memory-entity-detail-section-title { margin: 0; font-size: 13px; font-weight: 600; }
 .memory-entity-detail-empty, .memory-entity-detail-meta-empty, .memory-entity-detail-meta-hint { margin: 0; color: var(--fg-muted); }

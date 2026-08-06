@@ -1224,6 +1224,22 @@ export interface PackOperationRow {
   timeout_ms?: number;
   /** per-op read-cache TTL override (ms). */
   cache_ttl_ms?: number;
+  /** Free-form labels on the operation, in the same spirit as pack and ingredient tags.
+   *
+   *  ⚠ DECLARED HERE BECAUSE 3,703 SHIPPED OPERATIONS ALREADY CARRY IT AND THIS TYPE DID NOT
+   *  SAY SO. A field the corpus uses at that scale is part of the contract whether or not the
+   *  contract admits it; leaving it undeclared is how an authoring gate ends up unable to tell
+   *  a real key from an invented one.
+   *
+   *  The vocabulary is open — 83 distinct values, mostly vendor and domain labels — with one
+   *  load-bearing member: `sensitive-read`, on 3,362 operations, recording the D-209 judgment
+   *  that a read touches a privacy surface.
+   *
+   *  ⛔ IT IS A LABEL, NOT A GATE, and the distinction matters if you are tempted to enforce
+   *  from it. Every `sensitive-read` operation in the corpus also carries `approval: 'ask'` —
+   *  3,362 of 3,362 — and `approval` is what the dispatch path reads. The tag records WHY the
+   *  approval is there; it does not create it. */
+  tags?: string[];
 }
 
 /** D-182 §4 — the two authoring tables of a pack, as a pair. Slice 3 (pack

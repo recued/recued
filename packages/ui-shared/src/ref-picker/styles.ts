@@ -21,8 +21,9 @@ export const REF_PICKER_STYLES = `
 
 .ref-picker-input {
   font: inherit;
+  min-height: 36px;
   padding: 6px 8px;
-  padding-right: 26px;
+  padding-right: 40px;
   border: 1px solid var(--color-border, var(--border));
   border-radius: 4px;
   background: var(--color-input-bg, var(--surface));
@@ -39,12 +40,12 @@ export const REF_PICKER_STYLES = `
 
 .ref-picker-clear {
   position: absolute;
-  right: 4px;
+  right: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 36px;
+  height: 36px;
   padding: 0;
   border: none;
   border-radius: 4px;
@@ -91,8 +92,13 @@ export const REF_PICKER_STYLES = `
 }
 
 .ref-picker-option {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 36px;
   display: flex;
   flex-direction: column;
+  justify-content: center;
   gap: 1px;
   padding: 6px 8px;
   border-radius: 4px;
@@ -109,16 +115,21 @@ export const REF_PICKER_STYLES = `
 }
 
 .ref-picker-option-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 0.85rem;
 }
 
 .ref-picker-option-sub {
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 0.72rem;
   color: var(--color-text-secondary, var(--fg-muted));
 }
 
 .ref-picker-status {
   padding: 6px 8px;
+  overflow-wrap: anywhere;
   font-size: 0.78rem;
   color: var(--color-text-secondary, var(--fg-muted));
 }

@@ -216,6 +216,42 @@ const assertIdent = (name: string): string => {
  *  hot fields. */
 const FILTER_KEY_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
+/** ⛔ THE ONLY CORRECT WAY TO DISCOVER COLLECTION DATA TABLES.
+ *
+ *  A collection creates SEVEN tables, not one: the data table
+ *  `collection_<platform>_<10-hex>` plus its FTS5 companion `<data>_fts`,
+ *  which SQLite then backs with five shadow tables — `_fts_data`,
+ *  `_fts_idx`, `_fts_content`, `_fts_docsize`, `_fts_config`. Every one of
+ *  those matches a `name LIKE 'collection_mail_%'` scan, and NONE of them has
+ *  `record_id` / `received_at` / `hot_fields`. A caller that scans by LIKE and
+ *  then selects a data column throws `no such column` on the first shadow it
+ *  reaches — and inside a housekeeping task that throw is caught, counted, and
+ *  after three consecutive cycles disables the task for 24 h. The producer
+ *  then never emits anything again, while the cycle keeps reporting success.
+ *  Found 2026-08-04 by the long-horizon audit, live on three producers.
+ *
+ *  ⚠ An `endsWith('_fts')` filter is NOT sufficient and reads as though it
+ *  were — it strips the virtual table and leaves all five shadows. Match the
+ *  EXACT name shape instead, which also rejects any unexpected schema-drift
+ *  table before its name reaches SQL.
+ *
+ *  (The reasoning is `mail-union-twin-resolver.ts`'s, generalised: it had the
+ *  right predicate for one caller while twenty others open-coded the loose
+ *  scan.) */
+export const listCollectionDataTables = (
+  db: Database.Database,
+  platform: CollectionPlatform,
+): string[] => {
+  const exact = new RegExp(`^collection_${platform}_[0-9a-f]{10}$`);
+  const rows = db
+    .prepare(
+      `SELECT name FROM sqlite_master
+        WHERE type='table' AND name LIKE 'collection_${platform}_%'`,
+    )
+    .all() as Array<{ name: string }>;
+  return rows.map((r) => r.name).filter((n) => exact.test(n));
+};
+
 // ────────────────────────────────────────────────────────────────
 // Internal row shape
 // ────────────────────────────────────────────────────────────────
@@ -343,6 +379,25 @@ export const createCollectionTable = (
     CREATE INDEX IF NOT EXISTS idx_${tableName}_received_at ON ${tableName} (received_at);
     CREATE INDEX IF NOT EXISTS idx_${tableName}_modified_at ON ${tableName} (modified_at);
     CREATE INDEX IF NOT EXISTS idx_${tableName}_source_id   ON ${tableName} (source_id);
+    -- D-123 producers look records up BY THREAD, once per record. Without
+    -- this index that lookup is a full table scan, so a producer pass over N
+    -- mails costs O(N^2). Measured on a file-backed WAL db, one lookup:
+    --   2k mails 0.205ms -> 0.003ms | 20k 1.93ms -> 0.004ms
+    --   100k mails 21.8ms -> 0.004ms (5800x)
+    -- At 100k mails a full pass went from ~36 minutes of pure scanning to
+    -- nothing. thread-signals and task-signal-density-per-thread both have
+    -- this shape; the producer contract is per-mail-record, so the cost is
+    -- quadratic in the corpus and invisible on a small one.
+    --
+    -- PARTIAL, so platforms whose hot_fields carry no thread_id (calendar,
+    -- file) pay nothing for it. SQLite proves an equality test implies IS NOT
+    -- NULL and still uses the index -- verified with EXPLAIN, not assumed.
+    -- NOTE: no backticks in this comment. It lives inside a JS template
+    -- literal, where a backtick ends the string and the error surfaces as a
+    -- TS syntax error 30 lines away.
+    CREATE INDEX IF NOT EXISTS idx_${tableName}_thread_id
+      ON ${tableName} (json_extract(hot_fields, '$.thread_id'))
+      WHERE json_extract(hot_fields, '$.thread_id') IS NOT NULL;
   `);
   // D-161 P1 — additive origin-column upgrade for dev DBs that predate
   // the column (pre-launch zero installs — no data backfill beyond the

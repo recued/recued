@@ -22,7 +22,7 @@
       },
       "advanced_filtering": {
         "url": "https://developer.close.com/api/resources/advanced-filtering.md",
-        "sha256": "d82505febcf1cf0e82d32af595d953d42a15097fa2bf5a839d12f8b8fab0c507",
+        "sha256": "77aaf03d9263be6274029a3d35fec3bd1dccaacab829508c4c4e3bcd291d4a26",
         "bytes": 13429,
         "method": "POST",
         "path": "/api/v1/data/search/",
@@ -1101,7 +1101,7 @@
     "/data/search/": {
       "post": {
         "source": "https://developer.close.com/api/resources/advanced-filtering.md",
-        "sha256": "d82505febcf1cf0e82d32af595d953d42a15097fa2bf5a839d12f8b8fab0c507"
+        "sha256": "77aaf03d9263be6274029a3d35fec3bd1dccaacab829508c4c4e3bcd291d4a26"
       }
     }
   },
@@ -53658,7 +53658,7 @@
     "close-advanced-filtering.advanced_filter.search": {
       "source": "official_markdown",
       "source_url": "https://developer.close.com/api/resources/advanced-filtering.md",
-      "source_sha256": "d82505febcf1cf0e82d32af595d953d42a15097fa2bf5a839d12f8b8fab0c507",
+      "source_sha256": "77aaf03d9263be6274029a3d35fec3bd1dccaacab829508c4c4e3bcd291d4a26",
       "pack": "close-advanced-filtering",
       "ingredient": "close-advanced-filtering",
       "op": "advanced_filter.search",

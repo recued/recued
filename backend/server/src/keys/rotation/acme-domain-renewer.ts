@@ -129,8 +129,12 @@ const mapAcmeFailure = (
   return 'helper_unavailable';
 };
 
+/** ⛔ WAS Ed25519 — see `generate-csr.ts`. No public CA signs an Ed25519 CSR,
+ *  so every first issuance died at ACME finalize with `badCSR`. The key
+ *  algorithm and the CSR emitter must move together: `generateCsr` rejects
+ *  anything that is not P-256. */
 const generateDefaultTlsPrivateKeyPem = (): string => {
-  const { privateKey } = generateKeyPairSync('ed25519');
+  const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
   return privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 };
 
@@ -154,19 +158,35 @@ export const createAcmeDomainRenewer = (
         reason: 'helper_unavailable' | 'subscription_required' | 'storage_io_error';
       }
   > => {
+    // ⛔ FOUR DISTINCT CAUSES COLLAPSE INTO ONE `helper_unavailable`, and the
+    //    rpc surfaces it as a bare `acme_helper_unavailable` with no reason —
+    //    an unreadable failure is an unfixable one. A live drive hit this and
+    //    could not tell "wrong zone" from "cloud 5xx" from "bad CSR" without
+    //    patching the module. The closed-list return stays exactly as it is
+    //    (callers depend on it); only a diagnostic line is added.
+    const decline = (
+      why: string,
+      reason: 'helper_unavailable' | 'subscription_required' | 'storage_io_error' = 'helper_unavailable',
+    ): { ok: false; reason: 'helper_unavailable' | 'subscription_required' | 'storage_io_error' } => {
+      console.warn(`[acme-domain-renewer] ${domain}: ${reason} — ${why}`);
+      return { ok: false, reason };
+    };
+
     const handle = extractHandleStem(domain);
     if (handle === null) {
-      return { ok: false, reason: 'helper_unavailable' };
+      return decline(
+        `not a Pro DDNS host for this server's configured zone (cannot extract a handle stem from ${domain})`,
+      );
     }
 
     let csr_pem: string;
     try {
       csr_pem = generateCsr({ domain, private_key_pem });
-    } catch {
-      return { ok: false, reason: 'helper_unavailable' };
+    } catch (err) {
+      return decline(`CSR generation threw: ${err instanceof Error ? err.message : String(err)}`);
     }
     if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(csr_pem)) {
-      return { ok: false, reason: 'helper_unavailable' };
+      return decline('CSR generator emitted a PRIVATE KEY block — refusing to send');
     }
 
     let issued: Awaited<ReturnType<AcmeCertIssuer['issueCert']>>;
@@ -180,7 +200,12 @@ export const createAcmeDomainRenewer = (
         csr_pem,
       });
     } catch (err) {
-      return { ok: false, reason: mapAcmeFailure(err) };
+      // The most opaque of the four: a cloud 5xx, a network drop and an
+      // unknown HTTP shape are all indistinguishable from here without this.
+      return decline(
+        `cloud /v1/acme/issue-cert failed: ${err instanceof Error ? err.message : String(err)}`,
+        mapAcmeFailure(err),
+      );
     }
 
     try {
@@ -191,8 +216,11 @@ export const createAcmeDomainRenewer = (
         private_key_pem,
         chain_pem: issued.issuer_chain_pem,
       });
-    } catch {
-      return { ok: false, reason: 'storage_io_error' };
+    } catch (err) {
+      return decline(
+        `tls_domains upload failed: ${err instanceof Error ? err.message : String(err)}`,
+        'storage_io_error',
+      );
     }
 
     const issuedRow = store.lookup(domain);

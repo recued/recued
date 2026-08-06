@@ -36,6 +36,10 @@ import {
 } from '../housekeeping/producers/behavioral_signature.js';
 import type { HousekeepingContext } from '../housekeeping/registry.js';
 import type { SourceRecord } from '../housekeeping/source-walkers.js';
+import {
+  createCalendarFixtureTable,
+  insertCalendarFixtureRow,
+} from './_calendar-fixture.js';
 
 // ────────────────────────────────────────────────────────────────
 // Fixture infrastructure
@@ -46,10 +50,10 @@ let db: Database.Database;
 const NOW = 1_700_000_000_000;
 const ONE_DAY = 86_400_000;
 
-const MAIL_TABLE = 'collection_mail_test';
-const MAIL_TABLE_2 = 'collection_mail_other';
-const CALENDAR_TABLE = 'collection_calendar_test';
-const CALENDAR_TABLE_2 = 'collection_calendar_other';
+const MAIL_TABLE = 'collection_mail_11111111aa';
+const MAIL_TABLE_2 = 'collection_mail_22222222bb';
+const CALENDAR_TABLE = 'collection_calendar_11111111aa';
+const CALENDAR_TABLE_2 = 'collection_calendar_22222222bb';
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'd-131-bsig-'));
@@ -57,7 +61,7 @@ beforeEach(() => {
   db.pragma('journal_mode = WAL');
   // Mirror `collections/table.ts:230` exactly — same column set the
   // producer's SQL reads.
-  for (const t of [MAIL_TABLE, MAIL_TABLE_2, CALENDAR_TABLE, CALENDAR_TABLE_2]) {
+  for (const t of [MAIL_TABLE, MAIL_TABLE_2]) {
     db.exec(`
       CREATE TABLE IF NOT EXISTS ${t} (
         record_id   TEXT PRIMARY KEY,
@@ -70,6 +74,10 @@ beforeEach(() => {
         blob_hash   TEXT
       );
     `);
+  }
+  // ⛔ Calendar tables get the PRODUCTION shape, not mail's.
+  for (const t of [CALENDAR_TABLE, CALENDAR_TABLE_2]) {
+    createCalendarFixtureTable(db, t);
   }
 });
 
@@ -98,12 +106,7 @@ const insertCalendar = (
   hot: Record<string, unknown>,
   received_at = NOW,
 ): void => {
-  db.prepare(
-    `INSERT INTO ${table} (
-       record_id, received_at, modified_at, hot_fields,
-       size_bytes, source_id, body_inline, blob_hash
-     ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)`,
-  ).run(record_id, received_at, received_at, JSON.stringify(hot), 200, record_id);
+  insertCalendarFixtureRow(db, table, { record_id, hot, received_at });
 };
 
 const stubCtx = (now: number = NOW): HousekeepingContext => ({
@@ -411,28 +414,31 @@ describe('behavioralSignatureProducer.produce — calendar', () => {
     expect(v.last_meeting_at).toBeNull();
   });
 
-  it('drops calendar rows whose start_at is missing or non-numeric', async () => {
-    insertCalendar(CALENDAR_TABLE, 'e1', {
-      summary: 'Bad', organizer: 'bob@example.com',
-      attendees: ['user@example.com'],
-      // start_at missing → row should not contribute to counts.
-    });
-    insertCalendar(CALENDAR_TABLE, 'e2', {
-      summary: 'Good', organizer: 'bob@example.com',
-      attendees: ['user@example.com'],
-      start_at: NOW - 3 * ONE_DAY,
-    });
-
-    const out = await behavioralSignatureProducer.produce(
-      stubCtx(),
-      sourceFor('bob@example.com'),
-    );
-    const v = out?.value as { meeting_count_total: number; last_meeting_at: number };
-    // meeting_count_total counts every row containing the contact, even
-    // when start_at is missing — the meeting happened, we just can't
-    // place it on the timeline. last_meeting_at + 30d count exclude it.
-    expect(v.meeting_count_total).toBe(2);
-    expect(v.last_meeting_at).toBe(NOW - 3 * ONE_DAY);
+  it('cannot store an event with no start_at — production declares it NOT NULL', () => {
+    // ⚠ This replaces a test that inserted a calendar row whose `hot_fields`
+    // JSON omitted (or non-numerically typed) `start_at`, and asserted the
+    // producer dropped it.
+    //
+    // That input is NOT REPRESENTABLE. Production's calendar table declares
+    // `start_at INTEGER NOT NULL` (D-117 typed columns), so the branch is
+    // unreachable on any real server; the old test only passed because the
+    // fixture was mail-shaped and start_at lived in a JSON blob.
+    //
+    // Kept as an assertion about the schema rather than deleted: if start_at
+    // ever becomes nullable, this reddens and the branch needs a real test.
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO ${CALENDAR_TABLE} (
+             record_id, source_id, received_at, modified_at, size_bytes,
+             calendar_id, summary, start_at, end_at, status, organizer,
+             ical_uid, location, is_all_day, is_recurring,
+             body_inline, blob_hash, etag, record_payload, prior_payload
+           ) VALUES (?, ?, ?, ?, ?, 'primary', 'NoStart', NULL, ?, 'confirmed',
+                     NULL, 'uid-nostart', NULL, 0, 0, NULL, NULL, NULL, '{}', NULL)`,
+        )
+        .run('e_nostart', 'e_nostart', NOW, NOW, 200, NOW),
+    ).toThrow(/NOT NULL/i);
   });
 });
 

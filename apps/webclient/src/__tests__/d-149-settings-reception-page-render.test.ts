@@ -279,8 +279,10 @@ const makeFakeShell = (initial: ReceptionPageShellState) => {
 // ══════════════════════════════════════════════════════════════════
 
 describe('D-149 follow-on — renderReceptionPage: top-level views', () => {
-  it('unloaded state renders the "Load Reception" prompt', () => {
+  it('unloaded state distinguishes endpoint status from its inventory prompt', () => {
     const html = renderReceptionPage(emptyState(), NOW);
+    expect(html).toContain('<h2 class="reception-status-title">Endpoints</h2>');
+    expect(html).toContain('Endpoint inventory');
     expect(html).toContain('Load Reception');
     expect(html).toContain('data-action="reception-refresh"');
     expect(html).toContain('data-view="unloaded"');
@@ -297,7 +299,7 @@ describe('D-149 follow-on — renderReceptionPage: top-level views', () => {
 
   it('status header reflects the loaded page status_header', () => {
     const html = renderReceptionPage(loadedState(), NOW);
-    expect(html).toContain('Reception');
+    expect(html).toContain('<h2 class="reception-status-title">Endpoints</h2>');
     expect(html).toContain('alice.recued.cloud');
     expect(html).toContain('1 active · 1 total');
   });

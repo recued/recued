@@ -78,6 +78,8 @@ import type {
   HousekeepingTaskInstance,
 } from '../registry.js';
 import { canonicalOne } from './_email-addresses.js';
+import { listCollectionDataTables } from '../../collections/table.js';
+import { CALENDAR_LIKE_COLUMN } from './_calendar-rows.js';
 
 // ────────────────────────────────────────────────────────────────
 // Constants
@@ -368,16 +370,11 @@ const tallyMailWindows = (
 ): { recent: number; baseline: number; last_at: number | null } => {
   const recent_start = now - ENGAGEMENT_RECENT_WINDOW_MS;
   const baseline_start = now - ENGAGEMENT_RECENT_WINDOW_MS - ENGAGEMENT_BASELINE_WINDOW_MS;
-  const tables = ctx.db
-    .prepare(
-      `SELECT name FROM sqlite_master
-        WHERE type='table' AND name LIKE 'collection_mail_%'`,
-    )
-    .all() as Array<{ name: string }>;
+  const tables = listCollectionDataTables(ctx.db, 'mail');
   let recent = 0;
   let baseline = 0;
   let last_at: number | null = null;
-  for (const { name: table } of tables) {
+  for (const table of tables) {
     const rows = ctx.db
       .prepare(
         `SELECT received_at FROM "${table}"
@@ -404,25 +401,22 @@ const tallyCalendarWindows = (
 ): { recent: number; baseline: number; last_at: number | null } => {
   const recent_start = now - ENGAGEMENT_RECENT_WINDOW_MS;
   const baseline_start = now - ENGAGEMENT_RECENT_WINDOW_MS - ENGAGEMENT_BASELINE_WINDOW_MS;
-  const tables = ctx.db
-    .prepare(
-      `SELECT name FROM sqlite_master
-        WHERE type='table' AND name LIKE 'collection_calendar_%'`,
-    )
-    .all() as Array<{ name: string }>;
+  const tables = listCollectionDataTables(ctx.db, 'calendar');
   let recent = 0;
   let baseline = 0;
   let last_at: number | null = null;
-  for (const { name: table } of tables) {
+  for (const table of tables) {
     const rows = ctx.db
       .prepare(
-        `SELECT start_at, hot_fields FROM "${table}"
+        // ⛔ `record_payload`, not `hot_fields` — a calendar table has no such
+        // column (D-117 gave it typed columns). The pre-narrow is equivalent:
+        // organizer AND attendee emails both live in the canonical payload.
+        `SELECT start_at FROM "${table}"
           WHERE start_at >= ? AND start_at < ?
-            AND hot_fields LIKE ?`,
+            AND ${CALENDAR_LIKE_COLUMN} LIKE ?`,
       )
       .all(baseline_start, now, `%${email}%`) as Array<{
         start_at: number;
-        hot_fields: string;
       }>;
     for (const row of rows) {
       if (row.start_at >= recent_start) recent += 1;

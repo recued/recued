@@ -77,9 +77,10 @@ export const WEBHOOKS_PANEL_STYLES = `
 [${WEBHOOKS_PANEL_ATTR}] .wh-head h2 { margin:0; font-size:18px; }
 [${WEBHOOKS_PANEL_ATTR}] .wh-copy { margin:3px 0 0; color:var(--muted); font-size:13px; line-height:1.45; }
 [${WEBHOOKS_PANEL_ATTR}] .wh-actions { display:flex; flex-wrap:wrap; gap:8px; }
-[${WEBHOOKS_PANEL_ATTR}] button { border:1px solid var(--border); border-radius:7px; padding:7px 10px; background:var(--surface); color:var(--fg); cursor:pointer; }
+[${WEBHOOKS_PANEL_ATTR}] button { box-sizing:border-box; min-height:36px; border:1px solid var(--border); border-radius:7px; padding:7px 10px; background:var(--surface); color:var(--fg); cursor:pointer; }
 [${WEBHOOKS_PANEL_ATTR}] button.wh-primary { background:var(--accent); border-color:var(--accent); color:white; }
 [${WEBHOOKS_PANEL_ATTR}] button:disabled { opacity:.5; cursor:not-allowed; }
+[${WEBHOOKS_PANEL_ATTR}] button[aria-disabled="true"] { opacity:.5; cursor:progress; }
 [${WEBHOOKS_PANEL_ATTR}] form, [${WEBHOOKS_PANEL_CARD_ATTR}] { border:1px solid var(--border); border-radius:10px; padding:14px; background:var(--surface); }
 [${WEBHOOKS_PANEL_ATTR}] form { display:grid; gap:12px; }
 [${WEBHOOKS_PANEL_ATTR}] label { display:grid; gap:5px; font-size:12px; font-weight:600; color:var(--muted); }
@@ -366,6 +367,224 @@ export const mountWebhooksPanel = (
   let connectionRebindIngressId: string | null = null;
   let deliveryInspector: DeliveryInspectorState | null = null;
   let rejectionInspector: RejectionInspectorState | null = null;
+  let pendingActionFocus: {
+    ingress_id: string | null;
+    action: string;
+    label: string;
+    item_id: string | null;
+  } | null = null;
+  let pendingCompletionFocus: {
+    kind: 'card-title';
+    ingress_id: string;
+  } | {
+    kind: 'panel-title';
+  } | null = null;
+
+  /** The panel repaints every card around an authority-bearing read/write. Keep
+   *  the initiating control as a logical focus owner across both the busy and
+   *  settled paints; otherwise Chromium drops focus to `<body>` the moment the
+   *  old card is removed. */
+  const rememberActionFocus = (fallback?: HTMLElement): void => {
+    const focused = doc.activeElement as HTMLElement | null | undefined;
+    const active = focused !== null
+      && focused !== undefined
+      && root.contains(focused)
+      && focused.getAttribute?.(WEBHOOKS_PANEL_ACTION_ATTR) !== null
+      ? focused
+      : fallback;
+    if (active === undefined || !root.contains(active)) return;
+    const action = active.getAttribute?.(WEBHOOKS_PANEL_ACTION_ATTR) ?? null;
+    if (action === null) return;
+    let owner: HTMLElement | null = active;
+    while (
+      owner !== null
+      && owner !== root
+      && owner.getAttribute?.(WEBHOOKS_PANEL_CARD_ATTR) === null
+    ) {
+      owner = owner.parentElement ?? null;
+    }
+    if (owner === null) return;
+    const ingressId = owner === root
+      ? null
+      : owner.getAttribute?.(WEBHOOKS_PANEL_CARD_ATTR) ?? null;
+    if (owner !== root && ingressId === null) return;
+    let itemOwner: HTMLElement | null = active;
+    let itemId: string | null = null;
+    while (itemOwner !== null && itemOwner !== owner) {
+      itemId = itemOwner.getAttribute?.(WEBHOOKS_PANEL_EVENT_ATTR)
+        ?? itemOwner.getAttribute?.(WEBHOOKS_PANEL_DELIVERY_ATTR)
+        ?? null;
+      if (itemId !== null) break;
+      itemOwner = itemOwner.parentElement ?? null;
+    }
+    pendingActionFocus = {
+      ingress_id: ingressId,
+      action,
+      label: active.textContent?.trim() ?? '',
+      item_id: itemId,
+    };
+  };
+
+  const findDescendant = (
+    start: HTMLElement,
+    predicate: (element: HTMLElement) => boolean,
+  ): HTMLElement | null => {
+    if (predicate(start)) return start;
+    for (const child of Array.from(start.children)) {
+      const hit = findDescendant(child as HTMLElement, predicate);
+      if (hit !== null) return hit;
+    }
+    return null;
+  };
+
+  const contextualizeCardActions = (
+    start: HTMLElement,
+    ingress: WebhookIngressView,
+  ): void => {
+    if (
+      start.tagName === 'BUTTON'
+      && start.getAttribute?.(WEBHOOKS_PANEL_ACTION_ATTR) !== null
+      && !start.hasAttribute('aria-label')
+    ) {
+      const label = start.textContent?.trim() ?? '';
+      if (label !== '') {
+        start.setAttribute(
+          'aria-label',
+          `${label} for ${ingress.display_name} (${ingress.ingress_id})`,
+        );
+      }
+    }
+    for (const child of Array.from(start.children)) {
+      contextualizeCardActions(child as HTMLElement, ingress);
+    }
+  };
+
+  const restoreActionFocus = (): void => {
+    const pending = pendingActionFocus;
+    if (pending === null) return;
+    const card = pending.ingress_id === null
+      ? null
+      : findDescendant(root, (element) =>
+          element.getAttribute?.(WEBHOOKS_PANEL_CARD_ATTR) === pending.ingress_id);
+    const focusScope = pending.ingress_id === null ? root : card;
+    const successors: Readonly<Record<string, string>> = {
+      enable: 'disable',
+      disable: 'enable',
+      'manual-confirm': 'enable',
+      'delivery-open': 'deliveries-back',
+      'credential-save': 'credentials',
+      'connection-rebind-confirm': 'connection-rebind',
+    };
+    const actions = [pending.action, successors[pending.action]]
+      .filter((action): action is string => action !== undefined);
+    let candidate: HTMLButtonElement | null = null;
+    for (const action of actions) {
+      const itemScope = action === pending.action
+        && pending.item_id !== null
+        && focusScope !== null
+        ? findDescendant(focusScope, (element) =>
+            element.getAttribute?.(WEBHOOKS_PANEL_EVENT_ATTR) === pending.item_id
+            || element.getAttribute?.(WEBHOOKS_PANEL_DELIVERY_ATTR) === pending.item_id)
+        : null;
+      const actionScope = itemScope ?? focusScope;
+      candidate = actionScope === null ? null : findDescendant(actionScope, (element) =>
+        element.tagName === 'BUTTON'
+        && element.getAttribute?.(WEBHOOKS_PANEL_ACTION_ATTR) === action
+        && (action !== pending.action
+          || pending.label === ''
+          || element.textContent?.trim() === pending.label)) as HTMLButtonElement | null;
+      if (candidate !== null) break;
+      candidate = actionScope === null ? null : findDescendant(actionScope, (element) =>
+        element.tagName === 'BUTTON'
+        && element.getAttribute?.(WEBHOOKS_PANEL_ACTION_ATTR) === action) as HTMLButtonElement | null;
+      if (candidate !== null) break;
+    }
+    if (
+      candidate === null
+      && pending.action === 'event-open'
+      && pending.item_id !== null
+    ) {
+      const payload = card === null ? null : findDescendant(card, (element) =>
+        element.getAttribute?.(WEBHOOKS_PANEL_PAYLOAD_ATTR) === pending.item_id);
+      if (payload !== null) {
+        payload.focus?.({ preventScroll: true });
+        pendingActionFocus = null;
+        return;
+      }
+    }
+    if (!busy && pendingCompletionFocus !== null) {
+      const destination = pendingCompletionFocus;
+      const destinationCard = destination.kind === 'card-title'
+        ? findDescendant(root, (element) =>
+            element.getAttribute?.(WEBHOOKS_PANEL_CARD_ATTR) === destination.ingress_id)
+        : null;
+      const destinationTarget = destinationCard === null
+        ? findDescendant(root, (element) => element.tagName === 'H2')
+        : findDescendant(destinationCard, (element) => element.tagName === 'H3');
+      destinationTarget?.focus?.({ preventScroll: true });
+      pendingActionFocus = null;
+      pendingCompletionFocus = null;
+      return;
+    }
+    if (candidate === null) {
+      if (!busy) {
+        const title = card === null
+          ? findDescendant(root, (element) => element.tagName === 'H2')
+          : findDescendant(card, (element) => element.tagName === 'H3');
+        title?.focus?.({ preventScroll: true });
+        pendingActionFocus = null;
+      }
+      return;
+    }
+    if (busy && candidate.disabled) {
+      // Native-disabled buttons cannot own focus. Keep only the initiating
+      // action focusable, announce its busy state, and intercept duplicate
+      // activation before the action's ordinary listener can mutate local UI.
+      candidate.disabled = false;
+      candidate.setAttribute('aria-disabled', 'true');
+      candidate.setAttribute('aria-busy', 'true');
+      candidate.addEventListener('click', (event) => {
+        if (!busy) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }, { capture: true });
+    }
+    candidate.focus({ preventScroll: true });
+    if (!busy) pendingActionFocus = null;
+  };
+
+  const focusRendered = (
+    start: HTMLElement,
+    predicate: (element: HTMLElement) => boolean,
+  ): void => {
+    findDescendant(start, predicate)?.focus?.({ preventScroll: true });
+  };
+
+  const renderedCard = (ingressId: string): HTMLElement | null =>
+    findDescendant(root, (element) =>
+      element.getAttribute?.(WEBHOOKS_PANEL_CARD_ATTR) === ingressId);
+
+  const focusCardAction = (ingressId: string, action: string): void => {
+    const card = renderedCard(ingressId);
+    if (card === null) return;
+    focusRendered(card, (element) =>
+      element.getAttribute?.(WEBHOOKS_PANEL_ACTION_ATTR) === action);
+  };
+
+  const focusCardItemAction = (
+    ingressId: string,
+    itemAttribute: string,
+    itemId: string,
+    action: string,
+  ): void => {
+    const card = renderedCard(ingressId);
+    if (card === null) return;
+    const item = findDescendant(card, (element) =>
+      element.getAttribute?.(itemAttribute) === itemId);
+    if (item === null) return;
+    focusRendered(item, (element) =>
+      element.getAttribute?.(WEBHOOKS_PANEL_ACTION_ATTR) === action);
+  };
 
   const applyListResult = (result: Awaited<ReturnType<WebhooksListCaller>>): void => {
     ingresses = [...result.ingresses];
@@ -414,6 +633,8 @@ export const mountWebhooksPanel = (
 
   const mutate = async (operation: () => Promise<unknown>): Promise<void> => {
     if (busy || disposed) return;
+    rememberActionFocus();
+    pendingCompletionFocus = null;
     busy = true;
     mutationInFlight = true;
     error = null;
@@ -447,6 +668,7 @@ export const mountWebhooksPanel = (
 
   const inspect = async (operation: () => Promise<unknown>): Promise<void> => {
     if (busy || disposed) return;
+    rememberActionFocus();
     busy = true;
     error = null;
     render();
@@ -573,6 +795,7 @@ export const mountWebhooksPanel = (
     close.addEventListener('click', () => {
       deliveryInspector = null;
       render();
+      focusCardAction(ingress.ingress_id, 'deliveries');
     });
     head.appendChild(close);
     inspector.appendChild(head);
@@ -603,6 +826,7 @@ export const mountWebhooksPanel = (
       : new Date(value).toLocaleString();
 
     if (state.detail !== null) {
+      const inspectedDeliveryId = state.detail.delivery.delivery_id;
       const back = button(doc, 'Back to deliveries', 'deliveries-back');
       back.disabled = busy;
       back.addEventListener('click', () => {
@@ -613,6 +837,12 @@ export const mountWebhooksPanel = (
           payloads: new Map(),
         };
         render();
+        focusCardItemAction(
+          ingress.ingress_id,
+          WEBHOOKS_PANEL_DELIVERY_ATTR,
+          inspectedDeliveryId,
+          'delivery-open',
+        );
       });
       inspector.appendChild(back);
 
@@ -652,6 +882,7 @@ export const mountWebhooksPanel = (
         if (loaded?.payload_retained === true) {
           const payload = doc.createElement('pre');
           payload.setAttribute(WEBHOOKS_PANEL_PAYLOAD_ATTR, event.event_id);
+          payload.tabIndex = -1;
           payload.textContent = JSON.stringify(loaded.payload, null, 2) ?? 'null';
           eventNode.appendChild(payload);
         } else if (loaded?.payload_retained === false || !event.payload_retained) {
@@ -661,6 +892,10 @@ export const mountWebhooksPanel = (
           eventNode.appendChild(expired);
         } else {
           const viewPayload = button(doc, 'View decoded payload', 'event-open');
+          viewPayload.setAttribute(
+            'aria-label',
+            `View decoded payload for event ${event.event_id} in ${ingress.display_name} (${ingress.ingress_id})`,
+          );
           viewPayload.disabled = busy;
           viewPayload.addEventListener('click', () => {
             loadDeliveryEvent(
@@ -692,6 +927,10 @@ export const mountWebhooksPanel = (
       appendRow(deliveryMeta, 'Raw body', delivery.raw_body_retained ? 'Retained' : 'Not retained');
       deliveryNode.appendChild(deliveryMeta);
       const open = button(doc, 'Inspect delivery', 'delivery-open');
+      open.setAttribute(
+        'aria-label',
+        `Inspect delivery ${delivery.delivery_id} for ${ingress.display_name} (${ingress.ingress_id})`,
+      );
       open.disabled = busy;
       open.addEventListener('click', () => {
         loadDeliveryDetail(ingress.ingress_id, delivery.delivery_id);
@@ -726,6 +965,7 @@ export const mountWebhooksPanel = (
     close.addEventListener('click', () => {
       rejectionInspector = null;
       render();
+      focusCardAction(ingress.ingress_id, 'rejections');
     });
     head.appendChild(close);
     inspector.appendChild(head);
@@ -857,12 +1097,14 @@ export const mountWebhooksPanel = (
     cancel.addEventListener('click', () => {
       credentialIngressId = null;
       render();
+      focusCardAction(ingress.ingress_id, 'credentials');
     });
     actions.appendChild(cancel);
     form.appendChild(actions);
     form.addEventListener('submit', (event) => {
       event.preventDefault();
       if (busy || disposed) return;
+      rememberActionFocus(save);
       const credentials = Object.create(null) as Record<string, string>;
       for (const [key, input] of values) {
         if (input.value.length > 0) credentials[key] = input.value;
@@ -1159,11 +1401,14 @@ export const mountWebhooksPanel = (
     cancel.addEventListener('click', () => {
       showCreate = false;
       render();
+      focusRendered(root, (element) =>
+        element.hasAttribute?.(WEBHOOKS_PANEL_NEW_ATTR) === true);
     });
     actions.appendChild(cancel);
     form.appendChild(actions);
     form.addEventListener('submit', (event) => {
       event.preventDefault();
+      rememberActionFocus(create);
       const profile = descriptorFor(profileSelect.value);
       if (!profile) return;
       const credentials = Object.create(null) as Record<string, string>;
@@ -1223,6 +1468,10 @@ export const mountWebhooksPanel = (
         // point repair belongs to the persisted ingress card; keeping this form
         // open would invite a duplicate ingress after a partial failure.
         showCreate = false;
+        pendingCompletionFocus = {
+          kind: 'card-title',
+          ingress_id: created.ingress.ingress_id,
+        };
         const credentialWriteDeferred = selectedRegistrationMode === 'managed_endpoint'
           || profile.fields.some((field) => field.source === 'vendor_generated');
         if (!credentialWriteDeferred) {
@@ -1265,6 +1514,7 @@ export const mountWebhooksPanel = (
     const head = doc.createElement('div');
     head.className = 'wh-card-head';
     const title = doc.createElement('h3');
+    title.tabIndex = -1;
     title.textContent = ingress.display_name;
     head.appendChild(title);
     const pill = doc.createElement('span');
@@ -1437,6 +1687,11 @@ export const mountWebhooksPanel = (
       rotate.addEventListener('click', () => {
         credentialIngressId = ingress.ingress_id;
         render();
+        const card = renderedCard(ingress.ingress_id);
+        if (card !== null) {
+          focusRendered(card, (element) =>
+            element.getAttribute?.(WEBHOOKS_PANEL_FIELD_ATTR) !== null);
+        }
       });
       actions.appendChild(rotate);
     }
@@ -1540,6 +1795,11 @@ export const mountWebhooksPanel = (
       rebind.addEventListener('click', () => {
         connectionRebindIngressId = ingress.ingress_id;
         render();
+        const card = renderedCard(ingress.ingress_id);
+        if (card !== null) {
+          focusRendered(card, (element) =>
+            element.hasAttribute?.(WEBHOOKS_PANEL_REBIND_ATTR) === true);
+        }
       });
       actions.appendChild(rebind);
     }
@@ -1583,6 +1843,7 @@ export const mountWebhooksPanel = (
         if (inspecting) {
           deliveryInspector = null;
           render();
+          focusCardAction(ingress.ingress_id, 'deliveries');
           return;
         }
         deliveryInspector = {
@@ -1609,6 +1870,7 @@ export const mountWebhooksPanel = (
         if (inspecting) {
           rejectionInspector = null;
           render();
+          focusCardAction(ingress.ingress_id, 'rejections');
           return;
         }
         rejectionInspector = {
@@ -1675,6 +1937,7 @@ export const mountWebhooksPanel = (
             // a committed retirement as still active.
             ingresses = ingresses.filter((candidate) =>
               candidate.ingress_id !== ingress.ingress_id);
+            pendingCompletionFocus = { kind: 'panel-title' };
             if (oneTime?.ingress_id === ingress.ingress_id) oneTime = null;
             retirementConfirmIngressId = null;
             retentionNotice = null;
@@ -1689,6 +1952,7 @@ export const mountWebhooksPanel = (
         cancelRetire.addEventListener('click', () => {
           retirementConfirmIngressId = null;
           render();
+          focusCardAction(ingress.ingress_id, 'retire');
         });
         actions.appendChild(cancelRetire);
       } else {
@@ -1702,6 +1966,7 @@ export const mountWebhooksPanel = (
         retire.addEventListener('click', () => {
           retirementConfirmIngressId = ingress.ingress_id;
           render();
+          focusCardAction(ingress.ingress_id, 'retire-confirm');
         });
         actions.appendChild(retire);
       }
@@ -1739,11 +2004,13 @@ export const mountWebhooksPanel = (
       cancel.addEventListener('click', () => {
         connectionRebindIngressId = null;
         render();
+        focusCardAction(ingress.ingress_id, 'connection-rebind');
       });
       formActions.appendChild(cancel);
       form.appendChild(formActions);
       form.addEventListener('submit', (event) => {
         event.preventDefault();
+        rememberActionFocus(submit);
         const pairedConnectionId = input.value.trim();
         if (pairedConnectionId.length === 0
           || pairedConnectionId === ingress.paired_connection_id) return;
@@ -1807,6 +2074,7 @@ export const mountWebhooksPanel = (
     if (rejectionInspector?.ingress_id === ingress.ingress_id) {
       card.appendChild(rejectionInspectorView(ingress));
     }
+    contextualizeCardActions(card, ingress);
     return card;
   };
 
@@ -1817,6 +2085,7 @@ export const mountWebhooksPanel = (
     head.className = 'wh-head';
     const copy = doc.createElement('div');
     const heading = doc.createElement('h2');
+    heading.tabIndex = -1;
     heading.textContent = 'Inbound webhooks';
     copy.appendChild(heading);
     const subtitle = doc.createElement('p');
@@ -1833,6 +2102,8 @@ export const mountWebhooksPanel = (
     newButton.addEventListener('click', () => {
       showCreate = true;
       render();
+      focusRendered(root, (element) =>
+        element.getAttribute?.(WEBHOOKS_PANEL_FIELD_ATTR) === 'display_name');
     });
     head.appendChild(newButton);
     root.appendChild(head);
@@ -1850,6 +2121,7 @@ export const mountWebhooksPanel = (
       root.appendChild(empty);
     }
     for (const ingress of ingresses) root.appendChild(ingressCard(ingress));
+    restoreActionFocus();
   };
 
   const refresh = (): Promise<void> => {

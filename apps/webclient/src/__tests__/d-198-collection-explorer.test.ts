@@ -152,6 +152,52 @@ describe('collection-explorer — record detail', () => {
     );
   });
 
+  it('does not repeat metadata already rendered by the display schema', () => {
+    const mail = renderCollectionExplorer(base({
+      detail: {
+        record_id: 'mail-1',
+        loading: false,
+        record: mkRecord({
+          record_id: 'mail-1',
+          hot_fields: { subject: 'Hello', received_at: 1_700_000_000_000 },
+        }),
+      },
+    }));
+    expect(mail.match(/>Received</g)).toHaveLength(1);
+
+    const file = renderCollectionExplorer(base({
+      collection: 'file',
+      detail: {
+        record_id: 'file-1',
+        loading: false,
+        record: mkRecord({
+          record_id: 'file-1',
+          size_bytes: 5,
+          hot_fields: { path: '/docs/plan.txt', size: 5 },
+        }),
+      },
+    }));
+    expect(file.match(/>Size</g)).toHaveLength(1);
+    expect(file).not.toContain('>Stored body size<');
+  });
+
+  it('distinguishes stored body size when it differs from source size', () => {
+    const html = renderCollectionExplorer(base({
+      collection: 'file',
+      detail: {
+        record_id: 'file-1',
+        loading: false,
+        record: mkRecord({
+          record_id: 'file-1',
+          size_bytes: 12,
+          hot_fields: { path: '/docs/plan.txt', size: 5 },
+        }),
+      },
+    }));
+    expect(html).toContain('>Size<');
+    expect(html).toContain('>Stored body size<');
+  });
+
   it('uses canonical theme tokens for readable light and dark record details', () => {
     expect(COLLECTION_EXPLORER_STYLES).toContain('color: var(--fg)');
     expect(COLLECTION_EXPLORER_STYLES).toContain(
@@ -162,6 +208,12 @@ describe('collection-explorer — record detail', () => {
     );
     expect(COLLECTION_EXPLORER_STYLES).not.toMatch(
       /--(?:text|text-muted|surface-2)\b/,
+    );
+  });
+
+  it('keeps the raw-fields disclosure at the desktop control floor', () => {
+    expect(COLLECTION_EXPLORER_STYLES).toContain(
+      '.col-explorer-detail-raw summary {\n  min-height: 36px;',
     );
   });
 

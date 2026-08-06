@@ -35,6 +35,7 @@ import {
   PACKS_DISCLOSURE_BLOCK_ATTR,
   PACKS_DISCLOSURE_DISMISS_BTN_ATTR,
   PACKS_DISCLOSURE_ITEM_ATTR,
+  PACKS_PANEL_STYLES,
   mountPacksPanel,
   type PacksInstallCaller,
   type PacksListCaller,
@@ -243,7 +244,7 @@ const okUninstallResult = (): BulkPackUninstallResultLike => ({
 const unsatisfiedDep = (
   overrides: Partial<DependencyResolution> = {},
 ): DependencyResolution => ({
-  capability: 'deal',
+  capability: 'crm',
   ops: ['search'],
   optional: false,
   satisfied: false,
@@ -335,7 +336,7 @@ describe('D-145 PA10 Slice K — install born-blocked / born-degraded notice', (
     born_degraded: [
       runnabilityEntry('contact-enrich', 'degraded', [
         unsatisfiedDep({
-          capability: 'contact',
+          capability: 'acct',
           ops: ['enrich'],
           optional: true,
           unprovided_ops: ['enrich'],
@@ -384,7 +385,7 @@ describe('D-145 PA10 Slice K — install born-blocked / born-degraded notice', (
     );
     expect(blockedItem).not.toBeNull();
     expect(blockedItem!.textContent).toBe(
-      'deal-watch — Add a provider for deal.search.',
+      'deal-watch — Add a provider for crm.search.',
     );
 
     const degraded = findByAttrValue(
@@ -403,7 +404,7 @@ describe('D-145 PA10 Slice K — install born-blocked / born-degraded notice', (
     );
     expect(degradedItem).not.toBeNull();
     expect(degradedItem!.textContent).toBe(
-      'contact-enrich — Add a provider for contact.enrich (optional — those steps skip).',
+      'contact-enrich — Add a provider for acct.enrich (optional — those steps skip).',
     );
   });
 
@@ -474,7 +475,7 @@ describe('D-145 PA10 Slice K — uninstall would-disable notice', () => {
     );
     expect(block).not.toBeNull();
     expect(block!.children[0]!.textContent).toBe(
-      'This disabled 2 recipes that lost their last provider — they stay installed and recover when a provider is connected:',
+      'This disabled 2 recipes by removing a required dependency — they stay installed and recover when it is restored:',
     );
     const bare = findByAttrValue(
       block!,
@@ -523,6 +524,24 @@ describe('D-145 PA10 Slice K — uninstall would-disable notice', () => {
     expect(findByAttr(rig.host, PACKS_DISCLOSURE_ATTR)).toBeNull();
     // The failure surfaced through the normal strip error path.
     expect(rig.mount.getDeleteError()).not.toBeNull();
+  });
+
+  it('contains long disclosure identity while preserving a full-size dismiss target', () => {
+    expect(PACKS_PANEL_STYLES).toMatch(
+      /\.packs-disclosure\s*\{[^}]*box-sizing:\s*border-box[^}]*min-width:\s*0[^}]*max-width:\s*100%/s,
+    );
+    expect(PACKS_PANEL_STYLES).toMatch(
+      /\.packs-disclosure-head\s*\{[^}]*min-width:\s*0[^}]*flex-wrap:\s*wrap/s,
+    );
+    expect(PACKS_PANEL_STYLES).toMatch(
+      /\.packs-disclosure-title\s*\{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(PACKS_PANEL_STYLES).toMatch(
+      /\.packs-disclosure-dismiss\s*\{[^}]*min-height:\s*36px/s,
+    );
+    expect(PACKS_PANEL_STYLES).toMatch(
+      /@media \(max-width: 640px\)[\s\S]*?\[data-recued-packs-disclosure-dismiss\]\.packs-disclosure-dismiss\.rx-btn\s*\{[^}]*min-height:\s*44px/s,
+    );
   });
 
   it('stages BEFORE the refresh resolves and renders from the pre-submit pack identity', async () => {

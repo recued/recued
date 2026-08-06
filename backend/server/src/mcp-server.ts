@@ -1790,7 +1790,7 @@ const reconcileMcpAction = async (
     ) {
       return record;
     }
-    const firstError = anchor.errors[0];
+    const firstError = (anchor.errors ?? [])[0];
     const failure = {
       status: anchor.commit_status,
       run_id: record.run_id,

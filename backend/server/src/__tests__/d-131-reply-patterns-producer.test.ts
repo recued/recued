@@ -50,8 +50,8 @@ let db: Database.Database;
 const NOW = 1_700_000_000_000;
 const ONE_DAY = 86_400_000;
 
-const MAIL_TABLE = 'collection_mail_test';
-const MAIL_TABLE_2 = 'collection_mail_other';
+const MAIL_TABLE = 'collection_mail_11111111aa';
+const MAIL_TABLE_2 = 'collection_mail_22222222bb';
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'd-131-rp-'));

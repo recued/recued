@@ -7,7 +7,12 @@ import type {
   RecordsSchemaSnapshot,
 } from '@recued/contracts';
 import { bootstrapDataRoute } from '../bootstrap-data-route.js';
-import { renderRecordsExplorer, type RecordsExplorerState } from '../records-explorer.js';
+import {
+  RECORDS_EXPLORER_STYLES,
+  RECORDS_KIND_PANEL_ATTR,
+  renderRecordsExplorer,
+  type RecordsExplorerState,
+} from '../records-explorer.js';
 
 const schema: RecordsSchemaSnapshot = {
   decimal_scale: 4,
@@ -116,6 +121,48 @@ const state = (overrides: Partial<RecordsExplorerState> = {}): RecordsExplorerSt
 });
 
 describe('D-221 #data Records explorer', () => {
+  it('gives Records controls a consistent full-size interaction target', () => {
+    expect(RECORDS_EXPLORER_STYLES).toContain(
+      '.records-explorer button{box-sizing:border-box;min-height:36px',
+    );
+    expect(RECORDS_EXPLORER_STYLES).toContain(
+      '.records-explorer summary{box-sizing:border-box;min-height:36px',
+    );
+    expect(RECORDS_EXPLORER_STYLES).toContain(
+      '.records-explorer input{box-sizing:border-box;min-height:38px',
+    );
+    expect(RECORDS_EXPLORER_STYLES).toContain(
+      'grid-template-columns:minmax(190px,260px) minmax(0,1fr)',
+    );
+    expect(RECORDS_EXPLORER_STYLES).toContain(
+      '.records-layout>.records-content{min-width:0}',
+    );
+    expect(RECORDS_EXPLORER_STYLES).toContain(
+      '.records-namespace strong,.records-namespace span,'
+        + '.records-namespace small{overflow-wrap:anywhere}',
+    );
+    expect(RECORDS_EXPLORER_STYLES).toContain(
+      '.records-detail pre{box-sizing:border-box;max-width:100%;min-width:0;overflow:auto',
+    );
+    expect(RECORDS_EXPLORER_STYLES).toContain(
+      '.records-explorer .records-ref-link,'
+        + '.records-explorer .records-ref-link:hover:not([aria-disabled=true])'
+        + '{border:0;padding:0',
+    );
+    expect(RECORDS_EXPLORER_STYLES).toContain(
+      '.records-detail header{display:flex;justify-content:space-between;'
+        + 'align-items:flex-start',
+    );
+    expect(RECORDS_EXPLORER_STYLES).toContain(
+      '.records-purge-confirm input{width:100%;max-width:360px;min-width:0}',
+    );
+    const html = renderRecordsExplorer(state());
+    expect(html).toContain(
+      '<section class="records-content" aria-label="Record contents">',
+    );
+    expect(html).not.toContain('<main>');
+  });
+
   it('groups by full pack ref, preserves exact decimals, and masks PII in list previews', () => {
     const html = renderRecordsExplorer(state());
     expect(html).toContain('publisher-a');
@@ -132,6 +179,44 @@ describe('D-221 #data Records explorer', () => {
     expect(html).not.toContain('<tr tabindex=');
     expect(html).toContain('1 pending');
     expect(html).toContain('1 dead-lettered');
+  });
+
+  it('links one roving kind tab stop to the selected records panel', () => {
+    const html = renderRecordsExplorer(state({
+      kinds: [
+        { kind: 'invoice', rows: 2, payload_bytes: 84 },
+        { kind: 'job', rows: 1, payload_bytes: 42 },
+      ],
+      selectedKind: 'job',
+    }));
+    const tab = (kind: string): string => {
+      const marker = `data-records-kind="${kind}"`;
+      const index = html.indexOf(marker);
+      return html.slice(
+        html.lastIndexOf('<button', index),
+        html.indexOf('</button>', index),
+      );
+    };
+
+    expect(tab('invoice')).toContain(
+      'id="recued-records-kind-tab-invoice"',
+    );
+    expect(tab('invoice')).toContain(
+      'aria-controls="recued-records-kind-panel"',
+    );
+    expect(tab('invoice')).toContain('aria-selected="false"');
+    expect(tab('invoice')).toContain('tabindex="-1"');
+    expect(tab('job')).toContain('aria-selected="true"');
+    expect(tab('job')).toContain('tabindex="0"');
+    expect(html).toMatch(
+      new RegExp(
+        `${RECORDS_KIND_PANEL_ATTR}=""\\s+`
+          + 'id="recued-records-kind-panel"\\s+role="tabpanel"',
+      ),
+    );
+    expect(html).toContain(
+      'aria-labelledby="recued-records-kind-tab-job"',
+    );
   });
 
   it('reveals classified values only in an owner-opened detail and shows CAS metadata', () => {

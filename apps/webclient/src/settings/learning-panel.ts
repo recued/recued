@@ -717,6 +717,14 @@ export const mountLearningPanel = (
     opts.host.appendChild(block);
   };
 
+  const caseRequestLabel = (entry: ExecutionCaseLearnedEntry): string =>
+    entry.request.length > 0
+      ? entry.request.join(' · ')
+      : 'A request Recued could not summarise';
+
+  const caseAccessibleLabel = (entry: ExecutionCaseLearnedEntry): string =>
+    `learned case: ${caseRequestLabel(entry)} (${entry.case_id})`;
+
   const renderCase = (entry: ExecutionCaseLearnedEntry): HTMLElement => {
     const item = doc.createElement('div');
     item.setAttribute(LEARNING_PANEL_CASE_ATTR, entry.case_id);
@@ -724,11 +732,9 @@ export const mountLearningPanel = (
 
     const request = doc.createElement('div');
     request.className = 'learning-row-label';
-    request.textContent = entry.request.length > 0
-      ? entry.request.join(' · ')
-      // A shape with no intent facet is possible and must still be legible
-      // rather than rendering as a blank row the owner cannot act on.
-      : 'A request Recued could not summarise';
+    // A shape with no intent facet is possible and must still be legible
+    // rather than rendering as a blank row the owner cannot act on.
+    request.textContent = caseRequestLabel(entry);
     item.appendChild(request);
 
     for (const flow of entry.flows) {
@@ -837,6 +843,7 @@ export const mountLearningPanel = (
     const busy = state.drafting === entry.case_id;
     const retained = retainedDrafts.has(entry.case_id);
     const actionsLocked = state.drafting !== null || state.forgetting !== null;
+    const caseLabel = caseAccessibleLabel(entry);
 
     if (armed) {
       const confirm = doc.createElement('div');
@@ -847,6 +854,7 @@ export const mountLearningPanel = (
 
       const prompt = doc.createElement('textarea');
       prompt.setAttribute(LEARNING_PANEL_DRAFT_PROMPT_ATTR, entry.case_id);
+      prompt.setAttribute('aria-label', `Recipe instructions for ${caseLabel}`);
       prompt.setAttribute(
         'placeholder',
         // ⚠ Invites BOTH readings on purpose. This asked only "what should this
@@ -870,6 +878,9 @@ export const mountLearningPanel = (
     const button = doc.createElement('button');
     button.setAttribute('type', 'button');
     button.setAttribute(LEARNING_PANEL_DRAFT_ATTR, entry.case_id);
+    button.className = `rx-btn ${armed && !retained
+      ? 'rx-btn-primary'
+      : 'rx-btn-secondary'}`;
     button.textContent = retained
       ? 'Open finished draft'
       : busy
@@ -877,6 +888,16 @@ export const mountLearningPanel = (
         : armed
           ? 'Yes, write the draft'
           : 'Make a recipe...';
+    button.setAttribute(
+      'aria-label',
+      retained
+        ? `Open finished draft from ${caseLabel}`
+        : busy
+          ? `Asking your AI to draft a recipe from ${caseLabel}`
+          : armed
+            ? `Confirm recipe draft from ${caseLabel}`
+            : `Make a recipe from ${caseLabel}`,
+    );
     if (actionsLocked) {
       button.setAttribute('aria-disabled', 'true');
       if (busy) button.setAttribute('aria-busy', 'true');
@@ -919,14 +940,24 @@ export const mountLearningPanel = (
     const armed = state.armed === entry.case_id;
     const busy = state.forgetting === entry.case_id;
     const actionsLocked = state.forgetting !== null || state.drafting !== null;
+    const caseLabel = caseAccessibleLabel(entry);
     const button = doc.createElement('button');
     button.setAttribute('type', 'button');
     button.setAttribute(LEARNING_PANEL_FORGET_ATTR, entry.case_id);
+    button.className = 'rx-btn rx-btn-danger';
     button.textContent = busy
       ? 'Forgetting...'
       : armed
         ? 'Tap again to forget'
         : 'Forget';
+    button.setAttribute(
+      'aria-label',
+      busy
+        ? `Forgetting ${caseLabel}`
+        : armed
+          ? `Confirm forgetting ${caseLabel}`
+          : `Forget ${caseLabel}`,
+    );
     if (actionsLocked) {
       button.setAttribute('aria-disabled', 'true');
       if (busy) button.setAttribute('aria-busy', 'true');

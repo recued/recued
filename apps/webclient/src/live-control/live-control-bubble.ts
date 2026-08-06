@@ -284,6 +284,7 @@ const LIVE_CONTROL_BUBBLE_STYLES = `
 }
 [${LIVE_CONTROL_BUBBLE_PANEL_ATTR}] {
   pointer-events: auto;
+  box-sizing: border-box;
   width: min(360px, calc(100vw - 32px));
   max-height: min(60vh, 520px);
   overflow-y: auto;
@@ -313,8 +314,8 @@ const LIVE_CONTROL_BUBBLE_STYLES = `
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 36px;
+  height: 36px;
   padding: 0;
   border: 0;
   border-radius: 6px;
@@ -379,6 +380,8 @@ const LIVE_CONTROL_BUBBLE_STYLES = `
 }
 [${LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR}],
 [${LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR}] {
+  min-width: 36px;
+  min-height: 36px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
@@ -500,6 +503,7 @@ export const mountLiveControlBubble = (
     action: LiveControlAction,
     id: string,
     label: string,
+    ownerLabel: string,
     danger: boolean,
     guarded: boolean,
     busy: boolean,
@@ -510,7 +514,12 @@ export const mountLiveControlBubble = (
     button.setAttribute(rowAttr, action);
     button.setAttribute('data-id', id);
     button.setAttribute('data-danger', danger ? 'true' : 'false');
-    button.textContent = busy ? BUSY_CONTROL_LABELS[action] : label;
+    const visibleLabel = busy ? BUSY_CONTROL_LABELS[action] : label;
+    button.textContent = visibleLabel;
+    button.setAttribute(
+      'aria-label',
+      `${visibleLabel} ${ownerLabel} (${id})`,
+    );
     if (guarded) button.setAttribute('aria-disabled', 'true');
     if (busy) button.setAttribute('aria-busy', 'true');
     const focusKey = controlFocusKey(rowAttr, action, id);
@@ -560,6 +569,7 @@ export const mountLiveControlBubble = (
     const now = nowMs();
     for (const entry of activeEntries) {
       const id = activeControlId(entry);
+      const ownerLabel = activeEntryTitle(entry);
       const row = doc.createElement('div');
       row.setAttribute(LIVE_CONTROL_BUBBLE_RUNNING_ROW_ATTR, id);
       row.setAttribute(
@@ -569,7 +579,7 @@ export const mountLiveControlBubble = (
 
       const title = doc.createElement('span');
       title.className = 'lc-row-title';
-      title.textContent = activeEntryTitle(entry);
+      title.textContent = ownerLabel;
       row.appendChild(title);
 
       const meta = doc.createElement('span');
@@ -603,6 +613,7 @@ export const mountLiveControlBubble = (
             'promote',
             id,
             'Promote',
+            ownerLabel,
             false,
             guarded,
             busyAction === 'promote',
@@ -614,6 +625,7 @@ export const mountLiveControlBubble = (
             'cancel',
             id,
             'Cancel',
+            ownerLabel,
             true,
             guarded,
             busyAction === 'cancel',
@@ -626,6 +638,7 @@ export const mountLiveControlBubble = (
             'kill',
             id,
             'Kill',
+            ownerLabel,
             true,
             guarded,
             busyAction === 'kill',
@@ -674,6 +687,7 @@ export const mountLiveControlBubble = (
         'revoke',
         grant.contract_id,
         'Revoke',
+        grant.display_name,
         true,
         busyGrantIds.has(grant.contract_id),
         busyGrantIds.has(grant.contract_id),

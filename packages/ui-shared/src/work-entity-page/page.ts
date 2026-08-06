@@ -74,6 +74,7 @@ export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
   const { state } = props;
   const spec = workEntityNavSpec(state.kind);
   const showSourceLabel = state.selected_source_id === null;
+  const headingId = `work-entity-page-${state.kind}-heading`;
 
   const dropdownHtml = renderSourceDropdown({
     options: props.source_options,
@@ -128,20 +129,21 @@ export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
         });
 
   return `
-    <div class="work-entity-page" data-kind="${e(state.kind)}">
+    <section class="work-entity-page" data-kind="${e(state.kind)}"
+             aria-labelledby="${e(headingId)}">
       <header class="work-entity-page-header">
-        <h1 class="work-entity-page-title">${e(spec.plural_label)}</h1>
+        <h2 class="work-entity-page-title" id="${e(headingId)}">${e(spec.plural_label)}</h2>
         <div class="work-entity-page-source-row">
           ${dropdownHtml}
           ${chipsHtml}
           ${createButtonHtml}
         </div>
       </header>
-      <main class="work-entity-page-body">
+      <div class="work-entity-page-body">
         ${listHtml}
         ${props.footer_html ?? ''}
-      </main>
+      </div>
       ${dialogHtml}
-    </div>
+    </section>
   `;
 };

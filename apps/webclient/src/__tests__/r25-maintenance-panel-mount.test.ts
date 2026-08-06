@@ -105,6 +105,9 @@ describe('mountMaintenancePanel', () => {
 
     fakeHost.clickAction('housekeeping-run-now-open', 'cache-gc');
     expect(fakeHost.getHtml()).toContain('housekeeping-runnow-dialog');
+    expect(fakeHost.getHtml()).toContain(
+      'aria-labelledby="housekeeping-runnow-cache-gc-title"',
+    );
 
     fakeHost.clickAction('housekeeping-run-now-confirm');
     await flush();

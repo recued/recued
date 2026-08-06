@@ -270,9 +270,10 @@ export const ATTENTION_TOPBAR_STYLES = `
   line-height: 1.45;
 }
 [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-popover-close {
+  box-sizing: border-box;
   display: inline-flex;
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
@@ -335,6 +336,7 @@ export const ATTENTION_TOPBAR_STYLES = `
   overflow-wrap: anywhere;
 }
 [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-title {
+  margin: 0;
   font-size: 13px;
   font-weight: 650;
 }
@@ -365,10 +367,11 @@ export const ATTENTION_TOPBAR_STYLES = `
   justify-content: flex-end;
 }
 [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-action {
+  box-sizing: border-box;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 30px;
+  min-height: 36px;
   border: 1px solid var(--border-strong, #d4d4d8);
   border-radius: 8px;
   padding: 0 10px;
@@ -567,8 +570,9 @@ export const ATTENTION_TOPBAR_STYLES = `
   border-top: 1px solid var(--border, #e4e4e7);
 }
 [${ATTENTION_TOPBAR_HOST_ATTR}] .webclient-attention-footer a {
+  box-sizing: border-box;
   display: inline-flex;
-  min-height: 32px;
+  min-height: 36px;
   align-items: center;
   gap: 5px;
   color: var(--accent, #0e7490);
@@ -1021,7 +1025,7 @@ const renderApprovalRow = (
         data-approval-id="${idAttr}"
         data-recipe-id="${recipeAttr}">
         <div class="attention-row-body">
-          <span class="attention-row-title">${titleHtml}</span>
+          <h3 class="attention-row-title">${titleHtml}</h3>
           <span class="attention-row-meta">Approval &middot; ${actionLabel} &middot; ${riskLabel}</span>
           <span class="attention-row-reason">This cannot be undone. Confirm only if the details are correct.</span>
         </div>
@@ -1053,7 +1057,7 @@ const renderApprovalRow = (
         data-approval-id="${idAttr}"
         data-recipe-id="${recipeAttr}">
         <div class="attention-row-body">
-          <span class="attention-row-title">${titleHtml}</span>
+          <h3 class="attention-row-title">${titleHtml}</h3>
           <span class="attention-row-meta">Approval &middot; ${actionLabel} &middot; ${riskLabel}</span>
         </div>
         <div class="attention-row-actions">
@@ -1083,7 +1087,7 @@ const renderApprovalRow = (
       data-approval-id="${idAttr}"
       data-recipe-id="${recipeAttr}">
       <div class="attention-row-body">
-        <span class="attention-row-title">${titleHtml}</span>
+        <h3 class="attention-row-title">${titleHtml}</h3>
         <span class="attention-row-meta">Approval &middot; ${actionLabel} &middot; ${riskLabel}</span>
       </div>
       <div class="attention-row-actions">
@@ -1152,7 +1156,7 @@ const renderGatewayAskRow = (
       data-attention-kind="gateway-ask"
       ${ATTENTION_GATEWAY_ASK_ROW_ATTR}="${escapeHtml(ask.ask_id)}">
       <div class="attention-row-body">
-        <span class="attention-row-title">${escapeHtml(title)}</span>
+        <h3 class="attention-row-title">${escapeHtml(title)}</h3>
         <span class="attention-row-meta">Connected action &middot; Answer to continue</span>
         ${showBody ? `<span class="attention-row-reason">${escapeHtml(ask.text)}</span>` : ''}
       </div>
@@ -1199,7 +1203,7 @@ const renderChatPlanRow = (
       data-attention-kind="chat-plan"
       data-plan-id="${idAttr}"${retryAttr}>
       <div class="attention-row-body">
-        <span class="attention-row-title">${freshReview ? 'Review again: ' : 'Run '}${actionLabel}</span>
+        <h3 class="attention-row-title">${freshReview ? 'Review again: ' : 'Run '}${actionLabel}</h3>
         <span class="attention-row-meta">${freshReview ? 'Fresh approval' : 'Chat approval'} &middot; ${sourceLabel}</span>
         ${reason === '' ? '' : `<span class="attention-row-reason">${escapeHtml(reason)}</span>`}
       </div>
@@ -1373,7 +1377,7 @@ const renderConnectionRecoveryRow = (
       data-connection-kind="${escapeHtml(recovery.kind)}"
       data-connection-name="${escapeHtml(recovery.name)}">
       <div class="attention-row-body">
-        <span class="attention-row-title">${escapeHtml(copy.title)}</span>
+        <h3 class="attention-row-title">${escapeHtml(copy.title)}</h3>
         <span class="attention-row-meta">${escapeHtml(`${copy.meta} · Server profile: ${recovery.serverProfileLabel} · ${identity}`)}</span>
         <span class="attention-row-reason">${escapeHtml(copy.reason)}</span>
       </div>
@@ -1419,7 +1423,7 @@ const renderInactiveConnectionRecoveryRow = (
     data-server-profile-id="${escapeHtml(hint.serverProfileId)}"
     ${ATTENTION_INACTIVE_PROFILE_RECOVERY_ATTR}>
     <div class="attention-row-body">
-      <span class="attention-row-title">${escapeHtml(`${hint.serverProfileLabel} may still need connection recovery`)}</span>
+      <h3 class="attention-row-title">${escapeHtml(`${hint.serverProfileLabel} may still need connection recovery`)}</h3>
       <span class="attention-row-meta">${escapeHtml(`Inactive server profile · ${formatInactiveRecoveryObservation(hint.observedAt, now)}`)}</span>
       <span class="attention-row-reason">This is a last-observed reminder, not a live result. Open Account to review the profile switch. After it succeeds, Recued will recheck before revealing connection details or actions.</span>
     </div>

@@ -22,6 +22,7 @@ import {
   LOGS_ROUTE_AFFECTED_ITEMS_ATTR,
   LOGS_ROUTE_CHAT_RETURN_ATTR,
   LOGS_ROUTE_DEGRADED_ATTR,
+  LOGS_ROUTE_DETAIL_ATTR,
   LOGS_ROUTE_DETAIL_HEADING_ATTR,
   LOGS_ROUTE_CLI_FAILURE_ATTR,
   LOGS_ROUTE_ERROR_CATEGORY_ATTR,
@@ -385,6 +386,12 @@ describe('D-174 P5 - Runs route', () => {
     expect(shell.innerHTML).toContain(LOGS_ROUTE_STATUS_ATTR);
     expect(shell.innerHTML).toContain(LOGS_ROUTE_POLICY_ATTR);
     expect(shell.innerHTML).toContain(LOGS_ROUTE_LOAD_MORE_ATTR);
+    expect(shell.innerHTML).toContain(
+      `${LOGS_ROUTE_DETAIL_ATTR} aria-label="Run detail"`,
+    );
+    expect(shell.innerHTML).toContain(
+      'aria-label="Open run detail for Send digest (run-1)"',
+    );
     // R17 — History is a responsive table, not a card list.
     expect(shell.innerHTML).toContain('<table class="logs-table"');
     // The Recipe filter renders the shared ref-picker shell (★), not a
@@ -401,10 +408,24 @@ describe('D-174 P5 - Runs route', () => {
     expect(shell.innerHTML).not.toContain('href="#approvals"');
     expect(rig.doc.styleElements[0]?.attrs.has(LOGS_ROUTE_STYLES_MARKER))
       .toBe(true);
+    const routeStyles = rig.doc.styleElements[0]?.textContent ?? '';
+    expect(routeStyles).toMatch(
+      /\.logs-inline-link,[\s\S]*?min-height: 36px;/,
+    );
+    expect(routeStyles).toMatch(/\.logs-button \{[\s\S]*?min-height: 36px;/);
+    expect(routeStyles).toMatch(
+      /\.logs-row-open \{[\s\S]*?min-width: 36px;[\s\S]*?min-height: 36px;/,
+    );
+    expect(routeStyles).toMatch(
+      /@media \(max-width: 860px\)[\s\S]*?\.logs-table td\.logs-cell-status,[\s\S]*?\.logs-table td\.logs-cell-policy \{[\s\S]*?display: flex;/,
+    );
 
     // Opening a run surfaces those links in the detail pane.
     await rig.route.openRun('run-1');
     const detailHtml = rig.root.children[0]?.innerHTML ?? '';
+    expect(detailHtml).toContain(
+      `${LOGS_ROUTE_DETAIL_ATTR}="run-1" aria-label="Run detail"`,
+    );
     expect(detailHtml).toContain(
       `${LOGS_ROUTE_DETAIL_HEADING_ATTR}="run-1" tabindex="-1"`,
     );
@@ -1392,9 +1413,18 @@ describe('D-181 slice 5b — Runs Active section', () => {
     // exposes Cancel + Promote bound to its queued_call_id.
     expect(html).toContain('kill-run');
     expect(html).toContain('data-run-id="run-active-1"');
+    expect(html).toContain(
+      'aria-label="Kill docs/normalize-document · parse (run-active-1)"',
+    );
     expect(html).toContain('cancel-call');
     expect(html).toContain('promote-call');
     expect(html).toContain('data-queued-call-id="call-7"');
+    expect(html).toContain(
+      'aria-label="Promote media/transcode (call-7)"',
+    );
+    expect(html).toContain(
+      'aria-label="Cancel media/transcode (call-7)"',
+    );
 
     rig.route.dispose();
   });
@@ -1426,7 +1456,8 @@ describe('D-181 slice 5b — Runs Active section', () => {
 
     const pending = rig.route.refreshActive();
     expect(rig.html()).toContain(
-      'data-recued-logs-action="refresh-active" aria-disabled="true" '
+      'data-recued-logs-action="refresh-active" '
+      + 'aria-label="Refreshing… active runs" aria-disabled="true" '
       + 'aria-busy="true">Refreshing…',
     );
     expect(rig.html()).not.toContain(
@@ -1436,7 +1467,8 @@ describe('D-181 slice 5b — Runs Active section', () => {
     refresh.resolve({ entries: [runEntry()], lanes: [lane()] });
     await pending;
     expect(rig.html()).toContain(
-      'data-recued-logs-action="refresh-active">Refresh',
+      'data-recued-logs-action="refresh-active" '
+      + 'aria-label="Refresh active runs">Refresh',
     );
     rig.route.dispose();
   });
@@ -1464,7 +1496,9 @@ describe('D-181 slice 5b — Runs Active section', () => {
     );
     expect(rig.html()).toContain('Killing…');
     expect(rig.html()).toContain(
-      'data-run-id="run-active-1" aria-disabled="true" aria-busy="true"',
+      'data-run-id="run-active-1" '
+      + 'aria-label="Killing… docs/normalize-document · parse (run-active-1)" '
+      + 'aria-disabled="true" aria-busy="true"',
     );
     expect(rig.html()).not.toContain(
       'data-run-id="run-active-1" disabled',
@@ -1573,12 +1607,16 @@ describe('D-181 slice 5b — Runs Active section', () => {
     expect(rig.html()).toContain('Promoting…');
     expect(rig.html()).toContain(
       'data-recued-logs-action="promote-call" '
-      + 'data-queued-call-id="call-7" aria-disabled="true" '
+      + 'data-queued-call-id="call-7" '
+      + 'aria-label="Promoting… media/transcode (call-7)" '
+      + 'aria-disabled="true" '
       + 'aria-busy="true"',
     );
     expect(rig.html()).toContain(
       'data-recued-logs-action="cancel-call" '
-      + 'data-queued-call-id="call-7" aria-disabled="true">Cancel',
+      + 'data-queued-call-id="call-7" '
+      + 'aria-label="Cancel media/transcode (call-7)" '
+      + 'aria-disabled="true">Cancel',
     );
     expect(rig.html()).not.toContain('data-queued-call-id="call-7" disabled');
     await rig.route.cancelCall('call-7');
@@ -1596,12 +1634,16 @@ describe('D-181 slice 5b — Runs Active section', () => {
     expect(cancelRig.html()).toContain('Cancelling…');
     expect(cancelRig.html()).toContain(
       'data-recued-logs-action="cancel-call" '
-      + 'data-queued-call-id="call-7" aria-disabled="true" '
+      + 'data-queued-call-id="call-7" '
+      + 'aria-label="Cancelling… media/transcode (call-7)" '
+      + 'aria-disabled="true" '
       + 'aria-busy="true"',
     );
     expect(cancelRig.html()).toContain(
       'data-recued-logs-action="promote-call" '
-      + 'data-queued-call-id="call-7" aria-disabled="true">Promote',
+      + 'data-queued-call-id="call-7" '
+      + 'aria-label="Promote media/transcode (call-7)" '
+      + 'aria-disabled="true">Promote',
     );
     cancel.resolve({ status: 'already_dispatched' });
     await pendingCancel;
@@ -2098,6 +2140,9 @@ describe('D-186 slice C — Runs Active passes section', () => {
     // The Revoke control is bound to the grant's contract_id.
     expect(html).toContain('revoke-grant');
     expect(html).toContain('data-grant-id="ct_pass_1"');
+    expect(html).toContain(
+      'aria-label="Revoke Batched approval send-email (3 items) (ct_pass_1)"',
+    );
     rig.route.dispose();
   });
 
@@ -2145,7 +2190,8 @@ describe('D-186 slice C — Runs Active passes section', () => {
 
     const pending = rig.route.refreshGrants();
     expect(rig.html()).toContain(
-      'data-recued-logs-action="refresh-passes" aria-disabled="true" '
+      'data-recued-logs-action="refresh-passes" '
+      + 'aria-label="Refreshing… active passes" aria-disabled="true" '
       + 'aria-busy="true">Refreshing…',
     );
     expect(rig.html()).not.toContain(
@@ -2155,7 +2201,8 @@ describe('D-186 slice C — Runs Active passes section', () => {
     refresh.resolve({ grants: [sessionGrantView()] });
     await pending;
     expect(rig.html()).toContain(
-      'data-recued-logs-action="refresh-passes">Refresh',
+      'data-recued-logs-action="refresh-passes" '
+      + 'aria-label="Refresh active passes">Refresh',
     );
     rig.route.dispose();
   });
@@ -2190,7 +2237,9 @@ describe('D-186 slice C — Runs Active passes section', () => {
     );
     expect(rig.html()).toContain('Revoking…');
     expect(rig.html()).toContain(
-      'data-grant-id="ct_pass_1" aria-disabled="true" aria-busy="true"',
+      'data-grant-id="ct_pass_1" '
+      + 'aria-label="Revoking… Batched approval send-email (3 items) (ct_pass_1)" '
+      + 'aria-disabled="true" aria-busy="true"',
     );
     expect(rig.html()).not.toContain('data-grant-id="ct_pass_1" disabled');
     await rig.route.revokeGrant('ct_pass_1');

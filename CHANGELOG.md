@@ -7,6 +7,72 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.8.5 — 2026-08-05
+
+Two things dominate this release. The web app is now measured against a phone
+rather than assumed to work on one, and a path that had never actually completed
+— issuing a certificate for your own domain from the server — now does.
+
+### Fixed
+
+- **The app fits a phone.** Long values — a contract id, a pack slug, a failure
+  message, a reference path — used to push a whole page sideways off screen, so
+  the content you were reading moved out from under you. Every surface is now
+  measured at 280px and 390px wide and holds its column. Where a strip or a wide
+  table is *meant* to scroll sideways, it still does; that is now a deliberate,
+  marked exception rather than an accident.
+- **Keyboard position is held when a transient notice closes.** Dismissing a
+  result banner used to drop focus to the top of the page, which for a keyboard
+  or screen-reader user meant losing your place entirely.
+- **Touch targets and labels** across Automation, Packs, Recipes, Contracts,
+  Connections, Chat, Data, Logs, Reception and Settings — repeated controls now
+  have distinguishable names rather than a dozen identical "Retry"s.
+- **Certificate issuance for a custom domain could not succeed.** The request was
+  capped at 30 seconds, and the signing request used a key type no public
+  certificate authority will sign. Both are fixed, failover now decays through
+  every configured authority instead of stopping at the first, and recovering an
+  account no longer consumes a single-use credential.
+- **A published domain name now appears within seconds** of the name being
+  claimed, rather than on the next scheduled pass. A server that cannot yet
+  provision states why instead of appearing idle.
+- A setting stored outside its own table applied nothing and reported nothing —
+  it looked saved and did not take effect.
+
+### Changed
+
+- **Your own data is budgeted for a server, not a browser extension.** The stores
+  that cannot be re-fetched — your records, your shared data, your memory — were
+  limited to 50–100 MB while replaceable copies of remote data were allowed
+  gigabytes. That is inverted: the irreplaceable stores now hold up to 5 GB each.
+- **Memory and the activity trail are separate.** What you write and keep is
+  never pruned. The run-history trail is bounded and drops its oldest entries.
+  Previously one name covered both, which made it unclear what could be
+  discarded.
+- **Chat costs less per turn.** A turn is dominated by the catalog of available
+  tools rather than by the conversation; the default now sends a lean core and
+  fetches detail on demand.
+
+### Added
+
+- Around twenty new packs, including Snowflake, Databricks, BigQuery, Hex,
+  Atlassian Compass, Vanta, Teamwork, Netlify, DigitalOcean, Postmark,
+  VirusTotal, Readwise, MusicBrainz, Wikidata, Open Library, Open Food Facts and
+  several public-data sources.
+- Storage read-out and a Reclaim action under Server ▸ Maintenance, with
+  per-surface usage shown in the server popover.
+- Request signing for connections, so vendors that authenticate by signing each
+  request rather than sending a fixed key can be bound.
+
+### Performance
+
+- The hourly storage check no longer sums the whole activity log; the database
+  maintains the total, so the check is constant-time regardless of history size.
+- Retention no longer re-scans the entire log once per deleted row.
+- Reading the tail of a long chat scaled with conversation length — roughly 400×
+  slower at two thousand turns. It is now bounded.
+- Cache expiry, prefix invalidation and eviction use indexed range scans instead
+  of full passes.
+
 ## 26.8.4 — 2026-08-04
 
 Almost all of this release is one thing: work you have started stays yours. The

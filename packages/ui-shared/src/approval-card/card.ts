@@ -89,6 +89,22 @@ export const ASK_CARD_CONFIRM_ATTR = 'data-recued-ask-confirm';
 const nonBlankAskTitle = (title: string | undefined): string | undefined =>
   title !== undefined && title.trim() !== '' ? title : undefined;
 
+/** Keep compact visible controls distinguishable when several decision cards
+ *  share a queue. Prefer the card's human subject; title-less asks fall back
+ *  to the first meaningful line of their prompt, then their stable id. */
+const askActionSubject = (model: AskCardModel): string => {
+  const title = nonBlankAskTitle(model.title);
+  if (title !== undefined) return title;
+  const firstLine = model.text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line !== '');
+  return firstLine ?? `request ${model.ask_id}`;
+};
+
+const contextualActionLabel = (label: string, subject: string): string =>
+  `${label}: ${subject}`;
+
 interface ProjectedApprovalAsk {
   operation: string;
   target: string | null;
@@ -182,6 +198,7 @@ export const renderAskCard = (
   const card = doc.createElement('div');
   card.className = 'rx-ask-card';
   card.setAttribute(ASK_CARD_ATTR, model.ask_id);
+  const actionSubject = askActionSubject(model);
 
   const projected = projectGeneratedApprovalAsk(model.text);
   const risk = askRisk(model.title);
@@ -236,6 +253,10 @@ export const renderAskCard = (
       + (projected.target === null ? 0 : 1)
       + (projected.reason === null ? 0 : 1);
     detailsSummary.textContent = `Technical details (${technicalDetailCount})`;
+    detailsSummary.setAttribute(
+      'aria-label',
+      `Technical details for ${actionSubject} (${technicalDetailCount})`,
+    );
     details.appendChild(detailsSummary);
     const detailsList = doc.createElement('dl');
     const appendDetail = (labelText: string, valueText: string): void => {
@@ -282,6 +303,16 @@ export const renderAskCard = (
   const buttonOptions: Array<{ button: HTMLButtonElement; option: AskCardOption }> = [];
   let pending = options.busy === true;
   let armedOptionId: string | null = null;
+  const setOptionLabel = (
+    button: HTMLButtonElement,
+    label: string,
+  ): void => {
+    button.textContent = label;
+    button.setAttribute(
+      'aria-label',
+      contextualActionLabel(label, actionSubject),
+    );
+  };
   const pendingLabel = (option: AskCardOption): string => {
     const intent = askOptionIntent(option);
     return intent === 'approve'
@@ -295,9 +326,10 @@ export const renderAskCard = (
       row.button.setAttribute('aria-disabled', 'true');
       if (row.option.id === optionId) {
         row.button.setAttribute('aria-busy', 'true');
-        row.button.textContent = pendingLabel(row.option);
+        setOptionLabel(row.button, pendingLabel(row.option));
       } else {
         row.button.removeAttribute('aria-busy');
+        setOptionLabel(row.button, row.option.label);
       }
     }
   };
@@ -311,7 +343,7 @@ export const renderAskCard = (
     for (const row of buttonOptions) {
       const intent = askOptionIntent(row.option);
       row.button.className = `rx-ask-card-btn rx-ask-card-btn--${intent}`;
-      row.button.textContent = row.option.label;
+      setOptionLabel(row.button, row.option.label);
       row.button.setAttribute('aria-pressed', 'false');
     }
   };
@@ -323,7 +355,7 @@ export const renderAskCard = (
     btn.setAttribute(ASK_CARD_OPTION_ATTR, option.id);
     btn.setAttribute('data-intent', intent);
     btn.setAttribute('aria-pressed', 'false');
-    btn.textContent = option.label;
+    setOptionLabel(btn, option.label);
     btn.addEventListener('click', () => {
       // `aria-disabled` deliberately keeps the active option in the tab order,
       // so every activation path needs this explicit single-flight guard.
@@ -332,7 +364,7 @@ export const renderAskCard = (
         armedOptionId = option.id;
         resetOptionButtons();
         btn.className = 'rx-ask-card-btn rx-ask-card-btn--confirming';
-        btn.textContent = `Confirm ${option.label}`;
+        setOptionLabel(btn, `Confirm ${option.label}`);
         btn.setAttribute('aria-pressed', 'true');
         confirmation.hidden = false;
         return;
@@ -346,7 +378,7 @@ export const renderAskCard = (
       // focusable while every option is guarded, so keyboard focus and visible
       // progress retain the exact async owner instead of falling to <body>.
       const ownedFocus = doc.activeElement === btn;
-      const settledLabel = btn.textContent;
+      const settledLabel = btn.textContent ?? option.label;
       pending = true;
       setBusy(option.id);
       const focusAfterBusy = doc.activeElement;
@@ -361,7 +393,7 @@ export const renderAskCard = (
         } catch {
           pending = false;
           clearBusy();
-          btn.textContent = settledLabel;
+          setOptionLabel(btn, settledLabel);
           errorEl.hidden = false;
           if (ownedFocus && doc.activeElement === focusAfterBusy) {
             btn.focus({ preventScroll: true });
@@ -480,6 +512,7 @@ export const renderApprovalCard = (
   const card = doc.createElement('div');
   card.className = 'rx-approval-card';
   card.setAttribute(APPROVAL_CARD_ATTR, model.approval_id);
+  const actionSubject = model.description.trim() || `approval ${model.approval_id}`;
 
   const heading = doc.createElement('div');
   heading.className = 'rx-approval-card-title';
@@ -519,6 +552,7 @@ export const renderApprovalCard = (
     link.setAttribute('href', href);
     link.setAttribute(APPROVAL_CARD_LINK_ATTR, kind);
     link.textContent = label;
+    link.setAttribute('aria-label', `${label} for ${actionSubject}`);
     links.appendChild(link);
   };
   appendLink('recipe', 'Recipe', options.links?.recipeHref);
@@ -551,6 +585,19 @@ export const renderApprovalCard = (
 
   const buttons: HTMLButtonElement[] = [];
   let pending = false;
+  const accessibleVerb = (action: string, label: string): string =>
+    action === 'cancel' ? 'Cancel confirmation' : label;
+  const setActionLabel = (
+    button: HTMLButtonElement,
+    action: string,
+    label: string,
+  ): void => {
+    button.textContent = label;
+    button.setAttribute(
+      'aria-label',
+      contextualActionLabel(accessibleVerb(action, label), actionSubject),
+    );
+  };
   const setDisabled = (disabled: boolean): void => {
     for (const b of buttons) b.disabled = disabled;
   };
@@ -569,15 +616,15 @@ export const renderApprovalCard = (
         button.setAttribute('aria-disabled', 'true');
         if (action === ownerAction) {
           button.setAttribute('aria-busy', 'true');
-          button.textContent = busyLabel(action, idleLabel);
+          setActionLabel(button, action, busyLabel(action, idleLabel));
         } else {
           button.removeAttribute('aria-busy');
-          button.textContent = idleLabel;
+          setActionLabel(button, action, idleLabel);
         }
       } else {
         button.removeAttribute('aria-disabled');
         button.removeAttribute('aria-busy');
-        button.textContent = idleLabel;
+        setActionLabel(button, action, idleLabel);
       }
     }
   };
@@ -594,7 +641,7 @@ export const renderApprovalCard = (
     btn.type = 'button';
     btn.className = className;
     btn.setAttribute(APPROVAL_CARD_ACTION_ATTR, actionAttr);
-    btn.textContent = label;
+    setActionLabel(btn, actionAttr, label);
     btn.disabled = options.disabled === true;
     idleLabels.set(btn, label);
     btn.addEventListener('click', () => {
@@ -630,7 +677,7 @@ export const renderApprovalCard = (
     btn.type = 'button';
     btn.className = className;
     btn.setAttribute(APPROVAL_CARD_ACTION_ATTR, actionAttr);
-    btn.textContent = label;
+    setActionLabel(btn, actionAttr, label);
     btn.disabled = options.disabled === true;
     idleLabels.set(btn, label);
     btn.addEventListener('click', () => {
@@ -789,6 +836,7 @@ export const renderChatPlanCard = (
   options: ChatPlanCardOptions = {},
 ): HTMLElement => {
   const payloadAvailable = model.payload_available !== false;
+  const actionSubject = model.tool.trim() || `plan ${model.plan_id}`;
   const card = doc.createElement('div');
   card.className = 'rx-approval-card';
   card.setAttribute(CHAT_PLAN_CARD_ATTR, model.plan_id);
@@ -847,6 +895,7 @@ export const renderChatPlanCard = (
     link.setAttribute('href', options.chatHref);
     link.setAttribute(CHAT_PLAN_CARD_CHAT_LINK_ATTR, '');
     link.textContent = 'Review in Chat';
+    link.setAttribute('aria-label', `Review ${actionSubject} in Chat`);
     links.appendChild(link);
     card.appendChild(links);
   }
@@ -863,6 +912,16 @@ export const renderChatPlanCard = (
 
   const buttons: HTMLButtonElement[] = [];
   let pending = options.busy === true;
+  const setActionLabel = (
+    button: HTMLButtonElement,
+    label: string,
+  ): void => {
+    button.textContent = label;
+    button.setAttribute(
+      'aria-label',
+      contextualActionLabel(label, actionSubject),
+    );
+  };
   const setBusy = (
     busy: boolean,
     busyAction?: ChatPlanCardDecision,
@@ -880,15 +939,18 @@ export const renderChatPlanCard = (
         b.setAttribute('aria-disabled', 'true');
         if (action === busyAction) {
           b.setAttribute('aria-busy', 'true');
-          b.textContent = action === 'approve' ? 'Approving…' : 'Rejecting…';
+          setActionLabel(
+            b,
+            action === 'approve' ? 'Approving…' : 'Rejecting…',
+          );
         } else {
           b.removeAttribute('aria-busy');
-          b.textContent = action === 'approve' ? 'Approve' : 'Reject';
+          setActionLabel(b, action === 'approve' ? 'Approve' : 'Reject');
         }
       } else {
         b.removeAttribute('aria-disabled');
         b.removeAttribute('aria-busy');
-        b.textContent = action === 'approve' ? 'Approve' : 'Reject';
+        setActionLabel(b, action === 'approve' ? 'Approve' : 'Reject');
       }
     }
   };
@@ -901,7 +963,7 @@ export const renderChatPlanCard = (
     btn.type = 'button';
     btn.className = className;
     btn.setAttribute(CHAT_PLAN_CARD_ACTION_ATTR, decision);
-    btn.textContent = label;
+    setActionLabel(btn, label);
     btn.disabled =
       options.disabled === true
       || (decision === 'approve' && !payloadAvailable);
@@ -951,6 +1013,9 @@ export const renderChatPlanCard = (
  *  fallbacks so the card is legible even with no theme variables present. */
 export const ASK_CARD_STYLES = `
 .rx-ask-card {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 14px;
@@ -958,17 +1023,21 @@ export const ASK_CARD_STYLES = `
   background: var(--surface);
 }
 .rx-ask-card-title {
+  min-width: 0;
   font-weight: 650;
   font-size: 15px;
   margin-bottom: 6px;
   color: var(--fg);
+  overflow-wrap: anywhere;
 }
 .rx-ask-card-text {
+  min-width: 0;
   font-size: 13px;
   line-height: 1.4;
   color: var(--fg);
   margin-bottom: 8px;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .rx-ask-card-consequence {
   margin: 0 0 10px;
@@ -993,11 +1062,13 @@ export const ASK_CARD_STYLES = `
 }
 .rx-ask-card-summary dt,
 .rx-ask-card-detail-row dt {
+  min-width: 0;
   color: var(--fg-subtle);
   font-size: 11px;
   font-weight: 650;
   text-transform: uppercase;
   letter-spacing: .035em;
+  overflow-wrap: anywhere;
 }
 .rx-ask-card-summary dd,
 .rx-ask-card-detail-row dd {
@@ -1024,6 +1095,7 @@ export const ASK_CARD_STYLES = `
 }
 .rx-ask-card-details[open] summary { margin-bottom: 10px; }
 .rx-ask-card-confirm {
+  min-width: 0;
   margin-top: 10px;
   padding: 8px 10px;
   border-left: 3px solid var(--danger);
@@ -1031,15 +1103,20 @@ export const ASK_CARD_STYLES = `
   color: var(--fg);
   font-size: 12px;
   line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 .rx-ask-card-confirm[hidden] { display: none; }
 .rx-ask-card-actions {
+  min-width: 0;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 12px;
 }
 .rx-ask-card-btn {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   min-height: 44px;
   padding: 9px 16px;
   border: 1px solid var(--border-strong);
@@ -1050,6 +1127,8 @@ export const ASK_CARD_STYLES = `
   font-weight: 600;
   font-family: inherit;
   line-height: 1.2;
+  white-space: normal;
+  overflow-wrap: anywhere;
   cursor: pointer;
 }
 .rx-ask-card-btn--approve {
@@ -1070,15 +1149,20 @@ export const ASK_CARD_STYLES = `
 .rx-ask-card-btn:disabled,
 .rx-ask-card-btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
 .rx-ask-card-error {
+  min-width: 0;
   margin-top: 6px;
   font-size: 12px;
   color: var(--danger);
+  overflow-wrap: anywhere;
 }
 .rx-ask-card-error[hidden] { display: none; }
 `;
 
 export const APPROVAL_CARD_STYLES = `
 .rx-approval-card {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 12px;
@@ -1086,17 +1170,21 @@ export const APPROVAL_CARD_STYLES = `
   background: var(--surface);
 }
 .rx-approval-card-title {
+  min-width: 0;
   font-weight: 650;
   font-size: 13px;
   line-height: 1.35;
   color: var(--fg);
   margin-bottom: 5px;
+  overflow-wrap: anywhere;
 }
 .rx-approval-card-meta {
+  min-width: 0;
   font-size: 12px;
   line-height: 1.35;
   color: var(--muted);
   margin-bottom: 5px;
+  overflow-wrap: anywhere;
 }
 .rx-approval-card-retry-notice {
   margin: 7px 0;
@@ -1112,6 +1200,9 @@ export const APPROVAL_CARD_STYLES = `
   color: var(--danger, var(--fail));
 }
 .rx-approval-card-input {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   margin: 8px 0;
   padding: 8px;
   border: 1px solid var(--border-subtle, var(--border));
@@ -1129,16 +1220,34 @@ export const APPROVAL_CARD_STYLES = `
   margin: 8px 0;
 }
 .rx-approval-card-links a {
+  box-sizing: border-box;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 4px;
+  border-radius: 5px;
   color: var(--accent);
   font-size: 12px;
   text-decoration: none;
 }
+.rx-approval-card-links a:hover {
+  background: var(--accent-weak, var(--surface-subtle));
+}
+.rx-approval-card-links a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 .rx-approval-card-actions {
+  min-width: 0;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 .rx-approval-card-btn {
+  box-sizing: border-box;
+  min-height: 36px;
+  min-width: 0;
+  max-width: 100%;
   padding: 6px 12px;
   border: 1px solid var(--accent);
   border-radius: 4px;
@@ -1148,6 +1257,8 @@ export const APPROVAL_CARD_STYLES = `
   font-weight: 500;
   font-family: inherit;
   line-height: 1.2;
+  white-space: normal;
+  overflow-wrap: anywhere;
   cursor: pointer;
 }
 .rx-approval-card-btn--approve {
@@ -1169,15 +1280,19 @@ export const APPROVAL_CARD_STYLES = `
 .rx-approval-card-btn:disabled,
 .rx-approval-card-btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
 .rx-approval-card-caution {
+  min-width: 0;
   margin-top: 8px;
   font-size: 12px;
   font-weight: 600;
   color: var(--danger, var(--fail));
+  overflow-wrap: anywhere;
 }
 .rx-approval-card-error,
 .rx-approval-card-status {
+  min-width: 0;
   margin-top: 6px;
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 .rx-approval-card-error { color: var(--danger, var(--fail)); }
 .rx-approval-card-status { color: var(--muted); }

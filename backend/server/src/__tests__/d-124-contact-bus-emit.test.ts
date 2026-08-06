@@ -308,12 +308,12 @@ describe('boot backfill — silent by default', () => {
     // produces (collection_mail_<slug>). Only the columns
     // `mailRowToMessage` reads need to be present.
     db.exec(`
-      CREATE TABLE collection_mail_default (
+      CREATE TABLE collection_mail_99999999cc (
         record_id TEXT PRIMARY KEY,
         hot_fields TEXT NOT NULL,
         received_at INTEGER NOT NULL
       );
-      INSERT INTO collection_mail_default (record_id, hot_fields, received_at) VALUES
+      INSERT INTO collection_mail_99999999cc (record_id, hot_fields, received_at) VALUES
         ('m1', '{"from":"alice@x.com","to":["bob@x.com"],"cc":[],"message_id":"m1"}', 1000),
         ('m2', '{"from":"carol@x.com","to":["dave@x.com"],"cc":[],"message_id":"m2"}', 2000);
     `);
@@ -331,12 +331,12 @@ describe('boot backfill — silent by default', () => {
     const { events, bus } = collectAll();
     const store = createContactStore(db, { bus });
     db.exec(`
-      CREATE TABLE collection_mail_default (
+      CREATE TABLE collection_mail_99999999cc (
         record_id TEXT PRIMARY KEY,
         hot_fields TEXT NOT NULL,
         received_at INTEGER NOT NULL
       );
-      INSERT INTO collection_mail_default (record_id, hot_fields, received_at) VALUES
+      INSERT INTO collection_mail_99999999cc (record_id, hot_fields, received_at) VALUES
         ('m1', '{"from":"alice@x.com","to":["bob@x.com"],"cc":[],"message_id":"m1"}', 1000);
     `);
     await backfillContacts(db, store, {

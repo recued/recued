@@ -5,12 +5,12 @@
   "retrieved_on": "2026-07-15",
   "official_index": {
     "url": "https://docs.gusto.com/llms.txt",
-    "bytes": 216120,
-    "sha256": "e84d1a3256cacd882602a271e6499bfdc0b867b57a505aedd2b05a989ef0ca26"
+    "bytes": 216001,
+    "sha256": "9e1cf1fc1829e2374a6d8011afed0bd92d64611eab23f4c0b08a9241f2d0d990"
   },
   "official_reference_document_set": {
-    "reference_documents": 137,
-    "aggregate_sha256": "6641d2c3b055322ead0c3bd046ff17ff5b1ef1aafb2453512a19112567a878c1",
+    "reference_documents": 135,
+    "aggregate_sha256": "06e23f64abed66797c01ee3416d7fa9ff314cfabd7ec501ead2fcdfe2ab983e0",
     "aggregate_algorithm": "sha256(sorted newline records: url byte_length raw_markdown_sha256)",
     "note": "Gusto publishes one Markdown-wrapped OpenAPI fragment per App Integrations endpoint. Each raw page and extracted OpenAPI fragment is independently hashed below."
   },
@@ -19,74 +19,74 @@
     "supplemental_pins": [
       {
         "url": "https://docs.gusto.com/app-integrations/docs/introduction.md",
-        "bytes": 8509,
-        "sha256": "eaae410b47bfd3ae35f05e986dbb9658e5c382f6fecd378af77d73c0f570f054",
+        "bytes": 8720,
+        "sha256": "1233a39a74f73c9ccb745a234d5f372aa197d46203e18862e0739d17b0c16967",
         "purpose": "product boundary, production pre-approval, security review, and demo-only testing"
       },
       {
         "url": "https://docs.gusto.com/app-integrations/docs/authentication.md",
-        "bytes": 3245,
-        "sha256": "0aa926f94b8aaebae34541affe8119574cc04b75f50edadce1b2de981a6e6cd3",
+        "bytes": 3456,
+        "sha256": "cc9cdcbdb3161ea0f98dd36db549ccdd2bfd59b5ec62aaa7a828b4dd57e17dde",
         "purpose": "company OAuth access tokens and production versus demo origins"
       },
       {
         "url": "https://docs.gusto.com/app-integrations/docs/system-access-tokens.md",
-        "bytes": 1838,
-        "sha256": "aa37f335b404ae98a0b54911d5614fabeda9cb8ac5ee6a64e745bc8843b4c090",
+        "bytes": 2049,
+        "sha256": "605f5857ee35792e8856970a84ea8536da92e6a8ba2d942f1a661a69f2ce9ed0",
         "purpose": "system-token isolation and short-lived bearer placement"
       },
       {
         "url": "https://docs.gusto.com/app-integrations/docs/oauth2.md",
-        "bytes": 8753,
-        "sha256": "5cd90d241a51c12eec5a220d592da00a51a0b7a7cdae8c0cf67f4572b422eeb0",
+        "bytes": 8964,
+        "sha256": "a08cda339fb00e5e9888f540ff7aec53da25ec55515d6e6e767908eb21e38024",
         "purpose": "authorization-code and rotating refresh-token lifecycle"
       },
       {
         "url": "https://docs.gusto.com/app-integrations/docs/pagination.md",
-        "bytes": 2223,
-        "sha256": "dc26edf7fb581b0d70bfc94e241079dac0cb034f790a6d5121809e6ad92dd03e",
+        "bytes": 2434,
+        "sha256": "a0e2bb94f2089086558150aaae4a808633ee01932ef46ec8bc48230fad1f4967",
         "purpose": "page/per and response-header cursor behavior"
       },
       {
         "url": "https://docs.gusto.com/app-integrations/docs/api-versioning.md",
-        "bytes": 4597,
-        "sha256": "fbdc7b2fb25f58c5f6fba1ead6d60b02406f0eaf46d64fc4b3fee5f7bfa4d382",
+        "bytes": 4808,
+        "sha256": "d5ebd96916c9bf07b543be4e06d8491e20da789f3e3cf04e3cd32bbea4a148cb",
         "purpose": "date-version request header and deprecation behavior"
       },
       {
         "url": "https://docs.gusto.com/app-integrations/docs/scopes.md",
-        "bytes": 941,
-        "sha256": "02a8a95b165d97e00b7e2fb60c89ea71714d32df74db77ca0a0e06777a26fee0",
+        "bytes": 1152,
+        "sha256": "0153bde0fb79d4ac7f1307760eaafd44f990ec52e786cf2cefa936dbefa29261",
         "purpose": "per-operation production scope enforcement"
       },
       {
         "url": "https://docs.gusto.com/app-integrations/docs/rate-limits.md",
-        "bytes": 474,
-        "sha256": "781f41ee7ed84dde4b9c04b172c3e602ada1aaa5855963dfca824bbe0051dd65",
+        "bytes": 685,
+        "sha256": "f1e45ff9f1c246229cb29d4e287952e8fcf367ce0df12c8048db1d0cca877f0e",
         "purpose": "200 requests per minute per OAuth grant"
       },
       {
         "url": "https://docs.gusto.com/app-integrations/docs/idempotency.md",
-        "bytes": 2131,
-        "sha256": "f60c0cdd7632158318ecb6ee3c6d10805dac5b1f45b2d1ae4d47093b63e557b8",
+        "bytes": 2342,
+        "sha256": "0bb5765a7df96474d2411e4112a3dbafd3815a4f03d13825155a2d49d6478c74",
         "purpose": "object versions and stale-write 409 behavior"
       },
       {
         "url": "https://docs.gusto.com/app-integrations/docs/error-categories.md",
-        "bytes": 5489,
-        "sha256": "cdbf38dc048286a3213a057266022ee2be047fe87a0ca378613a0890a91d1d79",
+        "bytes": 5700,
+        "sha256": "6aaab3bda6f17d4707ba2b0d874f86ad82cb355a3c11c9e5cbff8820c2b08a8b",
         "purpose": "structured non-2xx errors array and categories"
       },
       {
         "url": "https://docs.gusto.com/app-integrations/docs/webhooks.md",
-        "bytes": 6843,
-        "sha256": "43c1ae6bf1bf14906919e4f2b0cd18f07dea1a5fa1d2265fd7653d645af7dcf7",
+        "bytes": 7054,
+        "sha256": "9fc3e73e27da3e554d0a9f724b61b65ecabc50ed603b41c24be2dea5c4b28ab6",
         "purpose": "webhook verification and delivery behavior"
       },
       {
         "url": "https://docs.gusto.com/app-integrations/docs/webhook-events.md",
-        "bytes": 5832,
-        "sha256": "32d26247af7b6c493ed73bc98eb2cb03a29272c03f8101f68e1aa01ab064ed28",
+        "bytes": 6043,
+        "sha256": "00959853146f222a79eea71c112efefb042a44926aa6b5cbc60a4848ebfe8c26",
         "purpose": "inbound event types and direction"
       }
     ]
@@ -126,45 +126,45 @@
     "system_auth": "Separate two-hour SystemAccess bearer for provisioning, events, and webhook administration; manually enrolled because the connection auth union has no client-credentials grant."
   },
   "coverage": {
-    "reference_documents": 137,
-    "operations": 137,
-    "selected": 135,
+    "reference_documents": 135,
+    "operations": 135,
+    "selected": 133,
     "excluded": 2,
     "methods": {
       "DELETE": 13,
-      "GET": 69,
+      "GET": 68,
       "PATCH": 1,
-      "POST": 28,
+      "POST": 27,
       "PUT": 26
     },
     "packs": {
       "gusto-benefits-time-off": 29,
       "gusto-companies-organization": 18,
       "gusto-compensation": 19,
-      "gusto-contractors": 7,
+      "gusto-contractors": 6,
       "gusto-employees": 27,
-      "gusto-payroll-time": 23,
+      "gusto-payroll-time": 22,
       "gusto-system-events": 12
     },
     "security": {
-      "company_oauth_bearer": 123,
+      "company_oauth_bearer": 121,
       "system_bearer": 12
     },
     "risks": {
       "admin": 23,
       "destructive": 28,
-      "read": 69,
-      "write": 15
+      "read": 68,
+      "write": 14
     },
     "approvals": {
-      "always": 66,
-      "ask": 64,
+      "always": 65,
+      "ask": 63,
       "never": 5
     },
     "pagination": 17,
     "manual_pagination": 1,
     "raw_request_bodies": 21,
-    "operations_with_scopes": 134,
+    "operations_with_scopes": 132,
     "workflows": 30
   },
   "contract_gaps": {
@@ -201,10 +201,10 @@
   "operations": [
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/delete-department.md",
-      "source_markdown_bytes": 92142,
-      "source_markdown_sha256": "f3db2960dfef7e6a43c0c6f1891468b775ebbd379a68567dbc62b6a52dcdce4f",
-      "source_openapi_bytes": 91949,
-      "source_openapi_sha256": "dfc1627573ed413aa1ee3075cf9846049d7a25d8379145c594c782500560d8a3",
+      "source_markdown_bytes": 92836,
+      "source_markdown_sha256": "e5b6e634f777ad2aadf1514e97e4e5712db1c093b48dab752a37371511049852",
+      "source_openapi_bytes": 92432,
+      "source_openapi_sha256": "bb6d1ee4fc837deed2d66aaedd61f5d2f088b8c463701c6c9c175433025e3bcf",
       "page": "delete-department",
       "tag": "Departments",
       "method": "DELETE",
@@ -277,10 +277,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/delete-time_tracking-time_sheets-time_sheet_uuid.md",
-      "source_markdown_bytes": 92754,
-      "source_markdown_sha256": "c11fb78824e67ef934d9d229c19c1bc31b6755e9041dc4d466c4860dabcdc304",
-      "source_openapi_bytes": 92452,
-      "source_openapi_sha256": "26fd139023e2a70876f30d133b126fbf4c500707263f480312134142beb0ef83",
+      "source_markdown_bytes": 93448,
+      "source_markdown_sha256": "cc7e8f163705305de8b85919c9090e9db07635484046fcb09291c7db1f7069cd",
+      "source_openapi_bytes": 92935,
+      "source_openapi_sha256": "df91650d141d02e7e4194fc8ebee5bc0bdbc894dd329bb3cd3856f935ab1cf10",
       "page": "delete-time_tracking-time_sheets-time_sheet_uuid",
       "tag": "Time Tracking",
       "method": "DELETE",
@@ -370,8 +370,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/delete-v1-companies-company_id-earning_types-earning_type_uuid.md",
-      "source_markdown_bytes": 5727,
-      "source_markdown_sha256": "26a49c022788e9c22656662f179c3302458f9833477e2138f9d6c1f31a4bbd08",
+      "source_markdown_bytes": 5938,
+      "source_markdown_sha256": "4eb4e069d131b51624d4991a50427df9d814fdfdb281a30971a5369e9250b588",
       "source_openapi_bytes": 5609,
       "source_openapi_sha256": "e5bad6d438c143b10819e1f9df9c05887991ae1a2eb1296f88f82689dd0493dd",
       "page": "delete-v1-companies-company_id-earning_types-earning_type_uuid",
@@ -463,10 +463,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/delete-v1-company_benefits-company_benefit_id.md",
-      "source_markdown_bytes": 93215,
-      "source_markdown_sha256": "00abb3aabdd8110abf1d329968016191217fd98de48ed750b2d7a32d728d1b91",
-      "source_openapi_bytes": 92639,
-      "source_openapi_sha256": "07efcc50eed6264f5a50820279c9c0e3291e67c18e0c71353efa82b64f5b324c",
+      "source_markdown_bytes": 93909,
+      "source_markdown_sha256": "2d02a35a0c88d1086f22e8d5658e3b23a5a8e51105b44ff21a8d23b33d345fc3",
+      "source_openapi_bytes": 93122,
+      "source_openapi_sha256": "126c936372124ed9d2c88f17e58cfd9e4e16cba7c5c7be09eb8b6306b856b4b8",
       "page": "delete-v1-company_benefits-company_benefit_id",
       "tag": "Company Benefits",
       "method": "DELETE",
@@ -539,10 +539,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/delete-v1-compensations-compensation_id.md",
-      "source_markdown_bytes": 92785,
-      "source_markdown_sha256": "b0c9bad210d267fcf8a33a9ae42dcb35de0ff3e1e726d165de710e20804b44d7",
-      "source_openapi_bytes": 92297,
-      "source_openapi_sha256": "e380d5226b132f7204a03c875628854f96a55c6e22704ca53cb334362b43b45f",
+      "source_markdown_bytes": 93479,
+      "source_markdown_sha256": "fab966a391c349f490097cdb26edadb5dbe38c24ed403f525e65734babf6f8ab",
+      "source_openapi_bytes": 92780,
+      "source_openapi_sha256": "49af5cc374e048730668e2a169edb710bc281a75acea21ef38e1b382207d657c",
       "page": "delete-v1-compensations-compensation_id",
       "tag": "Jobs and Compensations",
       "method": "DELETE",
@@ -615,10 +615,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/delete-v1-employee_benefits-employee_benefit_id.md",
-      "source_markdown_bytes": 92711,
-      "source_markdown_sha256": "f4cb88b4272288b0b7dc027b800a33a94563175ba339d772b97c3417a6157615",
-      "source_openapi_bytes": 92269,
-      "source_openapi_sha256": "a16e5594532e8831e0d8fbf24a7d52f477b9b321ff3f9d71b62def5302cbba04",
+      "source_markdown_bytes": 93405,
+      "source_markdown_sha256": "edfc8f685f030ace320990884a3aec79430a905b638fa7d051809d27a0edc617",
+      "source_openapi_bytes": 92752,
+      "source_openapi_sha256": "9d00c93fb530f67dead507885c61d31e9549bbdfc7e416710b7fb0f1b15513e9",
       "page": "delete-v1-employee_benefits-employee_benefit_id",
       "tag": "Employee Benefits",
       "method": "DELETE",
@@ -691,10 +691,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/delete-v1-employee.md",
-      "source_markdown_bytes": 92106,
-      "source_markdown_sha256": "d665be727aca686508a3a5068a174bfd33c7a687fd3357eed3d036c58c1912f3",
-      "source_openapi_bytes": 91785,
-      "source_openapi_sha256": "78bd161b75cadff09f0306ae8532c3bfb5ec91494ac4e93b085d1f31d7561951",
+      "source_markdown_bytes": 92800,
+      "source_markdown_sha256": "582eff1c0c814b81f55180e3e1071c8c136cb1ced9a0426433b980ee408c040d",
+      "source_openapi_bytes": 92268,
+      "source_openapi_sha256": "63f659cc503b25e1d8032a6e71458c585c5893c61f22b591c745bce5c9ebfe51",
       "page": "delete-v1-employee",
       "tag": "Employees",
       "method": "DELETE",
@@ -767,10 +767,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/delete-v1-employees-employee_id-rehire.md",
-      "source_markdown_bytes": 92182,
-      "source_markdown_sha256": "e1af06028deaf68070048711b4d399a7ac59cd3d36bb97da7dfedcd2ff1e6f06",
-      "source_openapi_bytes": 91988,
-      "source_openapi_sha256": "2e0d725745cc87bb58a884ef272b0ca845c368428e2ec89be82977cbc0ffefe5",
+      "source_markdown_bytes": 92876,
+      "source_markdown_sha256": "6b416119721ed6e0e33247a1abf2d13486f0149cd416e0b3c9b7a766a0b370a3",
+      "source_openapi_bytes": 92471,
+      "source_openapi_sha256": "e11f99d7f8e21bd0e353f38e80878d30fde17889861059ce49be5df801988f03",
       "page": "delete-v1-employees-employee_id-rehire",
       "tag": "Employee Employments",
       "method": "DELETE",
@@ -843,10 +843,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/delete-v1-employees-employee_id-terminations.md",
-      "source_markdown_bytes": 92544,
-      "source_markdown_sha256": "ebcb328d455652aaff338dbcf99142c9d4a6017f9b4d06980562fc24e3b2af27",
-      "source_openapi_bytes": 92415,
-      "source_openapi_sha256": "23c0c355d58f6c54eb7b683342d81a9fe5507cbb75d1a4d5faf64c44ecf81e56",
+      "source_markdown_bytes": 93238,
+      "source_markdown_sha256": "148c5d389ffae1e5bf343593cb51f9176d4f225d310b822b7984679617a9cec7",
+      "source_openapi_bytes": 92898,
+      "source_openapi_sha256": "19f672c55ae6d702b19d7422f213bf4baa2071908051b05099aa741d2b817ac7",
       "page": "delete-v1-employees-employee_id-terminations",
       "tag": "Employee Employments",
       "method": "DELETE",
@@ -919,10 +919,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/delete-v1-home_addresses-home_address_uuid.md",
-      "source_markdown_bytes": 92086,
-      "source_markdown_sha256": "b537997f1c5d3e5928245b70b193686ec006dbd3edf54fc9e8b5c99163ac7b04",
-      "source_openapi_bytes": 91892,
-      "source_openapi_sha256": "9fb5dfb4518dde830cdfc22c12b7e5bf5101c4e3e6c75f7fa6c09c73d238bfc6",
+      "source_markdown_bytes": 92780,
+      "source_markdown_sha256": "9b93983817b0261dce617d78facf67a5f4db65147133262b6373eb6e54990f8a",
+      "source_openapi_bytes": 92375,
+      "source_openapi_sha256": "c505d32068f511652bbdc91354b592483967bdc7fd48d8f8d558980c6ca98bb0",
       "page": "delete-v1-home_addresses-home_address_uuid",
       "tag": "Employee Addresses",
       "method": "DELETE",
@@ -995,8 +995,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/delete-v1-recurring_reimbursements.md",
-      "source_markdown_bytes": 5436,
-      "source_markdown_sha256": "a51ed40b670d10748f7d6f4d3e62491ffca3c54d5f32598e9e50f3c07d3a39de",
+      "source_markdown_bytes": 5647,
+      "source_markdown_sha256": "e1f56b63b2f3249de3ed8d7f201fee7b49c9459f5a9c5dc0a0b31ca8975ccd4b",
       "source_openapi_bytes": 5270,
       "source_openapi_sha256": "9971a8f94bb5790909c3605fa76d5c1b2417bd350bb3cd06a6c42b431d3a42c1",
       "page": "delete-v1-recurring_reimbursements",
@@ -1071,8 +1071,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/delete-v1-webhook-subscription-uuid.md",
-      "source_markdown_bytes": 6128,
-      "source_markdown_sha256": "18c35a9837d0cd8bc52b685ca11b1571d301a45882372bcaea1ce8681035cffe",
+      "source_markdown_bytes": 6339,
+      "source_markdown_sha256": "605280626d2d0782c0b5efcfc422d73432cb830d0edf92819757f514552d7299",
       "source_openapi_bytes": 5746,
       "source_openapi_sha256": "ce03bbb8503d481972b65a828f10ab10444fa41678b0a0ee87526f9655d829a9",
       "page": "delete-v1-webhook-subscription-uuid",
@@ -1147,10 +1147,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/delete-v1-work_addresses-work_address_uuid.md",
-      "source_markdown_bytes": 91819,
-      "source_markdown_sha256": "b958e8c3605cddd9c30134770c1bb23ae791940e8e090f7d820931849bb2bf4b",
-      "source_openapi_bytes": 91624,
-      "source_openapi_sha256": "ebc34d3c473f460ab2122ba309fbb6e71e7b843d8413add492d082206e6ed39e",
+      "source_markdown_bytes": 92513,
+      "source_markdown_sha256": "7182873ee07a2a553e56281fcaeb27c0fc4294bf4ac6178fe3e05913c2af0f30",
+      "source_openapi_bytes": 92107,
+      "source_openapi_sha256": "122544480e04fcdba2bef4b827b1c84532e077bc3b0c4505bdaac4e645cf1eac",
       "page": "delete-v1-work_addresses-work_address_uuid",
       "tag": "Employee Addresses",
       "method": "DELETE",
@@ -1223,8 +1223,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-companies-company_uuid-time_tracking-time_sheets.md",
-      "source_markdown_bytes": 14998,
-      "source_markdown_sha256": "592f3cb95697f0b6245850f02d3fba14f684849ac6932bdc5eb5040271d52808",
+      "source_markdown_bytes": 15209,
+      "source_markdown_sha256": "cf7978985c171828cd76e04b54805ad2589ebc2c01761749a0df8e49bea927e7",
       "source_openapi_bytes": 14681,
       "source_openapi_sha256": "3030405202946e06af9480d47fa1704f4f9279ad084117555fde0dad20580c32",
       "page": "get-companies-company_uuid-time_tracking-time_sheets",
@@ -1446,7 +1446,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -1458,8 +1457,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-companies-departments.md",
-      "source_markdown_bytes": 10281,
-      "source_markdown_sha256": "a0c4a13001355b579b55fb96b573e12e190113347b7793012e23e77730c81c20",
+      "source_markdown_bytes": 10492,
+      "source_markdown_sha256": "1267241f4d3af08d23eb28f819efe874db4caa49bdb3bf5ef98ee790b2e8b021",
       "source_openapi_bytes": 10072,
       "source_openapi_sha256": "1697ab7b2e73f519c03358a5673edcea46dd870fdcee703e8d355e5aa3264668",
       "page": "get-companies-departments",
@@ -1527,7 +1526,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -1539,8 +1537,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-company-notifications.md",
-      "source_markdown_bytes": 15324,
-      "source_markdown_sha256": "a124b5951726411f1d4dece63eeb90e6358046e3327edfc476998f4f7d23d204",
+      "source_markdown_bytes": 15535,
+      "source_markdown_sha256": "227177e4a43493054495d3b562dd38130ff6f6167de14371f187d5b5ca19d312",
       "source_openapi_bytes": 15169,
       "source_openapi_sha256": "dfbc26936adf5d563ec19796f6a97a986c4dc05ccf2ea893bae60972bdeead37",
       "page": "get-company-notifications",
@@ -1660,7 +1658,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -1672,8 +1669,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-department.md",
-      "source_markdown_bytes": 8438,
-      "source_markdown_sha256": "7252dfc3cd42b2904ae889fc82e2d85fb538e769044fc2711921d4cdcd1679f9",
+      "source_markdown_bytes": 8649,
+      "source_markdown_sha256": "6f92d13c711163dd142cf155bb7790f7cc7ed2372f6c13f631c9af3856a9b20d",
       "source_openapi_bytes": 8324,
       "source_openapi_sha256": "da3cb25b9ca538db1a229d7ca81f2e9d5c6ae471a3d9f667009a1ffde564c6e9",
       "page": "get-department",
@@ -1741,7 +1738,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -1753,8 +1749,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-employee-ytd-benefit-amounts-from-different-company.md",
-      "source_markdown_bytes": 8805,
-      "source_markdown_sha256": "2dfbf9bc0aaad3593d55d8e6639edde22b7c07f6babec0a0748a2b45e630b611",
+      "source_markdown_bytes": 9016,
+      "source_markdown_sha256": "7a45fd358fa09dc9edf0a5fcb5515cf301919bf8473ae234c4e252051e51a219",
       "source_openapi_bytes": 8385,
       "source_openapi_sha256": "25d7b973f4d3fb8ae38f32cbb698d0cd1583bd15230669773ebdb0255054dccf",
       "page": "get-employee-ytd-benefit-amounts-from-different-company",
@@ -1839,7 +1835,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -1851,10 +1846,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-events.md",
-      "source_markdown_bytes": 94997,
-      "source_markdown_sha256": "4173f8e64d8e22d88bedfd1d5104b9eb7547af4f18655f5e70c97fe9378058d3",
-      "source_openapi_bytes": 94503,
-      "source_openapi_sha256": "f22c9c2634d4a893513a2a1f6c4355fab5a5b114856e18da5fe96c5674c56943",
+      "source_markdown_bytes": 95691,
+      "source_markdown_sha256": "e36face5efb6c7f8261c2397bbf61b3e6b55948b7b2fcbb3b3083616fcd15a0d",
+      "source_openapi_bytes": 94986,
+      "source_openapi_sha256": "12c91fcbc96714eebb0095ee2f849b76935d7e912e26dcd068e1e6dc71c2d76e",
       "page": "get-events",
       "tag": "Events",
       "method": "GET",
@@ -1994,7 +1989,6 @@
       },
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -2006,8 +2000,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-reports-request_uuid.md",
-      "source_markdown_bytes": 7193,
-      "source_markdown_sha256": "5d283c9ed2a666547b6cf6129a4525f8964f60134ecf2b1ae5a3fdfe73c08400",
+      "source_markdown_bytes": 7404,
+      "source_markdown_sha256": "d4f44741a304fc7ce0732403376dec2fc36643254812ac69c03dad10a9279c58",
       "source_openapi_bytes": 6882,
       "source_openapi_sha256": "4965c9f2ae5ab7913632d92b7a8e4f3b6b86091888cac6cfcf601528c8e886e1",
       "page": "get-reports-request_uuid",
@@ -2075,7 +2069,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -2087,8 +2080,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-time_tracking-payroll_syncs-payroll_sync_uuid.md",
-      "source_markdown_bytes": 14996,
-      "source_markdown_sha256": "b21d8ef27af519beec9528bb053528501eeb642e89ec0f9a3b5058bb269d8b22",
+      "source_markdown_bytes": 15207,
+      "source_markdown_sha256": "67ace4b7bcd3bdbf10d2f81b5362f54c64f57d728b8a00e5d913dff2133a9e03",
       "source_openapi_bytes": 14730,
       "source_openapi_sha256": "aa2b7eba0f92df96ac259704fe7d14e87732e37ff5a2cfd0582ec56a1dc139c0",
       "page": "get-time_tracking-payroll_syncs-payroll_sync_uuid",
@@ -2156,7 +2149,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -2168,8 +2160,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-time_tracking-time_sheets-time_sheet_uuid.md",
-      "source_markdown_bytes": 11658,
-      "source_markdown_sha256": "fe34ae06d7b475bd0aedc448cc6ba42c3ba5d89e928416a1213d8f55beaf4d89",
+      "source_markdown_bytes": 11869,
+      "source_markdown_sha256": "f0d42a34d952cd3795104930ebe32a75b68d0c8852135000639fa721e66c56ed",
       "source_openapi_bytes": 11371,
       "source_openapi_sha256": "4749ee90bd3fe179b3785585aaf6538f8beefad28cb834bad5b2a97255e368a5",
       "page": "get-time_tracking-time_sheets-time_sheet_uuid",
@@ -2237,7 +2229,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -2249,8 +2240,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-benefits-benefit_id.md",
-      "source_markdown_bytes": 6558,
-      "source_markdown_sha256": "ca90c9f4c827ef436b8be4ffe678c3d2f18eb9bd6af6cfb4198c1f3f2fc6d793",
+      "source_markdown_bytes": 6769,
+      "source_markdown_sha256": "4b74564f1ee205870fd88636f2b7fb755e87b01b5dfb724283f1e1d4a914ecc6",
       "source_openapi_bytes": 6191,
       "source_openapi_sha256": "a106be7639572a8b16ae12d1fa9d598f487bdf894e6e4ceec054b454cd0de445",
       "page": "get-v1-benefits-benefit_id",
@@ -2318,7 +2309,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -2330,8 +2320,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-benefits-benefits_id-requirements.md",
-      "source_markdown_bytes": 15978,
-      "source_markdown_sha256": "43cda63514fe73b2be15bfcfd000f3f3275eb40e70f1b16206fcee35bf958388",
+      "source_markdown_bytes": 16189,
+      "source_markdown_sha256": "4f92fc1196363f4a33378af1923b2248e89effdec99b46ef29eb8706afffdc5e",
       "source_openapi_bytes": 15811,
       "source_openapi_sha256": "bcad67fde9e5e033a07d7f8f20500c44b4b498ac9ec4a2c5e4df96935ad84e78",
       "page": "get-v1-benefits-benefits_id-requirements",
@@ -2408,8 +2398,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-benefits-company_benefit_id-summary.md",
-      "source_markdown_bytes": 14153,
-      "source_markdown_sha256": "daaf9a7419dda8fa204a4599fc1474f7b76841ff6f4b0797c300ddd9a94e9a4a",
+      "source_markdown_bytes": 14364,
+      "source_markdown_sha256": "23b2ed93ae1e644b2fa26afec49194cc3a5d38b5aec2babf3782a557d7d9c22a",
       "source_openapi_bytes": 13863,
       "source_openapi_sha256": "70ec392a0ee903922995082e7f325ebd0539312fd5b486994e0d4ec84aee0f9b",
       "page": "get-v1-benefits-company_benefit_id-summary",
@@ -2528,7 +2518,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -2540,8 +2529,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-benefits.md",
-      "source_markdown_bytes": 29417,
-      "source_markdown_sha256": "bd801083c6df0fb933f0e142c2aafcabca314ae02c456b54b4f07c32684dea81",
+      "source_markdown_bytes": 29628,
+      "source_markdown_sha256": "702eef239ff4a2c93bd90fc616479b2e9ea797bf6fb0898990133800983cf69d",
       "source_openapi_bytes": 29044,
       "source_openapi_sha256": "ba737ce7cbeaacca662d642881ea3c1d6119dae3629c6f33b018775c96219516",
       "page": "get-v1-benefits",
@@ -2600,8 +2589,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-companies-company_id-admins.md",
-      "source_markdown_bytes": 7861,
-      "source_markdown_sha256": "cb79a418b0cfdbaaee69dd0adb62e0227442a58e4e0e4f52d7c94d5eaaa45a59",
+      "source_markdown_bytes": 8072,
+      "source_markdown_sha256": "2bfce80e1acbc125b5c937477092b63382d13aacdff4ae080afd781bec6419c9",
       "source_openapi_bytes": 7716,
       "source_openapi_sha256": "54986f3cd345366b372ec98ea560fabcb28521bf50fa23a83c74666a965e09a0",
       "page": "get-v1-companies-company_id-admins",
@@ -2704,7 +2693,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -2716,8 +2704,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-companies-company_id-company_benefits.md",
-      "source_markdown_bytes": 12495,
-      "source_markdown_sha256": "b15148b12b6bde3c1d9dd6990fee0ca58292700f47ccac6c8331db00f803ef50",
+      "source_markdown_bytes": 12706,
+      "source_markdown_sha256": "396b9cb190117d4102b34b6516869b82e470aa6e1d3f56561029705bdfead81d",
       "source_openapi_bytes": 12009,
       "source_openapi_sha256": "df52989fe911b9a722fae51d8e149528157d6a0c525ca6263b1f4253825e9e4f",
       "page": "get-v1-companies-company_id-company_benefits",
@@ -2836,7 +2824,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -2848,8 +2835,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-companies-company_id-contractor_payment-contractor-payment.md",
-      "source_markdown_bytes": 10945,
-      "source_markdown_sha256": "9139a637ae180e14f13109a5ee79a77dbd94c1033abc48ed96a9e5fd7d51bceb",
+      "source_markdown_bytes": 11156,
+      "source_markdown_sha256": "4e8d764ff0e59dfaa47ad8b0729f25e6f6e04ef213f104f3bca3138f410948ee",
       "source_openapi_bytes": 10814,
       "source_openapi_sha256": "2cd5facefdb8b793aa2dcb5d57069cc3825079ca8e9c540ba399294435cfd182",
       "page": "get-v1-companies-company_id-contractor_payment-contractor-payment",
@@ -2934,7 +2921,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -2946,8 +2932,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-companies-company_id-contractor_payments.md",
-      "source_markdown_bytes": 21942,
-      "source_markdown_sha256": "9d6cd41f426adacb4dd752f912912313ce3bd0356102e120440620a2a8f9c0e5",
+      "source_markdown_bytes": 22153,
+      "source_markdown_sha256": "6ee23d258746840e4ea9faacd5fd7cf0b6afd66e921c23d26b051139b9c0ff29",
       "source_openapi_bytes": 21666,
       "source_openapi_sha256": "d00fba11a13b7aee8ff3dbeb071a6c0914cdb2a0fc320a76f0f3f4a4145128bc",
       "page": "get-v1-companies-company_id-contractor_payments",
@@ -3118,122 +3104,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
-      "tags": [
-        "sensitive-read"
-      ],
-      "idempotency": "safe",
-      "error_contract": {
-        "transport": "non-2xx responses fail the step",
-        "envelope": "errors[] with error_key, category, message, optional nested errors and metadata"
-      }
-    },
-    {
-      "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-companies-company_id-contractors-payment_details.md",
-      "source_markdown_bytes": 13219,
-      "source_markdown_sha256": "613003feaa8665a4ce6a7cf7ed7550cf511fd9205c9b6a8046eaecd370e611bd",
-      "source_openapi_bytes": 12016,
-      "source_openapi_sha256": "1d021b86a9d0869e6f9741a719216a1d318d8d385fbf152716c5f4d655bf5a04",
-      "page": "get-v1-companies-company_id-contractors-payment_details",
-      "tag": "Contractors",
-      "method": "GET",
-      "path": "/v1/companies/{company_id}/contractors/payment_details",
-      "operation_id": "get-v1-companies-company_id-contractors-payment_details",
-      "selected": true,
-      "exclusion_reason": null,
-      "security": "company_oauth_bearer",
-      "scopes": [
-        "contractor_payment_methods:read"
-      ],
-      "pack": "gusto-contractors",
-      "op": "get_v1_companies_company_id_contractors_payment_details",
-      "request_media": [],
-      "selected_request_media": null,
-      "request_body_shape": null,
-      "request_presence": null,
-      "request_nullable_paths": [],
-      "request_read_only_paths": [],
-      "request_write_only_paths": [],
-      "request_int64_paths": [],
-      "response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_shape": "array",
-      "response_write_only_paths": [],
-      "response_int64_paths": [],
-      "parameters": [
-        {
-          "name": "X-Gusto-API-Version",
-          "in": "header",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": null,
-          "serialization": "scalar",
-          "pagination_owned": false,
-          "credential_or_version_owned": true,
-          "emitted_key": null
-        },
-        {
-          "name": "company_id",
-          "in": "path",
-          "required": true,
-          "schema_type": "string",
-          "schema_format": null,
-          "serialization": "scalar",
-          "pagination_owned": false,
-          "credential_or_version_owned": false,
-          "emitted_key": "company_id"
-        },
-        {
-          "name": "contractor_uuid",
-          "in": "query",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": null,
-          "serialization": "scalar",
-          "pagination_owned": false,
-          "credential_or_version_owned": false,
-          "emitted_key": "query.contractor_uuid"
-        },
-        {
-          "name": "contractor_payment_group_uuid",
-          "in": "query",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": null,
-          "serialization": "scalar",
-          "pagination_owned": false,
-          "credential_or_version_owned": false,
-          "emitted_key": "query.contractor_payment_group_uuid"
-        }
-      ],
-      "emitted_args": [
-        {
-          "key": "company_id",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "query.contractor_uuid",
-          "type": "string",
-          "required": false,
-          "affects_target": true
-        },
-        {
-          "key": "query.contractor_payment_group_uuid",
-          "type": "string",
-          "required": false,
-          "affects_target": true
-        }
-      ],
-      "result_path": null,
-      "pagination": null,
-      "manual_pagination": null,
-      "risk": "read",
-      "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -3245,8 +3115,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-companies-company_id-custom_fields.md",
-      "source_markdown_bytes": 9128,
-      "source_markdown_sha256": "55507e52f74f4d983393c5916163197d201c7161adde26aac47cf2b2a94c4366",
+      "source_markdown_bytes": 9339,
+      "source_markdown_sha256": "a1c3ec7f2862ab9636fa6fedcf5de8d15a50a1cfab7f0b7c3798c2a89294da8d",
       "source_openapi_bytes": 8898,
       "source_openapi_sha256": "dc7f6fbb53ec41ce7ddbd866087c746ba03c6efe356b44f007efc08cdc42d5be",
       "page": "get-v1-companies-company_id-custom_fields",
@@ -3349,7 +3219,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -3361,8 +3230,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-companies-company_id-earning_types.md",
-      "source_markdown_bytes": 11211,
-      "source_markdown_sha256": "014e90aa7c3c80f2b1ff437a5a662a54ccc0fae71ae155c29268b3e1031d669f",
+      "source_markdown_bytes": 11422,
+      "source_markdown_sha256": "a22ac7c3efb2e3cbc762253d0c68446e6c5a88ed8becf56e0f2e706da86a7cc6",
       "source_openapi_bytes": 10669,
       "source_openapi_sha256": "4fc2601a0fedb54d9fdfdc102aad6de3d26da72cef134c62683792c4336a9139",
       "page": "get-v1-companies-company_id-earning_types",
@@ -3430,7 +3299,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -3442,10 +3310,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-companies-company_id-employees.md",
-      "source_markdown_bytes": 68762,
-      "source_markdown_sha256": "53c66a2c1c5d097da247151994bc22407c5413491c27f481ae2dc93bc32f8353",
-      "source_openapi_bytes": 68207,
-      "source_openapi_sha256": "d5c124209bd467f1f965d0c630c6cb9e17a529e1ee864ed53fc31472d934c146",
+      "source_markdown_bytes": 69960,
+      "source_markdown_sha256": "05c911d7f04bfef252c4db28c46ba0d0a2ecc5ed6c226c340ded5b88554ba9ad",
+      "source_openapi_bytes": 69194,
+      "source_openapi_sha256": "0bd8d5d9a28922be6c473431027a7ac7b55f55ffc8c4eff6915c124a18e57fa6",
       "page": "get-v1-companies-company_id-employees",
       "tag": "Employees",
       "method": "GET",
@@ -3716,7 +3584,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -3728,10 +3595,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-companies-company_id-locations.md",
-      "source_markdown_bytes": 12649,
-      "source_markdown_sha256": "3aa2097f514f9c5e7209b9bd2918da81062f46ab4167d2fa5dbff06cb196efd6",
-      "source_openapi_bytes": 12184,
-      "source_openapi_sha256": "4e9c0a9198d7af2c885dac85b6446a0601a5c8739baa8200bcf3b05aec5b312a",
+      "source_markdown_bytes": 13847,
+      "source_markdown_sha256": "1fb2b70161c4084ecf80b0c658092cf4f9f8355c14b7d293b70d13c4e3a05d14",
+      "source_openapi_bytes": 13171,
+      "source_openapi_sha256": "f4778727048925d83b4635818d3fb424fc762ab367266586d7e8298e6ff1c896",
       "page": "get-v1-companies-company_id-locations",
       "tag": "Locations",
       "method": "GET",
@@ -3832,7 +3699,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -3844,10 +3710,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-companies-company_id-pay_periods.md",
-      "source_markdown_bytes": 98430,
-      "source_markdown_sha256": "763bcb1cd630f1769f13102991b41d2de60ed060a57640e49110b10dd159c0b2",
-      "source_openapi_bytes": 97518,
-      "source_openapi_sha256": "fa28fb5f26427bea57e6a5a1a5c348170a76b5b6d28932487097e6a569e87bf1",
+      "source_markdown_bytes": 99124,
+      "source_markdown_sha256": "f7b5e06dd6c3ccd796a38f4431cbcc2254277597052d688ee00d36ec1d27aa4d",
+      "source_openapi_bytes": 98001,
+      "source_openapi_sha256": "e0aebc19f906323b7e91fa7efcd3a377c036269120b339fa72af46c71a39f5ff",
       "page": "get-v1-companies-company_id-pay_periods",
       "tag": "Payrolls",
       "method": "GET",
@@ -3964,7 +3830,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -3976,8 +3841,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-companies-company_id-pay_schedules-assignments.md",
-      "source_markdown_bytes": 9990,
-      "source_markdown_sha256": "eb5c63f813d38fd8ce9193cafd7ff87623e2f39b696841d80fb1681140f57efe",
+      "source_markdown_bytes": 10201,
+      "source_markdown_sha256": "5d10e7e0c109dde1f06a81c09717b3c3517d4d455d9cdc8abf16d5fed4678ad6",
       "source_openapi_bytes": 9720,
       "source_openapi_sha256": "199c5891d8cd0ae16d55e23fd19759d998bc285f16611059bf1ab3fced0f6735",
       "page": "get-v1-companies-company_id-pay_schedules-assignments",
@@ -4045,7 +3910,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -4057,10 +3921,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-companies-company_id-pay_schedules-pay_schedule_id.md",
-      "source_markdown_bytes": 15019,
-      "source_markdown_sha256": "a9f571123657f9b4cae862121b525f8574bc62b291ab3f3d4ce8d39d493ec1f6",
-      "source_openapi_bytes": 14744,
-      "source_openapi_sha256": "6e55bcb7ba618436cf87a312704f87705ca6b56b29c7a7dc2f155fb20f4dca18",
+      "source_markdown_bytes": 15281,
+      "source_markdown_sha256": "64938a6e694c45ee471b229f648bdcb055706f82bbd85175c6a29a4e9c147303",
+      "source_openapi_bytes": 14795,
+      "source_openapi_sha256": "a272af0306247330755dd9850bf80202b36eec578dcf8165f7fb5e1d349e0b64",
       "page": "get-v1-companies-company_id-pay_schedules-pay_schedule_id",
       "tag": "Pay Schedules",
       "method": "GET",
@@ -4143,7 +4007,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -4155,10 +4018,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-companies-company_id-pay_schedules.md",
-      "source_markdown_bytes": 16501,
-      "source_markdown_sha256": "a53435412b6f869ce96a4bebae62a8b8648357a14ff7ff58c1fff1486e43b030",
-      "source_openapi_bytes": 16216,
-      "source_openapi_sha256": "54396f3e45e8a29ac59c141448346f3edf6a6bf751f34241743dec85a8817e2e",
+      "source_markdown_bytes": 16763,
+      "source_markdown_sha256": "34bff6ab561db9eb979df685b5bb94bfe106119ed9403993167aecf7766aefb2",
+      "source_openapi_bytes": 16267,
+      "source_openapi_sha256": "d51c024c7bbad1bc4bd67aa5547ba06a38b2b063cddc95b809024ffc2420fb0f",
       "page": "get-v1-companies-company_id-pay_schedules",
       "tag": "Pay Schedules",
       "method": "GET",
@@ -4259,7 +4122,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -4271,8 +4133,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-companies-company_id-payrolls-payroll_id.md",
-      "source_markdown_bytes": 74906,
-      "source_markdown_sha256": "1feae647ab58e7fb473be9709a974c9bbf2318835b412e739f9e7b3fb151e611",
+      "source_markdown_bytes": 75117,
+      "source_markdown_sha256": "bf955c4a8f15fc1cc6bd5dfbb237af650b470bf0240fcd5b2ee3e17c9a3f6210",
       "source_openapi_bytes": 74069,
       "source_openapi_sha256": "5e2dc23cdac6b7410b24f462690a8d0da2b710c8f6a0783593667f6f6f215e96",
       "page": "get-v1-companies-company_id-payrolls-payroll_id",
@@ -4426,7 +4288,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -4438,8 +4299,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-companies-company_id-payrolls.md",
-      "source_markdown_bytes": 48615,
-      "source_markdown_sha256": "aa23f605675e65c3ad10b0695c08f21c8e096f35c97f77fc8abc691d1551bd53",
+      "source_markdown_bytes": 48826,
+      "source_markdown_sha256": "c1ce935f58e31a29f172038add47f24d908d24bb6c0cf0db8f05c7efd1075503",
       "source_openapi_bytes": 47961,
       "source_openapi_sha256": "a41d525e9c532bddf0f18169a3ff7969a1c8d8bcf55f5c22d586b37fa9489a59",
       "page": "get-v1-companies-company_id-payrolls",
@@ -4695,7 +4556,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -4707,8 +4567,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-companies-company_id-time_off_requests.md",
-      "source_markdown_bytes": 12226,
-      "source_markdown_sha256": "f4a991bb080864254c30a818b65be080eca29dcb64e328ec1a0e9ec27dd33ed4",
+      "source_markdown_bytes": 12437,
+      "source_markdown_sha256": "c9b5710e2e6ddc0fc635d2e4c72aa3f00ba6cd03c01307bf6579cc02b9184a19",
       "source_openapi_bytes": 11290,
       "source_openapi_sha256": "f28d1a1fe57767c1a96f5f4a98e0d0f77662c782de7533e54f04541351c33d3b",
       "page": "get-v1-companies-company_id-time_off_requests",
@@ -4810,7 +4670,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -4822,8 +4681,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-companies-company_id-unprocessed_termination_pay_periods.md",
-      "source_markdown_bytes": 8434,
-      "source_markdown_sha256": "a86ead524b19b01473904ac783ebd72b83ddd3abfc95ca5e1f63b3e24dfb1059",
+      "source_markdown_bytes": 8645,
+      "source_markdown_sha256": "383e0c66c1cbfb32532d4cb7a9f7e13d265f998d5593c2ab97ff08aa55092db9",
       "source_openapi_bytes": 8062,
       "source_openapi_sha256": "9740bab746693ca710779f44577373ee48d42d72f109e0b1bc72d49bb9d55a42",
       "page": "get-v1-companies-company_id-unprocessed_termination_pay_periods",
@@ -4891,7 +4750,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -4903,8 +4761,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-companies-company_uuid-contractors.md",
-      "source_markdown_bytes": 23621,
-      "source_markdown_sha256": "c1b2446a6d3b548b8398c5d632b66bd61a1f8811d4a4c5d0c1fc512606514027",
+      "source_markdown_bytes": 23832,
+      "source_markdown_sha256": "dc9dfbbfdb49d5f57d890f6da7ab740c4eb7dd77ba1395a7e76489798bca9b7d",
       "source_openapi_bytes": 23445,
       "source_openapi_sha256": "8e7a4704f040a6405b92783308a7cdbecbf7f58c404ebff78cd9cc324b369199",
       "page": "get-v1-companies-company_uuid-contractors",
@@ -5126,7 +4984,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -5138,8 +4995,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-companies-company_uuid-time_off_policies.md",
-      "source_markdown_bytes": 13550,
-      "source_markdown_sha256": "44a4b2a6779cc064a56e9a28da2465f302965f1a358398dd500608a8a4c868fc",
+      "source_markdown_bytes": 13761,
+      "source_markdown_sha256": "81ec90134048249eebda18ac01598ea4f8110f3784cf1bbcef1ef39d951285e7",
       "source_openapi_bytes": 13399,
       "source_openapi_sha256": "fb536105b82b6bdc2a4ac8b8c533fabf5b293927e843448cd7d591dd1893e0ad",
       "page": "get-v1-companies-company_uuid-time_off_policies",
@@ -5207,7 +5064,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -5219,8 +5075,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-companies.md",
-      "source_markdown_bytes": 25455,
-      "source_markdown_sha256": "b4df0bb4143681d33b4be7c39c3310a5c93c41da80e02dfd3b832705ab9ada56",
+      "source_markdown_bytes": 25666,
+      "source_markdown_sha256": "4ec244bbf0497f3160e6cd5eb788372719a885ac4f953f3dd22054bcc4c2b836",
       "source_openapi_bytes": 25136,
       "source_openapi_sha256": "a7434222735a577c8e2c4abd66ee1caccde159c2666322c44785cb6fdff91cf9",
       "page": "get-v1-companies",
@@ -5288,7 +5144,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -5300,8 +5155,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-company_benefits-company_benefit_id-contribution_exclusions.md",
-      "source_markdown_bytes": 9020,
-      "source_markdown_sha256": "70f31b8772f2e49d234410e8ffc665d7632d5c976085e2bfab9b18d1f646a455",
+      "source_markdown_bytes": 9231,
+      "source_markdown_sha256": "baf639f2ec5c0fd0d8517701b9abecd916c32b485cb68610855247e57e70e7e1",
       "source_openapi_bytes": 8732,
       "source_openapi_sha256": "1c0094b669b1f6ffa716baa1c8a35cc351ee8d120377444a99721a095f9c1694",
       "page": "get-v1-company_benefits-company_benefit_id-contribution_exclusions",
@@ -5369,7 +5224,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -5381,8 +5235,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-company_benefits-company_benefit_id-employee_benefits.md",
-      "source_markdown_bytes": 19306,
-      "source_markdown_sha256": "98e5c6602d00092eea044b133f9a27dc50dbdb81d6db4bb799852fe928535deb",
+      "source_markdown_bytes": 19517,
+      "source_markdown_sha256": "d9761bbde0622582cc6812a115e52b30a71138cfb916991fd243cc30c480ad0d",
       "source_openapi_bytes": 18860,
       "source_openapi_sha256": "7889c4c5bcd8a2b67b170114fb5931537dd6751cd13ce599f1f60e3a38d3b809",
       "page": "get-v1-company_benefits-company_benefit_id-employee_benefits",
@@ -5502,7 +5356,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -5514,8 +5367,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-company_benefits-company_benefit_id.md",
-      "source_markdown_bytes": 17797,
-      "source_markdown_sha256": "e6ae6eb63f6dbbc05344ff02d9c21243f7538aa2576a06e5b9800d2655dc3942",
+      "source_markdown_bytes": 18008,
+      "source_markdown_sha256": "06390b24a89432e75d086356a62f0c074cdd9985d9575fc908c8ee148b2860da",
       "source_openapi_bytes": 17282,
       "source_openapi_sha256": "105a81d105ca8b0e03ab1f56b8eb6b24e8a3c8bc64c550f5eec37f791a8d8d41",
       "page": "get-v1-company_benefits-company_benefit_id",
@@ -5617,7 +5470,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -5629,8 +5481,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-compensations-compensation_id.md",
-      "source_markdown_bytes": 11998,
-      "source_markdown_sha256": "c8ff30b65cd88f7bda368abd8f01f8d10dc8d2788a0adc5dfea488190c83beaa",
+      "source_markdown_bytes": 12209,
+      "source_markdown_sha256": "8b2ea8daf11366a4821d429ddfa88bd115e55bf3e55424a511f130fa3a117b6b",
       "source_openapi_bytes": 11705,
       "source_openapi_sha256": "2c06e53c54b26fad649e217c21fe2086f67229e0d8891599c68b73b34cdd6f12",
       "page": "get-v1-compensations-compensation_id",
@@ -5698,7 +5550,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -5710,8 +5561,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-contractors-contractor_uuid.md",
-      "source_markdown_bytes": 20747,
-      "source_markdown_sha256": "51ff4b47193ab5323b1a91ccff9b4ceacda1f5545be211ab99fa139342171aa9",
+      "source_markdown_bytes": 20958,
+      "source_markdown_sha256": "54fbc946fae59fec4cd4e0787f894ca5ddecaea73a79767d90d33c91f0e4757f",
       "source_openapi_bytes": 20647,
       "source_openapi_sha256": "d1e80f18cbdc2e5368f99b519fd8da41a79dccc84f73f3a048f98d3dc200ea52",
       "page": "get-v1-contractors-contractor_uuid",
@@ -5796,7 +5647,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -5808,8 +5658,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-employee_benefits-employee_benefit_id.md",
-      "source_markdown_bytes": 18149,
-      "source_markdown_sha256": "009c0eb2e0148fadfa581f2117fdbfad6899192697c750453aab6b67324fd33e",
+      "source_markdown_bytes": 18360,
+      "source_markdown_sha256": "f96d0feaa66b8758bb186e834c3021d8a9124ac86dfc9ffe10be175a26c969cc",
       "source_openapi_bytes": 17803,
       "source_openapi_sha256": "66e17996d09be12f8c8fa5c6153c919f6940000a0f061ab81fe7e86ea28e11e5",
       "page": "get-v1-employee_benefits-employee_benefit_id",
@@ -5877,7 +5727,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -5889,8 +5738,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-employees-employee_id-custom_fields.md",
-      "source_markdown_bytes": 10140,
-      "source_markdown_sha256": "bc3c00f38e199967ea9469b562cf23c27af7a2a9d20d8050e3bb2aec3fea0bb1",
+      "source_markdown_bytes": 10351,
+      "source_markdown_sha256": "851fc2af232a2b7ad9ee77af09770eb45a665602a9420bf187b90dd07584f1ff",
       "source_openapi_bytes": 9997,
       "source_openapi_sha256": "df073172b0491b1ce9cc2077c685506b4c4dc4674ed3bc1c7b56d190d8fee6c4",
       "page": "get-v1-employees-employee_id-custom_fields",
@@ -5993,7 +5842,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -6005,8 +5853,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-employees-employee_id-employee_benefits.md",
-      "source_markdown_bytes": 19215,
-      "source_markdown_sha256": "e037dad0d082bee5d4f5ec8f0df6be567dffffb6c12b18ee1046a515589500dc",
+      "source_markdown_bytes": 19426,
+      "source_markdown_sha256": "7674f74cd21590a60459c81155d7e4151fa75ca00f8e4e4cf1bdcf5acc352cbc",
       "source_openapi_bytes": 18799,
       "source_openapi_sha256": "063d07f45c28cf91754eba45598259c2130c8f2ab7cd91c69e84b1ae566bd0f3",
       "page": "get-v1-employees-employee_id-employee_benefits",
@@ -6126,7 +5974,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -6138,8 +5985,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-employees-employee_id-employment_history.md",
-      "source_markdown_bytes": 7935,
-      "source_markdown_sha256": "5dfe89b6966f0c02ce80e050581c1b5ad3d7526a140587cb345ffda104e7cdff",
+      "source_markdown_bytes": 8146,
+      "source_markdown_sha256": "196286720ef19ac05c8f806ebbd9049d0563f4d695b004ad5ea998c4dcda05c3",
       "source_openapi_bytes": 7738,
       "source_openapi_sha256": "82ddb40b51c7c9f435e7b8387d42dd7d2bddc2582b3529ef3d82186a6c8a0b37",
       "page": "get-v1-employees-employee_id-employment_history",
@@ -6207,7 +6054,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -6219,8 +6065,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-employees-employee_id-garnishments.md",
-      "source_markdown_bytes": 18163,
-      "source_markdown_sha256": "104fb070f7dafa714e68a39f07aec818cc487b5eaf99855dfbdfb6e05525ba9e",
+      "source_markdown_bytes": 18374,
+      "source_markdown_sha256": "969cc522bcde4eabda124a290284043a843c38b92a8b3fd7522411d39185c489",
       "source_openapi_bytes": 17631,
       "source_openapi_sha256": "bd12278fc6d690fda6d1e31ed7e41c8236b6ec4911dba72290468390cbbf3372",
       "page": "get-v1-employees-employee_id-garnishments",
@@ -6323,7 +6169,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -6335,10 +6180,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-employees-employee_id-home_addresses.md",
-      "source_markdown_bytes": 10600,
-      "source_markdown_sha256": "af76a8e9a44259315672c213438c4dccdde8c290e964717853a24e1cf44e1a61",
-      "source_openapi_bytes": 10285,
-      "source_openapi_sha256": "1d26ea95bd1f0ff904396b4ed060be8cfec2fc1a7e50041487d6d70e67231d80",
+      "source_markdown_bytes": 11798,
+      "source_markdown_sha256": "354342d1db019c63fe784bcb72785c8dcfd598fce9fb24167217f335d8d3fb00",
+      "source_openapi_bytes": 11272,
+      "source_openapi_sha256": "2327c2d8d798dfb2ca13004c0fc7c37fcec2b01d7df62540328efb58f25cb43d",
       "page": "get-v1-employees-employee_id-home_addresses",
       "tag": "Employee Addresses",
       "method": "GET",
@@ -6404,7 +6249,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -6416,8 +6260,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-employees-employee_id-recurring_reimbursements.md",
-      "source_markdown_bytes": 9588,
-      "source_markdown_sha256": "77ca2524c3b7f879da4b2481da14ba3c0b23676a257fbb17699d69b7b1ff3ee4",
+      "source_markdown_bytes": 9799,
+      "source_markdown_sha256": "1f1cd8788b93bdbccdfd61f61416854ffbef4580bc8e985a4bc79650ad5b40df",
       "source_openapi_bytes": 9418,
       "source_openapi_sha256": "015f85b39854d0210681d298c1a3d2950937b182cef3cc074adb262ed57ae411",
       "page": "get-v1-employees-employee_id-recurring_reimbursements",
@@ -6520,7 +6364,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -6532,8 +6375,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-employees-employee_id-rehire.md",
-      "source_markdown_bytes": 9468,
-      "source_markdown_sha256": "84e57bf66538b31b1c845ca22d6ff2dd6c3631fdd14bfedc4460b7caafccc74a",
+      "source_markdown_bytes": 9679,
+      "source_markdown_sha256": "87256ab1bfb45ef11ba42336e437b500029abad6a58f0a3b123fcf58153a6761",
       "source_openapi_bytes": 9284,
       "source_openapi_sha256": "2f1ff6bcdc8e91608f8f8acf7e07ff39e62de13fd3238527cd35c423a8597553",
       "page": "get-v1-employees-employee_id-rehire",
@@ -6601,7 +6444,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -6613,8 +6455,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-employees-employee_id-terminations.md",
-      "source_markdown_bytes": 9457,
-      "source_markdown_sha256": "48d89963e15099e5b26d0944c099d4b364de35ab764eed9452523d79c3d694c5",
+      "source_markdown_bytes": 9668,
+      "source_markdown_sha256": "6db8fd6078df25b013829d0edeefa991c723337be007153f3f88b2ba3e998b05",
       "source_openapi_bytes": 8913,
       "source_openapi_sha256": "8252b3c31a7a9e7c8c5c4170df70211b6d82c6e8d66e237d7b74a30f50c27caf",
       "page": "get-v1-employees-employee_id-terminations",
@@ -6682,7 +6524,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -6694,8 +6535,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-employees-employee_id-work_addresses.md",
-      "source_markdown_bytes": 10647,
-      "source_markdown_sha256": "74c525512801006da8209e6b8e7e71421f115799673d79f1aa4d10bfba842ea2",
+      "source_markdown_bytes": 10858,
+      "source_markdown_sha256": "95323791cc4ce2e07881cfaddd9b6fefd1345c7d61e3d239b8d9eefe46141268",
       "source_openapi_bytes": 10393,
       "source_openapi_sha256": "1aeee7833f51dad570d450bfb679d9b2332d2986372100f67983f8c2c02da70f",
       "page": "get-v1-employees-employee_id-work_addresses",
@@ -6763,7 +6604,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -6775,10 +6615,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-employees-employee_uuid-section603_high_earner_statuses-effective_year.md",
-      "source_markdown_bytes": 94749,
-      "source_markdown_sha256": "7324029161025a5965cd049ecc02cec5577391e1d67c802846eedb65749c72b8",
-      "source_openapi_bytes": 94262,
-      "source_openapi_sha256": "da6feb0a9191e872aebd106d194af9d8ea4277910fedcb3dc064549f41b196c8",
+      "source_markdown_bytes": 95443,
+      "source_markdown_sha256": "aad55c5e61902d108a78d2387d2691d5572344068348fec208c531d6131341c6",
+      "source_openapi_bytes": 94745,
+      "source_openapi_sha256": "7b579b86ff03d8f244efb04e2deac33519cd7ca66ee528d31968277b4c21bf59",
       "page": "get-v1-employees-employee_uuid-section603_high_earner_statuses-effective_year",
       "tag": "Employee Benefits",
       "method": "GET",
@@ -6861,7 +6701,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -6873,8 +6712,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-employees-employee_uuid-section603_high_earner_statuses.md",
-      "source_markdown_bytes": 8741,
-      "source_markdown_sha256": "29337d1668df77edd0ef353696f8b250a8e5736d9fb0256124d74e1363802bbc",
+      "source_markdown_bytes": 8952,
+      "source_markdown_sha256": "51c4ee1a942573b81d8c6f7280f4dee2eb81e2f0c092bf0aed493d94849c1127",
       "source_openapi_bytes": 8253,
       "source_openapi_sha256": "0694bcd21d58dcfa73e0a80d18ce3895553917b04b0c98bcf99cce6000442b2c",
       "page": "get-v1-employees-employee_uuid-section603_high_earner_statuses",
@@ -6942,7 +6781,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -6954,10 +6792,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-employees.md",
-      "source_markdown_bytes": 55321,
-      "source_markdown_sha256": "ecbf90e38e9b1d60f373eba196f9637daa1f195a7ab91869babc0676845157b0",
-      "source_openapi_bytes": 54842,
-      "source_openapi_sha256": "3a6bc0ed2cea02cb15cc3b03ad0beebb9c99f4f980c0703cf26bac555020048d",
+      "source_markdown_bytes": 56519,
+      "source_markdown_sha256": "2df2ff135e2788dc5c277c7dd05fb3f49180903531159bbc81a1a4ae30c8d08f",
+      "source_openapi_bytes": 55829,
+      "source_openapi_sha256": "6b637528e812a0dd0760dc95b1e66a51702247714c121424e526031239dd122b",
       "page": "get-v1-employees",
       "tag": "Employees",
       "method": "GET",
@@ -7040,7 +6878,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -7052,8 +6889,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-garnishments-child_support.md",
-      "source_markdown_bytes": 7285,
-      "source_markdown_sha256": "74d9f77025939c99dc96bbbe3fb11f6dcbbd9be874695baef3f208da98846e2d",
+      "source_markdown_bytes": 7496,
+      "source_markdown_sha256": "51fa81fdaf583de48934ead73bff0e38fc701389f42973597c293d29ecf6dad7",
       "source_openapi_bytes": 7104,
       "source_openapi_sha256": "f01f3f019c0cd597dd6f5b2760fe3f2aa3befaf2a38853d3d458ebaa8d84f31d",
       "page": "get-v1-garnishments-child_support",
@@ -7103,7 +6940,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -7115,8 +6951,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-garnishments-garnishment_id.md",
-      "source_markdown_bytes": 17641,
-      "source_markdown_sha256": "43b29df56a72c852089004d099649bc2e09000fd02c6ddc7d852480fedcb91d0",
+      "source_markdown_bytes": 17852,
+      "source_markdown_sha256": "26fdf2a66158df2534ec9834f6ea8c875916adf838b9dea9e230389060a14bc9",
       "source_openapi_bytes": 17124,
       "source_openapi_sha256": "f09dd74856a4d6182cca59d8a6cf55621cba95601d6cc6a62180978686449f06",
       "page": "get-v1-garnishments-garnishment_id",
@@ -7184,7 +7020,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -7196,10 +7031,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-home_addresses-home_address_uuid.md",
-      "source_markdown_bytes": 8727,
-      "source_markdown_sha256": "7aba843d98300c57723209a380cb3da665f0a755f168a9473131ee18929a21f6",
-      "source_openapi_bytes": 8414,
-      "source_openapi_sha256": "efc10b3efa2cc764b751fbd05239eb6d0d139c81aa76cab19fb2dc656d18d08d",
+      "source_markdown_bytes": 9925,
+      "source_markdown_sha256": "1730c0c588fdc4276396a63deb4fb04f7da6ee617d3ba8859f6b0a9791373822",
+      "source_openapi_bytes": 9401,
+      "source_openapi_sha256": "641d996024487c15dc6ef2ac3d1a5f8c3bb3eb518bab3d85f028f65a7a8efaf0",
       "page": "get-v1-home_addresses-home_address_uuid",
       "tag": "Employee Addresses",
       "method": "GET",
@@ -7265,7 +7100,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -7277,8 +7111,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-jobs-job_id-compensations.md",
-      "source_markdown_bytes": 13887,
-      "source_markdown_sha256": "bba897bb8b165009f349eb3e0aecd60fcaa3e305d44e7ccdb69582062f14c077",
+      "source_markdown_bytes": 14098,
+      "source_markdown_sha256": "316e17904d2e064ffd7962bb986a80e949c532ca032bcdb8ea287a382d033cb9",
       "source_openapi_bytes": 13220,
       "source_openapi_sha256": "33274c776eb6e0b4becb78db74b733e21800246265c528479b292f968acb2e7e",
       "page": "get-v1-jobs-job_id-compensations",
@@ -7398,7 +7232,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -7410,10 +7243,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-locations-location_id.md",
-      "source_markdown_bytes": 9404,
-      "source_markdown_sha256": "7f2d56e50e72dab89c985d17e5e5ef0c3f10ead8f0ee954d64e4990f82bdff81",
-      "source_openapi_bytes": 9310,
-      "source_openapi_sha256": "24f3876bd61eb28c61dc3aecb24f0a6b26aca86f1dd0979fd7e5cd5036216875",
+      "source_markdown_bytes": 10602,
+      "source_markdown_sha256": "ac4d33b2f66f38c3d18a35c7aeb97912d4b1b7d6fdf1eecef2d836965189b035",
+      "source_openapi_bytes": 10297,
+      "source_openapi_sha256": "547fae804ef06970eeb8f357db0b844f5fa1792cb1ffa0318deb8f3ba1d31610",
       "page": "get-v1-locations-location_id",
       "tag": "Locations",
       "method": "GET",
@@ -7479,7 +7312,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -7491,8 +7323,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-locations-location_uuid-minimum_wages.md",
-      "source_markdown_bytes": 8749,
-      "source_markdown_sha256": "27397f364b2c0ae43cc98ee774a7d06954cfb78b214362a4c57700a6d3ae0352",
+      "source_markdown_bytes": 8960,
+      "source_markdown_sha256": "07db2d91a6c7a1539f15953bf7b2850a0941063c9ac800e15e12b71dbf241ae9",
       "source_openapi_bytes": 8620,
       "source_openapi_sha256": "f33a042997570d371ef7f02821a3296c0ae853033b241e3db90e8b873b1e7f8b",
       "page": "get-v1-locations-location_uuid-minimum_wages",
@@ -7577,7 +7409,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -7589,8 +7420,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-recurring_reimbursements.md",
-      "source_markdown_bytes": 7778,
-      "source_markdown_sha256": "5a8082f780ece307d2a0169f0af8e0631f650fcb81d106402e95fad01322cfe9",
+      "source_markdown_bytes": 7989,
+      "source_markdown_sha256": "2700419f7db6667f042d44e1d948ffcfaf11498e4f8a3489b187fa305c23222a",
       "source_openapi_bytes": 7640,
       "source_openapi_sha256": "9792ca01d65813c0fa65c202b5c5efcdd8929cef78fd310ae5e6c3e2dd61499c",
       "page": "get-v1-recurring_reimbursements",
@@ -7658,7 +7489,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -7670,8 +7500,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-salary_estimates-id.md",
-      "source_markdown_bytes": 11100,
-      "source_markdown_sha256": "6e6f2cbc881ca225a7f8fc3f2248528ff7df08a1e924166aec4c081ad7cc3147",
+      "source_markdown_bytes": 11311,
+      "source_markdown_sha256": "611e469bee044861fac4d668036899e8e960dd2635dd7d856609ae92a91e32e1",
       "source_openapi_bytes": 10857,
       "source_openapi_sha256": "a347b1996b2e4fe78a6986ae8a121e2e86ad794c57ebf166bd74ace636d137cf",
       "page": "get-v1-salary_estimates-id",
@@ -7739,7 +7569,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -7751,10 +7580,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-salary_estimates-occupations.md",
-      "source_markdown_bytes": 91644,
-      "source_markdown_sha256": "3877c36fd1abdc11484e17839006682c97c3a126967e5f7621770fd06a8e5c62",
-      "source_openapi_bytes": 91064,
-      "source_openapi_sha256": "442b5e284f0f437f5cab10054ab2ae6fd93ec90caae3a564dc0906bf2a10cb61",
+      "source_markdown_bytes": 92338,
+      "source_markdown_sha256": "0f6d259b72dad19db0d87bbddff8fc5a9fe1a3d0b36e4e92e1cc9334ff0fdb3b",
+      "source_openapi_bytes": 91547,
+      "source_openapi_sha256": "a2dd80edf9c70cbffe4c052fa67cfdcfa47eb4f588e0229428da824b2c103474",
       "page": "get-v1-salary_estimates-occupations",
       "tag": "Salary Estimates",
       "method": "GET",
@@ -7829,8 +7658,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-terminations-employee_id.md",
-      "source_markdown_bytes": 9291,
-      "source_markdown_sha256": "1e3baa08a3505ef03e9ff755404d4398c97ab96c84582237d6aa0cb72486c123",
+      "source_markdown_bytes": 9502,
+      "source_markdown_sha256": "d874d6b551f9b06673d643be48065a9ba914415e5b11fa3705ddbeeb041d389a",
       "source_openapi_bytes": 8752,
       "source_openapi_sha256": "9985bc119a5053c139a2361f6b817d8be10fa396fccba965c79e13f1c71ccab1",
       "page": "get-v1-terminations-employee_id",
@@ -7898,7 +7727,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -7910,8 +7738,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-time_off_policies-time_off_policy_uuid.md",
-      "source_markdown_bytes": 13354,
-      "source_markdown_sha256": "0bbfb02f0c8b2185909e7c3a2dd70eead731085946dda5b5f2f1714ecac0cf25",
+      "source_markdown_bytes": 13565,
+      "source_markdown_sha256": "cbc4da1769198bd81250f1fa153d4423d232820fc59adb53371faff96e6f091a",
       "source_openapi_bytes": 13239,
       "source_openapi_sha256": "3dbc37241f00606ff23d2ed271ff7fb48afccada231ffbfb1233b36acab011fb",
       "page": "get-v1-time_off_policies-time_off_policy_uuid",
@@ -7979,7 +7807,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -7991,8 +7818,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-token-info.md",
-      "source_markdown_bytes": 6051,
-      "source_markdown_sha256": "ee299988b417f06916f439e6af70bfc1e2e2debcec9dbdc3f956d767375f6548",
+      "source_markdown_bytes": 6262,
+      "source_markdown_sha256": "df31916f97edf77ca943adf775441a162f966af879442f0e29b85704ca879d9f",
       "source_openapi_bytes": 5727,
       "source_openapi_sha256": "426137494bdda8758bf5b9defaa257998b259b15c3b35b4f34293855b52a64e7",
       "page": "get-v1-token-info",
@@ -8049,8 +7876,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-webhook-subscription-uuid.md",
-      "source_markdown_bytes": 9349,
-      "source_markdown_sha256": "d356ced9e6924d16b8c4664c6d7ae286f448ada95f81488450cfd00560ee11cc",
+      "source_markdown_bytes": 9560,
+      "source_markdown_sha256": "4213c7e3c679c03e147f22897baaf2520be99129b1ee1ee42fd706263b1e304a",
       "source_openapi_bytes": 8971,
       "source_openapi_sha256": "d8527745816f551a3a0dee683f4747571bb81fab1f3c204cfa2586f45d40606d",
       "page": "get-v1-webhook-subscription-uuid",
@@ -8118,7 +7945,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -8130,8 +7956,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-webhook-subscription-verification-token-uuid.md",
-      "source_markdown_bytes": 7419,
-      "source_markdown_sha256": "3a758371a6614fce259da6bf9facd155a5f4a10e85f555698c7bc268b571e68c",
+      "source_markdown_bytes": 7630,
+      "source_markdown_sha256": "1b57a2b16de8e0630379052541319347e0ea782a7ef6b8d3b5450ed23837b1e8",
       "source_openapi_bytes": 6986,
       "source_openapi_sha256": "9f40b2effb3726526e380432aabe8ec0d228b8082a3c64c7ff6c89a74e4899a7",
       "page": "get-v1-webhook-subscription-verification-token-uuid",
@@ -8208,8 +8034,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-webhook-subscriptions.md",
-      "source_markdown_bytes": 6251,
-      "source_markdown_sha256": "3d3be984d5fc22956decf74826b15425bcd5bf5389b57d09f35e89ea02ae16a5",
+      "source_markdown_bytes": 6462,
+      "source_markdown_sha256": "5404180cc0ce2f2f04abcdb8d61d68585192916f2a2a8995c9d7c4f5e9764946",
       "source_openapi_bytes": 5859,
       "source_openapi_sha256": "f2a80a45b9371b7dcddad994e100e349786dc13e71ae3131bd36b38f832180a0",
       "page": "get-v1-webhook-subscriptions",
@@ -8259,7 +8085,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -8271,8 +8096,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-webhooks-health_check.md",
-      "source_markdown_bytes": 4357,
-      "source_markdown_sha256": "1917cc91e45633b2516f8bacb77622cc6a0b64c7864a5ceebf843ff06c6f2713",
+      "source_markdown_bytes": 4568,
+      "source_markdown_sha256": "e530cc17475a2d00f38271c2826f31cda2aee7c6e501a7f3f19bb03e865db840",
       "source_openapi_bytes": 3912,
       "source_openapi_sha256": "2df2245287a0aa9d18a333964bfe3f59651b11a8c86d5d3f605cfb4a9dfe7680",
       "page": "get-v1-webhooks-health_check",
@@ -8331,8 +8156,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-v1-work_addresses-work_address_uuid.md",
-      "source_markdown_bytes": 8436,
-      "source_markdown_sha256": "10732cd158e423c8df38f1a0688d36e7ac0de7cdb28c101ec4e8348b03fcf97d",
+      "source_markdown_bytes": 8647,
+      "source_markdown_sha256": "c18a085ababa4c481d5778e22b0d5fa7d9ce0e63932dd4273516f219b6039ef1",
       "source_openapi_bytes": 8278,
       "source_openapi_sha256": "8885a3195f7a3e53572b92264ad201ca000a0bbf164b9cf7f3ad9a7fc520f0fa",
       "page": "get-v1-work_addresses-work_address_uuid",
@@ -8400,7 +8225,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -8412,10 +8236,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/get-version-employees-time_off_activities.md",
-      "source_markdown_bytes": 96275,
-      "source_markdown_sha256": "4b71039480c8946a98a70fe802c036488ad1d2c46a1e63a9bdb846bfdf3abe71",
-      "source_openapi_bytes": 96126,
-      "source_openapi_sha256": "cc8c4a5fc0888befc956ad2a815d804a2a2a387bd98505f957b9629c748fbea9",
+      "source_markdown_bytes": 96969,
+      "source_markdown_sha256": "d7064e528fc6323c80967a6fbaa335f66c90db117f5b2e163a2e1cc08916e58f",
+      "source_openapi_bytes": 96609,
+      "source_openapi_sha256": "d6d0d5f73c47013e81783bc07ab77eac6ab2fe6d78ebc1fb7d6c1487f98ccf25",
       "page": "get-version-employees-time_off_activities",
       "tag": "Employees",
       "method": "GET",
@@ -8498,7 +8322,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -8510,8 +8333,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/oauth-access-token.md",
-      "source_markdown_bytes": 8928,
-      "source_markdown_sha256": "da37b7246773f90a83ac7953a8c12fac7c7ee0852c768712b90b0ec0c0cee711",
+      "source_markdown_bytes": 9139,
+      "source_markdown_sha256": "f7c7a61d32cb931d148a33b456706b0fe052b23d880e82b75a1ad6046cb462c4",
       "source_openapi_bytes": 8769,
       "source_openapi_sha256": "8cede30cf673bd4e1c7ca9991a3036f2d1c97d51a660d7dc64592cbb09fe3b5a",
       "page": "oauth-access-token",
@@ -8567,10 +8390,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/patch-v1-employees-employee_uuid-section603_high_earner_statuses-effective_year.md",
-      "source_markdown_bytes": 95516,
-      "source_markdown_sha256": "eac773ba0ea7e40513382673dd27cbb6d55b7f9e5e93dfad48a57a79f841c6a8",
-      "source_openapi_bytes": 95042,
-      "source_openapi_sha256": "cb10bf112c94d526f40d19ba7a4f4bde302853e115be6cc32f2f4a2b54d2ce08",
+      "source_markdown_bytes": 96210,
+      "source_markdown_sha256": "0557f6dec2a9add48cd2dd78075707b883d8eacdd5c2bdb7b38cde574039959f",
+      "source_openapi_bytes": 95525,
+      "source_openapi_sha256": "6bd8b5b6c238fdf1bda0c18f4852db2dc10e99c74faf85cfeec0fabc485aca54",
       "page": "patch-v1-employees-employee_uuid-section603_high_earner_statuses-effective_year",
       "tag": "Employee Benefits",
       "method": "PATCH",
@@ -8670,10 +8493,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-companies-company_uuid-time_tracking-payroll_syncs.md",
-      "source_markdown_bytes": 99981,
-      "source_markdown_sha256": "6f0c84e30fb9b5c148a234b65bd6324c77455a561b90a3cd6be59674526a3130",
-      "source_openapi_bytes": 99432,
-      "source_openapi_sha256": "51d2313444f08bdad4ff3ec5955270612ead7968d713efd5c82ad67cae20f3b5",
+      "source_markdown_bytes": 100675,
+      "source_markdown_sha256": "af9ba4c3e2ca57f86785b502ec22297f993d7141ca8583b34a8f06509e25aa5b",
+      "source_openapi_bytes": 99915,
+      "source_openapi_sha256": "ee1dc09ed0b80524bb184dac2705d164d4693c9ec91d5f2a30eb9644eacae02c",
       "page": "post-companies-company_uuid-time_tracking-payroll_syncs",
       "tag": "Time Tracking",
       "method": "POST",
@@ -8774,10 +8597,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-companies-company_uuid-time_tracking-time_sheets.md",
-      "source_markdown_bytes": 101941,
-      "source_markdown_sha256": "02d8001c9999044ec738d0dfab2eca50a8af646a0886288c6349cd0166c359e0",
-      "source_openapi_bytes": 101635,
-      "source_openapi_sha256": "a478f485b1c1c3dcde046cf32761c61cae951d39a9739cf6eb86c04f576b92b1",
+      "source_markdown_bytes": 102635,
+      "source_markdown_sha256": "7c28f489376d56763d6d87982c40e6a68bc6f70b1174769119e5cd990ef3868d",
+      "source_openapi_bytes": 102118,
+      "source_openapi_sha256": "f2c02a32b607a5acc67336d26020e159c03c5fa20fd2693c09a4b9e0c57b24aa",
       "page": "post-companies-company_uuid-time_tracking-time_sheets",
       "tag": "Time Tracking",
       "method": "POST",
@@ -8902,10 +8725,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-departments.md",
-      "source_markdown_bytes": 95600,
-      "source_markdown_sha256": "4d286fe6afc1e46264eb519697147e4cdefbbf3f840f55967f5da624c768fa42",
-      "source_openapi_bytes": 95494,
-      "source_openapi_sha256": "5a7b8e37c4d44ba16de09861d385bb6a2db65dbeae9a39fad30b8be02c3f8f4c",
+      "source_markdown_bytes": 96294,
+      "source_markdown_sha256": "5703ea09524a06db188a867cb5420520d6e17e1378114a0880b5bb9c5992dd92",
+      "source_openapi_bytes": 95977,
+      "source_openapi_sha256": "d7586aa99f63a92fca2cb31fe62b9119bc2c1f7833631ebcdf5618eaa6bfede2",
       "page": "post-departments",
       "tag": "Departments",
       "method": "POST",
@@ -8988,10 +8811,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-employee-ytd-benefit-amounts-from-different-company.md",
-      "source_markdown_bytes": 94262,
-      "source_markdown_sha256": "c705ec87f344ec94f56810795e558d16a40d8cd77c98a224ef894bb6e69488cf",
-      "source_openapi_bytes": 93824,
-      "source_openapi_sha256": "43f1468822773d33fd9e1d586a218328df1892e5b98144ee5193bd22b09f2b7f",
+      "source_markdown_bytes": 94956,
+      "source_markdown_sha256": "cd2c3528d480a2df8534aaea41988c7e1f611dcbcd242cc949a79799cca8bce6",
+      "source_openapi_bytes": 94307,
+      "source_openapi_sha256": "f112b2a942f75dc41cc6ad15be015b0e7802d6e778e43bc768e2e4f8d6d564fd",
       "page": "post-employee-ytd-benefit-amounts-from-different-company",
       "tag": "Employee Benefits",
       "method": "POST",
@@ -9090,10 +8913,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-payrolls-payroll_uuid-reports-general_ledger.md",
-      "source_markdown_bytes": 96096,
-      "source_markdown_sha256": "ffe006f736f4d75368fd433bb80a91866fa82c0ab0af2e961bc7306908061518",
-      "source_openapi_bytes": 95647,
-      "source_openapi_sha256": "01b06b8830eff03e5f98d8e27795a4b2dbc5b926f01daa067fc4389f47ea1434",
+      "source_markdown_bytes": 96790,
+      "source_markdown_sha256": "3ec81f28b3b4528f0165aefef182a9a7f2a71bbbfa4eb47fbe5106228563ba4e",
+      "source_openapi_bytes": 96130,
+      "source_openapi_sha256": "31ca862d551c1764f3f4e446f08ecc14173f6334fa1776d3eb1b6c9105980694",
       "page": "post-payrolls-payroll_uuid-reports-general_ledger",
       "tag": "Reports",
       "method": "POST",
@@ -9178,10 +9001,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-v1-companies-company_id-company_benefits.md",
-      "source_markdown_bytes": 100975,
-      "source_markdown_sha256": "241cd42802148b860d71035d0caf725034cf843dfcf294f0c466f7c7a95c6800",
-      "source_openapi_bytes": 100397,
-      "source_openapi_sha256": "dda09fbb33fed1e3f9c41ef4a13f043157a03a3f393ced864dba46443bc88fd4",
+      "source_markdown_bytes": 101669,
+      "source_markdown_sha256": "1a321e8d03ee6f13958990b1cf2ec0fbaccad786c68064e31abd3cecd994f4bf",
+      "source_openapi_bytes": 100880,
+      "source_openapi_sha256": "e043337c586eb0f8c18ae3763daefdd61486953753edc6761778514712c158f7",
       "page": "post-v1-companies-company_id-company_benefits",
       "tag": "Company Benefits",
       "method": "POST",
@@ -9266,10 +9089,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-v1-companies-company_id-earning_types.md",
-      "source_markdown_bytes": 94555,
-      "source_markdown_sha256": "7c36fd2da3ffae0949a09dcb7cd8be92e64e60cab0a654bdf218d16a3daa781d",
-      "source_openapi_bytes": 94322,
-      "source_openapi_sha256": "b94e916f6ff3e9c8fd53741532283c67f72b3354db21f1fe849983dda98677cc",
+      "source_markdown_bytes": 95249,
+      "source_markdown_sha256": "a7b97a036ccfc87ddcb5491d085ca2e4f298f459771c00f6aa54c3d68d55f7cb",
+      "source_openapi_bytes": 94805,
+      "source_openapi_sha256": "6e821c9d7342f91fa3e129a990593ea6661da5740207141ca34f894f35e9f9de",
       "page": "post-v1-companies-company_id-earning_types",
       "tag": "Earning Types",
       "method": "POST",
@@ -9352,10 +9175,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-v1-companies-company_id-locations.md",
-      "source_markdown_bytes": 99443,
-      "source_markdown_sha256": "1222348c013abcd425bff1ecd15f353c182a97391d5607473857ebf70471d1b9",
-      "source_openapi_bytes": 98965,
-      "source_openapi_sha256": "5c1c8cd4f19133d9325c722ba63594154055ccf53b2cd3b74348068ac7566403",
+      "source_markdown_bytes": 101124,
+      "source_markdown_sha256": "6934a400cd9a64a1ed86718b41329040e5f8b0ab8dd3e2ec4f5a1e8607e90e2f",
+      "source_openapi_bytes": 100435,
+      "source_openapi_sha256": "86074833836eb9a6fe3069450834e763bd67de905ada82dbe7a1c0e95e78e7d0",
       "page": "post-v1-companies-company_id-locations",
       "tag": "Locations",
       "method": "POST",
@@ -9439,103 +9262,11 @@
       }
     },
     {
-      "source_url": "https://docs.gusto.com/app-integrations/reference/post-v1-companies-company_id-reports-employees_annual_fica_wage.md",
-      "source_markdown_bytes": 95639,
-      "source_markdown_sha256": "d57e415a77fe2a03a893221cc1b3c3b705b8c1616d08a30d3c998e1b18e3e93e",
-      "source_openapi_bytes": 94920,
-      "source_openapi_sha256": "504460183244551c131c1599653ca66650297a46659248924c678514023a9e79",
-      "page": "post-v1-companies-company_id-reports-employees_annual_fica_wage",
-      "tag": "Reports",
-      "method": "POST",
-      "path": "/v1/companies/{company_id}/reports/employees_annual_fica_wage",
-      "operation_id": "post-v1-companies-company_id-reports-employees_annual_fica_wage",
-      "selected": true,
-      "exclusion_reason": null,
-      "security": "company_oauth_bearer",
-      "scopes": [
-        "company_reports:write"
-      ],
-      "pack": "gusto-payroll-time",
-      "op": "post_v1_companies_company_id_reports_employees_annual_fica_wage",
-      "request_media": [
-        "application/json"
-      ],
-      "selected_request_media": "application/json",
-      "request_body_shape": "object",
-      "request_presence": "projected_top_level",
-      "request_nullable_paths": [],
-      "request_read_only_paths": [],
-      "request_write_only_paths": [],
-      "request_int64_paths": [],
-      "response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_shape": "object",
-      "response_write_only_paths": [],
-      "response_int64_paths": [],
-      "parameters": [
-        {
-          "name": "X-Gusto-API-Version",
-          "in": "header",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": null,
-          "serialization": "scalar",
-          "pagination_owned": false,
-          "credential_or_version_owned": true,
-          "emitted_key": null
-        },
-        {
-          "name": "company_id",
-          "in": "path",
-          "required": true,
-          "schema_type": "string",
-          "schema_format": null,
-          "serialization": "scalar",
-          "pagination_owned": false,
-          "credential_or_version_owned": false,
-          "emitted_key": "company_id"
-        }
-      ],
-      "emitted_args": [
-        {
-          "key": "company_id",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "body.start_year",
-          "type": "number",
-          "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "body.end_year",
-          "type": "number",
-          "required": true,
-          "affects_target": true
-        }
-      ],
-      "result_path": null,
-      "pagination": null,
-      "manual_pagination": null,
-      "risk": "write",
-      "approval": "always",
-      "tags": null,
-      "idempotency": "non_idempotent",
-      "error_contract": {
-        "transport": "non-2xx responses fail the step",
-        "envelope": "errors[] with error_key, category, message, optional nested errors and metadata"
-      }
-    },
-    {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-v1-companies-company_uuid-contractors.md",
-      "source_markdown_bytes": 112364,
-      "source_markdown_sha256": "ee604819f6f9289161b4dfefd6b78754332cfa4c5ed31c478afa49f7ded303f8",
-      "source_openapi_bytes": 112232,
-      "source_openapi_sha256": "bd0cf6f990cf71bfdd836cd0d77c6ecfe34b0e837a6b22436e45c1a2f9b74c58",
+      "source_markdown_bytes": 113058,
+      "source_markdown_sha256": "e7ccbaba1db5ae6746692a3c5f67557d895ab905932cce0b8e56961469ce4887",
+      "source_openapi_bytes": 112715,
+      "source_openapi_sha256": "813c72212809d3b851469e3abe1aad16ca6df23e6cd101b26cebbb4b2454ffe9",
       "page": "post-v1-companies-company_uuid-contractors",
       "tag": "Contractors",
       "method": "POST",
@@ -9620,10 +9351,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-v1-compensations-compensation_id.md",
-      "source_markdown_bytes": 102054,
-      "source_markdown_sha256": "cde74daa356c5ca9ff229aea391c336d984d74880fd72279d4f967fa64a893ea",
-      "source_openapi_bytes": 101541,
-      "source_openapi_sha256": "37cfe7d3338ac27dff718acbe9b189049795a467383124061d7e866f1c2a775c",
+      "source_markdown_bytes": 102748,
+      "source_markdown_sha256": "acddb007479770564958f43b345e75003c4a433cd0e2d13a1cfc6004a230f481",
+      "source_openapi_bytes": 102024,
+      "source_openapi_sha256": "a4159ad65ea90369a853982ab55d5487aa296eb870fea15d89b3c5edec1e659a",
       "page": "post-v1-compensations-compensation_id",
       "tag": "Jobs and Compensations",
       "method": "POST",
@@ -9742,8 +9473,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-v1-disconnect-app-integration.md",
-      "source_markdown_bytes": 6443,
-      "source_markdown_sha256": "55c0ece05ab66b84cd624d3d9e2869edc0d9fa01ce64a3f054fd4c0a87f002f5",
+      "source_markdown_bytes": 6654,
+      "source_markdown_sha256": "8b48c713048c07a1ce218b628ed77aca8891b7b1b096e8cf54d920200c4557e5",
       "source_openapi_bytes": 5899,
       "source_openapi_sha256": "d0d02b1cce7c830a0b1abfc0d195b79efc74c476450e31c2e1873d5f97f4ba8d",
       "page": "post-v1-disconnect-app-integration",
@@ -9818,10 +9549,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-v1-employees-employee_id-employee_benefits.md",
-      "source_markdown_bytes": 114205,
-      "source_markdown_sha256": "9e13f3c72e5658afdd88c437ec770521ab11e0a306e8cf2f750ca99184ebe81b",
-      "source_openapi_bytes": 113763,
-      "source_openapi_sha256": "e2f70088c93c6c4472fcae5b3417e576263a598831f8e6901953b3aa00509f87",
+      "source_markdown_bytes": 114899,
+      "source_markdown_sha256": "7ff33c411581088c920a68715480a84f3a6a70dcb05c0de6d956a260724832ee",
+      "source_openapi_bytes": 114246,
+      "source_openapi_sha256": "0b7cf60a518e0d947a1ae42b96ae923573f0fc2f654a5c2a34fc4c3908de33e1",
       "page": "post-v1-employees-employee_id-employee_benefits",
       "tag": "Employee Benefits",
       "method": "POST",
@@ -9911,10 +9642,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-v1-employees-employee_id-garnishments.md",
-      "source_markdown_bytes": 110318,
-      "source_markdown_sha256": "859b6f00656470e4e1c82ab7bc7a1244482044a6d9617fad3bad75e06a772b66",
-      "source_openapi_bytes": 109797,
-      "source_openapi_sha256": "3f6d9d08b4395e7332e5cb659fd703d0995bb76323aed84fc76226456ba41442",
+      "source_markdown_bytes": 111012,
+      "source_markdown_sha256": "653b4167fc8ef83632f2902ae6862f234f52cea1922f7284869f89681ef92f28",
+      "source_openapi_bytes": 110280,
+      "source_openapi_sha256": "59acccc2e0934a65541dbb88b4fa3011c721d81c8681195d210d2580a1eb95cc",
       "page": "post-v1-employees-employee_id-garnishments",
       "tag": "Garnishments",
       "method": "POST",
@@ -10007,10 +9738,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-v1-employees-employee_id-home_addresses.md",
-      "source_markdown_bytes": 96609,
-      "source_markdown_sha256": "601169292aecf8de427912276913f595f60ea288bc0a748a77803913e2be75de",
-      "source_openapi_bytes": 96292,
-      "source_openapi_sha256": "68bf97f2d5ee271867059357e9e29fbb1781f84fdb63bc8f65cd7561c8957784",
+      "source_markdown_bytes": 98290,
+      "source_markdown_sha256": "6310b5c204b8798337868f567c82b0023f3a042de970cf0d78815c72c9ec2351",
+      "source_openapi_bytes": 97762,
+      "source_openapi_sha256": "62e1fc98bbdd9f7cd94c63414865dc42c4a27246e354c6d4721e0b841c66f5ff",
       "page": "post-v1-employees-employee_id-home_addresses",
       "tag": "Employee Addresses",
       "method": "POST",
@@ -10096,8 +9827,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-v1-employees-employee_id-recurring_reimbursements.md",
-      "source_markdown_bytes": 9109,
-      "source_markdown_sha256": "c19f7a9caa95f43ebc0875838f81a81653daf48039323c48d9872f12becb88b7",
+      "source_markdown_bytes": 9320,
+      "source_markdown_sha256": "75c2d72cb78e270cc88dbb39673ebd24f1b57ee345ab0c7b6c3c219f51027125",
       "source_openapi_bytes": 8957,
       "source_openapi_sha256": "91a0d4f246b147605b94c27d230ab73c82b23f1f033aaaa96fc4826933e59838",
       "page": "post-v1-employees-employee_id-recurring_reimbursements",
@@ -10188,10 +9919,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-v1-employees-employee_id-rehire.md",
-      "source_markdown_bytes": 97964,
-      "source_markdown_sha256": "eb08b0e6b93ea5bdebf1f4996aaa57e586218bf031d8cef54bdbb6a4f11b4e33",
-      "source_openapi_bytes": 97794,
-      "source_openapi_sha256": "8af3e89bbae6094da7f248a49c989c09de6f1587a75fe601731b262895fcf390",
+      "source_markdown_bytes": 98658,
+      "source_markdown_sha256": "b5c79182671c60a6500a7dc6168547d303ff759b6089084e1f50484a55fde9d8",
+      "source_openapi_bytes": 98277,
+      "source_openapi_sha256": "dc0e9f793af7eed45ac970097c12a260b2541a88d979b32ad039bb848603dc11",
       "page": "post-v1-employees-employee_id-rehire",
       "tag": "Employee Employments",
       "method": "POST",
@@ -10298,10 +10029,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-v1-employees-employee_id-salary_estimates.md",
-      "source_markdown_bytes": 101225,
-      "source_markdown_sha256": "275cd87c274bd69e8b2057e66c6faf9787f88aa54a2ccf9133a2158d96cab217",
-      "source_openapi_bytes": 100556,
-      "source_openapi_sha256": "f0e789e91329813df694c138872bbce2339c5f27d5a3bc775a24e18b3d9f2ac9",
+      "source_markdown_bytes": 101919,
+      "source_markdown_sha256": "d37dc86272a7159494189385af6713e00b64a3c71943242e159f3084a0e8d267",
+      "source_openapi_bytes": 101039,
+      "source_openapi_sha256": "d0d615f6fbe924b6210b1b32f24aae87b977f9d92c2d1c4b48ce44ec8aee0168",
       "page": "post-v1-employees-employee_id-salary_estimates",
       "tag": "Salary Estimates",
       "method": "POST",
@@ -10386,10 +10117,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-v1-employees-employee_id-terminations.md",
-      "source_markdown_bytes": 97694,
-      "source_markdown_sha256": "a33d50425a9948fe13d2074841d1a51c4526fda1061577a156723db83cf43b4d",
-      "source_openapi_bytes": 97194,
-      "source_openapi_sha256": "d9fadc1c102eeba193d59a02921cfe2c25c7c67c5a6480de5fa60fa6d5f3aaf1",
+      "source_markdown_bytes": 98388,
+      "source_markdown_sha256": "d0be405d746281c4b06d7115818ba246c2821ab3d9f31a62a8adf1b737673dea",
+      "source_openapi_bytes": 97677,
+      "source_openapi_sha256": "587ec21cef8befd20661616511c8ca2fa2db2abad96de38e8e8b114cfe1dd27a",
       "page": "post-v1-employees-employee_id-terminations",
       "tag": "Employee Employments",
       "method": "POST",
@@ -10478,10 +10209,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-v1-employees-employee_id-work_addresses.md",
-      "source_markdown_bytes": 95598,
-      "source_markdown_sha256": "f63d8518d018a73dadd069a538a128bc810eabc463b8d070261e4bba0409f891",
-      "source_openapi_bytes": 95393,
-      "source_openapi_sha256": "15b402da6ca0b9a84019871e3abe561a758b48d63f16c6d6871d00ef14da881f",
+      "source_markdown_bytes": 96292,
+      "source_markdown_sha256": "af4a0ca51a451db598ef96e4fa9eba9d829979a5c89fd711b56fb13d97b65654",
+      "source_openapi_bytes": 95876,
+      "source_openapi_sha256": "b55163a338dab0172f8aeff8f1bd0ef8b43b959344c6b7f31accce9d2d7f27e1",
       "page": "post-v1-employees-employee_id-work_addresses",
       "tag": "Employee Addresses",
       "method": "POST",
@@ -10564,10 +10295,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-v1-employees-employee_uuid-section603_high_earner_statuses.md",
-      "source_markdown_bytes": 95975,
-      "source_markdown_sha256": "78a6c3fe44affe359d41e8dc17fad1b684b75c36486b3227eb3f7610f59eb002",
-      "source_openapi_bytes": 95501,
-      "source_openapi_sha256": "7bb9ad758182a14d4d0927ab42de3ba5e073c80bd4d6abfe304d749c08a54c22",
+      "source_markdown_bytes": 96669,
+      "source_markdown_sha256": "559da975506f91a21797c125ace277f3db39913ff7e3d94dcb5c5dc3414409d0",
+      "source_openapi_bytes": 95984,
+      "source_openapi_sha256": "7b01ed92a13f7d49e2233a5590f9a4f9cabfa58e94b36fa4377a1d3de51c4769",
       "page": "post-v1-employees-employee_uuid-section603_high_earner_statuses",
       "tag": "Employee Benefits",
       "method": "POST",
@@ -10656,10 +10387,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-v1-employees.md",
-      "source_markdown_bytes": 141453,
-      "source_markdown_sha256": "1ddbbd458c59cc6039e5eb40632ba71246cff4550170b03e0954d0ebfb0347dd",
-      "source_openapi_bytes": 141349,
-      "source_openapi_sha256": "29720f1cd1732664b41c3fea1e131613b9cd0a0e230af2db5cffd451ad78f54c",
+      "source_markdown_bytes": 143134,
+      "source_markdown_sha256": "f54ab679c8e5f91482978000a9002cde4d56f7a1b9d10b6764026350bac3fa90",
+      "source_openapi_bytes": 142819,
+      "source_openapi_sha256": "d7c9b0aae46b30d5b8aa97f9ec8656851e02feb8aa560a468ddf2d1b85092b91",
       "page": "post-v1-employees",
       "tag": "Employees",
       "method": "POST",
@@ -10744,10 +10475,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-v1-payrolls-payroll_id-calculate_accruing_time_off_hours.md",
-      "source_markdown_bytes": 96870,
-      "source_markdown_sha256": "eff63afa692a130b38d84238fa57a77c3e97a0023af0226d0cb2beee3058c9de",
-      "source_openapi_bytes": 96177,
-      "source_openapi_sha256": "373ca2fbc93dac86f25effde6cfeca5e00966a5440a7e3e5697e327d131eb05d",
+      "source_markdown_bytes": 97564,
+      "source_markdown_sha256": "38b3b957fccd90a5450da7d2dfabdfdb08ec39d1479d5e008fcd176bc19db6f8",
+      "source_openapi_bytes": 96660,
+      "source_openapi_sha256": "f2d6135679610bbae31363c26e86ad9676c06ef2e32269dd0b5c6b20ff97444c",
       "page": "post-v1-payrolls-payroll_id-calculate_accruing_time_off_hours",
       "tag": "Time Off Policies",
       "method": "POST",
@@ -10844,7 +10575,6 @@
       "manual_pagination": null,
       "risk": "read",
       "approval": "ask",
-      "approval_reason": "privacy_surface",
       "tags": [
         "sensitive-read"
       ],
@@ -10856,10 +10586,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-v1-provision.md",
-      "source_markdown_bytes": 97033,
-      "source_markdown_sha256": "2a18d1a1869c093ce0f7aee6366fa712d788c5aa416626a94d146cba40a909f7",
-      "source_openapi_bytes": 96040,
-      "source_openapi_sha256": "309e9ce2768515b28704a1ad53a2fc09469c20350ea93c64e3fe59fafea9f049",
+      "source_markdown_bytes": 97727,
+      "source_markdown_sha256": "a63494f5f712a2946379a3e4c29c4b41a532e3812f716decdfbb2c7162f713b8",
+      "source_openapi_bytes": 96523,
+      "source_openapi_sha256": "95b64c6c76f1c85bd7b7f33f72b3ba0d9bfa932dc1de37eb8a39eaf4b696155f",
       "page": "post-v1-provision",
       "tag": "Companies",
       "method": "POST",
@@ -10933,10 +10663,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-v1-salary_estimates-uuid-accept.md",
-      "source_markdown_bytes": 98326,
-      "source_markdown_sha256": "3951fa92c4dfa5605d698f07799b24d19ae3bc5f88bb9ef7b2fc37e8e1db43cc",
-      "source_openapi_bytes": 97954,
-      "source_openapi_sha256": "ae3c66de81644605ccc4081c572d6cfb4d8b4f44cb18a21eb2afe65597de163b",
+      "source_markdown_bytes": 99020,
+      "source_markdown_sha256": "c777fac7d34196b4b17c9c2d9aca9aebe541f63f1a40b08fea248b58b68fb5fa",
+      "source_openapi_bytes": 98437,
+      "source_openapi_sha256": "b6147dd410b292538ac377c664106935e7252f746d2cada95ee2847d612a46b3",
       "page": "post-v1-salary_estimates-uuid-accept",
       "tag": "Salary Estimates",
       "method": "POST",
@@ -11019,10 +10749,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/post-v1-webhook-subscription.md",
-      "source_markdown_bytes": 94377,
-      "source_markdown_sha256": "aa962079df890979887151b84ca7897536058be6591f8a2e5c45068a53e7b506",
-      "source_openapi_bytes": 93937,
-      "source_openapi_sha256": "2b069e29981e1ab49d84ebb9a8ed59f29b19f3c8c6473a24084c772c06f5f61b",
+      "source_markdown_bytes": 95071,
+      "source_markdown_sha256": "f842a0c89d4e83d3baf9b926730643751be47c1b85f691081f6ed5d07badbed3",
+      "source_openapi_bytes": 94420,
+      "source_openapi_sha256": "2c68339d1953d2f64009273020e25388f879a14aabcd11eb82d9334d5b70bc5b",
       "page": "post-v1-webhook-subscription",
       "tag": "Webhooks",
       "method": "POST",
@@ -11094,10 +10824,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-add-people-to-department.md",
-      "source_markdown_bytes": 96907,
-      "source_markdown_sha256": "6fe47e5c5e71e139fe6057b3bd1cd05574c23e228e35677d8c2b8eb38fb6c688",
-      "source_openapi_bytes": 96768,
-      "source_openapi_sha256": "91738193a22bf67c3cb02edb5cd3016d60da0cbd5e1f2930c5944d70f0ebc096",
+      "source_markdown_bytes": 97601,
+      "source_markdown_sha256": "78b711750e16b914f6aec7f407dcd5a3361455f4c5fd7a43cf6ea7cbd5b35b89",
+      "source_openapi_bytes": 97251,
+      "source_openapi_sha256": "8d5d0725a0a293efdf29b5b6a28a038f66fdcb2ad4445b81f5b584aac96f9fa4",
       "page": "put-add-people-to-department",
       "tag": "Departments",
       "method": "PUT",
@@ -11192,10 +10922,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-departments.md",
-      "source_markdown_bytes": 98520,
-      "source_markdown_sha256": "25d695f00da06cd12c386873e70307f5288363bf2977b50c3f93943691940df0",
-      "source_openapi_bytes": 98414,
-      "source_openapi_sha256": "c7d1c8f56f8fe8b27042b351de70930588f119dc3ed58be1fae2adffc148d954",
+      "source_markdown_bytes": 99214,
+      "source_markdown_sha256": "7f01cca7362a38a67d45afa2243b2971568b0d7b1f11cfa1146878deb274bb5c",
+      "source_openapi_bytes": 98897,
+      "source_openapi_sha256": "9957cf416897d6af53c98a12bbcf7bdb1219b78034b0349086d961c908d95d0e",
       "page": "put-departments",
       "tag": "Departments",
       "method": "PUT",
@@ -11284,10 +11014,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-remove-people-from-department.md",
-      "source_markdown_bytes": 96935,
-      "source_markdown_sha256": "5a248be7243f25d6fd98ec911e2de6e619a1c2c49cfe1647ea282f30d890ef2d",
-      "source_openapi_bytes": 96786,
-      "source_openapi_sha256": "23c44c7f942d028a320d86fe12db22c975f1e1e8f680fed420d1fc6e9f73c9ba",
+      "source_markdown_bytes": 97629,
+      "source_markdown_sha256": "29e79a71f62b84fc095e0d64306efb7ea1026b81698a7871a6ed61c5444c668f",
+      "source_openapi_bytes": 97269,
+      "source_openapi_sha256": "246a392eb33434e1d3aef6c84704ffd93ca1a8d136db916ecc451478cad0f51a",
       "page": "put-remove-people-from-department",
       "tag": "Departments",
       "method": "PUT",
@@ -11382,10 +11112,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-time_tracking-time_sheets-time_sheet_uuid.md",
-      "source_markdown_bytes": 103256,
-      "source_markdown_sha256": "3394a2fbf1e93c52828f413252dcf3f00889090d37c294920847f227760b48c2",
-      "source_openapi_bytes": 102964,
-      "source_openapi_sha256": "9857305bbfe5d71b1f57558d9e1526ffe6a036cb11b0ac6a33cd67d9078d2d5f",
+      "source_markdown_bytes": 103950,
+      "source_markdown_sha256": "f2036685e2d11a72c912c27098ade07679768e52f58522b39620dfa61180ff35",
+      "source_openapi_bytes": 103447,
+      "source_openapi_sha256": "cdff581ef0b894db83a5dfd1d494cad90f15e3050131fe6dcc9c39f3e4dc4f70",
       "page": "put-time_tracking-time_sheets-time_sheet_uuid",
       "tag": "Time Tracking",
       "method": "PUT",
@@ -11516,10 +11246,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-v1-companies-company_id-earning_types-earning_type_uuid.md",
-      "source_markdown_bytes": 94199,
-      "source_markdown_sha256": "82fa9ce123883bbed7f8f6181d8df3cca477cce82e8e4502c2fa08aac79a77bb",
-      "source_openapi_bytes": 94089,
-      "source_openapi_sha256": "81dfec734d835d54101396b09ddb70a39e4235f09884033b7403c96a438725e5",
+      "source_markdown_bytes": 94893,
+      "source_markdown_sha256": "2051f17f08659810e9ac6d0d2d0db01827d9e438e093f28a18806eb20f252447",
+      "source_openapi_bytes": 94572,
+      "source_openapi_sha256": "236814aefd9d8d63094e8a429f08a9a9ffc88c68fbcb2b4a7578ae3714ea83f5",
       "page": "put-v1-companies-company_id-earning_types-earning_type_uuid",
       "tag": "Earning Types",
       "method": "PUT",
@@ -11619,10 +11349,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-v1-companies-company_id-payrolls-payroll_id-prepare.md",
-      "source_markdown_bytes": 126717,
-      "source_markdown_sha256": "6f2a96f98bb33d9f8b00b1a8ed11f29241411dac91a894ce4f576601ee32be07",
-      "source_openapi_bytes": 125897,
-      "source_openapi_sha256": "42f18129acbcdbde5a9b3086b02b4f89a2fcb965c9fc60ac67280ab71f3c771c",
+      "source_markdown_bytes": 128458,
+      "source_markdown_sha256": "c259f8acba0dc7cb5aaa4578b6d9936f938a3446863f4bb8e109d6dc014e81e7",
+      "source_openapi_bytes": 127365,
+      "source_openapi_sha256": "af19a36521af289bf9819f20026fb69b1b814bce3659be1691e000e263d1adbb",
       "page": "put-v1-companies-company_id-payrolls-payroll_id-prepare",
       "tag": "Payrolls",
       "method": "PUT",
@@ -11776,10 +11506,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-v1-companies-company_id-payrolls.md",
-      "source_markdown_bytes": 136366,
-      "source_markdown_sha256": "4186930073c9f2a74d7c17defcc6e76bdcafb8b155d30a952599a7eaf84084e2",
-      "source_openapi_bytes": 135635,
-      "source_openapi_sha256": "e49633b93bd68bcf19eac2effa9d2d51df793bb30a8a2e14f77c21d160b158cf",
+      "source_markdown_bytes": 137060,
+      "source_markdown_sha256": "5597cedc994613f9eb83687788e8f6800e885560618bd359ef1dadfd48229e5c",
+      "source_openapi_bytes": 136118,
+      "source_openapi_sha256": "239592780e2c28f90901e073a636fd5b342597912955bed9daeb9389fc095772",
       "page": "put-v1-companies-company_id-payrolls",
       "tag": "Payrolls",
       "method": "PUT",
@@ -11899,10 +11629,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-v1-companies.md",
-      "source_markdown_bytes": 112651,
-      "source_markdown_sha256": "b77695f1ac5fc5156097eec87e85dfe9b69bfa1066508bdae70b4c9118612574",
-      "source_openapi_bytes": 112552,
-      "source_openapi_sha256": "c52da1454518969b4052f0ec030e88365695f02c7636f6c55211834df549c8eb",
+      "source_markdown_bytes": 113345,
+      "source_markdown_sha256": "4a377d7b1ac6fb692ee1ed39274d619b149c4064067fe19a02b0baa0be3e7ede",
+      "source_openapi_bytes": 113035,
+      "source_openapi_sha256": "0ad060d2dcd924c7f48b335bb573588e45df4167c3a4ccb5552865e91f7b9139",
       "page": "put-v1-companies",
       "tag": "Companies",
       "method": "PUT",
@@ -11985,10 +11715,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-v1-company_benefits-company_benefit_id-contribution_exclusions.md",
-      "source_markdown_bytes": 96343,
-      "source_markdown_sha256": "7fe63ba264da88d5876b232d62fba8ac5787ab7e790663400929c73147d7e00e",
-      "source_openapi_bytes": 96082,
-      "source_openapi_sha256": "d5d5b65dfc33cc2d145aecb75aa5ffd8cbed735e19b913b7cdbe1d482af3f3b0",
+      "source_markdown_bytes": 97037,
+      "source_markdown_sha256": "01e8cb19a51492cfd9edc160642a94b9c1497396213477f276794832cfe15638",
+      "source_openapi_bytes": 96565,
+      "source_openapi_sha256": "2fed04c32d654561ad7534316854edf9ee3c5cf3afe4f98408ac40afd5f3f1c1",
       "page": "put-v1-company_benefits-company_benefit_id-contribution_exclusions",
       "tag": "Company Benefits",
       "method": "PUT",
@@ -12071,10 +11801,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-v1-company_benefits-company_benefit_id-employee_benefits.md",
-      "source_markdown_bytes": 107587,
-      "source_markdown_sha256": "1ba496d3cc318153a2d676fe3a073af3872aecee5e084cc2f0ec8232f18147f3",
-      "source_openapi_bytes": 106873,
-      "source_openapi_sha256": "a324b4b997746b209822356b70fd6f35bb77a1b017bd313e15761ed8436b7dba",
+      "source_markdown_bytes": 108281,
+      "source_markdown_sha256": "857f4e5feb43c3ae76392b5dddfa07e8f9d58f89ec532a63372331ba05ec1c56",
+      "source_openapi_bytes": 107356,
+      "source_openapi_sha256": "6493203c17c987cbce1cd284d5de55d3322b426586f7f050f3d555dc5526525f",
       "page": "put-v1-company_benefits-company_benefit_id-employee_benefits",
       "tag": "Company Benefits",
       "method": "PUT",
@@ -12169,10 +11899,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-v1-company_benefits-company_benefit_id.md",
-      "source_markdown_bytes": 100968,
-      "source_markdown_sha256": "8fa5948f8c1b0305f304527099356a7fcd7de87c1e4f08ce44e22c18239e0387",
-      "source_openapi_bytes": 100390,
-      "source_openapi_sha256": "dd95e7f60c525a00d8c85eef0573c973c08484e34774eb4e498f75b9cdf1cae3",
+      "source_markdown_bytes": 101662,
+      "source_markdown_sha256": "913ca87417e9220efbf37177abf781a33659b3875420064b7c4f27f13574bedf",
+      "source_openapi_bytes": 100873,
+      "source_openapi_sha256": "1ae20f9959ee30e4adc64d8b89dc66875ebd71d9c5cb71cc5245533c2e34273d",
       "page": "put-v1-company_benefits-company_benefit_id",
       "tag": "Company Benefits",
       "method": "PUT",
@@ -12257,10 +11987,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-v1-compensations-compensation_id.md",
-      "source_markdown_bytes": 102365,
-      "source_markdown_sha256": "1bb092027570c0685ece4be7621186f6dc5b3fd6a9b9ecd64a649d9da30931a9",
-      "source_openapi_bytes": 101965,
-      "source_openapi_sha256": "be81cc51306cdc875b8ac626a49c112cd22d41cc5412a3c1a36a8e9304f5e4b0",
+      "source_markdown_bytes": 103059,
+      "source_markdown_sha256": "d085343aa2fc7663aa21a490aa5582cbf9e33732f7c49b1aae330cf9b794211a",
+      "source_openapi_bytes": 102448,
+      "source_openapi_sha256": "bb8f11e3ef9310a91984f1eed92c37103817b141daf44b78b0070ecf4d72fd13",
       "page": "put-v1-compensations-compensation_id",
       "tag": "Jobs and Compensations",
       "method": "PUT",
@@ -12385,10 +12115,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-v1-contractors-contractor_uuid.md",
-      "source_markdown_bytes": 114773,
-      "source_markdown_sha256": "acd5552747ba94c54b91c10b77b682facb4a91f3efb04f57a3fd024704784b3e",
-      "source_openapi_bytes": 114394,
-      "source_openapi_sha256": "69ac7007fb599b3637614bd6f8b75407d2d0ca8b23edfadc0dabc27adca3a8fb",
+      "source_markdown_bytes": 115467,
+      "source_markdown_sha256": "da986160a69c67be7c9f64b54d69c57eb83a799caa7ccae2df7072f77fcd0cc1",
+      "source_openapi_bytes": 114877,
+      "source_openapi_sha256": "8b66d93c774befc79ce12d867dcc6fad3c4f85d24e0817a5ec2df62b6875ca4d",
       "page": "put-v1-contractors-contractor_uuid",
       "tag": "Contractors",
       "method": "PUT",
@@ -12473,10 +12203,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-v1-employee_benefits-employee_benefit_id.md",
-      "source_markdown_bytes": 113733,
-      "source_markdown_sha256": "98f6b51134a7c6dac4b4edfb4472930266494ca7ee3895ab319f1a9ca793e9e9",
-      "source_openapi_bytes": 113291,
-      "source_openapi_sha256": "40652288c7a3a965f2cb3f385f9e3c065787329b5ea5ec6920c87b4a1af91315",
+      "source_markdown_bytes": 114427,
+      "source_markdown_sha256": "9d9ff6e4feb3fdfc65e3c9490c8d370540dcdc12eb61dcb4115545c56efd0a04",
+      "source_openapi_bytes": 113774,
+      "source_openapi_sha256": "da49c779bda404d96035fb9be391223fe041b4d7cd0344c04b1f6897d16d68e5",
       "page": "put-v1-employee_benefits-employee_benefit_id",
       "tag": "Employee Benefits",
       "method": "PUT",
@@ -12566,10 +12296,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-v1-employees-employee_id-rehire.md",
-      "source_markdown_bytes": 98743,
-      "source_markdown_sha256": "b01c983df33aa6e67e83e8be0dbbe1fed2f945e289c17967c661908107a92cd2",
-      "source_openapi_bytes": 98622,
-      "source_openapi_sha256": "83b2ba24ba70b84ec9d4d27972e0c09f7ea93de385913dba5eb062bd6844fb57",
+      "source_markdown_bytes": 99437,
+      "source_markdown_sha256": "386206f0c7175f0d2a3ac6ecbba568a2435bd2b5f454be0b21c68460730e6944",
+      "source_openapi_bytes": 99105,
+      "source_openapi_sha256": "4d10baeaf1ed2429dd612877705702621a1ffef3006a93d05330dbb1ff786085",
       "page": "put-v1-employees-employee_id-rehire",
       "tag": "Employee Employments",
       "method": "PUT",
@@ -12682,10 +12412,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-v1-employees.md",
-      "source_markdown_bytes": 142616,
-      "source_markdown_sha256": "e23d09f63ba44868afaed9a850ad0c843054d80fae8a11dcb34580487300651b",
-      "source_openapi_bytes": 142512,
-      "source_openapi_sha256": "d723478bcc2aaf30c02733327de763b7f29652cd471b22aeb3e5a685291faff7",
+      "source_markdown_bytes": 144297,
+      "source_markdown_sha256": "af8b5780a6b01e76799475a6116791dc3933c18babeb3bf4f8e825fef5435726",
+      "source_openapi_bytes": 143982,
+      "source_openapi_sha256": "f0fa2f2aa39d13f3103c2b4708defbb431d9abd11b57878fa54ee5b36b246c63",
       "page": "put-v1-employees",
       "tag": "Employees",
       "method": "PUT",
@@ -12771,10 +12501,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-v1-garnishments-garnishment_id.md",
-      "source_markdown_bytes": 109705,
-      "source_markdown_sha256": "fb957de644a794f8eda1a801b4a8666de318de0805c24d9bc2db8884d97be02a",
-      "source_openapi_bytes": 109184,
-      "source_openapi_sha256": "b2f65fa9de97a2291df67328eaf9514d8a84d0188be83e7e8f1e7f06360f2242",
+      "source_markdown_bytes": 110399,
+      "source_markdown_sha256": "a6f1d247922173cf0af7f04addedd6caf7914927305243b7a0e292cecae17e86",
+      "source_openapi_bytes": 109667,
+      "source_openapi_sha256": "97f006114e76d75ad38366aca0cf80e91cd29ba6689dd4b9d74bc10b81546f1d",
       "page": "put-v1-garnishments-garnishment_id",
       "tag": "Garnishments",
       "method": "PUT",
@@ -12867,10 +12597,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-v1-home_addresses-home_address_uuid.md",
-      "source_markdown_bytes": 97184,
-      "source_markdown_sha256": "3596930b8368c2a057c6b3ae10ec8448cdbd970254ea19f574bf70055a871fd4",
-      "source_openapi_bytes": 96867,
-      "source_openapi_sha256": "d0624ca1236d513194ec0b3f0e5582f2dd95f0b16de211e3af2c3392988f4a20",
+      "source_markdown_bytes": 98865,
+      "source_markdown_sha256": "415272bea3e7c23f7a4b650048ebf0c649d226dc95561308d1e8f07b76e1edd6",
+      "source_openapi_bytes": 98337,
+      "source_openapi_sha256": "2e78fb1207d582f5fd4d9208f7183d5cd4e56c0278793753c612e18937cf7938",
       "page": "put-v1-home_addresses-home_address_uuid",
       "tag": "Employee Addresses",
       "method": "PUT",
@@ -12956,10 +12686,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-v1-locations-location_id.md",
-      "source_markdown_bytes": 98985,
-      "source_markdown_sha256": "a0420e6b2fcdd1981c47c25be0f091676b0a337db9ac6eaea77c4c7402d323e8",
-      "source_openapi_bytes": 98884,
-      "source_openapi_sha256": "1b3863ab6060c0d9c849a6692e3f59636aa184ec1025a0b1d70e83a3938ea7b7",
+      "source_markdown_bytes": 100666,
+      "source_markdown_sha256": "be2cd37649c578057672af64529a4fdd08c76a24c981104c6ccaf55dadc4e383",
+      "source_openapi_bytes": 100354,
+      "source_openapi_sha256": "72ccb77fb877e33fcc8e5422dd3bac4a0cb706e7826ddc09a1aef28944e06ac8",
       "page": "put-v1-locations-location_id",
       "tag": "Locations",
       "method": "PUT",
@@ -13044,8 +12774,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-v1-recurring_reimbursements.md",
-      "source_markdown_bytes": 10171,
-      "source_markdown_sha256": "12d16b3c97738a1e241310e14ee106d6654a556fe076d5c81ca9ef2ab58ca6c7",
+      "source_markdown_bytes": 10382,
+      "source_markdown_sha256": "4d9f965a0721ca60aed66a50ab1dd34ee3bffab42e0feb4369105e590da7ffe9",
       "source_openapi_bytes": 10035,
       "source_openapi_sha256": "8098c59faff575494ac73bfc7035588a8ece7d0708f193cba874d20996c616d9",
       "page": "put-v1-recurring_reimbursements",
@@ -13142,10 +12872,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-v1-salary_estimates-id.md",
-      "source_markdown_bytes": 100493,
-      "source_markdown_sha256": "ea19ea60f6d08f944f3a8c3d0b2f4d676a9f7f852808055614fd17a22d31385b",
-      "source_openapi_bytes": 100162,
-      "source_openapi_sha256": "c4e291ad680d3f38364f3860707fb1d891ca610933ccbc2890be0214d8f8c78b",
+      "source_markdown_bytes": 101187,
+      "source_markdown_sha256": "2999b358fcb30fb523a6ab2ecd367f52b57c0fceb82976bc41596607762ef971",
+      "source_openapi_bytes": 100645,
+      "source_openapi_sha256": "760ee6970189f957cbb6539618c7ae3e89bfdaaa1a9f58c6d8ff2f2f1031e638",
       "page": "put-v1-salary_estimates-id",
       "tag": "Salary Estimates",
       "method": "PUT",
@@ -13230,10 +12960,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-v1-terminations-employee_id.md",
-      "source_markdown_bytes": 98290,
-      "source_markdown_sha256": "af8bf85580ced2de4986be07ed60f0b02c5bd04fdd838a0d12473fd81683444d",
-      "source_openapi_bytes": 97747,
-      "source_openapi_sha256": "90576f9a8bbe8815e1100808d31c9cb41501cc10331403e54702dc9fc684d038",
+      "source_markdown_bytes": 98984,
+      "source_markdown_sha256": "6a91c825ce3d7ba9d0833996489f5f0979d5b78fea32eb8982aa57002ec0c1fe",
+      "source_openapi_bytes": 98230,
+      "source_openapi_sha256": "7394b4f1b61d4cfc24b3a37a269e80d8ace0149b4ccfccae774025cf10856e1d",
       "page": "put-v1-terminations-employee_id",
       "tag": "Employee Employments",
       "method": "PUT",
@@ -13328,10 +13058,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-v1-time_off_policies-time_off_policy_uuid-add_employees.md",
-      "source_markdown_bytes": 101187,
-      "source_markdown_sha256": "06f0b8172e2329ae7fe89d486593e0c43f898ed6605fbe54fc5f5d563aebbe54",
-      "source_openapi_bytes": 100909,
-      "source_openapi_sha256": "eb527504d535792c87ae31e574db676a5f223ae41887901f5aa03c1e83366a0e",
+      "source_markdown_bytes": 101881,
+      "source_markdown_sha256": "8165ec9ec1330d25109f0e5709e1ff5ba574a7b96098afbd37bdca2a6ef30c25",
+      "source_openapi_bytes": 101392,
+      "source_openapi_sha256": "900d0a55b3b05b7cecf13d3859881d1aaceac26948d42a175c37e8e5e2ff5e8d",
       "page": "put-v1-time_off_policies-time_off_policy_uuid-add_employees",
       "tag": "Time Off Policies",
       "method": "PUT",
@@ -13416,10 +13146,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-v1-verify-webhook-subscription-uuid.md",
-      "source_markdown_bytes": 97147,
-      "source_markdown_sha256": "3b4861e6d839001fe12bdd04dad800229b731ac414000fd3ca47bcba1c60e449",
-      "source_openapi_bytes": 96435,
-      "source_openapi_sha256": "8379d66b210bcfb89bb55d3f4fa84b61a73cc7a1070647054865aa60f52e57bd",
+      "source_markdown_bytes": 97841,
+      "source_markdown_sha256": "ea6d93c6fd1e77ced75c5391b55219d20172dc86b2d91d9e5bf8960b786fe760",
+      "source_openapi_bytes": 96918,
+      "source_openapi_sha256": "5eb3545b88cf5c30f94eba8574ac58dce9ccc1ab37a1e3451d4bf3f132a71b5e",
       "page": "put-v1-verify-webhook-subscription-uuid",
       "tag": "Webhooks",
       "method": "PUT",
@@ -13502,10 +13232,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-v1-webhook-subscription-uuid.md",
-      "source_markdown_bytes": 97356,
-      "source_markdown_sha256": "588a081413473cbc1b4b5b922174f3d48da0d150c5ce991705b59929e7113050",
-      "source_openapi_bytes": 96974,
-      "source_openapi_sha256": "d352cbcd5cf40b7a287cb6e2624ee292e75103514c443f70f69b9ad9a9a587cf",
+      "source_markdown_bytes": 98050,
+      "source_markdown_sha256": "73faefbbeedfa5cb59b0dcb249cfdb90ccf804796411d0ccba3314a7af5a9083",
+      "source_openapi_bytes": 97457,
+      "source_openapi_sha256": "a697130df678047e364422ff06325062ca517b3a417217c44e806ed649387e29",
       "page": "put-v1-webhook-subscription-uuid",
       "tag": "Webhooks",
       "method": "PUT",
@@ -13588,10 +13318,10 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/put-v1-work_addresses-work_address_uuid.md",
-      "source_markdown_bytes": 96142,
-      "source_markdown_sha256": "b09aeeebda60f5eb8d09fd9b8da0fab9cf85892ea81b754ab515e37136a1db68",
-      "source_openapi_bytes": 95979,
-      "source_openapi_sha256": "b444990ea5127ffde9610f9ac43cb4943ceec536edc11afb35256ef680e2dc02",
+      "source_markdown_bytes": 96836,
+      "source_markdown_sha256": "c6bcdc1bb960ec5d55b7aee5ea5ea463e8e6487d6bd49a7f3354849ddfdec033",
+      "source_openapi_bytes": 96462,
+      "source_openapi_sha256": "896cff57633f63b50c261dc4579b94ce6401a6d35a01bc98df31c8a474ee5c5f",
       "page": "put-v1-work_addresses-work_address_uuid",
       "tag": "Employee Addresses",
       "method": "PUT",
@@ -13686,8 +13416,8 @@
     },
     {
       "source_url": "https://docs.gusto.com/app-integrations/reference/revoke-access-token.md",
-      "source_markdown_bytes": 3087,
-      "source_markdown_sha256": "8746e5bd69005289886d0d264d0239c52f4ba85205422f569adf27faadbd2cc8",
+      "source_markdown_bytes": 3298,
+      "source_markdown_sha256": "fe934cf0c8f6587c46b632b259d421c498948475a9b3fd1e3040ca1a6dd30fbf",
       "source_openapi_bytes": 2906,
       "source_openapi_sha256": "6ac0d008333ffdf74b394647fc6818285e021d6f889ff74f3aa008534838d874",
       "page": "revoke-access-token",

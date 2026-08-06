@@ -89,6 +89,7 @@ export const wireRefPicker = (
   // commit/clear must write the id through here or the form reads a stale id.
   let mirrorEl: ElementLike | null = null;
   let hadFocus = false;
+  let restoringFocus = false;
   let destroyed = false;
   let searchSeq = 0;
   let cancelDebounce: (() => void) | null = null;
@@ -278,6 +279,11 @@ export const wireRefPicker = (
   const onFocusin = (event: EventLike): void => {
     if (!isInput(event.target)) return;
     hadFocus = true;
+    // A host repaint can replace the focused input immediately after a
+    // selection. Rewire restores that focus, but the synthetic focus-in must
+    // not reopen the list that the commit just closed. A genuinely new user
+    // focus still opens and searches as usual.
+    if (restoringFocus) return;
     state = openList(state);
     paint();
     const value = (inputEl?.value as string | undefined) ?? '';
@@ -338,7 +344,12 @@ export const wireRefPicker = (
     // Reconcile the freshly-rendered (resting) shell with our live state.
     paint();
     if (hadFocus && inputEl !== null && typeof inputEl.focus === 'function') {
-      inputEl.focus();
+      restoringFocus = true;
+      try {
+        inputEl.focus();
+      } finally {
+        restoringFocus = false;
+      }
     }
   };
 

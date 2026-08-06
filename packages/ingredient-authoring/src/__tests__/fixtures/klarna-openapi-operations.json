@@ -19,7 +19,7 @@
       "klarna-disputes-v4": 2
     },
     "composition_bytes": {
-      "klarna": 77733,
+      "klarna": 77847,
       "klarna-customer-tokens": 1465,
       "klarna-hosted-payment-page": 2549,
       "klarna-order-management": 9639,
@@ -97,7 +97,7 @@
       ],
       "phantom_payment_session_entity_removed": true,
       "read_recipe_session_identity_source": "config.session_id",
-      "normalized_operations_sha256": "0972c2b0c33ecbc4cd2963c5582002d50724a98871fd522f1ce88686c6bb62b5",
+      "normalized_operations_sha256": "dbb5b154ecf6f135f02bc96608343aa76aff277d9f6b45f9d9a416c51ae22802",
       "entities_sha256": "8ea6242f77dd78e11c08603f0eb10b85b3bd04bb72d2cfed0951d3fcc0035a30",
       "recipe_contents_sha256": "369f890fa7d160ca7ca3bb50d2e8de12a7dbf671080b8d0daab196d117946b67",
       "recipes_field_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
@@ -124,14 +124,14 @@
         "payment-session-brief-klarna": 3,
         "update-payment-session-cart-klarna": 3,
         "create-order-from-authorization-klarna": 3,
-        "order-operations-brief-klarna": 2,
-        "payout-reconciliation-brief-klarna": 2,
-        "disputes-queue-digest-klarna": 1,
-        "create-hosted-payment-page-klarna": 1,
-        "capture-order-klarna": 2,
-        "refund-order-klarna": 2
+        "order-operations-brief-klarna": 3,
+        "payout-reconciliation-brief-klarna": 3,
+        "disputes-queue-digest-klarna": 3,
+        "create-hosted-payment-page-klarna": 3,
+        "capture-order-klarna": 3,
+        "refund-order-klarna": 3
       },
-      "all_recipe_files_sha256": "ad9b77508e107f7d4575e082792d35e5f7a079dda0685bc4f460b9da60c2e0ed"
+      "all_recipe_files_sha256": "58c3aef2aea24919fad432ce78e2d587656f267c77de1c4ba5d8e8bc84b59537"
     },
     "source_pin": {
       "omitted": true,
@@ -318,8 +318,8 @@
       "pack": "klarna-disputes-v4",
       "docs_release": "r2606",
       "docs_version": "v2",
-      "embedded_schema_bytes": 189673,
-      "embedded_schema_sha256": "95918ef502922ebe8462ece407e63c7a8ec6bc39811696fc02190a398cddd0eb",
+      "embedded_schema_bytes": 190266,
+      "embedded_schema_sha256": "6aed89db077f628cffb5b3a7a15c76046db218f17366e09a8e83a224f2c86e01",
       "dialect": "openapi",
       "dialect_version": "3.0.3",
       "title": "Klarna Partner Product API - Payment Disputes",
@@ -1274,7 +1274,7 @@
       "migration_gated": false,
       "risk": "write",
       "approval": "ask",
-      "idempotency": null,
+      "idempotency": "non_idempotent",
       "arg_keys": [
         "body.purchase_country",
         "body.purchase_currency",
@@ -1358,7 +1358,7 @@
       "migration_gated": false,
       "risk": "read",
       "approval": "never",
-      "idempotency": null,
+      "idempotency": "safe",
       "arg_keys": [
         "session_id"
       ],
@@ -1424,7 +1424,7 @@
       "migration_gated": false,
       "risk": "write",
       "approval": "ask",
-      "idempotency": null,
+      "idempotency": "non_idempotent",
       "arg_keys": [
         "session_id",
         "body.purchase_country",
@@ -1508,7 +1508,7 @@
       "migration_gated": false,
       "risk": "write",
       "approval": "ask",
-      "idempotency": null,
+      "idempotency": "non_idempotent",
       "arg_keys": [
         "authorization_token",
         "body.purchase_country",

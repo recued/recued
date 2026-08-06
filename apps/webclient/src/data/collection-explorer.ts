@@ -293,18 +293,42 @@ const renderDetail = (
         (f) => [fieldLabel(f), formatFieldValue(f, readDisplayField(rec, f), now)] as [string, string],
       ),
     ];
+    const appendMetaField = (
+      label: string,
+      value: string,
+      collisionLabel: string,
+    ): void => {
+      const existing = metaFields.find(
+        ([candidate, candidateValue]) =>
+          candidate === label && candidateValue.length > 0,
+      );
+      if (existing?.[1] === value) return;
+      metaFields.push([existing === undefined ? label : collisionLabel, value]);
+    };
     // In compact (single-collection) mode, drop the rows that are always
     // redundant / empty there: Received (no timestamp → 0), Modified (===
     // Received), Size (0), Source id (=== record_id). Platform records keep
     // them all (received_at is always a real ingest stamp).
     if (!compact || record.received_at > 0) {
-      metaFields.push(['Received', formatRelativeTime(record.received_at, now)]);
+      appendMetaField(
+        'Received',
+        formatRelativeTime(record.received_at, now),
+        'Added to Recued',
+      );
     }
     if (!compact || record.modified_at !== record.received_at) {
-      metaFields.push(['Modified', formatRelativeTime(record.modified_at, now)]);
+      appendMetaField(
+        'Modified',
+        formatRelativeTime(record.modified_at, now),
+        'Last updated',
+      );
     }
     if (!compact || record.size_bytes > 0) {
-      metaFields.push(['Size', formatBytes(record.size_bytes)]);
+      appendMetaField(
+        'Size',
+        formatBytes(record.size_bytes),
+        'Stored body size',
+      );
     }
     if (!compact || record.source_id !== record.record_id) {
       metaFields.push(['Source id', record.source_id]);
@@ -426,7 +450,7 @@ export const renderCollectionExplorer = (props: CollectionExplorerProps): string
 };
 
 export const COLLECTION_EXPLORER_STYLES = `
-.col-explorer { display: flex; flex-direction: column; gap: 0.75rem; }
+.col-explorer { min-width: 0; display: flex; flex-direction: column; gap: 0.75rem; }
 .col-explorer-recovery { display: grid; justify-items: start; gap: 0.5rem; }
 .col-explorer-btn {
   font: inherit; font-size: 0.8125rem; padding: 0.375rem 0.75rem;
@@ -434,25 +458,28 @@ export const COLLECTION_EXPLORER_STYLES = `
   background: var(--surface); color: var(--fg); cursor: pointer;
 }
 .col-explorer-btn[aria-disabled="true"] { cursor: wait; opacity: 0.65; }
-.col-explorer-instances { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+.col-explorer-instances { min-width: 0; display: flex; flex-wrap: wrap; gap: 0.375rem; }
 .col-explorer-instance-chip {
+  min-width: 0; max-width: 100%; overflow-wrap: anywhere; text-align: left;
   font: inherit; font-size: 0.8125rem; padding: 0.25rem 0.625rem; border-radius: 999px;
   border: 1px solid var(--border); background: transparent; color: var(--fg-muted); cursor: pointer;
 }
 .col-explorer-instance-chip.is-active { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-.col-explorer-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.375rem; }
-.col-explorer-row { }
+.col-explorer-list { min-width: 0; list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.375rem; }
+.col-explorer-row { min-width: 0; }
 .col-explorer-row-btn {
+  min-width: 0;
   width: 100%; text-align: left; display: flex; flex-direction: column; gap: 0.25rem;
   font: inherit; padding: 0.625rem 0.75rem; border: 1px solid var(--border);
   border-radius: 0.5rem; background: var(--surface); color: var(--fg); cursor: pointer;
 }
 .col-explorer-row-btn:hover { background: var(--surface-sunk); }
 .col-explorer-row-title {
+  min-width: 0;
   font-size: 0.875rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.col-explorer-row-summary { display: flex; flex-wrap: wrap; gap: 0.75rem; font-size: 0.8125rem; color: var(--fg-muted); }
-.col-explorer-field { display: inline-flex; gap: 0.3125rem; align-items: baseline; }
+.col-explorer-row-summary { min-width: 0; display: flex; flex-wrap: wrap; gap: 0.75rem; font-size: 0.8125rem; color: var(--fg-muted); }
+.col-explorer-field { min-width: 0; max-width: 100%; display: inline-flex; flex-wrap: wrap; gap: 0.3125rem; align-items: baseline; overflow-wrap: anywhere; }
 .col-explorer-field-label { font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--fg-muted); }
 .col-explorer-detail { display: flex; flex-direction: column; gap: 0.625rem; }
 .col-explorer-detail-bar { margin-bottom: 0.25rem; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap; }
@@ -472,7 +499,7 @@ export const COLLECTION_EXPLORER_STYLES = `
   background: var(--surface-sunk); border-radius: 0.5rem; padding: 0.75rem; color: var(--fg); max-height: 24rem; overflow: auto;
 }
 .col-explorer-detail-raw summary {
-  min-height: 32px; display: inline-flex; align-items: center;
+  min-height: 36px; display: inline-flex; align-items: center;
   font-size: 0.8125rem; color: var(--fg-muted); cursor: pointer;
 }
 .col-explorer-detail-raw pre {
@@ -481,4 +508,7 @@ export const COLLECTION_EXPLORER_STYLES = `
 }
 .col-explorer-empty, .col-explorer-loading, .col-explorer-error { color: var(--fg-muted); font-size: 0.875rem; }
 .col-explorer-error { color: var(--danger); }
+@media (max-width: 360px) {
+  .col-explorer-instance-chip { width: 100%; border-radius: 0.5rem; }
+}
 `;

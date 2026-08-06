@@ -430,6 +430,8 @@ export const TRANSPARENCY_PANEL_STYLES = `
   color: var(--fg);
 }
 [${TRANSPARENCY_PANEL_HOST_ATTR}] .transparency-row {
+  box-sizing: border-box;
+  min-height: 36px;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   gap: 8px;

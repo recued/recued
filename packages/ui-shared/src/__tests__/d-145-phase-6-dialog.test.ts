@@ -33,6 +33,7 @@ import {
   WORK_ENTITY_DIALOG_DISCARD_GUARD_ATTR,
   WORK_ENTITY_DIALOG_DISCARD_KEEP_ACTION,
 } from '../work-entity-page/dialog.js';
+import { WORK_ENTITY_PAGE_STYLES } from '../work-entity-page/styles.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -155,6 +156,12 @@ describe('D-145 PA6 — create dialog', () => {
 });
 
 describe('D-145 PA6 — edit dialog', () => {
+  it('keeps discard-review actions at the shared control floor', () => {
+    expect(WORK_ENTITY_PAGE_STYLES).toContain(
+      '.work-entity-dialog-discard-actions button {\n  min-height: 36px;',
+    );
+  });
+
   it('renders title "Edit Task"', () => {
     const html = renderWorkEntityDialog({
       kind: 'task',

@@ -235,8 +235,21 @@ export interface ExposurePanelMount {
   settle(): Promise<void>;
 }
 
+interface ModalReturnFocusTarget {
+  attr: string;
+  value?: string;
+  childIndex?: number;
+}
+
+interface ModalPhraseSelection {
+  start: number;
+  end: number;
+  direction: 'forward' | 'backward' | 'none' | null;
+}
+
 // The webclient is itself a `/ws` client, so ≥ 1 (DD#3).
 const ASSUMED_ACTIVE_WS = 1;
+let exposurePanelIdSequence = 0;
 
 /** R26.2 Delta 2 — apex picker copy. */
 const APEX_COPY: Record<
@@ -326,6 +339,9 @@ export const mountExposurePanel = (
   let actionError: string | null = null;
   let publicMcpModal: PublicMcpModalState = { kind: 'idle' };
   let wsLockoutModal: WsLockoutModalState = { kind: 'idle' };
+  const modalIdBase = `recued-exposure-modal-${++exposurePanelIdSequence}`;
+  let modalReturnFocus: ModalReturnFocusTarget | null = null;
+  let modalPhraseSelection: ModalPhraseSelection | null = null;
   // DD#4 — set when the ack modal was opened in order to then enable a
   // specific path (the `/mcp` public bit). Cleared on resolve.
   let pendingPathAfterAck: { path: PathRole; resolution: PathResolution } | null =
@@ -509,6 +525,12 @@ export const mountExposurePanel = (
     const row = model.preset_rows.find((r) => r.preset === preset);
     if (row === undefined || row.is_current || row.requires_ddns) return;
     if (row.triggers_ws_lockout) {
+      modalReturnFocus = {
+        attr: EXPOSURE_PRESET_ROW_ATTR,
+        value: preset,
+        childIndex: 0,
+      };
+      modalPhraseSelection = null;
       wsLockoutModal = openWsLockoutModal({
         trigger: { kind: 'preset', preset },
         caller_channel: 'webclient_over_ws',
@@ -540,6 +562,11 @@ export const mountExposurePanel = (
       acknowledgement: state.public_mcp_acknowledgement,
     });
     if (needsAck) {
+      modalReturnFocus = {
+        attr: EXPOSURE_CELL_ATTR,
+        value: `${path}.${cell}`,
+      };
+      modalPhraseSelection = null;
       pendingPathAfterAck = { path, resolution: nextForPath };
       publicMcpModal = openPublicMcpModal('acknowledge');
       actionError = null;
@@ -555,6 +582,11 @@ export const mountExposurePanel = (
       active_ws_connections: ASSUMED_ACTIVE_WS,
     });
     if (lockout !== null) {
+      modalReturnFocus = {
+        attr: EXPOSURE_CELL_ATTR,
+        value: `${path}.${cell}`,
+      };
+      modalPhraseSelection = null;
       wsLockoutModal = openWsLockoutModal({
         trigger: { kind: 'path', resolution: nextForPath },
         caller_channel: 'webclient_over_ws',
@@ -576,6 +608,8 @@ export const mountExposurePanel = (
     const active = isPublicMcpAcknowledgementActive(
       state.public_mcp_acknowledgement,
     );
+    modalReturnFocus = { attr: EXPOSURE_PUBLIC_MCP_BTN_ATTR };
+    modalPhraseSelection = null;
     pendingPathAfterAck = null; // standalone card — record the ack only.
     publicMcpModal = openPublicMcpModal(active ? 'revoke' : 'acknowledge');
     actionError = null;
@@ -641,7 +675,7 @@ export const mountExposurePanel = (
         applyNewState(resp.state);
       }
       publicMcpModal = closePublicMcpModal();
-      render();
+      renderClosedModalAndRestore();
     } catch (err) {
       if (disposed) return;
       const code = networkErrorCodeOf(err);
@@ -657,7 +691,8 @@ export const mountExposurePanel = (
         publicMcpModal = closePublicMcpModal();
         actionError = errorCopyOf(err);
       }
-      render();
+      if (publicMcpModal.kind === 'idle') renderClosedModalAndRestore();
+      else render();
     }
   };
 
@@ -675,7 +710,7 @@ export const mountExposurePanel = (
       if (disposed) return;
       applyNewState(resp.state);
       wsLockoutModal = closeWsLockoutModal();
-      render();
+      renderClosedModalAndRestore();
     } catch (err) {
       if (disposed) return;
       const code = networkErrorCodeOf(err);
@@ -685,7 +720,8 @@ export const mountExposurePanel = (
         wsLockoutModal = closeWsLockoutModal();
         actionError = errorCopyOf(err);
       }
-      render();
+      if (wsLockoutModal.kind === 'idle') renderClosedModalAndRestore();
+      else render();
     }
   };
 
@@ -697,10 +733,18 @@ export const mountExposurePanel = (
     if (wsLockoutModal.kind !== 'idle') {
       wsLockoutModal = closeWsLockoutModal();
     }
-    render();
+    renderClosedModalAndRestore();
   };
 
-  const setModalPhrase = (phrase: string): void => {
+  const setModalPhrase = (
+    phrase: string,
+    selection: ModalPhraseSelection = {
+      start: phrase.length,
+      end: phrase.length,
+      direction: null,
+    },
+  ): void => {
+    modalPhraseSelection = selection;
     if (publicMcpModal.kind !== 'idle') {
       publicMcpModal = typePublicMcpPhrase(publicMcpModal, phrase);
     } else if (wsLockoutModal.kind !== 'idle') {
@@ -887,15 +931,21 @@ export const mountExposurePanel = (
   ): HTMLElement {
     const td = doc.createElement('td');
     td.className = 'exposure-grid-cell';
+    const label = doc.createElement('label');
+    label.className = 'exposure-cell-target';
     const input = doc.createElement('input');
     input.setAttribute('type', 'checkbox');
     input.className = 'exposure-cell-checkbox';
     input.setAttribute(EXPOSURE_CELL_ATTR, `${path}.${cell}`);
     input.setAttribute('aria-label', `${path} ${cell}`);
     if (checked) input.checked = true;
-    if (busy || disabledForDdns) input.disabled = true;
+    if (busy || disabledForDdns) {
+      input.disabled = true;
+      label.className += ' exposure-cell-target-disabled';
+    }
     input.addEventListener('change', () => onCellClick(path, cell));
-    td.appendChild(input);
+    label.appendChild(input);
+    td.appendChild(label);
     if (disabledForDdns) {
       const hint = doc.createElement('span');
       hint.className = 'exposure-hint exposure-hint-inline';
@@ -1038,17 +1088,22 @@ export const mountExposurePanel = (
     overlay.setAttribute(EXPOSURE_MODAL_ATTR, '');
     overlay.setAttribute('role', 'dialog');
     overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-labelledby', `${modalIdBase}-title`);
+    overlay.setAttribute('aria-describedby', `${modalIdBase}-description`);
+    overlay.tabIndex = -1;
 
     const card = doc.createElement('div');
     card.className = 'exposure-modal-card';
 
     const h = doc.createElement('h4');
     h.className = 'exposure-modal-title';
+    h.setAttribute('id', `${modalIdBase}-title`);
     h.textContent = title;
     card.appendChild(h);
 
     const sub = doc.createElement('p');
     sub.className = 'exposure-modal-subtitle';
+    sub.setAttribute('id', `${modalIdBase}-description`);
     sub.textContent = subtitle;
     card.appendChild(sub);
 
@@ -1081,8 +1136,8 @@ export const mountExposurePanel = (
     promptText: string,
     typed: string,
     submitting: boolean,
-  ): void {
-    if (promptText.length === 0) return;
+  ): HTMLInputElement | null {
+    if (promptText.length === 0) return null;
     const label = doc.createElement('label');
     label.className = 'exposure-modal-phrase-label';
     label.textContent = promptText;
@@ -1095,10 +1150,16 @@ export const mountExposurePanel = (
     if (submitting) input.disabled = true;
     input.addEventListener('input', (event) => {
       const t = event.target as HTMLInputElement | null;
-      setModalPhrase(t?.value ?? '');
+      const value = t?.value ?? '';
+      setModalPhrase(value, {
+        start: t?.selectionStart ?? value.length,
+        end: t?.selectionEnd ?? value.length,
+        direction: t?.selectionDirection ?? null,
+      });
     });
     label.appendChild(input);
     body.appendChild(label);
+    return input;
   }
 
   function renderModalError(body: HTMLElement, code: NetworkErrorCode): void {
@@ -1113,7 +1174,7 @@ export const mountExposurePanel = (
     const m = publicMcpModal;
     if (m.kind === 'idle') return;
     const copy = PUBLIC_MCP_MODAL_COPY[m.mode];
-    const { body, actions } = renderModalShell(
+    const { overlay, body, actions } = renderModalShell(
       copy.title,
       copy.subtitle,
       copy.bullets,
@@ -1122,7 +1183,12 @@ export const mountExposurePanel = (
     const typed = m.kind === 'open' || m.kind === 'submitting' || m.kind === 'error'
       ? m.typed_phrase
       : '';
-    renderPhraseInput(body, copy.phrase_prompt, typed, submitting);
+    const phraseInput = renderPhraseInput(
+      body,
+      copy.phrase_prompt,
+      typed,
+      submitting,
+    );
     if (m.kind === 'error') renderModalError(body, m.error);
 
     const phraseOk = m.kind === 'open' ? m.phrase_valid : false;
@@ -1131,19 +1197,31 @@ export const mountExposurePanel = (
         ? m.kind === 'open' || m.kind === 'error'
         : (m.kind === 'open' && phraseOk);
 
-    actions.appendChild(
-      makeButton(copy.cancel_label, EXPOSURE_MODAL_CANCEL_ATTR, 'secondary', cancelModal, submitting),
+    const cancelButton = makeButton(
+      copy.cancel_label,
+      EXPOSURE_MODAL_CANCEL_ATTR,
+      'secondary',
+      cancelModal,
+      submitting,
     );
-    actions.appendChild(
-      makeButton(
-        copy.submit_label,
-        EXPOSURE_MODAL_SUBMIT_ATTR,
-        m.mode === 'revoke' ? 'danger' : 'primary',
-        () => {
-          pendingWork = submitPublicMcp();
-        },
-        submitting || !canSubmit,
-      ),
+    const submitButton = makeButton(
+      copy.submit_label,
+      EXPOSURE_MODAL_SUBMIT_ATTR,
+      m.mode === 'revoke' ? 'danger' : 'primary',
+      () => {
+        pendingWork = submitPublicMcp();
+      },
+      submitting || !canSubmit,
+    );
+    actions.appendChild(cancelButton);
+    actions.appendChild(submitButton);
+    ownModalFocus(
+      overlay,
+      phraseInput === null
+        ? [cancelButton, submitButton]
+        : [phraseInput, cancelButton, submitButton],
+      phraseInput ?? cancelButton,
+      submitting,
     );
   }
 
@@ -1151,7 +1229,11 @@ export const mountExposurePanel = (
     const m = wsLockoutModal;
     if (m.kind === 'idle') return;
     const copy = WS_LOCKOUT_MODAL_COPY[m.flavor];
-    const { body, actions } = renderModalShell(copy.title, copy.subtitle, copy.bullets);
+    const { overlay, body, actions } = renderModalShell(
+      copy.title,
+      copy.subtitle,
+      copy.bullets,
+    );
     const submitting = m.kind === 'submitting';
     const typed =
       m.kind === 'open' || m.kind === 'submitting' || m.kind === 'error'
@@ -1160,24 +1242,107 @@ export const mountExposurePanel = (
     const requiredPhrase = m.kind === 'open' ? m.required_phrase : '';
     const promptText =
       requiredPhrase.length > 0 ? `Type "${requiredPhrase}" to confirm` : 'Type the confirmation phrase to continue';
-    renderPhraseInput(body, promptText, typed, submitting);
+    const phraseInput = renderPhraseInput(body, promptText, typed, submitting);
     if (m.kind === 'error') renderModalError(body, m.error);
 
     const canSubmit = m.kind === 'open' && m.phrase_valid;
-    actions.appendChild(
-      makeButton('Cancel', EXPOSURE_MODAL_CANCEL_ATTR, 'secondary', cancelModal, submitting),
+    const cancelButton = makeButton(
+      'Cancel',
+      EXPOSURE_MODAL_CANCEL_ATTR,
+      'secondary',
+      cancelModal,
+      submitting,
     );
-    actions.appendChild(
-      makeButton(
-        'Confirm',
-        EXPOSURE_MODAL_SUBMIT_ATTR,
-        'danger',
-        () => {
-          pendingWork = submitWsLockout();
-        },
-        submitting || !canSubmit,
-      ),
+    const submitButton = makeButton(
+      'Confirm',
+      EXPOSURE_MODAL_SUBMIT_ATTR,
+      'danger',
+      () => {
+        pendingWork = submitWsLockout();
+      },
+      submitting || !canSubmit,
     );
+    actions.appendChild(cancelButton);
+    actions.appendChild(submitButton);
+    ownModalFocus(
+      overlay,
+      phraseInput === null
+        ? [cancelButton, submitButton]
+        : [phraseInput, cancelButton, submitButton],
+      phraseInput ?? cancelButton,
+      submitting,
+    );
+  }
+
+  function ownModalFocus(
+    overlay: HTMLElement,
+    controls: ReadonlyArray<HTMLElement>,
+    initialControl: HTMLElement,
+    submitting: boolean,
+  ): void {
+    const enabledControls = (): HTMLElement[] =>
+      controls.filter((control) =>
+        !(control as HTMLElement & { disabled?: boolean }).disabled,
+      );
+    const focusElement = (element: HTMLElement): void => {
+      (element as HTMLElement & {
+        focus?: (options?: FocusOptions) => void;
+      }).focus?.({ preventScroll: true });
+    };
+
+    overlay.addEventListener('keydown', (event) => {
+      const keyEvent = event as KeyboardEvent;
+      if (keyEvent.key === 'Escape') {
+        keyEvent.preventDefault?.();
+        keyEvent.stopPropagation?.();
+        if (!submitting) cancelModal();
+        return;
+      }
+      if (keyEvent.key !== 'Tab') return;
+
+      const available = enabledControls();
+      if (available.length === 0) {
+        keyEvent.preventDefault?.();
+        focusElement(overlay);
+        return;
+      }
+      const active = doc.activeElement;
+      const currentIndex = available.indexOf(active as HTMLElement);
+      const wrapsBackward = keyEvent.shiftKey && currentIndex <= 0;
+      const wrapsForward = !keyEvent.shiftKey &&
+        (currentIndex < 0 || currentIndex === available.length - 1);
+      if (!wrapsBackward && !wrapsForward) return;
+      keyEvent.preventDefault?.();
+      focusElement(
+        wrapsBackward ? available[available.length - 1]! : available[0]!,
+      );
+    });
+
+    if (submitting) {
+      overlay.setAttribute('aria-busy', 'true');
+      focusElement(overlay);
+      return;
+    }
+    focusElement(initialControl);
+    if (initialControl === controls[0] && modalPhraseSelection !== null) {
+      const input = initialControl as HTMLInputElement & {
+        setSelectionRange?: (
+          start: number,
+          end: number,
+          direction?: 'forward' | 'backward' | 'none',
+        ) => void;
+      };
+      const selection = modalPhraseSelection;
+      if (selection.direction === null) {
+        input.setSelectionRange?.(selection.start, selection.end);
+      } else {
+        input.setSelectionRange?.(
+          selection.start,
+          selection.end,
+          selection.direction,
+        );
+      }
+    }
   }
 
   // ── DOM helpers ──────────────────────────────────────────────────
@@ -1226,6 +1391,22 @@ export const mountExposurePanel = (
     };
     return walk(wrapper);
   };
+
+  function renderClosedModalAndRestore(): void {
+    const target = modalReturnFocus;
+    modalReturnFocus = null;
+    modalPhraseSelection = null;
+    render();
+    if (target === null) return;
+    const root = findEl(target.attr, target.value);
+    const focusTarget = target.childIndex === undefined
+      ? root
+      : ((root as unknown as { children?: ArrayLike<HTMLElement> } | null)
+          ?.children?.[target.childIndex] ?? null);
+    (focusTarget as (HTMLElement & {
+      focus?: (options?: FocusOptions) => void;
+    }) | null)?.focus?.({ preventScroll: true });
+  }
 
   // ── Live refresh subscription (DD#5) ─────────────────────────────
   const unsubscribe = opts.subscribe
@@ -1449,6 +1630,17 @@ export const EXPOSURE_PANEL_STYLES = `
 }
 [${EXPOSURE_PANEL_ATTR}] .exposure-grid-path-name { font-weight: 600; }
 [${EXPOSURE_PANEL_ATTR}] .exposure-grid-path-subtitle { color: var(--fg-muted); font-size: 12px; }
+[${EXPOSURE_PANEL_ATTR}] .exposure-cell-target {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  min-height: 36px;
+  border-radius: var(--wc-radius, 6px);
+  cursor: pointer;
+}
+[${EXPOSURE_PANEL_ATTR}] .exposure-cell-target-disabled { cursor: not-allowed; }
 [${EXPOSURE_PANEL_ATTR}] .exposure-cell-checkbox { width: 16px; height: 16px; cursor: pointer; }
 [${EXPOSURE_PANEL_ATTR}] .exposure-cell-checkbox:disabled { cursor: not-allowed; }
 [${EXPOSURE_PANEL_ATTR}] .exposure-public-mcp-card {

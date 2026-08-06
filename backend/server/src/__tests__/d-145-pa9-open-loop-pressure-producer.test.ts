@@ -59,8 +59,8 @@ let db: Database.Database;
 const NOW = 1_700_000_000_000;
 const DAY = 86_400_000;
 
-const MAIL_TABLE_PRIMARY = 'collection_mail_primary';
-const MAIL_TABLE_SECONDARY = 'collection_mail_secondary';
+const MAIL_TABLE_PRIMARY = 'collection_mail_33333333cc';
+const MAIL_TABLE_SECONDARY = 'collection_mail_44444444dd';
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'd-145-pa9-pressure-'));

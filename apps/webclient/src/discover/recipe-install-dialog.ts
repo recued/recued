@@ -412,6 +412,7 @@ export const mountRecipeInstallDialog = (
     const head = doc.createElement('div');
     head.className = 'recipe-dialog-dep-head';
 
+    let toggle: HTMLInputElement | null = null;
     if (dep.installed) {
       const tick = doc.createElement('span');
       tick.className = 'recipe-dialog-dep-tick';
@@ -422,16 +423,25 @@ export const mountRecipeInstallDialog = (
       cb.type = 'checkbox';
       cb.className = 'recipe-dialog-dep-check';
       cb.setAttribute(RECIPE_DIALOG_DEP_TOGGLE_ATTR, dep.pack);
+      cb.setAttribute('aria-label', `Install ${dep.name}`);
       cb.checked = selected.has(dep.pack);
       cb.disabled = busy;
       cb.addEventListener('change', () => togglePack(dep.pack));
-      head.appendChild(cb);
+      toggle = cb;
     }
 
     const name = doc.createElement('span');
     name.className = 'recipe-dialog-dep-name';
     name.textContent = dep.name;
-    head.appendChild(name);
+    if (toggle === null) {
+      head.appendChild(name);
+    } else {
+      const label = doc.createElement('label');
+      label.className = 'recipe-dialog-dep-select';
+      label.appendChild(toggle);
+      label.appendChild(name);
+      head.appendChild(label);
+    }
 
     if (dep.service_kind !== undefined) {
       const badge = doc.createElement('span');
@@ -660,65 +670,92 @@ export const mountRecipeInstallDialog = (
 /** Scoped styles — a centered modal over a dimmed backdrop, on the shell tokens. */
 export const RECIPE_DIALOG_STYLES = `
 [${RECIPE_DIALOG_ATTR}] {
-  position: fixed; inset: 0; z-index: 60; display: flex; align-items: flex-start;
-  justify-content: center; overflow-y: auto; padding: clamp(16px, 4vw, 36px);
+  box-sizing: border-box; position: fixed; inset: 0; z-index: 60; display: flex;
+  max-width: 100%; align-items: flex-start; justify-content: center;
+  overflow-y: auto; padding: clamp(16px, 4vw, 36px);
   background: rgba(9,9,11,.56); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
 }
 [${RECIPE_DIALOG_ATTR}][hidden] { display: none; }
 [${RECIPE_DIALOG_ATTR}] .recipe-dialog-box {
-  width: 100%; max-width: 680px; max-height: calc(100vh - 48px); overflow-y: auto;
+  box-sizing: border-box; width: 100%; min-width: 0; max-width: 680px;
+  max-height: calc(100vh - 48px); overflow-y: auto;
   background: var(--surface); color: var(--fg); border: 1px solid var(--border);
   border-radius: 16px; padding: clamp(20px, 3vw, 28px); display: grid; gap: 12px;
   box-shadow: 0 28px 80px rgba(0,0,0,.34), 0 3px 10px rgba(0,0,0,.16);
 }
+[${RECIPE_DIALOG_ATTR}] .recipe-dialog-box > * { min-width: 0; max-width: 100%; }
 [${RECIPE_DIALOG_ATTR}] .recipe-dialog-title {
-  margin: 0; font-size: 22px; font-weight: 720; line-height: 1.2; letter-spacing: -.02em;
+  margin: 0; font-size: 22px; font-weight: 720; line-height: 1.2;
+  letter-spacing: -.02em; overflow-wrap: anywhere;
 }
 [${RECIPE_DIALOG_ATTR}] .recipe-dialog-meta {
-  justify-self: start; margin: -4px 0 0; padding: 3px 8px; border: 1px solid var(--border);
-  border-radius: 999px; background: var(--surface-sunk); font-size: 11px; color: var(--fg-muted);
+  box-sizing: border-box; justify-self: start; margin: -4px 0 0; padding: 3px 8px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--surface-sunk);
+  font-size: 11px; color: var(--fg-muted); overflow-wrap: anywhere;
 }
 [${RECIPE_DIALOG_ATTR}] .recipe-dialog-intro {
-  max-width: 58ch; margin: 0 0 3px; font-size: 13px; line-height: 1.5; color: var(--fg-muted);
+  max-width: min(58ch, 100%); margin: 0 0 3px; font-size: 13px;
+  line-height: 1.5; color: var(--fg-muted); overflow-wrap: anywhere;
 }
 [${RECIPE_DIALOG_ATTR}] .recipe-dialog-section-title {
   margin: 8px 0 0; font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
   color: var(--fg-muted); font-weight: 750;
 }
-[${RECIPE_DIALOG_ATTR}] .recipe-dialog-deps { display: grid; gap: 10px; }
+[${RECIPE_DIALOG_ATTR}] .recipe-dialog-deps {
+  display: grid; min-width: 0; max-width: 100%; gap: 10px;
+}
 [${RECIPE_DIALOG_DEP_ATTR}] {
+  box-sizing: border-box; min-width: 0; max-width: 100%;
   border: 1px solid var(--border); border-radius: 12px; padding: 13px;
   background: var(--surface-sunk); display: grid; gap: 7px;
 }
+[${RECIPE_DIALOG_DEP_ATTR}] > * { min-width: 0; max-width: 100%; }
 [${RECIPE_DIALOG_ATTR}] .recipe-dialog-dep-head {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  display: flex; min-width: 0; max-width: 100%; align-items: center;
+  gap: 8px; flex-wrap: wrap;
+}
+[${RECIPE_DIALOG_ATTR}] .recipe-dialog-dep-select {
+  display: inline-flex; flex: 1 1 180px; min-width: 0; max-width: 100%;
+  align-items: center; gap: 8px; min-height: 36px; cursor: pointer;
+}
+[${RECIPE_DIALOG_ATTR}] .recipe-dialog-dep-select:has(input:disabled) {
+  cursor: not-allowed;
 }
 [${RECIPE_DIALOG_ATTR}] .recipe-dialog-dep-tick { color: var(--accent); font-weight: 750; }
 [${RECIPE_DIALOG_ATTR}] .recipe-dialog-dep-check {
-  width: 17px; height: 17px; margin: 0; accent-color: var(--accent);
+  flex: 0 0 auto; width: 17px; height: 17px; margin: 0; accent-color: var(--accent);
 }
-[${RECIPE_DIALOG_ATTR}] .recipe-dialog-dep-name { font-size: 14px; font-weight: 700; }
+[${RECIPE_DIALOG_ATTR}] .recipe-dialog-dep-name {
+  flex: 1 1 180px; min-width: 0; max-width: 100%; font-size: 14px;
+  font-weight: 700; overflow-wrap: anywhere;
+}
 [${RECIPE_DIALOG_ATTR}] .recipe-dialog-dep-badge {
-  font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border);
-  color: var(--fg-muted);
+  box-sizing: border-box; min-width: 0; max-width: 100%; font-size: 11px;
+  padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border);
+  color: var(--fg-muted); overflow-wrap: anywhere;
 }
 [${RECIPE_DIALOG_ATTR}] .recipe-dialog-dep-status {
-  margin-left: auto; font-size: 11px; color: var(--fg-subtle);
+  min-width: 0; max-width: 100%; margin-left: auto; font-size: 11px;
+  color: var(--fg-subtle); overflow-wrap: anywhere;
 }
 [${RECIPE_DIALOG_ATTR}] .recipe-dialog-dep-perms {
   margin: 0; font-size: 11px; color: var(--fg-muted); line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 [${RECIPE_DIALOG_ERROR_ATTR}] {
-  margin: 0; padding: 10px 12px; font-size: 12px; color: var(--danger);
+  box-sizing: border-box; min-width: 0; max-width: 100%; margin: 0;
+  padding: 10px 12px; font-size: 12px; color: var(--danger); overflow-wrap: anywhere;
   border: 1px solid var(--danger); border-left: 3px solid var(--danger);
   border-radius: 9px; background: var(--danger-weak);
 }
 [${RECIPE_DIALOG_ATTR}] .recipe-dialog-foot {
-  display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px;
+  display: flex; flex-wrap: wrap; min-width: 0; max-width: 100%;
+  justify-content: flex-end; gap: 8px; margin-top: 6px;
   padding-top: 16px; border-top: 1px solid var(--border);
 }
 [${RECIPE_DIALOG_ATTR}] .recipe-dialog-btn {
-  min-height: 40px; font: inherit; font-size: 13px; font-weight: 650; padding: 8px 16px;
+  box-sizing: border-box; min-width: 0; max-width: 100%; min-height: 40px;
+  font: inherit; font-size: 13px; font-weight: 650; padding: 8px 16px;
   border-radius: 9px; border: 1px solid var(--border-strong);
   background: var(--surface); color: var(--fg); cursor: pointer;
   transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
@@ -730,6 +767,22 @@ export const RECIPE_DIALOG_STYLES = `
 [${RECIPE_DIALOG_ATTR}] .recipe-dialog-btn:is(:disabled, [aria-disabled="true"]) {
   opacity: .65; cursor: progress;
 }
+/* The shared grant picker is mounted inside a dependency row. Own its outer
+   width here so an operation id cannot reopen the modal's grid track. */
+[${RECIPE_DIALOG_ATTR}] [data-recued-install-grant-picker] {
+  box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%;
+}
+[${RECIPE_DIALOG_ATTR}] [data-recued-install-grant-picker] :is(
+  .igp-access-list, .igp-access-row, .igp-access-label,
+  .igp-scope, .igp-scope-list, .igp-scope-row, .igp-scope-label
+) { min-width: 0; max-width: 100%; }
+[${RECIPE_DIALOG_ATTR}] [data-recued-install-grant-picker] :is(
+  .igp-heading, .igp-intro, .igp-access-name, .igp-access-hint,
+  .igp-access-ops, .igp-scope-name, .igp-scope-hint
+) { overflow-wrap: anywhere; }
+[${RECIPE_DIALOG_ATTR}] [data-recued-install-grant-picker] .igp-access-list {
+  grid-template-columns: repeat(auto-fit, minmax(min(176px, 100%), 1fr));
+}
 @media (max-width: 560px) {
   [${RECIPE_DIALOG_ATTR}] { padding: 10px; }
   [${RECIPE_DIALOG_ATTR}] .recipe-dialog-box {
@@ -737,5 +790,8 @@ export const RECIPE_DIALOG_STYLES = `
   }
   [${RECIPE_DIALOG_ATTR}] .recipe-dialog-title { font-size: 20px; }
   [${RECIPE_DIALOG_ATTR}] .recipe-dialog-foot .recipe-dialog-btn { flex: 1 1 auto; }
+  [${RECIPE_DIALOG_ATTR}] [data-recued-install-grant-picker] :is(
+    .igp-access-list, .igp-scope-list
+  ) { grid-template-columns: minmax(0, 1fr); }
 }
 `;

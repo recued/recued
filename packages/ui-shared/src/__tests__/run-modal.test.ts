@@ -188,7 +188,7 @@ interface FakeDoc {
   createElement(tag: string): FakeEl;
   addEventListener(t: string, fn: (ev: Event) => void): void;
   removeEventListener(t: string, fn: (ev: Event) => void): void;
-  fireKeydown(key: string): void;
+  fireKeydown(key: string, isComposing?: boolean): void;
 }
 
 const makeDoc = (): FakeDoc => {
@@ -217,8 +217,10 @@ const makeDoc = (): FakeDoc => {
       const i = keydownListeners.indexOf(fn);
       if (i >= 0) keydownListeners.splice(i, 1);
     },
-    fireKeydown(key) {
-      for (const fn of [...keydownListeners]) fn({ key } as unknown as Event);
+    fireKeydown(key, isComposing = false) {
+      for (const fn of [...keydownListeners]) {
+        fn({ key, isComposing } as unknown as Event);
+      }
     },
   };
 };
@@ -471,6 +473,50 @@ describe('run-modal render', () => {
       canTrigger: false,
     });
     expect(noCaller).toContain('Scheduling is not available');
+  });
+
+  it('names repeated schedule and trigger actions by stable rule identity', () => {
+    const schedules = renderRunModal(
+      stateWith({
+        tab: 'schedule',
+        schedules: [scheduleRow('s1'), scheduleRow('s2')],
+      }),
+      recipeEntry(),
+      CAPS_FULL,
+    );
+    expect(schedules).toContain(
+      'aria-label="Pause schedule Daily at 9:00 AM (s1)"',
+    );
+    expect(schedules).toContain(
+      'aria-label="Pause schedule Daily at 9:00 AM (s2)"',
+    );
+    expect(schedules).toContain(
+      'aria-label="Remove schedule Daily at 9:00 AM (s1)"',
+    );
+    expect(schedules).toContain(
+      'aria-label="Remove schedule Daily at 9:00 AM (s2)"',
+    );
+
+    const triggers = renderRunModal(
+      stateWith({
+        tab: 'trigger',
+        triggers: [triggerRow('t1'), triggerRow('t2')],
+      }),
+      recipeEntry(),
+      CAPS_FULL,
+    );
+    expect(triggers).toContain(
+      'aria-label="Pause trigger data.mail.** (t1)"',
+    );
+    expect(triggers).toContain(
+      'aria-label="Pause trigger data.mail.** (t2)"',
+    );
+    expect(triggers).toContain(
+      'aria-label="Remove trigger data.mail.** (t1)"',
+    );
+    expect(triggers).toContain(
+      'aria-label="Remove trigger data.mail.** (t2)"',
+    );
   });
 
   it('keeps Add schedule focusable but inert during a mutation', () => {
@@ -858,6 +904,24 @@ describe('run-modal wire', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('leaves a composing Escape to the active IME', () => {
+    const onClose = vi.fn();
+    const doc = makeDoc();
+    const handle = wireRunModal({
+      document: doc as unknown as Document,
+      recipe: recipeEntry(),
+      execute: vi.fn(async () => executeResponse()),
+      onClose,
+    });
+    doc.fireKeydown('Escape', true);
+    expect(onClose).not.toHaveBeenCalled();
+    expect((handle.element as unknown as FakeEl).removed).toBe(false);
+
+    doc.fireKeydown('Escape');
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect((handle.element as unknown as FakeEl).removed).toBe(true);
+  });
+
   it('holds Escape dismissal until an in-flight mutation settles', async () => {
     const onClose = vi.fn();
     const doc = makeDoc();
@@ -894,5 +958,42 @@ describe('run-modal wire', () => {
     wireRunModal({ document: doc as unknown as Document, recipe: recipeEntry() });
     wireRunModal({ document: doc as unknown as Document, recipe: recipeEntry() });
     expect(doc.styles.length).toBe(1);
+    const styles = doc.styles[0]?.textContent ?? '';
+    expect(styles).toContain(
+      '.run-modal-panel {\n  box-sizing: border-box;',
+    );
+    expect(styles).toContain(
+      '.run-modal-tab {\n  box-sizing: border-box;\n  min-height: 36px;',
+    );
+    expect(styles).toContain(
+      '.run-modal-button {\n  box-sizing: border-box;\n  appearance: none;\n  min-width: 36px;\n  min-height: 36px;',
+    );
+    expect(styles).toContain(
+      '.run-modal-select {\n  box-sizing: border-box;\n  max-width: 100%;\n  min-height: 36px;',
+    );
+    expect(styles).toContain(
+      '.run-modal-actions > label.run-modal-copy {\n  box-sizing: border-box;\n  min-height: 36px;',
+    );
+    expect(styles).toContain(
+      '.run-modal-panel .ref-picker-clear {\n  right: 0;\n  width: 36px;\n  height: 36px;',
+    );
+    expect(styles).toContain(
+      '.run-modal-panel .var-file-refs-btn {\n  width: 36px;\n  height: 36px;',
+    );
+    expect(styles).toContain(
+      '.run-modal-rule-row {\n  box-sizing: border-box;\n  min-width: 0;\n  max-width: 100%;',
+    );
+    expect(styles).toContain(
+      '@media (max-width: 520px) {\n  .run-modal-header {\n    align-items: flex-start;',
+    );
+    expect(styles).toContain(
+      'grid-template-columns: minmax(0, 1fr) auto;',
+    );
+    expect(styles).toContain(
+      '.run-modal-close {\n  flex: 0 0 auto;\n  margin-left: auto;',
+    );
+    expect(styles).toContain(
+      '.run-modal-rule-row {\n    align-items: stretch;\n    flex-direction: column;',
+    );
   });
 });

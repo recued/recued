@@ -70,5 +70,14 @@ describe('R19 — section nav styles', () => {
     expect(RECEPTION_SECTION_NAV_STYLES).toContain('.reception-route-subtitle');
     expect(RECEPTION_SECTION_NAV_STYLES).toContain('var(--surface-sunk)');
     expect(RECEPTION_SECTION_NAV_STYLES).toContain('.reception-page');
+    expect(RECEPTION_SECTION_NAV_STYLES).toMatch(
+      /\[data-recued-reception-route\]\s*\{[^}]*width:\s*100%[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(RECEPTION_SECTION_NAV_STYLES).toMatch(
+      /\.reception-route-tab\s*\{[^}]*flex:\s*1 1 0[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(RECEPTION_SECTION_NAV_STYLES).toContain(
+      'grid-template-columns: repeat(2, minmax(0, 1fr));',
+    );
   });
 });

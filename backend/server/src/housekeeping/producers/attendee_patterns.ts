@@ -64,6 +64,13 @@ import {
   matchesAnyAddress,
   sqlLikeAny,
 } from './_contact-addresses.js';
+import { listCollectionDataTables } from '../../collections/table.js';
+import {
+  CALENDAR_LIKE_COLUMN,
+  CALENDAR_ROW_SELECT,
+  calendarRowHotFields,
+  type CalendarScanRow as CalendarRawRow,
+} from './_calendar-rows.js';
 
 /** Rolling window for the 90-day stat. Calendar-specific (broader
  *  than the 30d mail windows on A.6 / A.7) per the rationale in the
@@ -88,13 +95,8 @@ interface CalendarScanRow {
  *  Same prefix-scan approach `behavioral_signature` uses for the
  *  calendar half of its aggregate. */
 const listCalendarCollectionTables = (ctx: HousekeepingContext): string[] => {
-  const rows = ctx.db
-    .prepare(
-      `SELECT name FROM sqlite_master
-        WHERE type='table' AND name LIKE 'collection_calendar_%'`,
-    )
-    .all() as Array<{ name: string }>;
-  return rows.map((r) => r.name);
+  const rows = listCollectionDataTables(ctx.db, 'calendar');
+  return rows;
 };
 
 /** Pull every calendar row whose canonical addresses involve ANY of the
@@ -113,17 +115,13 @@ const collectCalendarRows = (
   for (const table of listCalendarCollectionTables(ctx)) {
     const rows = ctx.db
       .prepare(
-        `SELECT hot_fields FROM "${table}"
-          WHERE ${sqlLikeAny('hot_fields', addresses.length)}`,
+        `SELECT ${CALENDAR_ROW_SELECT} FROM "${table}"
+          WHERE ${sqlLikeAny(CALENDAR_LIKE_COLUMN, addresses.length)}`,
       )
-      .all(...likeAnyParams(addresses)) as Array<{ hot_fields: string }>;
+      .all(...likeAnyParams(addresses)) as CalendarRawRow[];
     for (const row of rows) {
-      let parsed: Record<string, unknown>;
-      try {
-        parsed = JSON.parse(row.hot_fields) as Record<string, unknown>;
-      } catch {
-        continue;
-      }
+      const parsed = calendarRowHotFields(row);
+      if (parsed === null) continue;
       const all = new Set<string>();
       collectAddresses(parsed[CAL_ORGANIZER_KEY], all);
       collectAddresses(parsed[CAL_ATTENDEES_KEY], all);

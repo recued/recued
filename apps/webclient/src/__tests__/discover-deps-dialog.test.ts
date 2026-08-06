@@ -185,6 +185,40 @@ describe('mountRecipeInstallDialog', () => {
     expect(dialog.getSelectedPacks()).toEqual(['salesforce']);
   });
 
+  it('names a missing dependency checkbox and gives it a full label target', () => {
+    const { host, dialog } = setup();
+    dialog.open(recipe, deps);
+
+    const toggle = depToggles(host)[0];
+    expect(toggle.getAttribute('aria-label')).toBe('Install Salesforce');
+    expect(toggle.parent?.tagName).toBe('LABEL');
+    expect(toggle.parent?.className).toBe('recipe-dialog-dep-select');
+    expect(toggle.parent?.children[1]?.textContent).toBe('Salesforce');
+    expect(RECIPE_DIALOG_STYLES).toContain(
+      '.recipe-dialog-dep-select {\n'
+        + '  display: inline-flex; flex: 1 1 180px; min-width: 0; max-width: 100%;\n'
+        + '  align-items: center; gap: 8px; min-height: 36px;',
+    );
+  });
+
+  it('contains long recipe and dependency text within the consent dialog', () => {
+    expect(RECIPE_DIALOG_STYLES).toContain(
+      'box-sizing: border-box; width: 100%; min-width: 0; max-width: 680px;',
+    );
+    expect(RECIPE_DIALOG_STYLES).toContain(
+      '.recipe-dialog-box > * { min-width: 0; max-width: 100%; }',
+    );
+    expect(RECIPE_DIALOG_STYLES).toContain(
+      'letter-spacing: -.02em; overflow-wrap: anywhere;',
+    );
+    expect(RECIPE_DIALOG_STYLES).toContain(
+      'grid-template-columns: repeat(auto-fit, minmax(min(176px, 100%), 1fr));',
+    );
+    expect(RECIPE_DIALOG_STYLES).toContain(
+      '.igp-access-list, .igp-scope-list\n  ) { grid-template-columns: minmax(0, 1fr); }',
+    );
+  });
+
   it('opens as a labelled modal, owns initial focus, and restores its opener', () => {
     const { host, document, dialog } = setup();
     const opener = document.createElement('button') as any;

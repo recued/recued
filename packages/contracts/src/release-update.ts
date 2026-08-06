@@ -54,8 +54,10 @@ export interface ReleaseCheckResponse {
 /** Per-install apply policy (spec § Update machinery, "Apply, per channel").
  *  `auto` self-applies eligible releases from quiesce; `notify` raises the
  *  update card without applying; `off` disables even the check. Default is
- *  channel-derived (`auto` on the self-updating channels, `notify` on the
- *  delegated ones); `RECUED_SELF_UPDATE` wins inside containers. */
+ *  channel-derived — `auto` ONLY on `docker-thin`, `notify` everywhere else
+ *  including `binary`, because an apply runs migrations against the owner's own
+ *  warehouse and a default nobody was shown is not consent;
+ *  `RECUED_SELF_UPDATE` wins inside containers. */
 export type UpdateMode = 'auto' | 'notify' | 'off';
 
 export interface UpdateModeStatus {

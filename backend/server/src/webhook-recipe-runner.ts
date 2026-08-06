@@ -92,7 +92,7 @@ const runOnce = async (
     // re-enter. This also closes the crash window between the approval core's
     // terminal audit write and the webhook store's wait-marker handoff.
     if (existing.commit_status === 'failed'
-      && existing.errors.some((error) =>
+      && (existing.errors ?? []).some((error) =>
         error.code === 'RECIPE_POLICY_DENIED' && error.retryable === false)) {
       return 'terminal_non_success';
     }

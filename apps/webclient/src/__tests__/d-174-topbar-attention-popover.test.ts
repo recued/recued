@@ -628,6 +628,15 @@ describe('D-174 - approval attention top-bar adapter', () => {
     expect(doc.styleElements[0]!.attrs.has(ATTENTION_TOPBAR_STYLES_MARKER))
       .toBe(true);
     expect(doc.styleElements[0]!.textContent).toBe(ATTENTION_TOPBAR_STYLES);
+    expect(ATTENTION_TOPBAR_STYLES).toMatch(
+      /\.attention-popover-close\s*\{[^}]*width:\s*36px;[^}]*height:\s*36px/s,
+    );
+    expect(ATTENTION_TOPBAR_STYLES).toMatch(
+      /\.attention-row-action\s*\{[^}]*min-height:\s*36px/s,
+    );
+    expect(ATTENTION_TOPBAR_STYLES).toMatch(
+      /\.webclient-attention-footer a\s*\{[^}]*min-height:\s*36px/s,
+    );
 
     topbar.fireAction({ 'data-action': 'open-attention' });
 
@@ -638,6 +647,9 @@ describe('D-174 - approval attention top-bar adapter', () => {
     expect(topbar.innerHTML).not.toContain('Other notifications');
     expect(topbar.innerHTML).not.toContain('role="tablist"');
     expect(topbar.innerHTML).toContain('data-action="approval-decide-server"');
+    expect(topbar.innerHTML).toContain(
+      '<h3 class="attention-row-title">Send follow-up ap-1</h3>',
+    );
     expect(topbar.innerHTML).toContain('Approval &middot; Mail send &middot; Changes data');
     expect(topbar.innerHTML).toContain(
       'aria-label="Approve: Send follow-up ap-1"',

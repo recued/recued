@@ -300,7 +300,7 @@ export const INSTALL_CONNECT_PICKER_STYLES = `
   justify-self: start;
   display: inline-flex;
   align-items: center;
-  min-height: 34px;
+  min-height: 36px;
   padding: 6px 9px;
   border: 0;
   border-radius: 8px;

@@ -34,6 +34,7 @@ import {
   SELLER_LLM_GATEWAY_ACK_SUBMIT_ATTR,
   SELLER_MAIL_CHOOSER_STATUS_ATTR,
   SELLER_PAGE_STATE_ATTR,
+  SELLER_PAGE_STYLES,
   SELLER_PAGE_SUBPAGE_ATTR,
   SELLER_SUBPAGE_HEADER_ATTR,
   SELLER_BACK_ATTR,
@@ -218,6 +219,14 @@ const findByAttr = (
   value?: string,
 ): FakeElement | null => findAllByAttr(root, attr, value)[0] ?? null;
 
+const findAllByTag = (
+  root: FakeElement,
+  tag: string,
+): FakeElement[] => [
+  ...(root.tagName === tag.toUpperCase() ? [root] : []),
+  ...root.children.flatMap((child) => findAllByTag(child, tag)),
+];
+
 const textOf = (root: FakeElement): string =>
   `${root.textContent}${root.children.map(textOf).join('')}`;
 
@@ -377,6 +386,27 @@ const ordersResponse = (
 ): SellerListOrdersResponse => ({ orders, truncated });
 
 describe('D-196 S2 - Settings -> Seller page', () => {
+  it('gives Seller navigation, commands, and disclosures full-size targets', () => {
+    expect(SELLER_PAGE_STYLES).toContain(
+      `[${SELLER_BACK_ATTR}] {\n  box-sizing: border-box;\n  min-height: 36px;`,
+    );
+    expect(SELLER_PAGE_STYLES).toContain(
+      `[${SELLER_COLLECTION_ITEM_LINK_ATTR}] {\n  box-sizing: border-box;\n  min-height: 36px;`,
+    );
+    expect(SELLER_PAGE_STYLES).toContain(
+      '.seller-related-links a {\n  box-sizing: border-box;\n  min-height: 36px;',
+    );
+    expect(SELLER_PAGE_STYLES).toContain(
+      '.seller-contract-link {\n  box-sizing: border-box;\n  min-height: 36px;',
+    );
+    expect(SELLER_PAGE_STYLES).toContain(
+      '.seller-paid-workflow-table a {\n  box-sizing: border-box;\n  min-height: 36px;',
+    );
+    expect(SELLER_PAGE_STYLES).toContain(
+      '.seller-action-disclosure > summary {\n  box-sizing: border-box;\n  min-height: 36px;',
+    );
+  });
+
   it('opens as a Seller feature list without loading optional detail data', async () => {
     const host = makeFakeElement('div');
     const runGetOverview = vi.fn(async () => overview());
@@ -415,7 +445,9 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     expect(findByAttr(host, SELLER_PAGE_SUBPAGE_ATTR)?.getAttribute(
       SELLER_PAGE_SUBPAGE_ATTR,
     )).toBe('directory');
-    expect(findByAttr(host, SELLER_SUBPAGE_HEADER_ATTR, 'directory')).not.toBeNull();
+    const header = findByAttr(host, SELLER_SUBPAGE_HEADER_ATTR, 'directory');
+    expect(header).not.toBeNull();
+    expect(findAllByTag(header!, 'h3')).toHaveLength(0);
 
     mount.dispose();
     expect(host.children.length).toBe(0);
@@ -434,11 +466,17 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     expect(findByAttr(tierHost, SELLER_CUSTOMER_ROW_ATTR)).toBeNull();
     expect(findByAttr(tierHost, SELLER_USAGE_ROW_ATTR)).toBeNull();
     expect(findByAttr(tierHost, SELLER_COLLECTION_LIST_ATTR, 'tiers')).not.toBeNull();
-    expect(findByAttr(
+    const tierLink = findByAttr(
       tierHost,
       SELLER_COLLECTION_ITEM_LINK_ATTR,
       'tier-1',
-    )?.getAttribute('href')).toBe('#settings/seller/tiers/detail/tier-1');
+    );
+    expect(tierLink?.getAttribute('href')).toBe(
+      '#settings/seller/tiers/detail/tier-1',
+    );
+    expect(tierLink?.getAttribute('aria-label')).toBe(
+      'Open tier tier-1 (Consulting Basic)',
+    );
     expect(
       findByAttr(tierHost, SELLER_CONTRACT_LINK_ATTR, 'contract-template-1')
         ?.getAttribute('href'),
@@ -467,11 +505,17 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     )).toBeNull();
     expect(textOf(customerHost)).toContain('contract-customer-1');
     expect(findByAttr(customerHost, SELLER_TIER_ROW_ATTR)).toBeNull();
-    expect(findByAttr(
+    const customerLink = findByAttr(
       customerHost,
       SELLER_COLLECTION_ITEM_LINK_ATTR,
       'customer-1',
-    )?.getAttribute('href')).toBe('#settings/seller/customers/detail/customer-1');
+    );
+    expect(customerLink?.getAttribute('href')).toBe(
+      '#settings/seller/customers/detail/customer-1',
+    );
+    expect(customerLink?.getAttribute('aria-label')).toBe(
+      'Open customer customer-1 (manual-cus-1)',
+    );
     customerMount.dispose();
 
     const usageHost = makeFakeElement('div');
@@ -484,6 +528,12 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     await usageMount.whenLoaded();
     expect(findByAttr(usageHost, SELLER_USAGE_ROW_ATTR)).not.toBeNull();
     expect(findByAttr(usageHost, SELLER_CUSTOMER_ROW_ATTR)).toBeNull();
+    expect(findByAttr(
+      usageHost,
+      SELLER_COLLECTION_ITEM_LINK_ATTR,
+    )?.getAttribute('aria-label')).toBe(
+      'Open Chat Turn usage for contract-customer-1 (month 1700000000000)',
+    );
     usageMount.dispose();
   });
 
@@ -612,12 +662,16 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     await listMount.whenLoaded();
 
     expect(runPage).toHaveBeenCalledWith({ limit: 2, offset: 2 });
-    expect(findByAttr(
+    const orderLink = findByAttr(
       listHost,
       SELLER_COLLECTION_ITEM_LINK_ATTR,
       'ord:page:3',
-    )?.getAttribute('href')).toBe(
+    );
+    expect(orderLink?.getAttribute('href')).toBe(
       '#settings/seller/orders/detail/ord%3Apage%3A3',
+    );
+    expect(orderLink?.getAttribute('aria-label')).toBe(
+      'Open order ord:page:3 for paid-doc',
     );
     expect(findByAttr(listHost, SELLER_PAGE_PREVIOUS_ATTR)?.getAttribute('href'))
       .toBe('#settings/seller/orders');
@@ -801,7 +855,16 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     // owner affirms it.
     findByAttr(host, SELLER_ORDER_CLOSE_ACTION_ATTR, 'ord:pass:stranded')!.click();
     expect(runRecipe).not.toHaveBeenCalled();
-    const modalText = textOf(findByAttr(host, SELLER_MESSAGE_MODAL_ATTR)!);
+    const modal = findByAttr(host, SELLER_MESSAGE_MODAL_ATTR)!;
+    const dialog = findByAttr(modal, 'role', 'dialog');
+    expect(dialog?.getAttribute('aria-modal')).toBe('true');
+    expect(dialog?.getAttribute('aria-labelledby')).toMatch(
+      /^recued-seller-confirm-title-/,
+    );
+    expect(dialog?.getAttribute('aria-describedby')).toMatch(
+      /^recued-seller-confirm-body-/,
+    );
+    const modalText = textOf(modal);
     expect(modalText).toContain('attesting');
     expect(modalText).toContain('cannot verify');
 
@@ -1004,6 +1067,13 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     expect(textOf(offerRow!)).not.toContain('version');
     expect(textOf(accessSection!)).toContain(
       'separately from one-time outcome offers and orders',
+    );
+    expect(findByAttr(
+      host,
+      SELLER_COLLECTION_ITEM_LINK_ATTR,
+      'paid-document.outcome',
+    )?.getAttribute('aria-label')).toBe(
+      'Open offer paid-document.outcome (Paid document)',
     );
     const definitionLink = findByAttr(
       offerRow!,
@@ -2345,6 +2415,23 @@ describe('D-196 S2 - Settings -> Seller page', () => {
       if (el === null) throw new Error(`missing lifecycle field ${name}`);
       return el;
     };
+    for (const [name, accessibleName] of [
+      ['extend.customer_id', 'Customer to extend'],
+      ['extend.email', 'Extension email'],
+      ['extend.current_period_end', 'Extension period end (Unix ms)'],
+      ['extend.source_status', 'Extension source status'],
+      ['swap.customer_id', 'Customer to swap'],
+      ['swap.entitlement_key', 'Swap entitlement'],
+      ['swap.current_period_end', 'Swap period end (Unix ms)'],
+      ['swap.source_status', 'Swap source status'],
+      ['close.customer_id', 'Customer to close'],
+      ['close.reason', 'Close reason'],
+      ['close.source_status', 'Close source status'],
+      ['reissue.customer_id', 'Customer to reissue'],
+      ['message.customer_id', 'Customer to message'],
+    ] as const) {
+      expect(field(name).getAttribute('aria-label')).toBe(accessibleName);
+    }
 
     field('extend.customer_id').value = 'customer-1';
     field('extend.email').value = 'renewed@example.com';

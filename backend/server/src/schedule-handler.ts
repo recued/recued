@@ -43,6 +43,21 @@ export interface ScheduleHandlerDeps {
    *  schedule_recipe path wires it and therefore rejects inline/new
    *  recipe creation attempts. */
   recipeStore?: Pick<RecipeStore, 'get'>;
+  /** The packs a recipe DECLARES but that are not installed — the create-time
+   *  refusal. A schedule whose recipe cannot lower would accept a cron happily
+   *  and then fail every single firing, forever; the fire-time gate skips those
+   *  loudly, but never arming one beats explaining it later.
+   *
+   *  ⚠ SEPARATE FROM `recipeStore` ON PURPOSE. Wiring that store here would
+   *  switch on the existence check above as a side effect, and its dormancy on
+   *  the UI path is documented as deliberate ("legacy UI path leaves this absent
+   *  for backward compatibility"). Turning a dormant refusal on is a decision to
+   *  take on its own evidence, not a by-product of adding a different one.
+   *
+   *  Absent ⇒ no pack refusal, matching every other surface's posture: a server
+   *  that cannot enumerate installed packs must not read "cannot tell" as
+   *  "nothing works". */
+  missingPackDepsForRecipe?: (recipe_id: string) => readonly string[];
   /** D-179 P2 — standing-dish lookup for create-time binding
    *  validation (existence + recipe match). D-179 config-on-schedule
    *  widens to `set`/`delete`: a create with a non-empty `config_overlay`
@@ -168,6 +183,21 @@ export const createSchedule = (
   }
   if (deps.recipeStore && deps.recipeStore.get(recipe_id) === null) {
     throw new RpcError('not_found', `Recipe '${recipe_id}' not found`, 404);
+  }
+  // Refuse rather than warn. A warning on a cron nobody looks at again is the
+  // same as nothing, and this is unambiguous: a recipe that cannot lower cannot
+  // ever run, and no input makes it work. The SAME code + `missing_packs` shape
+  // the run path throws, so a surface can offer the identical install links here
+  // without a second error contract.
+  const missingPacks = deps.missingPackDepsForRecipe?.(recipe_id) ?? [];
+  if (missingPacks.length > 0) {
+    throw new RpcError(
+      'pack_not_installed',
+      `Recipe '${recipe_id}' needs ${missingPacks.length === 1 ? 'a pack' : 'packs'} that ${missingPacks.length === 1 ? 'is' : 'are'} not installed: ${missingPacks.join(', ')}. Install ${missingPacks.length === 1 ? 'it' : 'them'} before scheduling this recipe.`,
+      400,
+      undefined,
+      { missing_packs: [...missingPacks] },
+    );
   }
   // D-179 P2 — standing-dish binding. Validated for existence + recipe
   // match when the dish store is wired; the fire-time gate in the

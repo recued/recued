@@ -758,3 +758,41 @@ export const removePackOwnerRulings = (
   });
   return { removed_rulings: removed };
 };
+
+/** The packs a recipe DECLARES but the inventory cannot resolve — the pre-run
+ *  answer to "will this recipe lower?".
+ *
+ *  ⛔ WHY A DECLARATION AND NOT THE OPS. `depends_on` is the recipe's own
+ *  `<publisher>.<pack>` list, enforced corpus-wide against the ops it actually
+ *  calls (`recipe-depends-on-coverage`). Re-deriving from op ids here would be a
+ *  second source of truth that could disagree with the field every other surface
+ *  reads — the uninstall disclosure, the schedule refusal, and the install offer
+ *  must all name the SAME packs or the user is told different stories by each.
+ *
+ *  A resolvable `pack_ref` means `lowerPackOpStep` will bind it; an unresolvable
+ *  one means `lowerSequentialStep` throws `CanonicalOpResolutionError` before
+ *  step 1. So an empty result is "this recipe can lower", and a non-empty one
+ *  names exactly what is missing — which is what an install offer needs.
+ *
+ *  Pure: no writes, never throws. A recipe with no `depends_on` returns `[]`
+ *  (nothing declared ⇒ nothing missing), which is correct now that the
+ *  declaration is enforced. */
+export const missingPackDependencies = (
+  recipe: { depends_on?: unknown },
+  /** Anything that can answer "is this pack_ref resolvable" — a
+   *  `PackOpResolution` (the run + scheduler path) or a plain `Set` of refs (the
+   *  runnability read). Typed structurally so BOTH callers share this one
+   *  implementation: a second copy would be a second source of truth for exactly
+   *  the property every surface is supposed to agree on. */
+  packs: { has(ref: string): boolean },
+): string[] => {
+  const declared = recipe.depends_on;
+  if (!Array.isArray(declared)) return [];
+  const missing: string[] = [];
+  for (const entry of declared) {
+    if (typeof entry !== 'string' || entry.length === 0) continue;
+    if (packs.has(entry) || missing.includes(entry)) continue;
+    missing.push(entry);
+  }
+  return missing;
+};

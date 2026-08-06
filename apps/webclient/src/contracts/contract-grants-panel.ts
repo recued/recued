@@ -975,19 +975,40 @@ export const mountContractGrantsPanel = (
 // ════════════════════════════════════════════════════════════════
 
 export const CONTRACT_GRANTS_PANEL_STYLES = `
+[${CONTRACT_GRANTS_HOST_ATTR}],
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-filter-results,
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-kind {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-op-ingredient {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: calc(100% - 6px);
+}
 [${CONTRACT_GRANTS_HOST_ATTR}] .cg-filter-bar {
+  box-sizing: border-box;
   position: sticky;
   top: 0;
   z-index: 1;
   display: flex;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   padding: 2px 0 10px;
   background: var(--surface, Canvas);
 }
 [${CONTRACT_GRANTS_HOST_ATTR}] .cg-filter-input {
+  box-sizing: border-box;
+  flex: 1 1 150px;
   width: min(100%, 440px);
   min-width: 0;
+  max-width: 100%;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
@@ -1002,10 +1023,14 @@ export const CONTRACT_GRANTS_PANEL_STYLES = `
   border-color: var(--accent);
 }
 [${CONTRACT_GRANTS_HOST_ATTR}] .cg-filter-status {
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 0 auto;
   margin-left: auto;
-  white-space: nowrap;
+  white-space: normal;
   font-size: 11px;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 [${CONTRACT_GRANTS_HOST_ATTR}] .cg-loading,
 [${CONTRACT_GRANTS_HOST_ATTR}] .cg-empty {
@@ -1044,11 +1069,17 @@ export const CONTRACT_GRANTS_PANEL_STYLES = `
   text-transform: uppercase;
   letter-spacing: 0.03em;
   margin-bottom: 2px;
+  overflow-wrap: anywhere;
 }
 [${CONTRACT_GRANTS_HOST_ATTR}] .cg-op-ingredient {
   margin: 6px 0 6px 6px;
 }
 [${CONTRACT_GRANTS_HOST_ATTR}] .cg-cell {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 36px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1056,6 +1087,7 @@ export const CONTRACT_GRANTS_PANEL_STYLES = `
   cursor: pointer;
 }
 [${CONTRACT_GRANTS_HOST_ATTR}] .cg-cell-box {
+  flex: 0 0 auto;
   cursor: pointer;
 }
 [${CONTRACT_GRANTS_HOST_ATTR}] .cg-cell-box[disabled],
@@ -1064,18 +1096,30 @@ export const CONTRACT_GRANTS_PANEL_STYLES = `
   cursor: default;
 }
 [${CONTRACT_GRANTS_HOST_ATTR}] .cg-cell-name {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 140px;
   font-size: 13px;
   font-family: var(--mono, ui-monospace, monospace);
+  overflow-wrap: anywhere;
 }
 [${CONTRACT_GRANTS_HOST_ATTR}] .cg-also-reads {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 auto;
   font-size: 10px;
   color: var(--muted);
   padding: 1px 6px;
   border: 1px solid var(--border, #ddd);
   border-radius: 999px;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 [${CONTRACT_GRANTS_HOST_ATTR}] .cg-source {
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 0 auto;
   font-size: 10px;
   color: var(--muted);
   margin-left: auto;

@@ -341,6 +341,7 @@ export const mountConnectionsGrantPanel = (
   const renderGroupRow = (
     card: HTMLElement,
     connectionName: string,
+    connectionDisplayName: string,
     group: OperationGroupGrantState,
   ): void => {
     const groupRow = doc.createElement('div');
@@ -393,6 +394,8 @@ export const mountConnectionsGrantPanel = (
       : 'conn-grant-toggle';
     toggle.textContent = group.granted ? 'Revoke' : 'Grant';
     const pendingGroup = pendingByConnection.get(connectionName);
+    const accessibleTarget =
+      `${groupLabel(group.group_id)} for ${connectionDisplayName} (${connectionName})`;
     if (pendingGroup !== undefined) {
       // A mutation is in flight on this connection. Every toggle is inert, but
       // stays in the tab order so rebuilding the card does not discard the
@@ -407,6 +410,12 @@ export const mountConnectionsGrantPanel = (
         void runToggle(connectionName, group.group_id, group.granted);
       });
     }
+    toggle.setAttribute(
+      'aria-label',
+      `${pendingGroup === group.group_id
+        ? (group.granted ? 'Revoking…' : 'Granting…')
+        : (group.granted ? 'Revoke' : 'Grant')} ${accessibleTarget}`,
+    );
     groupRow.appendChild(toggle);
     card.appendChild(groupRow);
   };
@@ -419,6 +428,7 @@ export const mountConnectionsGrantPanel = (
     const header = doc.createElement('div');
     header.className = 'conn-grant-header';
     const title = doc.createElement('strong');
+    title.className = 'conn-grant-display';
     title.textContent = row.connection.display_name;
     header.appendChild(title);
     const name = doc.createElement('span');
@@ -438,7 +448,12 @@ export const mountConnectionsGrantPanel = (
 
     if (row.view !== null) {
       for (const group of row.view.available_groups) {
-        renderGroupRow(card, row.connection.name, group);
+        renderGroupRow(
+          card,
+          row.connection.name,
+          row.connection.display_name,
+          group,
+        );
       }
     }
     root.appendChild(card);
@@ -634,36 +649,61 @@ export const mountConnectionsGrantPanel = (
  *  section isn't mounted. The settings route joins this into its one
  *  `<style>` bundle (mirrors `ASKS_PANEL_STYLES`). */
 export const CONNECTIONS_GRANT_PANEL_STYLES = `
+[data-recued-connections-grant-panel] {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
 [data-recued-connections-grant-panel] .conn-grant-loading,
 [data-recued-connections-grant-panel] .conn-grant-empty {
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 13px;
   color: var(--muted);
   padding: 6px 2px;
 }
 [data-recued-connections-grant-panel] .conn-grant-error,
 [data-recued-connections-grant-panel] .conn-grant-group-error {
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 13px;
   color: var(--fail);
   padding: 6px 2px;
 }
 [data-recued-connections-grant-panel] [${CONNECTIONS_GRANT_CARD_ATTR}] {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px 12px;
   margin: 8px 0;
 }
 [data-recued-connections-grant-panel] .conn-grant-header {
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   align-items: baseline;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 6px;
 }
+[data-recued-connections-grant-panel] .conn-grant-display {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 [data-recued-connections-grant-panel] .conn-grant-name {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   font-size: 12px;
   color: var(--muted);
   font-family: var(--mono, ui-monospace, monospace);
 }
 [data-recued-connections-grant-panel] .conn-grant-group {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -672,16 +712,22 @@ export const CONNECTIONS_GRANT_PANEL_STYLES = `
   border-top: 1px solid var(--border-subtle);
 }
 [data-recued-connections-grant-panel] .conn-grant-group-info {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+  max-width: 100%;
 }
 [data-recued-connections-grant-panel] .conn-grant-group-id {
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 13px;
   font-family: var(--mono, ui-monospace, monospace);
 }
 [data-recued-connections-grant-panel] .conn-grant-group-ops {
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 12px;
   color: var(--muted);
 }
@@ -695,11 +741,18 @@ export const CONNECTIONS_GRANT_PANEL_STYLES = `
   color: var(--warn);
 }
 [data-recued-connections-grant-panel] .conn-grant-auto {
+  flex: 0 0 auto;
   font-size: 12px;
   color: var(--muted);
   white-space: nowrap;
 }
 [data-recued-connections-grant-panel] .conn-grant-toggle {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: 13px;
   padding: 4px 12px;
   border: 1px solid var(--border);
@@ -715,5 +768,15 @@ export const CONNECTIONS_GRANT_PANEL_STYLES = `
 [data-recued-connections-grant-panel] .conn-grant-toggle[aria-disabled='true'] {
   opacity: 0.6;
   cursor: default;
+}
+@media (max-width: 520px) {
+  [data-recued-connections-grant-panel] .conn-grant-header {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 2px;
+  }
+  [data-recued-connections-grant-panel] .conn-grant-group {
+    align-items: flex-start;
+  }
 }
 `;

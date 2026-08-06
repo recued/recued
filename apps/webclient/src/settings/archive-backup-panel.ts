@@ -378,7 +378,6 @@ export interface ArchiveBackupPanelMount {
 // ════════════════════════════════════════════════════════════════
 
 const COPY = {
-  heading: 'Backup & Recovery',
   menu_body:
     'Back up everything Recued holds for you — your warehouse, contacts, memory, connections and settings — into one encrypted archive on your server, or restore your server from a previous backup. Backups are sealed with your 24-word recovery key.',
   backup_cta: 'Back up all my data',
@@ -388,6 +387,7 @@ const COPY = {
   // Export
   export_body:
     'Enter your 24-word recovery key to seal the backup. The key is sent only to your server and never stored here.',
+  export_key_label: '24-word recovery key',
   include_blobs_label: 'Include attached files and large records',
   include_passport_label: 'Include identity passport (for migrating to a new server)',
   run_backup_cta: 'Start backup',
@@ -406,6 +406,7 @@ const COPY = {
     'Restore replaces ALL current data on this server with the snapshot inside a backup file. Upload a backup file from this device (or give a path to one already on your server), enter your 24-word recovery key, then preview before confirming.',
   restore_upload_label: 'Upload a backup file from this device',
   restore_path_label: 'Or path to a backup already on your server',
+  restore_key_label: 'Recovery key for this backup',
   restore_path_placeholder: 'exports/recued-2026-06-25.recued.archive',
   restore_uploading: 'Uploading your backup…',
   restore_upload_done_prefix: 'Uploaded',
@@ -434,6 +435,7 @@ const COPY = {
   // Passport-only export
   passport_busy: 'Signing your identity passport…',
   passport_done: 'Identity passport exported (support / audit).',
+  passport_json_label: 'Exported identity passport JSON',
   passport_download_cta: 'Download .json',
   passport_failed: 'The passport export failed.',
 
@@ -473,12 +475,6 @@ export const ARCHIVE_BACKUP_PANEL_STYLES = `
   flex-direction: column;
   gap: 10px;
   max-width: 560px;
-}
-[${ARCHIVE_BACKUP_PANEL_ATTR}] h3 {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 650;
-  color: var(--fg);
 }
 [${ARCHIVE_BACKUP_PANEL_ATTR}] .archive-backup-body {
   margin: 0;
@@ -1407,6 +1403,22 @@ export const mountArchiveBackupPanel = (
     return textarea;
   };
 
+  /** A visible label wrapping its control so the field keeps a stable
+   * accessible name instead of falling back to placeholder or browser copy. */
+  const makeField = (
+    labelText: string,
+    control: HTMLElement,
+  ): HTMLLabelElement => {
+    const field = doc.createElement('label');
+    field.className = 'archive-backup-field';
+    const label = doc.createElement('span');
+    label.className = 'archive-backup-field-label';
+    label.textContent = labelText;
+    field.appendChild(label);
+    field.appendChild(control);
+    return field;
+  };
+
   const makeResultLine = (): HTMLParagraphElement | null => {
     if (resultLine === null) return null;
     const p = doc.createElement('p');
@@ -1497,11 +1509,12 @@ export const mountArchiveBackupPanel = (
 
   const renderExportEntry = (block: HTMLElement): void => {
     block.appendChild(makeBody(COPY.export_body));
-    block.appendChild(
+    block.appendChild(makeField(
+      COPY.export_key_label,
       makeMnemonicField(ARCHIVE_BACKUP_MNEMONIC_ATTR, exportMnemonic, (v) => {
         exportMnemonic = v;
       }),
-    );
+    ));
 
     block.appendChild(
       makeToggle(
@@ -1642,12 +1655,6 @@ export const mountArchiveBackupPanel = (
     // M4b.2 — the no-SSH path: upload a backup file from this device. Only when
     // the host wired the upload seam; otherwise restore stays server-path-only.
     if (opts.archiveUpload) {
-      const upField = doc.createElement('div');
-      upField.className = 'archive-backup-field';
-      const upLabel = doc.createElement('span');
-      upLabel.className = 'archive-backup-field-label';
-      upLabel.textContent = COPY.restore_upload_label;
-      upField.appendChild(upLabel);
       const fileInput = doc.createElement('input');
       fileInput.setAttribute(ARCHIVE_RESTORE_UPLOAD_INPUT_ATTR, '');
       fileInput.type = 'file';
@@ -1658,16 +1665,9 @@ export const mountArchiveBackupPanel = (
         const file = picked && picked.length > 0 ? picked[0] : null;
         if (file) startUpload(file);
       });
-      upField.appendChild(fileInput);
-      block.appendChild(upField);
+      block.appendChild(makeField(COPY.restore_upload_label, fileInput));
     }
 
-    const field = doc.createElement('div');
-    field.className = 'archive-backup-field';
-    const label = doc.createElement('span');
-    label.className = 'archive-backup-field-label';
-    label.textContent = COPY.restore_path_label;
-    field.appendChild(label);
     const pathInput = doc.createElement('input');
     pathInput.setAttribute(ARCHIVE_RESTORE_PATH_ATTR, '');
     pathInput.type = 'text';
@@ -1678,14 +1678,14 @@ export const mountArchiveBackupPanel = (
     pathInput.addEventListener('input', () => {
       restorePath = pathInput.value ?? '';
     });
-    field.appendChild(pathInput);
-    block.appendChild(field);
+    block.appendChild(makeField(COPY.restore_path_label, pathInput));
 
-    block.appendChild(
+    block.appendChild(makeField(
+      COPY.restore_key_label,
       makeMnemonicField(ARCHIVE_RESTORE_MNEMONIC_ATTR, restoreMnemonic, (v) => {
         restoreMnemonic = v;
       }),
-    );
+    ));
 
     const result = makeResultLine();
     if (result) block.appendChild(result);
@@ -1832,13 +1832,8 @@ export const mountArchiveBackupPanel = (
       xwarn.textContent = COPY.cross_realm_warning;
       block.appendChild(xwarn);
 
-      const field = doc.createElement('div');
-      field.className = 'archive-backup-field';
-      const label = doc.createElement('span');
-      label.className = 'archive-backup-field-label';
-      label.textContent = COPY.realm_key_label;
-      field.appendChild(label);
-      field.appendChild(
+      block.appendChild(makeField(
+        COPY.realm_key_label,
         makeMnemonicField(
           ARCHIVE_RESTORE_REALM_KEY_ATTR,
           restoreCurrentRealmKey,
@@ -1846,8 +1841,7 @@ export const mountArchiveBackupPanel = (
             restoreCurrentRealmKey = v;
           },
         ),
-      );
-      block.appendChild(field);
+      ));
     }
 
     const warn = doc.createElement('p');
@@ -1974,7 +1968,7 @@ export const mountArchiveBackupPanel = (
     ta.setAttribute('readonly', '');
     ta.setAttribute('spellcheck', 'false');
     ta.value = passportJson ?? '';
-    block.appendChild(ta);
+    block.appendChild(makeField(COPY.passport_json_label, ta));
 
     const actions = doc.createElement('div');
     actions.className = 'archive-backup-actions';
@@ -2007,10 +2001,6 @@ export const mountArchiveBackupPanel = (
 
     const block = doc.createElement('div');
     block.className = 'archive-backup-block';
-
-    const h3 = doc.createElement('h3');
-    h3.textContent = COPY.heading;
-    block.appendChild(h3);
 
     switch (view) {
       case 'menu':

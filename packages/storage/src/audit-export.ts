@@ -175,7 +175,9 @@ export const buildExportEntry = (
     duration_ms: entry.duration_ms,
     commit_status: entry.commit_status,
     trigger_source: entry.trigger_source,
-    trigger_url: entry.trigger_url,
+    // ⚠ Coalesced so the EXPORT SHAPE is unchanged: the field became optional
+    // on the entry, but an export consumer still gets an explicit null.
+    trigger_url: entry.trigger_url ?? null,
     instance_id: entry.instance_id,
     config_snapshot: entry.config_snapshot,
     errors: (entry.errors ?? []).map((e) => ({

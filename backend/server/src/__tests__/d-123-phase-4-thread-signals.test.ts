@@ -28,7 +28,7 @@ let db: Database.Database;
 let now = 1_700_000_000_000;
 const ONE_DAY = 86_400_000;
 
-const mailTableName = 'collection_mail_test';
+const mailTableName = 'collection_mail_11111111aa';
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'd-123-p4-thread-signals-'));
@@ -250,7 +250,7 @@ describe('threadSignalsProducer.produce — multi-record threads', () => {
 
 describe('threadSignalsProducer.produce — multi-account threading', () => {
   it('aggregates across multiple collection_mail_* tables sharing thread_id', async () => {
-    const otherTable = 'collection_mail_other';
+    const otherTable = 'collection_mail_22222222bb';
     db.exec(`
       CREATE TABLE IF NOT EXISTS ${otherTable} (
         record_id   TEXT PRIMARY KEY,

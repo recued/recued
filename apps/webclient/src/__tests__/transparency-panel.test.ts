@@ -10,6 +10,7 @@ import {
   TRANSPARENCY_PANEL_FAILURE_ROW_ATTR,
   TRANSPARENCY_PANEL_HOST_ATTR,
   TRANSPARENCY_PANEL_OFF_HINT_ATTR,
+  TRANSPARENCY_PANEL_STYLES,
   TRANSPARENCY_PANEL_TIER_ATTR,
   TRANSPARENCY_PANEL_TOGGLE_ATTR,
 } from '../settings/transparency-panel.js';
@@ -136,6 +137,12 @@ const makeSetCaller = () =>
   }));
 
 describe('mountTransparencyPanel', () => {
+  it('gives every checkbox a full-size label target', () => {
+    expect(TRANSPARENCY_PANEL_STYLES).toContain(
+      '.transparency-row {\n  box-sizing: border-box;\n  min-height: 36px;',
+    );
+  });
+
   it('loads prefs and renders default toggle and tier states', async () => {
     const doc = makeFakeDocument();
     const host = doc.createElement('div');

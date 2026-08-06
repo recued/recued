@@ -416,19 +416,22 @@ describe('listRecipesWorsenedByPackUninstall — R1 reverse-walk (registry shrin
     expect(out).toEqual([{ recipe_id: 'r', before: 'runnable', after: 'blocked' }]);
   });
 
-  it('a recipe-only pack (no droppable local catalog) → [] WITHOUT walking recipes', () => {
-    // `dropIds` returns [] → the registry is unchanged → the walk returns [] before
-    // reading any recipe (the throwing recipeStore proves the per-recipe diff never ran).
+  it('a recipe-only pack (no droppable local catalog) → []', () => {
+    // `dropIds` returns [] → the registry is unchanged → no R1 family can become
+    // unbound → the FAMILY diff worsens nothing.
+    //
+    // ⚠ This used to assert the walk returned before reading any recipe, proved
+    // by a throwing `recipeStore`. That laziness guarantee is deliberately gone:
+    // the Tier-P (`depends_on`) arm runs FIRST and unconditionally, because
+    // sitting behind this very short-circuit is what made a connection-less cli
+    // pack's uninstall disclose nothing. The OUTCOME is unchanged and is what
+    // this test was really about — a recipe-only pack declares no ops, so no
+    // recipe can name it in `depends_on` either.
     expect(
       listRecipesWorsenedByPackUninstall(
         {
           connectionStore: connectionStoreOf([mkRow('acme-conn', 'acme')]),
-          recipeStore: {
-            ids: () => {
-              throw new Error('per-recipe diff must not run');
-            },
-            get: () => null,
-          },
+          recipeStore: recipeStoreOf([mkOpRecipe('unrelated', ['core.crm.deal.search'])]),
           localManifestStore: acmePack(),
           localCatalogDropIdsForPack: dropIds(PACK /* no ids */),
         },
@@ -526,5 +529,180 @@ describe('listRecipesWorsenedByPackUninstall — R1 reverse-walk (registry shrin
         PACK,
       ),
     ).toEqual([]);
+  });
+});
+
+/** The Tier-P arm of the uninstall reverse-walk.
+ *
+ *  ⛔ THE BUG THIS FIXES WAS AN EMPTY LIST. R1 runnability is a pure function of
+ *  bound CONNECTION families, so both short-circuits in the family walk
+ *  (`dropIds.size === 0`, `afterFamilies.size === beforeFamilies.size`) hold for
+ *  a pack that enrols no connection. Uninstalling docling / whisper / ffmpeg /
+ *  officecli therefore disclosed NOTHING while its dependent recipes were about
+ *  to stop working — 121 shipped packs are `service_kind: cli` and 34 recipes
+ *  depend on one. An empty would-disable list reads as "nothing is affected",
+ *  not "I did not look".
+ *
+ *  A recipe naming a Tier-P op of the departing pack does not degrade; it cannot
+ *  start. `lowerSequentialStep` throws for "a two-tier id that resolves to
+ *  nothing" before step 1, so `after` is `blocked`. */
+describe('uninstall reverse-walk — Tier-P (depends_on) arm', () => {
+  const cliRecipe = (recipe_id: string, packRef: string, ops: string[]): RecipeDefinition => ({
+    ...mkOpRecipe(recipe_id, ops),
+    depends_on: [packRef],
+  } as RecipeDefinition);
+
+  it('discloses a recipe blocked by uninstalling a connection-less cli pack', () => {
+    // The exact shape the old walk missed: no connection, no local catalog to
+    // drop, so every family-based short-circuit returns early.
+    const out = listRecipesWorsenedByPackUninstall({
+      connectionStore: connectionStoreOf([]),
+      recipeStore: recipeStoreOf([
+        cliRecipe('parse-a-pdf', 'recued-core.docling', ['recued-core.docling.document.to_markdown']),
+      ]),
+    }, 'docling');
+    expect(out).toEqual([{ recipe_id: 'parse-a-pdf', before: 'runnable', after: 'blocked' }]);
+  });
+
+  it('leaves recipes that do not name the pack alone', () => {
+    const out = listRecipesWorsenedByPackUninstall({
+      connectionStore: connectionStoreOf([]),
+      recipeStore: recipeStoreOf([
+        cliRecipe('uses-whisper', 'recued-core.whisper', ['recued-core.whisper.audio.transcribe']),
+        mkOpRecipe('pure-kernel', ['core.ai.summarize']),
+      ]),
+    }, 'docling');
+    expect(out).toEqual([]);
+  });
+
+  it('matches the pack SLUG, not the publisher-qualified ref', () => {
+    // `installed_pack` is keyed by pack_slug alone, so qualifying here would
+    // claim a precision the inventory does not have.
+    const out = listRecipesWorsenedByPackUninstall({
+      connectionStore: connectionStoreOf([]),
+      recipeStore: recipeStoreOf([
+        cliRecipe('third-party', 'someone-else.docling', ['someone-else.docling.document.to_markdown']),
+      ]),
+    }, 'docling');
+    expect(out.map((t) => t.recipe_id)).toEqual(['third-party']);
+  });
+
+  it('does not report a recipe that is ALREADY blocked — uninstall cannot worsen it', () => {
+    // An unbound canonical WRITE blocks the recipe today; losing the pack too
+    // does not move its status, and a disclosure that lists it implies the
+    // uninstall is what breaks it.
+    const out = listRecipesWorsenedByPackUninstall({
+      connectionStore: connectionStoreOf([]),
+      recipeStore: recipeStoreOf([{
+        ...mkOpRecipe('already-blocked', ['core.crm.deal.create', 'recued-core.docling.document.to_markdown']),
+        depends_on: ['recued-core.docling'],
+      } as RecipeDefinition]),
+    }, 'docling');
+    expect(out).toEqual([]);
+  });
+
+  it('reports a degraded recipe as newly blocked, not merely degraded', () => {
+    // An unbound canonical READ degrades. Losing the pack is strictly worse:
+    // the run stops existing rather than returning less.
+    const out = listRecipesWorsenedByPackUninstall({
+      connectionStore: connectionStoreOf([]),
+      recipeStore: recipeStoreOf([{
+        ...mkOpRecipe('degraded-then-blocked', ['core.crm.deal.search', 'recued-core.docling.document.to_markdown']),
+        depends_on: ['recued-core.docling'],
+      } as RecipeDefinition]),
+    }, 'docling');
+    expect(out).toEqual([
+      { recipe_id: 'degraded-then-blocked', before: 'degraded', after: 'blocked' },
+    ]);
+  });
+
+  it('ignores a recipe with no depends_on rather than guessing from its ops', () => {
+    // `depends_on` is the declaration this walk reads. It is enforced
+    // corpus-wide (`recipe-depends-on-coverage`), so an absent list is a real
+    // "no pack dependency" — re-deriving from op ids here would be a second
+    // source of truth that could disagree with the one users see.
+    const out = listRecipesWorsenedByPackUninstall({
+      connectionStore: connectionStoreOf([]),
+      recipeStore: recipeStoreOf([
+        mkOpRecipe('undeclared', ['recued-core.docling.document.to_markdown']),
+      ]),
+    }, 'docling');
+    expect(out).toEqual([]);
+  });
+});
+
+/** The PACK arm of the runnability READ — the proactive half.
+ *
+ *  The uninstall walk already told the truth about packs; the read did not, so a
+ *  recipe whose pack was never installed showed a green `runnable` pill and only
+ *  revealed the problem when someone pressed Run. Disclosure is the whole point
+ *  of this surface, and it was silent on the one failure a user can fix in one
+ *  click.
+ *
+ *  ⛔ `blocked`, never `degraded`. A missing pack does not skip some steps — the
+ *  recipe cannot LOWER, so it never starts. Ranking it `degraded` would promise
+ *  a partial run that cannot happen.
+ */
+describe('runnability read — missing pack arm', () => {
+  const packRecipe = (recipe_id: string, packs: string[], ops: string[] = []): RecipeDefinition =>
+    ({ ...mkOpRecipe(recipe_id, ops), depends_on: packs }) as RecipeDefinition;
+
+  const read = (recipes: RecipeDefinition[], installed: string[] | null) =>
+    listRecipeRunnability({
+      connectionStore: connectionStoreOf([]),
+      recipeStore: recipeStoreOf(recipes),
+      ...(installed === null ? {} : { installedPackRefs: () => new Set(installed) }),
+    }).recipes;
+
+  it('blocks a recipe whose declared pack is not installed', () => {
+    const [entry] = read([packRecipe('parse-a-pdf', ['recued-core.docling'])], []);
+    expect(entry!.status).toBe('blocked');
+    expect(entry!.dependencies.map((d) => d.capability)).toEqual(['recued-core.docling']);
+    // HARD by construction — there is no optional half to a pack that is absent.
+    expect(entry!.dependencies[0]!.optional).toBe(false);
+    expect(entry!.dependencies[0]!.satisfied).toBe(false);
+  });
+
+  it('stays runnable when every declared pack is installed', () => {
+    const [entry] = read(
+      [packRecipe('parse-a-pdf', ['recued-core.docling'])],
+      ['recued-core.docling'],
+    );
+    expect(entry!.status).toBe('runnable');
+    expect(entry!.dependencies).toEqual([]);
+  });
+
+  it('lists the missing pack FIRST, ahead of family detail', () => {
+    // The pack is the thing the owner can fix in one click; an unbound CRM
+    // family below it is the longer errand.
+    const [entry] = read(
+      [packRecipe('mixed', ['recued-core.docling'], ['core.crm.deal.search'])],
+      [],
+    );
+    expect(entry!.status).toBe('blocked');
+    expect(entry!.dependencies[0]!.capability).toBe('recued-core.docling');
+    expect(entry!.dependencies.length).toBeGreaterThan(1);
+  });
+
+  it('keeps the family warning alongside the pack, not instead of it', () => {
+    // Fixing the pack must not then reveal a second problem the disclosure had
+    // been hiding behind the first.
+    const [entry] = read(
+      [packRecipe('mixed', ['recued-core.docling'], ['core.crm.deal.search'])],
+      [],
+    );
+    expect(entry!.dependencies.map((d) => d.capability)).toContain('crm');
+  });
+
+  // ⚠ Fail-OPEN, and only here. A dbless boot cannot enumerate installed packs;
+  // treating "cannot tell" as "missing" would paint every pack recipe blocked.
+  it('discloses nothing about packs when the dep is unwired', () => {
+    const [entry] = read([packRecipe('parse-a-pdf', ['recued-core.docling'])], null);
+    expect(entry!.status).toBe('runnable');
+  });
+
+  it('ignores a recipe that declares no packs', () => {
+    const [entry] = read([mkOpRecipe('plain', [])], []);
+    expect(entry!.status).toBe('runnable');
   });
 });

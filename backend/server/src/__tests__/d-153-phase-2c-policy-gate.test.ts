@@ -634,7 +634,7 @@ describe('D-153 P2.C handleExecute — schedule policy gate wiring', () => {
     expect(entries[0]?.recipe_id).toBe(recipe.recipe_id);
     expect(entries[0]?.commit_status).toBe('failed');
     expect(entries[0]?.duration_ms).toBe(0);
-    expect(entries[0]?.errors[0]?.code).toBe('RECIPE_POLICY_DENIED');
+    expect(entries[0]?.errors?.[0]?.code).toBe('RECIPE_POLICY_DENIED');
 
     const executionEvents = eventBus
       .replay(0)
@@ -718,7 +718,7 @@ describe('D-153 P2.C handleExecute — reactive policy gate wiring', () => {
     expect(entries[0]?.recipe_id).toBe(recipe.recipe_id);
     expect(entries[0]?.commit_status).toBe('failed');
     expect(entries[0]?.duration_ms).toBe(0);
-    expect(entries[0]?.errors[0]?.code).toBe('RECIPE_POLICY_DENIED');
+    expect(entries[0]?.errors?.[0]?.code).toBe('RECIPE_POLICY_DENIED');
 
     const executionEvents = eventBus
       .replay(0)
@@ -950,7 +950,7 @@ describe('D-153 P2.C handleExecute — mcp policy gate wiring', () => {
     expect(entries[0]?.recipe_id).toBe(recipe.recipe_id);
     expect(entries[0]?.commit_status).toBe('failed');
     expect(entries[0]?.duration_ms).toBe(0);
-    expect(entries[0]?.errors[0]?.code).toBe('RECIPE_POLICY_DENIED');
+    expect(entries[0]?.errors?.[0]?.code).toBe('RECIPE_POLICY_DENIED');
 
     const executionEvents = eventBus
       .replay(0)
@@ -1283,7 +1283,7 @@ describe('D-153 P2.C handleExecute — user policy gate wiring', () => {
     expect(entries[0]?.recipe_id).toBe(recipe.recipe_id);
     expect(entries[0]?.commit_status).toBe('failed');
     expect(entries[0]?.duration_ms).toBe(0);
-    expect(entries[0]?.errors[0]?.code).toBe('RECIPE_POLICY_DENIED');
+    expect(entries[0]?.errors?.[0]?.code).toBe('RECIPE_POLICY_DENIED');
 
     const executionEvents = eventBus
       .replay(0)

@@ -599,6 +599,12 @@ export const startPostListenerRuntime = async (
     webclientServed: options.webclientServed,
     notificationBlock: options.notificationBlock,
     runUpdateBootReconcile: options.runUpdateBootReconcile,
+    // D-148 § A.5.6 — the last hop of the lapse-recovery wiring. Resolved
+    // LAZILY: the cert stack fills `handleStateMachineRef` in `composeLate`,
+    // which can land after this call, so capturing the value here would pin
+    // `undefined` and silently disable recovery with everything still typed
+    // and green.
+    applyLifecycle: () => options.certStack.getHandleStateMachineRef(),
   });
 
   return {

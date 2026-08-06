@@ -637,6 +637,32 @@ describe('Settings → Learning — make a recipe from a case', () => {
     expect(findByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR)).toBeNull();
   });
 
+  it('names repeated case actions by request and stable case id', async () => {
+    const h = mountWithDraft({
+      cases: [
+        learned({ case_id: 'case_one', request: ['send the quarterly report'] }),
+        learned({ case_id: 'case_two', request: ['send the quarterly report'] }),
+      ],
+    });
+    await h.panel.whenLoaded();
+    const draftButtons = findAllByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR);
+    const forgetButtons = findAllByAttr(h.host, LEARNING_PANEL_FORGET_ATTR);
+    expect(draftButtons.map((button) => button.getAttribute('aria-label')))
+      .toEqual([
+        'Make a recipe from learned case: send the quarterly report (case_one)',
+        'Make a recipe from learned case: send the quarterly report (case_two)',
+      ]);
+    expect(forgetButtons.map((button) => button.getAttribute('aria-label')))
+      .toEqual([
+        'Forget learned case: send the quarterly report (case_one)',
+        'Forget learned case: send the quarterly report (case_two)',
+      ]);
+    expect(draftButtons.every((button) =>
+      button.className.includes('rx-btn-secondary'))).toBe(true);
+    expect(forgetButtons.every((button) =>
+      button.className.includes('rx-btn-danger'))).toBe(true);
+  });
+
   it('⛔ shows the confirmation FIRST and spends nothing on the first press', async () => {
     // ⛔⛔ THE POINT OF THE TWO PRESSES. This is a slow call against the owner's
     // model quota; an accidental tap must not spend it. The first press only
@@ -655,6 +681,14 @@ describe('Settings → Learning — make a recipe from a case', () => {
     expect(textOf(confirm!)).toBe(CONFIRMATION);
     button = findByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR)!;
     expect(textOf(button)).toContain('Yes, write the draft');
+    expect(button.className).toContain('rx-btn-primary');
+    expect(button.getAttribute('aria-label')).toBe(
+      'Confirm recipe draft from learned case: send the quarterly report (case_one)',
+    );
+    expect(findByAttr(h.host, LEARNING_PANEL_DRAFT_PROMPT_ATTR)?.getAttribute('aria-label'))
+      .toBe(
+        'Recipe instructions for learned case: send the quarterly report (case_one)',
+      );
     expect(h.doc.activeElement).toBe(button);
   });
 
@@ -680,6 +714,9 @@ describe('Settings → Learning — make a recipe from a case', () => {
     button = findByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR)!;
     expect(h.panel.hasInFlightWork()).toBe(true);
     expect(textOf(button)).toContain('Asking your AI...');
+    expect(button.getAttribute('aria-label')).toBe(
+      'Asking your AI to draft a recipe from learned case: send the quarterly report (case_one)',
+    );
     expect(button.disabled).toBe(false);
     expect(button.getAttribute('aria-disabled')).toBe('true');
     expect(button.getAttribute('aria-busy')).toBe('true');
@@ -808,6 +845,9 @@ describe('Settings → Learning — make a recipe from a case', () => {
     expect(h.panel.hasInFlightWork()).toBe(false);
     expect(h.panel.hasUnsavedChanges()).toBe(true);
     expect(textOf(button)).toContain('Open finished draft');
+    expect(button.getAttribute('aria-label')).toBe(
+      'Open finished draft from learned case: send the quarterly report (case_one)',
+    );
     expect(textOf(findByAttr(h.host, LEARNING_PANEL_DRAFT_ERROR_ATTR)!))
       .toContain('does not ask your AI or spend model quota again');
     expect(h.runDraftRecipe).toHaveBeenCalledTimes(1);

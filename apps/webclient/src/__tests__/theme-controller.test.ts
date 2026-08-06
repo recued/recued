@@ -4,6 +4,7 @@ import {
   mountThemeToggle,
   THEME_STORAGE_KEY,
   THEME_TOGGLE_ATTR,
+  THEME_TOGGLE_STYLES,
 } from '../shell/theme-controller.js';
 
 // ── Minimal fake DOM ────────────────────────────────────────────────
@@ -102,6 +103,7 @@ describe('mountThemeToggle', () => {
     const btn = host.children[0]!;
     expect(btn.getAttribute(THEME_TOGGLE_ATTR)).toBe('');
     expect(btn.textContent).toContain('System');
+    expect(THEME_TOGGLE_STYLES).toMatch(/min-height:\s*36px/);
     m.dispose();
   });
 
