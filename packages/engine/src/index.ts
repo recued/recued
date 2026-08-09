@@ -13,6 +13,28 @@ export {
   setNamespaceValue,
   isPrototypeSensitiveKey,
 } from './store-safety.js';
+export {
+  NestedRunNotCompletedError,
+  assertNestedRunCompleted,
+  RecipeCycleError,
+  assertNoRecipeCycle,
+  extendHeldRecipes,
+  seedHeldRecipes,
+  wouldCycle,
+} from './local-recipe-cycle.js';
+export type { LocalRecipeInvokeCall, LocalRecipeInvoker } from './types.js';
+export {
+  acknowledgementFor,
+  buildExchangeFirePayload,
+  classifyRunFailure,
+  fireExchangeOutput,
+} from './fire-exchange-output.js';
+export type {
+  ExchangeAcknowledgement,
+  ExchangeFireHandler,
+  ExchangeFireOutcome,
+  ExchangeFirePayload,
+} from './fire-exchange-output.js';
 export { evaluateCondition } from './condition.js';
 export { createTransformContext } from './context.js';
 export { createDryRunExecutor, generateMockData } from './dry-run.js';

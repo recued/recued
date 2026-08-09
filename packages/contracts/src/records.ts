@@ -78,6 +78,15 @@ export const RECORDS_ACTIONS = [
   // D-226 — N declared writes, ONE transaction, all or none. The only action
   // whose unit of work is more than one row.
   'batch',
+  // ⛔⛔ THE ONE ACTION WHOSE ROWS ARRIVE AS TEXT, and the reason it exists.
+  // Every other write takes rows the caller built in recipe step state; a real
+  // 1000-row bank export carried through a dozen `map` steps is an 11.9 MB step
+  // context against a 10 MB cap, so the recipe could not import a real
+  // statement AT ALL. Here the CSV crosses as one string and the rows are
+  // planned, deduped and written inside the store — they never enter step
+  // state. Writes `create` only, to the bound entity only; that is why it
+  // needs no allow-list where `batch` does.
+  'import',
 ] as const;
 
 export type RecordsAction = (typeof RECORDS_ACTIONS)[number];
@@ -156,6 +165,73 @@ export const validateRecordsBatchAllow = (
   });
   return problems;
 };
+
+/** How many per-row diagnostics an `import` returns alongside its counts.
+ *
+ *  ⛔ A CAP, NOT A PREFERENCE. The entire reason `import` exists is that rows
+ *  must not transit recipe step state; an uncapped failure list on a file where
+ *  every row is bad puts all of them straight back into it, and the 10 MB
+ *  ceiling that motivated the action reappears in its RESULT. The COUNTS are
+ *  always exact — only the examples are trimmed. */
+export const RECORDS_IMPORT_SAMPLE_LIMIT = 20;
+
+/** A cell that arrived non-empty and did not parse. ⚠ The row STILL LANDED with
+ *  the field null — this is a signal for the owner, never a verdict on the row.
+ *  `line` is 1-based including the header, so it is the line an owner opening
+ *  the file in a spreadsheet actually sees. */
+export interface RecordsImportUnparsedCell {
+  line: number;
+  column: string;
+  value: string;
+}
+
+/** One row the STORE refused, with its own error code so the owner can tell a
+ *  fact about their data (`records_conflict` — you edited this row since the
+ *  last import) from a fact about the namespace (`records_quota_exceeded`). */
+export interface RecordsImportFailure {
+  line: number;
+  id: string;
+  code: RecordsErrorCode;
+  reason: string;
+}
+
+/** ⛔⛔ THE SHAPE IS THE POINT — never a bare boolean, never `written` alone.
+ *
+ *  A `foreach` write reports SUCCESS when every single item was rejected: 1000
+ *  rows refused, `success: true`, nothing on screen. That is the defect this
+ *  action was built to remove, and a result carrying only a count would
+ *  reintroduce it one layer up. Here the only way to learn what landed is to
+ *  also receive what did not.
+ *
+ *  🔑 THE ARITHMETIC IS AN INVARIANT, and it is stated rather than implied:
+ *      rows_read === written + replayed + failed + not_attempted
+ *  A caller can therefore prove it was told about every row, which is the one
+ *  thing a partial import must never be able to hide. */
+export interface RecordsImportResult {
+  /** Data lines the file yielded — the denominator for everything else. */
+  rows_read: number;
+  /** Rows newly seated. */
+  written: number;
+  /** Rows already present, byte-identical: a re-import no-op, NOT a failure.
+   *  Bank exports overlap by design (the last 90 days, every time), so this is
+   *  the normal second-run outcome and the number an owner reads as
+   *  "already had". */
+  replayed: number;
+  failed: number;
+  /** Rows never attempted because the import halted — see `halted_reason`. */
+  not_attempted: number;
+  /** Cells that arrived non-empty and did not parse. ⚠ NOT a row count and NOT
+   *  a partial-import signal: every one of those rows is in `written` or
+   *  `replayed`, with the field null rather than a fabricated zero. */
+  unparsed: number;
+  failures_sample: RecordsImportFailure[];
+  unparsed_sample: RecordsImportUnparsedCell[];
+  /** Set when the import stopped early because a refusal was a fact about the
+   *  NAMESPACE (quota, fence, coherence) rather than about one row — retrying
+   *  the remaining rows could only reproduce it, and reporting 195,000 identical
+   *  failures would bury the one thing that actually happened. */
+  halted_reason?: string;
+}
 
 export const RECORDS_SLOT_FAMILIES = {
   number: Array.from({ length: 10 }, (_, idx) => `n${idx + 1}`),

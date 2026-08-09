@@ -5,7 +5,7 @@
   "ttl": 60,
   "metadata": {
     "name": "Schedule recipe",
-    "description": "Create a recurring or one-shot schedule for an already installed Recued recipe. Accepts only an installed recipe_id plus timing fields — no inline recipe JSON or new steps. For one_shot, resolve run_at against the current date/time in your context, in the user's timezone, as an absolute ISO 8601 timestamp with an explicit offset.",
+    "description": "Use “Schedule recipe” in Recued. Create a recurring or one-shot schedule for an already installed Recued recipe. Accepts only an installed recipeid plus timing fields — no inline recipe JSON or new steps.",
     "author": "recued-core",
     "supported_platforms": [],
     "tags": ["schedule", "recipe", "automation", "control-plane", "productivity", "pack:personal-organizer"],

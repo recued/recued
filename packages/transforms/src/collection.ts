@@ -488,6 +488,46 @@ export const slice: TransformFn = (p) => {
   return arr.slice(Number(p.start ?? 0), Number(p.end));
 };
 
+/** Split an array into fixed-size runs — the missing half of the D-226 records
+ *  `batch` action, whose `RECORDS_MAX_BATCH_OPS = 100` cap a recipe previously had
+ *  no way to feed from a larger array. `partition` splits by PREDICATE and `slice`
+ *  takes ONE window; neither expresses "this 1000-row import as ten batches".
+ *
+ *  ⚠ CHUNKING FORFEITS ATOMICITY, DELIBERATELY. D-226 calls the cap "a design
+ *  constraint on the caller rather than a knob to raise", because a chunked batch is
+ *  no longer all-or-none. This transform buys the VOLUME win — one gateway dispatch,
+ *  one transaction and one audit row per chunk instead of per row, which matters
+ *  because audit is quota'd and evicts oldest-first (D-230). Callers who genuinely
+ *  need all-or-none must reshape the work, not chunk it.
+ *
+ *  ⛔⛔ A NON-POSITIVE SIZE THROWS, AND THE REASON IS WORSE THAN DATA LOSS. `size: 0`
+ *  makes the loop below `i += 0` — it never advances, pushes empty slices forever, and
+ *  takes the worker out with `JS heap out of memory`. Measured, by removing this guard:
+ *  the suite did not fail, it DIED. A negative size is the same non-advancing loop. So
+ *  this is a liveness guard first and a data-integrity guard second; degrading to `[]`
+ *  would merely trade a hang for a bulk import that writes nothing and reports success.
+ *  ⚠ A FRACTIONAL size is refused for the separate reason that it silently re-batches:
+ *  `size: 2.5` advances by 2.5 and `slice` floors, producing runs of 2 and 3 in a
+ *  pattern the author never declared — a batch whose size is not what the recipe says
+ *  is a batch nobody can reason about afterwards. */
+export const chunk: TransformFn = (p) => {
+  const arr = p.array as unknown[];
+  if (!Array.isArray(arr)) return [];
+  const size = Number(p.size);
+  if (!Number.isInteger(size) || size < 1) {
+    throw new Error(
+      `chunk: size must be a positive integer (got ${String(p.size)})`
+      + ' — a non-positive size would drop every row while the run reported success',
+    );
+  }
+  const out: unknown[][] = [];
+  /** An EMPTY array yields NO chunks, never `[[]]`: an empty chunk becomes a batch
+   *  call carrying zero ops, which is a wasted dispatch and an audit row recording
+   *  that nothing happened. */
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+};
+
 export const group_by: TransformFn = (p) => {
   const arr = p.array as unknown[];
   if (!Array.isArray(arr)) return {};

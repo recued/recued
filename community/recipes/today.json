@@ -5,7 +5,7 @@
   "ttl": 60,
   "metadata": {
     "name": "Today (D-145 PA10)",
-    "description": "Morning glance card: today's calendar, the contacts and projects carrying the most open loops (unresolved commitments, tasks, unanswered threads), and active projects with no next action. Auto-refreshes weekday mornings (window configurable via start_hour / end_hour); invoke any time for a fresh snapshot.",
+    "description": "Use “Today” in Recued. Morning glance card: today's calendar, the contacts and projects carrying the most open loops (unresolved commitments, tasks, unanswered threads), and active projects with no next action.",
     "author": "recued-core",
     "supported_platforms": [],
     "tags": ["morning", "dashboard", "calendar", "commitments", "tasks", "ai_surface", "reactive", "pack:personal-organizer"],

@@ -424,6 +424,36 @@ describe('D-124 Phase 2.3 — TriggerDispatchQueue', () => {
     expect(queue.size(queueKey('t-b', 'r-2'))).toBe(0);
   });
 
+  it('⛔ K=4 — the key ceiling bounds LIVE keys, not lifetime keys', async () => {
+    // ⚠ THE HORIZON QUESTION THE SINGLE-CYCLE CLEANUP TEST ABOVE CANNOT ANSWER.
+    // That one drains two keys and asserts the maps are empty, which proves
+    // cleanup happens ONCE. It does not distinguish "cleans up" from "cleans up
+    // the first time" — and if it did not, `TRIGGER_QUEUE_MAX_KEYS` would be a
+    // LIFETIME budget: every reactive trigger on a mail server would stop firing
+    // forever after 1,024 distinct messages, with only a rate-limited daemon
+    // warning to say so. On a live server that is a subsystem that works for a
+    // week and then silently never fires again.
+    //
+    // Driven at 4x the ceiling: accepted 4,096/4,096, refused 0, dropped 0,
+    // activeKeys back to 0 after every cycle.
+    const queue = createTriggerDispatchQueue({ processEvent: async () => {} });
+    let accepted = 0;
+    const afterEachCycle: number[] = [];
+    for (let cycle = 1; cycle <= 4; cycle++) {
+      for (let i = 0; i < TRIGGER_QUEUE_MAX_KEYS; i++) {
+        if (queue.enqueue(trigger({ trigger_id: `t-${cycle}` }),
+          event({ record_id: `rec-${cycle}-${i}` }))) accepted += 1;
+      }
+      await queue.drained();
+      afterEachCycle.push(queue.activeKeys());
+    }
+    expect(accepted, 'every key across all four cycles was accepted')
+      .toBe(TRIGGER_QUEUE_MAX_KEYS * 4);
+    expect(afterEachCycle, 'no key survives its own drain, on any cycle')
+      .toEqual([0, 0, 0, 0]);
+    expect(queue.droppedEvents(), 'nothing was refused at any point').toBe(0);
+  });
+
   it('swallows processEvent errors — drain continues', async () => {
     const seen: number[] = [];
     const processEvent = vi.fn(async (_t: EventTrigger, e: WarehouseEvent) => {

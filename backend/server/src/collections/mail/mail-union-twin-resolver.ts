@@ -65,7 +65,6 @@ export const createMailUnionTwinResolver = (
       if (tables.length === 0) return [];
 
       const placeholders = wanted.map(() => '?').join(', ');
-      const path = `$.${field}`;
       const merged: CollectionRecord[] = [];
       for (const table of tables) {
         // `table` comes from sqlite_master (not user input) — safe to
@@ -75,9 +74,9 @@ export const createMailUnionTwinResolver = (
           .prepare(
             `SELECT record_id, received_at, modified_at, hot_fields, size_bytes, source_id
                FROM ${table}
-              WHERE json_extract(hot_fields, ?) IN (${placeholders})`,
+              WHERE json_extract(hot_fields, '$.${field}') IN (${placeholders})`,
           )
-          .all(path, ...wanted) as MailUnionRow[];
+          .all(...wanted) as MailUnionRow[];
         for (const r of rows) {
           merged.push({
             record_id: r.record_id,

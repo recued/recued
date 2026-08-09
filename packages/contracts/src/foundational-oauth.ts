@@ -91,6 +91,18 @@ export const GRAPH_FILES_READ_SCOPE = 'Files.Read';
  *  reads items across the site collections the user can access. It covers
  *  metadata sync and lazy explicit reads, with no `Sites.ReadWrite.All`. */
 export const GRAPH_SITES_READ_ALL_SCOPE = 'Sites.Read.All';
+/** Microsoft Graph files WRITE — item create / update / delete on the drives the
+ *  signed-in user can reach. Owner-ratified default (2026-08-07): requested at
+ *  OneDrive enrollment so a connection is write-capable BEFORE any pack is
+ *  installed. ⚠ It is a strict superset of {@link GRAPH_FILES_READ_SCOPE}; both are
+ *  requested so the granted set stays legible next to what the packs declare and a
+ *  reader comparing the two finds them consistent. */
+export const GRAPH_FILES_READWRITE_SCOPE = 'Files.ReadWrite';
+/** Microsoft Graph SharePoint sites WRITE — the {@link GRAPH_SITES_READ_ALL_SCOPE}
+ *  counterpart, same owner-ratified default. Needed because a document-library
+ *  drive is not reachable by `Files.ReadWrite` (which is scoped to the user's own
+ *  OneDrive), exactly as the read pair splits. */
+export const GRAPH_SITES_READWRITE_ALL_SCOPE = 'Sites.ReadWrite.All';
 
 // ── Scope sets ───────────────────────────────────────────────────────
 

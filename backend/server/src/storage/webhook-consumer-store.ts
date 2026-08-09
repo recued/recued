@@ -365,6 +365,23 @@ const createSchema = (db: Database.Database): void => {
 
     CREATE INDEX IF NOT EXISTS idx_webhook_recipe_dispatches_event
       ON webhook_recipe_dispatches(event_id, state, dispatch_id);
+    -- THE TRIGGER-SCOPED INDEX. Six statements in this file read dispatches by
+    --   trigger_id -- the consumer-uninstall cancel (three JOINs down from
+    --   webhook_consumer_bindings) and the trigger-level cancel, which runs its
+    --   three statements INSIDE A LOOP over the consumer's triggers. The only
+    --   index above leads with event_id, so every one of them SCANNED the whole
+    --   dispatch table, once per trigger.
+    --
+    -- This table grows with EVERY inbound webhook event (D-148 P9 posts
+    --   straight to the server), so it is one of the ones with no natural
+    --   ceiling. Measured at 200k dispatches across 2,000 triggers,
+    --   uninstalling one consumer that owns 5 of them: 33.6ms -> 0.26ms (130x).
+    --
+    -- The state column is second because the cancel statements pair
+    --   trigger_id = ? with state IN ('pending','running'); the plan becomes
+    --   SEARCH ... (trigger_id=? AND state=?) rather than a seek plus a filter.
+    CREATE INDEX IF NOT EXISTS idx_webhook_recipe_dispatches_trigger
+      ON webhook_recipe_dispatches(trigger_id, state);
 
     CREATE TABLE IF NOT EXISTS webhook_waiting_dispatches (
       dispatch_id TEXT PRIMARY KEY,

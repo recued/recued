@@ -58,9 +58,12 @@ const eventBus = (
   })),
 ): TestEventBus => ({ emit }) as unknown as TestEventBus;
 
+// `skipped` is part of BackfillResult: on a healthy second boot it equals
+// `tables` while `processed` is 0, which is the progress assertion rather than
+// a log line. A fixture missing it would type-error rather than silently drift.
 const backfillResult = {
-  mail: { tables: 0, processed: 0, observed: 0 },
-  calendar: { tables: 0, processed: 0, observed: 0 },
+  mail: { tables: 0, processed: 0, observed: 0, skipped: 0 },
+  calendar: { tables: 0, processed: 0, observed: 0, skipped: 0 },
 };
 
 const composeWithDb = (

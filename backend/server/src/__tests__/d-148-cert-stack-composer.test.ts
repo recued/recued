@@ -134,7 +134,7 @@ describe('D-148 § A.6.5 — cert-stack composer pair-revoke cascade', () => {
 
     // WS-side fan-out — the closer closure was invoked once.
     expect(closeCallCount).toBe(1);
-  });
+  }, 30_000);   // drives a real rotation: sqlite, key work, and a WS close
 
   it('markCompromised cascades into rotateServerIdentity with the DB revoke fanout', async () => {
     const db = new Database(':memory:');

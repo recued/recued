@@ -91,7 +91,7 @@ const ONEDRIVE_FIELDS: readonly ConnectionField[] = [
       'Optional — target a specific drive by its Graph drive id. Leave blank to '
       + 'mirror your default OneDrive (`/me/drive`). Reaching another drive (e.g. a '
       + 'SharePoint document library) may require broader Graph permissions on your '
-      + 'Entra app than the default `Files.Read`.',
+      + 'Entra app than the default `Files.Read` / `Files.ReadWrite`.',
   },
   {
     key: 'auth.type',
@@ -108,7 +108,8 @@ const ONEDRIVE_FIELDS: readonly ConnectionField[] = [
     help:
       'From your Microsoft Entra app — entra.microsoft.com → App registrations → '
       + 'your app → Overview → Application (client) ID. Grant it the `Files.Read`, '
-      + '`offline_access`, and `User.Read` delegated Microsoft Graph permissions.',
+      + '`Files.ReadWrite`, `offline_access`, and `User.Read` delegated Microsoft '
+      + 'Graph permissions.',
   },
   {
     key: 'auth.client_secret',

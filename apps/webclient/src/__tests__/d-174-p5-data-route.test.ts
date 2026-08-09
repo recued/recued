@@ -605,6 +605,15 @@ const mountRoute = (overrides: {
     unused: string,
     url?: string | URL | null,
   ) => void;
+  /** Supplied alongside `replaceState` when a test needs to tell a list→detail PUSH
+   *  from an in-page REPLACE. Omitted by default so every existing rig keeps a history
+   *  object with no `pushState` — which the route treats as replace-only, exactly as a
+   *  sandboxed embedding would. */
+  pushState?: (
+    data: unknown,
+    unused: string,
+    url?: string | URL | null,
+  ) => void;
   onHashSync?: BootstrapDataRouteOptions['onHashSync'];
   subscribe?: BootstrapDataRouteOptions['subscribe'];
   liveRefreshDebounceMs?: number;
@@ -614,7 +623,12 @@ const mountRoute = (overrides: {
   const doc = makeFakeDocument();
   if (overrides.replaceState !== undefined) {
     (doc as unknown as { defaultView: unknown }).defaultView = {
-      history: { replaceState: overrides.replaceState },
+      history: {
+        replaceState: overrides.replaceState,
+        ...(overrides.pushState !== undefined
+          ? { pushState: overrides.pushState }
+          : {}),
+      },
     };
   }
   const root = doc.createElement('div');
@@ -2857,6 +2871,80 @@ describe('D-174 P5 Data route', () => {
     expect(html).not.toContain('open-create-work-entity-dialog');
     expect(html).not.toContain('open-create-contact');
 
+    rig.route.dispose();
+  });
+
+  it('⛔⛔ opening a detail PUSHES so native Back returns to the list, not past it', async () => {
+    /** `#data/<tab>` → `#data/<tab>/<id>` used `replaceState` for the whole transition,
+     *  which OVERWROTE the list entry — so the browser's Back button skipped the list
+     *  and landed a level above it, on the route the owner came from rather than the one
+     *  they were looking at. Same defect as `#packs` and `#recipes`; the three shared one
+     *  hash-sync shape, so they shared the bug.
+     *  🔑 `pushState` emits no `hashchange` either, so the reason `replaceState` was
+     *  chosen — in-page navigation must never remount, master-detail stays smooth — is
+     *  untouched.
+     *  ⚠ Asserted as the ORDERED sequence of history calls. "pushState was called" alone
+     *  would pass even if it also pushed on the way back, which would trap Back in a
+     *  loop bouncing the owner into the detail they just closed. */
+    const calls: string[] = [];
+    const rig = mountRoute({
+      replaceState: (_d, _u, url) => { calls.push(`replace ${String(url)}`); },
+      pushState: (_d, _u, url) => { calls.push(`push ${String(url)}`); },
+    });
+    await rig.route.whenLoaded();
+
+    /** ⛔ THE MOUNT MUST NOT PUSH. The initial sync reflects the URL the browser is
+     *  already on; a push there stacks a duplicate entry and the owner's FIRST Back
+     *  press appears to do nothing. */
+    expect(calls.filter((c) => c.startsWith('push ')),
+      'the initial reflection is not a navigation').toEqual([]);
+
+    await rig.route.openContactDetail('sam@example.com');
+    expect(calls, 'entering a detail must PUSH a history entry')
+      .toContain('push #data/contact/sam%40example.com');
+
+    /** Returning to the list REPLACES — pushing here too would leave two entries. */
+    await rig.route.closeContactDetail();
+    expect(calls).toContain('replace #data/contact');
+    expect(calls.filter((c) => c.startsWith('push ')),
+      'only the detail-opening step may push').toEqual(['push #data/contact/sam%40example.com']);
+    rig.route.dispose();
+  });
+
+  it('⚠ mounting straight onto a deep-linked detail does NOT push — it is already that entry', async () => {
+    /** ⛔ Pushing on the initial reflection would stack a DUPLICATE over the entry the
+     *  browser is already on, so the owner's FIRST Back press appears to do nothing — a
+     *  worse bug than the one being fixed, because it looks like the button is broken.
+     *  ⛔⛔ AND THE ASSERTION THAT ACTUALLY EARNS THE SEED IS THE SECOND ONE. Checking
+     *  only that the MOUNT does not push is also satisfied by an unseeded tracker (the
+     *  list path does not sync on mount at all, so nothing is recorded either way) — that
+     *  mutant SURVIVED until this test drove DETAIL → DETAIL, which is the transition
+     *  where a null seed wrongly reads as a fresh entry and pushes.
+     *  ⚠ The pre-existing deep-link test nearby cannot catch this: its history fake has
+     *  no `pushState`, so the route falls back to `replaceState` whatever it decides. */
+    const calls: string[] = [];
+    const rig = mountRoute({
+      initialTab: 'contact',
+      initialEntityId: 'sam@example.com',
+      replaceState: (_d, _u, url) => { calls.push(`replace ${String(url)}`); },
+      pushState: (_d, _u, url) => { calls.push(`push ${String(url)}`); },
+    });
+    await rig.route.whenLoaded();
+
+    expect(calls.filter((c) => c.startsWith('push ')),
+      'a deep-linked mount is not a navigation').toEqual([]);
+
+    await rig.route.openContactDetail('alex@example.com');
+    expect(calls.filter((c) => c.startsWith('push ')),
+      'detail -> detail is sideways, not a level down').toEqual([]);
+    expect(calls).toContain('replace #data/contact/alex%40example.com');
+
+    /** …and a genuine list -> detail after that still pushes, so the seed has not simply
+     *  disabled pushing altogether. */
+    await rig.route.closeContactDetail();
+    await rig.route.openContactDetail('sam@example.com');
+    expect(calls.filter((c) => c.startsWith('push ')))
+      .toEqual(['push #data/contact/sam%40example.com']);
     rig.route.dispose();
   });
 

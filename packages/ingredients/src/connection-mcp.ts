@@ -67,6 +67,7 @@ import {
   MCP_CLIENT_IDLE_TIMEOUT_MS,
   validateHeaderAuthEntries,
   describeHeaderAuthIssue,
+  foldConnectionDispatchHealth,
 } from '@recued/contracts';
 import type {
   ConnectionAuth,
@@ -74,6 +75,7 @@ import type {
   ConnectionRow,
   McpTransport,
   McpToolDescriptor,
+  ConnectionDispatchOutcome,
 } from '@recued/contracts';
 import type { ConnectionHandlerCtx, ConnectionKindHandler } from './connection.js';
 import { IngredientError, type ResolvedCall } from './types.js';
@@ -618,6 +620,18 @@ export interface ConnectionMcpHandlerDeps {
    *  `refresh_token` the next refresh can fail closed (the old token may be
    *  revoked). Production boot always supplies it. */
   persistAuth?: EnsureFreshAuthDeps['persistAuth'];
+
+  /** D-232 § 22 — write the connection's health back after a dispatch.
+   *
+   *  ⚠ OPTIONAL FOR HARNESSES, LOAD-BEARING IN PRODUCTION. Omitting it means
+   *  health is written only by the manual probe, which is the state this exists
+   *  to end: a connection that fails every call still reading `ok` from whenever
+   *  someone last pressed the button. Wired in `wire-executor-config`.
+   *
+   *  Never called for a `call_failed` outcome — see `foldConnectionDispatchHealth`,
+   *  which returns null there so a refused call cannot refresh `last_probed_at`
+   *  and make the connection look freshly verified. */
+  persistHealth?: (name: string, health: ConnectionHealth) => Promise<void>;
 
   /** Advisory sink for a refreshed credential that could not be written back.
    * The in-flight MCP call still uses the fresh token; production records the
@@ -1338,7 +1352,7 @@ export const createConnectionMcpHandler = (
     }
   };
 
-  return async (
+  const dispatch = async (
     record: ConnectionRow,
     params: Record<string, unknown>,
     call: ResolvedCall,
@@ -1612,5 +1626,70 @@ export const createConnectionMcpHandler = (
     // Spec § 4.2 — shared `envelopeToShape` (see its JSDoc); identical
     // mapping for the websocket path.
     return envelopeToShape(envelope, method === 'tools/call');
+  };
+
+  // ── D-232 § 22 — EVERY DISPATCH IS A HEALTH PROBE, AND THE HONEST ONE ──
+  //
+  // ⛔⛔ HEALTH WAS WRITTEN ONLY BY THE MANUAL PROBE. This handler read
+  // `health.tools` for tool pre-validation and never wrote anything back, so a
+  // connection that failed every call for a week still reported `ok` from
+  // whenever someone last pressed the button. Anything consulting that field —
+  // a retry policy, a fail-fast gate, the Connections panel — was consulting
+  // nobody's opinion.
+  //
+  // 🔑 THE CLASSIFICATION IS THE SAME REACHED/NOT-REACHED LINE AS § 21, so one
+  // rule serves both consumers and they cannot disagree: a call the asker is
+  // told to treat as `error` can never simultaneously be evidence that the
+  // connection is down.
+  //   · returned `ok`          → the peer answered            → 'ok'
+  //   · returned `tool_error`  → answered and refused the CALL → 'call_failed'
+  //     (⛔ health MUST NOT move — a correctly-enforced refusal is not an outage)
+  //   · OAUTH_EXPIRED / 401,403 → reached, credential rejected → 'auth_failed'
+  //   · NETWORK_ERROR / timeout → never reached                → 'unreachable'
+  //   · anything else           → reached far enough to fail   → 'call_failed'
+  //
+  // ⚠ REPORTING IS BEST-EFFORT AND NEVER CHANGES THE CALL'S OUTCOME. A health
+  // write that throws must not turn a successful dispatch into a failure, nor
+  // replace the real error with a bookkeeping one.
+  const reportHealth = async (
+    record: ConnectionRow,
+    outcome: ConnectionDispatchOutcome,
+    detail?: string,
+  ): Promise<void> => {
+    if (deps.persistHealth === undefined) return;
+    const folded = foldConnectionDispatchHealth(readHealth(record), outcome, now(), detail);
+    if (folded === null) return; // 'call_failed' — deliberately no write at all
+    try {
+      await deps.persistHealth(record.name, folded);
+    } catch {
+      // Swallowed on purpose; see the note above.
+    }
+  };
+
+  const outcomeForThrow = (e: unknown): ConnectionDispatchOutcome => {
+    const code = (e as { code?: unknown } | null)?.code;
+    if (code === 'OAUTH_EXPIRED' || code === 'OAUTH_REVOKED') return 'auth_failed';
+    if (code === 'NETWORK_ERROR' || code === 'STEP_TIMEOUT') return 'unreachable';
+    // ⚠ `ACTION_DELIVERY_UNCERTAIN` and `API_RATE_LIMITED` land here: the peer
+    // was REACHED in both (a 5xx and a 429 are answers), so neither is evidence
+    // the connection is down.
+    return 'call_failed';
+  };
+
+  return async (
+    record: ConnectionRow,
+    params: Record<string, unknown>,
+    call: ResolvedCall,
+    ctx?: ConnectionHandlerCtx,
+  ): Promise<unknown> => {
+    try {
+      const out = await dispatch(record, params, call, ctx);
+      const status = (out as { status?: unknown } | null)?.status;
+      await reportHealth(record, status === 'tool_error' ? 'call_failed' : 'ok');
+      return out;
+    } catch (e) {
+      await reportHealth(record, outcomeForThrow(e), (e as Error)?.message);
+      throw e;
+    }
   };
 };

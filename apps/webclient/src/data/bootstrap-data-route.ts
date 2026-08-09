@@ -193,6 +193,7 @@ import {
   MEMORY_DETAIL_HEADING_ATTR,
   MEMORY_EDIT_ACTION,
   MEMORY_EXPORT_ACTION,
+  MEMORY_MORE_ACTION,
   MEMORY_FIELD_ATTR,
   MEMORY_FILTER_ACTION,
   MEMORY_FILTER_VALUE_ATTR,
@@ -4830,6 +4831,13 @@ export const bootstrapDataRoute = (
   let memoryImportDiscardGuardOpen = false;
   // D-198 Slice 3 — a memory-native export walk is in flight.
   let memoryExporting = false;
+  /** ⛔ The feed's `next_cursor`. `memory.list` has always returned one and this
+   *  route dropped it, so the Memory lens showed the newest `DEFAULT_LIMIT`
+   *  entries and gave the owner no way to reach the rest — while its own header
+   *  calls the feed "whole-feed". `data.memory` is UNBOUNDED under D-230, so a
+   *  single page is never the whole feed. */
+  let memoryCursor: string | null = null;
+  let memoryLoadingMore = false;
   // Writes are wired only when the whole CRUD caller set is present.
   const memoryCanWrite =
     opts.memoryCreateCaller !== undefined
@@ -6260,6 +6268,8 @@ export const bootstrapDataRoute = (
             ? { filteringOrigin: memoryFilteringOrigin }
             : {}),
           exporting: memoryExporting,
+          hasMore: memoryCursor !== null,
+          loadingMore: memoryLoadingMore,
           ...(memoryPendingDeleteId !== undefined ? { pendingDeleteId: memoryPendingDeleteId } : {}),
           ...(memoryDeletingId !== null ? { deletingId: memoryDeletingId } : {}),
           ...(memoryDeleteError !== null
@@ -7268,6 +7278,46 @@ export const bootstrapDataRoute = (
   // D-198 Slice 1b — load the Memory lens feed (`memory.list`). Generation-
   // guarded like the tab refreshers so a slow / live refetch can't clobber
   // newer state (e.g. after an origin-filter change or lens switch).
+  /** Append the next page of the memory feed.
+   *
+   *  ⚠ APPENDS, never replaces — `refreshMemory` owns the replace path, and a
+   *  Load-more that replaced would silently drop everything already on screen.
+   *
+   *  ⚠ Guarded on BOTH the generation and the in-flight flag: a second click
+   *  while the first is outstanding would page twice from the same cursor and
+   *  duplicate a page into the list. */
+  const loadMoreMemory = async (): Promise<void> => {
+    if (opts.memoryListCaller === undefined) return;
+    if (memoryLoadingMore || memoryCursor === null) return;
+    const generation = ++loadGeneration;
+    const cursor = memoryCursor;
+    memoryLoadingMore = true;
+    render();
+    try {
+      const actors = memoryFilterActors(memoryOriginFilter);
+      const response = await opts.memoryListCaller({
+        ...(actors ? { origin_actors: actors } : {}),
+        limit: DEFAULT_LIMIT,
+        cursor,
+      });
+      if (disposed || generation !== loadGeneration) return;
+      memoryEntries = [...memoryEntries, ...response.entries];
+      memoryCursor = response.next_cursor ?? null;
+      memoryError = undefined;
+    } catch (err) {
+      if (disposed || generation !== loadGeneration) return;
+      // ⚠ The already-loaded entries STAY. A failed page-2 is not a reason to
+      // empty a list the owner is reading; the error names the failure and the
+      // cursor is kept so the retry resumes from the same place.
+      memoryError = humanizeRpcError(err);
+    } finally {
+      if (!disposed && generation === loadGeneration) {
+        memoryLoadingMore = false;
+        render();
+      }
+    }
+  };
+
   const refreshMemory = async (generation: number): Promise<void> => {
     if (opts.memoryListCaller === undefined) {
       memoryEntries = [];
@@ -7282,10 +7332,14 @@ export const bootstrapDataRoute = (
       });
       if (disposed || generation !== loadGeneration) return;
       memoryEntries = [...response.entries];
+      memoryCursor = response.next_cursor ?? null;
       memoryError = undefined;
     } catch (err) {
       if (disposed || generation !== loadGeneration) return;
       memoryEntries = [];
+      // ⚠ Cleared with the entries. A stale cursor beside an empty list offers
+      // a "Load more" that pages from a feed the user is no longer looking at.
+      memoryCursor = null;
       memoryError = humanizeRpcError(err);
     }
   };
@@ -8586,6 +8640,20 @@ export const bootstrapDataRoute = (
     }
     return undefined;
   };
+  /** ⛔ SEEDED FROM THE DEEP-LINK INPUT, so mounting on a detail is not mistaken for a
+   *  navigation. `opts.initialEntityId` is the router's parse of the entity segment in
+   *  `#data/<tab>/<entity>` — if it is set, the browser is ALREADY on a detail entry, and
+   *  treating the first sync as "entering" would stack a duplicate over it so the owner's
+   *  first Back press appears to do nothing.
+   *
+   *  ⚠ TWO EARLIER ATTEMPTS WERE WRONG, both caught by mutation rather than by review:
+   *    · a "first sync is never a navigation" FLAG — the list path does not sync on
+   *      mount at all, so the flag swallowed the first REAL detail open;
+   *    · seeding from `currentDeepLinkEntity()` — it reads state the initial deep link
+   *      has not populated yet at construction (the contact detail loads async), so it
+   *      returned undefined and the mount pushed anyway.
+   *  The INPUT is available synchronously and means exactly what this needs to know. */
+  let syncedDataEntity: string | undefined = opts.initialEntityId;
   const syncDataHash = (): void => {
     const history = doc.defaultView?.history;
     if (history?.replaceState === undefined) return;
@@ -8650,12 +8718,32 @@ export const bootstrapDataRoute = (
                   : {}),
               })
             : serializeShellRoute('data', activeTab, deepLinkEntity);
+    /** ⛔⛔ OPENING A DETAIL IS A PLACE, SO IT PUSHES. `replaceState` for the whole
+     *  list→detail transition OVERWROTE the `#data/<tab>` entry, so the native Back
+     *  button skipped the list and landed a level above it. Same defect as `#packs` and
+     *  `#recipes` — the three shared one hash-sync shape, so they shared the bug.
+     *  🔑 `pushState` emits no `hashchange` either, so the reason `replaceState` was
+     *  chosen — in-page navigation must never remount, master-detail stays smooth — is
+     *  fully preserved.
+     *  ⚠ The trigger is the ENTITY SEGMENT APPEARING, not the tab changing. Entering a
+     *  detail pushes; closing it back to the bare tab replaces; and detail→detail within
+     *  a tab replaces too, or Back would have to walk every record the owner opened.
+     *  A tab switch carries no entity, so it replaces — it is a sibling list, not a
+     *  level down. */
+    const enteringDetail = deepLinkEntity !== undefined && syncedDataEntity === undefined;
     try {
-      history.replaceState(null, '', hash);
-      opts.onHashSync?.(hash);
+      if (enteringDetail && typeof history.pushState === 'function') {
+        history.pushState(null, '', hash);
+      } else {
+        history.replaceState(null, '', hash);
+      }
     } catch {
-      // Non-fatal — addressability degrades to in-page-only.
+      // Non-fatal — addressability degrades to in-page-only. URL unchanged → do NOT
+      // desync the router's activeHash from it.
+      return;
     }
+    syncedDataEntity = deepLinkEntity;
+    opts.onHashSync?.(hash);
   };
 
   const cancelContactEditOpen = (): void => {
@@ -12198,6 +12286,10 @@ export const bootstrapDataRoute = (
     }
     if (action === MEMORY_EXPORT_ACTION) {
       void exportMemory();
+      return;
+    }
+    if (action === MEMORY_MORE_ACTION) {
+      void loadMoreMemory();
       return;
     }
     if (action === MEMORY_OPEN_RUN_ACTION) return;

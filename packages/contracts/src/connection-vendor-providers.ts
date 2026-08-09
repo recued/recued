@@ -27,8 +27,10 @@
 // this stays a clean one-way edge (no cycle).
 import {
   GRAPH_FILES_READ_SCOPE,
+  GRAPH_FILES_READWRITE_SCOPE,
   GRAPH_OFFLINE_SCOPE,
   GRAPH_SITES_READ_ALL_SCOPE,
+  GRAPH_SITES_READWRITE_ALL_SCOPE,
   GRAPH_USER_READ_SCOPE,
   MICROSOFT_AUTHORIZE_URL,
   MICROSOFT_TOKEN_URL,
@@ -661,10 +663,30 @@ export const DROPBOX_DEFAULT_RECONCILIATION_CADENCE = '6h' as const;
  *  `/me/drive/root/delta` host AND the connection's fixed `config.base_url`. */
 export const MICROSOFT_GRAPH_API_BASE = 'https://graph.microsoft.com/v1.0';
 /** OneDrive OAuth scopes requested at enrollment. `Files.Read` covers the
- *  `/delta` metadata walk and lazy explicit byte reads, `offline_access` mints
- *  the refresh token, and `User.Read` backs identity read-back. */
+ *  `/delta` metadata walk and lazy explicit byte reads, `Files.ReadWrite` makes the
+ *  connection write-capable, `offline_access` mints the refresh token, and
+ *  `User.Read` backs identity read-back.
+ *
+ *  ⚠⚠ `Files.ReadWrite` IS A DELIBERATE WIDENING OF THE DEFAULT (owner-ratified
+ *  2026-08-07), not a correction. The D-192 file SOURCE family that this seed was
+ *  written for is READ-ONLY — it mirrors metadata and lazily fetches bytes, and
+ *  never mutates — so the seed asked for read alone, and the enroll form's
+ *  `prefillVendorScopes` already UNIONED in `Files.ReadWrite` the moment a
+ *  write-capable pack was installed. Measured before the change:
+ *      seed alone     -> Files.Read offline_access User.Read
+ *      pack installed -> Files.Read Files.ReadWrite User.Read offline_access
+ *  So nothing was broken; the owner chose a write-capable connection BEFORE any
+ *  pack is installed over a minimal one that widens on demand.
+ *
+ *  ⛔ THE COST, STATED PLAINLY: someone who wants only the read-only file mirror is
+ *  now asked to grant file mutation they will never exercise, and the consent
+ *  screen they see is correspondingly broader. Recued still gates every write at
+ *  approval (`RISK_APPROVAL_FLOOR`), but the TOKEN itself now carries the
+ *  authority. Reverting is this constant plus the paired assertion in
+ *  `connection-scope-prefill-corpus.test.ts`. */
 export const ONEDRIVE_OAUTH_SCOPES = [
   GRAPH_FILES_READ_SCOPE,
+  GRAPH_FILES_READWRITE_SCOPE,
   GRAPH_OFFLINE_SCOPE,
   GRAPH_USER_READ_SCOPE,
 ] as const;
@@ -715,10 +737,18 @@ export const BOX_DEFAULT_RECONCILIATION_CADENCE = '6h' as const;
  *  metadata-read floor for a SharePoint document library drive (a `Files.Read`
  *  grant is scoped to the user's own OneDrive and 403s on a site drive — which
  *  the leaf surfaces as a graceful `policy` outcome). `offline_access` mints the
- *  refresh token, `User.Read` backs the `/me` identity read-back. Read-only:
- *  Source sync mirrors metadata, while explicit reads may fetch file bytes. */
+ *  refresh token, `User.Read` backs the `/me` identity read-back.
+ *
+ *  ⚠⚠ `Sites.ReadWrite.All` IS A DELIBERATE WIDENING (owner-ratified 2026-08-07) —
+ *  see the OneDrive block above for the full rationale and the measured before/after.
+ *  A document-library drive is NOT reachable by `Files.ReadWrite` (which is scoped to
+ *  the user's own OneDrive), which is why the write pair splits exactly as the read
+ *  pair does. The D-192 Source sync itself still only mirrors metadata and fetches
+ *  bytes on an explicit read — it does not write; the connection is simply now
+ *  capable of it before a pack asks. */
 export const SHAREPOINT_OAUTH_SCOPES = [
   GRAPH_SITES_READ_ALL_SCOPE,
+  GRAPH_SITES_READWRITE_ALL_SCOPE,
   GRAPH_OFFLINE_SCOPE,
   GRAPH_USER_READ_SCOPE,
 ] as const;

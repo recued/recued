@@ -3,8 +3,12 @@
  *
  *  Mirrors the canary `thread_signals` shape but swaps deterministic
  *  SQL aggregation for an `ai-summarize` LLM call. The producer is
- *  manual-only by construction (`estimate_per_record_tokens > 0`
- *  flips `meta.idle_eligible` to false in `buildEnrichmentProducerTask`)
+ *  manual-only by construction — which needs BOTH `ai_surface: 'chat'`
+ *  and a positive `estimate_per_record_tokens()`. This header used to
+ *  credit the token estimate alone (via `meta.idle_eligible`); that is
+ *  not what `buildEnrichmentProducerTask` does, and `ai_surface` was
+ *  missing here for exactly that reason — leaving the topic on
+ *  trust_state 'auto', outside the Pause-AI window and the pool policy
  *  so the idle scheduler never fires it — the user clicks Run Now,
  *  the dialog shows the cost preview + AI-availability probe, and
  *  only then does the cycle invoke this producer.
@@ -127,6 +131,18 @@ export const summaryProducer: HousekeepingEnrichmentProducer = {
       sample_field_paths: ['subject', 'body_preview', 'from', 'thread_id'],
     },
   ],
+  // ⛔ WITHOUT THIS THE PRODUCER IS NOT AN AI SURFACE, and it calls an
+  //    LLM. `enrichment-producer.ts` derives
+  //    `isAiSurface = ai_surface !== undefined && estimate_per_record_tokens() > 0`
+  //    — BOTH terms, so a positive token estimate alone is not enough. The
+  //    header above used to claim the estimate flipped it "manual-only by
+  //    construction"; it did not. With `isAiSurface` false the topic
+  //    resolved to trust_state 'auto' (idle-eligible, running AI with no
+  //    owner action), the `isAiSurface && isAiPaused()` check was skipped so
+  //    Pause-AI did not stop it, and `wrapCtxWithForceLayer` was not applied
+  //    so the owner's pool_policy was not enforced either.
+  //    The field's own doc names this producer as the 'chat' case.
+  ai_surface: 'chat',
   estimate_per_record_tokens: () => TOKEN_ESTIMATE_PER_RECORD,
 
   async produce(ctx: HousekeepingContext, source_record: SourceRecord) {

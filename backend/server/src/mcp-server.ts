@@ -92,6 +92,8 @@ import {
   readOwnerOperationOverride,
   resolveTrustCeiling,
   STDIO_MCP_TOKEN_ID,
+  KERNEL_OP_REGISTRY,
+  isGrantableKernelOp,
 } from '@recued/contracts';
 import {
   AUTHOR_DEFAULT_READ_GRANT_CHECKER,
@@ -429,6 +431,7 @@ const buildMcpContractSnapshot = (
     );
   }
   const allSlugs = deps.executorConfig.manifests.slugs();
+  const installedSlugs = new Set(allSlugs);
   // D-221 §3.3 — a Records catalog is deliberately absent from every raw
   // MCP tool/grant surface, so its slug can never enter `allowed_tools` through
   // the ordinary `recued_ingredient_*` alias below. A granted recipe remains a
@@ -497,6 +500,59 @@ const buildMcpContractSnapshot = (
               // stays §8-fenced (dispatch backstop). The dead-contract kill-switch
               // (`[]` above) is reached first, so a revoked door admits nothing.
               ...cliReachableSlugsForSnapshot(source, deps, allSlugs),
+              // D-232 § 20.20 — the backing slugs of KERNEL OPS this token was
+              // explicitly granted. Without this the grant is inert: an owner
+              // could name `core.data.calendar.list` and the policy gate would
+              // still deny the step, because it looks for the ingredient SLUG
+              // and a grant names the OP. Same coarse slug-level admit as the
+              // cli union above — it only clears `tool_not_in_contract`; the
+              // gateway resolver still enforces the exact op risk tier, so a
+              // granted `read` can never carry a `destructive` past it.
+              //
+              // ⛔ DRIVEN BY THE TOKEN'S EXPLICIT GRANTS, never by author
+              // defaults. Kernel `core.*` is documented as "the standard toolset
+              // (default-available)", so resolving author defaults here would
+              // admit 116 slugs — 53 of them reads, including `email-list` and
+              // `mail-get` — for every door that ever connects. `inbound-
+              // TokenAuthorize` answers only what the owner actually chose at
+              // mint time, which is the whole difference between a grant surface
+              // and an open door.
+              //
+              // ⚠ BOUNDED BY `allSlugs`, like every sibling here. The registry is
+              // a STATIC list of 122 ops; iterating it unbounded consults the
+              // token authorizer once per op even on a server that has none of
+              // those ingredients loaded — which broke the seller-customer
+              // invariant that a bound-contract door is gated by its CONTRACT and
+              // "not the token checklist" (a test asserts the authorizer is never
+              // called there, and it was, 102 times). Admitting a slug for an
+              // ingredient this server does not have is meaningless anyway.
+              ...KERNEL_OP_REGISTRY.filter((entry) =>
+                entry.backing_slug !== undefined
+                && installedSlugs.has(entry.backing_slug)
+                && isGrantableKernelOp(entry.op)
+                && deps.inboundTokenAuthorize!(entry.op),
+              ).map((entry) => entry.backing_slug!),
+              // ── D-232 § 20.19 — THE GRANTED RECIPE'S OWN NAME ──
+              // Without this entry the § 20.19 rule is INERT: the policy gate
+              // asks "was this recipe granted", `allowed_tools` held ingredient
+              // slugs only, and the answer was structurally always no. Exact
+              // Tier-2 grants only — a door holding the GENERIC `recued_runRecipe`
+              // umbrella can run recipes, but naming no recipe it grants none,
+              // and each step of what it runs stays gated as before.
+              //
+              // ⚠ SAFE ONLY BECAUSE THE VOCABULARIES ARE DISJOINT: these are
+              // `<publisher>/<recipe_id>` wire names and an ingredient slug never
+              // contains `/`, so neither can be mistaken for the other by the
+              // `admitContractToolAccess` equality or the § 20.19 suffix match.
+              // `recipeStepsCoveredByGrant` carries the same warning.
+              ...(deps.internalRegistry?.listByTier(2) ?? [])
+                .filter((entry) => {
+                  const slash = entry.name.indexOf('/');
+                  return slash > 0
+                    && slash !== entry.name.length - 1
+                    && deps.inboundTokenAuthorize!(entry.name);
+                })
+                .map((entry) => entry.name),
               ...recordsRecipeSlugs,
             ]),
           )
@@ -741,11 +797,23 @@ const TOOLS = [
   },
   {
     name: 'recued_getAudit',
-    description: 'Get recent recipe execution audit entries from this server. Optionally filter by recipe_id. Entries include success, duration, token usage, and step outcomes.',
+    // ⚠ Model-facing — see internal design notes. The
+    // `exchange_ref` sentence is what makes D-232's query reachable at all: a
+    // sender holds a ref and no other tool turns one into an answer, so a
+    // filter the model does not know about is a filter nobody uses.
+    description: 'Get recent recipe execution audit entries from this server. Optionally filter by recipe_id, by exchange_ref (every run belonging to one peer exchange — the inbound call, the answer\'s own dispatch, and any approval hold in between: this is how you find out what happened to a message you sent a peer), or by peer_contract_id (everything with one peer). Entries include success, duration, token usage, and step outcomes.',
     inputSchema: {
       type: 'object',
       properties: {
         recipe_id: { type: 'string', description: 'Filter by recipe (optional)' },
+        exchange_ref: {
+          type: 'string',
+          description: 'Filter to one peer exchange, by the reference the exchange was accepted under (optional)',
+        },
+        peer_contract_id: {
+          type: 'string',
+          description: 'Filter to every run governed by one peer\'s contract (optional)',
+        },
         limit: { type: 'number', description: 'Max entries (default 20)' },
       },
     },
@@ -2763,9 +2831,23 @@ const handleToolCall = async (
         );
       }
       const limit = (args.limit as number) ?? 20;
-      const entries = args.recipe_id
-        ? await deps.auditLog.listByRecipe(args.recipe_id as string, limit)
-        : await deps.auditLog.listRecent(limit);
+      // D-232 § 20.9 — THE EXCHANGE QUERY. "What happened to it" is the one
+      // thing a post office adds over a real letter, and the answer is a
+      // filtered view of run history: the peer's inbound call, the answer's own
+      // dispatch, and any hold in between are each a run here.
+      //
+      // ⛔ ON THE EXISTING TOOL AND THE EXISTING GATE, deliberately. A new
+      // `exchange.*` read op would need its own grant, and a door granted run
+      // history can already see every one of these rows — the filter narrows
+      // what it returns, it does not widen what it may reach. A separate op
+      // would have been a second name for the same authority.
+      const entries = args.exchange_ref
+        ? await deps.auditLog.listByExchangeRef(args.exchange_ref as string, limit)
+        : args.peer_contract_id
+          ? await deps.auditLog.listByPeerContract(args.peer_contract_id as string, limit)
+          : args.recipe_id
+            ? await deps.auditLog.listByRecipe(args.recipe_id as string, limit)
+            : await deps.auditLog.listRecent(limit);
       return text(entries);
     }
 

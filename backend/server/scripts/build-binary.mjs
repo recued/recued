@@ -89,6 +89,51 @@ mkdirSync(OUT, { recursive: true });
 // widest compatibility.
 const seaConfigPath = join(OUT, 'sea-config.json');
 const blobPath = join(OUT, 'recued.blob');
+
+// ── 3a. PROTOTYPE (single-file) — carry the native addon as a SEA ASSET ──
+//
+// 🔑 "SEA cannot embed a .node" is true of `require()`ing one OUT of the blob,
+// and false of CARRYING one. `assets` (Node >=20.12/21.7) stores arbitrary bytes
+// retrievable with `sea.getRawAsset()`. The addon still has to reach the
+// filesystem before `dlopen` will take it — that part is not optional on any
+// platform — but it no longer has to be SHIPPED separately, which is the whole
+// cost: two artifacts and two signatures per triple, the `lib-<triple>` manifest
+// slots, the staged-without-sidecar guard, and the Windows failure mode where
+// the binary starts and then cannot open its database.
+//
+// ⚠ OPT-IN. Absent the env var this writes exactly the config it always did, so
+// the sidecar path stays the default until the embedded one is proven on every
+// triple. `open-database.ts` prefers the asset and falls back to the sidecar, so
+// binaries from either build work with either layout.
+//
+// ⛔ The addon must match the Node ABI of THIS process — the same coupling the
+// sidecar already has (`build-binary-docker.mjs` builds both in one container).
+// Embedding does not relax it; it just moves the bytes.
+const EMBED_ADDON = process.env.RECUED_EMBED_ADDON === '1';
+let addonPath;
+if (EMBED_ADDON) {
+  // Resolve through the package, not a guessed path — the addon is hoisted to
+  // the workspace root here, and would not be in a non-hoisting install.
+  addonPath = process.env.RECUED_ADDON_PATH ?? (() => {
+    try {
+      const pkg = createRequire(import.meta.url).resolve(
+        'better-sqlite3-multiple-ciphers/package.json',
+      );
+      return join(dirname(pkg), 'build', 'Release', 'better_sqlite3.node');
+    } catch {
+      return '';
+    }
+  })();
+  if (!existsSync(addonPath)) {
+    fail(
+      `RECUED_EMBED_ADDON=1 but no addon at ${addonPath}. `
+        + 'Set RECUED_ADDON_PATH, or build it (npm rebuild better-sqlite3-multiple-ciphers) first. '
+        + 'Refusing to emit a binary that claims to be self-contained and is not.',
+    );
+  }
+  console.log(`[build-binary] embedding addon as SEA asset: ${addonPath}`);
+}
+
 writeFileSync(
   seaConfigPath,
   JSON.stringify(
@@ -96,6 +141,7 @@ writeFileSync(
       main: ENTRY,
       output: blobPath,
       disableExperimentalSEAWarning: true,
+      ...(EMBED_ADDON ? { assets: { 'better_sqlite3.node': addonPath } } : {}),
     },
     null,
     2,

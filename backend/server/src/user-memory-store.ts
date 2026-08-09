@@ -30,7 +30,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { Actor } from '@recued/contracts';
-import { isFieldQueryable, type Collection } from '@recued/storage';
+import { isFieldQueryable, isOrderedWindowQueryable, type Collection } from '@recued/storage';
 import {
   createFtsTable,
   indexRecord,
@@ -175,6 +175,20 @@ export interface UserMemoryStore {
    *  actually fit its byte budget. */
   getRow(memory_id: string): Promise<UserMemoryRow | null>;
   list(): Promise<UserMemoryRow[]>;
+  /** ⛔ A BOUNDED PAGE OF THE FEED, newest-effective-time first.
+   *
+   *  `list()` returns the WHOLE store, and `memory.list` unions it with the
+   *  whole audit log to render one 50-row page. That was defensible while this
+   *  store was small; D-230 then left it with NO QUOTA (owner knowledge is never
+   *  pruned) and D-231 made it recipe-writable — so "small" is now an assumption
+   *  with nothing holding it up.
+   *
+   *  Ordered `COALESCE(event_at, ts) DESC, memory_id DESC` — the same total
+   *  order the feed sorts by, so a keyset cursor is exact. */
+  listWindow(query: {
+    limit: number;
+    before?: { ts: number; id: string };
+  }): Promise<UserMemoryRow[]>;
   update(memory_id: string, patch: UserMemoryUpdateInput): Promise<UserMemoryRow | null>;
   /** Hard-delete + free the body blob if no remaining row references it.
    *  Returns false when the id is unknown. */
@@ -268,6 +282,13 @@ export const createUserMemoryStore = (
    *  working through the `list()` fallback below. */
   const queryable = isFieldQueryable(collection) ? collection : undefined;
   queryable?.ensureFieldIndexes(['blob_hash']);
+
+  /** The feed's ordering index. Same feature-detect, same reason: the in-memory
+   *  collection keeps working through the sort-in-JS fallback in `listWindow`. */
+  const windowQueryable = isOrderedWindowQueryable(collection) ? collection : undefined;
+  windowQueryable?.ensureWindowIndex({
+    tsPath: 'event_at', tsFallbackPath: 'ts', idPath: 'memory_id',
+  });
 
   /** Resolve a row's full body (inline OR the > 64 KB CAS blob). Shared by
    *  `get`, the FTS indexer, and the no-db fallback search — all three need the
@@ -402,6 +423,30 @@ export const createUserMemoryStore = (
 
     async list() {
       return collection.list();
+    },
+
+    async listWindow({ limit, before }) {
+      if (limit <= 0) return [];
+      if (windowQueryable !== undefined) {
+        return windowQueryable.listWindowDesc({
+          tsPath: 'event_at',
+          tsFallbackPath: 'ts',
+          idPath: 'memory_id',
+          limit,
+          ...(before ? { before } : {}),
+        });
+      }
+      // In-memory harness: same order, same cursor, no SQL.
+      const eff = (r: UserMemoryRow): number => r.event_at ?? r.ts;
+      const ordered = (await collection.list()).sort((a, b) =>
+        (eff(b) - eff(a))
+        || (a.memory_id < b.memory_id ? 1 : a.memory_id > b.memory_id ? -1 : 0));
+      const after = before === undefined
+        ? ordered
+        : ordered.filter((r) => (eff(r) !== before.ts
+          ? eff(r) < before.ts
+          : r.memory_id < before.id));
+      return after.slice(0, limit);
     },
 
     async search(query, limit) {

@@ -15,6 +15,7 @@ import {
   CONNECTION_VENDOR_PROVIDERS,
   GRAPH_FILES_READ_SCOPE,
   GRAPH_SITES_READ_ALL_SCOPE,
+  GRAPH_SITES_READWRITE_ALL_SCOPE,
   getVendorProvider,
   MICROSOFT_AUTHORIZE_URL,
   MICROSOFT_GRAPH_API_BASE,
@@ -46,24 +47,40 @@ describe('D-192 — SharePoint vendor provider', () => {
     expect(sharepoint!.oauth.token_endpoint).toBe(MICROSOFT_TOKEN_URL);
   });
 
-  it('requests Sites.Read.All for metadata sync and lazy file reads', () => {
+  it('requests the Sites read+write PAIR — widened from read-only by owner decision', () => {
+    /** ⚠⚠ INVERTED 2026-08-07 alongside OneDrive's; the full rationale and the measured
+     *  before/after live in `d-192-onedrive-provider.test.ts`. In short: the seed was
+     *  read-only because the D-192 Source mirror never writes, the enroll form already
+     *  unioned write in from an installed pack, and the owner chose a connection that is
+     *  write-capable before any pack is installed.
+     *
+     *  ⛔ The cost is the same and is kept rather than deleted: someone who wants only the
+     *  read-only mirror now grants site mutation they will never exercise. */
     expect(sharepoint!.oauth.scopes).toEqual(SHAREPOINT_OAUTH_SCOPES);
     expect([...SHAREPOINT_OAUTH_SCOPES]).toEqual([
       GRAPH_SITES_READ_ALL_SCOPE,
+      GRAPH_SITES_READWRITE_ALL_SCOPE,
       'offline_access',
       'User.Read',
     ]);
     expect(GRAPH_SITES_READ_ALL_SCOPE).toBe('Sites.Read.All');
-    // Read-only — no write scope (`Sites.ReadWrite.All`).
-    expect([...SHAREPOINT_OAUTH_SCOPES].some((s) => s.includes('ReadWrite'))).toBe(false);
+    expect(GRAPH_SITES_READWRITE_ALL_SCOPE).toBe('Sites.ReadWrite.All');
+    /** ⛔ The read half must survive — see the OneDrive sibling for why a superset scope
+     *  does not license dropping it. */
+    expect([...SHAREPOINT_OAUTH_SCOPES]).toContain('Sites.Read.All');
   });
 
-  it('differs from OneDrive on exactly the read scope (Sites.Read.All vs Files.Read)', () => {
-    // The one intended deviation: OneDrive requests Files.Read (own OneDrive
-    // only); SharePoint needs Sites.Read.All to reach a site document library.
+  it('differs from OneDrive on exactly the file/site axis (Sites.* vs Files.*)', () => {
+    // The one intended deviation, now a PAIR on each side: OneDrive requests Files.*
+    // (own OneDrive only); SharePoint needs Sites.* to reach a site document library.
+    // ⚠ The deviation survived the 2026-08-07 widening precisely because it is about
+    // WHICH RESOURCE is reachable, not about read-vs-write — a `Files.ReadWrite` grant
+    // still cannot touch a site drive, so the split is structural, not a tier choice.
     expect([...SHAREPOINT_OAUTH_SCOPES]).toContain(GRAPH_SITES_READ_ALL_SCOPE);
+    expect([...SHAREPOINT_OAUTH_SCOPES]).toContain(GRAPH_SITES_READWRITE_ALL_SCOPE);
     expect([...SHAREPOINT_OAUTH_SCOPES]).not.toContain(GRAPH_FILES_READ_SCOPE);
     expect([...ONEDRIVE_OAUTH_SCOPES]).toContain(GRAPH_FILES_READ_SCOPE);
+    expect([...ONEDRIVE_OAUTH_SCOPES]).not.toContain(GRAPH_SITES_READ_ALL_SCOPE);
     // Everything else about the OAuth shape matches OneDrive.
     expect(sharepoint!.oauth.authorize_url).toBe(onedrive!.oauth.authorize_url);
     expect(sharepoint!.oauth.token_endpoint).toBe(onedrive!.oauth.token_endpoint);

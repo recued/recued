@@ -3750,6 +3750,10 @@ test('successful secure pairing stays clean through reload, Back, and Forward', 
 
   const pairForm = page.getByRole('form', { name: 'Pair this browser' });
   await expect(pairForm).toBeVisible();
+  const pairingCode = pairForm.locator('#webclient-pair-code-input-code');
+  await expect(pairingCode).toHaveValue('PAIR5678');
+  await pairingCode.fill('PAIR 56 78');
+  await expect(pairingCode).toHaveValue('PAIR5678');
   const recoveryKey = `${Array(23).fill('abandon').join(' ')} art`;
   await pairForm.locator('#webclient-pair-code-input-recovery-0').fill(
     recoveryKey,
@@ -3766,6 +3770,8 @@ test('successful secure pairing stays clean through reload, Back, and Forward', 
     .toHaveAttribute('aria-current', 'page');
   await expect(page.locator(`[${CHAT_INPUT}]`)).toBeVisible();
   await expect(page.locator(`[${SHELL_CONTENT}]`)).toBeFocused();
+  expect(await page.evaluate(() => window.__app.lastPairingCode?.()))
+    .toBe('PAIR5678');
 
   const cleanTarget =
     'https://alice.recued.cloud:8443/full-app-harness.html?chat=session&journey=secure-access&url=https%3A%2F%2Fattacker.example%2Fcollect#chat/session/chat_1';

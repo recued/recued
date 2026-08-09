@@ -287,6 +287,29 @@ export interface CatalogSessionGrantHooks {
 }
 
 /** Everything the engine needs to run a recipe. */
+/** D-232 — the host's in-process recipe runner, as the gateway sees it. The
+ *  gateway owns policy, audit and the cycle guard; the host owns loading the
+ *  recipe and re-entering `executeRecipe` with the widened `held_recipes`. */
+export interface LocalRecipeInvokeCall {
+  /** Publisher-qualified recipe id, taken from the binding's `tool` — NEVER
+   *  from caller args. The binding owns the call target, which is what makes a
+   *  recipe unable to redirect this at another recipe. */
+  readonly recipe_id: string;
+  readonly args: Record<string, unknown>;
+  /** This call's ancestors PLUS `recipe_id`. The host threads it into the
+   *  nested run so the guard composes down the tree. */
+  readonly held_recipes: ReadonlySet<string>;
+}
+
+export type LocalRecipeInvoker = (
+  call: LocalRecipeInvokeCall,
+) => Promise<unknown>;
+
+import type {
+  ExchangeAcknowledgement,
+  ExchangeFireHandler,
+} from './fire-exchange-output.js';
+
 export interface ExecutionContext {
   /** The recipe being run. D-182 §6/§10 step 7 — OPTIONAL: a raw op the LLM
    *  calls without a recipe (§8) forms an `ExecutionContext` with no recipe.
@@ -333,6 +356,34 @@ export interface ExecutionContext {
   /** D-221 server-local dispatch after the ordinary catalog policy/approval
    * path admits. Absent means Records fails closed. */
   recordsOperationExecutor?: RecordsOperationExecutor;
+  /** D-232 — in-process dispatch for an `mcp` binding that names a LOCAL
+   *  recipe. There is no separate declaration for local vs remote: the binding
+   *  names a recipe and the GATEWAY routes. A connection present means a peer's
+   *  server (JSON-RPC `tools/call`); a connection absent means this one, and the
+   *  call never leaves the process. Absent resolver ⇒ fails closed with
+   *  `no_local_recipe_invoker`, exactly as Records does.
+   *
+   *  ⛔ The invoker MUST pass `held_recipes` down into the nested run's own
+   *  {@link ExecutionContext.heldRecipes}, or the cycle guard protects only the
+   *  first hop and A→B→A walks straight through. */
+  /** D-232 § 19 — the post-run fire point's host hook. A recipe declaring
+   *  `output.exchange` on a host that leaves this absent FAILS the run rather
+   *  than completing having answered nobody. */
+  exchangeFireHandler?: ExchangeFireHandler;
+  localRecipeInvoker?: LocalRecipeInvoker;
+  /** D-232 — may a run here dispatch to this local recipe? The authorization
+   *  source for the connectionless mcp kind, mirroring
+   *  `recordsReachabilityResolver`. ⛔ ABSENT DENIES (Invariant 3): a host that
+   *  has not opted in does not acquire recipe-to-recipe dispatch by upgrading. */
+  localRecipeReachabilityResolver?: (
+    target_recipe_id: string,
+    operation_id: string,
+  ) => boolean;
+  /** D-232 — every recipe already on this call's stack, self included, as the
+   *  gateway walks the dispatch tree. Modelled on `SlotRequest.held_lanes`
+   *  (D-181 §5), which threads exactly this shape for exactly this reason: the
+   *  non-reentrancy guard. Empty/omitted at the top level. */
+  heldRecipes?: ReadonlySet<string>;
   /** Host-minted Records watcher lineage inherited by any mutation this run
    * performs. Not sourced from recipe/context/config data. */
   recordsMutationContext?: Pick<
@@ -921,6 +972,41 @@ export interface ExecutionResult {
    *  counter. Only ever set on reactive runs — trigger_steps never
    *  run on manual / cron recipes. */
   trigger_skipped?: boolean;
+  /** D-232 § 19.3 — the receipt for an exchange this run FIRED. Present iff the
+   *  run declared `output.exchange` and the fire succeeded (or was durably
+   *  queued behind an owner's card, which is an acceptance too — the answer is
+   *  going).
+   *
+   *  ⛔ THE ONE THING THE EXCHANGE EXISTS TO PROVIDE. A sender expects nothing
+   *  back — that is what makes it a post office and not an RPC — and the single
+   *  thing this substrate adds over a real letter is that the sender can ASK
+   *  WHAT HAPPENED TO IT. The ref is what they ask about, so a fire that reached
+   *  the wire while the caller got no ref would be a letter posted into a system
+   *  that cannot be queried: the exchange with its only justification removed.
+   *
+   *  Engine-derived, never authored (`acknowledgementFor`), so no recipe can
+   *  forget it. Absent on a run that renders, a run that paused before the
+   *  terminus, and a fire that could not happen — the last of which fails the
+   *  run, so an absent ack is never silent. */
+  exchange_ack?: ExchangeAcknowledgement;
+  /** D-232 § 30 — what the PEER said when the carrier delivered, validated off
+   *  the wire. Present only on a fire whose synchronous response carried an
+   *  acknowledgement — so: a remote delivery, to a correspondent that answered.
+   *
+   *  ⛔⛔ THE FIELD IS SEPARATE FROM {@link exchange_ack} ON PURPOSE, AND MERGING
+   *  THEM WOULD RE-CREATE THE BUG IT FIXES. `exchange_ack` is OUR receipt — did
+   *  our letter go — and on this path it is `accepted: true`, correctly. This is
+   *  THEIRS: did their reply go. Both are filed under one ref (both servers do,
+   *  by design), and one field cannot hold two servers' answers to two different
+   *  questions. The § 29 lie was exactly that shape one layer down: an ack whose
+   *  presence was read as a delivery claim.
+   *
+   *  ⚠ Absent on a LOCAL fire (nothing crossed a wire), on a fire that failed
+   *  (the throw path attaches `exchange_ack` with `accepted: false` instead), and
+   *  on every peer that returns no receipt — which today is every non-Recued
+   *  correspondent. Absence therefore means "they said nothing", never "they said
+   *  it was fine". */
+  exchange_peer_ack?: ExchangeAcknowledgement;
   /** D-115 Phase 5 — dynamic-interval override the recipe wrote via a
    *  step with id `next_run_at`. The engine reads
    *  `stores.step.next_run_at` after all sequential steps finish; when

@@ -439,6 +439,69 @@ describe('D-152 P6 hostnames panel', () => {
     panel.dispose();
   });
 
+  /** ⛔ THE PILL USED TO SHOW OWNERSHIP, WHICH IS A DIFFERENT QUESTION. A Pro
+   *  DDNS row registered by the enrollment service is `ownership_status:
+   *  'verified'` the INSTANT it appears — the handle reservation is the proof
+   *  for a Recued-controlled zone — so the panel said "Verified" while there
+   *  was no certificate at all, at exactly the moment a new user is watching to
+   *  see whether their hostname works. */
+  it('shows PROVISIONING, not "Verified", while the certificate is pending', async () => {
+    const { host, panel } = mountPanel({
+      rows: [
+        hostname('alice.recued.net', {
+          cert_source: 'recued_acme',
+          ownership_status: 'verified',   // ownership IS settled…
+          cert_provisioning: 'pending',   // …but there is no cert yet
+        }),
+      ],
+    });
+    await panel.whenLoaded();
+
+    expect(findByAttr(host, HOSTNAMES_ROW_STATUS_ATTR, 'pending')).not.toBeNull();
+    expect(textOf(host)).toContain('Provisioning');
+    expect(textOf(host)).not.toContain('Verified');
+    panel.dispose();
+  });
+
+  it('distinguishes a FAILED attempt from one that has not started', async () => {
+    // The difference a waiting user actually cares about, and the reason this
+    // is persisted rather than derived from a missing `cert_fingerprint`.
+    const { host, panel } = mountPanel({
+      rows: [
+        hostname('alice.recued.net', {
+          cert_source: 'recued_acme',
+          ownership_status: 'verified',
+          cert_provisioning: 'failed',
+          cert_last_error: 'subscription_required',
+        }),
+      ],
+    });
+    await panel.whenLoaded();
+
+    expect(findByAttr(host, HOSTNAMES_ROW_STATUS_ATTR, 'failed')).not.toBeNull();
+    expect(textOf(host)).toContain('retrying');
+    panel.dispose();
+  });
+
+  /** ⚠ A row written before the column existed has no `cert_provisioning`.
+   *  Absent must mean UNKNOWN and fall back to ownership — defaulting it to
+   *  'pending' would make every already-working legacy hostname read as if it
+   *  had never been provisioned. */
+  it('falls back to ownership for a legacy row with no provisioning state', async () => {
+    const { host, panel } = mountPanel({
+      rows: [
+        hostname('legacy.example', {
+          cert_source: 'byo_external',
+          ownership_status: 'verified',
+        }),
+      ],
+    });
+    await panel.whenLoaded();
+
+    expect(findByAttr(host, HOSTNAMES_ROW_STATUS_ATTR, 'verified')).not.toBeNull();
+    panel.dispose();
+  });
+
   it('adds a BYO hostname and carries the token hash into the verify flow', async () => {
     const added = hostname('token.example', {
       ownership_status: 'pending',

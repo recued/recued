@@ -74,15 +74,15 @@
       "plaid-sandbox": 17
     },
     "composition_bytes": {
-      "plaid": 225412,
-      "plaid-core-link-items": 39794,
-      "plaid-transactions-investments": 18458,
-      "plaid-credit-reports": 58150,
-      "plaid-risk-identity": 52460,
-      "plaid-transfers-ledger": 53854,
-      "plaid-payment-rails": 79608,
-      "plaid-platform-partners": 13856,
-      "plaid-sandbox": 27266
+      "plaid": 223845,
+      "plaid-core-link-items": 40384,
+      "plaid-transactions-investments": 17872,
+      "plaid-credit-reports": 59500,
+      "plaid-risk-identity": 53427,
+      "plaid-transfers-ledger": 54714,
+      "plaid-payment-rails": 80709,
+      "plaid-platform-partners": 14002,
+      "plaid-sandbox": 27681
     },
     "risk_counts": {
       "admin": 85,
@@ -154,10 +154,11 @@
         "api_base": "https://production.plaid.com",
         "vendor": "plaid",
         "auth": {
-          "type": "header",
-          "header_names": [
-            "PLAID-CLIENT-ID",
-            "PLAID-SECRET"
+          "type": "body_field",
+          "field_names": [
+            "client_id",
+            "secret",
+            "access_token"
           ]
         }
       },
@@ -165,22 +166,23 @@
         "[[\"clientId\",\"plaidVersion\",\"secret\"]]": 330,
         "[]": 1
       },
-      "selected": "PLAID-CLIENT-ID and PLAID-SECRET come only from the encrypted header connection; Plaid-Version is a binding-owned static header.",
+      "selected": "client_id, secret and the per-Item access_token come only from the encrypted connection, injected into the JSON request body of the operations that name them; Plaid-Version is a binding-owned static header.",
       "omitted_per_call_authority": [
         "body.client_id",
         "body.secret",
+        "body.access_token",
         "header.Plaid-Version",
         "base URL"
       ],
       "static_version_header": {
         "Plaid-Version": "2020-09-14"
       },
-      "closed_new_request_schemas": 269,
+      "closed_new_request_schemas": 264,
       "empty_json_body_contracts": 299
     },
     "compatibility": {
-      "operation_sha256": "1793cf7d07d05f072a3199744bb031b0176c13251e2a52042aa88e3944199011",
-      "hardened_operation_sha256": "b79e03e14aa229726b963e3a1c332a234a8d44e2d756c74c1629376120f17a02",
+      "operation_sha256": "3d28899f02334ca8a4615d83a9a7401c7d7c201bf10268aec71e2fc21392ffc8",
+      "hardened_operation_sha256": "be3aacc6fcafd78a84881bc10f97a318b50e5e5f3248e3e4356805e4aa7802dd",
       "entities_sha256": "928e9d9dd86eb8cb35bc4868e74b65366387f4e0cf0e28958210dfdc05c39eb4",
       "operation_ids": [
         "link_token.create",
@@ -8729,9 +8731,7 @@
           "reason": "connection_owned_credential_omitted"
         }
       ],
-      "required_body_fields": [
-        "access_token"
-      ],
+      "required_body_fields": [],
       "sensitive_request_field_count": 3,
       "sensitive_request_fields_sample": [
         "access_token",
@@ -8745,9 +8745,7 @@
       "risk": "read",
       "approval": "never",
       "idempotency": "safe",
-      "arg_keys": [
-        "body.access_token"
-      ],
+      "arg_keys": [],
       "result_path": null,
       "pagination": null,
       "pagination_signal": false,
@@ -8790,7 +8788,6 @@
         }
       ],
       "required_body_fields": [
-        "access_token",
         "webhook"
       ],
       "sensitive_request_field_count": 3,
@@ -8807,7 +8804,6 @@
       "approval": "ask",
       "idempotency": "non_idempotent",
       "arg_keys": [
-        "body.access_token",
         "body.webhook"
       ],
       "result_path": null,
@@ -8851,9 +8847,7 @@
           "reason": "connection_owned_credential_omitted"
         }
       ],
-      "required_body_fields": [
-        "access_token"
-      ],
+      "required_body_fields": [],
       "sensitive_request_field_count": 3,
       "sensitive_request_fields_sample": [
         "access_token",
@@ -8869,9 +8863,7 @@
       "risk": "write",
       "approval": "ask",
       "idempotency": "non_idempotent",
-      "arg_keys": [
-        "body.access_token"
-      ],
+      "arg_keys": [],
       "result_path": null,
       "pagination": null,
       "pagination_signal": false,
@@ -9172,9 +9164,7 @@
           "reason": "connection_owned_credential_omitted"
         }
       ],
-      "required_body_fields": [
-        "access_token"
-      ],
+      "required_body_fields": [],
       "sensitive_request_field_count": 3,
       "sensitive_request_fields_sample": [
         "access_token",
@@ -9191,7 +9181,6 @@
       "approval": "never",
       "idempotency": "safe",
       "arg_keys": [
-        "body.access_token",
         "body.options"
       ],
       "result_path": "accounts",
@@ -9235,9 +9224,7 @@
           "reason": "connection_owned_credential_omitted"
         }
       ],
-      "required_body_fields": [
-        "access_token"
-      ],
+      "required_body_fields": [],
       "sensitive_request_field_count": 3,
       "sensitive_request_fields_sample": [
         "access_token",
@@ -9254,7 +9241,6 @@
       "approval": "never",
       "idempotency": "safe",
       "arg_keys": [
-        "body.access_token",
         "body.options"
       ],
       "result_path": "accounts",
@@ -9299,7 +9285,6 @@
         }
       ],
       "required_body_fields": [
-        "access_token",
         "start_date",
         "end_date"
       ],
@@ -9320,7 +9305,6 @@
       "approval": "never",
       "idempotency": "safe",
       "arg_keys": [
-        "body.access_token",
         "body.start_date",
         "body.end_date",
         "body.options"
@@ -9366,9 +9350,7 @@
           "reason": "connection_owned_credential_omitted"
         }
       ],
-      "required_body_fields": [
-        "access_token"
-      ],
+      "required_body_fields": [],
       "sensitive_request_field_count": 3,
       "sensitive_request_fields_sample": [
         "access_token",
@@ -9387,7 +9369,6 @@
       "approval": "never",
       "idempotency": "safe",
       "arg_keys": [
-        "body.access_token",
         "body.cursor",
         "body.count",
         "body.options"
@@ -9433,9 +9414,7 @@
           "reason": "connection_owned_credential_omitted"
         }
       ],
-      "required_body_fields": [
-        "access_token"
-      ],
+      "required_body_fields": [],
       "sensitive_request_field_count": 3,
       "sensitive_request_fields_sample": [
         "access_token",
@@ -9449,9 +9428,7 @@
       "risk": "write",
       "approval": "ask",
       "idempotency": "non_idempotent",
-      "arg_keys": [
-        "body.access_token"
-      ],
+      "arg_keys": [],
       "result_path": null,
       "pagination": null,
       "pagination_signal": false,
@@ -9493,9 +9470,7 @@
           "reason": "connection_owned_credential_omitted"
         }
       ],
-      "required_body_fields": [
-        "access_token"
-      ],
+      "required_body_fields": [],
       "sensitive_request_field_count": 3,
       "sensitive_request_fields_sample": [
         "access_token",
@@ -9510,7 +9485,6 @@
       "approval": "never",
       "idempotency": "safe",
       "arg_keys": [
-        "body.access_token",
         "body.account_ids",
         "body.options"
       ],
@@ -9555,9 +9529,7 @@
           "reason": "connection_owned_credential_omitted"
         }
       ],
-      "required_body_fields": [
-        "access_token"
-      ],
+      "required_body_fields": [],
       "sensitive_request_field_count": 3,
       "sensitive_request_fields_sample": [
         "access_token",
@@ -9572,7 +9544,6 @@
       "approval": "never",
       "idempotency": "safe",
       "arg_keys": [
-        "body.access_token",
         "body.account_ids",
         "body.options"
       ],
@@ -9617,9 +9588,7 @@
           "reason": "connection_owned_credential_omitted"
         }
       ],
-      "required_body_fields": [
-        "access_token"
-      ],
+      "required_body_fields": [],
       "sensitive_request_field_count": 3,
       "sensitive_request_fields_sample": [
         "access_token",
@@ -9637,7 +9606,6 @@
       "approval": "never",
       "idempotency": "safe",
       "arg_keys": [
-        "body.access_token",
         "body.options"
       ],
       "result_path": "accounts",
@@ -9681,9 +9649,7 @@
           "reason": "connection_owned_credential_omitted"
         }
       ],
-      "required_body_fields": [
-        "access_token"
-      ],
+      "required_body_fields": [],
       "sensitive_request_field_count": 3,
       "sensitive_request_fields_sample": [
         "access_token",
@@ -9697,9 +9663,7 @@
       "risk": "write",
       "approval": "ask",
       "idempotency": "non_idempotent",
-      "arg_keys": [
-        "body.access_token"
-      ],
+      "arg_keys": [],
       "result_path": null,
       "pagination": null,
       "pagination_signal": false,
@@ -9741,9 +9705,7 @@
           "reason": "connection_owned_credential_omitted"
         }
       ],
-      "required_body_fields": [
-        "access_token"
-      ],
+      "required_body_fields": [],
       "sensitive_request_field_count": 3,
       "sensitive_request_fields_sample": [
         "access_token",
@@ -9764,7 +9726,6 @@
       "approval": "never",
       "idempotency": "safe",
       "arg_keys": [
-        "body.access_token",
         "body.options"
       ],
       "result_path": null,
@@ -9808,9 +9769,7 @@
           "reason": "connection_owned_credential_omitted"
         }
       ],
-      "required_body_fields": [
-        "access_token"
-      ],
+      "required_body_fields": [],
       "sensitive_request_field_count": 3,
       "sensitive_request_fields_sample": [
         "access_token",
@@ -9827,7 +9786,6 @@
       "approval": "never",
       "idempotency": "safe",
       "arg_keys": [
-        "body.access_token",
         "body.options"
       ],
       "result_path": "holdings",
@@ -9871,9 +9829,7 @@
           "reason": "connection_owned_credential_omitted"
         }
       ],
-      "required_body_fields": [
-        "access_token"
-      ],
+      "required_body_fields": [],
       "sensitive_request_field_count": 3,
       "sensitive_request_fields_sample": [
         "access_token",
@@ -9890,7 +9846,6 @@
       "approval": "never",
       "idempotency": "safe",
       "arg_keys": [
-        "body.access_token",
         "body.options"
       ],
       "result_path": "securities",
@@ -9935,7 +9890,6 @@
         }
       ],
       "required_body_fields": [
-        "access_token",
         "start_date",
         "end_date"
       ],
@@ -9955,7 +9909,6 @@
       "approval": "never",
       "idempotency": "safe",
       "arg_keys": [
-        "body.access_token",
         "body.start_date",
         "body.end_date",
         "body.options"
@@ -10001,9 +9954,7 @@
           "reason": "connection_owned_credential_omitted"
         }
       ],
-      "required_body_fields": [
-        "access_token"
-      ],
+      "required_body_fields": [],
       "sensitive_request_field_count": 3,
       "sensitive_request_fields_sample": [
         "access_token",
@@ -10017,9 +9968,7 @@
       "risk": "write",
       "approval": "ask",
       "idempotency": "non_idempotent",
-      "arg_keys": [
-        "body.access_token"
-      ],
+      "arg_keys": [],
       "result_path": null,
       "pagination": null,
       "pagination_signal": false,
@@ -10061,9 +10010,7 @@
           "reason": "connection_owned_credential_omitted"
         }
       ],
-      "required_body_fields": [
-        "access_token"
-      ],
+      "required_body_fields": [],
       "sensitive_request_field_count": 3,
       "sensitive_request_fields_sample": [
         "access_token",
@@ -10077,9 +10024,7 @@
       "risk": "read",
       "approval": "never",
       "idempotency": "safe",
-      "arg_keys": [
-        "body.access_token"
-      ],
+      "arg_keys": [],
       "result_path": "accounts",
       "pagination": null,
       "pagination_signal": false,
@@ -10121,9 +10066,7 @@
           "reason": "connection_owned_credential_omitted"
         }
       ],
-      "required_body_fields": [
-        "access_token"
-      ],
+      "required_body_fields": [],
       "sensitive_request_field_count": 3,
       "sensitive_request_fields_sample": [
         "access_token",
@@ -10140,9 +10083,7 @@
       "risk": "read",
       "approval": "never",
       "idempotency": "safe",
-      "arg_keys": [
-        "body.access_token"
-      ],
+      "arg_keys": [],
       "result_path": null,
       "pagination": null,
       "pagination_signal": false,
@@ -10845,7 +10786,6 @@
       "approval": "never",
       "idempotency": "safe",
       "arg_keys": [
-        "body.access_token",
         "body.options"
       ],
       "result_path": "accounts",
@@ -11103,7 +11043,6 @@
       "idempotency": "idempotent",
       "arg_keys": [
         "body.idempotency_key",
-        "body.access_token",
         "body.account_id",
         "body.type",
         "body.network",
@@ -12115,8 +12054,7 @@
       "approval": "never",
       "idempotency": "safe",
       "arg_keys": [
-        "body.beacon_user_id",
-        "body.access_token"
+        "body.beacon_user_id"
       ],
       "result_path": null,
       "pagination": null,
@@ -12602,9 +12540,7 @@
       "risk": "read",
       "approval": "never",
       "idempotency": "safe",
-      "arg_keys": [
-        "body.access_token"
-      ],
+      "arg_keys": [],
       "result_path": "ewa_scores",
       "pagination": null,
       "pagination_signal": false,
@@ -13195,7 +13131,6 @@
       "approval": "never",
       "idempotency": "safe",
       "arg_keys": [
-        "body.access_token",
         "body.days_requested",
         "body.count",
         "body.cursor",
@@ -13260,7 +13195,6 @@
       "approval": "always",
       "idempotency": "non_idempotent",
       "arg_keys": [
-        "body.access_token",
         "body.days_requested"
       ],
       "result_path": null,
@@ -13325,7 +13259,6 @@
       "approval": "never",
       "idempotency": "safe",
       "arg_keys": [
-        "body.access_token",
         "body.count",
         "body.cursor",
         "body.options"
@@ -13387,9 +13320,7 @@
       "risk": "read",
       "approval": "never",
       "idempotency": "safe",
-      "arg_keys": [
-        "body.access_token"
-      ],
+      "arg_keys": [],
       "result_path": "consent_events",
       "pagination": null,
       "pagination_signal": false,
@@ -16047,7 +15978,6 @@
       "approval": "never",
       "idempotency": "safe",
       "arg_keys": [
-        "body.access_token",
         "body.options"
       ],
       "result_path": "accounts",
@@ -16116,7 +16046,6 @@
       "approval": "never",
       "idempotency": "safe",
       "arg_keys": [
-        "body.access_token",
         "body.user",
         "body.options"
       ],
@@ -16530,7 +16459,6 @@
       "approval": "never",
       "idempotency": "safe",
       "arg_keys": [
-        "body.access_token",
         "body.options"
       ],
       "result_path": null,
@@ -16834,7 +16762,6 @@
       "approval": "always",
       "idempotency": "non_idempotent",
       "arg_keys": [
-        "body.access_token",
         "body.application_id",
         "body.scopes",
         "body.state",
@@ -16899,7 +16826,6 @@
       "approval": "always",
       "idempotency": "non_idempotent",
       "arg_keys": [
-        "body.access_token",
         "body.application_id"
       ],
       "result_path": null,
@@ -17027,7 +16953,6 @@
       "approval": "always",
       "idempotency": "non_idempotent",
       "arg_keys": [
-        "body.access_token",
         "body.reason_code",
         "body.reason_note"
       ],
@@ -17090,9 +17015,7 @@
       "risk": "admin",
       "approval": "always",
       "idempotency": "non_idempotent",
-      "arg_keys": [
-        "body.access_token"
-      ],
+      "arg_keys": [],
       "result_path": null,
       "pagination": null,
       "pagination_signal": false,
@@ -17151,7 +17074,6 @@
       "approval": "always",
       "idempotency": "non_idempotent",
       "arg_keys": [
-        "body.access_token",
         "body.reason_code",
         "body.reason_note"
       ],
@@ -18788,7 +18710,6 @@
       "approval": "always",
       "idempotency": "non_idempotent",
       "arg_keys": [
-        "body.access_token",
         "body.account_id"
       ],
       "result_path": null,
@@ -19733,7 +19654,6 @@
       "approval": "always",
       "idempotency": "non_idempotent",
       "arg_keys": [
-        "body.access_token",
         "body.account_id"
       ],
       "result_path": null,
@@ -19798,7 +19718,6 @@
       "approval": "always",
       "idempotency": "non_idempotent",
       "arg_keys": [
-        "body.access_token",
         "body.account_id",
         "body.processor"
       ],
@@ -20866,7 +20785,6 @@
       "approval": "always",
       "idempotency": "non_idempotent",
       "arg_keys": [
-        "body.access_token",
         "body.application_id"
       ],
       "result_path": null,
@@ -20928,7 +20846,6 @@
       "approval": "always",
       "idempotency": "non_idempotent",
       "arg_keys": [
-        "body.access_token",
         "body.webhook_type",
         "body.webhook_code"
       ],
@@ -20989,9 +20906,7 @@
       "risk": "admin",
       "approval": "always",
       "idempotency": "non_idempotent",
-      "arg_keys": [
-        "body.access_token"
-      ],
+      "arg_keys": [],
       "result_path": null,
       "pagination": null,
       "pagination_signal": false,
@@ -21052,7 +20967,6 @@
       "approval": "always",
       "idempotency": "non_idempotent",
       "arg_keys": [
-        "body.access_token",
         "body.account_id",
         "body.verification_status"
       ],
@@ -21292,7 +21206,6 @@
       "approval": "always",
       "idempotency": "non_idempotent",
       "arg_keys": [
-        "body.access_token",
         "body.transactions"
       ],
       "result_path": null,
@@ -22293,7 +22206,6 @@
       "approval": "never",
       "idempotency": "safe",
       "arg_keys": [
-        "body.access_token",
         "body.account_id",
         "body.client_transaction_id",
         "body.amount",
@@ -22363,9 +22275,7 @@
       "risk": "write",
       "approval": "always",
       "idempotency": "non_idempotent",
-      "arg_keys": [
-        "body.access_token"
-      ],
+      "arg_keys": [],
       "result_path": null,
       "pagination": null,
       "pagination_signal": false,
@@ -22489,7 +22399,6 @@
       "approval": "always",
       "idempotency": "non_idempotent",
       "arg_keys": [
-        "body.access_token",
         "body.account_id",
         "body.client_transaction_id",
         "body.amount",
@@ -22555,7 +22464,6 @@
       "approval": "always",
       "idempotency": "non_idempotent",
       "arg_keys": [
-        "body.access_token",
         "body.start_date",
         "body.end_date"
       ],
@@ -22765,7 +22673,6 @@
       "approval": "always",
       "idempotency": "idempotent",
       "arg_keys": [
-        "body.access_token",
         "body.account_id",
         "body.funding_account_id",
         "body.ledger_id",
@@ -22911,7 +22818,6 @@
       "approval": "never",
       "idempotency": "safe",
       "arg_keys": [
-        "body.access_token",
         "body.account_id",
         "body.payment_profile_token"
       ],
@@ -23050,7 +22956,6 @@
       "idempotency": "idempotent",
       "arg_keys": [
         "body.idempotency_key",
-        "body.access_token",
         "body.account_id",
         "body.authorization_id",
         "body.type",
@@ -24813,7 +24718,6 @@
       "approval": "always",
       "idempotency": "idempotent",
       "arg_keys": [
-        "body.access_token",
         "body.idempotency_key",
         "body.account_id",
         "body.funding_account_id",

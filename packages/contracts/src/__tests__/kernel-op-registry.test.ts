@@ -50,7 +50,9 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   audit: 1,
   data: 18, // D-210 closeout — + form-response-list
   webhook: 1,
-  storage: 18,
+  // D-232 § 23 — +1 for `core.storage.exchange.status`, the asker's own
+  // "what happened to my letter" read.
+  storage: 19,
   schedule: 1,
   // D-207 §4.5 — 14 offer/order + the 4 D-196 `customer-access` ops merged in
   // from their retired top-level domain (`core.seller.customer-access.*`), + the
@@ -250,6 +252,7 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.seller.tier.get|seller|seller-tier-get|read',
       'core.seller.tier.list|seller|seller-tier-list|read',
       'core.storage.data-file-read|storage|data-file-read|read',
+      'core.storage.exchange.status|storage|exchange-status|read',
       'core.storage.file.delete|storage|file-delete|destructive',
       'core.storage.file.get|storage|file-get|read',
       'core.storage.file.list|storage|file-list|read',

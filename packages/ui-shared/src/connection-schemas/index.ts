@@ -14,7 +14,7 @@ export type {
   ConnectionProbeSpec,
   ConnectionSchema,
 } from './types.js';
-export { collectHeaderRows, type HeaderRow } from './header-list.js';
+export { collectHeaderRows, nameKeyForListField, type HeaderRow } from './header-list.js';
 export {
   collectMatchPatternRows,
   matchPatternRowsToPatterns,

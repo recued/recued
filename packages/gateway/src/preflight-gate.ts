@@ -103,6 +103,13 @@ export const evaluatePreflightAdmission = (args: {
   readonly source: ExecutionSource;
   readonly tool: PreflightTool;
   readonly contract_snapshot?: ContractSnapshot;
+  /** D-232 § 20.19 — this dispatch is a STEP OF A RECIPE THE DOOR WAS GRANTED,
+   *  so the per-tool allowlist does not apply to it: `allowed_tools` answers
+   *  "what may this door call DIRECTLY", and a granted recipe's own steps are
+   *  what the recipe IS. ⛔ ACCESS ONLY — `admitByOpRisk` below still runs, so
+   *  the step's write still meets the `ask` floor and its destructive still
+   *  gates. Host-set from the run's grant resolution; absent everywhere else. */
+  readonly granted_recipe_steps?: boolean;
   readonly scope_path?: string | null;
   readonly owner_override?: OwnerOverridePolicy;
 }): AdmissionDecision => {
@@ -132,7 +139,11 @@ export const evaluatePreflightAdmission = (args: {
   // from the matrix's `evaluateToolAdmissibility`. NOT redundant with the op-admission
   // gate: that gate is PERMISSIVE for a wildcard door (its real gate IS this allowlist).
   // Contract-free dispatches carry no snapshot → null → no gate.
-  const accessDeny = admitContractToolAccess(args.contract_snapshot, args.tool.slug);
+  // § 20.19 — skipped for a step of a recipe the door was granted (see the arg's
+  // doc). Every other dispatch keeps the allowlist verbatim.
+  const accessDeny = args.granted_recipe_steps === true
+    ? null
+    : admitContractToolAccess(args.contract_snapshot, args.tool.slug);
   if (accessDeny) return accessDeny;
   // D-187 slice 4 — APPROVAL = op-risk × stage-trust, replacing the matrix's
   // `admitWithPolicyMatrix` approval verdict. The op-risk is the tool's `risk_tier` (a

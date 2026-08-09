@@ -22,12 +22,17 @@
  */
 
 import { AUTHORIZE_PARAM_RESERVED_KEYS, MICROSOFT_GRAPH_API_BASE } from './connection-vendor-providers.js';
-import type { ConnectionSigningScheme } from './connection-signing.js';
+import {
+  CONNECTION_SIGNING_SCHEMES,
+  isConnectionSigningScheme,
+  type ConnectionSigningScheme,
+} from './connection-signing.js';
 import {
   CONNECTION_AUTH_TYPES,
   isValidOAuthEndpointUrl,
   MAX_HEADER_AUTH_ENTRIES,
   validateHeaderAuthEntries,
+  validateBodyFieldAuthEntries,
   type ConnectionAuthType,
   type ConnectionView,
   type HeaderAuthIssue,
@@ -106,7 +111,23 @@ export type ConnectionAuthDescriptor =
    *  pack cannot describe a canonical string, because that would let its author
    *  choose which bytes Recued signs with the owner's secret. Same refusal, and
    *  the same reason, as the missing endpoint field on `atproto_session` above. */
-  | { type: 'request_signature'; scheme: ConnectionSigningScheme };
+  | { type: 'request_signature'; scheme: ConnectionSigningScheme }
+  /** Credentials the vendor reads from the JSON request BODY. The pack declares
+   *  WHICH field names it needs so the enroll form can render one labelled
+   *  blank per credential; the owner supplies the values.
+   *
+   *  ⚠ Naming a body field grants a pack NOTHING it did not already have. It
+   *  chooses the key the credential occupies in a request whose method, path
+   *  and body it already authors, sent to the connection's own host. Contrast
+   *  the endpoint field refused on `atproto_session` above, which would have
+   *  let a manifest choose the DESTINATION — that is the line, and a field name
+   *  is on the safe side of it.
+   *
+   *  ⛔ Declaring a name here does not put it on the wire. Each OPERATION opts
+   *  in via `bind.auth_body_fields`, because a vendor that rejects unknown body
+   *  keys (Plaid answers `UNKNOWN_FIELDS`) would fail every call that does not
+   *  take the credential. */
+  | { type: 'body_field'; field_names: ReadonlyArray<string> };
 
 /** Closed list of `ConnectionAuthDescriptor` discriminants.
  *
@@ -218,6 +239,24 @@ const headerNamesIssueMessage = (issue: HeaderAuthIssue): string => {
   }
 };
 
+/** Frame a `validateBodyFieldAuthEntries` issue as a `field_names` message.
+ *  `value_missing` is unreachable — we synthesize a placeholder value per name. */
+const fieldNamesIssueMessage = (issue: HeaderAuthIssue): string => {
+  switch (issue.code) {
+    case 'not_array':
+    case 'empty':
+      return 'auth.field_names must be a non-empty array of non-empty strings';
+    case 'too_many':
+      return `auth.field_names may contain at most ${MAX_HEADER_AUTH_ENTRIES} entries`;
+    case 'name_missing':
+      return `auth.field_names[${issue.index}] must be a non-empty string`;
+    case 'name_reserved':
+      return `auth.field_names[${issue.index}] must not be a reserved object key (__proto__ / constructor / prototype)`;
+    case 'value_missing':
+      return `auth.field_names[${issue.index}] is invalid`;
+  }
+};
+
 /** Shape-validate the `auth` descriptor. Returns issue strings (empty ⇒ valid). */
 const validateAuthDescriptor = (auth: unknown): string[] => {
   if (auth == null || typeof auth !== 'object' || Array.isArray(auth)) {
@@ -291,6 +330,35 @@ const validateAuthDescriptor = (auth: unknown): string[] => {
     case 'query':
       if (typeof a.param_name !== 'string' || a.param_name.length === 0) {
         issues.push('auth.param_name must be a non-empty string');
+      }
+      break;
+    /** ⚠ Same delegation as `header`, and for the same reason: a descriptor
+     *  must never be able to declare a field a real `ConnectionAuth` would
+     *  reject at enroll (reserved object keys, empty names, over the cap).
+     *  Names only — values are pasted at enroll — so a placeholder value is
+     *  synthesized per name to reuse the canonical guard. */
+    case 'body_field':
+      if (!Array.isArray(a.field_names)) {
+        issues.push('auth.field_names must be a non-empty array of non-empty strings');
+      } else {
+        const res = validateBodyFieldAuthEntries(
+          a.field_names.map((n) => ({ field_name: n, value: 'x' })),
+        );
+        if (!res.ok) issues.push(fieldNamesIssueMessage(res.issue));
+      }
+      break;
+    /** ⛔ ADDED LATE, and it was missing rather than deliberately absent. The
+     *  scheme selects from a closed registry, so an unrecognized name is a pack
+     *  that enrolls cleanly and fails every call — the exact failure the enroll
+     *  handler refuses at the `ConnectionAuth` layer. It fell into `default`
+     *  below, which is where a member lands when nobody decides about it; the
+     *  discriminant-only members are there ON PURPOSE, and this was not one. */
+    case 'request_signature':
+      if (!isConnectionSigningScheme(a.scheme)) {
+        issues.push(
+          `auth.scheme must be one of ${CONNECTION_SIGNING_SCHEMES.join('|')}; `
+            + `got ${JSON.stringify(a.scheme)}`,
+        );
       }
       break;
     // 'bearer' | 'basic' | 'none' | 'atproto_session' — the discriminant is the

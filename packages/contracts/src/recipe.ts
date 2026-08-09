@@ -597,6 +597,74 @@ export interface RecipeOutput {
   /** Legacy migration alias. Parsers normalize this into render before
    *  execution when authored by old recipes. */
   sidebar?: OutputSection[];
+  /** D-232 § 19.3 — the exchange output kind. A recipe RETURNS (`render`) or it
+   *  FIRES (`exchange`); the alternatives live in one block so result-XOR-fire
+   *  is structural rather than a rule an author must remember. */
+  exchange?: RecipeExchangeOutput;
+}
+
+/** D-232 § 19.3 — "output to exchange store and fire".
+ *
+ *  ⛔ Deliberately NOT a step. The gateway is per-op-step and single-valued,
+ *  while a recipe's outcome resolves only when the run ends — so a step-level
+ *  exchange (§ 18.5, retired) has to represent "a value that isn't ready", and
+ *  the paused-run shape it would carry reads as an ordinary object to the
+ *  caller. As an OUTPUT there is nothing to represent: the run is over.
+ *
+ *  🔑 The engine derives the acknowledgement (ref + callback op) from this
+ *  block, so no recipe authors it and none can forget it — leaving a caller with
+ *  no ref to query is the one failure the exchange exists to prevent. */
+export interface RecipeExchangeOutput {
+  /** Correlation id for this exchange, stable across the conversation. A
+   *  `{{ref}}` resolved at fire time against the finished run's stores. */
+  ref: string;
+  /** WHERE THIS MESSAGE GOES: the tool that carries it. Resolved at fire time
+   *  to the one INSTALLED operation whose `mcp` binding names it, which is what
+   *  keeps a peer choosing among the owner's operations rather than naming a
+   *  tool directly (D-232 § 20.6).
+   *
+   *  ⛔ SEPARATE FROM `callback_op`, AND THE ASKER IS WHY. On the ANSWERING side
+   *  the two coincide — B delivers to `…/peer-appointment-reply`, which is also
+   *  where the conversation's answer lands — so one field appeared to do both
+   *  jobs. On the ASKING side they are plainly different: A delivers to
+   *  `…/peer-request-appointment` and asks to be answered at
+   *  `…/peer-appointment-reply`. One field would have made A's receipt say the
+   *  answer arrives at the tool A just sent to, which is false, or routed A's
+   *  request through the reply operation, which is the wrong direction. */
+  deliver_to: string;
+  /** D-232 § 28 — this answer must LEAVE THE SERVER; refuse rather than deliver
+   *  it locally.
+   *
+   *  ⛔⛔ "NO CONNECTION ⇒ ROUTE LOCAL" IS RIGHT FOR ONE CASE AND CATASTROPHIC
+   *  FOR THE OTHER, AND THE SUBSTRATE CANNOT TELL THEM APART. An mcp binding
+   *  with no connection names a recipe on THIS server — correct for the owner's
+   *  own recipe→recipe exchange. For an answer owed to a PEER it means the run
+   *  is filed under THEIR ref, delivered to ourselves, and reported `succeeded`,
+   *  while the peer waits forever. Seen exactly that way: bob replied to bob
+   *  under alice's ref.
+   *
+   *  Both look identical at fire time — same shape, same empty connection, a
+   *  contracted caller in both — so the ONLY thing that can distinguish them is
+   *  the author saying which they meant. An answering recipe sets this; a local
+   *  one does not.
+   *
+   *  ⚠ CHECKED LOCALLY AND ONLY LOCALLY. The alternative is asking the peer to
+   *  confirm which contract they present, which probes another server before it
+   *  has agreed to anything. Each side binds its own connection and neither
+   *  interrogates the other; this needs no cooperation from them and fails at
+   *  the moment it matters, on the side that made the mistake. */
+  require_connection?: boolean;
+  /** Where the far side should answer — the endpoint of the CONVERSATION, not
+   *  of this message. Echoed into the acknowledgement so the caller knows where
+   *  the rest arrives, and carried in the payload so the far side knows where
+   *  to send it. Absent when nothing further is expected. */
+  callback_op?: string;
+  /** Connection naming the peer. ABSENT routes locally, the same discriminator
+   *  the gateway uses for an `mcp` binding (§ 18.4). */
+  connection?: string;
+  /** Extra fields to carry alongside the outcome. The OUTCOME itself is never
+   *  authored here — see `ExchangeFirePayload`. */
+  data?: Record<string, unknown>;
 }
 
 /** THE rule for which sections a recipe actually renders — `render`, else the
@@ -750,6 +818,44 @@ export interface UndeclaredConfigArgumentDetails {
  *  overlays merge. Pass it to get origin attribution; omit it and every finding
  *  reports `overlay`, which is the safe default — claiming a key came from the
  *  wire when we do not know would point the owner at the wrong fix. */
+/** D-232 § 21 — the EXCHANGE ENVELOPE: keys the engine always puts on the wire
+ *  when one recipe answers another, and which therefore may always ride along
+ *  undeclared.
+ *
+ *  ⛔⛔ WITHOUT THIS THE PROTOCOL CANNOT GROW A SINGLE FIELD. Every arg a
+ *  receiver does not declare is refused with `UNDECLARED_CONFIG_ARGUMENT` (400),
+ *  so adding `kind` + `reason` to the exchange broke EVERY existing receiver at
+ *  once — and it broke them at the far side, where the asker sees only that the
+ *  answer never arrived. A protocol whose every extension is a simultaneous
+ *  breaking change for all participants, including third-party ones on servers
+ *  you do not control, is not a protocol. Found by adding one field.
+ *
+ *  ⚠ WHY EXEMPTING THESE IS SAFE, stated plainly because it is a real relaxation
+ *  of a D-222 guard: an undeclared key is UNREADABLE. A recipe reaches config
+ *  only through `{{config.<name>}}`, which resolves against its declared
+ *  variables — so a key nobody declared cannot be read, cannot be gated on, and
+ *  cannot reach a step. The guard exists to catch a caller who MEANT to send
+ *  something and got the name wrong; it is not an authority boundary. A receiver
+ *  that wants any of these declares it, and then it is validated like any other
+ *  variable.
+ *
+ *  🔑 CLOSED AND ENGINE-OWNED. Every member is derived by the engine from the
+ *  RUN — never authored — which is what keeps this from becoming a hole a caller
+ *  can widen. Adding a member here is a protocol change and should be treated as
+ *  one. */
+export const EXCHANGE_ENVELOPE_KEYS: readonly string[] = Object.freeze([
+  'exchange_ref',
+  'outcome',
+  'kind',
+  'reason',
+  'errors',
+]);
+
+const EXCHANGE_ENVELOPE_KEY_SET: ReadonlySet<string> = new Set(EXCHANGE_ENVELOPE_KEYS);
+
+export const isExchangeEnvelopeKey = (key: string): boolean =>
+  EXCHANGE_ENVELOPE_KEY_SET.has(key);
+
 export const undeclaredConfigArguments = (
   variables: Readonly<Record<string, VariableDefault>> | undefined,
   config: Readonly<Record<string, unknown>> | undefined,
@@ -760,6 +866,9 @@ export const undeclaredConfigArguments = (
   const out: UndeclaredConfigArgument[] = [];
   for (const key of Object.keys(config)) {
     if (Object.prototype.hasOwnProperty.call(declared, key)) continue;
+    // § 21 — the exchange envelope always rides along; see the doc above for why
+    // exempting it is safe and why the protocol is unextendable without it.
+    if (EXCHANGE_ENVELOPE_KEY_SET.has(key)) continue;
     out.push({ key, origin: wireKeys?.has(key) === true ? 'wire' : 'overlay' });
   }
   return out;

@@ -21,11 +21,13 @@
  *  compliance (GDPR Article 15 subject access, SOC2 evidence, etc.).
  */
 
+import { isOrderedWindowQueryable } from './types.js';
 import type { Collection } from './types.js';
 import type {
   Actor,
   CommitKind,
   ContractSnapshot,
+  ExchangeAcknowledgement,
   ExecutionSource,
   HeavyOpErrorCategory,
   RecipeError,
@@ -141,6 +143,64 @@ export interface AuditEntry {
    *  "which of my 10 repos failed" across runs of one recipe.
    *  Undefined on pre-D-179 rows + ext-routed writers. */
   dish_id?: string;
+  /** D-232 § 20.9 — the exchange this run belongs to.
+   *
+   *  ⛔ THE EXCHANGE'S ONLY JUSTIFICATION LIVES ON THIS FIELD. A sender expects
+   *  nothing back — that is the post office — and what the substrate adds over a
+   *  real letter is that you can ask what happened to it. The ref is the handle
+   *  for asking, and until it was recorded somewhere QUERYABLE, the handle
+   *  pointed at nothing: the answer went, the caller held a ref, and no surface
+   *  could turn one into the other.
+   *
+   *  It lands on the RUN rather than on the commit because a run is what an
+   *  exchange is made of at both ends: the peer's inbound call is a run here,
+   *  the answer's outbound dispatch is its own run (D-232 § 20.6 — the fire is
+   *  its own run), and a hold is a run that has not finished. A commit-only
+   *  ledger would see only the crossings, and would be blind exactly where an
+   *  exchange spends most of its life — waiting.
+   *
+   *  ⚠ Absent on runs that are not part of an exchange, which is nearly all of
+   *  them. */
+  exchange_ref?: string;
+  /** D-232 § 30 — what the PEER reported when this run delivered to them.
+   *
+   *  ⛔ THE ONLY DURABLE RECORD THAT THE FAR SIDE CANNOT ANSWER. The verdict
+   *  arrives once, synchronously, on the carrier's own tool result; if it is not
+   *  written here it is gone, and § 23 falls through to `awaiting` for an
+   *  exchange nothing is ever coming back for.
+   *
+   *  ⚠ IT LANDS ON THE RUN THAT *DECLARED* THE EXCHANGE, NOT ON THE CARRIER THAT
+   *  CROSSED — measured, and the opposite of where it reads like it should go.
+   *  The fire point runs inside the declaring run; by the time the peer has
+   *  answered, the carrier's own anchor is written and closed, and a second
+   *  write to it would be a two-phase confirm (§ 20.12 deleted that shape
+   *  twice). Both rows carry the ref, and § 23 folds over every row under it.
+   *
+   *  ⚠ NOT A STEP PAYLOAD, so it does not breach this file's privacy contract.
+   *  It is a bounded control-plane receipt — ref, a closed-vocabulary `kind`, a
+   *  `reason` capped at `EXCHANGE_PEER_REASON_MAX`, two booleans — validated by
+   *  `parsePeerExchangeAck` before it ever reaches storage. `reason` is a run
+   *  failure message, the same class of diagnostic text `errors` already
+   *  retains.
+   *
+   *  ⚠ Absent on nearly every run, and on every exchange whose peer said
+   *  nothing. Absence means "no verdict", never "the verdict was fine". */
+  exchange_peer_ack?: ExchangeAcknowledgement;
+  /** D-232 § 20.19 — the WIRE NAME of the recipe grant that covered this run's
+   *  steps, for a run the host dispatched on a granted recipe's behalf (today:
+   *  an exchange fire's `run-ingredient` carrier). `<publisher>/<recipe_id>`.
+   *
+   *  ⛔ IT IS THE NAME, NOT A BOOLEAN, AND THAT IS THE POINT. An approval can
+   *  outlive the grant that justified it. The resume authority re-reads the
+   *  bearer immediately before the approved effect dispatches and must be able
+   *  to ask "does this door STILL hold the grant this run was riding" — which a
+   *  yes/no recorded at pause time cannot answer. Reduced to a boolean,
+   *  revoking the recipe grant would leave every already-approved carrier free
+   *  to send.
+   *
+   *  ⚠ Absent on every run that is not riding a recipe grant, which is nearly
+   *  all of them. */
+  granted_by_recipe?: string;
   /** D-120 — short post-run outcome summary (≤ AUDIT_OUTPUT_STRING_MAX
    *  chars). Captures approval outcome (`approval:allow` / `deny` /
    *  `edit` / `dismiss_unseen`), error code + brief fragment, or a
@@ -1049,6 +1109,31 @@ export interface AuditLogStore {
    *  (`memory.search`, audit export, the `recued_getAudit` MCP tool) stay
    *  unchanged (I-9). The aggregate "Recent activity" handler supplies the
    *  default foreground set (`TIMELINE_DEFAULT_ORIGIN_ACTORS`). */
+  /** ⛔ A BOUNDED, UNFILTERED WINDOW for a paginated feed.
+   *
+   *  `listRecent` materialises the ENTIRE table on every call regardless of
+   *  `limit`, because its origin filter runs in JS BEFORE the slice — so it
+   *  cannot narrow the read without risking a short page. `memory.list` called
+   *  it with `Number.MAX_SAFE_INTEGER`, reading the whole 5 GB-ceilinged log to
+   *  render one 50-row page: 401ms / 393 MB of heap at 200k rows, linear, and
+   *  an OOM at the prune trigger.
+   *
+   *  This is deliberately a SEPARATE method rather than a `listRecent` fast
+   *  path: making it conditional on "no filter requested" would have left the
+   *  caller that needs it — which passes both a filter AND MAX_SAFE_INTEGER —
+   *  on the slow path forever, a fast path nothing takes.
+   *
+   *  ⚠ RETURNS UNFILTERED ROWS. The caller applies its own predicates and
+   *  re-fetches a larger window if the page did not fill. That keeps the feed's
+   *  semantics exactly where they were.
+   *
+   *  Ordered `COALESCE(event_at, started_at) DESC, run_id DESC` — the same
+   *  total order the feed sorts by, so the keyset cursor is exact. */
+  listWindow(query: {
+    limit: number;
+    before?: { ts: number; id: string };
+  }): Promise<AuditEntry[]>;
+
   listRecent(
     limit: number,
     opts?: { origin_actors?: readonly Actor[] },
@@ -1098,6 +1183,46 @@ export interface AuditLogStore {
    *  design (an auto-run config change dissolves the prior dish and a
    *  one-shot retires itself on success, both leaving audit intact), so
    *  callers render an unresolvable id as *retired*, never as an error. */
+  /** D-232 § 20.9 — every run belonging to one exchange: the peer's inbound
+   *  call, the answer's own dispatch, and any hold in between. This is "what
+   *  happened to it" — the question the exchange exists to be able to answer.
+   *  Newest first; empty for an empty ref. `axis` follows the same rules as
+   *  {@link AuditLogStore.listByChannelSession}.
+   *
+   *  ⚠ An app-side scan, matching every sibling here (see the note on
+   *  `listByDish`): `Collection` exposes no predicate query, so an index would
+   *  have no reader. */
+  listByExchangeRef(
+    exchange_ref: string,
+    limit?: number,
+    axis?: TimelineAxis,
+  ): Promise<AuditEntry[]>;
+  /** D-232 § 20.9 — every run governed by one peer's contract: "everything with
+   *  this peer", § 18.6's second query. Reads the run's persisted
+   *  `contract_snapshot.contract_id`, so it spans exchanges rather than
+   *  belonging to one. Newest first; empty for an empty id. */
+  listByPeerContract(
+    contract_id: string,
+    limit?: number,
+    axis?: TimelineAxis,
+  ): Promise<AuditEntry[]>;
+  /** D-232 § 24 — every exchange ref whose LATEST carrier attempt failed: the
+   *  retry sweep's candidate set.
+   *
+   *  ⛔ LATEST, not any. A ref whose first attempt failed and whose second
+   *  succeeded is delivered; returning it would have the sweep re-send an
+   *  exchange that already landed. The planner would catch that (it reads the
+   *  derived status), but a candidate set that is wrong by construction makes
+   *  every downstream refusal load-bearing, and the cheapest place to be right
+   *  is here.
+   *
+   *  ⚠ An app-side scan, matching every sibling above. */
+  listPendingExchangeRefs(limit?: number): Promise<string[]>;
+  /** D-232 § 27 — every distinct contract id this server has actually been
+   *  CALLED BY. The handshake half of the peer binding: a connection declares
+   *  which contract its peer will present, and only the peer can confirm it — by
+   *  calling. Newest first. */
+  listInboundContractIds(limit?: number): Promise<string[]>;
   listByDish(
     dish_id: string,
     limit?: number,
@@ -1187,6 +1312,29 @@ export const createAuditLogStore = (
   activityBacking?: Collection<ActivityEntry>,
   options: CreateAuditLogStoreOptions = {},
 ): AuditLogStore => {
+  // ⛔ THE FEED'S ORDERING INDEX, CREATED HERE RATHER THAN BY THE CALLER.
+  //
+  // `listWindow` below emits `ORDER BY COALESCE(event_at, started_at) DESC,
+  // run_id DESC`. Without a matching index that statement is a full SCAN of
+  // `audit_entries` — which D-230 sized at 5 GB — plus a TEMP B-TREE sort, on
+  // every page. It returns exactly the right rows either way, which is the
+  // whole problem: nothing observable distinguishes the indexed path from the
+  // unindexed one except the query plan.
+  //
+  // ⚠ It was originally left to the composition root, and the store's own tests
+  // passed because each of them called `ensureWindowIndex` itself. That is the
+  // shape where a fix ships inert: green everywhere, and the one caller that
+  // matters — the real server — never asked. Owning it here means constructing
+  // the store is what turns the index on.
+  //
+  // ⚠ `IF NOT EXISTS`, so this is a one-time build on an existing log and a
+  // no-op every boot after.
+  if (isOrderedWindowQueryable(backing)) {
+    backing.ensureWindowIndex({
+      tsPath: 'event_at', tsFallbackPath: 'started_at', idPath: 'run_id',
+    });
+  }
+
   // Fallback in-memory activity store if no IDB collection provided
   const activities = activityBacking ?? createInMemoryActivityStore();
   const maxEntries = options.maxEntries ?? DEFAULT_MAX_AUDIT_ENTRIES;
@@ -1270,6 +1418,30 @@ export const createAuditLogStore = (
       autoTrim().catch(() => {});
     },
 
+    async listWindow({ limit, before }) {
+      if (limit <= 0) return [];
+      if (!isOrderedWindowQueryable(backing)) {
+        // In-memory harness: same order, same cursor, no SQL. Correct but
+        // unbounded — the real server always has the SQLite backing.
+        const all = await backing.list();
+        const eff = (e: AuditEntry): number => e.event_at ?? e.started_at;
+        const ordered = all.sort((a, b) =>
+          (eff(b) - eff(a)) || (a.run_id < b.run_id ? 1 : a.run_id > b.run_id ? -1 : 0));
+        const after = before
+          ? ordered.filter((e) =>
+            eff(e) !== before.ts ? eff(e) < before.ts : e.run_id < before.id)
+          : ordered;
+        return after.slice(0, limit);
+      }
+      return backing.listWindowDesc({
+        tsPath: 'event_at',
+        tsFallbackPath: 'started_at',
+        idPath: 'run_id',
+        limit,
+        ...(before ? { before } : {}),
+      });
+    },
+
     async listRecent(limit, opts) {
       if (limit <= 0) return [];
       const all = await backing.list();
@@ -1330,6 +1502,65 @@ export const createAuditLogStore = (
       return limit !== undefined && limit >= 0
         ? filtered.slice(0, limit)
         : filtered;
+    },
+
+    // D-232 § 20.9 — the exchange query. Same app-side filter as every sibling.
+    async listByExchangeRef(exchange_ref, limit, axis) {
+      if (exchange_ref === '') return [];
+      const all = await backing.list();
+      const filtered = all
+        .filter((e) => e.exchange_ref === exchange_ref)
+        .sort(sortForAxis(axis));
+      return limit !== undefined && limit >= 0 ? filtered.slice(0, limit) : filtered;
+    },
+
+    async listPendingExchangeRefs(limit) {
+      const all = await backing.list();
+      // Newest-first per ref, then keep a ref only when the newest CARRIER run
+      // under it failed. `run-ingredient` is the carrier (kernel plumbing); the
+      // declaring run failing says nothing about delivery (§ 19.4 fires a failed
+      // run's answer deliberately).
+      const newestCarrier = new Map<string, { at: number; failed: boolean }>();
+      for (const e of all) {
+        const ref = e.exchange_ref;
+        if (typeof ref !== 'string' || ref === '') continue;
+        if (e.recipe_id !== 'run-ingredient') continue;
+        const at = e.finished_at ?? e.started_at ?? 0;
+        const prior = newestCarrier.get(ref);
+        if (prior === undefined || at >= prior.at) {
+          newestCarrier.set(ref, { at, failed: e.commit_status === 'failed' });
+        }
+      }
+      const refs = [...newestCarrier.entries()]
+        .filter(([, v]) => v.failed)
+        .sort((a, b) => b[1].at - a[1].at)
+        .map(([ref]) => ref);
+      return typeof limit === 'number' ? refs.slice(0, limit) : refs;
+    },
+    async listInboundContractIds(limit) {
+      const all = await backing.list();
+      const seen = new Map();
+      for (const e of all) {
+        // ⛔ CONTRACTED CALLERS ONLY. The owner's own runs carry a contract id
+        // too (a self-restricted `user_self`), and counting those would confirm
+        // a binding against traffic the peer never sent — the exact false
+        // reassurance this check exists to avoid.
+        if (e.execution_source?.actor !== 'contracted_user') continue;
+        const id = e.contract_snapshot?.contract_id ?? e.execution_source.contract_id;
+        if (typeof id !== 'string' || id === '') continue;
+        const at = e.finished_at ?? e.started_at ?? 0;
+        if (!seen.has(id) || at > seen.get(id)) seen.set(id, at);
+      }
+      const ids = [...seen.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
+      return typeof limit === 'number' ? ids.slice(0, limit) : ids;
+    },
+    async listByPeerContract(contract_id, limit, axis) {
+      if (contract_id === '') return [];
+      const all = await backing.list();
+      const filtered = all
+        .filter((e) => e.contract_snapshot?.contract_id === contract_id)
+        .sort(sortForAxis(axis));
+      return limit !== undefined && limit >= 0 ? filtered.slice(0, limit) : filtered;
     },
 
     // D-215 slice 2 — app-side filter, matching every sibling above.
@@ -1578,6 +1809,13 @@ export const newRunId = (now: number = Date.now()): string => {
 export interface AuditEntryInput {
   recipe_id: string;
   recipe_hash: string;
+  /** D-232 § 20.9 — the exchange this run belongs to; see
+   *  {@link AuditEntry.exchange_ref}. Absent on nearly every run. */
+  exchange_ref?: string;
+  /** D-232 § 30 — see {@link AuditEntry.exchange_peer_ack}. */
+  exchange_peer_ack?: ExchangeAcknowledgement;
+  /** D-232 § 20.19 — see {@link AuditEntry.granted_by_recipe}. */
+  granted_by_recipe?: string;
   /** Run-anchor lifecycle state — a `RunAnchorStatus` (D-157 P1 widened
    *  it from `CommitStatus`). The engine maps the legacy
    *  `ExecutionResult.success: boolean` to one of the terminal values
@@ -1710,6 +1948,26 @@ export const buildAuditEntry = (input: AuditEntryInput): AuditEntry => {
     ...(input.backfill ? { backfill: input.backfill } : {}),
     ...(input.process_id ? { process_id: input.process_id } : {}),
     ...(input.dish_id ? { dish_id: input.dish_id } : {}),
+    // D-232 § 20.9 — the exchange this run belongs to. ⛔ NOTE WHERE THIS LINE
+    // IS: inside an ENUMERATING COPIER. The stamp was already computed at the
+    // call site and simply vanished here — the third time this session a field
+    // reached a builder that does not name it, and the only one that failed
+    // SILENTLY (no type error; the row just came back without it).
+    ...(input.exchange_ref ? { exchange_ref: input.exchange_ref } : {}),
+    // D-232 § 30 — the peer's verdict, and it is listed here BECAUSE of the
+    // warning below rather than in spite of it: this is the same builder that
+    // silently swallowed `exchange_ref`, and the peer ack has the same shape of
+    // consequence — the row comes back without it, § 23 reads `awaiting`, and
+    // nothing anywhere raises.
+    ...(input.exchange_peer_ack !== undefined
+      ? { exchange_peer_ack: input.exchange_peer_ack }
+      : {}),
+    // ⚠ `buildAuditEntry` is an ENUMERATING COPIER — it returns a literal, so a
+    // field added to the interface and not to this list is dropped with NO type
+    // error. `exchange_ref` was lost exactly here earlier this slice.
+    ...(input.granted_by_recipe
+      ? { granted_by_recipe: input.granted_by_recipe }
+      : {}),
     ...(input.recipe_insight_id != null ? { recipe_insight_id: input.recipe_insight_id } : {}),
     ...(input.output_string != null ? { output_string: input.output_string } : {}),
     // D-120 Phase 7.5 — bistemporal stamps. Both nullable; pass-through.

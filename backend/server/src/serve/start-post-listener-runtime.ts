@@ -13,6 +13,9 @@ import type { PollManagerHandle } from '../watch/poll-manager.js';
 import type { MessengerIngressSupervisor } from '../messenger-ingress/supervisor.js';
 import type { UpstreamMergeRegistry } from '../data/vendor-boot-registry.js';
 import type { EvictionCascade } from '../eviction-cascade.js';
+import { composeProCertEnrollment } from '../composition/bin/wire-pro-cert-enrollment.js';
+import { createSqliteHandleStateStore } from '../handle/sqlite-store.js';
+import { createHostnameRegistryStore } from '../storage/hostname-registry.js';
 import type { BootedServerIdentity } from '../identity/boot.js';
 import type { Lifecycle } from '../lifecycle/index.js';
 import type { ServerExecutorConfig } from '../server-executor.js';
@@ -31,6 +34,9 @@ import { composeWorkEntitySourceSync } from './compose-work-entity-source-sync.j
 import { composeContactSourceSync } from './compose-contact-source-sync.js';
 import { buildCanonicalPollDeps } from '../watch/canonical-poll-deps.js';
 import { handleExecute } from '../execute-handler.js';
+import { classifyRunFailure } from '@recued/engine';
+import { composeExchangeRetry } from '../composition/bin/wire-exchange-retry.js';
+import { RUN_INGREDIENT_RECIPE } from '../run-ingredient-recipe.js';
 import { liveVendorRegistry } from '../connection-convention-families.js';
 import { buildSellerAccessReconcileDepsIfReady } from '../seller/access-reconcile-deps.js';
 import { handleConnectionProbe } from '../connection-handler.js';
@@ -56,7 +62,9 @@ import { composeRecordsOutbox } from '../composition/bin/wire-records-outbox.js'
 export type PostListenerRuntimeStorageContext =
   StartHousekeepingStartupOptions['storage']
   & StartPostHousekeepingTailOptions['storage']
-  & Pick<StorageContext, 'recordsStore' | 'recipeStore'>;
+  // `serverInstanceId` stamps the enrollment row the same way
+  // `compose-listeners` stamps rows written by `collection.hostname.*`.
+  & Pick<StorageContext, 'recordsStore' | 'recipeStore' | 'serverInstanceId'>;
 
 export type PostListenerRuntimeAppContext =
   StartHousekeepingStartupOptions['app']
@@ -606,6 +614,119 @@ export const startPostListenerRuntime = async (
     // and green.
     applyLifecycle: () => options.certStack.getHandleStateMachineRef(),
   });
+
+  // D-148 — Pro DDNS certificate enrollment. Nothing else creates a hostname
+  // row or orders a first certificate: the only `.upsert(` callers are the
+  // user-facing `collection.hostname.*` rpcs, and the renewal task explicitly
+  // skips un-provisioned handles. Without this a paid server never gets a cert
+  // unless a human opens Settings → Hostnames and adds it by hand.
+  // ⚠ `getInitialAcmeIssuer` is resolved LAZILY — `composeLate` fills the ref
+  //   after this runs, so capturing it here would pin `undefined` and disable
+  //   enrollment with everything green.
+  // ── D-232 § 24 — the retry sweep ──────────────────────────────────────
+  //
+  // ⚠ A RETRY MUST RUN UNDER THE AUTHORITY THAT SENT THE ORIGINAL, and that is
+  // the only genuinely hard part of this wiring. The carrier's audit anchor
+  // persisted its `execution_source` and `contract_snapshot`, so the re-send
+  // restores them rather than minting fresh ones — a retry that ran as somebody
+  // else would be a privilege escalation dressed as a convenience, and D-232
+  // § 20.19 already had to make the same argument for the nested carrier run.
+  // No anchor identity ⇒ NO RESEND: an exchange we cannot re-authorize is one we
+  // must leave alone.
+  if (options.storage.auditLog) {
+    const auditLog = options.storage.auditLog;
+    const carrierOf = async (ref: string) => {
+      const rows = await auditLog.listByExchangeRef(ref, 200);
+      return rows
+        .filter((r) => r.recipe_id === 'run-ingredient')
+        .sort((a, b) => (b.finished_at ?? 0) - (a.finished_at ?? 0))[0];
+    };
+    composeExchangeRetry({
+      registry: options.backgroundServices,
+      // ⚠ DEV-ONLY OVERRIDE, and it exists because the honest test is otherwise
+      // unrunnable: proving a retry FIRES end to end needs a 60s interval plus a
+      // 60s backoff to elapse, which no drive waits for. Absent ⇒ production
+      // default. A short interval is the only way this path has ever been
+      // observed working rather than merely registered.
+      ...(process.env.RECUED_EXCHANGE_RETRY_INTERVAL_MS !== undefined
+        ? { intervalMs: Number(process.env.RECUED_EXCHANGE_RETRY_INTERVAL_MS) }
+        : {}),
+      pendingRefs: () => auditLog.listPendingExchangeRefs(50),
+      rowsForRef: async (ref) =>
+        (await auditLog.listByExchangeRef(ref, 200)).map((r) => ({
+          recipe_id: r.recipe_id,
+          status: String(r.commit_status ?? ''),
+          at: r.finished_at ?? r.started_at ?? 0,
+          errors: r.errors ?? [],
+          config: r.config_snapshot ?? {},
+          // D-232 § 30 — CHANGES NOTHING TODAY, AND IS HERE ANYWAY. `pendingRefs`
+          // admits only refs whose newest CARRIER run FAILED, and an
+          // `unanswerable` exchange has a succeeded carrier — so a peer verdict
+          // cannot currently reach this sweep, and even if it did, the
+          // carrier-failed rule outranks it inside the fold.
+          //
+          // ⚠ BUT THIS IS THE SECOND CALL SITE OF `deriveExchangeStatus`, and the
+          // other one (the § 23 status surface) DOES map it. Two callers folding
+          // one rule over different inputs is how a reordering later becomes a
+          // silent divergence between "what the owner is told" and "what the
+          // sweep decides" — with only one of them updated.
+          ...(r.exchange_peer_ack !== undefined
+            ? { peer_ack: r.exchange_peer_ack }
+            : {}),
+        })),
+      // The carrier's own args carry the callback the exchange named.
+      callbackForRef: () => undefined,
+      healthForRef: () => undefined,
+      classify: ((errors: readonly unknown[]) =>
+        classifyRunFailure(errors)) as never,
+      resend: async (ref, args) => {
+        const carrier = await carrierOf(ref);
+        if (carrier?.execution_source === undefined) {
+          // See the authority note above — silence here is deliberate and safe:
+          // the sweep simply never retries what it cannot re-authorize.
+          return;
+        }
+        await handleExecute(
+          options.executeDeps as Parameters<typeof handleExecute>[0],
+          {
+            // ⛔ INLINE, NOT BY ID. `run-ingredient` is a KERNEL recipe — bundled
+            // in the binary and absent from `recipeStore` — so a resend by id
+            // dies "Recipe 'run-ingredient' not found". The fire itself passes
+            // the definition inline for exactly this reason; a retry that does
+            // not is a sweep that finds its candidate, plans the attempt, logs
+            // that it is re-sending, and sends nothing. Which is what it did.
+            recipe: RUN_INGREDIENT_RECIPE as unknown as Record<string, unknown>,
+            config: args,
+            execution_source: carrier.execution_source,
+            ...(carrier.contract_snapshot !== undefined
+              ? { contract_snapshot: carrier.contract_snapshot }
+              : {}),
+          },
+          // Files the new attempt under the SAME ref, which is what makes it an
+          // attempt rather than a new exchange — and what lets the next sweep
+          // count it.
+          { exchange_ref: ref },
+        );
+      },
+    });
+  }
+
+  if (options.storage.db) {
+    composeProCertEnrollment({
+      registry: options.backgroundServices,
+      handleStateStore: createSqliteHandleStateStore({ db: options.storage.db }),
+      hostnameRegistry: createHostnameRegistryStore(options.storage.db),
+      getInitialAcmeIssuer: () => options.certStack.getInitialAcmeDomainIssuerRef(),
+      serverIdentityId: () => options.storage.serverInstanceId,
+      // ⛔ THIS LINE WAS MISSING AND THE GATE WAS INERT. The dep is optional, so
+      //    omitting it silently means "treat as unlocked" — the composer, its
+      //    tests (which pass their own predicate) and tsc were all green while
+      //    a sealed server would have run enrollment anyway. Classic
+      //    caller-obligation seam: the factory made the caller do the last
+      //    step, and the caller forgot.
+      isVaultUnlocked: options.app.isVaultUnlocked,
+    });
+  }
 
   return {
     schedulersBundle,

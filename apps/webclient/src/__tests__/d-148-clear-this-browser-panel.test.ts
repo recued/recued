@@ -168,6 +168,14 @@ const findAllByAttr = (root: FakeElement, attr: string): FakeElement[] => {
 // SW environment fakes
 // ──────────────────────────────────────────────────────────────────
 
+/** The origin the fake registrations live under. `unregisterServiceWorker` now
+ *  decides ownership by comparing a registration's `scope` against the app's own
+ *  resolved scope — so a neighbouring app's worker on a shared self-host origin
+ *  survives Settings → Privacy "Clear this browser". A node test has to supply
+ *  the base URL a browser gets free from `location.href`; the fake scopes were
+ *  bare `'./'`, which resolves to nothing the filter can match. */
+const TEST_SW_BASE = 'https://app.recued.com/';
+
 interface SwState {
   registrations: Array<{
     scope: string;
@@ -268,7 +276,7 @@ const setupMount = (overrides: SetupOptions = {}): SetupResult => {
       overrides.swRegistrations ??
       [
         {
-          scope: './',
+          scope: TEST_SW_BASE,
           update: async (): Promise<void> => undefined,
           unregister: async () => true,
         },
@@ -280,7 +288,11 @@ const setupMount = (overrides: SetupOptions = {}): SetupResult => {
     host: host as unknown as HTMLElement,
     document: doc as unknown as Document,
     localStore,
-    sw_environment: { navigator: { serviceWorker: sw.container }, caches: sw.caches },
+    sw_environment: {
+      navigator: { serviceWorker: sw.container },
+      caches: sw.caches,
+      baseUrl: TEST_SW_BASE,
+    },
     ...(overrides.reloader ? { reloader: overrides.reloader } : {}),
     ...(overrides.onCleared ? { onCleared: overrides.onCleared } : {}),
     ...(overrides.withCryptoWiper
@@ -547,7 +559,7 @@ describe('D-148 § A.4.1 — mountClearThisBrowserPanel: state machine', () => {
     const sw = makeSwEnvironment({
       registrations: [
         {
-          scope: './',
+          scope: TEST_SW_BASE,
           update: async (): Promise<void> => undefined,
           unregister: async () => true,
         },
@@ -557,7 +569,11 @@ describe('D-148 § A.4.1 — mountClearThisBrowserPanel: state machine', () => {
       host: host as unknown as HTMLElement,
       document: doc as unknown as Document,
       localStore: slowStore,
-      sw_environment: { navigator: { serviceWorker: sw.container }, caches: sw.caches },
+      sw_environment: {
+        navigator: { serviceWorker: sw.container },
+        caches: sw.caches,
+        baseUrl: TEST_SW_BASE,
+      },
     });
 
     mount.clickClear();
@@ -714,7 +730,7 @@ describe('D-148 § A.4.1 — mountClearThisBrowserPanel: dispose', () => {
     const sw = makeSwEnvironment({
       registrations: [
         {
-          scope: './',
+          scope: TEST_SW_BASE,
           update: async (): Promise<void> => undefined,
           unregister: async () => true,
         },
@@ -724,7 +740,11 @@ describe('D-148 § A.4.1 — mountClearThisBrowserPanel: dispose', () => {
       host: host as unknown as HTMLElement,
       document: doc as unknown as Document,
       localStore: slowStore,
-      sw_environment: { navigator: { serviceWorker: sw.container }, caches: sw.caches },
+      sw_environment: {
+        navigator: { serviceWorker: sw.container },
+        caches: sw.caches,
+        baseUrl: TEST_SW_BASE,
+      },
     });
     mount.clickClear();
     const pending = mount.clickConfirm();

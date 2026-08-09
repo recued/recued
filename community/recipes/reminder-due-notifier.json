@@ -5,7 +5,7 @@
   "ttl": 60,
   "metadata": {
     "name": "Reminder due notifier",
-    "description": "Hidden reminder firing recipe. It watches Recued reminder tasks at due_at, sends a notification through default fanout, and marks the task state as fired so the reminder does not re-notify after the watcher ledger has fired.",
+    "description": "Use “Reminder due notifier” in Recued. It supports this workflow in the background and is not intended to be run directly.",
     "author": "recued-core",
     "supported_platforms": [],
     "tags": ["reminder", "task", "notify", "reactive", "hidden", "pack:personal-organizer"],

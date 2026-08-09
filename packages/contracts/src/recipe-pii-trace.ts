@@ -226,6 +226,11 @@ export const PII_FLOW_RULES: Readonly<Record<string, PiiFlowRule>> = {
   unique: { rule: 'pass_array', arg: 'array' },
   flatten: { rule: 'pass_array', arg: 'array' },
   slice: { rule: 'pass_array', arg: 'array' },
+  /** `chunk` REGROUPS rows without touching them — every element of every chunk is
+   *  the identical object `array` carried in, so any taint on the input is present,
+   *  unchanged, on the output. Same rule as `slice` / `partition` for the same reason:
+   *  a nesting level is not a redaction. */
+  chunk: { rule: 'pass_array', arg: 'array' },
   group_by: { rule: 'structural' },
   to_list: { rule: 'pass_array', arg: 'input' },
   partition: { rule: 'pass_array', arg: 'array' },

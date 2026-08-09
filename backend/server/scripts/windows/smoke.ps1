@@ -18,7 +18,13 @@ param(
   [string] $Triples   = 'windows-x64,windows-arm64',
   [string] $Artifacts = 'C:\artifacts',
   [int]    $BasePort  = 7791,
-  [int]    $TimeoutSec= 45
+  [int]    $TimeoutSec= 45,
+  # PROTOTYPE (single-file): '1' INVERTS the sidecar assertion below. A binary
+  # carrying the addon as a SEA asset must boot with NO lib\better_sqlite3.node
+  # present -- and if one were lying around, the run would prove nothing about
+  # the embedded path, because createRequire would happily load the file.
+  # !! [string] not [switch]: `powershell -File` passes args literally.
+  [string] $EmbedAddon = '0'
 )
 
 $ErrorActionPreference = 'Continue'
@@ -31,11 +37,23 @@ foreach ($triple in ($Triples -split ',' | ForEach-Object { $_.Trim() } | Where-
   Write-Output "== $triple =="
 
   if (-not (Test-Path $bin)) { Write-Output '  MISSING BINARY'; $results += "$triple=MISSING"; $port++; continue }
-  # The sidecar must sit at lib\better_sqlite3.node BESIDE the exe -- that is what
-  # the binary's createRequire looks for, and its absence is the failure this
-  # whole script exists to catch.
-  if (-not (Test-Path (Join-Path $Artifacts "$triple\lib\better_sqlite3.node"))) {
-    Write-Output '  MISSING SIDECAR'; $results += "$triple=MISSING"; $port++; continue
+  $sidecar = Join-Path $Artifacts "$triple\lib\better_sqlite3.node"
+  if ($EmbedAddon -eq '1') {
+    # Single-file prototype: the sidecar must be ABSENT. Present, it would load
+    # normally and the run would say nothing about the embedded asset -- the
+    # test would pass for the wrong reason, which is worse than failing.
+    if (Test-Path $sidecar) {
+      Remove-Item -Force $sidecar -ErrorAction SilentlyContinue
+      Write-Output '  removed a stray sidecar so the embedded path is what gets exercised'
+    }
+    Write-Output '  sidecar ABSENT by design (addon must come from the SEA asset)'
+  } else {
+    # The sidecar must sit at lib\better_sqlite3.node BESIDE the exe -- that is what
+    # the binary's createRequire looks for, and its absence is the failure this
+    # whole script exists to catch.
+    if (-not (Test-Path $sidecar)) {
+      Write-Output '  MISSING SIDECAR'; $results += "$triple=MISSING"; $port++; continue
+    }
   }
 
   Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue

@@ -32,6 +32,9 @@ const mkAuditLog = (entriesByRecipe: Record<string, AuditEntry[]>): AuditLogStor
   };
   return {
     append: notUsed,
+    listWindow: notUsed,
+    listPendingExchangeRefs: notUsed,
+    listInboundContractIds: notUsed,
     listRecent: notUsed,
     listByRecipe: async (recipe_id: string, _limit?: number) =>
       (entriesByRecipe[recipe_id] ?? []).slice().sort((a, b) => b.started_at - a.started_at),
@@ -40,6 +43,8 @@ const mkAuditLog = (entriesByRecipe: Record<string, AuditEntry[]>): AuditLogStor
     listByChannelSession: notUsed,
     listByCognitionSession: notUsed,
     listByCorrelation: notUsed,
+    listByExchangeRef: () => { throw new Error("unused"); },
+    listByPeerContract: () => { throw new Error("unused"); },
     listByDish: () => { throw new Error("unused"); },
     latestByDishes: () => { throw new Error("unused"); },
     get: notUsed,

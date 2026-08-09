@@ -725,6 +725,48 @@ describe('D-145 PA10 follow-on — install dialog', () => {
     );
   });
 
+  it('⛔⛔ the detail footer says UPDATE for an available update, not Install', async () => {
+    /** The browse row rendered "↑ Update v2→v3" and clicking through to the detail
+     *  rendered "Install" for the SAME pack — two surfaces disagreeing about what the
+     *  button does. Reported on `onedrive`. At best that reads as the detail being
+     *  wrong; at worst as a fresh install that would discard existing configuration.
+     *
+     *  🔑 THE CAUSE WAS A CORRECT GUARD WITH AN UNCONSIDERED FALL-THROUGH.
+     *  `findPackBySlug` sets `installed: installedVersion >= pendingAddEntry.version` so
+     *  a NEWER installed version can never be shown as a downgrade-shaped "Update" —
+     *  right, but it also drops the genuine update case (older installed, newer in the
+     *  marketplace) into `showInstall`, and that footer had no update wording to land in.
+     *  `installed_any_version` already knew; only the label was missing.
+     *
+     *  ⚠ The version numbers are asserted, not just the word "Update". A label that said
+     *  "Update" without saying FROM WHAT is the same ambiguity in shorter form, and it is
+     *  what makes the detail agree with the row the owner just clicked. */
+    const { host, mount } = setupMount(
+      [baseEntry({ version: 3, installed: false, installed_any_version: true })],
+      {
+        runList: async () => ({
+          packs: [baseEntry({ version: 3, installed: false, installed_any_version: true })],
+          installed_versions: [{ slug: 'test-pack', version: 2 }],
+        }) as never,
+      },
+    );
+    await mount.whenLoaded();
+
+    const btn = findByAttr(host, PACKS_ROW_INSTALL_BTN_ATTR);
+    expect(btn, 'the affordance must still be present').not.toBeNull();
+    expect(btn!.textContent).toBe('↑ Update v2→v3');
+    expect(btn!.textContent, 'the bare Install wording must be gone').not.toBe('Install');
+  });
+
+  it('⚠ a plain uninstalled pack still says Install — the update label is not blanket', async () => {
+    /** The control. Without it, labelling EVERY install "Update" would pass the test
+     *  above, and a first-time install would tell the owner they are updating something
+     *  they do not have. */
+    const { host, mount } = setupMount([baseEntry({ installed: false })]);
+    await mount.whenLoaded();
+    expect(findByAttr(host, PACKS_ROW_INSTALL_BTN_ATTR)?.textContent).toBe('Install');
+  });
+
   it('renders changed and removed global owner rulings before update acceptance', async () => {
     const { host, mount } = setupMount([
       baseEntry({

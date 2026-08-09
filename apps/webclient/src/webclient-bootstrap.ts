@@ -774,6 +774,7 @@ import {
   type ReachabilityExternalProbeCaller,
 } from './settings/reachability.js';
 import type { ClearThisBrowserResult } from './auth/clear-this-browser.js';
+import { serverKeyFingerprint } from './auth/server-fingerprint.js';
 import {
   createReceptionPageShell,
   type ReceptionPageShell,
@@ -8337,12 +8338,27 @@ export const bootstrapWebclient = async (
     options.enableAccountBindingPanel === false
       ? undefined
       : () => rpcConn.call('pro_convenience.status', undefined);
+  // ⛔ `server_fingerprint` IS THE POINT OF THIS CALL. It used to be
+  // `mintBindingToken()` with no arguments, which mints a token bound to no
+  // server — and the auth Worker's own source spells out the consequence: a
+  // captured token is then redeemable by ANY server with a valid self-proof,
+  // binding the attacker's server to this account and consuming the single-use
+  // nonce, so the victim's own server afterwards gets `nonce_reused`. The
+  // enforcement has always been there (the DO rejects a proving fingerprint
+  // that differs from `intended_server`); nothing was ever naming the server.
+  //
+  // `pair.serverPublicKey` is the key this browser pinned at pair time, so the
+  // token is bound to the server the user is actually looking at. A derivation
+  // failure THROWS through to the panel's error copy rather than falling back
+  // to an unbound mint — falling back would silently restore the hole.
   const accountBindingTokenMintCaller:
     | AccountBindingTokenMintCaller
     | undefined =
     accountBindingAuthClient === null
       ? undefined
-      : () => accountBindingAuthClient.mintBindingToken();
+      : async () => accountBindingAuthClient.mintBindingToken({
+        server_fingerprint: await serverKeyFingerprint(pair.serverPublicKey),
+      });
   const accountBindingSessionCaller: AccountBindingSessionCaller | undefined =
     accountBindingAuthClient === null
       ? undefined

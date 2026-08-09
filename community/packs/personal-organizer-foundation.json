@@ -3,7 +3,7 @@
   "slug": "personal-organizer-foundation",
   "publisher": "recued-core",
   "name": "Personal Organizer Foundation",
-  "description": "Day-1 personal-organizer pack per D-145 § A.6. Pre-installs on first server init and composes built-in work entities (`task` / `note` / `commitment` / `project`) with PA9 enrichment producers (`open_loop_pressure` / `project_stall_signal` / `project_next_action_gap` / `commitment_reliability_band` / `note_relevance_decay`) into ten recipes: 4 Layer-2 visible views (today / open-commitments / stalled-projects / recent-notes-by-topic), 2 Layer-1 silent producers reactive on inbound mail (extract-commitments-from-mail / extract-tasks-from-mail), 1 Layer-2 visible alert reactive on inbound mail (triage-inbox), D-193 reminders (chat capture plus hidden due notifier), and the schedule-recipe control for installed recipes. Ships three canonical Standing Instructions as conservative safety defaults: an approval gate on composing email to contacts the substrate has only ever seen mentioned (never sent / received-from); a `min_tier: mid` floor for `schedule_meeting` so timezone-sensitive proposals don't ride the cheapest tier; and a `ban_omission_class: permission_scope` clause for `recipe_invoke` so foundation-pack views surface permission gaps instead of silently truncating. The substrate is provided by D-145 PA1-PA9 + the existing kernel ingredients; this pack is the consumer that turns the substrate into Day-1 value.",
+  "description": "Use Personal Organizer Foundation in Recued for tasks, commitments, projects, and notes. It includes 10 ready-to-run workflows.",
   "version": 4,
   "pre_install": true,
   "recipes": [],

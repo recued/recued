@@ -55,6 +55,47 @@ export interface FieldQueryableCollection<V> extends Collection<V> {
   ensureFieldIndexes(fields: readonly string[]): void;
 }
 
+/** A keyset window over one bistemporal ordering — the shape a paginated feed
+ *  needs so it can stop reading the whole table.
+ *
+ *  ⛔ WHY THIS EXISTS. `memory.list` (the Data → Memory lens feed) called
+ *  `listRecent(Number.MAX_SAFE_INTEGER)` and `userMemoryStore.list()`, then
+ *  projected, filtered, sorted and PAGINATED IN JS. Both sources were read
+ *  whole on every page request. Measured on real 698 B audit rows: 401ms and
+ *  393 MB of heap for one 50-row page at 200k rows, linear — so at the 3.5 GiB
+ *  prune trigger (~2.5M rows) it OOMs, which is exactly how the horizon harness
+ *  died at 3.1 GB doing this same shape.
+ *
+ *  ⚠ ORDER + LIMIT + CURSOR ONLY. Filters stay where they are, in JS, so the
+ *  feed's semantics do not move — this narrows what is READ, never what
+ *  matches. Pushing the filters down too would be faster still and is a
+ *  separate, riskier change: getting a paginated cursor subtly wrong shows up
+ *  as duplicated or skipped entries, which is worse than slowness. */
+export interface OrderedWindowQuery {
+  /** JSON path preferred as the sort key when non-null (the EVENT time). */
+  readonly tsPath: string;
+  /** JSON path used when `tsPath` is null (the INGESTION time). */
+  readonly tsFallbackPath: string;
+  /** JSON path of the tiebreak id, compared DESC like the timestamp. */
+  readonly idPath: string;
+  readonly limit: number;
+  /** Keyset cursor — return only rows STRICTLY after this in the DESC order. */
+  readonly before?: { readonly ts: number; readonly id: string };
+}
+
+export interface OrderedWindowCollection<V> extends Collection<V> {
+  /** Top-`limit` values by `COALESCE(tsPath, tsFallbackPath) DESC, idPath DESC`,
+   *  strictly after `before`. */
+  listWindowDesc(query: OrderedWindowQuery): Promise<V[]>;
+  /** Index the ordering expression so the window is a seek, not a sort. */
+  ensureWindowIndex(query: Pick<OrderedWindowQuery, 'tsPath' | 'tsFallbackPath' | 'idPath'>): void;
+}
+
+export const isOrderedWindowQueryable = <V>(
+  collection: Collection<V>,
+): collection is OrderedWindowCollection<V> =>
+  typeof (collection as Partial<OrderedWindowCollection<V>>).listWindowDesc === 'function';
+
 export const isFieldQueryable = <V>(
   collection: Collection<V>,
 ): collection is FieldQueryableCollection<V> =>

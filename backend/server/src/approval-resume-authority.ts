@@ -9,8 +9,10 @@
  */
 
 import {
+  KERNEL_OP_REGISTRY,
   MCP_INGREDIENT_TOOL_PREFIX,
   STDIO_MCP_TOKEN_ID,
+  isGrantableKernelOp,
   executionSourceContractId,
   isCliIngredient,
   isMcpInboundTokenActive,
@@ -129,6 +131,34 @@ const currentAllowedTools = (
         now,
       ),
   );
+  // ── D-232 §§ 20.19 / 20.20 — PARITY WITH `buildMcpContractSnapshot` ──
+  //
+  // ⛔ THIS IS A SECOND, INDEPENDENT SNAPSHOT BUILDER. It rebuilds
+  // `allowed_tools` from the token at RESUME time, so anything the dispatch-time
+  // builder admits and this one does not becomes a rule that holds until the
+  // owner approves and then stops holding — the worst shape a gate can have,
+  // because the denial lands after the human said yes. Two unions were missing:
+  //   § 20.20 — the backing slugs of granted kernel OPS, without which an
+  //     approved `core.data.calendar.list` step resumes into
+  //     `tool_not_in_contract`. Mirrors the dispatch-time union exactly,
+  //     including its bound: inside the loaded manifest set, and only EXPLICIT
+  //     token grants count (never author defaults).
+  //
+  // § 20.19's granted-recipe NAMES are deliberately NOT unioned here. That
+  // coverage rides the resumed run directly (`ExecuteInternal.granted_by_recipe`,
+  // re-threaded from the anchor), which is both more precise — it is the grant
+  // that ACTUALLY applied, not every grant the door happens to hold — and
+  // available for a host-dispatched carrier, whose own recipe name is
+  // structurally ungrantable and so could never appear in any snapshot.
+  // `requiredResumeBearerToolNames` re-verifies that exact name is still held
+  // before this resolver is consulted, so the anchor is not trusted blindly.
+  for (const entry of KERNEL_OP_REGISTRY) {
+    const backing = entry.backing_slug;
+    if (backing === undefined || !slugs.includes(backing)) continue;
+    if (allowed.includes(backing)) continue;
+    if (!isGrantableKernelOp(entry.op)) continue;
+    if (isMcpInboundTokenToolAuthorized(token, entry.op, now)) allowed.push(backing);
+  }
   const principal = executionSourceContractId(source);
   if (deps.cliReachableSlugsForPrincipal && principal && principal.length > 0) {
     let reachable: ReadonlyArray<string> = [];

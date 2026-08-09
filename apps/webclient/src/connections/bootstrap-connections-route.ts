@@ -970,11 +970,23 @@ export const bootstrapConnectionsRoute = (
     // only), so every write returns `operation_not_granted` and the ONLY other
     // grant writer is a pack install. Settings → Permissions cannot help: its
     // overrides may only TIGHTEN.
-    const canMountConnectionsGrant =
-      opts.connectionsListCaller !== undefined
-      && opts.connectionsListGroupsCaller !== undefined
-      && opts.connectionsGrantGroupCaller !== undefined
-      && opts.connectionsRevokeGroupCaller !== undefined;
+    //
+    // ⛔⛔ NOT MOUNTED (owner decision, 2026-08-07). The caveat above described the
+    // world in which this layer GATED; it no longer does
+    // (`OPERATION_GROUP_GATE_ENABLED = false`), so a hand-enrolled connection is not
+    // stuck and the panel's reason to exist is gone. It was ALSO actively misleading:
+    // its rows named one pack (`excel.table.write`) but any sibling pack's install
+    // flipped them, and its `granted` flag read user-manual grants only while
+    // enforcement unioned user AND pack-owned — so a row offering "Grant" could
+    // already be permitted. Authority now sits with the contract layer (doors) and the
+    // per-run approval gate (owner).
+    //
+    // 🔑 The rpc family stays REGISTERED AND HANDLED on purpose. Un-mounting a consumer
+    // is reversible; deleting a server-side surface is not, and R13 already made the
+    // opposite mistake once — it removed this panel and left the rpcs orphaned, which
+    // is how the gap this comment used to describe was created. The gate constant is
+    // the one place to flip if the layer is ever re-enabled.
+    const canMountConnectionsGrant = false;
     if (canMountConnectionsGrant) {
       const grantsSection = doc.createElement('section');
       grantsSection.className = 'connections-route-section';

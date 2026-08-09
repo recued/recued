@@ -110,6 +110,30 @@ export interface CollectionTable {
    *  (`json_extract` → NULL) never count. */
   countByAddress(field: string, value: string): number;
 
+  /** Index the normalised-address expression `countByAddress` compares on, so
+   *  the count is a SEEK rather than a scan of the whole collection.
+   *
+   *  ⛔ OPT-IN PER COLLECTION, deliberately. The expression is
+   *  `LOWER(TRIM(json_extract(hot_fields, '$.<field>')))`, which only makes
+   *  sense where that hot field exists — mail has `from`, a file or calendar
+   *  collection does not. Creating it on every table would make every unrelated
+   *  collection write maintain an index nothing queries.
+   *
+   *  Idempotent (`IF NOT EXISTS`); safe to call on every boot. */
+  ensureAddressIndex(field: string): void;
+
+  /** Index the EXACT hot-field expression `findByHotFieldIn` compares on.
+   *
+   *  ⚠ A SIBLING OF `ensureAddressIndex`, NOT THE SAME INDEX. That one indexes
+   *  `LOWER(TRIM(json_extract(...)))` because addresses fold; this one indexes
+   *  the bare `json_extract(...)` because its caller compares exactly —
+   *  Message-IDs are case-sensitive per RFC 5322 §3.6.4. SQLite matches an
+   *  expression index only against the IDENTICAL expression, so one index
+   *  cannot serve both and sharing one would silently serve neither.
+   *
+   *  Opt-in per collection and idempotent, for the same reasons. */
+  ensureHotFieldIndex(field: string): void;
+
   /** D-184 Decision 2 — batched scalar hot-field membership lookup.
    *  Returns every row whose SCALAR `field` hot-field exactly equals one
    *  of `values`, via a single parameterized `IN (...)` query. The
@@ -376,6 +400,25 @@ export const createCollectionTable = (
       origin_actor       TEXT NOT NULL DEFAULT 'system',
       origin_contract_id TEXT
     );
+    -- THE BLOB-GC KEEPSET INDEX. The cascade's blob sweep and archive export
+    --   both build a keepset with
+    --     SELECT DISTINCT blob_hash ... WHERE blob_hash IS NOT NULL
+    --   which planned as a full SCAN plus a TEMP B-TREE for the DISTINCT --
+    --   reading every row of the table to find the few that carry a CAS blob.
+    --   Measured at 200k rows with 2%% blob-bearing: 3.34ms -> 0.01ms (334x),
+    --   identical answer.
+    --
+    -- PARTIAL, so it holds only the blob-bearing rows -- 4,000 of 200,000 in
+    --   that measurement. Only ~2%% of writes touch it, which is what makes a
+    --   recurring O(all rows) GC pass into an O(blob rows) one for almost no
+    --   write cost. It is also COVERING for this query, so the DISTINCT dedups
+    --   over already-sorted index values instead of building a b-tree.
+    --
+    -- One shape, six call sites (collections, calendar, annotation,
+    --   shared_store, cache_entries, and the collection_* walk in
+    --   collection-blob-refs.ts). Fixing one would have left the rest scanning.
+    CREATE INDEX IF NOT EXISTS idx_${tableName}_blob_hash
+      ON ${tableName} (blob_hash) WHERE blob_hash IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_${tableName}_received_at ON ${tableName} (received_at);
     CREATE INDEX IF NOT EXISTS idx_${tableName}_modified_at ON ${tableName} (modified_at);
     CREATE INDEX IF NOT EXISTS idx_${tableName}_source_id   ON ${tableName} (source_id);
@@ -449,16 +492,41 @@ export const createCollectionTable = (
   const referencedBlobsStmt = db.prepare(
     `SELECT DISTINCT blob_hash FROM ${tableName} WHERE blob_hash IS NOT NULL`,
   );
-  // The JSON path + the wanted value are BIND params (the SQL text is static),
-  // so this prepares once and serves every `countByAddress` field. `LOWER` is
-  // ASCII-only; the JS side `asciiLower`s the value to fold identically (so the
-  // compare is self-consistent for any address) and `TRIM` strips the ASCII
-  // spaces an `item.address` never carries (belt + braces). A missing field
-  // → `json_extract` NULL → `NULL = ?` is not true → not counted.
-  const countByAddressStmt = db.prepare(
-    `SELECT COUNT(*) AS n FROM ${tableName}
-     WHERE LOWER(TRIM(json_extract(hot_fields, ?))) = ?`,
-  );
+  /** ⛔ THE JSON PATH IS A LITERAL, NOT A BIND, AND THAT IS THE WHOLE FIX.
+   *
+   *  This was one static statement with the path bound (`json_extract(
+   *  hot_fields, ?)`), which reads as tidy and is unindexable BY CONSTRUCTION:
+   *  a bound path differs per call, so no expression index can cover it. Every
+   *  `countByAddress` was therefore a full scan of the collection — and its one
+   *  caller is the chat short-circuit for "how many emails from <Name>?", over
+   *  `collection.mail`, which D-230 sized to 2 GB.
+   *
+   *  Specialising per field makes the expression constant, so
+   *  `ensureAddressIndex` below can index exactly it. `LOWER` is ASCII-only;
+   *  the JS side `asciiLower`s the value to fold identically, and `TRIM` strips
+   *  the ASCII spaces an `item.address` never carries (belt + braces). A
+   *  missing field → `json_extract` NULL → `NULL = ?` is not true → not
+   *  counted. Semantics unchanged in every case; only the plan moves.
+   *
+   *  ⚠ `field` is validated against `FILTER_KEY_PATTERN` before it reaches the
+   *  SQL text — it is interpolated now, not bound. */
+  // ⚠ `Database.Statement`, NOT an inline `import('better-sqlite3').Statement`.
+  // Both are type-only and erase identically, but the D-212 chokepoint ratchet
+  // scans for the dynamic-import TEXT and exempts only `.Database` — so the
+  // inline form reddens it as if this file constructed a driver.
+  const countByAddressStmts = new Map<string, Database.Statement>();
+  const addressExpr = (field: string): string =>
+    `LOWER(TRIM(json_extract(hot_fields, '$.${field}')))`;
+  const countByAddressStmtFor = (field: string) => {
+    let stmt = countByAddressStmts.get(field);
+    if (!stmt) {
+      stmt = db.prepare(
+        `SELECT COUNT(*) AS n FROM ${tableName} WHERE ${addressExpr(field)} = ?`,
+      );
+      countByAddressStmts.set(field, stmt);
+    }
+    return stmt;
+  };
   const ftsDeleteRowStmt = db.prepare(
     `DELETE FROM ${ftsName} WHERE key = ?`,
   );
@@ -617,9 +685,8 @@ export const createCollectionTable = (
   };
 
   const countByAddress = (field: string, value: string): number => {
-    // The field rides in as a bind param ($.<field>), so there is no SQL
-    // injection vector — but validate it to a clean identifier (like list
-    // filter keys) so a malformed JSON path can't silently mis-resolve.
+    // ⚠ The field is now INTERPOLATED into the SQL text (that is what makes it
+    // indexable), so this validation is load-bearing rather than hygiene.
     if (!FILTER_KEY_PATTERN.test(field)) {
       throw new CollectionTableError(
         `invalid count field: ${field} (allowed: /[A-Za-z_][A-Za-z0-9_]*/)`,
@@ -630,8 +697,40 @@ export const createCollectionTable = (
     // SQLite's ASCII-only LOWER for a non-ASCII address.
     const wanted = asciiLower(value.trim());
     if (wanted.length === 0) return 0;
-    const row = countByAddressStmt.get(`$.${field}`, wanted) as { n: number };
+    const row = countByAddressStmtFor(field).get(wanted) as { n: number };
     return row.n;
+  };
+
+  const hotFieldExpr = (field: string): string =>
+    `json_extract(hot_fields, '$.${field}')`;
+
+  const ensureHotFieldIndex = (field: string): void => {
+    if (!FILTER_KEY_PATTERN.test(field)) {
+      throw new CollectionTableError(
+        `invalid hot field index: ${field} (allowed: /[A-Za-z_][A-Za-z0-9_]*/)`,
+      );
+    }
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_${tableName}_hot_${field}`
+      + ` ON ${tableName} (${hotFieldExpr(field)})`,
+    );
+  };
+
+  const ensureAddressIndex = (field: string): void => {
+    if (!FILTER_KEY_PATTERN.test(field)) {
+      throw new CollectionTableError(
+        `invalid address index field: ${field} (allowed: /[A-Za-z_][A-Za-z0-9_]*/)`,
+      );
+    }
+    // ⚠ The indexed expression must be BYTE-IDENTICAL to the one in the
+    // WHERE clause — SQLite matches expression indexes syntactically, so a
+    // cosmetic difference (a space, a reordered call) yields an index that
+    // exists, is maintained on every write, and is never used. Both come from
+    // `addressExpr` for exactly that reason.
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_${tableName}_addr_${field}`
+      + ` ON ${tableName} (${addressExpr(field)})`,
+    );
   };
 
   const findByHotFieldIn = (
@@ -652,15 +751,18 @@ export const createCollectionTable = (
     ).slice(0, MAX_LIST_LIMIT);
     if (wanted.length === 0) return [];
     const placeholders = wanted.map(() => '?').join(', ');
-    // Bind the JSON path as a param (like `list` / `countByAddress`) — the
-    // FILTER_KEY_PATTERN check already rules out injection, this just keeps
-    // the path off the SQL string.
+    // ⛔ THE PATH IS A LITERAL. It used to be bound — and the comment here said
+    // so approvingly, citing `list` / `countByAddress` as precedent. A bound
+    // path is unindexable by construction, so this scanned the whole
+    // collection: no LIMIT, over `collection.mail`, which D-230 sized to 2 GB.
+    // `field` is already validated against FILTER_KEY_PATTERN above, which is
+    // what makes the interpolation safe.
     const sql = `
       SELECT * FROM ${tableName}
-      WHERE json_extract(hot_fields, ?) IN (${placeholders})
+      WHERE ${hotFieldExpr(field)} IN (${placeholders})
       ORDER BY received_at DESC, record_id DESC
     `;
-    const rows = db.prepare(sql).all(`$.${field}`, ...wanted) as Row[];
+    const rows = db.prepare(sql).all(...wanted) as Row[];
     return rows.map(rowToRecord);
   };
 
@@ -712,6 +814,8 @@ export const createCollectionTable = (
     list,
     search,
     countByAddress,
+    ensureAddressIndex,
+    ensureHotFieldIndex,
     findByHotFieldIn,
     totalBytes,
     referencedBlobHashes,

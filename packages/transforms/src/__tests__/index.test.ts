@@ -5,7 +5,7 @@ describe('TRANSFORMS registry', () => {
   // 90 as of `enrich_by` (the relational join the recipe language lacked — see
   // its header in `collection.ts`). The count is a deliberate ratchet: an
   // addition must be a decision, not a drift, and this is where it gets noticed.
-  it('has 91 transforms', () => expect(TRANSFORMS.size).toBe(91));
+  it('has 92 transforms', () => expect(TRANSFORMS.size).toBe(92));
 
   it('all values are functions', () => {
     for (const [name, fn] of TRANSFORMS) {

@@ -1330,6 +1330,28 @@ export interface RestExecutionBinding {
    *  need widens deliberately. Body-carrying methods (POST/PUT/PATCH) only —
    *  the validator rejects it on GET/DELETE. */
   static_body?: Record<string, string>;
+  /** Names of the connection's `body_field` auth credentials this operation
+   *  wants injected into its JSON request body. Absent or empty = inject
+   *  nothing, which is what every operation authored before this said.
+   *
+   *  ⛔ **OPT-IN PER OPERATION, because injecting everywhere is measurably
+   *  wrong.** `sandbox.plaid.com` answers `UNKNOWN_FIELDS` to an unexpected
+   *  body key, and Plaid's own `/link/token/create` and `/categories/get` take
+   *  no `access_token` — so a connection-wide injection would break the
+   *  enrollment flow of the vendor this exists for. Headers can be sent
+   *  blanket-wide; body fields cannot.
+   *
+   *  ⚠ Names only. The VALUES live in the owner's encrypted connection record
+   *  and never appear in a manifest, an arg, or an audit row. A name here that
+   *  the connection does not carry FAILS the call rather than sending the
+   *  request without the credential — a silently-missing credential surfaces
+   *  as the vendor's generic auth error, which sends the owner to re-check a
+   *  key that was never wrong.
+   *
+   *  ⚠ Body-carrying methods only, and the body must be JSON — a form-encoded
+   *  or multipart body has no place to put one, and the adapter refuses rather
+   *  than guessing an encoding. */
+  auth_body_fields?: ReadonlyArray<string>;
 }
 
 /** SMB-finance slice 3 — REST response-body → `data.file` ref capture spec.

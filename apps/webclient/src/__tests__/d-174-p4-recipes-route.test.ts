@@ -93,9 +93,15 @@ interface FakeEl {
   remove(): void;
 }
 
+type FakeHistory = {
+  replaceState: (data: unknown, unused: string, url?: string | null) => void;
+  pushState?: (data: unknown, unused: string, url?: string | null) => void;
+};
+
 interface FakeDoc {
   styleElements: FakeEl[];
   defaultView?: {
+    history?: FakeHistory;
     confirm?: (message?: string) => boolean;
     navigator?: {
       clipboard?: {
@@ -196,6 +202,10 @@ const makeFakeDocument = (overrides: {
   confirm?: (message?: string) => boolean;
   clipboardWrite?: (value: string) => Promise<void>;
   fileBrowser?: boolean;
+  /** Supplied when a test needs to tell a list->detail PUSH from an in-page REPLACE.
+   *  Omitted by default so every other test keeps a `defaultView` with no `history`,
+   *  which the route treats as sync-disabled — the sandboxed-embedding path. */
+  history?: FakeHistory;
 } = {}): FakeDoc => {
   const styleElements: FakeEl[] = [];
   const docListeners = new Map<string, Array<(ev: Event) => void>>();
@@ -209,8 +219,10 @@ const makeFakeDocument = (overrides: {
       overrides.confirm !== undefined
       || overrides.clipboardWrite !== undefined
       || overrides.fileBrowser === true
+      || overrides.history !== undefined
       ? {
           defaultView: {
+            ...(overrides.history !== undefined ? { history: overrides.history } : {}),
             ...(overrides.confirm !== undefined ? { confirm: overrides.confirm } : {}),
             ...(overrides.clipboardWrite !== undefined
               ? { navigator: { clipboard: { writeText: overrides.clipboardWrite } } }
@@ -373,9 +385,11 @@ const mountRoute = (overrides: {
   clipboardWrite?: (value: string) => Promise<void>;
   fileBrowser?: boolean;
   recordRefSearchCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['recordRefSearchCaller'];
+  history?: FakeHistory;
 } = {}) => {
   const doc = makeFakeDocument(
     {
+      ...(overrides.history !== undefined ? { history: overrides.history } : {}),
       ...(overrides.confirm !== undefined ? { confirm: overrides.confirm } : {}),
       ...(overrides.clipboardWrite !== undefined
         ? { clipboardWrite: overrides.clipboardWrite }
@@ -530,6 +544,89 @@ const clickRecipeAction = (
 };
 
 describe('R24 — Recipes route: list view', () => {
+  it('⛔⛔ opening a detail PUSHES so native Back returns to the list, not past it', async () => {
+    /** `#recipes` → `#recipes/<id>` used `replaceState` for the whole transition, which
+     *  OVERWROTE the list entry — so the browser's Back button skipped the list and
+     *  landed a level above it, on the route the owner came from rather than the one
+     *  they were looking at. Same defect as `#packs` and `#data`; the three shared one
+     *  hash-sync shape, so they shared the bug.
+     *  🔑 `pushState` emits no `hashchange` either, so the reason `replaceState` was
+     *  chosen — in-page navigation must never remount — is untouched.
+     *  ⚠ Asserted as the ORDERED sequence of history calls. "pushState was called" alone
+     *  would pass even if it also pushed on the way back, which would trap Back in a
+     *  loop bouncing the owner into the recipe they just closed. */
+    const calls: string[] = [];
+    const rig = mountRoute({
+      history: {
+        replaceState: (_d, _u, url) => { calls.push(`replace ${String(url)}`); },
+        pushState: (_d, _u, url) => { calls.push(`push ${String(url)}`); },
+      },
+    });
+    await rig.route.whenLoaded();
+
+    rig.route.openRecipe('daily-brief');
+    expect(calls, 'entering a detail must PUSH a history entry')
+      .toContain('push #recipes/daily-brief');
+    expect(calls, 'and must not merely replace the list away')
+      .not.toContain('replace #recipes/daily-brief');
+
+    /** Returning to the list REPLACES — pushing here too would leave two entries and
+     *  Back would bounce the owner into the recipe they just closed. */
+    rig.route.closeDetail();
+    expect(calls).toContain('replace #recipes');
+    expect(calls.filter((c) => c.startsWith('push ')),
+      'only the detail-opening step may push').toEqual(['push #recipes/daily-brief']);
+    rig.route.dispose();
+  });
+
+  it('⚠ mounting straight onto a deep link does NOT push — it is already that entry', async () => {
+    /** ⛔ The counterpart the packs fix never needed (its surface skips `onNavigate` on
+     *  initial paint). Here the route mounts with `initialRecipeId`, so the browser is
+     *  ALREADY on `#recipes/<id>`. Pushing that would stack a duplicate entry and the
+     *  owner's FIRST Back press would appear to do nothing — a worse bug than the one
+     *  being fixed, because it looks like the button is broken.
+     *  🔑 A "first sync is never a navigation" flag was tried and was WRONG: the list
+     *  path does not sync on mount at all, so the flag swallowed the first REAL detail
+     *  open. The tracker is seeded from the mounted selection instead, which is correct
+     *  whether or not mount syncs — and this test is what tells the two apart. */
+    const calls: string[] = [];
+    const rig = mountRoute({
+      initialRecipeId: 'daily-brief',
+      // Two entries: the sideways move below needs somewhere to go.
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [recipeEntry(), recipeEntry('second-recipe')],
+      })),
+      history: {
+        replaceState: (_d, _u, url) => { calls.push(`replace ${String(url)}`); },
+        pushState: (_d, _u, url) => { calls.push(`push ${String(url)}`); },
+      },
+    });
+    await rig.route.whenLoaded();
+
+    expect(calls.filter((c) => c.startsWith('push ')),
+      'a deep-linked mount is not a navigation').toEqual([]);
+
+    /** ⛔⛔ THE ASSERTION THE SEED ACTUALLY EARNS. Going DETAIL → DETAIL straight from a
+     *  deep-linked mount must REPLACE: the owner is moving sideways, not a level down,
+     *  and pushing would make Back walk every recipe they browsed through.
+     *  🔑 Without seeding `syncedRecipeId` from the mounted selection this reads as a
+     *  fresh entry into a detail and pushes. My first version of this test only checked
+     *  that the MOUNT did not push, which a null seed also satisfies — the mutant
+     *  survived. This is the transition that tells them apart. */
+    rig.route.openRecipe('second-recipe');
+    expect(calls.filter((c) => c.startsWith('push ')),
+      'detail -> detail is sideways, not a level down').toEqual([]);
+    expect(calls).toContain('replace #recipes/second-recipe');
+
+    /** …and a genuine list -> detail after that still pushes, so the seed has not simply
+     *  disabled pushing altogether. */
+    rig.route.closeDetail();
+    rig.route.openRecipe('daily-brief');
+    expect(calls.filter((c) => c.startsWith('push ')))
+      .toEqual(['push #recipes/daily-brief']);
+    rig.route.dispose();
+  });
+
   it('mounts the installed library from recipe.list + the tool catalog', async () => {
     const rig = mountRoute();
     await rig.route.whenLoaded();

@@ -1333,6 +1333,101 @@ const TIMESTAMPED_HMAC_PRESET_LIST = [
     ],
     payload_omitted_fields: ['response_url', 'token'],
   }),
+  // SPIKE — Recued-to-Recued peer exchange. Every other entry in this list
+  // accommodates a wire format someone else chose; this one declares ours, so
+  // the fields below are the peer envelope rather than a mapping onto it:
+  //     { v: "1", kind, action_ref, ts, data }
+  // `action_ref` is deliberately BOTH the correlation handle the requester
+  // holds and the dedup identity — the consumer's create-or-reuse on run_id
+  // then makes an at-least-once retry re-enter the same business run instead
+  // of replying twice.
+  timestampedPreset('recued-peer.exchange.v1', {
+    kind: 'timestamped_hmac_sha256.v1',
+    secret_field: 'signing_secret',
+    secret_shape: { kind: 'nonempty_utf8.v1', max_bytes: 65_536 },
+    // Fixed, not a credential field: both ends are ours, so there is no vendor
+    // header grammar to accommodate and no reason to let an owner mistype one.
+    signature_header: { kind: 'fixed', name: 'x-recued-signature' },
+    timestamp_source: { kind: 'signature_envelope' },
+    signature_envelope: 'strict_ordered_comma_t_v1_lowerhex.v1',
+    signed_payload: 'timestamp_dot_raw_body.v1',
+    replay_window_seconds: 300,
+    // Clock first: a stale delivery is rejected before the HMAC is computed.
+    admission_order: 'clock_then_signature',
+    // `newest` so a rotation can overlap two live secrets (the substrate allows
+    // MAX_ACTIVE_WEBHOOK_CREDENTIAL_VERSIONS = 2) without a delivery gap.
+    matching_credential: 'newest',
+  }, {
+    signing_secret: 'recued_generated',
+  }, null, null, {
+    kind: 'normalized_single_event.v1',
+    provider_event_id_field: 'event_id',
+    provider_resource_id_field: 'resource_id',
+    provider_event_type_field: 'event_type',
+    provider_occurred_at_field: 'occurred_at',
+    decoded_payload_field: 'payload',
+    occurred_at_unit: 'unix_seconds_to_milliseconds.v1',
+  }, {
+    kind: 'normalized_id_or_timestamp_body_sha256.v1',
+    stable_id_field: 'event_id',
+    stable_id_prefix: 'recued:peer:',
+    fallback_prefix: 'recued:peer-body:',
+    max_body_bytes: 1_048_576,
+  }, {
+    kind: 'json_single_event_fields.v1',
+    // `kind` is the trigger routing key — the reason this profile exists rather
+    // than reusing the generic timestamped one, whose event type is the single
+    // literal 'delivery'.
+    event_type_field: 'kind',
+    event_type_grammar: 'ascii_alphanumeric_dot_colon_slash_dash.v1',
+    event_type_max_bytes: 128,
+    event_id_field: 'action_ref',
+    event_id_max_bytes: 512,
+    // Required, unlike every vendor profile here: we control the sender, so a
+    // delivery with no correlation handle is malformed rather than tolerated.
+    event_id_required: true,
+    provider_id_grammar: 'control_free_trimmed_utf8.v1',
+    resource_id_field: null,
+    // The test-envelope composer requires a resource fallback path, and that
+    // requirement is right: an exchange is always ABOUT something. So the peer
+    // envelope's `data` carries the subject's id (`data.id` — the booking, the
+    // request), which is what a timeline entry and an audit row both want to
+    // point at anyway.
+    resource_fallback_object_field: 'data',
+    resource_fallback_nested_object_field: null,
+    resource_fallback_id_field: 'id',
+    resource_id_max_bytes: 512,
+    resource_id_required: false,
+    invalid_resource_id_disposition: 'treat_as_absent.v1',
+    occurred_at_field: 'ts',
+    occurred_at_unit: 'unix_seconds.v1',
+    occurred_at_required: true,
+    challenge_field: null,
+    challenge_max_bytes: null,
+    conditional_object_requirement: null,
+    // Protocol version pinned at ADMISSION: a v2 envelope is refused by the
+    // ingress rather than reaching a recipe that would read v1 field names.
+    exact_string_requirement: { field: 'v', value: '1' },
+  }, null, null, {
+    // The composer requires an environment map, and a peer protocol turns out
+    // to WANT one: enrolment should be provable without a test delivery landing
+    // as a real booking. So `live` is part of the peer envelope, not a vendor
+    // concession.
+    kind: 'json_boolean_environment_map.v1',
+    boolean_field: 'live',
+    false_environment: 'test',
+    true_environment: 'live',
+  }, {
+    // Likewise the test envelope: "send a test delivery to prove the peer link"
+    // is exactly the gesture two owners need at enrolment, before either trusts
+    // the other with a real exchange.
+    kind: 'json_single_event_test_envelope.v1',
+    nonce_grammar: 'lowercase_hex_64.v1',
+    event_id_prefix: 'ref_recued_test_',
+    resource_id_prefix: 'recued_test_',
+    marker_object_field: 'recued_test_delivery',
+    marker_nonce_field: 'nonce',
+  }, 'recued-peer-signature-v1', 'Recued peer webhook'),
 ] as const;
 
 const mutableTimestamped = Object.create(null) as Record<

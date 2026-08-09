@@ -4,8 +4,10 @@ export type {
   ConfigEntry,
   FieldQuery,
   FieldQueryableCollection,
+  OrderedWindowCollection,
+  OrderedWindowQuery,
 } from './types.js';
-export { isFieldQueryable } from './types.js';
+export { isFieldQueryable, isOrderedWindowQueryable } from './types.js';
 export { createInMemoryCollection } from './in-memory.js';
 export {
   createIDBCollection,

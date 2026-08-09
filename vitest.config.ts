@@ -53,6 +53,22 @@ export default defineConfig({
     ],
   },
   test: {
+    /** ⛔ NOT vitest's 5s default. This suite boots real servers, opens real
+     *  SQLite files, does real key work and drives real WebSocket closes — and
+     *  the release's step-5 run does it in a freshly `npm ci`'d tree at full
+     *  parallelism across 45,846 tests.
+     *
+     *  Under that load the 5s default produced THREE failures per run, and a
+     *  DIFFERENT three each time: 5.3s / 7.6s / 10.1s on one pass, 5.8s / 5.8s
+     *  on the previous. Every one of them passes standalone. Failures that move
+     *  between runs are a ceiling, not a defect, and patching them one at a time
+     *  is how each release rediscovers the same hour.
+     *
+     *  ⚠ 30s is still a CEILING — a genuinely hung test fails, it just fails
+     *  honestly. Tests that do real work also carry explicit per-test timeouts;
+     *  those stay, because they document WHICH tests those are. */
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
     include: [
       'packages/**/*.test.ts',
       'backend/**/*.test.ts',

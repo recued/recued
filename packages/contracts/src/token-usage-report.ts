@@ -67,6 +67,27 @@ export interface TokenUsageReport {
    *  OpenAI cache hits). Subset of `input_tokens`. Absent when the
    *  provider doesn't expose a cache count or when no cache was
    *  used. */
+  /** How many PROVIDER CALLS this report aggregates.
+   *
+   *  ⛔ WITHOUT THIS THE AGGREGATE IS UNATTRIBUTABLE. A turn emits ONE
+   *  `recued.token_usage` carrying the sum across every call it made, so
+   *  "one expensive call" and "three cheap ones" arrive identical. The
+   *  long-conversation lane exists to detect a packet that GROWS with
+   *  conversation length, and it read a turn at 10,706 input tokens against a
+   *  flat ~5,300 baseline as 2.06x growth — when the likeliest reading is two
+   *  calls of ~5,300 each, because the model chose to use a tool on that turn
+   *  and not on the others. Same measure, opposite conclusions, no way to tell.
+   *
+   *  ⚠ COUNTS THE CALLS WHOSE TOKENS ARE IN THESE TOTALS, not calls attempted.
+   *  A call that THREW produced no usage report, so it contributes neither
+   *  tokens nor a count — a turn that called twice and lost one to a context
+   *  overflow reports 1. That keeps the count and the sums describing the same
+   *  set of calls, which is the only way per-call arithmetic means anything.
+   *
+   *  Absent on reports that predate this field or come from a path that does
+   *  not count; a consumer should read `?? 1` for a single provider result and
+   *  make no claim at all for an aggregate. */
+  readonly provider_calls?: number;
   readonly cache_read_input_tokens?: number;
   /** Input tokens spent CREATING a cache entry. Anthropic-specific
    *  (`usage.cache_creation_input_tokens`). Subset of `input_tokens`. */
@@ -116,8 +137,16 @@ export const aggregateTokenUsageReports = (
   next: TokenUsageReport | undefined,
 ): TokenUsageReport | undefined => {
   if (prev === undefined && next === undefined) return undefined;
-  if (prev === undefined) return next;
-  if (next === undefined) return prev;
+  // ⛔ NORMALISE THE SINGLE-REPORT PATHS, or the count is absent in exactly the
+  // case that establishes the baseline. These early returns handed the report
+  // back untouched, so a turn making ONE provider call — the overwhelming
+  // majority — reported no `provider_calls` at all, and only multi-call turns
+  // carried a number. A consumer comparing "1 call" against "absent" cannot
+  // tell a quiet turn from an unannotated one, which is the ambiguity this
+  // field exists to remove. Caught by running the long-conversation lane: it
+  // printed `calls=?` on 14 of 14 turns.
+  if (prev === undefined) return { ...next!, provider_calls: next!.provider_calls ?? 1 };
+  if (next === undefined) return { ...prev, provider_calls: prev.provider_calls ?? 1 };
   const sumOpt = (a: number | undefined, b: number | undefined): number | undefined => {
     if (a === undefined && b === undefined) return undefined;
     return (a ?? 0) + (b ?? 0);
@@ -125,10 +154,16 @@ export const aggregateTokenUsageReports = (
   const cache_read = sumOpt(prev.cache_read_input_tokens, next.cache_read_input_tokens);
   const cache_write = sumOpt(prev.cache_write_input_tokens, next.cache_write_input_tokens);
   const reasoning = sumOpt(prev.reasoning_tokens, next.reasoning_tokens);
+  // ⚠ A report with no `provider_calls` counts as ONE call, not zero — every
+  // report that reaches here came from a provider result. Defaulting to 0 would
+  // make an aggregate of two un-annotated reports claim it covered no calls,
+  // which is worse than the ambiguity this field exists to remove.
+  const calls = (prev.provider_calls ?? 1) + (next.provider_calls ?? 1);
   return {
     input_tokens: prev.input_tokens + next.input_tokens,
     output_tokens: prev.output_tokens + next.output_tokens,
     total_tokens: prev.total_tokens + next.total_tokens,
+    provider_calls: calls,
     ...(cache_read !== undefined ? { cache_read_input_tokens: cache_read } : {}),
     ...(cache_write !== undefined ? { cache_write_input_tokens: cache_write } : {}),
     ...(reasoning !== undefined ? { reasoning_tokens: reasoning } : {}),

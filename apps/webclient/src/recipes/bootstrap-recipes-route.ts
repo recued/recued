@@ -2394,16 +2394,41 @@ export const bootstrapRecipesRoute = (
     || recipeConfigHandle?.hasInFlightWork() === true
     || childRunModal?.hasInFlightWork() === true;
 
+  /** ⛔⛔ OPENING A DETAIL IS A PLACE, SO IT PUSHES. `replaceState` for the whole
+   *  list→detail transition OVERWROTE the `#recipes` entry, so the native Back button
+   *  skipped the list entirely and landed a level above it — the route the owner came
+   *  from, not the one they could see. Same defect as `#packs` (fixed there first);
+   *  these two and `#data` shared one hash-sync shape, so they shared the bug.
+   *  🔑 `pushState` emits no `hashchange` either, so the reason `replaceState` was
+   *  chosen here — in-page navigation must never remount — is fully preserved. The only
+   *  difference is that Back now has somewhere to go.
+   *  ⚠ Only ENTERING a detail pushes. Closing one back to the bare list replaces, and
+   *  so does detail→detail; otherwise a round trip would leave two entries and Back
+   *  would bounce the owner into the recipe they just closed. */
+  /** ⛔ SEEDED FROM THE MOUNTED SELECTION, so a deep link is not mistaken for a
+   *  navigation. Mounting on `#recipes/<id>` means the browser is ALREADY on that entry;
+   *  treating the first sync as "entering" would stack a duplicate over it and the
+   *  owner's first Back press would appear to do nothing. (`#packs` needs no equivalent
+   *  — its surface deliberately skips `onNavigate` on initial paint.) */
+  let syncedRecipeId: string | null = selectedRecipeId;
   const syncRecipeHash = (): void => {
     const history = doc.defaultView?.history;
     if (history?.replaceState === undefined) return;
     const hash = serializeShellRoute('recipes', selectedRecipeId ?? undefined);
+    const entering = selectedRecipeId !== null && syncedRecipeId === null;
     try {
-      history.replaceState(null, '', hash);
-      opts.onHashSync?.(hash);
+      if (entering && typeof history.pushState === 'function') {
+        history.pushState(null, '', hash);
+      } else {
+        history.replaceState(null, '', hash);
+      }
     } catch {
-      // Non-fatal — addressability degrades to in-page-only.
+      // Non-fatal — addressability degrades to in-page-only. URL unchanged → do NOT
+      // desync the router's activeHash from it.
+      return;
     }
+    syncedRecipeId = selectedRecipeId;
+    opts.onHashSync?.(hash);
   };
 
   const carrierCacheKey = (pack: CatalogPackRow): string =>

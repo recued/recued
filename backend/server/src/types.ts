@@ -17,6 +17,7 @@ import type {
   RecipeInvocation,
   ResolvedOutputSection,
 } from '@recued/contracts';
+import type { ExchangeAcknowledgement } from '@recued/engine';
 
 /** A realm identifier — a bearer token the client presents on every
  *  authenticated request. After pairing, the server issues one realm
@@ -224,6 +225,49 @@ export interface InternalExecuteOverrides {
      *  runs that never aliased). */
     pii_ledgers?: PiiLedgerStoreSnapshot;
   };
+  /** D-232 — the cycle guard's ancestor set for a NESTED run: every recipe
+   *  already on this call's stack, the callee included (the gateway widens it
+   *  before handing it to the invoker). Threaded onto
+   *  `ExecutionContext.heldRecipes` so the guard composes down the dispatch
+   *  tree instead of protecting the first hop only.
+   *
+   *  ⛔ Internal-only for a sharper reason than its siblings: this set is the
+   *  guard's ENTIRE memory. A wire dispatcher able to supply it could hand in
+   *  an empty stack and re-enter a recipe already running — A → B → A, admitted
+   *  because the caller said there was no ancestry. Only `handleExecute`'s own
+   *  `localRecipeInvoker` populates it. */
+  held_recipes?: ReadonlySet<string>;
+  /** D-232 § 20.9 — the exchange this run belongs to, for a run the host
+   *  dispatched ON BEHALF of one: the fire's own `run-ingredient` dispatch,
+   *  which carries the answer and is therefore the run whose outcome "did it
+   *  reach the peer" is actually asking about.
+   *
+   *  ⛔ Internal-only, like its siblings, and here the reason is that the ref is
+   *  an ADDRESS: a wire dispatcher able to set it could file its run under
+   *  somebody else's exchange, and the query surface would then report a
+   *  stranger's run as part of your conversation. Only `handleExecute`'s own
+   *  `exchangeFireHandler` populates it. */
+  exchange_ref?: string;
+  /** D-232 § 20.19 — this nested run IS a granted recipe's work: the host
+   *  dispatched it on behalf of a run whose recipe the door was granted, so the
+   *  callee's steps inherit that coverage the way they already inherit the
+   *  contract. Without it the rule stops at the first hop — the fire's own
+   *  `run-ingredient` carrier run holds no grant of its own and is refused for
+   *  a grant its declaring run holds.
+   *
+   *  ⛔ Internal-only, and here the reason is the sharpest of the three: this
+   *  flag IS an authorization. A wire dispatcher able to set it would hand
+   *  itself the coverage of a recipe it was never granted, turning the whole
+   *  gate off with one boolean. Only `handleExecute`'s own `localRecipeInvoker`
+   *  and `exchangeFireHandler` populate it, and only from a coverage they
+   *  resolved for the parent run — never from anything on the request.
+   *
+   *  ⛔ THE NAME, NOT A BOOLEAN. An approval can outlive the grant that
+   *  justified it, and the approval-resume authority has to re-ask "does this
+   *  door STILL hold that grant" before the approved effect dispatches. A
+   *  yes/no cannot answer it. Persisted onto the run anchor as
+   *  `AuditEntry.granted_by_recipe` so the answer survives the pause. */
+  granted_by_recipe?: string;
 }
 
 /** Internal-only metadata key for the durable audit row written by
@@ -273,6 +317,30 @@ export interface ExecuteResponse {
    *  action is awaiting approval instead of mistaking the bare `success:
    *  false` for a silent failure and retrying. */
   awaiting_approval?: boolean;
+  /** D-232 § 19.3 — the receipt for an exchange this run FIRED: the ref the
+   *  caller asks about later, and where the rest of the answer arrives.
+   *
+   *  ⛔ THIS IS THE EXCHANGE'S ONLY JUSTIFICATION REACHING THE CALLER. A sender
+   *  expects nothing back — that is the post office — and the one thing the
+   *  substrate adds over a letter is that you can ask what happened to it. The
+   *  ref is the handle for asking. Until this field existed the engine derived
+   *  the receipt (`acknowledgementFor`, so no recipe could forget it) and then
+   *  nothing carried it: every answer went out and every caller was left with
+   *  nothing to ask about.
+   *
+   *  Passes through `projectRunResultForAgent` as its own named third state, so
+   *  an agent is TOLD the answer was accepted rather than handed an empty
+   *  `output.render` beside a flag — the shape that once made a model report an
+   *  unchecked recipe's empty result as "you have none". */
+  exchange_ack?: ExchangeAcknowledgement;
+  /** D-232 § 30 — what the PEER reported when this run's fire reached them.
+   *
+   *  ⚠ NOT the sibling above renamed. `exchange_ack` is OUR receipt (did our
+   *  letter go — on this path, yes) and this is THEIRS (did their reply go).
+   *  Both are true at once, about different questions, which is exactly why
+   *  the § 29 defect one layer down was possible: one ack read as an answer to
+   *  both. Absent unless a correspondent actually sent a receipt. */
+  exchange_peer_ack?: ExchangeAcknowledgement;
   /** D-181 § 9 — the run was terminated by the OWNER, not by a
    *  recipe-internal failure: `'killed'` = an `execution.kill` aborted a
    *  running op; `'cancelled_before_dispatch'` = an `execution.cancel`

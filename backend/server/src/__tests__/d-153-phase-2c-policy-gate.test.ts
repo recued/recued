@@ -1105,7 +1105,28 @@ describe('D-153 P2.C registry MCP wire — Tier 2 <publisher>/<recipe_id> policy
     expect(errorsContainCode(parsed.errors, 'RECIPE_POLICY_DENIED')).toBe(false);
   });
 
-  it('denies Tier 2 dispatch when inbound-token filtering removes the recipe ingredient slug from the snapshot', async () => {
+  // ⚠⚠ THIS TEST'S INVARIANT WAS DELIBERATELY REVERSED — D-232 § 20.19,
+  // 2026-08-07. It is recorded here rather than silently re-expected because
+  // the old expectation was CORRECT WHEN WRITTEN and the change is a policy
+  // decision, not a bug fix.
+  //
+  // It read: a token granting ONLY `recued-core/some-denied-recipe` reaches the
+  // recipe, and the recipe's own step is then denied `tool_not_in_contract`
+  // because inbound-token filtering left the step's ingredient slug out of
+  // `allowed_tools`. That is the owner naming a recipe and Recued refusing the
+  // recipe its own body in the same breath — `allowed_tools` answers "what may
+  // this door call DIRECTLY", and the gate was applying it to a different
+  // question: "what may a recipe the door was ALREADY GRANTED do internally".
+  //
+  // ⛔ WHAT DID **NOT** CHANGE, and is pinned by the two siblings below:
+  //   - the GENERIC umbrella confers nothing. A token holding `recipe.run` /
+  //     `recued_runRecipe` and no recipe NAME still hits `tool_not_in_contract`
+  //     on the step (the Tier-1 case above, untouched and still green).
+  //   - a grant on recipe X does NOT cover recipe Y's steps ('does not extend
+  //     coverage to a recipe the token did not name', below).
+  //   - the RISK axis is untouched at every layer: `admitByOpRisk` still runs
+  //     per step, so a granted recipe's `write` still meets the `ask` floor.
+  it('admits a granted Tier 2 recipe\'s own step even when the step slug is absent from allowed_tools', async () => {
     const manifest = buildHttpManifest('registry-tier2-forbidden-http');
     const recipe = buildRecipe({
       recipe_id: 'some-denied-recipe',
@@ -1129,20 +1150,34 @@ describe('D-153 P2.C registry MCP wire — Tier 2 <publisher>/<recipe_id> policy
       inboundTokenAuthorize: (name: string) => name === toolName,
     });
 
-    const res = await _testing.handleToolCall(
-      { name: toolName, arguments: {} },
-      deps,
+    const res = await withJsonFetch({ body: 'tier2-granted-step' }, () =>
+      _testing.handleToolCall({ name: toolName, arguments: {} }, deps),
     );
 
     expect((res as { isError?: boolean }).isError).toBeUndefined();
     const parsed = parseMcpText(res);
-    expect(parsed.success).toBe(false);
-    const error = firstRecipeError(parsed.errors);
-    expect(error.code).toBe('RECIPE_POLICY_DENIED');
-    const details = error.details as { denials?: PolicyGateDenial[] };
-    expect(details.denials?.[0]?.ingredient).toBe(manifest.slug);
-    expect(details.denials?.[0]?.decision.code).toBe('tool_not_in_contract');
+    expect(parsed.success).toBe(true);
+    // The step RAN — not merely "was not denied". A recipe whose step is skipped
+    // also reports no denial, so the step id is the load-bearing assertion.
+    expect(parsed.steps.map((step) => step.id)).toEqual(['blocked_http']);
+    expect(errorsContainCode(parsed.errors, 'RECIPE_POLICY_DENIED')).toBe(false);
   });
+
+  // 🔑 THE PAIRED NEGATIVE IS ALREADY IN THIS FILE, one describe up: 'denies
+  // Tier 1 recipe.run when inbound-token filtering removes the recipe
+  // ingredient slug from the snapshot'. Same fixture shape, same absent step
+  // slug — the ONLY difference is that its token holds the GENERIC `recipe.run`
+  // umbrella instead of a recipe NAME, and it still denies. That pair is the
+  // A/B: coverage comes from naming the recipe, nothing else.
+  //
+  // ⚠ A negative CANNOT be built on this by-name route, and the reason is worth
+  // recording: a Tier-2 tool is reachable only when the token authorizes its
+  // wire name, and that same authorization IS the § 20.19 grant. "Can call it"
+  // and "was granted it" are one fact here. An attempt to write the obvious
+  // "did not name it" case ran the step and failed on a NETWORK error, which is
+  // what surfaced this. The discriminating test — that coverage keys on the
+  // right recipe rather than any recipe — lives at the predicate, in
+  // `d-232-granted-recipe-step-coverage.test.ts`.
 });
 
 describe('D-153 P2.C registry internal_function_call regression', () => {

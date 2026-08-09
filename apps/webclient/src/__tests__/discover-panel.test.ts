@@ -251,6 +251,46 @@ describe('mountDiscoverPanel', () => {
     expect((document as Document).activeElement).toBe(replacement);
   });
 
+  it('⛔⛔ an INSTALLED card is still a working control in navigate mode', async () => {
+    /** The state you reach AFTER a successful install was the one that stopped
+     *  working: the installed action rendered as a bare `<span>` with no listener,
+     *  so the only affordance on the card was dead and the route into its detail
+     *  (grants, uninstall) did not respond. The other two states are buttons and
+     *  always worked, which is what made it look like a routing problem.
+     *  ⚠ Asserted on the ELEMENT TYPE as well as the click, because the tag is also
+     *  what made the badge ~52px against ~36px for its siblings — an inline element
+     *  taking the shared padding. A CSS patch would have fixed the height and left
+     *  the control dead. */
+    const onSelect = vi.fn();
+    const { host, panel } = mount({ onSelect });
+    await panel.whenLoaded();
+    const action = actionEls(host).find(
+      (element) => element.getAttribute('data-id') === 'installed-pack',
+    )!;
+    expect(action.getAttribute('data-state')).toBe('installed');
+    expect(action.tagName.toLowerCase(),
+      'an installed action must be the same element type as its siblings').toBe('button');
+    /** The fake document records listeners rather than dispatching, so the click is
+     *  driven the way this file's other click tests do it. */
+    for (const listener of action.listeners.get('click') ?? []) {
+      listener({ stopPropagation: () => {} });
+    }
+    expect(onSelect, 'clicking an installed card must open its detail')
+      .toHaveBeenCalledWith('installed-pack');
+  });
+
+  it('⚠ outside navigate mode the installed state stays a resting badge', async () => {
+    /** There is no detail to open in the install flow, so it must NOT become a
+     *  button that does nothing — the opposite failure. */
+    const { host, panel } = mount({});
+    await panel.whenLoaded();
+    const action = actionEls(host).find(
+      (element) => element.getAttribute('data-id') === 'installed-pack',
+    )!;
+    expect(action.getAttribute('data-state')).toBe('installed');
+    expect(action.tagName.toLowerCase()).toBe('span');
+  });
+
   it('keeps focus on the same card through a background catalogue refresh', async () => {
     const { host, panel, document } = mount({ onSelect: vi.fn() });
     await panel.whenLoaded();

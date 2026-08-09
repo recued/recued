@@ -1663,6 +1663,10 @@ describe('D-125 P7.2 — schemas', () => {
       // Request signing. Arrived here automatically because the list derives —
       // the pin is what makes the arrival a decision rather than a surprise.
       'request_signature',
+      // Body-field auth. ⚠ The select DERIVES from CONNECTION_AUTH_TYPES, so
+      // this list growing is the intended signal that a member was added —
+      // the assertion is here to make that a decision rather than a surprise.
+      'body_field',
     ]);
   });
 
@@ -2217,12 +2221,77 @@ describe('D-129 P1.3 — vendor-flavored form', () => {
     expect(html).toContain('Saving stores them on your server');
     expect(html).toContain('reload recovery never receive their values');
     expect(html).toContain(OAUTH_CLOUD_CALLBACK_URL);
-    expect(html).toContain('Register this unchanged in the provider app');
+    /** ⛔ AN INSTRUCTION, NOT A LABEL. "Register this unchanged in the provider app"
+     *  told the owner WHAT the string was and nothing about what to DO with it —
+     *  and the previous wording could not be acted on even by a technical user,
+     *  because the loopback and cloud callbacks differ in PATH as well as host
+     *  (`/webclient/oauth-callback.html` vs `/oauth-callback`), so swapping the
+     *  domain produces a URL that fails. The copy now names the action and the
+     *  alternate-URL note says the swap does not work. */
+    expect(html).toContain('Add this redirect URL to your provider app');
+    expect(html).toContain('redirect / callback URI list');
     // The checklist follows the fields it describes instead of putting an
     // unusable authorization action ahead of the required entries.
     expect(html.indexOf('class="connections-form-fields"')).toBeLessThan(
       html.indexOf('aria-labelledby="connections-oauth-title"'),
     );
+  });
+
+  it('⛔⛔ NAMES the scopes to register at the provider, before Authorize', () => {
+    /** ⛔ A COUNT IS NOT AN INSTRUCTION. The only scope wording on this form used to be
+     *  "N requested scopes will be reviewed on the provider screen" — which tells you how
+     *  many permissions to expect and not ONE of them, and worse, reads as though the
+     *  provider handles it at consent time. For Microsoft Entra (and Google) a delegated
+     *  permission generally has to be on the app registration FIRST; consent otherwise
+     *  succeeds and the first API call fails. The actual scope names lived only in the
+     *  `auth.client_id` field's help text — the wrong field, and not where anyone looks
+     *  before clicking Authorize.
+     *
+     *  🔑 SAME TREATMENT AS THE REDIRECT URL, deliberately: a titled block that names the
+     *  action, the exact value, and a Copy button. That pattern had to be fixed twice
+     *  before it read as something to DO rather than something to know; the scope half
+     *  should not have to learn that lesson again separately.
+     *
+     *  ⚠ The ORDER is asserted, not just presence. An instruction that appears BELOW the
+     *  Authorize button is one the owner reads after the flow has already failed. */
+    const html = renderConnectionsPage(hubspotForm({
+      values: {
+        'config.vendor': 'hubspot',
+        name: 'acme',
+        'auth.type': 'oauth2_refresh',
+        'auth.scopes': 'crm.objects.contacts.read crm.objects.deals.write oauth',
+      },
+    }));
+
+    expect(html).toContain('Add these permissions to your provider app');
+    /** Every scope named verbatim — these are the exact strings to paste into the
+     *  provider console, so a paraphrase or a truncation is a wrong instruction. */
+    expect(html).toContain('crm.objects.contacts.read');
+    expect(html).toContain('crm.objects.deals.write');
+    expect(html).toContain('oauth');
+    expect(html).toContain('data-action="connections-guide-copy-scopes"');
+    /** ⛔ The warning that makes it actionable rather than informational. */
+    expect(html).toContain('only grant a permission the app is already registered for');
+
+    expect(
+      html.indexOf('Add these permissions to your provider app'),
+      'the instruction must come BEFORE the Authorize action, not after it',
+    ).toBeLessThan(html.indexOf('data-action="connections-authorize-vendor"'));
+  });
+
+  it('⚠ renders no scopes block when the connection requests none', () => {
+    /** The control: a block that always rendered would show an empty permission list on
+     *  a provider that needs none, which reads as "something is missing here". */
+    const html = renderConnectionsPage(hubspotForm({
+      values: {
+        'config.vendor': 'hubspot',
+        name: 'acme',
+        'auth.type': 'oauth2_refresh',
+        'auth.scopes': '',
+      },
+    }));
+    expect(html).not.toContain('Add these permissions to your provider app');
+    expect(html).not.toContain('data-action="connections-guide-copy-scopes"');
   });
 
   it('makes the authorization action explicit only when registered credentials are ready', () => {

@@ -33,6 +33,16 @@ export type ConnectionFieldType =
    *  UX only — the authoritative shape/cap/proto-guard live in the shared
    *  `validateHeaderAuthEntries` (server re-validates). */
   | 'header-list'
+  /** A repeatable list of CREDENTIALS THE VENDOR READS FROM THE JSON REQUEST
+   *  BODY (`body_field` auth). Identical to `header-list` in every respect but
+   *  the sub-key holding the name (`field_name` rather than `header_name`) —
+   *  same renderer, same validator, same projector, same cap.
+   *
+   *  ⚠ The values here are NOT verified when the connection is saved. The
+   *  health probe is a GET, which carries no body, so there is nowhere to put
+   *  the credential; the row stays `unknown` until an operation uses it. The
+   *  setup-guide copy for `auth.fields` says so on the form. */
+  | 'body-field-list'
   /** D-192 M4c-UI — a repeatable list of messenger message→commitment TRIGGERS
    *  (`MessageMatchPattern[]`), anchored at `config.match_patterns`. Each row is
    *  a `kind` select (tag / mention / content) + a `value` + a `mode` select

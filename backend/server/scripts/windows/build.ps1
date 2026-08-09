@@ -21,7 +21,14 @@ param(
   [string] $Root     = 'C:\build',
   [string] $Artifacts= 'C:\artifacts',
   [string] $NodeVersion = '',      # blank = read it off THIS machine's node
-  [string] $UploadTo = ''          # http://10.0.2.2:PORT/upload -- empty = keep on the VM
+  [string] $UploadTo = '',         # http://10.0.2.2:PORT/upload -- empty = keep on the VM
+  # PROTOTYPE (single-file): embed better_sqlite3.node into the SEA blob as an
+  # asset instead of shipping it beside the exe. build-binary.mjs reads this as
+  # RECUED_EMBED_ADDON. Off by default -- the sidecar layout stays the shipping
+  # one until this is proven on every triple.
+  # !! A [switch] would arrive as the STRING '-EmbedAddon' through `powershell
+  # -File`, which passes args literally; a [string] compared to '1' survives it.
+  [string] $EmbedAddon = '0'
 )
 
 $ErrorActionPreference = 'Continue'
@@ -163,6 +170,21 @@ foreach ($triple in ($Triples -split ',' | ForEach-Object { $_.Trim() } | Where-
   if ($got -ne $want) { Fail ("addon is 0x" + $got.ToString('X4') + ", expected 0x" + $want.ToString('X4') + " for $triple") }
 
   Set-Location $SRV
+  # PROTOTYPE (single-file): hand build-binary.mjs the addon to EMBED.
+  # Deliberately $ADDON -- the path this script just verified is 0x8664/0xAA64
+  # for THIS triple -- rather than letting the build re-resolve it. Embedding the
+  # wrong-arch addon would produce a binary that starts and then dies at the
+  # first database open, which is the exact failure the machine check above
+  # exists to prevent; re-resolving would step around that check.
+  # !! Cleared in the else branch: the loop runs once per triple, and a leaked
+  # RECUED_ADDON_PATH would embed the x64 addon into the arm64 binary.
+  if ($EmbedAddon -eq '1') {
+    $env:RECUED_EMBED_ADDON = '1'
+    $env:RECUED_ADDON_PATH  = $ADDON
+    Say "  embedding addon into the blob (single-file prototype)"
+  } else {
+    Remove-Item Env:\RECUED_EMBED_ADDON, Env:\RECUED_ADDON_PATH -ErrorAction SilentlyContinue
+  }
   & $nodeExe (Join-Path $Root 'node_modules\tsx\dist\cli.mjs') 'scripts\build-binary.mjs' 2>&1 | ForEach-Object { Say ("  " + $_) }
   if ($LASTEXITCODE -ne 0) { Fail "build-binary exited $LASTEXITCODE for $triple" }
 

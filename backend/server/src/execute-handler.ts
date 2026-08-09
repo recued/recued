@@ -10,12 +10,16 @@
 
 import { randomUUID } from 'node:crypto';
 import { connectionBaseUrlFromConfig } from './connection-base-url.js';
+import { RUN_INGREDIENT_RECIPE } from './run-ingredient-recipe.js';
 import {
   executeRecipe,
   deriveRunMode,
   assignOwnSafe,
+  extendHeldRecipes,
+  seedHeldRecipes,
   snapshotContextRecipe,
   type CatalogGrantCall,
+  type ExchangeFirePayload,
   type CatalogGrantMintCall,
   type CatalogSessionGrantHooks,
   type CliInvocationExecutor,
@@ -66,6 +70,7 @@ import type {
   CreatePlanDetail,
   Dish,
   EmittedLink,
+  ExchangeAcknowledgement,
   RecipeDefinition,
   RecipeError,
   RecipeStep,
@@ -121,7 +126,7 @@ import {
   type ServerRpcRegistry,
   type UndeclaredConfigArgumentDetails,
 } from '@recued/contracts';
-import { ephemeralDishId } from '@recued/contracts';
+import { ephemeralDishId, parsePeerExchangeAck } from '@recued/contracts';
 import type { RecordsStore } from './records/index.js';
 import { readRootProjections } from './records/root-projection.js';
 import { emitRunOutcome, originTriggerIdFromContext } from './run-outcome-events.js';
@@ -153,6 +158,7 @@ import type {
 } from './types.js';
 import {
   gateRecipeAgainstPolicy,
+  grantingRecipeEntry,
   renderPolicyGateDenialSummary,
   type PolicyGateDenial,
 } from './policy-gate.js';
@@ -1087,6 +1093,235 @@ const outputForExecutionSource = (
     render: output.render.filter((section) => section.type !== 'filter'),
     sidebar: output.sidebar.filter((section) => section.type !== 'filter'),
   };
+};
+
+/** D-232 § 30 — DIG THE PEER'S RECEIPT OUT OF THE CARRIER RUN'S OWN RESULT.
+ *
+ *  ⛔⛔ THE FACT WAS ALWAYS HERE. A fire's carrier is a synchronous `tools/call`,
+ *  so the peer answers in the same breath they are asked — and when their reply
+ *  could not leave their server, that answer says so. Nothing read it. Every
+ *  classifier between the wire and this function keys on `isError` / a JSON-RPC
+ *  error envelope, and a Recued receiver reporting its own failure sets neither:
+ *  the agent projection is deliberately never an error, so a weak model does not
+ *  read it as one and loop. Correct for an LLM, invisible to a machine. The
+ *  verdict arrived, was dropped, and § 23 then reported `awaiting` forever.
+ *
+ *  🔑 WHY THE RENDER BLOCK, WHICH LOOKS LIKE THE WRONG DOOR. It is the only one
+ *  open. `ExecuteResponse.steps[]` is an enumerating copier that drops `result`
+ *  on purpose ("it can be megabytes"), so the step's own output does not survive
+ *  the response boundary. `RUN_INGREDIENT_RECIPE` declares
+ *  `output.render = [{ summary, source: 'step.call' }]`, and `resolveOutputRender`
+ *  resolves `{{step.call}}` VERBATIM into `.data` — so the carrier's render block
+ *  is the peer's envelope, unmodified. ⚠ That coupling is real: change the kernel
+ *  carrier's `output` and this goes quiet rather than loud, which is why the
+ *  drive asserts the parsed verdict end-to-end rather than this function alone.
+ *
+ *  The envelope is `connection.mcp`'s § 4.2 shape — `{ status, result, headers }`
+ *  where `result` is the peer's `CallToolResult`, whose `structuredContent` is
+ *  what `text()` published. Every hop is checked; a shape that is not an exchange
+ *  response yields `undefined`, which is the overwhelmingly common case. */
+const peerAckFromCarrierOutput = (
+  output: ExecuteResponse['output'] | undefined,
+): ExchangeAcknowledgement | undefined => {
+  for (const section of output?.render ?? []) {
+    const envelope = (section as { data?: unknown }).data;
+    if (envelope === null || typeof envelope !== 'object') continue;
+    const toolResult = (envelope as { result?: unknown }).result;
+    if (toolResult === null || typeof toolResult !== 'object') continue;
+    const structured = (toolResult as { structuredContent?: unknown }).structuredContent;
+    if (structured === null || typeof structured !== 'object') continue;
+    // ⛔ PEER-SUPPLIED FROM HERE DOWN. `parsePeerExchangeAck` re-validates every
+    // field against the closed vocabulary and caps the free text — the posture
+    // `declaredFailKind` already takes inside the classifier, for the same
+    // reason: this arrived off a wire, from a server we do not control.
+    const ack = parsePeerExchangeAck(
+      (structured as { exchange_ack?: unknown }).exchange_ack,
+    );
+    if (ack !== undefined) return ack;
+  }
+  return undefined;
+};
+
+/** D-232 § 20.17 — WHICH CONNECTION REACHES THE PEER THAT JUST CALLED US.
+ *
+ *  ⛔ THE RETURN PATH IS NOT IN THE MESSAGE, AND MUST NOT BE. A peer naming the
+ *  connection its answer leaves on would be choosing the owner's outbound route.
+ *  It is a property of the RELATIONSHIP, so it lives on the connection record
+ *  that IS the relationship — `config_json.peer_contract_id`, the contract this
+ *  server issued to that peer.
+ *
+ *  ⛔⛔ AND AN ABSENT CONNECTION IS NOT AN ERROR — IT IS THE LOCAL ROUTE. That is
+ *  the gateway's own local/remote discriminator, so a receiver that cannot
+ *  resolve its caller's connection does not fail: it answers ITSELF, running the
+ *  peer's landing recipe on this server, and reports success. Which is why this
+ *  resolves from `context.caller.contract_id` — the one peer identifier a caller
+ *  cannot forge (host-derived, stripped-if-supplied) — rather than from anything
+ *  the message carries.
+ *
+ *  🔑 It also makes N PEERS work. `chosen_connection` at install binds ONE
+ *  connection to the catalog; a receiver serving N peers needs the answer routed
+ *  per CALLER, which only a per-contract binding can do.
+ *
+ *  Ambiguity refuses: two connections claiming one peer contract is a
+ *  misconfiguration, and picking either would route an answer by install order. */
+/** D-232 § 29 — exported for the pre-send handshake. Bob answers "can I reply to
+ *  you?" by running exactly this resolution against HIS OWN connections for the
+ *  contract the caller presents. Same function, so his yes/no cannot disagree
+ *  with what the fire will actually do a moment later. */
+export const peerConnectionForContract = (
+  deps: ExecuteHandlerDeps,
+  contract_id: string | undefined,
+): string | undefined => {
+  if (contract_id === undefined || contract_id === '' || deps.connectionStore === undefined) {
+    return undefined;
+  }
+  let found: string | undefined;
+  for (const row of deps.connectionStore.list({ kind: 'mcp' })) {
+    let bound: unknown;
+    try {
+      bound = (JSON.parse(row.config_json ?? '{}') as Record<string, unknown>).peer_contract_id;
+    } catch {
+      continue;
+    }
+    if (bound !== contract_id) continue;
+    if (found !== undefined) return undefined;
+    found = row.name;
+  }
+  return found;
+};
+
+/** D-232 § 20.9 — WHICH exchange this run belongs to, from the two places a run
+ *  can learn it. This is the whole basis of "what happened to it": a ref nobody
+ *  records is a handle addressing nothing.
+ *
+ *  1. `internal.exchange_ref` — the host filed this run under an exchange. Only
+ *     the fire does that, for the dispatch that carries the answer.
+ *  2. `config.exchange_ref` — the run RECEIVED one. ⚠ Not a naming convention
+ *     the packs happen to share: `exchangeFireArgs` ALWAYS emits the ref under
+ *     exactly this key, so reading it back is the symmetric half of what the
+ *     engine writes. A peer that answers with a different key is answering a
+ *     different protocol.
+ *
+ *  A third source — the ref a FIRING run resolved — is added at the terminal
+ *  audit site, where the run result exists (`result.exchange_ack.ref`).
+ *
+ *  Caller-supplied by construction in case 2, and that is fine: it files the
+ *  peer's own call under the ref the peer named, which is what correlating an
+ *  exchange means. It confers no authority — the query is a read. */
+const requestExchangeRef = (
+  internal: InternalExecuteOverrides,
+  config: Record<string, unknown> | undefined,
+): string | undefined => {
+  if (typeof internal.exchange_ref === 'string' && internal.exchange_ref.length > 0) {
+    return internal.exchange_ref;
+  }
+  const fromConfig = config?.exchange_ref;
+  return typeof fromConfig === 'string' && fromConfig.length > 0 ? fromConfig : undefined;
+};
+
+/** D-232 § 20.6 — the op an exchange fires through, resolved from the
+ *  `deliver_to` the exchange named.
+ *
+ *  ⛔⛔ THE NAME CAN COME FROM DATA — SO EVERY NARROWING HERE IS LOAD-BEARING.
+ *  An answering recipe delivers to the tool the PEER named (`callback_op`
+ *  round-trips: A supplies it → B holds it → B presents it back at A's door), so
+ *  at fire time it can be peer-supplied input. The owner-ratified
+ *  posture is that **the grant is the gate**: a peer may name any op the owner
+ *  granted and no other. This function is what turns "a string from a peer" into
+ *  that posture rather than into a send:
+ *
+ *   1. it must match an INSTALLED catalog's declared binding — a tool nobody
+ *      installed an operation for is unreachable, so the peer's vocabulary is
+ *      exactly the owner's install set;
+ *   2. the binding must be `mcp`. A peer must not be able to steer an answer
+ *      into a REST call on an unrelated vendor by naming that op's tool;
+ *   3. ⛔ AMBIGUITY REFUSES. Two installed catalogs binding one tool name is a
+ *      collision, and picking either would make WHICH op runs depend on install
+ *      order. Fail closed and say both.
+ *
+ *  The dispatch itself then crosses the ordinary catalog gate under the caller's
+ *  contract, which is where admission actually happens — this only decides what
+ *  is being asked about. */
+interface ExchangeFireTarget {
+  readonly slug: string;
+  readonly operation_key: string;
+}
+
+const resolveExchangeFireTarget = (
+  manifests: ExecuteHandlerDeps['executorConfig']['manifests'],
+  deliver_to: string | undefined,
+): ExchangeFireTarget => {
+  if (deliver_to === undefined || deliver_to.length === 0) {
+    throw new Error(
+      'Exchange output named no deliver_to, so there is nowhere to send it. '
+      + 'Declare `output.exchange.deliver_to` (or carry the peer\'s through config).',
+    );
+  }
+  const matches: ExchangeFireTarget[] = [];
+  for (const slug of manifests.slugs()) {
+    const executes = manifests.get(slug)?.surfaces?.api?.executes;
+    if (executes === undefined) continue;
+    for (const [operation_key, binding] of Object.entries(executes)) {
+      if (binding.kind === 'mcp' && binding.tool === deliver_to) {
+        matches.push({ slug, operation_key });
+      }
+    }
+  }
+  if (matches.length === 0) {
+    throw new Error(
+      `Exchange deliver_to '${deliver_to}' matches no installed operation binding; `
+      + 'nothing was sent. Install the pack that declares it.',
+    );
+  }
+  if (matches.length > 1) {
+    throw new Error(
+      `Exchange deliver_to '${deliver_to}' is bound by ${String(matches.length)} installed `
+      + `operations (${matches.map((m) => `${m.slug}.${m.operation_key}`).join(', ')}); `
+      + 'refusing rather than choosing one.',
+    );
+  }
+  return matches[0]!;
+};
+
+/** D-232 § 20.6 — what actually goes on the wire.
+ *
+ *  ⛔ THE DERIVED FIELDS ARE SPREAD LAST, and the order is the rule. `data` is
+ *  authored; `outcome` is read off the RUN. Spreading `data` over the top would
+ *  let a recipe declare `data: { outcome: 'succeeded' }` and tell a peer its
+ *  failed run went fine — the exact thing `buildExchangeFirePayload`'s "an author
+ *  cannot declare their own failure a success" exists to prevent, undone one
+ *  layer down. */
+const exchangeFireArgs = (payload: ExchangeFirePayload): Record<string, unknown> => ({
+  ...(payload.data ?? {}),
+  exchange_ref: payload.ref,
+  outcome: payload.outcome,
+  ...(payload.errors !== undefined ? { errors: payload.errors } : {}),
+  // ⛔ D-232 § 21 — AN ENUMERATING COPIER, and the third field added to it. A
+  // classification the engine derives and this function forgets is a
+  // classification the peer never sees, with no type error to say so (the
+  // return is `Record<string, unknown>`). `exchange_ref` was lost this exact
+  // way in the audit-entry builder earlier in D-232.
+  ...(payload.kind !== undefined ? { kind: payload.kind } : {}),
+  ...(payload.reason !== undefined ? { reason: payload.reason } : {}),
+});
+
+/** D-232 — one line of WHY a nested local run failed, for the calling step's
+ *  error. The callee's errors are the only account of what went wrong on the
+ *  other side of the invoke, and they are otherwise thrown away: the caller
+ *  sees a failed step, and the callee's own audit row is a different run.
+ *
+ *  Shape-tolerant on purpose — the caller must still fail loudly when the
+ *  errors array holds something unexpected, so an unreadable entry yields a
+ *  weaker message rather than a second failure on top of the first. */
+const nestedRunFailureDetail = (errors: readonly unknown[]): string => {
+  const messages = errors
+    .map((e) => (e !== null && typeof e === 'object'
+      ? (e as { message?: unknown }).message
+      : e))
+    .filter((m): m is string => typeof m === 'string' && m.length > 0);
+  return messages.length > 0
+    ? messages.join('; ')
+    : `${String(errors.length)} error(s), none readable`;
 };
 
 /** Handle recipe execution. Pure handler — takes parsed request,
@@ -2127,6 +2362,23 @@ export const handleExecute = async (
   // P2.C slice that has not landed) — the Gateway then degrades to a
   // no-op pass-through and the run writes no commits.
   let runIdentity: CommitRunIdentity | undefined;
+  // ── D-232 § 20.19 — DOES THIS RUN'S RECIPE RIDE A GRANT? ──
+  // Resolved ONCE at run scope and handed to all three enforcement layers,
+  // because they must answer identically: the static pre-run walk, the per-call
+  // preflight probe, and any nested run the host dispatches on this run's
+  // behalf. An answer that differed between them would admit a step at one
+  // layer and refuse it at the next, which is how a grant becomes
+  // non-deterministic. `internal.granted_recipe_steps` is the inheritance arm
+  // (host-set only — see its doc on `ExecuteInternal`).
+  const grantedByRecipe =
+    internal.granted_by_recipe
+    ?? grantingRecipeEntry(
+      recipe.recipe_id,
+      executionSource !== undefined && executionSourceHasContract(executionSource)
+        ? request.contract_snapshot
+        : undefined,
+    );
+  const grantedRecipeSteps = grantedByRecipe !== undefined;
   if (executionSource !== undefined) {
     const channel_session_id = deriveChannelSessionId(executionSource);
     const correlation_id = correlationTracker.assign(
@@ -2261,12 +2513,14 @@ export const handleExecute = async (
         // passing `undefined` matches the system / unrestricted-user_self path.
         executionSourceHasContract(executionSource) ? request.contract_snapshot : undefined,
         resolveConfigRef,
+        grantedRecipeSteps,
       );
       if (!gateResult.admit) {
         return await handlePolicyGateDenial({
           deps,
           recipe,
           request,
+          internal,
           denials: gateResult.denials,
           lifecycle_run_id,
           run_id,
@@ -2394,6 +2648,9 @@ export const handleExecute = async (
                 ...(hasContract && request.contract_snapshot !== undefined
                   ? { contract_snapshot: request.contract_snapshot }
                   : {}),
+                // § 20.19 — ACCESS ONLY. The op-risk half of this decision still
+                // runs, so a granted recipe's `write` still meets the `ask` floor.
+                ...(grantedRecipeSteps ? { granted_recipe_steps: true } : {}),
                 // M-ENFORCE-2 — the derived `data.*` / `connection.*` scope path,
                 // gated against the snapshot's `scope_restrictions` (the per-door
                 // collection fence). Rate-limit throttling was the deferred SIBLING
@@ -3691,6 +3948,21 @@ export const handleExecute = async (
   // (`request.recipe !== undefined`) persist a snapshot, so only they clone.
   const preEngineRecipeSnapshot =
     request.recipe !== undefined ? structuredClone(recipe) : undefined;
+  // D-232 — the cycle guard's ancestor set, SEEDED WITH THIS RUN'S RECIPE.
+  // Without the seed the guard is a sender-only guard that silently admits
+  // `A → A`, and nothing downstream can tell the two apart (see
+  // `seedHeldRecipes`' own comment — this is the one place a run starts). A
+  // nested run arrives with the stack the gateway already widened; extending it
+  // again is a no-op that keeps the property true by construction rather than
+  // by the caller having remembered.
+  //
+  // ⛔ THE EXCHANGE FIRE NEEDS THIS TOO, which is why it is a local rather than
+  // an inline expression. A fire with no connection routes LOCAL, so a recipe
+  // that fires at itself would re-run, fire again, and never stop — the same
+  // loop the invoker's stack closes, arriving by the other door.
+  const heldRecipes = internal.held_recipes === undefined
+    ? seedHeldRecipes(recipe.recipe_id)
+    : extendHeldRecipes(internal.held_recipes, recipe.recipe_id);
   // Acquire only after every potentially-throwing pre-engine setup step. From
   // this point the encompassing finally owns the lease, so a registry/clone
   // failure cannot strand an invisible blocker until process restart.
@@ -3863,6 +4135,268 @@ export const handleExecute = async (
               : {}),
           }
         : {}),
+      // ── D-232 — recipe → recipe, in process ─────────────────────────────
+      // An `mcp` binding with NO connection names a recipe on THIS server; the
+      // gateway routes (connection ⇒ the peer's server, no connection ⇒ here)
+      // and these two hooks are the local arm. Both are consumed only after the
+      // ordinary catalog policy / approval path admits, exactly like Records.
+      //
+      // D-232 — the cycle guard's ancestor set (hoisted to `heldRecipes` above
+      // because the exchange fire point needs the same stack).
+      heldRecipes,
+      // ⛔ THE NESTED RUN INHERITS THE CALLER'S AUTHORITY, NEVER A FRESH ONE.
+      // `execution_source` + `contract_snapshot` pass through UNCHANGED, so B
+      // runs under exactly the contract that authorized A. Minting a source
+      // here — or simply dropping the snapshot, which is the version that
+      // compiles — would let a recipe launder its way out of its own gate by
+      // adding one hop, and the run would look identical from the outside.
+      // That is why the drive test asserts on the contract B's audit row
+      // carries, not on B having run.
+      //
+      // NOT inherited, deliberately: `config` is the op's args (the callee
+      // declares its own variables), `context` is dropped (page / client state
+      // belongs to the run that collected it, and `context.caller` is
+      // host-owned anyway), and the nested run mints its OWN `run_id` — its own
+      // audit anchor, checkpoint and provenance rather than overwriting the
+      // caller's.
+      localRecipeInvoker: async (call) => {
+        const nested = await handleExecute(
+          deps,
+          {
+            recipe_id: call.recipe_id,
+            config: call.args,
+            ...(request.execution_source !== undefined
+              ? { execution_source: request.execution_source }
+              : {}),
+            ...(request.contract_snapshot !== undefined
+              ? { contract_snapshot: request.contract_snapshot }
+              : {}),
+            ...(typeof request.trigger_source === 'string'
+              ? { trigger_source: request.trigger_source }
+              : {}),
+            // D-160 I-7 — a nested run IS a hop. Without this every level
+            // reports depth 0 and the commit Gateway's `MAX_DISPATCH_DEPTH`
+            // ceiling never sees the tree it exists to bound.
+            dispatch_depth: (request.dispatch_depth ?? 0) + 1,
+          },
+          { held_recipes: call.held_recipes },
+        );
+        // ⛔ A NESTED RUN THAT FAILED MUST FAIL THE CALLING STEP. The gateway
+        // refuses the two shapes that read as results without being ones — a
+        // pause, and `success:false` with no errors — but an ordinary failure
+        // is a well-formed object that would otherwise flow onward as this
+        // step's value AND audit as a successful dispatch. The remote arm
+        // classifies a peer's tool error as a step failure (`mcp_tool_error`);
+        // the local arm must not be more forgiving than the wire.
+        //
+        // ⚠ Scoped to failures that CARRY errors, so the empty-errors and
+        // paused shapes still reach `assertNestedRunCompleted` at the gateway.
+        // Throwing on everything here would leave that guard unreachable —
+        // which is this feature's recurring failure, not a tidier version of it.
+        if (
+          nested.success !== true
+          && nested.awaiting_approval === undefined
+          && nested.errors.length > 0
+        ) {
+          throw new Error(
+            `Local recipe '${call.recipe_id}' failed: ${nestedRunFailureDetail(nested.errors)}`,
+          );
+        }
+        return nested;
+      },
+      // D-232 — WHICH local recipes may be invoked. ABSENT DENIES (Invariant 3),
+      // so wiring it here is the server's opt-in, and what it asserts is
+      // deliberately narrow: the binding must name a recipe that actually
+      // exists on this server. A binding naming nothing must not synthesize an
+      // operation profile out of its own declaration.
+      //
+      // ⚠ WHAT THIS DOES NOT DECIDE, said plainly because the name invites the
+      // assumption. A connection-less op resolves no connection profile, so the
+      // install's per-connection operation-GROUP selection is not consulted on
+      // this path — the same structural gap `cli` and `records` each close with
+      // an allowlist of their own (`cli_reachability`; the pack-group scan
+      // above). The local-recipe kind has no owner-facing allowlist yet, so
+      // what stands between a caller and a nested run is: the pack is installed
+      // at all, the BINDING (never caller args) names the target, the op's risk
+      // floor, and the cycle guard. Narrowing this to an owner-chosen allowlist
+      // is the open policy question — D-232 § 19.5.
+      localRecipeReachabilityResolver: (target_recipe_id) =>
+        deps.recipeStore.get(target_recipe_id) !== null,
+      // ── D-232 § 19 — the post-run fire point's host half ─────────────────
+      // A recipe RETURNS (`output.render`) or it FIRES (`output.exchange`). The
+      // engine derives the payload from the finished RUN; this puts it on the
+      // wire, and there is exactly one interesting decision in it.
+      //
+      // ⛔⛔ THE FIRE IS ITS OWN RUN, and that is the whole answer to "the run is
+      // already over, so where does an `ask` hold?". Dispatching inline would
+      // leave a gated send with nowhere to pause: the fire would fail, the owner
+      // would see a red run, and the peer would get SILENCE — which § 19.4 calls
+      // the worst outcome for a correspondent. Re-entering `handleExecute`
+      // instead (the same move the local invoker makes) buys the whole pause
+      // machinery for free: the send crosses the ordinary catalog gate, an `ask`
+      // writes a durable checkpoint + card against THIS dispatch, and the
+      // owner's approval delivers the answer later. Nothing is swallowed and
+      // nothing goes out unasked.
+      //
+      // The carrier is the `run-ingredient` kernel recipe — the existing "run
+      // one operation, with audit / vault / approval / commit applying normally"
+      // primitive, already the engine of every per-ingredient MCP tool. Nothing
+      // is synthesized for the exchange.
+      exchangeFireHandler: async (payload) => {
+        const target = resolveExchangeFireTarget(
+          deps.executorConfig.manifests,
+          // ⛔ `deliver_to`, NOT `callback_op`. They are the same string only
+          // when you are the one ANSWERING; on the asking side, resolving from
+          // `callback_op` would dispatch the request through the REPLY
+          // operation — the right peer, the wrong direction.
+          payload.deliver_to,
+        );
+        const fired = await handleExecute(
+          deps,
+          {
+            recipe: RUN_INGREDIENT_RECIPE as unknown as Record<string, unknown>,
+            config: {
+              ingredient_slug: target.slug,
+              input: {
+                operation: target.operation_key,
+                args: exchangeFireArgs(payload),
+                // `run-ingredient`'s step declares no `connection`, so the name
+                // rides in the input — `resolveCatalogConnection` reads
+                // `s.connection ?? input.connection`. ABSENT routes local, the
+                // same discriminator the gateway uses for any mcp binding.
+                // § 20.17 — the declared connection, else the one bound to the
+                // caller's contract. An answering recipe cannot name its
+                // caller's connection (install pins one; the message carries
+                // none), and leaving it empty routes LOCAL — answering itself.
+                ...((): Record<string, string> => {
+                  // ⛔ `??` IS THE WRONG OPERATOR HERE AND IT COST A LOOP.
+                  // `payload.connection` comes from `{{config.peer_connection}}`,
+                  // and an unset config var resolves to '' — not undefined. `??`
+                  // passes '' through, the fallback never runs, and `connection ?
+                  // {...} : {}` then drops it: the answer routes LOCAL and the
+                  // server ANSWERS ITSELF. The two-server drive showed exactly
+                  // that — bob's reply landed on bob, under alice's ref, marked
+                  // `succeeded`. An empty declared connection means "I have none
+                  // to declare", which is the case § 20.17 exists to serve.
+                  const declared = payload.connection;
+                  const connection = declared !== undefined && declared !== ''
+                    ? declared
+                    : peerConnectionForContract(
+                      deps,
+                      request.execution_source !== undefined
+                        ? executionSourceContractId(request.execution_source)
+                        : undefined,
+                      );
+                  // ⛔⛔ D-232 § 28 — FAIL LOUD RATHER THAN ANSWER OURSELVES.
+                  // The recipe declared that this answer must LEAVE the server,
+                  // and no connection resolved. Falling through to the local
+                  // route would file the run under the PEER's ref, deliver it
+                  // here, and report `succeeded` — the peer waiting forever for
+                  // a letter posted into our own hallway. Seen exactly that way.
+                  // ⚠ The check is entirely local: the alternative is asking the
+                  // peer which contract they present, which probes another
+                  // server before it has agreed to anything. Each side binds its
+                  // own connection; the side that got it wrong is the side that
+                  // finds out.
+                  if (!connection && payload.require_connection === true) {
+                    throw new Error(
+                      `Exchange ref '${payload.ref}' must be delivered to a peer, but no `
+                      + 'installed mcp connection is bound to the contract of the caller it is '
+                      + `answering (${String(executionSourceContractId(request.execution_source ?? {} as never) ?? 'none')}). `
+                      + 'Set `config.peer_contract_id` on the connection that reaches them to the '
+                      + 'contract THEY present when they call you. Refusing rather than delivering '
+                      + 'this answer to ourselves.',
+                    );
+                  }
+                  return connection ? { connection } : {};
+                })(),
+              },
+            },
+            // Same actor + contract as the run that declared the exchange, for
+            // the same reason the local invoker inherits them: an answer sent
+            // under a fresh identity is an answer that escaped its own gate.
+            ...(request.execution_source !== undefined
+              ? { execution_source: request.execution_source }
+              : {}),
+            ...(request.contract_snapshot !== undefined
+              ? { contract_snapshot: request.contract_snapshot }
+              : {}),
+            ...(typeof request.trigger_source === 'string'
+              ? { trigger_source: request.trigger_source }
+              : {}),
+            dispatch_depth: (request.dispatch_depth ?? 0) + 1,
+          },
+          // The fire's own run IS the answer's crossing, so it is the run whose
+          // outcome "did it reach the peer" asks about. Filing it under the ref
+          // is what makes that question answerable later.
+          {
+            held_recipes: heldRecipes,
+            exchange_ref: payload.ref,
+            // ── § 20.19, THE INHERITANCE ARM — AND WHY ONLY HERE ──
+            //
+            // The carrier is `recued/run-ingredient`, a KERNEL recipe: bundled
+            // in the binary, invisible in the marketplace, never in
+            // `installRegistry`, and therefore an identity NO door can ever be
+            // granted. It exists to carry one op dispatch. So it IS the
+            // declaring recipe's op-step, wearing a recipe's costume for the
+            // sake of having a run to hold a gated `ask` — and refusing it a
+            // grant its declaring run holds refuses that run's own step.
+            //
+            // ⛔ THE LINE, STATED SO THE NEXT HOP DOESN'T CROSS IT: this does
+            // NOT go on `localRecipeInvoker` below. That callee is a real
+            // Tier-2 recipe with its own grantable name — a door that should
+            // reach it can be granted it. Recipes are the grantable unit; ops
+            // inside one are not. Inheriting into something the owner COULD
+            // have granted separately would convert "granting a recipe grants
+            // what it does" into "granting a recipe grants everything it can
+            // reach", which is a different and much larger promise.
+            ...(grantedByRecipe !== undefined
+              ? { granted_by_recipe: grantedByRecipe }
+              : {}),
+          },
+        );
+        // ⛔ A HOLD IS NOT A FAILURE HERE — it is the design. The answer is
+        // durably queued behind the owner's card and will go out on approval, so
+        // failing the declaring run would report "did not answer" about a run
+        // that will. (A pause the host could NOT make durable is downgraded to a
+        // real error by `handleExecute` itself and lands in the branch below.)
+        // ⛔ NOTHING TO REPORT ON EITHER STOPPED PATH, AND SAYING SO EXPLICITLY.
+        // A hold has not reached the peer yet (no response exists to read a
+        // verdict from), and a failed carrier throws below into the `accepted:
+        // false` receipt — where a peer verdict would be claiming knowledge of a
+        // conversation that never happened.
+        if (fired.awaiting_approval === true) return;
+        if (fired.success !== true) {
+          // ⛔⛔ CARRY THE CODE, OR THE CLASSIFICATION DIES HERE. This wraps the
+          // nested run's errors in a plain `Error`, and a plain Error has no
+          // code — so § 21's classifier saw nothing and called an UNREACHABLE
+          // peer a generic `error`, which is the one kind that never retries.
+          // The receipt then told the caller "not retrying" about the single
+          // case § 24 exists to retry. Exactly the collapse the gateway's
+          // `NETWORK_ERROR` had one hop earlier: a distinction thrown away
+          // upstream cannot be recovered downstream.
+          throw Object.assign(new Error(
+            `dispatching '${target.slug}.${target.operation_key}': `
+            + nestedRunFailureDetail(fired.errors),
+          ), ((): { code?: string } => {
+            const code = (fired.errors ?? [])
+              .map((e) => (e as { code?: unknown }).code)
+              .find((c): c is string => typeof c === 'string');
+            return code !== undefined ? { code } : {};
+          })());
+        }
+        // D-232 § 30 — THE LETTER WENT, AND THE PEER TOLD US SOMETHING ABOUT
+        // THEIRS. Handing it back is the whole fix: the engine attaches it to
+        // the run beside our own `accepted: true` receipt (both true, about
+        // different questions), the anchor persists it under the ref, and § 23
+        // can finally say "the peer cannot reply" instead of `awaiting`.
+        //
+        // ⚠ `undefined` when the peer sent no receipt — every non-Recued
+        // correspondent, and every ordinary successful answer. It is never
+        // synthesized: an absent verdict must not read as a good one.
+        const peer_ack = peerAckFromCarrierOutput(fired.output);
+        return peer_ack !== undefined ? { peer_ack } : {};
+      },
       // D-165 P3.path-picker (Slice 3b) — resolve a connection's stored
       // `subresource_path` so the catalog gateway can enforce an operation's
       // `path_scope`. Reads the connection RECORD (not the grant profile);
@@ -4857,6 +5391,35 @@ export const handleExecute = async (
           // can distinguish backfill (use event_at) from live activity
           // (today is fine).
           run_mode: deriveRunMode(recipe.run_mode, request.trigger_source),
+          // D-232 § 20.9 — file this run under its exchange. Three sources, and
+          // the run's OWN fire wins: a run that answered knows the ref it
+          // answered under better than anything handed to it.
+          ...((() => {
+            const ref = result.exchange_ack?.ref
+              ?? requestExchangeRef(internal, request.config);
+            return ref !== undefined && ref !== '' ? { exchange_ref: ref } : {};
+          })()),
+          // D-232 § 30 — the peer's verdict, on the same row as the ref it
+          // belongs to. ⛔ THIS IS THE ONLY DURABLE COPY: the verdict is stated
+          // once, synchronously, and the response it rode in on is gone the
+          // moment this run returns. Unwritten here, § 23 has nothing to read
+          // and answers `awaiting` for a conversation that has already ended.
+          //
+          // ⚠ THE ROW IS THE DECLARING RUN'S, NOT THE CARRIER'S, WHICH IS THE
+          // OPPOSITE OF WHERE INTUITION PUTS IT (measured, not assumed — see the
+          // § 30 durability test). The carrier crossed the wire, but the fire
+          // point runs inside the DECLARING run and the carrier's anchor is
+          // already closed by then; a second write to it would be the two-phase
+          // confirm § 20.12 deleted. Both rows are under the ref, and § 23 folds
+          // over all of them, so nothing depends on which one remembers.
+          ...(result.exchange_peer_ack !== undefined
+            ? { exchange_peer_ack: result.exchange_peer_ack }
+            : {}),
+          // § 20.19 — record WHICH grant this run's steps rode, so the
+          // approval-resume authority can re-check it after a pause.
+          ...(grantedByRecipe !== undefined
+            ? { granted_by_recipe: grantedByRecipe }
+            : {}),
           // D-145 engine-wiring (D-153 P1 + slice 2) — commit-substrate
           // session IDs + `execution_source` + contract snapshot.
           // Derived once above; stamped here so the P1.B
@@ -5177,6 +5740,19 @@ export const handleExecute = async (
       // approval, not silently failed. Only when the pause is durable (the
       // checkpoint was written); a downgraded pause stays a terminal failure.
       ...(isDurablyPaused ? { awaiting_approval: true } : {}),
+      // D-232 § 19.3 — the exchange receipt, and NOTE WHERE IT IS: inside the
+      // enumerating copier the comment above warns about. The engine derived
+      // this so no recipe could forget it; naming it here is what stops the
+      // HOST forgetting it on the recipe's behalf, which is exactly what
+      // happened between the fire point shipping and this line existing.
+      ...(result.exchange_ack !== undefined ? { exchange_ack: result.exchange_ack } : {}),
+      // D-232 § 30 — the PEER's verdict, named here for the reason the line
+      // above documents: this is the enumerating copier, and a field it does not
+      // list reaches no client. The asker's own tool result is the one place a
+      // caller learns their correspondent cannot reply without going to look.
+      ...(result.exchange_peer_ack !== undefined
+        ? { exchange_peer_ack: result.exchange_peer_ack }
+        : {}),
       // D-192 Slice 6b — surface an ambiguous-container create as a first-class
       // marker (the D-158 pick ask was raised; the create re-runs off the pick)
       // so the chat tool-loop tells the model the create is queued behind a
@@ -5285,6 +5861,11 @@ const buildPauseFailureError = (
  *  emission stays best-effort because the gate already refused
  *  dispatch (no external side-effect happened). */
 const handlePolicyGateDenial = async (args: {
+  /** D-232 § 20.9 — the run's internal overrides, for the exchange ref a
+   *  host-dispatched run carries. A DENIED run belongs to its exchange as much
+   *  as a successful one: from the far side a refusal and a lost letter look
+   *  identical, and only the ref can tell them apart. */
+  internal?: InternalExecuteOverrides;
   deps: ExecuteHandlerDeps;
   recipe: RecipeDefinition;
   request: ExecuteRequest;
@@ -5388,6 +5969,14 @@ const handlePolicyGateDenial = async (args: {
         ...(request.backfill ? { backfill: request.backfill } : {}),
         ...(request.process_id ? { process_id: request.process_id } : {}),
         run_mode: deriveRunMode(recipe.run_mode, request.trigger_source),
+        // D-232 § 20.9 — a DENIED run is part of the exchange too, and it is
+        // the one a peer most needs explained: from the far side, a refusal and
+        // a lost letter are indistinguishable. No `result` exists here, so only
+        // the two request-side sources apply.
+        ...((() => {
+          const ref = requestExchangeRef(args.internal ?? {}, request.config);
+          return ref !== undefined ? { exchange_ref: ref } : {};
+        })()),
         // D-145 engine-wiring (D-153 P1 + slice 2) — same
         // commit-substrate session IDs + `execution_source` as a
         // normal run, so the channel-session tier-query surfaces the

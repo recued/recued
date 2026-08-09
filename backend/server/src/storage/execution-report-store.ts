@@ -49,6 +49,19 @@ export const ensureExecutionReportSchema = (db: Database.Database): void => {
     -- N scans -- the quadratic shape fixed in audit-retention. Grows with chat.
     CREATE INDEX IF NOT EXISTS idx_execution_reports_root
       ON execution_reports (root_request_id);
+
+    -- closedReportIds() is the compiler's hot-path currency check: it runs
+    -- inside canCompileIncrementally, which compileReport() calls on the CHAT
+    -- TURN path whenever the model files an outcome report. It reads every
+    -- closed report id, so it is O(closed reports) by design — but without this
+    -- it walked the PRIMARY KEY and touched each row's 500-byte payload to test
+    -- closed_at.
+    -- PARTIAL + COVERING: only closed rows are indexed and report_id is the
+    -- indexed column, so the query is answered from the index alone, already in
+    -- report_id order (no sort). Measured at 200k reports / 115 MB:
+    --   50.5ms -> 19.9ms.
+    CREATE INDEX IF NOT EXISTS idx_execution_reports_closed
+      ON execution_reports (report_id) WHERE closed_at IS NOT NULL;
   `);
 };
 

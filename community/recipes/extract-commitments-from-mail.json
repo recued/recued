@@ -5,7 +5,7 @@
   "ttl": 60,
   "metadata": {
     "name": "Extract commitments from mail (D-145 PA10)",
-    "description": "Extract commitments from an inbound email into Recued's commitment tracker — who promised what to whom, with optional deadline and monetary amount. Thread-aware: a reply like 'yes, please send that by Friday' binds to the prior message, not the reply. Fires automatically on each inbound message; records only extractions above the confidence floor (default 0.7), resolves the counterparty to a known contact when possible, and the extractor model sees only PII-aliased text, never the raw sender.",
+    "description": "Use “Extract commitments from mail” in Recued. Extract commitments from an inbound email into Recued's commitment tracker — who promised what to whom, with optional deadline and monetary amount. Thread-aware: a reply like 'yes, please send that by Friday' binds to the prior message, not the reply.",
     "author": "recued-core",
     "supported_platforms": [],
     "tags": ["email", "mail", "commitment", "work-entity", "reactive", "silent-producer", "pack:personal-organizer", "ai_surface"],

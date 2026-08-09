@@ -407,6 +407,13 @@ export type PairCodeInputCommitResult =
 
 const normalizeServerUrl = (raw: string): string => raw.trim().replace(/\/$/, '');
 
+/** Pairing codes are generated as one compact token, but terminals, password
+ * managers, and messages commonly group short codes with spaces. Whitespace
+ * is never part of the server-issued secret, so discard it at the webclient
+ * boundary while leaving every non-whitespace character for the server's
+ * authoritative comparison. */
+const normalizePairingCode = (raw: string): string => raw.replace(/\s+/g, '');
+
 /** Server identity that is safe to show or share during unauthenticated
  * recovery. Origin deliberately drops user-info, paths, query parameters,
  * and fragments while retaining the scheme, host, and non-default port the
@@ -469,7 +476,7 @@ export const submitPairCodeInput = async (
   if (serverUrl.length === 0) {
     return { ok: false, error: 'pair_code_input_no_server_url' };
   }
-  const code = options.code?.trim() ?? '';
+  const code = normalizePairingCode(options.code ?? '');
   const recoveryKey = options.recoveryKey?.trim() ?? '';
   if (!code && !recoveryKey) {
     return { ok: false, error: 'pair_code_input_no_input' };
@@ -1654,7 +1661,7 @@ export const mountPairCodeInputHost = (
     serverUrl: seededServerUrl,
     pairingCode: privateRecoveryReentry
       ? ''
-      : options.seed?.pairingCode ?? '',
+      : normalizePairingCode(options.seed?.pairingCode ?? ''),
     sameOriginResume:
       options.seed?.sameOriginResume === true
       && seededServerUrl.trim().length > 0,
@@ -2127,12 +2134,27 @@ export const mountPairCodeInputHost = (
           state.replacementServerStage !== null
           && state.replacementServerStage !== 'details'
         ) return;
+        const pairingCode = normalizePairingCode(value);
+        if (pairingCode !== value) {
+          const selectionStart = fieldEl.selectionStart;
+          const selectionEnd = fieldEl.selectionEnd;
+          fieldEl.value = pairingCode;
+          if (
+            typeof selectionStart === 'number'
+            && typeof selectionEnd === 'number'
+          ) {
+            fieldEl.setSelectionRange?.(
+              normalizePairingCode(value.slice(0, selectionStart)).length,
+              normalizePairingCode(value.slice(0, selectionEnd)).length,
+            );
+          }
+        }
         const recoveryKeyError = isRecoveryKeyCorrectionError(state)
           ? state.error
           : null;
         state = {
           ...state,
-          pairingCode: value,
+          pairingCode,
           error: recoveryKeyError,
           restoreNotice: null,
         };
@@ -3005,7 +3027,7 @@ export const mountPairCodeInputHost = (
       try {
         await options.onRestoreSubmit({
           serverUrl: state.serverUrl,
-          code: state.pairingCode.trim(),
+          code: normalizePairingCode(state.pairingCode),
           archiveKey: fromRecoveryWords(state.recoveryWords),
           file,
         });
@@ -3183,7 +3205,7 @@ export const mountPairCodeInputHost = (
           const result = await submitPairCodeInput({
             serverUrl: state.serverUrl,
             ...(state.pairingCode.trim().length > 0
-              ? { code: state.pairingCode.trim() }
+              ? { code: normalizePairingCode(state.pairingCode) }
               : {}),
             recoveryKey: recoveryKeyToSubmit,
             ...(options.instanceId ? { instanceId: options.instanceId } : {}),
@@ -3432,7 +3454,7 @@ export const mountPairCodeInputHost = (
         ) return;
         state = {
           ...state,
-          pairingCode: value,
+          pairingCode: normalizePairingCode(value),
           error: isRecoveryKeyCorrectionError(state) ? state.error : null,
         };
       } else {

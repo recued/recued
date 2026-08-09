@@ -30,7 +30,7 @@ export type { Namespace } from './namespaces.js';
 export type { RecipeErrorCode, ErrorSeverity, RecipeError } from './errors.js';
 
 // Types — steps
-export type { StepType, BaseStep, TransformStep, IngredientStep, GuardStep, CanonicalOpStep, RecipeStep, PrefetchStep, PrefetchOpStep, CacheFreshness, StepOptions, StepMeta } from './steps.js';
+export type { StepType, BaseStep, TransformStep, IngredientStep, GuardStep, CanonicalOpStep, RecipeStep, PrefetchStep, PrefetchOpStep, CacheFreshness, StepOptions, StepMeta, StepFailureKind } from './steps.js';
 export { isPrefetchOpStep } from './steps.js';
 
 // Connection-agnostic op dispatch — resolver I/O types + the op-step guard +
@@ -63,7 +63,7 @@ export type {
   TableOutputSection, ResolvedRecordColumn, ResolvedRecordColumnsDescriptor,
   TableEditSpec, ResolvedTableEditDescriptor, OutputTableEditInvocation,
   TableAppendedColumn, TableColumnControl,
-  OutputSection, OutputType, RecipeOutput, ResolvedFilterDescriptor,
+  OutputSection, OutputType, RecipeOutput, RecipeExchangeOutput, ResolvedFilterDescriptor,
   ResolvedOutputSection, OutputFilterInvocation, RecipeInvocation,
   RecipeOutputAction, RecipeDefinition,
   RecipeEventTrigger, OnFailureBinding,
@@ -2342,6 +2342,7 @@ export type {
   McpTransport,
   ConnectionAuth,
   HeaderAuthEntry,
+  BodyFieldAuthEntry,
   HeaderAuthIssue,
   ConnectionRecord,
   ConnectionHealth,
@@ -2388,6 +2389,8 @@ export {
   // enrollment validation + every adapter/handler apply site).
   validateHeaderAuthEntries,
   describeHeaderAuthIssue,
+  validateBodyFieldAuthEntries,
+  describeBodyFieldAuthIssue,
   MAX_HEADER_AUTH_ENTRIES,
   // granted-scopes — shared row-column parse (view + server-side record decode).
   parseGrantedScopesJson,
@@ -2412,6 +2415,7 @@ export {
   declaredConnectionSlots,
   unionRequiredScopesForConnection,
   scopeCoverage,
+  UNECHOED_AUTHORIZATION_SCOPES,
 } from './connection-scope-coverage.js';
 export type { ScopeCoverage } from './connection-scope-coverage.js';
 
@@ -3295,11 +3299,13 @@ export {
   HOSTNAME_CERT_SOURCES,
   HOSTNAME_VERIFICATION_METHODS,
   HOSTNAME_OWNERSHIP_STATUSES,
+  HOSTNAME_CERT_PROVISIONING_STATES,
   HOSTNAME_TLS_TOPOLOGIES,
   HOSTNAME_LISTENER_PORTS,
   isHostnameCertSource,
   isHostnameVerificationMethod,
   isHostnameOwnershipStatus,
+  isHostnameCertProvisioningState,
   isHostnameTlsTopology,
   isHostnameListenerPort,
   tlsTopologyForHostnameCertSource,
@@ -3312,6 +3318,7 @@ export type {
   HostnameCertSource,
   HostnameVerificationMethod,
   HostnameOwnershipStatus,
+  HostnameCertProvisioningState,
   HostnameTlsTopology,
   HostnameListenerPort,
   HostnameCertChainMetadata,
@@ -4544,7 +4551,9 @@ export {
   GRAPH_OFFLINE_SCOPE,
   GRAPH_USER_READ_SCOPE,
   GRAPH_FILES_READ_SCOPE,
+  GRAPH_FILES_READWRITE_SCOPE,
   GRAPH_SITES_READ_ALL_SCOPE,
+  GRAPH_SITES_READWRITE_ALL_SCOPE,
   gmailScopes,
   graphMailScopes,
   gcalScopes,
@@ -4872,6 +4881,37 @@ export {
   isWorkEntitySourceKind,
 } from './source-primitive.js';
 export type { SourceRegistration, SourceTopTierKind, SourceKind, SourceSyncPosture } from './source-primitive.js';
+export type { RemoteFailureKind } from './source-primitive.js';
+export type {
+  ExchangeDeliveryStatus, ExchangeStatusRow, ExchangeStatusReport,
+} from './source-primitive.js';
+export { deriveExchangeStatus, planExchangeRetry } from './source-primitive.js';
+export type { ExchangeRetryRow, ExchangeRetryPlan } from './source-primitive.js';
+export {
+  EXCHANGE_RETRY_MAX_ATTEMPTS, EXCHANGE_RETRY_BASE_MS,
+} from './source-primitive.js';
+export { EXCHANGE_ENVELOPE_KEYS, isExchangeEnvelopeKey } from './recipe.js';
+export type { ConnectionDispatchOutcome } from './connection.js';
+export { MCP_PEER_CONTRACT_CONFIG_KEY, diagnosePeerBinding } from './connection.js';
+export type { PeerBindingStatus, PeerBindingDiagnosis } from './connection.js';
+export {
+  foldConnectionDispatchHealth,
+  effectiveConnectionHealth,
+  CONNECTION_HEALTH_FRESH_MS,
+} from './connection.js';
+export {
+  REMOTE_FAILURE_KINDS,
+  isRemoteFailureKind,
+  isRetryableRemoteFailure,
+} from './source-primitive.js';
+// D-232 § 30 — the exchange receipt, lifted out of the engine so storage (which
+// cannot import the engine) and the server can both speak it. `@recued/engine`
+// re-exports the type so existing imports keep resolving.
+export type { ExchangeAcknowledgement } from './source-primitive.js';
+export {
+  parsePeerExchangeAck,
+  EXCHANGE_PEER_REASON_MAX,
+} from './source-primitive.js';
 
 export {
   FILE_META_FILENAME_MAX,

@@ -163,10 +163,15 @@ const parsePrompt = (promptBody: string): Record<string, unknown> =>
 const tokenUsage = (
   input_tokens: number,
   output_tokens: number,
+  /** Provider calls the aggregate covers. Omitted when building an INPUT
+   *  report (a single provider result carries no count of its own); passed
+   *  when asserting an AGGREGATE, where the count is part of the contract. */
+  provider_calls?: number,
 ): TokenUsageReport => ({
   input_tokens,
   output_tokens,
   total_tokens: input_tokens + output_tokens,
+  ...(provider_calls !== undefined ? { provider_calls } : {}),
 });
 
 describe('isEmptyChatAiOutput', () => {
@@ -362,7 +367,9 @@ describe('D-137 args-only AIOutput recovery — orchestrator paths', () => {
     const messages = await store.listMessages('sess-recover-response');
     const assistant = messages.find((m) => m.role === 'assistant');
     expect(assistant?.content).toBe('Recovered answer.');
-    expect(ack.total_usage).toEqual(tokenUsage(30, 3));
+    // ⚠ `2` is checked against the FIXTURE — `usages` above holds two reports
+    // (the initial call and the retry) — not pasted from the observed output.
+    expect(ack.total_usage).toEqual(tokenUsage(30, 3, 2));
   });
 
   it('recovers an initial empty output when retry returns tool_calls, then synthesizes', async () => {

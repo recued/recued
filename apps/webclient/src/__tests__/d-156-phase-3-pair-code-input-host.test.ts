@@ -531,6 +531,21 @@ describe('submitPairCodeInput — request shape (3 modes)', () => {
     });
   });
 
+  it('removes grouping whitespace from a pasted pairing code', async () => {
+    const fetchFake = buildFakeFetch(200, { token: 'tok-spaced' });
+    const result = await submitPairCodeInput({
+      serverUrl: 'http://localhost:3001',
+      code: '  ABCD  12\t34\n',
+      fetch: fetchFake,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(fetchFake.calls[0].body).toEqual({
+      code: 'ABCD1234',
+      clientKind: 'webclient',
+    });
+  });
+
   it('recovery-key-only: posts { recoveryKey }', async () => {
     const fetchFake = buildFakeFetch(200, { token: 'tok-B' });
     const result = await submitPairCodeInput({
@@ -2746,6 +2761,23 @@ describe('mountPairCodeInputHost — field events', () => {
     // Simulate user typing into the server URL input — delegated input.
     fake.fireField('server-url', 'http://localhost:3001');
     expect(fake.getSubmitBtn()?.disabled).toBe(false);
+  });
+
+  it('compacts a pairing code pasted with grouping whitespace', () => {
+    const fake = makeFakeSplash();
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      onPaired: () => undefined,
+    });
+
+    fake.fireField('pairing-code', ' AB CD\t12 34 ');
+    // Force a normal render after the delegated input so the assertion reads
+    // the host's retained state rather than the fake input object.
+    handle.setFieldValue('serverUrl', 'http://localhost:3001');
+
+    expect(fake.getHtml()).toMatch(
+      /id="webclient-pair-code-input-code"[\s\S]*?value="ABCD1234"/,
+    );
   });
 
   it('input event on a single recovery slot updates that slot only (no re-render)', () => {

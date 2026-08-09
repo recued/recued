@@ -5,7 +5,7 @@
   "ttl": 60,
   "metadata": {
     "name": "Stalled projects (D-145 PA10)",
-    "description": "Today's intervention list for projects: those with no activity past the 14-day stall horizon, plus active projects with no next action (no open task, pending commitment, or recent note) — each with an AI-suggested next step. Auto-refreshes on weekdays.",
+    "description": "Use “Stalled projects” in Recued. Today's intervention list for projects: those with no activity past the 14-day stall horizon, plus active projects with no next action (no open task, pending commitment, or recent note) — each with an AI-suggested next step. Auto-refreshes on weekdays.",
     "author": "recued-core",
     "supported_platforms": [],
     "tags": ["productivity", "project", "stalled", "dashboard", "ai_surface", "reactive", "pack:personal-organizer"],

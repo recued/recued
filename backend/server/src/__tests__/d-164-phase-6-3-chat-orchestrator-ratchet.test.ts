@@ -982,7 +982,14 @@ describe('D-164 P6.3 multi-round loop boundaries', () => {
       picker_state: { current: 'self' },
     });
 
-    const expected = { input_tokens: 11, output_tokens: 14, total_tokens: 25 };
+    // ⚠ `provider_calls: 3` is checked against the FIXTURE — this drives three
+    // mocked AI calls (round 0, round 1, done) — not pasted from the observed
+    // output. It also sharpens the mutation this ratchet exists for
+    // ("aggregation only counts the last round"): a last-round-only aggregate
+    // would report 1 call, not 3.
+    const expected = {
+      input_tokens: 11, output_tokens: 14, total_tokens: 25, provider_calls: 3,
+    };
     expect(ack.total_usage).toEqual(expected);
     expect(eventsByKind('recued.token_usage')).toMatchObject([expected]);
   });

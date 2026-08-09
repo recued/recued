@@ -50,6 +50,10 @@ export interface ConnectionOAuthCredentialReadiness {
   readonly refreshReady: boolean;
   readonly ready: boolean;
   readonly scopeCount: number;
+  /** The exact scope strings that will be requested, in the order the owner typed
+   *  them. Surfaced so the form can NAME them before Authorize — a count alone tells
+   *  someone how many permissions to expect, never which ones to go and grant. */
+  readonly scopes: ReadonlyArray<string>;
 }
 
 /** Fields whose current value is consumed by an OAuth attempt or can be
@@ -220,17 +224,17 @@ export const connectionOAuthCredentialReadiness = (args: {
   }
   const issue = refreshIssue ?? (args.vendor === null ? authorizeUrlIssue : null);
 
-  const scopeCount = (args.values['auth.scopes'] ?? '')
+  const scopes = (args.values['auth.scopes'] ?? '')
     .trim()
     .split(/\s+/u)
-    .filter(Boolean)
-    .length;
+    .filter(Boolean);
   return {
     providerLabel,
     requirements,
     issue,
     refreshReady: refreshIssue === null,
     ready: issue === null,
-    scopeCount,
+    scopeCount: scopes.length,
+    scopes,
   };
 };

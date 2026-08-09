@@ -3,7 +3,7 @@
   "slug": "reception-drop",
   "publisher": "recued-core",
   "name": "Reception — Drop",
-  "description": "Review-by-default file-drop reception. A visitor uploads a file and it lands a pending record; a review-then-approve workflow holds the materialize operation at the Gateway gate, where you approve (editing the title / details / destination first) or reject. On approve it materializes a task in your local warehouse with the uploaded file attached (data.link role:'attachment', D-172) — no external connection required. Every upload is reviewed — there is no way to skip the gate.",
+  "description": "Use Reception — Drop in Recued. It includes 1 built-in action. Actions that change data use Recued's approval controls.",
   "version": 1,
   "pre_install": true,
   "recipes": [],

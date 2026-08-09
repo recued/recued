@@ -13,6 +13,7 @@ import {
   declaredConnectionSlots,
   unionRequiredScopesForConnection,
   scopeCoverage,
+  UNECHOED_AUTHORIZATION_SCOPES,
   type BulkPackManifest,
   type IngredientRow,
   type PackOperationRow,
@@ -301,5 +302,42 @@ describe('scopeCoverage', () => {
       covered: false,
       missing: ['a'],
     });
+  });
+});
+
+describe('scope coverage — a scope the provider grants without echoing is not missing', () => {
+  it('⛔⛔⛔ offline_access is not reported missing when the provider omits it', () => {
+    /** Microsoft Entra issues the refresh token for `offline_access` and then leaves it
+     *  out of the token response's `scope` field. A raw set difference calls it missing
+     *  on a connection that HAS it — permanently, because re-authorizing returns the
+     *  same answer. Observed on a live Graph enrollment: 7 granted scopes, none of them
+     *  `offline_access`, with the connection working. */
+    const cov = scopeCoverage(
+      ['Files.Read', 'Files.ReadWrite', 'offline_access'],
+      ['Files.Read', 'Files.ReadWrite', 'Mail.Read', 'User.Read'],
+    );
+    expect(cov.missing).toEqual([]);
+    expect(cov.covered).toBe(true);
+  });
+
+  it('⛔ a genuinely missing RESOURCE scope is still reported', () => {
+    /** The control. Excluding the authorization-behaviour scopes must not soften the
+     *  check that matters — a connection that cannot write is still called out. */
+    const cov = scopeCoverage(
+      ['Files.Read', 'Files.ReadWrite', 'offline_access'],
+      ['Files.Read'],
+    );
+    expect(cov.missing).toEqual(['Files.ReadWrite']);
+    expect(cov.covered).toBe(false);
+  });
+
+  it('⚠ the exclusion list is closed and behaviour-only', () => {
+    /** Every entry changes how the grant BEHAVES rather than what it reaches, so none
+     *  can hide a real permission gap. A resource scope must never join it. */
+    expect([...UNECHOED_AUTHORIZATION_SCOPES].sort())
+      .toEqual(['email', 'offline_access', 'openid', 'profile']);
+    for (const s of UNECHOED_AUTHORIZATION_SCOPES) {
+      expect(s, 'a Graph-style resource scope must not be exempted').not.toMatch(/\./u);
+    }
   });
 });

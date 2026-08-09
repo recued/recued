@@ -62,7 +62,16 @@ export const WEBCLIENT_SERVICE_WORKER_SCOPE = './' as const;
  *
  *  `service-worker-cache-name-parity.test.ts` now reads `public/sw.js` and
  *  fails if the two disagree. Bump BOTH or that test goes red. */
-export const WEBCLIENT_SHELL_CACHE_NAME = 'webclient-shell-v8' as const;
+export const WEBCLIENT_SHELL_CACHE_NAME = 'webclient-shell-v9' as const;
+
+/** The prefix every cache this app owns carries. Mirrors `CACHE_PREFIX` in
+ *  `public/sw.js` — same second-copy hazard as the name above, same reason it
+ *  cannot be imported. It is what makes the wipes below OURS: on
+ *  `app.recued.com` the origin is dedicated and the distinction is academic,
+ *  but a self-hosted server can share its origin with anything else the owner
+ *  runs, and pressing a Recued privacy control is not consent to delete a
+ *  neighbouring app's offline data. */
+export const WEBCLIENT_CACHE_PREFIX = 'webclient-' as const;
 
 /** Test-only seam — both the `navigator.serviceWorker` access path
  *  and the `caches` access path are overridable so the helper can be
@@ -71,6 +80,11 @@ export const WEBCLIENT_SHELL_CACHE_NAME = 'webclient-shell-v8' as const;
 export interface ServiceWorkerEnvironment {
   navigator?: { serviceWorker?: ServiceWorkerContainerShape };
   caches?: CacheStorageShape;
+  /** Absolute URL the registration scope resolves against. Production reads
+   *  `globalThis.location.href`; tests pass one because jsdom's differs from
+   *  the app's. Used to tell OUR service-worker registration from a
+   *  neighbouring app's on a shared self-host origin. */
+  baseUrl?: string;
 }
 
 /** Minimal subset of `ServiceWorkerContainer` the helper uses. */
@@ -166,18 +180,36 @@ const resolveCaches = (
   return g.caches ?? null;
 };
 
-/** Wipe every cache reachable via the page-side `CacheStorage` API.
+/** Wipe the caches THIS APP owns, via the page-side `CacheStorage` API.
  *  Exported separately so the Settings → Privacy "Reset cache" surface
- *  can call it directly without going through `registerServiceWorker`. */
+ *  can call it directly without going through `registerServiceWorker`.
+ *
+ *  ⚠ Scoped to `WEBCLIENT_CACHE_PREFIX`. This used to be
+ *  `keys.map((key) => caches.delete(key))` over EVERY cache on the origin. */
 export const clearServiceWorkerCaches = async (
   environment?: ServiceWorkerEnvironment,
 ): Promise<boolean> => {
   const caches = resolveCaches(environment);
   if (!caches) return false;
-  const keys = await caches.keys();
+  const keys = (await caches.keys()).filter((key) => key.startsWith(WEBCLIENT_CACHE_PREFIX));
   if (keys.length === 0) return false;
   const results = await Promise.all(keys.map((key) => caches.delete(key)));
   return results.some((deleted) => deleted);
+};
+
+/** Resolve the absolute scope URL this app's service worker claims, or `null`
+ *  when there is no base URL to resolve against (a non-browser environment, or
+ *  a test that did not supply one). `null` means "cannot prove ownership", and
+ *  every caller treats that as a reason to narrow, never to widen. */
+const resolveOwnScope = (environment?: ServiceWorkerEnvironment): string | null => {
+  const base = environment?.baseUrl
+    ?? (globalThis as { location?: { href?: string } }).location?.href;
+  if (!base) return null;
+  try {
+    return new URL(WEBCLIENT_SERVICE_WORKER_SCOPE, base).href;
+  } catch {
+    return null;
+  }
 };
 
 /** Unregister every webclient-owned SW registration. Exported
@@ -193,9 +225,21 @@ export const unregisterServiceWorker = async (
   // Prefer `getRegistrations` when available — covers the (rare) case
   // where multiple registrations coexist (e.g. a stale legacy SW
   // alongside the current one).
-  if (typeof container.getRegistrations === 'function') {
+  //
+  // ⚠ FILTERED BY SCOPE. `getRegistrations()` returns EVERY registration on the
+  // origin, and this loop used to unregister all of them — the doc comment above
+  // says "every webclient-owned SW registration", which was simply not what the
+  // code did. On `app.recued.com` nothing else is registered so it never showed;
+  // on a self-host origin shared with another app, "Clear this browser" tore
+  // down that app's service worker too. A registration outside our scope is not
+  // ours, and an unknown base URL means we cannot prove ownership — so that
+  // case falls through to `getRegistration()`, which asks the platform for the
+  // registration controlling THIS page and cannot over-reach.
+  const ourScope = resolveOwnScope(environment);
+  if (ourScope !== null && typeof container.getRegistrations === 'function') {
     const regs = await container.getRegistrations();
     for (const reg of regs) {
+      if (!reg.scope.startsWith(ourScope)) continue;
       try {
         const result = await reg.unregister();
         if (result) any = true;

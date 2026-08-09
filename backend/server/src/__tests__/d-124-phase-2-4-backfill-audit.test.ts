@@ -73,11 +73,16 @@ const newFakeAuditLog = (): FakeAuditLog => {
   const activities: ActivityEntry[] = [];
   const store: AuditLogStore = {
     append: async () => {},
+    listWindow: async () => [],
+    listPendingExchangeRefs: async () => [],
+    listInboundContractIds: async () => [],
     listRecent: async () => [],
     listByRecipe: async () => [],
     listByChannelSession: async () => [],
     listByCognitionSession: async () => [],
     listByCorrelation: async () => [],
+    listByExchangeRef: async () => [],
+    listByPeerContract: async () => [],
     listByDish: async () => [],
     latestByDishes: async () => new Map(),
     get: async () => null as AuditEntry | null,

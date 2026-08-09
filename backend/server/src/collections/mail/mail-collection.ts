@@ -20,6 +20,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { MAIL_RFC_MESSAGE_ID_HOT_FIELD } from './mail-twin-resolver.js';
 import type Database from 'better-sqlite3';
 import type { StorageGate } from '@recued/storage-gate';
 import type { ActivityEntry, AuditLogStore } from '@recued/storage';
@@ -473,6 +474,17 @@ export const createMailCollection = (
     onBytesChanged: (delta) => { gate.addUsed(delta); },
     ftsTextFor: mailFtsText,
   });
+  // ⛔ THE ONE COLLECTION THAT COUNTS BY ADDRESS. `countFrom` backs the chat
+  // short-circuit for "how many emails from <Name>?", which answers WITHOUT an
+  // LLM call — so it is on a user-visible latency path, over a collection
+  // D-230 sized to 2 GB. Without this index the count scans the whole mailbox
+  // every time; the query's JSON path was a BIND, which made an index
+  // impossible until `countByAddress` was specialised per field.
+  table.ensureAddressIndex('from');
+  // The mail-twin join (`createMailTwinResolver` → `findByHotFieldIn`) looks up
+  // by Message-ID with NO limit. Exact-match index, because Message-IDs are
+  // case-sensitive and must not fold.
+  table.ensureHotFieldIndex(MAIL_RFC_MESSAGE_ID_HOT_FIELD);
 
   const emitter = createCollectionEmitter({
     bus,

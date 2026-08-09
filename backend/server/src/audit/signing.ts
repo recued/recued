@@ -193,6 +193,7 @@ export const createSigningAuditLog = (
   return {
     append: (entry, opts) => underlying.append(entry, opts),
     listRecent: (limit, opts) => underlying.listRecent(limit, opts),
+    listWindow: (query) => underlying.listWindow(query),
     listByRecipe: (recipe_id, limit) => underlying.listByRecipe(recipe_id, limit),
     listByChannelSession: (id, limit, axis) =>
       underlying.listByChannelSession(id, limit, axis),
@@ -204,6 +205,12 @@ export const createSigningAuditLog = (
     // ⚠ This decorator is EXHAUSTIVE by construction: `AuditLogStore` is
     // an interface, so a store method added without a line here fails to
     // compile rather than silently reaching the signing path unwrapped.
+    listByExchangeRef: (exchange_ref, limit, axis) =>
+      underlying.listByExchangeRef(exchange_ref, limit, axis),
+    listPendingExchangeRefs: (limit) => underlying.listPendingExchangeRefs(limit),
+    listInboundContractIds: (limit) => underlying.listInboundContractIds(limit),
+    listByPeerContract: (contract_id, limit, axis) =>
+      underlying.listByPeerContract(contract_id, limit, axis),
     listByDish: (dish_id, limit, axis) =>
       underlying.listByDish(dish_id, limit, axis),
     latestByDishes: (dish_ids) => underlying.latestByDishes(dish_ids),

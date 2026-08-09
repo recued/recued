@@ -151,6 +151,44 @@ const afterCursorEntry = (e: MemoryListEntry, cursor: MemoryCursor): boolean => 
   return e.memory_id < cursor.id;
 };
 
+/** Strictly-after-cursor over the same order, on raw parts rather than an
+ *  entry — the windowing loop compares tails and entries against one another. */
+const afterCursor = (ts: number, id: string, cursor: MemoryCursor): boolean =>
+  (ts !== cursor.ts ? ts < cursor.ts : id < cursor.id);
+
+/** `compareEntriesDesc` over bare cursors: negative when `a` comes FIRST. */
+const compareCursorsDesc = (a: MemoryCursor, b: MemoryCursor): number =>
+  (b.ts - a.ts) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+
+/** The keyset position of a source's last returned row. Typed per source
+ *  rather than through one `Record<string, unknown>` helper: a shared signature
+ *  loose enough to accept both rows also accepts a row with NEITHER timestamp,
+ *  and would silently take the `?? 0` branch — a horizon of 0 covers nothing and
+ *  the loop would spin without advancing.
+ *
+ *  Both stores order by `COALESCE(event_at, <ingestion>) DESC, <id> DESC`,
+ *  matching the union's `compareEntriesDesc` — if those orders ever drift apart
+ *  the horizon stops bounding anything, which is why both `listWindow`
+ *  implementations state their order in the same terms. */
+const auditTailCursor = (row: AuditEntry): MemoryCursor =>
+  ({ ts: row.event_at ?? row.started_at, id: row.run_id });
+
+const userTailCursor = (row: UserMemoryRow): MemoryCursor =>
+  ({ ts: row.event_at ?? row.ts, id: row.memory_id });
+
+/** Rows per source per round. Above the default page size so the common
+ *  unfiltered first page resolves in ONE round. */
+const MEMORY_LIST_MIN_WINDOW = 128;
+/** Ceiling on a single round's read, so a pathological filter cannot walk the
+ *  whole table in one request. */
+const MEMORY_LIST_MAX_WINDOW = 4096;
+/** ⛔ A BOUND ON THE WALK, NOT ON THE ANSWER. A filter matching nothing for a
+ *  very long stretch would otherwise page through the entire log inside one
+ *  request. Stopping early can only return a SHORT page — never a wrong one —
+ *  and the cursor still advances, so the client's next call resumes where this
+ *  one stopped rather than losing the rows. */
+const MEMORY_LIST_MAX_ROUNDS = 12;
+
 /** Project a stored audit/memory row onto the wire shape. `body_preview` /
  *  `reason_code` stay absent for engine/AI-authored audit rows (they carry
  *  no user payload); the feed surfaces origin + kind + summary + time +
@@ -228,49 +266,115 @@ export const handleMemoryList = async (
   const origin_actors = sanitizeActors(args.origin_actors);
   const cursor = decodeCursor(args.cursor);
 
-  // Reuse the storage origin filter (D-161 P3). A MAX slice returns every
-  // matched row (the store materializes all rows internally regardless).
-  const auditRows = await deps.auditLog.listRecent(Number.MAX_SAFE_INTEGER, {
-    ...(origin_actors ? { origin_actors } : {}),
-  });
+  // ⛔ THE FEED IS PAGINATED, SO THE READ MUST BE TOO. This used to fetch
+  // `listRecent(Number.MAX_SAFE_INTEGER)` — the ENTIRE audit log — plus the
+  // ENTIRE `user_memory` store, project both, and slice 50 rows off the front.
+  // Measured on real 698 B rows: 401ms and 393 MB of resident heap to render
+  // ONE page at 200k entries, linear in the table. D-230 raised the audit
+  // ceiling to 5 GB and left `user_memory` with no quota at all, so at the
+  // prune trigger that page is ~5s and ~4.9 GB — the same shape that OOM'd the
+  // harness at 3.1 GB. The old comment called the store "small next to the full
+  // audit scan above", which was true and is the wrong comparison: both were
+  // unbounded.
+  //
+  // 🔑 WHAT MOVES AND WHAT DOES NOT. Only ORDER + LIMIT + CURSOR go to SQL.
+  // Every predicate stays in JS over the projected union exactly as before, so
+  // the feed's semantics do not move — a `kind`/`since`/`until`/origin filter
+  // still reads the projection, not the row. Getting pagination subtly wrong
+  // shows up as duplicated or skipped entries, which is worse than slow.
+  //
+  // ⛔ THE HORIZON IS THE WHOLE CORRECTNESS ARGUMENT. Two sources are windowed
+  // INDEPENDENTLY, so merging their tops is only trustworthy down to whichever
+  // one ran out of window FIRST. Below that point the truncated source may hold
+  // rows that belong ahead of rows the other source did supply, and taking the
+  // naive merge would silently drop them. So each round keeps only entries at
+  // or above `horizon` — the shallowest truncated tail — and re-enters from
+  // there. When neither source filled its window nothing is truncated, the
+  // horizon is unbounded, and the round is the last one.
+  const store = deps.userMemoryStore;
 
-  // UNION in the `user_memory` store rows. The store holds owner-authored
-  // `user_self` rows AND (D-198 Slice 4) `contracted_user` AI/customer writes,
-  // so fetch whenever the store exists — the origin filter is applied over the
-  // union below (a store-level `user_self`-only short-circuit would hide the
-  // contracted_user rows the "AI" origin filter must surface). "One pool" (§2)
-  // = this read union; the audit log stays a pure run record. The store list is
-  // small (owner notes + AI writes) next to the full audit scan above.
-  const userRows = deps.userMemoryStore !== undefined
-    ? await deps.userMemoryStore.list()
-    : [];
+  const collected: MemoryListEntry[] = [];
+  let from: MemoryCursor | undefined = cursor;
+  // One extra row is what tells `hasMore` from "exactly a full page".
+  const want = limit + 1;
+  let window = Math.max(want, MEMORY_LIST_MIN_WINDOW);
+  let rounds = 0;
+  /** True only when a round proved BOTH sources ran out. Anything else that
+   *  ends the walk — a full page, the round cap — leaves rows below `from`. */
+  let exhausted = false;
 
-  // Project both sources to the wire shape FIRST, then filter / sort / paginate
-  // over one basis (`kind` + effective-time filters read the projection, so the
-  // audit-only path stays byte-identical to Slice 1a).
-  const all: MemoryListEntry[] = [
-    ...auditRows.map(auditRowToEntry),
-    ...userRows.map(userRowToEntry),
-  ];
+  while (collected.length < want) {
+    // ⚠ A JS-side filter can reject an unbounded run of rows (a feed filtered
+    // to `kind: 'note'` over a log of engine runs), so a fixed window would
+    // return a short page that looks like the end of the feed. The window
+    // grows per round instead, which turns a selective filter into a few
+    // doubling reads rather than either a short page or a full scan.
+    if (rounds >= MEMORY_LIST_MAX_ROUNDS) break;   // resumable; see below
+    rounds += 1;
 
-  const filtered = all.filter((e) => {
-    // Origin filter over the UNION. The audit source is already pre-filtered by
-    // `listRecent(origin_actors)`; re-applying here (harmless for audit rows)
-    // extends the SAME filter to the store rows — so filtering to `contracted_user`
-    // surfaces both AI audit rows and AI-written store rows.
-    if (origin_actors !== undefined && !origin_actors.includes(e.origin_actor)) return false;
-    if (args.kind !== undefined && e.kind !== args.kind) return false;
-    const et = entryEffectiveTs(e);
-    if (typeof args.since === 'number' && et < args.since) return false;
-    if (typeof args.until === 'number' && et > args.until) return false;
-    return true;
-  });
+    const [auditRows, userRows] = await Promise.all([
+      deps.auditLog.listWindow({ limit: window, ...(from ? { before: from } : {}) }),
+      store !== undefined
+        ? store.listWindow({ limit: window, ...(from ? { before: from } : {}) })
+        : Promise.resolve([]),
+    ]);
 
-  filtered.sort(compareEntriesDesc);
+    // ⚠ A SHORT SOURCE CONTRIBUTES NO HORIZON — because it has nothing left to
+    //   hide, not because including it would be wrong. Treating any non-empty
+    //   source as a bound still returns the same rows (`from` advances to that
+    //   tail and the next round picks up the remainder); it just spends an extra
+    //   round doing it. Stated because a mutation flipping this to
+    //   `length > 0` survives the suite, and that is the honest reason why.
+    const auditFull = auditRows.length >= window;
+    const userFull = userRows.length >= window;
 
-  const afterCur = cursor ? filtered.filter((e) => afterCursorEntry(e, cursor)) : filtered;
-  const page = afterCur.slice(0, limit);
-  const hasMore = afterCur.length > limit;
+    // Project to the wire shape FIRST, then filter over one basis — unchanged.
+    const batch = [
+      ...auditRows.map(auditRowToEntry),
+      ...userRows.map(userRowToEntry),
+    ].sort(compareEntriesDesc);
+
+    // The shallowest truncated tail. `undefined` = neither source was cut off.
+    const auditTail = auditFull ? auditTailCursor(auditRows[auditRows.length - 1]!) : undefined;
+    const userTail = userFull ? userTailCursor(userRows[userRows.length - 1]!) : undefined;
+    const horizon = auditTail === undefined ? userTail
+      : userTail === undefined ? auditTail
+        : (compareCursorsDesc(auditTail, userTail) <= 0 ? auditTail : userTail);
+
+    const covered = horizon === undefined
+      ? batch
+      : batch.filter((e) => !afterCursor(entryEffectiveTs(e), e.memory_id, horizon));
+
+    for (const e of covered) {
+      if (origin_actors !== undefined && !origin_actors.includes(e.origin_actor)) continue;
+      if (args.kind !== undefined && e.kind !== args.kind) continue;
+      const et = entryEffectiveTs(e);
+      if (typeof args.since === 'number' && et < args.since) continue;
+      if (typeof args.until === 'number' && et > args.until) continue;
+      collected.push(e);
+    }
+
+    if (horizon === undefined) { exhausted = true; break; }  // the real end
+    from = horizon;
+    window = Math.min(window * 2, MEMORY_LIST_MAX_WINDOW);
+  }
+
+  // ⚠ The origin filter is applied in JS above rather than passed to
+  // `listWindow`. `listRecent`'s storage-level filter (D-161 P3) drops rows
+  // BEFORE the slice, which is why it could not be windowed; re-applying the
+  // same predicate over the union is what extends it to the store rows, so
+  // filtering to `contracted_user` still surfaces both AI audit rows and
+  // AI-written store rows.
+  const page = collected.slice(0, limit);
+
+  // ⛔ A TRUNCATED WALK MUST STILL HAND BACK A CURSOR. `hasMore` was
+  // `collected.length > limit` alone, which is only honest when the walk
+  // reached the end of the feed. Stop on the round cap with a short page and
+  // that yields NO `next_cursor` — the client reads "end of feed" and every
+  // matching row below the stopping point becomes unreachable, silently, for a
+  // filter that may have hundreds of matches left. The round cap is supposed to
+  // bound the WALK, not the ANSWER.
+  const hasMore = collected.length > limit || (!exhausted && from !== undefined);
 
   // Redaction overlay (§5) — applied to the page only; `redactEntry` preserves
   // `memory_id` + effective time, so the cursor is unaffected.
@@ -280,9 +384,16 @@ export const handleMemoryList = async (
     : page.map((e) => (redactedIds.has(e.memory_id) ? redactEntry(e) : e));
 
   const response: MemoryListResponse = { entries };
-  if (hasMore && page.length > 0) {
+  if (collected.length > limit && page.length > 0) {
+    // Rows were dropped from the tail of this page — resume at the last one
+    // SERVED, not at the walk position, or the remainder is skipped.
     const last = page[page.length - 1]!;
     response.next_cursor = encodeCursor({ ts: entryEffectiveTs(last), id: last.memory_id });
+  } else if (hasMore && from !== undefined) {
+    // The round cap fired. Everything down to `from` is already in this page,
+    // so resume at the walk position — which also skips re-scanning the
+    // non-matching stretch the cap was hit on.
+    response.next_cursor = encodeCursor(from);
   }
   return response;
 };

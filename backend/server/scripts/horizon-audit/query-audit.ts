@@ -47,7 +47,22 @@ export type QueryVerdict =
   | 'analysed-partial'
   | 'unresolved-interpolation'
   | 'explain-failed'
-  | 'not-explainable';
+  | 'not-explainable'
+  /** Not SQLite against THIS database, so it was never analysable here.
+   *
+   *  ⛔ SEPARATE FROM `not-explainable` ON PURPOSE. That bucket means "the audit
+   *  should be able to read this and could not" — a coverage hole worth closing.
+   *  This one means "there is nothing here for a SQLite EXPLAIN to say", and
+   *  mixing them makes the coverage number unreadable in both directions: it
+   *  overstates the hole, and it hides real holes among permanent ones.
+   *
+   *  Two sources, both structural:
+   *    - `backend/api/` is the CLOUD, which runs on a different database
+   *      entirely (its `hostnames` table does not exist in a server realm) —
+   *      15 statements;
+   *    - `data/salesforce/` issues SOQL, whose `Account` / `Contact` /
+   *      `Opportunity` / `PushTopic` are Salesforce objects, not tables — ~9. */
+  | 'out-of-scope';
 
 export interface AnalysedQuery extends ExtractedQuery {
   /** The statement with `${}` holes resolved — what actually EXPLAINed.
@@ -59,9 +74,155 @@ export interface AnalysedQuery extends ExtractedQuery {
   readonly resolvedSql?: string;
   readonly verdict: QueryVerdict;
   readonly plan: readonly string[];
+  /** Tables read by a TRUE full scan — every row of the table b-tree.
+   *
+   *  ⛔ THIS USED TO INCLUDE INDEX WALKS, and that made the audit unable to
+   *  measure its own progress. The regex was `^SCAN (?:TABLE )?(\w+)`, which
+   *  matches `SCAN t USING INDEX ix` just as happily as `SCAN t` — so four
+   *  fixes that turned real table scans into ordered index walks moved the
+   *  headline total by 2. Worse, plans that were ALREADY OPTIMAL were being
+   *  reported as findings: `SCAN t USING INDEX ix` under a LIMIT reads LIMIT
+   *  entries off the top of an index and stops, which is exactly what a
+   *  first page should do. */
   readonly scans: readonly string[];
+  /** Tables read by walking an index rather than the table — `SCAN t USING
+   *  [COVERING] INDEX ix` — each with the index that was walked.
+   *
+   *  ⚠ NOT automatically fine, and not automatically a defect. Under a LIMIT it
+   *  is the optimal shape. UNBOUNDED it is still O(rows), just with narrower
+   *  rows than a table scan — so those are reported separately rather than
+   *  folded into either bucket.
+   *
+   *  ⚠ …UNLESS THE INDEX IS PARTIAL, which is why the name is carried. A walk
+   *  over `… WHERE source_lifecycle = 'pending'` reads the handful of rows
+   *  matching that predicate, not the table — the bucket flagged a query the
+   *  previous commit had just FIXED until it could tell the difference. */
+  readonly indexWalks: ReadonlyArray<{ table: string; index: string }>;
   readonly reason?: string;
 }
+
+/** Split an `EXPLAIN QUERY PLAN` into TRUE full scans and index walks.
+ *
+ *  ⛔ THE `USING INDEX` SUFFIX IS THE WHOLE DISTINCTION, and missing it made
+ *  this audit unable to measure its own progress. The original regex was
+ *  `^SCAN (?:TABLE )?(\w+)`, which matches `SCAN t USING INDEX ix` exactly as
+ *  happily as `SCAN t`. Two consequences, both bad:
+ *
+ *    - plans that were ALREADY OPTIMAL were reported as findings. `SCAN t USING
+ *      INDEX ix` under a LIMIT reads LIMIT entries off the top of an index and
+ *      stops — precisely what a first page should do;
+ *    - fixing a real table scan into an ordered index walk moved the headline
+ *      total by ~nothing, so the number could not be used to tell whether the
+ *      sweep was working. Measured on the real tree: 258 reported scans, of
+ *      which 91 (35%) were index walks.
+ *
+ *  ⚠ AN INDEX WALK IS NOT AUTOMATICALLY FINE — unbounded it is still O(rows),
+ *  just over narrower ones. It gets its own bucket rather than being folded
+ *  into either pile; `query-audit-run.ts` reports the ones with no LIMIT.
+ *
+ *  ⚠ `SEARCH` rows are neither: they seek, and are what the fixes aim for. */
+export const classifyPlan = (
+  plan: readonly string[],
+): { scans: string[]; indexWalks: Array<{ table: string; index: string }> } => {
+  const scans: string[] = [];
+  const indexWalks: Array<{ table: string; index: string }> = [];
+  for (const detail of plan) {
+    const m = /^SCAN (?:TABLE )?([A-Za-z0-9_]+)(.*)$/.exec(detail);
+    if (m === null) continue;             // SEARCH / USE TEMP B-TREE / …
+    // ⛔ AN *AUTOMATIC* INDEX IS A SCAN, and deliberately so. SQLite reports
+    // `SCAN t USING AUTOMATIC COVERING INDEX` when NO PERSISTENT INDEX EXISTED
+    // and it built a transient one for this statement — which means it read the
+    // whole table to do it, and will do so again on every execution. That is a
+    // missing index, i.e. exactly the finding, so it belongs in `scans` even
+    // though the text says `USING … INDEX`.
+    //
+    // ⚠ The pattern excludes it EXPLICITLY. It already landed in the right
+    // bucket by accident, because `AUTOMATIC` sits between `USING` and
+    // `COVERING` and broke the match — an accident is not a decision, and the
+    // next person to loosen this pattern would silently reclassify every
+    // automatic index as a healthy walk.
+    const suffix = m[2]!;
+    const walked = /\bUSING\s+(COVERING\s+)?INDEX\b/.test(suffix)
+      && !/\bAUTOMATIC\b/.test(suffix);
+    if (walked) {
+      // ⚠ THE INDEX NAME IS LOAD-BEARING, not decoration: a walk over a PARTIAL
+      // index is bounded by that index's WHERE, not by the table, and the
+      // caller uses the name to look that up.
+      const named = /\bUSING\s+(?:COVERING\s+)?INDEX\s+([A-Za-z0-9_]+)/.exec(suffix);
+      indexWalks.push({ table: m[1]!, index: named?.[1] ?? '' });
+    } else scans.push(m[1]!);
+  }
+  return { scans, indexWalks };
+};
+
+/** A predicate for "is this scanned name a REAL user table?", built from the
+ *  schema the audit EXPLAINed against.
+ *
+ *  ⛔ THE NOISE THIS REMOVES. `EXPLAIN QUERY PLAN` names whatever the query
+ *  called the thing it scanned, so a CTE (`absorbed`, `merged_sources`), a join
+ *  alias (`a`, `s`, `dispatch`, `attempt`), a table-valued function
+ *  (`json_each`, `pragma_table_info`) and the literal `CONSTANT` all arrived as
+ *  "tables that were scanned". Measured on the real tree: 13 of the reported
+ *  names were not tables, and filtering them dropped the headline from 161 full
+ *  scans to 101.
+ *
+ *  🔑 Checking the SCHEMA is the principled version of the hardcoded
+ *  `CONSTANT || json_each` list this replaced — anything absent from the schema
+ *  cannot be a table scan, whatever it is called, and the list needed a new
+ *  entry every time a query introduced a new alias.
+ *
+ *  ⚠ `sqlite_master` is excluded BY NAME because it is a real table: reading the
+ *  schema is never the finding, and it alone accounted for 34 scans.
+ *
+ *  ⚠ SCANNING A CTE IS NOT FREE, it is just not a MISSING INDEX. The contact
+ *  merge walk's `SCAN absorbed` reads the recursive result it just built, while
+ *  its contacts half already seeks. Reporting it sends a reader hunting an index
+ *  that would change nothing. */
+export const makeRealTableFilter = (
+  tables: readonly string[],
+): ((name: string) => boolean) => {
+  const known = new Set(tables);
+  return (name: string): boolean => known.has(name) && !name.startsWith('sqlite_');
+};
+
+/** Rewrite named binds (`:name`, `@name`, `$name`) to `?`, OUTSIDE string
+ *  literals only.
+ *
+ *  ⛔ THE BUG THIS REPLACES. The one-line `replace(/[:@$][a-zA-Z_]\w*\/g, '?')`
+ *  rewrote inside quoted strings too, so
+ *      WHERE bucket_key LIKE 'per_ip_global:hz-expired-%'
+ *  became `'per_ip_global?-expired-%'`. The arity count then saw a placeholder
+ *  the statement does not have, bound a null for it, and EXPLAIN answered
+ *  "Too many parameter values were provided" — a statement with NO binds at all
+ *  reported as unanalysable because the instrument invented one. Five
+ *  statements, including `'kernel:mcp-recipe-callback'`.
+ *
+ *  ⚠ Handles the SQL `''` escape: inside a literal, a doubled quote is a quote,
+ *  not the end of the string. Getting that wrong flips the in/out state for the
+ *  rest of the statement and corrupts everything after it. */
+export const normaliseNamedBinds = (sql: string): string => {
+  let out = '';
+  let i = 0;
+  let inLiteral = false;
+  while (i < sql.length) {
+    const ch = sql[i]!;
+    if (inLiteral) {
+      out += ch;
+      if (ch === "'") {
+        if (sql[i + 1] === "'") { out += "'"; i += 2; continue; }  // escaped quote
+        inLiteral = false;
+      }
+      i += 1;
+      continue;
+    }
+    if (ch === "'") { inLiteral = true; out += ch; i += 1; continue; }
+    const m = /^[:@$][a-zA-Z_][a-zA-Z0-9_]*/.exec(sql.slice(i));
+    if (m) { out += '?'; i += m[0].length; continue; }
+    out += ch;
+    i += 1;
+  }
+  return out;
+};
 
 const SKIP_DIRS = new Set([
   'node_modules', 'dist', '.git', 'coverage', '__tests__', 'test-results',
@@ -111,12 +272,45 @@ const SQL_SHAPES: readonly RegExp[] = [
 ];
 const looksLikeSql = (s: string): boolean => SQL_SHAPES.some((re) => re.test(s));
 
+/** Blank out comment BODIES, preserving every offset and newline.
+ *
+ *  ⛔ THE AUDIT WAS EXTRACTING PROSE AS SQL. The scan walks template literals
+ *  and quoted strings over raw text with no comment awareness, so a backticked
+ *  snippet inside a JSDoc block came through with its leading asterisks —
+ *      DELETE FROM
+ *       *  audit_entries
+ *  — and sat in the closable bucket as a parse failure that can never be
+ *  closed, because it was never a statement. Same for a `//`-commented fragment
+ *  inside a template.
+ *
+ *  🔑 SPACES, NOT DELETION. Line numbers are computed from offsets in this same
+ *  text, so removing characters would silently misreport every location after
+ *  the first comment. Newlines are kept for the same reason.
+ *
+ *  ⚠ Deliberately simple: `[^:]` before `//` keeps `https://` intact, which is
+ *  enough for this repo's own source, and it can only ever make the extractor
+ *  look at LESS prose — never at less code. The D-212 chokepoint ratchet uses
+ *  the same shape for the same reason. */
+export const blankComments = (text: string): string => {
+  const blank = (m: string): string => m.replace(/[^\n]/g, ' ');
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, blank)
+    .replace(/(^|[^:])\/\/[^\n]*/g, (m, pre: string) => pre + blank(m.slice(pre.length)));
+};
+
 /** Pull every template-literal / quoted string that looks like SQL, with its
  *  1-based line number. Deliberately dumb and deliberately over-inclusive:
  *  a false candidate fails to EXPLAIN and is COUNTED as such, whereas a missed
  *  one is invisible. Over-inclusion is the safe direction. */
-export const extractQueries = (file: string, text: string): ExtractedQuery[] => {
+/** ⚠ Over-inclusion is why a handful of PROSE strings ("Delete from shared
+ *  store", a manifest description) sit permanently in the failed bucket. That is
+ *  the stated trade and it is the right one: tightening the matcher to reject
+ *  them risks dropping real SQL, which would be invisible. Left alone
+ *  deliberately. */
+export const extractQueries = (file: string, rawText: string): ExtractedQuery[] => {
   const out: ExtractedQuery[] = [];
+  // ⚠ Offsets stay valid because `blankComments` substitutes spaces in place.
+  const text = blankComments(rawText);
   const lineOf = (idx: number): number => text.slice(0, idx).split('\n').length;
 
   // Template literals. Nested `${ ... }` may contain backticks; step over them.
@@ -177,9 +371,45 @@ export type HoleKind =
    *  when wrong (a mis-filled hole simply fails to EXPLAIN, exactly as it did
    *  before). */
   | 'clause'
+  /** A clause fragment that SUPPLIED THE `WHERE`, detected because the text
+   *  after it continues with `AND` / `OR`. Filling it with '' — the ordinary
+   *  clause stub — leaves a dangling `AND` and the statement stops parsing:
+   *      FROM ${TASK_TABLE} ${relationshipVisible.sql}
+   *        AND assigned_contact_id IN (SELECT value FROM json_each(?))
+   *  Stubbed `WHERE 1=1` so the residual conjunction has something to attach
+   *  to. */
+  | 'where-fragment'
+  /** A predicate fragment spliced INTO an existing WHERE, with a live
+   *  conjunction on BOTH sides — `WHERE a=? ${aheadWhere} AND b<>?`. Filling
+   *  `1=1` (the plain predicate stub) yields `a=? 1=1 AND b<>?`, which does not
+   *  parse; the fragment must supply its own leading conjunction. */
+  | 'conjunct-fragment'
+  /** An UPDATE's `SET` list. Stubbed with a self-assignment-shaped fragment so
+   *  the statement parses; the plan is real SQL but not THIS query's. */
+  | 'assignments'
   | 'unknown';
 
 const CLAUSE_NAME_RE = /(where|order|group|having|limit|clause|filter|sort|predicate)/i;
+
+/** Which fragment shape a clause-ish hole is, given what surrounds it.
+ *
+ *  ⛔ THE THREE CASES DIFFER ONLY BY CONTEXT, and getting one wrong produces SQL
+ *  that parses WORSE than the unfixed version:
+ *    - a live conjunction FOLLOWS and no WHERE precedes → the fragment supplied
+ *      the WHERE          ⇒ `WHERE 1=1`
+ *    - a live conjunction FOLLOWS and a WHERE already precedes → it is spliced
+ *      between two predicates and must bring its own AND
+ *                         ⇒ `AND 1=1`   (`WHERE 1=1` here makes a second WHERE)
+ *    - nothing conjoins after it → an ordinary clause ⇒ ''
+ *
+ *  Written once because I first patched two of the three call sites separately
+ *  and they disagreed: `${aheadWhere}` matched the name rule, got `WHERE 1=1`,
+ *  and produced `pack_slug=? WHERE 1=1 AND version<>?`. */
+const clauseShape = (before: string, after: string): HoleKind => {
+  const conjoinsAfter = /^\$\{[^}]*\}\s*(AND|OR)\b/i.test(after);
+  if (!conjoinsAfter) return 'clause';
+  return /\bWHERE\b/i.test(before) ? 'conjunct-fragment' : 'where-fragment';
+};
 
 export const holeKind = (sql: string, index: number): HoleKind => {
   const before = sql.slice(Math.max(0, index - 60), index);
@@ -188,12 +418,39 @@ export const holeKind = (sql: string, index: number): HoleKind => {
   const ident = nameM ? nameM[1] : '';
   if (/\b(FROM|JOIN|INTO|UPDATE|TABLE)\s+"?$/i.test(before)) return 'table';
   if (/\bIN\s*\($/i.test(before)) return 'in-list';
+  // A hole inside a VALUES tuple is a BIND list, not a column list. `'*'` here
+  // would produce `VALUES (?,?,*)`.
+  if (/\bVALUES\s*\([^)]*$/i.test(before)) return 'in-list';
   if (/\b(WHERE|AND|OR)\s+$/i.test(before)) return 'predicate';
   if (/\bSELECT\s+$/i.test(before)) return 'column-list';
   if (/\bORDER\s+BY\s+$/i.test(before)) return 'order-by';
+  // ⛔ THESE MUST STAY ABOVE THE NAME-BASED RULE. I first appended them below
+  // it and `AND (${filters.join(' OR ')})` matched CLAUSE_NAME_RE on the word
+  // "filter", got filled with '', and produced `AND ()` — a statement that
+  // parsed WORSE than before. The header two lines down states this ordering;
+  // I broke it in the same edit that relied on it.
+  //
+  // A hole opening a parenthesised predicate group. The keyword rule above
+  // wants whitespace before the hole and finds `(`.
+  if (/\b(WHERE|AND|OR|HAVING)\s*\($/i.test(before)) return 'predicate';
+  // An UPDATE's assignment list — `SET ${assignments},…` and the mid-list
+  // `SET kind=?,${assignments},…`.
+  if (/\bSET\s+$/i.test(before)) return 'assignments';
+  if (/\bSET\b[^;()]*,\s*$/i.test(before)) return 'assignments';
+  // ⛔ A HOLE FOLLOWING ANOTHER HOLE IS A MODIFIER OF IT, not a second table.
+  // `FROM ${ROW_TABLE}${indexedBy}` (an optional INDEXED BY, no separator) and
+  // `DELETE FROM ${T} ${sql}` (a WHERE fragment, one space) both landed on
+  // `unknown`, and the candidate loop then put THE SAME TABLE NAME in both —
+  // `FROM core_recordswork_entity_source_sync_state`, `annotation annotation`.
+  // Whitespace-tolerant because the two forms differ only by a space.
+  // ⛔ CHECK WHAT FOLLOWS, not just what precedes. A clause hole whose text
+  // continues with `AND` / `OR` must have supplied the WHERE itself; stubbing
+  // it '' leaves a dangling conjunction and the statement stops parsing.
+  if (/\}\s*$/.test(before)) return clauseShape(before, after);
+
   // Name-based, checked AFTER every positional rule so a hole in a real
   // keyword slot is never mistaken for a clause.
-  if (CLAUSE_NAME_RE.test(ident)) return 'clause';
+  if (CLAUSE_NAME_RE.test(ident)) return clauseShape(before, after);
   // A hole immediately followed by the end of a WHERE clause is a predicate
   // fragment appended by a builder (`… ${reserveSql}\`).
   if (/^\$\{[^}]*\}\s*(ORDER|GROUP|LIMIT|\)|$)/i.test(after)
@@ -209,6 +466,9 @@ const fillForKind = (kind: HoleKind): string | undefined => {
     case 'column-list': return '*';
     case 'order-by': return '1';
     case 'clause': return '';
+    case 'where-fragment': return 'WHERE 1=1';
+    case 'conjunct-fragment': return 'AND 1=1';
+    case 'assignments': return 'updated_at=updated_at';
     default: return undefined;
   }
 };
@@ -221,24 +481,81 @@ export const resolveInterpolations = (
 ): { candidates: string[]; partial: boolean } => {
   if (!sql.includes('${')) return { candidates: [sql], partial: false };
 
+  // ⛔ A WHOLLY-DYNAMIC INSERT COLUMN LIST HAS TO LOSE ITS PARENS TOO. The
+  // table-rebuild migrations build
+  //     INSERT INTO ${rebuildTable} (${projection}) SELECT ${projection} FROM ${T}
+  // and a hole fill can only replace the HOLE — so any stand-in leaves `()`,
+  // which does not parse, while `'*'` gives `(a,b,*)`, which is not a column
+  // list. Dropping the group entirely yields `INSERT INTO t SELECT … FROM u`,
+  // which is valid AND keeps the half that matters: the SELECT's plan.
+  //
+  // ⚠ Only when the hole IS the whole list. `records/store.ts` writes
+  // `(publisher,…,payload_bytes,${columns})` with a matching `${placeholders}`
+  // in VALUES — stubbing one without the other changes the column/value counts,
+  // so that shape stays unanalysable and is reported as such rather than
+  // guessed at.
+  let working0 = sql;
+  // ⚠ ONLY WHEN A `SELECT` FOLLOWS. Dropping the list from an
+  // `INSERT INTO t (${cols}) VALUES (?)` leaves `INSERT INTO t VALUES (?)`,
+  // which must then match the table's FULL arity — `contacts_fts has 2 columns
+  // but 1 values were supplied`. I introduced exactly that in the first cut of
+  // this rule; a SELECT source has no such count to satisfy.
+  const wholeInsertList = /(\bINSERT\b[^(]*?)\(\s*\$\{[^}]*\}\s*\)(\s*SELECT\b)/i;
+  let droppedInsertList = false;
+  while (wholeInsertList.test(working0)) {
+    working0 = working0.replace(
+      wholeInsertList,
+      (_m, head: string, tail: string) => head + tail,
+    );
+    droppedInsertList = true;
+  }
+  if (droppedInsertList) {
+    const inner = resolveInterpolations(working0, tables, hintTables, constants);
+    return { candidates: inner.candidates, partial: true };
+  }
+
   // Fill every hole whose kind is NOT a table with a syntactically valid stand-in.
+  //
+  // ⛔ SKIP THE UNFILLABLE ONES, DO NOT STOP AT THEM. This used to `exec` the
+  // FIRST hole and `break` when it could not be filled — so in
+  //   SELECT * FROM ${tableName} ${whereClause} ${orderClause}
+  // it hit the TABLE hole first, broke, and never reached the two clause holes
+  // it would have classified perfectly well. All three then fell through to the
+  // candidate loop below, which puts THE SAME TABLE NAME in every unresolved
+  // hole — producing `… work_entity_source_sync_state work_entity_source_sync_state`
+  // where a WHERE and an ORDER BY belonged.
+  //
+  // Every one of those statements then failed to EXPLAIN and was filed under
+  // "not analysed". Measured on the real tree: 27 statements, i.e. 27 queries
+  // the audit had never checked because of the order it happened to visit their
+  // holes in.
   let working = sql;
   let partial = false;
   for (;;) {
-    const m = /\$\{[^}]*\}/.exec(working);
-    if (!m) break;
-    const kind = holeKind(working, m.index);
-    const fill = fillForKind(kind);
-    if (fill === undefined) break; // a table (or unknown) hole — handled below
-    if (kind === 'predicate' || kind === 'column-list' || kind === 'clause') partial = true;
-    working = working.slice(0, m.index) + fill + working.slice(m.index + m[0].length);
+    const matches = [...working.matchAll(/\$\{[^}]*\}/g)];
+    const target = matches.find(
+      (m) => fillForKind(holeKind(working, m.index ?? 0)) !== undefined,
+    );
+    if (target === undefined) break;   // only table / unknown holes left
+    const at = target.index ?? 0;
+    const kind = holeKind(working, at);
+    const fill = fillForKind(kind)!;
+    if (kind === 'predicate' || kind === 'column-list' || kind === 'clause'
+        || kind === 'assignments' || kind === 'where-fragment'
+        || kind === 'conjunct-fragment') partial = true;
+    working = working.slice(0, at) + fill + working.slice(at + target[0].length);
   }
 
   const holes = [...working.matchAll(/\$\{[^}]*\}/g)].map((x) => x[0]);
   const uniqueHoles = [...new Set(holes)];
   if (uniqueHoles.length === 0) return { candidates: [working], partial };
-  if (uniqueHoles.length > 3) return { candidates: [], partial };
 
+  // ⛔ RESOLVE EXACTLY *BEFORE* APPLYING THE CAP. The `> 3` limit exists to
+  // bound GUESSING — with N unresolved holes the candidate loop puts one table
+  // into all of them, and past a few holes that is noise. But a statement whose
+  // every hole is a KNOWN CONSTANT needs no guess at all, and the cap was
+  // rejecting those unread: three statements, each naming four table constants
+  // the map already held.
   const exact = uniqueHoles.map((hole) => {
     const ident = hole.slice(2, -1).trim().replace(/^this\./, '');
     return constants.get(ident);
@@ -248,6 +565,9 @@ export const resolveInterpolations = (
     uniqueHoles.forEach((hole, i) => { filled = filled.split(hole).join(exact[i]!); });
     return { candidates: [filled], partial };
   }
+
+  // The cap applies HERE — this is the guessing path.
+  if (uniqueHoles.length > 3) return { candidates: [], partial };
 
   const candidates = [...new Set([...hintTables, ...tables])];
   const out: string[] = [];
@@ -331,7 +651,7 @@ export const analyse = (
     );
     if (candidates.length === 0) {
       out.push({
-        ...q, verdict: 'unresolved-interpolation', plan: [], scans: [],
+        ...q, verdict: 'unresolved-interpolation', plan: [], scans: [], indexWalks: [],
         reason: 'more than three distinct `${}` holes — not a plain table name',
       });
       continue;
@@ -344,7 +664,7 @@ export const analyse = (
       // provided", i.e. the instrument refusing to look, reported as if the
       // statement were unanalysable. Named binds are normalised to `?` and the
       // right number of nulls is supplied.
-      const normalised = candidate.replace(/[:@$][a-zA-Z_][a-zA-Z0-9_]*/g, '?');
+      const normalised = normaliseNamedBinds(candidate);
       // ⚠ Multi-statement strings (`CREATE TABLE …; CREATE INDEX …`) are
       // "incomplete input" to EXPLAIN. Take the first executable statement;
       // DDL is not what this audit is about.
@@ -355,9 +675,7 @@ export const analyse = (
         const plan = (
           db.prepare(`EXPLAIN QUERY PLAN ${single}`).all(...binds) as PlanRow[]
         ).map((r) => r.detail);
-        const scans = plan
-          .map((d) => /^SCAN (?:TABLE )?([A-Za-z0-9_]+)/.exec(d)?.[1])
-          .filter((t): t is string => t !== undefined);
+        const { scans, indexWalks } = classifyPlan(plan);
         // ⛔ A `partial` statement had a PREDICATE or COLUMN LIST replaced with
         // a stand-in, so its plan is real SQL but not THIS query's plan — with
         // the predicate gone it will always look like a scan. Recorded as
@@ -369,6 +687,7 @@ export const analyse = (
           resolvedSql: single,
           plan,
           scans: partial ? [] : scans,
+          indexWalks: partial ? [] : indexWalks,
         });
         analysed = true;
         break;
@@ -377,12 +696,19 @@ export const analyse = (
       }
     }
     if (!analysed) {
+      // ⚠ OUT-OF-SCOPE IS CHECKED ONLY ON FAILURE, never up front. A cloud or
+      // Salesforce file that happens to hold a statement this schema CAN
+      // explain still gets explained — the classification describes why a
+      // failure is permanent, and is not a licence to skip the file.
+      const outOfScope = isOutOfScopeForServerSchema(q.file);
       out.push({
         ...q,
-        verdict: /no such table|no such column/i.test(lastErr)
-          ? 'not-explainable'
-          : 'explain-failed',
-        plan: [], scans: [], reason: lastErr.slice(0, 160),
+        verdict: outOfScope
+          ? 'out-of-scope'
+          : /no such table|no such column/i.test(lastErr)
+            ? 'not-explainable'
+            : 'explain-failed',
+        plan: [], scans: [], indexWalks: [], reason: lastErr.slice(0, 160),
       });
     }
   }
@@ -516,6 +842,31 @@ const ensureGeneratedSchemas = (db: Database.Database): void => {
     // "no such table: core_records", which is visible in the coverage report.
   }
 };
+
+/** Statements that no SQLite EXPLAIN against a server realm could ever read.
+ *
+ *  ⚠ PATH-BASED, and deliberately narrow. The alternative — detecting SOQL by
+ *  syntax — would silently reclassify a real SQLite statement the day one
+ *  happened to look Salesforce-ish. A directory is a fact about what the file
+ *  talks to. */
+const OUT_OF_SCOPE = [
+  'backend/api/',                       // the cloud: a different database
+  'backend/server/src/data/salesforce/', // SOQL against Salesforce objects
+  // ⚠ The Pro / DDNS dev harnesses. They live under `backend/server/src/` but
+  // read the CLOUD's `hostnames` table, which exists in no server realm — 8
+  // statements that sat in the closable bucket permanently.
+  //
+  // ⚠ NARROW ON PURPOSE: two named prefixes, NOT the whole `dev/` directory.
+  // `seed-bench-warehouse.ts`, `headless-client.ts` and `smtp-sink.ts` share
+  // that directory and do touch server tables, and a rule that grows to cover a
+  // directory because some of its files fail is how a real hole gets filed as
+  // permanent.
+  'backend/server/src/dev/pro-',
+  'backend/server/src/dev/ddns-',
+] as const;
+
+export const isOutOfScopeForServerSchema = (file: string): boolean =>
+  OUT_OF_SCOPE.some((prefix) => file.replace(/\\/g, '/').includes(prefix));
 
 export const runQueryAudit = (dbPath: string, roots: readonly string[]): {
   analysed: AnalysedQuery[];

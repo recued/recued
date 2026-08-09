@@ -240,10 +240,47 @@ export interface StepMeta {
   surface_dispatch_sensitive?: true;
 }
 
+/** D-232 § 21 — what a triggered `fail_on` MEANS, when it means something more
+ *  specific than "this run broke".
+ *
+ *  ⛔⛔ A GUARD AND A CRASH ARE THE SAME EVENT TO THE ENGINE, AND OPPOSITE EVENTS
+ *  TO A CORRESPONDENT. Every triggered guard raises `RECIPE_FAIL_ON_TRIGGERED`,
+ *  so a receiver's "exactly one active participant required" — a deliberate
+ *  REFUSAL, the authorization working — is indistinguishable from a division by
+ *  zero. Across an exchange the asker gets `kind: 'error'` for both: a human
+ *  must look, when in fact they were simply told no.
+ *
+ *  ⚠ AUTHORABLE, WHICH IS A DEPARTURE, SO THE VOCABULARY IS DELIBERATELY
+ *  NARROWER THAN {@link RemoteFailureKind}. `outcome` is engine-derived because
+ *  an author must not call their own failure a success. The same reasoning bans
+ *  the one value here that would be worth lying about:
+ *
+ *    ⛔ `unavailable` IS NOT AUTHORABLE. It is the ONLY kind that means "retry
+ *       later", so a recipe able to declare it could invite a peer to knock
+ *       forever — the recipe's own server absorbing the traffic it invited.
+ *       Unreachability is a fact about the TRANSPORT and only the transport may
+ *       assert it.
+ *
+ *  What remains is a claim about the author's OWN decision, which the author is
+ *  the only party who can make:
+ *    - `policy` — "I refused you." Not granted, not a participant, out of scope.
+ *    - `config`  — "I am not set up for this." A missing instance, an unbound
+ *                  connection. Retrying cannot help either way.
+ *
+ *  🔑 A MISDECLARATION HERE COSTS THE DECLARER, NOT THE CALLER. Saying `policy`
+ *  when it was really a crash makes the asker stop asking; that is a bug in the
+ *  author's own recipe with the author's own peers, and it confers no access and
+ *  escalates nothing. That asymmetry is what makes it safe to author at all. */
+export type StepFailureKind = 'policy' | 'config';
+
 export interface BaseStep {
   id: string;
   skip_when?: string | Condition;
   fail_on?: string | Condition;
+  /** D-232 § 21 — classify this guard's refusal. Honoured ONLY when `fail_on`
+   *  is present and actually triggers; absent means "this was a failure", the
+   *  behaviour every guard had before. See {@link StepFailureKind}. */
+  fail_kind?: StepFailureKind;
   /** Cache freshness mode for this step. Defaults to 'acceptable'.
    *  Honoured by both cache tiers — the L1 ingredient cache (ingredient
    *  + prefetch steps) and the L2 step cache (every sequential step,

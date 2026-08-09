@@ -166,6 +166,30 @@ export interface ScopeCoverage {
  *  string match (OAuth scopes are case-sensitive); per-vendor name
  *  normalization is a follow-up (see module header). `granted === undefined`
  *  → unknown coverage (`known: false`, no missing). */
+/** ⛔⛔⛔ SCOPES A PROVIDER GRANTS WITHOUT ECHOING. Microsoft Entra issues a refresh
+ *  token for `offline_access` and then OMITS it from the token response's `scope`
+ *  field — as it omits the OIDC trio. A raw set difference therefore reports them
+ *  "missing" on a connection that has them, permanently and unfixably: re-authorizing
+ *  produces the same answer, so the warning tells the owner to repeat an action that
+ *  cannot change it. Observed directly — a Graph connection came back
+ *  `Granted scopes (7): Files.Read, Files.ReadWrite, Mail.Read, User.Read, Mail.Send,
+ *  Calendars.ReadWrite, Contacts.Read` with `offline_access` requested and absent.
+ *
+ *  🔑 THE ABSENCE OF A REFRESH TOKEN IS ALREADY CAUGHT WHERE IT IS OBSERVABLE — at
+ *  enrollment, as a hard error ("token endpoint did not return a refresh_token"). This
+ *  function cannot see the token, so excluding these costs no real detection; keeping
+ *  them buys a false alarm that trains owners to ignore a true one.
+ *
+ *  ⚠ Deliberately a CLOSED list of authorization-behaviour scopes, not a pattern. Every
+ *  entry names a scope that changes how the grant BEHAVES rather than what it reaches,
+ *  so none of them is a resource permission whose absence could hide a real gap. */
+export const UNECHOED_AUTHORIZATION_SCOPES: ReadonlySet<string> = new Set([
+  'offline_access',
+  'openid',
+  'profile',
+  'email',
+]);
+
 export const scopeCoverage = (
   needed: readonly string[],
   granted: readonly string[] | undefined,
@@ -175,7 +199,9 @@ export const scopeCoverage = (
     granted.map((s) => s.trim()).filter((s) => s !== ''),
   );
   const missing = [
-    ...new Set(needed.map((s) => s.trim()).filter((s) => s !== '' && !have.has(s))),
+    ...new Set(needed.map((s) => s.trim()).filter(
+      (s) => s !== '' && !have.has(s) && !UNECHOED_AUTHORIZATION_SCOPES.has(s),
+    )),
   ].sort();
   return { known: true, covered: missing.length === 0, missing };
 };

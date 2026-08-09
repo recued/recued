@@ -210,6 +210,21 @@ export const isEligibleForIdleCycle = (
   return true;
 };
 
+/** Is this a "no LLM source matched the required pool" failure?
+ *
+ *  ⚠ Matched on the `LLMError` CODE, never on the message. `AI_LLM_UNAVAILABLE`
+ *  is raised by the match resolver when the requirements — including a forced
+ *  `free` / `byok` layer — cannot be met by any configured source. It means the
+ *  substrate is unavailable, not that the task is broken.
+ *
+ *  ⚠ Structural check rather than `instanceof LLMError`: the error crosses a
+ *  package boundary (`@recued/llm`), and an `instanceof` that silently stops
+ *  matching after a bundling change would restore the auto-disable bug with
+ *  nothing failing. */
+const isPoolUnsatisfiable = (e: unknown): boolean =>
+  typeof e === 'object' && e !== null
+  && (e as { code?: unknown }).code === 'AI_LLM_UNAVAILABLE';
+
 const initialCursor = (): HousekeepingCursor => ({ kind: 'complete' });
 
 // ────────────────────────────────────────────────────────────────
@@ -265,6 +280,61 @@ export const createHousekeepingScheduler = (
       const finish = opts.ctx.now();
       const duration_ms = finish - start;
       const message = e instanceof Error ? e.message : String(e);
+
+      // ⛔ AN UNSATISFIABLE POOL IS A YIELD, NOT A FAILURE — and this is the
+      // chokepoint where that has to be decided, because it is where
+      // `consecutive_errors` is incremented.
+      //
+      // `enrichment-producer.ts` already gets this right for producers riding
+      // its PER-RECORD harness: it catches `AI_LLM_UNAVAILABLE`, turns it into
+      // a soft yield, and its comment states why — "so the task isn't credited
+      // with a `consecutive_errors` bump (which would auto-disable after 3
+      // failures)".
+      //
+      // OWN-WALK AI producers do not ride that harness. `ai-producer-wrapper.ts`
+      // lists them — `lifecycle_stage_inferred*`, `topic_cluster`, `company`,
+      // `role` — and its contract says it THROWS when "LLM call propagates its
+      // own `LLMError`". Nothing between there and here translated it, so the
+      // protection existed on exactly one of the two producer paths.
+      //
+      // The consequence is not cosmetic: a server whose pool policy cannot be
+      // satisfied (`free_only` with an empty free pool, or BYOK disallowed for
+      // background work) auto-DISABLES those producers after three idle cycles,
+      // permanently, while the equivalent per-record producers yield and stay
+      // enabled. The owner would have to notice and re-enable by hand.
+      //
+      // Found by the long-horizon harness, which drove a real idle cycle and
+      // reported two producers ERRORED where ten others gated off cleanly:
+      //   ⛔ ERRORED enrichment.lifecycle_stage_inferred
+      //      No LLM source matches requirements (speed: fast, json, forceLayer: free)
+      //
+      // ⚠ THE CODE IS THE DISCRIMINATOR, never the message text. `LLMError`
+      // carries `AI_LLM_UNAVAILABLE` for exactly this condition; matching on the
+      // rendered string would break the moment the message is reworded, and
+      // would catch unrelated errors that happen to mention a model.
+      if (isPoolUnsatisfiable(e)) {
+        opts.state.set({
+          task_id: id,
+          cursor,                      // unchanged — the step made no progress
+          last_status: 'pending',
+          last_run_at: finish,
+          last_run_duration_ms: duration_ms,
+          // ⚠ `pool_policy_unsatisfiable` ALREADY EXISTS in
+          // `HousekeepingYieldReason`, which is the strongest evidence this was
+          // an oversight rather than a design choice: the contract has a member
+          // for exactly this condition and one of the two producer paths never
+          // emitted it.
+          last_yield_reason: 'pool_policy_unsatisfiable',
+          consecutive_errors: 0,
+        });
+        return {
+          task_id: id,
+          status: 'yield',
+          duration_ms,
+          yield_reason: 'pool_policy_unsatisfiable',
+        };
+      }
+
       opts.state.recordError(id, message, finish);
       return { task_id: id, status: 'error', duration_ms };
     }

@@ -12,8 +12,12 @@
  *
  *  Mirrors the AI-producer contract established by `summary`:
  *
- *    - Positive `estimate_per_record_tokens()` flips the harness's
- *      `meta.idle_eligible` to false → manual-only by construction.
+ *    - `ai_surface: 'chat'` + a positive `estimate_per_record_tokens()`
+ *      are BOTH required to make this an AI surface — that pair is what
+ *      resolves the topic to trust_state 'manual', honours the Pause-AI
+ *      window, and applies the owner's pool policy. This header used to
+ *      claim the token estimate alone did it; it did not, and the field
+ *      was missing here for exactly that reason.
  *    - The body-aware mail walker (`hashMailRecordWithBody` shared with
  *      `summary` via `bin.ts`) marks rows stale when `body_inline` /
  *      `blob_hash` change, so re-syncs trigger re-classification.
@@ -178,6 +182,18 @@ export const purposeProducer: HousekeepingEnrichmentProducer = {
       sample_field_paths: ['subject', 'body_preview', 'from'],
     },
   ],
+  // ⛔ WITHOUT THIS THE PRODUCER IS NOT AN AI SURFACE, and it calls an
+  //    LLM. `enrichment-producer.ts` derives
+  //    `isAiSurface = ai_surface !== undefined && estimate_per_record_tokens() > 0`
+  //    — BOTH terms, so a positive token estimate alone is not enough. The
+  //    header above used to claim the estimate flipped it "manual-only by
+  //    construction"; it did not. With `isAiSurface` false the topic
+  //    resolved to trust_state 'auto' (idle-eligible, running AI with no
+  //    owner action), the `isAiSurface && isAiPaused()` check was skipped so
+  //    Pause-AI did not stop it, and `wrapCtxWithForceLayer` was not applied
+  //    so the owner's pool_policy was not enforced either.
+  //    The field's own doc names this producer as the 'chat' case.
+  ai_surface: 'chat',
   estimate_per_record_tokens: () => TOKEN_ESTIMATE_PER_RECORD,
 
   async produce(ctx: HousekeepingContext, source_record: SourceRecord) {

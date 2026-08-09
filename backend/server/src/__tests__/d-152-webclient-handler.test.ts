@@ -206,11 +206,16 @@ describe('D-152 § A.16 — happy path GET', () => {
     expect((res.body as Buffer).toString()).toBe('<html><body>webclient</body></html>');
   });
 
-  it('GET /webclient/sw.js serves with javascript MIME', () => {
+  it('GET /webclient/sw.js serves with javascript MIME and REVALIDATES', () => {
     const res = run(handler, { url: '/webclient/sw.js' });
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toBe('application/javascript; charset=utf-8');
-    expect(res.headers['cache-control']).toBe('public, max-age=3600');
+    // ⛔ NOT `max-age=3600`, and the service worker is the worst possible file to
+    // cache for an hour. `webclient-handler.ts` moved every shell entry point to
+    // revalidation because NOTHING is content-hashed — the build emits a fixed
+    // `webclient-main.js` — so a long cache runs an hour-old bundle against a
+    // just-restarted server. This test still asserted the superseded value.
+    expect(res.headers['cache-control']).toBe('no-cache, must-revalidate');
   });
 
   it('GET /webclient/icons/icon-192.png serves with image MIME', () => {
@@ -387,7 +392,7 @@ describe('D-152 § A.16 — Codex P2 #2 fold: startServer forwards webclientHand
     } finally {
       await server.close();
     }
-  });
+  }, 30_000);   // boots a real server + listener; the 5s default is for in-process tests
 
   it('startServer without webclientBundle 404s /webclient/* on the LAN listener', async () => {
     const { startServer } = await import('../server.js');

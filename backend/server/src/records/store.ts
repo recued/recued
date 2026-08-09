@@ -22,8 +22,12 @@ import {
   RECORDS_MAX_QUERY_ROWS,
   RECORDS_MAX_ROW_BYTES,
   RECORDS_MAX_TEXT_BYTES,
+  RECORDS_IMPORT_SAMPLE_LIMIT,
   RecordsContractError,
   isRecordsExecutionBinding,
+  type RecordsErrorCode,
+  type RecordsImportFailure,
+  type RecordsImportResult,
   type EntitySchemaIngredientInput,
   type IngredientManifest,
   type RecipeDefinition,
@@ -59,6 +63,12 @@ import {
   type RecordsUpdateReviewFence,
 } from '@recued/contracts';
 import { hashRecipe } from '@recued/recipes';
+import { getTransform } from '@recued/transforms';
+import {
+  planCsvImport,
+  validateCsvImportSpec,
+  type CsvImportSpec,
+} from './csv-import.js';
 import type {
   RecordsMigrationFinalizeStep,
   RecordsMigrationPlan,
@@ -1544,7 +1554,23 @@ export const createRecordsStore = (
         (pair) => pair.entity === binding.entity && pair.action === binding.action)
       && canonicalJson({ ...binding, entity: exact.entity, action: exact.action })
         === canonicalJson(exact);
-    if (!exact || (canonicalJson(exact) !== canonicalJson(binding) && !admittedInBatch)) {
+    // ⛔ THE SECOND ADMITTED DIVERGENCE: a row written BY an import. Same
+    // structure as the batch's and deliberately NARROWER — an import declares
+    // no allow-list because it needs none, so there is no pair to look up:
+    //
+    //   - the installed op must BE an import, and
+    //   - the inner write must be a `create` on the import's OWN entity, and
+    //   - ⛔ EVERYTHING ELSE byte-identical to the installed binding.
+    //
+    // The entity is pinned rather than chosen, so unlike the batch this cannot
+    // be ridden to reach a sibling entity even in principle.
+    const admittedInImport = exact !== undefined
+      && exact.action === 'import'
+      && binding.action === 'create'
+      && binding.entity === exact.entity
+      && canonicalJson({ ...binding, action: exact.action }) === canonicalJson(exact);
+    if (!exact
+      || (canonicalJson(exact) !== canonicalJson(binding) && !admittedInBatch && !admittedInImport)) {
       fail('records_stale_operation', 'Records operation digest/binding is not installed');
     }
     if (mutate && row.row_count < 0) fail('records_incoherent', 'negative Records accounting');
@@ -2948,6 +2974,138 @@ export const createRecordsStore = (
     return { batch: true, count: results.length, results };
   };
 
+  /** The bulk file import: CSV text in, rows seated, an honest tally out.
+   *
+   *  ⛔⛔ WHY THIS IS AN ACTION AND NOT A RECIPE. Driving `statement-import`
+   *  against a real 1000-row bank export found four faults a recipe cannot fix:
+   *  the rows themselves blew the 10 MB step-context cap (11.9 MB), dedup by
+   *  read-back is capped at `RECORDS_MAX_PAGE_SIZE` so any account past 200 rows
+   *  compares against a fraction of itself, `upsert` cannot express a blind
+   *  overwrite, and a `foreach` write reports SUCCESS when every item was
+   *  rejected. As an action the rows never enter step state, identity is
+   *  content-derived rather than read back, and the result cannot be mistaken
+   *  for a clean import.
+   *
+   *  ⛔ NO IO HERE. The file read stays in the recipe, policy-gated and audited
+   *  as `core.storage.data-file-read` already is; what crosses is TEXT. The
+   *  11.9 MB was never the file (48 KB for the 1000-row sample) — it was 1000
+   *  rows carried through a dozen `map` steps.
+   */
+  const importCsv = (
+    call: RecordsExecutionCall,
+    _namespace: NamespaceRow,
+    schema: RecordsSchemaSnapshot,
+  ): RecordsImportResult => {
+    const csv = call.args.csv;
+    if (typeof csv !== 'string') fail('records_invalid', 'import requires csv text');
+    const writable = entityFor(schema, call.binding.entity).fields
+      .filter((field) => field.kind !== 'id')
+      .map((field) => ({ key: field.key, required: field.required }));
+    const problems = validateCsvImportSpec(call.args.spec, writable);
+    if (problems.length > 0) {
+      fail('records_invalid', `import spec is not admissible: ${problems.join('; ')}`);
+    }
+    const spec = call.args.spec as unknown as CsvImportSpec;
+
+    // ⛔ THE DEFAULT `ragged` MODE, NOT `'skip'`. A skipped row VANISHES —
+    // `rows_read` would then describe what the parser kept rather than what the
+    // file holds, and an owner reconciling against their statement would be
+    // short lines nothing ever mentioned. Padding lands the row with the missing
+    // cells empty, which is visible and fixable.
+    const parse = getTransform('csv_parse')!;
+    const rows = parse(
+      { input: csv, ...(spec.delimiter === undefined ? {} : { delimiter: spec.delimiter }) },
+      {} as never,
+    ) as Record<string, string>[];
+    const plan = planCsvImport(rows, spec);
+
+    // ⛔⛔ THE INNER WRITE RE-ENTERS `execute`, exactly as a batch's does — not a
+    // second write path one edit away from disagreeing with the first. The
+    // binding differs from the installed op ONLY in `action`; `requireState`
+    // admits that one divergence and compares everything else whole.
+    const writeBinding = {
+      ...call.binding, action: 'create' as RecordsExecutionBinding['action'],
+    };
+    const writeRow = (row: { id: string; values: Readonly<Record<string, unknown>> }): boolean => {
+      const result = execute({
+        ...call, binding: writeBinding, args: { id: row.id, values: row.values },
+      }) as { replayed: boolean };
+      return result.replayed;
+    };
+
+    /** A refusal that is a fact about the NAMESPACE rather than about one row.
+     *  Retrying the remaining rows can only reproduce it, and 195,000 identical
+     *  failures bury the one thing that actually happened. */
+    const HALTING = new Set<RecordsErrorCode>([
+      'records_quota_exceeded', 'records_not_ready', 'records_incoherent',
+      'records_stale_operation', 'records_unauthorized',
+    ]);
+    const classify = (error: unknown): { code: RecordsErrorCode; reason: string } =>
+      error instanceof RecordsContractError
+        ? { code: error.code, reason: error.message }
+        : { code: 'records_invalid', reason: error instanceof Error ? error.message : String(error) };
+
+    let written = 0;
+    let replayed = 0;
+    let failed = 0;
+    let halted: string | undefined;
+    const failures: RecordsImportFailure[] = [];
+    const record = (index: number, id: string, error: unknown): void => {
+      const { code, reason } = classify(error);
+      failed += 1;
+      if (failures.length < RECORDS_IMPORT_SAMPLE_LIMIT) {
+        failures.push({ line: index + 2, id, code, reason });
+      }
+      if (HALTING.has(code)) halted = `${code}: ${reason}`;
+    };
+
+    for (let start = 0; start < plan.rows.length && halted === undefined; start += RECORDS_MAX_BATCH_OPS) {
+      const slice = plan.rows.slice(start, start + RECORDS_MAX_BATCH_OPS);
+      try {
+        // Fast path: one transaction per slice. Bounds the write lock and the
+        // WAL, and a crash costs at most this slice — which stable ids make a
+        // re-run able to finish.
+        const replays = db.transaction(() => slice.map(writeRow))();
+        written += replays.filter((was) => !was).length;
+        replayed += replays.filter(Boolean).length;
+      } catch {
+        // ⛔⛔ ONE BAD ROW MUST NOT COST ITS 99 NEIGHBOURS. A slice is atomic, so
+        // the throw above rolled back rows that were perfectly fine — an
+        // import's rows are independent facts from a file, with no cross-row
+        // invariant a batch's all-or-none is protecting. So the slice is
+        // replayed row by row, each its own transaction, and every outcome is
+        // attributed to the row that earned it.
+        //
+        // ⚠ Replaying rows that "succeeded" in the rolled-back attempt is safe
+        // precisely because nothing was committed; and re-running the whole
+        // import later is safe because the ids are content-derived.
+        for (const [offset, row] of slice.entries()) {
+          if (halted !== undefined) break;
+          try {
+            if (writeRow(row)) replayed += 1; else written += 1;
+          } catch (error) {
+            record(start + offset, row.id, error);
+          }
+        }
+      }
+    }
+
+    return {
+      rows_read: plan.rows_read,
+      written,
+      replayed,
+      failed,
+      not_attempted: plan.rows_read - written - replayed - failed,
+      unparsed: plan.unparsed.length,
+      failures_sample: failures,
+      // ⚠ Sliced, not re-built field by field: an enumerating copier here would
+      // silently drop any field later added to `CsvImportUnparsed`, and the
+      // types are already the same three fields.
+      unparsed_sample: plan.unparsed.slice(0, RECORDS_IMPORT_SAMPLE_LIMIT),
+      ...(halted === undefined ? {} : { halted_reason: halted }),
+    };
+  };
+
   const getOne = (binding: RecordsExecutionBinding, args: Record<string, unknown>, schema: RecordsSchemaSnapshot) => {
     requireState(binding);
     const id = assertId(args.id);
@@ -4084,6 +4242,10 @@ export const createRecordsStore = (
     const { namespace, schema } = requireState(call.binding, ['create','update','upsert','delete'].includes(call.binding.action));
     switch (call.binding.action) {
       case 'batch': return batchWrite(call, namespace, schema);
+      // ⚠ Absent from the `mutate` list above for the same reason `batch` is:
+      // it writes nothing itself. Every row it seats re-enters this switch as a
+      // `create`, which carries `mutate: true` on its own account.
+      case 'import': return importCsv(call, namespace, schema);
       case 'create': return createRecord(call, namespace, schema);
       case 'get': return getOne(call.binding, call.args, schema);
       case 'get_many': return getMany(call.binding, call.args, schema);

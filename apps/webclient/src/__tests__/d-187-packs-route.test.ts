@@ -561,6 +561,54 @@ describe('Packs R22 — route list→detail wiring', () => {
     route.dispose();
   });
 
+  it('⛔⛔ opening a detail PUSHES so native Back returns to the list, not past it', async () => {
+    /** `#packs` → `#packs/<slug>` used `replaceState` for the whole transition, which
+     *  OVERWROTE the list entry — so the browser's Back button skipped `#packs` and
+     *  landed a level above it, on the route the owner came from rather than the one
+     *  they were looking at.
+     *  🔑 `pushState` emits no `hashchange` either, so the reason `replaceState` was
+     *  chosen — in-page navigation must never remount — is untouched. Asserted as the
+     *  ORDERED sequence of history calls, because "pushState was called" alone would
+     *  pass even if it also pushed on the way back, which would trap Back in a loop. */
+    const calls: string[] = [];
+    const doc = makeFakeDocument() as FakeDoc & {
+      defaultView?: {
+        history: {
+          replaceState: (s: unknown, t: string, url: string) => void;
+          pushState: (s: unknown, t: string, url: string) => void;
+        };
+      };
+    };
+    doc.defaultView = {
+      history: {
+        replaceState: (_s, _t, url) => { calls.push(`replace ${url}`); },
+        pushState: (_s, _t, url) => { calls.push(`push ${url}`); },
+      },
+    };
+    const root = doc.createElement('div');
+    const route = bootstrapPacksRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      packsListCaller: vi.fn(async () => ({ packs: twoPacks() })),
+    });
+    await route.packsPanel()!.whenLoaded();
+    await tick();
+
+    route.packsPanel()!.clickSelectPack('pack-a');
+    expect(calls, 'entering a detail must PUSH a history entry')
+      .toContain('push #packs/pack-a');
+    expect(calls, 'and must not merely replace the list away')
+      .not.toContain('replace #packs/pack-a');
+
+    /** ⚠ Returning to the list REPLACES. Pushing here too would leave two entries and
+     *  Back would bounce the owner into the detail they just closed. */
+    route.packsPanel()!.clickBackToList();
+    expect(calls).toContain('replace #packs');
+    expect(calls.filter((c) => c.startsWith('push ')),
+      'only the detail-opening step may push').toEqual(['push #packs/pack-a']);
+    route.dispose();
+  });
+
   it('an in-page selection replaceStates AND notifies onHashSync (so the router activeHash tracks it, closing the stale-hash desync)', async () => {
     const replaceCalls: string[] = [];
     const doc = makeFakeDocument() as FakeDoc & {

@@ -134,6 +134,7 @@ export const WEBHOOK_PROFILE_IDS = [
   'generic.raw-body-hmac-sha256.v1',
   'generic.timestamped-raw-body-hmac-sha256.v1',
   'generic.http-basic.v1',
+  'recued-peer.exchange.v1',
 ] as const;
 export type WebhookProfileId = (typeof WEBHOOK_PROFILE_IDS)[number];
 
@@ -680,6 +681,59 @@ const WEBHOOK_PROFILE_DESCRIPTOR_LIST = [
     max_body_bytes: 1_048_576,
     max_events_per_delivery: 1,
     deduplication: RECEIVED_AT_BODY_WINDOW_DEDUPLICATION,
+    managed_registration_requires_connection: false,
+    handshakes: [],
+  },
+  {
+    // SPIKE — Recued-to-Recued peer exchange. Unlike every other descriptor here
+    // this one has no vendor on the far side: both ends are Recued servers, so
+    // the wire format is ours to fix rather than a format we must accommodate.
+    // Three differences from `generic.timestamped-raw-body-hmac-sha256.v1`, and
+    // they are the whole reason this is a distinct profile:
+    //   1. `event_types` is OPEN — a peer exchange kind (`appointment.reply`) is
+    //      the trigger routing key, so it cannot be the single literal
+    //      `'delivery'` that every generic profile collapses to.
+    //   2. the signing secret is `recued_generated`, not owner-typed: enrolment
+    //      mints it on one side and the peer stores it, which is the two-sided
+    //      gesture D-209 §1.4 already calls the standing approval.
+    //   3. `decoded_schema_id` names OUR envelope, so the normalizer can require
+    //      `action_ref` rather than hoping a vendor supplies a stable id.
+    profile_id: 'recued-peer.exchange.v1',
+    // NOT `'generic'`, and the registry is right to insist: a generic profile is
+    // a SHAPE with no event vocabulary (`validateWebhookProfileRegistry` pins it
+    // to the single closed `'delivery'`). This profile has its own vocabulary,
+    // so it must name a vendor — and the vendor of the Recued peer protocol is
+    // Recued. Every other row here accommodates a format someone else owns;
+    // this is the one where we are the far side.
+    vendor: 'recued',
+    mechanism_kind: 'timestamped_hmac',
+    transport_assurance: 'authenticated',
+    minimum_source_truth_policy: 'delivery_payload_allowed',
+    decoder_kind: 'json',
+    decoded_schema_id: 'recued-peer.exchange.v1',
+    event_types: {
+      kind: 'open',
+      known_values: ['appointment.request', 'appointment.reply'],
+    },
+    fields: [
+      {
+        key: 'signing_secret',
+        label: 'Peer signing secret',
+        kind: 'secret',
+        required: true,
+        source: 'recued_generated',
+      },
+    ],
+    registration_modes: ['manual'],
+    // Not GENERIC_ENVIRONMENTS: the envelope's `live` boolean yields exactly
+    // two environments, so claiming 'custom' would advertise a state the
+    // admission map cannot produce.
+    supported_environments: ['test', 'live'],
+    allowed_methods: ['POST'],
+    allowed_content_types: JSON_CONTENT_TYPES,
+    max_body_bytes: 1_048_576,
+    max_events_per_delivery: 1,
+    deduplication: STABLE_PROVIDER_ID_OR_SIGNED_TIMESTAMP_BODY_DEDUPLICATION,
     managed_registration_requires_connection: false,
     handshakes: [],
   },

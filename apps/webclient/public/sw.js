@@ -77,7 +77,28 @@
 // Bumping evicts v7 on activate — the cache name is the only lever a fixed
 // filename leaves. ⚠ MUST match `WEBCLIENT_SHELL_CACHE_NAME`; a parity test
 // enforces it.
-const CACHE_NAME = 'webclient-shell-v8';
+// v9 (2026-08-08) — `boot-shell.js` joins the shell. index.html's inline
+// scripts moved into it because `script-src 'self'` was blocking all of them,
+// including the fallback that reports a failed bundle load; a client left on v8
+// caches an index.html that references a file its shell has never held. Bumping
+// evicts v8 on activate.
+/** Every cache this app owns starts with this — the shell cache below and any
+ *  future sibling. It is what distinguishes ours from everyone else's on the
+ *  same origin, which is what makes the sweeps safe to run on a self-host
+ *  origin the owner may share with another app.
+ *
+ *  ⚠ Deliberately `webclient-`, not `webclient-shell-`: the wipe's job is "our
+ *  caches", not "our shell cache". Narrowing it to the shell would strand a
+ *  sibling cache forever, which is the same class of silent leftover the
+ *  version suffix exists to prevent. */
+const CACHE_PREFIX = 'webclient-';
+// ⚠ A BARE STRING LITERAL ON PURPOSE. `service-worker-cache-name-parity.test.ts`
+// matches `/^const CACHE_NAME = '([^']+)';$/m` and fails loudly on a computed
+// binding — deliberately, so the name it checks is provably the name the SW
+// opens. Writing this as `` `${CACHE_PREFIX}v9` `` reddens that test rather than
+// drifting silently, which is the behaviour you want; it just means the prefix
+// relationship is asserted separately instead of expressed here.
+const CACHE_NAME = 'webclient-shell-v9';
 
 /** Pre-cache list — the app shell. Network-only for everything else.
  *  Adding a new shell asset requires an entry here + a `CACHE_NAME`
@@ -89,6 +110,12 @@ const SHELL_URLS = [
   // D-174 — the shell now <link>s the shared design tokens (render-blocking);
   // precache them so an offline launch isn't unstyled.
   './tokens.css',
+  // The pre-bundle shell script (theme-before-paint, splash reveal, SW
+  // registration, bundle-failure fallback). External rather than inline so
+  // `script-src 'self'` does not block it — see boot-shell.js's header. An
+  // offline launch that misses it boots unthemed AND loses the fallback that
+  // explains a missing bundle, so it belongs in the shell, not the runtime.
+  './boot-shell.js',
   './webclient-main.js',
 ];
 
@@ -144,7 +171,15 @@ self.addEventListener('activate', (event) => {
       const keys = await caches.keys();
       await Promise.all(
         keys.map((key) => {
-          if (key !== CACHE_NAME) return caches.delete(key);
+          // ⚠ SCOPED SWEEP. This used to delete EVERY cache whose name wasn't
+          // ours — on `app.recued.com` that is harmless (dedicated origin), but
+          // a self-hosted server can share its origin with anything else the
+          // owner runs, and "upgrade the webclient" is not consent to wipe a
+          // neighbouring app's offline data. The prefix is what makes the
+          // sweep OURS; a cache we did not create is not ours to evict.
+          if (key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME) {
+            return caches.delete(key);
+          }
           return Promise.resolve(true);
         }),
       );
@@ -199,8 +234,15 @@ self.addEventListener('message', (event) => {
   if (data && data.type === 'clear-cache') {
     event.waitUntil(
       (async () => {
+        // Scoped to OUR caches — see the activate sweep. "Clear this
+        // browser" is a Recued control; on a shared self-host origin it must
+        // not take a neighbouring app's offline data with it.
         const keys = await caches.keys();
-        await Promise.all(keys.map((key) => caches.delete(key)));
+        await Promise.all(
+          keys
+            .filter((key) => key.startsWith(CACHE_PREFIX))
+            .map((key) => caches.delete(key)),
+        );
       })(),
     );
   }

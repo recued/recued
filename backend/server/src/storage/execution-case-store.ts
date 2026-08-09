@@ -125,6 +125,28 @@ export const ensureExecutionCaseSchema = (db: Database.Database): void => {
       ALTER TABLE execution_case_observations ADD COLUMN case_key TEXT;
     `);
   }
+
+  // ⛔ CREATED AFTER THE ALTER, NEVER IN THE BLOCK ABOVE. `case_key` arrives by
+  // migration, and `CREATE INDEX IF NOT EXISTS` still resolves its column list —
+  // so declaring this beside the table would throw `no such column: case_key`
+  // on every FRESH database and take the boot down with it. (Written there
+  // first; the plan test caught it on the one schema that has never been
+  // migrated. `reception-store.ts` documents the same trap for its lifecycle
+  // index.)
+  //
+  // `listObservationsForCaseKeys` looks up by `case_key` and had no index at
+  // all, so a keyed read scanned the observation table and then sorted it —
+  // 2.6ms at 100k observations, now 0.0ms. The trailing columns are that
+  // query's own ORDER BY.
+  //
+  // ⚠ The SAME index answers `keylessObservationCount` (`WHERE case_key IS
+  // NULL`) as a COVERING index: SQLite indexes NULLs, so the keyless rows are
+  // the leading edge of this b-tree. A separate partial index would be dead
+  // weight. 1.7ms -> 0.0ms.
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_exec_case_obs_case_key
+      ON execution_case_observations (case_key, observed_at, observation_id);
+  `);
 };
 
 interface ObservationRow {

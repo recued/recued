@@ -431,10 +431,16 @@ export const mountConnectionsGrantPanel = (
     title.className = 'conn-grant-display';
     title.textContent = row.connection.display_name;
     header.appendChild(title);
-    const name = doc.createElement('span');
-    name.className = 'conn-grant-name';
-    name.textContent = row.connection.name;
-    header.appendChild(name);
+    /** ⚠ The slug line is the DISAMBIGUATOR, so it is suppressed when it disambiguates
+     *  nothing. A connection enrolled without a custom display name carries
+     *  `display_name === name`, and rendering both printed a bare "microsoft microsoft"
+     *  header — which reads as a rendering fault rather than as a name and its slug. */
+    if (row.connection.name !== row.connection.display_name) {
+      const name = doc.createElement('span');
+      name.className = 'conn-grant-name';
+      name.textContent = row.connection.name;
+      header.appendChild(name);
+    }
     card.appendChild(header);
 
     if (row.groupsError !== null) {

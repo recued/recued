@@ -586,14 +586,42 @@ export const mountDiscoverPanel = <Row>(
     // update-delta / installed) so the list still surfaces "N updates available".
     const navigate = opts.onSelect;
     if (st === 'installed') {
-      const badge = doc.createElement('span');
-      badge.setAttribute(DISCOVER_PANEL_ACTION_ATTR, '');
-      badge.setAttribute('data-state', 'installed');
-      badge.setAttribute('data-id', id);
-      badge.className = 'discover-action discover-action--installed';
-      badge.textContent = 'Installed ✓';
-      renderedActions.set(id, badge);
-      return badge;
+      /** ⛔⛔ IN NAVIGATE MODE THIS IS A CONTROL, NOT A LABEL. The comment above has
+       *  always said all three states read the same click → `onSelect(id)`, but the
+       *  installed branch returned a bare `<span>` with NO listener — so on an
+       *  installed pack the only affordance on the card was DEAD, and the one route
+       *  into its detail (grants, uninstall) did not respond. The other two states
+       *  are buttons and work; the state you reach after a successful install is the
+       *  one that stops working, which is the worst place for it.
+       *  ⚠ It also explains the height: a `<span>` is inline, so the shared
+       *  `discover-action` padding produced a ~52px box with dead space under the
+       *  text, against ~36px for the `<button>` states. Same element type ⇒ same box,
+       *  rather than a CSS patch chasing one symptom of the wrong tag.
+       *  ⚠ Outside navigate mode there is nothing to navigate TO, so it stays a
+       *  resting badge — the marketplace install flow has no detail route here. */
+      if (navigate === undefined) {
+        const badge = doc.createElement('span');
+        badge.setAttribute(DISCOVER_PANEL_ACTION_ATTR, '');
+        badge.setAttribute('data-state', 'installed');
+        badge.setAttribute('data-id', id);
+        badge.className = 'discover-action discover-action--installed';
+        badge.textContent = 'Installed ✓';
+        renderedActions.set(id, badge);
+        return badge;
+      }
+      const open = doc.createElement('button') as HTMLButtonElement;
+      open.type = 'button';
+      open.setAttribute(DISCOVER_PANEL_ACTION_ATTR, '');
+      open.setAttribute('data-state', 'installed');
+      open.setAttribute('data-id', id);
+      open.className = 'discover-action discover-action--installed';
+      open.textContent = 'Installed ✓';
+      open.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        onActionClick(id);
+      });
+      renderedActions.set(id, open);
+      return open;
     }
     const btn = doc.createElement('button') as HTMLButtonElement;
     btn.type = 'button';

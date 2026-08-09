@@ -206,6 +206,25 @@ export const buildExportEntry = (
   if (entry.correlation_id !== undefined) {
     out.correlation_id = entry.correlation_id;
   }
+  // D-232 § 20.14 — the peer exchange this run belongs to, for exactly the
+  // reason the three session ids above are here: an exported archive must stay
+  // groupable OFFLINE. The exchange is the only grouping key that spans two
+  // SERVERS, so an export missing it cannot answer "what happened to this
+  // conversation" — the one question the exchange exists to be able to answer.
+  //
+  // ⛔ Found by a live two-server drive, not by a test: the export is an
+  // ENUMERATING PROJECTION and the field was simply absent, silently.
+  if (entry.exchange_ref !== undefined) {
+    out.exchange_ref = entry.exchange_ref;
+  }
+  // D-232 § 30 — the peer's verdict travels with the ref or the archive answers
+  // "what happened to this conversation" with a shrug. An export carrying
+  // `exchange_ref` but not this reproduces, offline, the exact gap § 30 closes
+  // online: every run present, delivery apparently fine, and no record that the
+  // far side said they could not reply.
+  if (entry.exchange_peer_ack !== undefined) {
+    out.exchange_peer_ack = entry.exchange_peer_ack;
+  }
   return out;
 };
 
@@ -239,6 +258,12 @@ const CSV_HEADERS = [
   'channel_session_id',
   'cognition_session_id',
   'correlation_id',
+  // D-232 § 20.14 — appended, for the same no-migration reason as the ids above.
+  'exchange_ref',
+  // D-232 § 30 — the peer's verdict, flattened to `<accepted>:<kind>` for the
+  // spreadsheet. Lossy on purpose, exactly like `links` above: CSV is for
+  // eyeballing, JSON/JSONL keep the whole receipt.
+  'exchange_peer_verdict',
 ] as const;
 
 const csvRow = (entry: AuditExportEntry): string =>
@@ -265,6 +290,11 @@ const csvRow = (entry: AuditExportEntry): string =>
     csvEscape(entry.channel_session_id ?? ''),
     csvEscape(entry.cognition_session_id ?? ''),
     csvEscape(entry.correlation_id ?? ''),
+    csvEscape(entry.exchange_ref ?? ''),
+    csvEscape(entry.exchange_peer_ack === undefined
+      ? ''
+      : `${entry.exchange_peer_ack.accepted ? 'accepted' : 'refused'}`
+        + `:${entry.exchange_peer_ack.kind ?? ''}`),
   ].join(',');
 
 const serializePageBody = (

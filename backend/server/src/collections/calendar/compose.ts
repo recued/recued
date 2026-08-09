@@ -315,7 +315,20 @@ export const composeCalendarStack = (
       // Vault LOCKED → defer the poll loop. The collection stays live (its
       // dispatcher reads the plaintext warehouse), but we do NOT start the
       // provider fetch while sealed. `resumeSync()` starts it on unlock.
-      log('info', `calendar-stack: sync deferred for '${row.slug}' — vault locked`);
+      // ⚠ SAY WHAT HAPPENS NEXT. Read at boot, the old wording ("sync deferred
+      // — vault locked") looked like a startup ORDERING bug: sync firing before
+      // the server was ready. It is the opposite — `bootSigningIdentity()` (and
+      // with it the keyfile auto-unlock) runs at
+      // `start-boot-recovery-and-adapters.ts:85`, BEFORE
+      // `startCollectionAdapters()` at :190. Reaching here means the vault was
+      // still locked after auto-unlock had its turn, which is the designed state
+      // for a passphrase-sealed keyfile (D-212) or an unenrolled realm.
+      // A deferral that does not name its resumer reads as a silent drop.
+      log(
+        'info',
+        `calendar-stack: sync deferred for '${row.slug}' — vault locked; `
+          + 'reads still serve, and the poll loop starts automatically on unlock',
+      );
       return;
     }
 

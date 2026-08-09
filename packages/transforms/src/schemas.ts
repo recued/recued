@@ -154,6 +154,10 @@ export const TRANSFORM_SCHEMAS: Record<string, TransformSchema> = {
   to_list: {
     input: REQ('any'),
   },
+  chunk: {
+    array: REQ('array'),
+    size: REQ('number'),
+  },
   partition: {
     array: REQ('array'),
     field: OPT('string'),

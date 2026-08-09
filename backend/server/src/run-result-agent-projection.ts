@@ -15,7 +15,13 @@
  *  guidance to NOT retry. Non-agent callers (manual / scheduled) keep the raw
  *  `ExecuteResponse`. */
 
-import type { ContainerPickDetail, CreatePlanDetail, RunControlTermination } from '@recued/contracts';
+import type {
+  ContainerPickDetail,
+  CreatePlanDetail,
+  ExchangeAcknowledgement,
+  RunControlTermination,
+} from '@recued/contracts';
+import { isRemoteFailureKind } from '@recued/contracts';
 import type { ExecuteResponse } from './types.js';
 
 /** The agent-facing guidance for a held-for-approval run. Channel-agnostic —
@@ -190,6 +196,75 @@ export const CREATE_PLAN_UNRAISED_MESSAGE =
   + 'container needs to be created and ask them to confirm it. You cannot confirm '
   + 'it yourself.';
 
+/** D-232 § 19.3 — what the agent is told when a recipe ANSWERED rather than
+ *  returned.
+ *
+ *  ⛔ THE LOAD-BEARING SENTENCE IS "THE ANSWER HAS BEEN SENT". An exchange
+ *  recipe renders NOTHING by construction (result XOR fire), so what reaches an
+ *  agent otherwise is `success: true` beside an empty `output.render` — the
+ *  exact shape recorded below under `trigger_skipped`, where a model read an
+ *  empty result as a confident "you have none" and told the owner so. A flag
+ *  beside an empty collection is not a sentence, and a model will supply one.
+ *
+ *  The second half is the ref. It is the ONLY thing the caller can later ask
+ *  about — the exchange's whole justification over a plain send — so an agent
+ *  that drops it has thrown away the receipt for a letter it cannot re-post.
+ *
+ *  ⚠ Model-facing string — see `chat-prompt-optimization-log.md`. */
+export const EXCHANGE_ACCEPTED_MESSAGE =
+  'This recipe ANSWERED rather than returning a result: the answer has been sent '
+  + 'to the other side, and the reference below is how this exchange is looked up '
+  + 'later. This is the expected, successful outcome — it is NOT a failure and NOT '
+  + 'an empty result. ⛔ There is no output to report because there was never meant '
+  + 'to be one; do NOT tell the user that nothing was found or that the recipe '
+  + 'produced nothing. Do not call this tool again. If a further reply is expected, '
+  + 'it arrives later as its own separate call — not as a value here.';
+
+/** D-232 § 19.3 — the clean agent-facing shape for a run that FIRED. */
+export interface AgentExchangeAcceptedResult {
+  status: 'exchange_accepted';
+  exchange_accepted: true;
+  recipe_id: string;
+  /** The correlation the caller asks about later. */
+  ref: string;
+  /** Where the rest of the answer arrives, when the far side named one. */
+  callback_op?: string;
+  /** D-232 § 30 — see {@link AgentExchangeUndeliverableResult.exchange_ack}.
+   *  Carried on BOTH outcomes so a machine reader never has to branch on which
+   *  projection shape arrived before it can find the receipt. */
+  exchange_ack: ExchangeAcknowledgement;
+  message: string;
+}
+
+/** D-232 § 29 — a run that fired and could NOT send. Distinct from
+ *  `AgentExchangeAcceptedResult` because "I posted your letter" and "I could not
+ *  post your letter" must not share a status an agent branches on. */
+export interface AgentExchangeUndeliverableResult {
+  status: 'exchange_undeliverable';
+  exchange_accepted: false;
+  recipe_id: string;
+  ref: string;
+  kind?: string;
+  reason?: string;
+  /** D-232 § 30 — THE ENGINE-OWNED RECEIPT, RIDING BESIDE THE PROSE, AND THE
+   *  ONLY PART OF THIS OBJECT ANOTHER SERVER IS ALLOWED TO READ.
+   *
+   *  ⛔⛔ THE SIBLING FIELDS ABOVE ARE MODEL-FACING AND MUST NOT BECOME A
+   *  PROTOCOL. `status` / `message` exist to stop a weak model looping and are
+   *  tuned against `chat-prompt-optimization-log.md`; binding a peer to them
+   *  would make a prompt tuning a wire break. They were also already lossy in
+   *  the way that mattered — `retrying`, the field that tells an asker whether
+   *  to wait or give up, has no flattened twin here, because the LLM this shape
+   *  was designed for did not need it.
+   *
+   *  ⚠ REQUIRED, NOT OPTIONAL, and that is the enforcement. `satisfies` on the
+   *  return below fails if a future edit drops it — the only defence this
+   *  codebase has repeatedly needed against an enumerating copier that returns
+   *  a literal and swallows what it does not name. */
+  exchange_ack: ExchangeAcknowledgement;
+  message: string;
+}
+
 /** The clean agent-facing shape for a held run. */
 export interface AgentHeldRunResult {
   status: 'awaiting_approval';
@@ -357,6 +432,74 @@ export const projectRunResultForAgent = (result: unknown): unknown => {
       recipe_id: skipped.recipe_id,
       message: TRIGGER_SKIPPED_MESSAGE,
     };
+  }
+  // D-232 § 19.3 — a run that FIRED is the same class of third state as the
+  // ones above: not a failure, and emphatically not an empty answer. It is
+  // checked LAST of the third states because it is the only one that rides on a
+  // SUCCESSFUL run — the others all describe a run that stopped, and a run that
+  // stopped never reached the fire point (a hold does not fire; § 19 rule 3).
+  // So the orders cannot collide, and putting it here keeps every stopped-run
+  // branch ahead of it where a reader expects them.
+  const ack = (result as { exchange_ack?: unknown }).exchange_ack;
+  if (ack !== null && typeof ack === 'object') {
+    const fired = result as ExecuteResponse;
+    const receipt = ack as {
+      ref?: unknown; callback_op?: unknown;
+      accepted?: unknown; kind?: unknown; reason?: unknown; retrying?: unknown;
+    };
+    // D-232 § 30 — rebuild the receipt from the fields already validated here
+    // rather than spreading `ack` through. It arrives typed `unknown`, and a
+    // whole-object spread onto a declared shape is the cast that silences the
+    // missing-field check — the defect this codebase has shipped in test
+    // clothing before. Everything below is field-by-field and typed.
+    const engineAck: ExchangeAcknowledgement = {
+      ref: typeof receipt.ref === 'string' ? receipt.ref : '',
+      accepted: receipt.accepted !== false,
+      ...(typeof receipt.callback_op === 'string'
+        ? { callback_op: receipt.callback_op }
+        : {}),
+      ...(isRemoteFailureKind(receipt.kind) ? { kind: receipt.kind } : {}),
+      ...(typeof receipt.reason === 'string' ? { reason: receipt.reason } : {}),
+      ...(typeof receipt.retrying === 'boolean' ? { retrying: receipt.retrying } : {}),
+    };
+    // ⛔⛔ D-232 § 29 — THE TOOL RESULT IS THE ANSWER, SO IT MUST NOT LIE.
+    // This branch fired on the mere PRESENCE of an ack, which was safe until
+    // § 25 started attaching one to a FAILED fire (so the caller could still
+    // name their exchange). The two changes composed into: a receiver whose
+    // answer never left told its peer `exchange_accepted: true`.
+    //
+    // ⇒ Caught by driving a two-sided binding reversal: bob's receiver FAILED
+    // three times, and alice's carrier run still read `succeeded`. Bob refused
+    // loudly on his own console (§ 28) and told alice everything was fine.
+    //
+    // 🔑 THERE IS NO EXTRA ROUND TRIP TO ADD HERE. Alice already gets a tool
+    // result from this call; the only question was whether it told the truth.
+    if (receipt.accepted === false) {
+      return {
+        status: 'exchange_undeliverable',
+        exchange_accepted: false,
+        recipe_id: fired.recipe_id,
+        ref: typeof receipt.ref === 'string' ? receipt.ref : '',
+        ...(typeof receipt.kind === 'string' ? { kind: receipt.kind } : {}),
+        ...(typeof receipt.reason === 'string' ? { reason: receipt.reason } : {}),
+        exchange_ack: engineAck,
+        message:
+          'This recipe tried to answer and COULD NOT SEND. The reference below is '
+          + 'still how the exchange is looked up later, but no answer has reached the '
+          + 'other side. ⛔ Do NOT report this as delivered or successful.',
+      } satisfies AgentExchangeUndeliverableResult;
+    }
+    return {
+      status: 'exchange_accepted',
+      exchange_accepted: true,
+      recipe_id: fired.recipe_id,
+      ref: typeof receipt.ref === 'string' ? receipt.ref : '',
+      ...(typeof receipt.callback_op === 'string'
+        ? { callback_op: receipt.callback_op }
+        : {}),
+      exchange_ack: engineAck,
+      message: EXCHANGE_ACCEPTED_MESSAGE,
+    } satisfies AgentExchangeAcceptedResult;
   }
   if ((result as { awaiting_approval?: unknown }).awaiting_approval !== true) {
     return result;

@@ -121,6 +121,7 @@ import {
   GENERIC_OAUTH_VENDOR,
   getVendorProvider,
   unionRequiredScopesForConnection,
+  requiredScopesByConnection,
   MAX_HEADER_AUTH_ENTRIES,
   MESSAGE_MATCH_MAX_PATTERNS,
 } from '@recued/contracts';
@@ -751,6 +752,7 @@ type ConnectionsEnrollAction =
   | 'connections-guide-generate'
   | 'connections-guide-review-again'
   | 'connections-guide-copy-callback'
+  | 'connections-guide-copy-scopes'
   | 'connections-guide-use-suggestion'
   | 'connections-guide-return-to-form'
   | 'connections-guide-resume'
@@ -2175,9 +2177,18 @@ export const mountConnectionsEnrollPanel = (
         vendor: ctx.vendor,
         client_id: ctx.client_id,
         ...(ctx.client_secret ? { client_secret: ctx.client_secret } : {}),
-        // Model B — the user registers the cloud callback page as their BYO
-        // vendor app's redirect URI; it shares this origin's sessionStorage.
-        redirect_uri: OAUTH_CLOUD_CALLBACK_URL,
+        /** ⛔⛔⛔ RESOLVED FROM THIS PWA'S ORIGIN, never the cloud constant.
+         *  Hardcoding the cloud URL here made the flow UNUSABLE on a loopback
+         *  webclient: the cloud relay shares `sessionStorage` with
+         *  app.recued.com, NOT with `127.0.0.1`, so the code could never reach
+         *  the opener that minted the state. R26.2 Option B exists for exactly
+         *  this — the server serves its own relay at
+         *  `/webclient/oauth-callback.html` so the whole round-trip stays on the
+         *  owner's machine — and it was fully built, tested, and never reached,
+         *  because this one line never asked for it.
+         *  ⚠ It must equal what the form TELLS the owner to register; the two
+         *  now come from the same helper so they cannot drift apart. */
+        redirect_uri: resolveOAuthCallbackUrlForThisPwa(),
         sandbox: ctx.sandbox,
         ...(ctx.authorize_url !== undefined ? { authorize_url: ctx.authorize_url } : {}),
         ...(ctx.token_endpoint !== undefined ? { token_endpoint: ctx.token_endpoint } : {}),
@@ -2733,6 +2744,22 @@ export const mountConnectionsEnrollPanel = (
     editorRevision = null;
     dialogDraftBaseline = null;
     state.dialog.saving = false;
+    /** ⛔⛔⛔ THE CALLBACK URL BELONGS TO EVERY OPENED DIALOG, SET HERE ONCE. The five
+     *  in-place open paths MUTATE the existing dialog field by field rather than
+     *  rebuilding it, so each carries a hand-written list of what to set — and
+     *  `openVendorEnrollForm` (the `#connections/others/enroll/<vendor>` deep link,
+     *  which is where the packs "Set up" CTA lands) never listed the callback fields.
+     *  The renderer falls back to `OAUTH_CLOUD_CALLBACK_URL` on an unset field, so
+     *  that form told the owner to register the CLOUD callback while on a loopback
+     *  address — a URL the flow does not use and the provider cannot match. The
+     *  re-authorize dialog, which REBUILDS its state, showed the right one; the same
+     *  screen disagreeing with itself is what makes this class of bug so hard to
+     *  read from the outside.
+     *  ⇒ Set on the shared entry every open path already calls, so a sixth path
+     *  cannot reintroduce it by forgetting a line. The rebuilding sites set it too;
+     *  that is harmless duplication, not a second source — both call one resolver. */
+    state.dialog.oauthCallbackUrl = resolveOAuthCallbackUrlForThisPwa();
+    state.dialog.oauthCallbackAlternateUrl = resolveOAuthCallbackAlternateForThisPwa();
     // A Back/pick clicked mid-OAuth must not leave the new form stuck on
     // "Authorizing…" or carry the prior provider's correction/scopes into a
     // different connection (this mutates the existing dialog object in place).
@@ -4136,7 +4163,11 @@ export const mountConnectionsEnrollPanel = (
       return;
     }
     try {
-      void copy(OAUTH_CLOUD_CALLBACK_URL)
+      /** ⛔ The SAME resolved value the form displays and the flow sends. This
+       *  copied the cloud constant unconditionally, so on a loopback webclient
+       *  the owner pasted a URL the flow never uses — and copy is what people
+       *  actually paste. */
+      void copy(resolveOAuthCallbackUrlForThisPwa())
         .then(() => {
           if (!disposed) feedback('Copied', 'Callback URL copied.');
         })
@@ -4147,6 +4178,53 @@ export const mountConnectionsEnrollPanel = (
         });
     } catch {
       feedback('Copy manually', 'Copy failed. Select and copy the callback URL manually.');
+    }
+  };
+
+  /** Copy the exact scope string the authorize request will carry.
+   *
+   *  ⛔ REBUILT FROM THE LIVE FIELD, never read back from the DOM — the owner may have
+   *  edited the Scopes input since the last render, and copying stale text would hand
+   *  them a permission list to register that does not match what Recued then asks for.
+   *  That mismatch fails at the provider AFTER an app has been configured, which is the
+   *  expensive place to discover it. Same reasoning as the callback-URL copy above,
+   *  which shipped the cloud constant while the flow used a loopback URL. */
+  const copyRequestedScopes = (element: HTMLElement): void => {
+    element.setAttribute('aria-live', 'polite');
+    element.setAttribute('aria-atomic', 'true');
+    const feedback = (visible: string, accessible: string): void => {
+      element.textContent = visible;
+      element.setAttribute('aria-label', accessible);
+    };
+    const scopes = (state.dialog?.values['auth.scopes'] ?? '')
+      .trim()
+      .split(/\s+/u)
+      .filter(Boolean)
+      .join(' ');
+    if (scopes === '') {
+      feedback('Nothing to copy', 'No scopes are set on this connection yet.');
+      return;
+    }
+    const copy = opts.copyText
+      ?? (doc.defaultView?.navigator.clipboard?.writeText === undefined
+        ? undefined
+        : (value: string) => doc.defaultView!.navigator.clipboard.writeText(value));
+    if (copy === undefined) {
+      feedback('Copy manually', 'Clipboard unavailable. Select and copy the scopes manually.');
+      return;
+    }
+    try {
+      void copy(scopes)
+        .then(() => {
+          if (!disposed) feedback('Copied', 'Requested scopes copied.');
+        })
+        .catch(() => {
+          if (!disposed) {
+            feedback('Copy manually', 'Copy failed. Select and copy the scopes manually.');
+          }
+        });
+    } catch {
+      feedback('Copy manually', 'Copy failed. Select and copy the scopes manually.');
     }
   };
 
@@ -4538,15 +4616,42 @@ export const mountConnectionsEnrollPanel = (
     );
   }
 
-  /** Fork 1 B — the pre-filled scopes for a registered vendor's editable field:
-   *  the vendor const seed UNIONed with the installed packs' needs. Empty when
-   *  the pack list hasn't loaded (→ the field stays blank + the start passes
-   *  nothing → the server computes the union itself). */
+  /** Fork 1 B — the pre-filled scopes for a vendor's editable field: the vendor
+   *  const seed UNIONed with the installed packs' needs. Empty when the pack list
+   *  hasn't loaded (→ the field stays blank + the start passes nothing → the
+   *  server computes the union itself).
+   *
+   *  ⛔⛔⛔ THE UNION IS KEYED BY CONNECTION SLOT, NOT BY VENDOR SEGMENT, and for
+   *  several vendors those are DIFFERENT STRINGS. Every Microsoft Graph pack binds
+   *  the connection `microsoft`, while the vendor segments are `onedrive` /
+   *  `sharepoint` / `excel` — so looking the union up by the vendor segment
+   *  returned EMPTY and the Scopes box rendered blank. The owner could then click
+   *  Authorize and be rejected by Microsoft for requesting no scopes: a dead end
+   *  with nothing on screen explaining it.
+   *
+   *  🔑 It went unnoticed because the vendors where segment and slot happen to be
+   *  the SAME string (`google`, `hubspot`, `pipedrive`, `salesforce`) worked
+   *  perfectly — the working majority is exactly what made the broken ones look
+   *  like a different problem. So the slots are DERIVED from the installed packs
+   *  rather than assumed equal to the segment: every slot a pack of this vendor
+   *  actually binds contributes, and the segment stays in the set so nothing that
+   *  worked before can stop working. */
+  const scopeSlotsForVendor = (vendor: string): string[] => {
+    const slots = new Set<string>([vendor]);
+    for (const manifest of installedManifests ?? []) {
+      const declares = (manifest.connection_requirements ?? [])
+        .some((r) => (r as { vendor?: string }).vendor === vendor);
+      if (!declares) continue;
+      for (const slot of Object.keys(requiredScopesByConnection(manifest))) slots.add(slot);
+    }
+    return [...slots];
+  };
   const prefillVendorScopes = (vendor: string): string => {
     if (installedManifests === null) return '';
     const seed = getVendorProvider(vendor)?.oauth.scopes ?? [];
-    const union = unionRequiredScopesForConnection(installedManifests, vendor);
-    return [...new Set([...seed, ...union])].join(' ');
+    const union = scopeSlotsForVendor(vendor)
+      .flatMap((slot) => unionRequiredScopesForConnection(installedManifests ?? [], slot));
+    return [...new Set([...seed, ...union])].sort().join(' ');
   };
 
   /** D-223 — the installed packs' declared pre-fills for this connection.
@@ -4613,6 +4718,14 @@ export const mountConnectionsEnrollPanel = (
     }
     const schema = resolveConnectionSchema('api');
     const genericHints = applyConnectionHints(schema, hintSourcesFor(), vendor);
+    /** ⛔ THE GENERIC FORK PRE-FILLS SCOPES TOO. A vendor with no REGISTERED schema
+     *  (`excel` is one) falls through to here, and the prefill used to live only in
+     *  the registered-vendor branch above — so its Scopes box was blank however
+     *  well the pack declared `required_scopes`, and Authorize failed at the
+     *  provider for requesting none. The pack's own declarations are the whole
+     *  source here; a registered schema is not a precondition for knowing what a
+     *  pack needs. */
+    const genericPrefill = prefillVendorScopes(vendor);
     return {
       vendor: null,
       values: {
@@ -4621,6 +4734,7 @@ export const mountConnectionsEnrollPanel = (
         // NAME-matching lines up with the pack's vendor-matching; editable.
         ...(CONNECTION_NAME_REGEX.test(vendor) ? { name: vendor } : {}),
         'config.vendor': vendor,
+        ...(genericPrefill.length > 0 ? { 'auth.scopes': genericPrefill } : {}),
         ...connectionHintValues(genericHints),
       },
       schema,
@@ -8478,17 +8592,23 @@ export const mountConnectionsEnrollPanel = (
       if (state.dialog.saving) return;
       const baseKey = dataset.baseKey;
       if (baseKey === undefined) return;
-      const collected = collectHeaderRows(state.dialog.values, baseKey);
+      // ⚠ Defaults to `header_name` when the button carries no `name-key` —
+      // every header-list button rendered before this existed, and the
+      // header-list is the shape this handler was written for.
+      const nameKey = dataset.nameKey === 'field_name' ? 'field_name' : 'header_name';
+      const collected = collectHeaderRows(state.dialog.values, baseKey, nameKey);
       const shown =
-        collected.length > 0 ? collected : [{ index: 0, header_name: '', value: '' }];
+        collected.length > 0
+          ? collected
+          : [{ index: 0, header_name: '', name: '', value: '' }];
       if (shown.length >= MAX_HEADER_AUTH_ENTRIES) return;
       const next = { ...state.dialog.values };
       for (const r of shown) {
-        next[`${baseKey}.${r.index}.header_name`] = r.header_name;
+        next[`${baseKey}.${r.index}.${nameKey}`] = r.name;
         next[`${baseKey}.${r.index}.value`] = r.value;
       }
       const nextIndex = Math.max(...shown.map((r) => r.index)) + 1;
-      next[`${baseKey}.${nextIndex}.header_name`] = '';
+      next[`${baseKey}.${nextIndex}.${nameKey}`] = '';
       next[`${baseKey}.${nextIndex}.value`] = '';
       retireUntouchedCleanEditorIfCurrent();
       state.dialog.values = next;
@@ -8508,8 +8628,9 @@ export const mountConnectionsEnrollPanel = (
       const baseKey = dataset.baseKey;
       const idx = dataset.headerIndex;
       if (baseKey === undefined || idx === undefined) return;
+      const nameKey = dataset.nameKey === 'field_name' ? 'field_name' : 'header_name';
       const next = { ...state.dialog.values };
-      delete next[`${baseKey}.${idx}.header_name`];
+      delete next[`${baseKey}.${idx}.${nameKey}`];
       delete next[`${baseKey}.${idx}.value`];
       retireUntouchedCleanEditorIfCurrent();
       state.dialog.values = next;
@@ -8773,6 +8894,9 @@ export const mountConnectionsEnrollPanel = (
     },
     'connections-guide-copy-callback': (_dataset, _event, element) => {
       copySetupGuideCallback(element);
+    },
+    'connections-guide-copy-scopes': (_dataset, _event, element) => {
+      copyRequestedScopes(element);
     },
     'connections-guide-use-suggestion': (dataset) => {
       applySetupGuideSuggestion(dataset.fieldKey);

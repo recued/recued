@@ -540,6 +540,18 @@ export const HTTP_UPLOAD_WIRE_KIND_KEY = '__rc_upload_kind';
 export const HTTP_UPLOAD_WIRE_FIELD_KEY = '__rc_upload_field';
 export const HTTP_UPLOAD_WIRE_MAX_BYTES_KEY = '__rc_upload_max_bytes';
 
+/** Engine-owned carrier for a binding's `auth_body_fields` opt-in. JSON array
+ *  of credential NAMES (never values) — the adapter looks each up in the
+ *  connection's encrypted `body_field` auth at dispatch.
+ *
+ *  ⛔ It has to be an engine-owned `__rc_*` key rather than an ordinary arg for
+ *  the same reason the upload markers are: the gateway strips `__rc_*` from
+ *  recipe args, so its presence PROVES the manifest's binding asked for the
+ *  injection. A recipe-settable equivalent would let a recipe name a
+ *  credential the operation was never authorized to send and choose which body
+ *  key it lands in. */
+export const HTTP_AUTH_BODY_FIELDS_WIRE_KEY = '__rc_auth_body_fields';
+
 export interface HttpOneShotUploadSpec {
   kind: 'multipart' | 'binary';
   /** The op arg holding the `file_ref`. Must be a declared arg of type

@@ -484,16 +484,33 @@ export const bootstrapPacksRoute = (
     // a remount (a link/refresh to a different slug still remounts via
     // `initialPackSlug`). Non-fatal on failure — addressability degrades to
     // in-page-only.
+    /** ⛔⛔ OPENING A DETAIL IS A PLACE, SO IT PUSHES. `replaceState` for the whole
+     *  list→detail transition OVERWROTE the `#packs` entry, so the native Back button
+     *  skipped the list entirely and landed a level above it — the route the owner
+     *  came from, not the one they could see.
+     *  🔑 `pushState` emits no `hashchange` either, so the reason `replaceState` was
+     *  chosen here — in-page navigation must never remount — is fully preserved. The
+     *  only difference is that Back now has somewhere to go.
+     *  ⚠ Only ENTERING a detail pushes. Closing one back to the bare list replaces, or
+     *  a list→detail→list round trip would leave two entries and Back would bounce the
+     *  owner into the detail they just closed. */
+    let syncedPackSlug: string | null = null;
     const syncPacksHash = (slug: string | null): void => {
       const history = doc.defaultView?.history;
       if (history?.replaceState === undefined) return;
       const nextHash = serializeShellRoute('packs', slug ?? undefined);
+      const entering = slug !== null && syncedPackSlug === null;
       try {
-        history.replaceState(null, '', nextHash);
+        if (entering && typeof history.pushState === 'function') {
+          history.pushState(null, '', nextHash);
+        } else {
+          history.replaceState(null, '', nextHash);
+        }
       } catch {
         // URL unchanged → do NOT desync the router's activeHash from it.
         return;
       }
+      syncedPackSlug = slug;
       // The URL changed in-page without a hashchange event; tell the router so
       // its cached activeHash tracks the live selection.
       opts.onHashSync?.(nextHash);

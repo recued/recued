@@ -73,6 +73,10 @@ describe('D-201 Slices 9D + 9E + 9AD timestamped JSON single-event composition',
           profile_id: 'slack.request.v0',
           admission_method_label: 'slack-signature-v0',
           runtime_error_label: 'Slack webhook',
+        }, {
+          profile_id: 'recued-peer.exchange.v1',
+          admission_method_label: 'recued-peer-signature-v1',
+          runtime_error_label: 'Recued peer webhook',
         }]);
   });
 

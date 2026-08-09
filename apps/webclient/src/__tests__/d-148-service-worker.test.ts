@@ -248,17 +248,62 @@ describe('D-148 § A.4 — service-worker registration helper', () => {
     await expect(clearServiceWorkerCaches({ caches: undefined })).resolves.toBe(false);
   });
 
+  // `getRegistrations()` returns EVERY registration on the ORIGIN, not just
+  // ours, so ownership is decided by scope. These now carry resolvable scope
+  // URLs (they were the bare strings 'a' / 'b') and the environment supplies the
+  // `baseUrl` they resolve against — which is what the browser does for free and
+  // what a node test has to say out loud.
+  const BASE = 'https://app.recued.com/';
+
   it('unregisterServiceWorker uses getRegistrations when available', async () => {
-    const r1 = buildFakeRegistration('a');
-    const r2 = buildFakeRegistration('b');
+    const r1 = buildFakeRegistration(BASE);
+    const r2 = buildFakeRegistration(`${BASE}deeper/`);
     const ctl = buildFakeContainer({ regs: [r1.reg, r2.reg] });
+    r1.setUnregisterResult(true);
+    r2.setUnregisterResult(true);
+    await expect(
+      unregisterServiceWorker({ navigator: { serviceWorker: ctl.container }, baseUrl: BASE }),
+    ).resolves.toBe(true);
+    expect(r1.unregisterCount()).toBe(1);
+    expect(r2.unregisterCount()).toBe(1);
+  });
+
+  it('unregisterServiceWorker leaves a FOREIGN-scope registration alone', async () => {
+    // ⛔ THE DEFECT THIS PINS. The loop used to unregister every registration
+    // `getRegistrations()` returned, while its doc comment claimed "every
+    // webclient-owned SW registration". On `app.recued.com` nothing else is
+    // registered, so it never showed; on a self-host origin shared with another
+    // app, Settings → Privacy "Clear this browser" tore down that app's service
+    // worker too. Use the input that would DO THE THING if the filter were gone.
+    const ours = buildFakeRegistration(`${BASE}webclient/`);
+    const theirs = buildFakeRegistration(`${BASE}someone-elses-app/`);
+    const ctl = buildFakeContainer({ regs: [ours.reg, theirs.reg] });
+    ours.setUnregisterResult(true);
+    theirs.setUnregisterResult(true);
+    await expect(
+      unregisterServiceWorker({
+        navigator: { serviceWorker: ctl.container },
+        baseUrl: `${BASE}webclient/`,
+      }),
+    ).resolves.toBe(true);
+    expect(ours.unregisterCount()).toBe(1);
+    expect(theirs.unregisterCount(), 'a neighbouring app is not ours to unregister').toBe(0);
+  });
+
+  it('unregisterServiceWorker narrows to getRegistration when ownership is unprovable', async () => {
+    // No `baseUrl` and no `globalThis.location` ⇒ scope cannot be resolved ⇒ we
+    // cannot tell ours from theirs. That falls back to `getRegistration()`,
+    // which asks the platform for the registration controlling THIS page and so
+    // cannot over-reach. "Cannot prove ownership" narrows; it never widens.
+    const r1 = buildFakeRegistration(BASE);
+    const r2 = buildFakeRegistration(`${BASE}deeper/`);
+    const ctl = buildFakeContainer({ regs: [r1.reg, r2.reg], reg: r1.reg });
     r1.setUnregisterResult(true);
     r2.setUnregisterResult(true);
     await expect(
       unregisterServiceWorker({ navigator: { serviceWorker: ctl.container } }),
     ).resolves.toBe(true);
-    expect(r1.unregisterCount()).toBe(1);
-    expect(r2.unregisterCount()).toBe(1);
+    expect(r2.unregisterCount()).toBe(0);
   });
 
   it('unregisterServiceWorker reports false when nothing was unregistered', async () => {
@@ -293,8 +338,8 @@ describe('D-148 § A.4 — service-worker registration helper', () => {
   });
 
   it('unregisterServiceWorker swallows per-registration unregister failures', async () => {
-    const r1 = buildFakeRegistration('a');
-    const r2 = buildFakeRegistration('b');
+    const r1 = buildFakeRegistration(BASE);
+    const r2 = buildFakeRegistration(`${BASE}deeper/`);
     const ctl = buildFakeContainer({ regs: [r1.reg, r2.reg] });
     // r1 throws; r2 succeeds — the helper should still report true.
     r1.reg.unregister = async () => {
@@ -302,7 +347,7 @@ describe('D-148 § A.4 — service-worker registration helper', () => {
     };
     r2.setUnregisterResult(true);
     await expect(
-      unregisterServiceWorker({ navigator: { serviceWorker: ctl.container } }),
+      unregisterServiceWorker({ navigator: { serviceWorker: ctl.container }, baseUrl: BASE }),
     ).resolves.toBe(true);
   });
 });

@@ -263,6 +263,14 @@ const SETTINGS_LIST: readonly WebhookOwnerProfileSettings[] = [
     'Timestamped raw-body HMAC SHA-256',
   ),
   genericSettings('generic.http-basic.v1', 'HTTP Basic'),
+  // SPIKE — the peer profile's owner surface. Every other entry instructs an
+  // owner on configuring SOMEONE ELSE'S console; here the far side is another
+  // Recued server, so the instruction is an exchange between two owners.
+  genericSettings('recued-peer.exchange.v1', 'Recued peer exchange', {
+    connection_placeholder: 'peer-server',
+    generated_credential_instructions: 'Recued generates this signing secret. Give it to the peer owner over a channel you both already trust; they store it on their outbound connection to you, and it is what their deliveries are signed with. The secret authenticates the PEER, not the person who sent it to you — treat a leaked value as a peer impersonation and rotate. Rotation overlaps: add the new secret, have the peer switch, confirm one accepted delivery verified by the new version, then retire the old one.',
+    credential_rotation_instructions: 'Add the replacement before the peer switches. Two versions verify at once, so an in-flight delivery signed with either is accepted; retire the older only after an accepted delivery proves the new one is live.',
+  }),
 ];
 
 const freezeEnvironmentText = (

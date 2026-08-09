@@ -21,6 +21,7 @@
  *  and shows the scenarios; the reader supplies the usage. */
 
 import { spawnSync } from 'node:child_process';
+import { resolveSeedDir, seedNotFoundMessage } from './seed-dir.js';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -31,10 +32,6 @@ import { configureLlmFromDevEnv } from './llm-env.js';
 import { createRecordViaRecipe, driveChatTurn, installPack } from './install-packs.js';
 
 const REPO = resolve(import.meta.dirname, '../../../..');
-// The bench seed is a sibling checkout that is NOT part of this repository and
-// whose directory name is local to the machine it was cloned on. `HORIZON_SEED_DIR`
-// names it; this fallback stays neutral so no local layout ships in the source.
-const DEFAULT_SEED = resolve(REPO, '..', 'bench-seed');
 
 interface Counts { entries: number; activities: number; bytes: number }
 
@@ -59,7 +56,12 @@ const rows = (c: Counts): number => c.entries + c.activities;
 
 const main = async (): Promise<number> => {
   const workDir = process.env.HORIZON_WORKDIR ?? resolve(REPO, '.audit-rate-scratch');
-  const seedDir = process.env.HORIZON_SEED_DIR ?? DEFAULT_SEED;
+  const seed = resolveSeedDir(REPO);
+  if (seed.dir === null) {
+    console.error(seedNotFoundMessage(seed));
+    return 1;
+  }
+  const seedDir = seed.dir;
   const seedDb = resolve(seedDir, 'seed-test.db');
   const seedIdentity = resolve(seedDir, 'seed-identity.json');
   const seedRecoveryKey = resolve(seedDir, 'seed-recovery-key.txt');

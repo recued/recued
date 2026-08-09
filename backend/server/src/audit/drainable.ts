@@ -52,6 +52,7 @@ export const createDrainableAuditLog = (
     append: (entry: AuditEntry, options?: AppendOptions) =>
       track(() => underlying.append(entry, options)),
     listRecent: (limit, options) => underlying.listRecent(limit, options),
+    listWindow: (query) => underlying.listWindow(query),
     listByRecipe: (recipeId, limit) => underlying.listByRecipe(recipeId, limit),
     listByChannelSession: (id, limit, axis) =>
       underlying.listByChannelSession(id, limit, axis),
@@ -59,6 +60,12 @@ export const createDrainableAuditLog = (
       underlying.listByCognitionSession(id, limit, axis),
     listByCorrelation: (id, limit, axis) =>
       underlying.listByCorrelation(id, limit, axis),
+    listByExchangeRef: (ref, limit, axis) =>
+      underlying.listByExchangeRef(ref, limit, axis),
+    listPendingExchangeRefs: (limit) => underlying.listPendingExchangeRefs(limit),
+    listInboundContractIds: (limit) => underlying.listInboundContractIds(limit),
+    listByPeerContract: (contractId, limit, axis) =>
+      underlying.listByPeerContract(contractId, limit, axis),
     listByDish: (dishId, limit, axis) =>
       underlying.listByDish(dishId, limit, axis),
     latestByDishes: (dishIds) => underlying.latestByDishes(dishIds),

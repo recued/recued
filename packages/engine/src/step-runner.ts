@@ -142,7 +142,23 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
 
     // fail_on check
     if (step.fail_on && evaluateCondition(step.fail_on, ctx.stores)) {
-      const error = makeError(ctx, id, 'RECIPE_FAIL_ON_TRIGGERED', `fail_on triggered on step ${id}`);
+      // D-232 § 21 — a guard that says WHAT it is says so in `details.fail_kind`.
+      // ⛔ The CODE stays `RECIPE_FAIL_ON_TRIGGERED` for every guard, deliberately:
+      // that code is load-bearing across the corpus (`errorsContainCode`, failure
+      // handlers, the D-159 surface), and re-coding a refusal would break readers
+      // that have nothing to do with exchanges. The classification rides ALONGSIDE
+      // it, so a consumer that knows to look finds it and every existing consumer
+      // is unaffected.
+      // ⚠ `fail_kind` is authorable but its type admits only `policy` / `config`
+      // — never `unavailable`, the one value worth lying about. See StepFailureKind.
+      const failKind = (step as { fail_kind?: string }).fail_kind;
+      const error = makeError(
+        ctx,
+        id,
+        'RECIPE_FAIL_ON_TRIGGERED',
+        `fail_on triggered on step ${id}`,
+        failKind === 'policy' || failKind === 'config' ? { fail_kind: failKind } : {},
+      );
       return { id, type, skipped: false, result, error, duration_ms: Date.now() - start };
     }
 

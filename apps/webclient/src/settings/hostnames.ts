@@ -17,6 +17,7 @@ import type {
   HostnameMutationResponse,
   HostnameOwnershipProofInput,
   HostnameOwnershipProofResult,
+  HostnameCertProvisioningState,
   HostnameOwnershipStatus,
   HostnameProjection,
   HostnameRemoveRequest,
@@ -119,6 +120,29 @@ const OWNERSHIP_CLASS: Record<HostnameOwnershipStatus, string> = {
   pending: 'hostnames-pill-pending',
   verified: 'hostnames-pill-verified',
   failed: 'hostnames-pill-failed',
+};
+
+/** ⛔ THE PILL USED TO SHOW OWNERSHIP, WHICH ANSWERS A DIFFERENT QUESTION. A
+ *  Pro DDNS row registered by the enrollment service is `ownership_status:
+ *  'verified'` the instant it appears — the handle reservation IS the proof for
+ *  a Recued-controlled zone — so the panel said "Verified" while there was no
+ *  certificate at all, at exactly the moment a new user is watching to see
+ *  whether their hostname works.
+ *
+ *  Certificate PROVISIONING is now its own field, so the pill can say what the
+ *  user is actually waiting on. `cert_provisioning` takes precedence when
+ *  present; ownership remains the fallback for BYO rows and for legacy rows
+ *  written before the column existed (absent ⇒ unknown, not assumed). */
+const CERT_PROVISIONING_LABELS: Record<HostnameCertProvisioningState, string> = {
+  pending: 'Provisioning…',
+  failed: 'Cert failed — retrying',
+  ready: 'Verified',
+};
+
+const CERT_PROVISIONING_CLASS: Record<HostnameCertProvisioningState, string> = {
+  pending: 'hostnames-pill-pending',
+  failed: 'hostnames-pill-failed',
+  ready: 'hostnames-pill-verified',
 };
 
 export const HOSTNAMES_PANEL_STYLES = `
@@ -1222,6 +1246,20 @@ export const mountHostnamesPanel = (
       renderMeta(meta, 'Proof method', detail.verification_method
         ? VERIFICATION_METHOD_LABELS[detail.verification_method]
         : 'none');
+      // A bare "none" told the user nothing about WHY. The enrollment service
+      // records the closed-list reason from its last failed attempt, so show it
+      // rather than leaving them to guess whether anything is happening.
+      renderMeta(
+        meta,
+        'Certificate',
+        detail.cert_provisioning === 'failed' && detail.cert_last_error
+          ? `Failed (${detail.cert_last_error}) — retrying automatically`
+          : detail.cert_provisioning === 'pending'
+            ? 'Provisioning…'
+            : detail.cert_provisioning === 'ready'
+              ? 'Ready'
+              : 'Unknown',
+      );
       renderMeta(meta, 'Cert fingerprint', detail.cert_fingerprint ?? 'none', true);
       renderMeta(meta, 'Cert expiry', formatDate(detail.cert_expires_at));
       renderMeta(meta, 'Cert issuer', detail.cert_chain_metadata?.issuer ?? 'none');
@@ -1427,9 +1465,20 @@ export const mountHostnamesPanel = (
       name.className = 'hostnames-row-name';
       name.textContent = row.hostname;
       const pill = doc.createElement('span');
-      pill.className = `hostnames-pill ${OWNERSHIP_CLASS[row.ownership_status]}`;
-      pill.setAttribute(HOSTNAMES_ROW_STATUS_ATTR, row.ownership_status);
-      pill.textContent = OWNERSHIP_LABELS[row.ownership_status];
+      // Provisioning wins when known — see the note on CERT_PROVISIONING_LABELS.
+      const provisioning = row.cert_provisioning;
+      const pillClass = provisioning
+        ? CERT_PROVISIONING_CLASS[provisioning]
+        : OWNERSHIP_CLASS[row.ownership_status];
+      const pillLabel = provisioning
+        ? CERT_PROVISIONING_LABELS[provisioning]
+        : OWNERSHIP_LABELS[row.ownership_status];
+      pill.className = `hostnames-pill ${pillClass}`;
+      // The status ATTRIBUTE keeps carrying the provisioning value when there
+      // is one, so a test or a stylesheet can target the real state rather than
+      // inferring it from the label text.
+      pill.setAttribute(HOSTNAMES_ROW_STATUS_ATTR, provisioning ?? row.ownership_status);
+      pill.textContent = pillLabel;
       main.appendChild(name);
       main.appendChild(pill);
       renderCertExpiryChip(main, row.cert_expires_at);

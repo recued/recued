@@ -138,7 +138,74 @@ export const catalogSlugForConnection = (row: ConnectionRow): string | undefined
  *  group whose ops the manifest no longer declares is ignored (forward-safe
  *  against manifest drift). Deterministic order (group declaration order,
  *  deduped). */
+/** ⛔⛔ THE OPERATION-GROUP LAYER IS BYPASSED (owner decision, 2026-08-07). Every
+ *  operation a bound catalog declares is admitted; the group grants are still WRITTEN
+ *  and readable, they simply no longer gate. Authority moved to the two layers that
+ *  actually hold it:
+ *
+ *    - a DOOR (mcp / chat / webhook / reception / agent) → the CONTRACT layer, which
+ *      denies a live bound non-owner `contract_id` by default (`contract-dispatch.ts`
+ *      → `operation_not_granted`, plus `resolveTrustCeiling` and the per-door op
+ *      admission fan-out). Untouched by this flag.
+ *    - the OWNER's own dispatch → the per-run APPROVAL gate, which `RISK_APPROVAL_FLOOR`
+ *      pins at `ask` for write and `always` for destructive. A write can never go
+ *      silent, whatever this layer says.
+ *
+ *  ── Why the layer was removed rather than fixed ───────────────────────────────
+ *  It did not do what its own UI claimed. Three findings, all reproduced:
+ *    1. NOT PER-PACK. `resolveInstallGrantWriteSet` iterates the CONNECTION's catalog
+ *       manifest, so installing ANY pack at `All` granted every group on that
+ *       connection. Installing `planner` flipped `excel.table.write` to granted — the
+ *       owner demonstrated this live.
+ *    2. DISPLAY ≠ ENFORCEMENT. `allowed_operations` unions user-manual AND pack-owned
+ *       grants; the panel's `granted` flag read user-manual ONLY. An op could be fully
+ *       admitted at the gateway while its row still offered a "Grant" button.
+ *    3. TWO WRITERS, ONE DERIVED PROFILE. The install picker writes pack-owned
+ *       `contract.grant` rows; the panel writes `__user__` rows. The panel presented
+ *       itself as the write control while owning only one of the two writers.
+ *  A gate whose displayed state is not its enforced state, and whose scope is not the
+ *  scope it names, is assurance-shaped non-assurance — worse than no gate, because its
+ *  state is read as a verdict. See internal design notes.
+ *
+ *  ⚠ FAIL-CLOSED IS PRESERVED WHERE IT WAS REAL: a connection with NO catalog manifest
+ *  still derives the empty set → its profile is dropped → the gateway denies with
+ *  `no_connection_profile`. This admits the ops of a catalog the owner BOUND, never the
+ *  ops of a connection that has none.
+ *
+ *  🔑 The old derivation is kept below, reachable by flipping this constant, because a
+ *  posture decision should be reversible without archaeology. */
+export const OPERATION_GROUP_GATE_ENABLED = false;
+
+/** The PRODUCTION entry point. Bypassed by default per the block above; delegates to the
+ *  group-gated derivation when the gate is re-enabled.
+ *
+ *  ⚠ `grantedGroups` is retained in the signature even though the bypass ignores it —
+ *  the callers still compute and pass the union, so re-enabling is one constant and no
+ *  call-site surgery. */
 export const deriveAllowedOperations = (
+  manifest: IngredientManifest | null | undefined,
+  grantedGroups: ReadonlyArray<string>,
+): string[] => {
+  if (OPERATION_GROUP_GATE_ENABLED) return deriveGroupGatedOperations(manifest, grantedGroups);
+  const operations = manifest?.operations;
+  /** ⛔ FAIL-CLOSED SURVIVES HERE: no catalog manifest ⇒ empty ⇒ the caller drops the
+   *  profile ⇒ the gateway denies with `no_connection_profile`. The bypass admits the
+   *  ops of a catalog the owner BOUND, never the ops of a connection that has none. */
+  if (!operations) return [];
+  /** `Object.keys` is own-enumerable only, so the prototype-smuggling defence the gated
+   *  path needs (a group listing `operations: ['constructor']`) has nothing to defend
+   *  against here — there is no attacker-supplied key list to honour, only the catalog's
+   *  own declarations. */
+  return Object.keys(operations);
+};
+
+/** The GROUP-GATED derivation — production's behaviour until 2026-08-07, now reachable
+ *  only via `OPERATION_GROUP_GATE_ENABLED`. Exported so its considerable test coverage
+ *  keeps testing IT rather than being re-expected to the bypass's output: re-pointing
+ *  those assertions at a function that now returns everything would have deleted the
+ *  coverage while appearing to keep it, and left nothing to verify against if the gate
+ *  is ever turned back on. */
+export const deriveGroupGatedOperations = (
   manifest: IngredientManifest | null | undefined,
   grantedGroups: ReadonlyArray<string>,
 ): string[] => {

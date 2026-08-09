@@ -8385,6 +8385,8 @@ void (async (): Promise<void> => {
           rpcCallCount: (method) => transport.rpcCallCount(method),
           fireState: (state) => transport.fireState(state),
           fireMessage: (message) => transport.fireMessage(message),
+          pairSubmitCount: () => pairSubmitCount,
+          lastPairingCode: () => lastPairingCode,
         };
         return;
       }

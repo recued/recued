@@ -3603,6 +3603,12 @@ export const createChatOrchestrator = (
           input_tokens: totalUsage.input_tokens,
           output_tokens: totalUsage.output_tokens,
           total_tokens: totalUsage.total_tokens,
+          // ⚠ The count is what makes the totals READABLE. A consumer plotting
+          // input_tokens per turn cannot otherwise tell a growing packet from a
+          // turn that called the provider twice.
+          ...(totalUsage.provider_calls !== undefined
+            ? { provider_calls: totalUsage.provider_calls }
+            : {}),
           ...(totalUsage.cache_read_input_tokens !== undefined
             ? { cache_read_input_tokens: totalUsage.cache_read_input_tokens }
             : {}),

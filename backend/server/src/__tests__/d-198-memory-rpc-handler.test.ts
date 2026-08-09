@@ -54,7 +54,37 @@ const mkRow = (o: {
   }) as unknown as AuditEntry;
 
 /** Fake store honouring the real `listRecent` semantics: origin filter
- *  (undefined actor -> 'system'), sort by started_at DESC, slice to limit. */
+ *  (undefined actor -> 'system'), sort by started_at DESC, slice to limit.
+ *
+ *  ⛔ `listWindow` MUST MIRROR THE REAL ORDER, not merely return rows. The
+ *  handler merges two independently-truncated DESC streams and trusts them down
+ *  to a shared horizon; a fake that ordered differently from the SQLite
+ *  implementation would make the merge look correct here and drop rows in
+ *  production. So this sorts by `COALESCE(event_at, started_at) DESC, run_id
+ *  DESC` — the same total order `listWindowDesc` emits and `compareEntriesDesc`
+ *  expects — and applies the keyset cursor with the same strict comparison.
+ *
+ *  ⚠ And it applies NO ORIGIN FILTER, matching the real one. The filter runs in
+ *  JS over the union; pushing it down here would hide the case where a windowed
+ *  read returns fewer matching rows than the page needs. */
+const auditEff = (r: AuditEntry): number => r.event_at ?? r.started_at;
+
+/** ONE definition of the window, shared by both fakes below. Two hand-rolled
+ *  copies of an ordering are two chances for one of them to drift from the
+ *  SQLite implementation the handler's horizon argument depends on. */
+const auditWindowOver = (rows: AuditEntry[]) =>
+  async ({ limit, before }: { limit: number; before?: { ts: number; id: string } }) => {
+    const ordered = [...rows].sort((a, b) =>
+      (auditEff(b) - auditEff(a))
+      || (a.run_id < b.run_id ? 1 : a.run_id > b.run_id ? -1 : 0));
+    const after = before === undefined
+      ? ordered
+      : ordered.filter((r) => (auditEff(r) !== before.ts
+        ? auditEff(r) < before.ts
+        : r.run_id < before.id));
+    return after.slice(0, limit);
+  };
+
 const depsFor = (rows: AuditEntry[]): MemoryRpcDeps => ({
   auditLog: {
     async listRecent(limit: number, opts?: { origin_actors?: readonly string[] }) {
@@ -65,6 +95,7 @@ const depsFor = (rows: AuditEntry[]): MemoryRpcDeps => ({
           : rows;
       return [...matched].sort((a, b) => b.started_at - a.started_at).slice(0, limit);
     },
+    listWindow: auditWindowOver(rows),
   } as unknown as AuditLogStore,
 });
 
@@ -208,6 +239,7 @@ const mkAuditStore = (rows: AuditEntry[]): AuditLogStore =>
           : rows;
       return [...matched].sort((a, b) => b.started_at - a.started_at).slice(0, limit);
     },
+    listWindow: auditWindowOver(rows),
     async get(run_id: string) {
       return rows.find((r) => r.run_id === run_id) ?? null;
     },

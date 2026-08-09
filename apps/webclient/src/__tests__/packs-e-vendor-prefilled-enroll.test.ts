@@ -313,6 +313,52 @@ const mountPanel = (opts: MountOpts = {}) => {
 };
 
 describe('packs item E — vendor-prefilled connection enroll deep link', () => {
+  it('⛔⛔⛔ the deep-linked enroll form carries THIS origin\'s callback URL', async () => {
+    /** `#connections/others/enroll/<vendor>` — where the packs "Set up" CTA lands.
+     *  It opens through `openVendorEnrollForm`, which MUTATES the dialog field by
+     *  field instead of rebuilding it, and its hand-written list never included the
+     *  callback fields. The renderer falls back to the cloud URL on an unset field,
+     *  so this form told the owner to register `https://app.recued.com/oauth-callback`
+     *  while they were on `http://localhost:7891` — a URL the flow does not send and
+     *  the provider cannot match. The re-authorize dialog REBUILDS its state and so
+     *  showed the correct one: the same screen disagreeing with itself, which is what
+     *  made it read as a caching problem rather than a code one.
+     *  ⚠ Asserted on the DIALOG STATE, not the HTML, so the fallback in the renderer
+     *  cannot mask an unset field — that fallback is exactly what hid this. */
+    /** ⚠ The resolver reads `globalThis.location.origin` and falls back to the cloud
+     *  URL off-browser — correctly. Without an origin here the test would "reproduce"
+     *  the bug for an environment reason and pass on a fix that changed nothing, so
+     *  the origin is supplied and restored. */
+    const priorLocation = (globalThis as { location?: unknown }).location;
+    Object.defineProperty(globalThis, 'location', {
+      value: { origin: 'http://localhost:7891' }, configurable: true, writable: true,
+    });
+    const { panel } = mountPanel({ initialVendor: 'onedrive' });
+    await panel.whenLoaded();
+    await flush();
+
+    const { dialog } = panel.getState();
+    if (priorLocation === undefined) {
+      delete (globalThis as { location?: unknown }).location;
+    } else {
+      Object.defineProperty(globalThis, 'location', {
+        value: priorLocation, configurable: true, writable: true,
+      });
+    }
+    expect(dialog.stage).toBe('form');
+    expect(dialog.oauthCallbackUrl,
+      'the deep-linked form must resolve a callback URL, not leave it unset')
+      .toBeDefined();
+    expect(dialog.oauthCallbackUrl,
+      'and it must NOT be the cloud callback while on a loopback origin')
+      .not.toBe('https://app.recued.com/oauth-callback');
+    expect(dialog.oauthCallbackUrl).toBe(
+      'http://localhost:7891/webclient/oauth-callback.html');
+    /** ⚠ The alternate must be the OTHER one, so "register both" names a real pair. */
+    expect(dialog.oauthCallbackAlternateUrl).toBe('https://app.recued.com/oauth-callback');
+    panel.dispose();
+  });
+
   it('auto-opens a registered HubSpot vendor form from initialVendor', async () => {
     const { panel } = mountPanel({ initialVendor: 'hubspot' });
 

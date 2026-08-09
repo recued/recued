@@ -3818,6 +3818,32 @@ const MANIFESTS = [
     }
   },
   {
+    "slug": "exchange-status",
+    "name": "What happened to an exchange",
+    "description": "Ask what became of a peer exchange, by the reference `output.exchange` handed back. Returns a DELIVERY state — `unknown` (nothing was sent), `awaiting` (sent, the peer has not answered yet, which is NOT a failure), `answered`, `undeliverable` with the reason it could not be delivered, or `unanswerable` (it DID reach them and they have told us they cannot reply — no answer is coming, and re-sending will not help). Derived from the runs already filed under the ref; it stores nothing of its own.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "data",
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "exchange",
+      "read"
+    ],
+    "input": {
+      "exchange_ref": null,
+      "callback_op": null
+    },
+    "output": {
+      "ref": "ref",
+      "status": "status",
+      "kind": "kind",
+      "reason": "reason",
+      "runs": "runs"
+    }
+  },
+  {
     "slug": "shared-read",
     "name": "Read one shared record by key",
     "description": "Return one exact shared.* or data.shared.* record by key. Use this when a recipe already knows the full key and should not pay a prefix list or full-text search cost. Missing keys return found:false.",

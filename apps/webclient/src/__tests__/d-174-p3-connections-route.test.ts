@@ -4056,53 +4056,46 @@ describe('operation grants — the surface R13 deleted and left rpc-only', () =>
     connectionsRevokeGroupCaller: vi.fn(async () => { throw new Error('unused'); }),
   });
 
-  it('renders the grants section in Apps & APIs when the callers are wired', () => {
-    const doc = makeFakeDocument();
-    const root = doc.createElement('div');
-    bootstrapConnectionsRoute({
-      root: root as unknown as HTMLElement,
-      document: doc as unknown as Document,
-      initialTab: 'others',
-      ...grantCallers(),
-    } as never);
-    // Without this the only grant writer is a pack install, and Settings →
-    // Permissions can only TIGHTEN — so a hand-enrolled connection stays at
-    // `operation_not_granted` forever.
-    expect(collectByAttr(root, CONNECTIONS_ROUTE_GRANTS_SECTION_ATTR).length).toBe(1);
-  });
-
-  it('keeps grants outside the enroll panel replacement boundary', async () => {
+  it('⛔⛔ NOT MOUNTED even with every caller wired — the layer no longer gates', async () => {
+    /** INVERTED 2026-08-07 (owner decision). This used to assert the section RENDERS,
+     *  on the premise that without it a hand-enrolled connection is stuck at
+     *  `operation_not_granted` forever. That premise died with
+     *  `OPERATION_GROUP_GATE_ENABLED = false`: every op a bound catalog declares is now
+     *  admitted, and authority sits with the contract layer (doors) + the per-run
+     *  approval gate (owner).
+     *
+     *  ⛔ THE PANEL WAS ALSO LYING, which is why it was removed rather than restyled:
+     *    - its rows named ONE pack (`excel.table.write`) but `resolveInstallGrantWriteSet`
+     *      iterates the CONNECTION's catalog, so ANY sibling pack installed at `All`
+     *      flipped them — reproduced live by installing `planner`;
+     *    - its `granted` flag read `__user__` grants only, while enforcement unioned
+     *      user AND pack-owned — so a row offering "Grant" could already be permitted.
+     *
+     *  🔑 WIRING EVERY CALLER IS THE POINT OF THIS TEST. The sibling case below already
+     *  covers "absent when the callers are absent"; passing that would be trivially
+     *  satisfied by a route that lost its grant wiring by accident. Supplying the full
+     *  caller set proves the un-mount is a DECISION, not a regression. */
     const doc = makeFakeDocument();
     const root = doc.createElement('div');
     const enroll = enrollCallers();
-    const grants = grantCallers();
     const route = bootstrapConnectionsRoute({
       root: root as unknown as HTMLElement,
       document: doc as unknown as Document,
       initialTab: 'others',
       ...enroll,
-      ...grants,
+      ...grantCallers(),
       // Production reuses this exact list caller for both panels.
       connectionsListCaller: enroll.connectionsEnrollListCaller,
     } as never);
 
-    await Promise.all([
-      route.connectionsEnrollPanel()!.whenLoaded(),
-      route.connectionsGrantPanel()!.whenLoaded(),
-    ]);
+    expect(collectByAttr(root, CONNECTIONS_ROUTE_GRANTS_SECTION_ATTR).length).toBe(0);
+    expect(route.connectionsGrantPanel(), 'no panel instance to drive').toBeNull();
 
+    /** ⚠ The ENROL panel must survive intact — the two share a lane and a list caller,
+     *  so un-mounting one is exactly the change that could take the other with it. */
+    await route.connectionsEnrollPanel()!.whenLoaded();
     const content = collectByAttr(root, CONNECTIONS_ROUTE_CONTENT_ATTR)[0]!;
-    const enrollHost = collectByAttr(
-      root,
-      CONNECTIONS_ROUTE_ENROLL_HOST_ATTR,
-    )[0]!;
-    const grantsSection = collectByAttr(
-      root,
-      CONNECTIONS_ROUTE_GRANTS_SECTION_ATTR,
-    )[0]!;
-    expect(enrollHost.parent).toBe(content);
-    expect(grantsSection.parent).toBe(content);
-    expect(enrollHost).not.toBe(grantsSection);
+    expect(collectByAttr(root, CONNECTIONS_ROUTE_ENROLL_HOST_ATTR)[0]!.parent).toBe(content);
     route.dispose();
   });
 

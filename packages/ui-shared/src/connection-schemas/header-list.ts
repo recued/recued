@@ -9,37 +9,57 @@
  *  prototype-safe non-empty name+value) lives in the contracts
  *  `validateHeaderAuthEntries`, which the server re-runs at enroll. */
 
-/** One header row as held in the flat form values. `index` is the form-value
- *  index (may be sparse after removals — the payload projector compacts it). */
+/** Which sub-key holds a row's NAME. `header_name` for header auth,
+ *  `field_name` for `body_field` auth — the only difference between the two
+ *  list fields, so they share one renderer, one validator and one projector.
+ *
+ *  ⚠ Derived from the FIELD TYPE, never passed separately: a name key that
+ *  travelled independently of the field it describes is a second thing to keep
+ *  in step, and the three consumers would each have their own chance to get it
+ *  wrong. */
+export const nameKeyForListField = (
+  type: 'header-list' | 'body-field-list',
+): 'header_name' | 'field_name' =>
+  (type === 'body-field-list' ? 'field_name' : 'header_name');
+
+/** One list row as held in the flat form values. `index` is the form-value
+ *  index (may be sparse after removals — the payload projector compacts it).
+ *  `name` is the row's name whichever sub-key carried it. */
 export interface HeaderRow {
   index: number;
+  /** @deprecated Read `name`. Retained so existing header-list call sites and
+   *  their tests keep compiling; always equal to `name`. */
   header_name: string;
+  name: string;
   value: string;
 }
 
-/** Collect the present header rows from flat form values, sorted by index. A
- *  row is "present" when either its `header_name` or `value` key exists in
- *  `values` (so an added-but-empty row still renders). Ignores non-numeric
- *  indices and any sub-key other than `header_name` / `value`. */
+/** Collect the present rows from flat form values, sorted by index. A row is
+ *  "present" when either its name key or its `value` key exists in `values` (so
+ *  an added-but-empty row still renders). Ignores non-numeric indices and any
+ *  sub-key other than the name key / `value`. */
 export const collectHeaderRows = (
   values: Record<string, string>,
   baseKey: string,
+  nameKey: 'header_name' | 'field_name' = 'header_name',
 ): HeaderRow[] => {
   const prefix = `${baseKey}.`;
   const byIndex = new Map<number, HeaderRow>();
   for (const key of Object.keys(values)) {
     if (!key.startsWith(prefix)) continue;
-    const rest = key.slice(prefix.length); // `<i>.header_name` | `<i>.value`
+    const rest = key.slice(prefix.length); // `<i>.<nameKey>` | `<i>.value`
     const dot = rest.indexOf('.');
     if (dot < 0) continue;
     const idxStr = rest.slice(0, dot);
     const sub = rest.slice(dot + 1);
     if (!/^\d+$/.test(idxStr)) continue;
-    if (sub !== 'header_name' && sub !== 'value') continue;
+    if (sub !== nameKey && sub !== 'value') continue;
     const index = Number(idxStr);
-    const row = byIndex.get(index) ?? { index, header_name: '', value: '' };
-    if (sub === 'header_name') row.header_name = values[key] ?? '';
-    else row.value = values[key] ?? '';
+    const row = byIndex.get(index) ?? { index, header_name: '', name: '', value: '' };
+    if (sub === nameKey) {
+      row.name = values[key] ?? '';
+      row.header_name = row.name;
+    } else row.value = values[key] ?? '';
     byIndex.set(index, row);
   }
   return [...byIndex.values()].sort((a, b) => a.index - b.index);

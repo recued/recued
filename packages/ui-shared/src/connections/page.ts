@@ -46,6 +46,7 @@ import {
   CONNECTION_SUBTYPE_CHOICES,
   CONNECTION_NAME_REGEX,
   collectHeaderRows,
+  nameKeyForListField,
   collectMatchPatternRows,
   matchPatternRowsToPatterns,
   isCompleteMatchPatternRow,
@@ -631,6 +632,7 @@ const renderRecentProbe = (
           header: 'Header credential',
           query: 'Query credential',
           request_signature: 'Signing key pair',
+          body_field: 'Request-body credential',
           oauth2_refresh: 'OAuth refresh credential',
           oauth2_client_credentials: 'OAuth client credential',
           atproto_session: 'AT Protocol app password',
@@ -1342,17 +1344,24 @@ const renderHeaderRow = (
   total: number,
   saving: boolean,
   credentialRejected = false,
+  // ⚠ The two list fields differ ONLY here. Threading the field type rather
+  // than duplicating the renderer keeps the remove-button wiring, the
+  // credential-rejection focus target and the password masking identical for
+  // both — three behaviours a copy would have to re-earn.
+  listType: 'header-list' | 'body-field-list' = 'header-list',
 ): string => {
-  const nameKey = `${baseKey}.${row.index}.header_name`;
+  const isBody = listType === 'body-field-list';
+  const noun = isBody ? 'field' : 'header';
+  const nameKey = `${baseKey}.${row.index}.${nameKeyForListField(listType)}`;
   const valueKey = `${baseKey}.${row.index}.value`;
   const nameInput = textInput({
     id: fieldId(nameKey),
     type: 'text',
-    value: row.header_name,
-    placeholder: 'X-API-Key',
+    value: row.name,
+    placeholder: isBody ? 'access_token' : 'X-API-Key',
     spellcheck: false,
     disabled: saving,
-    ariaLabel: `Header ${position} name`,
+    ariaLabel: `${isBody ? 'Field' : 'Header'} ${position} name`,
     ariaInvalid: credentialRejected,
     ariaErrormessage: credentialRejected
       ? 'connections-credential-correction-message'
@@ -1367,7 +1376,7 @@ const renderHeaderRow = (
     autocomplete: 'off',
     spellcheck: false,
     disabled: saving,
-    ariaLabel: `Header ${position} value`,
+    ariaLabel: `${isBody ? 'Field' : 'Header'} ${position} value`,
     ariaInvalid: credentialRejected,
     ariaErrormessage: credentialRejected
       ? 'connections-credential-correction-message'
@@ -1382,8 +1391,15 @@ const renderHeaderRow = (
     variant: 'secondary',
     extraClass: 'connections-header-remove',
     disabled: saving || total <= 1,
-    ariaLabel: `Remove header ${position}`,
-    data: { 'header-index': String(row.index), 'base-key': baseKey },
+    ariaLabel: `Remove ${noun} ${position}`,
+    // ⚠ `name-key` rides the dataset because the click handler lives in the
+    // webclient panel, which sees only what the button carries — deriving it
+    // there would mean re-deriving the field type from the schema by key.
+    data: {
+      'header-index': String(row.index),
+      'base-key': baseKey,
+      'name-key': nameKeyForListField(listType),
+    },
   });
   return `<div class="connections-header-row" data-header-row="${row.index}">${nameInput}${valueInput}${removeBtn}</div>`;
 };
@@ -1397,9 +1413,10 @@ const renderHeaderList = (
   saving: boolean,
   credentialRejected = false,
 ): string => {
-  const collected = collectHeaderRows(values, field.key);
+  const listType = field.type === 'body-field-list' ? 'body-field-list' : 'header-list';
+  const collected = collectHeaderRows(values, field.key, nameKeyForListField(listType));
   const rows: HeaderRow[] =
-    collected.length > 0 ? collected : [{ index: 0, header_name: '', value: '' }];
+    collected.length > 0 ? collected : [{ index: 0, header_name: '', name: '', value: '' }];
   const rowsHtml = rows
     .map((r, i) => renderHeaderRow(
       field.key,
@@ -1408,16 +1425,17 @@ const renderHeaderList = (
       rows.length,
       saving,
       credentialRejected,
+      listType,
     ))
     .join('');
   const addBtn = button({
-    label: '+ Add header',
+    label: listType === 'body-field-list' ? '+ Add field' : '+ Add header',
     action: 'connections-add-header',
     size: 'sm',
     variant: 'secondary',
     extraClass: 'connections-header-add',
     disabled: saving || rows.length >= MAX_HEADER_AUTH_ENTRIES,
-    data: { 'base-key': field.key },
+    data: { 'base-key': field.key, 'name-key': nameKeyForListField(listType) },
   });
   // `autofilled` joins `optional` here: the `*` is a claim about what the
   // OWNER must type, and an in-app flow supplies this one.
@@ -1562,7 +1580,7 @@ const renderField = (
   // A `header-list` renders its own repeatable-rows block, not the standard
   // single label+control wrapper.
   const credentialRejected = credentialCorrectionFieldKeys.includes(field.key);
-  if (field.type === 'header-list') {
+  if (field.type === 'header-list' || field.type === 'body-field-list') {
     return renderHeaderList(field, values, locked, credentialRejected);
   }
   // A `match-pattern-list` (D-192 M4c-UI) likewise renders its own repeatable
@@ -1804,26 +1822,28 @@ export const connectionFormValidationIssue = (
     // one complete row is required unless the field is optional. UX only — the
     // server re-validates the shape (+ cap + proto-guard) via
     // `validateHeaderAuthEntries`, so this never diverges from that authority.
-    if (field.type === 'header-list') {
+    if (field.type === 'header-list' || field.type === 'body-field-list') {
+      const nameKey = nameKeyForListField(field.type);
+      const noun = field.type === 'body-field-list' ? 'field' : 'header';
       let complete = 0;
-      for (const row of collectHeaderRows(values, field.key)) {
-        const hasName = row.header_name.trim().length > 0;
+      for (const row of collectHeaderRows(values, field.key, nameKey)) {
+        const hasName = row.name.trim().length > 0;
         const hasValue = row.value.trim().length > 0;
         if (hasName !== hasValue) {
-          const missingKey = hasName ? 'value' : 'header_name';
+          const missingKey = hasName ? 'value' : nameKey;
           return formValidationIssue(
             `${field.key}.${row.index}.${missingKey}`,
             field.label,
-            `${field.label}: each header needs both a name and a value.`,
+            `${field.label}: each ${noun} needs both a name and a value.`,
           );
         }
         if (hasName) complete += 1;
       }
       if (!field.optional && complete === 0) {
         return formValidationIssue(
-          `${field.key}.0.header_name`,
+          `${field.key}.0.${nameKey}`,
           field.label,
-          `${field.label}: add at least one header (name and value).`,
+          `${field.label}: add at least one ${noun} (name and value).`,
         );
       }
       continue;
@@ -2383,11 +2403,11 @@ const renderVendorOAuth = (dialog: ConnectionsDialogState): string => {
       <ul class="connections-oauth-readiness">${requirements}</ul>
       <div class="connections-oauth-callback">
         <div>
-          <strong>Exact callback URL</strong>
-          <span>Register this unchanged in the provider app.</span>
+          <strong>Add this redirect URL to your provider app</strong>
+          <span>Copy it exactly ${'—'} character for character ${'—'} into the app's redirect / callback URI list, then come back here and Authorize.</span>
         </div>
         ${dialog.oauthCallbackAlternateUrl !== undefined
-          ? `<p class="connections-oauth-callback-alt">This URL is specific to the address you are using now. If you also open Recued at <code>${e(new URL(dialog.oauthCallbackAlternateUrl).origin)}</code>, register <code>${e(dialog.oauthCallbackAlternateUrl)}</code> as well ${'—'} the two paths differ, and only the one matching your current address will work.</p>`
+          ? `<p class="connections-oauth-callback-alt">⚠ This URL belongs to the address you are on right now (<code>${e(new URL(dialog.oauthCallbackUrl ?? OAUTH_CLOUD_CALLBACK_URL).origin)}</code>). If you also open Recued at <code>${e(new URL(dialog.oauthCallbackAlternateUrl).origin)}</code>, add <code>${e(dialog.oauthCallbackAlternateUrl)}</code> too ${'—'} <strong>you cannot get one from the other by swapping the domain</strong>, because the paths are different as well. Providers accept several redirect URLs, so adding both is the safe move.</p>`
           : ''}
         <div class="connections-oauth-callback-value">
           <code>${e(dialog.oauthCallbackUrl ?? OAUTH_CLOUD_CALLBACK_URL)}</code>
@@ -2403,8 +2423,23 @@ const renderVendorOAuth = (dialog: ConnectionsDialogState): string => {
       ${reauthorizationBlock}
       ${grantedSummary}
       ${postAuthorizationNextStep}
-      ${readiness.scopeCount > 0
-        ? `<p class="connections-oauth-scope-count">${readiness.scopeCount} requested ${readiness.scopeCount === 1 ? 'scope' : 'scopes'} will be reviewed on the provider screen.</p>`
+      ${readiness.scopes.length > 0
+        ? `<div class="connections-oauth-scopes-required" data-recued-connections-oauth-scopes>
+        <div>
+          <strong>Add these permissions to your provider app</strong>
+          <span>Recued will request exactly these at Authorize. Most providers only grant a permission the app is already registered for ${'—'} add them first, or consent succeeds and the first call still fails.</span>
+        </div>
+        <div class="connections-oauth-scopes-value">
+          <code>${e(readiness.scopes.join(' '))}</code>
+          ${button({
+            label: 'Copy',
+            size: 'xs',
+            action: 'connections-guide-copy-scopes',
+            ariaLabel: 'Copy the exact OAuth scopes this connection will request',
+          })}
+        </div>
+        <p class="connections-oauth-scope-count">${readiness.scopeCount} ${readiness.scopeCount === 1 ? 'scope' : 'scopes'} ${'—'} the provider will show them on its consent screen.</p>
+      </div>`
         : ''}
       ${button({
         label: buttonLabel,
@@ -4177,6 +4212,40 @@ export const CONNECTIONS_PAGE_STYLES = `
   overflow-wrap: anywhere;
   color: var(--fg);
   font-size: 10px;
+}
+/* Mirrors .connections-oauth-callback deliberately: they are the same KIND of
+   instruction ("go configure this at your provider, then come back"), and a reader who
+   has learned to act on the accent-barred block should not have to learn a second
+   visual language for the other half of the same setup.
+   NOTE: no backticks anywhere in this block — the stylesheet is a template literal, and
+   a backtick here terminates it (which is exactly how this comment broke the build). */
+.connections-oauth-scopes-required {
+  display: grid;
+  gap: 6px;
+  padding: 9px;
+  border-left: 3px solid var(--accent);
+  background: var(--bg);
+}
+.connections-oauth-scopes-required > div:first-child {
+  display: grid;
+  gap: 1px;
+  font-size: 11px;
+}
+.connections-oauth-scopes-required > div:first-child span {
+  color: var(--fg-muted);
+}
+.connections-oauth-scopes-value {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.connections-oauth-scopes-value code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+  font-size: 10px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
 }
 .connections-oauth-error {
   margin: 0;

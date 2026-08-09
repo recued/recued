@@ -47,6 +47,7 @@ import {
   CHUNKED_UPLOAD_WIRE_PREFIX,
   CHUNKED_UPLOAD_WIRE_WALK_KEY,
   HTTP_UPLOAD_WIRE_FIELD_KEY,
+  HTTP_AUTH_BODY_FIELDS_WIRE_KEY,
   HTTP_UPLOAD_WIRE_KIND_KEY,
   HTTP_UPLOAD_WIRE_MAX_BYTES_KEY,
   D165_CONTRACT_SCHEMA,
@@ -85,6 +86,11 @@ import {
 // allowed direction of the project graph; the engine reaches in only for
 // `planChunkedUpload`, to size the act before it dispatches.
 import { planChunkedUpload } from '@recued/ingredients';
+import {
+  assertNestedRunCompleted,
+  assertNoRecipeCycle,
+  extendHeldRecipes,
+} from './local-recipe-cycle.js';
 import type {
   ApiExecutionBinding,
   ApiExecutionBindingKind,
@@ -113,6 +119,7 @@ import type {
   RoleComposition,
   StepMeta,
   StepOptions,
+  RecipeErrorCode,
 } from '@recued/contracts';
 import type {
   ExecutionContext,
@@ -490,6 +497,15 @@ const buildApiDispatchInput = (
     if (upload.max_bytes !== undefined) {
       input[HTTP_UPLOAD_WIRE_MAX_BYTES_KEY] = upload.max_bytes;
     }
+  }
+  // Body-field auth opt-in. The binding — never a recipe arg — names which of
+  // the connection's encrypted `body_field` credentials this operation carries;
+  // recipe `__rc_*` keys were stripped above, so the marker's presence proves
+  // the manifest asked. Only NAMES cross here; the adapter resolves the values
+  // out of the connection record.
+  const authBodyFields = binding.auth_body_fields;
+  if (Array.isArray(authBodyFields) && authBodyFields.length > 0) {
+    input[HTTP_AUTH_BODY_FIELDS_WIRE_KEY] = JSON.stringify(authBodyFields);
   }
   input.method = binding.method;
   input.path = binding.path_template;
@@ -1645,7 +1661,20 @@ type ProtocolResponseOutcome =
       readonly pages_fetched?: number;
       readonly truncated?: boolean;
     }
-  | { readonly kind: 'fail'; readonly failure_mode: string; readonly message: string };
+  | {
+      readonly kind: 'fail';
+      readonly failure_mode: string;
+      readonly message: string;
+      /** D-232 § 21 — the `RecipeErrorCode` this failure should carry.
+       *
+       *  ⛔⛔ WITHOUT IT THE THROW IS A BARE `Error` AND THE STEP RUNNER DEFAULTS
+       *  TO `NETWORK_ERROR` — the same code a genuinely unreachable peer gets.
+       *  That collapse is why "nobody answered" and "they answered and refused
+       *  you" were indistinguishable to every consumer downstream, § 21's
+       *  classifier included. `failure_mode` already distinguished them, but it
+       *  goes only to the AUDIT row; nothing on the error the caller sees. */
+      readonly error_code?: RecipeErrorCode;
+    };
 
 /** Everything a protocol's `adaptResponse` needs — the executor's first result
  *  plus the full dispatch context (structured objects, so each field read is
@@ -1916,6 +1945,10 @@ const MCP_PROTOCOL_EXECUTOR: ProtocolExecutor<McpExecutionBinding> = {
       return {
         kind: 'fail',
         failure_mode: 'mcp_tool_error',
+        // § 21 — REACHED AND REFUSED, which is not a network problem. This is
+        // what lets `NETWORK_ERROR` go back to meaning what it says, and with it
+        // `unavailable` (come back later) vs `error` (a human must look).
+        error_code: 'MCP_TOOL_ERROR',
         message:
           `D-165 gateway: mcp operation '${a.resolution.operation_id}' on connection `
           + `'${a.call.connection_name}' invoked tool '${a.binding.tool}' and the server `
@@ -1929,18 +1962,58 @@ const MCP_PROTOCOL_EXECUTOR: ProtocolExecutor<McpExecutionBinding> = {
   },
 };
 
-/** Best-effort one-line summary of an MCP JSON-RPC error envelope, for the
- *  step-failure message. Shape-tolerant — a server that returns something else
- *  yields no detail rather than a misleading one. */
+/** Best-effort one-line summary of an MCP tool failure, for the step-failure
+ *  message. Shape-tolerant — a server that returns something else yields no
+ *  detail rather than a misleading one.
+ *
+ *  ⛔⛔ TWO SHAPES, AND ONLY ONE OF THEM WAS READ. A tool can fail as a JSON-RPC
+ *  ERROR ENVELOPE (`{message, code}`) or — far more commonly, because it is what
+ *  the MCP spec defines for a tool that ran and failed — as a SUCCESSFUL result
+ *  carrying `{ isError: true, content: [{ type: 'text', text }] }`. This function
+ *  understood only the first, so every tool error of the second shape produced
+ *  an EMPTY detail and the caller received:
+ *
+ *    "…invoked tool 'X' and the server returned an error."
+ *
+ *  with the reason discarded. The two-server drive spent three rounds on that
+ *  one sentence: behind it were a missing pack dependency, a Records exposure
+ *  fence about step ORDER, and finally the participant guard that was supposed
+ *  to fire — each perfectly legible AT THE DOOR, each thrown away one hop later.
+ *  Diagnosing any of them required bypassing this path entirely and knocking on
+ *  the peer directly.
+ *
+ *  🔑 A REMOTE FAILURE IS ONLY AS ACTIONABLE AS THE WORST LINK IN ITS REPORTING.
+ *  D-232 § 21 classifies failures so a caller can tell "they refused you" from
+ *  "they were down" — and a classifier can only ever see what survived transport.
+ *  This is that link. */
+const MCP_TOOL_ERROR_DETAIL_MAX = 600;
+
 const mcpToolErrorDetail = (err: unknown): string => {
   if (typeof err === 'string') return err;
   if (err === null || typeof err !== 'object') return '';
+  const parts: string[] = [];
+  // The MCP tool-failure shape first — it is the one servers actually send.
+  const content = getOwnByPath(err, ['content']);
+  if (Array.isArray(content)) {
+    const texts: string[] = [];
+    for (const block of content) {
+      const text = getOwnByPath(block, ['text']);
+      if (typeof text === 'string' && text.length > 0) texts.push(text);
+    }
+    if (texts.length > 0) parts.push(texts.join(' '));
+  }
   const message = getOwnByPath(err, ['message']);
   const code = getOwnByPath(err, ['code']);
-  const parts: string[] = [];
   if (typeof message === 'string' && message.length > 0) parts.push(message);
   if (typeof code === 'number') parts.push(`code ${code}`);
-  return parts.join(' ');
+  // ⚠ CAP IT — this string is PEER-SUPPLIED and lands in a step-failure message
+  // and an audit row. A peer's own success envelope runs ~800 characters, and a
+  // hostile or merely verbose one is unbounded. Truncation marks itself so a
+  // reader knows the reason was cut rather than being that short.
+  const joined = parts.join(' ');
+  return joined.length > MCP_TOOL_ERROR_DETAIL_MAX
+    ? `${joined.slice(0, MCP_TOOL_ERROR_DETAIL_MAX)}…`
+    : joined;
 };
 
 /** The dispatchable transport registry — keyed by `ApiExecutionBinding['kind']`.
@@ -1963,6 +2036,47 @@ const PROTOCOL_EXECUTORS: Partial<Record<ApiExecutionBindingKind, ProtocolExecut
  *  dispatch consumers (`apiBindingProducesDispatch` for authorization, the
  *  dispatch site for execution) both resolve through here, so they never
  *  diverge. */
+/** D-232 — is this op an `mcp` binding with no connection, i.e. a recipe on
+ *  THIS server? The two halves matter separately:
+ *
+ *   - `kind === 'mcp'` — the only binding whose target is a TOOL NAME, and
+ *     recipe-backed tools are named `<publisher>/<recipe_id>`. A rest/graphql
+ *     op with no connection is a misconfiguration, not a local call, and must
+ *     keep failing the way it does today.
+ *   - empty `connectionName` — the routing decision itself. A connection means
+ *     someone else's server; its absence means this one.
+ *
+ *  ⚠ `connectionName` is engine-resolved from the step's `connection` field, so
+ *  a recipe CAN choose local by omitting it. That is the intended control and
+ *  it is safe: the binding still owns `tool`, so omitting a connection can only
+ *  redirect the call to the same recipe on this server — never to a different
+ *  recipe, and never to a different peer. */
+const isLocalRecipeInvocation = (
+  manifest: IngredientManifest,
+  operationKey: string,
+  connectionName: string,
+): boolean => {
+  if (connectionName) return false;
+  const binding = manifest.surfaces?.api?.executes?.[operationKey];
+  return binding !== undefined && binding.kind === 'mcp';
+};
+
+/** The recipe id an mcp binding names, with the publisher prefix stripped
+ *  (`recued-core/peer-appointment-reply` → `peer-appointment-reply`).
+ *
+ *  ⛔ Read from the BINDING, never from caller args — the same structural
+ *  property that makes `buildMcpDispatchInput` need no anti-spoof gate. A
+ *  recipe cannot name the recipe it invokes. */
+const localRecipeIdFor = (
+  manifest: IngredientManifest,
+  operationKey: string,
+): string => {
+  const binding = manifest.surfaces?.api?.executes?.[operationKey];
+  const tool = binding !== undefined && binding.kind === 'mcp' ? binding.tool : '';
+  const slash = tool.lastIndexOf('/');
+  return slash === -1 ? tool : tool.slice(slash + 1);
+};
+
 const protocolExecutorFor = (
   binding: ApiExecutionBinding | undefined,
 ): ProtocolExecutor | undefined =>
@@ -2022,6 +2136,13 @@ export const runCatalogOperation = async (
   // deferred §6/§8 follow-on the spec itself gates on the GatewayCallAudit
   // op-level amendment; Increment 3 lands the AUTHORIZATION-stage seam, the one
   // stage with a kind divergence today, which is where the cli gap lives.)
+  // D-232 — an `mcp` binding with NO connection names a recipe on THIS server.
+  // There is no separate declaration for local vs remote: the binding names a
+  // recipe and the gateway routes on whether a connection was resolved. This is
+  // the third connection-less kind, after `cli` and `records`, and it takes the
+  // same shape they do — skip the profile, authorize by a local resolver,
+  // dispatch in-process.
+  const isLocalRecipeOp = isLocalRecipeInvocation(manifest, call.operation_id, connectionName);
   const isCliOp = isCliInvocationOp(manifest, call.operation_id);
   const rawRecordsBinding = manifest.surfaces?.records?.executes?.[call.operation_id];
   const recordsBinding: RecordsExecutionBinding | undefined =
@@ -2031,10 +2152,10 @@ export const runCatalogOperation = async (
   // The cli kind never binds a connection — its profile / base-url resolution
   // is skipped (the per-contract reachability allowlist is its authorization
   // source instead).
-  const profile = !isCliOp && !isRecordsOp && connectionName
+  const profile = !isCliOp && !isRecordsOp && !isLocalRecipeOp && connectionName
     ? await ctx.connectionProfileResolver?.(connectionName)
     : null;
-  const connectionBaseUrl = !isCliOp && !isRecordsOp && connectionName
+  const connectionBaseUrl = !isCliOp && !isRecordsOp && !isLocalRecipeOp && connectionName
     ? await ctx.connectionBaseUrlResolver?.(connectionName)
     : undefined;
 
@@ -2059,12 +2180,36 @@ export const runCatalogOperation = async (
       recordsReachable = false;
     }
   }
+  // D-232 — the local-recipe kind's authorization source. A connectionless mcp
+  // op has no connection profile to resolve against, so the profile is
+  // SYNTHESISED from a reachability verdict, exactly as Records does above.
+  //
+  // ⛔ ABSENT RESOLVER DENIES. Invariant 3 says operations default OFF, and the
+  // tempting shortcut here — "the binding declared it, so admit it" — would
+  // invert that for the one kind whose target is another recipe. A host that
+  // has not opted in must not gain recipe-to-recipe dispatch by upgrading.
+  let localRecipeReachable = false;
+  if (isLocalRecipeOp) {
+    try {
+      localRecipeReachable = ctx.localRecipeReachabilityResolver?.(
+        localRecipeIdFor(manifest, call.operation_id),
+        call.operation_id,
+      ) ?? false;
+    } catch {
+      localRecipeReachable = false;
+    }
+  }
   const effectiveProfile = isRecordsOp
     ? {
         allowed_operations: recordsReachable ? [call.operation_id] : [],
         catalog_slug: slug,
       }
-    : profile;
+    : isLocalRecipeOp
+      ? {
+          allowed_operations: localRecipeReachable ? [call.operation_id] : [],
+          catalog_slug: slug,
+        }
+      : profile;
 
   // D-182 §7.2 (increment 3, ENFORCED) — the per-contract cli reachability
   // verdict: may a recipe run under THIS principal reach this cli ingredient's
@@ -2708,6 +2853,11 @@ export const runCatalogOperation = async (
         + `(no_cli_executor).`,
     );
   }
+  if (isLocalRecipeOp && !ctx.localRecipeInvoker) {
+    throw new Error(
+      `D-232 local recipe operation '${call.operation_id}' has no localRecipeInvoker.`,
+    );
+  }
   if (recordsBinding && !ctx.recordsOperationExecutor) {
     emitGatewayAudit(ctx, {
       ...auditBase(slug, call, resolution, ctx, stepMeta, auditArgHash),
@@ -2898,6 +3048,36 @@ export const runCatalogOperation = async (
   let operationBoundFailurePhase: 'dispatch_preparation' | 'provider' =
     'dispatch_preparation';
   try {
+    if (isLocalRecipeOp) {
+      const target = localRecipeIdFor(manifest, call.operation_id);
+      // ⛔ THE GUARD LIVES HERE, not in the recipe. The gateway is the single
+      // dispatch boundary, so this is the only place a cycle CANNOT be authored
+      // around. It runs AFTER the policy gate admitted — a refused cycle is a
+      // substrate refusal, not a permission one, and conflating them would let
+      // an owner "approve" their way into an infinite loop.
+      assertNoRecipeCycle(target, ctx.heldRecipes);
+      const result = await ctx.localRecipeInvoker!({
+        recipe_id: target,
+        args: effectiveArgs,
+        held_recipes: extendHeldRecipes(ctx.heldRecipes, target),
+      });
+      // ⛔⛔ A NESTED RUN THAT PAUSED IS NOT A RESULT. `executeRecipe` RETURNS
+      // on a preflight hold — `{success: false, errors: [], awaiting_approval}`
+      // — it does not throw. Passing that object through as this step's value
+      // makes the caller continue as though the callee finished, and because
+      // BOTH error arrays are empty the parent then reports `success: true`
+      // having done nothing. Refused loudly until nested pause/resume exists:
+      // the caller's checkpoint would have to carry the callee's, and its
+      // re-run would have to RESUME the callee rather than re-invoke it. A
+      // wrong answer that announces itself beats a silent one.
+      assertNestedRunCompleted(target, result);
+      emitGatewayAudit(ctx, {
+        ...auditBase(slug, call, resolution, ctx, stepMeta, auditArgHash),
+        outcome: 'success',
+        duration_ms: Date.now() - started,
+      });
+      return result;
+    }
     if (recordsBinding) {
       if (recordsPrincipal === null) {
         throw new Error(`D-221 Records operation '${resolution.operation_id}' has no derived execution principal.`);
@@ -3063,7 +3243,13 @@ export const runCatalogOperation = async (
         duration_ms: Date.now() - started,
       });
       failureAudited = true;
-      throw new Error(adapted.message);
+      // The step runner reads `.code` off a thrown error and uses it in place of
+      // its `NETWORK_ERROR` default (see `step-runner.ts` adapterCode), so the
+      // classification survives all the way to the caller instead of stopping at
+      // the audit row.
+      throw Object.assign(new Error(adapted.message), adapted.error_code !== undefined
+        ? { code: adapted.error_code }
+        : {});
     }
     const projectedResult = operationBoundDispatch === undefined
       ? adapted.result

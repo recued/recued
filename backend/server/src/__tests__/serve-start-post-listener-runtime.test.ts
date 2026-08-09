@@ -35,6 +35,30 @@ vi.mock('../serve/start-post-housekeeping-tail.js', () => ({
   startPostHousekeepingTail: runtimeMocks.startPostHousekeepingTail,
 }));
 
+// ⚠ ALL THREE, AND THE STORES ARE NOT OPTIONAL. `start-post-listener-runtime`
+// builds them INLINE AS ARGUMENTS to the composer, so mocking the composer alone
+// still evaluates `createSqliteHandleStateStore({ db })` and re-raises the
+// TypeError. The composer mock stops the background work; the store mocks stop
+// the construction. Neither substitutes for the other.
+vi.mock('../handle/sqlite-store.js', () => ({
+  createSqliteHandleStateStore: vi.fn(() => ({
+    load: vi.fn(async () => null),
+    save: vi.fn(async () => {}),
+  })),
+}));
+
+vi.mock('../storage/hostname-registry.js', () => ({
+  createHostnameRegistryStore: vi.fn(() => ({
+    getByHostname: vi.fn(() => null),
+    upsert: vi.fn(),
+    list: vi.fn(() => []),
+  })),
+}));
+
+vi.mock('../composition/bin/wire-pro-cert-enrollment.js', () => ({
+  composeProCertEnrollment: vi.fn(),
+}));
+
 vi.mock('../seller/access-reconcile-deps.js', () => ({
   buildSellerAccessReconcileDepsIfReady: runtimeMocks.buildSellerAccessReconcileDepsIfReady,
 }));
@@ -74,6 +98,37 @@ beforeEach(() => {
   runtimeMocks.buildSellerAccessReconcileDepsIfReady.mockReset();
 });
 
+/** ⛔⛔ `composeProCertEnrollment` IS MOCKED, AND FINDING THE RIGHT SEAM TOOK
+ *  THREE TRIES. Both wrong answers are recorded because each looked correct.
+ *
+ *  1. The fixture was `db: { tag: 'db' }` — fine until `1952f131c` wired the
+ *     Pro-cert enrollment composer, which calls `createSqliteHandleStateStore`
+ *     and `createHostnameRegistryStore` with it. A tag object is TRUTHY, so the
+ *     `if (options.storage.db)` branch ran and all 9 tests died on
+ *     `options.db.prepare is not a function`.
+ *  2. Handing it a real in-memory `better-sqlite3` handle turned all 9 green —
+ *     and turned this file into a SHARD KILLER. `vitest run backend --shard=1/4`
+ *     produced 441 bytes: banner, no summary, not one test reported. Closing
+ *     every handle did not help; nor did mocking the two stores instead.
+ *
+ *  🔑🔑 THE TELL WAS BACKWARDS FROM THE OBVIOUS READING. The shard summarised
+ *  while these tests were FAILING and died once they PASSED — because the
+ *  TypeError used to abort `startPostListenerRuntime` before it composed
+ *  anything. Making the tests pass let the composer actually run, and
+ *  `composeProCertEnrollment` registers a background service that fires an
+ *  IMMEDIATE tick reaching for ACME/DDNS. A test that starts real work does not
+ *  fail — it leaves the worker unable to exit, and the damage lands on the
+ *  SHARD, nowhere near the file that caused it.
+ *
+ *  🔑 A GREEN FILE IS NOT A HARMLESS FILE. Attempt 2 traded 6 red tests for a
+ *  shard that could not report at all — strictly worse, and invisible unless the
+ *  whole sweep is re-run after the fix.
+ *
+ *  ⇒ This is a COMPOSITION test: it asserts what `startPostListenerRuntime`
+ *  wires, not what the cert enroller does. Every other collaborator is already
+ *  mocked one by one above; this one belongs in that list, and no assertion in
+ *  this file mentions Pro-cert enrollment. `db` stays an opaque token whose only
+ *  job is to be the identity threaded through — which the assertions check. */
 const makeOptions = (
   overrides: Partial<StartPostListenerRuntimeOptions> = {},
 ): StartPostListenerRuntimeOptions =>
@@ -488,3 +543,45 @@ describe('start-post-listener-runtime source boundary', () => {
     expect(stripSourceComments(source)).not.toMatch(/startBootRecoveryAndAdapters/);
   });
 });
+
+describe('D-232 § 24 — the retry sweep is REACHED at boot', () => {
+  /** ⛔⛔ AN INERT COMPOSER IS THE FAILURE MODE THIS FEATURE KEPT PRODUCING. The
+   *  planner and the sweep are each tested in isolation, and neither proves the
+   *  thing is WIRED — a `composeExchangeRetry` nobody calls passes every one of
+   *  those tests. There is no rpc that lists background services and boot logs
+   *  no registrations, so the live drive cannot see it either; this composition
+   *  test is the only place the question is answerable.
+   *
+   *  🔑 Asserted on the NAME, not on a call count: `registerInterval` is used by
+   *  several composers, so "it was called" is true whether or not this one ran. */
+  it('registers `exchange-retry` when an audit log is present', async () => {
+    runtimeMocks.composeCertStackLate.mockResolvedValue({
+      tlsCertSource: undefined, tlsRenewerConfigured: false,
+    });
+    runtimeMocks.startHousekeepingStartup.mockResolvedValue({ scheduler: undefined });
+    const options = makeOptions();
+    await startPostListenerRuntime(options);
+    const names = (options.backgroundServices.registerInterval as unknown as {
+      mock: { calls: Array<[{ name: string }]> };
+    }).mock.calls.map((c) => c[0]?.name);
+    expect(names).toContain('exchange-retry');
+  });
+
+  it('⛔ registers NOTHING when there is no audit log to read attempts from', async () => {
+    runtimeMocks.composeCertStackLate.mockResolvedValue({
+      tlsCertSource: undefined, tlsRenewerConfigured: false,
+    });
+    runtimeMocks.startHousekeepingStartup.mockResolvedValue({ scheduler: undefined });
+
+    // Attempts are counted from the trail (§ 24 — "the audit log is the outbox").
+    // With no trail there is no candidate set, and a sweep that ticks over
+    // nothing is a timer pretending to be a feature.
+    const options = makeOptions({ storage: { ...makeOptions().storage, auditLog: undefined } as never });
+    await startPostListenerRuntime(options);
+    const names = (options.backgroundServices.registerInterval as unknown as {
+      mock: { calls: Array<[{ name: string }]> };
+    }).mock.calls.map((c) => c[0]?.name);
+    expect(names).not.toContain('exchange-retry');
+  });
+});
+

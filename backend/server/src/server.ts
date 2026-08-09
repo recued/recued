@@ -819,6 +819,22 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
           respond(res, { ok: false, status: 401, error: { code: 'invalid_code', message: 'Invalid, expired, or already-used pairing code' } });
           return;
         }
+        // Reject a malformed `clientKind` HERE — ahead of the recovery-key
+        // enrollment and, crucially, ahead of `pairing.pair(code)` below, which
+        // CONSUMES the code. This validation used to sit after the consume, so a
+        // client that sent a typo'd kind burned a single-use pairing code to earn
+        // its 400: the honest retry with the corrected kind then got a 401
+        // `invalid_code` for a code the user had just been told was fine, and the
+        // only way forward was to go back to the terminal for a new one. It reads
+        // nothing but the request body, so it leaks nothing to an unauthenticated
+        // prober — unlike the revoked-instance check further down, which stays
+        // after authentication deliberately.
+        const clientKindRaw = body?.clientKind;
+        if (clientKindRaw !== undefined && !isClientKind(clientKindRaw)) {
+          respond(res, { ok: false, status: 400, error: { code: 'bad_request', message: 'clientKind must be bridge, webclient, or cli' } });
+          return;
+        }
+        const clientKind: ClientKind = isClientKind(clientKindRaw) ? clientKindRaw : 'webclient';
         if (recoveryKey) {
           if (!config.recoveryKeyCheck) {
             respond(res, { ok: false, status: 503, error: { code: 'server_not_configured', message: 'Server has no recovery-key check store.' } });
@@ -886,16 +902,9 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
           respond(res, { ok: false, status: 403, error: { code: 'instance_revoked', message: 'this instance was previously revoked; re-pair as a new device' } });
           return;
         }
-        // Resolve the client kind BEFORE seeding the roster so the
-        // durable row records the surface this device paired as (D-156
-        // P10 — drives the Devices roster's kind label). Validation
-        // here also rejects a bad kind before any persistence.
-        const clientKindRaw = body?.clientKind;
-        if (clientKindRaw !== undefined && !isClientKind(clientKindRaw)) {
-          respond(res, { ok: false, status: 400, error: { code: 'bad_request', message: 'clientKind must be bridge, webclient, or cli' } });
-          return;
-        }
-        const clientKind: ClientKind = isClientKind(clientKindRaw) ? clientKindRaw : 'webclient';
+        // `clientKind` is resolved above, before the code is consumed — the
+        // durable row still records the surface this device paired as (D-156
+        // P10 — drives the Devices roster's kind label).
         if (config.pairedInstances
             && typeof body?.instanceId === 'string' && body.instanceId.length > 0) {
           config.pairedInstances.addOrRefresh({
@@ -1001,13 +1010,35 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
         });
         return;
       }
+      if (e instanceof InvalidJsonBodyError) {
+        respond(res, {
+          ok: false,
+          status: 400,
+          error: { code: 'bad_request', message: 'Invalid JSON body' },
+        });
+        return;
+      }
+      // The message stays SERVER-SIDE. This handler fronts pre-auth surfaces
+      // (`/auth/pair`, `/status.json`), so an unauthenticated caller was reading
+      // raw thrown text — sqlite constraint strings, filesystem paths, upstream
+      // hostnames — from any unhandled path. The webhook handler below has
+      // always done it this way and says why; this one was the outlier.
+      //
+      // ⚠ DELIBERATE DEVIATION: this is the only `console.*` in this file, and
+      // the webhook handler's comment says server.ts "logs nothing by design".
+      // That was true when written and is the reason it is called out here. The
+      // alternative is a 500 that leaves no trace anywhere, and on a self-hosted
+      // server the operator IS at the terminal — dropping the detail from the
+      // response only helps if it survives somewhere they can read it.
+      console.error('[http] unhandled request error', {
+        method: req.method ?? 'GET',
+        path: (req.url ?? '/').split('?')[0],
+        error: e instanceof Error ? (e.stack ?? e.message) : String(e),
+      });
       respond(res, {
         ok: false,
         status: 500,
-        error: {
-          code: 'internal_error',
-          message: e instanceof Error ? e.message : String(e),
-        },
+        error: { code: 'internal_error', message: 'internal error' },
       });
     }
   };
@@ -1190,8 +1221,11 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
       // Never echo the raw exception text back to an unauthenticated
       // webhook caller — `e.message` can carry internal paths / state.
       // The webhook surface is unauthenticated at this layer, so the
-      // 500 body stays a fixed generic string (server.ts logs nothing
-      // by design; the daemon's higher-level wiring owns diagnostics).
+      // 500 body stays a fixed generic string. (This used to add "server.ts
+      // logs nothing by design; the daemon's higher-level wiring owns
+      // diagnostics" — no longer true: the ws-role handler above now logs the
+      // detail it stopped returning. This one still doesn't; a webhook sender
+      // retries and the daemon sees the delivery failure.)
       respond(res, {
         ok: false,
         status: 500,
@@ -1659,6 +1693,19 @@ class RequestBodyTooLargeError extends Error {
   }
 }
 
+/** A body that is not JSON. Typed for the same reason `RequestBodyTooLargeError`
+ *  is: the outer handler can only map a failure to the right status if the
+ *  failure says what it is. `readJsonBody`'s contract is "throws on a malformed
+ *  body", but the handler had no arm for it, so a syntax error fell to the
+ *  catch-all and came back as a 500 whose message was the raw parser text — a
+ *  server-fault status for a caller-fault input. */
+class InvalidJsonBodyError extends Error {
+  constructor() {
+    super('Invalid JSON body');
+    this.name = 'InvalidJsonBodyError';
+  }
+}
+
 /** Cap the pre-auth request body. The only caller is `/auth/pair`, whose
  *  payloads are a few hundred bytes; bounding the buffer stops an
  *  unauthenticated LAN client from growing process memory with a giant
@@ -1704,7 +1751,7 @@ const readJsonBody = (req: IncomingMessage): Promise<unknown> =>
       try {
         resolve(JSON.parse(text));
       } catch {
-        reject(new Error('Invalid JSON body'));
+        reject(new InvalidJsonBodyError());
       }
     }
     function onError(err: unknown) {

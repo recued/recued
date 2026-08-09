@@ -813,6 +813,11 @@ describe('D-196 llm_gateway shared-turn carriers', () => {
         input_tokens: 7,
         output_tokens: 3,
         total_tokens: 10,
+        // ⚠ ONE, checked against the fixture: round 0 returns usage and round 1
+        // THROWS `ChatContextLengthError`. A call that threw produced no usage
+        // report, so it contributes neither tokens nor a count — the count and
+        // the sums describe the same set of calls.
+        provider_calls: 1,
       });
       expect(result.assistant_content).toContain('Do not retry automatically');
     },

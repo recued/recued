@@ -280,6 +280,16 @@ const requiredResumeBearerToolNames = (
     return !inlineRecipe && qualified ? [qualified] : [];
   }
   if (source.channel === 'mcp') {
+    // ── D-232 § 20.19 — A RECORDED GRANT IS AN EXACT REQUIREMENT ──
+    // Hoisted above BOTH arms below. When the anchor says this run's steps rode
+    // a specific recipe grant, that grant — not a substitute — must still be
+    // held. Without the hoist a door holding both `recued-core/X` and the
+    // generic `recipe.run` could have `recued-core/X` revoked mid-ask and still
+    // resume, because the Tier-2 arm accepts ANY of its names and the umbrella
+    // would stand in. Strictly tightening: a run whose coverage came from
+    // `recued-core/X` alone required that name already.
+    const grantedBy = anchor.granted_by_recipe;
+    if (typeof grantedBy === 'string' && grantedBy.length > 0) return [grantedBy];
     // The inline kernel run-ingredient recipe is reachable ONLY through the
     // exact per-ingredient wire tool. A generic recipe-run grant cannot load it
     // from RecipeStore, and a bare ingredient dependency grant is snapshot
@@ -287,6 +297,30 @@ const requiredResumeBearerToolNames = (
     // revoked `recued_ingredient_<slug>` cannot be substituted by either.
     if (recipeId === 'run-ingredient' && inlineRecipe) {
       if (hashRecipe(recipe) !== hashRecipe(RUN_INGREDIENT_RECIPE)) return [];
+      // ── D-232 § 20.19 — A HOST-DISPATCHED CARRIER IS NOT A WIRE CALL ──
+      //
+      // The arm below is correct for what it was written for: a door that
+      // called `run-ingredient` ITSELF, over the wire, to dispatch one
+      // ingredient. That door must still hold the exact per-ingredient grant.
+      //
+      // An exchange fire's carrier is the other thing wearing the same recipe
+      // id. The door never called it — the HOST dispatched it to carry a
+      // granted recipe's own `output.exchange`, and no door can hold a grant on
+      // `run-ingredient` because it is kernel plumbing, absent from the
+      // marketplace and from `installRegistry`. Requiring the per-ingredient
+      // wire grant here denied every approved answer at resume:
+      // `bearer_grant_revoked` for a grant that was never grantable.
+      //
+      // ⛔ THIS IS NOT A DOWNGRADE TO "REQUIRE NOTHING". It substitutes the
+      // grant that ACTUALLY justified the run — the declaring recipe's wire
+      // name, recorded on the anchor at dispatch — so revoking THAT grant while
+      // the ask is outstanding still denies the resume. The kill-switch keeps
+      // its full strength; it just points at the real key.
+      //
+      // Reachable only from the host: `granted_by_recipe` is written by
+      // `handleExecute` from a coverage it resolved itself, never from request
+      // input (see `ExecuteInternal.granted_by_recipe`). The substitution
+      // happens at the top of this branch, above both arms.
       const ingredient = checkpoint.approved_target?.ingredient_slug;
       return ingredient
         ? [`${MCP_INGREDIENT_TOOL_PREFIX}${ingredient}`]
@@ -484,6 +518,18 @@ export const createPreflightResumer = (
         // carrier across the pause).
         ...(checkpoint.predecessor_commit_id !== undefined
           ? { predecessor_commit_id: checkpoint.predecessor_commit_id }
+          : {}),
+        // D-232 § 20.19 — carry the run's grant coverage across the pause. The
+        // resumed run re-derives coverage from its OWN recipe name, and for a
+        // host-dispatched carrier (`run-ingredient`) that derivation is
+        // structurally empty — so without this the resume re-enters uncovered
+        // and its step dies `tool_not_in_contract` AFTER the owner approved it.
+        // Anchor-sourced, and the anchor was written by the host: the value
+        // never originates from caller input. The resume authority above has
+        // already re-verified that this exact grant is still held.
+        ...(typeof anchor.granted_by_recipe === 'string'
+          && anchor.granted_by_recipe.length > 0
+          ? { granted_by_recipe: anchor.granted_by_recipe }
           : {}),
         resume_from: {
           gated_step_id: checkpoint.gated_step_id!,

@@ -5,7 +5,7 @@
   "ttl": 60,
   "metadata": {
     "name": "Remind me",
-    "description": "Capture a one-shot personal reminder as a Recued task. Resolve the requested time against the current date/time in your context, in the user's timezone, and pass remind_at as an absolute ISO 8601 timestamp with an explicit offset. The paired reminder-due-notifier recipe fans notification delivery through the user's configured channels.",
+    "description": "Use “Remind me” in Recued. Capture a one-shot personal reminder as a Recued task. Resolve the requested time against the current date/time in your context, in the user's timezone, and pass remindat as an absolute ISO 8601 timestamp with an explicit offset.",
     "author": "recued-core",
     "supported_platforms": [],
     "tags": ["reminder", "task", "notify", "personal-organizer", "pack:personal-organizer"],

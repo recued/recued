@@ -247,6 +247,7 @@ export {
   CONNECTION_SUBTYPE_CHOICES,
   CONNECTION_NAME_REGEX,
   collectHeaderRows,
+  nameKeyForListField,
   collectMatchPatternRows,
   matchPatternRowsToPatterns,
   isCompleteMatchPatternRow,

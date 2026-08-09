@@ -242,16 +242,26 @@ describe('D-170 gap #2 live-reconcile — reconcileConnectionProfile primitive',
     grantStore.grantPackGroup('acme-pack', LOCAL_SLUG, 'support', TICKETS_READ);
     reconcile('support');
 
+    /** ⚠ 2026-08-07: the write op is seeded too — the connection layer stopped gating.
+     *  This test is about the RECONCILE FIRING at all (connect-before-install), which is
+     *  what `catalog_slug` proves; the op set was only ever the payload. */
     const profile = profileStore.get('support');
     expect(profile?.catalog_slug).toBe(LOCAL_SLUG);
-    expect([...profile!.allowed_operations]).toEqual(['ticket.read']); // write op OFF
+    expect([...profile!.allowed_operations].sort()).toEqual(['ticket.create', 'ticket.read']);
   });
 
-  it('seeds NOTHING when the binding is written but no group is granted (inc 5c ratchet)', () => {
+  it('⛔ seeds the catalog even with NO group granted — 5c ratchet retired', () => {
+    /** Inverted in place 2026-08-07 rather than deleted, so the retirement is legible
+     *  where the ratchet used to be enforced. `catalog_slug` still proves the reconcile
+     *  resolved the right catalog; what changed is that reachability no longer waits on
+     *  a grant. The fail-closed half is asserted by its own sibling below: remove the
+     *  BINDING and the profile is dropped. */
     connectionStore.upsert(apiConnection('support', 'custom'));
     bindingStore.bind('support', LOCAL_SLUG, 'acme-pack');
     reconcile('support');
-    expect(profileStore.get('support')).toBeNull(); // deny until granted
+    const profile = profileStore.get('support');
+    expect(profile?.catalog_slug).toBe(LOCAL_SLUG);
+    expect([...profile!.allowed_operations].sort()).toEqual(['ticket.create', 'ticket.read']);
   });
 
   it('unions a pack-owned grant on the local catalog into the reconciled profile', () => {
@@ -432,9 +442,14 @@ describe('D-170 gap #2 live-reconcile — ingredient.install invokes reconcile',
 
     await env.install(appPack(wideComposition('acme', 'acme')), { access: 'read' });
 
+    /** ⚠ 2026-08-07: the Read scope no longer NARROWS the seeded set — the connection
+     *  layer is open, so the write op is seeded too and the `access` tier's effect is
+     *  now confined to the per-door op-admission fan-out (`applyInstallOpAdmissionFanOut`),
+     *  which is where authority actually lives. The connect-BEFORE-install property this
+     *  test is named for is `catalog_slug` resolving at all, and it is unchanged. */
     const profile = env.profileStore.get('acme');
     expect(profile?.catalog_slug).toBe('acme');
-    expect([...profile!.allowed_operations].sort()).toEqual(['deal.read'].sort());
+    expect([...profile!.allowed_operations].sort()).toEqual(['deal.create', 'deal.read']);
   });
 
   it('end-to-end: install WITHOUT a grant scope seeds nothing (deny until granted — inc 5c)', async () => {
@@ -453,8 +468,15 @@ describe('D-170 gap #2 live-reconcile — ingredient.install invokes reconcile',
 
     await env.install(appPack(wideComposition('acme', 'acme')));
 
-    expect(env.reconciled).toContain('acme'); // the reconcile wiring still fires
-    expect(env.profileStore.get('acme')).toBeNull(); // …but nothing is granted
+    /** ⚠ INVERTED 2026-08-07. This asserted that skipping the install dialog left the
+     *  profile null (deny until granted). With the connection layer open the catalog is
+     *  seeded regardless — an install with no scope no longer leaves a dead connection.
+     *
+     *  🔑 THE WIRING ASSERTION IS THE ONE THIS TEST WAS BUILT FOR and is unchanged: the
+     *  reconcile FIRES on install. That is what would break if the hook were lost, and
+     *  a null profile could previously mask it — the two causes are now separable. */
+    expect(env.reconciled).toContain('acme');
+    expect(env.profileStore.get('acme')?.catalog_slug).toBe('acme');
   });
 
   it('reinstall that MOVES auth.connection drops the old connection’s profile (no stale grant)', async () => {

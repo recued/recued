@@ -4,12 +4,13 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createRuntimeConfigStore } from '@recued/config';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createBootTrace } from '../cli/boot-trace.js';
 import { composeAppContext } from '../serve/compose-app-context.js';
 import { composeCollectionContext } from '../serve/compose-collection-context.js';
 import { composeStorageContext } from '../serve/compose-storage-context.js';
+import { createVaultStateBus } from '../vault-state-bus.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..', '..', '..', '..');
@@ -128,6 +129,120 @@ describe('composeCollectionContext', () => {
       await expect(context.startCollectionAdapters()).resolves.toBeUndefined();
     } finally {
       storageContext.db.close();
+    }
+  });
+
+  // ⛔ THE WIRING, NOT THE ACTION. `calendar-compose.test.ts` calls
+  // `stack.resumeSync()` directly and `vault-state-bus.ts` is tested on its own —
+  // both pass with the subscribe block in `startCollectionAdapters` DELETED,
+  // while mail and calendar then silently never sync after a locked boot. The
+  // deferral is only safe because something re-arms it; nothing proved anything
+  // did. These two go through the real `composeCollectionContext` and a real
+  // `createVaultStateBus`, and assert the edge reaches the stacks.
+  //
+  // ⚠ The stacks' own resume/pause are replaced AFTER `startCollectionAdapters`
+  // (which is where the subscription is registered) and BEFORE the emit. The
+  // listener resolves `.resumeSync` on the stack object at call time, and
+  // `context.calendarStack` is that same object, so a substituted method is
+  // what the real listener reaches. Deliberately NOT asserting what
+  // resume/pauseSync then do — that is `vault-gated-sync.ts`'s contract and is
+  // covered where it lives.
+  const composeWithVaultBus = async (): Promise<{
+    context: ReturnType<typeof composeCollectionContext>;
+    vaultStateBus: ReturnType<typeof createVaultStateBus>;
+    close: () => void;
+  }> => {
+    const dir = makeTmp();
+    const dbPath = join(dir, 'server.db');
+    const runtimeConfig = createRuntimeConfigStore({});
+    const storageContext = await composeStorageContext({
+      dbPath,
+      bootTrace: createBootTrace({
+        entrypoint: 'serve-entry',
+        profile: 'serve',
+        command: 'serve',
+        env: {},
+      }),
+      runtimeConfig,
+      vaultQuotas: { perPublisherBytes: 1_234_000, totalBytes: 5_678_000 },
+    });
+    const app = composeAppContext({
+      db: storageContext.db,
+      dbPath,
+      envLlmConfig: storageContext.envLlmConfig,
+      gateRegistry: storageContext.gateRegistry,
+      auditLog: storageContext.auditLog,
+      eventBus: storageContext.eventBus,
+      serverInstanceId: storageContext.serverInstanceId,
+      recipeStore: storageContext.recipeStore,
+      pairedInstances: storageContext.pairedInstances,
+      workEntityStore: storageContext.workEntityStoreRef,
+      chatLateBound: {
+        getCollectionRegistry: () => undefined,
+        getExecutorConfig: () => undefined,
+        getExecuteDeps: () => undefined,
+      },
+    });
+    const vaultStateBus = createVaultStateBus();
+    const context = composeCollectionContext({
+      db: storageContext.db,
+      dbPath,
+      runtimeConfig,
+      manifests: storageContext.manifests,
+      baseVault: storageContext.baseVault,
+      auditLog: storageContext.auditLog,
+      cacheBlobs: app.cacheBlobs,
+      warehouseBus: app.warehouseBus,
+      contactStore: app.contactStoreRef,
+      gateRegistry: storageContext.gateRegistry,
+      accountStore: storageContext.accountStore,
+      eventBus: storageContext.eventBus,
+      keys: app.keys,
+      vaultStateBus,
+      connectionStore: app.connectionStoreRef,
+      workEntityStore: storageContext.workEntityStoreRef,
+      enrichmentCascade: app.enrichmentCascadeRef,
+    });
+    return { context, vaultStateBus, close: () => storageContext.db.close() };
+  };
+
+  it('the vault→unlocked edge reaches mail + calendar resumeSync', async () => {
+    const { context, vaultStateBus, close } = await composeWithVaultBus();
+    try {
+      await context.startCollectionAdapters();
+
+      const calendarResume = vi.fn(async () => {});
+      const mailResume = vi.fn(async () => {});
+      context.calendarStack!.resumeSync = calendarResume;
+      context.mailStack!.resumeSync = mailResume;
+
+      vaultStateBus.emit('unlocked', 'locked');
+
+      expect(calendarResume).toHaveBeenCalledTimes(1);
+      expect(mailResume).toHaveBeenCalledTimes(1);
+    } finally {
+      close();
+    }
+  });
+
+  it('the vault→locked edge reaches mail + calendar pauseSync', async () => {
+    const { context, vaultStateBus, close } = await composeWithVaultBus();
+    try {
+      await context.startCollectionAdapters();
+
+      const calendarPause = vi.fn(async () => {});
+      const mailPause = vi.fn(async () => {});
+      context.calendarStack!.pauseSync = calendarPause;
+      context.mailStack!.pauseSync = mailPause;
+
+      // Non-'unlocked' is the pause branch — an auto-lock mid-life must stop
+      // polling before the next tick can drop a CAS item (D-117).
+      vaultStateBus.emit('locked', 'unlocked');
+
+      expect(calendarPause).toHaveBeenCalledTimes(1);
+      expect(mailPause).toHaveBeenCalledTimes(1);
+    } finally {
+      close();
     }
   });
 

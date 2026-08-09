@@ -57,6 +57,12 @@ export const RECORDS_BIND_KEYS: Record<RecordsAction, ReadonlySet<string>> = {
   count: new Set(['kind', 'action', 'entity', 'filter_fields']),
   aggregate: new Set(['kind', 'action', 'entity', 'filter_fields', 'select', 'group_by']),
   batch: new Set(['kind', 'action', 'entity', 'allow']),
+  // ⚠ NO `allow`, and that is not an omission. A batch needs one because the
+  // CALLER supplies the entity/action pairs; an import supplies neither — it
+  // writes `create`, to this bind's own entity, and nothing else. There is
+  // nothing to declare, so declaring it would only create a second place the
+  // grant could be widened.
+  import: new Set(['kind', 'action', 'entity']),
   update: new Set(['kind', 'action', 'entity']),
   upsert: new Set(['kind', 'action', 'entity']),
   delete: new Set(['kind', 'action', 'entity']),
@@ -79,6 +85,14 @@ const RISK_FLOOR: Record<RecordsAction, RiskTier> = {
   update: 'write',
   upsert: 'write',
   delete: 'destructive',
+  // A constant, unlike `batch`: an import can only ever `create`, so its floor
+  // is a create's floor no matter how large the file. ⚠ SIZE IS NOT RISK —
+  // writing 1000 rows is a thousand times a write, not a different tier, and
+  // promoting it to `destructive` would make it need an approval a delete
+  // earns while telling an owner nothing true about what it does. What an
+  // owner needs to weigh before a bulk import is the ONE GATE, which is the
+  // op's authored `approval: 'ask'`, not an inflated risk.
+  import: 'write',
   // ⚠ THE ONLY ENTRY THAT IS A FLOOR-OF-A-FLOOR. A batch is at least a write
   // (it admits no reads), but its real floor is the strictest action its
   // allow-list contains — a batch that may delete is destructive. Computed by
@@ -125,6 +139,21 @@ const ACTION_ARGS: Record<RecordsAction, readonly OperationArgSpec[]> = {
   // D-226 — the caller supplies the ROWS; the bind's `allow` decides what kinds
   // of write may be among them. Same split as `aggregate`'s `select`.
   batch: [{ key: 'ops', type: 'array', required: true }],
+  // The file's TEXT plus the owner's column mapping — never a target. There is
+  // no entity or namespace arg by design: the binding comes from the pack,
+  // exactly as every other Records op binds, and without that this would be a
+  // primitive for writing arbitrary rows into any pack's store.
+  //
+  // ⚠ THE MAPPING IS CALLER-SUPPLIED AND THAT IS CORRECT, unlike `aggregate`'s
+  // `select` or `batch`'s `allow`. Which column holds the amount is a per-BANK
+  // fact the owner declares, not a per-pack one — on the bind it would need a
+  // pack per bank. It grants nothing either: a `create` already takes its
+  // `values` wholesale from the caller, and the mapping can only ever name
+  // fields of the entity this bind already writes.
+  import: [
+    { key: 'csv', type: 'string', required: true },
+    { key: 'spec', type: 'object', required: true },
+  ],
   update: [
     { key: 'id', type: 'string', required: true, affects_target: true },
     { key: 'expected_version', type: 'number', required: true },

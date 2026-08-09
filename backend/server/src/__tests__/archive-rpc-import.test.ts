@@ -401,7 +401,7 @@ describe('archive online runtime', () => {
     } finally {
       live.close();
     }
-  });
+  }, 30_000);   // runs a real export + import through the archive runtime
 
   it('runImport without a drivingClient returns no rebind', async () => {
     h = newHarness();

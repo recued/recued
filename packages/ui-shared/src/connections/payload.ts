@@ -20,6 +20,7 @@ import type {
 } from '../connection-schemas/index.js';
 import {
   collectHeaderRows,
+  nameKeyForListField,
   initialVendorSchemaValues,
   resolveConnectionSchema,
   syncVendorOAuthEndpointValue,
@@ -106,9 +107,9 @@ export const shouldPatchConnectionAuth = (
     if (!field.key.startsWith('auth.')) return false;
     if (AUTH_INTENT_EXCLUDED_KEYS.has(field.key)) return false;
     if (field.showWhen && !field.showWhen(values)) return false;
-    if (field.type === 'header-list') {
-      return collectHeaderRows(values, field.key).some((row) =>
-        row.header_name.trim().length > 0 || row.value.trim().length > 0);
+    if (field.type === 'header-list' || field.type === 'body-field-list') {
+      return collectHeaderRows(values, field.key, nameKeyForListField(field.type))
+        .some((row) => row.name.trim().length > 0 || row.value.trim().length > 0);
     }
     return (values[field.key] ?? '').trim().length > 0;
   });
@@ -138,12 +139,13 @@ export const projectConnectionPayload = (
     // in the form indices). Values are sent verbatim; the server's
     // `validateHeaderAuthEntries` is the authority on the final shape (a
     // half-filled row that slips through is rejected there).
-    if (field.type === 'header-list') {
+    if (field.type === 'header-list' || field.type === 'body-field-list') {
       const base = field.key.split('.');
-      collectHeaderRows(values, field.key)
-        .filter((r) => r.header_name.trim().length > 0 || r.value.trim().length > 0)
+      const nameKey = nameKeyForListField(field.type);
+      collectHeaderRows(values, field.key, nameKey)
+        .filter((r) => r.name.trim().length > 0 || r.value.trim().length > 0)
         .forEach((r, j) => {
-          setDeep(root, [...base, String(j), 'header_name'], r.header_name);
+          setDeep(root, [...base, String(j), nameKey], r.name);
           setDeep(root, [...base, String(j), 'value'], r.value);
         });
       continue;

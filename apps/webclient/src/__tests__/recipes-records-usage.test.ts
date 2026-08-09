@@ -254,6 +254,11 @@ describe('RECORDS_ACTION_EFFECT', () => {
       update: 'write',
       upsert: 'write',
       delete: 'delete',
+      // ⚠ REACHABLE, unlike `batch` below. An import declares no allow-list to
+      // expand into, because there is nothing for a caller to choose: it writes
+      // `create` to the bound entity and only that. So a flat 'write' is the
+      // whole truth about it — the exact condition `batch` fails.
+      import: 'write',
       // ⚠ Present for the completeness ratchet and UNREACHABLE in practice: a
       // `batch` is expanded into its declared allow-list pairs before anything
       // reaches this table, so what a person is shown is "creates batch,

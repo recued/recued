@@ -130,6 +130,19 @@ export const apiSchema: ConnectionSchema = {
       showWhen: ifAuth('header'),
       help: 'Sent on every call. Add one per credential header — most APIs need just one (e.g. X-API-Key).',
     },
+    // Body-field — credentials the vendor reads from the JSON request BODY
+    // rather than a header. The only auth type here that CANNOT be verified at
+    // save time: the health probe is a GET and has no body to carry it.
+    {
+      key: 'auth.fields',
+      label: 'Request-body credentials',
+      type: 'body-field-list',
+      showWhen: ifAuth('body_field'),
+      help: 'Sent inside the JSON body of the operations that ask for them by name '
+        + '(e.g. Plaid\u2019s access_token). \u26a0 Recued cannot check these when you '
+        + 'save \u2014 the health probe carries no body, so this connection stays '
+        + '\u201cunknown\u201d until an operation uses it.',
+    },
     // Request signing — the only auth here whose credential is COMPUTED per
     // call rather than stored and re-sent.
     //

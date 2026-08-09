@@ -129,12 +129,45 @@ export interface PolicyGateResult {
  *  deleted the retired matrix-baseline `scan` + per-step overlay-cell resolver args
  *  (slice 4 had left them unconsumed on the signature). The authoritative ACCESS gate
  *  (op-admission, Layer 1) fires per-call at the gateway, not in this pre-run walk. */
+/** D-232 § 20.19 — is this recipe one the door was GRANTED, such that its own
+ *  steps ride the grant? The three enforcement layers (pre-run static walk,
+ *  per-call preflight probe, nested carrier run) must answer this identically or
+ *  a step admitted by one is refused by the next; this is the single answer.
+ *
+ *  A Tier-2 recipe grant enters `allowed_tools` under its WIRE NAME
+ *  `<publisher>/<recipe_id>` (see `buildMcpContractSnapshot`). ⚠ THE TWO
+ *  VOCABULARIES ARE DISJOINT BY CONSTRUCTION, which is what makes sharing the
+ *  array safe: an ingredient slug never contains `/` (verified across
+ *  `community/ingredients/`), so a recipe name can never satisfy the
+ *  `admitContractToolAccess` slug equality and a slug can never satisfy this
+ *  suffix match. If slugs ever gain a `/`, these must split into two fields. */
+export const grantingRecipeEntry = (
+  recipeId: string,
+  contractSnapshot: ContractSnapshot | undefined,
+): string | undefined =>
+  contractSnapshot?.allowed_tools.find((entry) => {
+    const slash = entry.indexOf('/');
+    return slash > 0 && entry.slice(slash + 1) === recipeId;
+  });
+
+/** The boolean form of {@link grantingRecipeEntry}. The NAME is what a nested
+ *  run and the approval-resume authority need — revoking that exact grant has
+ *  to kill an outstanding approval, and it can only do that if the name was
+ *  written down rather than reduced to a yes. */
+export const recipeStepsCoveredByGrant = (
+  recipeId: string,
+  contractSnapshot: ContractSnapshot | undefined,
+): boolean => grantingRecipeEntry(recipeId, contractSnapshot) !== undefined;
+
 export const gateRecipeAgainstPolicy = (
   recipe: RecipeDefinition,
   source: ExecutionSource,
   manifestGetter: (slug: string) => IngredientManifest | undefined,
   contractSnapshot?: ContractSnapshot,
   resolveConfigRef?: (template: string) => string | undefined,
+  /** D-232 § 20.19 — host-set: this run IS a granted recipe's work (a nested run
+   *  the host dispatched on its behalf). See `grantedRecipeCoversSteps`. */
+  coversStepsOverride?: boolean,
 ): PolicyGateResult => {
   // A source carrying a contract_id MUST carry a snapshot at this
   // boundary (D-161 N.4 — covers contracted_user AND a self-restricted
@@ -162,6 +195,35 @@ export const gateRecipeAgainstPolicy = (
   // D-209 #1 — the snapshot rides along so a door's AUTHORED ceiling governs the
   // static walk exactly as it will govern each per-call dispatch.
   const ceiling = resolveTrustCeiling(source, contractSnapshot);
+
+  // ── D-232 § 20.19 — A GRANTED RECIPE'S OWN STEPS ARE PART OF THE GRANT ──
+  //
+  // ⛔ TWO CONCEPTS WORE ONE NAME. `allowed_tools` answers "what may this door
+  // CALL DIRECTLY". The per-step check below was applying it to a different
+  // question — "what may a recipe the door was ALREADY GRANTED do internally" —
+  // and a recipe's steps are what the recipe IS. Granting
+  // `pub/summarise-my-inbox` and then refusing its `core-ai-summarize` step
+  // refuses the grant in the same breath it gives it.
+  //
+  // ⛔⛔ WHAT THIS DOES **NOT** RELAX: the risk axis. `admitByOpRisk` still runs
+  // per step, so a granted recipe's `write` still meets the `ask` floor and its
+  // `destructive` still gates. The recipe grant satisfies ACCESS ONLY — that is
+  // the difference between "granting a recipe grants what the recipe does" and
+  // "granting a recipe is a standing key to the ingredients it names".
+  //
+  // ⚠ THE COST, STATED: a recipe re-authored AFTER being granted reaches further
+  // under the same grant. Tool grants key on NAME; D-177 session grants pin
+  // `recipe_hash` precisely so "a modified recipe never inherits trust".
+  // Narrowing that here would need the grant surface to carry a hash.
+  //
+  // `coversStepsOverride` is the host's inheritance channel: a run the host
+  // dispatched ON BEHALF of a granted recipe (an exchange fire's carrier run, a
+  // local recipe invoke) carries the coverage down, the same way it already
+  // carries the contract. Without it the rule stops at the first hop and the
+  // nested run is refused for a grant its parent holds.
+  const grantedRecipeCoversSteps =
+    coversStepsOverride === true
+    || recipeStepsCoveredByGrant(recipe.recipe_id, contractSnapshot);
 
   const denials: PolicyGateDenial[] = [];
 
@@ -217,7 +279,9 @@ export const gateRecipeAgainstPolicy = (
     // preserved from the matrix's `evaluateToolAdmissibility`. NOT redundant with the
     // per-call op-admission gate (which is permissive for a wildcard door — this
     // allowlist is its real gate). Contract-free walks carry no snapshot → no gate.
-    const accessDeny = admitContractToolAccess(contractSnapshot, slug);
+    const accessDeny = grantedRecipeCoversSteps
+      ? null
+      : admitContractToolAccess(contractSnapshot, slug);
     if (accessDeny !== null && accessDeny.verdict === 'deny') {
       denials.push({ step_id: stepId, ingredient: slug, phase, decision: accessDeny });
       return;

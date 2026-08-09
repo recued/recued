@@ -147,10 +147,38 @@ const grantReads = (name: string, slug = 'hubspot-catalog', group = READ_GROUP):
   grantStore.grantUserGroup(slug, name, group);
 };
 
-const expectAllowedOperations = (name: string): void => {
+/** ⛔ WHAT THIS ASSERTS CHANGED 2026-08-07 (owner decision), and it is worth being
+ *  precise about what SURVIVED. `OPERATION_GROUP_GATE_ENABLED = false` means a bound
+ *  catalog's profile holds every op the CATALOG declares, not the subset a grant
+ *  unlocked — so pinning `READ_OPS` here would now be pinning the retired contract.
+ *
+ *  🔑 EVERY OTHER PROPERTY THESE TESTS EXIST FOR IS UNTOUCHED and still asserted by
+ *  their own bodies: that a profile is SEEDED at all, under the right `catalog_slug`,
+ *  for the right connection name, and DROPPED on delete / vendor-flip / missing
+ *  manifest. Those are the pipeline; the op-set was only ever the payload. So the
+ *  helper is re-anchored to the manifest — derived, never a literal list — and the
+ *  suite keeps testing the wiring it was written to test.
+ *
+ *  ⚠ Anchored to the MANIFEST rather than to `profile.allowed_operations` on purpose: a
+ *  helper that compared the profile to itself would pass for any value the code
+ *  produced, which is how a rewritten assertion silently becomes a tautology. */
+const expectAllowedOperations = (
+  name: string,
+  manifest: IngredientManifest | null | undefined = catalogManifest(),
+): void => {
   const profile = profileStore.get(name);
   expect(profile).not.toBeNull();
-  expect([...profile!.allowed_operations].sort()).toEqual([...READ_OPS].sort());
+  const declared = Object.keys(manifest?.operations ?? {});
+  expect(declared.length, 'the catalog must declare something to admit')
+    .toBeGreaterThan(0);
+  expect([...profile!.allowed_operations].sort()).toEqual([...declared].sort());
+  /** The reads the old contract pinned must STILL be present — the bypass widens the
+   *  set, and a change that accidentally NARROWED it would otherwise slip through.
+   *  ⚠ Only for the reads THIS manifest declares: the write-only catalog legitimately
+   *  has none, and demanding them there would assert the fixture rather than the code. */
+  for (const op of READ_OPS) {
+    if (declared.includes(op)) expect(profile!.allowed_operations).toContain(op);
+  }
 };
 
 beforeEach(() => {
@@ -166,26 +194,42 @@ afterEach(() => {
 });
 
 describe('wireCatalogOperationProfiles', () => {
-  it('seeds an already-enrolled HubSpot connection’s read ops once the read group is granted', () => {
+  it('seeds an already-enrolled HubSpot connection’s catalog ops', () => {
+    /** ⚠ Was: "…read ops once the read group is granted", with a trailing assertion
+     *  that `note.create` was ABSENT because the write group was ungranted. That
+     *  absence is exactly what `OPERATION_GROUP_GATE_ENABLED = false` removes, so the
+     *  assertion is inverted rather than dropped — a write op MUST now be seeded, and
+     *  a change that silently stopped seeding writes should redden here. The grant is
+     *  still issued so this stays a fair comparison with the ungranted case below. */
     upsertApiConnection('hubspot-prod', 'hubspot');
     grantReads('hubspot-prod');
 
     wire();
 
     expectAllowedOperations('hubspot-prod');
-    expect(profileStore.get('hubspot-prod')!.allowed_operations).not.toContain(
-      'note.create', // write group not granted
-    );
+    expect(profileStore.get('hubspot-prod')!.allowed_operations,
+      'a write op is seeded now — approval, not this layer, gates it').toContain('note.create');
   });
 
-  it('seeds NOTHING for a HubSpot connection with no grant (deny until granted — inc 5c ratchet)', () => {
-    // Bare enrollment grants nothing: the derived set is empty → the profile is
-    // dropped → the gateway denies every op (`no_connection_profile`).
+  it('⛔⛔ seeds a HubSpot connection with NO grant — the 5c ratchet is retired', () => {
+    /** ⛔ THIS TEST'S SUBJECT IS REVERSED, and that is the point of keeping it. It
+     *  asserted the D-182 §7.1 inc 5c ratchet: bare enrollment granted nothing, the
+     *  derived set was empty, the profile was dropped, and the gateway denied
+     *  everything with `no_connection_profile`. The owner retired that layer on
+     *  2026-08-07 (`OPERATION_GROUP_GATE_ENABLED = false`).
+     *
+     *  🔑 IT IS INVERTED IN PLACE, NOT DELETED, so the retirement is legible at the
+     *  exact spot the ratchet used to be enforced — a deleted test leaves no trace that
+     *  a security property was ever there, and this one was deliberate.
+     *
+     *  ⚠ The op set is compared against the CATALOG, so this cannot pass by seeding
+     *  some arbitrary set; and the sibling test below still proves a connection with NO
+     *  catalog seeds nothing, which is the fail-closed half that survived. */
     upsertApiConnection('hubspot-ungranted', 'hubspot');
 
     wire();
 
-    expect(profileStore.get('hubspot-ungranted')).toBeNull();
+    expectAllowedOperations('hubspot-ungranted');
   });
 
   it('does not seed an api connection whose vendor has no registered catalog', () => {
@@ -240,15 +284,25 @@ describe('wireCatalogOperationProfiles', () => {
 
     expect(profileStore.get('missing-on-boot')).toBeNull();
 
-    // A write-only catalog declares no read group, so a granted read group expands
-    // to nothing → empty profile dropped (and any pre-existing profile cleared).
+    /** ⛔⛔ THE WRITE-ONLY HALF IS WHERE THE POSTURE CHANGE HAS TEETH, so it is pinned
+     *  rather than softened. A write-only catalog declares no read group; under the 5c
+     *  ratchet a granted read group expanded to nothing, the profile was dropped, and
+     *  the write was unreachable. Now the catalog's declared write IS seeded.
+     *
+     *  ⚠ This is the single most consequential line in the change: it is the case where
+     *  "bypass the group layer" stops being a UI simplification and actually admits a
+     *  write that was previously denied outright. It is safe only because the approval
+     *  floor still pins that op at `ask` — which the E2E cases in
+     *  `d-165-operation-group-grant.test.ts` assert directly. If this ever seeds a write
+     *  whose approval is `never`, those tests are the ones that must catch it, and this
+     *  comment is the pointer to why. */
     manifest = writeOnlyCatalogManifest();
     profileStore.set('write-only-on-upsert', { allowed_operations: READ_OPS });
     grantReads('write-only-on-upsert');
 
     upsertApiConnection('write-only-on-upsert', 'hubspot');
 
-    expect(profileStore.get('write-only-on-upsert')).toBeNull();
+    expectAllowedOperations('write-only-on-upsert', writeOnlyCatalogManifest());
   });
 
   it('seeds two distinct HubSpot connections under their own names', () => {
@@ -345,8 +399,15 @@ describe('wireCatalogOperationProfiles — pack-owned grant union (D-165 P3, Pat
     grantStore.removePackGroups('sales-pack');
     upsertApiConnection('hs', 'hubspot', { updated_at: NOW + 1 });
 
-    expect(profileStore.get('hs')!.allowed_operations).not.toContain('note.create');
-    expect([...profileStore.get('hs')!.allowed_operations].sort()).toEqual([...READ_OPS].sort());
+    /** ⚠ INVERTED 2026-08-07. This asserted that uninstalling the pack REVOKED
+     *  `note.create`, leaving the user's read grant. With the group layer bypassed the
+     *  seeded set follows the CATALOG, so uninstalling a pack no longer narrows what a
+     *  connection can reach — a real consequence of the decision, recorded here rather
+     *  than discovered later. What the uninstall still does (drop the pack's grant
+     *  rows) is unchanged and asserted by the grant-store's own suite. */
+    expect(profileStore.get('hs')!.allowed_operations,
+      'pack uninstall no longer narrows reachability').toContain('note.create');
+    expectAllowedOperations('hs');
   });
 
   it('a pack grant for a DIFFERENT connection does not leak into this one', () => {
@@ -356,8 +417,20 @@ describe('wireCatalogOperationProfiles — pack-owned grant union (D-165 P3, Pat
 
     wireWithGrants();
 
-    expect(profileStore.get('hs')!.allowed_operations).not.toContain('note.create');
-    expect([...profileStore.get('hs')!.allowed_operations].sort()).toEqual([...READ_OPS].sort());
+    /** ⚠ INVERTED 2026-08-07 — and this one is worth reading carefully, because the
+     *  ORIGINAL PROPERTY IS NOW UNTESTABLE HERE. It asserted that a pack grant on
+     *  `other-conn` did not leak into `hs`. Under the bypass both connections reach
+     *  their catalog's ops regardless of any grant, so `hs` containing `note.create`
+     *  is no longer evidence of a leak — the assertion cannot distinguish the two.
+     *
+     *  🔑 What still CAN be checked is that the grant landed where it was addressed, so
+     *  that is what is asserted: the store's own per-connection keying. Cross-connection
+     *  isolation of REACHABILITY is not a property this layer provides any more. */
+    expectAllowedOperations('hs');
+    expect(grantStore.listPackOwnedGroups('hubspot-catalog', 'hs'),
+      'the grant was addressed to other-conn and must not be stored against hs').toEqual([]);
+    expect(grantStore.listPackOwnedGroups('hubspot-catalog', 'other-conn'))
+      .toContain('notes.write');
   });
 });
 
@@ -415,17 +488,26 @@ describe('wireCatalogOperationProfiles — local composition-catalog binding (D-
 
     wireLocal();
 
+    /** ⚠ INVERTED 2026-08-07: the write op no longer "stays OFF". The BINDING half —
+     *  that a local catalog reaches a connection through the install-recorded binding
+     *  alone, with the right `catalog_slug` — is what this test exists for and is
+     *  untouched; only the op-set expectation moved. */
     const profile = profileStore.get('support');
     expect(profile?.catalog_slug).toBe(LOCAL_SLUG);
-    expect([...profile!.allowed_operations]).toEqual(['ticket.read']); // write op stays OFF
+    expect([...profile!.allowed_operations].sort()).toEqual(['ticket.create', 'ticket.read']);
   });
 
-  it('seeds NOTHING for a bound local-catalog connection with no grant (inc 5c ratchet)', () => {
+  it('⛔ seeds a bound local-catalog connection with NO grant — 5c ratchet retired', () => {
+    /** The local-catalog mirror of the registered-vendor case above. Kept inverted in
+     *  place for the same reason: this is where the ratchet was enforced for a private
+     *  catalog, and a deleted test would leave no sign it ever was. */
     bindingStore.bind('support', LOCAL_SLUG, 'acme-pack');
 
     wireLocal();
 
-    expect(profileStore.get('support')).toBeNull();
+    const profile = profileStore.get('support');
+    expect(profile?.catalog_slug).toBe(LOCAL_SLUG);
+    expect([...profile!.allowed_operations].sort()).toEqual(['ticket.create', 'ticket.read']);
   });
 
   it('a PACK-OWNED grant on the local catalog makes its write op effective at dispatch', () => {
@@ -473,9 +555,13 @@ describe('wireCatalogOperationProfiles — local composition-catalog binding (D-
     wireLocal();
 
     upsertMcpConnection('peer');
+    /** ⚠ Op set widened 2026-08-07 (bypass): the local catalog's declared ops, not the
+     *  granted subset. The DELETE/RE-ENROL lifecycle below is what this test is for and
+     *  is unchanged — profile dropped on delete, binding survives, profile re-seeded on
+     *  re-enrol under the same catalog. */
     expect(profileStore.get('peer')).toMatchObject({
       catalog_slug: LOCAL_SLUG,
-      allowed_operations: ['ticket.read'],
+      allowed_operations: ['ticket.read', 'ticket.create'],
     });
 
     connectionStore.delete('mcp', 'peer');
@@ -531,7 +617,14 @@ describe('wireCatalogOperationProfiles — local composition-catalog binding (D-
 
     wireLocal();
 
+    /** 🔑 THE PRECEDENCE IS THE POINT AND IT STILL HOLDS — `catalog_slug` resolves to
+     *  the registered vendor, not the local binding. The op-set assertion moved to the
+     *  hubspot catalog's full declaration (bypass), which ALSO strengthens the test:
+     *  the two catalogs declare disjoint ops, so seeding `ticket.*` here would now be a
+     *  visible failure rather than a subset that happened to match. */
     expect(profileStore.get('hs')?.catalog_slug).toBe('hubspot-catalog');
-    expect([...profileStore.get('hs')!.allowed_operations].sort()).toEqual([...READ_OPS].sort());
+    expectAllowedOperations('hs');
+    expect(profileStore.get('hs')!.allowed_operations,
+      'the local catalog must not shadow the registered vendor').not.toContain('ticket.read');
   });
 });

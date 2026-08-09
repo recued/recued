@@ -45,7 +45,7 @@ import type { RpcConn } from './unlock-vault.js';
  *  composition carry only `fields`, so the action set is synthesised. */
 const RECORDS_ACTIONS = [
   'create', 'get', 'get_many', 'search', 'count', 'aggregate',
-  'update', 'upsert', 'delete', 'batch',
+  'update', 'upsert', 'delete', 'batch', 'import',
 ] as const;
 
 export interface PackInstallOutcome {

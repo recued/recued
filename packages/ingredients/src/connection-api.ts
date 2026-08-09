@@ -73,6 +73,9 @@ import {
   walkPath,
   validateHeaderAuthEntries,
   describeHeaderAuthIssue,
+  validateBodyFieldAuthEntries,
+  describeBodyFieldAuthIssue,
+  HTTP_AUTH_BODY_FIELDS_WIRE_KEY,
   HTTP_UPLOAD_MAX_BYTES_CEILING,
   HTTP_UPLOAD_WIRE_FIELD_KEY,
   HTTP_UPLOAD_WIRE_KIND_KEY,
@@ -723,22 +726,160 @@ const requireAuthNameString = (
   return value;
 };
 
+/** Read the binding's `auth_body_fields` opt-in off the engine-owned wire key.
+ *
+ *  ⚠ Absent for every operation that did not opt in — which is every operation
+ *  authored before this existed, so the default has to be "inject nothing".
+ *  A malformed value is treated the same way rather than throwing: the key is
+ *  engine-written, so a bad one is a bug on our side, and failing every call on
+ *  a connection because of it would be a worse outcome than the operation
+ *  behaving as it did before the opt-in existed. A record that actually needs
+ *  the credential still fails loudly at the vendor. */
+const parseAuthBodyFields = (params: Record<string, unknown>): readonly string[] => {
+  const raw = own(params, HTTP_AUTH_BODY_FIELDS_WIRE_KEY);
+  if (typeof raw !== 'string' || raw.trim() === '') return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((v): v is string => typeof v === 'string' && v.trim() !== '');
+  } catch {
+    return [];
+  }
+};
+
+/** Object keys a body-field credential must never be written to. Same set the
+ *  contract enforces on `field_name` at enrollment — repeated at the ASSIGNMENT
+ *  site because this is where `obj[name] = value` actually happens, and the
+ *  requested names arrive from a manifest rather than from the validated auth
+ *  record. Enrollment validation alone would leave the dangerous operation
+ *  guarded only by something that ran somewhere else, earlier. */
+const BODY_FIELD_RESERVED_KEYS: ReadonlySet<string> = new Set([
+  '__proto__',
+  'constructor',
+  'prototype',
+]);
+
+/** Write the operation's requested credentials into its JSON request body and
+ *  return the re-serialized body.
+ *
+ *  ⚠ An absent body becomes `{}`. A vendor whose credential rides the body
+ *  requires a body, and a POST with no other arguments legitimately has none
+ *  yet — Plaid's `/item/get` is exactly `{"access_token": …}`. Refusing here
+ *  would make the no-argument case unreachable.
+ *
+ *  ⛔ Fails on anything it cannot inject into HONESTLY: a non-JSON content
+ *  type (form-encoded and multipart have their own encodings and are a
+ *  deliberate future widening, not something to guess at), a body that parses
+ *  to an array or a scalar, an unparseable body, or a requested name this
+ *  connection does not carry. */
+const applyBodyFieldAuth = (
+  entries: ReadonlyArray<{ field_name: string; value: string }>,
+  wanted: readonly string[],
+  headers: Headers,
+  req: { method: string; body?: string | undefined },
+): string => {
+  const method = req.method.toUpperCase();
+  if (method === 'GET' || method === 'HEAD') {
+    throw new IngredientError(
+      'INGREDIENT_OUTPUT_VALIDATION_FAILED',
+      `connection.api: body-field auth cannot be sent on a ${method} request — `
+        + 'the operation declares auth_body_fields but carries no body',
+      { auth_type: 'body_field', method },
+    );
+  }
+  const contentType = headers.get('Content-Type')?.split(';', 1)[0]?.trim().toLowerCase();
+  if (contentType !== undefined && contentType !== 'application/json') {
+    throw new IngredientError(
+      'INGREDIENT_OUTPUT_VALIDATION_FAILED',
+      // ⚠ Deliberately NOT worded like the parse failure below. The two are
+      // different problems with different fixes — a mislabelled body vs a
+      // malformed one — and a shared phrasing made a test that meant to check
+      // this one pass on the other.
+      `connection.api: body-field auth needs a JSON content type (got '${contentType}')`,
+      { auth_type: 'body_field', content_type: contentType },
+    );
+  }
+  let parsed: unknown;
+  if (req.body === undefined || req.body.trim() === '') {
+    parsed = {};
+  } else {
+    try {
+      parsed = JSON.parse(req.body);
+    } catch {
+      throw new IngredientError(
+        'INGREDIENT_OUTPUT_VALIDATION_FAILED',
+        'connection.api: body-field auth requires a JSON request body — the composed body did not parse',
+        { auth_type: 'body_field' },
+      );
+    }
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new IngredientError(
+      'INGREDIENT_OUTPUT_VALIDATION_FAILED',
+      'connection.api: body-field auth requires a JSON OBJECT request body '
+        + `(got ${Array.isArray(parsed) ? 'an array' : typeof parsed})`,
+      { auth_type: 'body_field' },
+    );
+  }
+  const byName = new Map(entries.map((e) => [e.field_name, e.value]));
+  const body = parsed as Record<string, unknown>;
+  for (const name of wanted) {
+    if (BODY_FIELD_RESERVED_KEYS.has(name)) {
+      throw new IngredientError(
+        'INGREDIENT_OUTPUT_VALIDATION_FAILED',
+        `connection.api: auth_body_fields cannot name the reserved object key '${name}'`,
+        { auth_type: 'body_field' },
+      );
+    }
+    const value = byName.get(name);
+    if (value === undefined) {
+      // ⚠ Named but absent FAILS. Skipping would send the request with the
+      // credential missing, and the vendor's reply ("invalid credentials")
+      // would send the owner to re-check a key that was never wrong.
+      throw new IngredientError(
+        'INGREDIENT_OUTPUT_VALIDATION_FAILED',
+        `connection.api: this operation needs the body credential '${name}', which this `
+          + 'connection does not carry — re-enroll it with that field',
+        { auth_type: 'body_field', field_name: name },
+      );
+    }
+    body[name] = value;
+  }
+  return JSON.stringify(body);
+};
+
 /** ⚠ `method` and `body` were added for request signing and are unused by every
  *  other member. They were already in scope at the call site — the block above
  *  it builds all four — so this is a widened parameter list rather than the
- *  restructure a signing scheme usually forces. */
+ *  restructure a signing scheme usually forces.
+ *
+ *  ⛔ **RETURNS THE BODY TO SEND, and the wrapper object is load-bearing.**
+ *  `body_field` is the first member that rewrites the request body, so this can
+ *  no longer be `void`. Returning a bare `string | undefined` would have been
+ *  the obvious signature and is a trap: `return;` typechecks against it and
+ *  means "send no body", so any case left un-updated would silently DROP the
+ *  request body instead of failing. Wrapping it makes every bare `return;` a
+ *  compile error, which is what forced each case below to say what it sends. */
 const injectAuth = (
   auth: ConnectionAuth,
   headers: Headers,
   url: URL,
-  req: { method: string; body?: string | undefined; nowMs: number },
-): void => {
+  req: {
+    method: string;
+    body?: string | undefined;
+    nowMs: number;
+    /** Names from the binding's `auth_body_fields` (via the engine-owned
+     *  `__rc_auth_body_fields` wire key). Empty for every operation that did
+     *  not opt in — which is every operation authored before this existed. */
+    authBodyFields?: readonly string[] | undefined;
+  },
+): { readonly body: string | undefined } => {
   switch (auth.type) {
     case 'none':
-      return;
+      return { body: req.body };
     case 'bearer':
       headers.set('Authorization', `Bearer ${requireAuthString(auth, 'token')}`);
-      return;
+      return { body: req.body };
     case 'basic': {
       // btoa is global in Node 18+ and every browser. ASCII-only
       // by spec; non-ASCII passwords would already break the
@@ -747,7 +888,7 @@ const injectAuth = (
         `${requireAuthString(auth, 'username')}:${requireAuthString(auth, 'password')}`,
       );
       headers.set('Authorization', `Basic ${b64}`);
-      return;
+      return { body: req.body };
     }
     case 'header': {
       const res = validateHeaderAuthEntries(auth.headers);
@@ -759,11 +900,11 @@ const injectAuth = (
         );
       }
       for (const h of res.entries) headers.set(h.header_name, h.value);
-      return;
+      return { body: req.body };
     }
     case 'query':
       url.searchParams.set(requireAuthNameString(auth, 'param_name'), requireAuthString(auth, 'value'));
-      return;
+      return { body: req.body };
     case 'oauth2_refresh':
     case 'oauth2_client_credentials':
       if (
@@ -777,7 +918,7 @@ const injectAuth = (
         );
       }
       headers.set('Authorization', `Bearer ${auth.current_access_token}`);
-      return;
+      return { body: req.body };
     // D-218 — the `accessJwt` an AT Protocol session exchange produced. Sent as
     // an ordinary bearer, because that is what the protocol asks for.
     //
@@ -799,7 +940,7 @@ const injectAuth = (
         );
       }
       headers.set('Authorization', `Bearer ${auth.current_access_token}`);
-      return;
+      return { body: req.body };
     /** The first member whose credential is COMPUTED. Everything the signature
      *  covers — the final query string, the body — is settled by the time this
      *  runs, which is why the call sits last in the dispatch.
@@ -815,7 +956,40 @@ const injectAuth = (
         req.nowMs,
       );
       for (const [name, value] of Object.entries(signed)) headers.set(name, value);
-      return;
+      return { body: req.body };
+    }
+    /** The first member that writes to the request BODY rather than a header or
+     *  the query string — the whole reason this function returns a body.
+     *
+     *  ⛔ INJECTS ONLY WHAT THE OPERATION ASKED FOR. `req.authBodyFields` comes
+     *  from the binding's `auth_body_fields` via an engine-owned wire key, so a
+     *  recipe cannot name a credential or choose the key it lands in. An
+     *  operation that named none gets its body back untouched — necessary
+     *  because a vendor that rejects unknown body keys (Plaid answers
+     *  `UNKNOWN_FIELDS`) would fail every call that does not take the
+     *  credential.
+     *
+     *  ⛔ EVERY UNEXPECTED SHAPE FAILS THE CALL. A non-JSON body, an array, a
+     *  scalar, an unparseable string, a name this record does not carry — each
+     *  one throws rather than sending the request with the credential quietly
+     *  absent. That matters more than it looks: a request missing its
+     *  credential earns the vendor's ordinary auth error, which points the
+     *  owner at a key that is not the problem.
+     *
+     *  ⚠ Idempotent by construction (re-parse, then set), so the 401 re-auth
+     *  path calling this a second time on the same request is harmless. */
+    case 'body_field': {
+      const res = validateBodyFieldAuthEntries(auth.fields);
+      if (!res.ok) {
+        throw new IngredientError(
+          'INGREDIENT_OUTPUT_VALIDATION_FAILED',
+          `connection.api: auth.fields ${describeBodyFieldAuthIssue(res.issue)}`,
+          { auth_type: 'body_field' },
+        );
+      }
+      const wanted = req.authBodyFields ?? [];
+      if (wanted.length === 0) return { body: req.body };
+      return { body: applyBodyFieldAuth(res.entries, wanted, headers, req) };
     }
   }
   throw new IngredientError(
@@ -1945,7 +2119,9 @@ export const createConnectionApiHandler = (
     if (upload?.contentSha256 !== undefined) {
       ctx?.setUploadContentSha256?.(upload.contentSha256);
     }
-    const body = upload !== undefined
+    // ⚠ `let`, because body-field auth rewrites it below. Every other auth type
+    // hands the same value straight back.
+    let body = upload !== undefined
       ? upload.body
       : method === 'GET' || method === 'HEAD'
         ? undefined
@@ -1962,11 +2138,21 @@ export const createConnectionApiHandler = (
       baseUrl = refreshed.runtime_base_url;
       ({ url, baseOrigin } = resolveRequestUrl(baseUrl));
     }
-    injectAuth(liveAuth, headers, url, {
-      method,
-      body: typeof body === 'string' ? body : undefined,
-      nowMs: deps.now?.() ?? Date.now(),
-    });
+    const authBodyFields = parseAuthBodyFields(params);
+    {
+      const injected = injectAuth(liveAuth, headers, url, {
+        method,
+        body: typeof body === 'string' ? body : undefined,
+        nowMs: deps.now?.() ?? Date.now(),
+        authBodyFields,
+      });
+      // ⚠ Only a STRING body is replaceable. An upload's body is a stream /
+      // buffer that `injectAuth` never saw (it is handed `undefined` above), so
+      // writing the return value back over it would silently discard the
+      // bytes. Body-field auth on an upload operation is refused inside
+      // `applyBodyFieldAuth` by the content-type check, not here.
+      if (typeof body === 'string' || body === undefined) body = injected.body;
+    }
 
     // ────────────── fetch with timeout ──────────────
     const timeoutMs = resolveTimeoutMs(
@@ -2105,11 +2291,20 @@ export const createConnectionApiHandler = (
         // recomputes. This path is currently gated to `atproto_session` above,
         // so a signing row never reaches it; the pin in the tests is what keeps
         // that true if the gate is ever widened.
-        injectAuth(reauthed, headers, url, {
-          method,
-          body: typeof body === 'string' ? body : undefined,
-          nowMs: deps.now?.() ?? Date.now(),
-        });
+        //
+        // ⚠ Body-field auth is idempotent for the same reason — it re-parses
+        // and SETS rather than appending — so the return value is fed back the
+        // same way the first call does it. Dropping it here would leave the
+        // retry sending the pre-injection body if the gate is ever widened.
+        {
+          const reinjected = injectAuth(reauthed, headers, url, {
+            method,
+            body: typeof body === 'string' ? body : undefined,
+            nowMs: deps.now?.() ?? Date.now(),
+            authBodyFields,
+          });
+          if (typeof body === 'string' || body === undefined) body = reinjected.body;
+        }
         pending = await attempt();
         response = pending.response;
       }

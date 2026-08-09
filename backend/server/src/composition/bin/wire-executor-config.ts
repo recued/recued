@@ -30,6 +30,8 @@ import {
   isMailSendClaimSettled,
   mailSentReconciliationQueryFor,
   toPublicSellerTier,
+  type ConnectionHealth,
+  deriveExchangeStatus,
 } from '@recued/contracts';
 import { createMailSendClaimStore } from '../../storage/mail-send-claim-store.js';
 import type { MailSentReconciliationResult } from '../../collections/mail/provider.js';
@@ -557,6 +559,23 @@ export const composeExecutorConfig = async (
                 encodeAuthForStorage,
                 keyProvider,
               ),
+              // D-232 § 22 — REAL TRAFFIC WRITES HEALTH. Without this the field is
+              // a manual snapshot: a connection that has failed every call for a
+              // week still reads `ok` from whenever someone last pressed probe,
+              // and anything consulting it (retry, fail-fast, the Connections
+              // panel) is consulting nobody's opinion.
+              // ⚠ `setHealth` is a single-column UPDATE precisely so this cannot
+              // race the `persistAuth` credential rotation directly above — a
+              // read-modify-write here would run that race on EVERY dispatch.
+              persistHealth: async (name: string, health: ConnectionHealth) => {
+                if (deps.connectionStore === undefined) {
+                  // ⛔ NEVER SILENT. An optional-chained no-op here is the exact
+                  // fake-seam shape this whole feature exists to remove.
+                  console.warn('[connection-health] no connectionStore; health not written');
+                  return;
+                }
+                deps.connectionStore.setHealth('mcp', name, JSON.stringify(health));
+              },
               ...(deps.auditLog
                 ? { onPersistFailure: makeConnectionCredentialPersistFailureSink(deps.auditLog) }
                 : {}),
@@ -628,6 +647,41 @@ export const composeExecutorConfig = async (
             read: async ({ key }) => {
               const { handleSharedRead } = await import('../../shared-handler.js');
               return handleSharedRead({ store: deps.sharedStore! }, { key });
+            },
+            // D-232 § 23 — DERIVED FROM THE AUDIT TRAIL, WHICH IS WHY IT IS
+            // SERVER-SIDE. Nothing new is stored: the runs filed under the ref
+            // already say everything, and a state machine that can drift from the
+            // runs it describes is worse than a projection that cannot.
+            exchangeStatus: async ({ exchange_ref, callback_op }) => {
+              const { classifyRunFailure: classifyRunFailureImpl } = await import('@recued/engine');
+              const rows = deps.auditLog === undefined
+                ? []
+                : await deps.auditLog.listByExchangeRef(exchange_ref, 200);
+              const report = deriveExchangeStatus(
+                exchange_ref,
+                rows.map((r) => ({
+                  recipe_id: r.recipe_id,
+                  status: String(r.commit_status ?? ''),
+                  errors: r.errors ?? [],
+                  // D-232 § 30 — the peer's verdict, carried into the fold. ⛔
+                  // This mapping is a THIRD enumerating copier on the same path
+                  // (after `buildAuditEntry` and `ExecuteResponse`): the column
+                  // can be written and exported correctly and STILL be invisible
+                  // to the status surface if it is not named right here.
+                  ...(r.exchange_peer_ack !== undefined
+                    ? { peer_ack: r.exchange_peer_ack }
+                    : {}),
+                })),
+                callback_op,
+                classifyRunFailureImpl,
+              );
+              return {
+                ref: report.ref,
+                status: report.status,
+                ...(report.kind !== undefined ? { kind: report.kind } : {}),
+                ...(report.reason !== undefined ? { reason: report.reason } : {}),
+                runs: report.runs,
+              };
             },
             list: async ({ prefix }) => {
               const { handleSharedList } = await import('../../shared-handler.js');

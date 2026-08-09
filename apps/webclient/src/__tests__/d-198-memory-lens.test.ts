@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 import type { MemoryListEntry } from '@recued/contracts';
 import {
   MEMORY_ADD_ACTION,
+  MEMORY_MORE_ACTION,
   MEMORY_COMPOSE_CANCEL_ACTION,
   MEMORY_COMPOSE_DISCARD_COMMIT_ACTION,
   MEMORY_COMPOSE_DISCARD_COMMIT_ATTR,
@@ -659,3 +660,52 @@ describe('renderMemoryLens — Slice 4 redaction UI', () => {
     expect(html).not.toContain('>Forget<');
   });
 });
+
+describe('memory feed pagination', () => {
+  /** ⛔ THE LENS NEVER ASKED FOR PAGE 2. `memory.list` has always returned a
+   *  `next_cursor`; the route dropped it and the lens rendered nothing about
+   *  there being more, so an owner past the first page saw the newest
+   *  `DEFAULT_LIMIT` entries and no way to tell there were others. The lens
+   *  header calls this feed "whole-feed", and `data.memory` is UNBOUNDED under
+   *  D-230 (owner knowledge is never pruned) — one page is never the whole
+   *  feed. */
+  const withEntries = (over: Record<string, unknown>): string => renderMemoryLens({
+    ...baseProps,
+    entries: [entry({ memory_id: 'a', origin_actor: 'user_self', kind: 'note', ts: 999_000 })],
+    ...over,
+  } as never);
+
+  it('⛔ offers Load more when the server reported another page', () => {
+    expect(withEntries({ hasMore: true })).toContain(MEMORY_MORE_ACTION);
+  });
+
+  it('⛔ offers NOTHING when the feed ended — the button must not invite a dead click', () => {
+    // A button that always renders returns an empty page at the end, which
+    // reads as a broken feed rather than the end of one.
+    expect(withEntries({ hasMore: false })).not.toContain(MEMORY_MORE_ACTION);
+    expect(withEntries({})).not.toContain(MEMORY_MORE_ACTION);
+  });
+
+  it('⛔ shows the in-flight state and disables the button while paging', () => {
+    // Without this a second click pages twice from the SAME cursor and
+    // duplicates a page into the list.
+    const html = withEntries({ hasMore: true, loadingMore: true });
+    expect(html).toContain('Loading…');
+    expect(html).toContain('aria-disabled="true"');
+    // ⚠ `/memory-more[\s\S]*?disabled/` was too weak to discriminate — it also
+    // matches `aria-disabled`, so a mutation dropping the real attribute passed.
+    // Assert the BARE `disabled` that actually blocks the second click.
+    expect(html).toMatch(/aria-disabled="true"\s+disabled>/);
+    // ...and that it is gone when idle, or the button would never be clickable.
+    expect(withEntries({ hasMore: true, loadingMore: false }))
+      .not.toMatch(/aria-disabled="[^"]*"\s+disabled>/);
+  });
+
+  it('is absent on an EMPTY feed even if a cursor somehow survived', () => {
+    // The empty-state copy already says there is nothing; a Load more beside it
+    // would contradict it.
+    const html = renderMemoryLens({ ...baseProps, entries: [], hasMore: true } as never);
+    expect(html).not.toContain(MEMORY_MORE_ACTION);
+  });
+});
+

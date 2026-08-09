@@ -361,6 +361,18 @@ export interface ConnectionStoreSqlite {
   delete(kind: ConnectionKind, name: string): boolean;
   /** Total row count — Settings page header. */
   count(): number;
+  /** D-232 § 22 — write ONLY the health column for one connection.
+   *
+   *  ⛔⛔ NOT `upsert`, AND THE DIFFERENCE IS A LOST CREDENTIAL. `upsert` fully
+   *  replaces the row, so a health write built as read-modify-write would race
+   *  the OAuth refresh path: refresh rotates `auth_ciphertext`, a dispatch that
+   *  read the row moments earlier writes its stale copy back, and the rotated
+   *  refresh token is gone. Health is written on EVERY dispatch, so that race
+   *  would be run constantly rather than rarely.
+   *
+   *  Returns false when no such row exists (deleted mid-dispatch) — the caller
+   *  treats health as best-effort and never fails a call over it. */
+  setHealth(kind: ConnectionKind, name: string, health_json: string): boolean;
   /** Claim an idempotency key before any provider I/O. Optional on the broad
    * interface so narrowly hand-built read-only test stores remain valid; the
    * production SQLite store always implements the complete recovery quartet. */
@@ -961,6 +973,16 @@ export const createConnectionStore = (
       }
       return removed;
     },
+    setHealth(kind, name, health_json) {
+      // Single-column UPDATE; `updated_at` is deliberately NOT bumped — health is
+      // an observation ABOUT the row, not a change TO it, and bumping it would
+      // push every dispatch into the sync delta scan (`listSince`).
+      const res = db
+        .prepare(`UPDATE connections SET health_json = ? WHERE kind = ? AND name = ?`)
+        .run(health_json, kind, name);
+      return res.changes > 0;
+    },
+
 
     count() {
       return (countStmt.get() as { n: number }).n;

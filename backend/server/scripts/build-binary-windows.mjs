@@ -38,6 +38,7 @@
  *   node scripts/build-binary-windows.mjs --source v26.8.2     # a tagged tree
  *   node scripts/build-binary-windows.mjs --triple windows-x64
  *   node scripts/build-binary-windows.mjs --reuse-source       # skip transfer, rebuild
+ *   node scripts/build-binary-windows.mjs --embed-addon        # single-file prototype
  *   node scripts/build-binary-windows.mjs --out /tmp/art
  */
 
@@ -81,6 +82,11 @@ if (requested !== 'all' && !TRIPLES.includes(requested)) {
   fail(`unknown triple "${requested}" — expected one of ${TRIPLES.join(', ')}`);
 }
 const triples = requested === 'all' ? TRIPLES : [requested];
+/** PROTOTYPE (single-file): carry the addon INSIDE the binary. Threaded to
+ *  both build.ps1 (embed) and smoke.ps1 (assert no sidecar), because proving
+ *  it needs both halves -- building it in and then booting with the sidecar
+ *  still present would pass for the wrong reason. */
+const embedAddon = has('embed-addon');
 const SOURCE = flag('source', 'HEAD');
 const OUT = resolve(flag('out', join(SERVER_DIR, 'dist', 'binary-windows')));
 const REUSE = has('reuse-source');
@@ -312,13 +318,21 @@ try {
   const buildOut = await runPs1('build', {
     Triples: triples.join(','),
     UploadTo: `${base}/upload`,
+    // PROTOTYPE (single-file): embed better_sqlite3.node into the SEA blob as
+    // an asset rather than shipping it beside the exe. Off unless asked.
+    ...(embedAddon ? { EmbedAddon: '1' } : {}),
   }, 3600);
   for (const line of buildOut.split('\n')) if (line.trim()) console.log(`  ${line}`);
   if (!buildOut.includes('WINBUILD-OK')) fail('the VM build did not reach WINBUILD-OK — see above');
 
   console.log('');
   console.log('[build-binary-windows] boot smoke on the VM…');
-  const smokeOut = await runPs1('smoke', { Triples: triples.join(',') }, 900);
+  // The smoke must assert the OPPOSITE sidecar condition under --embed-addon:
+  // a stray sidecar would load normally and the run would prove nothing.
+  const smokeOut = await runPs1('smoke', {
+    Triples: triples.join(','),
+    ...(embedAddon ? { EmbedAddon: '1' } : {}),
+  }, 900);
   for (const line of smokeOut.split('\n')) if (line.trim()) console.log(`  ${line}`);
   if (!smokeOut.includes('SMOKE-OK')) { failed += 1; console.error('[build-binary-windows] ⛔ SMOKE FAILED — the binaries do not start'); }
 } finally {

@@ -5,7 +5,7 @@
   "ttl": 60,
   "metadata": {
     "name": "Open commitments (D-145 PA10)",
-    "description": "Dashboard of open commitments and tasks per contact and project, sorted by each contact's follow-through reliability — dependable counterparties land on top so the easy wins get chased first. Auto-refreshes weekday morning and early afternoon; invoke any time for the current view.",
+    "description": "Use “Open commitments” in Recued. Dashboard of open commitments and tasks per contact and project, sorted by each contact's follow-through reliability — dependable counterparties land on top so the easy wins get chased first. Auto-refreshes weekday morning and early afternoon; invoke any time for the current view.",
     "author": "recued-core",
     "supported_platforms": [],
     "tags": ["productivity", "commitment", "open-loop", "dashboard", "ai_surface", "reactive", "pack:personal-organizer"],

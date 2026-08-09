@@ -138,6 +138,15 @@ export const CONNECTION_SETUP_GUIDE_FIELDS = {
       + 'a mistyped secret or a CLOCK more than a few seconds out — the request carries a '
       + 'timestamp the provider checks, and no field on this form can fix a wrong clock.',
   },
+  'auth.fields': {
+    label: 'Request-body credentials',
+    description:
+      'Credentials this provider reads from the JSON request body rather than a header — '
+      + 'Plaid\'s per-account access token is the common case. Each entry is a field name '
+      + 'and its value. ⚠ Recued cannot verify these when you save them: the health check '
+      + 'is a GET, which carries no body, so this connection stays "unknown" until the '
+      + 'first operation actually uses it.',
+  },
 } as const satisfies Record<string, GuideField>;
 
 export type ConnectionSetupGuideFieldKey =
@@ -158,6 +167,9 @@ const AUTH_FIELDS: Record<AuthType, readonly ConnectionSetupGuideFieldKey[]> = {
   header: ['auth.headers'],
   query: ['auth.param_name', 'auth.value'],
   request_signature: ['auth.api_key', 'auth.secret_key'],
+  // The whole array — a `body_field` record's entry names are vendor-chosen,
+  // so there is no per-field key to name the way `auth.token` names one blank.
+  body_field: ['auth.fields'],
   oauth2_refresh: [
     'auth.refresh_token',
     'auth.client_id',

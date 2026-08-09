@@ -3,7 +3,7 @@
   "slug": "reception-scheduling",
   "publisher": "recued-core",
   "name": "Reception — Scheduling",
-  "description": "Review-by-default scheduling reception (a booking front-door). A visitor picks a slot and the booking lands a pending record; a review-then-approve workflow holds the materialize operation at the Gateway gate, where you approve (editing the slot time / details first) or reject. Materializes a booking in your local warehouse — a mutable business record that owns its own slot and lifecycle (confirmed / completed / no_show / cancelled). A booking is never written to your calendar: the calendar is personal, a booking is business (D-210 A.2). Scheduling never auto-books (D-173 I-7).",
+  "description": "Use Reception — Scheduling in Recued. It includes 1 built-in action and 3 ready-to-run workflows. Actions that change data use Recued's approval controls.",
   "version": 4,
   "pre_install": true,
   "recipes": [

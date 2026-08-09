@@ -235,6 +235,8 @@ const withInitialRecuedAcmeCert = async (
   deps: HostnameRpcDeps,
   method: string,
   hostname: string,
+  /** True when the row existed BEFORE this mutation — see the defer note. */
+  alreadyRegistered = false,
 ): Promise<HostnameMutationResponse> => {
   const row = withRegistryErrors(method, () => deps.store.get(hostname));
   if (!row) {
@@ -245,6 +247,33 @@ const withInitialRecuedAcmeCert = async (
     || row.ownership_status !== 'verified'
     || row.cert_fingerprint !== undefined
   ) {
+    return { hostname: projectHostname(row) };
+  }
+
+  // ⛔ DEFER WHEN THE ROW ALREADY EXISTED — `pro-cert-enrollment` owns it.
+  //
+  //    The background service creates the Pro DDNS row and orders its
+  //    certificate on its own cadence, retrying on its own backoff. If this
+  //    handler also issued for a row the service had already registered, one
+  //    hostname would have TWO racing attempts — and CAs rate-limit FAILED
+  //    validations (LE: 5 per account per hostname per hour), so a racing pair
+  //    can exhaust the limit and block both. Observed live: the enrollment
+  //    service and a manual `.add` both ordering for the same host in one run.
+  //
+  //    A FRESH add still issues inline, so a user adding a hostname gets
+  //    immediate feedback rather than waiting for the next background tick.
+  //
+  //    Returning the row is the honest answer, not a silent no-op: it carries
+  //    no `cert_fingerprint`, which is exactly the pending state the UI
+  //    renders — "registered, provisioning", and the server finishes it.
+  //
+  // ⚠ Keyed on PRE-EXISTENCE, not on `ddns_managed`. My first attempt used the
+  //   latter and was wrong twice over: `cert_source: 'recued_acme'` already
+  //   REQUIRES a single-label Pro DDNS hostname (`hostname-registry.ts` — a BYO
+  //   domain cannot use it), and BYO rows never reach this line anyway because
+  //   the `cert_source !== 'recued_acme'` guard above returns first. So the
+  //   "BYO keeps issuing inline" carve-out it was protecting cannot occur.
+  if (alreadyRegistered) {
     return { hostname: projectHostname(row) };
   }
 
@@ -335,8 +364,12 @@ export const handleHostnameAdd = async (
     cert_source: a.cert_source,
   };
   fillOptionalUpsertFields(method, input, a);
+  // Read BEFORE the upsert — afterwards every row looks pre-existing.
+  const alreadyRegistered = withRegistryErrors(method, () => deps.store.get(hostname)) !== null;
   const hostnameProjection = withRegistryErrors(method, () => deps.store.upsert(input));
-  return withInitialRecuedAcmeCert(deps, method, hostnameProjection.hostname);
+  return withInitialRecuedAcmeCert(
+    deps, method, hostnameProjection.hostname, alreadyRegistered,
+  );
 };
 
 export const handleHostnameUpdate = async (

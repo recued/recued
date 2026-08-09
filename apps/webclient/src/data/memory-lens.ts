@@ -47,6 +47,14 @@ export const MEMORY_LENS_VALUE_ATTR = 'data-memory-lens';
 
 /** Slice 2 CRUD dispatch. `*_ROW_ID_ATTR` carries the target `memory_id`;
  *  `*_FIELD_ATTR` tags the compose-form inputs the route syncs on `input`. */
+/** ⛔ The feed's page-2 door. `memory.list` returns `next_cursor` and this lens
+ *  never asked for it: it requested 100 entries, ignored the cursor, and
+ *  rendered nothing about there being more — so an owner with 101 memories saw
+ *  100 and no way to tell. The lens header calls this feed "whole-feed", which
+ *  is what it was meant to be; `data.memory` is UNBOUNDED under D-230 (owner
+ *  knowledge is never pruned), so one page is never the whole feed. */
+export const MEMORY_MORE_ACTION = 'memory-more';
+
 export const MEMORY_ADD_ACTION = 'memory-add';
 export const MEMORY_OPEN_ACTION = 'memory-open';
 export const MEMORY_OPEN_RUN_ACTION = 'memory-open-run';
@@ -168,6 +176,10 @@ export interface MemoryLensProps {
   filteringOrigin?: MemoryOriginFilter;
   /** Slice 3 — an export walk is in flight. */
   exporting?: boolean;
+  /** True when the server reported a `next_cursor` — there is another page. */
+  hasMore?: boolean;
+  /** A Load-more read is in flight. */
+  loadingMore?: boolean;
   /** Slice 2 — the row awaiting a delete confirm (inline two-step). */
   pendingDeleteId?: string;
   /** The confirmed Delete/Forget write currently owned by one row. */
@@ -699,7 +711,18 @@ export const renderMemoryLens = (props: MemoryLensProps): string => {
           listLocked,
         ),
       )
-      .join('')}</ul>`;
+      .join('')}</ul>${
+      // ⚠ Rendered only when the SERVER said there is more. Showing the button
+      // unconditionally would invite a click that returns nothing, which reads
+      // as a broken feed rather than the end of one.
+      props.hasMore === true
+        ? `<button type="button" class="memory-btn memory-more"
+             ${props.actionAttr}="${MEMORY_MORE_ACTION}"
+             aria-disabled="${props.loadingMore === true ? 'true' : 'false'}"${
+               props.loadingMore === true || listLocked ? ' disabled' : ''
+             }>${props.loadingMore === true ? 'Loading…' : 'Load more'}</button>`
+        : ''
+    }`;
   }
 
   return renderMemoryLensFrame(`
@@ -712,6 +735,7 @@ export const renderMemoryLens = (props: MemoryLensProps): string => {
 };
 
 export const MEMORY_LENS_STYLES = `
+.memory-more { margin-top: 0.5rem; }
 .data-lens-switch { display: inline-flex; gap: 0.25rem; padding: 0.25rem; background: var(--surface-sunk); border-radius: 0.5rem; margin: 0.5rem 0; }
 .data-lens-btn {
   box-sizing: border-box; min-height: 36px; display: inline-flex; align-items: center; justify-content: center;

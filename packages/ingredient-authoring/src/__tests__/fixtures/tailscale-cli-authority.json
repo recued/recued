@@ -5,17 +5,17 @@
       "cli": {
         "kind": "official_mutable_markdown_hash_locked",
         "url": "https://tailscale.com/docs/reference/tailscale-cli.md",
-        "bytes": 49514,
-        "sha256": "0ae48e49acd4c1f32b3d4e65c095bd5613b5cb221fbec32253976312fc315325",
-        "last_validated": "2026-01-26",
+        "bytes": 52642,
+        "sha256": "afb521a8d26192afefc9dac5da9a4dde8c0a601f23432bc1721f1180319d7d1e",
+        "last_validated": "2026-08-06",
         "retrieved_on": "2026-07-16"
       },
       "serve": {
         "kind": "official_mutable_markdown_hash_locked",
         "url": "https://tailscale.com/docs/reference/tailscale-cli/serve.md",
-        "bytes": 12905,
-        "sha256": "709ea830c06def48521ce28c2322241dde3bfce5cad3b176347fbb225814f137",
-        "last_validated": "2026-01-26",
+        "bytes": 12940,
+        "sha256": "81159f9159d7dd6404bd854ce05488508a2d0fe91a97b87a0ae5046032d7d98e",
+        "last_validated": "2026-08-06",
         "retrieved_on": "2026-07-16"
       },
       "funnel": {
@@ -23,7 +23,7 @@
         "url": "https://tailscale.com/docs/reference/tailscale-cli/funnel.md",
         "bytes": 9088,
         "sha256": "d96631edcab3fd619eebe6c5c205c0148836439ae7af25814f9c603f5ebfc852",
-        "last_validated": "2026-01-26",
+        "last_validated": "2026-08-06",
         "retrieved_on": "2026-07-16"
       },
       "lock": {
@@ -31,23 +31,23 @@
         "url": "https://tailscale.com/docs/reference/tailscale-cli/lock.md",
         "bytes": 15627,
         "sha256": "cf074704eb08ca069aa78b03ba603ff2acabbc6c83fa2960d519f726dc208ad2",
-        "last_validated": "2026-01-05",
+        "last_validated": "2026-08-06",
         "retrieved_on": "2026-07-16"
       },
       "daemon": {
         "kind": "official_mutable_markdown_hash_locked",
         "url": "https://tailscale.com/docs/reference/tailscaled.md",
-        "bytes": 5625,
-        "sha256": "a3927da5bdce40d74ddb1e95f5788bb003cd3029bdff175ad76c2a94865c2068",
-        "last_validated": "2026-01-05",
+        "bytes": 5637,
+        "sha256": "c036b6b7110ff7eeebabf0dda5eae73435adf1ba772db836cb3f38267b9b86ea",
+        "last_validated": "2026-08-06",
         "retrieved_on": "2026-07-16"
       }
     },
-    "official_command_root_count": 33,
+    "official_command_root_count": 36,
     "admitted_command_root_count": 15,
-    "excluded_command_root_count": 18,
+    "excluded_command_root_count": 21,
     "operation_count": 18,
-    "composition_bytes": 17991,
+    "composition_bytes": 18652,
     "risk_counts": {
       "read": 18
     },
@@ -191,9 +191,27 @@
         "resolution": "Declare no work_entity_sources and bundle no automatic or chat workflow that could leak private local diagnostics."
       }
     ],
-    "operations_sha256": "9868207a99c3e2ff96460d3ef74622046754b3bf9be4b62fb73b39f919d259fe"
+    "operations_sha256": "53210db7b9883da84feee1ead52257d5df646de7b8951eb4f5158a4b4ea725af"
   },
   "official_commands": [
+    {
+      "root": "get",
+      "decision": "excluded",
+      "reason": "Reads local preferences and would be a legitimate bounded read, but it does not exist on the stable client this pack pins: stable 1.98.10 answers \"unknown subcommand: get\" while unstable 1.103.74 provides it. Admitting a documented-but-unreleased command would ship an operation that fails for every operator on stable. Revisit when a stable client carries it.",
+      "operation_ids": []
+    },
+    {
+      "root": "service",
+      "decision": "excluded",
+      "reason": "Lists the Tailscale Services this node may reach and would be a legitimate bounded read, but stable 1.98.10 answers \"unknown subcommand: service\" while unstable 1.103.74 provides it. Same reason as `get`: documented ahead of the stable release. Revisit when a stable client carries it.",
+      "operation_ids": []
+    },
+    {
+      "root": "whoami",
+      "decision": "excluded",
+      "reason": "Returns this machine and user identity and would be a legitimate bounded read, but stable 1.98.10 answers \"unknown subcommand: whoami\" while unstable 1.103.74 provides it. Same reason as `get`: documented ahead of the stable release. Revisit when a stable client carries it.",
+      "operation_ids": []
+    },
     {
       "root": "up",
       "decision": "excluded",

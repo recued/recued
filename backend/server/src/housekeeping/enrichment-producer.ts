@@ -386,10 +386,44 @@ export const buildEnrichmentProducerTask = <TData>(
     }
   }
 
+  // ⛔ THIS PREDICATE NEEDS TWO DECLARATIONS TO AGREE, AND FORGETTING ONE
+  // FAILS OPEN. `summary`, `purpose` and `action_items` each declared a
+  // positive token estimate and omitted `ai_surface`, so `isAiSurface`
+  // came out FALSE for three producers that call `executeLLM`. Everything
+  // protecting the owner keys on this flag, so all of it silently
+  // disengaged at once:
+  //
+  //   - `resolveEnrichmentTrustDefault(topic, false)` returns 'auto'
+  //     instead of 'manual' → idle-eligible, running AI on housekeeping
+  //     cycles with no owner action;
+  //   - `isEligibleForIdleCycle`'s `isAiSurface && isAiPaused(...)` is
+  //     skipped → the top-bar Pause-AI control did not stop them;
+  //   - `wrapCtxWithForceLayer` below is applied only when `isAiSurface`
+  //     → the owner's `pool_policy` (free_only / byok_only) was not
+  //     enforced for their calls.
+  //
+  // Each producer's header claimed the token estimate alone made it
+  // "manual-only by construction", and `ai_surface`'s own doc says
+  // "defaults treated as 'chat' for backward-compat" — neither is what
+  // this line does. So the omission is asserted rather than defaulted:
+  // guessing 'chat' here would make the SAFE reading of a missing field
+  // depend on a comment, and the failure it hides is "AI ran without
+  // being asked".
+  const tokenEstimate = producer.estimate_per_record_tokens();
+  if (tokenEstimate > 0 && producer.ai_surface === undefined) {
+    throw new Error(
+      `enrichment_ai_surface_undeclared: topic '${producer.topic}' estimates `
+      + `${String(tokenEstimate)} tokens/record but declares no \`ai_surface\`. `
+      + `A producer that spends tokens must name its surface ('chat' | `
+      + `'embeddings') — without it the topic defaults to trust_state 'auto', `
+      + `ignores the Pause-AI window, and bypasses the owner's pool policy.`,
+    );
+  }
+
   // D-132 A.2 — trust-default consistency check. Throws when registry-
   // declared default_trust_state is incompatible with the producer's
   // ai_surface (e.g. 'auto' on an AI producer).
-  const isAiSurface = producer.ai_surface !== undefined && producer.estimate_per_record_tokens() > 0;
+  const isAiSurface = producer.ai_surface !== undefined && tokenEstimate > 0;
   assertEnrichmentTrustDefaults(producer.topic, isAiSurface);
   // D-136 §A.8 — lifecycle / temporal-class / identity-aggregation
   // gates. Throws when the registry entry violates any of the eight

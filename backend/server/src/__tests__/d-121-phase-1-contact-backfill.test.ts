@@ -5,8 +5,10 @@
  *    - calendar-table walk pulls organizer + attendees
  *    - batch yield budget honored (small batch_size triggers
  *      multiple ticks; onBatch fires per tick)
- *    - idempotent: second call doesn't double-insert (counts go up
- *      via interaction_count, contacts row count stays the same)
+ *    - idempotent: a second call sweeps NOTHING — the table carries a
+ *      completion marker, so counts and record hashes freeze after the
+ *      first run (K=3), while a later-enrolled table is still swept once
+ *      and an interrupted sweep is retried rather than marked done
  *    - corrupted JSON rows skipped without aborting
  *    - empty database -> 0/0/0 result */
 
@@ -21,6 +23,7 @@ import {
   createContactStore,
   type ContactStore,
 } from '../storage/contact-store.js';
+import { hashContactRecord } from '../housekeeping/source-walkers.js';
 import {
   backfillContacts,
   backfillContactsFromMail,
@@ -135,7 +138,7 @@ afterEach(() => {
 describe('backfillContactsFromMail', () => {
   it('returns zero result when no mail tables exist', async () => {
     const result = await backfillContactsFromMail(db, store);
-    expect(result).toEqual({ tables: 0, processed: 0, observed: 0 });
+    expect(result).toEqual({ tables: 0, processed: 0, observed: 0, skipped: 0 });
     expect(store.count()).toBe(0);
   });
 
@@ -264,10 +267,118 @@ describe('idempotency', () => {
 
     await backfillContactsFromMail(db, store);
     expect(store.count()).toBe(firstCount);
-    // Re-running counts as a second observation; first-seen wins for
-    // source / first_seen / name. interaction_count bumps every time.
-    expect(store.get('bob@x.com')?.interaction_count).toBe((firstInteractions ?? 0) + 1);
+    // ⛔ THIS ASSERTION USED TO READ `+ 1`, with the comment "interaction_count
+    // bumps every time". That was DESCRIBING the defect, not stating the
+    // intent — this test's NAME is the intent, and a second sweep that bumps
+    // nothing satisfies "does not double-insert" strictly better than one that
+    // bumps. The bump was load-bearing in the wrong direction:
+    // `hashContactRecord` folds `interaction_count` in, so every restart moved
+    // every contact's hash and re-derived every contact-scoped producer.
+    // The table now carries a completion marker, so the second run is a marker
+    // lookup that processes nothing.
+    expect(store.get('bob@x.com')?.interaction_count).toBe(firstInteractions);
     expect(store.get('bob@x.com')?.first_seen).toBe(100);
+  });
+
+  it('⛔ K=3 — counts and record hashes are FROZEN after the first sweep', async () => {
+    // The horizon invariant, asserted as PROGRESS rather than invocation: run 1
+    // does the work, runs 2 and 3 do none, and the two values downstream
+    // consumers key on do not move. Three cycles because two cannot
+    // distinguish "stopped" from "alternating".
+    setupMailTable('collection_mail_aaaaaaaaaa');
+    for (const [i, from] of ['a@x.com', 'b@x.com', 'a@x.com'].entries()) {
+      insertMailRow('collection_mail_aaaaaaaaaa', {
+        record_id: `m${i}`, received_at: 100 + i, from, to: ['c@x.com'],
+      });
+    }
+    const seen: Array<{ processed: number; skipped: number; counts: number[]; hashes: string[] }> = [];
+    for (let boot = 0; boot < 3; boot++) {
+      const res = await backfillContactsFromMail(db, store, { yieldBatch: async () => {} });
+      const recs = ['a@x.com', 'b@x.com', 'c@x.com'].map((e) => store.get(e)!);
+      seen.push({
+        processed: res.processed,
+        skipped: res.skipped,
+        counts: recs.map((r) => r.interaction_count),
+        hashes: recs.map((r) => hashContactRecord(r)),
+      });
+    }
+    expect(seen[0]!.processed, 'the first sweep must actually do the work').toBe(3);
+    expect(seen[0]!.skipped).toBe(0);
+    expect(seen[1]!.processed, 'second boot re-reads nothing').toBe(0);
+    expect(seen[2]!.processed, 'third boot re-reads nothing').toBe(0);
+    expect(seen[1]!.skipped).toBe(1);
+    expect(seen[2]!.skipped).toBe(1);
+    // The two values that actually matter downstream.
+    expect(seen[1]!.counts, 'interaction_count frozen').toEqual(seen[0]!.counts);
+    expect(seen[2]!.counts).toEqual(seen[0]!.counts);
+    expect(seen[1]!.hashes, 'source_record_hash frozen — no false re-derivation')
+      .toEqual(seen[0]!.hashes);
+    expect(seen[2]!.hashes).toEqual(seen[0]!.hashes);
+  });
+
+  it('⛔ KNOWN NEGATIVE: force:true re-sweeps, and the counts move again', async () => {
+    // Proves the K=3 assertions above discriminate rather than passing because
+    // the walk is inert. This is the OLD behaviour, on demand.
+    setupMailTable('collection_mail_aaaaaaaaaa');
+    insertMailRow('collection_mail_aaaaaaaaaa', {
+      record_id: 'm1', received_at: 100, from: 'bob@x.com',
+    });
+    await backfillContactsFromMail(db, store);
+    const before = store.get('bob@x.com')!;
+    const beforeHash = hashContactRecord(before);
+
+    const res = await backfillContactsFromMail(db, store, { force: true });
+    expect(res.processed, 'force re-reads the table').toBe(1);
+    expect(res.skipped).toBe(0);
+    const after = store.get('bob@x.com')!;
+    expect(after.interaction_count).toBe(before.interaction_count + 1);
+    expect(hashContactRecord(after)).not.toBe(beforeHash);
+  });
+
+  it('⛔ a table enrolled LATER is swept once, on the boot that first sees it', async () => {
+    // The marker is per-table, not global — a second mail account added months
+    // after the first must still get its historical rows materialized. A global
+    // "backfill done" flag would silently skip it forever.
+    setupMailTable('collection_mail_aaaaaaaaaa');
+    insertMailRow('collection_mail_aaaaaaaaaa', {
+      record_id: 'm1', received_at: 100, from: 'bob@x.com',
+    });
+    await backfillContactsFromMail(db, store);
+
+    setupMailTable('collection_mail_bbbbbbbbbb');
+    insertMailRow('collection_mail_bbbbbbbbbb', {
+      record_id: 'm2', received_at: 200, from: 'carol@x.com',
+    });
+    const second = await backfillContactsFromMail(db, store);
+    expect(second.processed, 'the new table IS read').toBe(1);
+    expect(second.skipped, 'the old one is not').toBe(1);
+    expect(store.get('carol@x.com')).toBeTruthy();
+
+    const third = await backfillContactsFromMail(db, store);
+    expect(third.processed).toBe(0);
+    expect(third.skipped).toBe(2);
+  });
+
+  it('⛔ an INTERRUPTED sweep is retried, not recorded as done', async () => {
+    // The marker is written after the table completes. A throw part-way must
+    // leave it absent, or a crash mid-migration loses every contact the walk
+    // had not yet reached — the one direction that is not recoverable.
+    setupMailTable('collection_mail_aaaaaaaaaa');
+    for (let i = 0; i < 4; i++) {
+      insertMailRow('collection_mail_aaaaaaaaaa', {
+        record_id: `m${i}`, received_at: 100 + i, from: `p${i}@x.com`,
+      });
+    }
+    await expect(backfillContactsFromMail(db, store, {
+      batch_size: 2,
+      yieldBatch: async () => { throw new Error('killed mid-table'); },
+    })).rejects.toThrow('killed mid-table');
+
+    // Marker absent ⇒ the retry does the whole table.
+    const retry = await backfillContactsFromMail(db, store, { yieldBatch: async () => {} });
+    expect(retry.processed, 'the interrupted table is re-read in full').toBe(4);
+    expect(retry.skipped).toBe(0);
+    for (let i = 0; i < 4; i++) expect(store.get(`p${i}@x.com`), `p${i}`).toBeTruthy();
   });
 });
 

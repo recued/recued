@@ -305,6 +305,12 @@ export type TransparencyEvent =
       readonly input_tokens: number;
       readonly output_tokens: number;
       readonly total_tokens: number;
+      /** How many PROVIDER CALLS the turn made. Without it these totals are
+       *  unattributable: one expensive call and three cheap ones arrive
+       *  identical, and a cost series cannot tell a packet that GREW from a
+       *  turn that simply called more often. Absent on turns whose usage
+       *  predates the field. */
+      readonly provider_calls?: number;
       readonly cache_read_input_tokens?: number;
       readonly cache_write_input_tokens?: number;
       readonly reasoning_tokens?: number;
@@ -959,7 +965,13 @@ export const validateTransparencyEvent = (
       requireFiniteNumber(ev, 'total_tokens', issues);
       // Optional cache / reasoning fields — finite-number check only
       // when present so absent stays distinguishable from measured-zero.
-      for (const field of ['cache_read_input_tokens', 'cache_write_input_tokens', 'reasoning_tokens'] as const) {
+      for (const field of [
+        'cache_read_input_tokens', 'cache_write_input_tokens', 'reasoning_tokens',
+        // ⚠ Validated on the SAME optional footing. Left out, a malformed
+        // `provider_calls` would ride the wire unchecked into the one consumer
+        // whose whole job is to trust it.
+        'provider_calls',
+      ] as const) {
         const v = (ev as Record<string, unknown>)[field];
         if (v !== undefined && !(typeof v === 'number' && Number.isFinite(v))) {
           issues.push({

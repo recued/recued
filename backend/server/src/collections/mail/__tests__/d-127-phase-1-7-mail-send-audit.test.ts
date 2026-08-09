@@ -107,11 +107,16 @@ const mkAuditLog = (): AuditSink => {
   const rows: ActivityEntry[] = [];
   const log: AuditLogStore = {
     append: async (_entry: AuditEntry, _opts?: AppendOptions) => {},
+    listWindow: async () => [],
+    listPendingExchangeRefs: async () => [],
+    listInboundContractIds: async () => [],
     listRecent: async () => [],
     listByRecipe: async () => [],
     listByChannelSession: async () => [],
     listByCognitionSession: async () => [],
     listByCorrelation: async () => [],
+    listByExchangeRef: async () => [],
+    listByPeerContract: async () => [],
     listByDish: async () => [],
     latestByDishes: async () => new Map(),
     get: async () => null,

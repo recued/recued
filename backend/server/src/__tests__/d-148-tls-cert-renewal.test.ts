@@ -429,6 +429,78 @@ describe('tls-cert-renewal — exact threshold boundary', () => {
   });
 });
 
+describe('tls-cert-renewal — K=12 cycles against a persistently failing helper', () => {
+  /** ⛔ EVERY OTHER CASE IN THIS FILE RUNS ONE CYCLE against a hand-built
+   *  cursor. That verifies each BRANCH in isolation and says nothing about what
+   *  the task does over TIME — which is the whole question for a renewal, because
+   *  the cert has a deadline and the failure mode is silent.
+   *
+   *  ⚠ THE SCENARIO IS THE COMMON ONE, not an exotic error. A free self-hosted
+   *  server has no Pro slot, so the hook returns `acme_helper_unavailable` /
+   *  `subscription_required` on EVERY cycle, indefinitely. The task registers
+   *  regardless (the composer gates only on a domain store), so this path runs
+   *  forever on the majority deployment. Two ways it could be wrong, neither
+   *  visible in a single-cycle test:
+   *
+   *    - fire once per CYCLE rather than once per cooldown ⇒ an audit row every
+   *      housekeeping tick, forever, on every free server;
+   *    - stall the cursor ⇒ the cooldown never elapses and the renewal never
+   *      re-attempts, so a cert that becomes renewable later is never renewed
+   *      and the server goes unreachable at expiry.
+   *
+   *  Asserted as PROGRESS across cycles, not as invocation. */
+  it('⛔ fires once per cooldown — not once per cycle — and the cursor advances monotonically', async () => {
+    const CYCLE_MS = 60 * 60_000;                    // an hour between probes
+    const CYCLES = 12;
+    const { engine, calls } = stubEngine({
+      ok: false,
+      op: 'tls_renew',
+      // The failure shape carries `error: RotationErrorCode` — `acme_helper_
+      // unavailable` is a real member, and it is what this stub already meant
+      // by the free-text `reason` it used to pass.
+      error: 'acme_helper_unavailable',
+      key_class: 'tls_private_key',
+    } as RotationResult);
+    const task = buildTlsCertRenewalTask({
+      engine,
+      // Inside the renewal window for the whole run, so eligibility never
+      // stops being true — any suppression must come from the cooldown.
+      certSource: stubCertSource({
+        fingerprint: 'sha256:old',
+        valid_until: NOW + RENEWAL_THRESHOLD_MS - DAY_MS,
+      }),
+    });
+
+    let cursor: HousekeepingCursor = { kind: 'time', last_seen_at: 0 };
+    const seen: number[] = [];
+    for (let cycle = 0; cycle < CYCLES; cycle++) {
+      const { ctx } = stubCtx(NOW + cycle * CYCLE_MS);
+      const result = await task.step(ctx, cursor, 60_000);
+      cursor = result.cursor as HousekeepingCursor;
+      seen.push((cursor as { last_seen_at: number }).last_seen_at);
+    }
+
+    // 12 hours elapsed against a 6h cooldown ⇒ a small number of attempts, and
+    // emphatically not one per cycle. The bound is stated in cooldown terms so
+    // it stays true if the constant is retuned.
+    const expectedMax = Math.ceil((CYCLES * CYCLE_MS) / RENEWAL_COOLDOWN_MS) + 1;
+    expect(calls.length, 'fired every cycle — the cooldown is not suppressing')
+      .toBeLessThanOrEqual(expectedMax);
+    expect(calls.length, 'never fired at all — eligibility or the cursor is stuck')
+      .toBeGreaterThan(0);
+
+    // PROGRESS: the cursor must never move backwards, and must have moved off
+    // its initial value. A stalled cursor is the failure that silently prevents
+    // every future renewal.
+    expect(seen[seen.length - 1], 'cursor never advanced off its initial value')
+      .toBeGreaterThan(0);
+    for (let i = 1; i < seen.length; i++) {
+      expect(seen[i], `cursor went backwards at cycle ${String(i)}`)
+        .toBeGreaterThanOrEqual(seen[i - 1]!);
+    }
+  });
+});
+
 describe('tls-cert-renewal — override knobs', () => {
   it('honours custom threshold_ms', async () => {
     const { engine, calls } = stubEngine({

@@ -435,7 +435,7 @@ describe('handleConnectionProbe real health probes', () => {
           expires_in: 300,
           api_domain: 'https://attacker.example',
         }), { status: 200, headers: { 'content-type': 'application/json' } })),
-        auditLog: { logActivity },
+        auditLog: { logActivity, listInboundContractIds: async () => [] },
       },
       { kind: 'api', name },
     );
@@ -966,6 +966,61 @@ describe('handleConnectionProbe real health probes', () => {
     expect(sent.searchParams.get('timestamp')).toMatch(/^\d+$/u);
     // ⛔ and the secret is not in the request it produced
     expect(first.url).not.toContain('sec-key');
+  });
+
+  it('⛔⛔ a body_field probe reports UNKNOWN and never calls the vendor', async () => {
+    // ⛔ **The failure this refuses is a GREEN health check on a credential
+    // nobody checked.** The probe is a GET/HEAD and has no body, so there is
+    // nowhere to put a body-borne credential. Applying nothing and calling
+    // anyway is the tempting path and it is the wrong one: on a vendor whose
+    // base URL answers 200 to anyone, an unauthenticated request comes back
+    // `ok` and the owner is told a credential works that was never presented.
+    //
+    // ⚠ Asserting the fetcher was NOT called is the load-bearing half. A test
+    // that only checked `status === 'unknown'` would also pass if the probe
+    // called the endpoint and merely failed to classify the answer.
+    const name = await enroll('api', {
+      name: 'plaid-body-probe',
+      config: { base_url: 'https://sandbox.plaid.com' },
+      auth: {
+        type: 'body_field',
+        fields: [{ field_name: 'access_token', value: 'access-sandbox-fixture' }],
+      } as ConnectionAuth,
+    });
+    const fetcher = vi.fn<HttpFetcher>(async () => new Response('{}', { status: 200 }));
+
+    const health = await probe('api', name, fetcher);
+
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(health.status).toBe('unknown');
+    expect(health.last_error).toBe('body_field_auth_not_probeable');
+    expect(storedHealth('api', name).status).toBe('unknown');
+  });
+
+  it('⛔ body_field is refused on a kind whose adapter cannot send it', async () => {
+    // Nothing outside the api adapter writes a JSON request body, so an mcp row
+    // carrying one would hold a credential that is never sent — a connection
+    // that looks configured and authenticates as nobody. `VALID_AUTH_TYPES` is
+    // derived from `CONNECTION_AUTH_TYPES`, so a new member becomes enrollable
+    // on every kind the moment it is added; this is the gate that stops it.
+    await expect(enroll('mcp', {
+      name: 'mcp-body-field',
+      subtype: 'sse',
+      auth: {
+        type: 'body_field',
+        fields: [{ field_name: 'access_token', value: 'v' }],
+      } as ConnectionAuth,
+    })).rejects.toMatchObject({ message: expect.stringContaining('only valid on an api connection') });
+  });
+
+  it('⛔ a malformed body_field record is refused at enroll, not at first use', async () => {
+    await expect(enroll('api', {
+      name: 'plaid-bad-field',
+      auth: {
+        type: 'body_field',
+        fields: [{ field_name: '__proto__', value: 'v' }],
+      } as unknown as ConnectionAuth,
+    })).rejects.toMatchObject({ message: expect.stringContaining('auth.fields') });
   });
 
   it('D-218 creates and persists an AT Protocol session before the first probe', async () => {

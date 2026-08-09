@@ -52,6 +52,7 @@ import {
   runUpstreamMergeRecoverySweep,
   type UpstreamMergeAuditEntry,
   type UpstreamMergeRpcDeps,
+  __upstreamMergeDispatchLockSize,
 } from '../upstream-merge-handler.js';
 import type {
   VendorMergeClient,
@@ -217,6 +218,82 @@ const buildDeps = (
   onIdentityChanged: (input) => cascade.push(input),
   sleep: async () => undefined, // skip real timeouts in tests
   ...overrides,
+});
+
+// ────────────────────────────────────────────────────────────────
+// The in-process dispatch lock — release on the THROW path
+// ────────────────────────────────────────────────────────────────
+
+describe('D-138 P5 — dispatch lock is released when the drive throws', () => {
+  /** ⛔ WHY THIS EXISTS. `inFlightOutboxLocks` is a module-scope Set: it lives
+   *  for the whole process, and `claimDispatchLock` refuses a second caller for
+   *  an outbox_id already in it. So a lock leaked once blocks THAT ROW FOREVER —
+   *  every later request for it returns the stale row and never dispatches, with
+   *  no error, no log and no expiry. Restarting the server is the only cure.
+   *
+   *  🔑 `__upstreamMergeDispatchLockSize` was exported for exactly this, in its
+   *  own words: "Test-only — used by acceptance tests to assert the lock state."
+   *  No test referenced it. The release IS correct (the `try` opens on the line
+   *  after the claim and the `finally` releases), but nothing held it that way,
+   *  and the whole point of a process-lifetime lock is that its release cannot
+   *  be allowed to regress quietly.
+   *
+   *  The injected failure is a store read THROWING inside the locked region —
+   *  the re-fetch "under the lock so we don't act on a stale snapshot", which a
+   *  SQLite error can genuinely raise. A vendor-side failure would not do: those
+   *  are caught and turned into a failed state, so they exercise the ordinary
+   *  path, not the escape. */
+  it('⛔ a throw inside the locked region still releases the lock', async () => {
+    seedContact('survivor@example.com', 'Survivor', [{ vendor: 'hubspot', platform_id: 'hs_master' }]);
+    seedContact('loser@example.com', 'Loser', [{ vendor: 'hubspot', platform_id: 'hs_victim' }]);
+    seedCandidate('cand_lock', 'loser@example.com', 'survivor@example.com');
+
+    expect(__upstreamMergeDispatchLockSize(), 'clean before').toBe(0);
+
+    const registry = new Map<UpstreamMergeObjectType, VendorMergeClient>();
+    // `makeFakeMerger` returns the WRAPPER (client + call bookkeeping); the
+    // registry holds clients. Every sibling call site passes `.client` —
+    // this one did not, and the wrapper happened to satisfy the old type.
+    registry.set('hubspot:contact', makeFakeMerger('hubspot:contact').client);
+
+    // ⛔ THE TRIGGER IS SELF-VERIFYING, and the first version was not. Throwing
+    // on "the 2nd store.get" looked right and was wrong: the request path reads
+    // the store several times BEFORE the claim, so the throw landed pre-lock,
+    // no lock was ever held, and the case passed while proving nothing —
+    // mutation-proved by moving the release out of the `finally`, which left it
+    // GREEN. Gating the throw on the lock being HELD makes the trigger prove its
+    // own precondition: it cannot fire outside the locked region.
+    let threwUnderLock = false;
+    const throwingStore = new Proxy(store, {
+      get(target, prop, receiver) {
+        if (prop !== 'get') return Reflect.get(target, prop, receiver) as unknown;
+        return (id: string) => {
+          if (__upstreamMergeDispatchLockSize() > 0) {
+            threwUnderLock = true;
+            throw new Error('sqlite: disk I/O error');
+          }
+          return target.get(id);
+        };
+      },
+    }) as typeof store;
+
+    await expect(handleUpstreamMergeRequest(
+      buildDeps(registry, { store: throwingStore }),
+      {
+        vendor: 'hubspot',
+        object_type: 'hubspot:contact',
+        candidate_ids: ['cand_lock'],
+        survivor_email: 'survivor@example.com',
+        vendor_pairs: [{ survivor_platform_id: 'hs_master', loser_platform_id: 'hs_victim' }],
+        connection_name: 'main',
+      },
+    )).rejects.toThrow(/disk I\/O error/);
+
+    expect(threwUnderLock, 'the throw never landed inside the locked region — this case would prove nothing')
+      .toBe(true);
+    expect(__upstreamMergeDispatchLockSize(), 'the lock leaked — this row is now blocked forever')
+      .toBe(0);
+  });
 });
 
 // ────────────────────────────────────────────────────────────────

@@ -91,6 +91,25 @@ export const NOTIFICATION_SUBTYPES = [
 ] as const;
 export type NotificationSubtype = (typeof NOTIFICATION_SUBTYPES)[number];
 
+/** D-232 § 26 — the config key that binds an mcp connection to the CONTRACT the
+ *  peer on the other end presents when it calls in.
+ *
+ *  ⛔⛔ IT WAS AN UNDECLARED MAGIC STRING, KNOWN ONLY TO THE HOST THAT READS IT
+ *  AND THE DRIVE THAT WROTE IT. `peerConnectionForContract` resolves an inbound
+ *  `contract_id` to the ONE connection carrying this value and fires the answer
+ *  down it; nothing named the field, so an owner had to hand-craft an enroll
+ *  payload and guess the key. Declared here so it is part of the connection's
+ *  shape rather than folklore.
+ *
+ *  ⚠ THE VALUE IS THE CONTRACT **THEY** PRESENT, NOT THE ONE YOU HOLD. For an
+ *  unbound inbound token that is the token id itself (`buildMcpExecutionSource`:
+ *  `contract_id = boundContractId ?? mcp_token_id`), i.e. the id of the token
+ *  YOU MINTED FOR THEM. Getting this backwards resolves nothing, and resolving
+ *  nothing routes their answers LOCAL — the server answers itself and reports
+ *  success. `assertPeerContractBinding` refuses the locally-checkable mistakes at
+ *  enroll; the direction is not one of them, which is why it is stated here. */
+export const MCP_PEER_CONTRACT_CONFIG_KEY = 'peer_contract_id';
+
 /** MCP transports — three flavors of the same JSON-RPC tool surface. */
 export type McpTransport = 'sse' | 'websocket' | 'stdio';
 
@@ -99,6 +118,21 @@ export type McpTransport = 'sse' | 'websocket' | 'stdio';
  *  is the wire header key. */
 export interface HeaderAuthEntry {
   header_name: string;
+  value: string;
+}
+
+/** One credential injected into the JSON request BODY of the operations that
+ *  opt in. `value` is the credential (encrypted at rest with the rest of
+ *  `ConnectionAuth`); `field_name` is a TOP-LEVEL key of the request object.
+ *
+ *  ⛔ FLAT, DELIBERATELY. No dot paths, no nesting — a path grammar here would
+ *  need its own traversal, its own prototype guard at every hop, and its own
+ *  answer for "the parent is an array". Every vendor this exists for (Plaid's
+ *  per-Item `access_token` is the motivating one) puts its credential at the
+ *  top level. A nested case should widen this deliberately, with the traversal
+ *  written once, rather than arriving as a surprise in a `field_name`. */
+export interface BodyFieldAuthEntry {
+  field_name: string;
   value: string;
 }
 
@@ -203,7 +237,35 @@ export type ConnectionAuth =
    *  `connection-signing.ts` — the rationale is that a pack-authored canonical
    *  string would make this a signing oracle, which is the same class of
    *  mistake as the configurable endpoint D-218 refused two members above. */
-  | RequestSignatureAuth;
+  | RequestSignatureAuth
+  /** N credentials injected into the JSON request BODY of the operations that
+   *  ASK for them by name.
+   *
+   *  🔑 **The shape no other member can express, and the reason it matters.**
+   *  Every member above puts its credential in a HEADER or the QUERY STRING —
+   *  `injectAuth` had no body write at all. A vendor that reads its credential
+   *  from the POST body therefore had nowhere to put it inside the connection
+   *  store, so the only place left was a recipe `config.*` variable: an
+   *  ordinary string, captured VERBATIM into every run's audit
+   *  `config_snapshot`, outside the AEAD envelope that protects every other
+   *  credential in the system. The shipped `plaid` pack shows exactly that —
+   *  `body.access_token` is a required plain-string op argument on ~100
+   *  operations, and it is a durable bank credential.
+   *
+   *  ⛔ **PER-OPERATION OPT-IN, and this is not tidiness — it is the only way
+   *  the type works at all.** Injecting into every call was the obvious design
+   *  and is wrong: measured live against `sandbox.plaid.com`, an unexpected
+   *  body key earns `UNKNOWN_FIELDS` and the call fails. Plaid's own
+   *  `/link/token/create` and `/categories/get` take no `access_token`, so
+   *  unconditional injection would break the enrollment flow of the very
+   *  vendor this exists for. An operation names the fields it wants in
+   *  `bind.auth_body_fields`; an operation that names none is untouched.
+   *
+   *  ⚠ Fields named by an operation but absent from this record FAIL the call
+   *  rather than being skipped. Sending a request with the credential silently
+   *  missing produces the vendor's generic auth error, which points the owner
+   *  at their key instead of at the misconfiguration. */
+  | { type: 'body_field'; fields: ReadonlyArray<BodyFieldAuthEntry> };
 
 /** Validate an owner-supplied OAuth authorization/token endpoint before any
  * credential can be sent to it. This is the shared authority for webclient
@@ -293,6 +355,7 @@ export const CONNECTION_AUTH_TYPES = [
   'oauth2_client_credentials',
   'atproto_session',
   'request_signature',
+  'body_field',
 ] as const satisfies readonly ConnectionAuth['type'][];
 
 export type ConnectionAuthType = (typeof CONNECTION_AUTH_TYPES)[number];
@@ -338,10 +401,11 @@ const MESSENGER_SENDABLE_AUTH_TYPES: ReadonlySet<ConnectionAuth['type']> = new S
 export const resolveMessengerSendToken = (auth: ConnectionAuth): string | undefined =>
   MESSENGER_SENDABLE_AUTH_TYPES.has(auth.type) ? resolveBearerAccessToken(auth) : undefined;
 
-/** Object keys a `header_name` must never be — guards the plain-object apply sites
- *  (`headers[name] = value` in the mcp adapter + the handler probe) against
- *  prototype pollution. Centralized here so every site that injects header auth
- *  applies the identical guard. */
+/** Object keys an injected credential's NAME must never be — guards the
+ *  plain-object apply sites (`headers[name] = value` in the mcp adapter + the
+ *  handler probe; `body[name] = value` for `body_field`) against prototype
+ *  pollution. Centralized here so every site that injects auth by name applies
+ *  the identical guard. */
 const HEADER_NAME_RESERVED_KEYS: ReadonlySet<string> = new Set([
   '__proto__',
   'constructor',
@@ -375,14 +439,37 @@ export const validateHeaderAuthEntries = (
 ):
   | { ok: true; entries: ReadonlyArray<HeaderAuthEntry> }
   | { ok: false; issue: HeaderAuthIssue } => {
-  if (!Array.isArray(headers)) return { ok: false, issue: { code: 'not_array' } };
-  if (headers.length === 0) return { ok: false, issue: { code: 'empty' } };
-  if (headers.length > MAX_HEADER_AUTH_ENTRIES) return { ok: false, issue: { code: 'too_many' } };
-  const entries: HeaderAuthEntry[] = [];
-  for (let index = 0; index < headers.length; index += 1) {
-    const entry = headers[index] as unknown;
+  const walked = walkNamedAuthEntries(headers, 'header_name');
+  if (!walked.ok) return walked;
+  return {
+    ok: true,
+    entries: walked.entries.map((e) => ({ header_name: e.name, value: e.value })),
+  };
+};
+
+/** The shape check `header` and `body_field` share: a non-empty, capped array
+ *  whose every entry is a proto-safe non-empty NAME plus a non-empty value.
+ *
+ *  ⛔ ONE COPY ON PURPOSE. The two members differ only in what the name key is
+ *  called on the wire (`header_name` / `field_name`); the prototype guard, the
+ *  own-property rule and the emptiness rules are the same rules. A second copy
+ *  is the shape that falls behind — the guard gets tightened in one place and
+ *  the other apply site keeps accepting what the first now rejects. Both public
+ *  validators are thin adapters over this. */
+const walkNamedAuthEntries = (
+  list: unknown,
+  nameKey: 'header_name' | 'field_name',
+):
+  | { ok: true; entries: ReadonlyArray<{ name: string; value: string }> }
+  | { ok: false; issue: HeaderAuthIssue } => {
+  if (!Array.isArray(list)) return { ok: false, issue: { code: 'not_array' } };
+  if (list.length === 0) return { ok: false, issue: { code: 'empty' } };
+  if (list.length > MAX_HEADER_AUTH_ENTRIES) return { ok: false, issue: { code: 'too_many' } };
+  const entries: { name: string; value: string }[] = [];
+  for (let index = 0; index < list.length; index += 1) {
+    const entry = list[index] as unknown;
     const isObj = typeof entry === 'object' && entry !== null && !Array.isArray(entry);
-    // OWN properties only — an inherited / prototype-backed `header_name` or `value`
+    // OWN properties only — an inherited / prototype-backed name or `value`
     // (e.g. `Object.create({ header_name: '…' })`) must NOT satisfy validation. JSON
     // parsing only yields own enumerable props, so this never rejects a wire payload;
     // it fails closed against a crafted in-process object.
@@ -390,7 +477,7 @@ export const validateHeaderAuthEntries = (
       isObj && Object.prototype.hasOwnProperty.call(entry, key)
         ? (entry as Record<string, unknown>)[key]
         : undefined;
-    const name = own('header_name');
+    const name = own(nameKey);
     const value = own('value');
     if (typeof name !== 'string' || name.trim() === '') {
       return { ok: false, issue: { code: 'name_missing', index } };
@@ -401,9 +488,48 @@ export const validateHeaderAuthEntries = (
     if (typeof value !== 'string' || value.trim() === '') {
       return { ok: false, issue: { code: 'value_missing', index } };
     }
-    entries.push({ header_name: name, value });
+    entries.push({ name, value });
   }
   return { ok: true, entries };
+};
+
+/** Validate a `body_field` ConnectionAuth's `fields` value. Same shape rules as
+ *  header auth (see {@link walkNamedAuthEntries}); the name is a top-level JSON
+ *  object key rather than a wire header name.
+ *
+ *  ⚠ Duplicate `field_name`s are NOT rejected here — last one wins at inject,
+ *  the same as `headers.set`. A duplicate is a confusing enrollment, not an
+ *  unsafe one, and rejecting it would be a rule the header path does not have. */
+export const validateBodyFieldAuthEntries = (
+  fields: unknown,
+):
+  | { ok: true; entries: ReadonlyArray<BodyFieldAuthEntry> }
+  | { ok: false; issue: HeaderAuthIssue } => {
+  const walked = walkNamedAuthEntries(fields, 'field_name');
+  if (!walked.ok) return walked;
+  return {
+    ok: true,
+    entries: walked.entries.map((e) => ({ field_name: e.name, value: e.value })),
+  };
+};
+
+/** Render a validation issue for `body_field`'s `fields` array. Mirrors
+ *  {@link describeHeaderAuthIssue}, naming fields rather than headers. */
+export const describeBodyFieldAuthIssue = (issue: HeaderAuthIssue): string => {
+  switch (issue.code) {
+    case 'not_array':
+      return 'must be an array of { field_name, value }';
+    case 'empty':
+      return 'must contain at least one field';
+    case 'too_many':
+      return `must contain at most ${MAX_HEADER_AUTH_ENTRIES} fields`;
+    case 'name_missing':
+      return `entry ${issue.index} field_name is required`;
+    case 'name_reserved':
+      return `entry ${issue.index} field_name cannot be a reserved object key`;
+    case 'value_missing':
+      return `entry ${issue.index} value is required`;
+  }
 };
 
 /** Render a `HeaderAuthIssue` as a human-readable fragment for an error message
@@ -542,7 +668,10 @@ export type ConnectionCredentialCorrectionFieldKey =
   | 'auth.identifier'
   | 'auth.app_password'
   | 'auth.api_key'
-  | 'auth.secret_key';
+  | 'auth.secret_key'
+  /** `body_field`'s whole `fields` array — its entry names are vendor-chosen,
+   *  so there is no per-field key. Parallels `auth.headers`. */
+  | 'auth.fields';
 
 /** Secret-free correction handoff attached only to an authoritative provider
  * rejection. `field_keys[0]` is the first review target; the remaining keys
@@ -627,6 +756,13 @@ export const connectionCredentialRejectionCorrection = (
      *  offered here; the enroll form says so instead. */
     case 'request_signature':
       fieldKeys = ['auth.secret_key', 'auth.api_key'];
+      break;
+    /** ⚠ The whole array, because the entries have no fixed names — a
+     *  `body_field` record's fields are vendor-chosen (`access_token` for
+     *  Plaid), so there is no per-field key to offer the way `auth.token` or
+     *  `auth.secret_key` names one blank. The form re-collects the set. */
+    case 'body_field':
+      fieldKeys = ['auth.fields'];
       break;
     case 'none':
       fieldKeys = [];
@@ -1160,3 +1296,134 @@ export const ENRICHMENT_TRUST_MIN_DEFAULT = 0.8;
  *  lifts to a preflight ask. */
 export const CONNECTION_MCP_READ_SLUG = 'connection-mcp-read';
 export const CONNECTION_MCP_WRITE_SLUG = 'connection-mcp-write';
+
+// ════════════════════════════════════════════════════════════════
+// D-232 § 22 — health from real traffic
+// ════════════════════════════════════════════════════════════════
+
+/** What one dispatch says about the CONNECTION, as opposed to about the call.
+ *
+ *  ⛔⛔ THE TWO ARE ROUTINELY CONFUSED AND THE DIFFERENCE IS THE WHOLE POINT. A
+ *  peer that answers "no" is a HEALTHY connection carrying a refusal; a peer that
+ *  does not answer at all is a sick one. Degrading health on the first would make
+ *  a correctly-enforced authorization look like an outage, and every consumer
+ *  downstream — retry, fail-fast, the Connections panel — would act on it.
+ *
+ *  🔑 SAME LINE AS D-232 § 21's `unavailable` vs `error`: WAS THE PEER REACHED.
+ *  One rule, two consumers, so a call classified `error` for the asker can never
+ *  simultaneously be evidence of unreachability for the connection. */
+export type ConnectionDispatchOutcome =
+  /** Reached, answered, all good. */
+  | 'ok'
+  /** Never reached: connect refused, DNS, timeout, socket died. */
+  | 'unreachable'
+  /** Reached and rejected the CREDENTIAL (401 / 403). The connection is
+   *  addressable but not usable, which is a different repair. */
+  | 'auth_failed'
+  /** Reached, understood, and refused or failed the CALL. ⛔ Says NOTHING about
+   *  the connection — health must not move. */
+  | 'call_failed';
+
+/** Fold one dispatch outcome into the stored health record.
+ *
+ *  ⚠ Returns `null` when health must not change (`call_failed`), so a caller
+ *  cannot accidentally write a no-op row and refresh `last_probed_at` — which
+ *  would make a connection look freshly-verified on the strength of a call that
+ *  proved nothing about it. That is the subtle half of the rule above. */
+export const foldConnectionDispatchHealth = (
+  prior: ConnectionHealth | undefined,
+  outcome: ConnectionDispatchOutcome,
+  at: number,
+  detail?: string,
+): ConnectionHealth | null => {
+  if (outcome === 'call_failed') return null;
+  return {
+    ...(prior ?? {}),
+    status: outcome,
+    last_probed_at: at,
+    ...(outcome === 'ok'
+      // ⚠ CLEAR the stale reason on recovery. A lingering `last_error` beside
+      // `status: 'ok'` is read as a current problem by anything rendering it.
+      ? {}
+      : { last_error: detail !== undefined && detail.length > 0
+          ? detail.slice(0, CONNECTION_HEALTH_ERROR_MAX)
+          : 'the dispatch failed without a reported reason' }),
+  };
+};
+
+const CONNECTION_HEALTH_ERROR_MAX = 300;
+
+/** How long a successful probe stays believable.
+ *  ⛔ `ok` WITH NO EXPIRY IS THE BUG THIS EXISTS TO PREVENT: health was written
+ *  only by a manual probe, so a connection that had failed every call for a week
+ *  still read `ok` from whenever someone last pressed the button. A consumer must
+ *  be able to tell "verified just now" from "verified at some point". */
+export const CONNECTION_HEALTH_FRESH_MS = 15 * 60 * 1000;
+
+/** The believable status: `unknown` once a positive result has aged out.
+ *  ⚠ Only `ok` decays. A FAILURE stands until something succeeds — an
+ *  unreachable peer does not become "maybe fine" by being ignored for a while. */
+export const effectiveConnectionHealth = (
+  health: ConnectionHealth | undefined,
+  now: number,
+): ConnectionHealth['status'] => {
+  if (health === undefined) return 'unknown';
+  if (health.status !== 'ok') return health.status;
+  const at = health.last_probed_at;
+  if (at === undefined) return 'unknown';
+  return now - at <= CONNECTION_HEALTH_FRESH_MS ? 'ok' : 'unknown';
+};
+
+// ════════════════════════════════════════════════════════════════
+// D-232 § 27 — the handshake: has this peer ever actually called?
+// ════════════════════════════════════════════════════════════════
+
+/** What we know about a declared `peer_contract_id`, from traffic.
+ *
+ *  ⛔⛔ THE MISTAKE THIS EXISTS FOR IS DIRECTIONAL AND SILENT. The value must be
+ *  the contract the PEER PRESENTS — for an unbound inbound token, the id of the
+ *  token YOU MINTED FOR THEM. Bind the one they minted for you instead and the
+ *  resolver matches nothing; matching nothing means no connection; no connection
+ *  means LOCAL. The server answers ITSELF, files the run under the peer's ref,
+ *  and reports `succeeded`.
+ *
+ *  ⚠ Enroll-time validation cannot catch it: both directions are non-empty,
+ *  unique, well-formed strings. NOTHING LOCAL DISTINGUISHES THEM. Only the peer
+ *  can settle it, and it settles it by CALLING — so this is knowable at first
+ *  contact and not one moment sooner, which is why it is an observation rather
+ *  than a gate. */
+export type PeerBindingStatus =
+  /** A contracted caller has presented exactly this id. The binding works. */
+  | 'confirmed'
+  /** Nobody has called under any contract yet. Says nothing either way — a
+   *  freshly enrolled peer is here until they first speak. */
+  | 'unheard'
+  /** ⛔ Callers HAVE arrived, and none presented this id. The binding is almost
+   *  certainly backwards (or stale), and every answer to those callers is
+   *  currently routing local. */
+  | 'unmatched';
+
+export interface PeerBindingDiagnosis {
+  readonly status: PeerBindingStatus;
+  /** The ids that HAVE called, when the declared one is not among them — the
+   *  operator's fix is usually one of these, so naming them turns "wrong" into
+   *  "use this". Capped; newest first. */
+  readonly heard?: readonly string[];
+}
+
+const PEER_BINDING_HEARD_MAX = 5;
+
+/** Diagnose one declared binding against the contracts actually heard from.
+ *  Pure. `heardContractIds` is newest-first and contracted-callers-only. */
+export const diagnosePeerBinding = (
+  declared: string | undefined,
+  heardContractIds: readonly string[],
+): PeerBindingDiagnosis | undefined => {
+  if (declared === undefined || declared.trim() === '') return undefined;
+  if (heardContractIds.includes(declared.trim())) return { status: 'confirmed' };
+  // ⚠ NO CALLERS AT ALL is not evidence of a bad binding. Reporting `unmatched`
+  // for a peer who simply has not spoken yet would cry wolf on every fresh
+  // enrolment, and an alarm that fires on the normal case gets muted.
+  if (heardContractIds.length === 0) return { status: 'unheard' };
+  return { status: 'unmatched', heard: heardContractIds.slice(0, PEER_BINDING_HEARD_MAX) };
+};

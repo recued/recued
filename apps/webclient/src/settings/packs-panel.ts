@@ -361,6 +361,10 @@ import {
   type InstallAudienceOption,
   type InstallGrantPickerModel,
 } from './install-grant-picker.js';
+// Pre-install permission disclosure — the read-only "what installing would allow"
+// projection of a resolved manifest, rendered where the owner-override matrix cannot
+// exist yet. See the module header for why a blank was the wrong answer.
+import { renderPackPermissionPreview } from './pack-permission-preview.js';
 // D-194 2b-2 — the Connect section's pick resolver (validates an explicit pick
 // against the live candidate list; falls back to the pre-selected default).
 import {
@@ -1008,6 +1012,12 @@ const COPY = {
   detail_permissions_tab_label: 'Permissions',
   detail_access_tab_label: 'Access',
   detail_operation_defaults_label: 'Operation defaults',
+  /** ⚠ The not-installed heading. "Operation defaults" names something that does not
+   *  exist yet for an uninstalled pack — there are no defaults to set — so it
+   *  contradicted the first line under it ("Not installed — nothing is granted yet").
+   *  A section heading that disagrees with its own body is how a reader decides one of
+   *  the two is stale. */
+  detail_permission_preview_label: 'Before you install',
   detail_operation_defaults_empty: 'This pack has no operation defaults to customize.',
   detail_operation_defaults_unavailable: 'Operation defaults are unavailable on this server.',
   recipes_label: 'recipes',
@@ -2887,9 +2897,36 @@ export const mountPacksPanel = (
         // of nowhere — that gap is indistinguishable from the button being
         // broken, which is exactly how it was reported.
         const resolvingThis = detailResolving === pack.slug;
+        /** ⛔⛔ AN AVAILABLE UPDATE IS NOT AN INSTALL, AND THE LIST ALREADY SAID SO.
+         *  The browse row renders "↑ Update v2→v3" while this footer said "Install" for
+         *  the same pack — two surfaces disagreeing about what the button does, which
+         *  reads as the detail being wrong (or worse, as a fresh install that would
+         *  discard the owner's existing configuration).
+         *
+         *  🔑 THE CAUSE IS UPSTREAM AND DELIBERATE: `findPackBySlug` sets
+         *  `installed: installedVersion >= pendingAddEntry.version` so that a NEWER
+         *  installed version can never be presented as a downgrade-shaped "Update".
+         *  That guard is right, but it also makes the genuine update case (older
+         *  installed, newer in the marketplace) fall through to `showInstall` — and this
+         *  footer had no update wording to fall into. `installed_any_version` is the
+         *  field that already knows the difference; only the LABEL was missing.
+         *
+         *  ⚠ The click is unchanged — installing the newer version IS the update — so
+         *  this is a truthfulness fix, not a behaviour change. Wording is duplicated from
+         *  `discover-panel`'s row on purpose: the two surfaces must read identically, and
+         *  a shared helper across the browse/detail boundary is a bigger refactor than
+         *  this defect justifies. */
+        const installedVersion = rosterInstalledVersions.get(pack.slug);
+        const isUpdate =
+          pack.installed_any_version === true
+          && !pack.installed
+          && installedVersion !== undefined
+          && installedVersion < pack.version;
         installBtn.textContent = resolvingThis
           ? COPY.install_preparing_label
-          : COPY.install_label;
+          : isUpdate
+            ? `↑ Update v${installedVersion}→v${pack.version}`
+            : COPY.install_label;
         // ⚠ NOT disabled while resolving. Disabling it swallowed the click —
         // press Install during the fetch and nothing happened, the label flipped
         // back, and you had to press again. `openDialog` does not need the
@@ -3446,20 +3483,45 @@ export const mountPacksPanel = (
     } else if (shownTab === 'permissions') {
       // D-211 global owner replacements. They are pack-wide defaults shared by
       // every contract, so Permissions is deliberately separate from Access.
+      /** ⛔⛔⛔ THE NOT-INSTALLED CASE IS DECIDED BY `installed`, NOT BY WHETHER THE
+       *  OWNER-OVERRIDE MATRIX HAPPENED TO RETURN NULL. My first version asked
+       *  `renderForPack(pack)` first and only previewed when it returned null — and it
+       *  does NOT return null for a resolved-but-uninstalled pack: `matchedNothing` is
+       *  true (the manifest declares operation ingredients, none are installed), which
+       *  SKIPS its early return and renders "Install this pack to set owner defaults for
+       *  its operations." So the preview never appeared in the product.
+       *
+       *  ⛔⛔ AND THE TEST PASSED ANYWAY, through a path production never takes: the test
+       *  host wires no owner-operation callers, so `renderForPack` hit `if (!enabled)
+       *  return null` and the preview rendered. A green integration test proved the
+       *  branch worked under a condition the real panel never has. The owner found it in
+       *  a browser. ⇒ Ask the question that actually decides it — is this pack installed?
+       *  — instead of inferring it from another component's return value. */
+      const preview = pack.installed || pack.manifest === undefined
+        ? null
+        : renderPackPermissionPreview({ document: doc, manifest: pack.manifest });
+      /** The heading follows the CONTENT, so the section can never announce owner
+       *  defaults over a pre-install disclosure. */
       const defaults = makeDetailSection(
         'operation-defaults',
-        COPY.detail_operation_defaults_label,
+        preview !== null
+          ? COPY.detail_permission_preview_label
+          : COPY.detail_operation_defaults_label,
       );
-      const operationDefaults = ownerOperations.renderForPack(pack);
-      if (operationDefaults !== null) {
-        defaults.appendChild(operationDefaults);
+      if (preview !== null) {
+        defaults.appendChild(preview);
       } else {
-        const note = doc.createElement('p');
-        note.className = 'packs-detail-note';
-        note.textContent = ownerOperations.enabled
-          ? COPY.detail_operation_defaults_empty
-          : COPY.detail_operation_defaults_unavailable;
-        defaults.appendChild(note);
+        const operationDefaults = ownerOperations.renderForPack(pack);
+        if (operationDefaults !== null) {
+          defaults.appendChild(operationDefaults);
+        } else {
+          const note = doc.createElement('p');
+          note.className = 'packs-detail-note';
+          note.textContent = ownerOperations.enabled
+            ? COPY.detail_operation_defaults_empty
+            : COPY.detail_operation_defaults_unavailable;
+          defaults.appendChild(note);
+        }
       }
       tabPanel.appendChild(defaults);
     } else if (shownTab === 'access') {

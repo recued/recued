@@ -134,6 +134,16 @@ const validateStripeDeliveryCredentialShape =
     'stripe.event.v1',
   );
 
+/** SPIKE — the peer profile is vendor-family (it rides the timestamped-JSON
+ *  single-event composer), so it needs a full `entry`, not a `primitiveEntry`.
+ *  Built here rather than imported from the profile module for the same reason
+ *  every other validator is: the policy registry must not depend on a profile
+ *  module that depends back on it. */
+const validateRecuedPeerDeliveryCredentialShape =
+  createTimestampedJsonSingleEventWebhookCredentialShapeValidator(
+    'recued-peer.exchange.v1',
+  );
+
 const validatePaddleDeliveryCredentialShape =
   createTimestampedJsonSingleNotificationWebhookCredentialShapeValidator(
     'paddle.notification.v1',
@@ -169,6 +179,7 @@ const BUILTIN_POLICIES = [
   primitiveEntry('generic.raw-body-hmac-sha256.v1'),
   primitiveEntry('generic.timestamped-raw-body-hmac-sha256.v1'),
   primitiveEntry('generic.http-basic.v1'),
+  entry('recued-peer.exchange.v1', validateRecuedPeerDeliveryCredentialShape),
 ] as const;
 
 export const createWebhookProfileControlPlanePolicyRegistry = (

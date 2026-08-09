@@ -7,6 +7,71 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.8.8 — 2026-08-08
+
+One capability dominates this release: a Recued server can now ask *another*
+Recued server for something, and get an honest answer back. Alongside it, a
+spreadsheet or bank statement can become records without a vendor connection,
+and about eighteen new review packs ask a question of a service you already pay
+for.
+
+### Added
+
+- **Server-to-server exchange.** Your server can send a request to another
+  person's Recued server — a project update, a question, a record — and that
+  server answers under its own owner's rules. The part that took the longest was
+  not sending; it was making the *failure* useful. "Refused" and "unreachable"
+  are now different things, a guard that declines says so rather than implying
+  you should try again later, and a peer that cannot reply says that instead of
+  going quiet. A request that is worth retrying is retried on a schedule; one
+  that is not is not. A recipe can ask what became of a message it sent.
+- **Import a file of records in one call.** A CSV — a bank statement, an export
+  from another tool, a spreadsheet you keep by hand — becomes records through a
+  single gated call, written in batches rather than one row at a time. A
+  thousand-row import used to mean a thousand separate writes and a thousand
+  audit rows against a quota that evicts the oldest; it is now around ten.
+- **Statement import**, which turns a downloaded bank or card statement into
+  records without connecting the bank at all. For accounts with no API, or that
+  you would rather not connect, the file you can already download is enough.
+- **Around eighteen new review packs**, each asking one question of a service
+  you are already paying for: Stripe receivables, Zendesk ticket counts, GitHub
+  scan coverage, Sentry measured-versus-extrapolated numbers, Twilio and
+  PagerDuty reachability, Xero's first-page ceiling, Datadog cost windows,
+  LaunchDarkly flag debt, Vercel edge-config exposure, Intercom content
+  freshness, Brevo list reach, Close activity time, Asana allocation,
+  Elasticsearch access blind spots, OpenAI standing credentials, and PandaDoc
+  webhook delivery.
+- **Federated projects**, for a project whose participants are on different
+  servers.
+
+### Changed
+
+- **You can see what a pack would be allowed to do before you install it.** The
+  permissions a pack asks for are shown up front, and where a connection needs
+  scopes registered with the provider, the app names them *before* you
+  authorize rather than after the authorization fails.
+
+### Fixed
+
+- **Browser Back returns to the list.** On the recipes and data screens the
+  device's own Back gesture went somewhere unexpected; it now goes where you
+  came from.
+- **A connection's slug is shown only when it tells you something** — when two
+  connections would otherwise read identically.
+- **A failed boot can report itself.** The web app's own content-security policy
+  was blocking the script that reports a failed start, so the one case where you
+  most need a message produced none.
+
+### Performance
+
+Four places where a screen or a background task read an entire table to find a
+handful of rows: cancelling a consumer's queued dispatches, the owner's
+pending-approvals view, the blob collector's scan for the small share of rows
+that actually carry a blob, and the pinned-row count behind the MCP surface —
+the last around 390 times cheaper. None of these changed what you see; they
+change how long you wait for it, and they matter most on the servers that have
+been running longest.
+
 ## 26.8.5 — 2026-08-05
 
 Two things dominate this release. The web app is now measured against a phone

@@ -835,6 +835,45 @@ export const validateWait = (r: Record<string, unknown>, add: AddFn): void => {
  *  (domain check) — registry membership of a specific `core.watch.*` op is
  *  validated at install/dispatch by the lowering, mirroring how the other
  *  closed-kind kernel ops are shape-checked here. */
+/** D-232 § 21 — `fail_kind` classifies a guard's refusal for a peer reading it
+ *  across an exchange. Two rules, both load-bearing:
+ *
+ *  ⛔⛔ THE VOCABULARY IS NARROWER THAN THE ONE THE ENGINE REPORTS, ON PURPOSE.
+ *  `unavailable` is the only remote-failure kind that means "retry later", so a
+ *  recipe able to declare it could invite a peer to knock forever. Only the
+ *  TRANSPORT may assert unreachability; an author may only describe their own
+ *  decision (`policy` = I refused you, `config` = I am not set up for this).
+ *
+ *  ⚠ AND IT MUST ACCOMPANY A GUARD. `fail_kind` without `fail_on` classifies a
+ *  refusal that can never happen — always an authoring mistake, and a silent one,
+ *  because the field simply never reads. */
+const validateFailKind = (
+  s: Record<string, unknown>,
+  path: string,
+  add: AddFn,
+): void => {
+  if (s.fail_kind === undefined) return;
+  if (s.fail_kind !== 'policy' && s.fail_kind !== 'config') {
+    add(
+      'error',
+      'fail_kind_invalid',
+      `${path}.fail_kind`,
+      `fail_kind must be 'policy' or 'config' (got ${JSON.stringify(s.fail_kind)}). `
+      + "'unavailable' is deliberately not authorable — only the transport may say "
+      + 'a peer is unreachable, because that is the one kind that invites a retry.',
+    );
+    return;
+  }
+  if (s.fail_on === undefined) {
+    add(
+      'error',
+      'fail_kind_without_fail_on',
+      `${path}.fail_kind`,
+      'fail_kind classifies a fail_on refusal, but this step declares no fail_on.',
+    );
+  }
+};
+
 const isWatchOp = (op: unknown): boolean => {
   if (typeof op !== 'string') return false;
   const parsed = parseOpId(op);
@@ -918,6 +957,7 @@ export const validateTriggerSteps = (
     if (s.fail_on !== undefined) {
       validateConditionField(s.fail_on, `${path}.fail_on`, add);
     }
+    validateFailKind(s, path, add);
     if ('guard' in s && s.guard !== undefined) {
       validateConditionField(s.guard, `${path}.guard`, add);
     }
@@ -1275,6 +1315,7 @@ export const validateSteps = (r: Record<string, unknown>, add: AddFn): Set<strin
       if (s.fail_on !== undefined) {
         validateConditionField(s.fail_on, `${path}.fail_on`, add);
       }
+      validateFailKind(s, path, add);
       if ('guard' in s && s.guard !== undefined) {
         validateConditionField(s.guard, `${path}.guard`, add);
       }
@@ -1653,7 +1694,21 @@ const validateEnumVariable = (name: string, value: unknown[], add: AddFn): void 
  *  and `RecipeOutput` is `{render?, sidebar?}`. Widen a shape in contracts and widen the
  *  matching const here in the same change — a copy that silently disagrees is the drift this
  *  very fence exists to catch. */
-const KNOWN_OUTPUT_KEYS: ReadonlySet<string> = new Set(['render', 'sidebar']);
+const KNOWN_OUTPUT_KEYS: ReadonlySet<string> = new Set(['render', 'sidebar', 'exchange']);
+/** D-232 § 19.3 — the exchange output kind's own fence. Same rule as the block
+ *  and section fences above and for the same reason: an invented key here is a
+ *  field the fire point never reads, so an author would believe they had told
+ *  the far side something and the far side would receive nothing. */
+const KNOWN_EXCHANGE_KEYS: ReadonlySet<string> = new Set([
+  'ref',
+  'deliver_to',
+  'callback_op',
+  'connection',
+  'data',
+  // D-232 § 28 — "this answer must leave the server; refuse rather than
+  // deliver it locally". See `RecipeExchangeOutput.require_connection`.
+  'require_connection',
+]);
 const KNOWN_SECTION_KEYS: ReadonlySet<string> = new Set(['type', 'source', 'label']);
 const KNOWN_FILTER_SECTION_KEYS: ReadonlySet<string> = new Set([
   ...KNOWN_SECTION_KEYS,
@@ -1694,6 +1749,76 @@ export const validateOutput = (
 
   const hasRender = Object.prototype.hasOwnProperty.call(output, 'render');
   const hasSidebar = Object.prototype.hasOwnProperty.call(output, 'sidebar');
+  const hasExchange = Object.prototype.hasOwnProperty.call(output, 'exchange');
+
+  // ── D-232 § 19.3 — a recipe RETURNS or it FIRES ──────────────────────────
+  // The alternatives live in ONE block so result-XOR-fire is structural rather
+  // than a rule an author must remember. ⛔ The TYPE cannot express it (all three
+  // keys are optional), so this is the only place the rule exists — without it
+  // "structural" would mean "documented", which is what every other output key
+  // in this file's header was before the fence.
+  if (hasExchange) {
+    // ⚠ NON-EMPTY, not merely present. `parseRecipe` normalizes output in place
+    // and every recipe that survives a save/install round-trip may carry a
+    // `render: []` it never authored — refusing THAT would refuse a recipe on
+    // its second parse having accepted it on the first. An empty render returns
+    // nothing, so it does not "return"; what the rule forbids is a recipe that
+    // shows the owner something AND answers a peer with the same run.
+    const returnsSomething =
+      (Array.isArray(output.render) && output.render.length > 0)
+      || (Array.isArray(output.sidebar) && output.sidebar.length > 0);
+    if (returnsSomething) {
+      add('error', 'output_exchange_exclusive', 'output.exchange',
+        'a recipe RETURNS (output.render) or it FIRES (output.exchange) — not both. '
+        + 'The peer receives the run result and a callback op as two separate things; '
+        + 'rendering as well would mean one run owed an answer to two different readers.');
+    }
+    const exchange = output.exchange;
+    if (!exchange || typeof exchange !== 'object' || Array.isArray(exchange)) {
+      add('error', 'output_exchange_shape', 'output.exchange',
+        'output.exchange must be an object naming at least a `ref`');
+      return;
+    }
+    const ex = exchange as Record<string, unknown>;
+    for (const key of Object.keys(ex)) {
+      if (KNOWN_EXCHANGE_KEYS.has(key)) continue;
+      add('error', 'output_exchange_unknown_key', `output.exchange.${key}`,
+        `${key} is not a field on an exchange output — it carries only `
+        + `${[...KNOWN_EXCHANGE_KEYS].join(' / ')}. It would be silently dropped, and `
+        + 'the far side would receive an answer missing exactly what you meant to say.');
+    }
+    // ⛔ The ref is the ONLY thing that makes an exchange queryable afterwards,
+    // which is the exchange's whole justification over a plain send. A recipe
+    // that fires without one leaves the sender with nothing to ask about.
+    if (typeof ex.ref !== 'string' || ex.ref.length === 0) {
+      add('error', 'output_exchange_ref_required', 'output.exchange.ref',
+        'output.exchange.ref is required — it is the correlation the sender asks about later.');
+    }
+    // ⛔ Without a target there is no fire — the run would reach its whole
+    // purpose and fail there. Caught at authoring rather than at the one moment
+    // a peer is waiting.
+    if (typeof ex.deliver_to !== 'string' || ex.deliver_to.length === 0) {
+      add('error', 'output_exchange_deliver_to_required', 'output.exchange.deliver_to',
+        'output.exchange.deliver_to is required — it names the tool this message is '
+        + 'delivered to. It is NOT callback_op: that is where the far side answers, '
+        + 'which is the same string only when you are the one answering.');
+    }
+    for (const key of ['callback_op', 'connection'] as const) {
+      if (ex[key] !== undefined && typeof ex[key] !== 'string') {
+        add('error', 'output_exchange_field_shape', `output.exchange.${key}`,
+          `output.exchange.${key} must be a string`);
+      }
+    }
+    if (ex.data !== undefined
+      && (ex.data === null || typeof ex.data !== 'object' || Array.isArray(ex.data))) {
+      add('error', 'output_exchange_field_shape', 'output.exchange.data',
+        'output.exchange.data must be an object');
+    }
+    // An exchange recipe renders nothing by construction, so the
+    // render-or-sidebar requirement below does not apply to it.
+    if (!hasRender && !hasSidebar) return;
+  }
+
   let sections: unknown[];
   let outputPath: string;
 

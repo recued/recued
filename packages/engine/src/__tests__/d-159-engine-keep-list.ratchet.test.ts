@@ -40,6 +40,10 @@ const SRC = resolve(__dirname, '..'); // packages/engine/src
 const KEEP_FILES = [
   'catalog-gateway.ts',
   'condition.ts',
+  // D-232 — gateway-routed local recipe invocation: the cycle guard.
+  'local-recipe-cycle.ts',
+  // D-232 §19 — the post-run fire point.
+  'fire-exchange-output.ts',
   'context-recipe.ts',
   'context.ts',
   'dry-run.ts',

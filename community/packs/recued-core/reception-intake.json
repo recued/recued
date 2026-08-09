@@ -3,7 +3,7 @@
   "slug": "reception-intake",
   "publisher": "recued-core",
   "name": "Reception — Intake",
-  "description": "Review-by-default intake reception. An incoming form submission lands in Reception Inbox; approval always retains the canonical response in Data. Store-only forms finish there, while forms with an entity target also materialize a task, note, or commitment — no external connection required.",
+  "description": "Use Reception — Intake in Recued. It includes 1 built-in action. Actions that change data use Recued's approval controls.",
   "version": 1,
   "pre_install": true,
   "recipes": [],

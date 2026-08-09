@@ -24,6 +24,7 @@
  */
 
 import type { RunAnchorStatus } from '../commits.js';
+import type { ExchangeAcknowledgement } from '../source-primitive.js';
 
 /** Output formats. JSON is the default (self-contained envelope, ideal
  *  archival). JSONL streams one entry per line with the envelope on a
@@ -188,6 +189,14 @@ export interface AuditExportEntry {
   channel_session_id?: string;
   cognition_session_id?: string;
   correlation_id?: string;
+  /** D-232 § 20.14 — the peer exchange this run belongs to. Same reason as the
+   *  three ids above, one scope wider: it is the only grouping key that spans
+   *  two SERVERS, so an archive without it cannot reconstruct a conversation. */
+  exchange_ref?: string;
+  /** D-232 § 30 — the PEER's verdict on the reply they owed us, as recorded on
+   *  the carrier run. The one fact in an exchange that only the far side knows
+   *  and only ever states once. */
+  exchange_peer_ack?: ExchangeAcknowledgement;
 }
 
 /** Translate a preset to `(since, until)` bounds against the supplied

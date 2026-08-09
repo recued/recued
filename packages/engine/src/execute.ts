@@ -6,6 +6,7 @@ import {
   resolveValue,
 } from '@recued/contracts';
 import { hashRecipe, parseRecipe, type ValidationIssue } from '@recued/recipes';
+import { fireExchangeOutput } from './fire-exchange-output.js';
 import type {
   FilterOutputSection,
   OutputSection,
@@ -132,7 +133,7 @@ export const executeRecipe = async (inputCtx: ExecutionContext): Promise<Executi
   const budgetMs = recipe.metadata?.budget_ms;
   if (!budgetMs || budgetMs <= 0) {
     try {
-      return await executeRecipeInner(ctx);
+      return await fireExchangeOutput(ctx, await executeRecipeInner(ctx));
     } finally {
       if (ownsStore) piiStore?.dispose();
     }
@@ -195,7 +196,7 @@ export const executeRecipe = async (inputCtx: ExecutionContext): Promise<Executi
   // budget cutoff). Disposing on inner-settle still drops the real PII the
   // moment the run actually ends. (The no-budget path above disposes in its own
   // `finally`, which is likewise inner-settle.)
-  const run = executeRecipeInner(innerCtx).finally(() => { if (ownsStore) piiStore?.dispose(); });
+  const run = executeRecipeInner(innerCtx).then((r) => fireExchangeOutput(innerCtx, r)).finally(() => { if (ownsStore) piiStore?.dispose(); });
   try {
     return await Promise.race([run, budgetSignal]);
   } finally {

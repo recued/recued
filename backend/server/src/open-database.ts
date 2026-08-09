@@ -6,8 +6,12 @@
  * keyfile and apply it before the first schema read.
  */
 
-import { chmodSync, existsSync, readdirSync, renameSync, unlinkSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import {
+  chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import CipherDatabase from 'better-sqlite3-multiple-ciphers';
 import type Database from 'better-sqlite3';
@@ -182,6 +186,103 @@ const restrictToOwner = (path: string): void => {
  *  (`build-binary-docker.mjs`); building them separately at different Node
  *  majors yields a binary that starts and then fails at the first database
  *  open. */
+/** PROTOTYPE (single-file) — materialise a SEA-embedded addon and return its
+ *  path, or undefined when this binary carries none.
+ *
+ *  🔑 EXTRACTION IS NOT A DESIGN CHOICE. `dlopen` takes a filesystem path on
+ *  every platform we ship; there is no portable load-from-memory. So embedding
+ *  buys ONE DISTRIBUTED FILE, not zero files on disk — the win is the manifest
+ *  `lib-<triple>` slots, the second signature per triple, the
+ *  staged-without-sidecar guard, and the Windows failure where the binary starts
+ *  and then cannot open its database.
+ *
+ *  ⛔ CONTENT-ADDRESSED, and that is load-bearing rather than tidy. The addon
+ *  must match the Node ABI inside the binary; an upgrade that reused a stale
+ *  extract would reproduce the exact failure the sidecar's ABI note describes —
+ *  starts fine, dies at the first database open. Keying the directory on the
+ *  bytes' own hash makes a stale hit impossible: different bytes, different path.
+ *
+ *  ⚠ Written to a temp name then RENAMED. Two servers starting together would
+ *  otherwise race on a half-written file, and a partially-written .node fails
+ *  `dlopen` in a way that reads like corruption rather than a race.
+ *
+ *  ⚠ Returns undefined — never throws — on any miss. A binary built without the
+ *  asset MUST fall through to the sidecar, which is still the default layout. */
+const extractEmbeddedAddon = (sea: { getRawAsset?(k: string): ArrayBuffer }): string | undefined => {
+  try {
+    if (typeof sea.getRawAsset !== 'function') return undefined;
+    let bytes: Buffer;
+    try {
+      bytes = Buffer.from(sea.getRawAsset('better_sqlite3.node'));
+    } catch {
+      return undefined; // no such asset — a sidecar build, which is fine
+    }
+    if (bytes.length === 0) return undefined;
+
+    const digest = createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+
+    /** ⛔ NOT os.tmpdir(). Every platform reclaims temp on a schedule — Storage
+     *  Sense and Disk Cleanup on Windows, the periodic purge over
+     *  /var/folders on macOS, systemd-tmpfiles (10d by default) on Linux — and
+     *  several distros clear /tmp at boot outright. Re-extracting is cheap and
+     *  self-healing, so this was never a correctness bug; it just meant the
+     *  cache silently evaporated and every N-th start paid the write again.
+     *
+     *  `~/.recued/` is where this server already keeps per-user state
+     *  (`cli/url-enumerate.ts`), so it inherits a location the user's backups
+     *  and their own expectations already cover. It is also a less
+     *  antivirus-interesting place to write an executable than %TEMP%.
+     *
+     *  ⚠ NOT beside the database. The data dir is what export/import walks, and
+     *  a 2 MB native object living there would ride into archives that have no
+     *  use for it and cannot verify it. */
+    const home = (() => {
+      try { return homedir(); } catch { return ''; }
+    })();
+    const roots = [
+      ...(home ? [join(home, '.recued', 'native')] : []),
+      tmpdir(), // last resort: a read-only or absent HOME must still boot
+    ];
+
+    for (const root of roots) {
+      try {
+        const dir = join(root, `recued-addon-${digest}`);
+        const target = join(dir, 'better_sqlite3.node');
+
+        // ⛔ HASH THE CACHED COPY, do not trust its LENGTH. A same-length but
+        // altered file — an antivirus that zeroed or quarantined-and-stubbed it,
+        // a partial write from a killed process, bit rot — would otherwise be
+        // handed to dlopen, which fails in a way that reads like a corrupt
+        // BUILD rather than a corrupt CACHE. ~2 MB of sha256 is single-digit
+        // milliseconds against a failure that costs a support round trip.
+        if (existsSync(target) && statSync(target).size === bytes.length) {
+          const cached = createHash('sha256').update(readFileSync(target)).digest('hex').slice(0, 16);
+          if (cached === digest) return target;
+          // Same length, wrong bytes. Fall through and rewrite it.
+        }
+
+        mkdirSync(dir, { recursive: true });
+        const staging = join(dir, `.tmp-${process.pid}-${randomBytes(4).toString('hex')}`);
+        writeFileSync(staging, bytes, { mode: 0o700 });
+        try {
+          renameSync(staging, target);
+        } catch (err) {
+          // Lost the race: a sibling renamed first. Its bytes hash the same as
+          // ours by construction, so its file is ours — take it, drop the copy.
+          try { unlinkSync(staging); } catch { /* best-effort */ }
+          if (!existsSync(target)) throw err;
+        }
+        return target;
+      } catch {
+        // This root is unusable (no HOME, read-only, quota). Try the next.
+      }
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 const resolveNativeBinding = (): unknown | undefined => {
   try {
     // ⚠ `typeof require` is the portability guard, not decoration. This module
@@ -191,7 +292,14 @@ const resolveNativeBinding = (): unknown | undefined => {
     // the ESM bundle the createRequire banner supplies a real one, which then
     // correctly answers `isSea() === false`.
     if (typeof require === 'undefined') return undefined;
-    const sea = require('node:sea') as { isSea(): boolean };
+    // ⚠ `getRawAsset` is OPTIONAL in this cast on purpose: it landed in Node
+    // 20.12/21.7, and a binary built on an older base must read as "no asset"
+    // rather than crash. `extractEmbeddedAddon` typeof-guards it for the same
+    // reason — the type is a claim about the shape, not a guarantee it is there.
+    const sea = require('node:sea') as {
+      isSea(): boolean;
+      getRawAsset?(k: string): ArrayBuffer;
+    };
     if (!sea.isSea()) return undefined;
 
     // ⛔ RETURNS THE ADDON OBJECT, NOT A PATH — and that is forced, not chosen.
@@ -201,22 +309,34 @@ const resolveNativeBinding = (): unknown | undefined => {
     // filesystem require, and the driver accepts a pre-loaded addon object
     // (`nativeBinding` is documented as string OR object) so nothing downstream
     // has to resolve anything.
-    const bindingPath =
-      process.env.RECUED_NATIVE_BINDING
-      ?? join(dirname(process.execPath), 'lib', 'better_sqlite3.node');
     const { createRequire } = require('node:module') as {
       createRequire(p: string): (id: string) => unknown;
     };
+    const bindingPath =
+      process.env.RECUED_NATIVE_BINDING
+      ?? extractEmbeddedAddon(sea)
+      ?? join(dirname(process.execPath), 'lib', 'better_sqlite3.node');
     return createRequire(process.execPath)(bindingPath);
   } catch (err) {
     // Fail LOUDLY. Returning undefined here would fall through to the
     // `bindings` search, which inside a SEA cannot succeed either — the
     // operator would get a path list from a package that is not on disk
     // instead of the one fact that helps: the sidecar is missing.
+    // ⚠ NAME THE INSTALLER, not just the missing path. `recued` is TWO files by
+    // design, and the artifacts sit next to each other in the bucket — so the
+    // reachable failure is downloading the .exe alone from a browser, which
+    // starts fine and dies here at the first database open. Someone in that
+    // position does not need the path; they need to know a one-line installer
+    // exists that fetches BOTH and verifies both signatures.
     throw new Error(
       `D178_SIDECAR_MISSING: could not load the native SQLite addon beside the binary `
         + `(${err instanceof Error ? err.message : String(err)}). Expected `
-        + `lib/better_sqlite3.node next to ${process.execPath}, or RECUED_NATIVE_BINDING set.`,
+        + `lib/better_sqlite3.node next to ${process.execPath}, or RECUED_NATIVE_BINDING set.\n`
+        + `  recued ships as TWO files. If you downloaded the executable on its own, use the\n`
+        + `  installer instead — it fetches both and verifies both signatures:\n`
+        + (process.platform === 'win32'
+          ? '      irm https://recued.com/install.ps1 | iex'
+          : '      curl -fsSL https://recued.com/install.sh | sh'),
     );
   }
 };

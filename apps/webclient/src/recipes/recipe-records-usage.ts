@@ -73,6 +73,11 @@ export const RECORDS_ACTION_EFFECT: Record<RecordsAction, RecordsEffect> = {
   update: 'write',
   upsert: 'write',
   delete: 'delete',
+  // ⚠ REACHABLE, unlike `batch` below — an import declares no allow-list to
+  // expand into, because there is nothing to choose: it writes `create` to the
+  // bound entity and only that. So a flat 'write' here is the whole truth
+  // about it, which is exactly the condition `batch` fails.
+  import: 'write',
   // ⚠ UNREACHABLE, and kept so the ratchet keeps working. A `batch` never
   // arrives here: it is EXPANDED into its declared pairs below, so the panel
   // says "creates batch, creates leg" rather than "batches batch" — which is

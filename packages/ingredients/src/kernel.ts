@@ -637,6 +637,19 @@ export interface KernelDispatchers {
     created: boolean;
     bytes_written: number;
   }>;
+  /** D-232 § 23 — what happened to an exchange. Server-side because the answer
+   *  lives in the AUDIT TRAIL, which no client holds.
+   *
+   *  ⛔ Read-only and ref-scoped by construction: the caller names a ref and gets
+   *  a delivery state back. It confers no authority — an exchange ref is a handle
+   *  the caller already minted or was handed, and the query is a read. */
+  exchangeStatus?: (input: { exchange_ref: string; callback_op?: string }) => Promise<{
+    ref: string;
+    status: string;
+    kind?: string;
+    reason?: string;
+    runs: number;
+  }>;
   read?: (input: { key: string }) => Promise<{
     found: boolean;
     key: string;
@@ -1691,6 +1704,31 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           key,
           expected_revision,
           value,
+        });
+      }
+      case 'exchange-status': {
+        // D-232 § 23 — `output.exchange` hands the caller a ref; this is what
+        // makes that ref answerable from RECIPE-LAND. `listByExchangeRef` was
+        // wired only to the AI door, so a model could ask and the recipe that
+        // started the exchange could not.
+        if (!dispatchers.exchangeStatus) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            `exchange-status unavailable — the answer lives in the server's audit trail`,
+            { slug },
+          );
+        }
+        const { exchange_ref, callback_op } = call.input as {
+          exchange_ref: unknown; callback_op: unknown;
+        };
+        if (typeof exchange_ref !== 'string' || exchange_ref.length === 0) {
+          throw new IngredientError('BAD_INPUT', `exchange-status: exchange_ref is required`, { slug });
+        }
+        return await dispatchers.exchangeStatus({
+          exchange_ref,
+          ...(typeof callback_op === 'string' && callback_op.length > 0
+            ? { callback_op }
+            : {}),
         });
       }
       case 'shared-read': {

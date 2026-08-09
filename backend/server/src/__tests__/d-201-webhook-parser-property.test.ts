@@ -319,6 +319,9 @@ const CREDENTIALS: Readonly<Partial<
   'lemonsqueezy.webhook.v1': Object.freeze({
     signing_secret: 'generated-lemonsqueezy-signing-secret',
   }),
+  'recued-peer.exchange.v1': Object.freeze({
+    signing_secret: 'generated-recued-peer-signing-secret',
+  }),
 });
 
 const credentialsFor = (

@@ -465,7 +465,17 @@ export const composeMailStack = (
       // warehouse rows read from plaintext SQLite; its `send` rpc still works),
       // but we do NOT start the provider fetch loop while sealed — see the
       // `isVaultUnlocked` doc. `resumeSync()` starts it on the unlock edge.
-      log('info', `mail-stack: sync deferred for '${row.slug}' — vault locked`);
+      // ⚠ Same wording fix as the calendar sibling — a deferral that does not
+      // name its resumer reads at boot like a startup ORDERING bug. The order is
+      // in fact correct: the keyfile auto-unlock runs inside
+      // `bootSigningIdentity()` at `start-boot-recovery-and-adapters.ts:85`,
+      // BEFORE `startCollectionAdapters()` at :190. Reaching here means the
+      // vault was still locked after auto-unlock had its turn.
+      log(
+        'info',
+        `mail-stack: sync deferred for '${row.slug}' — vault locked; `
+          + 'reads and send still serve, and the poll loop starts automatically on unlock',
+      );
       return;
     }
 

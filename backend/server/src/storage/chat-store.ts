@@ -272,6 +272,25 @@ export const ensureChatSchema = (db: Database.Database): void => {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_chat_messages_recall_eligibility
       ON chat_messages (recall_eligibility, ts DESC, message_id DESC);
+    -- PARTIAL, and it has to be. reconcileAbandonedPending reads
+    --   WHERE source_lifecycle = 'pending' AND (@session_id IS NULL OR ...)
+    -- which had no index at all, so it SCANNED THE WHOLE MESSAGE TABLE -- once
+    -- per call on the per-request recall path, and again on every session
+    -- delete. Measured at 100k messages: 2.8ms -> 0.0ms.
+    --
+    -- Partial rather than a plain (source_lifecycle, session_id) index because
+    -- 'pending' is a TRANSIENT state -- a row is pending only between the
+    -- extraction start and its finalizer. The index therefore holds the few
+    -- in-flight rows instead of one entry per message ever written, and a row
+    -- LEAVES it when it settles. The predicate matches the query's own
+    -- WHERE text, which is what lets SQLite use it.
+    --
+    -- NOTE the second conjunct stays a residual: (@x IS NULL OR col = @x) is
+    -- unindexable by construction (the plan cannot depend on a bound value), so
+    -- the win comes entirely from narrowing to 'pending' first.
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_pending_source
+      ON chat_messages (session_id)
+      WHERE source_lifecycle = 'pending';
   `);
 
   // Durable reviewed-action history. The args and terminal execution payload
@@ -302,6 +321,25 @@ export const ensureChatSchema = (db: Database.Database): void => {
       FOREIGN KEY (session_id) REFERENCES chat_sessions (session_id) ON DELETE CASCADE,
       FOREIGN KEY (message_id) REFERENCES chat_messages (message_id) ON DELETE SET NULL
     );
+    -- THE APPROVAL-INBOX INDEX. handlePlansPendingList (the owner's
+    --   cross-session pending-approvals rpc) reads
+    --     WHERE status = 'proposed' ORDER BY created_at ASC, plan_id ASC
+    --   and every other index here leads with session_id, which cannot serve a
+    --   query naming no session. So the approvals view SCANNED chat_plans and
+    --   sorted it. Measured at 200k plans with 100 proposed: 4.62ms -> 0.06ms.
+    --
+    -- PARTIAL, because 'proposed' is a TRANSIENT state -- a plan is proposed
+    --   only until the owner approves or rejects it. The index holds the
+    --   pending approvals and nothing else (100 entries, not 200,000), and a
+    --   row LEAVES it when the owner acts. The columns are that query's own
+    --   ORDER BY, so the sort goes away too.
+    --
+    -- NOT added for the sibling boot statement (UPDATE ... WHERE
+    --   execution_status = 'running'): that is crash recovery, runs ONCE per
+    --   store construction, and an index maintained on every execution
+    --   transition to save a single scan at boot is the wrong trade.
+    CREATE INDEX IF NOT EXISTS idx_chat_plans_proposed
+      ON chat_plans (created_at, plan_id) WHERE status = 'proposed';
     CREATE INDEX IF NOT EXISTS idx_chat_plans_session_created
       ON chat_plans (session_id, created_at, plan_id);
     CREATE INDEX IF NOT EXISTS idx_chat_plans_dispatch_match

@@ -399,6 +399,58 @@ describe('D-165 Connections operation-group grant panel', () => {
     mount.dispose();
   });
 
+  it('⚠ prints the slug only when it disambiguates — never "microsoft microsoft"', async () => {
+    /** Found on screen by the owner: the Microsoft connection header read "microsoft
+     *  microsoft". A connection enrolled without a custom label carries
+     *  `display_name === name`, and the header rendered BOTH unconditionally, so the
+     *  slug line — which exists to tell two connections of one vendor apart — printed a
+     *  second copy of the label and read as a rendering fault.
+     *
+     *  ⛔ BOTH DIRECTIONS ARE PINNED IN ONE CASE, deliberately. Asserting only the
+     *  suppression would be satisfied by deleting the slug line outright, which breaks
+     *  the `hs-a` / `hs-b` case above where the slug is the ONLY thing distinguishing
+     *  two HubSpot connections. */
+    const bare = connection('microsoft', { vendor: 'microsoft' });
+    const labelled = connection('ms-two', {
+      vendor: 'microsoft',
+      display_name: 'Microsoft (work)',
+    });
+    const { host, mount } = mountFor({
+      runListConnections: () =>
+        Promise.resolve({ connections: [bare, labelled] as ReadonlyArray<ConnectionView> }),
+      groupsByName: {
+        microsoft: grantView('microsoft', [group(DEALS_WRITE)]),
+        'ms-two': grantView('ms-two', [group(DEALS_WRITE)]),
+      },
+    });
+    await mount.whenLoaded();
+
+    const cards = collectByAttr(host, CONNECTIONS_GRANT_CARD_ATTR);
+    expect(cards).toHaveLength(2);
+
+    /** The fake DOM has no `querySelector`, so walk `children` by className — the same
+     *  traversal `collectByAttr` uses. */
+    const byClass = (root: FakeEl, cls: string, out: FakeEl[] = []): FakeEl[] => {
+      if (root.className === cls) out.push(root);
+      for (const c of root.children) byClass(c, cls, out);
+      return out;
+    };
+    const textsOf = (card: FakeEl, cls: string): string[] =>
+      byClass(card, cls).map((n) => n.textContent);
+
+    /** The bare one: label shown once, slug suppressed because it repeats the label. */
+    expect(textsOf(cards[0], 'conn-grant-display')).toEqual(['microsoft']);
+    expect(textsOf(cards[0], 'conn-grant-name'),
+      'the slug repeats the label and must not render').toEqual([]);
+
+    /** The labelled one: slug still renders, because here it carries information. */
+    expect(textsOf(cards[1], 'conn-grant-display')).toEqual(['Microsoft (work)']);
+    expect(textsOf(cards[1], 'conn-grant-name'),
+      'a distinguishing slug must still render').toEqual(['ms-two']);
+
+    mount.dispose();
+  });
+
   it('reads groups for api connections, including local/private catalog candidates', async () => {
     const hubspot = connection('hs', { display_name: 'HubSpot' });
     const localCatalog = connection('support', {

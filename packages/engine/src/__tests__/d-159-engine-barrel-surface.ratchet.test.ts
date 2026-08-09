@@ -22,6 +22,9 @@ const MIDDLEWARE_ALIAS = /^@recued\/middleware(?:-recued)?(?:\/|$)/;
 
 const KEEP_MODULES = new Set([
   'condition',
+  // D-232 — gateway-routed local recipe invocation: the cycle guard.
+  'local-recipe-cycle',
+  'fire-exchange-output',
   'context-recipe',
   'context',
   'dry-run',
@@ -47,6 +50,22 @@ const KEEP_MODULES = new Set([
 const EXPECTED_RUNTIME_EXPORTS = [
   'executeRecipe',
   'evaluateCondition',
+  // D-232 — the local-recipe cycle guard's public surface.
+  'RecipeCycleError',
+  'NestedRunNotCompletedError',
+  'acknowledgementFor',
+  'buildExchangeFirePayload',
+  // D-232 § 21 — the run-failure classifier. Exported deliberately rather than
+  // kept private: the SERVER needs it to classify a failure it did not raise
+  // (an outbound dispatch that never became a run on the far side), and the
+  // ratchet is here to make that a decision rather than a drift.
+  'classifyRunFailure',
+  'fireExchangeOutput',
+  'assertNestedRunCompleted',
+  'assertNoRecipeCycle',
+  'extendHeldRecipes',
+  'seedHeldRecipes',
+  'wouldCycle',
   'createTransformContext',
   'createDryRunExecutor',
   'generateMockData',

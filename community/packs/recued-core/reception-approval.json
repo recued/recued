@@ -3,7 +3,7 @@
   "slug": "reception-approval",
   "publisher": "recued-core",
   "name": "Reception — Approval",
-  "description": "Review-by-default approval reception. An incoming scoped approval (approve / confirm / pick a time / answer) lands a pending record; a review-then-approve workflow holds the materialize operation at the Gateway gate, where you approve (editing the resulting commitment first) or reject. Materializes a commitment to your local warehouse by default — no external connection required.",
+  "description": "Use Reception — Approval in Recued. It includes 1 built-in action. Actions that change data use Recued's approval controls.",
   "version": 1,
   "pre_install": true,
   "recipes": [],

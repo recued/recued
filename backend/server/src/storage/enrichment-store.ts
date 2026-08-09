@@ -2473,6 +2473,26 @@ export const createEnrichmentStore = (
   // stale + enqueue, or tombstone. Every mutation skips pinned rows
   // (`is_pinned = 1`) and treats already-pending rows as no-ops.
 
+  // ⚖ MEASURED AND DELIBERATELY NOT INDEXED — recorded so the next sweep does
+  //   not re-litigate it.
+  //
+  //   This scans `data_enrichment` and runs `json_each` per candidate row. At
+  //   200k rows with 5% derived: 8.43ms. A partial index on
+  //   `(_id) WHERE input_enrichment_row_ids IS NOT NULL AND superseded_by_id IS
+  //   NULL` takes it to 4.26ms — only 2x, because the index narrows the
+  //   candidate set but every surviving row still needs its JSON parsed. A 2x
+  //   constant factor does not earn an index maintained on every enrichment
+  //   write.
+  //
+  // 🔑 THE FLOOR IS STRUCTURAL. An `EXISTS` over `json_each` of a JSON array
+  //   cannot be seeked at all — the edge lives inside a document. Making this
+  //   O(matches) instead of O(derived rows) needs a NORMALISED EDGE TABLE
+  //   (upstream_row_id -> consumer_row_id), which is a design decision for the
+  //   cascade engine, not something a query rewrite reaches.
+  //
+  // ⚠ Worth revisiting if the derived fraction grows: the scan is O(all rows)
+  //   and the JSON work is O(derived), so the 2x holds only while most rows are
+  //   NOT derived.
   const listConsumerRowIdsOfUpstreamStmt = db.prepare(
     `SELECT _id FROM ${ENRICHMENT_TABLE}
        WHERE input_enrichment_row_ids IS NOT NULL
@@ -2502,6 +2522,13 @@ export const createEnrichmentStore = (
     return rows.map((r) => r._id);
   };
 
+  // ⚖ ALSO MEASURED, ALSO NOT INDEXED. A partial index on
+  //   `(producer_version_hash) WHERE superseded_by_id IS NULL` turns this from
+  //   SCAN into SEARCH — 8.61ms to 0.77ms at 200k rows. But its only caller is
+  //   `cascadeForProducerUpgrade`, which fires once per producer when its
+  //   version hash changes, i.e. on a release that altered that producer. An
+  //   index maintained on every write to save 8ms on a maintenance operation is
+  //   the same trade already declined for the boot backfills.
   const listChainHeadRowIdsByProducerVersionStmt = db.prepare(
     `SELECT _id FROM ${ENRICHMENT_TABLE}
        WHERE producer_version_hash = ? AND superseded_by_id IS NULL`,

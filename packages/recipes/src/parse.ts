@@ -37,7 +37,20 @@ const normalizeOutputRenderAlias = (recipe: RecipeDefinition): void => {
   const output = recipe.output as RecipeDefinition['output'] & {
     render?: OutputSection[];
     sidebar?: OutputSection[];
+    exchange?: unknown;
   };
+  // ⛔ D-232 § 19.3 — A FIRING RECIPE GETS NO PHANTOM RENDER. This function
+  // grafts `render: []` onto anything lacking one, which for every other recipe
+  // is the harmless canonical shape. On an `output.exchange` recipe it invents
+  // the very key that result-XOR-fire forbids, and the NEXT parse — install
+  // normalizes, then the run re-parses — refuses the recipe the installer just
+  // accepted. Found exactly that way: the migrated peer receiver validated as a
+  // FILE in three artifact suites and could not run at all.
+  if (output.exchange !== undefined && !Array.isArray(output.render)
+    && !Array.isArray(output.sidebar)) {
+    delete output.sidebar;
+    return;
+  }
   output.render = Array.isArray(output.render)
     ? output.render
     : Array.isArray(output.sidebar)

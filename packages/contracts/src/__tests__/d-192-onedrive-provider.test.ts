@@ -14,6 +14,7 @@ import {
   assertConnectionVendorProviderRegistry,
   CONNECTION_VENDOR_PROVIDERS,
   GRAPH_FILES_READ_SCOPE,
+  GRAPH_FILES_READWRITE_SCOPE,
   getVendorProvider,
   MICROSOFT_AUTHORIZE_URL,
   MICROSOFT_GRAPH_API_BASE,
@@ -50,16 +51,39 @@ describe('D-192 — OneDrive vendor provider', () => {
     );
   });
 
-  it('requests read-only Graph scopes for metadata sync and lazy byte reads', () => {
+  it('requests WRITE-CAPABLE Graph scopes — widened from read-only by owner decision', () => {
+    /** ⚠⚠ INVERTED 2026-08-07, DELIBERATELY. This asserted the seed was read-only and
+     *  carried NO `Files.ReadWrite`, on reasoning that still stands on its own terms: the
+     *  D-192 file SOURCE family mirrors METADATA via `/delta` and fetches bytes only on an
+     *  explicit read — it never writes — and the enroll form's `prefillVendorScopes`
+     *  already UNIONED write in the moment a write-capable pack was installed. Measured
+     *  before the change:
+     *      seed alone     -> Files.Read offline_access User.Read
+     *      pack installed -> Files.Read Files.ReadWrite User.Read offline_access
+     *  Nothing was broken. The owner weighed a connection that is write-capable BEFORE any
+     *  pack is installed against a minimal one that widens on demand, and chose the former.
+     *
+     *  ⛔ THE COST IS KEPT HERE RATHER THAN DELETED WITH THE OLD ASSERTION: an owner who
+     *  wants only the read-only file mirror is now asked to grant file mutation they will
+     *  never exercise, and their Microsoft consent screen is correspondingly broader.
+     *  Recued still gates every write at approval (`RISK_APPROVAL_FLOOR`), but the TOKEN
+     *  now carries the authority — approval is the only thing standing between the two.
+     *  Reverting is `ONEDRIVE_OAUTH_SCOPES` plus this assertion and its sibling in
+     *  `connection-scope-prefill-corpus.test.ts`. */
     expect(onedrive!.oauth.scopes).toEqual(ONEDRIVE_OAUTH_SCOPES);
     expect([...ONEDRIVE_OAUTH_SCOPES]).toEqual([
       GRAPH_FILES_READ_SCOPE,
+      GRAPH_FILES_READWRITE_SCOPE,
       'offline_access',
       'User.Read',
     ]);
     expect(GRAPH_FILES_READ_SCOPE).toBe('Files.Read');
-    // Read-only — no write scope (`Files.ReadWrite`).
-    expect([...ONEDRIVE_OAUTH_SCOPES].some((s) => s.includes('ReadWrite'))).toBe(false);
+    expect(GRAPH_FILES_READWRITE_SCOPE).toBe('Files.ReadWrite');
+    /** ⛔ The READ scope must SURVIVE the widening. Microsoft treats `Files.ReadWrite` as a
+     *  superset, so dropping the read half would still work at the provider — and would
+     *  silently diverge from what the packs declare, leaving the granted set and the
+     *  disclosed set disagreeing for no benefit. */
+    expect([...ONEDRIVE_OAUTH_SCOPES]).toContain('Files.Read');
   });
 
   it('carries NO authorize_params — the refresh token comes from the offline_access scope', () => {

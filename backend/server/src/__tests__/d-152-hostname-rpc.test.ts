@@ -371,6 +371,43 @@ describe('D-152 collection.hostname.* handlers', () => {
     expect(createHostnameSniBindingLookup(deps.store)('ready.example')).toBeNull();
   });
 
+  /** ⛔ A row that ALREADY EXISTS was registered by the `pro-cert-enrollment`
+   *  background service, which orders its certificate on its own cadence and
+   *  retries on its own backoff. Issuing here as well means two racing attempts
+   *  for one hostname — and CAs rate-limit FAILED validations (LE: 5 per
+   *  account per hostname per hour), so a racing pair can exhaust the limit and
+   *  block both. Observed live in a single run. */
+  it('DEFERS issuance when the row already exists — the enrollment service owns it', async () => {
+    const issueInitialDomain = vi.fn(async () => ({
+      ok: true as const,
+      new_fingerprint: 'should-not-be-used',
+      cert_expires_at: NOW + 1,
+    }));
+    const deps = makeDeps({ initialAcmeIssuer: () => ({ issueInitialDomain }) });
+
+    // Stand in for the background service having registered it already.
+    deps.store.upsert({
+      server_identity_id: 'srv-1',
+      hostname: 'alice.recued.net',
+      cert_source: 'recued_acme',
+      ownership_status: 'verified',
+      ddns_managed: true,
+      enabled: true,
+    });
+
+    const added = await handleHostnameAdd(
+      deps,
+      { hostname: 'Alice.Recued.Net', cert_source: 'recued_acme', enabled: true },
+      CALLER,
+    );
+
+    expect(issueInitialDomain).not.toHaveBeenCalled();
+    // Returning the row is the honest answer, not a silent no-op: no
+    // `cert_fingerprint` IS the pending state the UI renders.
+    expect(added.hostname).toMatchObject({ hostname: 'alice.recued.net' });
+    expect(added.hostname.cert_fingerprint).toBeUndefined();
+  });
+
   it('issues the first cert for a verified recued_acme hostname and mirrors cert metadata', async () => {
     const issueInitialDomain = vi.fn(async () => ({
       ok: true as const,

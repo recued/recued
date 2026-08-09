@@ -10,11 +10,16 @@ import { createWatcherDispatcher } from '../index.js';
 
 const mkAuditLog = (): AuditLogStore => ({
   append: async () => {},
+  listWindow: async () => [],
+  listPendingExchangeRefs: async () => [],
+  listInboundContractIds: async () => [],
   listRecent: async () => [],
   listByRecipe: async () => [],
   listByChannelSession: async () => [],
   listByCognitionSession: async () => [],
   listByCorrelation: async () => [],
+  listByExchangeRef: async () => [],
+  listByPeerContract: async () => [],
   listByDish: async () => [],
   latestByDishes: async () => new Map(),
   get: async () => null,

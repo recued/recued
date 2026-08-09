@@ -2,9 +2,42 @@
  *
  *  On D-121 first boot (or upgrade-from-pre-D-121), scan every
  *  existing `data.mail` + `data.calendar` table and materialize
- *  contacts for the rows already on disk. Idempotent — repeat runs
- *  are first-seen-wins inserts that bump `interaction_count` on
- *  collisions, so the second boot doesn't double-count.
+ *  contacts for the rows already on disk.
+ *
+ *  ⛔ THIS IS A ONE-TIME MIGRATION PER TABLE, AND IT USED TO RUN ON
+ *  EVERY BOOT. There was no cursor and no completion marker: `offset`
+ *  reset to 0 per table and the walk ran to exhaustion, every start,
+ *  forever. The header called that "idempotent", which was true only of
+ *  the contacts ROW COUNT — every observation of an existing contact
+ *  still took `updateOnObserveStmt`, so `interaction_count` grew by the
+ *  full observation count on each boot. Driven K=3 over 5 mail rows /
+ *  3 contacts, mail untouched between runs:
+ *
+ *      boot 1: counts=[4,3,3]   boot 2: [8,6,6]   boot 3: [12,9,9]
+ *
+ *  🔑 AND THE COUNTER IS NOT COSMETIC. `hashContactRecord`
+ *  (`housekeeping/source-walkers.ts`) folds `interaction_count` in, and
+ *  `enrichment-producer.ts` skips a record only when its stored
+ *  `source_record_hash` still matches. So every contact's hash moved on
+ *  every boot (3/3 measured), every contact-scoped producer re-derived,
+ *  and the owner-visible "N interactions" in the Data lens inflated by
+ *  roughly the restart count.
+ *
+ *  ⚠ WHY A PER-TABLE DONE-MARKER IS THE RIGHT CURSOR, not a row
+ *  watermark. Live ingestion already observes contacts itself —
+ *  `wire-mail-stack.ts`'s `onMessageUpserted` and
+ *  `wire-calendar-stack.ts`'s calendar hook both call
+ *  `contactStore.observeBatch` per record. This walk exists ONLY to
+ *  catch rows that predate the contact substrate, so "has this table
+ *  been swept once" is the whole question; a `record_id` high-water
+ *  mark would be wrong anyway, since ids are provider strings and a new
+ *  message can sort BEFORE the mark. A table enrolled later gets its
+ *  own marker and is swept once, on the boot that first sees it.
+ *
+ *  ⚠ The marker is written only after a table completes. A crash
+ *  mid-table leaves it unmarked and the next boot re-sweeps that table,
+ *  re-bumping the counts it already applied. That is the deliberate
+ *  direction: re-counting is recoverable, missing a contact is not.
  *
  *  Bounded yield: each batch processes `CONTACT_MATERIALIZE_BATCH_SIZE`
  *  rows, optionally awaits a microtask in async callers (`yield_each`),
@@ -51,9 +84,57 @@ export interface BackfillOptions {
    *  restart shouldn't broadcast `created` / `updated` events through
    *  the realtime bridge for rows that haven't actually changed since
    *  last boot. Tests that want to assert the emit shape pass
-   *  `silent: false`. */
+   *  `silent: false`.
+   *
+   *  🔑 This option is the precedent the completion marker follows. The
+   *  same judgement — "a restart is not a change" — was applied to the
+   *  event bus here and NOT to the interaction counter, which is how
+   *  the counter came to move on every boot while the bus stayed quiet
+   *  about it. */
   silent?: boolean;
+  /** Re-sweep tables already marked complete. Off by default; the
+   *  marker is the point. Tests use it to drive the walk twice, and it
+   *  is the seam a future "rebuild my contact graph" affordance would
+   *  call. */
+  force?: boolean;
+  /** Injectable clock for the completion marker's timestamp. */
+  now?: () => number;
 }
+
+/** Per-table completion markers live in the shared `server_state` kv,
+ *  keyed `contact_backfill.<table>` — the same namespaced-flat-key
+ *  convention `pressure-state.ts` uses, and for the same reason: this
+ *  is pair-local boot bookkeeping (D-097), not user data, and it does
+ *  not warrant a table of its own. */
+const STATE_TABLE = 'server_state';
+
+const markerKey = (table: string): string => `contact_backfill.${table}`;
+
+/** Defensive create — the composer may run before `ServerStateStore`.
+ *  Idempotent, and identical to the DDL that store declares. */
+const ensureStateTable = (db: Database.Database): void => {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ${STATE_TABLE} (
+      key        TEXT PRIMARY KEY,
+      value      TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+  `);
+};
+
+const isTableSwept = (db: Database.Database, table: string): boolean =>
+  db.prepare(`SELECT 1 FROM ${STATE_TABLE} WHERE key = ?`).get(markerKey(table)) !== undefined;
+
+const markTableSwept = (
+  db: Database.Database,
+  table: string,
+  stats: { processed: number; observed: number },
+  at: number,
+): void => {
+  db.prepare(
+    `INSERT OR REPLACE INTO ${STATE_TABLE} (key, value, updated_at) VALUES (?, ?, ?)`,
+  ).run(markerKey(table), JSON.stringify({ ...stats, at }), at);
+};
 
 interface MailRow {
   hot_fields: string;
@@ -170,69 +251,97 @@ const backfillTable = async <Row, Item>(
   return { processed: totalProcessed, observed: totalObserved };
 };
 
-/** Walk every `collection_mail_*` table on `db` and materialize
- *  contacts for the rows already on disk. Returns aggregate counts
- *  for logging. */
+export interface BackfillResult {
+  tables: number;
+  processed: number;
+  observed: number;
+  /** Tables passed over because a completion marker already existed.
+   *  On a healthy second boot this equals `tables` and `processed` is
+   *  0 — which is the progress assertion, not merely a log line. */
+  skipped: number;
+}
+
+/** The marker-aware walk, shared by both collection kinds so the skip
+ *  and the mark cannot drift apart between them — the earlier shape
+ *  duplicated the whole loop per kind, which is exactly where a
+ *  one-sided fix would hide. */
+const sweepTables = async <Row, Item>(
+  db: Database.Database,
+  tables: readonly string[],
+  store: ContactStore,
+  opts: BackfillOptions,
+  selectSqlFor: (table: string) => string,
+  fromRow: (row: Row) => Item | null,
+  derive: (item: Item) => ReturnType<typeof deriveContactsFromMail>,
+): Promise<BackfillResult> => {
+  ensureStateTable(db);
+  const now = opts.now ?? Date.now;
+  let processed = 0;
+  let observed = 0;
+  let skipped = 0;
+  for (const table of tables) {
+    if (opts.force !== true && isTableSwept(db, table)) {
+      skipped += 1;
+      continue;
+    }
+    const out = await backfillTable<Row, Item>(
+      db, table, selectSqlFor(table), fromRow, derive, store, opts,
+    );
+    // AFTER the table completes, never before — an interrupted sweep
+    // must be retried, not recorded as done.
+    markTableSwept(db, table, out, now());
+    processed += out.processed;
+    observed += out.observed;
+  }
+  return { tables: tables.length, processed, observed, skipped };
+};
+
+/** Walk every not-yet-swept `collection_mail_*` table on `db` and
+ *  materialize contacts for the rows already on disk. Returns aggregate
+ *  counts for logging. */
 export const backfillContactsFromMail = async (
   db: Database.Database,
   store: ContactStore,
   opts: BackfillOptions = {},
-): Promise<{ tables: number; processed: number; observed: number }> => {
-  const tables = listMailTables(db);
-  let processed = 0;
-  let observed = 0;
-  for (const table of tables) {
-    const out = await backfillTable<MailRow, CanonicalMessage>(
-      db,
-      table,
-      `SELECT hot_fields, received_at FROM ${table} ORDER BY record_id`,
-      (row) => mailRowToMessage(row),
-      (msg) => deriveContactsFromMail(msg),
-      store,
-      opts,
-    );
-    processed += out.processed;
-    observed += out.observed;
-  }
-  return { tables: tables.length, processed, observed };
-};
+): Promise<BackfillResult> =>
+  sweepTables<MailRow, CanonicalMessage>(
+    db,
+    listMailTables(db),
+    store,
+    opts,
+    (table) => `SELECT hot_fields, received_at FROM ${table} ORDER BY record_id`,
+    (row) => mailRowToMessage(row),
+    (msg) => deriveContactsFromMail(msg),
+  );
 
-/** Walk every `collection_calendar_*` table on `db` and materialize
- *  contacts for the events already on disk. */
+/** Walk every not-yet-swept `collection_calendar_*` table on `db` and
+ *  materialize contacts for the events already on disk. */
 export const backfillContactsFromCalendar = async (
   db: Database.Database,
   store: ContactStore,
   opts: BackfillOptions = {},
-): Promise<{ tables: number; processed: number; observed: number }> => {
-  const tables = listCalendarTables(db);
-  let processed = 0;
-  let observed = 0;
-  for (const table of tables) {
-    const out = await backfillTable<CalendarRow, CanonicalEvent>(
-      db,
-      table,
-      `SELECT record_payload FROM ${table} ORDER BY record_id`,
-      (row) => calendarRowToEvent(row),
-      (event) => deriveContactsFromCalendar(event),
-      store,
-      opts,
-    );
-    processed += out.processed;
-    observed += out.observed;
-  }
-  return { tables: tables.length, processed, observed };
-};
+): Promise<BackfillResult> =>
+  sweepTables<CalendarRow, CanonicalEvent>(
+    db,
+    listCalendarTables(db),
+    store,
+    opts,
+    (table) => `SELECT record_payload FROM ${table} ORDER BY record_id`,
+    (row) => calendarRowToEvent(row),
+    (event) => deriveContactsFromCalendar(event),
+  );
 
-/** Run both backfills end-to-end. Idempotent — safe to call on every
- *  boot. Errors are swallowed per-table; a corrupt JSON row in one
- *  collection doesn't poison the rest. */
+/** Run both backfills end-to-end. Safe to call on every boot — and
+ *  after the first, it is a pair of marker lookups that process nothing.
+ *  Errors are swallowed per-table; a corrupt JSON row in one collection
+ *  doesn't poison the rest. */
 export const backfillContacts = async (
   db: Database.Database,
   store: ContactStore,
   opts: BackfillOptions = {},
 ): Promise<{
-  mail: { tables: number; processed: number; observed: number };
-  calendar: { tables: number; processed: number; observed: number };
+  mail: BackfillResult;
+  calendar: BackfillResult;
 }> => {
   const mail = await backfillContactsFromMail(db, store, opts);
   const calendar = await backfillContactsFromCalendar(db, store, opts);

@@ -32,6 +32,34 @@ export const HOSTNAME_OWNERSHIP_STATUSES = [
 ] as const;
 export type HostnameOwnershipStatus = (typeof HOSTNAME_OWNERSHIP_STATUSES)[number];
 
+/** Certificate PROVISIONING state — deliberately separate from
+ *  `ownership_status`, which answers a different question and was being read as
+ *  this one. A `recued_acme` row registered by the enrollment service is
+ *  `ownership_status: 'verified'` the instant it appears (the handle
+ *  reservation IS the proof for a Recued-controlled zone), so the UI showed
+ *  "Verified" while there was no certificate at all.
+ *
+ *  `pending` and `failed` are NOT distinguishable from a missing
+ *  `cert_fingerprint` alone, which is why this is persisted rather than
+ *  derived: a server backing off after a CA rejection looks identical to one
+ *  that has simply not tried yet. */
+export const HOSTNAME_CERT_PROVISIONING_STATES = [
+  /** Registered; no issuance attempted yet. */
+  'pending',
+  /** An attempt failed; the enrollment service is backing off and will retry. */
+  'failed',
+  /** Certificate issued and stored. */
+  'ready',
+] as const;
+export type HostnameCertProvisioningState =
+  (typeof HOSTNAME_CERT_PROVISIONING_STATES)[number];
+
+export const isHostnameCertProvisioningState = (
+  value: unknown,
+): value is HostnameCertProvisioningState =>
+  typeof value === 'string'
+  && (HOSTNAME_CERT_PROVISIONING_STATES as ReadonlyArray<string>).includes(value);
+
 export const HOSTNAME_TLS_TOPOLOGIES = [
   'server_terminated',
   'upstream_terminated',
@@ -56,6 +84,11 @@ export interface HostnameStorageRow {
   cert_fingerprint?: string;
   cert_expires_at?: number;
   cert_chain_metadata?: HostnameCertChainMetadata;
+  /** Certificate PROVISIONING state — distinct from `ownership_status`. */
+  cert_provisioning?: HostnameCertProvisioningState;
+  /** Closed-list reason from the last failed attempt, for the UI to explain
+   *  WHY rather than just that something is wrong. */
+  cert_last_error?: string;
   ownership_status: HostnameOwnershipStatus;
   verification_method?: HostnameVerificationMethod;
   verification_token_hash?: string;
@@ -76,6 +109,8 @@ export interface HostnameProjection {
   cert_fingerprint?: string;
   cert_expires_at?: number;
   cert_chain_metadata?: HostnameCertChainMetadata;
+  cert_provisioning?: HostnameCertProvisioningState;
+  cert_last_error?: string;
   ownership_status: HostnameOwnershipStatus;
   verification_method?: HostnameVerificationMethod;
   listener_ports: ReadonlyArray<HostnameListenerPort>;
@@ -103,6 +138,8 @@ export interface HostnameAddRequest {
   cert_fingerprint?: string;
   cert_expires_at?: number;
   cert_chain_metadata?: HostnameCertChainMetadata;
+  cert_provisioning?: HostnameCertProvisioningState;
+  cert_last_error?: string;
   ownership_status?: HostnameOwnershipStatus;
   verification_method?: HostnameVerificationMethod;
   verification_token_hash?: string;
@@ -261,6 +298,11 @@ export const projectHostname = (row: HostnameStorageRow): HostnameProjection => 
     tls_topology: row.tls_topology,
   };
   if (row.cert_fingerprint !== undefined) projection.cert_fingerprint = row.cert_fingerprint;
+  // ⚠ Projected UNCONDITIONALLY when present, including 'pending' — the whole
+  //   point is that the UI can tell "not tried yet" from "failed, backing off",
+  //   which a missing field cannot express.
+  if (row.cert_provisioning !== undefined) projection.cert_provisioning = row.cert_provisioning;
+  if (row.cert_last_error !== undefined) projection.cert_last_error = row.cert_last_error;
   if (row.cert_expires_at !== undefined) projection.cert_expires_at = row.cert_expires_at;
   if (row.cert_chain_metadata !== undefined) projection.cert_chain_metadata = row.cert_chain_metadata;
   if (row.verification_method !== undefined) projection.verification_method = row.verification_method;

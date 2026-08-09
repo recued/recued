@@ -33,9 +33,25 @@
  *  server-side change (the server currently only reads from
  *  `Authorization` + `?token=`). Until that ships, query string is
  *  the only browser-reachable path. The bearer ciphertext at rest is
- *  AES-GCM-wrapped (`storage/token-store.ts`); plaintext leakage risk
- *  is bounded by the TLS pin + the short bearer lifetime + the
- *  webclient's own audit trail.
+ *  AES-GCM-wrapped (`storage/token-store.ts`).
+ *
+ *  ⛔ THE RESIDUAL RISK IS LARGER THAN THIS COMMENT USED TO CLAIM. It said the
+ *  leakage risk is "bounded by the TLS pin + the SHORT BEARER LIFETIME + the
+ *  webclient's own audit trail". There is no short bearer lifetime. The
+ *  `client_tokens` table (`backend/server/src/pairing/client-tokens.ts`) carries
+ *  `issued_at`, `last_used_at`, `revoked_at`, `revocation_reason` — and NO
+ *  expiry column and no expiry check anywhere. A paired bearer is valid until
+ *  someone revokes it, which for a device nobody revisits is forever. So a
+ *  bearer that reaches a proxy log, an access log, a crash report or browser URL
+ *  telemetry stays live indefinitely.
+ *
+ *  What actually bounds it: TLS in production, and `pair.revoke` — which is a
+ *  MANUAL, AFTER-THE-FACT control, not a lifetime. Treat the URL as a place the
+ *  secret is durably written, because it is. The real close-out is still the
+ *  subprotocol carrier (server-side `extractRealm` learning
+ *  `Sec-WebSocket-Protocol`, then this client offering it), and the second
+ *  candidate is giving `client_tokens` a real expiry so the claim above becomes
+ *  true instead of being deleted.
  *
  *  DD#2 — Pre-upgrade 401 surfaces as a generic transport drop, NOT
  *  a `WebclientReauthRequiredError`. A browser `WebSocket` cannot

@@ -24,6 +24,8 @@ import {
   type HostnameStorageRow,
   type HostnameTlsTopology,
   type HostnameVerificationMethod,
+  isHostnameCertProvisioningState,
+  type HostnameCertProvisioningState,
 } from '@recued/contracts';
 
 export const HOSTNAME_REGISTRY_TABLES = ['hostname_registry', 'cert_blob'] as const;
@@ -48,6 +50,8 @@ export const ensureHostnameRegistrySchema = (db: Database.Database): void => {
       cert_fingerprint TEXT,
       cert_expires_at INTEGER,
       cert_chain_metadata_json TEXT,
+      cert_provisioning TEXT,
+      cert_last_error TEXT,
       ownership_status TEXT NOT NULL DEFAULT 'pending' CHECK (ownership_status IN ('pending', 'verified', 'failed')),
       verification_method TEXT CHECK (verification_method IN ('cert_proof', 'http_token', 'dns_txt')),
       verification_token_hash TEXT,
@@ -64,6 +68,23 @@ export const ensureHostnameRegistrySchema = (db: Database.Database): void => {
     CREATE INDEX IF NOT EXISTS hostname_registry_by_status
       ON hostname_registry(ownership_status);
   `);
+
+  // Zero-migration: the columns are in the CREATE above for fresh dbs, but a
+  // registry from an earlier boot needs a guarded ALTER so it gains them
+  // without a destructive rebuild. PRAGMA-guarded ⇒ idempotent, safe every
+  // boot. Nullable on purpose — an existing row predates provisioning
+  // tracking, and NULL reads as "unknown", which the projection leaves absent
+  // rather than asserting a state it never observed.
+  const cols = new Set(
+    (db.prepare(`PRAGMA table_info(hostname_registry)`).all() as { name: string }[])
+      .map((c) => c.name),
+  );
+  if (!cols.has('cert_provisioning')) {
+    db.exec(`ALTER TABLE hostname_registry ADD COLUMN cert_provisioning TEXT`);
+  }
+  if (!cols.has('cert_last_error')) {
+    db.exec(`ALTER TABLE hostname_registry ADD COLUMN cert_last_error TEXT`);
+  }
 };
 
 export type HostnameRegistryErrorCode =
@@ -92,6 +113,8 @@ export interface HostnameRegistryUpsertInput {
   cert_fingerprint?: string;
   cert_expires_at?: number;
   cert_chain_metadata?: HostnameCertChainMetadata;
+  cert_provisioning?: HostnameCertProvisioningState;
+  cert_last_error?: string;
   ownership_status?: HostnameOwnershipStatus;
   verification_method?: HostnameVerificationMethod;
   verification_token_hash?: string;
@@ -130,6 +153,8 @@ interface HostnameRegistryDbRow {
   cert_fingerprint: string | null;
   cert_expires_at: number | null;
   cert_chain_metadata_json: string | null;
+  cert_provisioning: string | null;
+  cert_last_error: string | null;
   ownership_status: string;
   verification_method: string | null;
   verification_token_hash: string | null;
@@ -224,6 +249,14 @@ const rowToStorage = (row: HostnameRegistryDbRow): HostnameStorageRow => {
   if (row.cert_expires_at !== null) out.cert_expires_at = row.cert_expires_at;
   const certChainMetadata = parseCertChainMetadata(row.cert_chain_metadata_json);
   if (certChainMetadata !== undefined) out.cert_chain_metadata = certChainMetadata;
+  // NULL = a row written before provisioning tracking existed. Left ABSENT
+  // rather than defaulted to 'pending', which would assert a state never
+  // observed — an already-provisioned legacy row would read as "not started".
+  const certProvisioning = row.cert_provisioning;
+  if (certProvisioning !== null && isHostnameCertProvisioningState(certProvisioning)) {
+    out.cert_provisioning = certProvisioning;
+  }
+  if (row.cert_last_error !== null) out.cert_last_error = row.cert_last_error;
   if (row.verification_method !== null) {
     out.verification_method = row.verification_method as HostnameVerificationMethod;
   }
@@ -253,11 +286,13 @@ export const createHostnameRegistryStore = (
     INSERT INTO hostname_registry (
       hostname_id, server_identity_id, hostname_normalized, cert_source,
       cert_blob_id, cert_fingerprint, cert_expires_at, cert_chain_metadata_json,
+      cert_provisioning, cert_last_error,
       ownership_status, verification_method, verification_token_hash, verified_at,
       listener_ports_json, ddns_managed, enabled, tls_topology, created_at, updated_at
     ) VALUES (
       @hostname_id, @server_identity_id, @hostname_normalized, @cert_source,
       @cert_blob_id, @cert_fingerprint, @cert_expires_at, @cert_chain_metadata_json,
+      @cert_provisioning, @cert_last_error,
       @ownership_status, @verification_method, @verification_token_hash, @verified_at,
       @listener_ports_json, @ddns_managed, @enabled, @tls_topology, @created_at, @updated_at
     )
@@ -268,6 +303,8 @@ export const createHostnameRegistryStore = (
       cert_fingerprint = excluded.cert_fingerprint,
       cert_expires_at = excluded.cert_expires_at,
       cert_chain_metadata_json = excluded.cert_chain_metadata_json,
+      cert_provisioning = excluded.cert_provisioning,
+      cert_last_error = excluded.cert_last_error,
       ownership_status = excluded.ownership_status,
       verification_method = excluded.verification_method,
       verification_token_hash = excluded.verification_token_hash,
@@ -354,6 +391,9 @@ export const createHostnameRegistryStore = (
         cert_blob_id: input.cert_blob_id ?? null,
         cert_fingerprint: input.cert_fingerprint ?? null,
         cert_expires_at: input.cert_expires_at ?? null,
+        cert_provisioning: input.cert_provisioning ?? existing?.cert_provisioning ?? null,
+        cert_last_error: input.cert_last_error
+          ?? (input.cert_provisioning === 'ready' ? null : existing?.cert_last_error ?? null),
         cert_chain_metadata_json: input.cert_chain_metadata
           ? JSON.stringify(input.cert_chain_metadata)
           : null,

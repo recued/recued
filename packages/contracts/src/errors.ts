@@ -61,6 +61,20 @@ export type RecipeErrorCode =
    *  against a different MCP instance. Re-probe the connection to
    *  refresh the cache, or fix the recipe. */
   | 'MCP_TOOL_NOT_FOUND'
+  /** D-232 § 21 — an MCP tool that WAS REACHED and reported a failure: a
+   *  JSON-RPC error envelope, or a `tools/call` result carrying `isError: true`.
+   *
+   *  ⛔⛔ ITS WHOLE JOB IS TO NOT BE `NETWORK_ERROR`. Both outcomes used to land
+   *  on that code — a transport failure because it genuinely is one, and a tool
+   *  error because the gateway threw a bare `Error` and the step runner
+   *  DEFAULTED there. So "nobody answered" and "they answered and refused you"
+   *  were indistinguishable downstream, and § 21 could not tell `unavailable`
+   *  (come back later) from `error` (a human must look). Retrying the second
+   *  forever is the failure mode that costs something.
+   *
+   *  🔑 THE PEER WAS REACHED. That is the entire semantic content, and it is
+   *  what makes `NETWORK_ERROR` honest again for the case it names. */
+  | 'MCP_TOOL_ERROR'
   // D-177 P2b — connection-adapter classification gate
   /** A `connection-mcp-read` / `connection-mcp-write` dispatch named a
    *  tool the user has not enabled and classified for this connection
@@ -488,6 +502,7 @@ export const ERR: Record<RecipeErrorCode, ErrorSeverity> = {
   OAUTH_REVOKED: 'fatal',
   TOKEN_REFRESH_FAILED: 'error',
   MCP_TOOL_NOT_FOUND: 'error',
+  MCP_TOOL_ERROR: 'error',
   MCP_TOOL_NOT_CLASSIFIED: 'error',
   MCP_TRANSPORT_NOT_IMPLEMENTED: 'error',
   NOTIFICATION_TRANSPORT_NOT_IMPLEMENTED: 'error',
@@ -646,6 +661,7 @@ export const ERROR_MESSAGES: Record<RecipeErrorCode, string> = {
   OAUTH_REVOKED: 'The OAuth grant was revoked at the provider. Reconnect to restore access.',
   TOKEN_REFRESH_FAILED: 'A token refresh failed. Reconnect the account so the recipe can keep running.',
   MCP_TOOL_NOT_FOUND: 'The recipe asked for an MCP tool the server no longer exposes. Re-probe the connection or fix the recipe.',
+  MCP_TOOL_ERROR: 'The other server was reached and reported an error. This is not a connection problem — retrying unchanged will not help.',
   MCP_TOOL_NOT_CLASSIFIED: 'This MCP tool is not enabled and classified for this connection at the dispatched tier. Review it under Settings → Connections → Tools.',
   MCP_TRANSPORT_NOT_IMPLEMENTED: 'This MCP transport is not wired in this runtime version yet. Use the sse transport, or wait for the upgrade.',
   NOTIFICATION_TRANSPORT_NOT_IMPLEMENTED: 'This notification subtype is not wired in this runtime version yet. Use Slack, Telegram, or in-app, or wait for the upgrade.',
@@ -826,6 +842,7 @@ export const ERROR_ATTRIBUTION: Record<RecipeErrorCode, ErrorAttribution> = {
   OAUTH_REVOKED: 'environment',
   TOKEN_REFRESH_FAILED: 'environment',
   MCP_TOOL_NOT_FOUND: 'choice',
+  MCP_TOOL_ERROR: 'environment',
   MCP_TOOL_NOT_CLASSIFIED: 'owner',
   MCP_TRANSPORT_NOT_IMPLEMENTED: 'choice',
   NOTIFICATION_TRANSPORT_NOT_IMPLEMENTED: 'choice',

@@ -16,7 +16,7 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
     "slug": "personal-organizer-foundation",
     "publisher": "recued-core",
     "name": "Personal Organizer Foundation",
-    "description": "Day-1 personal-organizer pack per D-145 § A.6. Pre-installs on first server init and composes built-in work entities (`task` / `note` / `commitment` / `project`) with PA9 enrichment producers (`open_loop_pressure` / `project_stall_signal` / `project_next_action_gap` / `commitment_reliability_band` / `note_relevance_decay`) into ten recipes: 4 Layer-2 visible views (today / open-commitments / stalled-projects / recent-notes-by-topic), 2 Layer-1 silent producers reactive on inbound mail (extract-commitments-from-mail / extract-tasks-from-mail), 1 Layer-2 visible alert reactive on inbound mail (triage-inbox), D-193 reminders (chat capture plus hidden due notifier), and the schedule-recipe control for installed recipes. Ships three canonical Standing Instructions as conservative safety defaults: an approval gate on composing email to contacts the substrate has only ever seen mentioned (never sent / received-from); a `min_tier: mid` floor for `schedule_meeting` so timezone-sensitive proposals don't ride the cheapest tier; and a `ban_omission_class: permission_scope` clause for `recipe_invoke` so foundation-pack views surface permission gaps instead of silently truncating. The substrate is provided by D-145 PA1-PA9 + the existing kernel ingredients; this pack is the consumer that turns the substrate into Day-1 value.",
+    "description": "Use Personal Organizer Foundation in Recued for tasks, commitments, projects, and notes. It includes 10 ready-to-run workflows.",
     "version": 4,
     "pre_install": true,
     "recipes": [],
@@ -105,7 +105,7 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
     "slug": "reception-approval",
     "publisher": "recued-core",
     "name": "Reception — Approval",
-    "description": "Review-by-default approval reception. An incoming scoped approval (approve / confirm / pick a time / answer) lands a pending record; a review-then-approve workflow holds the materialize operation at the Gateway gate, where you approve (editing the resulting commitment first) or reject. Materializes a commitment to your local warehouse by default — no external connection required.",
+    "description": "Use Reception — Approval in Recued. It includes 1 built-in action. Actions that change data use Recued's approval controls.",
     "version": 1,
     "pre_install": true,
     "recipes": [],
@@ -247,7 +247,7 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
     "slug": "reception-drop",
     "publisher": "recued-core",
     "name": "Reception — Drop",
-    "description": "Review-by-default file-drop reception. A visitor uploads a file and it lands a pending record; a review-then-approve workflow holds the materialize operation at the Gateway gate, where you approve (editing the title / details / destination first) or reject. On approve it materializes a task in your local warehouse with the uploaded file attached (data.link role:'attachment', D-172) — no external connection required. Every upload is reviewed — there is no way to skip the gate.",
+    "description": "Use Reception — Drop in Recued. It includes 1 built-in action. Actions that change data use Recued's approval controls.",
     "version": 1,
     "pre_install": true,
     "recipes": [],
@@ -386,7 +386,7 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
     "slug": "reception-intake",
     "publisher": "recued-core",
     "name": "Reception — Intake",
-    "description": "Review-by-default intake reception. An incoming form submission lands in Reception Inbox; approval always retains the canonical response in Data. Store-only forms finish there, while forms with an entity target also materialize a task, note, or commitment — no external connection required.",
+    "description": "Use Reception — Intake in Recued. It includes 1 built-in action. Actions that change data use Recued's approval controls.",
     "version": 1,
     "pre_install": true,
     "recipes": [],
@@ -525,7 +525,7 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
     "slug": "reception-scheduling",
     "publisher": "recued-core",
     "name": "Reception — Scheduling",
-    "description": "Review-by-default scheduling reception (a booking front-door). A visitor picks a slot and the booking lands a pending record; a review-then-approve workflow holds the materialize operation at the Gateway gate, where you approve (editing the slot time / details first) or reject. Materializes a booking in your local warehouse — a mutable business record that owns its own slot and lifecycle (confirmed / completed / no_show / cancelled). A booking is never written to your calendar: the calendar is personal, a booking is business (D-210 A.2). Scheduling never auto-books (D-173 I-7).",
+    "description": "Use Reception — Scheduling in Recued. It includes 1 built-in action and 3 ready-to-run workflows. Actions that change data use Recued's approval controls.",
     "version": 4,
     "pre_install": true,
     "recipes": [
@@ -681,7 +681,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "ttl": 60,
     "metadata": {
       "name": "Extract commitments from mail (D-145 PA10)",
-      "description": "Extract commitments from an inbound email into Recued's commitment tracker — who promised what to whom, with optional deadline and monetary amount. Thread-aware: a reply like 'yes, please send that by Friday' binds to the prior message, not the reply. Fires automatically on each inbound message; records only extractions above the confidence floor (default 0.7), resolves the counterparty to a known contact when possible, and the extractor model sees only PII-aliased text, never the raw sender.",
+      "description": "Use “Extract commitments from mail” in Recued. Extract commitments from an inbound email into Recued's commitment tracker — who promised what to whom, with optional deadline and monetary amount. Thread-aware: a reply like 'yes, please send that by Friday' binds to the prior message, not the reply.",
       "author": "recued-core",
       "supported_platforms": [],
       "tags": [
@@ -1050,7 +1050,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "ttl": 60,
     "metadata": {
       "name": "Extract tasks from mail (D-145 PA10)",
-      "description": "Extract action items from an inbound email into Recued's task tracker — title, due date, and priority (low / medium / high). Thread-aware; fires automatically on each inbound message; records only extractions above the confidence floor (default 0.7). A task is assigned to a contact only when the mail explicitly delegates it to a named third party — otherwise it lands unassigned. The extractor model sees only PII-aliased text, never the raw sender.",
+      "description": "Use “Extract tasks from mail” in Recued. Extract action items from an inbound email into Recued's task tracker — title, due date, and priority (low / medium / high). Thread-aware; fires automatically on each inbound message; records only extractions above the confidence floor (default 0.7).",
       "author": "recued-core",
       "supported_platforms": [],
       "tags": [
@@ -1382,7 +1382,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "ttl": 60,
     "metadata": {
       "name": "Open commitments (D-145 PA10)",
-      "description": "Dashboard of open commitments and tasks per contact and project, sorted by each contact's follow-through reliability — dependable counterparties land on top so the easy wins get chased first. Auto-refreshes weekday morning and early afternoon; invoke any time for the current view.",
+      "description": "Use “Open commitments” in Recued. Dashboard of open commitments and tasks per contact and project, sorted by each contact's follow-through reliability — dependable counterparties land on top so the easy wins get chased first. Auto-refreshes weekday morning and early afternoon; invoke any time for the current view.",
       "author": "recued-core",
       "supported_platforms": [],
       "tags": [
@@ -1584,7 +1584,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "ttl": 60,
     "metadata": {
       "name": "Recent notes by topic (D-145 PA10)",
-      "description": "Surface your still-warm notes: ranks notes by ongoing relevance (recently touched and frequently referenced rise; dormant ones decay over 180 days) and shows the freshest decile. Private notes stay private by default. Auto-refreshes weekday mornings.",
+      "description": "Use “Recent notes by topic” in Recued. Surface your still-warm notes: ranks notes by ongoing relevance (recently touched and frequently referenced rise; dormant ones decay over 180 days) and shows the freshest decile. Private notes stay private by default.",
       "author": "recued-core",
       "supported_platforms": [],
       "tags": [
@@ -1706,7 +1706,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "ttl": 60,
     "metadata": {
       "name": "Remind me",
-      "description": "Capture a one-shot personal reminder as a Recued task. Resolve the requested time against the current date/time in your context, in the user's timezone, and pass remind_at as an absolute ISO 8601 timestamp with an explicit offset. The paired reminder-due-notifier recipe fans notification delivery through the user's configured channels.",
+      "description": "Use “Remind me” in Recued. Capture a one-shot personal reminder as a Recued task. Resolve the requested time against the current date/time in your context, in the user's timezone, and pass remindat as an absolute ISO 8601 timestamp with an explicit offset.",
       "author": "recued-core",
       "supported_platforms": [],
       "tags": [
@@ -1800,7 +1800,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "ttl": 60,
     "metadata": {
       "name": "Reminder due notifier",
-      "description": "Hidden reminder firing recipe. It watches Recued reminder tasks at due_at, sends a notification through default fanout, and marks the task state as fired so the reminder does not re-notify after the watcher ledger has fired.",
+      "description": "Use “Reminder due notifier” in Recued. It supports this workflow in the background and is not intended to be run directly.",
       "author": "recued-core",
       "supported_platforms": [],
       "tags": [
@@ -1913,7 +1913,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "requires": [],
     "metadata": {
       "name": "Reschedule a booking",
-      "description": "D-210 R-4 / A.2 — the owner's reschedule ignition for a BOOKING. Moves one data.booking row to a new slot via a single booking-update patch carrying slot_start_at AND slot_end_at. Deterministic: the owner picks the time (no AI writes it — LLM-as-editor is out of scope). A booking owns its own time and is never in the calendar (A.2), so this is how a reservation moves — there is no calendar event to update instead. The pair moves ATOMICALLY: booking-update refuses a half-supplied move, because keeping the old end against a new start would silently change the booking's duration. Triggered manually with config {booking_id, new_start_at, new_end_at} (unix ms) — the webclient reschedule control on a booking record fills them from the row's own slot, computing the new end from the current duration. Telling the visitor is an OWNER TICK on this run, not a trigger: set notify_visitor (and sender_mail_instance) and this recipe mails them that the booking moved. It is off unless the owner turns it on for this reschedule — a message to someone else is a judgement the owner makes per occasion. The address is never an argument and never reaches step state: notify-booking-visitor resolves it server-side from the booking's own reception_record_id, and does nothing (notified:false) when the booking did not come from a reception request. ⚠ This REPLACES a claim that a reactive notify-visitor-on-reschedule recipe did it on approval — that recipe had no trigger, no booking_id and no subscribers, so it could never fire (D-210 code audit finding 4). Re-running the same move is safe (the patch is idempotent and preserves the booking's identity, lifecycle_state and provenance).",
+      "description": "Use “Reschedule a booking” in Recued. It carries out the named workflow using the connections and settings you choose.",
       "author": "recued-core",
       "supported_platforms": [],
       "tags": [
@@ -2066,7 +2066,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "requires": [],
     "metadata": {
       "name": "Reschedule a booking (managed door)",
-      "description": "D-210 Appendix B — the RESCHEDULE ignition for the public /reception/manage door. Identical write to reschedule-booking (one core.work-entity.booking.update patching slot_start_at + slot_end_at) but WITHOUT an output.render block, so it can back a public reception door: a door whose recipe renders output cannot carry a write (bindReceptionDoor refuses it — an anonymous write holds and returns no output, so the visitor would get a bare page). Here the manage HANDLER owns the response (the held-request page), not the recipe, so the recipe renders nothing. Run by the manage handler under the anonymous reception actor + the door's minted contract: the booking-update write is pinned to the read ceiling and HOLDS at the D-157 gate — the owner approves it in the Reception Inbox (or on the go). config {booking_id, new_start_at, new_end_at} (unix ms) is supplied per-request by the manage handler — the TARGET (booking_id) is resolved server-side from the credential (a visitor cannot retarget), only the new time comes from the form. ⚠ The visitor is NOT auto-notified here, and that is deliberate: on this door the VISITOR asked for the move, so they already know. This used to claim a reactive notify-visitor-on-reschedule recipe told them on approval — that recipe had no trigger, no booking_id and no subscribers, so it could never fire (D-210 code audit finding 4). If the owner approves a DIFFERENT time than the visitor asked for, telling them is a deliberate act: run reschedule-booking with notify_visitor set. The slot pair moves ATOMICALLY: booking-update refuses a half-supplied move, so a re-run of the same times is safe and a partial one is impossible.",
+      "description": "Use “Reschedule a booking (managed door)” in Recued. It carries out the named workflow using the connections and settings you choose.",
       "author": "recued-core",
       "supported_platforms": [],
       "tags": [
@@ -2136,7 +2136,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "requires": [],
     "metadata": {
       "name": "Reschedule a calendar event",
-      "description": "D-210 R-4 — the owner's reschedule ignition for a PERSONAL calendar event. Moves ONE calendar event to a new start/end time via a single calendar-update patch. Deterministic: the owner picks the time (no AI writes it — LLM-as-editor is out of scope). ⚠ This does NOT move a booking. Since D-210 A.2 a booking is never in the calendar — it owns its own slot_start_at / slot_end_at — so a reservation is rescheduled with reschedule-booking instead, and only that path notifies the visitor. Triggered manually with config {calendar_slug, event_source_id, new_start_at, new_end_at} (unix ms) — the webclient reschedule control on a calendar record fills them from the event's own record, computing the new end from the current duration. calendar-update is idempotent and preserves the event's identity, so re-running the same move is safe.",
+      "description": "Use “Reschedule a calendar event” in Recued. It carries out the named workflow using the connections and settings you choose.",
       "author": "recued-core",
       "supported_platforms": [],
       "tags": [
@@ -2239,7 +2239,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "ttl": 60,
     "metadata": {
       "name": "Schedule recipe",
-      "description": "Create a recurring or one-shot schedule for an already installed Recued recipe. Accepts only an installed recipe_id plus timing fields — no inline recipe JSON or new steps. For one_shot, resolve run_at against the current date/time in your context, in the user's timezone, as an absolute ISO 8601 timestamp with an explicit offset.",
+      "description": "Use “Schedule recipe” in Recued. Create a recurring or one-shot schedule for an already installed Recued recipe. Accepts only an installed recipeid plus timing fields — no inline recipe JSON or new steps.",
       "author": "recued-core",
       "supported_platforms": [],
       "tags": [
@@ -2355,7 +2355,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "ttl": 60,
     "metadata": {
       "name": "Stalled projects (D-145 PA10)",
-      "description": "Today's intervention list for projects: those with no activity past the 14-day stall horizon, plus active projects with no next action (no open task, pending commitment, or recent note) — each with an AI-suggested next step. Auto-refreshes on weekdays.",
+      "description": "Use “Stalled projects” in Recued. Today's intervention list for projects: those with no activity past the 14-day stall horizon, plus active projects with no next action (no open task, pending commitment, or recent note) — each with an AI-suggested next step. Auto-refreshes on weekdays.",
       "author": "recued-core",
       "supported_platforms": [],
       "tags": [
@@ -2522,7 +2522,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "ttl": 60,
     "metadata": {
       "name": "Today (D-145 PA10)",
-      "description": "Morning glance card: today's calendar, the contacts and projects carrying the most open loops (unresolved commitments, tasks, unanswered threads), and active projects with no next action. Auto-refreshes weekday mornings (window configurable via start_hour / end_hour); invoke any time for a fresh snapshot.",
+      "description": "Use “Today” in Recued. Morning glance card: today's calendar, the contacts and projects carrying the most open loops (unresolved commitments, tasks, unanswered threads), and active projects with no next action.",
       "author": "recued-core",
       "supported_platforms": [],
       "tags": [
@@ -2716,7 +2716,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "ttl": 60,
     "metadata": {
       "name": "Triage inbox (D-145 PA10)",
-      "description": "Classify each inbound email into urgent_action / awaiting_response / fyi / promotional / spam and send an in-app notification for urgent_action + awaiting_response (subject, sender, suggested next action). Promotional / spam classify silently — no notification noise on bulk mail. Fires automatically on inbound mail; the classifier model sees only PII-aliased text, never the raw sender.",
+      "description": "Use “Triage inbox” in Recued. Classify each inbound email into urgentaction / awaitingresponse / fyi / promotional / spam and send an in-app notification for urgentaction + awaitingresponse (subject, sender, suggested next action). Promotional / spam classify silently — no notification noise on bulk mail.",
       "author": "recued-core",
       "supported_platforms": [],
       "tags": [

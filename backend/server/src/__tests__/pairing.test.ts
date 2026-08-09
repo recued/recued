@@ -313,6 +313,52 @@ describe('POST /auth/pair client_tokens issuance', () => {
     expect(pairedInstances.get('bridge-iid')?.kind).toBe('bridge');
   });
 
+  it('a rejected clientKind does NOT burn the pairing code — the retry still works', async () => {
+    // ⛔ `clientKind` used to be validated AFTER `pairing.pair(code)`, which
+    // CONSUMES the code. So a client that sent a typo'd kind paid for its 400
+    // with the user's one-shot code: the corrected retry then came back 401
+    // `invalid_code` for a code the user had just been shown, and the only way
+    // forward was a fresh code from the terminal. Validation now happens ahead
+    // of the consume.
+    //
+    // The retry is the assertion. A 400 on the first request proves nothing on
+    // its own — it was always 400; what changed is what the code is worth
+    // afterwards.
+    const code = pairing.refreshCode();
+    const bad = await fetch(`http://127.0.0.1:${server!.port}/auth/pair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, clientKind: 'webclientt', instanceId: 'typo-iid' }),
+    });
+    expect(bad.status).toBe(400);
+    expect((await bad.json() as { error: { code: string } }).error.code).toBe('bad_request');
+    // Nothing was seeded on the way to the refusal (the fake returns null for
+    // an absent row).
+    expect(pairedInstances.get('typo-iid') ?? null).toBeNull();
+
+    const retry = await fetch(`http://127.0.0.1:${server!.port}/auth/pair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, clientKind: 'webclient', instanceId: 'typo-iid' }),
+    });
+    expect(retry.status).toBe(200);
+    expect(pairedInstances.get('typo-iid')?.kind).toBe('webclient');
+  });
+
+  it('a malformed JSON body is a 400, not a 500', async () => {
+    // `readJsonBody` throws on a syntax error and the outer handler had no arm
+    // for it, so the failure fell to the catch-all: a 500 whose message was the
+    // raw parser text. A server-fault status for a caller-fault input, on a
+    // PRE-AUTH surface.
+    const res = await fetch(`http://127.0.0.1:${server!.port}/auth/pair`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{ not json',
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: { code: string } }).error.code).toBe('bad_request');
+  });
+
   it('rejects a re-pair that reuses a REVOKED instance_id (403, no resurrection)', async () => {
     const iid = 'revoked-resurrect-iid';
     // First pair seeds the durable row.

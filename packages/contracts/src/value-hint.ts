@@ -14,10 +14,35 @@
 /** D-179 P5b — `'file_slug'` formalizes a variable naming a REGISTERED
  *  file collection slug (the queue-sweeper drop dir). Install surfaces
  *  derive a "file access needed" disclosure from it and point the user
- *  at registration (`collection.file.enroll`). Note the authored set
- *  historically ran ahead of this union (`'connection'` /
- *  `'service_ref'` / `'array'` — see chat-catalog.ts CONTRACT_GAP);
- *  the structural validator accepts unknown hint types by design. */
+ *  at registration (`collection.file.enroll`).
+ *
+ *  ⚠ THE AUTHORED SET RUNS AHEAD OF THIS UNION, and always has. Measured
+ *  over `community/recipes/` on 2026-08-06 — 6,160 variable hints name a
+ *  type that is not a member below:
+ *
+ *      'string'      3,677 in 1,491 recipes
+ *      'connection'  1,836 in 1,811 recipes
+ *      'array'         591 in   359 recipes
+ *      'object'         46 in    37 recipes
+ *      'json'           10 in     9 recipes
+ *
+ *  🔑 THAT IS A RULING, NOT A BACKLOG. `validate/structural.ts` admits an
+ *  unknown TYPE — renderers fall back to `text`, a D-222 § 7 ruling —
+ *  while refusing an unknown KEY, which has no fallback. Consumers read
+ *  the field as a plain string on purpose: `chat-catalog.ts` casts and
+ *  branches on `'array'`, a type undeclared here (its CONTRACT_GAP note).
+ *
+ *  ⛔ SO DO NOT ADD ONE MEMBER TO CLOSE A TYPECHECK LANE. `'connection'`
+ *  is the obvious candidate — this note used to name it first — and
+ *  declaring it alone closes 29% of the gap while leaving `'string'`
+ *  undeclared in 1,491 recipes, so a lane blocked by this stays blocked
+ *  on the identical error. A member added without a renderer branch also
+ *  asserts support that D-222 § 7 says is a text fallback. Declare all
+ *  five WITH their renderers, or leave the cast; a partial union is the
+ *  worst of the two.
+ *
+ *  (Superseded text named `'service_ref'`, which no recipe authors, and
+ *  omitted `'string'` — the largest gap, by 2×.) */
 export type ValueHintType =
   | 'secret' | 'url' | 'text' | 'number' | 'boolean' | 'enum' | 'oauth'
   | 'file_slug'

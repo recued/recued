@@ -212,7 +212,7 @@ describe('handleConnectionDelete — remove_mirror_data gate', () => {
     const logActivity = vi.fn(async (_entry: ActivityEntry) => {});
 
     const out = await handleConnectionDelete(
-      { store, purgeConnectionData: purgeFn, auditLog: { logActivity }, now: () => 42 },
+      { store, purgeConnectionData: purgeFn, auditLog: { logActivity, listInboundContractIds: async () => [] }, now: () => 42 },
       { kind: 'api', name: 'my_hubspot', remove_mirror_data: true },
     );
 
@@ -232,7 +232,7 @@ describe('handleConnectionDelete — remove_mirror_data gate', () => {
     const logActivity = vi.fn(async () => {});
 
     const out = await handleConnectionDelete(
-      { store, purgeConnectionData: purgeFn, auditLog: { logActivity } },
+      { store, purgeConnectionData: purgeFn, auditLog: { logActivity, listInboundContractIds: async () => [] } },
       { kind: 'api', name: 'my_hubspot' },
     );
 

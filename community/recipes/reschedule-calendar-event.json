@@ -6,7 +6,7 @@
   "requires": [],
   "metadata": {
     "name": "Reschedule a calendar event",
-    "description": "D-210 R-4 — the owner's reschedule ignition for a PERSONAL calendar event. Moves ONE calendar event to a new start/end time via a single calendar-update patch. Deterministic: the owner picks the time (no AI writes it — LLM-as-editor is out of scope). ⚠ This does NOT move a booking. Since D-210 A.2 a booking is never in the calendar — it owns its own slot_start_at / slot_end_at — so a reservation is rescheduled with reschedule-booking instead, and only that path notifies the visitor. Triggered manually with config {calendar_slug, event_source_id, new_start_at, new_end_at} (unix ms) — the webclient reschedule control on a calendar record fills them from the event's own record, computing the new end from the current duration. calendar-update is idempotent and preserves the event's identity, so re-running the same move is safe.",
+    "description": "Use “Reschedule a calendar event” in Recued. It carries out the named workflow using the connections and settings you choose.",
     "author": "recued-core",
     "supported_platforms": [],
     "tags": [

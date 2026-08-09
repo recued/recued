@@ -6,10 +6,25 @@
  *  lookup; the public listener never invokes this handler (the
  *  listener-set only threads it onto the LAN router).
  *
- *  Off-grid scenario (the original FU#7 deferred concern): an air-
- *  gapped server is reachable on `192.168.x.x` from Mary's LAN-local
- *  browser. Mary opens `http://192.168.x.x/webclient/` and gets the
- *  full webclient PWA without ever loading `app.recued.com`.
+ *  Off-grid scenario (the original FU#7 deferred concern): an air-gapped
+ *  server is reachable on `192.168.x.x` and serves the full webclient PWA
+ *  without anyone loading `app.recued.com`.
+ *
+ *  ⛔ BUT NOT OVER PLAIN `http://192.168.x.x/webclient/`, and this header used
+ *  to say it was. A plain-http LAN IP is NOT a secure context, so
+ *  `crypto.subtle` is undefined — and the webclient's token store, ed25519
+ *  verifier and key generation are all built on it. `boot/secure-context-guard.
+ *  ts` detects exactly this and mounts the guided secure-access handoff instead
+ *  of letting every crypto call throw; a real load from another device on the
+ *  LAN reaches that screen, not the app. That guard is CORRECT — the browser
+ *  rule is not ours to opt out of — so what was wrong was this promise.
+ *
+ *  What actually works today: `http://localhost:<port>/` ON THE SERVER MACHINE
+ *  (loopback is a secure-context exception), or any device once the server has
+ *  trusted HTTPS (Pro DDNS + ACME, or an operator-provisioned cert). Another
+ *  phone or laptop over a bare LAN IP needs that HTTPS first. Serving these
+ *  files is still right — the handler is what a LAN HTTPS listener serves — but
+ *  the transport is a precondition, not an afterthought.
  *
  *  Substrate scope:
  *
@@ -26,11 +41,12 @@
  *    fall out at the regex layer.
  *  - MIME types derived from file extension (closed list — anything
  *    not in the list serves as `application/octet-stream`).
- *  - Cache headers: `index.html` + `manifest.json` (the entry points)
- *    short-cache; everything else `max-age=3600`. Bundle-content
- *    integrity guarantees come from the manifest verification at boot,
- *    not from per-asset hash querystrings — when the bundle changes,
- *    the manifest changes, the server reloads, the new bundle serves.
+ *  - Cache headers: every stable-named shell asset revalidates
+ *    (`SHORT_CACHE_PATHS`); only genuinely immutable assets take
+ *    `max-age=3600`. The build emits FIXED filenames, so revalidation is
+ *    the only freshness mechanism there is — see the note on that set.
+ *    Bundle-content integrity comes from manifest verification at boot,
+ *    not from per-asset hash querystrings.
  *  - Strict Content-Security-Policy header on every response — the
  *    webclient runs strictly within `'self'` for scripts + styles. The
  *    user-typed server URL is reached via `connect-src 'self' ws: wss:
@@ -137,15 +153,47 @@ const MIME_BY_EXT: Record<string, string> = {
   woff2: 'font/woff2',
   ttf: 'font/ttf',
   txt: 'text/plain; charset=utf-8',
+  // ⛔ MISSING until 2026-08-08, and the omission was invisible: the PWA
+  // manifest fell to `application/octet-stream`, which this handler serves
+  // WITH `X-Content-Type-Options: nosniff`. Chromium happens to parse a
+  // `<link rel="manifest">` anyway, so nothing errored — it just made the one
+  // file whose whole job is install identity the least portable thing served.
+  webmanifest: 'application/manifest+json',
 };
 
 const DEFAULT_MIME = 'application/octet-stream';
 
-/** Paths that need short cache: the entry-point `index.html` + the PWA
- *  `manifest.json`. Everything else is `public, max-age=3600` —
- *  bundles ship with hashed asset filenames so freshness comes from
- *  the URL changing, not from cache invalidation. */
-const SHORT_CACHE_PATHS = new Set(['index.html', 'manifest.json']);
+/** Paths that must not be cached: everything whose FILENAME IS STABLE across
+ *  builds, which — contrary to what this comment used to claim — is all of them.
+ *
+ *  ⛔ IT SAID: "`index.html` + the PWA `manifest.json` … everything else is
+ *  `max-age=3600` — bundles ship with hashed asset filenames so freshness comes
+ *  from the URL changing". Two things wrong with that, both silent:
+ *
+ *    1. THERE IS NO `manifest.json`. The file is `manifest.webmanifest`
+ *       (`apps/webclient/public/`), so this set matched nothing and the manifest
+ *       took the hour-long cache.
+ *    2. NOTHING IS HASHED. `apps/webclient/scripts/build.mjs` emits a FIXED
+ *       `webclient-main.js` (+ `.map`), and `sw.js` says so in capitals. So the
+ *       "freshness comes from the URL changing" premise is false for the one
+ *       asset it matters most for: a returning browser served
+ *       `max-age=3600` runs an hour-old bundle against a just-restarted server.
+ *
+ *  Until the build emits content-hashed names, correctness has to come from
+ *  revalidation, so the shell entry points revalidate and the long cache is
+ *  reserved for genuinely immutable assets (fonts, images). `no-cache,
+ *  must-revalidate` still allows a 304 — this costs a conditional request per
+ *  asset per load on a LAN, not a re-download. */
+const SHORT_CACHE_PATHS = new Set([
+  'index.html',
+  'manifest.webmanifest',
+  'boot-shell.js',
+  'sw.js',
+  'webclient-main.js',
+  'webclient-main.js.map',
+  'tokens.css',
+  'oauth-callback.html',
+]);
 
 const SHORT_CACHE_HEADER = 'no-cache, must-revalidate';
 const LONG_CACHE_HEADER = 'public, max-age=3600';

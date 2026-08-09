@@ -52,7 +52,10 @@ import type {
   InternalToolRegistry,
   WebChatTab,
 } from '@recued/contracts';
-import { primitiveGrantEntry } from '@recued/contracts';
+import { primitiveGrantEntry,
+  isGrantableKernelOp,
+  isRegisteredKernelOp,
+} from '@recued/contracts';
 import {
   KERNEL_OP_REGISTRY,
   CHAT_CATALOG_DELIVERY_MODES,
@@ -1119,6 +1122,28 @@ export const composeChatOrchestrator = (
     planApprovalStore: planApprovalStoreShared,
     inboundTokenStore,
     preflightExternalToolGrant: (toolName) => {
+      // D-232 § 20.20 — a KERNEL OP is grantable by its op id, and until now it
+      // was not: the registry holds Tier-1 natives, Tier-2 recipes and Tier-3
+      // connection tools, so `core.data.calendar.list` fell through to "not
+      // currently grantable" and there was NO name by which an owner could give
+      // a door a calendar read at all.
+      if (isRegisteredKernelOp(toolName)) {
+        if (!isGrantableKernelOp(toolName)) {
+          // Say WHY. "not currently grantable" reads as a bug for something the
+          // owner can see in the op list; these are excluded on purpose and the
+          // reason is short enough to give.
+          throw new Error(
+            `kernel op '${toolName}' is not grantable to a door: `
+            + `${toolName.startsWith('core.ai.')
+                ? 'a door is already an LLM, and the grant would spend the owner\'s inference budget'
+                : toolName.startsWith('core.watch.')
+                  ? 'a watcher is a trigger evaluator, not a callable read — pushes reach a door via recipe callbacks'
+                  : 'it is how a recipe pushes to a door, not something a door calls'}`
+            + ' (D-232 § 20.20).',
+          );
+        }
+        return;
+      }
       const entry = internalRegistry.getByName(toolName);
       if (entry === null) {
         throw new Error(`tool '${toolName}' is not currently grantable`);

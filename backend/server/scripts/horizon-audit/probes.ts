@@ -26,7 +26,7 @@ import { RUNTIME_SCHEMA_MAP } from '@recued/config';
 import type { BootedServer } from './boot.js';
 import type { CycleRecord } from './sweep.js';
 import type { RpcConn } from './unlock-vault.js';
-import { driveChatTurn } from './install-packs.js';
+import { createRecordViaRecipe, driveChatTurn } from './install-packs.js';
 
 export interface ProbeContext {
   readonly db: Database.Database;
@@ -712,8 +712,37 @@ const mcpRecipeCallbackPrune: Probe = {
 const recordsOutbox: Probe = {
   drivenBy:
     'real record mutation via an installed pack (decision-log / log-decision, '
-    + 'whose record.created watcher is what enqueues the delivery) + direct '
-    + 'tick (registered cadence 1s)',
+    + 'whose stamp-decision-review watcher enqueues the delivery) driven AT '
+    + 'SWEEP TIME + direct tick (registered cadence 1.2s)',
+  /** ⛔ THE WORK HAS TO BE MADE HERE, NOT AT SUBSTRATE-INSTALL TIME.
+   *
+   *  This probe read as "undrivable — seeded=0" for the whole audit, and the
+   *  diagnosis in its note ("a pending DELIVERY needs a records WATCHER") was
+   *  WRONG: `stamp-decision-review` ships in the same pack and declares exactly
+   *  the `record.created` / `kind: decision` trigger required. The delivery was
+   *  being enqueued all along.
+   *
+   *  It was simply already GONE. This interval's cadence is 1.2s
+   *  (`every 0.02m`, `fireImmediate`) — the shortest in the codebase — and the
+   *  record was created during substrate install, minutes before the sweep
+   *  reached this probe once the run started making live model calls. The real
+   *  timer drained it, `seed()` counted the survivors, and found none.
+   *
+   *  Same broken assumption as `reception-rate-snapshot`: `boot.ts` states
+   *  "every registered cadence is >= 60s and the sweep runs in seconds, so no
+   *  timer fires on its own during a run". Two intervals are faster than that,
+   *  and the run is no longer measured in seconds.
+   *
+   *  ⚠ Still the REAL path — a genuine record mutation through the installed
+   *  pack, whose watcher enqueues a genuine delivery. Only the MOMENT moves. */
+  prepare: async (ctx) => {
+    if (!ctx.conn) return;
+    await createRecordViaRecipe(ctx.conn, 'log-decision', {
+      title: `Outbox drive ${ctx.now}`,
+      rationale: 'a delivery the sweep can still observe',
+      review_in_days: 90,
+    }).catch(() => undefined);
+  },
   seed: (ctx) =>
     count(
       ctx,
@@ -721,6 +750,20 @@ const recordsOutbox: Probe = {
          JOIN core_record_outbox o ON o.event_id = d.event_id
         WHERE o.status = 'pending' AND d.status = 'pending'`,
     ),
+  /** ⛔ THE DRAIN IS ASYNC BEHIND A RE-ENTRANCY LATCH, so a tick that returns
+   *  is not a tick that ran. `wire-records-outbox`'s tick is
+   *  `if (running) return;` — with a real 1.2s timer also firing, four driven
+   *  ticks in ~20ms can ALL no-op against a latch held by an in-flight drain,
+   *  and the sweep would read "pending never moved" as a product defect.
+   *
+   *  ⚠ Which is exactly what happened on the first drivable run: 4 cycles,
+   *  `due 1 → 1`, retry stuck at 10. Waiting is what separates "the drain is
+   *  wedged" from "the harness outran it" — and the two must not be reported
+   *  as the same thing.
+   *
+   *  2s covers one full 1.2s interval plus a delivery, which is a recipe
+   *  execution rather than a table write. */
+  settle: async () => { await new Promise((r) => setTimeout(r, 2_000)); },
   pending: (ctx) =>
     count(
       ctx,
@@ -765,14 +808,13 @@ const recordsOutbox: Probe = {
     );
   },
   note:
-    'a pending DELIVERY needs a records WATCHER — `insertDelivery` only fires '
-    + 'for matching subscriber bindings, and an untargeted event is terminal on '
-    + 'the spot. The corpus watchers were both blocked (job-status-board needs '
-    + 'a gateway-minted context.caller.contract_id; field-service-day-plan '
-    + 'needs a nominatim connection), so `decision-log` was authored to close '
-    + 'the gap. ⚠ The delivery here FAILS and retries — that is the point: it '
-    + 'exercises the retry path rather than the happy one, and the invariant '
-    + 'is bounded progress toward dead_letter, not immediate drain.',
+    'drives the real chain: log-decision creates a `decision` record, the '
+    + 'pack\'s own `stamp-decision-review` watcher (record.created / '
+    + 'kind:decision) is the matching subscriber, and THAT enqueues the '
+    + 'delivery this drains. ⚠ Needs BOTH a sweep-time mutation and a settle: '
+    + 'the record must be made after the 1.2s timer stops eating it, and the '
+    + 'drain is async behind a re-entrancy latch, so a tick that returns is '
+    + 'not a tick that ran.',
 };
 
 
@@ -1075,4 +1117,26 @@ export const NOT_DRIVABLE: Record<string, string> = {
   'hostname-reconciliation-daily':
     'reconciles against externally-observed hostname state (DNS + cert SANs); '
     + 'no local seam produces a genuine divergence to reconcile',
+  // ⛔ MOVED OUT OF THE "no probe written" BUCKET, which is where a run of this
+  //    harness found it — the only subsystem unaudited by OMISSION rather than
+  //    by verdict, and the two must not read alike. Checked against the object
+  //    rather than assumed (three `⊘`s in this audit were overturned by doing
+  //    exactly that): `tick` gates on a reserved Pro handle, an enrollable
+  //    `subscription_state`, a server identity and a hostname, so on the bench
+  //    seed it returns at `skip('no handle state yet')` every cycle. Seeding a
+  //    handle would drive the Pro branch a free self-host never takes — the
+  //    same objection already recorded for `ddns-update-poll`.
+  //
+  // 🔑 Its one horizon-shaped property IS covered, just not here: the `inFlight`
+  //    guard whose own comment warns it would "wedge enrollment for the life of
+  //    the process" if it stuck true. `pro-cert-enrollment.test.ts` pins both
+  //    halves — "does NOT re-enter while an issuance is still in flight" and
+  //    "releases the guard when a precondition gate returns early". Undrivable
+  //    HERE is not unasserted everywhere, and saying which is the point.
+  'pro-cert-enrollment':
+    'first-issuance enrollment for a Pro DDNS handle; every tick gates on a '
+    + 'reserved handle + enrollable subscription_state + server identity, so it '
+    + 'is a no-op on the bench seed and seeding one would drive a Pro-only '
+    + 'branch. Its re-entrancy/guard-release invariants are covered by '
+    + 'pro-cert-enrollment.test.ts instead',
 };

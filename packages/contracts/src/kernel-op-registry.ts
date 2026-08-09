@@ -347,6 +347,18 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   op('core.storage.shared.write', 'storage', 'shared-write', 'write'),
   op('core.storage.shared.compare-and-set', 'storage', 'shared-compare-and-set', 'write'),
   op('core.storage.shared.read', 'storage', 'shared-read', 'read'),
+  // D-232 § 23 — the asker's own question. `output.exchange` returns a ref, and
+  // until this op the ref addressed nothing a RECIPE could query: the audit
+  // lookup behind it was wired only to the AI door, so a model could ask what
+  // happened to an exchange and the recipe that started it could not.
+  // ⚠ `read` risk and grantable (§ 20.20): naming a ref you already hold and
+  // being told whether it was delivered confers nothing.
+  // ⚠ NAMED UNDER `storage`, not a new `exchange` domain — the registry asserts
+  // at BOOT that an op's domain segment is a registered closed kind, and caught
+  // both halves of getting this wrong in turn. The backing ingredient's own
+  // `kind` is `storage` and the answer is an audit read, so `storage` is the
+  // honest home rather than a domain invented for one op.
+  op('core.storage.exchange.status', 'storage', 'exchange-status', 'read'),
   op('core.storage.shared.delete', 'storage', 'shared-delete', 'write'),
   op('core.storage.shared.delete-prefix', 'storage', 'shared-delete-prefix', 'destructive'),
   op('core.storage.shared.list', 'storage', 'shared-list', 'read'),
@@ -702,6 +714,59 @@ const KERNEL_OP_BY_BACKING_SLUG: ReadonlyMap<string, string> = new Map(
  *  `core.crm.*` / `core.acct.*` are NOT here — slice 2 handles them
  *  verb-derived.) */
 export const getKernelOp = (opId: string): KernelOpEntry | undefined => KERNEL_OP_BY_ID.get(opId);
+
+/** D-232 § 20.20 — the kernel ops a DOOR may never be granted directly.
+ *
+ *  ⛔ THIS IS A USEFULNESS FENCE, NOT A SAFETY ONE, and the distinction is the
+ *  whole point. Everything dangerous on this registry stays GRANTABLE and is
+ *  gated by RISK — `core.data.calendar.delete` is `destructive`, `core.dom.write`
+ *  actuates the owner's browser, and both remain grantable because invasive is a
+ *  reason to GATE, not a reason to make un-nameable. What is excluded here is
+ *  excluded because granting it accomplishes nothing for the holder.
+ *
+ *  Two classes, plus one hazard:
+ *
+ *  1. `core.ai.*` — a door IS an LLM, so granting it `summarize` asks the owner's
+ *     model to do what the caller already does. 🔑 And the real reason is SPEND:
+ *     every call runs on the owner's free-pool quota or BYOK key, so the grant
+ *     transfers COST, not capability. ⚠ A RECIPE using `ai-*` internally is
+ *     untouched — this governs only what a door may call DIRECTLY.
+ *
+ *  2. `core.watch.*` — a watcher is a TRIGGER EVALUATOR the engine runs against
+ *     its own cursor state to answer "should this run fire". A door calling one
+ *     receives a verdict, not data. ⇒ And excluding them forecloses no future
+ *     push capability, because push is the opposite DIRECTION from a grant: a
+ *     grant says what a door may CALL, a callback says what the server may SEND.
+ *     That path already exists (see 3).
+ *
+ *  3. `core.notification.recipe-callback` — how a RECIPE pushes a pointer to a
+ *     door. A DOOR holding it could queue notifications at OTHER doors: no use to
+ *     the caller, and a small cross-door hazard. Excluded from direct grant,
+ *     untouched for recipes.
+ *
+ *  ⚠ Deliberately NOT excluded, though each was considered:
+ *  `core.mail.sent.reconcile` / `core.storage.file.set-scan-status` (internal
+ *  bookkeeping — no use, but both are `write` and therefore already ask, so
+ *  excluding them would be tidiness posing as safety), and `core.dom.*` (a door
+ *  driving the owner's browser is a REAL capability to offer, gated by risk). */
+export const KERNEL_OP_GRANT_EXCLUSIONS: ReadonlySet<string> = new Set(
+  KERNEL_OP_REGISTRY
+    .filter((e) => e.domain === 'ai' || e.domain === 'watch')
+    .map((e) => e.op)
+    .concat(['core.notification.recipe-callback']),
+);
+
+/** D-232 § 20.20 — may a door be granted this kernel op directly? True for every
+ *  registered op outside {@link KERNEL_OP_GRANT_EXCLUSIONS}, including the
+ *  destructive ones: risk gates them, grantability does not.
+ *
+ *  ⛔ Derived from the registry, never a hand-listed allowlist. A kernel op added
+ *  tomorrow is grantable by default, which is the correct direction for a
+ *  USEFULNESS fence — the failure mode of forgetting to add one is "the owner
+ *  cannot grant something useful", not "a door reaches something it should not".
+ *  The reverse (a hand-listed grantable set) would fail the other way. */
+export const isGrantableKernelOp = (opId: string): boolean =>
+  KERNEL_OP_BY_ID.has(opId) && !KERNEL_OP_GRANT_EXCLUSIONS.has(opId);
 
 /** True iff `opId` is a registered closed-kind kernel op (ordinary OR native).
  *  Use {@link isNativeKernelOp} to exclude native verb-ops where recipe

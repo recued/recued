@@ -1,6 +1,6 @@
 import type { TransformFn } from './types.js';
 
-import { filter, sort, map, project, reduce, unique, flatten, slice, group_by, enrich_by, to_list, partition } from './collection.js';
+import { filter, sort, map, project, reduce, unique, flatten, slice, chunk, group_by, enrich_by, to_list, partition } from './collection.js';
 import {
   merge, prefix_keys, pick, omit, rename, set, json_byte_length,
   json_stringify, json_parse, csv_parse, utf8_byte_length, sha256,
@@ -120,7 +120,7 @@ export type { AhoCorasick, AhoCorasickMatch } from './aho-corasick.js';
 export const TRANSFORMS: ReadonlyMap<string, TransformFn> = new Map([
   // Collection
   ['filter', filter], ['sort', sort], ['map', map], ['project', project], ['reduce', reduce],
-  ['unique', unique], ['flatten', flatten], ['slice', slice], ['group_by', group_by], ['enrich_by', enrich_by], ['to_list', to_list],
+  ['unique', unique], ['flatten', flatten], ['slice', slice], ['chunk', chunk], ['group_by', group_by], ['enrich_by', enrich_by], ['to_list', to_list],
   ['partition', partition],
   // Object
   ['merge', merge], ['prefix_keys', prefix_keys], ['pick', pick], ['omit', omit], ['rename', rename], ['set', set],

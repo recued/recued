@@ -805,3 +805,114 @@ describe('buildEnrichmentProducerTask — D-132 P2 instance stamping', () => {
     expect(detTask.meta.idle_eligible).toBeUndefined();
   });
 });
+
+// ────────────────────────────────────────────────────────────────
+// OWN-WALK AI producers — the other half of the pool-policy contract
+// ────────────────────────────────────────────────────────────────
+
+/** ⛔ THE GAP THE TESTS ABOVE COULD NOT SEE, and they are green.
+ *
+ *  Every pool-unsatisfiable case above drives `buildEnrichmentProducerTask` —
+ *  the PER-RECORD harness — which catches `AI_LLM_UNAVAILABLE` itself and
+ *  translates it to a yield. That path is covered and correct.
+ *
+ *  OWN-WALK AI producers do not ride that harness. `ai-producer-wrapper.ts`
+ *  names them (`lifecycle_stage_inferred*`, `topic_cluster`, `company`, `role`)
+ *  and its contract says it THROWS when "LLM call propagates its own
+ *  `LLMError`". Nothing translated it, so the same condition ERRORED — and
+ *  three errors auto-disable the task, permanently, until the retry window or a
+ *  manual Reset.
+ *
+ *  🔑 FOUND BY THE LONG-HORIZON HARNESS driving a real idle cycle: two producers
+ *  ERRORED where ten gated off cleanly. The fix is at the SCHEDULER, which is
+ *  where `consecutive_errors` is decided and therefore covers both walks. */
+describe('D-132 — an unsatisfiable pool yields on the OWN-WALK path too', () => {
+  const ownWalkTask = (step: HousekeepingTaskInstance['step']): HousekeepingTaskInstance => ({
+    meta: {
+      id: 'enrichment.lifecycle_stage_inferred',
+      description: '',
+      interruptible: true,
+      kind: 'enrichment',
+    },
+    topic: 'purpose' as EnrichmentTopic,
+    is_ai_surface: true,
+    step,
+  });
+
+  const drive = async (step: HousekeepingTaskInstance['step']) => {
+    trustStore.write(
+      'purpose' as EnrichmentTopic,
+      { trust_state: 'auto', pool_policy: 'free_only' },
+      now,
+    );
+    const sched = createHousekeepingScheduler({
+      ctx: baseCtx({ trustStore }),
+      config: configStore,
+      state: stateStore,
+      busy: createEngineBusySignal({ instances: { list: () => [] } as never }),
+      trustStore,
+      registry: () => [ownWalkTask(step)],
+    });
+    const out = await sched.runOnce({ task_id: 'enrichment.lifecycle_stage_inferred' });
+    return {
+      out,
+      row: stateStore.get('enrichment.lifecycle_stage_inferred'),
+    };
+  };
+
+  const poolError = () => {
+    throw new LLMError(
+      'AI_LLM_UNAVAILABLE',
+      'No LLM source matches requirements (speed: fast, json, forceLayer: free)',
+      { forceLayer: 'free' },
+    );
+  };
+
+  it('⛔ yields instead of erroring', async () => {
+    const { out } = await drive(poolError as never);
+    expect(out.per_task[0]?.status).toBe('yield');
+    // The cycle tallies are what the harness and the Settings UI report; a
+    // per-task yield that still counted as errored would read the same as the
+    // bug to anyone looking at the summary.
+    expect(out.tasks_yielded).toBe(1);
+    expect(out.tasks_errored).toBe(0);
+  });
+
+  it('⛔ does NOT bump consecutive_errors — the auto-disable counter', async () => {
+    // The whole consequence: three of these disables the producer.
+    await drive(poolError as never);
+    await drive(poolError as never);
+    await drive(poolError as never);
+    const row = stateStore.get('enrichment.lifecycle_stage_inferred');
+    expect(row?.consecutive_errors ?? 0).toBe(0);
+  });
+
+  it('⛔ reports the reason the contract already had a member for', async () => {
+    const { row } = await drive(poolError as never);
+    expect(row?.last_yield_reason).toBe('pool_policy_unsatisfiable');
+  });
+
+  it('⛔ KNOWN NEGATIVE: an ordinary failure still errors and still counts', async () => {
+    // The fix must not disable the auto-disable — that exists so a genuinely
+    // broken task stops burning idle cycles forever.
+    const { out, row } = await drive((() => {
+      throw new Error('storage shape mismatch');
+    }) as never);
+    expect(out.per_task[0]?.status).toBe('error');
+    expect(row?.consecutive_errors).toBe(1);
+  });
+
+  it('⛔ discriminates on the CODE, not the message text', async () => {
+    // A plain Error whose text merely READS like a pool failure must still be
+    // an error: matching the rendered string would break on a reword and would
+    // swallow unrelated failures that happen to mention a model.
+    const { out, row } = await drive((() => {
+      throw new Error(
+        'No LLM source matches requirements (speed: fast, json, forceLayer: free)',
+      );
+    }) as never);
+    expect(out.per_task[0]?.status).toBe('error');
+    expect(row?.consecutive_errors).toBe(1);
+  });
+});
+

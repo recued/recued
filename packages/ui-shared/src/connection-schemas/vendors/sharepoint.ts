@@ -18,7 +18,9 @@
  *       hand-copied `config.drive_id` (the advanced override, for a non-default
  *       library). Enrollment requires exactly one; the resolver writes `drive_id`
  *       so the leaf always reads the same field at runtime.
- *    2. The Entra app needs the `Sites.Read.All` delegated Graph permission
+ *    2. The Entra app needs the `Sites.Read.All` + `Sites.ReadWrite.All` delegated
+ *       Graph permissions (the write half added 2026-08-07 — see
+ *       `ONEDRIVE_OAUTH_SCOPES` for the owner decision and its cost)
  *       (OneDrive's `Files.Read` is scoped to the user's own OneDrive and 403s
  *       on a SharePoint site drive — which the leaf surfaces gracefully as a
  *       `policy` outcome, and the site→drive resolver surfaces as a clear
@@ -98,7 +100,8 @@ const SHAREPOINT_FIELDS: readonly ConnectionField[] = [
     help:
       'Paste your SharePoint site’s URL — Recued resolves the site’s default '
       + 'document library automatically when you connect. Needs the '
-      + '`Sites.Read.All` permission on your Entra app. Leave blank only if you '
+      + '`Sites.Read.All` and `Sites.ReadWrite.All` permissions on your Entra app. '
+      + 'Leave blank only if you '
       + 'paste the drive ID directly below.',
   },
   // The ADVANCED override — a hand-copied Graph drive id. Optional: leave blank
@@ -133,9 +136,10 @@ const SHAREPOINT_FIELDS: readonly ConnectionField[] = [
     help:
       'From your Microsoft Entra app — entra.microsoft.com → App registrations → '
       + 'your app → Overview → Application (client) ID. Grant it the '
-      + '`Sites.Read.All`, `offline_access`, and `User.Read` delegated Microsoft '
-      + 'Graph permissions (SharePoint libraries need `Sites.Read.All`, not the '
-      + 'OneDrive-only `Files.Read`).',
+      + '`Sites.Read.All`, `Sites.ReadWrite.All`, `offline_access`, and `User.Read` '
+      + 'delegated Microsoft Graph permissions (SharePoint libraries need the '
+      + '`Sites.*` pair — the OneDrive-only `Files.*` scopes cannot reach a site '
+      + 'drive).',
   },
   {
     key: 'auth.client_secret',

@@ -49,6 +49,8 @@ import {
   SUBRESOURCE_PATH_MAX_LEN,
   validateHeaderAuthEntries,
   describeHeaderAuthIssue,
+  validateBodyFieldAuthEntries,
+  describeBodyFieldAuthIssue,
   MESSAGE_MATCH_CONFIG_KEY,
   validateMessageMatchPatterns,
   requestSignatureSecrets,
@@ -71,6 +73,9 @@ import {
   resolveBearerAccessToken,
   MESSENGER_PROBE_TOKEN_PLACEHOLDER,
   vendorHasEngagement,
+  effectiveConnectionHealth,
+  diagnosePeerBinding,
+  MCP_PEER_CONTRACT_CONFIG_KEY,
 } from '@recued/contracts';
 import type {
   ConnectionAuth,
@@ -270,7 +275,10 @@ export interface ConnectionRpcDeps {
    *  (the teardown is itself provenance; spec § 3 "Never" tier). Only written
    *  when a purge actually ran. Optional — absent → the purge still runs, just
    *  without the ledger row. */
-  auditLog?: Pick<AuditLogStore, 'logActivity'>;
+  // D-232 § 27 — `listInboundContractIds` joins `logActivity` here: the peer
+  // binding handshake is answered from the audit trail (who has actually called
+  // this server), so the connection list needs to read it as well as write to it.
+  auditLog?: Pick<AuditLogStore, 'logActivity' | 'listInboundContractIds'>;
   /** D-165 follow-on — operation-group grant management. When wired, the
    *  `grant/revoke/listOperationGroup` rpcs persist user-manual grants to the
    *  durable `contract.grant` store (`ContractGrantStore`, keyed under the
@@ -757,27 +765,38 @@ const ensureOptionalTokenAuthStyleField = (
   }
 };
 
-/** ⛔ Request signing is an `api`-kind concept and must be refused elsewhere.
+/** ⛔ Auth types only the `api` adapter can apply, refused on every other kind.
  *
  *  `VALID_AUTH_TYPES` is DERIVED from `CONNECTION_AUTH_TYPES`, which is what
  *  keeps the vocabulary from drifting — but it also means a new member becomes
  *  enrollable on every kind the moment it is added. An `mcp` or `notification`
- *  row carrying a signing credential would enroll green and then fail on every
- *  use: neither adapter can sign, and both refuse unknown auth shapes at
- *  dispatch. Refusing at enroll turns that into an answerable error.
+ *  row carrying one of these would enroll green and then fail on every use:
+ *  neither adapter can sign or write a JSON request body, and both refuse
+ *  unknown auth shapes at dispatch. Refusing at enroll turns that into an
+ *  answerable error.
+ *
+ *  ⚠ `body_field` joined for the same reason and one more: its injection lives
+ *  entirely in the api adapter's `injectAuth`, so an mcp row would carry a
+ *  credential nothing would ever send — a connection that looks configured and
+ *  silently authenticates as nobody.
  *
  *  ⚠ Called on the UPDATE path too, for the reason the messenger gate beside it
  *  records: otherwise a row enrolls as `bearer` and is patched into the
  *  unusable shape through the back door. */
+const API_ONLY_AUTH_TYPES: ReadonlySet<ConnectionAuth['type']> = new Set([
+  'request_signature',
+  'body_field',
+]);
+
 const ensureSigningAuthKind = (
   where: string,
   kind: ConnectionKind,
   auth: ConnectionAuth | undefined,
 ): void => {
-  if (auth?.type !== 'request_signature' || kind === 'api') return;
+  if (auth === undefined || !API_ONLY_AUTH_TYPES.has(auth.type) || kind === 'api') return;
   throw new RpcError(
     'bad_request',
-    `${where}: auth.type 'request_signature' is only valid on an api connection (got ${kind})`,
+    `${where}: auth.type '${auth.type}' is only valid on an api connection (got ${kind})`,
   );
 };
 
@@ -819,6 +838,20 @@ const ensureAuth = (where: string, auth: unknown): ConnectionAuth => {
       requireSafeAuthNameField(where, auth, 'param_name');
       requireStringField(where, auth, 'value');
       break;
+    // ⚠ Not compiler-forced — this switch has no exhaustiveness guard, so an
+    // unvalidated member enrolls cleanly and fails at every dispatch instead of
+    // at the form. Same shape rules as `header`; the shared walker in contracts
+    // is the single authority for both.
+    case 'body_field': {
+      const res = validateBodyFieldAuthEntries((auth as Record<string, unknown>).fields);
+      if (!res.ok) {
+        throw new RpcError(
+          'bad_request',
+          `${where}: auth.fields ${describeBodyFieldAuthIssue(res.issue)}`,
+        );
+      }
+      break;
+    }
     case 'request_signature':
       requireStringField(where, auth, 'api_key');
       requireStringField(where, auth, 'secret_key');
@@ -1080,6 +1113,13 @@ export const handleConnectionList = async (
   const engagementRegistry = deps.resolveVendorRegistry?.();
   const listedKey = deps.getEncryptionKey?.();
   const canReadAuthType = deps.getEncryptionKey === undefined || listedKey !== null;
+  // ⚠ Resolved ONCE for the whole list, not per row: it is an app-side scan of
+  // the audit log, and doing it per connection would turn a Settings page render
+  // into N scans. Absent audit log ⇒ empty ⇒ every binding reports `unheard`,
+  // which is the honest answer when there is no traffic record to consult.
+  const heardContractIds = deps.auditLog === undefined
+    ? []
+    : await deps.auditLog.listInboundContractIds(200).catch(() => []);
   const connections = await Promise.all(rows.map(async (row) => {
       const view = connectionViewFromRow(row);
       // Settings-only, non-secret revision. Keep it out of the shared resolver
@@ -1112,6 +1152,51 @@ export const handleConnectionList = async (
       // entities (api rows only) so the UI can show the engagement-health toggle
       // for a pack-declared CRM too, not just the built-in hubspot/salesforce.
       // `view.vendor` is the flattened `config.vendor`; a vendor-less row → false.
+      // ⛔⛔ D-232 § 22 — PROJECT HEALTH. `health_json` is a
+      // CONNECTION_VIEW_RESERVED_FIELD, so it is stripped from the view and
+      // nothing re-added a parsed form: `collection.connection.list` has never
+      // returned health at all. That made the field invisible to every consumer
+      // — the Settings panel, a fail-fast gate, and the two-server drive, which
+      // read `(none)` and reported "real traffic does not write health" while the
+      // server log showed it writing it three times.
+      // 🔑 A WRITE NOBODY CAN READ IS INDISTINGUISHABLE FROM NO WRITE. The whole
+      // § 22 loop looked broken for exactly this reason.
+      // ⚠ `effectiveConnectionHealth` decays a stale `ok` to `unknown` — an
+      // observation from an hour ago is not a claim about now. Failures do NOT
+      // decay: an unreachable peer does not become "maybe fine" by being ignored.
+      const storedHealth = ((): ConnectionHealth | undefined => {
+        if (row.health_json === undefined || row.health_json === null) return undefined;
+        try {
+          const parsed: unknown = JSON.parse(row.health_json);
+          return isRecord(parsed) ? (parsed as unknown as ConnectionHealth) : undefined;
+        } catch {
+          return undefined;
+        }
+      })();
+      // ⛔⛔ D-232 § 27 — THE HANDSHAKE. A declared `peer_contract_id` is only
+      // confirmable by the peer CALLING, so this compares the binding against
+      // the contracts this server has actually been called by. It catches the
+      // one mistake enroll-time validation structurally cannot: a BACKWARDS
+      // binding is non-empty, unique and well-formed, so nothing local tells it
+      // from a correct one — and it silently routes that peer's answers LOCAL,
+      // making the server answer itself and report success.
+      if (view.kind === 'mcp') {
+        const declared = (() => {
+          try {
+            const cfg = JSON.parse(row.config_json ?? '{}') as Record<string, unknown>;
+            const v = cfg[MCP_PEER_CONTRACT_CONFIG_KEY];
+            return typeof v === 'string' ? v : undefined;
+          } catch { return undefined; }
+        })();
+        const diagnosis = diagnosePeerBinding(declared, heardContractIds);
+        if (diagnosis !== undefined) view.peer_binding = diagnosis;
+      }
+      if (storedHealth !== undefined) {
+        view.health = {
+          ...storedHealth,
+          status: effectiveConnectionHealth(storedHealth, Date.now()),
+        };
+      }
       if (engagementRegistry !== undefined && view.kind === 'api') {
         const vendor = typeof view.vendor === 'string' ? view.vendor : '';
         view.supports_engagement_health = vendorHasEngagement(vendor, engagementRegistry);
@@ -1291,6 +1376,66 @@ const maybeResolveSharePointDrive = async (
   return { config: { ...config, drive_id: resolved.drive_id }, auth: fresh };
 };
 
+/** D-232 § 26 — the contract → MCP binding, checked WHERE A HUMAN CAN FIX IT.
+ *
+ *  `config.peer_contract_id` is how an answering recipe finds its way home: the
+ *  host resolves the caller's `contract_id` to the ONE mcp connection carrying
+ *  it (§ 20.17 `peerConnectionForContract`) and fires the answer down it.
+ *
+ *  ⛔⛔ THAT RESOLVER FAILS CLOSED BY RETURNING UNDEFINED, WHICH IS WHY THIS MUST
+ *  BE CHECKED HERE. An unresolved binding does not raise — it leaves the exchange
+ *  with no connection, and no connection means LOCAL. The server then answers
+ *  ITSELF, files the run under the peer's ref, and reports `succeeded`. A wrong
+ *  answer that reports success is the failure mode this whole substrate exists to
+ *  prevent, and it is invisible at answer time.
+ *
+ *  Seen twice while building D-232: once from invented `ct_<peer>_for_<owner>`
+ *  ids that matched nothing, and once from AMBIGUITY, where two connections
+ *  claimed one contract and the resolver refused rather than guess.
+ *
+ *  ⇒ Both become an enroll-time refusal naming the conflict. ⚠ What is NOT
+ *  checked is whether the peer actually ISSUED this id: only the peer can say,
+ *  and it says so by CALLING — no query settles it from this side. So this
+ *  catches what is locally checkable (empty, duplicated) and deliberately does
+ *  not pretend to verify the pairing itself. */
+const assertPeerContractBinding = (
+  deps: { store: ConnectionStoreSqlite },
+  kind: ConnectionKind,
+  name: string,
+  config: Record<string, unknown>,
+): void => {
+  if (kind !== 'mcp') return;
+  const raw = config.peer_contract_id;
+  if (raw === undefined || raw === null) return;
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    throw new RpcError(
+      'bad_request',
+      'connection.enroll: config.peer_contract_id must be a non-empty string when present — '
+      + 'it is the contract this peer presents when it calls you, and an empty one silently '
+      + "routes their answers back to this server instead of to them.",
+    );
+  }
+  const bound = raw.trim();
+  const clash = deps.store.list({ kind: 'mcp' }).find((row) => {
+    if (row.name === name) return false;
+    try {
+      return (JSON.parse(row.config_json ?? '{}') as Record<string, unknown>)
+        .peer_contract_id === bound;
+    } catch {
+      return false;
+    }
+  });
+  if (clash !== undefined) {
+    throw new RpcError(
+      'bad_request',
+      `connection.enroll: peer_contract_id '${bound}' is already bound to connection `
+      + `'${clash.name}'. Two connections claiming one contract makes the callback path `
+      + 'ambiguous, and the resolver refuses rather than guess — which routes that peer\'s '
+      + 'answers LOCAL, so this server would answer itself and report success.',
+    );
+  }
+};
+
 export const handleConnectionEnroll = async (
   deps: ConnectionRpcDeps,
   args: {
@@ -1355,6 +1500,7 @@ export const handleConnectionEnroll = async (
   // surfaces. Returns fresh objects — the original `config`/`auth` are unmutated.
   const resolvedSharePoint = await maybeResolveSharePointDrive(config, auth, deps, () => now);
   const effectiveConfig = resolvedSharePoint.config;
+  assertPeerContractBinding(deps, kind, name, effectiveConfig);
   const effectiveAuth = resolvedSharePoint.auth;
   // Preserve enrolled_at across re-enrollments — first sight wins on
   // identity, every patch refreshes updated_at. This matches the
@@ -1973,6 +2119,14 @@ export const handleConnectionProbe = async (
           deps.now?.() ?? Date.now(),
         ));
         return;
+      // ⚠ Unreachable — `probeApi` returns `unknown` before calling this for a
+      // `body_field` record, because a GET/HEAD probe has no body to put the
+      // credential in. Enumerated anyway so the `never` guard below keeps its
+      // meaning: falling through to it would be the silent-anonymous-probe bug
+      // it exists to catch, and a caller that ever reaches applyAuth with one
+      // of these should get nothing rather than a partial application.
+      case 'body_field':
+        return;
       // ⛔ Same `never` guard, same reason, as the redaction switch below: this
       // one has no default either, and a member that falls through here applies
       // NO credential — so the probe would call the endpoint unauthenticated
@@ -2054,6 +2208,21 @@ export const handleConnectionProbe = async (
       case 'request_signature':
         for (const secret of requestSignatureSecrets(auth)) add(secret);
         break;
+      // ⚠ EVERY entry's value, and only the values. A `body_field` record's
+      // field NAMES are vendor vocabulary (`access_token`), not secrets —
+      // redacting them would blank ordinary words out of an error message and
+      // make it unreadable, while the values are durable vendor credentials
+      // (Plaid's per-Item access token is the motivating one) that a failing
+      // target may echo straight back in its own error body.
+      case 'body_field':
+        if (Array.isArray(authRecord.fields)) {
+          for (const entry of authRecord.fields) {
+            if (entry && typeof entry === 'object') {
+              add((entry as Record<string, unknown>).value);
+            }
+          }
+        }
+        break;
       case 'none':
         break;
       // ⛔⛔ THE GUARD THIS SWITCH DID NOT HAVE, AND THE REASON IT NOW DOES.
@@ -2123,6 +2292,16 @@ export const handleConnectionProbe = async (
     const base = config.base_url;
     if (typeof base !== 'string' || base.trim() === '') {
       return healthOf('unknown', 'missing_base_url');
+    }
+    // ⛔ A GET/HEAD probe cannot carry a body credential, so it cannot verify
+    // one — and the failure mode of pretending otherwise is the bad one. The
+    // probe would call the endpoint with no credential at all and report
+    // whatever an anonymous request earns; on a vendor whose base URL answers
+    // 200 to anyone, that is a GREEN health check on a credential nobody
+    // checked. `unknown` is the truthful answer: this connection's credential
+    // is verified by the first operation that uses it, not here.
+    if (auth.type === 'body_field') {
+      return healthOf('unknown', 'body_field_auth_not_probeable');
     }
     const url = authenticatedPath === undefined
       ? new URL(base)
@@ -2976,6 +3155,13 @@ const isolatedConnectionStore = (
       row = { pk: connectionRowKey(input.kind, input.name), ...input };
       return row;
     },
+    // D-232 § 22 — health-only write, mirroring the SQLite store's single-column
+    // UPDATE (no `updated_at` bump: an observation about the row, not a change).
+    setHealth: (kind, name, health_json) => {
+      if (!matches(kind, name)) return false;
+      row = { ...row, health_json };
+      return true;
+    },
     get: (kind, name) => (matches(kind, name) ? { ...row } : null),
     list: (query) => (query?.kind === undefined || query.kind === row.kind ? [{ ...row }] : []),
     listSince: (since) => (row.updated_at > since ? [{ ...row }] : []),
@@ -3090,6 +3276,15 @@ const credentialCandidateFromOwnerInput = (auth: ConnectionAuth): ConnectionAuth
         api_key: auth.api_key,
         secret_key: auth.secret_key,
       };
+    /** Entirely owner-typed, no server-derived cache — same posture as
+     *  `request_signature`. Rebuilt entry by entry so surplus fields on an
+     *  entry are dropped before encryption, not just surplus fields on the
+     *  auth object. */
+    case 'body_field':
+      return {
+        type: 'body_field',
+        fields: auth.fields.map(({ field_name, value }) => ({ field_name, value })),
+      };
   }
 };
 
@@ -3120,6 +3315,14 @@ const invalidCredentialControlFor = (auth: ConnectionAuth): ConnectionAuth | nul
      *  verification, which is the negative this probe needs. */
     case 'request_signature':
       return { ...auth, secret_key: invalid };
+    /** ⛔ NO CONTROL IS POSSIBLE, and returning one would be worse than
+     *  returning none. The generic probe is a GET/HEAD with no body, so a
+     *  corrupted body credential would never reach the wire — the control
+     *  request and the candidate request would be byte-identical, and a
+     *  "control was rejected" result would be measuring something else
+     *  entirely. `probeApi` reports `unknown` for this type for the same
+     *  reason; the credential is proven by the first operation that sends it. */
+    case 'body_field':
     case 'none':
     case 'oauth2_refresh':
     case 'oauth2_client_credentials':

@@ -12,6 +12,7 @@ import type {
   Collection,
   FieldQuery,
   FieldQueryableCollection,
+  OrderedWindowCollection,
 } from '@recued/storage';
 
 /** ⛔ FIELD NAMES ARE INTERPOLATED INTO SQL, so they are validated rather than
@@ -60,7 +61,7 @@ const buildWhere = (spec: FieldQuery): { sql: string; params: unknown[] } => {
 export const createSQLiteCollection = <V>(
   db: Database.Database,
   table: string,
-): FieldQueryableCollection<V> => {
+): FieldQueryableCollection<V> & OrderedWindowCollection<V> => {
   db.exec(`
     CREATE TABLE IF NOT EXISTS ${table} (
       key  TEXT NOT NULL PRIMARY KEY,
@@ -164,6 +165,67 @@ export const createSQLiteCollection = <V>(
       }
       const { sql, params } = buildWhere(spec);
       return db.prepare(`DELETE FROM ${table} WHERE ${sql}`).run(...params).changes;
+    },
+
+    /** ⛔ ORDER + LIMIT + CURSOR IN SQL, so a paginated feed stops reading the
+     *  whole table. Filters deliberately stay with the caller — this narrows
+     *  what is READ, never what matches, so the feed's semantics do not move.
+     *
+     *  The ordering is bistemporal: `COALESCE(event_at, ts)` reads in
+     *  real-world chronology, with the ingestion time as the fallback. The
+     *  tiebreak id is compared DESC alongside it so the (ts, id) pair is a
+     *  TOTAL order — without it a page boundary landing inside a group of
+     *  equal timestamps can repeat or skip rows. */
+    async listWindowDesc(query) {
+      const ts = `json_extract(data, '$.${assertField(query.tsPath)}')`;
+      const tsFallback = `json_extract(data, '$.${assertField(query.tsFallbackPath)}')`;
+      const id = `json_extract(data, '$.${assertField(query.idPath)}')`;
+      const eff = `COALESCE(${ts}, ${tsFallback})`;
+      const params: Array<string | number> = [];
+      let where = '';
+      if (query.before) {
+        // Strictly after the cursor in (eff DESC, id DESC) — the same total
+        // order the caller sorts by.
+        //
+        // ⛔ SPLIT, NOT THE OBVIOUS `OR`. Written as one disjunction —
+        // `(eff < ? OR (eff = ? AND id < ?))` — SQLite uses the index only to
+        // SATISFY THE ORDER BY and applies the cursor as a filter during a full
+        // index SCAN, so page N walks every entry ahead of it. A ROW VALUE
+        // (`(eff, id) < (?, ?)`) does not help either: measured, SQLite will not
+        // use a MULTI-COLUMN EXPRESSION index as a range constraint in any of
+        // those forms.
+        //
+        // 🔑 What it WILL seek on is a LEADING SINGLE-COLUMN range. Hoisting
+        // `eff <= ?` out as its own conjunct turns the plan from
+        // `SCAN t USING INDEX` into `SEARCH t USING INDEX (<expr><?)`; the
+        // disjunction stays behind as a residual that can only discard rows
+        // TIED with the cursor on effective time. Logically identical — every
+        // row satisfying the OR satisfies `eff <= ?` — which is exactly why the
+        // difference is invisible to a result assertion and only a plan
+        // assertion pins it.
+        where = ` WHERE ${eff} <= ? AND (${eff} < ? OR ${id} < ?)`;
+        params.push(query.before.ts, query.before.ts, query.before.id);
+      }
+      const limit = Math.max(0, Math.floor(query.limit));
+      if (limit === 0) return [];
+      params.push(limit);
+      const rows = db
+        .prepare(`SELECT data FROM ${table}${where} ORDER BY ${eff} DESC, ${id} DESC LIMIT ?`)
+        .all(...params) as Array<{ data: string }>;
+      return rows.map((r) => JSON.parse(r.data) as V);
+    },
+
+    ensureWindowIndex(query) {
+      const ts = `json_extract(data, '$.${assertField(query.tsPath)}')`;
+      const tsFallback = `json_extract(data, '$.${assertField(query.tsFallbackPath)}')`;
+      const id = `json_extract(data, '$.${assertField(query.idPath)}')`;
+      // ⚠ BYTE-IDENTICAL to the ORDER BY above. SQLite matches expression
+      // indexes syntactically, so a cosmetic difference yields an index that
+      // exists, is maintained on every write, and is never used.
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_${table}_win_${query.tsPath}_${query.idPath} `
+        + `ON ${table} (COALESCE(${ts}, ${tsFallback}) DESC, ${id} DESC)`,
+      );
     },
 
     ensureFieldIndexes(fields) {

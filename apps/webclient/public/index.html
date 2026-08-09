@@ -17,24 +17,15 @@
          injects PRIMITIVE_STYLES on mount. Only the boot-splash styles below are
          shell-local. -->
     <link rel="stylesheet" href="./tokens.css" />
-    <!-- Theme: apply the user's pinned light/dark choice to <html> before
-         first paint so there's no flash. 'system' (or no stored value)
-         leaves no data-theme attribute, so tokens.css's
-         prefers-color-scheme media query governs. The bundle's theme
-         controller (shell/theme-controller.ts) keeps this in sync + owns
-         the toggle. Kept tiny + inline + dependency-free on purpose. -->
-    <script>
-      (function () {
-        try {
-          var t = localStorage.getItem('recued.theme');
-          if (t === 'light' || t === 'dark') {
-            document.documentElement.setAttribute('data-theme', t);
-          }
-        } catch (e) {
-          /* storage blocked (private mode) — fall back to System. */
-        }
-      })();
-    </script>
+    <!-- Pre-bundle shell behaviour: theme-before-paint, splash reveal,
+         service-worker registration, and the bundle-failure fallback.
+         ⛔ EXTERNAL, NOT INLINE, and deliberately so — both surfaces that serve
+         this shell send `script-src 'self'`, which blocked every inline block
+         this file replaced (including the fallback that is supposed to rescue a
+         failed bundle load). See boot-shell.js's header. Render-blocking in
+         <head> on purpose: the theme must land before first paint and the error
+         listener must exist before the module tag below is parsed. -->
+    <script src="./boot-shell.js"></script>
     <style>
       html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--fg); }
       body { font-family: -apple-system, system-ui, 'Segoe UI', sans-serif; -webkit-font-smoothing: antialiased; }
@@ -66,41 +57,12 @@
         <div id="webclient-boot-splash-message">Loading…</div>
       </div>
     </div>
-    <script>
-      setTimeout(function () {
-        var splash = document.getElementById('webclient-boot-splash');
-        if (splash) splash.removeAttribute('data-recued-boot-pending');
-      }, 160);
-    </script>
-    <!-- D-148 § A.4 — service-worker registration. Inline so the
-         registration starts as soon as the HTML parses, independent of
-         the (larger) ESM bundle landing. The bundle re-imports
-         `registerServiceWorker` from `@recued/webclient` for the
-         programmatic API (e.g. `unregister()` on the Settings → Privacy
-         "Clear this browser" path). -->
-    <script>
-      if ('serviceWorker' in navigator) {
-        window.addEventListener('load', function () {
-          navigator.serviceWorker
-            .register('./sw.js', { scope: './' })
-            .catch(function () {
-              /* SW registration failures are non-fatal — the PWA still
-                 runs without offline caching. */
-            });
-        });
-      }
-    </script>
-    <!-- Main entry — a follow-up phase wires `webclient-main.ts`'s
-         `bootstrapWebclient({ root: … })` call here. The script tag
-         lands before the bundle exists so production builds drop the
-         compiled output at the same path. The `onerror` handler is the
-         Codex P1 fold — until the bundle ships, a 404 on this script
-         upgrades the splash to a visible "shell not ready" message
-         rather than stranding the user on "Loading…" forever. -->
-    <script
-      type="module"
-      src="./webclient-main.js"
-      onerror="(function(){var el=document.getElementById('webclient-boot-splash-message');if(el){el.textContent='Webclient bundle not loaded — the static shell is shipped without a build step yet. See apps/webclient/README for the build-out plan.';}})()"
-    ></script>
+    <!-- Main entry. `id` is load-bearing: boot-shell.js filters its
+         capture-phase `error` listener on it, which is what upgrades the splash
+         to an actionable message when this fails to load. That used to be an
+         `onerror=` attribute here, which `script-src 'self'` blocked — so the
+         one path that exists to avoid stranding the user on "Loading…" was
+         itself the thing that never ran. -->
+    <script id="webclient-main-script" type="module" src="./webclient-main.js"></script>
   </body>
 </html>

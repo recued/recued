@@ -87,6 +87,33 @@ describe('D-219 execution-case index coverage', () => {
     db.close();
   });
 
+  it('⛔ the compiler\'s hot-path currency check reads from a COVERING index', () => {
+    // `closedReportIds()` runs inside `canCompileIncrementally`, which
+    // `compileReport()` calls on the CHAT TURN path. It is O(closed reports) by
+    // design, but without a partial covering index it walked the primary key
+    // and touched every row's sealed payload to test `closed_at`. 200k reports
+    // / 115 MB: 50.5ms -> 19.9ms.
+    const db = mkDb();
+    const p = plan(db, `SELECT report_id FROM execution_reports
+       WHERE closed_at IS NOT NULL ORDER BY report_id ASC`);
+    expect(p).toMatch(/USING INDEX idx_execution_reports_closed/);
+    // Covering: the table itself is never touched, and the index order means
+    // no sort.
+    expect(p).not.toMatch(/TEMP B-TREE/);
+    db.close();
+  });
+
+  it('⛔ that index is PARTIAL — an unclosed report does not enter it', () => {
+    // Reports accumulate with chat usage and only some are closed. A full index
+    // would make every write maintain an entry the query never reads.
+    const db = mkDb();
+    const ddl = (db.prepare(
+      `SELECT sql FROM sqlite_master WHERE name = 'idx_execution_reports_closed'`,
+    ).get() as { sql: string }).sql;
+    expect(ddl).toMatch(/WHERE closed_at IS NOT NULL/);
+    db.close();
+  });
+
   it('the tables really exist — a typo would make both assertions vacuous', () => {
     // Without this, a renamed table makes EXPLAIN throw, the helper is never
     // reached, and "no scanning tables" passes for the wrong reason.

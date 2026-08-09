@@ -21,12 +21,26 @@
  *  do with what the engine sent — a saturated measure reading as a clean null.
  *  Each turn carries its own index and a distinct question.
  *
+ *  ⛔ AND THE TOTAL ALONE IS UNATTRIBUTABLE — the trap this lane fell into.
+ *  `recued.token_usage` fires ONCE PER TURN with the sum across every provider
+ *  call the turn made, so "the packet grew" and "the turn called twice" arrive
+ *  as the same number. A 24-turn run read flat at ~5,300 for turns 0-21 and
+ *  10,706 on turn 22, which the summary reported as 2.06x growth — while the
+ *  likeliest reading was two calls of ~5,300 because the model chose a tool on
+ *  that turn and not the others. The SAME prompt at turns 6 and 14 cost ~5,300,
+ *  which is what rules the prompt out as the cause.
+ *
+ *  🔑 So the series is printed with `calls`, and the growth ratio is computed
+ *  over PER-CALL input. A rise in per-call input is packet growth; a rise in the
+ *  total with flat per-call input is just a busier turn.
+ *
  *  ⚠ REPORTS, NEVER ASSERTS A THRESHOLD. What counts as "too big" depends on
  *  the slot's context window, which differs per provider; the honest output is
  *  the series plus the growth ratio, and a non-zero exit only when a turn
  *  actually FAILS. */
 
 import { spawnSync } from 'node:child_process';
+import { resolveSeedDir, seedNotFoundMessage } from './seed-dir.js';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -36,15 +50,13 @@ import { openServerVault, type RpcConn } from './unlock-vault.js';
 import { configureLlmFromDevEnv } from './llm-env.js';
 
 const REPO = resolve(import.meta.dirname, '../../../..');
-// The bench seed is a sibling checkout that is NOT part of this repository and
-// whose directory name is local to the machine it was cloned on. `HORIZON_SEED_DIR`
-// names it; this fallback stays neutral so no local layout ships in the source.
-const DEFAULT_SEED = resolve(REPO, '..', 'bench-seed');
 
 interface TurnRecord {
   readonly index: number;
   readonly ok: boolean;
   readonly input_tokens?: number;
+  /** Provider calls the turn made — what makes `input_tokens` readable. */
+  readonly provider_calls?: number;
   readonly output_tokens?: number;
   readonly ms: number;
   readonly reply_chars: number;
@@ -91,7 +103,9 @@ const sendTurn = async (
         note: 'chat.send returned no turn_id' };
     }
 
-    let usage: { input_tokens?: number; output_tokens?: number } | undefined;
+    let usage: {
+      input_tokens?: number; output_tokens?: number; provider_calls?: number;
+    } | undefined;
     let catalog: Readonly<Record<string, number>> | undefined;
     let failure: string | undefined;
     // ⚠ The realtime envelope nests the kind under `event`. Matching a flat
@@ -104,7 +118,7 @@ const sendTurn = async (
           turn_id?: string;
           event?: {
             kind?: string; reason?: string;
-            input_tokens?: number; output_tokens?: number;
+            input_tokens?: number; output_tokens?: number; provider_calls?: number;
             section_counts?: Readonly<Record<string, number>>;
           };
         } | undefined;
@@ -133,6 +147,7 @@ const sendTurn = async (
       index,
       ok: failure === undefined && reply.length > 0,
       ...(usage?.input_tokens !== undefined ? { input_tokens: usage.input_tokens } : {}),
+      ...(usage?.provider_calls !== undefined ? { provider_calls: usage.provider_calls } : {}),
       ...(usage?.output_tokens !== undefined ? { output_tokens: usage.output_tokens } : {}),
       ms: Date.now() - started,
       reply_chars: reply.length,
@@ -150,7 +165,12 @@ const sendTurn = async (
 const main = async (): Promise<number> => {
   const turns = Number(process.argv[2] ?? process.env.CHAT_TURNS ?? 12);
   const workDir = process.env.HORIZON_WORKDIR ?? resolve(REPO, '.chat-long-scratch');
-  const seedDir = process.env.HORIZON_SEED_DIR ?? DEFAULT_SEED;
+  const seed = resolveSeedDir(REPO);
+  if (seed.dir === null) {
+    console.error(seedNotFoundMessage(seed));
+    return 1;
+  }
+  const seedDir = seed.dir;
   const seedDb = resolve(seedDir, 'seed-test.db');
   const seedIdentity = resolve(seedDir, 'seed-identity.json');
   const seedRecoveryKey = resolve(seedDir, 'seed-recovery-key.txt');
@@ -218,6 +238,12 @@ const main = async (): Promise<number> => {
     console.error(
       `  turn ${String(i).padStart(3)}  ${rec.ok ? 'ok  ' : 'FAIL'}`
       + `  in=${String(rec.input_tokens ?? '?').padStart(7)}`
+      + `  calls=${String(rec.provider_calls ?? '?').padStart(2)}`
+      + `  in/call=${String(
+        rec.input_tokens !== undefined
+          ? Math.round(rec.input_tokens / (rec.provider_calls ?? 1))
+          : '?',
+      ).padStart(6)}`
       + `  out=${String(rec.output_tokens ?? '?').padStart(5)}`
       + `  ${String(rec.ms).padStart(6)}ms  reply=${rec.reply_chars}c`
       + (rec.catalog ? `  catalog=${JSON.stringify(rec.catalog)}` : '  catalog=?')
@@ -252,12 +278,42 @@ const main = async (): Promise<number> => {
     );
     console.error(`growth first→last : ${(last / first).toFixed(3)}×`);
     console.error(`spread max/min    : ${(max / min).toFixed(3)}×`);
-    console.error(
-      '\n⚠ A packet that grows with conversation length shows as a rising\n'
-      + '  series. A flat series means the tail cap is holding and the cost of\n'
-      + '  turn N is independent of turns 1..N-1 — the property the store test\n'
-      + '  pins and this run confirms against a live provider.',
+
+    // ⛔ PER-CALL IS THE ATTRIBUTABLE SERIES. The totals above are per TURN and
+    // a turn may call the provider more than once, so a rise in the total is
+    // ambiguous between a growing packet and a busier turn. Dividing by the
+    // call count separates them, and the two lines disagreeing IS the signal.
+    const perCall = measured.map(
+      (r) => r.input_tokens! / (r.provider_calls ?? 1),
     );
+    const pcFirst = perCall[0]!;
+    const pcLast = perCall[perCall.length - 1]!;
+    const pcMax = Math.max(...perCall);
+    const pcMin = Math.min(...perCall);
+    const counted = measured.filter((r) => r.provider_calls !== undefined).length;
+    console.error(
+      `\nper-call input    : first=${Math.round(pcFirst)} last=${Math.round(pcLast)}`
+      + ` min=${Math.round(pcMin)} max=${Math.round(pcMax)}`
+      + `   (call counts on ${counted}/${measured.length} turns)`,
+    );
+    console.error(`per-call growth   : ${(pcLast / pcFirst).toFixed(3)}×`);
+    console.error(`per-call spread   : ${(pcMax / pcMin).toFixed(3)}×`);
+    console.error(
+      '\n⚠ READ THE PER-CALL LINE. A packet that grows with conversation length\n'
+      + '  shows as a rising PER-CALL series. A flat per-call series with a\n'
+      + '  rising total means some turns simply called the provider more often —\n'
+      + '  which is the model choosing a tool, not the engine sending more. The\n'
+      + '  totals alone cannot tell those apart, and this lane reported a 2.06×\n'
+      + '  "growth" that was one turn making two calls.',
+    );
+    if (counted < measured.length) {
+      // ⛔ Never let a missing count read as "one call". The per-call series is
+      // only as trustworthy as the turns that actually reported a count.
+      console.error(
+        `\n⚠ ${measured.length - counted} turn(s) reported NO call count — those\n`
+        + '  rows assume 1 call, so their per-call figure is a floor, not a fact.',
+      );
+    }
   } else {
     // ⛔ Say so. "No usage reported" must not read the same as "flat".
     console.error(

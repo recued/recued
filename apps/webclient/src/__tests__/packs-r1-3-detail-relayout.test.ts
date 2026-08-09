@@ -279,6 +279,11 @@ interface SetupOptions {
   runConnectionList?: boolean;
   initialSlug?: string;
   runRecipeList?: () => Promise<{ recipes: readonly never[] }>;
+  /** Wires the D-211 owner-operation controller so it computes `enabled = true`.
+   *  ⛔ Without BOTH callers `createOwnerOperationController` short-circuits and
+   *  `renderForPack` returns null at its first line — which silently changes which
+   *  branch of the Permissions tab a test exercises. */
+  ownerOperations?: boolean;
 }
 
 const setupMount = (packs: PackListEntry[], opts: SetupOptions = {}) => {
@@ -311,6 +316,12 @@ const setupMount = (packs: PackListEntry[], opts: SetupOptions = {}) => {
       ? { runRecipeList: opts.runRecipeList }
       : {}),
     ...(autoSlug !== undefined ? { initialSlug: autoSlug } : {}),
+    ...(opts.ownerOperations === true
+      ? {
+          runOwnerOperationInventory: async () => ({ ingredients: [] }),
+          runOwnerOperationList: async () => ({ overrides: [] }),
+        }
+      : {}),
   });
   return { host, mount, document: doc };
 };
@@ -373,6 +384,89 @@ describe('Packs R1.3 — detail section layout', () => {
     expect(PACKS_PANEL_STYLES).toMatch(
       /@media \(max-width: 640px\)[\s\S]*?\.packs-detail-access-link\s*\{[^}]*min-height:\s*44px/s,
     );
+  });
+
+  it('⛔⛔ a NOT-INSTALLED pack discloses what installing would allow, never a blank', async () => {
+    /** Before this the Permissions tab of a marketplace pack rendered "this pack has no
+     *  operation defaults to customize" — the D-211 owner-override matrix only exists
+     *  for an INSTALLED pack's operations. To a reader that says "this pack needs no
+     *  permissions", which is false for any connection-backed pack and is the DANGEROUS
+     *  direction for an absence to be misread. Install is the one moment the decision is
+     *  still free.
+     *
+     *  🔑 THIS IS THE COMPOSITION CHECK, and it is the one that matters. The preview's
+     *  own unit tests prove the projection is correct; they cannot prove the panel ever
+     *  CALLS it. A module that is correct and unreached renders exactly the blank it was
+     *  written to replace. So this drives the real panel, clicks the real tab, and reads
+     *  the rendered text. */
+    const pack = entry({ manifest: connectionManifest('preview-pack', 'demo') });
+    /** ⛔⛔⛔ THE OWNER-OPERATION CALLERS ARE WIRED ON PURPOSE, and this is the whole
+     *  reason this test is trustworthy. Without them `createOwnerOperationController`
+     *  computes `enabled = false`, `renderForPack` returns null at its first line, and
+     *  the preview renders through a branch PRODUCTION NEVER TAKES. My first version
+     *  omitted them, passed, and shipped a feature that did not appear on screen at all —
+     *  the owner found it in a browser. With them enabled, `renderForPack` returns its
+     *  "Install this pack to set owner defaults" element (matchedNothing: the manifest
+     *  declares operation ingredients and none are installed), which is exactly the
+     *  production condition the preview has to win against. */
+    const { host, mount } = setupMount([pack], { ownerOperations: true });
+    await mount.whenLoaded();
+    mount.clickSelectPack('preview-pack');
+    findByAttrValue(host, PACKS_DETAIL_TAB_ATTR, 'permissions')!.click();
+
+    const panel = findByAttr(host, PACKS_DETAIL_TAB_PANEL_ATTR);
+    expect(panel?.getAttribute(PACKS_DETAIL_TAB_PANEL_ATTR),
+      'the Permissions pane must be the active one').toBe('permissions');
+    /** ⚠ `collectTextContent`, not `.textContent` — this is a fake DOM and a bare
+     *  `textContent` read returns only the node's OWN text, so it reported '' for a
+     *  fully-populated panel and the test failed against working code. */
+    const text = collectTextContent(panel!);
+
+    /** ⛔ The framing line is load-bearing: without it the list is indistinguishable
+     *  from a grant matrix showing state the pack ALREADY has. */
+    expect(text, 'a preview must not read as current state').toContain('Not installed');
+    expect(text).toContain('nothing is granted yet');
+    expect(text, 'the operations must actually be disclosed').toContain('Read');
+    expect(text, 'and the account it wants').toContain('demo');
+
+    /** ⚠ The control: the blank it replaced must be GONE, not merely accompanied. A
+     *  preview rendered alongside "no operation defaults to customize" would still tell
+     *  the owner the pack needs nothing. */
+    expect(text, 'the misleading empty-state must not survive alongside it')
+      .not.toContain('no operation defaults to customize');
+
+    /** ⚠ THE SECTION HEADING MUST FOLLOW ITS CONTENT. "Operation defaults" names
+     *  something that does not exist for an uninstalled pack — there are no defaults to
+     *  set — so it contradicted the first line beneath it. A heading that disagrees with
+     *  its own body is how a reader decides one of the two is stale, and it was the last
+     *  thing on this pane still describing the installed case. */
+    expect(text, 'the heading must not announce owner defaults over a preview')
+      .not.toContain('Operation defaults');
+    expect(text).toContain('Before you install');
+    mount.dispose?.();
+  });
+
+  it('⚠ an INSTALLED pack keeps the owner-defaults heading — the relabel is not blanket', async () => {
+    /** The control for the heading-follows-content rule. Without it, hardcoding EVERY
+     *  Permissions section to "Before you install" passes the preview test above while
+     *  telling an owner who installed the pack weeks ago that they have not installed
+     *  it — the same heading-disagrees-with-body defect, pointed the other way.
+     *  ⛔ It survived as a mutant until this existed. */
+    const pack = entry({
+      installed: true,
+      manifest: connectionManifest('installed-pack', 'demo'),
+    });
+    const { host, mount } = setupMount([pack], { ownerOperations: true });
+    await mount.whenLoaded();
+    mount.clickSelectPack('installed-pack');
+    findByAttrValue(host, PACKS_DETAIL_TAB_ATTR, 'permissions')!.click();
+
+    const text = collectTextContent(findByAttr(host, PACKS_DETAIL_TAB_PANEL_ATTR)!);
+    expect(text).toContain('Operation defaults');
+    expect(text, 'an installed pack must not be told it is not installed')
+      .not.toContain('Before you install');
+    expect(text).not.toContain('nothing is granted yet');
+    mount.dispose?.();
   });
 
   it('renders Detail / Permissions / Access tabs with one active content pane', async () => {

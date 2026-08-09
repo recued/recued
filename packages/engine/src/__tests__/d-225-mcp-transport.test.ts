@@ -219,6 +219,54 @@ describe('D-225 Slice 1 — mcp api transport', () => {
     expect(auditCalls[0]).toMatchObject({ failure_mode: 'mcp_tool_error' });
   });
 
+  it("⛔⛔ carries the peer's REASON when the failure is MCP's own isError shape", async () => {
+    /** D-232 § 21 — THE SHAPE THAT WAS BEING DROPPED, AND IT IS THE COMMON ONE.
+     *
+     *  The sibling above covers a JSON-RPC ERROR ENVELOPE (`{message, code}`).
+     *  But a tool that RAN and FAILED reports it, per the MCP spec, as a
+     *  SUCCESSFUL result carrying `{ isError: true, content: [{ text }] }` — and
+     *  the detail extractor read only the first shape, so every failure of this
+     *  kind arrived as:
+     *
+     *    "…invoked tool 'X' and the server returned an error."
+     *
+     *  with the reason gone. The two-server drive burned three rounds on that one
+     *  sentence — a missing pack dependency, a Records exposure fence about step
+     *  ORDER, then the guard that was meant to fire — each legible at the peer's
+     *  door and discarded one hop later. Diagnosing them required bypassing the
+     *  gateway and knocking on the peer directly.
+     *
+     *  🔑 Asserted on the REASON TEXT, not on the failure_mode: the mode was
+     *  already correct while the message said nothing, which is exactly how this
+     *  survived. */
+    const manifest = manifestFor(operation('read'));
+    const { ctx, auditCalls } = makeHarness({
+      result: {
+        status: 'tool_error',
+        result: {
+          isError: true,
+          content: [{ type: 'text', text: "Recipe 'x' needs a pack that is not installed: pub.dep" }],
+        },
+        headers: undefined,
+      },
+    });
+
+    await expect(run(ctx, manifest)).rejects.toThrow(/needs a pack that is not installed/);
+    await expect(run(ctx, manifest)).rejects.toThrow(/pub\.dep/);
+    expect(auditCalls[0]).toMatchObject({ failure_mode: 'mcp_tool_error' });
+
+    // ⛔⛔ THE THROWN ERROR MUST CARRY `MCP_TOOL_ERROR`, AND ASSERTING IT HERE IS
+    // NOT BELT-AND-BRACES. `failure_mode` goes to the AUDIT ROW only; the step
+    // runner builds the caller-visible error from the throw, and with no `code`
+    // on it defaults to `NETWORK_ERROR` — the same code an UNREACHABLE peer
+    // gets. That collapse is the whole bug. Proven necessary: deleting the
+    // gateway's `error_code` line left all ten tests in this file GREEN, so
+    // without this assertion the stamp is unbacked and can silently rot away.
+    const thrown = await run(ctx, manifest).then(() => null, (e: unknown) => e);
+    expect((thrown as { code?: string } | null)?.code,
+      'reached-and-refused must not report as a network failure').toBe('MCP_TOOL_ERROR');
+  });
+
   it('tolerates a tool_error whose envelope is not the documented shape', async () => {
     // A server free to return anything must not turn a step failure into a
     // crash inside the failure path.

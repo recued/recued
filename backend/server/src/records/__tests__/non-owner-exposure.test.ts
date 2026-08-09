@@ -279,11 +279,23 @@ describe('D-221 non-owner Records recipe exposure', () => {
       tool_call_id: 'call-1',
     } as const;
 
-    expect(mcpTesting.buildMcpContractSnapshot(source, deps).allowed_tools)
-      .toEqual(['records-catalog']);
+    // ⚠ D-232 § 20.19 added the granted recipe's own WIRE NAME to
+    // `allowed_tools` (that is how the policy gate learns the recipe was
+    // granted). It is a legitimate new member here, not a leak — and the claim
+    // under test is unchanged: `records-catalog` appears ONLY when the granted
+    // recipe uses a Records operation. Asserted as a sorted exact set so a
+    // genuine leak (e.g. `ordinary-catalog`) still reddens this.
+    const snapshotTools = (): string[] =>
+      [...mcpTesting.buildMcpContractSnapshot(source, deps).allowed_tools].sort();
+
+    expect(snapshotTools())
+      .toEqual(['publisher.example/receive-project-change', 'records-catalog']);
     grant.value = 'unrelated/tool';
-    expect(mcpTesting.buildMcpContractSnapshot(source, deps).allowed_tools)
-      .toEqual([]);
+    // The grant now names a recipe that is not the Records receiver, so the
+    // hidden catalog is gone — the recipe name remains because that grant is
+    // still held. THIS is the assertion the test exists for.
+    expect(snapshotTools()).toEqual(['unrelated/tool']);
+    expect(snapshotTools()).not.toContain('records-catalog');
   });
 
   it('leaves webhook trigger rows unstamped when exposure preflight refuses', () => {

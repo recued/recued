@@ -155,6 +155,7 @@ describe('D-201 Slices 8L-9C + 9BH timestamped HMAC profile engine', () => {
       'paddle.notification.v1',
       'slack.request.v0',
       'slack.slash-command.v1',
+      'recued-peer.exchange.v1',
     ]);
     expect(Object.getPrototypeOf(WEBHOOK_TIMESTAMPED_HMAC_DELIVERY_PROFILE_PRESETS))
       .toBeNull();
@@ -393,22 +394,27 @@ describe('D-201 Slices 8L-9C + 9BH timestamped HMAC profile engine', () => {
           'paddle.notification.v1',
           'slack.request.v0',
           'slack.slash-command.v1',
+          'recued-peer.exchange.v1',
         ]);
     expect(Object.values(WEBHOOK_TIMESTAMPED_HMAC_DELIVERY_PROFILE_PRESETS)
       .flatMap((preset) => preset !== undefined
         && preset.event_normalizer !== null
         ? [preset.profile_id]
-        : [])).toEqual(['stripe.event.v1', 'slack.request.v0']);
+        : [])).toEqual([
+          'stripe.event.v1',
+          'slack.request.v0',
+          'recued-peer.exchange.v1',
+        ]);
     expect(Object.values(WEBHOOK_TIMESTAMPED_HMAC_DELIVERY_PROFILE_PRESETS)
       .flatMap((preset) => preset !== undefined
         && preset.environment_admission !== null
         ? [preset.profile_id]
-        : [])).toEqual(['stripe.event.v1']);
+        : [])).toEqual(['stripe.event.v1', 'recued-peer.exchange.v1']);
     expect(Object.values(WEBHOOK_TIMESTAMPED_HMAC_DELIVERY_PROFILE_PRESETS)
       .flatMap((preset) => preset !== undefined
         && preset.test_envelope !== null
         ? [preset.profile_id]
-        : [])).toEqual(['stripe.event.v1']);
+        : [])).toEqual(['stripe.event.v1', 'recued-peer.exchange.v1']);
     expect(Object.values(WEBHOOK_TIMESTAMPED_HMAC_DELIVERY_PROFILE_PRESETS)
       .flatMap((preset) => preset !== undefined
         && preset.delivery_deduplicator !== null
@@ -418,6 +424,7 @@ describe('D-201 Slices 8L-9C + 9BH timestamped HMAC profile engine', () => {
           'paddle.notification.v1',
           'slack.request.v0',
           'slack.slash-command.v1',
+          'recued-peer.exchange.v1',
         ]);
     expect(Object.values(WEBHOOK_TIMESTAMPED_HMAC_DELIVERY_PROFILE_PRESETS)
       .flatMap((preset) => preset !== undefined
