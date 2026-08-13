@@ -163,6 +163,33 @@ foreach ($triple in ($Triples -split ',' | ForEach-Object { $_.Trim() } | Where-
   & $nodeExe $npmCli rebuild better-sqlite3-multiple-ciphers --foreground-scripts 2>&1 | Select-Object -Last 2
   Remove-Item Env:\npm_config_arch, Env:\npm_config_target_arch -ErrorAction SilentlyContinue
 
+  # !!! tsx IS esbuild, AND esbuild IS NATIVE. build-binary.mjs must run under the
+  # TARGET node (it copies process.execPath as the SEA base), and it imports
+  # @recued/release whose `main` is a .ts file -- so tsx, so esbuild. `npm ci` on
+  # this ARM64 host installs only @esbuild/win32-arm64, and the x64 node then
+  # dies with "You installed esbuild for another platform than the one you're
+  # currently using".
+  #
+  # !! The platform gate is on the PACKAGE, so `--os/--cpu` are not enough on
+  # this npm ("notsup Valid cpu: x64, Actual cpu: arm64") -- it takes --force.
+  # That is safe here: the package is a single prebuilt esbuild binary for a
+  # platform this machine genuinely runs under emulation.
+  #
+  # !! Installed INSIDE the per-triple loop, after `npm ci` has already run --
+  # ci wipes node_modules, so doing it once up front would be undone.
+  $ebVer = $null
+  $ebPkg = Join-Path $Root 'node_modules	sx
+ode_modules\@esbuild'
+  $host_ = Get-ChildItem $ebPkg -Directory -EA SilentlyContinue | Select-Object -First 1
+  if ($host_) { $ebVer = (Get-Content (Join-Path $host_.FullName 'package.json') -Raw | ConvertFrom-Json).version }
+  if ($ebVer -and -not (Test-Path (Join-Path $Root "node_modules\@esbuild\win32-$arch\esbuild.exe"))) {
+    Say "  installing @esbuild/win32-$arch@$ebVer (tsx needs a native binary matching the TARGET node)"
+    & $nodeExe $npmCli install --no-save --no-audit --no-fund --force "@esbuild/win32-$arch@$ebVer" 2>&1 | Select-Object -Last 1
+    if (-not (Test-Path (Join-Path $Root "node_modules\@esbuild\win32-$arch\esbuild.exe"))) {
+      Fail "could not install @esbuild/win32-$arch@$ebVer -- tsx cannot run under the $arch node without it"
+    }
+  }
+
   if (-not (Test-Path $ADDON)) { Fail "no addon at $ADDON (no prebuild for $arch at this ABI?)" }
   $want = if ($arch -eq 'x64') { 0x8664 } else { 0xAA64 }
   $got  = Get-Machine $ADDON

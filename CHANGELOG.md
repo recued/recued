@@ -7,7 +7,7 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
-## 26.8.12 — 2026-08-12
+## 26.8.13 — 2026-08-13
 
 Two capabilities, both about a conversation that leaves your own machine. A
 request sent to another person's server can now be answered by a *recipe* on

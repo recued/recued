@@ -282,6 +282,12 @@ describe('D-172 P2 — a wordless drop in webclient chat', () => {
         role: 'assistant',
         content: 'Stored signed-contract.pdf. What would you like me to do with it?',
       });
+      // ⛔ The ORDER above is not self-enforcing: the read breaks a `ts` tie on
+      // a randomUUID `message_id`, so with both rows in one millisecond the two
+      // assertions above passed on a COIN FLIP (measured 7/12). Name the
+      // invariant that actually holds them apart, or a regression comes back as
+      // a flake nobody trusts rather than a failure.
+      expect(messages[1]!.ts).toBeGreaterThan(messages[0]!.ts);
     } finally {
       db.close();
     }

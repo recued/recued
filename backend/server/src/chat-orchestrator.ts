@@ -3400,6 +3400,9 @@ export const createChatOrchestrator = (
     // 1b) Persist the user turn immediately so reconnect-replay sees
     //     it even if the orchestrator crashes mid-turn.
     const userMessageId = mintId();
+    /** Held so a reply written in the SAME millisecond can order itself
+     *  strictly after this row — see the wordless-drop short-circuit below. */
+    const userTs = now();
     await deps.chatStore.appendMessage({
       id: userMessageId,
       session_id: input.session_id,
@@ -3409,7 +3412,7 @@ export const createChatOrchestrator = (
       picker_at_send: pickerAtSend,
       model_used: modelUsed,
       execution_source: executionSource,
-      ts: now(),
+      ts: userTs,
       ...(input.data_diagnosis
         ? { data_diagnosis: input.data_diagnosis }
         : {}),
@@ -3485,7 +3488,14 @@ export const createChatOrchestrator = (
         picker_at_send: pickerAtSend,
         model_used: modelUsed,
         execution_source: executionSource,
-        ts: now(),
+        // ⛔ NOT `now()`. This short-circuit spends no provider call, so the ack
+        // lands in the SAME millisecond as the user row it answers — and the
+        // read is `ORDER BY ts ASC, message_id ASC` over a randomUUID id, so a
+        // tie is a COIN FLIP. Half of all wordless drops rendered the answer
+        // ABOVE the question. Strictly-after keeps `ts` genuinely ordered, so
+        // the display query AND the (ts, message_id) recall cursor both stay
+        // right — fixing it in the ORDER BY would have had to break that cursor.
+        ts: Math.max(now(), userTs + 1),
       });
       return { turn_id };
     }
