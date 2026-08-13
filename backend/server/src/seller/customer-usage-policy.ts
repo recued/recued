@@ -117,7 +117,6 @@ interface RateBucket {
 }
 
 const MINUTE_MS = 60 * 1000;
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 const objectRecord = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value)
@@ -515,7 +514,3 @@ export const createSellerCustomerUsageGate = (
   };
 };
 
-export const _testing = {
-  DAY_MS,
-  periodStart: sellerCustomerUsagePeriodStart,
-};

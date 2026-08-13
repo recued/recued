@@ -3891,6 +3891,40 @@ const MANIFESTS = [
     }
   },
   {
+    "slug": "peer-ask",
+    "name": "Ask a peer's owner a question",
+    "description": "D-234 \u00a7 234.4 \u2014 put one question, with your own option set, to the OWNER of a peer server, and suspend this run until they answer. The peer must already have exposed the label you name or nothing is raised at all. No recipe runs on their side and they can read nothing of yours \u2014 the only thing that happens over there is a person seeing a question and choosing an answer. The run resumes on its own when they reply, or when the deadline you set passes: on_timeout 'stop' resumes with answered=false so the recipe can branch, 'wait' waits indefinitely and must be cancelled by hand. The step result is { answered, option?, note?, at, unanswered_because? } \u2014 answered=false is an ordinary outcome to branch on, not an error. `via` picks how it travels and defaults to 'direct': the server calls the peer's built-in ask door itself, so they install nothing and you are prompted once. Use 'recipe' only when the exchange goes through an installed peer-exchange pack on both sides. `deliver_to` says WHERE on the receiver the question lands and defaults to their built-in ask door \u2014 name one of your own installed peer operations instead to send it somewhere that acts on it rather than to a person's attention. It requires via 'recipe', because only that route checks the name against what you installed; naming a destination on the direct route is refused rather than ignored.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "action",
+    "risk_tier": "write",
+    "tags": [
+      "kernel",
+      "peer",
+      "ask"
+    ],
+    "input": {
+      "connection": null,
+      "label": null,
+      "question": null,
+      "options": null,
+      "deadline_at": null,
+      "on_timeout": null,
+      "via": null,
+      "deliver_to": null,
+      "note_prompt": null,
+      "body": null
+    },
+    "output": {
+      "answered": "answered",
+      "option": "option",
+      "note": "note",
+      "at": "at",
+      "unanswered_because": "unanswered_because"
+    }
+  },
+  {
     "slug": "shared-write",
     "name": "Write to shared store",
     "description": "Persist a value under a shared.* (cache tier, LRU+TTL) or data.shared.* (durable SQLite plus content-addressed blobs) key. The kernel routes by key prefix — cache keys go through the ext's local cache + peer broadcast; durable keys rpc to the paired recued-server. Returns bytes_written on success. A revision-controlled durable key rejects with a typed conflict and must advance through shared-compare-and-set.",

@@ -1,0 +1,29 @@
+{
+  "manifest_version": 2,
+  "slug": "mail-compose-foundation",
+  "publisher": "recued-core",
+  "name": "Mail — Compose",
+  "description": "Use Mail — Compose in Recued. It carries a message you wrote in the compose window to your own enrolled mail account. Sending stops at the approval gate first, and the approval names the recipients, the subject, and every attached file.",
+  "version": 1,
+  "pre_install": true,
+  "recipes": [],
+  "requires": [
+    "install_bulk_pack"
+  ],
+  "tags": [
+    "pack:mail",
+    "mail",
+    "compose",
+    "send",
+    "foundation"
+  ],
+  "pack_kind": "app_pack",
+  "contents": [
+    {
+      "type": "recipe",
+      "slug": "send-composed-mail",
+      "version": 1,
+      "visible": false
+    }
+  ]
+}

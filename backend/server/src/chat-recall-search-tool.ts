@@ -1132,7 +1132,3 @@ export const registerVisibleRecallToolResult = (
   }
 };
 
-export const _testing = {
-  parseArgs,
-  serializedMatchesBytes,
-};

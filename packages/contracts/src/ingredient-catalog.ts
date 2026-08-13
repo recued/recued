@@ -71,6 +71,16 @@ export type OperationApproval = 'never' | 'ask' | 'always';
  *  delegation remains eligible. */
 export interface AuthorizationProvenance {
   readonly pre_lift_approval: OperationApproval;
+  /** ⚠ CLOSED, AND IT IS RE-VALIDATED IN TWO PLACES THAT CANNOT IMPORT THIS
+   *  TYPE'S NARROWING — `isCheckpoint` (`checkpoint.ts`) and
+   *  `readAuthorizationProvenance` (`preflight-reconciliation.ts`) both spell
+   *  the members out against untrusted persisted JSON. Adding a member is
+   *  THREE edits, and the two revalidators fail CLOSED: a reason they do not
+   *  know drops the whole provenance, which silently costs a resumed hold its
+   *  `pre_lift_approval` and with it its session-grant eligibility. ⇒ That cost
+   *  is why D-234 § 234.4o's peer-ask lift did NOT earn a fourth member: it is
+   *  an outbound send and reports `review_send`, with `ingredient_slug` already
+   *  distinguishing it precisely. */
   readonly lift_reason?: 'review_send' | 'review_commitment' | 'quality';
 }
 

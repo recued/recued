@@ -7,6 +7,7 @@
 
 import {
   SELLER_USAGE_KINDS,
+  totalRecord,
   type SellerCustomer,
   type SellerTier,
   type SellerUsageKind,
@@ -80,9 +81,7 @@ export const createSellerCustomerStatusResolver = (
   return {
     getStatus(input) {
       const timestamp = input.now ?? now();
-      const usageViews = {} as Record<SellerUsageKind, SellerCustomerStatusUsageKindView>;
-
-      for (const usageKind of SELLER_USAGE_KINDS) {
+      const usageViews = totalRecord(SELLER_USAGE_KINDS, (usageKind): SellerCustomerStatusUsageKindView => {
         const resolved = resolveSellerCustomerUsagePolicy(input.tier, usageKind);
         if (!resolved.ok) {
           throw new Error(`cannot read customer.status: ${resolved.message}`);
@@ -94,14 +93,14 @@ export const createSellerCustomerStatusResolver = (
           period_granularity: resolved.policy.period_granularity,
           period_start: start,
         });
-        usageViews[usageKind] = {
+        return {
           consumed: rollup?.units ?? 0,
           period_limit: resolved.policy.period_limit,
           rate_limit_per_min: resolved.policy.rate_limit_per_minute,
           period_start: start,
           period_granularity: resolved.policy.period_granularity,
         };
-      }
+      });
 
       return {
         usage: {
@@ -123,6 +122,3 @@ export const createSellerCustomerStatusResolver = (
   };
 };
 
-export const _testing = {
-  periodStart,
-};

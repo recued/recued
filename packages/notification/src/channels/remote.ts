@@ -111,8 +111,11 @@ export const createRemoteChannel = (
   // D-192 CORE #6 — `Transport.vendor` widened to an open slug; a transport-
   // backed remote channel's name IS its vendor and must be a registered
   // notification `ChannelName`. Fail loud if a transport is wired whose vendor
-  // isn't a known channel (a new messenger transport must be added to
-  // CHANNEL_NAMES first — seam 10).
+  // isn't a known channel (seam 10).
+  // ⛔ NOT "must be added to CHANNEL_NAMES first" — that read as an instruction
+  // to edit a list, and the list is DERIVED: `NOTIFICATION_CHANNEL_NAMES`
+  // splices `...MESSENGER_VENDOR_SLUGS`, so declaring the vendor in contracts
+  // is what makes it a channel. See `messenger-vendors.ts` § ADDING A VENDOR.
   if (!isChannelName(transport.vendor)) {
     throw new Error(
       `createRemoteChannel: transport vendor '${transport.vendor}' is not a registered notification channel`,

@@ -39,8 +39,9 @@
  *  ws-client transport. Rationale: the bootstrap's ws-client takes
  *  AAD-wrapped storage as input; we don't have the wrap yet because
  *  we don't have server_public_key. The one-shot opens a transport
- *  with the bearer alone (via `?token=` query fallback per server
- *  `extractRealm`), calls one rpc, closes. Same shape as
+ *  with the bearer alone (carried in `Sec-WebSocket-Protocol` per server
+ *  `extractRealm` — it used to be the `?token=` query fallback), calls one rpc,
+ *  closes. Same shape as
  *  pair-consume-invoker's one-shot during the D-148 § A.2.1 era.
  *
  *  DD#2 — token_id is client-minted, not server-issued. The realm

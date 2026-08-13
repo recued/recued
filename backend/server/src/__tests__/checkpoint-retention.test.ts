@@ -455,6 +455,32 @@ describe('checkpoint-retention — garbage collection', () => {
     expect(await h.checkpointStore.get('cp-1')).toBeNull();
   });
 
+  it('⛔⛔ NEVER SWEEPS A RUN HELD FOR A PEER — D-234 § 234.4', async () => {
+    // THE LANDMINE THIS SECTION SHIPPED WITH, HAD IT NOT BEEN CAUGHT. The garbage
+    // branch classified any anchor whose status was not literally
+    // `'awaiting_approval'` as crash residue and deleted its checkpoint. A run
+    // suspended waiting on a PEER'S owner is held, not residue — and a peer
+    // review legitimately outlives the 24h grace many times over. Left alone
+    // this deleted the checkpoint and destroyed the run, silently, and no
+    // existing fixture writes the status so nothing would have gone red.
+    //
+    // ⚠ The age is deliberately WELL past the garbage grace: the whole point is
+    // that a peer hold is allowed to be old.
+    const h = harness();
+    await seed(
+      h,
+      [checkpoint({ created_at: NOW - GARBAGE_AGE })],
+      [anchor({ commit_status: 'awaiting_peer' })],
+    );
+
+    const result = await h.retention.run();
+
+    expect(result.garbage_collected).toBe(0);
+    // And its prompt is untouched — the ask is live on ANOTHER server.
+    expect(h.cancelAsk).not.toHaveBeenCalled();
+    expect(await h.checkpointStore.get('cp-1')).not.toBeNull();
+  });
+
   it('deletes a terminal-anchor checkpoint past the grace and closes its zombie prompt', async () => {
     const h = harness();
     await seed(

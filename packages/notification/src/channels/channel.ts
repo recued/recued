@@ -16,6 +16,7 @@
  *  Spec: D-158 § A.4 / N.4 + D-163 § N.1-N.3.
  */
 
+import type { AskExtras } from '../types.js';
 import type { AskOption, ChannelName, NotificationMessage } from '../types.js';
 
 /** D-163 N.1 — three capability classes. The medium declares which one
@@ -101,6 +102,13 @@ export interface Channel {
     ask_id: string,
     message: NotificationMessage,
     options: readonly AskOption[],
+    /** D-234 § 234.4e/f — the note prompt and the readable body. OPTIONAL and
+     *  additive: an adapter that can render neither (slack / telegram / email
+     *  today) ignores it and delivers the option set exactly as before, which is
+     *  the honest degradation — the note is collected on whichever surface can,
+     *  the `'required'` guard still refuses a bare answer, and the document
+     *  deliberately does NOT follow the notification off-device. */
+    extras?: AskExtras,
   ): Promise<void>;
 
   /** Resolve a delivered ask prompt — because it was answered here, or

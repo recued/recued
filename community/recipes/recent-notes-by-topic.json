@@ -63,25 +63,39 @@
       "separator": ", "
     },
     {
-      "id": "first_note_id",
-      "transform": "default",
-      "value": "{{step.relevance_rows.entries.0.target_id}}",
-      "fallback": ""
-    },
-    {
-      "id": "first_relevance_score",
-      "transform": "default",
-      "value": "{{step.relevance_rows.entries.0.value.relevance_score}}",
-      "fallback": 0
+      "id": "defaults",
+      "transform": "defaults",
+      "fields": {
+        "first_note_id": {
+          "value": "{{step.relevance_rows.entries.0.target_id}}",
+          "fallback": ""
+        },
+        "first_relevance_score": {
+          "value": "{{step.relevance_rows.entries.0.value.relevance_score}}",
+          "fallback": 0
+        }
+      }
     },
     {
       "id": "card",
       "transform": "to_summary",
       "fields": [
-        { "label": "Recent notes (relevance-ranked)", "value": "{{step.row_count:number}}" },
-        { "label": "Top note ID", "value": "{{step.first_note_id}}" },
-        { "label": "Top note relevance", "value": "{{step.first_relevance_score:number}}" },
-        { "label": "All recent note IDs", "value": "{{step.note_ids_text}}" }
+        {
+          "label": "Recent notes (relevance-ranked)",
+          "value": "{{step.row_count:number}}"
+        },
+        {
+          "label": "Top note ID",
+          "value": "{{step.first_note_id}}"
+        },
+        {
+          "label": "Top note relevance",
+          "value": "{{step.first_relevance_score:number}}"
+        },
+        {
+          "label": "All recent note IDs",
+          "value": "{{step.note_ids_text}}"
+        }
       ]
     }
   ],

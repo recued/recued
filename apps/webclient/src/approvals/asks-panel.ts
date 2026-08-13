@@ -74,6 +74,8 @@ export type AsksListCaller = () => Promise<{
 export type AsksSubmitAnswerCaller = (args: {
   ask_id: string;
   option_id: string;
+  /** D-234 § 234.4e — the written reason, when the ask invited one. */
+  note?: string;
 }) => Promise<{ ok: true }>;
 
 export type AsksPanelState = 'loading' | 'ready' | 'error';
@@ -142,7 +144,7 @@ export interface AsksPanelMount {
    *  click drives (`runSubmitAnswer` + the defensive re-fetch).
    *  Test seam + host convenience. Awaits both the submit AND the
    *  follow-up re-fetch so callers can observe the converged list. */
-  submitAnswer(askId: string, optionId: string): Promise<void>;
+  submitAnswer(askId: string, optionId: string, note?: string): Promise<void>;
   /** An answer write has been issued and has not acknowledged yet. */
   hasInFlightWork(): boolean;
   /** Tear down the panel DOM + remove the broadcast subscription.
@@ -260,7 +262,7 @@ export const mountAsksPanel = (
         // structural `AskCardModel` ({ ask_id, title?, text, options }).
         root.appendChild(
           renderAskCard(doc, ask, {
-            onAnswer: (optionId) => submitFromCard(ask.ask_id, optionId),
+            onAnswer: (optionId, note) => submitFromCard(ask.ask_id, optionId, note),
           }),
         );
       }
@@ -330,10 +332,19 @@ export const mountAsksPanel = (
   const submitAndRetire = async (
     askId: string,
     optionId: string,
+    note?: string,
   ): Promise<void> => {
     answersInFlight += 1;
     try {
-      await opts.runSubmitAnswer({ ask_id: askId, option_id: optionId });
+      // D-234 § 234.4e — the reason rides with the option. ⛔ Threading it all
+      // the way from the card is the whole point: the box can render, the user
+      // can type, and if any hop here drops it the answer still SUCCEEDS —
+      // silently, minus the thing they were asked for.
+      await opts.runSubmitAnswer({
+        ask_id: askId,
+        option_id: optionId,
+        ...(note !== undefined ? { note } : {}),
+      });
     } finally {
       answersInFlight -= 1;
     }
@@ -348,8 +359,9 @@ export const mountAsksPanel = (
   const submitFromCard = async (
     askId: string,
     optionId: string,
+    note?: string,
   ): Promise<void> => {
-    await submitAndRetire(askId, optionId);
+    await submitAndRetire(askId, optionId, note);
     // Acked + retired. Reconcile the rest of the queue (also covered by the
     // ask_closed bus frame; both idempotent). Not awaited here so the card's
     // onAnswer resolves on the submit alone.
@@ -388,8 +400,8 @@ export const mountAsksPanel = (
     getListError: () => state.listError,
     refresh: () => doRefresh(),
     whenLoaded: () => pendingLoad,
-    submitAnswer: async (askId, optionId) => {
-      await submitAndRetire(askId, optionId);
+    submitAnswer: async (askId, optionId, note) => {
+      await submitAndRetire(askId, optionId, note);
       // Test seam / host convenience: await the reconcile too, so a
       // caller can observe the converged list (the card path doesn't).
       await doRefresh();

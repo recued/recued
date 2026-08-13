@@ -45,7 +45,7 @@
  *  resolve relative phrasing ("by Friday") without a trusted clock, and
  *  the deadline is the owner's to set at approval (the F1 posture —
  *  `promised_for_at` defaults absent). Extraction over warehouse
- *  `mail` / `calendar` / `memory` (beyond CRM engagement bodies) is a
+ *  `mail` / `calendar` / `audit` (beyond CRM engagement bodies) is a
  *  documented follow-on; v1 scopes to the D-139 engagement surface the
  *  pack's body-content grant covers.
  *

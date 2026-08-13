@@ -6,11 +6,17 @@ import {
   getPref,
   sanitizePrefsPatch,
 } from '../prefs.js';
-// D-168: SYNC_OBJECTS registry retired. sync_transport on contract.*
-// composite_keys (D-166) is the canonical sync-policy declaration surface.
-// TODO(D-166 P0): once D-166's contract-schema substrate lands, add a
-// ratchet asserting connection_record's schema entry carries
-// sync_transport: 'pair'.
+// D-168: SYNC_OBJECTS registry retired. ⛔ Its named successor was never
+// built: `sync_transport` is absent from `contract-schema.ts` and
+// `contract.connection_record` has no runtime path. The TODO that stood
+// here — "once D-166's contract-schema substrate lands, add a ratchet
+// asserting connection_record's schema entry carries sync_transport:
+// 'pair'" — is DELETED, not deferred. `connection_record` was ruled
+// won't-do 2026-08-11 (D-166 amendment); that ratchet would have pinned a
+// mechanism that is not coming. Connections reach clients by pull
+// (`collection.connection.list`) plus `recipe_runnability_changed`.
+// `prefs` itself is pair-scoped via the pair rpc/storage path and has
+// never depended on either registry.
 
 describe('INSTANCE_PREFS registry', () => {
   it('every registered key has a default that matches its declared type', () => {

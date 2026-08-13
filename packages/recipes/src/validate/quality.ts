@@ -85,7 +85,19 @@ const checkOrphanSteps = (steps: StepArr, output: Record<string, unknown>, add: 
     if (typeof sid !== 'string' || !sid) continue;
     if ('guard' in s) continue;
     const rest = JSON.stringify(steps.slice(i + 1)) + JSON.stringify(output);
-    if (!rest.includes(`step.${sid}`)) {
+    // A `defaults` step is referenced through its HOISTED FIELD NAMES, never
+    // through its own id: the step-runner publishes each field into
+    // `stores.step` so `{{step.<field>}}` keeps resolving after N `default`
+    // steps fold into one. Checking only `step.<sid>` reported every folded
+    // step as an orphan — a warning that is exactly backwards, since those are
+    // the most-referenced steps in the recipe.
+    const names = [sid];
+    const f = (s as { transform?: string; fields?: unknown }).transform === 'defaults'
+      ? (s as { fields?: unknown }).fields : undefined;
+    if (f !== null && typeof f === 'object' && !Array.isArray(f)) {
+      names.push(...Object.keys(f as Record<string, unknown>));
+    }
+    if (!names.some((n) => rest.includes(`step.${n}`))) {
       add('info', 'orphan_step', `steps[${i}]`,
         `step '${sid}' output is not referenced downstream or in output`);
     }

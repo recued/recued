@@ -226,7 +226,7 @@ export const computeHealthTrendValue = (
  *
  *  Pre-launch zero-installs semantics: cascade engine doesn't touch
  *  `aggregate`-policy rows on source change (the `aggregates_from`
- *  source is `memory`, not the source connection record), and there
+ *  source is `audit`, not the source connection record), and there
  *  is no source-delete cascade for connection records. Manual sweep
  *  is the sole orphan-cleanup path. */
 export const sweepStaleHealthTrendRows = (
@@ -334,14 +334,21 @@ export const connectionHealthTrendTokenEstimate = (): number =>
 /** Scope-of-read declaration surfaced in the Run-Now scope dialog +
  *  detail drawer. The producer reads from the connections table (one
  *  row per `(kind, name)`) plus the audit activity log filtered by
- *  `connection_<kind>` actions. */
+ *  `connection_<kind>` actions.
+ *
+ *  ⛔ THIS SAID `data.memory` UNTIL 2026-08-11 — an owner-facing disclosure
+ *  naming the WRONG STORE. It was written when `data.memory.*` was the audit
+ *  collection; D-231 split the namespace and `data.memory` now means the
+ *  owner's curated pool (`user_memory`), which this producer has never read.
+ *  The field paths below are `audit_activities` columns. Keep it `data.audit`:
+ *  the whole point of the dialog is telling the owner what gets read. */
 export const connectionHealthTrendScopeReadDeclaration = [
   {
     collection: 'connection',
     sample_field_paths: ['kind', 'name'],
   },
   {
-    collection: 'data.memory',
+    collection: 'data.audit',
     sample_field_paths: [
       'action',
       'target',

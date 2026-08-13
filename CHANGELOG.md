@@ -7,6 +7,51 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.8.12 — 2026-08-12
+
+Two capabilities, both about a conversation that leaves your own machine. A
+request sent to another person's server can now be answered by a *recipe* on
+that server, and the answer resumes the run that was waiting for it. And chat
+turns can carry files.
+
+### Added
+
+- **A recipe on the other server can answer.** The previous release let your
+  server ask another one a question. This one lets the far side answer with a
+  recipe rather than a person: the ask carries where the reply should land, the
+  receiving server runs its own recipe under its own owner's rules, and the
+  reply resumes the run that was held waiting for it. The authorization is bound
+  to the evidence that justified it, so an answer cannot be replayed into a
+  different request.
+- **Files in chat.** The composer takes attachments, a file dropped in with no
+  message behaves the way it does in a messenger, and a turn carrying files goes
+  through the same approval gate as anything else that leaves your server —
+  compose, approve, send.
+- **A mail compose window**, reachable in the app at .
+- **Commitment-reliability signals** — four derived facts about whether
+  commitments in your world are being met, computed locally like the rest of the
+  enrichment substrate.
+
+### Fixed
+
+- **A mail account enrolled after startup now works immediately.** It never
+  joined the account registry until the next restart, so enrolling an account
+  and sending straight away failed — with an error that pointed at the port
+  rather than the cause.
+- **Re-uploading a collection sheet no longer doubles the rent**, and a
+  fundamentals refresh past 200 periods no longer duplicates history. Both were
+  imports counting the same rows twice.
+- **One chat notice never arrived.** A resolved data-diagnosis message was
+  handled by the app but never subscribed to on the wire, so the branch that
+  displayed it could not run.
+- **Attachment filenames are escaped**, and an attachment marker now fires on
+  the turn the file actually arrives on rather than the one after.
+
+### Changed
+
+- The app's shell cache was rolled twice so a change to how the app talks to
+  your server could not linger in a stale browser.
+
 ## 26.8.8 — 2026-08-08
 
 One capability dominates this release: a Recued server can now ask *another*

@@ -202,6 +202,12 @@ export interface ComposeExecutorConfigDeps {
   resolveLlmConfig: (() => LLMConfig | undefined) | undefined;
   llmManager: LLMConfigManager | undefined;
   connectionStore: ConnectionStoreSqlite | undefined;
+  /** D-234 § 234.4 — LATE BINDING for the inbound peer door. The notification
+   *  block lands on `executeDeps.preflightNotifier`, which is composed AFTER
+   *  this config, so a kernel dispatcher cannot capture it at construction. Same
+   *  seam the container-pick and saga wirings use for the same reason. Absent ⇒
+   *  the door refuses rather than raising nothing silently. */
+  getExecuteDeps?: () => { preflightNotifier?: unknown; auditLog?: unknown } | undefined;
   auditLog: AuditLogStore | undefined;
   keys: KeyManager | undefined;
   connectionNotificationDeps: ConnectionNotificationHandlerDeps | undefined;
@@ -479,8 +485,9 @@ export const composeExecutorConfig = async (
     // D-125 P3.1 — connection adapter store reference. The SQLite-
     // backed store from P1.2 doubles as the adapter's lookup surface;
     // server-executor materialises the connection adapter when this is
-    // set. Absent in dbless harnesses → registry slot stays at D-126's
-    // `connectionPlaceholder`.
+    // set. Absent in dbless harnesses → the registry slot stays at D-126's
+    // kind-named `unsupported('connection')` default, which reports the
+    // unwired store rather than claiming the adapter has not shipped.
     ...(deps.connectionStore ? { connectionStore: deps.connectionStore } : {}),
     // D-125 P3.2 — audit sink for connection adapter dispatch. When both
     // the connection store and the audit log are present, server-executor
@@ -631,6 +638,56 @@ export const composeExecutorConfig = async (
       // server-local watcher — it runs through the D-179 watch-poll
       // source via the paired Bridge; see `watch/dom-source.ts`.)
       watcher: deps.watcherDispatcher,
+      // D-234 § 234.4 — the peer ASK dispatcher. ⛔ WIRING THIS IS THE WHOLE
+      // FEATURE: `createKernelAdapter` refuses an unwired slug with
+      // `SERVER_NOT_REACHABLE`, so `core.peer.ask` exists and does nothing until
+      // it is threaded here. Absent without a db, matching every other
+      // store-backed dispatcher — a dbless harness has nowhere to record an
+      // answer, and refusing beats accepting a call and dropping it.
+      //
+      // ⛔⛔ THE STORE IS BUILT LAZILY, ON FIRST USE, AND THE FIRST CUT WAS NOT.
+      // Constructing it here ran `CREATE TABLE` at COMPOSITION time, which (a)
+      // pays DDL on every boot for a table most servers never touch, and (b)
+      // makes composing the executor fail outright if the handle is not open yet
+      // — caught by two unrelated `timelineRead` tests that compose with a closed
+      // db and had nothing to do with peers. Every sibling dispatcher in this
+      // block already defers its work to call time (`await import(...)` inside
+      // the handler); this now matches them.
+      ...(deps.db
+        ? (() => {
+            let answers:
+              import('../../storage/peer-answer-store.js').PeerAnswerStore | undefined;
+            const openAnswers = async () => {
+              if (answers === undefined) {
+                const { createPeerAnswerStore } = await import(
+                  '../../storage/peer-answer-store.js'
+                );
+                answers = createPeerAnswerStore(deps.db!);
+              }
+              return answers;
+            };
+            return {
+              // D-234 § 234.4 — the ASKING op. ⛔ WITHOUT THIS THREADING, a recipe
+              // naming `core.peer.ask` gets `SERVER_NOT_REACHABLE` and the whole
+              // pause substrate — signal, re-throw, step-loop catch,
+              // `awaiting_peer` — is unreachable code that every test still
+              // passes, because every test builds its own adapter.
+              //
+              // ⚠ `run_id` / `step_id` come off `StepMeta`, i.e. the ENGINE, and
+              // are refused when absent: the conversation ref is derived from
+              // them and a ref that cannot be reproduced on resume strands the
+              // run silently.
+              peerAsk: async (input, stepMeta) => {
+                const { dispatchPeerAsk } = await import('../../peer-ask-dispatch.js');
+                return dispatchPeerAsk(input, {
+                  answers: await openAnswers(),
+                  run_id: stepMeta?.run_id ?? '',
+                  step_id: stepMeta?.step_id ?? '',
+                });
+              },
+            };
+          })()
+        : {}),
       ...(deps.sharedStore
         ? {
             write: async ({ key, value, ttl: _ttl }) => {

@@ -88,7 +88,6 @@ const EXPECTED_RUNTIME_EXPORTS = [
   'deriveRunMode',
   'KNOWN_TRIGGER_SOURCES',
   'createAdapterRegistry',
-  'connectionPlaceholder',
   // D-157 Part C — held-action idempotency resolves a recipe's variable
   // defaults the engine's way (the dedup identity's `config_snapshot` must
   // match the audit anchor's) via this canonical extractor.

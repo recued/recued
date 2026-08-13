@@ -124,7 +124,6 @@ export const composeCalendarBoot = (
       blobs: cacheBlobs,
       bus: warehouseBus,
       ...(auditLog ? { auditLog } : {}),
-      ...(getCollectionRegistry ? { getCollectionRegistry } : {}),
       ...(contactStore
         ? {
             onEventUpserted: (payload) => {
@@ -156,6 +155,13 @@ export const composeCalendarBoot = (
       },
     },
     {
+      // ⛔ Belongs on the BUNDLE (3rd arg) — `runStartLive` reads
+      // `bundle.getCollectionRegistry`. It sat in the storage arg (2nd) until
+      // 2026-08-12, where the conditional spread hid it from the excess-property
+      // check, so post-boot enrolls never joined the shared registry and every
+      // read answered COLLECTION_NOT_FOUND until a restart. Same slip, same day,
+      // as `wire-mail-stack.ts` — this composer is the one mail was modelled on.
+      ...(getCollectionRegistry ? { getCollectionRegistry } : {}),
       ...(isVaultUnlocked ? { isVaultUnlocked } : {}),
       factories: [
         // D-173 P4.3 — the credential-free local calendar. Always

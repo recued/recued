@@ -13,6 +13,7 @@ import {
   type ConnectionKind,
   type ConnectionRow,
   type NotificationSubtype,
+  totalRecord,
 } from '@recued/contracts';
 import type { ConnectionKindHandler } from '@recued/ingredients';
 import {
@@ -63,18 +64,18 @@ const EXPECTED_SUBTYPES = [
 const EXPECTED_SUBTYPE_BY_CHANNEL = {
   // For a chat transport the channel id IS the wire subtype — the two spellings
   // only ever diverge for `in_app`.
-  ...Object.fromEntries(CHAT_TRANSPORTS.map((v) => [v, v])),
+  ...totalRecord(CHAT_TRANSPORTS, (v): NotificationSubtype => v),
   email: 'email',
   in_app: 'in-app',
-} as Record<NotificationChannel, NotificationSubtype>;
+} satisfies Record<NotificationChannel, NotificationSubtype>;
 
 const EXPECTED_BOOT_BY_CHANNEL = {
   // Every chat transport boots identically — that is a FACT about them, and the
   // reason four byte-identical `boot<X>Channel` files were collapsed into one.
-  ...Object.fromEntries(CHAT_TRANSPORTS.map((v) => [v, bootChatTransportChannel])),
+  ...totalRecord(CHAT_TRANSPORTS, () => bootChatTransportChannel),
   email: bootEmailChannel,
   in_app: bootInAppChannel,
-} as Record<NotificationChannel, NotificationChannelEntry['boot']>;
+} satisfies Record<NotificationChannel, NotificationChannelEntry['boot']>;
 
 const ENTRY_CASES = NOTIFICATION_CHANNEL_REGISTRY.map((entry) =>
   [entry.channel, entry] as const);

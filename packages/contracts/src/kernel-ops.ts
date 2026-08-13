@@ -103,6 +103,16 @@ export const KERNEL_DOMAINS: readonly KernelDomain[] = [
   // Same reasoning D-201 used to split `webhook` out of the generic `data`
   // collection readers: a capability-scoped surface deserves its own domain.
   { domain: 'audit', class: 'closed_kind' },
+  // D-234 § 234.4 — PEER: what this server offers ANOTHER RECUED SERVER'S owner.
+  //
+  // ⛔ ITS OWN DOMAIN, NOT FOLDED UNDER `storage`, AND FOR THE REASON THE
+  // audit/memory SPLIT ABOVE RECORDS. § 23 put the exchange-resolve op under
+  // `storage` because it is an audit read that confers nothing. This surface is
+  // the opposite: it hands another owner the ability to INTERRUPT you. A grant
+  // screen showing that inside the storage family would read as "let them read
+  // my storage" — a name implying a hierarchy that gates nothing, which is a
+  // trust bug on the one surface where trust is the product.
+  { domain: 'peer', class: 'closed_kind' },
   { domain: 'data', class: 'closed_kind' },
   // D-201 — accepted webhook events are a capability-scoped kernel surface,
   // separate from the legacy generic `data.webhook` collection readers.

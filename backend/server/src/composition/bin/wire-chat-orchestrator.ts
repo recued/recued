@@ -173,11 +173,12 @@ import {
 import type { ChatRpcDeps } from '../../chat-handler.js';
 import { assertRecordsNonOwnerRecipeExposure } from '../../records/non-owner-exposure.js';
 import { buildChatToolRegistryInputs } from '../../chat-tool-handlers.js';
+import { DATA_FILE_RECEIVED_SLUG } from '../../collections/file/file-read-handler.js';
 import { tokenUsageToReport } from '../../chat-token-usage.js';
 import type { EventBus } from '../../events/bus.js';
 import type { KeyManager } from '../../key-manager.js';
 import type { ContactStore } from '../../storage/contact-store.js';
-import type { UserMemoryStore } from '../../user-memory-store.js';
+import type { MemoryEmbedder, UserMemoryStore } from '../../user-memory-store.js';
 import type { MemoryRedactionRecord } from '../../memory-rpc-handler.js';
 import { createCorrectionEventsStore } from '../../storage/correction-events-store.js';
 import { createLocalManifestStore } from '../../ingredient-authoring/local-manifest-store.js';
@@ -237,6 +238,10 @@ export interface ComposeChatOrchestratorDeps {
   /** D-198 Slice 4 — the redaction-marker store so `memory.search` omits
    *  "forgotten" rows from recall. Late-bound alongside the user_memory store. */
   getMemoryRedactionStore?: () => Collection<MemoryRedactionRecord> | undefined;
+  /** RUNG 4 — the query embedder `memory.search` falls through to when NO
+   *  lexical rung matched. Late-bound + optional: absent leaves rung 4 off and
+   *  keeps the tool a zero-token SQL read. */
+  getMemoryEmbedder?: () => MemoryEmbedder | undefined;
   /** D-190 (generic reconciler MS3) — the dedicated CRM record mirror that
    *  `deal.search` reads (the producer-independent base-row store MS2 writes).
    *  Late-bound like the other store getters; absent → deal.search returns empty. */
@@ -316,6 +321,7 @@ export const composeChatOrchestrator = (
     getEnrichmentStore,
     getUserMemoryStore,
     getMemoryRedactionStore,
+    getMemoryEmbedder,
     getCrmRecordMirror,
     getConnectionStore,
     getExecutorConfig,
@@ -538,12 +544,18 @@ export const composeChatOrchestrator = (
   const chatToolRegistryInputs = buildChatToolRegistryInputs({
     getContactStore,
     getCollectionRegistry,
+    // D-172 P2 — `file.search`'s DEFAULT (session) scope reads this session's
+    // own message rows for their attachments. Without it the tool would have
+    // only the owner-wide scope, which is the one we deliberately made
+    // opt-in — so the seam being wired is what keeps the safe default usable.
+    getChatStore: () => chatStore,
     getAuditLog: () => auditLog,
     // D-198 Slice 4 — memory.write target + memory.search union source + the
     // redaction store (recall omits forgotten rows) + the realtime bus so an AI
     // memory write live-refreshes paired Memory lenses.
     ...(getUserMemoryStore ? { getUserMemoryStore } : {}),
     ...(getMemoryRedactionStore ? { getMemoryRedactionStore } : {}),
+    ...(getMemoryEmbedder ? { getMemoryEmbedder } : {}),
     getEventBus: () => eventBus,
     getEnrichmentStore,
     // D-190 (generic reconciler MS3) — the CRM record mirror deal.search reads.
@@ -1000,6 +1012,21 @@ export const composeChatOrchestrator = (
 
   const orchestrator = createChatOrchestrator({
     chatStore,
+    // D-172 P2 — names the files the chat tail carries, resolved LIVE from the
+    // file collection so a since-deleted file drops out of the marker instead
+    // of being offered to the model as an id that resolves to nothing.
+    resolveFileNames: (ids) => {
+      const names = new Map<string, string>();
+      const collection = getCollectionRegistry()?.get('file', DATA_FILE_RECEIVED_SLUG) as
+        | { get(id: string): { hot_fields?: { filename?: unknown } } | null }
+        | undefined;
+      if (!collection) return names;
+      for (const id of ids) {
+        const filename = collection.get(id)?.hot_fields?.filename;
+        if (typeof filename === 'string' && filename.length > 0) names.set(id, filename);
+      }
+      return names;
+    },
     forwardedSenderIndex,
     getScopedGrantParseDeps,
     getSpanAnchorDeps,

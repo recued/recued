@@ -227,18 +227,18 @@ describe('connectionHealthTrendTask surface contract', () => {
     expect(connectionHealthTrendTokenEstimate()).toBe(CONNECTION_HEALTH_TREND_TOKEN_ESTIMATE);
   });
 
-  it('declares non-empty scope_read_declaration over connections + memory', () => {
+  it('declares non-empty scope_read_declaration over connections + audit', () => {
     expect(connectionHealthTrendScopeReadDeclaration.length).toBeGreaterThan(0);
     const conn = connectionHealthTrendScopeReadDeclaration.find(
       (e) => e.collection === 'connection',
     );
-    const memory = connectionHealthTrendScopeReadDeclaration.find(
-      (e) => e.collection === 'data.memory',
+    const audit = connectionHealthTrendScopeReadDeclaration.find(
+      (e) => e.collection === 'data.audit',
     );
     expect(conn).toBeDefined();
-    expect(memory).toBeDefined();
+    expect(audit).toBeDefined();
     expect((conn!.sample_field_paths as ReadonlyArray<string>).length).toBeGreaterThan(0);
-    expect((memory!.sample_field_paths as ReadonlyArray<string>).length).toBeGreaterThan(0);
+    expect((audit!.sample_field_paths as ReadonlyArray<string>).length).toBeGreaterThan(0);
   });
 });
 
@@ -266,8 +266,8 @@ describe('connection_health_trend registry entry', () => {
     expect(ENRICHMENT_REGISTRY.connection_health_trend.producer_kind).toBe('housekeeping');
   });
 
-  it('declares aggregates_from: ["memory"]', () => {
-    expect(ENRICHMENT_REGISTRY.connection_health_trend.aggregates_from).toEqual(['memory']);
+  it('declares aggregates_from: ["audit"] — the run-provenance trail, never user_memory', () => {
+    expect(ENRICHMENT_REGISTRY.connection_health_trend.aggregates_from).toEqual(['audit']);
   });
 
   it('declares recompute_cadence: 24h', () => {

@@ -39,7 +39,6 @@ import { join, resolve } from 'node:path';
 
 import {
   parseBulkPackManifest,
-  RpcError,
   type BulkPackManifest,
   type HandlerSlice,
   type PackListEntry,
@@ -441,8 +440,3 @@ export const makePackListHandlers = (
   };
 };
 
-// `RpcError` is re-exported for parity with `pack-install-handler.ts`
-// even though `packs.list` has no `bad_request` path today (no args).
-// Future args (filter by publisher / installed-state) land their
-// validation here without a fresh import.
-export { RpcError };

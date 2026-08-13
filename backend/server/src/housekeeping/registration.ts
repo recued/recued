@@ -32,6 +32,7 @@ import { auditCompactionTask } from './tasks/audit-compaction.js';
 import { cacheEvictionBeyondTtlTask } from './tasks/cache-eviction-beyond-ttl.js';
 import { linkDiscoveryTask } from './tasks/link-discovery.js';
 import { deterministicRiskPatternsTask } from './tasks/deterministic-risk-patterns.js';
+import { memoryEmbedBacklogTask } from './tasks/memory-embed-backlog.js';
 import { lifecycleQueueDrainTask } from './tasks/lifecycle-queue-drain.js';
 import { llmResultCacheGcTask } from './tasks/llm-result-cache-gc.js';
 
@@ -132,6 +133,12 @@ export const STANDALONE_TASKS: ReadonlyArray<HousekeepingTaskInstance> = [
   // presence at cycle time (the task self-checks rather than the
   // walker registry gating it the way per-record producers are).
   sourceFreshnessDegradationTask,
+  // ── RUNG 4's write side — embed the memory pool so recall can match by
+  // meaning. ⛔ `idle_eligible: false`: costs one embedding call per entry and
+  // fires ONLY from Run-Now. Not an enrichment producer — it writes no
+  // `data_enrichment` row and claims no topic; housekeeping is the scheduler
+  // for a resumable token-spending backlog, nothing more.
+  memoryEmbedBacklogTask,
 ];
 
 /** Walker discriminator for per-record producers. The bin maps each

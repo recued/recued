@@ -688,13 +688,33 @@ describe('D-174 P5 - Runs route', () => {
         nextStep: 'continue or stop the action',
         actionHref: '#approvals/ask-1',
       },
+      {
+        // D-234 § 234.4 — the REMOTE hold. ⛔ NOTE WHAT IS ABSENT: no
+        // `actionHref`. The `awaiting_approval` row above links to the approvals
+        // queue because the owner can answer it; this hold is answerable only by
+        // another server's owner, and a link into a queue that will never contain
+        // it is the correct-looking absence this project keeps paying for. That
+        // asymmetry is the entire reason § 234.4 made it a distinct status rather
+        // than a flag on the existing one.
+        status: 'awaiting_peer',
+        tone: 'attention',
+        title: 'Waiting on a peer',
+        detail: 'asking another Recued server',
+        nextStep: 'continues on its own when they answer',
+      },
     ];
 
     expect(scenarios.map(({ status }) => status)).toEqual(
       RUN_ANCHOR_STATUSES,
     );
     for (const scenario of scenarios) {
+      // ⚠ `derivePolicyResult` maps BOTH holds to `'approval-requested'` — the
+      // closest honest value in the closed `PolicyResult` union, since letting a
+      // peer hold fall through to `'allowed'` would report that policy cleared a
+      // run which is right now suspended. The run's own status is what
+      // distinguishes whose answer is outstanding.
       const policy: PolicyResult = scenario.status === 'awaiting_approval'
+        || scenario.status === 'awaiting_peer'
         ? 'approval-requested'
         : 'allowed';
       const summary = projectRunOutcomeSummary(

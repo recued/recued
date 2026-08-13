@@ -356,7 +356,15 @@ export const fireExchangeOutput = async (
   const declared = ctx.recipe?.output?.exchange;
   if (declared === undefined) return result;
   // Rule 3 — a hold is not a terminus.
+  //
+  // ⛔⛔ D-234 § 234.4 — `awaiting_peer` IS A HOLD TOO, AND THIS LINE WAS A HOLE
+  // THE MOMENT THAT STATE EXISTED. A recipe that asks a peer mid-run and also
+  // declares `output.exchange` would, while SUSPENDED, have fired its terminal
+  // exchange — sending a conclusion drawn from an answer nobody has given yet,
+  // and then sending it AGAIN on resume. The rule was always "a paused run has
+  // not finished"; it just named only one way to be paused.
   if (result.awaiting_approval !== undefined) return result;
+  if (result.awaiting_peer !== undefined) return result;
 
   const payload = buildExchangeFirePayload(declared, ctx, result);
 

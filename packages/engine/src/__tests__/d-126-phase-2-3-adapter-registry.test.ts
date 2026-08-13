@@ -9,15 +9,15 @@
  *      placeholder that throws `INGREDIENT_ADAPTER_ALL_FAILED` with
  *      the kind on `details.kind` and a kind-named diagnostic in the
  *      message.
- *    - `connection` defaults to `connectionPlaceholder` (single swap
- *      point for D-125 P3).
+ *    - `connection` defaults to the same kind-named `unsupported(...)`
+ *      placeholder as every other slot — D-125 P3 shipped.
  *    - Callers can override `connection` for tests / custom
  *      connection-kind harnesses. */
 
 import { describe, expect, it } from 'vitest';
 import { INGREDIENT_KINDS, type IngredientKind } from '@recued/contracts';
 import type { Adapter, ResolvedCall } from '@recued/ingredients';
-import { createAdapterRegistry, connectionPlaceholder } from '../adapters/registry.js';
+import { createAdapterRegistry } from '../adapters/registry.js';
 
 const stubResolved = (slug = 'stub'): ResolvedCall => ({
   slug,
@@ -75,16 +75,32 @@ describe('D-126 Phase 2.3 — caller-supplied adapters', () => {
 });
 
 describe('D-126 Phase 2.3 — connection slot', () => {
-  it('defaults to connectionPlaceholder (single swap point for D-125 P3)', () => {
+  // ⛔ The default is the SAME kind-named `unsupported(...)` as every other
+  // slot — NOT a "not yet implemented" placeholder. D-125 P3 shipped
+  // `createConnectionAdapter` and both server boot sites wire it whenever
+  // `connectionStore` is present, so the only way to land on the default is an
+  // unwired store. The old placeholder said "connection adapter ships in
+  // D-125 P3" and carried `KIND_NOT_YET_IMPLEMENTED`, whose user-facing text
+  // is "…has not shipped yet. Update Recued" — pointing the operator at an
+  // upgrade that could never fix an unwired store. A stale diagnostic is worse
+  // than a generic one: it sends the reader somewhere real and wrong.
+  it('defaults to the kind-named unsupported placeholder, not a NOT_YET_IMPLEMENTED one', async () => {
     const registry = createAdapterRegistry({});
-    expect(registry.connection).toBe(connectionPlaceholder);
+    await expect(registry.connection(stubResolved('any-connection'))).rejects.toMatchObject({
+      code: 'INGREDIENT_ADAPTER_ALL_FAILED',
+      details: { kind: 'connection' },
+    });
   });
 
-  it('connectionPlaceholder throws KIND_NOT_YET_IMPLEMENTED', async () => {
-    await expect(connectionPlaceholder(stubResolved('any-connection'))).rejects.toMatchObject({
-      code: 'KIND_NOT_YET_IMPLEMENTED',
-      kind: 'connection',
-    });
+  it('the default names the real condition — an unwired store, not a missing feature', async () => {
+    const registry = createAdapterRegistry({});
+    const err = await registry.connection(stubResolved('any-connection')).catch((e: unknown) => e);
+    const message = (err as { message?: string }).message ?? '';
+    expect(message).toContain('connection');
+    expect(message).toContain('wired');
+    // The stale claims must not come back in any form.
+    expect(message).not.toMatch(/D-125|not yet|ships in|shipped/i);
+    expect(err).not.toMatchObject({ code: 'KIND_NOT_YET_IMPLEMENTED' });
   });
 
   it('caller can override connection (test / custom harness)', () => {

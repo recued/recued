@@ -5,6 +5,7 @@
  * declared slot grammar remains truthful; missing/ambiguous contacts or one
  * missing value make the probe defer the whole answer. */
 
+import { totalRecord } from '@recued/contracts';
 import type { SlotValue } from '../ner/index.js';
 import type { TemplateMatcher } from '../gate/index.js';
 import type { RenderTemplate } from '../types.js';
@@ -23,13 +24,22 @@ export const CONTACT_ATTRIBUTE_LIST_MAX = 5;
 
 type ContactListCount = 2 | 3 | 4 | 5;
 const CONTACT_LIST_COUNTS = [2, 3, 4, 5] as const;
-const CONTACT_ATTRIBUTES: readonly ContactAttribute[] = [
+// ⚠ No `: readonly ContactAttribute[]` annotation — it would widen the `as const`
+// and make `totalRecord`'s key inference (and the proof below) vacuous.
+const CONTACT_ATTRIBUTES = [
   'email',
   'phone',
   'company',
   'title',
   'birthday',
-];
+] as const satisfies readonly ContactAttribute[];
+
+/** Compile-time proof the list covers the union — what keeps `totalRecord`
+ *  sound here rather than an assertion. */
+type ContactAttributesAreExhaustive =
+  Exclude<ContactAttribute, (typeof CONTACT_ATTRIBUTES)[number]> extends never ? true : never;
+const _contactAttributesAreExhaustive: ContactAttributesAreExhaustive = true;
+void _contactAttributesAreExhaustive;
 
 export interface ContactAttributeListTemplateDescriptor {
   readonly attribute: ContactAttribute;
@@ -93,11 +103,9 @@ const HEADINGS: Readonly<Record<SupportedLocale, Readonly<Record<ContactAttribut
 };
 
 const templatesForLocale = (locale: SupportedLocale): AttributeListTemplates => {
-  const out = {} as Record<ContactAttribute, Record<ContactListCount, RenderTemplate>>;
-  for (const attribute of CONTACT_ATTRIBUTES) {
-    const byCount = {} as Record<ContactListCount, RenderTemplate>;
-    for (const count of CONTACT_LIST_COUNTS) {
-      byCount[count] = {
+  return totalRecord(CONTACT_ATTRIBUTES, (attribute) =>
+    totalRecord(CONTACT_LIST_COUNTS, (count): RenderTemplate => {
+      return {
         template_hash: `recued/contact-${attribute}-by-name-list-${count}-${locale}@v1`,
         kind: 'render_template',
         slot_grammar: Array.from({ length: count }, () => 'entity.name'),
@@ -105,10 +113,7 @@ const templatesForLocale = (locale: SupportedLocale): AttributeListTemplates => 
         short_circuit_eligible: true,
         body: `${HEADINGS[locale][attribute]}\n{{items}}`,
       };
-    }
-    out[attribute] = byCount;
-  }
-  return out;
+    }));
 };
 
 export const CONTACT_ATTRIBUTE_LIST_TEMPLATES_BY_LOCALE: Readonly<

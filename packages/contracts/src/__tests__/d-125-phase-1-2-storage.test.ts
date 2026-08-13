@@ -10,9 +10,15 @@
  *    - malformed config_json doesn't throw — falls back to empty
  *      config + still surfaces row identity (defensive shape)
  *
- *  D-168: SYNC_OBJECTS registry assertions retired. The connection
- *  sync surface is now declared via D-166's contract.connection_record
- *  schema entry (sync_transport: 'pair').
+ *  D-168: SYNC_OBJECTS registry assertions retired. ⛔ Its named
+ *  successor was never built — this claimed the sync surface "is now
+ *  declared via D-166's contract.connection_record schema entry
+ *  (sync_transport: 'pair')", and neither the entry nor the field
+ *  exists in `contract-schema.ts`. There is no connection sync surface
+ *  to assert: clients pull via `collection.connection.list` and react
+ *  to `recipe_runnability_changed`. Ruled won't-do 2026-08-11 (D-166
+ *  amendment) — do not add assertions for a declaration surface that
+ *  is not coming.
  */
 
 import { describe, expect, it } from 'vitest';

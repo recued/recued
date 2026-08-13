@@ -307,6 +307,28 @@ export type ServerEvent =
        *  webclient can render `{ id, label }` pairs without dragging
        *  the notification package in. */
       options: readonly { id: string; label: string }[];
+      /** D-234 § 234.3 — "read the thing this is about", already absolute.
+       *  ⛔ ABSENT FROM THIS FRAME SINCE § 234.3 SHIPPED, so a LIVE ask carried
+       *  no link on any surface that renders off the bus — it appeared only
+       *  after the next `pending_asks` re-fetch replaced the row. Mirrors
+       *  `ServerPendingAsk.link_url`; the two must be named together or the same
+       *  ask reads differently depending on which path delivered it. */
+      link_url?: string;
+      /** D-234 § 234.4e — this ask invites a written reason. ⛔ NAMED HERE OR THE
+       *  LIVE CARD CANNOT COLLECT ONE: a surface that renders off this frame
+       *  (Bridge's bus buffer) would show a note-less card until its next
+       *  history re-fetch, and a `'required'` ask answered from it would no-op
+       *  server-side with nothing on screen to say why. */
+      note_prompt?: 'optional' | 'required';
+      /** D-234 § 234.4f — the document behind the question.
+       *  ⛔ ON THIS FRAME BUT NEVER ON A CHANNEL PAYLOAD. The bus reaches the
+       *  owner's own paired clients; Slack / Telegram / email and the bearer
+       *  `/ask/<ask_id>` landing render `NotificationMessage`, which the body is
+       *  deliberately not part of. Bounded at 16 KB so it can ride here at all —
+       *  a larger body would have forced a second fetch for the live card, and a
+       *  field carried on one path and not another is the drop this arc has
+       *  already paid for twice. */
+      body?: string;
       cursor: number;
     }
   | {

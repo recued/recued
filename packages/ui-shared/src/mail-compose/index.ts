@@ -8,4 +8,9 @@ export {
   renderAiAssistSidebar,
   type AiAssistSidebarProps,
 } from './ai-assist-sidebar.js';
+export {
+  renderMailComposeAttachmentPicker,
+  humanFileSize,
+  type MailComposeAttachmentPickerProps,
+} from './attachment-picker.js';
 export { MAIL_COMPOSE_STYLES } from './styles.js';

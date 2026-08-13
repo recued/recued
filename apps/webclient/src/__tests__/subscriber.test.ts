@@ -5,6 +5,8 @@ import {
   ALL_BROADCAST_EVENT_KINDS,
   DEFAULT_SUBSCRIPTIONS,
 } from '@recued/contracts';
+import type { ServerEvent } from '@recued/contracts';
+import { isChatThreadEvent } from '../chat/state.js';
 import {
   WEBCLIENT_DEFAULT_SUBSCRIPTIONS,
   createBroadcastSubscriber,
@@ -61,6 +63,32 @@ describe('D-148 P4 — broadcast subscriber', () => {
       sortUnique(WEBCLIENT_DEFAULT_SUBSCRIPTIONS).length,
     );
     expect(DEFAULT_SUBSCRIPTIONS).toHaveLength(all.length);
+  });
+
+  // ⛔⛔ DERIVED, NOT ENUMERATED. `chat.data_diagnosis_resolved` shipped into
+  // the reducer on 2026-07-24 and was never added to the subscription list, so
+  // the server never fanned it and the handler sat unreachable until
+  // 2026-08-11. Every check above is a hand-written `.toContain()`, and a list
+  // of remembered names cannot catch the one nobody remembered — it fails only
+  // where someone already knew to look.
+  //
+  // 🔑 So ask the CODE which kinds it handles. `isChatThreadEvent` is the
+  // reducer's own predicate; anything it accepts must be subscribed, or the
+  // branch behind it is dead on the wire. A new chat kind now fails here the
+  // moment it is handled, without anyone updating this test.
+  it('ratchet: every chat kind the reducer HANDLES is actually subscribed', () => {
+    const subscribed = new Set<string>(WEBCLIENT_DEFAULT_SUBSCRIPTIONS);
+    const handled = ALL_BROADCAST_EVENT_KINDS.filter((kind) =>
+      isChatThreadEvent({ kind } as unknown as ServerEvent));
+
+    // Guard the guard: if the predicate stops recognising anything, the loop
+    // below passes vacuously and this ratchet silently stops ratcheting.
+    expect(handled.length).toBeGreaterThanOrEqual(10);
+
+    for (const kind of handled) {
+      expect(subscribed, `reducer handles '${kind}' but the webclient never asks for it`)
+        .toContain(kind);
+    }
   });
 
   it('on(kind) only fires for matching kind', () => {

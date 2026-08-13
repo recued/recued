@@ -36,6 +36,7 @@ import { buildCanonicalPollDeps } from '../watch/canonical-poll-deps.js';
 import { handleExecute } from '../execute-handler.js';
 import { classifyRunFailure } from '@recued/engine';
 import { composeExchangeRetry } from '../composition/bin/wire-exchange-retry.js';
+import { composePeerAskTimeoutSweep } from '../composition/bin/wire-peer-ask-timeout.js';
 import { RUN_INGREDIENT_RECIPE } from '../run-ingredient-recipe.js';
 import { liveVendorRegistry } from '../connection-convention-families.js';
 import { buildSellerAccessReconcileDepsIfReady } from '../seller/access-reconcile-deps.js';
@@ -633,6 +634,130 @@ export const startPostListenerRuntime = async (
   // § 20.19 already had to make the same argument for the nested carrier run.
   // No anchor identity ⇒ NO RESEND: an exchange we cannot re-authorize is one we
   // must leave alone.
+  // D-234 § 234.4m — THE DEADLINE FIRES. Registered here rather than in
+  // housekeeping because housekeeping is IDLE-driven: a deadline that lands while
+  // the server is busy would wait for a lull, and "your question expires at 5pm
+  // unless the machine is working" is not a promise worth making.
+  //
+  // ⛔ GATED ON BOTH STORES AND BOTH RESUME DEPENDENCIES, and the gate is honest
+  // rather than defensive: with any of them missing there is no way to record a
+  // timeout or resume the run it belongs to, and a sweep that silently swallowed
+  // that would be exactly the unkept promise this whole section exists to close.
+  const timeoutDb = options.storage.db;
+  const timeoutExecuteDeps = options.executeDeps;
+  const timeoutOutbox = timeoutExecuteDeps?.peerAskOutbox;
+  const timeoutAuditLog = options.storage.auditLog;
+  const timeoutCheckpoints = timeoutExecuteDeps?.checkpointStore;
+  if (
+    timeoutDb !== undefined
+    && timeoutExecuteDeps !== undefined
+    && timeoutOutbox !== undefined
+    && timeoutAuditLog !== undefined
+    && timeoutCheckpoints !== undefined
+  ) {
+    const db = timeoutDb;
+    const executeDeps = timeoutExecuteDeps;
+    const outbox = timeoutOutbox;
+    const auditLogForTimeout = timeoutAuditLog;
+    const checkpoints = timeoutCheckpoints;
+    void (async () => {
+      const [{ createPeerAnswerStore }, { resumePeerHold }] = await Promise.all([
+        import('../storage/peer-answer-store.js'),
+        import('../peer-hold-resumer.js'),
+      ]);
+      composePeerAskTimeoutSweep({
+        registry: options.backgroundServices,
+        // ⚠ DEV-ONLY OVERRIDE, for the same reason `exchange-retry` has one:
+        // proving the sweep FIRES end to end otherwise needs a 60s wall-clock
+        // wait that no drive will sit through. Absent ⇒ production default.
+        ...(process.env.RECUED_PEER_ASK_TIMEOUT_INTERVAL_MS !== undefined
+          ? { intervalMs: Number(process.env.RECUED_PEER_ASK_TIMEOUT_INTERVAL_MS) }
+          : {}),
+        sweep: {
+          outbox,
+          answers: createPeerAnswerStore(db),
+          resume: async (target) => {
+            await resumePeerHold(target, {
+              getExecuteDeps: () => executeDeps,
+              auditLog: auditLogForTimeout,
+              checkpoints,
+            });
+          },
+          logActivity: (row) => {
+            void (auditLogForTimeout as unknown as {
+              logActivity?: (r: unknown) => void;
+            }).logActivity?.({ ...row, timestamp: Date.now() });
+          },
+        },
+        // D-234 § 234.4n — the orphaned-hold half, on the same tick. ⚠ Gated on
+        // the dish store: with no way to ask "is this dish still there", the
+        // only safe answer is to abandon nothing.
+        ...(executeDeps.dishStore !== undefined
+          ? {
+              abandon: {
+                outbox,
+                auditLog: auditLogForTimeout,
+                dishes: executeDeps.dishStore,
+                // ⛔ BEST EFFORT, AND THE CALLER SWALLOWS THE REJECTION. This is
+                // a letter, not a recall: the local hold is already retired by
+                // the time this runs, and an unreachable peer must not resurrect
+                // it. Same direct path the ANSWER goes out on, for the same
+                // reason — there is no run here to preflight, and asking the
+                // owner to approve "tell them I stopped waiting" would spend the
+                // attention this notice exists to save.
+                notifyWithdrawn: async (row) => {
+                  const { createServerExecutor } = await import('../server-executor.js');
+                  const { CONNECTION_DIRECT_SLUG } = await import('@recued/contracts');
+                  const { PEER_RECEIVE_ASK_TOOL } = await import('../peer-receive-ask-recipe.js');
+                  const cfg = executeDeps.executorConfig;
+                  if (cfg === undefined) throw new Error('executor config not yet published');
+                  const res = await createServerExecutor(cfg)(CONNECTION_DIRECT_SLUG, {
+                    connection_kind: 'mcp',
+                    connection: row.connection,
+                    // ⛔ THE ASK DOOR, DISCRIMINATED ON SHAPE — not a second
+                    // tool. A withdrawal is the same conversation on the same
+                    // door, so it needs no grant, no checklist entry and no
+                    // advertisement of its own. § 234.4n's first cut shipped a
+                    // separate tool and the per-token checklist refused it for
+                    // every peer, silently, before any handler could log it.
+                    tool: PEER_RECEIVE_ASK_TOOL,
+                    args: { exchange_ref: row.exchange_ref, withdraw: true },
+                  });
+                  // ⛔⛔ A REFUSAL IS A RESULT, NOT AN ERROR ENVELOPE — the same
+                  // rule this arc already learned at the ask door, re-learned
+                  // here the hard way. The call SUCCEEDS and answers
+                  // `withdrawn: false` when the peer kept the card, so a bare
+                  // try/catch counted "sent" for a notice that closed nothing.
+                  // The live drive is what said so: `notice sent=1 failed=0` on
+                  // the same run where bob's card was still on his screen.
+                  // ⚠ This changes no local decision — the hold is already
+                  // retired — it only stops the counter from lying.
+                  // ⛔⛔ ONLY AN EXPLICIT `withdrawn: true` COUNTS, AND THE FIRST
+                  // CUT PATTERN-MATCHED THE ONE REFUSAL IT HAD THOUGHT OF
+                  // (`"withdrawn":false`). Everything else — a tool error, an
+                  // unknown-tool result, a shape we did not anticipate — sailed
+                  // through as "sent". The drive said `notice sent=1 failed=0` on
+                  // a run where the receiving server had not logged the call at
+                  // all. 🔑 A refusal is a RESULT, not an error envelope, and
+                  // enumerating refusals is how you miss the next one: assert the
+                  // POSITIVE and treat every other answer as a failure.
+                  const said = JSON.stringify(res ?? null);
+                  if (!said.includes('"withdrawn":true')) {
+                    throw new Error(`the peer did not confirm a withdrawal — ${said.slice(0, 200)}`);
+                  }
+                },
+                logActivity: (row) => {
+                  void (auditLogForTimeout as unknown as {
+                    logActivity?: (r: unknown) => void;
+                  }).logActivity?.({ ...row, timestamp: Date.now() });
+                },
+              },
+            }
+          : {}),
+      });
+    })();
+  }
+
   if (options.storage.auditLog) {
     const auditLog = options.storage.auditLog;
     const carrierOf = async (ref: string) => {

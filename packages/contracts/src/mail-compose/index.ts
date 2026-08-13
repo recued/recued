@@ -8,11 +8,13 @@ export type {
   MailReplyContext,
   MailSenderSourceOption,
   MailComposeAiAction,
+  MailComposeAttachment,
 } from './types.js';
 export {
   MAIL_COMPOSE_MODES,
   EMPTY_MAIL_COMPOSE_VALUES,
   MAIL_COMPOSE_AI_ACTIONS,
+  MAIL_COMPOSE_MAX_ATTACHMENTS,
 } from './types.js';
 
 export {
@@ -20,6 +22,8 @@ export {
   openCreateComposeTransition,
   openReplyComposeTransition,
   setComposeValuesTransition,
+  addComposeAttachmentsTransition,
+  removeComposeAttachmentTransition,
   setComposeErrorsTransition,
   setComposeSubmittingTransition,
   setComposeSubmitErrorTransition,
@@ -35,4 +39,8 @@ export type {
   ComposeMailSendPayload,
   ComposeDispatchHooks,
 } from './dispatch.js';
-export { composeStateToSendPayload } from './dispatch.js';
+export {
+  composeStateToSendPayload,
+  composePayloadToSendRecipeConfig,
+  SEND_COMPOSED_MAIL_RECIPE_ID,
+} from './dispatch.js';

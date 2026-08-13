@@ -246,12 +246,12 @@ describe('connectionOptimalBatchSizeTask surface contract', () => {
     );
   });
 
-  it('exposes scope_read_declaration over connections + memory with bytes_out path', () => {
-    const memory = connectionOptimalBatchSizeScopeReadDeclaration.find(
-      (e) => e.collection === 'data.memory',
+  it('exposes scope_read_declaration over connections + audit with bytes_out path', () => {
+    const audit = connectionOptimalBatchSizeScopeReadDeclaration.find(
+      (e) => e.collection === 'data.audit',
     );
-    expect(memory).toBeDefined();
-    expect((memory!.sample_field_paths as ReadonlyArray<string>)).toContain(
+    expect(audit).toBeDefined();
+    expect((audit!.sample_field_paths as ReadonlyArray<string>)).toContain(
       'detail.bytes_out',
     );
   });
@@ -293,10 +293,10 @@ describe('connection_optimal_batch_size registry entry', () => {
     );
   });
 
-  it('declares aggregates_from: ["memory"]', () => {
+  it('declares aggregates_from: ["audit"] - the run-provenance trail, never user_memory', () => {
     expect(
       ENRICHMENT_REGISTRY.connection_optimal_batch_size.aggregates_from,
-    ).toEqual(['memory']);
+    ).toEqual(['audit']);
   });
 
   it('declares recompute_cadence: 7d (matches WINDOW_MS)', () => {

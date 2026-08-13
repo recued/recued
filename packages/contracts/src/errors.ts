@@ -8,6 +8,19 @@ export type RecipeErrorCode =
   | 'RECIPE_FAIL_ON_TRIGGERED'
   | 'RECIPE_PREREQUISITE_NOT_MET'
   | 'RECIPE_APPROVAL_TIMEOUT'
+  /** D-234 § 234.4n — a run held on a peer's answer was abandoned because the
+   *  DISH THAT OWNS IT NO LONGER EXISTS. The owner deleted it, or it went with an
+   *  uninstall; either way nothing will ever resume this run, and leaving it
+   *  `awaiting_peer` forever is how held runs accumulate.
+   *
+   *  ⚠ The run is NOT resumed — a deleted dish must not go on doing work. The
+   *  hold is retired terminal and the recipe's remaining steps never execute.
+   *
+   *  ⛔ THE PEER IS NOT TOLD BY THIS CODE, and the notice that does tell them is a
+   *  COURTESY, not a recall: a peer ask is a letter, and once sent it cannot be
+   *  unsent. Their answer, if it comes, is refused as unsolicited — honest,
+   *  because by then it is. */
+  | 'RECIPE_HOLD_ABANDONED'
   | 'RECIPE_APPROVAL_DENIED'
   | 'RECIPE_BUDGET_EXCEEDED'
   /** D-157 P1 slice 3 — resume from a preflight checkpoint failed because
@@ -328,14 +341,25 @@ export type RecipeErrorCode =
    *  `kind: service` recipe arriving at a device install. */
   | 'EXECUTION_SCOPE_INCOMPATIBLE'
   // D-126 — adapter kind unification (P2.1 + onward).
-  /** AdapterRegistry resolved a kind whose adapter has not yet been
-   *  wired. Pre-launch placeholder for the full kind taxonomy: every
-   *  P2.1 adapter slot ships with this error until P2.2 + P2.3 land
-   *  the real implementations. The `connection` slot keeps this error
-   *  until D-125 P3 ships the connection adapter. Surfaces as fatal —
-   *  shipping a recipe whose `kind` resolves here is an authoring or
-   *  runtime-build bug, not a runtime-recoverable error. */
-  | 'KIND_NOT_YET_IMPLEMENTED'
+  //
+  // ⛔ `KIND_NOT_YET_IMPLEMENTED` was REMOVED 2026-08-11. Every adapter slot
+  // shipped with it until P2.2/P2.3 landed the real implementations, and the
+  // `connection` slot kept it until D-125 P3 — which shipped, along with
+  // P4.1/4.2/4.3. That left it with ZERO producers while its copy still read
+  // "…has not shipped yet. Update Recued", pointing operators at an upgrade
+  // that could never fix what they actually had: an unwired `connectionStore`.
+  // The slot now uses the same kind-named `unsupported(...)` default as every
+  // other kind (`INGREDIENT_ADAPTER_ALL_FAILED`, naming the missing wire).
+  //
+  // Removing a member is safe because an unknown code keeps its MACHINE-READABLE
+  // half: `ExecutionCaseFlow.failure_codes` is assigned unconditionally, so a
+  // pre-removal server's code still reaches the card. Only the prose gloss is
+  // withheld, deliberately — a model-bound card must not gloss a token it
+  // cannot read (`d-214-presentation-bench`: "says nothing when a code has no
+  // static message, rather than guessing"). ⚠ That is also why `ERROR_MESSAGES`
+  // must NOT gain a catch-all fallback at the render site: it would trade
+  // silence for an uninterpretable sentence on the exact surface where shape
+  // without meaning invites invention.
   // D-126 P4.3 — manifest validator codes (graduated from validator
   // free-form strings into the typed registry so the marketplace
   // submission gate + runtime install path can route on them).
@@ -478,6 +502,7 @@ export const ERR: Record<RecipeErrorCode, ErrorSeverity> = {
   RECIPE_GUARD_TRIGGERED: 'warn',
   RECIPE_FAIL_ON_TRIGGERED: 'error',
   RECIPE_PREREQUISITE_NOT_MET: 'error',
+  RECIPE_HOLD_ABANDONED: 'error',
   RECIPE_APPROVAL_TIMEOUT: 'error',
   RECIPE_APPROVAL_DENIED: 'error',
   RECIPE_BUDGET_EXCEEDED: 'error',
@@ -579,8 +604,6 @@ export const ERR: Record<RecipeErrorCode, ErrorSeverity> = {
   // D-119 Phase 15 — execution scope.
   EXECUTION_SCOPE_TOO_WIDE: 'fatal',
   EXECUTION_SCOPE_INCOMPATIBLE: 'fatal',
-  // D-126 — adapter kind unification.
-  KIND_NOT_YET_IMPLEMENTED: 'fatal',
   // D-126 P4.3 — manifest validator codes (graduated).
   INGREDIENT_KIND_MISSING: 'fatal',
   INGREDIENT_KIND_INVALID: 'fatal',
@@ -637,6 +660,7 @@ export const ERROR_MESSAGES: Record<RecipeErrorCode, string> = {
   RECIPE_GUARD_TRIGGERED: 'A guard step asked the recipe to stop. The conditions you set were not met.',
   RECIPE_FAIL_ON_TRIGGERED: 'A fail-on condition stopped the recipe. Open the step to see which check tripped.',
   RECIPE_PREREQUISITE_NOT_MET: 'A prerequisite step did not return what this recipe needs to continue.',
+  RECIPE_HOLD_ABANDONED: 'This run was waiting on a peer\u2019s answer, and the dish that started it no longer exists. Nothing will resume it.',
   RECIPE_APPROVAL_TIMEOUT: 'Approval was not granted in time. Re-run the recipe to try again.',
   RECIPE_APPROVAL_DENIED: 'You blocked this step. The recipe stopped without making the change.',
   RECIPE_BUDGET_EXCEEDED: 'This recipe ran longer than its time budget. Increase the budget or simplify a slow step.',
@@ -738,7 +762,6 @@ export const ERROR_MESSAGES: Record<RecipeErrorCode, string> = {
   // D-119 Phase 15 — execution scope.
   EXECUTION_SCOPE_TOO_WIDE: 'This recipe claims to run somewhere it cannot. Its declared execution scope is wider than the ingredients allow — the author needs to narrow the scope or change the ingredients.',
   EXECUTION_SCOPE_INCOMPATIBLE: 'This recipe cannot run on this device. Install it on a paired runtime that matches its execution scope (extension for device-only, server for server-only).',
-  KIND_NOT_YET_IMPLEMENTED: 'An ingredient relies on a runtime adapter that has not shipped yet. Update Recued, or pick a recipe whose ingredients use a supported adapter kind.',
   // D-126 P4.3 — manifest validator codes (graduated).
   INGREDIENT_KIND_MISSING: 'This ingredient is missing the required `kind` field. The author needs to declare which adapter handles it.',
   INGREDIENT_KIND_INVALID: 'This ingredient declares an unknown adapter kind. Update Recued or ask the author to fix the manifest.',
@@ -813,6 +836,8 @@ export type ErrorAttribution =
   | 'conditional';
 
 export const ERROR_ATTRIBUTION: Record<RecipeErrorCode, ErrorAttribution> = {
+  // D-234 § 234.4n — the OWNER deleted the dish out from under a held run.
+  RECIPE_HOLD_ABANDONED: 'owner',
   RECIPE_NOT_FOUND: 'choice',
   RECIPE_VALIDATION_FAILED: 'choice',
   RECIPE_GUARD_TRIGGERED: 'conditional',
@@ -917,7 +942,6 @@ export const ERROR_ATTRIBUTION: Record<RecipeErrorCode, ErrorAttribution> = {
   SERVICE_DOWNLOAD_SHA_MISMATCH: 'owner',
   EXECUTION_SCOPE_TOO_WIDE: 'choice',
   EXECUTION_SCOPE_INCOMPATIBLE: 'choice',
-  KIND_NOT_YET_IMPLEMENTED: 'choice',
   INGREDIENT_KIND_MISSING: 'choice',
   INGREDIENT_KIND_INVALID: 'choice',
   INGREDIENT_KIND_MISSING_FIELD: 'choice',

@@ -69,6 +69,7 @@
  *
  *  Spec: D-163 § N.5 / N.6 / A.5. */
 
+import { totalRecord } from '@recued/contracts';
 import type {
   NotificationBridgeModeRow,
   NotificationBridgeRow,
@@ -363,13 +364,11 @@ const CHANNEL_DISPLAY_NAME: Record<NotificationChannelName, string> = {
   ui: 'Webclient cards',
   bridge: 'Browser Bridge OS',
   email: 'Email',
-  ...Object.fromEntries(
-    MESSENGER_VENDOR_SLUGS.map((vendor) => [
-      vendor,
-      getMessengerVendorDeclaration(vendor)?.display_name ?? vendor,
-    ]),
+  ...totalRecord(
+    MESSENGER_VENDOR_SLUGS,
+    (vendor) => getMessengerVendorDeclaration(vendor)?.display_name ?? vendor,
   ),
-} as Record<NotificationChannelName, string>;
+};
 
 /** Per-capability badge presentation. The substrate's three
  *  `NotificationChannelCapability` classes each map to a fixed badge
@@ -405,10 +404,8 @@ const NOT_READY_CTA_LABEL: Record<NotificationChannelName, string> = {
   ui: '',
   bridge: COPY.install_bridge,
   email: '',
-  ...Object.fromEntries(
-    MESSENGER_VENDOR_SLUGS.map((vendor) => [vendor, COPY.connect_in_connections]),
-  ),
-} as Record<NotificationChannelName, string>;
+  ...totalRecord(MESSENGER_VENDOR_SLUGS, () => COPY.connect_in_connections),
+};
 
 // ════════════════════════════════════════════════════════════════
 // Mount

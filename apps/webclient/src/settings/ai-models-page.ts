@@ -5,6 +5,7 @@
  * backend write path is not present in this checkout.
  */
 
+import { totalRecord } from '@recued/contracts';
 import {
   CHAT_CATALOG_DELIVERY_MODES,
   CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE,
@@ -136,7 +137,10 @@ export const AI_MODELS_CHAT_SETUP_ADVANCED_ATTR =
   'data-recued-ai-models-chat-setup-advanced';
 
 /** The AI / Models page's internal sub-views. */
-type AiModelsTab = 'preference' | 'providers' | 'prompts' | 'usage';
+/** ⚠ The tab ids are the SOURCE of the union, not a parallel list — so
+ *  `totalRecord(AI_MODELS_TAB_IDS, …)` is total by construction. */
+const AI_MODELS_TAB_IDS = ['preference', 'providers', 'prompts', 'usage'] as const;
+type AiModelsTab = (typeof AI_MODELS_TAB_IDS)[number];
 const AI_MODELS_TABS: ReadonlyArray<{ id: AiModelsTab; label: string }> = [
   { id: 'preference', label: 'Preference' },
   { id: 'providers', label: 'Providers' },
@@ -3089,11 +3093,20 @@ export const mountAiModelsPage = (
     }
     dynamicHost.appendChild(tabStrip);
 
-    const panels = {} as Record<AiModelsTab, HTMLElement>;
-    for (const item of aiTabItems) {
-      panels[item.id] = item.panel;
-      dynamicHost.appendChild(item.panel);
-    }
+    // ⛔ Built by LOOKUP against the declared tab list, not by accumulating
+    // whatever the loop happened to produce. The map used to be
+    // `{} as Record<AiModelsTab, HTMLElement>`, which asserted every tab had a
+    // panel — a declared tab with no panel became `undefined` typed as an
+    // element, and the failure would surface as a blank tab far from here.
+    const panelById = new Map(aiTabItems.map((item) => [item.id, item.panel]));
+    const panels = totalRecord(AI_MODELS_TAB_IDS, (id) => {
+      const panel = panelById.get(id);
+      if (panel === undefined) {
+        throw new Error(`ai-models: no panel built for declared tab '${id}'`);
+      }
+      return panel;
+    });
+    for (const item of aiTabItems) dynamicHost.appendChild(item.panel);
     activateAiTab(aiTab);
 
     renderModelPreference(panels.preference);

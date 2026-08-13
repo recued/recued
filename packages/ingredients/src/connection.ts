@@ -2,9 +2,11 @@
  *
  *  The `kind: 'connection'` ingredient adapter — single dispatch
  *  surface for outbound api / mcp / notification calls keyed off
- *  enrolled connection records. Replaces D-126's
- *  `KIND_NOT_YET_IMPLEMENTED` placeholder at
- *  `AdapterRegistry['connection']`.
+ *  enrolled connection records. Occupies `AdapterRegistry['connection']`
+ *  whenever the boot site wires a `connectionStore`; without one the slot
+ *  holds D-126's kind-named `unsupported('connection')` default. (It
+ *  originally displaced a bespoke `KIND_NOT_YET_IMPLEMENTED` placeholder,
+ *  retired once P3 shipped — that code now has no producer anywhere.)
  *
  *  Two entry paths converge here (per spec § 3.1 + § 3.2):
  *
@@ -283,7 +285,8 @@ const isConnectionKind = (v: unknown): v is ConnectionKind =>
  *  `Adapter` is wired into:
  *
  *    - `createAdapterRegistry({ connection: createConnectionAdapter(deps) })`
- *      at boot sites, replacing D-126's `connectionPlaceholder`.
+ *      at boot sites, replacing D-126's kind-named `unsupported('connection')`
+ *      default (which stands only when no `connectionStore` is wired).
  *
  *    - Tests construct the adapter directly with stub handlers + an
  *      in-memory store double to assert the dispatch shell.
@@ -489,7 +492,12 @@ export const createConnectionAdapter = (
       });
       throw new IngredientError(
         'INGREDIENT_ADAPTER_ALL_FAILED',
-        `connection adapter: no handler wired for kind '${connection_kind}' on this runtime (slug '${call.slug}'). The connection.${connection_kind} handler ships in D-125 P4.${connection_kind === 'api' ? 1 : connection_kind === 'mcp' ? 2 : 3}.`,
+        // ⛔ Name the UNWIRED DEPS, never a ship date. This read "the
+        // connection.<kind> handler ships in D-125 P4.x" long after P4.1/4.2/4.3
+        // all shipped, so the one condition it could describe — a boot site that
+        // did not pass this handler's deps — was reported as an unbuilt feature.
+        // A reader who believes it goes looking for a release instead of a wire.
+        `connection adapter: no handler wired for kind '${connection_kind}' on this runtime (slug '${call.slug}'). The boot site did not supply the connection.${connection_kind} handler's deps — check the connection adapter's \`handlers\` wiring at the executor boot site.`,
         { slug: call.slug, kind: `connection.${connection_kind}`, name: connection },
       );
     }

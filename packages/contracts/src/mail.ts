@@ -15,6 +15,32 @@
  *  and keeps the column a normal SQLite TEXT cell. */
 export const MAIL_MESSAGE_SUBJECT_MAX = 300;
 
+/** D-172 P2 — Half-A per-attachment byte cap. There is no Recued byte
+ *  ceiling (D-172 Resolved Q5) — the real constraint is the provider's
+ *  input window — but the three providers' *inline* attachment paths
+ *  differ (Gmail `raw` tolerates tens of MB; Graph's
+ *  `fileAttachment.contentBytes` inline path caps at ~3 MB before it
+ *  needs an upload session; SMTP varies by host). Half A ships a single
+ *  conservative cap pegged to the smallest provider inline window so a
+ *  too-large file surfaces a WARNING on the send (via
+ *  `SentMessageMeta.warnings[]`) and is OMITTED from that provider's
+ *  payload — never silently dropped without a trace (I-6). Per-modality
+ *  / per-provider sizing (downscale, upload-session, chunking) is Half
+ *  B. 3 MB raw bytes ≈ 4 MB base64-on-the-wire.
+ *
+ *  ⛔ LIVES HERE, NOT WITH THE SERVER THAT ENFORCES IT, BECAUSE TWO SIDES
+ *  NEED IT AND `packages/` MAY NOT IMPORT `backend/`. The compose UI reads it
+ *  to mark an over-cap file BEFORE the user sends, rather than letting them
+ *  discover it from a post-send warning. ⚠ The server stays AUTHORITATIVE:
+ *  the UI mark is advisory, and a compose that ignored it still has the file
+ *  dropped + warned at `MailCollection.send`. Never let the UI check become
+ *  the only one. */
+export const MAIL_SEND_ATTACHMENT_MAX_BYTES = 3 * 1024 * 1024;
+
+/** D-172 P2 — warning code attached to `SentMessageMeta.warnings[]` when an
+ *  attachment exceeded `MAIL_SEND_ATTACHMENT_MAX_BYTES` and was omitted. */
+export const MAIL_SEND_ATTACHMENT_OVERSIZE_WARNING = 'MAIL_SEND_ATTACHMENT_OVERSIZE' as const;
+
 /** D-145 PA7 — closed list of `ref` targets the mail_message canonical
  *  schema points at. Tests pin these to catch silent schema drift. */
 export const MAIL_MESSAGE_REF_CONTACT = 'data.contact';

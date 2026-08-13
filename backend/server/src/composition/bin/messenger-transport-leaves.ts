@@ -121,9 +121,16 @@ export const buildMessengerCredentialResolvers = (deps: {
  *
  *  A declared vendor missing either leaf is skipped (structural no-op).
  *  `createRemoteChannel` fails LOUD if a vendor's transport slug is not a
- *  registered notification `ChannelName` (seam 10) — a new chat transport
- *  (Discord / Teams / …) must be added to `CHANNEL_NAMES` before it can back a
- *  channel here. */
+ *  registered notification `ChannelName` (seam 10).
+ *
+ *  ⛔ THERE IS NO CHANNEL LIST TO EDIT. This used to read "a new chat transport
+ *  must be added to `CHANNEL_NAMES` first", which is wrong twice: `CHANNEL_NAMES`
+ *  is a derived ALIAS nothing imports, and `NOTIFICATION_CHANNEL_NAMES` SPLICES
+ *  `...MESSENGER_VENDOR_SLUGS`, so a declared vendor is already a channel. The
+ *  procedure is the one `messenger-vendors.ts` states five lines under its own
+ *  slug list: the slug + a `MESSENGER_VENDOR_DECLARATIONS` entry (a boot check
+ *  enforces both directions) + the adapter leaves below. "Nothing else to
+ *  widen." Following the old note sent you to hand-edit a derived list. */
 export const buildMessengerRemoteChannels = (deps: {
   connectionStore: ConnectionStoreSqlite;
   keys?: KeyManager;

@@ -46,6 +46,13 @@ export const RESERVED_HANDLES: ReadonlySet<string> = new Set([
   // so a dotted pack stamp owned by either publisher handle would collide with
   // a genuine Tier-1 / ingredient-tool grant instead of failing structurally.
   'primitive', 'ingredient',
+  // D-234 § 234.4h — `peer.label.<label>`, the fourth grant-entry prefix. ⚠ The
+  // reserved handle is the FIRST SEGMENT, not the whole prefix: a stamped op id
+  // is `<publisher>.<pack>.<key>`, so the collision needs publisher `peer` with
+  // pack `label` — reserving `peer.label` would reserve a handle no publisher
+  // could ever hold anyway (handles carry no dot), which is a check that cannot
+  // fail and therefore protects nothing.
+  'peer',
   'system', 'admin', 'administrator', 'moderator', 'mod', 'staff', 'support',
   'official', 'internal', 'test', 'demo', 'example', 'sample',
   // Auth / security

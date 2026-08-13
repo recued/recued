@@ -83,6 +83,31 @@ export interface KernelOpEntry {
    *  rejected as recipe op-steps ({@link isNativeKernelOp}). Absent/false ⇒ an
    *  ordinary ingredient-backed, recipe-runnable kernel op. */
   native?: boolean;
+  /** D-234 § 234.4 — the STATIC MCP TOOL NAME this native verb-op is reached
+   *  through, when it is reachable from outside at all.
+   *
+   *  ⛔⛔ IT EXISTS BECAUSE THE MINT AND THE GATE SPOKE DIFFERENT LANGUAGES, AND
+   *  THE DISAGREEMENT FAILED CLOSED IN SILENCE. `chat.inbound_token.issue`
+   *  validates each grant key through `preflightExternalToolGrant`, which
+   *  ACCEPTS a registered kernel op id — so an owner can hand a door
+   *  `core.peer.receive-ask` and the mint says yes. At call time the per-token
+   *  checklist is an EXACT lookup on the TOOL name
+   *  ({@link isMcpInboundTokenToolAuthorized} → `grants[tool_name] === true`),
+   *  so it asked for `recued_peerAsk` and found nothing. A native op has no
+   *  `backing_slug`, so it is also filtered out of the one place op ids ARE
+   *  honoured (`buildMcpContractSnapshot`'s `KERNEL_OP_REGISTRY` walk). Net
+   *  effect: the only name the owner could grant was a name nothing ever read.
+   *
+   *  ⇒ This field is the join, so the vocabulary the mint accepts is the
+   *  vocabulary the gate reads. Populated ONLY where a native op is actually
+   *  callable as a static MCP tool; every other native verb-op is a per-contract
+   *  READ grant consulted through `ReadGrantChecker`, never a checklist entry,
+   *  and giving those a tool name would invent a door rather than describe one.
+   *
+   *  ⚠ Additive at the gate: it widens what satisfies the checklist, never what
+   *  the checklist protects. A token granted the tool NAME still passes exactly
+   *  as before. */
+  mcp_tool?: string;
 }
 
 /** §3 — ⛔ THERE IS DELIBERATELY NO KERNEL APPROVAL DERIVATION HERE.
@@ -140,7 +165,16 @@ const nativeOp = (
   opId: string,
   domain: string,
   risk: RiskTier,
-): KernelOpEntry => ({ op: opId, domain, risk, native: true });
+  /** D-234 § 234.4 — see {@link KernelOpEntry.mcp_tool}. Supply it only for a
+   *  native op that is genuinely callable as a static MCP tool. */
+  mcp_tool?: string,
+): KernelOpEntry => ({
+  op: opId,
+  domain,
+  risk,
+  native: true,
+  ...(mcp_tool !== undefined ? { mcp_tool } : {}),
+});
 
 // ────────────────────────────────────────────────────────────────
 // §10 step 2 — the closed-kind kernel op enumeration, grouped by domain
@@ -342,6 +376,68 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   // accepts only an opaque event ref; engine-only StepMeta supplies the recipe
   // and run identities used by the consumer-binding authorization check.
   op('core.webhook.event.get', 'webhook', 'webhook-event-get', 'read'),
+
+  // ── peer — D-234 § 234.4, what this server offers another server's OWNER.
+  //
+  // ⛔ `write` RISK IS LOAD-BEARING, NOT A GUESS. A write-tier op pauses for the
+  // owner's approval, and declaring yourself answerable to a peer is exactly a
+  // decision they should see before it takes effect — the exposure is what turns
+  // "we are connected" into "they may put questions on my screen". Getting the
+  // owner into that loop is free at this tier and would need inventing at `read`.
+  // D-234 § 234.4 — THE ASKING HALF. ⛔ `write` RISK, and it is not a formality:
+  // this op puts a question on ANOTHER PERSON'S SCREEN and suspends the run until
+  // they answer. Spending someone else's attention is an outward action, and the
+  // owner should see it proposed before it leaves — the same tier that gates a
+  // mail send, for the same reason.
+  op('core.peer.ask', 'peer', 'peer-ask', 'write'),
+  // D-234 § 234.4 — THE INBOUND DOOR, as a NATIVE verb-op.
+  //
+  // ⛔⛔ NATIVE, NOT RECIPE-BACKED, AND THE FIRST CUT GOT THIS WRONG. It shipped
+  // as a bundled kernel recipe, and the live drive found that a peer's call could
+  // never resolve: `mcp-server` looks an incoming tool name up in `recipeStore`,
+  // and bundled kernel recipes are deliberately never in it. That resolution
+  // failure was the architecture saying the VEHICLE was wrong.
+  //
+  // 🔑 AND THE OWNER'S ARGUMENT IS THE REAL ONE: if the receiver's whole job is
+  // to raise an ask and answer it, a recipe makes the door CONDITIONAL ON AN
+  // INSTALL — it exists only where someone happened to add a pack. That is
+  // exactly what putting this in core is meant to avoid. A recipe earns its place
+  // when the receiver DOES something (write, store, act), and that is `peer.run`.
+  // Native means every Recued server can answer a peer out of the box.
+  //
+  // ⇒ It also removes the § 234.1 ceiling exemption entirely rather than
+  // justifying it: a native verb is not a recipe dispatch, so the recipe
+  // admission ceiling never applies and EXPOSURE is the only gate — one door,
+  // not two with a bridge between them.
+  // ⚠ THE ONLY NATIVE OP WITH AN `mcp_tool`, and the asymmetry is the point:
+  // every other native verb-op above is a per-contract READ grant consulted
+  // through `ReadGrantChecker`, never a per-token checklist entry. This one is a
+  // DOOR a peer calls, so the token that reaches it has to be able to name it —
+  // and until this field the only name the mint accepted was one the gate never
+  // read. See {@link KernelOpEntry.mcp_tool}.
+  nativeOp('core.peer.receive-ask', 'peer', 'write', 'recued_peerAsk'),
+  // D-234 § 234.4 — THE RETURN LEG'S DOOR: where the peer's ANSWER comes back.
+  //
+  // ⛔ A SEPARATE OP FROM `receive-ask`, NOT A MODE ON IT, because the two admit
+  // on DIFFERENT evidence and an owner must be able to hold one without the
+  // other. `receive-ask` is gated by EXPOSURE — a standing "you may put questions
+  // to me". This one is gated by CORRELATION: we must have asked THIS ref, and
+  // the answer must arrive from the contract the connection we asked through is
+  // bound to. A peer that was never exposed can still answer a question we sent
+  // them, and a peer we exposed to cannot push an answer we never solicited.
+  // Folding them into one op would make each grant carry the other's authority.
+  //
+  // ⚠ `write` because it resumes a suspended run of the owner's; see
+  // `isSelfGatedNativeMcpTool` for why the synchronous-path ceiling is
+  // substituted rather than applied — § 234.2 already ruled that the reply you
+  // asked for needs no prompt.
+  nativeOp('core.peer.receive-answer', 'peer', 'write', 'recued_peerAnswer'),
+  // ⛔⛔ D-234 § 234.4j — `core.peer.expose` / `.revoke` / `.exposures` USED TO SIT
+  // HERE AND WERE DELETED. They wrote a `peer_exposures` table saying "this peer
+  // may ask me things under this label" — which is the SAME QUESTION the peer's
+  // contract already answers, in a second store with no UI. `peer.label.<label>`
+  // on the contract grant is the one gate now; `admitPeerAsk` reads it directly.
+  // Do not re-add a per-peer flag store: the contract IS the flag store.
 
   // ── storage — the generic KV / blob surface (data.shared + data.file).
   op('core.storage.shared.write', 'storage', 'shared-write', 'write'),
@@ -777,6 +873,24 @@ export const isRegisteredKernelOp = (opId: string): boolean => KERNEL_OP_BY_ID.h
  *  verb-op (an MCP-native read-tool grant handle with no backing ingredient,
  *  {@link KernelOpEntry.native}). These are grantable per-contract `op` entries
  *  but NOT recipe-runnable, so the op-step save check rejects them as steps. */
+/** D-234 § 234.4 — the static MCP tool name → native verb-op id map, built once
+ *  from the registry. Empty for every tool with no native op behind it. */
+const KERNEL_OP_BY_MCP_TOOL: ReadonlyMap<string, string> = new Map(
+  KERNEL_OP_REGISTRY
+    .filter((e): e is KernelOpEntry & { mcp_tool: string } => e.mcp_tool !== undefined)
+    .map((e) => [e.mcp_tool, e.op] as const),
+);
+
+/** The native verb-op a static MCP tool is reached through, or undefined when
+ *  the tool fronts no kernel op ({@link KernelOpEntry.mcp_tool}).
+ *
+ *  ⇒ The per-token checklist uses this to accept EITHER name: the tool the
+ *  caller invoked, or the op id the owner actually granted at mint time. Without
+ *  it the two vocabularies never meet and the op-id grant is inert — see the
+ *  field doc for how that failed silently. */
+export const kernelOpForMcpTool = (tool_name: string): string | undefined =>
+  KERNEL_OP_BY_MCP_TOOL.get(tool_name);
+
 export const isNativeKernelOp = (opId: string): boolean =>
   KERNEL_OP_BY_ID.get(opId)?.native === true;
 

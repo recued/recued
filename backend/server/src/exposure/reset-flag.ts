@@ -32,7 +32,7 @@
  *      The helper logs but does not propagate audit-emit failures. */
 
 import type { ExposureState, PathResolution, PathRole } from '@recued/contracts';
-import { PATH_ROLES } from '@recued/contracts';
+import { PATH_ROLES, totalRecord } from '@recued/contracts';
 import type { ExposureStateStore } from './index.js';
 
 /** Action code mirrored from `packages/storage/src/audit.ts` (ActivityAction
@@ -99,11 +99,10 @@ export interface ApplyResetExposureBootOutcome {
 const cloneResolution = (
   src: Record<PathRole, PathResolution>,
 ): Record<PathRole, PathResolution> => {
-  const out = {} as Record<PathRole, PathResolution>;
-  for (const role of PATH_ROLES) {
-    out[role] = { lan: src[role].lan, public: src[role].public };
-  }
-  return out;
+  return totalRecord(PATH_ROLES, (role) => ({
+    lan: src[role].lan,
+    public: src[role].public,
+  }));
 };
 
 /** Apply the boot-flag gate. Returns whether the reset path was taken

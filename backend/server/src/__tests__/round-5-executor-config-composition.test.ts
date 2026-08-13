@@ -1211,6 +1211,37 @@ describe('composeExecutorConfig kernel dispatcher shape', () => {
     expect('timelineRead' in kernelOf(config)).toBe(false);
   });
 
+  it('⛔⛔ D-234 § 234.4 — the peer ASK op REACHES a dispatcher when db is wired', async () => {
+    // THREADING THIS IS THE WHOLE FEATURE. `createKernelAdapter` refuses an
+    // unwired slug with `SERVER_NOT_REACHABLE`, so `core.peer.ask` can sit in the
+    // registry, pass its ratchets, and reach nothing at all — the exact shape of
+    // D-231's inert `data.memory` resolver and of the four things D-232 built,
+    // typed, tested and left unreachable in one session, all green.
+    // ⚠ § 234.4j removed `exposePeer` / `revokePeer` / `listPeerExposures` from
+    // this list WITH the ops behind them. A name dropped from an expectation is
+    // indistinguishable from one never asserted, so it is written down here.
+    const { config } = await composeWith({ db: makeDb() });
+    expectPresentFunctions(kernelOf(config), [
+      // D-234 § 234.4 slice 6 — `peerAsk` is the one that makes the whole pause
+      // substrate reachable. Without it a recipe naming `core.peer.ask` gets
+      // `SERVER_NOT_REACHABLE`, and the signal / re-throw / step-loop catch /
+      // `awaiting_peer` chain is unreachable code that every test still passes,
+      // because every test builds its own adapter.
+      'peerAsk',
+    ]);
+  });
+
+  it('⚠ and are ABSENT without a db rather than pretending', async () => {
+    // A dbless harness has nowhere to record an answer. Refusing is the safe
+    // direction for a surface that suspends a run waiting on one: a dispatcher
+    // that accepted the call and dropped it would report success for a question
+    // nobody will ever answer.
+    const { config } = await composeWith({ db: undefined });
+    expectAbsent(kernelOf(config), [
+      'peerAsk',
+    ]);
+  });
+
   it('includes timelineRead only when db, annotationStore, and auditLog are all present', async () => {
     const { config } = await composeWith({
       db: makeDb(),

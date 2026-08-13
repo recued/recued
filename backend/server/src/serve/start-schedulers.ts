@@ -57,6 +57,8 @@ export type ServeHousekeepingAppContext = Pick<
   | 'vendorRateGateRef'
   // R21.1 — gates the autonomous idle-probe loop on vault-unlocked.
   | 'isVaultUnlocked'
+  // RUNG 4 — the memory pool the `memory-embed-backlog` task embeds.
+  | 'userMemoryStore'
 >;
 
 export type ServeHousekeepingCollectionContext = Pick<
@@ -171,6 +173,10 @@ export const startServeHousekeepingScheduler = async (
     ...(storage.workEntityStoreRef
       ? { workEntityStore: storage.workEntityStoreRef }
       : {}),
+    // RUNG 4's write side — the memory pool the `memory-embed-backlog` task
+    // embeds. Without this the task registers and no-ops, which is the exact
+    // built-and-unreachable shape it exists to close.
+    ...(app.userMemoryStore ? { userMemoryStore: app.userMemoryStore } : {}),
     // D-172 — register the upload-session TTL/orphan sweep when the webclient
     // upload service is wired (built in compose-collection-context).
     ...(collection.uploadService

@@ -166,6 +166,7 @@ const SURFACE_LABELS: Readonly<Record<
   data: 'Data',
   logs: 'Runs',
   chat: 'Chat',
+  mail: 'Mail',
 };
 
 const SAFE_SUBVIEW_LABELS: Readonly<Record<string, string>> = {

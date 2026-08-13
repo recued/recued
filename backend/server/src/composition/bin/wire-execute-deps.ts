@@ -29,6 +29,8 @@
  */
 
 import type Database from 'better-sqlite3';
+import { createPeerAskOutboxStore } from '../../storage/peer-ask-outbox-store.js';
+import { createPeerAdmissionStore } from '../../storage/peer-admission-store.js';
 import type {
   Checkpoint,
   ExecutionLane,
@@ -131,6 +133,11 @@ export interface ComposeExecuteDepsDeps {
    *  nothing here resolves it (the public base URL is not in scope at this
    *  layer). */
   askAnswerLink?: (ask_id: string) => string;
+  /** D-234 § 234.3 — resolve a recipe's `metadata.owner_surface` to an absolute
+   *  webclient link, so the peer-admission entry ask can carry "read it here".
+   *  Same binary presence as `askAnswerLink`: a non-public server has no base
+   *  URL, so the ask goes out with no link rather than an unopenable one. */
+  ownerSurfaceLink?: (recipe_id: string) => string;
   recipeStore: RecipeStore;
   /** D-221 — server-local Records authority. The engine reaches it only after
    * the ordinary catalog policy, operation-grant, and approval gates admit. */
@@ -784,6 +791,19 @@ export const composeExecuteDeps = (
     // links table after the audit row is appended. Daemon-only mode
     // (db undefined) skips emission entirely.
     ...(deps.db ? { db: deps.db } : {}),
+    // D-234 § 234.1 — where an answered peer-admission ask is recorded, and where
+    // the ceiling CLAIMS it on the peer's next call. ⛔ Absent DENIES rather than
+    // admits: an `ask` ceiling with nowhere to read a decision from can only
+    // refuse, which is the safe direction — an unwired host must never downgrade
+    // "ask me" into "let them in". Wired wherever `db` is, i.e. everywhere but
+    // the dbless harnesses.
+    ...(deps.db ? { peerAdmissionStore: createPeerAdmissionStore(deps.db) } : {}),
+    // D-234 § 234.3 — forwarded, not rebuilt: the composition root owns the one
+    // public-base-URL decision (same rule as `askAnswerLink` above), so a
+    // deployment can never link from one surface and not the other.
+    ...(deps.ownerSurfaceLink !== undefined
+      ? { ownerSurfaceLink: deps.ownerSurfaceLink }
+      : {}),
     // D-121 Phase 6 — execution lifecycle + memory event broadcast.
     // Bus emits are best-effort; absent → no realtime events but
     // engine + audit log behavior unchanged.
@@ -822,6 +842,12 @@ export const composeExecuteDeps = (
     // `awaiting_approval`. Absent (no db) ⇒ a paused run is reported in
     // the response but no checkpoint persists — the run cannot resume.
     ...(deps.checkpointStore ? { checkpointStore: deps.checkpointStore } : {}),
+    // D-234 § 234.4 return leg — the asker's open-conversation record. Written as
+    // a peer ask goes out; read (and closed) when the answer comes back, and it
+    // carries the OFFERED option set the inbound answer is validated against.
+    // Absent (dbless) ⇒ questions still go and their answers refuse as
+    // unsolicited, which is where an undelivered ask already leaves the hold.
+    ...(deps.db ? { peerAskOutbox: createPeerAskOutboxStore(deps.db) } : {}),
     ...(deps.mcpActionStore ? { mcpActionStore: deps.mcpActionStore } : {}),
     // D-157 server-wiring — the D-158 notification block, threaded as
     // the preflight notifier. `execute-handler` calls `raisePreflightAsk`

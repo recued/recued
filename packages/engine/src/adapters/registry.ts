@@ -25,8 +25,12 @@
  *  `(manifest, input, ctx)` form as conceptual; `ResolvedCall` already
  *  flattens manifest + input + per-call context into a single envelope.
  *
- *  `connection` slot stays a `KIND_NOT_YET_IMPLEMENTED` placeholder
- *  until D-125 P3 swaps in the outbound-endpoint adapter.
+ *  The `connection` slot carried a bespoke `KIND_NOT_YET_IMPLEMENTED`
+ *  placeholder until D-125 P3 shipped `createConnectionAdapter`. It has
+ *  shipped: both server boot sites wire it whenever `connectionStore` is
+ *  present (`server-executor.ts`), so the slot now falls back to the same
+ *  kind-named `unsupported(...)` default as every other kind. See the note
+ *  on that default below for why the old placeholder was actively wrong.
  *
  *  Spec: D-126 § 2.1, § A.3. */
 
@@ -55,22 +59,6 @@ const unsupported = (kind: IngredientKind, reason: string): Adapter =>
     );
   };
 
-/** `connection` adapter placeholder. D-125 P3 swaps in the real
- *  outbound-endpoint adapter (api / mcp / notification subtypes).
- *  Surfaces as `KIND_NOT_YET_IMPLEMENTED` so callers can render a
- *  "connection adapter not yet shipped" message; D-126 P4.3 promotes
- *  this to a structured RecipeError envelope. */
-export const connectionPlaceholder: Adapter = async (resolved) => {
-  throw Object.assign(
-    new IngredientError(
-      'KIND_NOT_YET_IMPLEMENTED' as 'INGREDIENT_ADAPTER_ALL_FAILED',
-      `connection adapter ships in D-125 P3 (slug '${resolved.slug}')`,
-      { slug: resolved.slug, kind: 'connection' },
-    ),
-    { code: 'KIND_NOT_YET_IMPLEMENTED' as const, kind: 'connection' as const },
-  );
-};
-
 /** Construction-time deps for `createAdapterRegistry`. Each kind is
  *  optional — boot sites provide adapters for the kinds they support;
  *  unsupported kinds get the `unsupported(...)` placeholder. The
@@ -85,8 +73,10 @@ export interface AdapterRegistryDeps {
   mcp?: Adapter;
   service?: Adapter;
   storage?: Adapter;
-  /** D-125 P3 will replace this default placeholder. Override here only
-   *  for tests that exercise a custom connection-kind harness. */
+  /** D-125 P3 `createConnectionAdapter` (api / mcp / notification
+   *  subtypes). Both server boot sites wire it when `connectionStore` is
+   *  present; dbless harnesses leave it unset and get the kind-named
+   *  placeholder. Override here for a custom connection-kind harness. */
   connection?: Adapter;
   /** D-182 — cli toolkit ops execute via the per-kind preflight/execute
    *  handler registry (§7 cli handler), addressed as Tier-P pack ops, NOT
@@ -115,6 +105,14 @@ export const createAdapterRegistry = (
   mcp: deps.mcp ?? unsupported('mcp', 'no MCP adapter is registered on this device'),
   service: deps.service ?? unsupported('service', 'this device does not host long-running services'),
   storage: deps.storage ?? unsupported('storage', 'no storage adapter is registered on this device'),
-  connection: deps.connection ?? connectionPlaceholder,
+  // ⛔ NOT a `KIND_NOT_YET_IMPLEMENTED` placeholder. It was one until D-125
+  // P3, and the message ("connection adapter ships in D-125 P3") outlived the
+  // thing it described by the whole of P3 + P4.1/4.2/4.3 — so an operator whose
+  // real problem was an unwired `connectionStore` got told the feature did not
+  // exist yet, and the code's user-facing text told them to update Recued,
+  // which could never help. The condition here is "not wired on this device",
+  // identical in kind to every slot above; say that.
+  connection: deps.connection
+    ?? unsupported('connection', 'no connection store is wired on this device'),
   cli: deps.cli ?? unsupported('cli', 'cli ops execute via the per-kind handler registry, not the legacy adapter table'),
 });

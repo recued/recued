@@ -216,6 +216,42 @@ describe('composeMailBoot', () => {
     expect(bundle.isVaultUnlocked).toBe(predicate);
   });
 
+  /** ⛔⛔ REGRESSION PIN — this field rode in the WRONG ARGUMENT for as long as
+   *  it existed. `runStartLive` reads `bundle.getCollectionRegistry?.()`, but
+   *  the wiring spread it into `storage`, so the getter was always undefined,
+   *  `?.()` swallowed it, and a mail account enrolled at RUNTIME never joined the
+   *  shared registry — every send answered MAIL_INSTANCE_NOT_FOUND until the
+   *  server was restarted.
+   *
+   *  ⛔⛔ THE COMPILER COULD NOT HELP: `...(x ? { x } : {})` is a SPREAD, and
+   *  spreads are exempt from the excess-property check. Written plainly as
+   *  `getCollectionRegistry,` it is a TS2353 error. Verified both ways.
+   *
+   *  ⛔⛔ NEITHER COULD THE OTHER TESTS. `registry-lifecycle-on-enroll.test.ts`
+   *  hand-builds its own `composeMailStack` call and puts the getter in the
+   *  correct third argument — so it proved the COMPONENT honours the getter
+   *  while production never DELIVERED it. And this file asserts arg placement
+   *  field-by-field, which is blind to whichever field nobody listed.
+   *  ⇒ assert the SIDE it lands on, not merely that it was forwarded. */
+  it('⛔ puts getCollectionRegistry on the BUNDLE, not storage — runStartLive reads it there', () => {
+    const registry = {} as never;
+    const getCollectionRegistry = () => registry;
+
+    composeMailBoot(buildDeps({ getCollectionRegistry }));
+
+    const [, storage, bundle] = lastComposeCall();
+    expect(bundle.getCollectionRegistry).toBe(getCollectionRegistry);
+    // The half that actually failed: present, but on the object nobody reads.
+    expect(Object.hasOwn(storage, 'getCollectionRegistry')).toBe(false);
+  });
+
+  it('omits getCollectionRegistry from the bundle when not passed', () => {
+    composeMailBoot(buildDeps());
+
+    const [, , bundle] = lastComposeCall();
+    expect(Object.hasOwn(bundle, 'getCollectionRegistry')).toBe(false);
+  });
+
   it('omits isVaultUnlocked from the bundle when not passed', () => {
     composeMailBoot(buildDeps());
 

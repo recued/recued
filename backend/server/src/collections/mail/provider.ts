@@ -88,6 +88,61 @@ export const sanitizeMailAttachmentFilename = (raw: string, fallback = 'attachme
   return Buffer.from(stem, 'utf8').subarray(0, room).toString('utf8') + ext;
 };
 
+/** D-172 P2 — render one MIME header parameter carrying an attachment
+ *  filename (`Content-Type: …; name=…` / `Content-Disposition: attachment;
+ *  filename=…`).
+ *
+ *  ⛔ THE FILENAME IS OWNER-SUPPLIED DATA GOING INTO A STRUCTURED HEADER, and
+ *  both RFC 5322 builders used to interpolate it raw into a quoted-string:
+ *  `filename="${att.filename}"`. Two consequences, neither of which announces
+ *  itself — the send SUCCEEDS and the recipient simply sees something else:
+ *
+ *    1. A `"` in the name closes the quoted-string early. `in"voice.pdf`
+ *       reached the recipient as `invoice.pdf` — silently a different file
+ *       name from the one the owner attached. Found by driving a real send
+ *       into a local SMTP sink and parsing what came out
+ *       (`dev/mail-attachment-smtp-drive.ts`, check 6.1); every pure-function
+ *       builder test passed throughout, because they only ever asserted on
+ *       filenames that needed no quoting.
+ *    2. A non-ASCII name shipped as raw 8-bit inside a header, which RFC 5322
+ *       does not permit. Lenient parsers cope (the drive's `facturé-café.pdf`
+ *       round-tripped), so this one hides behind whatever client you happen to
+ *       test with.
+ *
+ *  ⚠ Header INJECTION is not among them and never was: `sanitizeFileDisplayName`
+ *  strips `[\x00-\x1f\x7f]` at ingest, so CR/LF cannot reach here. This is a
+ *  fidelity fix, not a security one — which is exactly why nothing caught it.
+ *
+ *  Encoding rules:
+ *    · printable-ASCII name → RFC 2822 quoted-string with `\` and `"` escaped
+ *      as quoted-pairs.
+ *    · anything else → BOTH an ASCII-transliterated fallback (legacy clients
+ *      that ignore `*=`) AND the RFC 2231 extended form
+ *      `<name>*=UTF-8''<pct-encoded>`, which every modern client prefers. */
+export const mimeFilenameParameter = (parameter: string, filename: string): string => {
+  const quoted = (value: string): string =>
+    `${parameter}="${value.replace(/[\\"]/g, (c) => `\\${c}`)}"`;
+
+  // eslint-disable-next-line no-control-regex
+  if (/^[\x20-\x7e]*$/.test(filename)) return quoted(filename);
+
+  // RFC 2231 §4 — percent-encode every byte outside `attribute-char`.
+  const extended = Array.from(Buffer.from(filename, 'utf8'))
+    .map((b) => {
+      const c = String.fromCharCode(b);
+      return /[A-Za-z0-9!#$&+\-.^_`|~]/.test(c)
+        ? c
+        : `%${b.toString(16).toUpperCase().padStart(2, '0')}`;
+    })
+    .join('');
+
+  // The fallback keeps a recognizable extension for clients that read only the
+  // plain parameter. `_` (not deletion) so the name keeps its shape.
+  // eslint-disable-next-line no-control-regex
+  const fallback = filename.replace(/[^\x20-\x7e]/g, '_');
+  return `${quoted(fallback)}; ${parameter}*=UTF-8''${extended}`;
+};
+
 export const normalizeMailAttachmentMimeType = (raw: string | undefined): string => {
   const mime = String(raw ?? '').split(';', 1)[0]?.trim().toLowerCase() ?? '';
   return mime.length > 0 ? mime : 'application/octet-stream';

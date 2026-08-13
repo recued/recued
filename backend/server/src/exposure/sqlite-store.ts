@@ -34,6 +34,7 @@ import type Database from 'better-sqlite3';
 import {
   EXPOSURE_PRESETS,
   PATH_ROLES,
+  totalRecord,
   isAcknowledgementWellFormed,
   type ExposurePreset,
   type ExposureState,
@@ -162,11 +163,14 @@ const parseStateJson = (raw: string): ExposureState | null => {
   }
   // Project a fresh object so future mutation of the parsed JSON
   // doesn't leak into other callers. Mirrors `cloneState` in index.ts.
-  const resolution = {} as Record<PathRole, PathResolution>;
-  for (const role of PATH_ROLES) {
-    const cell = r.resolution[role];
-    resolution[role] = { lan: cell.lan, public: cell.public };
-  }
+  // ⚠ Bound to a const FIRST: the guards above narrow `r.resolution` off
+  // `unknown`, and that narrowing does not survive into a callback. Reading it
+  // inside the builder would be `unknown` again.
+  const src = r.resolution;
+  const resolution = totalRecord(PATH_ROLES, (role) => {
+    const cell = src[role];
+    return { lan: cell.lan, public: cell.public };
+  });
   const out: ExposureState = {
     resolution,
     derived_preset_label: r.derived_preset_label,
@@ -183,11 +187,10 @@ const parseStateJson = (raw: string): ExposureState | null => {
  *  trips identically — important for the `load()` predicate gates
  *  which reject records carrying unexpected fields. */
 const serializeState = (state: ExposureState): string => {
-  const resolution = {} as Record<PathRole, PathResolution>;
-  for (const role of PATH_ROLES) {
+  const resolution = totalRecord(PATH_ROLES, (role) => {
     const cell = state.resolution[role];
-    resolution[role] = { lan: cell.lan, public: cell.public };
-  }
+    return { lan: cell.lan, public: cell.public };
+  });
   const projected: Record<string, unknown> = {
     resolution,
     derived_preset_label: state.derived_preset_label,

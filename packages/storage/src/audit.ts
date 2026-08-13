@@ -186,6 +186,21 @@ export interface AuditEntry {
    *  ⚠ Absent on nearly every run, and on every exchange whose peer said
    *  nothing. Absence means "no verdict", never "the verdict was fine". */
   exchange_peer_ack?: ExchangeAcknowledgement;
+  /** D-234 § 234.2 — WHERE THIS RUN SAID THE CONVERSATION WOULD BE ANSWERED, i.e.
+   *  the `callback_op` the fire declared. Stamped on the run that OPENED an
+   *  exchange, so the reply that eventually arrives can be checked against what
+   *  we actually asked for rather than merely against the ref.
+   *
+   *  ⛔ WITHOUT IT, CORRELATION ADMISSION IS TOO WIDE. A peer holding a ref we
+   *  opened could invoke ANY recipe their contract reaches and skip the entry ask,
+   *  because the ref alone says "this conversation exists" and not "and this is
+   *  where I said to answer". With it, the admission is exactly the recipe we
+   *  named.
+   *
+   *  ⚠ Stored as the WIRE NAME (`<publisher>/<recipe_id>`) because that is what
+   *  `output.exchange` declares; readers must slice the publisher off before
+   *  comparing to an audit `recipe_id`, exactly as `deriveExchangeStatus` does. */
+  exchange_callback_op?: string;
   /** D-232 § 20.19 — the WIRE NAME of the recipe grant that covered this run's
    *  steps, for a run the host dispatched on a granted recipe's behalf (today:
    *  an exchange fire's `run-ingredient` carrier). `<publisher>/<recipe_id>`.
@@ -400,6 +415,21 @@ export type ActivityAction =
   // to cursor-stable. Non-reserve: low-volume (< 10 per server-month),
   // not forensically critical.
   | 'collection_backfill'
+  // D-221 — ONE row per `core.records.import` call, whatever the file's size.
+  // Target carries `<publisher>/<pack_slug>:<entity>`; `detail` is JSON-encoded
+  // `RecordsImportAuditDetail` (the exact outcome: rows_read / written /
+  // replayed / failed / not_attempted / unparsed, plus `halted_reason`).
+  //
+  // ⛔⛔ IT EXISTS BECAUSE THE GATEWAY ROW CANNOT TELL THE TRUTH HERE. An import
+  // returns a RESULT rather than throwing on a partial write, so the dispatch
+  // row reads `outcome: 'success'` even when 0 of 1000 rows landed — verified,
+  // not assumed. The gateway audits that the CALL happened; this audits what it
+  // DID, which for a bulk write is the only part an owner can act on.
+  //
+  // ⚠ Volume is one row per import (the per-row writes re-enter `execute`
+  // BELOW this emit, so a 1000-row file costs one row, not a thousand) —
+  // deliberately unlike `collection_record_*`.
+  | 'records_import'
   // D-125 Phase 3.2 — one row per connection adapter dispatch, faceted
   // by transport kind so list / filter queries scope without parsing
   // the JSON detail. Target carries the connection record's `name`;
@@ -840,7 +870,30 @@ export type ActivityAction =
   // Reserve-class: the record that a user hard-removed a connection's mirrored
   // data is teardown provenance the ledger must keep past retention (spec § 3
   // "Never" tier preserves audit/memory even as the live data is purged).
-  | 'source_data_purged';
+  | 'source_data_purged'
+  // D-234 § 234.4 — the REMOTE HOLD's ledger. A peer asking this owner a
+  // question, and the owner's answer, are events with NO RUN on this server:
+  // `peer.ask` deliberately dispatches no recipe (that is `peer.run`), so
+  // there is no `AuditEntry` to hang them on.
+  //
+  // ⛔⛔ AND SYNTHESIZING ONE WOULD BE WRONG, NOT MERELY UGLY. D-182 §8 already
+  // ruled the adjacent case for the recipe-less raw-op hold: a fake recipe
+  // pollutes Memory's `recipe_insights` with a recipe nobody wrote. The § 234.4
+  // spec called this record "the only net-new storage" in the design — it is
+  // not: `ActivityEntry` is exactly the recipe-less row, and it already carries
+  // the reserve class and the signing hook these events want.
+  //
+  // `target` = `<peer_contract_id>/<label>`. `detail` = JSON
+  // `{ exchange_ref, question, options, deadline_at?, ask_id?, option?, reason? }`.
+  //
+  // ⚠ ALL FIVE ARE RESERVE-CLASS. "Which peer asked me what, and what did I
+  // answer" is precisely the months-later question an eviction would erase, and
+  // the volume is human-rate. `peer_ask_refused` most of all: the record that
+  // someone tried to reach the owner and was turned away at the door is the one
+  // an investigation starts from, and it is the row an attacker would most like
+  // to see evicted.
+  | 'peer_ask_received' | 'peer_ask_refused'
+  | 'peer_ask_answered' | 'peer_ask_withdrawn' | 'peer_ask_expired';
 
 /** Activity log entry for non-execution events (install, vault, approval, etc.). */
 export interface ActivityEntry {
@@ -899,6 +952,14 @@ export const RESERVE_ACTIONS: ReadonlySet<string> = new Set<string>([
   // D-192 — the teardown-purge record is provenance that outlives the data it
   // removed; it must survive retention pruning.
   'source_data_purged',
+  // D-221 — the mirror of the row above: provenance of data that ARRIVED and
+  // cannot be re-derived. `collection_backfill` is deliberately NOT reserve
+  // because a collection can be re-synced from its source; Records rows are the
+  // owner's own authored business data and cannot (the same asymmetry
+  // `RECORDS_DEFAULT_ROW_QUOTA` is sized around). Evicting this row loses the
+  // only record of which file put which rows in the ledger, on what date.
+  // Volume is human-rate — one row per import the owner actually ran.
+  'records_import',
   'quota_exceeded',
   'tier_limit_exceeded',
   'account_mismatch_rejected',
@@ -917,6 +978,13 @@ export const RESERVE_ACTIONS: ReadonlySet<string> = new Set<string>([
   // Evictable would mean the prune is lossy after all.
   // Volume is human-rate (one row per decision the owner actually made),
   // and each row is far smaller than the ask row it replaces.
+  // D-234 § 234.4 — the remote hold's ledger; see the action union for why all
+  // five survive eviction.
+  'peer_ask_received',
+  'peer_ask_refused',
+  'peer_ask_answered',
+  'peer_ask_withdrawn',
+  'peer_ask_expired',
   'approval_allow',
   'approval_deny',
   // Phase C: lifecycle events must persist past retention so the
@@ -1814,6 +1882,8 @@ export interface AuditEntryInput {
   exchange_ref?: string;
   /** D-232 § 30 — see {@link AuditEntry.exchange_peer_ack}. */
   exchange_peer_ack?: ExchangeAcknowledgement;
+  /** D-234 § 234.2 — see {@link AuditEntry.exchange_callback_op}. */
+  exchange_callback_op?: string;
   /** D-232 § 20.19 — see {@link AuditEntry.granted_by_recipe}. */
   granted_by_recipe?: string;
   /** Run-anchor lifecycle state — a `RunAnchorStatus` (D-157 P1 widened
@@ -1961,6 +2031,11 @@ export const buildAuditEntry = (input: AuditEntryInput): AuditEntry => {
     // nothing anywhere raises.
     ...(input.exchange_peer_ack !== undefined
       ? { exchange_peer_ack: input.exchange_peer_ack }
+      : {}),
+    // D-234 § 234.2 — named here for the third time in this arc's history of this
+    // builder swallowing exchange fields it does not list.
+    ...(input.exchange_callback_op
+      ? { exchange_callback_op: input.exchange_callback_op }
       : {}),
     // ⚠ `buildAuditEntry` is an ENUMERATING COPIER — it returns a literal, so a
     // field added to the interface and not to this list is dropped with NO type

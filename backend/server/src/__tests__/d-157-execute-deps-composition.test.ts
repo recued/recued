@@ -97,6 +97,18 @@ const conditionalExecuteDepKeys = [
   // store threads for the gate's dotted-email record resolution.
   'annotationStore',
   'contactStore',
+  // D-234 § 234.1 — where an answered peer-admission ask is recorded, and where
+  // the ceiling CLAIMS it on the peer's next call. db-gated (constructed inside
+  // the composer from `deps.db`). ⛔ Its ABSENCE denies rather than admits: an
+  // `ask` ceiling with nowhere to read a decision from can only refuse, so an
+  // unwired host never downgrades "ask me" into "let them in".
+  'peerAdmissionStore',
+  // D-234 § 234.4d — the outbox row that lets an ANSWER find the run it belongs
+  // to. db-gated, composer-constructed. ⛔ Its absence strands the return leg
+  // silently: the ask goes out, the peer answers, and `receiveAnswer` refuses
+  // with `not_solicited` because nothing recorded that we asked — a hold that
+  // never closes, reported nowhere.
+  'peerAskOutbox',
   // D-179 P1 — dish resolution + per-dish continuity, both db-gated
   // (constructed inside the composer from `deps.db`); P3 adds the
   // group store for overlay inheritance.

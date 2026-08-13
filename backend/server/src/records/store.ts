@@ -69,6 +69,7 @@ import {
   validateCsvImportSpec,
   type CsvImportSpec,
 } from './csv-import.js';
+import type { RecordsImportAudit } from './import-audit.js';
 import type {
   RecordsMigrationFinalizeStep,
   RecordsMigrationPlan,
@@ -484,6 +485,15 @@ export interface RecordsOutboxDelivery {
 export interface CreateRecordsStoreOptions {
   now?: () => number;
   id?: () => string;
+  /** D-221 — sink for the one-per-import audit fact (see `import-audit.ts`).
+   *
+   *  ⚠ A TYPED EVENT, NOT AN `AuditLogStore`. The records store owns no audit
+   *  table and should not learn about one; the server turns the fact into an
+   *  activity row, exactly as it does for `onGatewayCall`. Optional so a store
+   *  without a sink still imports — but ⛔ an UNWIRED sink is silence, so the
+   *  boot wiring is asserted in `records-import-audit.test.ts` rather than
+   *  trusted. */
+  onImport?: (event: RecordsImportAudit) => void;
 }
 
 const fail = (
@@ -1857,7 +1867,16 @@ export const createRecordsStore = (
     }
   };
 
-  const naturalId = (binding: RecordsExecutionBinding, schema: RecordsSchemaSnapshot, values: unknown): string => {
+  /** ⚠ Takes only the two fields it reads, NOT a whole `RecordsExecutionBinding`.
+   *  The re-derivation call site had to cast `{ entity, natural_key }` up to the
+   *  full binding, which silenced the missing-field check on every OTHER field —
+   *  so if this function ever grew a third field read, the caller would have
+   *  handed it `undefined` with no warning anywhere. */
+  const naturalId = (
+    binding: Pick<RecordsExecutionBinding, 'entity' | 'natural_key'>,
+    schema: RecordsSchemaSnapshot,
+    values: unknown,
+  ): string => {
     const entity = entityFor(schema, binding.entity);
     const byKey = new Map(entity.fields.map((field) => [field.key, field]));
     const source = values as Record<string, unknown>;
@@ -2993,15 +3012,34 @@ export const createRecordsStore = (
    */
   const importCsv = (
     call: RecordsExecutionCall,
-    _namespace: NamespaceRow,
+    namespace: NamespaceRow,
     schema: RecordsSchemaSnapshot,
   ): RecordsImportResult => {
+    const startedAt = now();
+    /** ⚠ STRICT `=== true`. A truthy check would make `dry_run: 'false'` — the
+     *  string a form or a `{{config.*}}` ref hands over — silently mean "do not
+     *  write", so an owner who typed the word false would get nothing imported
+     *  and a report saying it worked. */
+    const dryRun = call.args.dry_run === true;
+    if (call.args.dry_run !== undefined && typeof call.args.dry_run !== 'boolean') {
+      fail('records_invalid', 'dry_run must be a boolean');
+    }
     const csv = call.args.csv;
     if (typeof csv !== 'string') fail('records_invalid', 'import requires csv text');
     const writable = entityFor(schema, call.binding.entity).fields
       .filter((field) => field.kind !== 'id')
       .map((field) => ({ key: field.key, required: field.required }));
-    const problems = validateCsvImportSpec(call.args.spec, writable);
+    /** ⛔⛔ WHO OWNS IDENTITY IS THE PACK'S CHOICE, DECLARED PER ENTITY. With a
+     *  `natural_key` the store derives each row id from the key's own fields, so a row
+     *  typed by hand and the same row arriving in a file land on ONE id — which is the
+     *  only way `import` can SUPPLEMENT manual entry rather than duplicate it. Without
+     *  one the caller's `dedup_on` decides, and the occurrence counter keeps two
+     *  genuinely identical lines distinct.
+     *
+     *  ⚠ These are mutually exclusive by construction: a natural-key entity refuses a
+     *  caller-supplied id outright, so `import` must not offer one. */
+    const naturalKey = declaredNaturalKey(namespace, call.binding.entity);
+    const problems = validateCsvImportSpec(call.args.spec, writable, naturalKey);
     if (problems.length > 0) {
       fail('records_invalid', `import spec is not admissible: ${problems.join('; ')}`);
     }
@@ -3026,9 +3064,13 @@ export const createRecordsStore = (
     const writeBinding = {
       ...call.binding, action: 'create' as RecordsExecutionBinding['action'],
     };
-    const writeRow = (row: { id: string; values: Readonly<Record<string, unknown>> }): boolean => {
+    const writeRow = (row: { id?: string; values: Readonly<Record<string, unknown>> }): boolean => {
       const result = execute({
-        ...call, binding: writeBinding, args: { id: row.id, values: row.values },
+        ...call, binding: writeBinding,
+        // ⛔ The id is OMITTED on a natural-key entity, not computed and discarded: the
+        // store's own derivation is then the single source of identity, shared with
+        // every manual `create` on the same entity.
+        args: { ...(row.id === undefined ? {} : { id: row.id }), values: row.values },
       }) as { replayed: boolean };
       return result.replayed;
     };
@@ -3059,6 +3101,7 @@ export const createRecordsStore = (
       if (HALTING.has(code)) halted = `${code}: ${reason}`;
     };
 
+    const writeAllRows = (): void => {
     for (let start = 0; start < plan.rows.length && halted === undefined; start += RECORDS_MAX_BATCH_OPS) {
       const slice = plan.rows.slice(start, start + RECORDS_MAX_BATCH_OPS);
       try {
@@ -3084,13 +3127,41 @@ export const createRecordsStore = (
           try {
             if (writeRow(row)) replayed += 1; else written += 1;
           } catch (error) {
-            record(start + offset, row.id, error);
+            record(start + offset, row.id ?? '', error);
           }
         }
       }
     }
+    };
 
-    return {
+    /** ⛔⛔ A DRY RUN GOES THROUGH THE REAL WRITE PATH AND IS THEN ROLLED BACK.
+     *  Not a simulation, and deliberately not one: the numbers only mean
+     *  anything if they came from the same validation, the same conflict
+     *  detection and the same quota accounting a real import runs. A predicted
+     *  answer would be a second implementation of the write, free to disagree
+     *  with the first exactly where it matters.
+     *
+     *  🔑 SAME DEVICE `runMigrationPreflight` USES a few hundred lines below —
+     *  do the work inside a transaction, throw a private sentinel, swallow it.
+     *  The sentinel is a Symbol so no caller error can be mistaken for it.
+     *
+     *  ⚠ The counters are ordinary JS and do NOT roll back with the rows, which
+     *  is the whole point: the database forgets, the report does not. */
+    if (dryRun) {
+      const rollback = Symbol('records-import-dry-run');
+      try {
+        db.transaction(() => {
+          writeAllRows();
+          throw rollback;
+        })();
+      } catch (error) {
+        if (error !== rollback) throw error;
+      }
+    } else {
+      writeAllRows();
+    }
+
+    const result: RecordsImportResult = {
       rows_read: plan.rows_read,
       written,
       replayed,
@@ -3103,7 +3174,46 @@ export const createRecordsStore = (
       // types are already the same three fields.
       unparsed_sample: plan.unparsed.slice(0, RECORDS_IMPORT_SAMPLE_LIMIT),
       ...(halted === undefined ? {} : { halted_reason: halted }),
+      ...(dryRun ? { dry_run: true as const } : {}),
     };
+
+    /** ⛔⛔ THE DURABLE RECORD OF WHAT THIS IMPORT ACTUALLY DID, emitted HERE and
+     *  nowhere else. The gateway already audits the dispatch, once — but an
+     *  import returns a result instead of throwing on a partial write, so that
+     *  row reads `success` for a file where nothing landed. This carries the
+     *  exact outcome; the two rows answer different questions and both are true.
+     *
+     *  ⛔ BURIED IN THE ACTION ON PURPOSE. Putting it at a call site would make
+     *  the honest record optional — every future caller would have to remember,
+     *  and the one who forgets produces a silent bulk write over the owner's
+     *  data. There is exactly one way to run an import and exactly one place it
+     *  is recorded.
+     *
+     *  ⚠ AFTER the result is built, so the row and the return value cannot
+     *  disagree; and swallowed, because an audit sink must never be able to fail
+     *  an import that already wrote rows — the same fire-and-forget contract
+     *  `onGatewayCall` and `collection_backfill` both keep. */
+    /** ⛔ A DRY RUN EMITS NOTHING. The row's whole justification is that it is
+     *  provenance for data that arrived and cannot be re-synced — and a dry run
+     *  is data that did NOT arrive. Recording one would put a reserve-class row
+     *  (never evicted) against every rehearsal, and would leave a trail in which
+     *  "imported" and "considered importing" look alike, which is the exact
+     *  confusion the row exists to prevent. */
+    if (options.onImport && !dryRun) {
+      try {
+        options.onImport({
+          owner: call.binding.owner,
+          entity: call.binding.entity,
+          principal: call.principal,
+          duration_ms: now() - startedAt,
+          result,
+        });
+      } catch {
+        /* audit-sink failures never break an import */
+      }
+    }
+
+    return result;
   };
 
   const getOne = (binding: RecordsExecutionBinding, args: Record<string, unknown>, schema: RecordsSchemaSnapshot) => {
@@ -4101,7 +4211,7 @@ export const createRecordsStore = (
           // friendly shape, so this can never disagree with the id a create
           // would mint for these values.
           const derived = naturalId(
-            { entity: row.kind, natural_key: [...naturalKey] } as RecordsExecutionBinding,
+            { entity: row.kind, natural_key: [...naturalKey] },
             targetSchema,
             projectRow(row, targetSchema),
           );

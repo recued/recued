@@ -1,4 +1,5 @@
 import {
+  isPeerAnswerRequiredSignal,
   isPreflightRequiredSignal,
   recipeOutputSections,
   resolveRecordFields,
@@ -433,6 +434,37 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
       // `Checkpoint` from the snapshot; on `Approve` it re-instantiates
       // a fresh execution with `ctx.resumeFrom = { gated_step_id }` and
       // `ctx.stores.step` seeded from the checkpoint.
+      // D-234 § 234.4 — THE SECOND CHECKPOINT MINT POINT. Structurally identical
+      // to the preflight pause below it: a control-flow signal raised inside the
+      // step, caught here rather than captured as a step error, ending the run
+      // with a snapshot the host turns into a `Checkpoint`.
+      //
+      // ⛔ IT MUST PRECEDE THE PREFLIGHT BRANCH ONLY IF THE GUARDS OVERLAP — they
+      // do not (different marker names), so order is not load-bearing here. What
+      // IS load-bearing is that `step-runner` re-throws this signal instead of
+      // swallowing it into `StepLog.error`; without that it never reaches this
+      // loop and the run fails with an opaque error instead of pausing.
+      if (isPeerAnswerRequiredSignal(e)) {
+        fireProgress(ctx, { type: 'focus_update', phase: 'done', step_id: null });
+        return {
+          recipe_id: recipe.recipe_id,
+          recipe_hash,
+          success: false,
+          output: emptyOutput(),
+          steps: logs,
+          errors: [],
+          duration_ms: Date.now() - start,
+          validation_issues: [],
+          awaiting_peer: {
+            gated_step_id: stepId,
+            // Same structured clone the preflight pause takes — the host passes
+            // it straight to `CheckpointStore.write` with no further copying.
+            step_state: structuredClone(ctx.stores.step as Record<string, unknown>),
+            exchange_ref: e.exchange_ref,
+            spec: e.spec,
+          },
+        };
+      }
       if (isPreflightRequiredSignal(e)) {
         fireProgress(ctx, { type: 'focus_update', phase: 'done', step_id: null });
         // § 7 follow-on (pii-ledger-in-checkpoint) — serialize the run's pii

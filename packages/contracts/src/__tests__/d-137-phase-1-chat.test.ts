@@ -93,10 +93,14 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     'account.search',
     'work.search',
     'work.read',
+    // D-172 P2 — +1: `file.search`. Identity-only read over the owner's files,
+    // SESSION-SCOPED BY DEFAULT so the model can resolve "that PDF" without
+    // being able to reach the whole file store by saying nothing.
+    'file.search',
     'recipe.run',
   ];
 
-  it('lists exactly eleven canonical primitives in spec order (P1 six + deal/account.search + work.search/read + memory.write)', () => {
+  it('lists exactly twelve canonical primitives in spec order (P1 six + deal/account.search + work.search/read + memory.write + file.search)', () => {
     expect(TIER1_TOOL_NAMES).toEqual(expected);
   });
 

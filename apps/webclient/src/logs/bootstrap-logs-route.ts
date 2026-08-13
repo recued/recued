@@ -1073,6 +1073,9 @@ const STATUS_LABELS: Record<RunAnchorStatus, string> = {
   killed: 'killed',
   in_doubt: 'in doubt',
   awaiting_approval: 'awaiting approval',
+  // D-234 § 234.4 — waiting on ANOTHER OWNER, not on you. The wording carries
+  // the whole difference: there is nothing here for you to approve.
+  awaiting_peer: 'waiting on a peer',
 };
 
 // R17 — near-monochrome chip tone per status (one accent, one danger). Drives
@@ -1090,6 +1093,9 @@ const STATUS_TONES: Record<RunAnchorStatus, ChipTone> = {
   killed: 'off',
   in_doubt: 'accent',
   awaiting_approval: 'accent',
+  // `accent` (live / needs attention), not `neutral`: the run is genuinely in
+  // flight, just not on this server.
+  awaiting_peer: 'accent',
 };
 
 const POLICY_LABELS: Record<PolicyResult, string> = {
@@ -1428,6 +1434,23 @@ const runOutcomeCore = (detail: RunDetail): RunOutcomeCore => {
           : {}),
       };
     }
+    case 'awaiting_peer':
+      // D-234 § 234.4 — ⛔ NO ACTION LINK, DELIBERATELY. The `awaiting_approval`
+      // arm above offers "Review approval" because the owner CAN answer it. This
+      // hold is answerable only by another server's owner; the affordances here
+      // are wait or cancel, and offering a review link would send someone to a
+      // queue that will never contain this. That asymmetry is exactly why
+      // § 234.4 made this a distinct status rather than a flag.
+      return {
+        tone: 'attention',
+        title: 'Waiting on a peer',
+        detail:
+          'The run paused after asking another Recued server. Nothing further has run, '
+          + 'and their answer is theirs to give when they are ready.',
+        nextStep:
+          'Nothing to do here — the run continues on its own when they answer. '
+          + 'Stop waiting from the run if you no longer need it.',
+      };
     default: {
       const exhaustiveStatus: never = status;
       return exhaustiveStatus;

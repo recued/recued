@@ -407,6 +407,14 @@ export const createPreflightResumer = (
             + `(commit_status='${anchor.commit_status}') — answer is a retry of a completed run`,
       };
     }
+    // D-234 § 234.4 — ⇒ THE LITERAL IS CORRECT AND FAIL-CLOSED. The branch above
+    // has already refused anything that is not `awaiting_approval` as "already
+    // terminal". A peer-held anchor cannot legitimately reach here — this path is
+    // driven by an APPROVAL answer, and a peer hold raises no local ask for one
+    // to name — and if it ever did, refusing to resume is the right direction.
+    // ⚠ Only the REASON would be wrong ("already terminal" of a live hold), which
+    // is a diagnosis bug, not a safety one; widening it belongs in the slice that
+    // introduces the peer answer's own resume path.
     if (anchor.commit_status === 'awaiting_approval') {
       // A re-pause on a downstream gate would have rewritten the anchor
       // with a fresh `checkpoint_id`. If the row's `checkpoint_id` no

@@ -24,6 +24,24 @@ describe('D-169 P2 Slice 3 — handleSubmitAnswer', () => {
     expect(submitAnswer).toHaveBeenCalledWith('ask-1', 'yes');
   });
 
+  it('D-234 § 234.4e — forwards a written reason, and OMITS the argument without one', async () => {
+    // ⛔ ARITY IS THE ASSERTION. Passing `undefined` explicitly would satisfy any
+    // "note is not forwarded" check written as a value comparison while still
+    // calling a 2-arg dep with 3 arguments — which is exactly the regression that
+    // reddened the case above.
+    const submitAnswer = vi.fn(async () => {});
+    const deps: HistoryDeps = { submitAnswer };
+
+    await handleSubmitAnswer(deps, { ask_id: 'ask-1', option_id: 'no', note: 'too firm' });
+    expect(submitAnswer).toHaveBeenLastCalledWith('ask-1', 'no', 'too firm');
+
+    // A blank note is the third spelling of absent (the textarea was rendered
+    // and left empty), and must not travel as an empty string.
+    await handleSubmitAnswer(deps, { ask_id: 'ask-1', option_id: 'no', note: '' });
+    expect(submitAnswer).toHaveBeenLastCalledWith('ask-1', 'no');
+    expect(submitAnswer.mock.calls.at(-1)).toHaveLength(2);
+  });
+
   it('no-ops + resolves { ok: true } when the submitAnswer dep is absent', async () => {
     // Partially-composed boot (no notification block): the rpc must still
     // resolve, matching the read handlers' graceful-absent `[]` posture.

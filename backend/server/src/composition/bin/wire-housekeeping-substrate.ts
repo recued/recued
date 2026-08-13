@@ -50,6 +50,7 @@ import type {
 import type { EnrichmentStore } from '../../storage/enrichment-store.js';
 import type { CrmRecordMirrorStore } from '../../storage/crm-record-mirror-store.js';
 import type { WorkEntityStore } from '../../storage/work-entity-store.js';
+import type { UserMemoryStore } from '../../user-memory-store.js';
 import type { WebclientUploadService } from '../../upload/webclient-upload-service.js';
 import type { ArchiveUploadService } from '../../archive/archive-upload-service.js';
 import type { RecipeStore } from '../../recipe-store.js';
@@ -399,6 +400,9 @@ export interface ComposeHousekeepingSchedulerDeps {
   /** Optional collaborators — each gates a per-task registration. */
   contactStore?: ContactStore;
   workEntityStore?: WorkEntityStore;
+  /** RUNG 4 — the owner's memory pool, for the `memory-embed-backlog` task.
+   *  Absent on dbless boots ⇒ the task no-ops. */
+  userMemoryStore?: UserMemoryStore;
   /** D-192 email flagship (E2b) — the contact-engagements resolver bundle
    *  (`{ engagementStore, resolverDeps }`) the AppContext already builds for
    *  the WS-rpc / MCP read channels. Threaded here so the ctx can expose a
@@ -959,6 +963,12 @@ export const composeHousekeepingScheduler = async (
       // the housekeeping refs in bin.ts, so it's defined when the
       // composer runs.
       blobs: deps.cacheBlobs,
+      // RUNG 4 — the owner's memory pool, for `memory-embed-backlog`. Absent on
+      // a dbless boot ⇒ the task no-ops (and rung 4 reports `not_embedded`
+      // rather than pretending the pool holds nothing).
+      ...(deps.userMemoryStore !== undefined
+        ? { userMemoryStore: deps.userMemoryStore }
+        : {}),
       // D-184 — shared vendor rate gate (daily budget + skip-if-busy) for the
       // reconciliation harness. Absent on dbless harnesses ⇒ reconcilers ungated.
       ...(deps.rateGate !== undefined ? { rateGate: deps.rateGate } : {}),

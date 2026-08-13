@@ -23,6 +23,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import WebSocket from 'ws';
+import { WS_VERSION_SUBPROTOCOL, encodeBearerSubprotocol } from '@recued/contracts';
 import Database from 'better-sqlite3';
 
 import { startServer, type RunningServer } from '../server.js';
@@ -94,6 +95,29 @@ const tryConnect = (
       settled = true;
       resolve({ ws, opened: false });
     });
+  });
+
+/** Connect the way BROWSERS now do: the bearer in `Sec-WebSocket-Protocol`,
+ *  nothing secret on the URL. `recued.v1` is offered first deliberately — see
+ *  the ordering note in `ws-subprotocol.ts`. */
+const tryConnectViaSubprotocol = (
+  port: number,
+  token: string,
+): Promise<{ ws: WebSocket; opened: boolean; acceptedProtocol: string }> =>
+  new Promise((resolve) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, [
+      WS_VERSION_SUBPROTOCOL,
+      encodeBearerSubprotocol(token),
+    ]);
+    let settled = false;
+    const done = (opened: boolean): void => {
+      if (settled) return;
+      settled = true;
+      resolve({ ws, opened, acceptedProtocol: ws.protocol ?? '' });
+    };
+    ws.on('open', () => done(true));
+    ws.on('error', () => done(false));
+    ws.on('unexpected-response', () => done(false));
   });
 
 // ════════════════════════════════════════════════════════════════
@@ -281,6 +305,103 @@ describe('D-148 § A.2.1 — WS upgrade with clientTokens.verify wired', () => {
     const result = server!.wsServer.revokeConnectedInstance('ext-bearer-verified');
     expect(result.revoked).toBe(true);
     expect(result.client_token_id).toBe(issuedTokenId);
+    await wait(20);
+  });
+
+  // ── The bearer's carrier ──────────────────────────────────────────
+  //
+  // ⛔ WHAT CHANGED AND WHY. Browsers cannot set request headers on
+  // `new WebSocket(url, protocols)`, so the bearer used to ride the URL as
+  // `?token=`. A URL is where secrets get durably written down — reverse-proxy
+  // and access logs, crash reports, browser URL telemetry — none covered by
+  // TLS, and `client_tokens` has NO expiry column, so anything that leaked
+  // stayed valid until revoked by hand. It now rides `Sec-WebSocket-Protocol`,
+  // the one header the constructor reaches.
+
+  it('authenticates with the bearer in the SUBPROTOCOL, nothing secret on the URL', async () => {
+    const { ws, opened } = await tryConnectViaSubprotocol(
+      server!.port,
+      `${issuedTokenId}.${issuedBearer}`,
+    );
+    expect(opened, 'the subprotocol carrier did not authenticate').toBe(true);
+    ws.close();
+    await wait(20);
+  });
+
+  it('the server NEVER echoes the bearer back in the handshake response', async () => {
+    // `ws` selects the client's FIRST offered protocol by default and echoes the
+    // selection in the `Sec-WebSocket-Protocol` RESPONSE header. Left to that
+    // default, a bearer-first client would have its secret written into the
+    // response — straight back into the logs this change exists to avoid. The
+    // server pins the selection instead; this asserts the pin, not the ordering.
+    const { ws, opened, acceptedProtocol } = await tryConnectViaSubprotocol(
+      server!.port,
+      `${issuedTokenId}.${issuedBearer}`,
+    );
+    expect(opened).toBe(true);
+    expect(acceptedProtocol).toBe(WS_VERSION_SUBPROTOCOL);
+    expect(acceptedProtocol).not.toContain('bearer.');
+    expect(acceptedProtocol).not.toContain(issuedBearer);
+    ws.close();
+    await wait(20);
+  });
+
+  it('never echoes the bearer even when the client offers it FIRST', async () => {
+    // ⛔ THIS IS THE TEST THAT ACTUALLY PINS THE GUARD. The case above offers
+    // `recued.v1` first, so `ws`'s DEFAULT selection (first-offered) picks the
+    // same value the pin would — it passes with or without `handleProtocols`,
+    // proven by deleting the pin and watching all 21 stay green. It asserts the
+    // outcome under a well-behaved client, not the guarantee.
+    //
+    // A client that offers the bearer first is the input that would do the thing
+    // if the guard were gone: ws's default would select the bearer and echo it
+    // into the `Sec-WebSocket-Protocol` RESPONSE header — the secret back in a
+    // log, which is the whole point of moving it off the URL. Our clients order
+    // it safely, but that is a client-side promise and the server must not
+    // depend on one.
+    const encodedBearer = encodeBearerSubprotocol(`${issuedTokenId}.${issuedBearer}`);
+    const ws = new WebSocket(`ws://127.0.0.1:${server!.port}/ws`, [
+      encodedBearer,               // ← adversarial ordering, on purpose
+      WS_VERSION_SUBPROTOCOL,
+    ]);
+    const opened = await new Promise<boolean>((resolve) => {
+      ws.on('open', () => resolve(true));
+      ws.on('error', () => resolve(false));
+      ws.on('unexpected-response', () => resolve(false));
+    });
+
+    expect(opened, 'bearer-first must still authenticate — order is not auth').toBe(true);
+    expect(
+      ws.protocol,
+      'the server echoed the BEARER back in the handshake response',
+    ).toBe(WS_VERSION_SUBPROTOCOL);
+    expect(ws.protocol).not.toContain('bearer.');
+    expect(ws.protocol).not.toContain(encodedBearer);
+    ws.close();
+    await wait(20);
+  });
+
+  it('a BAD bearer in the subprotocol is refused, exactly like a bad one on the URL', async () => {
+    // The input that would do the thing if the check were gone: a well-formed
+    // carrier around a bearer that is not issued.
+    const { opened } = await tryConnectViaSubprotocol(
+      server!.port,
+      `${canonicalTokenId('Z')}.${canonicalBearer('Z')}`,
+    );
+    expect(opened).toBe(false);
+  });
+
+  it('STILL accepts the legacy `?token=` form — un-upgraded clients must not break', async () => {
+    // A PWA serves its cached bundle before replacing itself and an extension
+    // updates on its own schedule, so browsers are still sending the old form.
+    // Dropping it would 401 them with no way to tell why. This pins the
+    // transition as deliberate; delete it only once no shipped client emits it.
+    const { ws, opened } = await tryConnect(
+      server!.port,
+      `${issuedTokenId}.${issuedBearer}`,
+    );
+    expect(opened).toBe(true);
+    ws.close();
     await wait(20);
   });
 });

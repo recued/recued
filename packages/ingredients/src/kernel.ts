@@ -621,6 +621,17 @@ export interface KernelCustomerAccessCloseInput extends KernelCustomerAccessTarg
 }
 
 export interface KernelDispatchers {
+  /** D-234 § 234.4 — the asking half. Returns the recorded `PeerAnswer` when the
+   *  conversation has one, and otherwise THROWS `PeerAnswerRequiredSignal`, which
+   *  the step-runner re-throws and the step loop turns into `awaiting_peer`.
+   *
+   *  ⚠ Throwing to pause is not a hack — it is the same control-flow shape
+   *  `PreflightRequiredSignal` has used since D-157, and the reason both are
+   *  re-thrown by `step-runner` rather than captured as step errors. */
+  peerAsk?: (
+    input: Record<string, unknown>,
+    stepMeta?: { run_id?: string; step_id?: string },
+  ) => Promise<unknown>;
   write?: (input: {
     key: string;
     value: unknown;
@@ -1659,6 +1670,29 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
     // §5 — a `core-<bare>` kernel alias (e.g. `core-notification-send`) dispatches
     // to the same case as its bare slug; `slug` stays the raw value for error context.
     switch (stripCorePrefix(slug)) {
+      case 'peer-ask': {
+        // D-234 § 234.4 — ⛔⛔ THIS OP IS IDEMPOTENT-WITH-MEMORY, AND THAT IS THE
+        // WHOLE RESUME DESIGN. `execute.ts` documents that the gated step RE-RUNS
+        // on resume. So: an answer already recorded ⇒ return it as this step's
+        // result; no answer ⇒ raise the pause signal. The engine needs no
+        // answer-injection path and the checkpoint carries no answer slot —
+        // exactly how § 234.1's ceiling re-runs and finds its recorded decision.
+        if (!dispatchers.peerAsk) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            `peer-ask unavailable — no paired server or kernel dispatcher`,
+            { slug },
+          );
+        }
+        // ⚠ `stepMeta` CARRIES THE RUN IDENTITY the conversation ref is derived
+        // from. It is present only on the engine's path
+        // (`createIngredientExecutor`); a hand-built `ResolvedCall` has none, and
+        // the dispatcher must refuse rather than mint a ref it cannot reproduce.
+        return dispatchers.peerAsk(
+          call.input as Record<string, unknown>,
+          call.stepMeta,
+        );
+      }
       case 'shared-write': {
         if (!dispatchers.write) {
           throw new IngredientError(

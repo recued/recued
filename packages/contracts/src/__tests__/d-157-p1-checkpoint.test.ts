@@ -292,12 +292,19 @@ describe('Checkpoint raw_op discriminant (D-182 §8)', () => {
 });
 
 describe('RunAnchorStatus', () => {
-  it('RUN_ANCHOR_STATUSES extends every CommitStatus with awaiting_approval', () => {
+  it('RUN_ANCHOR_STATUSES extends every CommitStatus with the two HOLDS', () => {
     for (const status of COMMIT_STATUSES) {
       expect(RUN_ANCHOR_STATUSES).toContain(status);
     }
     expect(RUN_ANCHOR_STATUSES).toContain('awaiting_approval');
-    expect(RUN_ANCHOR_STATUSES).toHaveLength(COMMIT_STATUSES.length + 1);
+    // D-234 § 234.4 — `awaiting_peer`: held for a PEER'S owner's answer. This
+    // ratchet caught the widening, which is what it is for; the count is bumped
+    // deliberately rather than relaxed. A hold is a run suspended into a live
+    // `Checkpoint`, and the two differ only in WHERE the ask lives — here, or on
+    // the peer's server. `isHeldRunAnchorStatus` is the predicate every resumer /
+    // boot sweep / retention scan should use instead of either literal.
+    expect(RUN_ANCHOR_STATUSES).toContain('awaiting_peer');
+    expect(RUN_ANCHOR_STATUSES).toHaveLength(COMMIT_STATUSES.length + 2);
   });
 
   it('keeps awaiting_approval out of the CommitStatus closed list', () => {

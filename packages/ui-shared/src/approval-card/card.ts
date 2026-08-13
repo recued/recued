@@ -46,6 +46,19 @@ export interface AskCardModel {
   title?: string;
   text: string;
   options: ReadonlyArray<AskCardOption>;
+  /** D-234 § 234.3 — "read the thing this is about", already absolute.
+   *  Mirrors `NotificationMessage.link_url` / `ServerPendingAsk.link_url`
+   *  without importing either (this shape stays structural). Absent ⇒ no
+   *  link element at all. */
+  link_url?: string;
+  /** D-234 § 234.4e — invite a written reason with the answer. `'required'`
+   *  will not submit without one. Absent ⇒ no note field is rendered.
+   *  Mirrors `ServerPendingAsk.note_prompt` without importing it. */
+  note_prompt?: 'optional' | 'required';
+  /** D-234 § 234.4f — the document the answerer reads before deciding. Rendered
+   *  COLLAPSED: the question is the decision, the body is the evidence, and a
+   *  card that opens four pages by default stops being a card. */
+  body?: string;
 }
 
 export interface AskCardHandlers {
@@ -57,7 +70,7 @@ export interface AskCardHandlers {
    *  drops out of the list). If the promise REJECTS (transient failure / not
    *  paired) the card clears the guard + shows a brief inline error so the
    *  user can retry — the busy state is in-flight-only, never sticky. */
-  onAnswer: (optionId: string) => void | Promise<void>;
+  onAnswer: (optionId: string, note?: string) => void | Promise<void>;
 }
 
 /** Optional host-owned async state. A composed queue can rebuild the card
@@ -74,8 +87,16 @@ export interface AskCardOptions {
 export const ASK_CARD_ATTR = 'data-recued-ask-card';
 /** Stable hook on each option button — the value is the `AskOption.id`. */
 export const ASK_CARD_OPTION_ATTR = 'data-recued-ask-option';
+/** D-234 § 234.4e — stable hook on the written-reason field; the value is the
+ *  `ask_id`, so a test or host can address one card's note box. */
+export const ASK_CARD_NOTE_ATTR = 'data-recued-ask-note';
+/** D-234 § 234.4f — stable hook on the readable-body disclosure; the value is
+ *  the `ask_id`. */
+export const ASK_CARD_BODY_ATTR = 'data-recued-ask-body';
 /** Stable hook on the inline submit-error line (hidden until a submit fails). */
 export const ASK_CARD_ERROR_ATTR = 'data-recued-ask-error';
+/** Stable hook on the D-234 § 234.3 "read it" link (absent when unlinked). */
+export const ASK_CARD_LINK_ATTR = 'data-recued-ask-link';
 /** Concise action/target/highlight projection for generated write asks. */
 export const ASK_CARD_SUMMARY_ATTR = 'data-recued-ask-summary';
 /** Collapsed technical details for generated write asks. */
@@ -281,6 +302,32 @@ export const renderAskCard = (
     card.appendChild(details);
   }
 
+  // D-234 § 234.3 — the READ affordance, between the body and the buttons.
+  //
+  // ⛔ EVERY OTHER STRING ON THIS CARD IS `textContent`; AN `href` IS NOT. The
+  // module contract above says all server-derived text is set inert — that
+  // guarantee does not extend to an attribute the browser NAVIGATES, where
+  // `htmlEscape`-style handling leaves `javascript:` intact. Hence a scheme
+  // allowlist, duplicated rather than imported: `packages/ui-shared` keeps zero
+  // dependency on the notification block, so this is the same rule as
+  // `safeHttpUrl`, enforced where the anchor is actually built.
+  //
+  // ⚠ Not a button and not `onAnswer` — reading is not answering. The card
+  // stays a decision surface; this only says where the subject can be read.
+  const linkHref = typeof model.link_url === 'string'
+    && /^https?:\/\//i.test(model.link_url)
+    ? model.link_url
+    : null;
+  if (linkHref !== null) {
+    const link = doc.createElement('a');
+    link.className = 'rx-ask-card-link';
+    link.setAttribute(ASK_CARD_LINK_ATTR, model.ask_id);
+    link.setAttribute('href', linkHref);
+    link.textContent = 'Open the full details';
+    link.setAttribute('aria-label', `Open the full details for ${actionSubject}`);
+    card.appendChild(link);
+  }
+
   // Inline error line — hidden until a submit fails. Created up front so
   // the click handlers can toggle it; appended after the action row.
   const errorEl = doc.createElement('div');
@@ -289,6 +336,68 @@ export const renderAskCard = (
   errorEl.setAttribute('role', 'alert');
   errorEl.textContent = options.errorMessage ?? 'Could not submit — try again.';
   errorEl.hidden = options.errorMessage == null;
+
+  // D-234 § 234.4f — the document behind the question, in a disclosure. ⛔ It is
+  // rendered from the ASK RECORD, never from `message.text` — the notification
+  // that reaches Slack / Telegram / email carries the question alone, and this
+  // element only ever exists on a surface the owner is signed in to.
+  const bodyWrap = doc.createElement('details');
+  bodyWrap.className = 'rx-ask-card-body';
+  if (model.body !== undefined && model.body !== '') {
+    bodyWrap.setAttribute(ASK_CARD_BODY_ATTR, model.ask_id);
+    const bodySummary = doc.createElement('summary');
+    bodySummary.className = 'rx-ask-card-body-summary';
+    bodySummary.textContent = 'Read what this is about';
+    const bodyText = doc.createElement('pre');
+    bodyText.className = 'rx-ask-card-body-text';
+    // ⚠ `textContent`, never `innerHTML` — this string was written by ANOTHER
+    // SERVER'S OWNER and arrives verbatim. The card is DOM-built precisely so a
+    // peer cannot put markup on the reader's screen.
+    bodyText.textContent = model.body;
+    bodyWrap.appendChild(bodySummary);
+    bodyWrap.appendChild(bodyText);
+  }
+
+  // D-234 § 234.4e — the written reason. Rendered ONLY when the ask invited one,
+  // so an ordinary approval card is unchanged (no field, no label, no extra tab
+  // stop). A textarea rather than an input: a reason is prose, and a
+  // single-line box silently truncates the reader's attention to a phrase.
+  const noteWrap = doc.createElement('div');
+  noteWrap.className = 'rx-ask-card-note';
+  const noteEl = doc.createElement('textarea');
+  let noteRequiredError: HTMLElement | null = null;
+  if (model.note_prompt !== undefined) {
+    const required = model.note_prompt === 'required';
+    const noteId = `rx-ask-note-${model.ask_id}`;
+    const label = doc.createElement('label');
+    label.className = 'rx-ask-card-note-label';
+    label.setAttribute('for', noteId);
+    // ⚠ The label says which it is. "Why (required)" is the difference between a
+    // user who types and one who hits a guard they did not see coming.
+    label.textContent = required ? 'Why? (required)' : 'Why? (optional)';
+    noteEl.id = noteId;
+    noteEl.className = 'rx-ask-card-note-input';
+    noteEl.setAttribute(ASK_CARD_NOTE_ATTR, model.ask_id);
+    noteEl.rows = 3;
+    // ⚠ MIRRORS THE SERVER'S `ASK_NOTE_MAX`. The block caps at 600 on entry, so
+    // an unbounded box would silently discard the tail of what someone wrote —
+    // the surface must not let them type what will not survive.
+    noteEl.maxLength = 600;
+    if (required) noteEl.required = true;
+    noteEl.placeholder = required
+      ? 'Say why — this answer needs a reason'
+      : 'Add a reason (optional)';
+    noteRequiredError = doc.createElement('div');
+    noteRequiredError.className = 'rx-ask-card-note-error';
+    noteRequiredError.setAttribute('role', 'alert');
+    noteRequiredError.textContent = 'A reason is required before you can answer.';
+    noteRequiredError.hidden = true;
+    noteWrap.appendChild(label);
+    noteWrap.appendChild(noteEl);
+    noteWrap.appendChild(noteRequiredError);
+  } else {
+    noteWrap.hidden = true;
+  }
 
   const actions = doc.createElement('div');
   actions.className = 'rx-ask-card-actions';
@@ -377,6 +486,18 @@ export const renderAskCard = (
       // First submitted answer wins on this surface. Keep the chosen button
       // focusable while every option is guarded, so keyboard focus and visible
       // progress retain the exact async owner instead of falling to <body>.
+      // ⛔ ENFORCE `required` HERE, BEFORE anything is submitted. The server
+      // treats a missing required note as an INVALID reply and no-ops it — which
+      // on this surface would look like a click that did nothing and an ask that
+      // stayed open. Catching it client-side turns a silent no-op into a
+      // sentence. (The server check remains the authority; this is the
+      // affordance, not the gate.)
+      if (model.note_prompt === 'required' && noteEl.value.trim() === '') {
+        if (noteRequiredError !== null) noteRequiredError.hidden = false;
+        noteEl.focus({ preventScroll: true });
+        return;
+      }
+      if (noteRequiredError !== null) noteRequiredError.hidden = true;
       const ownedFocus = doc.activeElement === btn;
       const settledLabel = btn.textContent ?? option.label;
       pending = true;
@@ -389,7 +510,18 @@ export const renderAskCard = (
       // re-enable + inline-error path.
       void (async () => {
         try {
-          await handlers.onAnswer(option.id);
+          // ⚠ Trimmed, and the second argument is OMITTED entirely when there is
+          // no note — not passed as `undefined`.
+          //
+          // ⛔ THAT DISTINCTION IS NOT PEDANTRY: it is what keeps the call shape
+          // BYTE-IDENTICAL for the ~all asks that invite no reason. Passing an
+          // explicit `undefined` changed `toHaveBeenCalledWith(id)` for every
+          // existing consumer and broke two shipped tests — a silent behaviour
+          // change to every approval card in the product, to carry a field they
+          // do not have. An ask with no note field has no note argument.
+          const typed = model.note_prompt !== undefined ? noteEl.value.trim() : '';
+          if (typed === '') await handlers.onAnswer(option.id);
+          else await handlers.onAnswer(option.id, typed);
         } catch {
           pending = false;
           clearBusy();
@@ -406,6 +538,13 @@ export const renderAskCard = (
   }
   if (pending) setBusy(options.busyOptionId);
   card.appendChild(confirmation);
+  // D-234 § 234.4e — the reason sits ABOVE the buttons, deliberately: a field
+  // discovered after the decision is a field nobody fills. Hidden entirely when
+  // the ask invited no note, so an ordinary approval card is byte-identical.
+  // The evidence comes before the reason, and both before the buttons: read,
+  // then explain, then decide.
+  if (model.body !== undefined && model.body !== '') card.appendChild(bodyWrap);
+  if (model.note_prompt !== undefined) card.appendChild(noteWrap);
   card.appendChild(actions);
   card.appendChild(errorEl);
   return card;
@@ -1148,6 +1287,57 @@ export const ASK_CARD_STYLES = `
 .rx-ask-card-btn:hover:not(:disabled):not([aria-disabled="true"]) { filter: brightness(.96); }
 .rx-ask-card-btn:disabled,
 .rx-ask-card-btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
+.rx-ask-card-body {
+  min-width: 0;
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: var(--surface);
+}
+.rx-ask-card-body-summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+}
+.rx-ask-card-body-text {
+  margin: 8px 0 0;
+  max-height: 40vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+}
+.rx-ask-card-note {
+  min-width: 0;
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.rx-ask-card-note-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.rx-ask-card-note-input {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--fg);
+}
+.rx-ask-card-note-error {
+  font-size: 12px;
+  color: var(--danger);
+}
 .rx-ask-card-error {
   min-width: 0;
   margin-top: 6px;
@@ -1156,6 +1346,18 @@ export const ASK_CARD_STYLES = `
   overflow-wrap: anywhere;
 }
 .rx-ask-card-error[hidden] { display: none; }
+/* D-234 § 234.3 — the "read it" affordance. Deliberately a LINK, not a button:
+   it must not read as one of the answers. WARN: CSS IS INVISIBLE TO A RENDER
+   TEST, so the display rule here is what actually puts it on its own row - the
+   DOM assertion passes either way. (No backticks in this block: it lives inside
+   a template literal.) */
+.rx-ask-card-link {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--accent, #2563eb);
+  overflow-wrap: anywhere;
+}
 `;
 
 export const APPROVAL_CARD_STYLES = `

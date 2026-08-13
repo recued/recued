@@ -1,11 +1,15 @@
 /** D-126 Phase 4.3 / 5.1 — manifest validator error codes graduated.
  *
- *  Asserts the 5 new `INGREDIENT_KIND_*` codes (P4.3) are registered
- *  in the typed `RecipeErrorCode` registry alongside the pre-existing
- *  `KIND_NOT_YET_IMPLEMENTED` (P2.1), and that severity + user-facing
- *  copy are wired for each. Catches silent drift if a future commit
- *  adds a new validator code without a matching `ERR` / `ERROR_MESSAGES`
- *  entry. */
+ *  Asserts the 5 `INGREDIENT_KIND_*` codes (P4.3) are registered in the
+ *  typed `RecipeErrorCode` registry and that severity + user-facing copy
+ *  are wired for each. Catches silent drift if a future commit adds a
+ *  new validator code without a matching `ERR` / `ERROR_MESSAGES` entry.
+ *
+ *  ⛔ `KIND_NOT_YET_IMPLEMENTED` (P2.1) was in this family and was REMOVED
+ *  2026-08-11 — D-125 P3 + P4.1/4.2/4.3 all shipped, leaving it with zero
+ *  producers while its copy still told operators to update Recued. Do not
+ *  re-add it here; the case it named is now the kind-named
+ *  `unsupported('connection')` default (`INGREDIENT_ADAPTER_ALL_FAILED`). */
 
 import { describe, it, expect } from 'vitest';
 import { ERR, ERROR_MESSAGES, defaultErrorMessage, type RecipeErrorCode } from '../errors.js';
@@ -16,7 +20,6 @@ const KIND_FAMILY: readonly RecipeErrorCode[] = [
   'INGREDIENT_KIND_MISSING_FIELD',
   'INGREDIENT_KIND_FIELD_FORBIDDEN',
   'INGREDIENT_KIND_TIER_MISMATCH',
-  'KIND_NOT_YET_IMPLEMENTED',
 ];
 
 describe('D-126 P5.1 — INGREDIENT_KIND_* codes graduated to RecipeErrorCode', () => {

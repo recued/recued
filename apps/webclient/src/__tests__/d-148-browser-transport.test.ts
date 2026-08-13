@@ -28,6 +28,7 @@ import {
   WebclientReauthRequiredError,
   type WebclientWsState,
 } from '../realtime/ws-client.js';
+import { decodeBearerSubprotocol, encodeBearerSubprotocol } from '@recued/contracts';
 
 interface FakeWsControls {
   readonly Ctor: BrowserWebSocketConstructor;
@@ -130,23 +131,20 @@ describe('D-148 § A.4 — production browser WS transport', () => {
     expect(WEBCLIENT_AUTH_CLOSE_CODES.has(1000)).toBe(false);
   });
 
+  // ⛔ THE CONTRACT INVERTED HERE, DELIBERATELY. These three cases used to
+  // assert `?token=<bearer>` on the URL. The bearer now rides
+  // `Sec-WebSocket-Protocol`, because a URL is where secrets get durably
+  // written — reverse-proxy and access logs, crash reports, browser URL
+  // telemetry — none covered by TLS, and `client_tokens` has no expiry column,
+  // so anything leaked stayed valid until revoked by hand.
   describe('buildDefaultConnectUrl', () => {
-    it('appends ?token= when server URL has no query', () => {
-      expect(
-        buildDefaultConnectUrl({ server_url: 'wss://alice.example/ws', bearer: 'secret' }),
-      ).toBe('wss://alice.example/ws?token=secret');
+    it('returns the server URL untouched', () => {
+      expect(buildDefaultConnectUrl({ server_url: 'wss://alice.example/ws' }))
+        .toBe('wss://alice.example/ws');
     });
-    it('appends &token= when server URL already has a query', () => {
-      expect(
-        buildDefaultConnectUrl({ server_url: 'wss://alice.example/ws?v=1', bearer: 'secret' }),
-      ).toBe('wss://alice.example/ws?v=1&token=secret');
-    });
-    it('URL-encodes the bearer (handles `+`, `/`, `=`)', () => {
-      const url = buildDefaultConnectUrl({
-        server_url: 'wss://alice.example/ws',
-        bearer: 'a+b/c=d',
-      });
-      expect(url).toBe('wss://alice.example/ws?token=a%2Bb%2Fc%3Dd');
+    it('preserves an existing query string without adding to it', () => {
+      expect(buildDefaultConnectUrl({ server_url: 'wss://alice.example/ws?v=1' }))
+        .toBe('wss://alice.example/ws?v=1');
     });
   });
 
@@ -164,11 +162,23 @@ describe('D-148 § A.4 — production browser WS transport', () => {
     await opening;
     expect(states).toEqual(['connecting', 'connected']);
 
-    // Constructor was called with the correct URL + subprotocol.
+    // Constructor got a CLEAN url + the bearer in the subprotocol list.
     const callArgs = fake.constructorArgs();
     expect(callArgs.length).toBe(1);
-    expect(callArgs[0].url).toBe('wss://x/ws?token=t1');
-    expect(callArgs[0].protocols).toBe('recued.v1');
+    expect(callArgs[0].url).toBe('wss://x/ws');
+    // The assertion that matters: the secret is nowhere in the URL. A regression
+    // that re-added `?token=` would still open fine and still pass every other
+    // case in this file — this is the one that would notice.
+    expect(callArgs[0].url).not.toContain('t1');
+    expect(callArgs[0].url).not.toContain('token=');
+
+    const protocols = callArgs[0].protocols as ReadonlyArray<string>;
+    // `recued.v1` FIRST: `ws` selects the client's first offered value by
+    // default and echoes the selection back in a response header, so
+    // bearer-first would write the secret into the response.
+    expect(protocols[0]).toBe('recued.v1');
+    expect(protocols[1]).toBe(encodeBearerSubprotocol('t1'));
+    expect(decodeBearerSubprotocol(protocols)).toBe('t1');
   });
 
   it('rejects open() when WS closes before `open`', async () => {
@@ -394,7 +404,12 @@ describe('D-148 § A.4 — production browser WS transport', () => {
     fake.current()!.fireOpen();
     await opening;
     expect(fake.constructorArgs().length).toBe(2);
-    expect(fake.constructorArgs()[1].url).toBe('wss://x/ws?token=t2');
+    expect(fake.constructorArgs()[1].url).toBe('wss://x/ws');
+    // The RECONNECT carries the new bearer too — a fresh socket that kept the
+    // first bearer would authenticate as the wrong session.
+    expect(decodeBearerSubprotocol(
+      fake.constructorArgs()[1].protocols as ReadonlyArray<string>,
+    )).toBe('t2');
   });
 
   it('throws when globalThis.WebSocket is unavailable + no override', () => {

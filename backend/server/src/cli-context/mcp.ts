@@ -96,6 +96,10 @@ import type { ServerExecutorConfig } from '../server-executor.js';
 import { scopedCandidatesForChannelSession } from '../chat-forwarded-sender-index.js';
 import { composeChatOrchestrator } from '../composition/bin/wire-chat-orchestrator.js';
 import { composeExecuteDeps } from '../composition/bin/wire-execute-deps.js';
+import {
+  buildOwnerSurfaceLink,
+  resolvePublicBaseUrl,
+} from '../ask-landing-answer-link.js';
 import { composeExecutorConfig } from '../composition/bin/wire-executor-config.js';
 import { composeHousekeepingStores } from '../composition/bin/wire-housekeeping-substrate.js';
 import { composeLlmSubstrate } from '../composition/bin/wire-llm-substrate.js';
@@ -325,6 +329,10 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   });
 
   const executorConfig = await composeExecutorConfig({
+    // D-234 § 234.4 — the inbound peer door needs the notification block, which
+    // is composed after this config. Same late-binding seam the container-pick
+    // and saga wirings use.
+    getExecuteDeps: () => executeDepsRef,
     manifests,
     baseVault,
     llmQuota: llmSubstrate.llmQuota,
@@ -391,6 +399,15 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   executorConfigRef = executorConfig;
 
   const executeDepsBundle = composeExecuteDeps({
+    // D-234 § 234.3 — the stdio profile resolves its own link from the same env
+    // var the serving root uses. Wired here too so a peer-admission ask raised
+    // on this path is not silently the one without a "read it here" link.
+    ...((): { ownerSurfaceLink?: (recipe_id: string) => string } => {
+      const link = buildOwnerSurfaceLink(
+        resolvePublicBaseUrl(env.RECUED_PUBLIC_BASE_URL),
+      );
+      return link !== null ? { ownerSurfaceLink: link } : {};
+    })(),
     recipeStore,
     recordsStore,
     executorConfig,

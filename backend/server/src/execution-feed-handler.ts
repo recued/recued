@@ -220,6 +220,15 @@ const requireRunId = (method: string, raw: unknown): string => {
 
 const derivePolicyResult = (entry: AuditEntry): PolicyResult => {
   if (entry.commit_status === 'awaiting_approval') return 'approval-requested';
+  // D-234 § 234.4 — ⛔ THE LITERAL STAYS, BUT THE FALL-THROUGH DOES NOT. A run
+  // held for a PEER'S answer is not an approval request (there is nothing here to
+  // approve) — but letting it drop to the `'allowed'` default below would report
+  // that policy cleared a run which is, right now, suspended. `'approval-
+  // requested'` is the closest honest value in the closed `PolicyResult` union:
+  // both mean "held pending someone's answer", and the run's own
+  // `commit_status` is what distinguishes WHOSE. Widening `PolicyResult` is the
+  // better fix and is deferred with the rest of the surfaces slice.
+  if (entry.commit_status === 'awaiting_peer') return 'approval-requested';
   const out = entry.output_string?.toLowerCase() ?? '';
   if (out.includes('approval:allow')) return 'released-after-approval';
   if (out.includes('approval:deny')) return 'denied';

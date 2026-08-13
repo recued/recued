@@ -85,6 +85,37 @@ export const EMPTY_MAIL_COMPOSE_VALUES: MailComposeValues = {
   sender_source: '',
 };
 
+/** D-172 P2 — one entry the compose attachment picker can display.
+ *
+ *  ⛔ THE COMPOSE STATE HOLDS `data.file` RECORD IDS, NEVER BYTES — that is the
+ *  whole point of the attachment design. `MailComposeValues.attachments` is a
+ *  list of ids; the send payload carries the same ids; `MailCollection.send`
+ *  resolves them to bytes server-side through the Gateway-gated `file.read`.
+ *  This shape exists ONLY so the picker can show a human something better than
+ *  a raw `file:9a3c…` string. It is display metadata the host supplies
+ *  alongside the ids — losing it degrades the label, never the attachment.
+ *
+ *  ⇒ the same property is what makes an AI-composed mail safe: a model names a
+ *  file it has seen; it never carries, re-encodes, or re-uploads the bytes. */
+export interface MailComposeAttachment {
+  /** `data.file` record id — the value that actually rides in
+   *  `MailComposeValues.attachments` and in the send payload. */
+  id: string;
+  filename: string;
+  /** Byte length as recorded at ingest. Drives the over-cap mark against
+   *  `MAIL_SEND_ATTACHMENT_MAX_BYTES`. `undefined` when the host could not
+   *  resolve the record — the picker then shows the id and marks it unknown
+   *  rather than pretending a size it does not have. */
+  size_bytes?: number;
+  mime_type?: string;
+}
+
+/** Upper bound on how many files one compose may carry. Not a provider limit —
+ *  a UX floor against a runaway multi-select, checked in the add transition.
+ *  The per-file byte cap (`MAIL_SEND_ATTACHMENT_MAX_BYTES`) is the separate,
+ *  server-enforced one. */
+export const MAIL_COMPOSE_MAX_ATTACHMENTS = 20;
+
 /** Reply-context input shape. The host hands the substrate the
  *  original mail being replied to + the Source id that received the
  *  original; the substrate emits a partial values shape with

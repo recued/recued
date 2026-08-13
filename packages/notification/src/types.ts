@@ -28,6 +28,42 @@ export interface NotificationMessage {
   link_url?: string;
 }
 
+/** D-234 § 234.4e — whether an ask invites a written reason with the answer.
+ *  Absent (the common case) ⇒ no note is offered. */
+export type AskNotePrompt = 'optional' | 'required';
+
+/** ⚠ THE FAR SIDE MAY HAVE WRITTEN THIS. On a peer ask the note is authored by
+ *  ANOTHER SERVER'S OWNER and travels back over the wire, so it is bounded at the
+ *  point of entry rather than trusted — the same posture (and the same bound) as
+ *  `PEER_ASK_QUESTION_MAX`. A reason that does not fit in 600 characters is a
+ *  document, and a document belongs behind a link, not in an answer row. */
+export const ASK_NOTE_MAX = 600;
+
+/** D-234 § 234.4f — what an ask can carry BESIDES its message, options and
+ *  handler. One object rather than a growing tail of positionals: `note_prompt`
+ *  was the fifth parameter and `body` would have been the sixth, which is the
+ *  point at which a caller starts passing `undefined` to reach the one it wants.
+ *
+ *  ⛔⛔ EVERY FIELD HERE IS DELIBERATELY *NOT* ON `NotificationMessage`. That
+ *  type is what channel adapters render into Slack / Telegram / email and what
+ *  the bearer `/ask/<ask_id>` landing shows. Anything in it is readable by
+ *  whoever holds the notification. These ride the ASK RECORD instead — reachable
+ *  only through the pair-authenticated `pending_asks` rpc and the owner's own
+ *  broadcast bus. */
+export interface AskExtras {
+  /** Invite a written reason with the answer. */
+  note_prompt?: AskNotePrompt;
+  /** D-234 § 234.4f — the document the answerer opens to READ before deciding.
+   *  Bounded at {@link ASK_BODY_MAX} on entry; the far side may have written it. */
+  body?: string;
+}
+
+/** ⚠ Mirrors `PEER_ASK_BODY_MAX`. A body that does not fit is TRUNCATED at
+ *  entry, not refused: the decision still has to be answerable, and a reviewer
+ *  who can read four pages of five is better served than one who gets an error
+ *  where the draft should be. The surface says it was truncated. */
+export const ASK_BODY_MAX = 16_384;
+
 /** One answer choice on an `ask`. `id` is the stable slug a handler
  *  branches on; `label` is what the user sees. */
 export interface AskOption {
@@ -46,6 +82,17 @@ export interface Answer {
   option: string;
   /** Unix-ms the winning answer was recorded. */
   answered_at: number;
+  /** D-234 § 234.4e — free text the answerer added, when the ask OFFERED it
+   *  ({@link PendingAsk.note_prompt}). Absent on every ask that did not.
+   *
+   *  🔑 THE OPTION IS THE DECISION; THIS IS THE REASON. They are different kinds
+   *  of fact and the split is deliberate: a handler branches on `option` and must
+   *  never have to parse prose to learn what was decided. Nothing downstream may
+   *  make behaviour depend on this field — it is for the human on the other end.
+   *
+   *  ⚠ Capped at {@link ASK_NOTE_MAX} at the point of entry, because on a peer
+   *  ask the author of this text is ANOTHER SERVER'S OWNER. */
+  note?: string;
 }
 
 /** A consumer's handler slug — a closed-list string identifying the
@@ -89,14 +136,23 @@ export interface AskHandlerRef {
  *  canonical dependency direction (every package imports contracts, never the
  *  reverse) and adds no coupling layer — `@recued/storage`, already a dep of this
  *  block, imports it too. */
-export const CHANNEL_NAMES = NOTIFICATION_CHANNEL_NAMES;
+// ⛔ MODULE-PRIVATE. Retired as an export 2026-08-11: no caller ever imported it
+// — every consumer takes `NOTIFICATION_CHANNEL_NAMES` from contracts directly —
+// while FIVE prose sites named it as the thing to add a channel to. It survives
+// only because `isChannelName` below closes over it; the name is kept so the
+// predicate reads the same. `ChannelName` stays exported (77 references).
+const CHANNEL_NAMES = NOTIFICATION_CHANNEL_NAMES;
 export type ChannelName = NotificationChannelName;
 /** Predicate — true when `value` is a registered notification `ChannelName`.
  *  D-192 CORE #6: bridges the widened `TransportVendor` (an open slug) back to
  *  the closed notification-channel set when a transport-backed `RemoteChannel`
- *  is built (a messenger transport's channel name IS its vendor). A new chat
- *  transport must be added to `CHANNEL_NAMES` (seam 10) before it can back a
- *  notification channel. */
+ *  is built (a messenger transport's channel name IS its vendor).
+ *
+ *  ⛔ NOT "add the transport to `CHANNEL_NAMES` first" — the fifth site to say
+ *  so, and the one closest to the code. There is no list to edit:
+ *  `NOTIFICATION_CHANNEL_NAMES` splices `...MESSENGER_VENDOR_SLUGS`, so
+ *  declaring the vendor in contracts IS what makes it a channel. See
+ *  `messenger-vendors.ts` § ADDING A VENDOR. */
 export const isChannelName = (value: unknown): value is ChannelName =>
   typeof value === 'string' && (CHANNEL_NAMES as readonly string[]).includes(value);
 
@@ -247,6 +303,24 @@ export interface PendingAsk {
   status: PendingAskStatus;
   /** Unix-ms the ask was minted + persisted. */
   created_at: number;
+  /** D-234 § 234.4e — does this ask invite a written reason, and is one
+   *  required? Absent ⇒ the surface renders no note field and any note on a
+   *  reply is dropped.
+   *
+   *  ⛔ OPT-IN, NOT ALWAYS-ON. Rendering a free-text box on every approval card
+   *  would train people to explain routine decisions nobody reads, and the field
+   *  costs a durable row per answer. An ask asks for prose when the prose is the
+   *  point — a peer review's reasoning — and stays a two-tap decision otherwise.
+   *
+   *  ⚠ `'required'` is enforced by the SURFACE, not by the block: a reply that
+   *  arrives without one is treated as invalid and no-ops, exactly as an
+   *  unoffered option does, so a surface that ignores the flag cannot record a
+   *  half-answer. */
+  note_prompt?: AskNotePrompt;
+  /** D-234 § 234.4f — the document behind the question. Persisted WITH the ask,
+   *  so it lives and dies with the conversation and needs no second store or
+   *  eviction rule. ⛔ Never copied into `message` — see {@link AskExtras}. */
+  body?: string;
   /** Recorded once `status` leaves `open`. */
   answer?: Answer;
   /** Provenance — which channel the winning answer arrived on (A.2
@@ -266,6 +340,11 @@ export interface InboundReply {
   option: string;
   /** Which channel the reply arrived on. */
   via: ChannelName;
+  /** D-234 § 234.4e — free text, when the ask offered a note prompt. A note on
+   *  an ask that did not offer one is DROPPED, not refused: the option is the
+   *  decision and it is already valid, and failing a recorded decision over an
+   *  extra field is TR-4's forbidden failure. */
+  note?: string;
 }
 
 /** What the block hands its audit seam when an ask is answered.

@@ -140,6 +140,22 @@ export type SourceQueryValidationResult =
 
 /** Per-kind id field required on the parsed shape. Keeps the parser
  *  closed-list — adding a new query kind = adding a new entry here. */
+/** The kinds whose variant needs NOTHING but `kind`, derived rather than listed:
+ *  a kind belongs here exactly when `{ kind }` alone is a valid `SourceQueryRef`. */
+type IdFreeSourceQueryKind = {
+  [K in SourceQueryKind]: { readonly kind: K } extends SourceQueryRef ? K : never;
+}[SourceQueryKind];
+
+/** ⚠ The invariant, NAMED. `REQUIRED_ID_FIELD_BY_KIND[k] === null` and "k is an
+ *  id-free variant" are the same fact, but TypeScript cannot follow a runtime
+ *  table lookup into a union narrowing. Stating it as a predicate keeps the claim
+ *  to one reviewable line instead of a whole-object `as SourceQueryRef`, which
+ *  silenced the check for EVERY field of every variant — including the id fields
+ *  this function exists to require. If the table and the union ever disagree, the
+ *  wrong half is this one line. */
+const isIdFreeKind = (kind: SourceQueryKind): kind is IdFreeSourceQueryKind =>
+  REQUIRED_ID_FIELD_BY_KIND[kind] === null;
+
 const REQUIRED_ID_FIELD_BY_KIND: Record<SourceQueryKind, string | null> = {
   reception_page_config: null,
   'data.calendar.combined': null,
@@ -175,9 +191,19 @@ export const parseSourceQueryRef = (raw: unknown): SourceQueryValidationResult =
       detail: `source_query_ref.kind must be one of ${SOURCE_QUERY_KINDS.join(', ')}; got ${JSON.stringify(kind)}`,
     };
   }
+  if (isIdFreeKind(kind)) {
+    return { ok: true, value: { kind } };
+  }
+  // Not id-free ⇒ the table names a field. If it somehow does not, the table and
+  // the union disagree; report it through the SAME missing-id error rather than
+  // asserting the disagreement away.
   const requiredIdField = REQUIRED_ID_FIELD_BY_KIND[kind];
   if (requiredIdField === null) {
-    return { ok: true, value: { kind } as SourceQueryRef };
+    return {
+      ok: false,
+      code: 'source_query_missing_id_field',
+      detail: `source_query_ref kind=${kind} requires an id field but none is declared`,
+    };
   }
   const idValue = obj[requiredIdField];
   if (typeof idValue !== 'string' || idValue.length === 0) {

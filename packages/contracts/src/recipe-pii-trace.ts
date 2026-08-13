@@ -303,6 +303,15 @@ export const PII_FLOW_RULES: Readonly<Record<string, PiiFlowRule>> = {
   any: { rule: 'destroy' },
   count: { rule: 'destroy' },
   default: { rule: 'union_values', args: ['value', 'fallback'] },
+  // `defaults` — N defaults in one step. `union_values` over the single
+  // `fields` param is CORRECT here, not a shortcut: `valueTaint` keys a nested
+  // record by its OWN keys, so `fields: { vendor: { value, fallback } }` yields
+  // a profile at `vendor.value` / `vendor.fallback`, and a downstream read of
+  // `{{step.<id>.vendor}}` re-roots the remainder via `selectPath`
+  // (`r === refSegs.length` branch) and carries both. Verified against that
+  // walk before choosing the param shape — a flatter shape would have keyed the
+  // taint one level off and UNDER-tainted, which is the unsafe direction.
+  defaults: { rule: 'union_values', args: ['fields'] },
   not: { rule: 'destroy' },
   ternary: { rule: 'union_values', args: ['then', 'else'] },
   pluralize: { rule: 'destroy' },

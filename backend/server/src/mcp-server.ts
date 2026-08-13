@@ -45,7 +45,9 @@ import {
   rawOpToolEntries,
   type RawOpToolDescriptor,
 } from './raw-op-tool-catalog.js';
+import { executionSourceContractId } from '@recued/contracts';
 import { RUN_INGREDIENT_RECIPE } from './run-ingredient-recipe.js';
+import { PEER_RECEIVE_ANSWER_TOOL, PEER_RECEIVE_ASK_TOOL } from './peer-receive-ask-recipe.js';
 import { checkFormContract, type FormDefinitionReader } from './form-contract-gate.js';
 import {
   executeResponseAuditRunId,
@@ -94,6 +96,7 @@ import {
   STDIO_MCP_TOKEN_ID,
   KERNEL_OP_REGISTRY,
   isGrantableKernelOp,
+  kernelOpForMcpTool,
 } from '@recued/contracts';
 import {
   AUTHOR_DEFAULT_READ_GRANT_CHECKER,
@@ -275,6 +278,25 @@ const STDIO_MCP_AGENT_ID = 'stdio_local';
  *  (each MCP token == one contract scope). The full contracts
  *  substrate (open question #21) replaces this with a proper contract
  *  registry; the field stays the same shape. */
+/** D-234 § 234.4 — the owner's own name for the peer holding this contract, so a
+ *  question card is never unattributed. Falls back to the raw contract id. */
+const peerConnectionNameFor = (
+  deps: { connectionStore?: unknown },
+  contract_id: string,
+): string | undefined => {
+  const store = deps.connectionStore as
+    | { list(f: { kind: string }): { name: string; config_json?: string | null }[] }
+    | undefined;
+  if (store === undefined || contract_id === '') return undefined;
+  for (const row of store.list({ kind: 'mcp' })) {
+    try {
+      const cfg = JSON.parse(row.config_json ?? '{}') as Record<string, unknown>;
+      if (cfg.peer_contract_id === contract_id) return row.name;
+    } catch { /* a malformed row names nobody */ }
+  }
+  return undefined;
+};
+
 const buildMcpExecutionSource = (deps: McpDeps): ExecutionSource => {
   const mcp_token_id = deps.mcpTokenId ?? STDIO_MCP_TOKEN_ID;
   // D-166 P2 token↔contract binding — when the inbound token names a minted
@@ -343,6 +365,36 @@ const resolveMcpDoorScopeRestrictions = (deps: McpDeps): ReadonlyArray<string> =
 const resolveMcpDoorReadGrantChecker = (deps: McpDeps): ReadGrantChecker =>
   deps.contractOverlay?.resolveReadGrantChecker?.(buildMcpExecutionSource(deps))
   ?? AUTHOR_DEFAULT_READ_GRANT_CHECKER;
+
+/** D-234 § 234.4 — does this token's per-tool checklist admit `tool_name`?
+ *
+ *  ⛔⛔ EITHER NAME, BECAUSE THE MINT AND THE GATE SPOKE DIFFERENT LANGUAGES.
+ *  `chat.inbound_token.issue` validates every grant key through
+ *  `preflightExternalToolGrant`, which ACCEPTS a registered kernel op id and
+ *  REFUSES a static `recued_*` tool name (it is in no internal-registry tier).
+ *  The checklist then looked up the TOOL name and found nothing. So for a native
+ *  verb-op fronted by a static tool, the only name the owner could grant was the
+ *  one name never read — a grant that granted nothing, failing closed in silence
+ *  with a refusal that reads as "your token is wrong" rather than "this cannot
+ *  be granted at all". `kernelOpForMcpTool` is the join.
+ *
+ *  ⚠ STRICTLY ADDITIVE — it widens what SATISFIES the checklist, never what the
+ *  checklist protects. A token granted the literal tool name passes exactly as
+ *  before; a tool fronting no native op resolves `undefined` and the second term
+ *  never fires. Absent callback still denies (D-228 slice 6): no checklist,
+ *  nothing.
+ *
+ *  ⚠ AND IT IS NOT THE ONLY GATE ON THE DOOR IT OPENS. `recued_peerAsk` still
+ *  passes `isVerbOpGranted('core.peer.receive-ask')` (the CONTRACT overlay, a
+ *  different axis) and then the receiver's default-closed per-(peer, label)
+ *  exposure check. This one answers "may this token call this tool at all". */
+const isCheckedListGranted = (deps: McpDeps, tool_name: string): boolean => {
+  const gate = deps.inboundTokenAuthorize;
+  if (gate === undefined) return false;
+  if (gate(tool_name)) return true;
+  const opId = kernelOpForMcpTool(tool_name);
+  return opId !== undefined && gate(opId);
+};
 
 /** D-182 §8 door-cli authorization path — the cli ingredient slugs THIS door's
  *  principal may reach internally (a recipe it triggers shells out to the
@@ -796,6 +848,69 @@ const TOOLS = [
     },
   },
   {
+    name: 'recued_peerAsk',
+    // D-234 § 234.4 — the inbound door. ⚠ Model-facing copy: this is what a
+    // PEER'S agent reads, so it must say plainly what it costs (a person's
+    // attention) and what it cannot do (anything else).
+    description: 'Put ONE question to this server\'s owner and get their answer back later. Raises a durable notification they can answer from any surface; runs nothing, reads nothing, changes nothing else. Refused unless this owner has already OFFERED to answer questions under the exact `label` you name — there is no way to ask for that offer through this tool. The answer is not returned here: it comes back on the conversation you name with `exchange_ref`.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        withdraw: {
+          type: 'boolean',
+          // ⚠ MODEL-FACING. Says plainly what it is and is not, because a model
+          // that reads this as a recall will retry it, and one that reads it as
+          // "cancel the answer" will send it after being answered.
+          description: 'Set true, with exchange_ref and nothing else, to say a '
+            + 'question you asked is no longer awaited so its owner is not asked '
+            + 'to spend time on it. A courtesy, not a recall: an answer already '
+            + 'given still stands, and you learn nothing about whether it was seen.',
+        },
+        exchange_ref: { type: 'string', description: 'The conversation this question belongs to' },
+        label: { type: 'string', description: 'The capability the owner offered, matched exactly' },
+        question: { type: 'string', description: 'The question, in words the owner will read' },
+        options: {
+          type: 'array',
+          description: 'The answers they may choose from ({ id, label })',
+          items: { type: 'object' },
+        },
+        deadline_at: { type: 'number', description: 'Unix ms you will stop waiting (optional)' },
+        on_timeout: { type: 'string', description: 'stop | wait (optional)' },
+        note_prompt: {
+          type: 'string',
+          description: 'optional | required — invite a written reason with the answer',
+        },
+        body: {
+          type: 'string',
+          description: 'The document the owner reads before deciding (optional). It is NOT put on the notification — it is readable only on their own signed-in surfaces.',
+        },
+      },
+      required: ['exchange_ref', 'label', 'question', 'options'],
+    },
+  },
+  {
+    name: 'recued_peerAnswer',
+    // D-234 § 234.4 — the return leg's door. ⚠ Model-facing: this is read by the
+    // agent of a peer whose OWNER has answered, so it must say plainly that the
+    // only thing it accepts is a reply to something this server already asked.
+    description: 'Return this server\'s own question to it, answered. Accepted ONLY for a conversation this server opened with you (`exchange_ref`), only from the peer it addressed, and only carrying one of the options it offered — there is no way to start a conversation, choose an unoffered outcome, or answer on another peer\'s behalf through this tool. The asking run resumes when it lands.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        exchange_ref: { type: 'string', description: 'The conversation being answered' },
+        answered: { type: 'boolean', description: 'false when the owner is not answering' },
+        option: { type: 'string', description: 'The chosen option id — must be one that was offered' },
+        note: { type: 'string', description: 'Free text the answerer added (optional)' },
+        at: { type: 'number', description: 'Unix ms the answer was made (optional)' },
+        unanswered_because: {
+          type: 'string',
+          description: 'timed_out | declined | not_exposed | withdrawn — only when answered is false',
+        },
+      },
+      required: ['exchange_ref', 'answered'],
+    },
+  },
+  {
     name: 'recued_getAudit',
     // ⚠ Model-facing — see internal design notes. The
     // `exchange_ref` sentence is what makes D-232's query reachable at all: a
@@ -945,6 +1060,12 @@ const LEGACY_MCP_META_TOOL_CLASSIFICATION: Readonly<
   recued_listIngredients: 'read',
   recued_runRecipe: 'unknown',
   recued_getAudit: 'read',
+  // D-234 § 234.4 — write: it spends the owner's attention and writes a durable
+  // ask + ledger row. The real gate is EXPOSURE, checked inside the handler.
+  recued_peerAsk: 'write',
+  // D-234 § 234.4 return leg — write: it records an answer and RESUMES a
+  // suspended run. The real gate is CORRELATION, checked inside the handler.
+  recued_peerAnswer: 'write',
   [CUSTOMER_STATUS_TOOL_NAME]: 'read',
   recued_saveRecipe: 'write',
   recued_dataTimeline: 'read',
@@ -1026,6 +1147,53 @@ const customerRawOpGrant = (deps: McpDeps, toolName: string): boolean | null => 
  *
  *  The outbound-send LIFT does NOT engage here — it is `user_self`-scoped and the MCP
  *  source is `contracted_user`; native tools are introspection + saveRecipe anyway. */
+/** D-234 § 234.4 — the native tools that carry their OWN approval gate, and so
+ *  must not also take {@link admitMcpDirectDispatch}'s.
+ *
+ *  ⛔⛔ `recued_peerAsk` IS UNREACHABLE BY ANY PEER WITHOUT THIS, PERMANENTLY.
+ *  It is classified `write` (correctly — it spends the owner's attention and
+ *  writes a durable ask), and `resolveTrustCeiling` gives every DELEGATED mcp
+ *  token the contracted LOW ceiling, which no row may raise (the model-door pin).
+ *  A `write` under a `read` ceiling is `ask`, and `ask` on a synchronous
+ *  direct-return `tools/call` can only REFUSE — there is no approval-capable
+ *  surface for an inbound tool call to resume onto. So the door refused every
+ *  peer, always, with a message telling the CALLER to raise a trust setting on
+ *  the RECEIVER's server. The live drive is what surfaced it: nothing had ever
+ *  reached this gate, because delivery went through the held carrier instead.
+ *
+ *  🔑 AND THE APPROVAL IT WANTS WAS ALREADY GIVEN. § 234.4's admit-first ruling
+ *  is exactly this argument: the owner grants `peer.label.<label>` on that peer's
+ *  contract by hand, per (peer, label), default-closed — "the yes-in-principle
+ *  was given in advance, deliberately, by the receiver".
+ *  Asking again here would be prompting the owner to approve showing the owner a
+ *  prompt: the tool's ENTIRE effect is to put a question in front of that same
+ *  person. Same shape as the `(webhook, anonymous)` carve-out in
+ *  `resolveTrustCeiling` — a two-sided enrollment IS the standing approval.
+ *
+ *  ⛔ WHAT STILL GATES IT, so this is a substitution and not a hole: the
+ *  per-token checklist (`isCheckedListGranted`), the contract's verb-op grant
+ *  (`isVerbOpGranted('core.peer.receive-ask')`), and then the receiver's
+ *  default-closed per-(peer, label) LABEL GRANT inside the handler — which is
+ *  NARROWER than the ceiling removed here, and is the gate § 234.4 designed for
+ *  this door. The handler's own comment already claimed that check was the only
+ *  gate; this makes that true instead of aspirational.
+ *
+ *  ⚠ It keeps its `write` CLASSIFICATION. The grant checklist still renders it as
+ *  a write the owner is choosing to hand out, and the contract axis still gates
+ *  it — only the synchronous-path approval verdict is bypassed. */
+const isSelfGatedNativeMcpTool = (toolName: string): boolean =>
+  toolName === PEER_RECEIVE_ASK_TOOL
+  // D-234 § 234.4 return leg — the SAME argument as the ask door, on the other
+  // evidence. `recued_peerAnswer` is `write` under a delegated token's LOW
+  // ceiling, so `ask` is the verdict and a synchronous tools/call can only
+  // REFUSE — the door would be unreachable by every peer, permanently. What
+  // replaces the ceiling is stricter than it: we must have OPENED this exact
+  // conversation, the caller must be the contract we addressed it to, and the
+  // option must be one we offered. § 234.2 already ruled the principle — the
+  // reply you asked for needs no prompt — and prompting here would ask the owner
+  // to approve the arrival of an answer they are already waiting on.
+  || toolName === PEER_RECEIVE_ANSWER_TOOL;
+
 const admitMcpDirectDispatch = (
   deps: McpDeps,
   toolName: string,
@@ -1458,7 +1626,6 @@ const handleToolsList = async (deps: McpDeps): Promise<unknown> => {
   // NEITHER, which on stdio means no `--token` / `RECUED_MCP_TOKEN`; the CLI
   // prints that instruction to stderr, so the refusal is recoverable.
   const allTools = [...TOOLS, ...ingredientTools, ...registryTools, ...rawOpTools];
-  const gate = deps.inboundTokenAuthorize;
   return {
     tools: allTools.filter((t) => {
       // Continuation status is an authenticated protocol utility, not a new
@@ -1483,7 +1650,11 @@ const handleToolsList = async (deps: McpDeps): Promise<unknown> => {
       // The authenticated owner (verified CLI bearer) carries no checklist and
       // is admit-all by design; everyone else needs one and is denied without.
       if (deps.ownerAdmitAll === true) return true;
-      return gate !== undefined && gate(t.name);
+      // ⚠ THE ENUMERATION MIRROR OF THE DISPATCH GATE, and it has to stay one.
+      // A tool the checklist admits but the catalog hides is a door that works
+      // only for a caller who already knew the name — which is what a peer's
+      // agent does NOT have. Both sides now read `isCheckedListGranted`.
+      return isCheckedListGranted(deps, t.name);
     }),
   };
 };
@@ -2217,6 +2388,8 @@ const preflightMcpCustomerUsage = (
     staticTool
     && params.name !== 'recued_runRecipe'
     && params.name !== CUSTOMER_STATUS_TOOL_NAME
+    // D-234 § 234.4 — see {@link isSelfGatedNativeMcpTool}.
+    && !isSelfGatedNativeMcpTool(params.name)
   ) {
     const approval = admitMcpDirectDispatch(deps, params.name);
     if (!approval.ok) return { ok: false, result: err(approval.message) };
@@ -2326,7 +2499,7 @@ const handleToolCall = async (
     if (
       customerGrant === null
       && deps.ownerAdmitAll !== true
-      && deps.inboundTokenAuthorize?.(params.name) !== true
+      && !isCheckedListGranted(deps, params.name)
     ) {
       return err(
         deps.inboundTokenAuthorize === undefined
@@ -2679,8 +2852,18 @@ const handleToolCall = async (
     // refuses here and `recordUse` fires only for an admitted direct-return call.
     // (`recued_runRecipe` runs through `handleExecute`, which gates itself — excluded,
     // like the recordUse below.)
-    const admission = admitMcpDirectDispatch(deps, params.name);
-    if (!admission.ok) return err(admission.message);
+    //
+    // ⛔ D-234 § 234.4 — THE APPROVAL VERDICT IS SKIPPED FOR A SELF-GATED TOOL,
+    // THE METER IS NOT, and the split is the point. A usage cap is an ACCESS
+    // limit the owner set on the door, not an approval — dropping it with the
+    // verdict would let an exposed peer ask unlimited questions while the token's
+    // cap never moved. See {@link isSelfGatedNativeMcpTool} for what replaces the
+    // verdict. ⚠ The sibling site above must carry the same exemption or this one
+    // never runs: that one refuses first, with the same dead-end message.
+    if (!isSelfGatedNativeMcpTool(params.name)) {
+      const admission = admitMcpDirectDispatch(deps, params.name);
+      if (!admission.ok) return err(admission.message);
+    }
     recordMcpDirectDispatchUse(deps, params.name);
   }
 
@@ -2815,6 +2998,260 @@ const handleToolCall = async (
     }
 
     // ── getAudit ───────────────────────────────────────────
+    case 'recued_peerAsk': {
+      // ⚠ INSTRUMENTATION — the one fact no amount of reading alice's side can
+      // establish: did the call ARRIVE.
+      console.warn('[peer-ask:inbound] recued_peerAsk called');
+      // D-234 § 234.4 — ⛔⛔ IDENTITY COMES FROM THE TRANSPORT, AND ONLY FROM
+      // THERE. `buildMcpExecutionSource` reads the contract the caller actually
+      // presented; the payload has no `peer_contract_id` field and must never
+      // gain one, or a peer would be naming its own authorization and the
+      // exposure check would be asking the attacker whether the attacker is in.
+      const peerSource = buildMcpExecutionSource(deps);
+      const peerContract = executionSourceContractId(peerSource) ?? '';
+      if (peerContract === '') {
+        return err(
+          JSON.stringify({
+            code: 'bad_request',
+            message: 'recued_peerAsk: no bound contract on this call — a question must be attributable to a peer',
+          }),
+        );
+      }
+      // ⛔ THE CONTRACT GRANT IS THE RECEIVER'S OFF-SWITCH FOR THE DOOR ITSELF,
+      // and it is a DIFFERENT question from exposure. Exposure says "this peer,
+      // this label"; the grant says "this door, at all" — revoke it and no peer
+      // reaches the ask surface regardless of what was offered. Every native
+      // verb-op carries one (`core.audit.read` gates `recued_getAudit` the same
+      // way), and omitting it here would make this the one native tool with no
+      // contract-level control.
+      //
+      // ⚠ NOT a second PROMPT, so it does not reintroduce the double-ask § 234.4
+      // removed: a grant is standing config the owner sets once, not a question
+      // put to them per message.
+      if (!resolveMcpDoorReadGrantChecker(deps).isVerbOpGranted('core.peer.receive-ask')) {
+        return err(
+          JSON.stringify({
+            code: 'bad_request',
+            message: 'recued_peerAsk: this door is not granted to your contract',
+          }),
+        );
+      }
+      // ⛔⛔ D-234 § 234.4n — THE WITHDRAWAL IS THE SAME DOOR, DISCRIMINATED ON
+      // SHAPE. Owner's ruling, and it dissolved a bug rather than routing around
+      // one: a separate `recued_peerWithdraw` tool needed its own per-token
+      // checklist entry, no kernel op could name it (the join is op → ONE tool),
+      // and the checklist therefore refused it for every peer, silently, BEFORE
+      // any handler could log that it had been called. A second tool whose entire
+      // authority is "the ask grant" is not a capability — it is the mistake
+      // § 234.4j deleted three ops for, rebuilt one tool later.
+      //
+      // 🔑 EVERY GATE ABOVE ALREADY BRACKETS THIS. Same transport identity, same
+      // door grant, same conversation. What it may do is narrower than an ask:
+      // close a card THIS server holds, for THIS contract, under a ref THEY
+      // opened. It cannot create anything.
+      //
+      // ⚠ BRANCHED BEFORE ASK VALIDATION, deliberately — a withdrawal carries no
+      // question, no options and no label, and every one of those is required of
+      // an ask. Validating first would refuse the shape for missing fields it was
+      // never supposed to have.
+      if (args.withdraw === true) {
+        const wRef = typeof args.exchange_ref === 'string' ? args.exchange_ref : '';
+        if (wRef === '') {
+          return err(JSON.stringify({
+            code: 'bad_request',
+            message: 'recued_peerAsk: withdraw requires the exchange_ref being withdrawn',
+          }));
+        }
+        const notifier = deps.preflightNotifier as unknown as {
+          listOpenAsks?: () => Promise<{
+            ask_id: string;
+            handler_kind?: string;
+            handler_payload?: Record<string, unknown>;
+          }[]>;
+          cancelAsk?: (ask_id: string) => Promise<'cancelled' | 'not_open'>;
+        } | undefined;
+        if (notifier?.listOpenAsks === undefined || notifier.cancelAsk === undefined) {
+          return err('peer withdraw: no notification block on this host');
+        }
+        const { PEER_ASK_HANDLER_KIND: wKind } = await import('./peer-ask-receiver.js');
+        const openAsks = await notifier.listOpenAsks();
+        // ⛔ MATCH ON REF **AND** CONTRACT. A ref is a lookup key and never a
+        // credential (§ 234.2), so ref alone would let a peer who learned one
+        // close a card belonging to somebody else — invisibly, because a
+        // cancelled ask leaves nothing behind to notice was missing.
+        // ⚠ `handler_kind` / `handler_payload`, FLAT. The raise-side builds a
+        // nested `handler: { kind, payload }` and `PendingAsk` persists it
+        // flattened; copying the raise-side's spelling matches NOTHING and
+        // answers "nothing to withdraw" for every call, with no error anywhere.
+        const mine = openAsks.find((a) =>
+          a.handler_kind === wKind
+          && a.handler_payload?.exchange_ref === wRef
+          && a.handler_payload.peer_contract_id === peerContract);
+        console.warn(
+          `[peer-withdraw:inbound] ref=${wRef.slice(0, 12)}… match=${String(mine !== undefined)}`
+          + ` of ${String(openAsks.length)} open`,
+        );
+        // ⚠ ONE UNINFORMATIVE ANSWER FOR EVERY MISS — already answered, never
+        // existed, someone else's, already withdrawn. Distinguishing them would
+        // report on the owner's attention ("have they read it yet?"), which is a
+        // surveillance channel dressed as a confirmation.
+        const outcome = mine === undefined ? 'not_open' : await notifier.cancelAsk(mine.ask_id);
+        if (outcome === 'cancelled' && deps.auditLog !== undefined) {
+          void (deps.auditLog as unknown as { logActivity?: (r: unknown) => void })
+            .logActivity?.({
+              action: 'peer_ask_withdrawn',
+              target: peerContract,
+              detail: JSON.stringify({ exchange_ref: wRef }),
+              timestamp: Date.now(),
+            });
+        }
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ withdrawn: outcome === 'cancelled' }) }],
+        };
+      }
+      if (!deps.db) return err('peer grant store not configured');
+      const [
+        { receivePeerAsk },
+        { createContractStore },
+        { createContractGrantEntryStore },
+        { peerLabelGrantEntry },
+      ] = await Promise.all([
+        import('./peer-ask-inbound.js'),
+        import('./storage/contract-store.js'),
+        import('./storage/contract-grant-entry-store.js'),
+        import('@recued/contracts'),
+      ]);
+      // D-234 § 234.4h/j — THE gate: the owner grants `peer.label.<label>` on the
+      // peer's contract from the surface they already use to manage that peer. No
+      // pack, no recipe, no second store to remember — § 234.4j deleted the
+      // `peer_exposures` table that used to answer this same question in
+      // parallel, because a flag saying "this peer, this label" beside a contract
+      // that already says "this peer, this door" is the question asked twice.
+      //
+      // ⚠ KEYED ON THE CONTRACT THE CALLER PRESENTED, so the admission decision
+      // and the identity it is about cannot come apart.
+      const peerGrantEntries = createContractGrantEntryStore(createContractStore(deps.db));
+      // ⚠ NO ADMISSION CEILING HERE, and that is not an omission. A native verb
+      // is not a recipe dispatch, so § 234.1 never applies; the label grant is
+      // the ONLY gate — one door rather than two with an exemption bridging them.
+      // It is default-closed and per-(peer, label), which is narrower than the
+      // ceiling it replaces.
+      const received = await receivePeerAsk(
+        {
+          peer_contract_id: peerContract,
+          connection_name: peerConnectionNameFor(deps, peerContract) ?? peerContract,
+          exchange_ref: typeof args.exchange_ref === 'string' ? args.exchange_ref : '',
+          label: typeof args.label === 'string' ? args.label : '',
+          question: typeof args.question === 'string' ? args.question : '',
+          options: Array.isArray(args.options)
+            ? (args.options as { id: string; label: string }[])
+            : [],
+          ...(typeof args.deadline_at === 'number' ? { deadline_at: args.deadline_at } : {}),
+          ...(typeof args.on_timeout === 'string' ? { on_timeout: args.on_timeout } : {}),
+          ...(typeof args.note_prompt === 'string'
+            ? { note_prompt: args.note_prompt }
+            : {}),
+          ...(typeof args.body === 'string' ? { body: args.body } : {}),
+        },
+        {
+          isLabelGranted: (contract_id, label) =>
+            peerGrantEntries.get(contract_id, peerLabelGrantEntry(label)) === true,
+          notifier: deps.preflightNotifier as never,
+          ...(deps.auditLog !== undefined
+            ? {
+                logActivity: (row: { action: string; target: string; detail: string }) => {
+                  void (deps.auditLog as unknown as {
+                    logActivity?: (r: unknown) => void;
+                  }).logActivity?.({ ...row, timestamp: Date.now() });
+                },
+              }
+            : {}),
+        },
+      );
+      // ⚠ A REFUSAL IS A RESULT, NOT AN ERROR. § 30's lesson: a Recued receiver
+      // reporting its own refusal through an error envelope is invisible to every
+      // machine classifier on the far side, and the asker then reports `awaiting`
+      // forever. The shape is the answer.
+      // ⚠ A REFUSAL IS A RESULT, NOT AN ERROR ENVELOPE — see the note above.
+      console.warn(`[peer-ask:inbound] ${JSON.stringify(received)}`);
+      return { content: [{ type: 'text', text: JSON.stringify(received) }] };
+    }
+    // ── peerAnswer ─────────────────────────────────────────
+    case PEER_RECEIVE_ANSWER_TOOL: {
+      console.warn('[peer-answer:inbound] recued_peerAnswer called');
+      // ⛔⛔ IDENTITY FROM THE TRANSPORT, AND ONLY THERE — the same rule as the
+      // ask door, and load-bearing for the same reason: correlation is checked
+      // against the contract the caller PRESENTED, so a payload field would let
+      // a peer answer in someone else's name.
+      const answerSource = buildMcpExecutionSource(deps);
+      const answerContract = executionSourceContractId(answerSource) ?? '';
+      if (answerContract === '') {
+        return err(JSON.stringify({
+          code: 'bad_request',
+          message: 'recued_peerAnswer: no bound contract on this call — an answer must be attributable to a peer',
+        }));
+      }
+      if (!resolveMcpDoorReadGrantChecker(deps).isVerbOpGranted('core.peer.receive-answer')) {
+        return err(JSON.stringify({
+          code: 'bad_request',
+          message: 'recued_peerAnswer: this door is not granted to your contract',
+        }));
+      }
+      if (!deps.db) return err('peer answer store not configured');
+      if (deps.peerAskOutbox === undefined) {
+        return err('peer ask outbox not configured — this server cannot correlate answers');
+      }
+      const [{ receiveAnswer }, { createPeerAnswerStore }, { resumePeerHold }] = await Promise.all([
+        import('./peer-answer-return.js'),
+        import('./storage/peer-answer-store.js'),
+        import('./peer-hold-resumer.js'),
+      ]);
+      const outboxStore = deps.peerAskOutbox;
+      const received = await receiveAnswer(
+        { peer_contract_id: answerContract, exchange_ref: typeof args.exchange_ref === 'string' ? args.exchange_ref : '', raw: args },
+        {
+          outbox: outboxStore,
+          answers: createPeerAnswerStore(deps.db),
+          // ⚠ The INVERSE of the ask door's `peerConnectionNameFor`: there we ask
+          // "which connection reaches this contract", here "which contract is
+          // this connection bound to". Same `config.peer_contract_id` field,
+          // read the other way, so the two can never disagree about a pairing.
+          contractForConnection: (name) => {
+            const store = deps.connectionStore as
+              | { get?(kind: string, n: string): { config_json?: string | null } | null }
+              | undefined;
+            try {
+              const row = store?.get?.('mcp', name) ?? null;
+              if (row === null) return undefined;
+              const cfg = JSON.parse(row.config_json ?? '{}') as Record<string, unknown>;
+              return typeof cfg.peer_contract_id === 'string' ? cfg.peer_contract_id : undefined;
+            } catch { return undefined; }
+          },
+          resume: async (row) => {
+            await resumePeerHold(row, {
+              getExecuteDeps: () => deps,
+              auditLog: deps.auditLog!,
+              checkpoints: deps.checkpointStore!,
+            });
+          },
+          ...(deps.auditLog !== undefined
+            ? {
+                logActivity: (row: { action: string; target: string; detail: string }) => {
+                  void (deps.auditLog as unknown as {
+                    logActivity?: (r: unknown) => void;
+                  }).logActivity?.({ ...row, timestamp: Date.now() });
+                },
+              }
+            : {}),
+        },
+      );
+      // ⚠ A REFUSAL IS A RESULT, NOT AN ERROR ENVELOPE — § 30, same as the ask
+      // door. A peer whose answer was refused must be able to tell WHY
+      // machine-readably; an error envelope makes "not yours" and "the server
+      // fell over" the same fact, and they would retry forever on both.
+      console.warn(`[peer-answer:inbound] ${JSON.stringify(received)}`);
+      return { content: [{ type: 'text', text: JSON.stringify(received) }] };
+    }
     case 'recued_getAudit': {
       if (!deps.auditLog) return err('Audit log not configured');
       // D-187 slice 3b — the audit/run-history read gate: the OWNER-default-only verb-op

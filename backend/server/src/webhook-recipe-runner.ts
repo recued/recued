@@ -146,7 +146,12 @@ const runOnce = async (
     ? buildWebhookContractSnapshot(input.execution_source, {
         definitionStore: deps.definitionStore,
         now: deps.now ?? Date.now,
-      })
+      // ⛔ `'recipe'` — this runner dispatches an ARBITRARY user recipe, so
+      // D-209's authored ceiling is not admissible on it (its rule requires a
+      // machine delivering to a DETERMINISTIC path). The door keeps its minted
+      // `admin`; this dispatch simply does not borrow it, and falls to the LOW
+      // ceiling every other unattended trigger already sits on.
+      }, 'recipe')
     : undefined;
   if (
     input.execution_source.contract_id !== undefined

@@ -63,6 +63,7 @@ import {
   MAIL_SENT_RECONCILIATION_MAX_SOURCE_BYTES,
   mailAttachmentPartFromBytes,
   mailSentReconciliationAttachmentPartFromBytes,
+  mimeFilenameParameter,
   type CanonicalMessage,
   type InitialScanOptions,
   type MailSyncFailureKind,
@@ -409,9 +410,9 @@ export const buildImapRfc5322 = (
   for (const att of attachments) {
     segments.push(
       `--${mixed}`,
-      `Content-Type: ${att.mime_type}; name="${att.filename}"`,
+      `Content-Type: ${att.mime_type}; ${mimeFilenameParameter('name', att.filename)}`,
       'Content-Transfer-Encoding: base64',
-      `Content-Disposition: attachment; filename="${att.filename}"`,
+      `Content-Disposition: attachment; ${mimeFilenameParameter('filename', att.filename)}`,
       '',
       wrapBase64(att.bytes_b64),
     );

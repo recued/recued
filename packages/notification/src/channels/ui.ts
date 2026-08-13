@@ -44,6 +44,12 @@ export type UiNotificationEvent =
       ask_id: string;
       message: NotificationMessage;
       options: readonly AskOption[];
+      /** D-234 § 234.4e/f — so the in-app card can render the reason field and
+       *  the readable body on the LIVE frame, not only after the next history
+       *  re-fetch. ⛔ Carried HERE and not on `message`: this bus is the owner's
+       *  own paired clients, where a channel adapter's payload is not. */
+      note_prompt?: 'optional' | 'required';
+      body?: string;
     }
   | { kind: 'notification.ask_closed'; ask_id: string };
 
@@ -79,8 +85,14 @@ export const createUiChannel = (opts: UiChannelOptions): Channel => {
       opts.busSink({ kind: 'notification.notify', message });
     },
 
-    async deliverAsk(ask_id, message, options) {
-      opts.busSink({ kind: 'notification.ask', ask_id, message, options });
+    async deliverAsk(ask_id, message, options, extras) {
+      opts.busSink({
+        kind: 'notification.ask', ask_id, message, options,
+        ...(extras?.note_prompt !== undefined
+          ? { note_prompt: extras.note_prompt }
+          : {}),
+        ...(extras?.body !== undefined ? { body: extras.body } : {}),
+      });
     },
 
     async closeAsk(ask_id) {

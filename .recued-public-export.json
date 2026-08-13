@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "1f1981c87a81e0d92883f7b71d85d2ded59afb90",
-    "tree": "109d3bd3d68b5f00e7b14bd25c946d48509de82f",
-    "committed_at": "2026-08-08T20:22:04-07:00"
+    "commit": "b276b4ba80a0301881a49ca9575436938368d417",
+    "tree": "97585f8fa5b22a1d83186ac8b75d3445a695a044",
+    "committed_at": "2026-08-12T20:47:38-07:00"
   },
-  "export_manifest_sha256": "835561b8adf2774b4ef6cdfeb5508e5e30bf930b50eb27bac8d72c0d82b5fb02",
-  "version": "26.8.8",
+  "export_manifest_sha256": "89e71fca4271fa0e92329454eaffc77e1055dab8ac5d873bb7dcb715fb028477",
+  "version": "26.8.12",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -128,8 +128,10 @@
       "backend/server/src/__tests__/d-212-production-source.ts",
       "backend/server/src/__tests__/d-222-reception-manage-config-declared.test.ts",
       "backend/server/src/__tests__/d-223-corpus-connection-hints.test.ts",
+      "backend/server/src/__tests__/d-234-peer-ask-delivery.test.ts",
       "backend/server/src/__tests__/dispatch-canonical-resolve.test.ts",
       "backend/server/src/__tests__/excel-workbook-semi-live.test.ts",
+      "backend/server/src/__tests__/expense-ledger-import-workflow.test.ts",
       "backend/server/src/__tests__/federated-project-business-workflow.test.ts",
       "backend/server/src/__tests__/federated-project-source-sync.test.ts",
       "backend/server/src/__tests__/federated-project-two-node-live-drive.test.ts",
@@ -238,6 +240,7 @@
       "packages/ingredient-authoring/src/__tests__/alpaca-mcp-market-data-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/alpaca-trading-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/binance-market-data-pack-audit.test.ts",
+      "packages/ingredient-authoring/src/__tests__/catalog-bind-tool-target-corpus.test.ts",
       "packages/ingredient-authoring/src/__tests__/cli-argv-pin-shipped-packs.test.ts",
       "packages/ingredient-authoring/src/__tests__/connection-hints-corpus.test.ts",
       "packages/ingredient-authoring/src/__tests__/connection-scope-prefill-corpus.test.ts",
@@ -329,9 +332,11 @@
       "packages/ingredient-authoring/src/__tests__/d-211-held-read-fence.test.ts",
       "packages/ingredient-authoring/src/__tests__/d-216-social-publishing-pack.test.ts",
       "packages/ingredient-authoring/src/__tests__/d-217-upload-binding-passthrough.test.ts",
+      "packages/ingredient-authoring/src/__tests__/d-234-peer-review-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/decision-log-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/deeptutor-daily-mastery-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/excel-workbook-pack-audit.test.ts",
+      "packages/ingredient-authoring/src/__tests__/exchange-require-connection-corpus.test.ts",
       "packages/ingredient-authoring/src/__tests__/federated-project-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/fireflies-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/generator-version-drift-corpus.test.ts",
@@ -350,6 +355,8 @@
       "packages/ingredient-authoring/src/__tests__/placeholder-required-default-corpus.test.ts",
       "packages/ingredient-authoring/src/__tests__/recipe-depends-on-coverage.test.ts",
       "packages/ingredient-authoring/src/__tests__/recipe-description-readability.test.ts",
+      "packages/ingredient-authoring/src/__tests__/recipe-owner-surface-reachability.test.ts",
+      "packages/ingredient-authoring/src/__tests__/records-expected-version-coupling.test.ts",
       "packages/ingredient-authoring/src/__tests__/seller-quote-request-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/smb-finance-slice3-storage-gdrive.test.ts",
       "packages/ingredient-authoring/src/__tests__/spreadsheet-workbook-read-audit.test.ts",
@@ -505,7 +512,7 @@
       "packages/recipes/src/__tests__/zendesk-ticket-count-truth-pack-audit.test.ts",
       "packages/recipes/src/__tests__/zendesk-ticket-reply-closure-loop.test.ts"
     ],
-    "sha256": "51fbd8522b84f47116371da5bb3566e86b284268fb24292ee3f1227b82bd4f83",
+    "sha256": "119a85c6918177891fdd0f59e46395fd2aad23d99e86db7579ecadb4af43c6cd",
     "roots": [
       "apps/auth-worker",
       "backend/api",
@@ -516,15 +523,15 @@
     ]
   },
   "internal_reference_scrub": {
-    "files_changed": 1015,
+    "files_changed": 1017,
     "rules": [
       {
         "id": "internal-spec-reference",
-        "comments_rewritten": 982
+        "comments_rewritten": 983
       },
       {
         "id": "internal-design-document",
-        "comments_rewritten": 80
+        "comments_rewritten": 81
       },
       {
         "id": "internal-handover-note",
@@ -549,10 +556,11 @@
       "id": "foundation-packs",
       "root": "community",
       "derivation": "foundation_pack_closure",
-      "file_count": 18,
-      "sha256": "83e0860c4ea9bf72cb2b884c61e48fc62c764c3969c0cf2e1784bca9ce753151",
+      "file_count": 20,
+      "sha256": "fee591a2a0d4fabdc9c7cc06490611d14dcb4114f6ae740999d9f933ed8959c7",
       "paths": [
         "community/packs/personal-organizer-foundation.json",
+        "community/packs/recued-core/mail-compose-foundation.json",
         "community/packs/recued-core/reception-approval.json",
         "community/packs/recued-core/reception-drop.json",
         "community/packs/recued-core/reception-intake.json",
@@ -567,6 +575,7 @@
         "community/recipes/reschedule-booking.json",
         "community/recipes/reschedule-calendar-event.json",
         "community/recipes/schedule-recipe.json",
+        "community/recipes/send-composed-mail.json",
         "community/recipes/stalled-projects.json",
         "community/recipes/today.json",
         "community/recipes/triage-inbox.json"
@@ -610,7 +619,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 5262,
-    "sha256": "8ae5580f2313727620cd8b35403700605b77dfef7a9c25258f496c2f9c111834"
+    "file_count": 5318,
+    "sha256": "8c497ff0a41cf311dc8765034f418fa7a35ae9bb9dfa1a9153187ec5ba2ce5d3"
   }
 }

@@ -106,9 +106,12 @@ export interface ServerExecutorConfig {
   /** D-125 P3.1 — connection store reference. The connection adapter
    *  looks up enrolled records at dispatch time via `.get(kind, name)`.
    *  Server passes the SQLite-backed store from `bin.ts`; absent in
-   *  dbless harnesses, in which case the registry slot stays at the
-   *  D-126 placeholder and any `kind: 'connection'` ingredient surfaces
-   *  `KIND_NOT_YET_IMPLEMENTED` until P4 wires per-kind handlers. */
+   *  dbless harnesses, in which case the registry slot stays at D-126's
+   *  kind-named `unsupported('connection')` default and any
+   *  `kind: 'connection'` ingredient fails with
+   *  `INGREDIENT_ADAPTER_ALL_FAILED` naming the unwired store. (This read
+   *  "surfaces `KIND_NOT_YET_IMPLEMENTED` until P4 wires per-kind
+   *  handlers" — P4.1/4.2/4.3 all shipped.) */
   connectionStore?: ConnectionAdapterStore;
   /** D-125 P3.2 — audit sink for connection adapter dispatch. When
    *  wired, every adapter call lands one `connection_<kind>` activity
@@ -670,8 +673,9 @@ export const createServerExecutor = (
     // mcp / notification) ship in P4.x; absent handlers throw
     // `INGREDIENT_ADAPTER_ALL_FAILED` with `kind: 'connection.<kind>'`
     // at dispatch time. Skipping the slot when no store is wired keeps
-    // the D-126 `connectionPlaceholder` (KIND_NOT_YET_IMPLEMENTED) in
-    // place for dbless harnesses.
+    // D-126's kind-named `unsupported('connection')` default in place for
+    // dbless harnesses — INGREDIENT_ADAPTER_ALL_FAILED naming the unwired
+    // store, NOT a "not yet shipped" claim. P3/P4.x all shipped.
     //
     // D-125 P3.2 — `auditLog` (when wired) feeds the per-dispatch
     // emitter that lands one `connection_<kind>` activity row per call.
@@ -795,8 +799,9 @@ export const createBoundExecutor = (
     // mcp / notification) ship in P4.x; absent handlers throw
     // `INGREDIENT_ADAPTER_ALL_FAILED` with `kind: 'connection.<kind>'`
     // at dispatch time. Skipping the slot when no store is wired keeps
-    // the D-126 `connectionPlaceholder` (KIND_NOT_YET_IMPLEMENTED) in
-    // place for dbless harnesses.
+    // D-126's kind-named `unsupported('connection')` default in place for
+    // dbless harnesses — INGREDIENT_ADAPTER_ALL_FAILED naming the unwired
+    // store, NOT a "not yet shipped" claim. P3/P4.x all shipped.
     //
     // D-125 P3.2 — `auditLog` (when wired) feeds the per-dispatch
     // emitter that lands one `connection_<kind>` activity row per call.

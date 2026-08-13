@@ -95,7 +95,6 @@ export {
 // D-126 Phase 2.3 — Adapter registry runtime wiring.
 export {
   createAdapterRegistry,
-  connectionPlaceholder,
   type AdapterRegistry,
   type AdapterRegistryDeps,
 } from './adapters/registry.js';

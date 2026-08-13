@@ -55,6 +55,19 @@ export const WEBCLIENT_DEFAULT_SUBSCRIPTIONS: ReadonlyArray<BroadcastEventKind> 
   'chat.token_streamed',
   'chat.tool_call_completed',
   'chat.tool_call_started',
+  // ⛔ ADDED 2026-08-11 — the reducer had handled this since 2026-07-24 and
+  // never received it. `chat/state.ts` carries it in `CHAT_THREAD_EVENT_KINDS`
+  // and branches on it (`patch an owner-confirmed safe-check resolution`), but
+  // the server fans only the kinds a client NAMES, so the handler was
+  // unreachable for two and a half weeks: written, typed, tested in isolation,
+  // dead on the wire. Nothing failed — an owner who resolved a safe-check on
+  // one device simply never saw it clear on another.
+  //
+  // 🔑 The hand-written `.toContain()` list in `__tests__/subscriber.test.ts`
+  // could not catch it: an assertion list only covers the kinds someone
+  // remembered to add. The ratchet there now DERIVES the requirement from
+  // `isChatThreadEvent`, so the next appended chat kind fails until subscribed.
+  'chat.data_diagnosis_resolved',
   // D-137 W2.2 § A.1.1 — Mary's per-kind catalog scope. Fans to every
   // paired client so Settings → Chat → Tool Catalog Scope stays in
   // sync across devices without a manual refresh.

@@ -34,6 +34,8 @@ import {
   createPendingMap,
   getPref,
   SERVER_RPC_METHOD_SET,
+  WS_VERSION_SUBPROTOCOL,
+  decodeBearerSubprotocol,
   type BridgeCapabilityProfile,
   type BridgeResult,
   type BridgeWireEnvelope,
@@ -2090,6 +2092,14 @@ const buildWsBinding = (
     noServer: boolean;
     maxPayload?: number;
     perMessageDeflate?: boolean;
+    /** `ws`'s subprotocol-selection hook. Typed here because this local shape
+     *  is hand-written — an option absent from it is a compile error, which is
+     *  the desired behaviour: a security-relevant option must not be passable
+     *  by accident, and must be declared to be usable. */
+    handleProtocols?: (
+      protocols: ReadonlySet<string>,
+      request: IncomingMessage,
+    ) => string | false;
   }) => any;
   const WS_OPEN = ws.WebSocket?.OPEN ?? ws.OPEN ?? 1;
 
@@ -2097,6 +2107,14 @@ const buildWsBinding = (
     noServer: true,
     maxPayload: RPC_WS_MAX_PAYLOAD_BYTES,
     perMessageDeflate: false,
+    // ⛔ PIN THE SELECTION — do not let `ws` pick. Its default is
+    // `protocols.values().next().value`, the client's FIRST offered value, and
+    // the selection is echoed in the `Sec-WebSocket-Protocol` RESPONSE header.
+    // Since browsers now carry the bearer in that field, a client that offered
+    // it first would have its secret echoed straight back into the response —
+    // and into whatever logs that header. `selectWsSubprotocol` only ever
+    // returns the version marker, or nothing.
+    handleProtocols: selectWsSubprotocol,
   });
   const clients = new Map<any, WsClient>();
   const activeRpcDispatches = new Set<Promise<void>>();
@@ -2142,7 +2160,14 @@ const buildWsBinding = (
   // frame at the WS layer — before a 100 MiB (`ws` default) buffer + the
   // service-side copy (Codex 2026-06-24 fold).
   const uploadWss = uploadDeps
-    ? new WsServer({ noServer: true, maxPayload: UPLOAD_WS_MAX_PAYLOAD_BYTES })
+    ? new WsServer({
+        noServer: true,
+        maxPayload: UPLOAD_WS_MAX_PAYLOAD_BYTES,
+        // Same pin as the rpc socket: never echo a client's bearer back in the
+        // handshake response. These data sockets carry the bearer in the
+        // subprotocol too, so `ws`'s first-offered default is a live hazard here.
+        handleProtocols: selectWsSubprotocol,
+      })
     : null;
 
   // M4 archive download — a SEPARATE WebSocketServer for the dedicated binary
@@ -2154,7 +2179,11 @@ const buildWsBinding = (
   // `download_start`; the server's outbound chunks are unbounded by this cap
   // (it gates inbound only) and self-paced by the read stream + backpressure.
   const downloadWss = downloadDeps
-    ? new WsServer({ noServer: true, maxPayload: DOWNLOAD_WS_MAX_INBOUND_BYTES })
+    ? new WsServer({
+        noServer: true,
+        maxPayload: DOWNLOAD_WS_MAX_INBOUND_BYTES,
+        handleProtocols: selectWsSubprotocol,
+      })
     : null;
 
   // M4b.1 archive upload (no-SSH migrate) — a SEPARATE WebSocketServer for the
@@ -2165,7 +2194,11 @@ const buildWsBinding = (
   // / event traffic. The same tight `maxPayload` (one max chunk + the frame
   // header budget) rejects an over-cap frame at the WS layer.
   const archiveUploadWss = archiveUploadDeps
-    ? new WsServer({ noServer: true, maxPayload: UPLOAD_WS_MAX_PAYLOAD_BYTES })
+    ? new WsServer({
+        noServer: true,
+        maxPayload: UPLOAD_WS_MAX_PAYLOAD_BYTES,
+        handleProtocols: selectWsSubprotocol,
+      })
     : null;
 
   // D-169 P0 follow-on — multi-bridge dispatcher composition. The
@@ -3608,13 +3641,33 @@ const buildWsBinding = (
  *  the bearer is over TLS in production, and a leaked bearer is independently
  *  revocable via `pair.revoke` (which now also kills the client token). */
 const extractRealm = (req: IncomingMessage): string | null => {
-  // Header
+  // 1. Authorization header — non-browser clients (CLI, server-to-server).
   const header = req.headers.authorization;
   if (header) {
     const match = header.match(/^Bearer\s+(.+)$/i);
     if (match) return match[1].trim() || null;
   }
-  // Query string fallback (WebSocket clients can't set headers easily)
+  // 2. `Sec-WebSocket-Protocol` — the browser carrier. A browser cannot set
+  //    request headers on `new WebSocket(url, protocols)`, and this is the one
+  //    header the constructor DOES reach. See `@recued/contracts`
+  //    `ws-subprotocol.ts` for the encoding and why it is base64url.
+  const bySubprotocol = decodeBearerSubprotocol(req.headers['sec-websocket-protocol']);
+  if (bySubprotocol) return bySubprotocol;
+  // 3. `?token=` — LEGACY, and the reason the carrier above exists. A URL is
+  //    the worst place for a secret: reverse-proxy and access logs, crash
+  //    reports and browser URL telemetry all capture it, none are covered by
+  //    TLS, and `client_tokens` has NO expiry column — so a bearer that reached
+  //    a log stays valid until somebody revokes it by hand.
+  //
+  //    ⚠ STILL ACCEPTED ON PURPOSE, AND NOT YET REMOVABLE. A PWA serves its
+  //    cached bundle before it replaces itself, so browsers are still running
+  //    webclient builds that send this form, and an extension updates on its
+  //    own schedule. Removing it now would 401 every un-upgraded client with no
+  //    way for them to tell why. Retire it once no shipped client emits it —
+  //    the check is that no `token=` remains in `apps/webclient/src/realtime/`
+  //    or `apps/bridge/src/boot/`, plus a deliberate wait for caches to turn
+  //    over. Until then this is a transition, and the bearer is only as safe as
+  //    the oldest client still using it.
   const url = req.url ?? '';
   const qmark = url.indexOf('?');
   if (qmark !== -1) {
@@ -3623,6 +3676,27 @@ const extractRealm = (req: IncomingMessage): string | null => {
     if (token) return token;
   }
   return null;
+};
+
+/** Which subprotocol the server selects, and echoes back in the handshake.
+ *
+ *  ⛔ NEVER THE BEARER. `ws`'s default selection is
+ *  `protocols.values().next().value` — whatever the CLIENT offered first — and
+ *  the selected value goes back in the `Sec-WebSocket-Protocol` RESPONSE header.
+ *  A client that offered the bearer first would therefore have its secret echoed
+ *  into a response header, i.e. straight back into the logs this change exists
+ *  to keep it out of. Our clients offer `recued.v1` first, but that is a
+ *  client-side guarantee and the server must not depend on one.
+ *
+ *  Returning `false` means "select nothing", which RFC 6455 permits and browsers
+ *  accept — the right answer for a client that offered only a bearer. */
+export const selectWsSubprotocol = (
+  offered: ReadonlySet<string> | ReadonlyArray<string>,
+): string | false => {
+  for (const value of offered) {
+    if (value === WS_VERSION_SUBPROTOCOL) return WS_VERSION_SUBPROTOCOL;
+  }
+  return false;
 };
 
 /** D-148 § A.2.1 — canonical length of `client_tokens.token_id`

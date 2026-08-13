@@ -664,7 +664,7 @@ export const installBulkPack = async (
       auto_run: ctx.auto_run_default ?? false,
       last_checked_at: now,
       upstream_version: row.version,
-      upstream_hash: row.recipe_hash,
+      upstream_hash: row.recipe_hash ?? null,
     };
 
     try {

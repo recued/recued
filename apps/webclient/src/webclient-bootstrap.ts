@@ -154,7 +154,8 @@ import type {
   WebclientServerProfile,
   WebclientTokenRecord,
 } from '@recued/contracts';
-import { canBindHostname } from '@recued/contracts';
+import {
+  encodeBearerSubprotocol, canBindHostname } from '@recued/contracts';
 import {
   bindRecordRefSearchToRecipe,
   createRecordRefSearchCaller,
@@ -309,6 +310,7 @@ import {
   type ApprovalResolveCaller,
   type ApprovalSubscribeCaller,
 } from './approvals/bootstrap-approvals-route.js';
+import { bootstrapMailRoute } from './mail/bootstrap-mail-route.js';
 import {
   createPendingChatPlansStore,
   type PendingChatPlansStore,
@@ -4183,6 +4185,7 @@ export const bootstrapWebclient = async (
       data: { label: 'Saving a Data change', returnLabel: 'Return to Data' },
       logs: { label: 'Finishing a run action', returnLabel: 'Return to Runs' },
       chat: { label: 'Finishing a Chat action', returnLabel: 'Return to Chat' },
+      mail: { label: 'Finishing a mail action', returnLabel: 'Return to Mail' },
     };
     return {
       ...routeCopy[activeRoute],
@@ -6044,12 +6047,19 @@ export const bootstrapWebclient = async (
           const bearer = `${record.token_id}.${plaintext}`;
           const base = serverUrl.replace(/\/ws(?=$|\?)/, '/ws/download');
           const separator = base.includes('?') ? '&' : '?';
-          const url = `${base}${separator}token=${encodeURIComponent(bearer)}`;
+          // Bearer in the SUBPROTOCOL, not the URL — same carrier as the rpc
+          // socket (`realtime/browser-transport.ts` DD#1). Fixing only that one
+          // left FOUR data sockets still writing the secret into a URL; the
+          // minified bundle is what showed it (`grep -c 'token=' → 9`).
+          const url = base;
           const WsCtor = (globalThis as { WebSocket?: typeof WebSocket }).WebSocket;
           if (WsCtor === undefined) {
             throw new Error('download: globalThis.WebSocket unavailable');
           }
-          const ws = new WsCtor(url, WEBCLIENT_WS_SUBPROTOCOL);
+          const ws = new WsCtor(url, [
+            WEBCLIENT_WS_SUBPROTOCOL,
+            encodeBearerSubprotocol(bearer),
+          ]);
           ws.binaryType = 'arraybuffer';
           await new Promise<void>((resolve, reject) => {
             ws.addEventListener('open', () => resolve());
@@ -6114,12 +6124,19 @@ export const bootstrapWebclient = async (
           const bearer = `${record.token_id}.${plaintext}`;
           const base = serverUrl.replace(/\/ws(?=$|\?)/, '/ws/archive-upload');
           const separator = base.includes('?') ? '&' : '?';
-          const url = `${base}${separator}token=${encodeURIComponent(bearer)}`;
+          // Bearer in the SUBPROTOCOL, not the URL — same carrier as the rpc
+          // socket (`realtime/browser-transport.ts` DD#1). Fixing only that one
+          // left FOUR data sockets still writing the secret into a URL; the
+          // minified bundle is what showed it (`grep -c 'token=' → 9`).
+          const url = base;
           const WsCtor = (globalThis as { WebSocket?: typeof WebSocket }).WebSocket;
           if (WsCtor === undefined) {
             throw new Error('archive-upload: globalThis.WebSocket unavailable');
           }
-          const ws = new WsCtor(url, WEBCLIENT_WS_SUBPROTOCOL);
+          const ws = new WsCtor(url, [
+            WEBCLIENT_WS_SUBPROTOCOL,
+            encodeBearerSubprotocol(bearer),
+          ]);
           ws.binaryType = 'arraybuffer';
           await new Promise<void>((resolve, reject) => {
             ws.addEventListener('open', () => resolve());
@@ -6593,12 +6610,19 @@ export const bootstrapWebclient = async (
     const bearer = `${record.token_id}.${plaintext}`;
     const base = serverUrl.replace(/\/ws(?=$|\?)/, '/ws/upload');
     const separator = base.includes('?') ? '&' : '?';
-    const url = `${base}${separator}token=${encodeURIComponent(bearer)}`;
+    // Bearer in the SUBPROTOCOL, not the URL — same carrier as the rpc
+    // socket (`realtime/browser-transport.ts` DD#1). Fixing only that one
+    // left FOUR data sockets still writing the secret into a URL; the
+    // minified bundle is what showed it (`grep -c 'token=' → 9`).
+    const url = base;
     const WsCtor = (globalThis as { WebSocket?: typeof WebSocket }).WebSocket;
     if (WsCtor === undefined) {
       throw new Error('upload: globalThis.WebSocket unavailable');
     }
-    const ws = new WsCtor(url, WEBCLIENT_WS_SUBPROTOCOL);
+    const ws = new WsCtor(url, [
+      WEBCLIENT_WS_SUBPROTOCOL,
+      encodeBearerSubprotocol(bearer),
+    ]);
     ws.binaryType = 'arraybuffer';
     return new Promise<Upload.UploadSocket>((resolve, reject) => {
       ws.addEventListener('open', () =>
@@ -9745,6 +9769,18 @@ export const bootstrapWebclient = async (
       const chatRoute = bootstrapChatRoute({
         root: appShell.contentRoot,
         conn: chatConn,
+        // D-172 P2 — the same `upload.*` control plane + binary socket the
+        // Data → Files panel uses, so a file dropped in Chat lands in the ONE
+        // `data.file` inventory rather than a second one. Passed as a pair: the
+        // route renders the attach control only when both are present, because
+        // half-wired it would open a picker that can never finish.
+        uploadCallers: {
+          create: dataUploadCreateCaller,
+          probe: dataUploadProbeCaller,
+          finalize: dataUploadFinalizeCaller,
+          delete: dataUploadDeleteCaller,
+        },
+        uploadConnect: uploadConnectFactory,
         ...(options.document !== undefined ? { document: options.document } : {}),
         subscribe: subscriber.on,
         reconnect,
@@ -10621,6 +10657,26 @@ export const bootstrapWebclient = async (
           : {}),
         ...(options.now !== undefined ? { now: options.now } : {}),
       }));
+    }
+    if (route === 'mail') {
+      // D-145 PA7 / D-172 P2 — the compose host.
+      //
+      // ⛔ SEND IS AN `execute` RUN, NOT AN RPC. D-177 N.12 removed
+      // `collection.mail.send` from the wire method set, so this route
+      // dispatches the `send-composed-mail` recipe and the D-157 gate lifts the
+      // outbound step to `ask`. The owner approves in #approvals; a dispatch
+      // that resolves means the run was ACCEPTED, never that mail was sent.
+      activeSettingsRoute = null;
+      return bootstrapMailRoute({
+        root: appShell.contentRoot,
+        ...(options.document !== undefined ? { document: options.document } : {}),
+        listMailInstances: () => rpcConn.call('collection.mail.list', undefined),
+        runExecute: (args) =>
+          rpcConn.call('execute', { ...args, trigger_source: 'manual' }),
+        // The attachment chooser's inventory. Same read Data → Files browses,
+        // so an uploaded file is attachable without a second index.
+        searchFiles: (args) => rpcConn.call('data.mirror.search', args),
+      });
     }
     if (route === 'kitchen') {
       activeSettingsRoute = null;

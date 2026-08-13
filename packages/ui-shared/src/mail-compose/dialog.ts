@@ -22,12 +22,14 @@
 
 import type {
   FormDefinition,
+  MailComposeAttachment,
   MailComposeDialogState,
   MailSenderSourceOption,
 } from '@recued/contracts';
 import { e } from '../template.js';
 import { renderForm } from '../form-renderer/render.js';
 import { renderAiAssistSidebar } from './ai-assist-sidebar.js';
+import { renderMailComposeAttachmentPicker } from './attachment-picker.js';
 
 /** Drop the `sender_source` ref input from the form-renderer's view of
  *  the mail_message schema — the dialog renders a dedicated From
@@ -40,21 +42,51 @@ import { renderAiAssistSidebar } from './ai-assist-sidebar.js';
  *  becomes a no-op (the form renders the new name) and the dialog's
  *  picker remains the single source of truth. */
 const SENDER_SOURCE_FIELD_NAME = 'sender_source';
-const stripSenderSource = (definition: FormDefinition): FormDefinition => ({
+
+/** D-172 P2 — same treatment, same reason, for `attachments`.
+ *
+ *  The schema models it as `array<ref data.file>`, and the form renderer only
+ *  upgrades a ref to a real picker when the target is `data.contact` — so
+ *  leaving it in the generic form renders a bare text input expecting a typed
+ *  `file:9a3c…` record id. The dedicated picker
+ *  (`renderMailComposeAttachmentPicker`) replaces it, exactly as the From
+ *  picker replaces `sender_source`.
+ *
+ *  ⚠ Both names are matched EXACTLY against the canonical schema. If a future
+ *  schema renames either slot this filter silently becomes a no-op and the
+ *  generic control reappears alongside the dedicated one — the same failure
+ *  mode the sender_source note already calls out. The dialog test pins that
+ *  neither name survives into the rendered form. */
+const ATTACHMENTS_FIELD_NAME = 'attachments';
+const DIALOG_OWNED_FIELD_NAMES = new Set([
+  SENDER_SOURCE_FIELD_NAME,
+  ATTACHMENTS_FIELD_NAME,
+]);
+const stripDialogOwnedFields = (definition: FormDefinition): FormDefinition => ({
   kind: definition.kind,
-  fields: definition.fields.filter((f) => f.name !== SENDER_SOURCE_FIELD_NAME),
+  fields: definition.fields.filter((f) => !DIALOG_OWNED_FIELD_NAMES.has(f.name)),
 });
 
 export interface MailComposeDialogProps {
   /** PA5 `FormDefinition` produced by `formFromCanonicalSchema(MAIL_MESSAGE_SCHEMA)`.
-   *  Hosts can pass a customized definition (e.g. without the
-   *  `attachments` field while attachment-send isn't shipped) — the
-   *  renderer walks whatever is passed. */
+   *  The renderer walks whatever is passed, minus the two slots the dialog
+   *  owns directly (`sender_source`, `attachments`).
+   *
+   *  ⚠ This used to suggest hosts drop `attachments` "while attachment-send
+   *  isn't shipped". Attachment-send SHIPPED with D-172 P2 and is drive-proven
+   *  end to end over a real SMTP socket; the dialog now renders a dedicated
+   *  picker for it. Passing a definition without the field is harmless (the
+   *  dialog strips it anyway) but no longer meaningful. */
   definition: FormDefinition;
   state: MailComposeDialogState;
   /** Sender-Source picker options. The dialog filters to entries
    *  where `send_capable === true`. */
   sources: readonly MailSenderSourceOption[];
+  /** D-172 P2 — display metadata for the ids in
+   *  `state.values.attachments`, in any order. Optional: omitted (or missing
+   *  an id) renders that chip unresolved rather than dropping it, so a host
+   *  that has not wired an inventory read still shows what is attached. */
+  attachments?: readonly MailComposeAttachment[];
 }
 
 const dialogTitle = (mode: MailComposeDialogState['mode']): string =>
@@ -107,9 +139,14 @@ export const renderMailComposeDialog = (
         <div class="mail-compose-body">
           <form class="mail-compose-form" data-form-kind="mail_message">
             ${senderPicker}
-            ${renderForm(stripSenderSource(props.definition), {
+            ${renderForm(stripDialogOwnedFields(props.definition), {
               values: props.state.values as unknown as Record<string, unknown>,
               errors: props.state.errors,
+            })}
+            ${renderMailComposeAttachmentPicker({
+              attachment_ids: props.state.values.attachments,
+              known: props.attachments ?? [],
+              submitting: props.state.submitting,
             })}
             ${submitError}
             <footer class="mail-compose-actions">

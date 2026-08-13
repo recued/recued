@@ -1,0 +1,94 @@
+{
+  "recipe_id": "send-composed-mail",
+  "chat_exposed": false,
+  "version": 1,
+  "ttl": 0,
+  "metadata": {
+    "name": "Send a composed email",
+    "description": "Use “Send a composed email” in Recued. Carries a message you wrote in the compose window to your own enrolled mail account. Sending is irreversible, so it stops at the approval gate first, and the approval names the recipients, the subject, and every attached file. Attachments travel as references to files you already hold, never as bytes.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "budget_ms": 30000,
+    "tags": ["mail", "compose", "send", "outbound"]
+  },
+  "requires": ["mail_send"],
+  "variables": {
+    "sender_mail_instance": {
+      "label": "Send from",
+      "type": "string",
+      "default": ""
+    },
+    "to": {
+      "label": "To",
+      "type": "array",
+      "default": []
+    },
+    "cc": {
+      "label": "Cc",
+      "type": "array",
+      "default": []
+    },
+    "bcc": {
+      "label": "Bcc",
+      "type": "array",
+      "default": []
+    },
+    "subject": {
+      "label": "Subject",
+      "type": "string",
+      "default": ""
+    },
+    "body": {
+      "label": "Message",
+      "type": "text",
+      "default": ""
+    },
+    "body_format": {
+      "label": "Body format",
+      "type": "string",
+      "default": "text"
+    },
+    "attachments": {
+      "label": "Attachments",
+      "type": "file_ref[]",
+      "default": []
+    },
+    "in_reply_to": {
+      "label": "In reply to",
+      "type": "string",
+      "default": ""
+    },
+    "references": {
+      "label": "Thread references",
+      "type": "array",
+      "default": []
+    }
+  },
+  "prefetch_steps": [],
+  "steps": [
+    {
+      "id": "send",
+      "op": "core.mail.send",
+      "args": {
+        "sender_mail_instance": "{{config.sender_mail_instance}}",
+        "to": "{{config.to}}",
+        "cc": "{{config.cc}}",
+        "bcc": "{{config.bcc}}",
+        "subject": "{{config.subject}}",
+        "body": "{{config.body}}",
+        "body_format": "{{config.body_format}}",
+        "in_reply_to": "{{config.in_reply_to}}",
+        "references": "{{config.references}}",
+        "attachments": "{{config.attachments}}"
+      }
+    }
+  ],
+  "output": {
+    "render": [
+      {
+        "type": "summary",
+        "source": "step.send"
+      }
+    ]
+  }
+}

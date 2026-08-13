@@ -713,6 +713,29 @@ export interface RecipeMetadata {
   variant_group?: string;
   tags?: string[];
   fork_of?: { recipe_id: string; author: string; version: number };
+  /** D-234 § 234.3 — WHERE AN OWNER GOES TO ACT ON WHAT THIS RECIPE PRODUCED.
+   *  A bare `recipe_id` on this same server, never a URL.
+   *
+   *  ⛔⛔ A RECIPE CANNOT BUILD ITS OWN DEEP LINK, AND SHOULD NOT TRY. Every
+   *  channel that carries a notification's `link_url` needs an ABSOLUTE url —
+   *  `email` appends it raw, `remote` (Slack / Telegram) passes it through, and
+   *  the ask landing runs it through `safeHttpUrl`, which refuses a bare
+   *  `#recipes/…`. The only public base URL is a BOOT-TIME fact
+   *  (`RECUED_PUBLIC_BASE_URL`, the same one `askAnswerLink` is built from), and
+   *  `context.server.name` is a DISPLAY LABEL, not a hostname. So a recipe that
+   *  authored a link would emit one that resolves for nobody.
+   *
+   *  🔑 The recipe therefore names a DESTINATION and the host resolves it
+   *  (`ownerSurfaceLink`). The split is the point: the recipe knows which surface
+   *  reads its output, the host knows where this server lives, and neither has to
+   *  learn the other's fact.
+   *
+   *  ⚠ Its reason for existing is that some runs are triggered by somebody else
+   *  — a peer, a schedule, a webhook — so their output is never in front of the
+   *  owner. `output.render` is NOT persisted (the audit row keeps only a capped
+   *  `output_string`), so there is no run to link to; what an owner can be sent
+   *  to is a recipe they RUN, which produces the content fresh. */
+  owner_surface?: string;
   /** Long-form documentation in Markdown. Rendered on the marketplace
    *  detail page. Max 10,000 characters. Optional — description is
    *  the card/search preview, readme is the detail page explainer. */

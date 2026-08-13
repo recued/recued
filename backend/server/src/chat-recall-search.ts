@@ -451,6 +451,3 @@ export const createRecallSearchBackend = (
   };
 };
 
-export const _testing = {
-  normalizeSearchText,
-};

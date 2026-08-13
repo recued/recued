@@ -62,7 +62,8 @@ export const DISPATCH_ROLES = [
   // inventory roles it returns a raw row SET (the contract definition keyed by
   // contract_id) rather than a merged policy; the use-resolution slice reads the
   // row to gate active/expired/revoked + decrement uses. (`connection_lifecycle`
-  // for the still-unbuilt `connection_record` entry is added by that slice.)
+  // is NOT coming — `connection_record` was ruled won't-do 2026-08-11; see the
+  // D-166 amendment in the decisions log and the header note below.)
   'contract_lifecycle',
   // D-177 N.13 (P6b) — `delegation_rule_suggestion` rows: the staged-trust
   // suggestion inventory the housekeeping learner upserts + the P6c
@@ -1138,10 +1139,47 @@ const COMPOSITE_KEYS: Readonly<Record<string, CompositeKeySchema>> = {
  *  runtime (the store seeds it; the gateway + dispatcher read it). Holds D-165's 5
  *  composite_keys + value_shapes AND D-166's cross-spec entries as they land
  *  (per the file header, D-166 extends THIS file rather than a sibling registry —
- *  every consumer already reads `D165_CONTRACT_SCHEMA`). D-166 P2 adds
- *  `policy_matrix` (+ `policy_matrix_cell`); `connection_record` / `preflight_state`
- *  / `contract_definition` remain unbuilt. The export name is kept for stability
- *  even though it now carries D-166 entries too. */
+ *  every consumer already reads `D165_CONTRACT_SCHEMA`).
+ *
+ *  ⛔⛔ OF D-166's FOUR CROSS-SPEC ENTRIES, ONLY `contract_definition` IS LIVE.
+ *  Grep `COMPOSITE_KEYS` below and count — the other three are absent, each for a
+ *  different reason, and D-166's own status line ("substantially implemented …
+ *  still unbuilt: connection_record and preflight_state") is wrong about two of
+ *  them. Do not read that line as current:
+ *    - `policy_matrix` (+ `policy_matrix_cell`) — BUILT by D-166 P2, then REMOVED.
+ *      "The matrix is gone" (`policy-enforcement.ts`); its per-cell `approval_tier`
+ *      / `allowed_kinds` / `allowed_risk_tiers` / `denied_ingredient_ids` went with
+ *      it, `policy_matrix_denied` → `op_risk_denied`. Surviving mentions here are
+ *      historical precedent, not a live entry.
+ *    - `preflight_state` — DROPPED by D-177 § N.8, and for a correctness reason,
+ *      not a scheduling one. It placed per-call approval state at priority 50 under
+ *      `stricter_wins` in `approval_composition`; on that lattice
+ *      (`never < ask < always < approval_required < deny`, stricter-HIGH wins) an
+ *      approval row can only ever tighten — so 🔑 APPROVALS COULD NOT APPROVE.
+ *      D-177's gate-consumed grants are the corrected successor.
+ *    - `connection_record` — RULED WON'T-DO 2026-08-11; see below.
+ *
+ *  ⛔ `connection_record` is NOT unbuilt-pending — it is RULED WON'T-DO
+ *  (2026-08-11; D-166 amendment in the decisions log). Its whole rationale was
+ *  `sync_transport: 'pair'`, and `sync_transport` was never added to this file:
+ *  D-168 retired SYNC_OBJECTS and pointed at a successor nobody wrote. Meanwhile
+ *  the sync it was to preserve already happens — clients pull
+ *  `collection.connection.list` and react to `recipe_runnability_changed`. Moving
+ *  1,086 lines of AEAD-encrypted credential storage here would buy a policy field
+ *  that does not exist, for sync that already works. ⚠ Do NOT add `sync_transport`
+ *  on its own either: nothing would consume it, and a policy knob with no
+ *  enforcement point reads as a control while being decoration.
+ *
+ *  🔑 The pattern across all three, worth carrying: a `contract.*` entry earns its
+ *  place by what CONSUMES it, never by what it tidies. `policy_matrix` lost its
+ *  only projection producer and went with it; `preflight_state` would have merged
+ *  per-call execution state (a `Checkpoint` — `run_id`, recipe re-instantiation, a
+ *  boot sweep over `awaiting_approval` anchors) through a POLICY lattice that can
+ *  only tighten; `connection_record` was pure relocation for a sync field nobody
+ *  wrote. Only `contract_definition` had a consumer that needed it.
+ *
+ *  The export name is kept for stability even though it now carries D-166
+ *  entries too. */
 export const D165_CONTRACT_SCHEMA: ContractSchemaRegistry = {
   composite_keys: COMPOSITE_KEYS,
   value_shapes: VALUE_SHAPES,

@@ -30,8 +30,25 @@ export const PAIRING_CODE_REGEX = /^[2-9A-HJ-NP-Za-km-z]{8}$/;
 // D-121 Phase 6 — paired-client lifecycle constants
 // ────────────────────────────────────────────────────────────────
 
-/** Default broadcast subscription set for newly-connected paired
- *  clients. Listed alphabetically for diffability. */
+/** The catch-all paired-client subscription CONCEPT — every bus kind, listed
+ *  alphabetically for diffability. Pinned equal to `ALL_BROADCAST_EVENT_KINDS`
+ *  by `apps/webclient/src/__tests__/subscriber.test.ts`, so the two cannot
+ *  drift.
+ *
+ *  ⚠ NO CLIENT SUBSCRIBES TO THIS, and that is correct, not a gap. Each surface
+ *  names its own set sized to its live UI consumers — `WEBCLIENT_DEFAULT_
+ *  SUBSCRIPTIONS` (54) and `BRIDGE_DEFAULT_SUBSCRIPTIONS` (5, the Bridge being
+ *  a deliberately narrow DOM + notification surface). The zero-consumer export
+ *  audit reports this constant for exactly that reason; it is answered here
+ *  rather than re-investigated. Blanket-subscribing a client to every kind
+ *  would hand it traffic it has no listener for.
+ *
+ *  ⛔ THE COROLLARY THAT COST TIME: the server fans only the kinds a client
+ *  NAMES, so a handler for an unnamed kind is dead on the wire — no error, no
+ *  event, just a branch that never runs. `chat.data_diagnosis_resolved` was
+ *  handled by the webclient reducer from 2026-07-24 and unsubscribed until
+ *  2026-08-11. Adding a broadcast handler is not done until the kind is in that
+ *  client's list. */
 export const DEFAULT_SUBSCRIPTIONS: BroadcastEventKind[] = [
   'approval',
   // Reactive-substrate slice 1 — automation rule mutations (trigger

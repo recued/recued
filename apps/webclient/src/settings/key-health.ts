@@ -46,8 +46,15 @@ const sortIndex = (status: 'healthy' | 'warning' | 'overdue'): number => {
 
 /** Build the rendered rows from the passport's projection. The
  *  passport carries the per-class entries verbatim — this function
- *  flattens into a typed array + sorts by status. */
-export const buildKeyHealthRows = (bundle: KeyHealthBundle): KeyHealthRow[] => {
+ *  flattens into a typed array + sorts by status.
+ *
+ *  ⚠ TAKES A `Partial<>` BECAUSE IT GENUINELY TOLERATES ONE. It walks
+ *  `Object.entries` and skips anything that is not a well-formed entry, so a
+ *  bundle carrying one class renders one row. Declaring the total
+ *  `KeyHealthBundle` forced every caller that had less — including the tests
+ *  that pin exactly this behaviour — to assert a complete bundle it did not
+ *  have. The renderer's tolerance is the contract; say so. */
+export const buildKeyHealthRows = (bundle: Partial<KeyHealthBundle>): KeyHealthRow[] => {
   const rows: KeyHealthRow[] = [];
   for (const [key_class, entry] of Object.entries(bundle) as [KeyClass, unknown][]) {
     if (!isHealthEntry(entry)) continue;

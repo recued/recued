@@ -35,6 +35,10 @@ import type {
   MailSendAuditDetail,
 } from '@recued/contracts';
 import { MAIL_SEND_AUDIT_RECIPIENT_REDACTION_THRESHOLD } from '@recued/contracts';
+import {
+  MAIL_SEND_ATTACHMENT_MAX_BYTES,
+  MAIL_SEND_ATTACHMENT_OVERSIZE_WARNING,
+} from '@recued/contracts';
 import { isMailReconciliationId } from '@recued/contracts';
 import type { WarehouseEventBus } from '@recued/warehouse-events';
 import { IngredientError } from '@recued/ingredients';
@@ -172,25 +176,13 @@ export interface CreateMailCollectionOptions {
 const recordIdFor = (sourceId: string): string =>
   `mail:${createHash('sha256').update(sourceId).digest('hex').slice(0, 32)}`;
 
-/** D-172 P2 — Half-A per-attachment byte cap. There is no Recued byte
- *  ceiling (D-172 Resolved Q5) — the real constraint is the provider's
- *  input window — but the three providers' *inline* attachment paths
- *  differ (Gmail `raw` tolerates tens of MB; Graph's
- *  `fileAttachment.contentBytes` inline path caps at ~3 MB before it
- *  needs an upload session; SMTP varies by host). Half A ships a single
- *  conservative cap pegged to the smallest provider inline window so a
- *  too-large file surfaces a WARNING on the send (via
- *  `SentMessageMeta.warnings[]`) and is OMITTED from that provider's
- *  payload — never silently dropped without a trace (I-6). Per-modality
- *  / per-provider sizing (downscale, upload-session, chunking) is Half
- *  B. 3 MB raw bytes ≈ 4 MB base64-on-the-wire. */
-export const MAIL_SEND_ATTACHMENT_MAX_BYTES = 3 * 1024 * 1024;
-
-/** D-172 P2 — non-fatal warning code attached to `SentMessageMeta`
- *  when an attachment exceeds `MAIL_SEND_ATTACHMENT_MAX_BYTES` and is
- *  dropped from the outbound payload. Surfaced on the `mail_send` audit
- *  row + the rpc response `warnings[]` so the user sees the omission. */
-export const MAIL_SEND_ATTACHMENT_OVERSIZE_WARNING = 'MAIL_SEND_ATTACHMENT_OVERSIZE' as const;
+/** ⚠ BOTH CONSTANTS MOVED TO `@recued/contracts` (`packages/contracts/src/mail.ts`),
+ *  where their rationale now lives in full. The compose UI needs the cap to mark
+ *  an over-cap file before send, and `packages/` may not import `backend/`.
+ *  Re-exported here because this module was their home and their importers
+ *  (the collection tests, the SMTP drive) name them from here — ONE definition,
+ *  aliased, never copied. */
+export { MAIL_SEND_ATTACHMENT_MAX_BYTES, MAIL_SEND_ATTACHMENT_OVERSIZE_WARNING };
 
 const pickPrimaryFolder = (folderOrLabel: string, labels: string[] = []): string => {
   // Gmail: the first label in a deterministic priority order so

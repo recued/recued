@@ -426,6 +426,26 @@ const ROUTE_LANDING_POLICIES: Record<WebclientRouteId, RouteLandingPolicy> = {
       heading('data-recued-chat-route-heading'),
     ],
   },
+  // D-145 PA7 / D-172 P2 — the compose host. The landing targets are the
+  // Compose button and the heading; the dialog itself is transient and is not
+  // a landing target (recovering INTO a half-written draft would present a
+  // message the person did not just write as one they were about to send).
+  mail: {
+    choose_again: [
+      control('data-recued-mail-compose'),
+      heading('data-recued-mail-route'),
+    ],
+    continue: [
+      control('data-recued-mail-compose'),
+      heading('data-recued-mail-route'),
+    ],
+    review: [
+      self('data-recued-mail-empty'),
+      alertTarget,
+      statusTarget,
+      heading('data-recued-mail-route'),
+    ],
+  },
 };
 
 /**
@@ -543,6 +563,10 @@ const ROUTE_LANDING_INVALIDATIONS: Record<
     invalidation('data-recued-chat-route-plan-target-missing'),
     invalidation('data-recued-chat-route-history-draft-guard'),
   ],
+  // A mail route with no send-capable account is a settled condition that
+  // needs the person's attention — the Compose button is disabled and the
+  // reason is on screen — so it promotes Continue / Choose again to Review.
+  mail: [invalidation('data-recued-mail-empty')],
 };
 
 const RECOVERY_INTENT_OBSERVED_ROUTE_ATTRIBUTES = [

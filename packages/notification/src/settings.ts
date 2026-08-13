@@ -36,6 +36,7 @@
  *        § N.5 / N.6 / A.5.
  */
 
+import { totalRecord } from '@recued/contracts';
 import type { Collection } from '@recued/storage';
 import {
   CHANNEL_ROLES,
@@ -72,11 +73,11 @@ export const NOTIFICATION_SETTINGS_KEY = 'notification_settings';
  *  (each declared chat transport + email), built off the registry so a new
  *  transport defaults correctly (opt-in, TR-8) with no edit here. */
 const defaultChannelModes = (): Record<NotificationCredentialChannel, ChannelModeSettings> => {
-  const modes = {} as Record<NotificationCredentialChannel, ChannelModeSettings>;
-  for (const channel of NOTIFICATION_CREDENTIAL_CHANNELS) {
-    modes[channel] = { notification: false, approval: false, messenger: false };
-  }
-  return modes;
+  return totalRecord(NOTIFICATION_CREDENTIAL_CHANNELS, () => ({
+    notification: false,
+    approval: false,
+    messenger: false,
+  }));
 };
 
 export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
@@ -102,11 +103,8 @@ export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
 const cloneChannelModes = (
   stored: Partial<Record<NotificationCredentialChannel, ChannelModeSettings>>,
 ): Record<NotificationCredentialChannel, ChannelModeSettings> => {
-  const modes = {} as Record<NotificationCredentialChannel, ChannelModeSettings>;
-  for (const channel of NOTIFICATION_CREDENTIAL_CHANNELS) {
-    modes[channel] = cloneMode(stored[channel] ?? DEFAULT_NOTIFICATION_SETTINGS[channel]);
-  }
-  return modes;
+  return totalRecord(NOTIFICATION_CREDENTIAL_CHANNELS, (channel) =>
+    cloneMode(stored[channel] ?? DEFAULT_NOTIFICATION_SETTINGS[channel]));
 };
 
 /** THE THREE AXES — eligibility = "does the channel SUPPORT it" AND "has the owner
@@ -550,8 +548,8 @@ const CHANNEL_CAPABILITY_TABLE: Readonly<Record<ChannelName, ChannelCapability>>
   // construction — which is exactly what the D-163 ratchet asserts. A future
   // non-interactive transport would need a declared capability facet; none exists,
   // so none is invented here.
-  ...Object.fromEntries(MESSENGER_VENDOR_SLUGS.map((vendor) => [vendor, 'inline'])),
-} as Readonly<Record<ChannelName, ChannelCapability>>;
+  ...totalRecord(MESSENGER_VENDOR_SLUGS, (): ChannelCapability => 'inline'),
+};
 
 /** Per-channel install / connect CTA URL builder. Bridge points at its
  *  install guide; the credential-backed channels return `undefined`

@@ -30,14 +30,78 @@ export interface SearchResult {
   rank: number;
 }
 
-export const createFtsTable = (db: Database.Database, name: string): void => {
+export interface CreateFtsTableOptions {
+  /** FTS5 `tokenize=` argument list, e.g. `porter unicode61 remove_diacritics 2`.
+   *  Omit for FTS5's default (`unicode61`, non-stemming) — the shape every index
+   *  in this codebase was built with, so omitting it changes nothing.
+   *  ⛔ Interpolated into DDL. Validated to a conservative alphabet; never pass
+   *  user input. */
+  tokenizer?: string;
+}
+
+export interface CreateFtsTableResult {
+  /** True when an index existed with a DIFFERENT declared tokenizer and was
+   *  therefore dropped and recreated empty. **The caller owes a full reindex.**
+   *  A caller that ignores this silently serves an empty index. */
+  migrated: boolean;
+}
+
+/** Create the index — MIGRATING it when its declared tokenizer has changed.
+ *
+ *  ⛔⛔ THE MIGRATION IS NOT OPTIONAL, and this was verified rather than assumed:
+ *  `CREATE VIRTUAL TABLE IF NOT EXISTS` is a NO-OP against an existing table, so
+ *  re-running it with a new `tokenize=` leaves `sqlite_master.sql` still saying
+ *  the old one. Without the drop below, changing a tokenizer would take effect
+ *  on FRESH installs only and be inert on every server that already has the
+ *  index — built, typed, tested and unreachable. */
+export const createFtsTable = (
+  db: Database.Database,
+  name: string,
+  options: CreateFtsTableOptions = {},
+): CreateFtsTableResult => {
+  // Validate BEFORE any DDL, so a bad tokenizer can never drop a live index.
+  const clause = tokenizeClause(options.tokenizer);
+  const declared = declaredTableSql(db, name);
+  const migrated = declared !== null && !declaresTokenizer(declared, clause);
+  if (migrated) dropFtsTable(db, name);
   // FTS5 with default (non-contentless) storage so `key` round-trips
   // back from queries. The blob_text column is the whole JSON blob,
   // untokenized-shaped — FTS5 handles tokenization + inverted index.
   db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS ${escapeIdent(name)}
-    USING fts5(key UNINDEXED, blob_text)
+    USING fts5(key UNINDEXED, blob_text${clause})
   `);
+  return { migrated };
+};
+
+/** The `CREATE` statement SQLite recorded for `name`, verbatim — null when the
+ *  table does not exist. */
+const declaredTableSql = (db: Database.Database, name: string): string | null => {
+  const row = db
+    .prepare(`SELECT sql FROM sqlite_master WHERE name = ?`)
+    .get(name) as { sql: string | null } | undefined;
+  return row?.sql ?? null;
+};
+
+/** Does an existing declaration already carry exactly the tokenizer we would
+ *  emit? Both arms fail SAFE — an unrecognised declaration reads as a mismatch
+ *  and costs one rebuild, never a silently-stale tokenizer. The clause is
+ *  compared against the SAME string `createFtsTable` emits, so the two cannot
+ *  drift into a rebuild-on-every-boot loop. */
+const declaresTokenizer = (declaredSql: string, clause: string): boolean =>
+  clause === '' ? !/\btokenize\b/i.test(declaredSql) : declaredSql.includes(clause);
+
+/** FTS5 tokenizer arg lists are space-separated bare words (`porter unicode61
+ *  remove_diacritics 2`). Anything else — quotes above all — is rejected rather
+ *  than escaped: this string is interpolated into DDL. */
+const TOKENIZER_PATTERN = /^[A-Za-z0-9_]+( [A-Za-z0-9_]+)*$/;
+
+const tokenizeClause = (tokenizer: string | undefined): string => {
+  if (tokenizer === undefined) return '';
+  if (!TOKENIZER_PATTERN.test(tokenizer)) {
+    throw new Error(`@recued/fts: invalid tokenizer '${tokenizer}'`);
+  }
+  return `, tokenize='${tokenizer}'`;
 };
 
 export const dropFtsTable = (db: Database.Database, name: string): void => {
@@ -141,14 +205,18 @@ const isFtsQueryError = (err: unknown): boolean =>
   err instanceof Error && /fts5:/i.test(err.message);
 
 /** Admin-only: drop the index and rebuild from a caller-supplied
- *  reindexer. Used during schema evolution. */
+ *  reindexer. Used during schema evolution.
+ *  ⚠ Pass the SAME `options` the index was created with — omitting them on a
+ *  stemmed index silently downgrades it back to the default tokenizer, and the
+ *  rebuild makes that look like a deliberate refresh. */
 export const rebuildIndex = (
   db: Database.Database,
   name: string,
   reindex: () => void,
+  options: CreateFtsTableOptions = {},
 ): void => {
   dropFtsTable(db, name);
-  createFtsTable(db, name);
+  createFtsTable(db, name, options);
   reindex();
 };
 
@@ -168,18 +236,120 @@ const escapeIdent = (name: string): string => {
 export const escapeLike = (literal: string): string =>
   literal.replace(/[\\%_]/g, (c) => `\\${c}`);
 
+/** The Unicode word tokens of a raw query, each optionally carrying a trailing
+ *  `*` prefix operator. */
+const wordTokens = (raw: string): string[] => raw.match(/[\p{L}\p{N}]+\*?/gu) ?? [];
+
+/** Quote one token as an FTS5 phrase literal. The stem stays quoted even for a
+ *  prefix token (`"OR"*`) so a reserved-word stem can't be reinterpreted as an
+ *  operator. */
+const quoteToken = (t: string): string =>
+  t.endsWith('*') ? `"${t.slice(0, -1)}"*` : `"${t}"`;
+
 /** Reduce an arbitrary user string to a safe FTS5 MATCH expression: the
  *  Unicode word tokens (each optionally carrying a trailing `*` prefix
  *  operator) quoted as phrase literals and AND-joined. Neutralizes
  *  `. : @ - ( ) ,` and bare AND/OR/NOT/NEAR that would otherwise raise
- *  `fts5: syntax error`. The stem stays quoted even for a prefix token
- *  (`"OR"*`) so a reserved-word stem can't be reinterpreted as an operator.
+ *  `fts5: syntax error`.
  *  Returns null when the string has no word tokens (all punctuation) — the
  *  caller then yields no matches rather than an invalid empty MATCH. */
 export const toFtsMatch = (raw: string): string | null => {
-  const tokens = raw.match(/[\p{L}\p{N}]+\*?/gu);
-  if (!tokens || tokens.length === 0) return null;
-  return tokens
-    .map((t) => (t.endsWith('*') ? `"${t.slice(0, -1)}"*` : `"${t}"`))
-    .join(' ');
+  const tokens = wordTokens(raw);
+  if (tokens.length === 0) return null;
+  return tokens.map(quoteToken).join(' ');
 };
+
+/** English function words that carry no retrieval signal in a natural-language
+ *  question. Consulted ONLY by the relaxation rungs below — never by
+ *  `toFtsMatch`, so the exact rung still demands every word the caller typed.
+ *
+ *  ⛔ NEGATIONS ARE DELIBERATELY ABSENT (`not` / `no` / `never` / `without` /
+ *  `nothing`). They look like function words and are on most published stopword
+ *  lists, but they invert the sentence around them: drop `not` from "how to not
+ *  delete a record" and the query relaxes into its own opposite. A word belongs
+ *  here only if removing it cannot change WHICH document is the right answer. */
+const FTS_STOPWORDS: ReadonlySet<string> = new Set([
+  'a', 'about', 'am', 'an', 'and', 'any', 'are', 'as', 'at', 'be', 'been',
+  'being', 'but', 'by', 'can', 'could', 'did', 'do', 'does', 'for', 'from',
+  'had', 'has', 'have', 'he', 'her', 'hers', 'him', 'his', 'how', 'i', 'if',
+  'in', 'into', 'is', 'it', 'its', 'may', 'me', 'might', 'must', 'my', 'of',
+  'on', 'or', 'our', 'ours', 'please', 'shall', 'she', 'should', 'so', 'than',
+  'that', 'the', 'their', 'theirs', 'them', 'then', 'there', 'these', 'they',
+  'this', 'those', 'to', 'us', 'was', 'were', 'what', 'when', 'where', 'which',
+  'while', 'who', 'whom', 'whose', 'will', 'with', 'would', 'you', 'your',
+  'yours',
+]);
+
+/** A query's word tokens, lowercased with any trailing `*` stripped, split into
+ *  every token and the CONTENT tokens (stopwords removed). For callers matching
+ *  against raw text rather than building an FTS5 expression — they get the same
+ *  relaxation vocabulary `toFtsMatchLadder` uses. */
+export interface FtsQueryTokens {
+  readonly all: readonly string[];
+  readonly content: readonly string[];
+}
+
+export const tokenizeFtsQuery = (raw: string): FtsQueryTokens => {
+  const all = wordTokens(raw).map((t) => t.replace(/\*$/, '').toLowerCase());
+  return { all, content: all.filter((t) => !FTS_STOPWORDS.has(t)) };
+};
+
+/** Ordered RELAXATION LADDER for one query — the MATCH expressions to try in
+ *  turn, most precise first. The caller runs each until one returns rows.
+ *
+ *  ⚠ WHY THIS EXISTS. FTS5 joins bare terms with an implicit **AND**, and
+ *  `toFtsMatch` emits every word the caller typed — so a whole natural-language
+ *  question, which is how an agent actually queries a knowledge base, demands
+ *  that one document contain "what", "is" and "your" as well as "refund" and
+ *  "policy". Measured against a 3-entry Q&A pool: `refund policy` hit the right
+ *  entry, `What is your refund policy?` returned ZERO.
+ *
+ *  The rungs:
+ *    1. AND over every token — today's expression, unchanged and always first,
+ *       so any query that already matched keeps its exact result set.
+ *    2. AND over the CONTENT tokens — drops function words and nothing else.
+ *       Still a conjunction, so it buys recall without buying noise. This is
+ *       the rung that answers the question above.
+ *    3. OR over the content tokens — bm25 sorts a document matching more (and
+ *       rarer) terms first. The last resort before an empty answer.
+ *
+ *  A rung that would duplicate an earlier one is omitted, and a query of
+ *  nothing BUT stopwords gets rung 1 alone: "what is it" carries no retrieval
+ *  signal, and OR-ing stopwords would return the whole corpus — worse than
+ *  returning nothing. An empty array means no word tokens at all (the
+ *  `toFtsMatch`-returns-null case); the caller yields no matches. */
+export const toFtsMatchLadder = (raw: string): FtsMatchLadderRung[] => {
+  const tokens = wordTokens(raw);
+  if (tokens.length === 0) return [];
+  const all = tokens.map(quoteToken);
+  const content = tokens
+    .filter((t) => !FTS_STOPWORDS.has(t.replace(/\*$/, '').toLowerCase()))
+    .map(quoteToken);
+
+  const ladder: FtsMatchLadderRung[] = [{ kind: 'exact', match: all.join(' ') }];
+  if (content.length > 0 && content.length < all.length) {
+    ladder.push({ kind: 'relaxed', match: content.join(' ') });
+  }
+  if (content.length > 1) ladder.push({ kind: 'loose', match: content.join(' OR ') });
+  return ladder;
+};
+
+/** How much relaxation a rung applied — the retrieval's own precision signal.
+ *
+ *    exact    every word the caller typed is present
+ *    relaxed  every CONTENT word is present; only function words were dropped
+ *    loose    no entry had all the content words; these merely share some
+ *
+ *  ⛔ EACH RUNG CARRIES ITS OWN KIND rather than the caller inferring one from
+ *  the array index, because rungs 2 and 3 are INDEPENDENTLY conditional:
+ *  `refund policy` (no function words to drop) yields `[exact, loose]`, so
+ *  index 1 is `loose`; `what is the refund` (one content word, no OR rung)
+ *  yields `[exact, relaxed]`, so index 1 is `relaxed`. Indexing would report
+ *  the opposite of the truth on one of those two shapes. */
+export type FtsMatchRung = 'exact' | 'relaxed' | 'loose';
+
+export interface FtsMatchLadderRung {
+  readonly kind: FtsMatchRung;
+  /** The FTS5 MATCH expression to run for this rung. */
+  readonly match: string;
+}

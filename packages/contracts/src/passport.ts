@@ -26,7 +26,9 @@ import type {
   PathRole,
   PublicMcpAcknowledgement,
 } from './network.js';
+import { KEY_CLASSES } from './keys.js';
 import type { KeyClass, KeyHealthBundle } from './keys.js';
+import { totalRecord } from './total-record.js';
 import type { ReceptionEndpointKind } from './reception.js';
 
 /** D-148 § A.9 — closed list of passport export profiles. */
@@ -409,10 +411,13 @@ export const projectServerPassport = (
     backup_status: full.recovery.backup_status,
     filevault_recovery_key_status: full.recovery.filevault_recovery_key_status,
   };
-  const key_health = {} as KeyHealthBundleRedacted;
-  for (const cls of Object.keys(full.key_health) as Array<keyof KeyHealthBundle>) {
-    key_health[cls] = { status: full.key_health[cls].status };
-  }
+  // Walks KEY_CLASSES rather than the input's own keys: `KeyHealthBundle` is
+  // total by type AND by production (`loadKeyHealth` returns all seven), so the
+  // redacted projection is total too — no `{} as KeyHealthBundleRedacted`
+  // asserting keys nobody filled.
+  const key_health = totalRecord(KEY_CLASSES, (cls) => ({
+    status: full.key_health[cls].status,
+  }));
   const projection: Omit<ServerPassportSupportRedacted, 'signature'> = {
     passport_version: full.passport_version,
     passport_id: full.passport_id,

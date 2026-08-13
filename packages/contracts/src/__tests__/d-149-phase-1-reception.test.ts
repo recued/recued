@@ -36,6 +36,8 @@ import {
   type ReachabilityPathEntry,
   type ReachabilityReceptionSpecific,
   type ReachabilityRecommendationCode,
+  KEY_CLASSES,
+  totalRecord,
 } from '../index.js';
 
 describe('D-149 P1 — RECEPTION_ENDPOINT_KINDS closed list (§ N.1)', () => {
@@ -225,7 +227,12 @@ const sample_passport_with_reception_extras = (): ServerPassport => ({
     backup_status: 'configured',
     filevault_recovery_key_status: 'present',
   },
-  key_health: {} as ServerPassport['key_health'],
+  // ⛔ NOT `{} as ServerPassport['key_health']`. That cast asserted a bundle with
+  // EVERY key class while supplying none, so any consumer that walks KEY_CLASSES
+  // crashed on this fixture — which is exactly what happened when the redacted
+  // projection was converted to a total build. Production's `loadKeyHealth`
+  // returns all seven; a fixture that claims the type owes the same.
+  key_health: totalRecord(KEY_CLASSES, () => ({ status: 'healthy' as const })),
   signature: 'SIG',
 });
 

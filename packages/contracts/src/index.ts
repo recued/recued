@@ -1385,6 +1385,8 @@ export {
   collectionGrantEntry,
   topicGrantEntry,
   opGrantEntry,
+  peerLabelGrantEntry,
+  PEER_LABEL_GRANT_PREFIX,
   KERNEL_GRANT_PREFIX,
   PRIMITIVE_GRANT_PREFIX,
   primitiveGrantEntry,
@@ -1696,6 +1698,7 @@ export {
   isCommit,
   RUN_ANCHOR_STATUSES,
   isRunAnchorStatus,
+  isHeldRunAnchorStatus,
   RUN_DEGRADATIONS,
   isRunDegradation,
 } from './commits.js';
@@ -2332,6 +2335,7 @@ export {
   connectionCredentialRejectionCorrection,
   connectionCredentialRejectionTriage,
   // D-177 P2b — kernel MCP-tool dispatch surfaces (chat Tier-3 routing).
+  CONNECTION_DIRECT_SLUG,
   CONNECTION_MCP_READ_SLUG,
   CONNECTION_MCP_WRITE_SLUG,
   NOTIFICATION_SUBTYPES,
@@ -3199,6 +3203,10 @@ export {
   MAIL_MESSAGE_REF_FILE,
   MAIL_MESSAGE_REF_MESSAGE,
   MAIL_MESSAGE_REF_SOURCE,
+  // D-172 P2 — the send-side attachment cap, shared with the compose UI so an
+  // over-cap file is marked before send rather than warned about after.
+  MAIL_SEND_ATTACHMENT_MAX_BYTES,
+  MAIL_SEND_ATTACHMENT_OVERSIZE_WARNING,
 } from './mail.js';
 export type {
   MailSendAuditDetail,
@@ -3417,6 +3425,11 @@ export type {
   LocalServerUrl,
   NetworkLocalUrlsResponse,
 } from './network.js';
+
+// Total-record builder — replaces the `{} as Record<Union, V>` accumulator that
+// silenced the missing-key check at eight sites. See the module for why it is a
+// proof rather than a tidier assertion.
+export { totalRecord } from './total-record.js';
 
 // D-148 § A.11 P7 — rotation + exposure-changed event substrate.
 export {
@@ -4882,10 +4895,48 @@ export {
 } from './source-primitive.js';
 export type { SourceRegistration, SourceTopTierKind, SourceKind, SourceSyncPosture } from './source-primitive.js';
 export type { RemoteFailureKind } from './source-primitive.js';
+// D-234 § 234.4 — the remote hold: asking a peer's OWNER a question.
+export {
+  PEER_ANSWER_REQUIRED_SIGNAL_NAME,
+  PEER_ASK_BODY_MAX,
+  PEER_ASK_LABEL_MAX,
+  PEER_ASK_OPTION_ID_MAX,
+  PEER_ASK_OPTION_LABEL_MAX,
+  PEER_ASK_OPTIONS_MAX,
+  PEER_ASK_QUESTION_MAX,
+  PEER_ASK_SPEC_ERRORS,
+  PEER_ASK_TIMEOUT_ACTIONS,
+  PEER_ASK_UNANSWERED_REASONS,
+  PEER_ASK_NOTE_PROMPTS,
+  PEER_ASK_VIA,
+  PeerAnswerRequiredSignal,
+  isPeerAnswerRequiredSignal,
+  isPeerAskTimeoutAction,
+  isPeerAskUnansweredReason,
+  isPeerAskNotePrompt,
+  isPeerAskVia,
+  normalizePeerAskVia,
+  parsePeerAnswer,
+  validatePeerAskSpec,
+} from './peer-ask.js';
+export type {
+  PeerAnswer,
+  PeerAskOption,
+  PeerAskSpec,
+  PeerAskSpecError,
+  PeerAskTimeoutAction,
+  PeerAskUnansweredReason,
+  PeerAskNotePrompt,
+  PeerAskVia,
+} from './peer-ask.js';
 export type {
   ExchangeDeliveryStatus, ExchangeStatusRow, ExchangeStatusReport,
 } from './source-primitive.js';
 export { deriveExchangeStatus, planExchangeRetry } from './source-primitive.js';
+// D-234 § 234.2 — unsolicited faces the ceiling; solicited is admitted by our own
+// record of having solicited it.
+export { isSolicitedReply } from './source-primitive.js';
+export type { ExchangeCorrelationRow } from './source-primitive.js';
 export type { ExchangeRetryRow, ExchangeRetryPlan } from './source-primitive.js';
 export {
   EXCHANGE_RETRY_MAX_ATTEMPTS, EXCHANGE_RETRY_BASE_MS,
@@ -4893,6 +4944,16 @@ export {
 export { EXCHANGE_ENVELOPE_KEYS, isExchangeEnvelopeKey } from './recipe.js';
 export type { ConnectionDispatchOutcome } from './connection.js';
 export { MCP_PEER_CONTRACT_CONFIG_KEY, diagnosePeerBinding } from './connection.js';
+// D-234 § 234.1 — the receiver's ceiling. Local by construction (the sender's
+// half, `callback_op`, is already on the wire), so it does not touch the held
+// handshake.
+export {
+  MCP_PEER_ADMISSION_CONFIG_KEY,
+  EXCHANGE_ADMISSION_WILDCARD,
+  resolveExchangeAdmission,
+  peerAdmissionIdentity,
+} from './connection.js';
+export type { ExchangeAdmission, PeerAdmissionDecision } from './connection.js';
 export type { PeerBindingStatus, PeerBindingDiagnosis } from './connection.js';
 export {
   foldConnectionDispatchHealth,
@@ -5203,6 +5264,7 @@ export type {
   MailReplyContext,
   MailSenderSourceOption,
   MailComposeAiAction,
+  MailComposeAttachment,
   ComposeDispatchResult,
   ComposeMailSendPayload,
   ComposeDispatchHooks,
@@ -5211,10 +5273,13 @@ export {
   MAIL_COMPOSE_MODES,
   EMPTY_MAIL_COMPOSE_VALUES,
   MAIL_COMPOSE_AI_ACTIONS,
+  MAIL_COMPOSE_MAX_ATTACHMENTS,
   initialMailComposeState,
   openCreateComposeTransition,
   openReplyComposeTransition,
   setComposeValuesTransition,
+  addComposeAttachmentsTransition,
+  removeComposeAttachmentTransition,
   setComposeErrorsTransition,
   setComposeSubmittingTransition,
   setComposeSubmitErrorTransition,
@@ -5224,6 +5289,8 @@ export {
   addReReplyPrefix,
   deriveReplyValues,
   composeStateToSendPayload,
+  composePayloadToSendRecipeConfig,
+  SEND_COMPOSED_MAIL_RECIPE_ID,
 } from './mail-compose/index.js';
 
 // D-145 PA5 — form renderer substrate (types, generators, validators).
@@ -6079,6 +6146,11 @@ export * from './download-frame.js';
 // chunk BYTES reuse the generic `upload-frame.ts` wire format; finalize STAGES
 // the assembled archive under `exports/` for `server.archive.import`).
 export * from './archive-upload.js';
+
+// D-148 § A.2.1 follow-on — the WS bearer's `Sec-WebSocket-Protocol` carrier.
+// Three surfaces must agree byte for byte (webclient + Bridge encode, server
+// decodes) and a disagreement fails closed, so the codec is shared, not copied.
+export * from './ws-subprotocol.js';
 export type { RecipeDefinition as Recipe } from './recipe.js';
 export {
   PURE_WORKFLOW_STEP_KINDS,

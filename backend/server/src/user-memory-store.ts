@@ -36,7 +36,9 @@ import {
   indexRecord,
   deleteRecord as ftsDeleteRecord,
   search as ftsSearch,
-  toFtsMatch,
+  toFtsMatchLadder,
+  tokenizeFtsQuery,
+  type FtsMatchRung,
 } from '@recued/fts';
 import type { BlobStore } from './storage/blob-store.js';
 
@@ -203,11 +205,103 @@ export interface UserMemoryStore {
    *  a long product-knowledge doc must be findable by its contents, not just its
    *  title). Returns `memory_id`s in RELEVANCE order (FTS5 bm25 rank).
    *
-   *  NEVER throws on a junk / unparseable query — it returns `[]`. An `ok:false`
-   *  here would re-open the retry-to-timeout loop the 2026-06-09
+   *  ⚠ RELAXES a query that matches nothing exactly, via `toFtsMatchLadder`:
+   *  all-words AND → content-words AND → content-words OR, answering with the
+   *  FIRST rung that returns rows. Stopping there is what preserves precision —
+   *  an exact match is never diluted by the looser rungs beneath it, so every
+   *  query that matched before the ladder existed still returns exactly its old
+   *  result set. Only a previously-EMPTY answer can change. Without this a whole
+   *  natural-language question ("What is your refund policy?") matches nothing,
+   *  because FTS5 joins terms with an implicit AND and the entry does not
+   *  contain "what" / "is" / "your" — see the ladder's own note.
+   *
+   *  Reports WHICH rung answered (`match`) and each hit's bm25 `rank`, so the
+   *  caller can tell an exact hit from the best of a weak field. Both were
+   *  computed and discarded before — the ladder always knew, and `Promise<
+   *  string[]>` threw it away, leaving a rung-3 top-1 and a rung-1 top-1
+   *  indistinguishable to the model reading the result.
+   *
+   *  NEVER throws on a junk / unparseable query — it returns no hits. An
+   *  `ok:false` here would re-open the retry-to-timeout loop the 2026-06-09
    *  `enrichment.search` fix closed (see internal design notes);
    *  an empty result is a usable answer, an error is not. */
-  search(query: string, limit: number): Promise<string[]>;
+  search(query: string, limit: number): Promise<MemorySearchResult>;
+
+  /** RUNG 4 — nearest neighbours by MEANING, for the case the lexical ladder
+   *  cannot reach: a query sharing NO token with its answer ("How do I turn on
+   *  2FA?" against "How do I enable two-factor authentication?"), which matches
+   *  at no rung and returns `match: undefined`.
+   *
+   *  Cohort-enforced: only rows embedded with `model` are scanned, because
+   *  vectors from different models are not comparable and mixing them returns
+   *  confident nonsense rather than an error. Brute-force cosine, no ANN — the
+   *  owner pool is small, and `mcp/vector-similarity.ts` already scans this way.
+   *
+   *  Hits carry `rank = -similarity` so they share the bm25 convention (a COST,
+   *  more negative is better) and flow through the same ordering + `top_margin`
+   *  maths as every other rung. No db / no vectors ⇒ no hits. */
+  semanticSearch(
+    query: { vector: number[]; model: string },
+    limit: number,
+    threshold?: number,
+  ): MemorySearchHit[];
+
+  /** Store one entry's vector. Overwrites; no-op without a db. */
+  putVector(memory_id: string, embedding: { vector: number[]; model: string }): void;
+
+  /** How much of the pool is actually embedded, and under which cohort.
+   *
+   *  ⛔ RUNG 4 MUST CONSULT THIS BEFORE REPORTING AN EMPTY. An unembedded pool
+   *  and a pool with no semantic neighbour produce the same zero rows, and
+   *  telling the agent "nothing matches" when the truth is "nothing was ever
+   *  embedded" is the absence-reads-as-an-answer failure this codebase keeps
+   *  paying for. `model` is the dominant cohort — the one to embed queries with.
+   *
+   *  ⚠ Deliberately does NOT report pool size. The only question it answers is
+   *  "is semantic recall possible at all", and counting the pool would mean
+   *  either an async signature or a `list()` that loads every inline body — a
+   *  real cost for a field nothing needs. */
+  vectorCoverage(): { embedded: number; model?: string };
+
+  /** Embed every entry that has no current vector, oldest first, up to `limit`.
+   *  RESUMABLE by construction (it re-reads what is missing each call) so a
+   *  quota stop or a crash loses only the in-flight entry. Per-entry failures
+   *  are counted, never thrown — one bad row must not abandon the backlog. */
+  embedBacklog(
+    embed: MemoryEmbedder,
+    opts?: { limit?: number },
+  ): Promise<{ embedded: number; failed: number; remaining: number }>;
+}
+
+/** Turn text into a vector. Provider-agnostic by design: the composition root
+ *  binds it to the `ai-embed` kernel ingredient, tests bind a deterministic
+ *  fake, and an absent binding simply turns rung 4 off. */
+export type MemoryEmbedder = (
+  text: string,
+) => Promise<{ vector: number[]; model: string }>;
+
+/** One ranked recall hit. */
+export interface MemorySearchHit {
+  memory_id: string;
+  /** FTS5 bm25 `rank`. ⚠ A COST, NOT A SCORE — more negative is better, and
+   *  the list is ordered ascending. `null` on the no-db harness, which matches
+   *  by substring and cannot rank. */
+  rank: number | null;
+}
+
+/** How the hits were found. The three lexical rungs come from the FTS ladder;
+ *  `'semantic'` is rung 4 and is deliberately NOT an `FtsMatchRung` — it shares
+ *  no machinery with the ladder and lives at the memory layer, where the
+ *  vectors do. Widening `FtsMatchRung` instead would put an embedding concept
+ *  inside a package that only knows about SQLite full-text. */
+export type MemoryMatchKind = FtsMatchRung | 'semantic';
+
+export interface MemorySearchResult {
+  /** Relevance order (most relevant first). */
+  hits: MemorySearchHit[];
+  /** How the hits were found. Absent when nothing matched at any rung — there
+   *  is no match quality to report about an empty result. */
+  match?: MemoryMatchKind;
 }
 
 export interface UserMemoryStoreOptions {
@@ -220,7 +314,8 @@ export interface UserMemoryStoreOptions {
    *  server (`compose-app-context`), absent in the in-memory test harnesses.
    *  When present the store maintains an FTS5 index over `summary + body` and
    *  `search` is a real ranked match; when absent `search` degrades to a
-   *  linear substring scan (correct, unranked — the harness pool is tiny). */
+   *  linear substring scan over the same relaxation rungs (correct, unranked —
+   *  the harness pool is tiny). */
   db?: Database.Database;
 }
 
@@ -228,12 +323,117 @@ export interface UserMemoryStoreOptions {
  *  written before the index existed becomes searchable without a boot cost. */
 const USER_MEMORY_FTS_TABLE = 'user_memory_fts';
 
+/** ⚠ PORTER-STEMMED, unlike every other index in this codebase.
+ *
+ *  The pool holds owner-curated PROSE — product Q&A, policies, notes — queried
+ *  in the words a person happens to use, so `cancel` must find "cancelled" and
+ *  `billing` must find "bill". FTS5's default `unicode61` does no stemming at
+ *  all, which made those three separate, non-matching terms. Measured on a
+ *  3-entry Q&A pool, this declaration newly matches `cancel`, `cancelling`,
+ *  `cancellation`, `bill`, `issue` and `running` and LOSES nothing: stemming
+ *  merges terms, so `stem(t) === stem(q)` holds wherever `t === q` did.
+ *
+ *  `remove_diacritics 2` follows `contact-store.ts` — the other index over text
+ *  a human typed — rather than FTS5's default of 1.
+ *
+ *  ⛔ CHANGING THIS STRING RE-INDEXES EVERY POOL ON EVERY SERVER. `createFtsTable`
+ *  compares it against the recorded declaration and drops a mismatched index;
+ *  the reindex below then walks the whole pool, resolving every CAS body. That
+ *  is correct and one-time, but it is not free — do not tune it casually. */
+export const USER_MEMORY_FTS_TOKENIZER = 'porter unicode61 remove_diacritics 2';
+
+/** RUNG 4's sidecar — one embedding per entry, beside the FTS index rather than
+ *  in `data_enrichment`'s vector index.
+ *
+ *  ⚠ WHY LOCAL AND NOT AN ENRICHMENT TOPIC. `EnrichmentScope` has no `memory`
+ *  arm, and adding one means the arm across its three hand-copies, a source
+ *  walker, a registry topic and a producer — a multi-commit arc through a
+ *  closed vocabulary 46 files reference. This store already owns a sidecar of
+ *  exactly this shape (`user_memory_fts`) with create / migrate / index /
+ *  unindex / backfill machinery to be symmetric with. The Float32 packing below
+ *  is byte-identical to `data_enrichment_vector_index`'s, so promoting this to
+ *  a real enrichment topic later is a data move, not a re-encode.
+ *
+ *  `model` is stored per row and enforced at query time: cross-model vectors
+ *  are not comparable, and mixing cohorts silently returns nonsense neighbours
+ *  rather than an error. */
+const USER_MEMORY_VEC_TABLE = 'user_memory_vec';
+
+const createVectorTable = (db: Database.Database): void => {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ${USER_MEMORY_VEC_TABLE} (
+      memory_id TEXT PRIMARY KEY,
+      model     TEXT NOT NULL,
+      dims      INTEGER NOT NULL,
+      vec       BLOB NOT NULL
+    )
+  `);
+};
+
+/** Pack a `number[]` as Float32 — the same encoding the enrichment vector index
+ *  uses, so the two are interchangeable. `Float32Array.from` surfaces a
+ *  non-finite value as NaN rather than silently truncating it. */
+const packVector = (vector: number[]): Buffer => {
+  const f32 = Float32Array.from(vector);
+  return Buffer.from(f32.buffer, f32.byteOffset, f32.byteLength);
+};
+
+/** Unpack, refusing anything that is not a whole number of Float32s (corrupt,
+ *  or written by something that is not this encoder). */
+const unpackVector = (buf: Buffer): Float32Array | null => {
+  if (buf.byteLength === 0 || buf.byteLength % 4 !== 0) return null;
+  return new Float32Array(
+    buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+  );
+};
+
+/** Cosine similarity. ⚠ Computed in full rather than assuming unit vectors —
+ *  most providers normalize, `text-embedding-3-*` with a custom `dimensions`
+ *  does not, and an un-normalized pair silently ranks by magnitude instead of
+ *  direction. Dimension mismatch returns null (the cohort filter should prevent
+ *  it; this is the defensive second gate). */
+const cosine = (a: Float32Array, b: Float32Array): number | null => {
+  if (a.length !== b.length || a.length === 0) return null;
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i]! * b[i]!;
+    na += a[i]! * a[i]!;
+    nb += b[i]! * b[i]!;
+  }
+  if (na === 0 || nb === 0) return null;
+  const sim = dot / (Math.sqrt(na) * Math.sqrt(nb));
+  return Number.isFinite(sim) ? sim : null;
+};
+
 /** The searchable projection of a row: its recall line + its full body. */
 const searchableText = (summary: string | undefined, body: string | undefined): string =>
   [summary ?? '', body ?? ''].join('\n');
 
 const clampPreview = (body: string): string =>
   body.length > USER_MEMORY_PREVIEW_CHARS ? body.slice(0, USER_MEMORY_PREVIEW_CHARS) : body;
+
+/** The substring analogue of `toFtsMatchLadder`'s rungs — same relaxation, same
+ *  order, `includes` instead of FTS5. The no-db harness walks these so a test
+ *  written against it describes the store that actually ships; a harness that
+ *  relaxed differently would certify nothing about the real search path. */
+const substringLadder = (
+  query: string,
+): Array<{ kind: FtsMatchRung; matches: (text: string) => boolean }> => {
+  const { all, content } = tokenizeFtsQuery(query);
+  if (all.length === 0) return [];
+  const rungs: Array<{ kind: FtsMatchRung; matches: (text: string) => boolean }> = [
+    { kind: 'exact', matches: (text) => all.every((t) => text.includes(t)) },
+  ];
+  if (content.length > 0 && content.length < all.length) {
+    rungs.push({ kind: 'relaxed', matches: (text) => content.every((t) => text.includes(t)) });
+  }
+  if (content.length > 1) {
+    rungs.push({ kind: 'loose', matches: (text) => content.some((t) => text.includes(t)) });
+  }
+  return rungs;
+};
 
 /** Content-dedup key for imported "other" rows: sha256 over the entry's text
  *  content (summary + body). Two "other" entries with the same content dedup
@@ -263,7 +463,14 @@ export const createUserMemoryStore = (
   const now = options.now ?? ((): number => Date.now());
   const mintId = options.mintId ?? ((): string => `${USER_MEMORY_ID_PREFIX}${randomUUID()}`);
   const db = options.db;
-  if (db) createFtsTable(db, USER_MEMORY_FTS_TABLE);
+  // `migrated` = an index existed under a DIFFERENT tokenizer and was dropped.
+  // It is load-bearing, not informational — see `ensureIndexed`.
+  const migrated =
+    db !== undefined
+    && createFtsTable(db, USER_MEMORY_FTS_TABLE, {
+      tokenizer: USER_MEMORY_FTS_TOKENIZER,
+    }).migrated;
+  if (db) createVectorTable(db);
 
   /** D-230 + D-231 made the orphan check O(total memories) matter.
    *
@@ -312,25 +519,62 @@ export const createUserMemoryStore = (
   ): void => {
     if (!db) return;
     indexRecord(db, USER_MEMORY_FTS_TABLE, memory_id, searchableText(summary, body));
+    dropVector(memory_id);
   };
 
   const unindexRow = (memory_id: string): void => {
     if (!db) return;
     ftsDeleteRecord(db, USER_MEMORY_FTS_TABLE, memory_id);
+    dropVector(memory_id);
+  };
+
+  /** ⛔ ANY WRITE DROPS THE VECTOR. A summary-only patch still changes the
+   *  embedded text, and there is no cheap way to know whether the meaning
+   *  moved — so the row leaves the embedded set until the backlog re-embeds it.
+   *  ABSENT BEATS STALE: a missing vector costs one recall miss that
+   *  `vectorCoverage` can explain, while a stale one silently answers the
+   *  question the entry used to answer. */
+  const dropVector = (memory_id: string): void => {
+    if (!db) return;
+    db.prepare(`DELETE FROM ${USER_MEMORY_VEC_TABLE} WHERE memory_id = ?`).run(memory_id);
+  };
+
+  /** The no-db fallback's corpus: every row's searchable text, lowercased. Only
+   *  the harness path pays this walk — the real server has the FTS5 index. */
+  const scanCorpus = async (): Promise<Array<{ id: string; text: string }>> => {
+    const out: Array<{ id: string; text: string }> = [];
+    for (const row of await collection.list()) {
+      out.push({
+        id: row.memory_id,
+        text: searchableText(row.summary, await resolveBody(row)).toLowerCase(),
+      });
+    }
+    return out;
   };
 
   /** Lazy self-healing backfill: rows written BEFORE this index existed (every
    *  row in a pool that predates the FTS slice) are invisible to `search` until
    *  they are indexed. Rather than pay a boot-time walk, detect the empty-index-
-   *  but-non-empty-pool case on the first search and backfill once. Idempotent. */
+   *  but-non-empty-pool case on the first search and backfill once. Idempotent
+   *  (`indexRow` deletes-then-inserts), so re-indexing a live row is safe.
+   *
+   *  ⛔ A TOKENIZER MIGRATION SKIPS THE EMPTY-INDEX HEURISTIC. The `indexed > 0`
+   *  guard asks "has anything been indexed yet", which answers the pre-FTS case
+   *  but is WRONG after a migration dropped a populated index: any write landing
+   *  between construction and the first search re-populates the index with ONE
+   *  row, the guard then reads a non-empty index and returns early, and the rest
+   *  of the pool stays permanently unsearchable. A dropped index owes a FULL
+   *  rebuild regardless of what has been written since. */
   let backfilled = false;
   const ensureIndexed = async (): Promise<void> => {
     if (!db || backfilled) return;
     backfilled = true;
-    const indexed = (
-      db.prepare(`SELECT count(*) AS n FROM ${USER_MEMORY_FTS_TABLE}`).get() as { n: number }
-    ).n;
-    if (indexed > 0) return;
+    if (!migrated) {
+      const indexed = (
+        db.prepare(`SELECT count(*) AS n FROM ${USER_MEMORY_FTS_TABLE}`).get() as { n: number }
+      ).n;
+      if (indexed > 0) return;
+    }
     const rows = await collection.list();
     for (const row of rows) {
       indexRow(row.memory_id, row.summary, await resolveBody(row));
@@ -451,32 +695,132 @@ export const createUserMemoryStore = (
 
     async search(query, limit) {
       const trimmed = query.trim();
-      if (trimmed.length === 0 || limit <= 0) return [];
+      if (trimmed.length === 0 || limit <= 0) return { hits: [] };
       await ensureIndexed();
       if (db) {
-        // A junk query (only punctuation / unbalanced quotes) yields no usable
-        // FTS5 match expression → `[]`, NEVER a throw. See the interface note:
-        // an error here re-opens the agent retry loop.
-        const match = toFtsMatch(trimmed);
-        if (match === null) return [];
-        try {
-          return ftsSearch(db, USER_MEMORY_FTS_TABLE, { query: match, limit })
-            .map((hit) => hit.key);
-        } catch {
-          return []; // malformed FTS5 expression that slipped the sanitizer
+        // Answer with the FIRST rung that matches — exact before relaxed, so a
+        // precise hit is never diluted by the looser rungs below it — and
+        // report WHICH one answered.
+        //
+        // A junk query (only punctuation / unbalanced quotes) yields NO rungs →
+        // no hits, never a throw; and a rung FTS5 still refuses is skipped
+        // rather than thrown. See the interface note: an error here re-opens
+        // the agent retry loop.
+        for (const rung of toFtsMatchLadder(trimmed)) {
+          try {
+            const found = ftsSearch(db, USER_MEMORY_FTS_TABLE, { query: rung.match, limit });
+            if (found.length > 0) {
+              return {
+                hits: found.map((hit) => ({ memory_id: hit.key, rank: hit.rank })),
+                match: rung.kind,
+              };
+            }
+          } catch {
+            /* malformed FTS5 expression that slipped the builder — next rung */
+          }
+        }
+        return { hits: [] };
+      }
+      // No-db harness: the SAME rungs, matched by substring over the resolved
+      // bodies. Correct but UNRANKED (`rank: null`, insertion order) — the
+      // in-memory pool is tiny by construction, and the real server always
+      // passes `db`.
+      const corpus = await scanCorpus();
+      for (const rung of substringLadder(trimmed)) {
+        const found = corpus.filter((r) => rung.matches(r.text)).slice(0, limit);
+        if (found.length > 0) {
+          return {
+            hits: found.map((r) => ({ memory_id: r.id, rank: null })),
+            match: rung.kind,
+          };
         }
       }
-      // No-db harness: linear substring scan over the resolved bodies. Correct
-      // but UNRANKED (insertion order) — the in-memory pool is tiny by
-      // construction, and the real server always passes `db`.
-      const needle = trimmed.toLowerCase();
-      const hits: string[] = [];
-      for (const row of await collection.list()) {
-        const text = searchableText(row.summary, await resolveBody(row));
-        if (text.toLowerCase().includes(needle)) hits.push(row.memory_id);
-        if (hits.length >= limit) break;
+      return { hits: [] };
+    },
+
+    putVector(memory_id, embedding) {
+      if (!db || embedding.vector.length === 0) return;
+      db.prepare(
+        `INSERT INTO ${USER_MEMORY_VEC_TABLE} (memory_id, model, dims, vec)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(memory_id) DO UPDATE SET model = excluded.model,
+                                              dims  = excluded.dims,
+                                              vec   = excluded.vec`,
+      ).run(memory_id, embedding.model, embedding.vector.length, packVector(embedding.vector));
+    },
+
+    vectorCoverage() {
+      if (!db) return { embedded: 0 };
+      // The dominant cohort — queries must be embedded with the SAME model, so
+      // a pool split across models reports the one worth comparing against.
+      const top = db
+        .prepare(
+          `SELECT model, count(*) AS n FROM ${USER_MEMORY_VEC_TABLE}
+            GROUP BY model ORDER BY n DESC LIMIT 1`,
+        )
+        .get() as { model: string; n: number } | undefined;
+      return top === undefined ? { embedded: 0 } : { embedded: top.n, model: top.model };
+    },
+
+    semanticSearch(query, limit, threshold = 0.5) {
+      if (!db || limit <= 0 || query.vector.length === 0) return [];
+      const probe = Float32Array.from(query.vector);
+      const rows = db
+        .prepare(
+          `SELECT memory_id, vec FROM ${USER_MEMORY_VEC_TABLE}
+            WHERE model = ? AND dims = ?`,
+        )
+        .all(query.model, query.vector.length) as Array<{ memory_id: string; vec: Buffer }>;
+
+      const scored: MemorySearchHit[] = [];
+      for (const row of rows) {
+        const vec = unpackVector(row.vec);
+        if (vec === null) continue; // corrupt row — skip, never throw
+        const sim = cosine(probe, vec);
+        if (sim === null || sim < threshold) continue;
+        // Negated so `rank` keeps its bm25 meaning (a cost) and `top_margin`
+        // needs no per-rung special case.
+        scored.push({ memory_id: row.memory_id, rank: -sim });
       }
-      return hits;
+      scored.sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
+      return scored.slice(0, limit);
+    },
+
+    async embedBacklog(embed, opts = {}) {
+      if (!db) return { embedded: 0, failed: 0, remaining: 0 };
+      const limit = Math.max(1, opts.limit ?? 100);
+      const all = await collection.list();
+      const has = new Set(
+        (
+          db.prepare(`SELECT memory_id FROM ${USER_MEMORY_VEC_TABLE}`).all() as Array<{
+            memory_id: string;
+          }>
+        ).map((r) => r.memory_id),
+      );
+      // Oldest first so a repeatedly-interrupted backlog still converges
+      // instead of re-attempting the same head every run.
+      const missing = all
+        .filter((r) => !has.has(r.memory_id))
+        .sort((a, b) => a.ts - b.ts);
+
+      let embedded = 0;
+      let failed = 0;
+      for (const row of missing.slice(0, limit)) {
+        const text = searchableText(row.summary, await resolveBody(row)).trim();
+        if (text.length === 0) continue; // nothing to embed; not a failure
+        try {
+          const result = await embed(text);
+          if (result.vector.length === 0) { failed += 1; continue; }
+          this.putVector(row.memory_id, result);
+          embedded += 1;
+        } catch {
+          // Per-entry failure — quota, timeout, a body that upsets the
+          // provider. Counted and stepped over: one bad row must not abandon
+          // the backlog, and the next call retries it.
+          failed += 1;
+        }
+      }
+      return { embedded, failed, remaining: Math.max(0, missing.length - embedded) };
     },
 
     async update(memory_id, patch) {

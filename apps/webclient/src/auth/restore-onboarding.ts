@@ -105,6 +105,7 @@ import type {
   WebclientTokenStore,
 } from '../storage/token-store.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { encodeBearerSubprotocol } from '@recued/contracts';
 
 // ════════════════════════════════════════════════════════════════
 // Public state + inputs
@@ -831,12 +832,19 @@ export const createBrowserRestoreOps = (
         const current = (await env.localStore.get('server_url')) ?? serverUrl;
         const base = current.replace(/\/ws(?=$|\?)/, '/ws/archive-upload');
         const separator = base.includes('?') ? '&' : '?';
-        const url = `${base}${separator}token=${encodeURIComponent(bearer)}`;
+        // Bearer in the SUBPROTOCOL, not the URL — same carrier as the rpc
+        // socket (`realtime/browser-transport.ts` DD#1). Fixing only that one
+        // left FOUR data sockets still writing the secret into a URL; the
+        // minified bundle is what showed it (`grep -c 'token=' → 9`).
+        const url = base;
         const WsCtor = (globalThis as { WebSocket?: typeof WebSocket }).WebSocket;
         if (WsCtor === undefined) {
           throw new Error('restore-onboarding: globalThis.WebSocket unavailable');
         }
-        const sock = new WsCtor(url, WEBCLIENT_WS_SUBPROTOCOL);
+        const sock = new WsCtor(url, [
+          WEBCLIENT_WS_SUBPROTOCOL,
+          encodeBearerSubprotocol(bearer),
+        ]);
         sock.binaryType = 'arraybuffer';
         await new Promise<void>((resolve, reject) => {
           sock.addEventListener('open', () => resolve());

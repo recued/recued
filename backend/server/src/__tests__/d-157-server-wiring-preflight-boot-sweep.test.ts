@@ -90,6 +90,32 @@ afterEach(() => {
 });
 
 describe('sweepAwaitingCheckpoints', () => {
+  it('⛔ counts a PEER hold apart from terminal, and raises nothing — D-234 § 234.4', async () => {
+    // A peer hold is skipped here for a good reason — this sweep re-raises
+    // PREFLIGHT asks, and a run waiting on another server's owner has no local
+    // ask to re-raise; its answer arrives over the wire. But it is NOT terminal,
+    // and folding it into that counter makes an accumulating backlog of live
+    // conversations read as an accumulating backlog of dead rows.
+    //
+    // ⚠ The ordering is what this pins: the peer branch must precede the
+    // `!== 'awaiting_approval'` branch, or the hold is silently absorbed by it
+    // and the counter is right by accident in one direction only.
+    const log = auditLog();
+    await append(log, anchor({ commit_status: 'awaiting_peer' }));
+    const notes = notifier();
+
+    const result = await sweepAwaitingCheckpoints({
+      checkpointStore: checkpointStore([checkpoint()]),
+      auditLog: log,
+      notifier: notes,
+    });
+
+    expect(result.heldForPeer).toBe(1);
+    expect(result.terminal).toBe(0);
+    expect(result.raised).toBe(0);
+    expect(notes.ask).not.toHaveBeenCalled();
+  });
+
   it('re-raises notification.ask and pins the new ask_id', async () => {
     const log = auditLog();
     await append(log, anchor());
@@ -107,6 +133,9 @@ describe('sweepAwaitingCheckpoints', () => {
       raised: 1,
       failed: 0,
       orphaned: 0,
+      // D-234 § 234.4 — peer holds are counted apart from `terminal`; they are
+      // skipped for the same reason (nothing local to re-raise) but are LIVE.
+      heldForPeer: 0,
       terminal: 0,
       // D-210 Phase C — holds left ask-less on purpose because the owner's
       // fanout mode is 'notify'. Zero here: no mode resolver is wired, so

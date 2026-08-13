@@ -8,7 +8,7 @@
  *      × lifecycle_policy + compression_class + producer_kind +
  *      default_trust_state + default_pool_policy + valid_scopes +
  *      aggregates_from listing all per-type engagement scopes + warehouse
- *      collections (mail / calendar / memory)).
+ *      collections (mail / calendar / audit)).
  *    - Pass-4 evidence-quality consumption defaults (`body_state_acceptance`
  *      / `authorship_acceptance` / `lifecycle_state_acceptance` /
  *      `dedupe_acceptance`) declared per topic per Pass-4 P6.B requirements.
@@ -55,7 +55,7 @@ const SALESFORCE_CONTACT = 'connection.api.salesforce.contact' as const;
 const FULL_AGGREGATES_FROM = [
   'mail',
   'calendar',
-  'memory',
+  'audit',
   'connection.api.hubspot.email',
   'connection.api.hubspot.meeting',
   'connection.api.hubspot.note',
@@ -92,7 +92,7 @@ describe('D-139 P6.B — commitment_tracker topic registration', () => {
     );
     expect(def.valid_scopes).toContain('connection.api.pipedrive.person');
   });
-  it('aggregates_from enumerates mail + calendar + memory + per-type engagement scopes', () => {
+  it('aggregates_from enumerates mail + calendar + audit + per-type engagement scopes', () => {
     const def = ENRICHMENT_REGISTRY.commitment_tracker;
     expect([...(def.aggregates_from ?? [])].sort()).toEqual(
       [...FULL_AGGREGATES_FROM].sort(),

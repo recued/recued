@@ -309,11 +309,22 @@ const KIND_TITLE: Record<GrantEntryKind, string> = {
   op: 'Operations',
   collection: 'Collections',
   topic: 'Topics',
+  // D-234 § 234.4h — what this peer may ASK the owner about. Titled for the
+  // person reading it, not for the key: "questions they may ask you" is the
+  // fact, `peer.label.<label>` is the storage.
+  peer_label: 'Questions they may ask you',
 };
 
-/** Render order WITHIN each tab. Ops tab shows `op`; Entities tab shows the two
- *  read kinds (collections then topics). */
-const OPS_KINDS: readonly GrantEntryKind[] = ['op'];
+/** Render order WITHIN each tab. Ops tab shows `op` and the peer labels — both
+ *  are things this contract may DO, as opposed to data it may read; Entities tab
+ *  shows the two read kinds (collections then topics).
+ *
+ *  ⚠ THE COMPILER PUT THIS LINE HERE. `KIND_TITLE` is a `Record` over the kind
+ *  union, so adding `peer_label` failed the build until it was titled AND
+ *  placed — which is the whole reason the union is closed. A kind that compiled
+ *  without being grouped would render nowhere, and § 234.4's "a findable surface,
+ *  or standing means forgotten" would be unmet in the one place it is now met. */
+const OPS_KINDS: readonly GrantEntryKind[] = ['op', 'peer_label'];
 const ENTITIES_KINDS: readonly GrantEntryKind[] = ['collection', 'topic'];
 
 const errMessage = (err: unknown): string =>

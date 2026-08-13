@@ -31,6 +31,7 @@
 
 import {
   PATH_ROLES,
+  totalRecord,
   DEFAULT_PATH_RESOLUTION,
   EXPOSURE_PRESETS,
   applyPreset as projectPreset,
@@ -170,11 +171,10 @@ export const createInMemoryExposureStore = (
 const cloneResolution = (
   src: Record<PathRole, PathResolution>,
 ): Record<PathRole, PathResolution> => {
-  const out = {} as Record<PathRole, PathResolution>;
-  for (const role of PATH_ROLES) {
-    out[role] = { lan: src[role].lan, public: src[role].public };
-  }
-  return out;
+  return totalRecord(PATH_ROLES, (role) => ({
+    lan: src[role].lan,
+    public: src[role].public,
+  }));
 };
 
 const cloneState = (state: ExposureState): ExposureState => ({

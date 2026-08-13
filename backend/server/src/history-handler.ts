@@ -86,7 +86,7 @@ export interface HistoryDeps {
    *  `via: 'ui'` channel (the interactive inbound path) so the handler
    *  never names a channel or holds the block. Absent (partially-composed
    *  boot) → the rpc is a no-op that still resolves `{ ok: true }`. */
-  submitAnswer?: (ask_id: string, option_id: string) => Promise<void>;
+  submitAnswer?: (ask_id: string, option_id: string, note?: string) => Promise<void>;
 }
 
 /** Parse a `notification_fired` activity row's JSON `detail` into the
@@ -212,6 +212,16 @@ export const handlePendingAsks = async (
       text: p.message.text,
       options: p.options.map((o) => ({ id: o.id, label: o.label })),
       created_at: p.created_at,
+      // D-234 § 234.3 — forwarded because THIS LITERAL IS THE FILTER. Every
+      // other channel gets `link_url` off the message itself; the in-app card
+      // only ever sees what is named here.
+      ...(p.message.link_url !== undefined ? { link_url: p.message.link_url } : {}),
+      // D-234 § 234.4e — and the note prompt, for the same reason as `link_url`:
+      // this literal is the enumerating copier, so a field it does not NAME is
+      // dropped. Without it the in-app card cannot know to collect a reason, and
+      // a `'required'` ask would no-op every answer it sent.
+      ...(p.note_prompt !== undefined ? { note_prompt: p.note_prompt } : {}),
+      ...(p.body !== undefined ? { body: p.body } : {}),
     })),
   };
 };
@@ -228,7 +238,7 @@ export const handlePendingAsks = async (
  *  graceful-absent posture. */
 export const handleSubmitAnswer = async (
   deps: HistoryDeps,
-  req: { ask_id: string; option_id: string },
+  req: { ask_id: string; option_id: string; note?: string },
 ): Promise<{ ok: true }> => {
   // Defensive shape guard (Codex Slice-3 LOW ×2): only forward well-formed,
   // non-empty string ids into the block. A malformed wire payload becomes a
@@ -237,7 +247,9 @@ export const handleSubmitAnswer = async (
   // which would otherwise throw on the `.ask_id` read instead of no-op'ing.
   // Typed callers are unaffected; the block separately no-ops an unknown /
   // already-answered ask or an option it never offered.
-  const args = req as { ask_id?: unknown; option_id?: unknown } | null | undefined;
+  const args = req as {
+    ask_id?: unknown; option_id?: unknown; note?: unknown;
+  } | null | undefined;
   if (
     deps.submitAnswer &&
     args != null &&
@@ -246,7 +258,21 @@ export const handleSubmitAnswer = async (
     typeof args.option_id === 'string' &&
     args.option_id !== ''
   ) {
-    await deps.submitAnswer(args.ask_id, args.option_id);
+    // D-234 § 234.4e — the note rides through UNVALIDATED beyond its type: the
+    // BLOCK owns whether this ask invited one, the cap, and the required-ness.
+    // Re-deciding any of that here would put the rule in two places, and the wire
+    // layer cannot see `note_prompt` anyway.
+    //
+    // ⛔ OMITTED WHEN ABSENT, NEVER PASSED AS AN EXPLICIT `undefined`. Third time
+    // this exact regression has been caught in this arc (ui-shared's `onAnswer`,
+    // the Bridge's, now here): a call with a trailing `undefined` has arity 3, so
+    // every `toHaveBeenCalledWith(a, b)` in the codebase goes red — and the
+    // reason it MATTERS beyond tests is that a dep typed `(a, b) => …` may still
+    // read `arguments.length`.
+    const note = typeof args.note === 'string' && args.note !== '' ? args.note : undefined;
+    await (note === undefined
+      ? deps.submitAnswer(args.ask_id, args.option_id)
+      : deps.submitAnswer(args.ask_id, args.option_id, note));
   }
   return { ok: true };
 };

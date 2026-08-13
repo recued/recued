@@ -13,6 +13,35 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
   [
   {
     "manifest_version": 2,
+    "slug": "mail-compose-foundation",
+    "publisher": "recued-core",
+    "name": "Mail — Compose",
+    "description": "Use Mail — Compose in Recued. It carries a message you wrote in the compose window to your own enrolled mail account. Sending stops at the approval gate first, and the approval names the recipients, the subject, and every attached file.",
+    "version": 1,
+    "pre_install": true,
+    "recipes": [],
+    "requires": [
+      "install_bulk_pack"
+    ],
+    "tags": [
+      "pack:mail",
+      "mail",
+      "compose",
+      "send",
+      "foundation"
+    ],
+    "pack_kind": "app_pack",
+    "contents": [
+      {
+        "type": "recipe",
+        "slug": "send-composed-mail",
+        "version": 1,
+        "visible": false
+      }
+    ]
+  },
+  {
+    "manifest_version": 2,
     "slug": "personal-organizer-foundation",
     "publisher": "recued-core",
     "name": "Personal Organizer Foundation",
@@ -721,22 +750,22 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     ],
     "steps": [
       {
-        "id": "subject",
-        "transform": "default",
-        "value": "{{step.message.record.hot_fields.subject}}",
-        "fallback": ""
-      },
-      {
-        "id": "from_email",
-        "transform": "default",
-        "value": "{{step.message.record.hot_fields.from}}",
-        "fallback": ""
-      },
-      {
-        "id": "thread_id",
-        "transform": "default",
-        "value": "{{step.message.record.hot_fields.thread_id}}",
-        "fallback": ""
+        "id": "defaults",
+        "transform": "defaults",
+        "fields": {
+          "subject": {
+            "value": "{{step.message.record.hot_fields.subject}}",
+            "fallback": ""
+          },
+          "from_email": {
+            "value": "{{step.message.record.hot_fields.from}}",
+            "fallback": ""
+          },
+          "thread_id": {
+            "value": "{{step.message.record.hot_fields.thread_id}}",
+            "fallback": ""
+          }
+        }
       },
       {
         "id": "has_thread_id",
@@ -873,28 +902,26 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         "ledger_handle": "{{step.protect.ledger_handle}}"
       },
       {
-        "id": "extracted_statement",
-        "transform": "default",
-        "value": "{{step.restore.restored.statement}}",
-        "fallback": ""
-      },
-      {
-        "id": "extracted_direction",
-        "transform": "default",
-        "value": "{{step.restore.restored.direction}}",
-        "fallback": "inbound"
-      },
-      {
-        "id": "extracted_confidence",
-        "transform": "default",
-        "value": "{{step.restore.restored.derivation_confidence}}",
-        "fallback": 0
-      },
-      {
-        "id": "extracted_counterparty_email",
-        "transform": "default",
-        "value": "{{step.restore.restored.counterparty_email}}",
-        "fallback": ""
+        "id": "defaults_2",
+        "transform": "defaults",
+        "fields": {
+          "extracted_statement": {
+            "value": "{{step.restore.restored.statement}}",
+            "fallback": ""
+          },
+          "extracted_direction": {
+            "value": "{{step.restore.restored.direction}}",
+            "fallback": "inbound"
+          },
+          "extracted_confidence": {
+            "value": "{{step.restore.restored.derivation_confidence}}",
+            "fallback": 0
+          },
+          "extracted_counterparty_email": {
+            "value": "{{step.restore.restored.counterparty_email}}",
+            "fallback": ""
+          }
+        }
       },
       {
         "id": "counterparty_email",
@@ -902,16 +929,18 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         "input": "{{step.extracted_counterparty_email}}"
       },
       {
-        "id": "extracted_monetary_amount",
-        "transform": "default",
-        "value": "{{step.restore.restored.monetary_amount}}",
-        "fallback": ""
-      },
-      {
-        "id": "extracted_monetary_currency",
-        "transform": "default",
-        "value": "{{step.restore.restored.monetary_currency}}",
-        "fallback": ""
+        "id": "defaults_3",
+        "transform": "defaults",
+        "fields": {
+          "extracted_monetary_amount": {
+            "value": "{{step.restore.restored.monetary_amount}}",
+            "fallback": ""
+          },
+          "extracted_monetary_currency": {
+            "value": "{{step.restore.restored.monetary_currency}}",
+            "fallback": ""
+          }
+        }
       },
       {
         "id": "promised_for_at",
@@ -1097,22 +1126,22 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     ],
     "steps": [
       {
-        "id": "subject",
-        "transform": "default",
-        "value": "{{step.message.record.hot_fields.subject}}",
-        "fallback": ""
-      },
-      {
-        "id": "from_email",
-        "transform": "default",
-        "value": "{{step.message.record.hot_fields.from}}",
-        "fallback": ""
-      },
-      {
-        "id": "thread_id",
-        "transform": "default",
-        "value": "{{step.message.record.hot_fields.thread_id}}",
-        "fallback": ""
+        "id": "defaults",
+        "transform": "defaults",
+        "fields": {
+          "subject": {
+            "value": "{{step.message.record.hot_fields.subject}}",
+            "fallback": ""
+          },
+          "from_email": {
+            "value": "{{step.message.record.hot_fields.from}}",
+            "fallback": ""
+          },
+          "thread_id": {
+            "value": "{{step.message.record.hot_fields.thread_id}}",
+            "fallback": ""
+          }
+        }
       },
       {
         "id": "has_thread_id",
@@ -1247,28 +1276,26 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         "ledger_handle": "{{step.protect.ledger_handle}}"
       },
       {
-        "id": "extracted_title",
-        "transform": "default",
-        "value": "{{step.restore.restored.title}}",
-        "fallback": ""
-      },
-      {
-        "id": "extracted_priority",
-        "transform": "default",
-        "value": "{{step.restore.restored.priority}}",
-        "fallback": "medium"
-      },
-      {
-        "id": "extracted_confidence",
-        "transform": "default",
-        "value": "{{step.restore.restored.extraction_confidence}}",
-        "fallback": 0
-      },
-      {
-        "id": "extracted_assignee_email",
-        "transform": "default",
-        "value": "{{step.restore.restored.delegated_assignee_email}}",
-        "fallback": ""
+        "id": "defaults_2",
+        "transform": "defaults",
+        "fields": {
+          "extracted_title": {
+            "value": "{{step.restore.restored.title}}",
+            "fallback": ""
+          },
+          "extracted_priority": {
+            "value": "{{step.restore.restored.priority}}",
+            "fallback": "medium"
+          },
+          "extracted_confidence": {
+            "value": "{{step.restore.restored.extraction_confidence}}",
+            "fallback": 0
+          },
+          "extracted_assignee_email": {
+            "value": "{{step.restore.restored.delegated_assignee_email}}",
+            "fallback": ""
+          }
+        }
       },
       {
         "id": "assignee_email",
@@ -1656,16 +1683,18 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         "separator": ", "
       },
       {
-        "id": "first_note_id",
-        "transform": "default",
-        "value": "{{step.relevance_rows.entries.0.target_id}}",
-        "fallback": ""
-      },
-      {
-        "id": "first_relevance_score",
-        "transform": "default",
-        "value": "{{step.relevance_rows.entries.0.value.relevance_score}}",
-        "fallback": 0
+        "id": "defaults",
+        "transform": "defaults",
+        "fields": {
+          "first_note_id": {
+            "value": "{{step.relevance_rows.entries.0.target_id}}",
+            "fallback": ""
+          },
+          "first_relevance_score": {
+            "value": "{{step.relevance_rows.entries.0.value.relevance_score}}",
+            "fallback": 0
+          }
+        }
       },
       {
         "id": "card",
@@ -2348,6 +2377,107 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
       ]
     }
   },
+  "send-composed-mail": {
+    "recipe_id": "send-composed-mail",
+    "chat_exposed": false,
+    "version": 1,
+    "ttl": 0,
+    "metadata": {
+      "name": "Send a composed email",
+      "description": "Use “Send a composed email” in Recued. Carries a message you wrote in the compose window to your own enrolled mail account. Sending is irreversible, so it stops at the approval gate first, and the approval names the recipients, the subject, and every attached file. Attachments travel as references to files you already hold, never as bytes.",
+      "author": "recued-core",
+      "supported_platforms": [],
+      "budget_ms": 30000,
+      "tags": [
+        "mail",
+        "compose",
+        "send",
+        "outbound"
+      ]
+    },
+    "requires": [
+      "mail_send"
+    ],
+    "variables": {
+      "sender_mail_instance": {
+        "label": "Send from",
+        "type": "string",
+        "default": ""
+      },
+      "to": {
+        "label": "To",
+        "type": "array",
+        "default": []
+      },
+      "cc": {
+        "label": "Cc",
+        "type": "array",
+        "default": []
+      },
+      "bcc": {
+        "label": "Bcc",
+        "type": "array",
+        "default": []
+      },
+      "subject": {
+        "label": "Subject",
+        "type": "string",
+        "default": ""
+      },
+      "body": {
+        "label": "Message",
+        "type": "text",
+        "default": ""
+      },
+      "body_format": {
+        "label": "Body format",
+        "type": "string",
+        "default": "text"
+      },
+      "attachments": {
+        "label": "Attachments",
+        "type": "file_ref[]",
+        "default": []
+      },
+      "in_reply_to": {
+        "label": "In reply to",
+        "type": "string",
+        "default": ""
+      },
+      "references": {
+        "label": "Thread references",
+        "type": "array",
+        "default": []
+      }
+    },
+    "prefetch_steps": [],
+    "steps": [
+      {
+        "id": "send",
+        "op": "core.mail.send",
+        "args": {
+          "sender_mail_instance": "{{config.sender_mail_instance}}",
+          "to": "{{config.to}}",
+          "cc": "{{config.cc}}",
+          "bcc": "{{config.bcc}}",
+          "subject": "{{config.subject}}",
+          "body": "{{config.body}}",
+          "body_format": "{{config.body_format}}",
+          "in_reply_to": "{{config.in_reply_to}}",
+          "references": "{{config.references}}",
+          "attachments": "{{config.attachments}}"
+        }
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "summary",
+          "source": "step.send"
+        }
+      ]
+    }
+  },
   "stalled-projects": {
     "recipe_id": "stalled-projects",
     "chat_exposed": true,
@@ -2765,16 +2895,18 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     ],
     "steps": [
       {
-        "id": "subject",
-        "transform": "default",
-        "value": "{{step.message.record.hot_fields.subject}}",
-        "fallback": ""
-      },
-      {
-        "id": "from_email",
-        "transform": "default",
-        "value": "{{step.message.record.hot_fields.from}}",
-        "fallback": ""
+        "id": "defaults",
+        "transform": "defaults",
+        "fields": {
+          "subject": {
+            "value": "{{step.message.record.hot_fields.subject}}",
+            "fallback": ""
+          },
+          "from_email": {
+            "value": "{{step.message.record.hot_fields.from}}",
+            "fallback": ""
+          }
+        }
       },
       {
         "id": "body_read",
@@ -2853,16 +2985,18 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         "ledger_handle": "{{step.protect.ledger_handle}}"
       },
       {
-        "id": "category",
-        "transform": "default",
-        "value": "{{step.classify.category}}",
-        "fallback": "fyi"
-      },
-      {
-        "id": "confidence",
-        "transform": "default",
-        "value": "{{step.classify.confidence}}",
-        "fallback": 0
+        "id": "defaults_2",
+        "transform": "defaults",
+        "fields": {
+          "category": {
+            "value": "{{step.classify.category}}",
+            "fallback": "fyi"
+          },
+          "confidence": {
+            "value": "{{step.classify.confidence}}",
+            "fallback": 0
+          }
+        }
       },
       {
         "id": "is_actionable",

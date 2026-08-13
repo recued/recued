@@ -66,7 +66,7 @@ export interface CsvImportSpec {
   /** Entity fields whose combined value identifies a row. Order is significant and is
    *  preserved, so a mapping change that reorders them produces different ids — which is
    *  correct: it IS a different identity. */
-  readonly dedup_on: readonly string[];
+  readonly dedup_on?: readonly string[];
   /** Folded into every id so two accounts importing the same statement keep their own
    *  rows. Without it, identical transactions in a joint and a personal account collide
    *  and the second import silently drops a real one. */
@@ -87,7 +87,9 @@ export interface CsvImportSpec {
 }
 
 export interface CsvImportPlannedRow {
-  readonly id: string;
+  /** ⚠ ABSENT on a natural-key entity — the store derives the id from the key's own
+   *  fields, and a planner-invented one would be a second identity competing with it. */
+  readonly id?: string;
   readonly values: Readonly<Record<string, unknown>>;
 }
 
@@ -143,6 +145,10 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
 export const validateCsvImportSpec = (
   raw: unknown,
   fields: readonly CsvImportField[],
+  /** The entity's declared `natural_key`, when it has one. Its PRESENCE moves ownership
+   *  of identity from the caller to the store, so it flips whether `dedup_on` is
+   *  required or refused. */
+  naturalKey?: readonly string[],
 ): string[] => {
   if (!isPlainObject(raw)) return ['spec must be an object'];
   const problems: string[] = [];
@@ -234,7 +240,18 @@ export const validateCsvImportSpec = (
       seen.add(entry);
     });
   };
-  fieldList('dedup_on', true);
+  if (naturalKey === undefined) {
+    fieldList('dedup_on', true);
+  } else if (raw.dedup_on !== undefined) {
+    // ⛔ REFUSED, NOT IGNORED. On a natural-key entity the store derives each row id from
+    // the key's own fields; a `dedup_on` sitting beside it would read like the thing
+    // choosing identity while something else actually did — the most expensive kind of
+    // dead config, because it looks answered.
+    problems.push(
+      `dedup_on is not admitted: this entity declares a natural_key (${naturalKey.join(', ')}), `
+      + 'so the store derives each row id from those fields',
+    );
+  }
   fieldList('numeric_fields', false);
 
   for (const key of ['scope', 'thousands_separator'] as const) {
@@ -319,6 +336,15 @@ export const planCsvImport = (
         continue;
       }
       values[field] = numberCell(column) ?? null;
+    }
+
+    /** ⛔ NO ID WHEN THE CALLER DECLARED NO `dedup_on`. That is the natural-key case: the
+     *  store derives the id from the key's own fields, so inventing one here would be a
+     *  second identity for the same row — and the store refuses it outright ("id is
+     *  forbidden on a natural_key entity"). */
+    if (spec.dedup_on === undefined) {
+      planned.push({ values });
+      return;
     }
 
     /** ⛔⛔ NUL-SEPARATED, NOT SPACE-SEPARATED. A space lets two DIFFERENT rows produce

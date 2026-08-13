@@ -12,8 +12,10 @@ import {
   KERNEL_OP_REGISTRY,
   type KernelOpEntry,
   getKernelOp,
+  isGrantableKernelOp,
   isNativeKernelOp,
   isRegisteredKernelOp,
+  kernelOpForMcpTool,
   kernelOpsInDomain,
   kernelOpBackingSlug,
   kernelOpForBackingSlug,
@@ -48,6 +50,17 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // into its own `audit` domain: run history is not the knowledge pool.
   memory: 12,
   audit: 1,
+  // D-234 § 234.4 — `peer` is a NEW closed-kind domain: what one server may put
+  // in front of another server's owner. Its own domain rather than folded under
+  // `storage` for the same reason `audit` left `memory` — a capability-scoped
+  // surface whose name must not imply a hierarchy that gates nothing.
+  // D-234 § 234.4 return leg — +1 for `core.peer.receive-answer`, the door the
+  // peer's ANSWER comes back through (gated by CORRELATION, where `receive-ask`
+  // is gated by the LABEL GRANT — two doors, two grants, deliberately not one).
+  // D-234 § 234.4j — 6→3: `expose` / `revoke` / `exposures` deleted. They wrote a
+  // second per-(peer, label) flag store beside the contract that already answers
+  // that question; the label is a `peer.label.*` contract grant now.
+  peer: 3,
   data: 18, // D-210 closeout — + form-response-list
   webhook: 1,
   // D-232 § 23 — +1 for `core.storage.exchange.status`, the asker's own
@@ -226,6 +239,18 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.memory.write|memory|(native)|write',
       'core.notification.recipe-callback|notification|core-notification-recipe-callback|write',
       'core.notification.send|notification|core-notification-send|write',
+      // D-234 § 234.4 — the ASKING half. `write` because it spends another
+      // person's attention and suspends the run until they answer.
+      // ⛔ § 234.4j DELETED `core.peer.expose` / `.revoke` / `.exposures` FROM
+      // HERE. Do not restore them: the contract grant `peer.label.<label>` is the
+      // one place a peer's standing is recorded, and a second store would be the
+      // same question with a second answer.
+      'core.peer.ask|peer|peer-ask|write',
+      // D-234 § 234.4 — the inbound door a peer calls on us.
+      // D-234 § 234.4 — NATIVE: the receiver installs nothing, so the door
+      // exists on every server rather than only where a pack was added.
+      'core.peer.receive-answer|peer|(native)|write',
+      'core.peer.receive-ask|peer|(native)|write',
       'core.schedule.recipe|schedule|schedule-recipe|write',
       // D-207 §4.5 — the op path moved under `seller`; the backing capability
       // slug (`customer-access-*`) is deliberately unchanged.
@@ -483,6 +508,44 @@ describe('D-182 slice 3a — kernel op registry', () => {
       // [ok, ok] shares BOTH op id and backing slug; the op-id check must win so
       // the existing /duplicate op id/ contract holds (the slug guard runs after).
       expect(() => assertKernelOpRegistry([ok, ok])).toThrow(/duplicate op id/);
+    });
+  });
+
+  describe('D-234 § 234.4 — the mcp_tool join', () => {
+    it('⛔⛔ THE NAME THE MINT ACCEPTS IS THE NAME THE GATE READS', () => {
+      // THE WHOLE POINT OF THE FIELD, and the shape of the bug it closed: the
+      // token mint (`preflightExternalToolGrant`) accepts a registered kernel OP
+      // ID and refuses the static tool name; the per-token checklist looked up
+      // the TOOL NAME. So the only name an owner could grant was one nothing
+      // read — a grant that granted nothing, denying with a message that reads
+      // as "your token is wrong" rather than "this cannot be granted at all".
+      // Both halves asserted together, because either alone is satisfiable while
+      // the door stays shut.
+      expect(isGrantableKernelOp('core.peer.receive-ask')).toBe(true);
+      expect(kernelOpForMcpTool('recued_peerAsk')).toBe('core.peer.receive-ask');
+    });
+
+    it('is populated for exactly the two peer DOORS — adding another must be deliberate', () => {
+      // ⚠ A RATCHET, not trivia. Every other native verb-op is a per-contract
+      // READ grant consulted through `ReadGrantChecker` and is NOT reachable as
+      // a static MCP tool; giving one an `mcp_tool` would invent a door rather
+      // than describe one, and would silently widen what satisfies a per-token
+      // checklist. The frozen-identity ratchet above does not cover this field.
+      expect(
+        KERNEL_OP_REGISTRY.filter((e) => e.mcp_tool !== undefined).map((e) => e.op).sort(),
+      ).toEqual(['core.peer.receive-answer', 'core.peer.receive-ask']);
+    });
+
+    it('every mcp_tool belongs to a NATIVE op, and unknown tools resolve to nothing', () => {
+      for (const e of KERNEL_OP_REGISTRY) {
+        if (e.mcp_tool === undefined) continue;
+        // A tool name fronting an ingredient-backed op would be reachable by two
+        // routes with two different gates — the ambiguity this field must not add.
+        expect(e.native).toBe(true);
+        expect(e.backing_slug).toBeUndefined();
+      }
+      expect(kernelOpForMcpTool('recued_getAudit')).toBeUndefined();
+      expect(kernelOpForMcpTool('core.peer.receive-ask')).toBeUndefined();
     });
   });
 });

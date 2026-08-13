@@ -326,7 +326,10 @@ export {
 export {
   renderMailComposeDialog,
   renderAiAssistSidebar,
+  renderMailComposeAttachmentPicker,
+  humanFileSize,
   MAIL_COMPOSE_STYLES,
   type MailComposeDialogProps,
   type AiAssistSidebarProps,
+  type MailComposeAttachmentPickerProps,
 } from './mail-compose/index.js';

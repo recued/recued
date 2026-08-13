@@ -18,6 +18,7 @@ import {
   isCliFailureDetail,
   isContainerPickDetail,
   isCreatePlanDetail,
+  isPeerAnswerRequiredSignal,
   isPreflightRequiredSignal,
   isRef,
   parseDataEntityRef,
@@ -138,6 +139,26 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
       : null;
 
     setNamespaceValue(ctx.stores.step as Record<string, unknown>, id, result);
+    // ⛔ A `defaults` step ALSO publishes each field under its own name, so
+    // `{{step.<field>}}` keeps resolving after N `default` steps fold into one.
+    //
+    // Step ids are an INTERFACE at three levels — refs inside recipes, ref
+    // strings asserted in tests, and `step('<id>')` reads in the pack-audit
+    // harnesses that execute a recipe and inspect intermediate outputs. Folding
+    // without this broke 121 tests across 62 files; with it the fold is
+    // invisible to all three. The step's own id still holds the whole object,
+    // so `{{step.<id>.<field>}}` works and checkpoint capture
+    // (`stores.step[s.id]`) is unaffected.
+    //
+    // Collision-free by construction: the field names ARE the step ids the fold
+    // removed, and those were unique step ids already (verified 0 collisions
+    // across the corpus).
+    if ((step as { transform?: string }).transform === 'defaults' && result !== null && typeof result === 'object'
+      && !Array.isArray(result)) {
+      for (const [field, value] of Object.entries(result as Record<string, unknown>)) {
+        setNamespaceValue(ctx.stores.step as Record<string, unknown>, field, value);
+      }
+    }
     trackContextSize(ctx, result);
 
     // fail_on check
@@ -179,6 +200,12 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
     // the run with `awaiting_approval`. Re-throw so the signal reaches
     // that loop instead of landing in `StepLog.error`.
     if (isPreflightRequiredSignal(e)) throw e;
+    // D-234 § 234.4 — same treatment, same reason. A peer-answer pause is a
+    // CONTROL-FLOW SIGNAL, not a step failure. ⛔ WITHOUT THIS RE-THROW THE
+    // FEATURE IS INERT AND LOOKS BROKEN: the signal lands in `StepLog.error`,
+    // the step-loop never sees it, and the run FAILS with an opaque message
+    // instead of pausing — a hold that presents as a crash.
+    if (isPeerAnswerRequiredSignal(e)) throw e;
     const msg = e instanceof Error ? e.message : String(e);
     // D-181 §12 — preserve a long-op executor's structured kill telemetry into
     // the step error's `details` so the audit-anchor write can derive a display

@@ -11,47 +11,58 @@
  *
  *  The server URL pinned at pair time is the full `wss://<host>/ws`
  *  endpoint (see `packages/contracts/src/webclient.ts`
- *  `WebclientLocalStorage.server_url` example). The transport adds the
- *  bearer to the URL via the `?token=<bearer>` query parameter — the
- *  one mechanism that works from a browser `WebSocket` constructor
- *  (the `Authorization` header isn't reachable from
- *  `new WebSocket(url, protocols)`). The server's `extractRealm`
- *  already accepts the same form (`backend/server/src/ws-server.ts`
- *  line 1499-1516), so the wire is symmetric without a server-side
- *  change.
+ *  `WebclientLocalStorage.server_url` example). The bearer rides in the
+ *  SUBPROTOCOL slot, as `['recued.v1', 'bearer.<base64url>']` — the
+ *  `Authorization` header isn't reachable from `new WebSocket(url,
+ *  protocols)`, and this is the one header the constructor does reach.
+ *  `@recued/contracts` `ws-subprotocol.ts` owns the encoding; the
+ *  server's `extractRealm` decodes it.
  *
- *  The subprotocol slot carries `recued.v1` as a version marker —
- *  forward-compatible: a future server can negotiate a different
- *  subprotocol without breaking older clients.
+ *  `recued.v1` stays first in the list, and that ORDER IS LOAD-BEARING:
+ *  `ws` selects the client's first offered value by default and echoes
+ *  the selection back in a response header, so bearer-first would put
+ *  the secret in a response. (The server also pins the selection.)
  *
  *  ── Key design decisions (READ before touching) ────────────────────
  *
- *  DD#1 — Auth via query string, not subprotocol-encoded bearer. We
- *  considered packing the bearer into the `Sec-WebSocket-Protocol`
- *  field (`['recued.v1', 'bearer.<base64url>']`) so the secret never
- *  appears in URL-level access logs, but that needs a paired
- *  server-side change (the server currently only reads from
- *  `Authorization` + `?token=`). Until that ships, query string is
- *  the only browser-reachable path. The bearer ciphertext at rest is
- *  AES-GCM-wrapped (`storage/token-store.ts`).
+ *  DD#1 — Auth via the subprotocol, NOT the query string. The bearer used to
+ *  ride as `?token=<bearer>` on the URL, under a comment claiming the leakage
+ *  risk was "bounded by the TLS pin + the SHORT BEARER LIFETIME". ⛔ There is no
+ *  short bearer lifetime: `client_tokens`
+ *  (`backend/server/src/pairing/client-tokens.ts`) has `issued_at`,
+ *  `last_used_at`, `revoked_at`, `revocation_reason` — no expiry column and no
+ *  expiry check anywhere. A paired bearer is valid until somebody revokes it by
+ *  hand, so a bearer that reached a reverse-proxy log, an access log, a crash
+ *  report or browser URL telemetry stayed live indefinitely. A URL is a place a
+ *  secret gets durably written down; a request header is not.
  *
- *  ⛔ THE RESIDUAL RISK IS LARGER THAN THIS COMMENT USED TO CLAIM. It said the
- *  leakage risk is "bounded by the TLS pin + the SHORT BEARER LIFETIME + the
- *  webclient's own audit trail". There is no short bearer lifetime. The
- *  `client_tokens` table (`backend/server/src/pairing/client-tokens.ts`) carries
- *  `issued_at`, `last_used_at`, `revoked_at`, `revocation_reason` — and NO
- *  expiry column and no expiry check anywhere. A paired bearer is valid until
- *  someone revokes it, which for a device nobody revisits is forever. So a
- *  bearer that reaches a proxy log, an access log, a crash report or browser URL
- *  telemetry stays live indefinitely.
+ *  The carrier is `['recued.v1', 'bearer.<base64url>']` — see
+ *  `@recued/contracts` `ws-subprotocol.ts` for why base64url specifically (the
+ *  structured bearer is standard base64, whose `/` and `=` are not valid
+ *  subprotocol token characters, so raw would be rejected at the constructor).
+ *  The bearer ciphertext at rest is AES-GCM-wrapped (`storage/token-store.ts`).
  *
- *  What actually bounds it: TLS in production, and `pair.revoke` — which is a
- *  MANUAL, AFTER-THE-FACT control, not a lifetime. Treat the URL as a place the
- *  secret is durably written, because it is. The real close-out is still the
- *  subprotocol carrier (server-side `extractRealm` learning
- *  `Sec-WebSocket-Protocol`, then this client offering it), and the second
- *  candidate is giving `client_tokens` a real expiry so the claim above becomes
- *  true instead of being deleted.
+ *  ⚠ The server still ACCEPTS `?token=` for un-upgraded clients — a PWA serves
+ *  its cached bundle before replacing itself. So the old form is not gone from
+ *  the wire until those caches turn over; it is gone from what THIS client
+ *  emits. `client_tokens` still has no expiry, which remains worth fixing on its
+ *  own merits: revocation is a manual, after-the-fact control, not a lifetime.
+ *
+ *  ⛔⛔ ROLLOUT ORDER — THE SERVER SHIPS FIRST, AND THE SERVER IS SELF-HOSTED.
+ *  This is a two-sided protocol change against servers Recued does not operate:
+ *
+ *      new client + OLD server  → the server never learned the subprotocol,
+ *                                 finds no `?token=`, and 401s.  BREAKS.
+ *      new server + old client  → `?token=` still accepted.      Works.
+ *
+ *  So deploying `app.recued.com` ahead of self-hoster adoption disconnects
+ *  every user whose server predates the `extractRealm` change — and there is no
+ *  capability signal to gate on: the server exposes no version in
+ *  `/status.json` and the webclient stores none at pair time. Either ship the
+ *  server release and wait for adoption before deploying this client, or make
+ *  this client send BOTH carriers for one release (which defers the whole
+ *  security benefit, since the point is to get the secret off the URL).
+ *  Whichever is chosen, it is a decision, not a deploy step.
  *
  *  DD#2 — Pre-upgrade 401 surfaces as a generic transport drop, NOT
  *  a `WebclientReauthRequiredError`. A browser `WebSocket` cannot
@@ -106,6 +117,8 @@
  *  Spec: D-148 § A.4 + the WS-server contract in
  *  `backend/server/src/ws-server.ts`. */
 
+import { WS_VERSION_SUBPROTOCOL, encodeBearerSubprotocol } from '@recued/contracts';
+
 import {
   WebclientReauthRequiredError,
   type WebclientWsState,
@@ -113,8 +126,12 @@ import {
 } from './ws-client.js';
 
 /** Subprotocol version marker. Forward-compatible: a future server
- *  can offer a higher version without breaking older clients. */
-export const WEBCLIENT_WS_SUBPROTOCOL = 'recued.v1' as const;
+ *  can offer a higher version without breaking older clients.
+ *
+ *  ⚠ Now an alias of the contracts constant rather than a second copy — the
+ *  server matches on the same value when it pins which protocol to echo, and
+ *  two literals that must agree are two literals that can drift. */
+export const WEBCLIENT_WS_SUBPROTOCOL = WS_VERSION_SUBPROTOCOL;
 
 /** Post-upgrade close codes that map to `WebclientReauthRequiredError`.
  *  4001 = server-not-enrolled (existing convention in
@@ -176,19 +193,21 @@ export interface BrowserWebclientTransportOptions {
   /** Override the URL builder — tests cover edge cases (server URL
    *  already has `?`, server URL missing `/ws`, …) without depending
    *  on the default heuristics. */
-  buildConnectUrl?: (args: { server_url: string; bearer: string }) => string;
+  /** ⚠ Takes NO bearer — the secret rides in the subprotocol, not the URL. */
+  buildConnectUrl?: (args: { server_url: string }) => string;
 }
 
-/** Default URL builder. Appends `?token=<bearer>` (URL-encoded) to the
- *  pinned `server_url`, preserving an existing query string if the
- *  server URL already has one. Exported for tests. */
+/** Default URL builder — the pinned `server_url`, UNCHANGED.
+ *
+ *  ⛔ It used to append `?token=<bearer>`. It does not any more: the bearer
+ *  travels in the subprotocol (see DD#1). The builder is kept as a seam because
+ *  the ws-client's URL heuristics are tested through it, and because a future
+ *  non-secret query parameter still belongs here — but a SECRET must never come
+ *  back to this function. `bearer` is deliberately absent from the argument type
+ *  so re-adding it is a compile error, not an oversight. */
 export const buildDefaultConnectUrl = (args: {
   server_url: string;
-  bearer: string;
-}): string => {
-  const separator = args.server_url.includes('?') ? '&' : '?';
-  return `${args.server_url}${separator}token=${encodeURIComponent(args.bearer)}`;
-};
+}): string => args.server_url;
 
 /** Build a production browser-WebSocket-backed `WebclientWsTransport`.
  *  Each invocation returns a fresh transport whose lifecycle owns one
@@ -284,10 +303,13 @@ export const createBrowserWebclientTransport = (
       }
       setState('connecting');
 
-      const url = buildUrl({ server_url, bearer });
+      const url = buildUrl({ server_url });
       let ws: BrowserWebSocketLike;
       try {
-        ws = new Ctor(url, subprotocol);
+        // `recued.v1` FIRST, bearer second. `ws` selects the client's first
+        // offered value by default and echoes the selection back in a response
+        // header — bearer-first would put the secret in the response.
+        ws = new Ctor(url, [subprotocol, encodeBearerSubprotocol(bearer)]);
       } catch (err) {
         setState('disconnected');
         throw err instanceof Error

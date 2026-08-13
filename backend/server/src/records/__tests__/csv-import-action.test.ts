@@ -94,9 +94,12 @@ describe('core.records.import', () => {
   let store: RecordsStore;
 
   const importCsv = (
-    csv: string, spec: unknown = SPEC, binding = B.importLine,
+    csv: string, spec: unknown = SPEC, binding = B.importLine, dry_run?: boolean,
   ): RecordsImportResult =>
-    store.execute({ binding, principal: 'owner', args: { csv, spec } }) as RecordsImportResult;
+    store.execute({
+      binding, principal: 'owner',
+      args: { csv, spec, ...(dry_run === undefined ? {} : { dry_run }) },
+    }) as RecordsImportResult;
 
   const rows = () =>
     db.prepare('SELECT pk, s1, s2, s3, n1, n2, n3, n4 FROM core_records ORDER BY s1').all() as
@@ -380,6 +383,180 @@ describe('core.records.import', () => {
       const r = accounted(importCsv(THREE));
       expect(r.halted_reason).toBeUndefined();
       expect(r.replayed).toBe(2);
+    });
+  });
+
+  describe('⛔⛔ import SUPPLEMENTS manual entry on a natural-key entity', () => {
+    /** ⛔⛔ THE CASE THAT DOES NOT WORK WITHOUT THIS. `import` is a supplement, not a
+     *  replacement — the same entity still takes rows typed by hand. But the two paths
+     *  derive identity differently: a manual `create` gets a random id, an import a
+     *  content-derived one. So a purchase entered on Tuesday and then present in
+     *  Friday's card export lands TWICE, and neither path can see the other's row.
+     *
+     *  A `natural_key` is the mechanism that makes them converge — and it used to make
+     *  `import` fail outright, because a natural-key entity refuses a caller-supplied id
+     *  and `import` always supplied one. Now it omits the id and the store derives it,
+     *  so both paths land on the same row.
+     *
+     *  🔑 THE CHOICE IS THE PACK'S. `statement_line` declares no key: two identical £3
+     *  coffees are both real and import is its sole writer. An entity where import
+     *  supplements typing wants the opposite, and pays for it by collapsing genuine
+     *  duplicates — which is what declaring a natural key MEANS. */
+    const KEYED_CREATE = {
+      ...bind('create', 'line', ':nk'), natural_key: ['posted_on', 'description'],
+    } as RecordsExecutionBinding;
+    const keyedStore = () => {
+      db = new Database(':memory:');
+      db.pragma('foreign_keys = ON');
+      store = createRecordsStore(db, { now: (() => { let t = 1e12; return () => t++; })() });
+      store.installNamespace({
+        owner: OWNER, version: 1, storage_schema_hash: SH, declaration_hash: DH,
+        artifact_digest: 'x', schema,
+        // The pack's declaration: identity is (posted_on, description).
+        bindings: { imp: B.importLine, create: KEYED_CREATE },
+      });
+    };
+    const KEYED_SPEC = {
+      columns: [
+        { column: 'Date', field: 'posted_on' },
+        { column: 'Detail', field: 'description' },
+        { column: 'In', field: 'money_in' },
+      ],
+      numeric_fields: ['money_in'],
+      defaults: { category: '' },
+    };
+    /** What the owner types by hand — the SAME transaction the card export will carry. */
+    const typed = (day: string, note: string, moneyIn: number) =>
+      store.execute({
+        binding: KEYED_CREATE, principal: 'owner',
+        args: { values: { posted_on: day, description: note, category: '', money_in: moneyIn } },
+      });
+
+    it('⛔⛔⛔ a row typed by hand is RECOGNISED by the import, not duplicated', () => {
+      keyedStore();
+      typed('01-Jan', 'coffee', 3.5);                         // Tuesday, by hand
+      const r = importCsv(
+        'Date,Detail,In\n01-Jan,coffee,3.50\n02-Jan,rent,1200.00', KEYED_SPEC,
+      );
+
+      expect(r.replayed, 'the hand-typed row is recognised, not re-created').toBe(1);
+      expect(r.written, 'only the line the owner had not typed').toBe(1);
+      expect(r.failed, JSON.stringify(r.failures_sample)).toBe(0);
+      expect(rowCount(), '⛔ two rows, not three').toBe(2);
+    });
+
+    it('⛔ and the import still refuses to overwrite what the owner typed', () => {
+      /** Convergence must not mean the file wins. The hand-typed row carries a value the
+       *  file disagrees with, so the row is refused — the same refusal that protects an
+       *  edit on a re-import, reached through the other path. */
+      keyedStore();
+      typed('01-Jan', 'coffee', 99.99);   // the owner recorded a different amount
+      const r = importCsv('Date,Detail,In\n01-Jan,coffee,3.50', KEYED_SPEC);
+      expect(r.failed).toBe(1);
+      expect(r.failures_sample[0]?.code).toBe('records_conflict');
+      expect(r.failures_sample[0]?.line, 'the handle that always works').toBe(2);
+      expect(r.failures_sample[0]?.id, 'no id — the store owns identity here').toBe('');
+    });
+
+    it('⛔ dedup_on is REFUSED on a natural-key entity — it would decide nothing', () => {
+      keyedStore();
+      expect(() => importCsv('Date,Detail,In\n01-Jan,coffee,3.50',
+        { ...KEYED_SPEC, dedup_on: ['posted_on'] })).toThrow(/dedup_on is not admitted/);
+      expect(rowCount()).toBe(0);
+    });
+
+    it('⚠ and it is still REQUIRED where the caller does own identity', () => {
+      // The over-correction: making it optional everywhere would let an entity with no
+      // key import rows whose identity nothing decides.
+      const { dedup_on: _drop, ...noDedup } = SPEC;
+      expect(() => importCsv(THREE, noDedup)).toThrow(/dedup_on must be a non-empty array/);
+    });
+  });
+
+  describe('⛔⛔ a dry run rehearses the real write and keeps nothing', () => {
+    /** ⛔ IT EXISTS FOR THE ONE FAILURE NOTHING ELSE CATCHES. A mapping that is
+     *  VALID but points at the wrong column imports a thousand successful, WRONG
+     *  rows: `failed: 0`, nothing to re-run, and the cleanup is manual because
+     *  the ids were derived from the wrong values. Neither the result shape nor
+     *  an all-or-nothing import would say a word about it. Seeing the first rows
+     *  before committing is the only thing that does.
+     *
+     *  ⚠ NOT for malformed CSV — measured, that barely fails at all: an
+     *  unreadable amount, a blank cell, a short row, extra cells and an entirely
+     *  blank row ALL land (see the cases above). The dominant real failure is
+     *  `records_conflict` on rows the owner has since edited. */
+
+    it('writes NOTHING, and says so', () => {
+      const r = accounted(importCsv(THREE, { ...SPEC }, B.importLine, true));
+      expect(r.dry_run).toBe(true);
+      expect(r.written, 'would-be-written is still reported').toBe(3);
+      expect(rowCount(), 'and not one row survives the rollback').toBe(0);
+    });
+
+    it('⛔⛔ the numbers are MEASURED through the real write path, not predicted', () => {
+      /** The property that makes a rehearsal worth anything. This row violates a
+       *  STORE limit (>4096 bytes in an indexed string) — a rule that lives in
+       *  `normalizeValues`, not in the planner. A dry run that simulated instead
+       *  of executing would report it as fine and the real import would refuse
+       *  it, which is worse than no dry run: it would have been checked and
+       *  cleared. */
+      const long = 'x'.repeat(5000);
+      const r = accounted(importCsv(
+        csvOf('01-Jan,ok,1.00,0,10', `02-Jan,${long},1.00,0,10`), SPEC, B.importLine, true,
+      ));
+      expect(r.failed, 'the store limit is enforced during the rehearsal').toBe(1);
+      expect(r.failures_sample[0]?.code).toBe('records_invalid');
+      expect(r.written).toBe(1);
+      expect(rowCount(), 'still nothing kept').toBe(0);
+    });
+
+    it('⛔ it sees CONFLICTS with rows the owner already edited', () => {
+      /** The realistic partial-import cause, and the number an owner actually
+       *  wants before re-importing an overlapping export: how many of these have
+       *  I touched since last time? */
+      importCsv(THREE);
+      db.prepare('UPDATE core_records SET s3=? WHERE s1=?').run('groceries', '02-Jan');
+      const r = accounted(importCsv(THREE, SPEC, B.importLine, true));
+      expect(r.failed).toBe(1);
+      expect(r.failures_sample[0]?.code).toBe('records_conflict');
+      expect(r.replayed, 'the untouched rows are already held').toBe(2);
+      expect(rowCount(), 'the rehearsal changed nothing').toBe(3);
+      expect(rows().find((x) => x.s1 === '02-Jan')?.s3, 'least of all the edit')
+        .toBe('groceries');
+    });
+
+    it('⛔ a dry run leaves NO audit row — it is not provenance, nothing arrived', () => {
+      const seen: unknown[] = [];
+      db = new Database(':memory:');
+      db.pragma('foreign_keys = ON');
+      const store = createRecordsStore(db, {
+        now: (() => { let t = 1e12; return () => t++; })(),
+        onImport: (e) => { seen.push(e); },
+      });
+      store.installNamespace({
+        owner: OWNER, version: 1, storage_schema_hash: SH, declaration_hash: DH,
+        artifact_digest: 'x', schema, bindings: B,
+      });
+      store.execute({ binding: B.importLine, principal: 'owner',
+        args: { csv: THREE, spec: SPEC, dry_run: true } });
+      expect(seen, 'a rehearsal must not be recorded as an import').toEqual([]);
+      store.execute({ binding: B.importLine, principal: 'owner',
+        args: { csv: THREE, spec: SPEC } });
+      expect(seen, 'a real import still is').toHaveLength(1);
+    });
+
+    it('⚠ dry_run must be a BOOLEAN — the string "false" cannot mean true', () => {
+      /** A `{{config.*}}` ref or a form hands over strings. Under a truthy check
+       *  `dry_run: "false"` would silently import nothing and report success. */
+      expect(() => importCsv(THREE, SPEC, B.importLine, 'false' as never))
+        .toThrow(/dry_run must be a boolean/);
+      expect(rowCount()).toBe(0);
+    });
+
+    it('⚠ and the DEFAULT is a real import', () => {
+      // The over-correction: a dry-run default would make every recipe a no-op.
+      expect(accounted(importCsv(THREE)).dry_run).toBeUndefined();
+      expect(rowCount()).toBe(3);
     });
   });
 

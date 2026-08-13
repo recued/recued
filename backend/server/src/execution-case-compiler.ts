@@ -1,6 +1,7 @@
 /** D-214 span closure, source projection, and deterministic case rebuild. */
 
 import type Database from 'better-sqlite3';
+import { isHeldRunAnchorStatus } from '@recued/contracts';
 import {
   type ExecutionCase,
   type ExecutionObservation,
@@ -518,11 +519,15 @@ const isApprovalExpiry = (
   run: Pick<ParsedRecipeAuditEntry, 'error_codes'>,
 ): boolean => run.error_codes.includes('RECIPE_APPROVAL_TIMEOUT');
 
+/** D-234 § 234.4 — ⇒ THE PREDICATE. This asks "has this run FINISHED", and a run
+ *  suspended waiting on a peer's owner plainly has not. With the bare literal,
+ *  `awaiting_peer` fell through every clause and was classified TERMINAL — a
+ *  still-waiting conversation compiled into a case as though it had settled. */
 const isTerminalRecipeStatus = (status: string | undefined): boolean =>
   status !== undefined
   && status !== 'pending'
   && status !== 'running'
-  && status !== 'awaiting_approval';
+  && !isHeldRunAnchorStatus(status);
 
 export interface ResolvedExecutionSpan {
   root_request_id: string;

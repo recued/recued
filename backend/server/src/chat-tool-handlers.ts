@@ -88,6 +88,7 @@ import type { ContactStore } from './storage/contact-store.js';
 import type { EnrichmentStore } from './storage/enrichment-store.js';
 import type { CrmRecordMirrorStore } from './storage/crm-record-mirror-store.js';
 import type { CollectionRegistry } from './collections/registry.js';
+import { DATA_FILE_RECEIVED_SLUG } from './collections/file/file-read-handler.js';
 import type { Collection } from './collections/types.js';
 import type {
   CalendarCollection,
@@ -127,6 +128,8 @@ import { emitMemoryUser } from './events/emit-sites.js';
 import type { MemoryRedactionRecord } from './memory-rpc-handler.js';
 import type { EventBus } from './events/bus.js';
 import type {
+  MemoryEmbedder,
+  MemorySearchResult,
   UserMemoryRow,
   UserMemorySession,
   UserMemoryStore,
@@ -161,6 +164,15 @@ export type ChatRecipeExecutor = (request: ExecuteRequest) => Promise<ExecuteRes
 export interface ChatToolHandlerDeps {
   getContactStore: () => ContactStore | undefined;
   getCollectionRegistry: () => CollectionRegistry | undefined;
+  /** D-172 P2 — the session's own message rows, for `file.search`'s default
+   *  (and safe) scope. Optional because a dbless / partial harness has no chat
+   *  store; absent ⇒ session scope returns EMPTY with a stated reason rather
+   *  than silently falling through to the whole file store. */
+  getChatStore?: () => {
+    listMessages(session_id: string): Promise<ReadonlyArray<{
+      attachments?: ReadonlyArray<{ file_id: string }>;
+    }>>;
+  } | undefined;
   getAuditLog: () => AuditLogStore | undefined;
   /** D-198 Slice 4 — the owner-authored + AI/customer-written `user_memory`
    *  store. `memory.write` writes here (stamped `contracted_user`) and the
@@ -174,6 +186,15 @@ export interface ChatToolHandlerDeps {
    *  store (both db-gated); absent → recall can't consult it (unreachable in a
    *  db-backed server where the user_memory store also exists). */
   getMemoryRedactionStore?: () => StorageCollection<MemoryRedactionRecord> | undefined;
+  /** RUNG 4 — turns the QUERY into a vector so `memory.search` can fall through
+   *  to meaning when no rung of the lexical ladder matched.
+   *
+   *  ⚠ THIS IS THE ONLY LLM CALL IN THE TOOL, which is why it is late-bound and
+   *  optional rather than a required dep: absent ⇒ rung 4 is simply off, and
+   *  `memory.search` stays the zero-token, provider-free SQL read it is today.
+   *  It fires only after rungs 1–3 return nothing (~3% of queries on the pilot
+   *  corpus), so the common path never pays for it. */
+  getMemoryEmbedder?: () => MemoryEmbedder | undefined;
   /** D-198 Slice 4 — the realtime bus, so a `memory.write` fans a `memory`
    *  event and paired Memory lenses live-refresh (mirrors the owner-direct
    *  `memory.create` rpc, spec §7.7). Absent → the write still persists; the
@@ -1388,6 +1409,36 @@ const projectMemoryEntry = (
  *  else ingestion `ts`. The axis `since`/`until` filter on (D-120 P7.5). */
 const effectiveTime = (r: UserMemoryRow): number => r.event_at ?? r.ts;
 
+/** How far the FIRST result outscores the SECOND, in `[0, 1]`.
+ *
+ *  The question a recall caller actually has is not "how many results are
+ *  there" but "is the top one THE one" — and that is a property of the score
+ *  DISTRIBUTION, not a constant. Near 1: the leader dominates, act on it. Near
+ *  0: the top two are interchangeable and picking one silently is a guess
+ *  wearing an answer's clothes. Mirrors `ChatConfidenceMeasures.top_margin`,
+ *  which `contact` / `deal` / `account.search` already carry.
+ *
+ *  ⚠ RELATIVE, not absolute, because bm25 is unbounded and corpus-dependent —
+ *  a raw gap of "0.4" means nothing on its own, while "the leader scored 40%
+ *  above the runner-up" is the same statement at any corpus size.
+ *
+ *  ⚠ `rank` IS A COST: FTS5 returns bm25 as a negative number, most-negative
+ *  first. Flipped to a score here; a non-positive leader (or an unranked
+ *  substring-harness hit) yields `null` rather than a fabricated number. */
+const topMargin = (ranks: ReadonlyArray<number | null>): number | null => {
+  if (ranks.length < 2) return null;
+  const [first, second] = ranks;
+  if (first === null || first === undefined || second === null || second === undefined) {
+    return null;
+  }
+  const lead = -first;
+  const runnerUp = -second;
+  if (!(lead > 0)) return null;
+  const margin = (lead - runnerUp) / lead;
+  if (!Number.isFinite(margin)) return null;
+  return Math.round(Math.min(1, Math.max(0, margin)) * 1000) / 1000;
+};
+
 /** Every non-result exit is a GUIDED EMPTY, never an error. An `ok:false` from a
  *  recall tool makes the agent retry-to-timeout (the loop the 2026-06-09
  *  `enrichment.search` fix closed, which cited memory.search's own never-error
@@ -1430,6 +1481,145 @@ const emptyMemoryResult = (
  *  ungranted read, an unknown id — none may error. See the 2026-06-09
  *  `enrichment.search` entry in internal design notes, which
  *  cites THIS tool's never-error fallback as the precedent it copied. */
+/** D-172 P2 — `file.search`: file IDENTITY, session-scoped by default.
+ *
+ *  ⛔⛔ THE DEFAULT IS THE CONTAINMENT. Scope is an argument, so it is the
+ *  MODEL that chooses it — and the model is often reading text a stranger
+ *  wrote (an inbound email it was asked to summarize). If omitting the
+ *  argument meant "everything", a prompt-injected instruction would reach the
+ *  owner's whole file store just by saying nothing, and the model could name
+ *  a file the owner never put in front of it. So `session` is what you get for
+ *  free and `'all'` has to be asked for out loud, where it shows up in the
+ *  tool trace.
+ *
+ *  🔑 The reason to prefer narrow is not primarily security, it is PRECISION,
+ *  and the asymmetry is what settles it: failing to find a file costs one turn
+ *  ("no, the other one"); attaching the WRONG file to an outbound email cannot
+ *  be taken back. Bias toward returning too few.
+ *
+ *  ⚠ IDENTITY ONLY — no bytes, ever. Content egress stays on the Gateway-gated
+ *  `data-file-read`, which is a separate admission and writes its own
+ *  `file_content_read` audit row. Naming a file is free; reading one is an
+ *  observable act. That split is what lets "attach this" cost nothing while
+ *  "what does this say" stays gated. */
+const FILE_SEARCH_DEFAULT_LIMIT = 20;
+const FILE_SEARCH_MAX_LIMIT = 100;
+
+interface ChatFileRow {
+  file_id: string;
+  filename: string;
+  media_class: string;
+  size_bytes: number;
+  origin: string;
+  scan_status: string;
+  received_at: number;
+}
+
+const projectChatFileRow = (record: {
+  record_id: string;
+  received_at?: number;
+  size_bytes?: number;
+  hot_fields: Record<string, unknown>;
+}): ChatFileRow => {
+  const hot = record.hot_fields;
+  const str = (v: unknown, fallback: string): string =>
+    typeof v === 'string' && v.length > 0 ? v : fallback;
+  return {
+    file_id: record.record_id,
+    filename: str(hot.filename, record.record_id),
+    media_class: str(hot.media_class, 'other'),
+    size_bytes: typeof hot.size === 'number'
+      ? hot.size
+      : typeof record.size_bytes === 'number' ? record.size_bytes : 0,
+    origin: str(hot.origin, 'unknown'),
+    // ⚠ NOT defaulted to 'clean'. An absent scan status is UNKNOWN, and a
+    // reader deciding whether to send a file outward must not be told
+    // "checked" about a file nobody checked.
+    scan_status: str(hot.scan_status, 'unscanned'),
+    received_at: typeof record.received_at === 'number' ? record.received_at : 0,
+  };
+};
+
+const createFileSearchHandler =
+  (deps: ChatToolHandlerDeps): Tier1Handler =>
+  async (raw, ctx) => {
+    const args = asObject(raw);
+    if (!args) return invalidArgs('args must be an object');
+
+    const registry = deps.getCollectionRegistry();
+    const collection = registry?.get('file', DATA_FILE_RECEIVED_SLUG) as
+      | { get(id: string): unknown; list?: (limit?: number) => unknown[] }
+      | undefined;
+    if (!collection) {
+      return { ok: true, result: { files: [], hint: 'the file store is not available on this server' } };
+    }
+
+    const rawScope = typeof args.scope === 'string' ? args.scope : 'session';
+    // An unrecognized scope falls back to the NARROW one. A typo must never be
+    // the thing that widens a search whose whole point is being narrow.
+    const scope: 'session' | 'all' = rawScope === 'all' ? 'all' : 'session';
+    const query = typeof args.query === 'string' ? args.query.trim().toLowerCase() : '';
+    const limit = Math.min(
+      typeof args.limit === 'number' && Number.isFinite(args.limit) && args.limit > 0
+        ? Math.floor(args.limit)
+        : FILE_SEARCH_DEFAULT_LIMIT,
+      FILE_SEARCH_MAX_LIMIT,
+    );
+
+    let rows: ChatFileRow[] = [];
+    if (scope === 'session') {
+      const store = deps.getChatStore?.();
+      if (!store || ctx.session_id === undefined) {
+        return {
+          ok: true,
+          result: {
+            files: [],
+            scope,
+            hint: 'no conversation files are readable here — this turn has no session context',
+          },
+        };
+      }
+      const messages = await store.listMessages(ctx.session_id);
+      const seen = new Set<string>();
+      for (const message of messages) {
+        for (const att of message.attachments ?? []) {
+          if (seen.has(att.file_id)) continue;
+          seen.add(att.file_id);
+          const record = collection.get(att.file_id) as Parameters<typeof projectChatFileRow>[0] | null;
+          // A referenced file whose record is gone is SKIPPED, not surfaced as
+          // a bare id — an entry the model cannot describe is one it will
+          // describe wrongly.
+          if (record) rows.push(projectChatFileRow(record));
+        }
+      }
+    } else {
+      const listed = collection.list?.(FILE_SEARCH_MAX_LIMIT) ?? [];
+      rows = (listed as Parameters<typeof projectChatFileRow>[0][]).map(projectChatFileRow);
+    }
+
+    if (query.length > 0) {
+      rows = rows.filter((r) => r.filename.toLowerCase().includes(query));
+    }
+    rows.sort((a, b) => b.received_at - a.received_at);
+    const truncated = rows.length > limit;
+    rows = rows.slice(0, limit);
+
+    return {
+      ok: true,
+      result: {
+        files: rows,
+        scope,
+        ...(truncated ? { truncated: true } : {}),
+        // The scope is stated back on EVERY result, not just when widened. A
+        // model that forgot which set it searched will otherwise report an
+        // absence it never actually established.
+        hint: scope === 'session'
+          ? 'These are the files of THIS conversation only. If Mary means a file from elsewhere, ask her before widening.'
+          : 'This searched EVERY file Mary holds, including uploads from strangers via her public form. Check `origin` and `scan_status` before putting any of these into something that leaves her machine.',
+      },
+    };
+  };
+
 const createMemorySearchHandler =
   (deps: ChatToolHandlerDeps): Tier1Handler =>
   async (raw, ctx) => {
@@ -1499,18 +1689,77 @@ const createMemorySearchHandler =
       const offset = decodeMemoryCursor(args.cursor);
 
       let ordered: UserMemoryRow[];
+      // Which relaxation rung answered + each hit's bm25 rank. Both absent on
+      // the no-query path — "the 20 most recent" is a listing, not a match, so
+      // reporting match quality about it would be a fabricated signal.
+      let matchKind: MemorySearchResult['match'];
+      /** Why rung 4 did not run, when it did not. Shapes the empty's hint so
+       *  "no semantic neighbour" and "semantic recall was never possible" stay
+       *  distinguishable to the agent. */
+      let semanticSkipped:
+        | 'no_embedder' | 'not_embedded' | 'cohort_mismatch' | 'embed_failed'
+        | undefined;
+      const rankById = new Map<string, number | null>();
       if (query !== undefined) {
         // Fetch PAST the requested offset so `next_cursor` stays truthful when
         // the agent pages deep (a fixed over-fetch would silently cap paging).
-        const ids = await store.search(
-          query,
-          offset + MEMORY_SEARCH_PAGE_SIZE * MEMORY_SEARCH_OVERFETCH,
-        );
+        const overFetch = offset + MEMORY_SEARCH_PAGE_SIZE * MEMORY_SEARCH_OVERFETCH;
+        const found = await store.search(query, overFetch);
+        matchKind = found.match;
+        let hits = found.hits;
+
+        // ── RUNG 4 — semantic, and ONLY when the lexical ladder found nothing.
+        //
+        // Conditional for a reason that is not thrift: `memory.search` is pure
+        // SQL today — zero token cost, no provider dependency, instant — and
+        // embedding the query puts an LLM call in the chat read path. Gating it
+        // on total lexical failure keeps that cost off the ~97% of queries the
+        // ladder already answers (measured 29/30 on the pilot corpus) and means
+        // NO query that works today changes at all.
+        //
+        // The case it exists for shares no token with its answer, so no amount
+        // of relaxation reaches it: "How do I turn on 2FA?" against an entry
+        // saying "two-factor authentication" matches at rung 1, 2 and 3 alike —
+        // which is to say, not at all.
+        if (hits.length === 0) {
+          const embedder = deps.getMemoryEmbedder?.();
+          const coverage = store.vectorCoverage();
+          if (embedder === undefined || coverage.model === undefined) {
+            // ⛔ NOT "nothing matches" — semantic recall never RAN. An
+            // unembedded pool and a pool with no neighbour produce identical
+            // zero rows, and conflating them is the absence-reads-as-an-answer
+            // failure. Which one is true rides out on the hint.
+            semanticSkipped = embedder === undefined ? 'no_embedder' : 'not_embedded';
+          } else {
+            try {
+              const probe = await embedder(query);
+              // Cohort guard: a query embedded by a different model than the
+              // pool is not comparable, and comparing anyway returns confident
+              // nonsense. Skip rather than mislead.
+              if (probe.model === coverage.model) {
+                hits = store.semanticSearch(probe, overFetch);
+                if (hits.length > 0) matchKind = 'semantic';
+              } else {
+                semanticSkipped = 'cohort_mismatch';
+              }
+            } catch {
+              // No embeddings path, quota, timeout. Rung 4 is an ENHANCEMENT
+              // over an already-empty answer, so a failure degrades to that
+              // empty — never to an error the agent would retry.
+              semanticSkipped = 'embed_failed';
+            }
+          }
+        }
+        for (const hit of hits) rankById.set(hit.memory_id, hit.rank);
         // Rows only — NEVER `store.get` here. `get` resolves the body (a CAS blob
         // read for every > 64 KB memory) and `list` scans the whole pool loading
         // every inline body; we need bodies for at most ONE page AFTER the budget
         // decides. Point-get the ranked ids, preserving rank order.
-        const rows = await Promise.all(ids.map((id) => store.getRow(id)));
+        // ⛔ `hits`, NOT `found.hits` — rung 4 REPLACES the (empty) lexical hits,
+        // and reading the original array here silently discarded every semantic
+        // result while still reporting `match: 'semantic'`. Each half was right;
+        // the join was the defect, and only the seam test saw it.
+        const rows = await Promise.all(hits.map((h) => store.getRow(h.memory_id)));
         ordered = rows.filter((r): r is UserMemoryRow => r !== null); // rank order preserved
       } else {
         ordered = (await store.list()).sort((a, b) => effectiveTime(b) - effectiveTime(a));
@@ -1525,10 +1774,28 @@ const createMemorySearchHandler =
 
       const page = filtered.slice(offset, offset + MEMORY_SEARCH_PAGE_SIZE);
       if (page.length === 0) {
+        if (query === undefined) {
+          return emptyMemoryResult('no memories saved yet — write one with memory.write');
+        }
+        // ⛔ SAY WHICH EMPTY THIS IS. "No entry matches" is a fact about the
+        // pool; "semantic recall could not run" is a fact about the SERVER, and
+        // an agent that reads the second as the first will tell Mary her
+        // knowledge is not there when it may simply not be embedded.
         return emptyMemoryResult(
-          query === undefined
-            ? 'no memories saved yet — write one with memory.write'
-            : `nothing in the memory pool matches '${query}'`,
+          semanticSkipped === undefined
+            ? `nothing in the memory pool matches '${query}' — including by meaning`
+            : semanticSkipped === 'not_embedded'
+              // ⛔ NO "Mary can enable it in Settings" — there is no such
+              // control yet (see `embedBacklog`'s caller gap). Naming an
+              // affordance that does not exist sends her looking for it and
+              // makes the tool the liar.
+              ? `no entry contains those words, and meaning-based recall could not be`
+                + ` tried: this pool has not been embedded. An entry phrased`
+                + ` differently would not be found, so do not conclude the knowledge`
+                + ` is absent.`
+              : `no entry contains those words. Meaning-based recall is unavailable on`
+                + ` this server, so an entry phrased differently would not be found.`
+                + ` Do not conclude the knowledge is absent.`,
         );
       }
 
@@ -1555,6 +1822,10 @@ const createMemorySearchHandler =
       }
 
       const hasMore = filtered.length > offset + page.length;
+      // Computed over the PAGE, after redaction + time filters — the set the
+      // agent is actually looking at. Computing it in the store would describe
+      // a ranking that a redacted top hit may have already invalidated.
+      const margin = topMargin(page.map((r) => rankById.get(r.memory_id) ?? null));
       return {
         ok: true,
         result: {
@@ -1564,6 +1835,8 @@ const createMemorySearchHandler =
             used_bytes: used,
             truncated_count: truncatedCount,
           },
+          ...(matchKind !== undefined ? { match: matchKind } : {}),
+          ...(margin !== null ? { top_margin: margin } : {}),
           ...(hasMore ? { next_cursor: encodeMemoryCursor(offset + page.length) } : {}),
         },
       };
@@ -2932,6 +3205,7 @@ export const buildChatTier1Handlers = (
   'account.search': createAccountSearchHandler(deps),
   'work.search': createWorkSearchHandler(deps),
   'work.read': createWorkReadHandler(deps),
+  'file.search': createFileSearchHandler(deps),
   'recipe.run': createRecipeRunHandler(deps),
 });
 
@@ -3022,13 +3296,24 @@ export const createChatRawOpDispatch = (
   const opArgs = asObject(args);
   if (opArgs === null) return invalidArgs('raw catalog-op arguments must be an object');
   const opId = toolName.slice(OP_TOOL_PREFIX.length);
+  // ⛔ REFUSE RATHER THAN DISPATCH WITHOUT A SOURCE. `executionSource` is a
+  // REQUIRED field of `RawOpDispatchRequest`, but `ctx.execution_source` is
+  // optional — and this call used to spread it in conditionally under a
+  // whole-object `as`, which silenced the missing-field check. A source-less
+  // request reaches `admitRawOp`, whose gates no-op for contract-free sources
+  // by design ("no governing contract ⇒ the gate is a no-op"; "Contract-free
+  // sources bypass" `isFrozenByPause`), and then dereferences
+  // `executionSource.channel`. Neither outcome is one to reach by accident.
+  if (!ctx.execution_source) {
+    return executionError('cannot dispatch operation: no execution source on this turn');
+  }
   try {
     const outcome = await dispatchRawOp(dispatchDeps, {
       opId,
       args: opArgs,
-      ...(ctx.execution_source ? { executionSource: ctx.execution_source } : {}),
+      executionSource: ctx.execution_source,
       ...(ctx.contract_snapshot ? { contractSnapshot: ctx.contract_snapshot } : {}),
-    } as Parameters<typeof dispatchRawOp>[1]);
+    });
     return projectRawOpOutcome(outcome);
   } catch (e) {
     return executionError(errMessage(e));

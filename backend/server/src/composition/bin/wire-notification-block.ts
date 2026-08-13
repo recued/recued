@@ -74,6 +74,11 @@ import { createInDoubtAnnotationWriter } from '../../in-doubt-annotation-writer.
 import { registerSagaReconciliation } from '../../saga-server-wiring.js';
 import { registerPickResolution } from '../../pick-server-wiring.js';
 import { registerContainerPickResolution } from '../../work-entity-container-pick-wiring.js';
+import { registerPeerAdmissionHandler } from '../../peer-admission-ask.js';
+import { registerPeerAnswerHandler } from '../../peer-answer-return.js';
+import { PEER_ASK_HANDLER_KIND } from '../../peer-ask-receiver.js';
+import { PEER_RECEIVE_ANSWER_TOOL } from '../../peer-receive-ask-recipe.js';
+import { createPeerAdmissionStore } from '../../storage/peer-admission-store.js';
 import { registerCreatePlanResolution } from '../../work-entity-create-plan-wiring.js';
 import type { WorkEntitySourceWriteExecutor } from '../../work-entity-write-executor.js';
 import { createSourceDependencyEntityStore } from '../../storage/source-dependency-entity-store.js';
@@ -380,6 +385,18 @@ export const composeNotificationBlock = (
                 id: o.id,
                 label: o.label,
               })),
+              // D-234 § 234.3 / § 234.4e — TWO more fields on an enumerating
+              // copier. This literal is the bus frame; a field it does not name
+              // never reaches any live card. `link_url` had been missing here
+              // since § 234.3, so a live ask's "read it here" affordance
+              // appeared only after the next history re-fetch.
+              ...(event.message.link_url !== undefined
+                ? { link_url: event.message.link_url }
+                : {}),
+              ...(event.note_prompt !== undefined
+                ? { note_prompt: event.note_prompt }
+                : {}),
+              ...(event.body !== undefined ? { body: event.body } : {}),
             });
             return;
           case 'notification.ask_closed':
@@ -607,6 +624,55 @@ export const composeNotificationBlock = (
   // gate). The store is a thin prepared-statement wrapper over `db` (same pattern
   // as the batch-ask store constructed inline above), so a local instance here
   // reads/writes the one `source_dependency_entity` table consistently.
+  // D-234 § 234.1 — the peer-admission answer handler. ⛔ IT DISPATCHES NOTHING:
+  // recording the decision IS the whole effect, because you can re-dispatch a
+  // REQUEST but not an IDENTITY — a peer's authority comes from their live token
+  // presentation, so a deferred re-run has no honest way to be them. The peer's
+  // next call (a manual retry, carrying its own token) claims the decision at the
+  // ceiling. That makes this the one ask leaf with no re-run dispatcher.
+  registerPeerAdmissionHandler(block, createPeerAdmissionStore(db));
+  // D-234 § 234.4 — THE RETURN LEG. Unlike the admission handler above, this one
+  // DOES dispatch: an answer is DATA, not authority, so carrying it back needs no
+  // re-presentation of anyone's identity — we call the peer under OUR connection,
+  // as ourselves. That is the whole difference § 234.4 turns on.
+  registerPeerAnswerHandler(block, PEER_ASK_HANDLER_KIND, {
+    // ⚠ THE SAME SCAN `peerConnectionNameFor` DOES IN `mcp-server`, over the
+    // SAME `config.peer_contract_id` field. Duplicated rather than shared only
+    // because the two live either side of the public boundary; if a third copy
+    // ever appears, that is the moment to lift it into one resolver.
+    connectionForContract: (peer_contract_id) => {
+      if (connectionStore === undefined || peer_contract_id === '') return undefined;
+      for (const row of connectionStore.list({ kind: 'mcp' })) {
+        try {
+          const cfg = JSON.parse(row.config_json ?? '{}') as Record<string, unknown>;
+          if (cfg.peer_contract_id === peer_contract_id) return row.name;
+        } catch { /* a malformed row names nobody */ }
+      }
+      return undefined;
+    },
+    call: async (connection, callArgs) => {
+      // ⛔ THE SAME DIRECT PATH THE ASK WENT OUT ON, and for the same reason:
+      // preflight is a property of the RUN, and there is no run here — an owner
+      // answering their own notification must not be asked to approve the
+      // delivery of the answer they just gave.
+      const { createServerExecutor } = await import('../../server-executor.js');
+      const { CONNECTION_DIRECT_SLUG } = await import('@recued/contracts');
+      const cfg = getExecuteDeps()?.executorConfig;
+      if (cfg === undefined) throw new Error('executor config not yet published');
+      return createServerExecutor(cfg)(CONNECTION_DIRECT_SLUG, {
+        connection_kind: 'mcp',
+        connection,
+        tool: PEER_RECEIVE_ANSWER_TOOL,
+        args: callArgs,
+      });
+    },
+    logActivity: (row) => {
+      try {
+        (auditLog as unknown as { logActivity?: (r: unknown) => void })
+          .logActivity?.({ ...row, timestamp: Date.now() });
+      } catch { /* the ledger is not the decision */ }
+    },
+  });
   registerContainerPickResolution(block, {
     getExecuteDeps,
     auditLog,

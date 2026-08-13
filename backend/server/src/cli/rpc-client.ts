@@ -65,7 +65,12 @@ export const callLocalRpc = async <T = unknown>(options: RpcCallOptions): Promis
     return Promise.reject(err);
   }
 
-  const url = `ws://127.0.0.1:${options.port}/ws?token=${encodeURIComponent(realm)}`;
+  // ⛔ The bearer goes in the AUTHORIZATION HEADER, not the URL. This is a Node
+  // `ws` client, so unlike a browser it can set request headers — and a URL is
+  // where secrets get written down (process listings, any layer that logs a
+  // connect target). Loopback makes the exposure small, not zero, and there is
+  // no reason to take it: `extractRealm` checks the header FIRST.
+  const url = `ws://127.0.0.1:${options.port}/ws`;
   const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
   return new Promise<T>((resolve, reject) => {
@@ -77,7 +82,7 @@ export const callLocalRpc = async <T = unknown>(options: RpcCallOptions): Promis
       try { ws.close(); } catch { /* ignore */ }
     };
 
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${realm}` } });
     const timer = setTimeout(() => {
       settle(() => reject(new RpcError('timeout', `rpc call to ${options.method} timed out after ${timeoutMs}ms`)));
     }, timeoutMs);

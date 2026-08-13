@@ -623,7 +623,38 @@ export const handleSend = async (
     safe.session_id,
   );
   ensureSession(deps, session_id);
-  const message = ensureNonEmptyString('chat.send', 'message', safe.message);
+  // D-172 P2 — a turn may be a wordless FILE DROP, mirroring messenger. The
+  // message is still required to be a string, and still required to be
+  // non-empty when nothing is attached: an empty turn with no file is a
+  // no-op the model would be paid to answer.
+  const rawMessage = typeof safe.message === 'string' ? safe.message : '';
+  // D-172 P2 — attachments the owner added to this turn. Ids only; the bytes
+  // went up the binary upload socket and were finalized before this call.
+  // ⛔ VALIDATED, NOT TRUSTED: this is untrusted wire input, and a malformed
+  // entry that reached the store would produce a message row whose attachment
+  // cannot be named — the exact "announces a file it cannot describe" shape the
+  // marker refuses. A bad entry is DROPPED rather than rejecting the turn: the
+  // person's message is the thing that matters, and failing their whole send
+  // over a mangled ref would be the worse trade.
+  const attachments = Array.isArray(safe.attachments)
+    ? safe.attachments.flatMap((raw) => {
+      if (raw === null || typeof raw !== 'object') return [];
+      const file_id = (raw as { file_id?: unknown }).file_id;
+      const media_class = (raw as { media_class?: unknown }).media_class;
+      if (typeof file_id !== 'string' || file_id.length === 0) return [];
+      return [{
+        file_id,
+        media_class: typeof media_class === 'string' && media_class.length > 0
+          ? media_class
+          : 'other',
+      }];
+    })
+    : [];
+
+  const message = attachments.length > 0
+    ? rawMessage
+    : ensureNonEmptyString('chat.send', 'message', safe.message);
+
   const pickerArg = safe.picker_state;
   if (
     !pickerArg
@@ -882,6 +913,7 @@ export const handleSend = async (
       .runTurn({
         session_id,
         message,
+        ...(attachments.length > 0 ? { attachments } : {}),
         picker_state: {
           current: pickerCurrent as ChatPickerTarget,
         },

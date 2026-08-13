@@ -205,3 +205,82 @@ describe('D-172 P2 — buildGraphMessage attachment rendering', () => {
     }
   });
 });
+
+// ────────────────────────────────────────────────────────────────
+// Filename → MIME header parameter (`mimeFilenameParameter`)
+//
+// ⛔ REGRESSION PIN. Both RFC 5322 builders used to interpolate the filename
+// raw into a quoted-string. Every assertion in this file passed throughout,
+// because each one used a filename that needed no quoting — the cases below
+// are the ones that DO. Found by driving a real send into a local SMTP sink
+// and parsing what came back out (`dev/mail-attachment-smtp-drive.ts` check
+// 6.1): `in"voice.pdf` reached the recipient as `invoice.pdf`.
+//
+// Non-ASCII is pinned on the RAW header, not on a parsed filename: the pre-fix
+// build shipped it as raw 8-bit, and a lenient parser round-trips that
+// perfectly — so an assertion phrased as "the parsed name matches" would have
+// passed on the broken build too.
+// ────────────────────────────────────────────────────────────────
+
+const attachmentNamed = (filename: string): OutgoingAttachment => ({
+  ...oneAttachment,
+  filename,
+});
+
+describe('D-172 P2 — attachment filename → MIME header parameter', () => {
+  const meta = {
+    from: 'me@example.com',
+    messageId: '<mid@example.com>',
+    sentAt: Date.UTC(2024, 0, 1, 10, 0, 0),
+  };
+
+  it('escapes a double-quote as an RFC 2822 quoted-pair (IMAP + Gmail)', () => {
+    const msg = (a: OutgoingAttachment): OutgoingMessage => ({
+      to: ['a@example.com'], subject: 'hi', body_text: 'hello', attachments: [a],
+    });
+    const att = attachmentNamed('in"voice.pdf');
+    for (const out of [
+      buildImapRfc5322(msg(att), meta),
+      buildGmailRfc5322(msg(att), 1_700_000_000_000),
+    ]) {
+      expect(out).toContain('Content-Disposition: attachment; filename="in\\"voice.pdf"');
+      expect(out).toContain('name="in\\"voice.pdf"');
+      // The unescaped form is what truncated the name at the recipient.
+      expect(out).not.toContain('filename="in"voice.pdf"');
+    }
+  });
+
+  it('escapes a backslash as a quoted-pair', () => {
+    const out = buildImapRfc5322(
+      {
+        to: ['a@example.com'], subject: 'hi', body_text: 'hello',
+        attachments: [attachmentNamed('back\\slash.pdf')],
+      },
+      meta,
+    );
+    expect(out).toContain('filename="back\\\\slash.pdf"');
+  });
+
+  it('RFC 2231-encodes a non-ASCII name and keeps an ASCII fallback', () => {
+    const out = buildImapRfc5322(
+      {
+        to: ['a@example.com'], subject: 'hi', body_text: 'hello',
+        attachments: [attachmentNamed('facturé.pdf')],
+      },
+      meta,
+    );
+    expect(out).toContain("filename*=UTF-8''factur%C3%A9.pdf");
+    expect(out).toContain('filename="factur_.pdf"');
+    // Raw 8-bit in a header is what RFC 5322 forbids and what shipped before.
+    expect(out).not.toContain('filename="facturé.pdf"');
+  });
+
+  it('leaves an ordinary ASCII name untouched (no gratuitous encoding)', () => {
+    const out = buildImapRfc5322(
+      { to: ['a@example.com'], subject: 'hi', body_text: 'hello', attachments: [oneAttachment] },
+      meta,
+    );
+    expect(out).toContain('Content-Disposition: attachment; filename="contract.pdf"');
+    expect(out).not.toContain("filename*=");
+  });
+});

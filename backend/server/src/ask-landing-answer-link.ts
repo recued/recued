@@ -91,3 +91,56 @@ export const buildAskLandingAnswerLink = (
   return (ask_id: string): string =>
     `${base}${PATH_FOR_ROLE.ask}/${encodeURIComponent(ask_id)}`;
 };
+
+/** D-234 § 234.3 — resolve a recipe's `metadata.owner_surface` to an ABSOLUTE
+ *  deep link at the webclient, or null when this server has no public base URL.
+ *
+ *  🔑 THE SPLIT THIS EXISTS TO KEEP: the RECIPE knows which surface reads its
+ *  output (it names a `recipe_id`); the HOST knows where this server lives. A
+ *  recipe that tried to author the URL itself would emit one that resolves for
+ *  nobody — every channel carrying `link_url` needs an absolute url (email
+ *  appends it raw, remote passes it through, the ask landing runs it through
+ *  `safeHttpUrl`), and the only public base URL is a boot-time fact.
+ *
+ *  ⚠ Null on a non-public server, exactly like {@link buildAskLandingAnswerLink}
+ *  — same base, same binary presence, so an owner never gets a link that cannot
+ *  be opened from where the notification reached them.
+ *
+ *  ⚠ The hash route is the webclient's own (`serializeShellRoute('recipes', id)`
+ *  → `#recipes/<id>`); the id is URL-encoded because a recipe id may carry a
+ *  `publisher/name` slash. */
+export const buildOwnerSurfaceLink = (
+  baseUrl: string | null,
+): ((recipe_id: string) => string) | null => {
+  if (baseUrl === null) return null;
+  const base = baseUrl;
+  return (recipe_id: string): string =>
+    `${base}/#recipes/${encodeURIComponent(recipe_id)}`;
+};
+
+/** D-234 § 234.3 — the whole "does this ask get a link?" decision, in one place.
+ *
+ *  ⛔ THREE WAYS TO HAVE NO LINK, AND A LINK IS RETURNED ONLY WHEN NONE HOLD:
+ *    1. the recipe named no surface;
+ *    2. this server has no public base URL (`resolveLink` is null);
+ *    3. THE NAMED RECIPE IS NOT INSTALLED HERE.
+ *
+ *  The third is the one that needs code rather than a comment. The name travels
+ *  in a recipe authored by the SENDER and is resolved on the RECEIVER, so it can
+ *  perfectly well name something this server has never had — and a dead deep
+ *  link in the only notification an owner receives reads as "nothing here" and
+ *  as "could not find it" with the same pixels. No link is the honest version.
+ *
+ *  Extracted from the ceiling so it is provable without booting an executor:
+ *  the failing input here is a name that resolves to nothing, which is exactly
+ *  what no live drive can arrange (a drive ships both halves of its own pack).
+ */
+export const resolveOwnerSurfaceUrl = (
+  owner_surface: unknown,
+  isInstalled: (recipe_id: string) => boolean,
+  resolveLink: ((recipe_id: string) => string) | undefined,
+): string | undefined => {
+  if (typeof owner_surface !== 'string' || owner_surface === '') return undefined;
+  if (!isInstalled(owner_surface)) return undefined;
+  return resolveLink?.(owner_surface);
+};

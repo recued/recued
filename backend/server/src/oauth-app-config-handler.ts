@@ -13,6 +13,7 @@
 
 import {
   OAUTH_APP_ISSUERS,
+  totalRecord,
   RpcError,
   type HandlerSlice,
   type ServerRpcRegistry,
@@ -64,9 +65,7 @@ export const makeOAuthAppConfigHandlers = (
     methods: ['server.getOAuthAppConfig', 'server.setOAuthAppConfig', 'server.clearOAuthAppConfig'],
     handlers: {
       'server.getOAuthAppConfig': async () => {
-        const snap = {} as OAuthAppConfigSnapshot;
-        for (const issuer of OAUTH_APP_ISSUERS) snap[issuer] = statusFor(issuer);
-        return snap;
+        return totalRecord(OAUTH_APP_ISSUERS, (issuer) => statusFor(issuer));
       },
       'server.setOAuthAppConfig': async (args) => {
         if (!isIssuer(args.issuer)) {

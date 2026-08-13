@@ -38,7 +38,10 @@ export type KeyClass =
   | 'webclient_token'
   | 'webhook_secret';
 
-export const KEY_CLASSES: ReadonlyArray<KeyClass> = [
+/** ⚠ NO `: ReadonlyArray<KeyClass>` annotation — it would WIDEN the `as const`
+ *  and make the exhaustiveness proof below vacuous. See PATH_ROLES in
+ *  `network.ts` for the full note. */
+export const KEY_CLASSES = [
   'master_dek',
   'sub_dek',
   'server_identity_key',
@@ -46,7 +49,14 @@ export const KEY_CLASSES: ReadonlyArray<KeyClass> = [
   'tls_private_key',
   'webclient_token',
   'webhook_secret',
-] as const;
+] as const satisfies readonly KeyClass[];
+
+/** Compile-time proof that no `KeyClass` is missing above — what keeps
+ *  `totalRecord(KEY_CLASSES, …)` sound rather than an assertion. */
+type KeyClassesAreExhaustive =
+  Exclude<KeyClass, (typeof KEY_CLASSES)[number]> extends never ? true : never;
+const _keyClassesAreExhaustive: KeyClassesAreExhaustive = true;
+void _keyClassesAreExhaustive;
 
 /** Closed list of operations. A key class supports zero or more.
  *  `decrypt` is the only encryption-side op (encryption uses the same

@@ -47,7 +47,7 @@ import { KERNEL_OP_PREFIX } from './op-model.js';
 /** The closed set of grant-entry kinds. `op` = the verb a contract may invoke;
  *  `collection` = a raw warehouse-collection read; `topic` = an enrichment-topic
  *  read. All three live in ONE per-contract grant set (amendment §2). */
-export const GRANT_ENTRY_KINDS = ['op', 'collection', 'topic'] as const;
+export const GRANT_ENTRY_KINDS = ['op', 'collection', 'topic', 'peer_label'] as const;
 
 /** String-literal union derived from {@link GRANT_ENTRY_KINDS}. */
 export type GrantEntryKind = (typeof GRANT_ENTRY_KINDS)[number];
@@ -116,6 +116,21 @@ export const INGREDIENT_GRANT_PREFIX = 'ingredient.';
  *  strings, so declaration collision checks need the exact `core.` form. */
 export const KERNEL_GRANT_PREFIX = `${KERNEL_OP_PREFIX}.`;
 
+/** D-234 § 234.4h — the `peer_label`-kind entry-key prefix. A key
+ *  `peer.label.<label>` grants this contract's peer the right to put questions
+ *  to the owner under that exact label.
+ *
+ *  ⚠ THE LABEL IS FREE-FORM AND MATCHED EXACTLY, and the prefix is what keeps
+ *  that safe: an author cannot name an operation `peer.label.*` (it joins
+ *  {@link RESERVED_GRANT_ENTRY_PREFIXES}), so a label can never be mistaken for
+ *  an op grant or vice versa. Kernel ops lead `core.`, pack ops carry a `/`
+ *  before any `.` — neither collides. */
+export const PEER_LABEL_GRANT_PREFIX = 'peer.label.';
+
+/** Format the grant entry-key for one peer capability label. */
+export const peerLabelGrantEntry = (label: string): string =>
+  `${PEER_LABEL_GRANT_PREFIX}${label}`;
+
 /** The reserved prefixes an `op`-kind entry-key (an `operation_id`) must NOT
  *  start with — the invariant that lets `classifyGrantEntry` treat "neither
  *  reserved prefix" as `op`. Kernel ops start `core.`; pack ops carry a `/`
@@ -123,6 +138,7 @@ export const KERNEL_GRANT_PREFIX = `${KERNEL_OP_PREFIX}.`;
 export const RESERVED_GRANT_ENTRY_PREFIXES: readonly string[] = Object.freeze([
   COLLECTION_GRANT_PREFIX,
   TOPIC_GRANT_PREFIX,
+  PEER_LABEL_GRANT_PREFIX,
 ]);
 
 /** Prefixes a catalog/manifest-declared operation id may not claim.
@@ -211,6 +227,7 @@ export const opGrantEntry = (operationId: string): string => {
 export const classifyGrantEntry = (entryKey: string): GrantEntryKind => {
   if (entryKey.startsWith(COLLECTION_GRANT_PREFIX)) return 'collection';
   if (entryKey.startsWith(TOPIC_GRANT_PREFIX)) return 'topic';
+  if (entryKey.startsWith(PEER_LABEL_GRANT_PREFIX)) return 'peer_label';
   return 'op';
 };
 
@@ -223,7 +240,8 @@ export const classifyGrantEntry = (entryKey: string): GrantEntryKind => {
 export type ParsedGrantEntry =
   | { readonly kind: 'op'; readonly value: string }
   | { readonly kind: 'collection'; readonly value: string }
-  | { readonly kind: 'topic'; readonly value: string };
+  | { readonly kind: 'topic'; readonly value: string }
+  | { readonly kind: 'peer_label'; readonly value: string };
 
 /** Parse a stored entry-key into its kind + kind-specific value. Total +
  *  never-throws (the inverse of the `*GrantEntry` formatters). Use when a
@@ -236,12 +254,20 @@ export const parseGrantEntry = (entryKey: string): ParsedGrantEntry => {
   if (entryKey.startsWith(TOPIC_GRANT_PREFIX)) {
     return { kind: 'topic', value: entryKey.slice(TOPIC_GRANT_PREFIX.length) };
   }
+  if (entryKey.startsWith(PEER_LABEL_GRANT_PREFIX)) {
+    return { kind: 'peer_label', value: entryKey.slice(PEER_LABEL_GRANT_PREFIX.length) };
+  }
   return { kind: 'op', value: entryKey };
 };
 
 /** Predicate — true iff `entryKey` classifies as `op`. */
 export const isOpGrantEntry = (entryKey: string): boolean =>
   classifyGrantEntry(entryKey) === 'op';
+
+// ⛔ NO `isPeerLabelGrantEntry`. Its three siblings each have two callers; this
+// one had none, in production or in tests — `npm run audit:zero-consumer` named
+// it the day after § 234.4h added it. Written for symmetry, which is not a
+// consumer. Add it back when something asks the question.
 
 /** Predicate — true iff `entryKey` classifies as `collection`. */
 export const isCollectionGrantEntry = (entryKey: string): boolean =>

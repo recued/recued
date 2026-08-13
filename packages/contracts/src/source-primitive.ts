@@ -429,6 +429,73 @@ export const deriveExchangeStatus = (
 // D-232 § 24 — retry, and the four times you must not
 // ════════════════════════════════════════════════════════════════
 
+// ════════════════════════════════════════════════════════════════
+// D-234 § 234.2 — is this inbound call a REPLY I asked for?
+// ════════════════════════════════════════════════════════════════
+
+/** One run already filed under an exchange ref, as the correlation check sees it. */
+export interface ExchangeCorrelationRow {
+  readonly recipe_id: string;
+  /** The contract the run was executed under, when it had one. Absent for the
+   *  owner's own runs — which is exactly the signal that WE opened this. */
+  readonly contract_id?: string;
+  /** D-234 § 234.2 — where the run that opened the exchange said to answer, as
+   *  the WIRE NAME (`<publisher>/<recipe_id>`). */
+  readonly callback_op?: string;
+}
+
+/** Should an inbound peer call be admitted as a REPLY we solicited?
+ *
+ *  ⛔⛔ THE ASYMMETRY THIS ENCODES: UNSOLICITED FACES THE CEILING, SOLICITED IS
+ *  ADMITTED BY OUR OWN RECORD OF HAVING SOLICITED IT. Asking the owner "do you
+ *  want the answer you asked for?" is both absurd and dangerous — it lets a
+ *  server starve its own conversations, and § 19.4 already calls silence the
+ *  worst outcome for a correspondent. But blind trust is worse: a landing recipe
+ *  does real work (in the review case, it is where the mail is actually SENT), so
+ *  "it claims to be a reply" cannot be enough.
+ *
+ *  🔑 THE PEER'S REF IS A LOOKUP KEY, NEVER A CREDENTIAL. `exchange_ref` is
+ *  caller-supplied — it rides in `EXCHANGE_ENVELOPE_KEYS` precisely so it can
+ *  round-trip. Authority here comes from OUR OWN ROWS: a ref we never opened
+ *  finds nothing and falls straight through to the ceiling. Same posture as
+ *  § 30's peer ack (peer-supplied, validated, used as data).
+ *
+ *  🔑 CORRELATION ADMITS; IT NEVER AUTHORIZES. The reply still runs under the
+ *  peer's contract, so their grants still fence what the landing recipe may do.
+ *  This answers only "did I ask for this?" — the same line the container pick
+ *  draws when it says the pick DISAMBIGUATES but never AUTHORIZES.
+ *
+ *  Four conditions, and the last two are what keep it narrow:
+ *   1. the ref names an exchange we have rows for;
+ *   2. at least one of those rows is OURS (not run under the calling peer's
+ *      contract) — otherwise a peer who merely called us once could later cite
+ *      their own inbound run as evidence that we solicited them;
+ *   3. the recipe being invoked is the one we NAMED as `callback_op`. ⛔ Without
+ *      this the admission is far too wide: a peer holding any ref we opened could
+ *      skip the entry ask for ANY recipe their contract reaches;
+ *   4. that recipe has not already run under this ref — one solicitation admits
+ *      one reply, so a replayed answer faces the ceiling like anything else. */
+export const isSolicitedReply = (
+  rows: readonly ExchangeCorrelationRow[],
+  input: { recipe_id: string; caller_contract_id: string },
+): boolean => {
+  if (rows.length === 0) return false;
+  // (2) — evidence that WE participated, not merely that they called.
+  if (!rows.some((r) => r.contract_id !== input.caller_contract_id)) return false;
+  // (4) — one solicitation, one reply.
+  if (rows.some((r) => r.recipe_id === input.recipe_id)) return false;
+  // (3) — and it must be where we said to answer. ⚠ Accept either spelling: the
+  // stamp is the WIRE NAME a recipe authors, audit rows carry the bare id. The
+  // same normalization `deriveExchangeStatus` needed, for the same reason —
+  // comparing them raw silently answers "no" for a correct reply.
+  return rows.some((r) => {
+    const declared = r.callback_op;
+    if (declared === undefined || declared === '') return false;
+    return declared.slice(declared.indexOf('/') + 1) === input.recipe_id
+      || declared === input.recipe_id;
+  });
+};
+
 /** ⚠ THE WHOLE POLICY, IN ONE PLACE, BECAUSE A CALLER MADE TO RE-DERIVE IT WILL
  *  EVENTUALLY GET IT WRONG IN THE EXPENSIVE DIRECTION. */
 export const EXCHANGE_RETRY_MAX_ATTEMPTS = 4;

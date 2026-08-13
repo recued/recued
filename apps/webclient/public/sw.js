@@ -82,6 +82,21 @@
 // including the fallback that reports a failed bundle load; a client left on v8
 // caches an index.html that references a file its shell has never held. Bumping
 // evicts v8 on activate.
+// v10 (2026-08-12) — the WS bearer moved off the URL into
+// `Sec-WebSocket-Protocol`. This one is not cosmetic: a client left on v9 sends
+// `?token=` and a client on v10 sends the subprotocol, and the SERVER decides
+// which it accepts. Until a server release carries the `extractRealm` change,
+// a v10 client cannot connect to it at all — so the shell must replace itself
+// promptly rather than linger a session behind, or a user upgrading their
+// server would still be running the client that predates the change. Bumping
+// evicts v9 on activate.
+// v11 (2026-08-12) — v10 reached STAGING ONLY and was superseded before it ever
+// shipped to production: a pre-deploy grep of the minified bundle showed the
+// bearer was still being written into a URL by the four DATA sockets (upload /
+// download / archive-upload), which v10's rpc-socket fix had not touched. v10's
+// shell is therefore live on app.recued2.com with a bundle nobody should keep;
+// bumping evicts it there and gives production a name that has never served
+// anything else.
 /** Every cache this app owns starts with this — the shell cache below and any
  *  future sibling. It is what distinguishes ours from everyone else's on the
  *  same origin, which is what makes the sweeps safe to run on a self-host
@@ -98,7 +113,7 @@ const CACHE_PREFIX = 'webclient-';
 // opens. Writing this as `` `${CACHE_PREFIX}v9` `` reddens that test rather than
 // drifting silently, which is the behaviour you want; it just means the prefix
 // relationship is asserted separately instead of expressed here.
-const CACHE_NAME = 'webclient-shell-v9';
+const CACHE_NAME = 'webclient-shell-v11';
 
 /** Pre-cache list — the app shell. Network-only for everything else.
  *  Adding a new shell asset requires an entry here + a `CACHE_NAME`

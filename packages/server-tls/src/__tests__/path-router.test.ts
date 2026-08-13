@@ -14,6 +14,8 @@ import {
   DEFAULT_PATH_RESOLUTION,
   EXPOSURE_PRESET_PATH_MAP,
   PATH_FOR_ROLE,
+  PATH_ROLES,
+  totalRecord,
   type PathResolution,
   type PathRole,
 } from '@recued/contracts';
@@ -85,20 +87,18 @@ const buildSocket = (): StubSocket => {
   };
 };
 
-const allRoles: PathRole[] = ['health', 'ws', 'mcp', 'llm_gateway', 'webhooks', 'reception'];
 
 const buildRoleHandlers = (
   spy?: (role: PathRole, url: string) => void,
 ): Record<PathRole, PortRequestHandler> => {
-  const out = {} as Record<PathRole, PortRequestHandler>;
-  for (const role of allRoles) {
-    out[role] = (req, res) => {
+  const out = totalRecord(PATH_ROLES, (role): PortRequestHandler => {
+    return (req, res) => {
       spy?.(role, req.url ?? '');
       res.statusCode = 200;
       res.setHeader('content-type', 'text/plain');
       res.end(`role:${role}`);
     };
-  }
+  });
   return out;
 };
 
@@ -146,7 +146,12 @@ const parse404 = (body: string): { code?: string } => {
 // ────────────────────────────────────────────────────────────────
 
 describe('path-router request — happy path per role', () => {
-  it.each(allRoles)('dispatches /<role-base> to the matching handler', async (role) => {
+  // ⛔ PATH_ROLES, NOT A HAND-SPELLED LIST. This used to iterate a local six while
+  // `PathRole` had NINE, so `oauth`, `ask` and `webclient` routing was never
+  // exercised — and the handler map's cast to a total `Record<PathRole, …>` meant
+  // nothing said so. Driving the parametrised test off the canonical list means a
+  // new role joins it by itself.
+  it.each(PATH_ROLES)('dispatches /<role-base> to the matching handler', async (role) => {
     const spy = vi.fn();
     const router = createPathRouter({
       resolution: allOn,
@@ -1316,9 +1321,16 @@ describe('path-router request — R26.2 Delta 3 webclient path role', () => {
   });
 
   it('404s when handlers.webclient is unset (no bundle loaded at boot)', async () => {
+    // ⚠ The omission is STATED here, not inherited. This test used to rely on
+    // `buildRoleHandlers()` happening to leave `webclient` out — an accident of a
+    // hand-spelled role list, invisible because the helper's return was cast to a
+    // total Record. Once the helper covered every role this test went red, which
+    // is the right outcome: the behaviour under test is a MISSING handler, so the
+    // test has to remove one. `handlers` is `Partial<…>`, so this needs no cast.
+    const { webclient: _noBundleAtBoot, ...handlersWithoutWebclient } = buildRoleHandlers();
     const router = createPathRouter({
       resolution: allOn,
-      handlers: buildRoleHandlers(), // no webclient entry
+      handlers: handlersWithoutWebclient,
       listener: 'lan',
     });
     const { res, statusCode, body } = buildRes();

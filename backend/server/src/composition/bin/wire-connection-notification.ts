@@ -27,6 +27,7 @@ import {
   createConnectionNotificationHandler,
   type ConnectionNotificationHandlerDeps,
 } from '@recued/ingredients';
+import { NOTIFICATION_DELIVERY_CHANNELS, totalRecord } from '@recued/contracts';
 import type { ConnectionStoreSqlite } from '../../storage/connection-store.js';
 import type { CollectionRegistry } from '../../collections/registry.js';
 import type { EventBus } from '../../events/bus.js';
@@ -106,15 +107,36 @@ export const composeConnectionNotification = (
   // own. Order in the resulting map mirrors registry order so boot
   // diagnostics are deterministic, but every key is accessed by
   // channel id (not by index) downstream.
-  const channelDispatchers = {} as Record<NotificationChannel, NotificationChannelDispatcher>;
+  const booted: Partial<Record<NotificationChannel, NotificationChannelDispatcher>> = {};
   for (const entry of NOTIFICATION_CHANNEL_REGISTRY) {
-    channelDispatchers[entry.channel] = entry.boot({
+    booted[entry.channel] = entry.boot({
       connectionStore,
       notificationHandler,
       channel: entry.channel,
       subtype: entry.subtype,
     });
   }
+  // ⛔ COMPLETENESS IS CHECKED HERE, LOUDLY — this is the failure the registry's
+  // own note describes ("an ARRAY cannot be checked for completeness by the
+  // compiler … no dispatcher, meaning `notification.send` aimed at it would
+  // resolve, enrol, probe healthy, and then do NOTHING. Green, ready, and mute:
+  // the same failure this arc has now met three times").
+  //
+  // The map used to be built as `{} as Record<NotificationChannel, …>`, and that
+  // cast asserted every key was present — so a channel missing from the array
+  // produced `undefined` typed as a dispatcher, which is exactly the mute path.
+  // `NOTIFICATION_DELIVERY_CHANNELS` is the derived source of the union, so this
+  // walk is total by construction and a gap now fails the BOOT, not a send.
+  const channelDispatchers = totalRecord(NOTIFICATION_DELIVERY_CHANNELS, (channel) => {
+    const dispatcher = booted[channel];
+    if (dispatcher === undefined) {
+      throw new Error(
+        `connection-notification: no dispatcher registered for channel '${channel}' `
+        + '— add an entry to NOTIFICATION_CHANNEL_REGISTRY',
+      );
+    }
+    return dispatcher;
+  });
 
   return { notificationDeps, notificationHandler, channelDispatchers };
 };

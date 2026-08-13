@@ -34,6 +34,7 @@ import type { CrmRecordMirrorStore } from '../storage/crm-record-mirror-store.js
 import type { RecipeStore } from '../recipe-store.js';
 import type { BlobStore } from '../storage/blob-store.js';
 import type { WorkEntityStore } from '../storage/work-entity-store.js';
+import type { UserMemoryStore } from '../user-memory-store.js';
 import type { WarehouseEventBus } from '@recued/warehouse-events';
 
 import type { TrustStore } from './trust-store.js';
@@ -221,6 +222,16 @@ export interface HousekeepingContext {
    *  + deterministic producers. AI-embed producers throw at use-site
    *  when this is absent so misconfiguration surfaces cleanly. */
   embed?: HousekeepingEmbedExecute;
+  /** The owner's curated memory pool, for the `memory-embed-backlog`
+   *  task that fills rung 4's vector sidecar.
+   *
+   *  ⚠ NOT an enrichment scope. The pool's vectors live beside it in
+   *  `user_memory_vec`, not in `data_enrichment` — `EnrichmentScope` has
+   *  no `memory` arm and adding one is a multi-commit arc through a
+   *  closed vocabulary. Housekeeping is here only as the SCHEDULER for a
+   *  token-spending backlog, which is the part it is genuinely good at.
+   *  Absent (dbless harness) → the task no-ops. */
+  userMemoryStore?: UserMemoryStore;
   /** D-172 P6 — transcription executor for file-enrichment producers
    *  over voice `data.file` records. Wired through `transcribe` from
    *  `bin.ts`; optional for deterministic producers and tests. The

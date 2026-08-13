@@ -427,4 +427,3 @@ export const createApprovalResumeAuthorityResolver = (
   },
 });
 
-export const _testing = { llmGatewayTokenId };

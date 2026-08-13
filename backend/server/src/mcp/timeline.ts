@@ -960,15 +960,6 @@ export const handleTimelineRequest = async (
   return rollups === undefined ? base : { ...base, rollups };
 };
 
-/** Test-only export — exposes the internal merge comparator + cursor
- *  predicate so tests can assert ordering + cursor semantics without
- *  spinning up the full DB. Not part of the public API. */
-export const _testing: {
-  compareDesc: typeof compareDesc;
-  passesCursor: typeof passesCursor;
-  mergeKey: typeof mergeKey;
-} = { compareDesc, passesCursor, mergeKey };
-
 /** Re-export so consumers (mcp-server.ts) can name the supplier
  *  callback type without reaching into the contracts package twice. */
 export type { TimelineSource };

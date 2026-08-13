@@ -51,6 +51,7 @@
  *  Spec: D-157 § N.8 SHOULD/MAY + D-158
  *  staleness guard (P3 / O-5). */
 
+import { isHeldRunAnchorStatus } from '@recued/contracts';
 import type { Checkpoint, RecipeError } from '@recued/contracts';
 import {
   buildAuditEntry,
@@ -264,9 +265,17 @@ export const createCheckpointRetention = (
         continue;
       }
 
+      // D-234 § 234.4 — ⛔⛔ THE PREDICATE, NOT THE LITERAL, AND THIS IS THE SITE
+      // THAT PROVES WHY THE PREDICATE EXISTS. This branch classifies a checkpoint
+      // as GARBAGE and deletes it. Comparing against `'awaiting_approval'` alone
+      // means every run held for a PEER'S answer looks like crash residue, and
+      // gets swept after the grace period — the run destroyed, silently, with no
+      // test catching it because no fixture writes the new status. `isHeld…`
+      // asks the question this branch actually means: is a live hold still
+      // pointing at this checkpoint?
       if (
         anchor === null
-        || anchor.commit_status !== 'awaiting_approval'
+        || !isHeldRunAnchorStatus(anchor.commit_status)
         || (anchor.checkpoint_id !== undefined
           && anchor.checkpoint_id !== checkpoint.checkpoint_id)
       ) {
@@ -288,9 +297,13 @@ export const createCheckpointRetention = (
           // normal outcome — in particular a terminal batch member's
           // anchor can point at the shared batch ask, which by then is
           // past `open` (members only resume through an answer).
+          // ⚠ ALSO THE PREDICATE, for the same reason one level down: this
+          // closes a zombie prompt on a TERMINAL anchor. A peer-held anchor is
+          // not terminal, and cancelling its ask would be cancelling a live
+          // conversation on ANOTHER server.
           if (
             anchor !== null
-            && anchor.commit_status !== 'awaiting_approval'
+            && !isHeldRunAnchorStatus(anchor.commit_status)
             && anchor.ask_id !== undefined
             && deps.askHooks !== undefined
           ) {

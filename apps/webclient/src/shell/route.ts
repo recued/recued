@@ -38,6 +38,11 @@ export const WEBCLIENT_ROUTE_IDS = [
   'data',
   'logs',
   'chat',
+  // D-145 PA7 / D-172 P2 — the mail compose host. NOT a mail client: a mailbox
+  // roster plus the compose window. D-174 D12 puts email's long-term home in
+  // Chat; this is the first host, and `mountMailCompose` is shaped so Chat
+  // becomes the second without moving it.
+  'mail',
 ] as const;
 export type WebclientRouteId = (typeof WEBCLIENT_ROUTE_IDS)[number];
 const WEBCLIENT_ROUTE_ID_SET: ReadonlySet<string> = new Set(WEBCLIENT_ROUTE_IDS);

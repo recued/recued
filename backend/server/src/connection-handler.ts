@@ -6,11 +6,18 @@
  *
  *  Core lifecycle methods: list / enroll / update / verified credential
  *  rotation / delete / probe. Server is authoritative — the durable SQLite
- *  row lives in `storage/
- *  connection-store.ts`; paired clients mirror via the pair sync wire.
- *  Pair sync rides on `contract.connection_record.*` (sync_transport:
- *  'pair' per D-166). D-168 retired cloud sync entirely — there is no
- *  cloud `/v1/sync` route.
+ *  row lives in `storage/connection-store.ts`.
+ *
+ *  ⛔ Clients PULL the record; they do not mirror it. This said "paired
+ *  clients mirror via the pair sync wire … pair sync rides on
+ *  `contract.connection_record.*` (sync_transport: 'pair' per D-166)".
+ *  Neither exists: `sync_transport` is absent from `contract-schema.ts`
+ *  and `contract.connection_record` has no runtime path. What actually
+ *  happens is `collection.connection.list` on demand plus a
+ *  `recipe_runnability_changed` broadcast recomputed post-commit by
+ *  `recipeRunnabilityBroadcast` — there is no connection-record kind in
+ *  `DEFAULT_SUBSCRIPTIONS`. Ruled won't-do 2026-08-11 (D-166 amendment).
+ *  D-168 retired cloud sync entirely — there is no cloud `/v1/sync` route.
  *
  *  Auth handling: the rpc accepts `ConnectionAuth` plaintext over
  *  the secure pair channel. `encodeAuthForStorage` AEAD-encrypts under

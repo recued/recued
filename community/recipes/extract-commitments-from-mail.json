@@ -34,22 +34,22 @@
   ],
   "steps": [
     {
-      "id": "subject",
-      "transform": "default",
-      "value": "{{step.message.record.hot_fields.subject}}",
-      "fallback": ""
-    },
-    {
-      "id": "from_email",
-      "transform": "default",
-      "value": "{{step.message.record.hot_fields.from}}",
-      "fallback": ""
-    },
-    {
-      "id": "thread_id",
-      "transform": "default",
-      "value": "{{step.message.record.hot_fields.thread_id}}",
-      "fallback": ""
+      "id": "defaults",
+      "transform": "defaults",
+      "fields": {
+        "subject": {
+          "value": "{{step.message.record.hot_fields.subject}}",
+          "fallback": ""
+        },
+        "from_email": {
+          "value": "{{step.message.record.hot_fields.from}}",
+          "fallback": ""
+        },
+        "thread_id": {
+          "value": "{{step.message.record.hot_fields.thread_id}}",
+          "fallback": ""
+        }
+      }
     },
     {
       "id": "has_thread_id",
@@ -147,9 +147,18 @@
         "body": "{{step.body}}"
       },
       "fields": [
-        { "path": "from", "kind": "email" },
-        { "path": "subject", "kind": "content" },
-        { "path": "body", "kind": "content" }
+        {
+          "path": "from",
+          "kind": "email"
+        },
+        {
+          "path": "subject",
+          "kind": "content"
+        },
+        {
+          "path": "body",
+          "kind": "content"
+        }
       ]
     },
     {
@@ -177,28 +186,26 @@
       "ledger_handle": "{{step.protect.ledger_handle}}"
     },
     {
-      "id": "extracted_statement",
-      "transform": "default",
-      "value": "{{step.restore.restored.statement}}",
-      "fallback": ""
-    },
-    {
-      "id": "extracted_direction",
-      "transform": "default",
-      "value": "{{step.restore.restored.direction}}",
-      "fallback": "inbound"
-    },
-    {
-      "id": "extracted_confidence",
-      "transform": "default",
-      "value": "{{step.restore.restored.derivation_confidence}}",
-      "fallback": 0
-    },
-    {
-      "id": "extracted_counterparty_email",
-      "transform": "default",
-      "value": "{{step.restore.restored.counterparty_email}}",
-      "fallback": ""
+      "id": "defaults_2",
+      "transform": "defaults",
+      "fields": {
+        "extracted_statement": {
+          "value": "{{step.restore.restored.statement}}",
+          "fallback": ""
+        },
+        "extracted_direction": {
+          "value": "{{step.restore.restored.direction}}",
+          "fallback": "inbound"
+        },
+        "extracted_confidence": {
+          "value": "{{step.restore.restored.derivation_confidence}}",
+          "fallback": 0
+        },
+        "extracted_counterparty_email": {
+          "value": "{{step.restore.restored.counterparty_email}}",
+          "fallback": ""
+        }
+      }
     },
     {
       "id": "counterparty_email",
@@ -206,16 +213,18 @@
       "input": "{{step.extracted_counterparty_email}}"
     },
     {
-      "id": "extracted_monetary_amount",
-      "transform": "default",
-      "value": "{{step.restore.restored.monetary_amount}}",
-      "fallback": ""
-    },
-    {
-      "id": "extracted_monetary_currency",
-      "transform": "default",
-      "value": "{{step.restore.restored.monetary_currency}}",
-      "fallback": ""
+      "id": "defaults_3",
+      "transform": "defaults",
+      "fields": {
+        "extracted_monetary_amount": {
+          "value": "{{step.restore.restored.monetary_amount}}",
+          "fallback": ""
+        },
+        "extracted_monetary_currency": {
+          "value": "{{step.restore.restored.monetary_currency}}",
+          "fallback": ""
+        }
+      }
     },
     {
       "id": "promised_for_at",
@@ -291,17 +300,50 @@
       "id": "card",
       "transform": "to_summary",
       "fields": [
-        { "label": "Mail thread",        "value": "{{step.thread_id}}" },
-        { "label": "Subject",            "value": "{{step.subject}}" },
-        { "label": "Statement",          "value": "{{step.extracted_statement}}" },
-        { "label": "Direction",          "value": "{{step.extracted_direction}}" },
-        { "label": "Confidence",         "value": "{{step.extracted_confidence:number}}" },
-        { "label": "Counterparty email", "value": "{{step.extracted_counterparty_email}}" },
-        { "label": "Counterparty contact", "value": "{{step.resolve_counterparty.contact.email}}" },
-        { "label": "Monetary amount",    "value": "{{step.extracted_monetary_amount}}" },
-        { "label": "Monetary currency",  "value": "{{step.extracted_monetary_currency}}" },
-        { "label": "Skipped",            "value": "{{step.skip_create}}" },
-        { "label": "Commitment ID",      "value": "{{step.create.commitment.id}}" }
+        {
+          "label": "Mail thread",
+          "value": "{{step.thread_id}}"
+        },
+        {
+          "label": "Subject",
+          "value": "{{step.subject}}"
+        },
+        {
+          "label": "Statement",
+          "value": "{{step.extracted_statement}}"
+        },
+        {
+          "label": "Direction",
+          "value": "{{step.extracted_direction}}"
+        },
+        {
+          "label": "Confidence",
+          "value": "{{step.extracted_confidence:number}}"
+        },
+        {
+          "label": "Counterparty email",
+          "value": "{{step.extracted_counterparty_email}}"
+        },
+        {
+          "label": "Counterparty contact",
+          "value": "{{step.resolve_counterparty.contact.email}}"
+        },
+        {
+          "label": "Monetary amount",
+          "value": "{{step.extracted_monetary_amount}}"
+        },
+        {
+          "label": "Monetary currency",
+          "value": "{{step.extracted_monetary_currency}}"
+        },
+        {
+          "label": "Skipped",
+          "value": "{{step.skip_create}}"
+        },
+        {
+          "label": "Commitment ID",
+          "value": "{{step.create.commitment.id}}"
+        }
       ]
     }
   ],

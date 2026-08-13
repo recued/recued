@@ -178,7 +178,21 @@ const WHERE_MANAGED: Partial<Record<KeyClass, string>> = {
  *  button. `tls_private_key` / `webclient_token` are managed elsewhere;
  *  `webhook_secret` needs a per-vendor selector (and is unavailable on
  *  self-host anyway), so neither appears here. */
-const ROTATE_OP_FOR_CLASS: Partial<Record<KeyClass, KeyRotateRequest['op']>> = {
+/** The rotate ops that need NOTHING beyond `op`, derived rather than listed: an
+ *  op belongs here exactly when `{ op }` alone is a valid `KeyRotateRequest`.
+ *
+ *  ⛔ WHY IT IS DERIVED. `KeyRotateRequest` is a discriminated union and two of
+ *  its members carry required arguments (`webhook_secret_rotate` needs `vendor`,
+ *  `mark_compromised` needs `key_class`). This map used to be typed with the FULL
+ *  op union and the button built `{ op } as KeyRotateRequest`, so adding
+ *  `webhook_secret_rotate` here would have shipped a rotate request with no
+ *  vendor — silently, because the cast answered for the missing field. Now it is
+ *  a compile error at the map. */
+type ArgFreeRotateOp = {
+  [O in KeyRotateRequest['op']]: { op: O } extends KeyRotateRequest ? O : never;
+}[KeyRotateRequest['op']];
+
+const ROTATE_OP_FOR_CLASS: Partial<Record<KeyClass, ArgFreeRotateOp>> = {
   master_dek: 'master_dek_rotate',
   server_identity_key: 'server_identity_rotate',
   publisher_identity_key: 'publisher_identity_rotate',
@@ -561,7 +575,7 @@ export const mountKeyHealthPanel = (
               attr: KEY_HEALTH_ROTATE_BTN_ATTR,
               value: key_class,
             };
-            pendingAction = { op: rotateOp } as KeyRotateRequest;
+            pendingAction = { op: rotateOp };
             transitionTo('confirm');
           },
         );

@@ -9,6 +9,7 @@
 
 import {
   EMPTY_MAIL_COMPOSE_VALUES,
+  MAIL_COMPOSE_MAX_ATTACHMENTS,
   type MailComposeDialogState,
   type MailComposeState,
   type MailComposeValues,
@@ -87,6 +88,64 @@ export const setComposeValuesTransition = (
     dialog: {
       ...state.dialog,
       values: { ...state.dialog.values, ...patch },
+      submit_error: null,
+    },
+  };
+};
+
+/** D-172 P2 — attach one or more `data.file` record ids.
+ *
+ *  Deliberately NOT expressed as `setComposeValuesTransition({attachments})`:
+ *  that overload makes the caller own dedup and the cap, and every host would
+ *  own them differently. Appends in argument order, drops ids already present
+ *  (re-picking the same file is a no-op, not a duplicate part on the wire),
+ *  and refuses anything past `MAIL_COMPOSE_MAX_ATTACHMENTS` — silently
+ *  truncating there would let the user believe a file is attached that is not.
+ *  Over-cap ids are NOT rejected here: the picker marks them and the server
+ *  drops + warns, so the decision stays visible rather than swallowed.
+ *
+ *  Returns the same reference when nothing changed, so a host diffing on
+ *  identity does not re-render for a duplicate pick. */
+export const addComposeAttachmentsTransition = (
+  state: MailComposeState,
+  ids: readonly string[],
+): MailComposeState => {
+  if (state.dialog === null) return state;
+  const current = state.dialog.values.attachments;
+  const seen = new Set(current);
+  const added: string[] = [];
+  for (const id of ids) {
+    const trimmed = id.trim();
+    if (trimmed.length === 0 || seen.has(trimmed)) continue;
+    if (current.length + added.length >= MAIL_COMPOSE_MAX_ATTACHMENTS) break;
+    seen.add(trimmed);
+    added.push(trimmed);
+  }
+  if (added.length === 0) return state;
+  return {
+    ...state,
+    dialog: {
+      ...state.dialog,
+      values: { ...state.dialog.values, attachments: [...current, ...added] },
+      submit_error: null,
+    },
+  };
+};
+
+/** D-172 P2 — detach one `data.file` record id. No-op (same reference) when the
+ *  id is not attached, so a double-click on Remove cannot drop a neighbour. */
+export const removeComposeAttachmentTransition = (
+  state: MailComposeState,
+  id: string,
+): MailComposeState => {
+  if (state.dialog === null) return state;
+  const current = state.dialog.values.attachments;
+  if (!current.includes(id)) return state;
+  return {
+    ...state,
+    dialog: {
+      ...state.dialog,
+      values: { ...state.dialog.values, attachments: current.filter((a) => a !== id) },
       submit_error: null,
     },
   };

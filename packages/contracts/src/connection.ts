@@ -26,6 +26,11 @@ import {
   MESSENGER_VENDOR_SLUGS,
 } from './messenger-vendors.js';
 import type { RequestSignatureAuth } from './connection-signing.js';
+// D-234 § 234.1 — one admission decision is bound to the CONTENT of one inbound
+// message, hashed here rather than taken from the caller-supplied ref.
+import { sha256Hex } from '@recued/crypto/hash';
+import { canonicalArgHash } from './action-envelope.js';
+import { canonicalJSONStringify } from './passport.js';
 
 
 /** Three kinds. Subtypes fold under each (`mcp.sse|websocket|stdio`,
@@ -109,6 +114,127 @@ export type NotificationSubtype = (typeof NOTIFICATION_SUBTYPES)[number];
  *  success. `assertPeerContractBinding` refuses the locally-checkable mistakes at
  *  enroll; the direction is not one of them, which is why it is stated here. */
 export const MCP_PEER_CONTRACT_CONFIG_KEY = 'peer_contract_id';
+
+/** D-234 § 234.1 — the RECEIVER'S CEILING: will I answer this peer at all?
+ *
+ *  ⛔⛔ THE RECEIVER HAD NO VOICE. Before this, B's only outcomes were "the
+ *  recipe runs" or "the contract denies at the door" — there was no *"I received
+ *  this and I decline"* as a POLICY rather than a crash. An unwilling receiver
+ *  therefore produced either the silence § 19.4 calls the worst outcome, or a
+ *  contract denial that reads to the asker as a misconfiguration of THEIR end.
+ *
+ *  🔑 THE SENDER'S HALF ALREADY EXISTS — this is the other side of a floor and a
+ *  ceiling. `RecipeExchangeOutput.callback_op` is the sender declaring a NEED
+ *  ("absent when nothing further is expected"); this is the receiver declaring a
+ *  WILLINGNESS. Neither side gets what it wants unilaterally, exactly as
+ *  `RISK_APPROVAL_FLOOR` and the trust ceiling already compose. And because the
+ *  sender's half is already on the wire, this half is entirely LOCAL: no new
+ *  field crosses, so it does not touch the handshake D-234 holds. */
+export const MCP_PEER_ADMISSION_CONFIG_KEY = 'peer_admission';
+
+/** Three states: run it, ask me, or decline.
+ *
+ *  ⛔⛔ `'ask'` IS PER-MESSAGE JUDGMENT AND MUST NEVER BECOME LEARNABLE — learning
+ *  it means auto-accepting correspondence, which is the exact thing it gates. The
+ *  CEILING is the configuration (declarable, durable); the ANSWER is not. That
+ *  split is why an approved admission is recorded against the CONTENT of one
+ *  message (see {@link peerAdmissionIdentity}) and consumed once, rather than
+ *  promoted to `auto_accept` for the peer.
+ *
+ *  ⚠ `'ask'` DOES NOT RE-DISPATCH THE HELD RUN — you can re-dispatch a REQUEST,
+ *  but not an IDENTITY. A peer's authority comes from their live token
+ *  presentation (`buildMcpExecutionSource` reads `boundContractId ?? mcpTokenId`
+ *  off the transport), so a deferred re-run has no honest way to be them, and
+ *  running it as the owner would be escalation. The decision is recorded and the
+ *  peer's NEXT call — a manual retry, carrying its own token — finds it waiting.
+ *  Authority is therefore always live and never replayed. */
+export type ExchangeAdmission = 'auto_accept' | 'ask' | 'refuse';
+
+const EXCHANGE_ADMISSIONS: ReadonlySet<string> = new Set<ExchangeAdmission>([
+  'auto_accept',
+  'ask',
+  'refuse',
+]);
+
+/** The wildcard key — the peer-wide default a per-recipe entry overrides. */
+export const EXCHANGE_ADMISSION_WILDCARD = '*';
+
+/** Resolve one inbound call against the connection's declared ceiling.
+ *
+ *  ⛔⛔ GRANULAR, BECAUSE A COARSE CEILING PROTECTS NOTHING. The sender's floor
+ *  (`callback_op`) is peer-supplied — they can always claim to be waiting. That
+ *  is harmless ONLY while the ceiling can answer per-recipe: a single global
+ *  "willing" would let a peer set `callback_op` on everything and turn the
+ *  owner's attention into their queue. Most specific wins: an exact `recipe_id`
+ *  entry beats `'*'`.
+ *
+ *  ⚠ ABSENT MEANS `auto_accept`, AND THAT IS FAIL-OPEN ON PURPOSE — the one place
+ *  in this feature it is right. This gate decides whether to answer a peer the
+ *  owner ALREADY admitted through a contract, a grant, and an installed recipe;
+ *  defaulting to refuse would silently break every exchange already working today
+ *  (D-232's own two-server drive included) the moment this shipped. The fences
+ *  that fail CLOSED are upstream, where admission is actually decided.
+ *
+ *  ⚠ An unrecognized value resolves `auto_accept` too, for the same reason —
+ *  including the not-yet-wired `'ask'`, so a config written against a future
+ *  version degrades to today's behaviour rather than to a refusal nobody chose. */
+/** D-234 § 234.1 — the durable answer to ONE admission ask.
+ *
+ *  ⚠ `'declined'` IS RECORDED, NOT INFERRED FROM ABSENCE. Absence means "not
+ *  asked yet"; a decline is a decision the owner made, and the peer is owed the
+ *  same delivered denial a `refuse` ceiling produces. § 19.4: silence is the
+ *  worst outcome for a correspondent. */
+export type PeerAdmissionDecision = 'accepted' | 'declined';
+
+/** The identity ONE admission decision is bound to.
+ *
+ *  ⛔⛔ NOT `exchange_ref`, AND THE DIFFERENCE IS A FORGERY. The ref is
+ *  caller-supplied — it rides in `EXCHANGE_ENVELOPE_KEYS` precisely so it can
+ *  round-trip — so keying an admission on it would let a peer get message A
+ *  approved and then send message B under A's ref. This binds to what they
+ *  ACTUALLY SENT, hashed HERE: the contract they presented (host-derived,
+ *  unforgeable), the recipe they asked for, and the canonical payload of their
+ *  arguments.
+ *
+ *  🔑 A MANUAL RETRY OF THE SAME MESSAGE REPRODUCES THIS IDENTITY, which is the
+ *  whole mechanism: the owner answers, the peer sends the same request again, and
+ *  the ceiling finds the decision. A DIFFERENT message hashes differently and is
+ *  asked afresh — per-message judgment, non-learnable by construction.
+ *
+ *  ⚠ THROWS when the args are not JSON-clean, inheriting `canonicalArgHash`'s
+ *  fail-closed contract: a caller MUST treat a throw as "cannot compute identity"
+ *  and ask again rather than match a decision. A silently-collapsed hash here
+ *  would be an admission collision — one peer's approval admitting another's
+ *  message. */
+export const peerAdmissionIdentity = (input: {
+  contract_id: string;
+  recipe_id: string;
+  config: Record<string, unknown>;
+}): string => {
+  const { canonical_payload_hash } = canonicalArgHash(input.config);
+  return sha256Hex(canonicalJSONStringify({
+    contract_id: input.contract_id,
+    recipe_id: input.recipe_id,
+    payload: canonical_payload_hash,
+  }));
+};
+
+export const resolveExchangeAdmission = (
+  declared: unknown,
+  recipe_id: string,
+): ExchangeAdmission => {
+  if (declared === null || typeof declared !== 'object' || Array.isArray(declared)) {
+    return 'auto_accept';
+  }
+  const map = declared as Record<string, unknown>;
+  const exact = map[recipe_id];
+  const chosen = typeof exact === 'string' && exact !== ''
+    ? exact
+    : map[EXCHANGE_ADMISSION_WILDCARD];
+  return typeof chosen === 'string' && EXCHANGE_ADMISSIONS.has(chosen)
+    ? chosen as ExchangeAdmission
+    : 'auto_accept';
+};
 
 /** MCP transports — three flavors of the same JSON-RPC tool surface. */
 export type McpTransport = 'sse' | 'websocket' | 'stdio';
@@ -554,9 +680,20 @@ export const describeHeaderAuthIssue = (issue: HeaderAuthIssue): string => {
 /** One enrolled connection. Stored encrypted at rest (auth ciphertext
  *  via the connection sub-DEK, derived from the recovery-key-bound
  *  master KEK — same crypto pipeline `account.*` uses pre-RIP per
- *  D-100/101). Per-pair-broadcast — sync_transport: 'pair' on the
- *  D-166 `contract.connection_record` schema entry (D-168 retired the
- *  legacy SYNC_OBJECTS.connection route). */
+ *  D-100/101).
+ *
+ *  ⛔ NOT record-synced to paired clients, and never was. This said
+ *  "per-pair-broadcast — sync_transport: 'pair' on the D-166
+ *  `contract.connection_record` schema entry" — neither exists in code:
+ *  `sync_transport` was never added to `contract-schema.ts` and
+ *  `contract.connection_record` has no runtime path. D-168 retired
+ *  SYNC_OBJECTS.connection and the named successor was never built, so
+ *  from D-168 to today the record has reached clients by PULL:
+ *  `collection.connection.list` on demand, plus a
+ *  `recipe_runnability_changed` broadcast recomputed after every
+ *  connection mutation — which is the part the UI actually reacts to.
+ *  Ruled won't-do 2026-08-11; see the D-166 amendment in the
+ *  decisions log. */
 export interface ConnectionRecord {
   /** User-chosen identifier entered at enrollment. Validates against
    *  the existing identifier regex applied at the form (same rule
@@ -1296,6 +1433,24 @@ export const ENRICHMENT_TRUST_MIN_DEFAULT = 0.8;
  *  lifts to a preflight ask. */
 export const CONNECTION_MCP_READ_SLUG = 'connection-mcp-read';
 export const CONNECTION_MCP_WRITE_SLUG = 'connection-mcp-write';
+
+/** D-125 — the admin-tier DIRECT adapter-access kernel ingredient: the same
+ *  connection adapter as its two siblings above, reached without a per-tool
+ *  classification.
+ *
+ *  ⛔⛔ WHICH IS THE ONLY REASON A CORE PROTOCOL CALL CAN USE IT. The D-177 P2b
+ *  classification gate scopes itself to exactly the two `connection-mcp-*`
+ *  slugs, and a dispatch under either is refused (`MCP_TOOL_NOT_CLASSIFIED`)
+ *  unless the OWNER enabled and classified that tool in Settings → Connections →
+ *  Tools. That gate is right for arbitrary VENDOR tools a chat agent or recipe
+ *  names; it is wrong for `recued_peerAsk` on a peer, which is core's own verb
+ *  with a literal tool name no author supplies — routing it through the
+ *  classified surface would make D-234's "the receiver installs nothing" true
+ *  while quietly making the SENDER configure something per peer, discoverable
+ *  only as a refusal. This slug is the documented escape hatch for exactly that
+ *  case (`kernel-manifests.ts`: "for unclassified tools use the admin-tier
+ *  `connection` escape hatch"). */
+export const CONNECTION_DIRECT_SLUG = 'connection';
 
 // ════════════════════════════════════════════════════════════════
 // D-232 § 22 — health from real traffic

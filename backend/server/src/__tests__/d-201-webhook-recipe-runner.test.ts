@@ -139,9 +139,23 @@ describe('D-201 Slices 5A/5B2A webhook recipe runner', () => {
   // D-209 #1 W3 — a door-stamped dispatch must reach handleExecute WITH its
   // door ContractSnapshot (a contract-bearing source with no snapshot throws at
   // the policy/preflight gates), resolved from the SAME definition store the
-  // Gateway reads: live door → derived tool closure + authored ceiling; dead /
-  // unknown door → EMPTY allowlist and NO ceiling (denies — fail-closed).
-  it('threads a LIVE door\'s snapshot (tools + authored ceiling) into execution', async () => {
+  // Gateway reads: live door → derived tool closure; dead / unknown door → EMPTY
+  // allowlist (denies — fail-closed).
+  //
+  // ⛔⛔ THE AUTHORED CEILING IS NO LONGER THREADED HERE, AND THAT IS THE POINT
+  // OF THE CHANGE THIS ASSERTION USED TO PIN. D-209's rule is *"an authored
+  // ceiling is admissible only where a MACHINE delivers a payload to a
+  // DETERMINISTIC PATH"* — and this runner dispatches an ARBITRARY user recipe
+  // (`recipe_id: claim.recipe_id`), so the premise does not hold on it. With the
+  // ceiling threaded, an outbound send crossed admission with NO preflight:
+  // `admin` relaxes the `write`, and `liftOutboundSend` is `user_self`-scoped so
+  // nothing re-raises it. Driven, with an A/B isolating the ceiling as the sole
+  // cause, in `d-209-webhook-outbound-send-ceiling.test.ts`.
+  // ⇒ The door KEEPS its minted `admin` (a true property of the door under
+  // §1.4); this dispatch simply does not borrow it, and falls to the LOW ceiling
+  // that schedule and reactive already sit on. `allowed_tools` is untouched —
+  // this narrows APPROVAL, never ACCESS.
+  it('threads a LIVE door\'s tool closure — but NOT its authored ceiling', async () => {
     handleExecute.mockResolvedValue({ success: true });
     const stamped = request();
     stamped.execution_source.contract_id = 'door-wh-1';
@@ -166,11 +180,18 @@ describe('D-201 Slices 5A/5B2A webhook recipe runner', () => {
         contract_snapshot: expect.objectContaining({
           contract_id: 'door-wh-1',
           allowed_tools: ['mail-send'],
-          max_risk_without_approval: 'admin',
         }),
       }),
       { run_id: stamped.run_id },
     );
+    // ⛔ AND ASSERT THE ABSENCE EXPLICITLY. `objectContaining` passes whether or
+    // not the field is there, so dropping it from the matcher above proves
+    // nothing on its own — the exact shape of a test that silently stops
+    // covering what it was written for.
+    const snapshot = (handleExecute.mock.calls[0]?.[1] as {
+      contract_snapshot?: { max_risk_without_approval?: unknown };
+    }).contract_snapshot;
+    expect(snapshot?.max_risk_without_approval).toBeUndefined();
   });
 
   it('a NON-webhook door (wrong door_types) resolves DEAD — its ceiling cannot be borrowed across door classes', async () => {

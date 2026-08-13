@@ -150,9 +150,14 @@ const ACTION_ARGS: Record<RecordsAction, readonly OperationArgSpec[]> = {
   // pack per bank. It grants nothing either: a `create` already takes its
   // `values` wholesale from the caller, and the mapping can only ever name
   // fields of the entity this bind already writes.
+  // ⚠ `dry_run` is OPTIONAL and defaults to a real import, which is the right
+  // default only because the import is already idempotent — a re-run of the
+  // same file replays rather than doubles. If that ever stops being true, the
+  // default becomes the wrong way round.
   import: [
     { key: 'csv', type: 'string', required: true },
     { key: 'spec', type: 'object', required: true },
+    { key: 'dry_run', type: 'boolean', required: false },
   ],
   update: [
     { key: 'id', type: 'string', required: true, affects_target: true },

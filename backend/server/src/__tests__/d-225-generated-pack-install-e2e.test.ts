@@ -219,11 +219,20 @@ describe('D-225 § 9.9 — the grant-entry prefixes are unclaimable handles', ()
   });
 
   it('🔑 every RESERVED grant-entry prefix has its bare handle reserved', () => {
-    // Derived from the prefix list rather than hard-coded, so adding a fourth
+    // Derived from the prefix list rather than hard-coded, so adding a fifth
     // grant-entry prefix without reserving its handle fails HERE instead of in
     // whatever pack first trips over it.
+    //
+    // ⛔ THE FIRST SEGMENT IS THE HANDLE, and the original `.replace(/\.$/)` was
+    // right only while every prefix was one segment. `peer.label.` (D-234
+    // § 234.4h) made it derive `peer.label` — a string no publisher handle can
+    // ever equal, because handles carry no dot. That is the shape of a check
+    // that cannot fail: it went red honestly here, but had it been written the
+    // other way round it would have gone GREEN forever while `peer` stayed
+    // claimable. The collision needs `<publisher>.<pack>.` to lead the prefix,
+    // so the publisher half is segment one.
     for (const prefix of RESERVED_GRANT_ENTRY_PREFIXES) {
-      const handle = prefix.replace(/\.$/, '');
+      const handle = prefix.split('.')[0]!;
       expect(RESERVED_HANDLES.has(handle), `prefix '${prefix}' => handle '${handle}'`).toBe(true);
     }
   });

@@ -89,7 +89,7 @@ describe('webhook contract snapshot version', () => {
       now: () => 2_000,
     };
 
-    const initial = buildWebhookContractSnapshot(source, deps);
+    const initial = buildWebhookContractSnapshot(source, deps, 'deterministic_handler');
     definition = {
       ...definition,
       scope: {
@@ -97,13 +97,13 @@ describe('webhook contract snapshot version', () => {
         ingredient_ids: ['mail-send', 'calendar-write'],
       },
     };
-    const widened = buildWebhookContractSnapshot(source, deps);
+    const widened = buildWebhookContractSnapshot(source, deps, 'deterministic_handler');
     definition = {
       ...definition,
       revoked_at: 1_999,
       revocation_reason: 'disabled',
     };
-    const revoked = buildWebhookContractSnapshot(source, deps);
+    const revoked = buildWebhookContractSnapshot(source, deps, 'deterministic_handler');
 
     expect(initial.allowed_tools).toEqual(['mail-send']);
     expect(widened.allowed_tools).toEqual(['mail-send', 'calendar-write']);

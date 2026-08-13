@@ -960,6 +960,10 @@ export const queryReceptionInboxHeldOps = async (
   const held: ReceptionInboxHeldOp[] = [];
   for (const anchor of recent) {
     // (1) only paused runs.
+    // D-234 § 234.4 — ⇒ THE LITERAL IS CORRECT HERE AND IS DELIBERATE. This
+    // queue exists so the owner can APPROVE something; a run held for a peer's
+    // answer offers them nothing to act on, so `awaiting_peer` must NOT widen to
+    // the predicate. Recorded because the next reader will wonder.
     if (anchor.commit_status !== 'awaiting_approval') continue;
     // (2) ONLY reception-incoming-triggered holds (N.1) — never an
     //     arbitrary gated op. The single most important filter.

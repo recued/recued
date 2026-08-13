@@ -246,6 +246,35 @@ describe('composeCalendarBoot', () => {
     expect(options.log).toEqual(expect.any(Function));
   });
 
+  /** ⛔⛔ REGRESSION PIN — same slip as `wire-mail-stack.test.ts`, found the same
+   *  day by sweeping for it. `runStartLive` reads
+   *  `bundle.getCollectionRegistry?.()`, but the wiring spread it into `storage`,
+   *  so the getter was always undefined and a calendar enrolled at RUNTIME never
+   *  joined the shared registry — reads answered COLLECTION_NOT_FOUND until a
+   *  restart.
+   *
+   *  ⛔⛔ `...(x ? { x } : {})` is a SPREAD, and spreads are EXEMPT from the
+   *  excess-property check; written plainly the same misplacement is TS2353.
+   *  ⇒ assert the SIDE a field lands on, not merely that it was forwarded. */
+  it('⛔ puts getCollectionRegistry on the BUNDLE, not storage — runStartLive reads it there', () => {
+    const registry = {} as never;
+    const getCollectionRegistry = () => registry;
+
+    composeCalendarBoot(buildDeps({ getCollectionRegistry }));
+
+    const [, storage, bundle] = lastComposeCall();
+    expect(bundle.getCollectionRegistry).toBe(getCollectionRegistry);
+    // The half that actually failed: present, but on the object nobody reads.
+    expect(Object.hasOwn(storage, 'getCollectionRegistry')).toBe(false);
+  });
+
+  it('omits getCollectionRegistry from the bundle when not passed', () => {
+    composeCalendarBoot(buildDeps());
+
+    const [, , bundle] = lastComposeCall();
+    expect(Object.hasOwn(bundle, 'getCollectionRegistry')).toBe(false);
+  });
+
   it('omits auditLog from storage when auditLog is not passed', () => {
     composeCalendarBoot(buildDeps());
 

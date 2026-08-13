@@ -86,7 +86,14 @@ export interface MarketplaceRecipeResult {
   recipe_id: string;
   publisher_id: string;
   version: number;
-  recipe_hash: string;
+  /** ⚠ OPTIONAL BECAUSE IT IS GENUINELY ABSENT ON ONE PATH. The apex
+   *  `.json` omits it (see the note on `fetchRecipeBySlug`, which defaults it
+   *  to `''`), and `pack-install-handler`'s prepared-row resolver has no hash
+   *  to give. That resolver used to cast the whole object up to this type,
+   *  which declared the field REQUIRED and silenced the omission — so
+   *  `upstream_hash` was being written `undefined` against a `string | null`
+   *  column. Optional here states the fact; consumers coalesce. */
+  recipe_hash?: string;
   recipe: RecipeDefinition;
 }
 

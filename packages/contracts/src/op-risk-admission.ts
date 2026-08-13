@@ -18,9 +18,10 @@
  *      reads/writes/admin run silent); contracted (chat / mcp / messenger under a
  *      contract) → the contract's trust, derived from the snapshot's
  *      `approval_required` (defaults LOW so an AI's writes surface for approval).
- *    - `admitByOpRisk(...)` — the single entry: base → ceiling RELAX → outbound-send
- *      LIFT → `AdmissionDecision`. The chokepoints map `verdict`/`detail` onto their
- *      own control flow exactly as they did for `admitWithPolicyMatrix`.
+ *    - `admitByOpRisk(...)` — the single entry: base → ceiling RELAX → the review
+ *      LIFTS (outbound-send, commitment-proposal) → `AdmissionDecision`. The
+ *      chokepoints map `verdict`/`detail` onto their own control flow exactly as
+ *      they did for `admitWithPolicyMatrix`.
  *    - the outbound-send approval LIFT — relocated here from the (now-deleted)
  *      matrix-coupled `escalateOutboundSend` (`policy-matrix-dispatch.ts`). It is
  *      DELIBERATELY actor-scoped, not folded into the send op's `risk_tier`: at the
@@ -87,6 +88,23 @@ export const OUTBOUND_SEND_INGREDIENT_SLUGS: ReadonlySet<string> = new Set([
   // Tier-3 path routes here via run-ingredient). Lifting it closes the N.12 hole. The
   // read sibling (connection-mcp-read) deliberately stays out — reads pass through.
   'connection-mcp-write',
+  // D-234 § 234.4o — recued/peer-ask: putting a question on ANOTHER SERVER OWNER'S
+  // SCREEN is an irreversible outbound act like any send here, and the owner was
+  // asked ZERO times for it before this (an owner-initiated run takes the
+  // contract-less `admin` ceiling, which admits `write` outright).
+  //
+  // ⛔⛔ IT IS SLUG-KEYED, WHICH IS ONLY CORRECT BECAUSE THE CARRIER NO LONGER
+  // PROMPTS. On `via: 'recipe'` the ask travels the § 232 carrier, whose catalog
+  // `ask.send` used to raise a SECOND prompt — so a slug-keyed lift would have
+  // double-prompted that road, and § 234.4o's first cut routed around it with a
+  // `via`-aware lift of its own. The real defect was one level down: that carrier
+  // ran SOURCE-LESS, so it had no trust ceiling to relax its `write` and no
+  // session-grant cell to make its prompt learnable. Now it inherits the declaring
+  // run's `execution_source` (`deliverPeerAskAfterAnchor`) like the § 232 carrier
+  // always did, relaxes at the owner ceiling, and the route stops mattering.
+  // ⇒ ⚠ IF THE CARRIER EVER GOES SOURCE-LESS AGAIN, THIS MEMBERSHIP DOUBLE-PROMPTS
+  // THE RECIPE ROAD. The two-server drive's per-road prompt COUNT is the guard.
+  'peer-ask',
 ]);
 
 /** True when `slug` is a known outbound external-communication send. A `core-<bare>`
@@ -438,13 +456,21 @@ const mapResolutionToAdmission = (
         // already renders the tier as its consequence, in words), and no
         // spec citation (`(D-192 F1)` means nothing to the person being
         // asked). Each claim is unchanged.
-        detail: isOutboundSendSlug(slug)
-          ? `outbound send '${slug}' delivers a message outside your trust boundary `
+        // D-234 § 234.4o — a peer ask is an outbound send, so it takes the send
+        // branch's LIFT; it gets its own SENTENCE because the generic wording
+        // ("delivers a message outside your trust boundary") describes a machine
+        // boundary, and what the owner is actually being asked about is an
+        // interruption of another PERSON. Prose only — the policy is identical.
+        detail: stripCorePrefix(slug) === 'peer-ask'
+          ? `this puts your question on another server owner's screen `
             + `— preflight approval required`
-          : isCommitmentProposalSlug(slug)
-            ? `'${slug}' is a review-then-approve proposal surface — the commitment `
-              + `mints only on your approval`
-            : `op '${slug}' requires preflight approval under the active trust ceiling`,
+          : isOutboundSendSlug(slug)
+            ? `outbound send '${slug}' delivers a message outside your trust boundary `
+              + `— preflight approval required`
+            : isCommitmentProposalSlug(slug)
+              ? `'${slug}' is a review-then-approve proposal surface — the commitment `
+                + `mints only on your approval`
+              : `op '${slug}' requires preflight approval under the active trust ceiling`,
       });
     case 'deny':
       return Object.freeze({
@@ -458,11 +484,19 @@ const mapResolutionToAdmission = (
 
 /** D-187 slice 4 — the single op-risk × stage-trust APPROVAL entry the four matrix
  *  chokepoints call. Composes: simple-form op-risk base (`resolveSimpleFormOperationPolicy`)
- *  → stage-trust RELAX (`applyTrustCeiling`) → outbound-send LIFT (`liftOutboundSend`)
- *  → `AdmissionDecision`. `ceiling` is the dispatch's applicable trust
- *  (`resolveTrustCeiling`); `source` drives ONLY the user_self-scoped outbound-send
- *  lift. APPROVAL (Layer 2) only — the host layers the op-admission ACCESS gate
- *  (Layer 1) on top of the returned decision. Pure: no I/O, no clock. */
+ *  → stage-trust RELAX (`applyTrustCeiling`) → the review LIFTS (`liftOutboundSend`,
+ *  `liftCommitmentProposal`) → `AdmissionDecision`. `ceiling` is the dispatch's
+ *  applicable trust (`resolveTrustCeiling`); `source` drives ONLY the user_self-scoped
+ *  outbound-send lift. APPROVAL (Layer 2) only — the host layers the op-admission
+ *  ACCESS gate (Layer 1) on top of the returned decision. Pure: no I/O, no clock.
+ *
+ *  ⚠ D-234 § 234.4o CARRIED A THIRD, ARGS-KEYED LIFT HERE FOR ONE COMMIT and it is
+ *  gone: `peer-ask` is a plain member of the outbound-send set now, because the
+ *  reason it could not be — the § 232 carrier raising a second prompt on
+ *  `via: 'recipe'` — was a source-less nested run, fixed at its own layer. ⇒ Reach
+ *  for a resolved-ARG lift only after checking whether the thing it routes around
+ *  is a defect one level down; this one was, and the lift was 85 lines of correct
+ *  code compensating for it. */
 export const admitByOpRisk = (args: {
   readonly slug: string;
   readonly risk_tier: RiskTier;
@@ -516,11 +550,11 @@ export const admitByOpRisk = (args: {
   );
 };
 
-/** D-202 task 4a — the op-risk verdict BEFORE the two quality-review lifts:
+/** D-202 task 4a — the op-risk verdict BEFORE the quality-review lifts:
  *  simple-form op-risk base (`resolveSimpleFormOperationPolicy`) → stage-trust
  *  RELAX (`applyTrustCeiling`) → `AdmissionDecision`, with the outbound-send /
- *  commitment-proposal lifts DELIBERATELY OMITTED. This is the AUTHORIZATION
- *  conjunct the D-202 three-conjunct gate composes against
+ *  commitment-proposal lifts DELIBERATELY OMITTED. This is the
+ *  AUTHORIZATION conjunct the D-202 three-conjunct gate composes against
  *  ({@link resolveQualityGateDecision}).
  *
  *  WHY strip exactly those two lifts and nothing else: they are the "review the
@@ -545,9 +579,15 @@ export const admitByOpRisk = (args: {
  *
  *  ⚠ SOUNDNESS BOUND — read before adding any new `ask` source to the admission
  *  chain (D-202 review Finding 1). This is a PARTIAL, args-BLIND recompute:
- *  op-risk × ceiling × the-two-lifts ONLY. It is a faithful stand-in for "would
- *  authorization admit this send" ONLY while `admitByOpRisk` (base + ceiling +
- *  these two lifts) is the admission's SOLE `ask` source — which it is today
+ *  op-risk × ceiling × the-two-lifts ONLY. ⚠ D-234 § 234.4o briefly added an
+ *  args-keyed third lift here and then removed it; the bound never bent, and the
+ *  reason it would have SURVIVED is worth keeping — a LIFT is omitted by this
+ *  recompute BY CONSTRUCTION, so being blind to its inputs costs nothing. What
+ *  the bound forbids is an args-keyed `ask` source that is NOT a lift.
+ *
+ *  It is a faithful stand-in for "would authorization admit this send" ONLY
+ *  while `admitByOpRisk` (base + ceiling + these two lifts) is the admission's
+ *  SOLE `ask` source — which it is today
  *  (every other gate DENIES, which throws before the D-202 ask-branch). The moment
  *  a non-lift `ask` source keyed off RESOLVED ARGS lands — notably the spec §1
  *  authorization **value-bounds** ("amount > $X → review", which `quality-

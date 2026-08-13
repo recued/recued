@@ -25,11 +25,14 @@ import {
   APPROVAL_CARD_STATUS_ATTR,
   type ApprovalCardModel,
   ASK_CARD_ATTR,
+  ASK_CARD_BODY_ATTR,
   ASK_CARD_STYLES,
   ASK_CARD_CONFIRM_ATTR,
   ASK_CARD_DETAILS_ATTR,
+  ASK_CARD_NOTE_ATTR,
   ASK_CARD_OPTION_ATTR,
   ASK_CARD_ERROR_ATTR,
+  ASK_CARD_LINK_ATTR,
   ASK_CARD_SUMMARY_ATTR,
   type AskCardModel,
   type AskCardOptions,
@@ -78,6 +81,13 @@ interface FakeEl {
   type: string;
   disabled: boolean;
   hidden: boolean;
+  /** D-234 § 234.4e — the `<textarea>` surface the ask card's note field uses. */
+  value: string;
+  maxLength: number;
+  required: boolean;
+  rows: number;
+  placeholder: string;
+  id: string;
   attrs: Map<string, string>;
   children: FakeEl[];
   listeners: Map<string, Array<() => void>>;
@@ -103,6 +113,17 @@ const makeFakeDocument = (): FakeDoc => {
         tagName: tag.toUpperCase(),
         className: '',
         textContent: '',
+        // D-234 § 234.4e — a real `<textarea>` always has `value: ''`; the fake
+        // had no such property, so the card's read threw and the note tests
+        // failed for a reason that could never happen in a browser. ⚠ A double
+        // WEAKER than the real thing manufactures false reds the same way a
+        // stronger one hides true ones.
+        value: '',
+        maxLength: 0,
+        required: false,
+        rows: 0,
+        placeholder: '',
+        id: '',
         type: '',
         disabled: false,
         hidden: false,
@@ -153,6 +174,10 @@ const optionButtons = (root: FakeEl): FakeEl[] =>
   collectByAttr(root, ASK_CARD_OPTION_ATTR);
 const errorLine = (root: FakeEl): FakeEl | undefined =>
   collectByAttr(root, ASK_CARD_ERROR_ATTR)[0];
+const readLink = (root: FakeEl): FakeEl | undefined =>
+  collectByAttr(root, ASK_CARD_LINK_ATTR)[0];
+const noteBox = (root: FakeEl): FakeEl | undefined =>
+  collectByAttr(root, ASK_CARD_NOTE_ATTR)[0];
 
 const model = (over: Partial<AskCardModel> = {}): AskCardModel => ({
   ask_id: 'ask-1',
@@ -754,5 +779,151 @@ describe('R20 — renderChatPlanCard', () => {
     expect(reject.getAttribute('aria-disabled')).toBe('true');
     expect(reject.getAttribute('aria-busy')).toBe('true');
     expect(reject.textContent).toBe('Rejecting…');
+  });
+});
+
+describe('D-234 § 234.3 — the ask card\'s READ affordance', () => {
+  it('renders an anchor to the resolved surface when the ask carries one', () => {
+    const card = render(
+      model({ link_url: 'https://bob.recued.app/#recipes/peer-review-pending' }),
+      () => {},
+    );
+    const link = readLink(card);
+    expect(link?.tagName).toBe('A');
+    expect(link?.getAttribute('href'))
+      .toBe('https://bob.recued.app/#recipes/peer-review-pending');
+  });
+
+  it('renders NOTHING when the ask carries no link', () => {
+    // ⚠ Absent, not empty: a disabled or href-less "Open the full details" is a
+    // correct-looking absence — it says "nothing here" and "could not find it"
+    // with the same pixels.
+    expect(readLink(render(model(), () => {}))).toBeUndefined();
+  });
+
+  it('is a link, NOT a third option button', () => {
+    // ⛔ Reading is not answering. If this ever became an option the card would
+    // submit an answer the owner never chose.
+    const card = render(
+      model({ link_url: 'https://bob.recued.app/#recipes/x' }),
+      () => {},
+    );
+    expect(optionButtons(card)).toHaveLength(2);
+    expect(readLink(card)?.attrs.has(ASK_CARD_OPTION_ATTR)).toBe(false);
+  });
+
+  it('DROPS a non-http scheme instead of building the href', () => {
+    // ⛔⛔ EVERY OTHER STRING ON THIS CARD IS `textContent`, WHICH IS INERT — an
+    // `href` is not. `javascript:` survives HTML escaping intact, so the scheme
+    // allowlist is the only thing standing between a link_url and execution.
+    for (const hostile of [
+      'javascript:alert(1)',
+      'JavaScript:alert(1)',
+      'data:text/html,<script>alert(1)</script>',
+      'file:///etc/passwd',
+      '#recipes/peer-review-pending',
+    ]) {
+      expect(readLink(render(model({ link_url: hostile }), () => {})))
+        .toBeUndefined();
+    }
+  });
+});
+
+
+describe('D-234 § 234.4e — the written reason', () => {
+  const answerWith = (
+    m: AskCardModel,
+  ): { card: FakeEl; calls: Array<string[]> } => {
+    const calls: Array<string[]> = [];
+    const card = render(m, ((...args: string[]) => {
+      // Capture the ARITY too — "called with one argument" is the property that
+      // keeps every note-less card unchanged.
+      calls.push(args);
+    }) as never);
+    return { card, calls };
+  };
+
+  it('⛔ RENDERS NOTHING when the ask did not invite a reason', () => {
+    // THE REGRESSION THAT MATTERS MOST. Every ordinary approval card in the
+    // product goes through this function; a note box that leaked onto them
+    // would add a tab stop and a demand for prose to every routine decision.
+    const { card } = answerWith(model());
+    expect(noteBox(card)).toBeUndefined();
+  });
+
+  it('renders an optional field and carries what was typed', () => {
+    const { card, calls } = answerWith(model({ note_prompt: 'optional' }));
+    const box = noteBox(card);
+    expect(box).toBeDefined();
+    box!.value = '  the penalty clause is not fine  ';
+    optionButtons(card)[0]!.click();
+    // ⚠ TRIMMED — the surface must not send the user's stray whitespace as
+    // their reasoning.
+    expect(calls).toEqual([['yes', 'the penalty clause is not fine']]);
+  });
+
+  it('an optional field left blank submits with NO note, not an empty one', () => {
+    const { card, calls } = answerWith(model({ note_prompt: 'optional' }));
+    optionButtons(card)[0]!.click();
+    // ⚠ ONE argument, not two-with-undefined — the call shape for a note-less
+    // answer is exactly what it was before this feature existed.
+    expect(calls).toEqual([['yes']]);
+  });
+
+  it('⛔⛔ REQUIRED: a bare click does NOT submit, and says why', () => {
+    // Without this the click reaches the server, which treats a missing
+    // required note as an INVALID reply and NO-OPS it — so the user would see a
+    // button do nothing and an ask that stayed open, with no explanation
+    // anywhere. The guard turns a silent no-op into a sentence.
+    const { card, calls } = answerWith(model({ note_prompt: 'required' }));
+    optionButtons(card)[0]!.click();
+    expect(calls).toEqual([]);
+  });
+
+  it('REQUIRED: submits once a reason is typed', () => {
+    const { card, calls } = answerWith(model({ note_prompt: 'required' }));
+    noteBox(card)!.value = 'Friday is fine, the penalty is not.';
+    optionButtons(card)[0]!.click();
+    expect(calls).toEqual([['yes', 'Friday is fine, the penalty is not.']]);
+  });
+
+  it('⚠ bounds what can be typed to the server cap', () => {
+    // The block caps at 600 on entry, so an unbounded box would silently
+    // discard the tail of what someone wrote.
+    const { card } = answerWith(model({ note_prompt: 'optional' }));
+    expect(noteBox(card)!.maxLength).toBe(600);
+  });
+});
+
+
+describe('D-234 § 234.4f — the readable body', () => {
+  const bodyOf = (root: FakeEl): FakeEl | undefined =>
+    collectByAttr(root, ASK_CARD_BODY_ATTR)[0];
+
+  it('⛔ RENDERS NOTHING when the ask carries no body', () => {
+    // Every ordinary approval card goes through this function; a stray empty
+    // disclosure on all of them would be the regression that matters.
+    const card = render(model(), () => {});
+    expect(bodyOf(card)).toBeUndefined();
+  });
+
+  it('renders the document COLLAPSED, and verbatim', () => {
+    const draft = 'Clause 4.2\nThe penalty accrues daily.';
+    const card = render(model({ body: draft }), () => {});
+    const el = bodyOf(card);
+    expect(el).toBeDefined();
+    // A `<details>` — the question is the decision, the body is the evidence,
+    // and a card that opens four pages by default stops being a card.
+    expect(el!.tagName.toLowerCase()).toBe('details');
+    // ⛔ VERBATIM VIA `textContent`. This string was written by ANOTHER SERVER'S
+    // OWNER; the card is DOM-built precisely so a peer cannot put markup on the
+    // reader's screen. `textContent` on a `<pre>` is the whole defence.
+    const pre = el!.children.find((c) => c.tagName.toLowerCase() === 'pre');
+    expect(pre?.textContent).toBe(draft);
+  });
+
+  it('⛔⛔ an empty body is ABSENT, not an empty disclosure', () => {
+    const card = render(model({ body: '' }), () => {});
+    expect(bodyOf(card)).toBeUndefined();
   });
 });

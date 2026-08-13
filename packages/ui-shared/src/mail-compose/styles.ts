@@ -62,6 +62,12 @@ export const MAIL_COMPOSE_STYLES = `
   grid-template-columns: minmax(0, 1fr) 240px;
   gap: 16px;
   padding: 16px;
+  /* Scrolls on its own. No min-height:0 needed despite being a flex child of a
+     column parent: the usual flexbox min-height:auto trap does not apply to an
+     item whose own overflow is not visible — the automatic minimum size
+     resolves to zero. Verified by measuring the real dialog in Chromium
+     (clientHeight 757 vs scrollHeight 929, last row reachable) both with and
+     without min-height:0, which changed nothing. */
   overflow: auto;
 }
 
@@ -174,5 +180,92 @@ export const MAIL_COMPOSE_STYLES = `
 
 .mail-compose-ai-action {
   text-align: left;
+}
+
+/* D-172 P2 — attachment picker. */
+.mail-compose-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mail-compose-attachment-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mail-compose-attachment-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--rx-muted, var(--fg-muted));
+}
+
+.mail-compose-attachment-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--rx-muted, var(--fg-muted));
+}
+
+.mail-compose-attachment-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mail-compose-attachment {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--rx-border, var(--border));
+  border-radius: 4px;
+}
+
+/* The filename is the one part allowed to truncate — size and the remove
+   control must stay legible, since the over-cap note is the whole reason the
+   row is worth reading. */
+.mail-compose-attachment-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.mail-compose-attachment-size,
+.mail-compose-attachment-note {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--rx-muted, var(--fg-muted));
+}
+
+.mail-compose-attachment[data-attachment-over-cap='true'] {
+  border-color: var(--rx-danger, var(--danger, #b3261e));
+}
+
+/* Colour is a REINFORCEMENT here, never the signal — the note already says
+   "over the 3.0 MB limit, will not be sent" in words, so the row still reads
+   correctly in monochrome or to a screen reader. */
+.mail-compose-attachment-note[data-attachment-state='over-cap'] {
+  color: var(--rx-danger, var(--danger, #b3261e));
+}
+
+.mail-compose-attachment-remove {
+  flex: 0 0 auto;
+  line-height: 1;
+}
+
+.mail-compose-attachment-cap {
+  margin: 0;
+  font-size: 12px;
+  color: var(--rx-muted, var(--fg-muted));
 }
 `;

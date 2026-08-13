@@ -243,27 +243,27 @@ describe('connectionLastUsedPatternTask surface contract', () => {
     );
   });
 
-  it('declares non-empty scope_read_declaration over connections + memory', () => {
+  it('declares non-empty scope_read_declaration over connections + audit', () => {
     expect(connectionLastUsedPatternScopeReadDeclaration.length).toBeGreaterThan(0);
     const conn = connectionLastUsedPatternScopeReadDeclaration.find(
       (e) => e.collection === 'connection',
     );
-    const memory = connectionLastUsedPatternScopeReadDeclaration.find(
-      (e) => e.collection === 'data.memory',
+    const audit = connectionLastUsedPatternScopeReadDeclaration.find(
+      (e) => e.collection === 'data.audit',
     );
     expect(conn).toBeDefined();
-    expect(memory).toBeDefined();
+    expect(audit).toBeDefined();
     expect((conn!.sample_field_paths as ReadonlyArray<string>).length).toBeGreaterThan(0);
     expect(
-      (memory!.sample_field_paths as ReadonlyArray<string>).length,
+      (audit!.sample_field_paths as ReadonlyArray<string>).length,
     ).toBeGreaterThan(0);
   });
 
-  it('memory scope_read_declaration includes detail.recipe_id (per-recipe breakout signal)', () => {
-    const memory = connectionLastUsedPatternScopeReadDeclaration.find(
-      (e) => e.collection === 'data.memory',
+  it('audit scope_read_declaration includes detail.recipe_id (per-recipe breakout signal)', () => {
+    const audit = connectionLastUsedPatternScopeReadDeclaration.find(
+      (e) => e.collection === 'data.audit',
     );
-    expect((memory!.sample_field_paths as ReadonlyArray<string>)).toContain(
+    expect((audit!.sample_field_paths as ReadonlyArray<string>)).toContain(
       'detail.recipe_id',
     );
   });
@@ -299,9 +299,9 @@ describe('connection_last_used_pattern registry entry', () => {
     );
   });
 
-  it('declares aggregates_from: ["memory"]', () => {
+  it('declares aggregates_from: ["audit"] - the run-provenance trail, never user_memory', () => {
     expect(ENRICHMENT_REGISTRY.connection_last_used_pattern.aggregates_from).toEqual([
-      'memory',
+      'audit',
     ]);
   });
 

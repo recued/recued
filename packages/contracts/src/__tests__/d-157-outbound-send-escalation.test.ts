@@ -91,10 +91,12 @@ const SENDS = [
   // D-210 §7 — the booking-visitor courtesy send. Recipient sealed + resolved
   // server-side, but delivery is still an irreversible external send.
   'notify-booking-visitor',
+  // D-234 § 234.4o — `core.peer.ask`'s backing ingredient.
+  'peer-ask',
 ] as const;
 
 describe('D-157 outbound-send promise via D-187 op-risk lift (admitByOpRisk)', () => {
-  it('the closed send set is exactly the six external-side-effect slugs', () => {
+  it('the closed send set is exactly the seven external-side-effect slugs', () => {
     expect([...OUTBOUND_SEND_INGREDIENT_SLUGS].sort()).toEqual(
       [
         'connection-mcp-write',
@@ -102,6 +104,10 @@ describe('D-157 outbound-send promise via D-187 op-risk lift (admitByOpRisk)', (
         'mail-send',
         'notification-send',
         'notify-booking-visitor',
+        // D-234 § 234.4o — a question on another server owner's SCREEN is an
+        // irreversible outbound act too, and the owner was asked zero times for
+        // it before this.
+        'peer-ask',
         'slack-post',
       ],
     );
@@ -129,7 +135,18 @@ describe('D-157 outbound-send promise via D-187 op-risk lift (admitByOpRisk)', (
     if (decision.verdict === 'ask') {
       // Risk tier preserved for audit — a send is a `write`, not reclassified.
       expect(decision.risk_tier).toBe('write');
-      expect(decision.detail).toContain(slug);
+      // ⚠ `peer-ask` IS EXEMPT FROM THE SLUG CHECK, AND ON PURPOSE RATHER THAN
+      // BECAUSE IT FAILED. `detail` renders VERBATIM into the ask body's
+      // "Reason:" line (see the comment on the branch in `op-risk-admission.ts`),
+      // so it is owner-facing prose. The generic send sentence names the slug
+      // because it is otherwise identical for five different sends and the slug
+      // is the only thing that says which. § 234.4o's peer-ask sentence — "this
+      // puts your question on another server owner's screen" — is already
+      // self-identifying, and appending `'peer-ask'` would put a machine token
+      // in front of a person for no gain. The lift itself is asserted
+      // identically for it; only the wording differs.
+      if (slug !== 'peer-ask') expect(decision.detail).toContain(slug);
+      else expect(decision.detail).toContain('another server owner\'s screen');
     }
   });
 

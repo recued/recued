@@ -10,6 +10,8 @@ import {
   setVendorAliasRegistryResolver,
 } from '@recued/contracts';
 import type { LLMConfig } from '@recued/llm';
+import { executeEmbedding } from '@recued/llm';
+import { createMemoryEmbedder } from '../memory-embedder.js';
 import type { AuditLogStore, Collection } from '@recued/storage';
 import type { MemoryRedactionRecord } from '../memory-rpc-handler.js';
 import { createWarehouseEventBus, type WarehouseEventBus } from '@recued/warehouse-events';
@@ -847,6 +849,26 @@ export const composeAppContext = (
       // the redaction store so recall omits "forgotten" rows.
       getUserMemoryStore: () => userMemoryStore,
       getMemoryRedactionStore: () => memoryRedactionStore,
+      // RUNG 4 — the query embedder for meaning-based recall. Built from the
+      // substrate's own pieces rather than added to `LlmSubstrate`, so the
+      // memory path stays self-contained and housekeeping's callable bundle is
+      // untouched. Resolved PER CALL for the same reason the housekeeping
+      // `embed` does: an embeddings slot saved after boot must apply without a
+      // restart. No config at all ⇒ `undefined` ⇒ rung 4 is off by
+      // construction, and the handler says so rather than reporting an empty
+      // pool. (Config present but no embeddings slot — the pure-Anthropic case
+      // — throws inside `executeEmbedding` instead, which the handler
+      // degrades to the same empty.)
+      getMemoryEmbedder: () => {
+        const config = llmSubstrate.resolveLlmConfig();
+        if (!config) return undefined;
+        return createMemoryEmbedder((manifest, input) =>
+          executeEmbedding(manifest, input, {
+            config,
+            adapters: llmSubstrate.llmEmbeddingsAdapterRegistry,
+            quota: llmSubstrate.llmQuota,
+          }));
+      },
       // D-190 (generic reconciler MS3) — deal.search reads the CRM record mirror.
       getCrmRecordMirror: () => crmRecordMirrorStoreRef,
       getConnectionStore: () => connectionStoreRef,

@@ -41,22 +41,22 @@
   ],
   "steps": [
     {
-      "id": "subject",
-      "transform": "default",
-      "value": "{{step.message.record.hot_fields.subject}}",
-      "fallback": ""
-    },
-    {
-      "id": "from_email",
-      "transform": "default",
-      "value": "{{step.message.record.hot_fields.from}}",
-      "fallback": ""
-    },
-    {
-      "id": "thread_id",
-      "transform": "default",
-      "value": "{{step.message.record.hot_fields.thread_id}}",
-      "fallback": ""
+      "id": "defaults",
+      "transform": "defaults",
+      "fields": {
+        "subject": {
+          "value": "{{step.message.record.hot_fields.subject}}",
+          "fallback": ""
+        },
+        "from_email": {
+          "value": "{{step.message.record.hot_fields.from}}",
+          "fallback": ""
+        },
+        "thread_id": {
+          "value": "{{step.message.record.hot_fields.thread_id}}",
+          "fallback": ""
+        }
+      }
     },
     {
       "id": "has_thread_id",
@@ -154,9 +154,18 @@
         "body": "{{step.body}}"
       },
       "fields": [
-        { "path": "from", "kind": "email" },
-        { "path": "subject", "kind": "content" },
-        { "path": "body", "kind": "content" }
+        {
+          "path": "from",
+          "kind": "email"
+        },
+        {
+          "path": "subject",
+          "kind": "content"
+        },
+        {
+          "path": "body",
+          "kind": "content"
+        }
       ]
     },
     {
@@ -182,28 +191,26 @@
       "ledger_handle": "{{step.protect.ledger_handle}}"
     },
     {
-      "id": "extracted_title",
-      "transform": "default",
-      "value": "{{step.restore.restored.title}}",
-      "fallback": ""
-    },
-    {
-      "id": "extracted_priority",
-      "transform": "default",
-      "value": "{{step.restore.restored.priority}}",
-      "fallback": "medium"
-    },
-    {
-      "id": "extracted_confidence",
-      "transform": "default",
-      "value": "{{step.restore.restored.extraction_confidence}}",
-      "fallback": 0
-    },
-    {
-      "id": "extracted_assignee_email",
-      "transform": "default",
-      "value": "{{step.restore.restored.delegated_assignee_email}}",
-      "fallback": ""
+      "id": "defaults_2",
+      "transform": "defaults",
+      "fields": {
+        "extracted_title": {
+          "value": "{{step.restore.restored.title}}",
+          "fallback": ""
+        },
+        "extracted_priority": {
+          "value": "{{step.restore.restored.priority}}",
+          "fallback": "medium"
+        },
+        "extracted_confidence": {
+          "value": "{{step.restore.restored.extraction_confidence}}",
+          "fallback": 0
+        },
+        "extracted_assignee_email": {
+          "value": "{{step.restore.restored.delegated_assignee_email}}",
+          "fallback": ""
+        }
+      }
     },
     {
       "id": "assignee_email",
@@ -262,15 +269,42 @@
       "id": "card",
       "transform": "to_summary",
       "fields": [
-        { "label": "Mail thread", "value": "{{step.thread_id}}" },
-        { "label": "Subject",     "value": "{{step.subject}}" },
-        { "label": "Task title",  "value": "{{step.extracted_title}}" },
-        { "label": "Priority",    "value": "{{step.extracted_priority}}" },
-        { "label": "Confidence",  "value": "{{step.extracted_confidence:number}}" },
-        { "label": "Assignee email",   "value": "{{step.extracted_assignee_email}}" },
-        { "label": "Assignee contact", "value": "{{step.resolve_assignee.contact.email}}" },
-        { "label": "Skipped",     "value": "{{step.skip_create}}" },
-        { "label": "Task ID",     "value": "{{step.create.task.id}}" }
+        {
+          "label": "Mail thread",
+          "value": "{{step.thread_id}}"
+        },
+        {
+          "label": "Subject",
+          "value": "{{step.subject}}"
+        },
+        {
+          "label": "Task title",
+          "value": "{{step.extracted_title}}"
+        },
+        {
+          "label": "Priority",
+          "value": "{{step.extracted_priority}}"
+        },
+        {
+          "label": "Confidence",
+          "value": "{{step.extracted_confidence:number}}"
+        },
+        {
+          "label": "Assignee email",
+          "value": "{{step.extracted_assignee_email}}"
+        },
+        {
+          "label": "Assignee contact",
+          "value": "{{step.resolve_assignee.contact.email}}"
+        },
+        {
+          "label": "Skipped",
+          "value": "{{step.skip_create}}"
+        },
+        {
+          "label": "Task ID",
+          "value": "{{step.create.task.id}}"
+        }
       ]
     }
   ],

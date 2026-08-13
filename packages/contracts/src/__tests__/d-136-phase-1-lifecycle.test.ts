@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ALL_ENRICHMENT_SCOPES,
   validateLifecycleDefinition,
   type EnrichmentDefinition,
 } from '../index.js';
@@ -136,17 +137,43 @@ describe('D-136 §A.8 — Gate 4: aggregate_window + recompute_on_drift requires
     expect(issues.some((i) => i.includes('Replay against original snapshot impossible'))).toBe(true);
   });
 
-  it('passes aggregate_window + recompute_on_drift on memory source', () => {
+  it('passes aggregate_window + recompute_on_drift on audit source', () => {
     const def = baseDef({
       temporal_class: 'aggregate_window',
       lifecycle_policy: 'recompute_on_drift',
-      aggregates_from: ['memory'],
+      aggregates_from: ['audit'],
       as_of_field: 'computed_at',
       aggregate_window_axis: 'ingestion_time',
       inputFingerprintComposition: 'aggregate_window_fold',
     });
     const issues = validateLifecycleDefinition('test', def);
     expect(issues.filter((i) => i.includes('Replay against original snapshot'))).toEqual([]);
+  });
+
+  /* ⛔ THE RATCHET THAT WOULD HAVE CAUGHT THE `'memory'` HAZARD.
+   *
+   * `aggregates_from` members that are NOT scopes (`'audit'`,
+   * `'data_enrichment'`) share a value space with `EnrichmentScope`, and the
+   * cascade routes on exactly that overlap:
+   *     if (!def.aggregates_from.includes(scope)) return;   // enrichment-cascade
+   * So a member that is ALSO a scope makes every write of that scope fan into
+   * every topic that merely aggregates from it — stale-marking and enqueuing
+   * recompute for unrelated topics.
+   *
+   * That was live until 2026-08-11: the member was spelled `'memory'`, and the
+   * obvious name for a future owner-pool scope was also `'memory'`. TypeScript
+   * cannot catch the collision — `EnrichmentScope | 'memory'` with `'memory'`
+   * already in `EnrichmentScope` collapses to one union with no error. Only an
+   * assertion over the VALUES can. */
+  it('⛔ a non-scope aggregates_from member must never also be an EnrichmentScope', () => {
+    const NON_SCOPE_AGGREGATE_SOURCES = ['audit', 'data_enrichment'] as const;
+    for (const member of NON_SCOPE_AGGREGATE_SOURCES) {
+      expect(
+        (ALL_ENRICHMENT_SCOPES as ReadonlyArray<string>),
+        `'${member}' is both an aggregates_from member and a scope — the cascade `
+          + `would fan every '${member}' write into every topic aggregating from it`,
+      ).not.toContain(member);
+    }
   });
 });
 

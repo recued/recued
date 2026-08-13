@@ -110,7 +110,6 @@ export const composeMailBoot = (
       blobs: cacheBlobs,
       bus: warehouseBus,
       ...(auditLog ? { auditLog } : {}),
-      ...(getCollectionRegistry ? { getCollectionRegistry } : {}),
       ...(fileReadDeps ? { fileReadDeps } : {}),
       ...(inboundAttachmentDeps ? { inboundAttachmentDeps } : {}),
       ...(contactStore
@@ -142,6 +141,12 @@ export const composeMailBoot = (
       },
     },
     {
+      // ⛔ Belongs on the BUNDLE (3rd arg) — `runStartLive` reads
+      // `bundle.getCollectionRegistry`. It sat in the storage arg (2nd) until
+      // 2026-08-12, where the conditional spread hid it from the excess-property
+      // check, so post-boot enrolls never joined the shared registry and every
+      // send answered MAIL_INSTANCE_NOT_FOUND until a restart.
+      ...(getCollectionRegistry ? { getCollectionRegistry } : {}),
       ...(accountStore
         ? {
             accountStore: {

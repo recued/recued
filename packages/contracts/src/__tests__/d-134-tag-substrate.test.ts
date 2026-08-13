@@ -62,7 +62,7 @@ const FAKE_CONNECTION_TRIO_DEF: EnrichmentDefinition = {
   valid_scopes: ['connection.api', 'connection.mcp', 'connection.notification'],
   value_schema: () => ({ ok: false, issues: ['stub'] }),
   policy: 'aggregate',
-  aggregates_from: ['memory'],
+  aggregates_from: ['audit'],
   producer_kind: 'housekeeping',
   temporal_class: 'aggregate_window',
   identity_aggregation: 'scenario',

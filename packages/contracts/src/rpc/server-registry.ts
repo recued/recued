@@ -681,6 +681,32 @@ export interface ServerPendingAsk {
   text: string;
   options: { id: string; label: string }[];
   created_at: number;
+  /** D-234 § 234.3 — "read the thing this is about", already absolute.
+   *
+   *  ⛔ THIS FIELD EXISTS BECAUSE THE PROJECTION IS AN ENUMERATING COPIER.
+   *  `handlePendingAsks` rebuilds each ask as a literal, so a message field it
+   *  does not NAME is dropped on the way to the in-app card — every messenger
+   *  channel appends `link_url` and the `/ask` landing renders it, and the one
+   *  surface that would have silently lacked it is the webclient. Mirrors
+   *  `NotificationMessage.link_url`; absent when the raiser had no link. */
+  link_url?: string;
+  /** D-234 § 234.4e — this ask invites a written reason, and whether one is
+   *  required. Absent ⇒ the card renders no note field.
+   *
+   *  ⛔ THE SAME ENUMERATING-COPIER TRAP AS `link_url` ABOVE, one field along.
+   *  The server refuses a bare option on a `'required'` ask, so a projection
+   *  that dropped this would give the webclient a card whose submit silently
+   *  no-ops — the answer looks sent, the ask stays open, and nothing reports a
+   *  fault. Naming it here is what makes the client able to collect it at all. */
+  note_prompt?: 'optional' | 'required';
+  /** D-234 § 234.4f — the document the answerer reads before deciding.
+   *
+   *  ⛔ THIS RPC IS PAIR-AUTHENTICATED, WHICH IS WHY THE BODY MAY BE HERE AT
+   *  ALL. It is the owner's own signed-in surface; the notification that travels
+   *  to Slack / Telegram / email carries only `text`, and the bearer
+   *  `/ask/<ask_id>` landing renders that same message. Same ask, two
+   *  audiences — the question goes everywhere, the document does not. */
+  body?: string;
 }
 
 /** One row from `pair.list`. Mirrors `PairedInstance` from the server
@@ -1535,7 +1561,15 @@ export type ServerRpcRegistry = {
    *  omitted from `MCP_TOOL_CATALOG`, the same posture as the sibling
    *  historical-view reads. */
   'notification.submitAnswer': RpcMethodSpec<
-    { ask_id: string; option_id: string },
+    {
+      ask_id: string;
+      option_id: string;
+      /** D-234 § 234.4e — the written reason, when the ask invited one
+       *  (`PendingAsk.note_prompt`). DROPPED by the block for an ask that did
+       *  not, and REQUIRED — the reply no-ops without it — when the prompt says
+       *  `'required'`. Capped at `ASK_NOTE_MAX` on entry. */
+      note?: string;
+    },
     { ok: true }
   >;
 
@@ -5558,6 +5592,17 @@ export type ServerRpcRegistry = {
     {
       session_id: string;
       message: string;
+      /** D-172 P2 — `data.file` records the owner attached to THIS turn,
+       *  already uploaded and finalized (the webclient's resumable upload
+       *  returns the `record_id`). Ids only: the bytes went up the binary
+       *  `/ws/upload` socket, and reading them back is the separately-gated
+       *  `data-file-read`. Absent on a plain text turn.
+       *
+       *  ⚠ Until this existed, MESSENGER was the only way a file could enter a
+       *  chat session — `attachments` was set on exactly one code path. The
+       *  model-facing half (the tail marker, `file.search`) was already built
+       *  and simply had nothing to see from the webclient. */
+      attachments?: Array<{ file_id: string; media_class: string }>;
       picker_state: { current: string };
       model_pref?: { current: string; source_id?: string };
       /** D-193 — the requesting user's IANA timezone (the webclient reads

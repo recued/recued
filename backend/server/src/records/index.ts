@@ -7,6 +7,16 @@ export {
   type RecordsOwnerSearchInput,
   type RecordsStore,
 } from './store.js';
+// D-221 — the import's durable-record seam. Exported from the barrel so the
+// boot composer wires it through one import path, like everything else here.
+export { createRecordsImportAuditEmitter } from './import-audit-emitter.js';
+export {
+  RECORDS_IMPORT_ACTION,
+  recordsImportAuditDetail,
+  recordsImportAuditTarget,
+  type RecordsImportAudit,
+  type RecordsImportAuditDetail,
+} from './import-audit.js';
 export type { RecordsExportEnvelope, RecordsRetentionPolicy } from '@recued/contracts';
 export {
   RECORDS_NON_OWNER_CONTRACT_REFUSAL,

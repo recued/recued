@@ -47,6 +47,35 @@ export interface WebhookContractSnapshotDeps {
   readonly now: () => number;
 }
 
+/** WHICH ROUTE THE WEBHOOK PAYLOAD IS TAKING — and therefore whether D-209's
+ *  authored ceiling is admissible on it at all.
+ *
+ *  ⛔⛔ REQUIRED, NOT DEFAULTED, DELIBERATELY. D-209's rule is *"an authored
+ *  ceiling is admissible only where a MACHINE delivers a payload to a
+ *  DETERMINISTIC PATH"*, and a defaulted parameter is how a future caller
+ *  inherits the ceiling without ever answering that question. Making it a
+ *  required closed union forces the answer at the call site — the same reason
+ *  `GrantEntryKind` is a `Record`-keyed union that fails the build until a new
+ *  member is placed.
+ *
+ *  - `'deterministic_handler'` — the vendor POSTs and the payload lands in a
+ *    FIXED handler. This is the shape §1.4 reasoned about, and the two-sided
+ *    enrollment genuinely is the standing approval for it.
+ *  - `'recipe'` — the payload fires an ARBITRARY user recipe
+ *    (`webhook-recipe-consumer.ts` runs `recipe_id: claim.recipe_id`). The
+ *    premise does NOT hold: the recipe is user content that can contain any
+ *    outbound send, and the enrollment approved THE VENDOR DELIVERING PAYLOADS,
+ *    not whatever a recipe subsequently decides to do with them. Enrolling a
+ *    Stripe webhook is not consent to message a peer.
+ *
+ *  ⚠ TODAY EVERY CALLER IS `'recipe'`, so the authored ceiling is DORMANT rather
+ *  than deleted. That is the honest state and it is worth saying plainly: the
+ *  mint still writes `max_risk_without_approval: 'admin'` on the door (it is a
+ *  true property of the door under §1.4), and nothing reads it until a genuinely
+ *  deterministic ingestion path exists to pass `'deterministic_handler'`. Driven
+ *  in `d-209-webhook-outbound-send-ceiling.test.ts`. */
+export type WebhookDispatchPath = 'deterministic_handler' | 'recipe';
+
 /** Build the snapshot for a webhook dispatch, or fail closed.
  *
  *  Throws only on a source that is not a contract-bearing webhook dispatch — that is a
@@ -57,6 +86,7 @@ export interface WebhookContractSnapshotDeps {
 export const buildWebhookContractSnapshot = (
   source: ExecutionSource,
   deps: WebhookContractSnapshotDeps,
+  dispatch_path: WebhookDispatchPath,
 ): ContractSnapshot => {
   if (source.channel !== 'webhook' || source.actor !== 'anonymous') {
     throw new Error(
@@ -95,9 +125,19 @@ export const buildWebhookContractSnapshot = (
     scope_restrictions: [],
     resolved_at: resolvedAt,
     // The per-door authored ceiling (D-209 §1.4, minted `'admin'`) — copied from the
-    // LIVE definition only. A dead door must not keep relaxing writes: dropping the
-    // field leaves the anonymous dispatch at the pinned LOW `read` ceiling.
-    ...(live && def.max_risk_without_approval !== undefined
+    // LIVE definition only, and ONLY onto a deterministic-handler dispatch. A dead
+    // door must not keep relaxing writes, and neither must an arbitrary recipe:
+    // dropping the field leaves the anonymous dispatch at the pinned LOW `read`
+    // ceiling, which is where every other unattended trigger (schedule, reactive)
+    // already sits.
+    //
+    // ⛔⛔ THIS IS THE FIX FOR A DRIVEN DEFECT, NOT A PRECAUTION. With the ceiling
+    // on a recipe dispatch, an outbound send crossed admission with NO preflight:
+    // `admin` relaxes the `write`, and `liftOutboundSend` is `user_self`-scoped so
+    // nothing re-raises it. Same source, same send, ceiling removed ⇒ the gate
+    // fires. See `d-209-webhook-outbound-send-ceiling.test.ts` for the A/B.
+    ...(dispatch_path === 'deterministic_handler'
+      && live && def.max_risk_without_approval !== undefined
       ? { max_risk_without_approval: def.max_risk_without_approval }
       : {}),
   });

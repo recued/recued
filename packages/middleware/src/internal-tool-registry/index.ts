@@ -312,6 +312,7 @@ export const createInternalToolRegistry = (
     'account.search': notImplementedHandler,
     'work.search': notImplementedHandler,
     'work.read': notImplementedHandler,
+    'file.search': notImplementedHandler,
     'recipe.run': notImplementedHandler,
   };
   if (options.tier1Handlers) {

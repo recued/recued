@@ -786,13 +786,14 @@ export const bootstrapApprovalsRoute = (
   const submitAskFromCard = async (
     askId: string,
     optionId: string,
+    note?: string,
   ): Promise<void> => {
     if (resolvingAsks.has(askId)) return;
     resolvingAsks.set(askId, optionId);
     askResolveErrors.delete(askId);
     renderDecisions();
     try {
-      await panel.submitAnswer(askId, optionId);
+      await panel.submitAnswer(askId, optionId, note);
     } catch (err) {
       askResolveErrors.set(askId, 'Could not submit — try again.');
       throw err;
@@ -807,11 +808,14 @@ export const bootstrapApprovalsRoute = (
       doc,
       ask,
       {
-        onAnswer: (optionId) =>
+        // D-234 § 234.4e — the note travels the same path the option does; a
+        // route that forwards one and drops the other submits a decision whose
+        // reason was typed and thrown away, with nothing reporting it.
+        onAnswer: (optionId, note) =>
           runDecisionAction(
             ask.ask_id,
             { attr: ASK_CARD_OPTION_ATTR, value: optionId },
-            () => submitAskFromCard(ask.ask_id, optionId),
+            () => submitAskFromCard(ask.ask_id, optionId, note),
           ),
       },
       {

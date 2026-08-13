@@ -31,10 +31,11 @@
  *  Unlike `pair-consume-invoker` (which uses a CSPRNG placeholder
  *  bearer because the consume handler is unauthenticated by
  *  construction), this invoker uses the FRESHLY-ISSUED realm bearer
- *  from `/auth/pair`. The server's `extractRealm` reads it via the
- *  `?token=` query fallback (per `backend/server/src/ws-server.ts`
- *  line 1881) so the URL builder threads it the same way every
- *  authenticated webclient does.
+ *  from `/auth/pair`. The server's `extractRealm` reads it from
+ *  `Sec-WebSocket-Protocol`, which this invoker gets for free by going through
+ *  the shared transport rather than building its own socket. (It used to ride
+ *  `?token=` on the URL; retired — see `@recued/contracts`
+ *  `ws-subprotocol.ts`.)
  *
  *  ── Timeout ────────────────────────────────────────────────────────
  *

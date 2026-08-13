@@ -85,7 +85,9 @@ import { CHANNEL_ROLE_AXES, type ChannelRoles } from './channel-roles.js';
  *  `Transport` handshake is code. The RUNTIME accessors stay open (they take a
  *  `registry` param), so a future merged registry can still carry an undeclared
  *  slug; such a vendor simply cannot back a notification channel — which is
- *  already the rule (`createRemoteChannel` fails LOUD on a slug ∉ `CHANNEL_NAMES`).
+ *  already the rule (`createRemoteChannel` fails LOUD via `isChannelName`, backed
+ *  by `NOTIFICATION_CHANNEL_NAMES` below — not by `@recued/notification`'s
+ *  `CHANNEL_NAMES`, which is a derived alias no caller imports).
  *
  *  ⚠ ADDING A VENDOR: the slug here + a `MESSENGER_VENDOR_DECLARATIONS` entry
  *  (the boot check at the foot of this file enforces both, in BOTH directions) +

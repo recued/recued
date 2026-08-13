@@ -16,7 +16,7 @@ describe('D-148 P4 — settings.key_health', () => {
       tls_private_key: { status: 'warning', last_rotated_at: 3 },
       webclient_token: { status: 'healthy', last_rotated_at: 4 },
     };
-    const rows = buildKeyHealthRows(bundle as KeyHealthBundle);
+    const rows = buildKeyHealthRows(bundle);
     expect(rows.map((r) => r.status)).toEqual(['overdue', 'warning', 'healthy', 'healthy']);
     // Within healthy, alphabetical by class id.
     const healthyClasses = rows.filter((r) => r.status === 'healthy').map((r) => r.key_class);
@@ -35,7 +35,7 @@ describe('D-148 P4 — settings.key_health', () => {
   it('threads the optional flags through', () => {
     const rows = buildKeyHealthRows({
       master_dek: { status: 'overdue', expiry_warning: true, compromise_alert: true },
-    } as KeyHealthBundle);
+    });
     expect(rows[0].expiry_warning).toBe(true);
     expect(rows[0].compromise_alert).toBe(true);
   });

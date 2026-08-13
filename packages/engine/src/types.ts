@@ -1,3 +1,4 @@
+import type { PeerAskSpec } from '@recued/contracts';
 import type {
   Actor,
   ContractSnapshot,
@@ -879,6 +880,7 @@ export interface ExecutionContext {
      *  as before for legacy checkpoints). */
     pii_ledgers?: PiiLedgerStoreSnapshot;
   };
+
 }
 
 /** Per-step audit record. */
@@ -1104,5 +1106,36 @@ export interface ExecutionResult {
      *  hydrates its run store from it. Deep-copied like `step_state` —
      *  safe to pass straight to `CheckpointStore.write`. */
     pii_ledgers?: PiiLedgerStoreSnapshot;
+  };
+  /** D-234 § 234.4 — THE RUN PAUSED WAITING FOR A PEER'S OWNER TO ANSWER.
+   *
+   *  Structurally the twin of {@link ExecutionResult.awaiting_approval}: the run
+   *  did not complete (`success: false`, empty `errors`), the host mints and
+   *  persists a `Checkpoint` from `step_state`, and resume re-instantiates with
+   *  `resumeFrom.gated_step_id`. A peer answer IS an approval hold whose
+   *  answerer is elsewhere.
+   *
+   *  ⛔⛔ A SEPARATE FIELD, NOT A FLAG ON `awaiting_approval`, FOR THE SAME REASON
+   *  `awaiting_peer` IS A SEPARATE `commit_status`. Every consumer that reads
+   *  `awaiting_approval` today goes on to raise or pair a LOCAL ask — and this
+   *  hold has none to raise. A consumer that does not know the flag would raise
+   *  an approval nobody can answer; one that does not know the FIELD does nothing
+   *  at all, which is the harmless direction.
+   *
+   *  ⛔ AND NOTHING RESUMES THIS FROM HERE. The op-step re-runs on resume and
+   *  finds the recorded answer, exactly as § 234.1's ceiling re-runs and finds
+   *  the recorded admission decision — idempotent-with-memory, both of them. So
+   *  the engine needs no answer-injection path and the checkpoint carries no
+   *  answer slot. */
+  awaiting_peer?: {
+    /** Id of the peer-ask step — the `Checkpoint.gated_step_id`. */
+    gated_step_id: string;
+    /** Cloned snapshot of `ctx.stores.step` at the pause. */
+    step_state: Record<string, unknown>;
+    /** The conversation id the answer will correlate on. Deterministic, minted
+     *  by the op so a re-run of the same step in the same run reproduces it. */
+    exchange_ref: string;
+    /** What to send, verbatim from the authored step — the host owns delivery. */
+    spec: PeerAskSpec;
   };
 }

@@ -97,6 +97,7 @@ import {
   type ChatToolCall,
   type ChatToolCatalogScopeState,
   type ConnectionMcpAnnotationState,
+  type ChatMessageAttachment,
   type ContractSnapshot,
   type ExecutionSource,
   type IngredientKind,
@@ -840,6 +841,12 @@ export const broadcastEmitterFromBus = (bus: EventBus): ChatBroadcastEmitter => 
 export interface ChatOrchestratorDeps {
   /** Per-pair chat session/message store. */
   chatStore: ChatStore;
+  /** D-172 P2 — resolve attached `data.file` ids to their CURRENT filenames for
+   *  the chat tail's attachment marker. Optional: absent (dbless / partial
+   *  harness) means the marker is simply omitted, which is the correct
+   *  degradation — a marker naming files it could not resolve would be the
+   *  shape-without-values case the bench measured at ~5.5x fabrication odds. */
+  resolveFileNames?: ChatFileNameResolver;
   /** D-177 N.11 rule 5 (5.d hot-path) — the per-session forwarded-sender
    *  candidate index. The orchestrator RECORDS into it right after
    *  durably persisting a CHAT user turn (`contributor: 'user'`);
@@ -1107,6 +1114,13 @@ export interface ChatOrchestratorDeps {
 export interface ChatTurnInput {
   session_id: string;
   message: string;
+  /** D-172 P2 — `data.file` records the owner attached to THIS turn. Ids only;
+   *  the bytes went up the binary upload socket and reading them back is the
+   *  separately-gated `data-file-read`. Handled exactly as the messenger path
+   *  handles `inbound.media`: persisted on the user row AND named on the
+   *  model's copy of this turn, because `buildChatTail` runs before the append
+   *  so the current message is never in the tail. */
+  attachments?: readonly ChatMessageAttachment[];
   picker_state: { current: ChatPickerTarget };
   /** Explicit same-session conversational lineage. The RPC shell validates
    * this prior turn and the D-214 middleware resolves it to a durable root;
@@ -1293,11 +1307,55 @@ const buildChatExecutionSource = (
   ...(turn_id !== undefined && turn_id.length > 0 ? { turn_id } : {}),
 });
 
-const mediaOnlyAffordance = (media: NonNullable<ChannelInbound['media']>): string => {
+/** The reply to a file dropped with no words.
+ *
+ *  ⛔ THIS COSTS NO AI CALL, AND THAT IS THE DESIGN — not a limitation being
+ *  worked around. A file arriving is not a question, so running a turn on it
+ *  would spend a provider call to guess an intent the person has not stated
+ *  yet, and someone dropping a receipt to file it away does not want an answer.
+ *  So: store it, SAY SO, and ask. The next message carries the intent, and by
+ *  then the file is already in the session — the row was appended with its
+ *  attachments BEFORE this short-circuit, so the following turn's tail names it
+ *  automatically. The model ends up with exactly `{file_refs, user_prompt}` on
+ *  one call instead of two.
+ *
+ *  ⚠ "Attachment received." was the whole reply before, which is a dead end: it
+ *  reports an event and invites nothing, so a person with something in mind has
+ *  to guess that a follow-up would even be understood.
+ *
+ *  ⚠ Names come from the same live resolver the tail marker uses, but the
+ *  REAL-FILENAMES-OR-NOTHING rule does NOT apply here: this string goes to a
+ *  HUMAN, not to a model. A person reading "Stored 2 files" cannot hallucinate
+ *  a filename from it; a model given the same shape would. Falling back to a
+ *  count is therefore fine, and better than refusing to acknowledge the drop. */
+/** D-172 P2 — the same words the messenger short-circuit uses, for the
+ *  webclient. Shared deliberately: two surfaces phrasing "your file is stored,
+ *  now tell me what to do" differently would read as two different features.
+ *  ⚠ Human-facing, so a COUNT fallback is fine here — the real-filenames-or-
+ *  nothing rule guards MODEL-facing copy, where a shape without values invites
+ *  an invented name. */
+export const wordlessDropAffordance = (
+  attachments: readonly { file_id: string }[],
+  names: ReadonlyMap<string, string>,
+): string => {
+  const named = attachments
+    .map((a) => names.get(a.file_id))
+    .filter((n): n is string => n !== undefined && n.length > 0);
+  const subject = named.length === attachments.length && named.length > 0
+    ? named.join(', ')
+    : attachments.length === 1 ? 'your file' : `${attachments.length} files`;
+  return `Stored ${subject}. What would you like me to do with ${
+    attachments.length === 1 ? 'it' : 'them'}?`;
+};
+
+const mediaOnlyAffordance = (
+  media: NonNullable<ChannelInbound['media']>,
+  names: ReadonlyMap<string, string>,
+): string => {
   if (isVoiceOnlyMedia(media)) {
     return 'Voice message received. Transcription is not configured yet.';
   }
-  return 'Attachment received.';
+  return wordlessDropAffordance(media, names);
 };
 
 const isVoiceOnlyMedia = (media: NonNullable<ChannelInbound['media']>): boolean =>
@@ -1680,9 +1738,49 @@ interface BuiltChatTail {
   readonly item_ids: readonly string[];
 }
 
-const buildChatTail = async (
+/** D-172 P2 — resolve attached `data.file` ids to their CURRENT filenames.
+ *
+ *  ⛔ RESOLVED LIVE, NEVER DENORMALIZED ONTO THE MESSAGE ROW. Storing the name
+ *  beside the id at append time would be cheaper per turn and wrong in the one
+ *  case that matters: a file the owner has since deleted would still be named
+ *  in the tail, and the model would confidently offer to attach an id that
+ *  resolves to nothing. Resolving live means a deleted file simply stops
+ *  appearing — the model cannot name what is gone. */
+export type ChatFileNameResolver = (
+  file_ids: readonly string[],
+) => ReadonlyMap<string, string>;
+
+/** ⛔ REAL FILENAMES OR NOTHING. The substrate-bench measured that giving a
+ *  model SHAPE WITHOUT VALUES multiplies fabrication odds ~5.5× — it fills the
+ *  slot it can see. So a bare "[2 files attached]" marker would be worse than
+ *  silence: it announces files and invites invented names. A file whose record
+ *  does not resolve is therefore OMITTED from the marker rather than listed as
+ *  a bare id.
+ *
+ *  The id rides alongside the name because naming is the whole point: the model
+ *  can pass it straight to a recipe that takes files without a lookup round-trip.
+ *  Reading the CONTENT still requires the Gateway-gated `data-file-read`. */
+export const renderAttachmentMarker = (
+  attachments: readonly { file_id: string }[],
+  names: ReadonlyMap<string, string>,
+): string => {
+  const named = attachments
+    .map((a) => ({ id: a.file_id, name: names.get(a.file_id) }))
+    .filter((a): a is { id: string; name: string } => a.name !== undefined);
+  if (named.length === 0) return '';
+  const list = named.map((a) => `${a.name} (${a.id})`).join(', ');
+  return `\n[files attached to this message: ${list}]`;
+};
+
+/** ⚠ EXPORTED FOR THE SEAM TEST, and that is not incidental. `renderAttachmentMarker`
+ *  is a pure function with its own tests — and those tests pass whether or not
+ *  anything CALLS it. A marker function nobody invokes is the same
+ *  built-typed-tested-and-unreachable shape that has bitten this codebase
+ *  repeatedly, so the join is covered here rather than assumed. */
+export const buildChatTail = async (
   chatStore: ChatStore,
   session_id: string,
+  resolveFileNames?: ChatFileNameResolver,
 ): Promise<BuiltChatTail> => {
   try {
     // Bounded read: the last CHAT_TAIL_LIMIT conversational rows, selected and
@@ -1702,11 +1800,32 @@ const buildChatTail = async (
       (m): m is ChatMessage & { role: 'user' | 'assistant' } =>
         m.role === 'user' || m.role === 'assistant',
     );
+    // D-172 P2 — name the files this window carries. Without it the model is
+    // never told a dropped file exists at all: attachments are persisted on the
+    // row and were dropped here, so the ONLY file that ever reached a model was
+    // the voice-only transcript. ⚠ The tail is CHAT_TAIL_LIMIT rows, so this is
+    // the recent window by construction — anything older is `file.search`'s job,
+    // which is the same split on purpose.
+    const attachedIds = [
+      ...new Set(selected.flatMap((m) => (m.attachments ?? []).map((a) => a.file_id))),
+    ];
+    const names = attachedIds.length > 0 && resolveFileNames !== undefined
+      ? resolveFileNames(attachedIds)
+      : new Map<string, string>();
+
     return {
-      messages: selected.map((m) => ({
-        role: m.role,
-        content: m.content,
-      })),
+      messages: selected.map((m) => {
+        const marker = m.attachments && m.attachments.length > 0
+          ? renderAttachmentMarker(m.attachments, names)
+          : '';
+        return {
+          role: m.role,
+          // Appended to the model's COPY of the turn only — `selected` is
+          // mapped, never mutated, so nothing is written back to the stored
+          // message and chat history still renders what the person typed.
+          content: marker.length > 0 ? `${m.content}${marker}` : m.content,
+        };
+      }),
       item_ids: selected.map((m) => m.id),
     };
   } catch (e) {
@@ -3275,6 +3394,7 @@ export const createChatOrchestrator = (
     const builtChatTail = await buildChatTail(
       deps.chatStore,
       input.session_id,
+      deps.resolveFileNames,
     );
 
     // 1b) Persist the user turn immediately so reconnect-replay sees
@@ -3292,6 +3412,9 @@ export const createChatOrchestrator = (
       ts: now(),
       ...(input.data_diagnosis
         ? { data_diagnosis: input.data_diagnosis }
+        : {}),
+      ...(input.attachments && input.attachments.length > 0
+        ? { attachments: [...input.attachments] }
         : {}),
     });
     void safeLogActivity(
@@ -3330,6 +3453,41 @@ export const createChatOrchestrator = (
       input.on_accepted?.({ turn_id });
     } catch {
       /* observability-only seam — never fail the committed turn */
+    }
+
+    // D-172 P2 — a WORDLESS FILE DROP, mirroring the messenger short-circuit.
+    //
+    // ⛔ ZERO AI CALLS. A file arriving is not a question, so running a turn
+    // would spend a provider call guessing an intent nobody has stated. Store
+    // it, SAY SO, and ask. The person's next message carries the intent, and by
+    // then the file is in the session — the user row above was appended WITH
+    // its attachments, so the following turn's tail names it automatically and
+    // the model gets `{file_refs, user_prompt}` on ONE call.
+    //
+    // ⚠ The reply is a real assistant ROW, not a transient banner: the webclient
+    // renders the thread from stored messages, so a banner would vanish on the
+    // next repaint and the person would be left with a file and no trace of
+    // having been asked anything.
+    if (
+      input.message.trim().length === 0
+      && input.attachments !== undefined
+      && input.attachments.length > 0
+    ) {
+      const names = deps.resolveFileNames?.(
+        input.attachments.map((a) => a.file_id),
+      ) ?? new Map<string, string>();
+      await deps.chatStore.appendMessage({
+        id: mintId(),
+        session_id: input.session_id,
+        role: 'assistant',
+        content: wordlessDropAffordance(input.attachments, names),
+        target_server: picker_target,
+        picker_at_send: pickerAtSend,
+        model_used: modelUsed,
+        execution_source: executionSource,
+        ts: now(),
+      });
+      return { turn_id };
     }
 
     // 2) The AI-facing catalog (the post-capability-filter Tier 1/2/3
@@ -3399,7 +3557,16 @@ export const createChatOrchestrator = (
         // the stream inbound below.
         dispatch_depth: 0,
         content_parts: buildChatContentPromptParts({
-          user_message: input.message,
+          // D-172 P2 — same reason as the messenger path: the tail is built
+          // BEFORE this message is appended, so a file attached to THIS turn
+          // is not in it. Without this the marker would fire one turn late.
+          user_message: input.attachments && input.attachments.length > 0
+            ? `${input.message}${renderAttachmentMarker(
+              input.attachments,
+              deps.resolveFileNames?.(input.attachments.map((a) => a.file_id))
+                ?? new Map<string, string>(),
+            )}`
+            : input.message,
           chat_tail: builtChatTail.messages,
         }),
         visible_recall_item_ids: [
@@ -3808,7 +3975,11 @@ export const createChatOrchestrator = (
     // One conversation: the turn reasons over the SAME durable tail chat
     // reads. Build the tail before appending the current messenger row so
     // the current user message does not appear twice in the AI packet.
-    const builtChatTail = await buildChatTail(deps.chatStore, session_id);
+    const builtChatTail = await buildChatTail(
+      deps.chatStore,
+      session_id,
+      deps.resolveFileNames,
+    );
     const pickerAtSend = buildPickerAtSend(picker_target);
     if (!session) {
       deps.chatStore.createSession({
@@ -3865,7 +4036,11 @@ export const createChatOrchestrator = (
         kind: 'message',
         session_id,
         turn_id,
-        text: mediaOnlyAffordance(userAttachments),
+        text: mediaOnlyAffordance(
+          userAttachments,
+          deps.resolveFileNames?.(userAttachments.map((a) => a.file_id))
+            ?? new Map<string, string>(),
+        ),
       });
       return { turn_id };
     }
@@ -3895,7 +4070,24 @@ export const createChatOrchestrator = (
       execution_source: inbound.source,
       dispatch_depth: inbound.dispatch_depth,
       content_parts: buildChatContentPromptParts({
-        user_message: userText,
+        // ⛔⛔ THE MARKER MUST BE ON THE CURRENT TURN TOO, NOT ONLY THE TAIL.
+        // `buildChatTail` runs BEFORE the user row is appended (deliberately —
+        // otherwise the current message appears twice in the packet), so the
+        // file the person JUST dropped is not in the tail. Marking only the
+        // tail meant the motivating case — drop a PDF, say "send this to Bob"
+        // — reached the model with no marker at all, and the file only became
+        // visible one turn LATE. `file.search` would still have found it, but
+        // the discovery guarantee was not being delivered where it matters.
+        //
+        // ⚠ Applied to the MODEL's copy only. `userText` is what was appended
+        // to the store above, and it stays exactly what the person sent.
+        user_message: userAttachments && userAttachments.length > 0
+          ? `${userText}${renderAttachmentMarker(
+            userAttachments,
+            deps.resolveFileNames?.(userAttachments.map((a) => a.file_id))
+              ?? new Map<string, string>(),
+          )}`
+          : userText,
         chat_tail: builtChatTail.messages,
       }),
       model_layer: modelLayer,

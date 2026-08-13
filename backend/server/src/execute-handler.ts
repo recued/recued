@@ -10,6 +10,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { connectionBaseUrlFromConfig } from './connection-base-url.js';
+import { PEER_RECEIVE_ASK_TOOL } from './peer-receive-ask-recipe.js';
 import { RUN_INGREDIENT_RECIPE } from './run-ingredient-recipe.js';
 import {
   executeRecipe,
@@ -86,6 +87,7 @@ import {
   isCreatePlanDetail,
   collectOperationAuthorityPaths,
   admitByOpRiskWithoutQualityLifts,
+  CONNECTION_DIRECT_SLUG,
   CONTRACTED_DEFAULT_TRUST_CEILING,
   operationPathTemplate,
   deriveDispatchScope,
@@ -126,7 +128,17 @@ import {
   type ServerRpcRegistry,
   type UndeclaredConfigArgumentDetails,
 } from '@recued/contracts';
-import { ephemeralDishId, parsePeerExchangeAck } from '@recued/contracts';
+import {
+  ephemeralDishId,
+  isSolicitedReply,
+  parsePeerExchangeAck,
+  peerAdmissionIdentity,
+  resolveExchangeAdmission,
+  MCP_PEER_ADMISSION_CONFIG_KEY,
+} from '@recued/contracts';
+import { resolveOwnerSurfaceUrl } from './ask-landing-answer-link.js';
+import { raisePeerAdmissionAsk } from './peer-admission-ask.js';
+import type { PeerAdmissionStore } from './storage/peer-admission-store.js';
 import type { RecordsStore } from './records/index.js';
 import { readRootProjections } from './records/root-projection.js';
 import { emitRunOutcome, originTriggerIdFromContext } from './run-outcome-events.js';
@@ -199,7 +211,7 @@ import {
 } from './events/emit-sites.js';
 import type { RecipeStore } from './recipe-store.js';
 import type { FileReadFn, ServerExecutorConfig } from './server-executor.js';
-import { createBoundExecutor, createGatewayAuditEmitter, createNamespaceStores, extractFileRecordId, mergeVault } from './server-executor.js';
+import { createBoundExecutor, createGatewayAuditEmitter, createNamespaceStores, createServerExecutor, extractFileRecordId, mergeVault } from './server-executor.js';
 import { createCliInvocationExecutor } from './cli-invocation-executor.js';
 import type { ConnectionOperationProfileStore } from './connection-operation-profile.js';
 import { resolveCanonicalRecipeForDispatch } from './dispatch-canonical-resolve.js';
@@ -798,6 +810,16 @@ export interface ExecuteHandlerDeps {
    *  gateway preflight flow (slice 4) treats a missing checkpoint as
    *  abort-on-approval. */
   checkpointStore?: CheckpointStore;
+  /** D-234 § 234.4 return leg — the asker's open-conversation record. Written
+   *  as a peer ask goes out, read (and closed) when its answer comes back.
+   *
+   *  ⛔ IT IS THE ONLY THING THAT MAKES AN INBOUND ANSWER CHECKABLE. Without a
+   *  row, `receiveAnswer` cannot tell a solicited reply from a peer pushing an
+   *  outcome at a run we never held — and it carries the OFFERED option set
+   *  `parsePeerAnswer` refuses against. Absent (dbless) ⇒ questions still go out
+   *  and their answers are refused as unsolicited: the hold stays, which is the
+   *  same place an undelivered ask already leaves it. */
+  peerAskOutbox?: import('./storage/peer-ask-outbox-store.js').PeerAskOutboxStore;
   /** D-157 P1 slice 4 — the D-158 notification block, threaded as the
    *  narrow `PreflightNotifier` seam. When wired AND the engine paused
    *  on a preflight gate, the handler calls `raisePreflightAsk(...)`
@@ -814,6 +836,17 @@ export interface ExecuteHandlerDeps {
    *  (which also defers the server-side notification-block
    *  construction to a downstream slice). */
   preflightNotifier?: PreflightNotifier;
+  /** D-234 § 234.1 — where an answered admission ask is recorded and claimed.
+   *
+   *  ⛔ ABSENT DENIES, not admits. Without the store an `ask` ceiling has nowhere
+   *  to read a decision from, so it can only refuse — which is the safe
+   *  direction: an unwired host must not silently downgrade "ask me" to "let them
+   *  in". Nearly every deployment leaves it wired; the dbless harnesses do not. */
+  peerAdmissionStore?: PeerAdmissionStore;
+  /** D-234 § 234.3 — resolve a recipe's `metadata.owner_surface` to an absolute
+   *  webclient link. ⚠ Absent on a server with no public base URL, exactly like
+   *  `askAnswerLink` — an ask then carries no link rather than a dead one. */
+  ownerSurfaceLink?: (recipe_id: string) => string;
   /** D-210 Phase C — the owner's inbox device-fanout mode, read fresh at
    *  each raise off the `reception_page` singleton config.
    *
@@ -2503,6 +2536,226 @@ export const handleExecute = async (
       // overlay-cell resolver args are gone (slice 4 left them unconsumed; slice 5
       // removes the plumbing). The authoritative ACCESS gate (op-admission, Layer 1)
       // fires per-call at the gateway, not in this pre-run walk.
+      // ── D-234 § 234.1 — THE RECEIVER'S CEILING, asked before anything runs ──
+      //
+      // ⛔⛔ THE RECEIVER HAD NO VOICE. Until this, B's only outcomes were "the
+      // recipe runs" or "the contract denies at the door". There was no *"I got
+      // this and I decline"* as a POLICY — so an unwilling receiver produced
+      // either the silence § 19.4 calls the worst outcome for a correspondent,
+      // or a contract denial the asker reads as a misconfiguration of their own
+      // end. This is the missing third answer, and it is DELIVERED.
+      //
+      // 🔑 IT ROUTES THROUGH `handlePolicyGateDenial` RATHER THAN REFUSING ON ITS
+      // OWN, and that is the whole reason it composes: that path already files a
+      // denied run under its exchange ref (its own doc — "a DENIED run belongs to
+      // its exchange as much as a successful one: from the far side a refusal and
+      // a lost letter look identical, and only the ref can tell them apart"), and
+      // it emits `RECIPE_POLICY_DENIED` — which § 21's `POLICY_CODES` already
+      // classifies `policy`. So the asker is told *they refused you, do not
+      // retry*, in the vocabulary that exists, with no new error code and no
+      // second refusal shape to keep in step with the first.
+      //
+      // ⚠ CONTRACT-BEARING CALLERS ONLY. A ceiling is a statement about a PEER;
+      // applying it to the owner's own runs would let a connection's config
+      // refuse the owner their own recipe.
+      // D-234 § 234.1 — ONE denial shape for every admission refusal (declared
+      // `refuse`, an owner's decline, an un-keyable payload, and a pending ask).
+      // ⚠ Four call sites, one builder: a second spelling of this would drift,
+      // and the code it carries is what tells the asker "a human decided" rather
+      // than "something broke".
+      const admissionDenial = (detail: string): PolicyGateDenial => ({
+        step_id: '',
+        ingredient: recipe.recipe_id,
+        // ⛔ NOT `tool_not_in_contract` — the tool IS in the contract and the peer
+        // IS admitted and granted; a wrong code sends whoever diagnoses this to
+        // inspect a contract that turns out to be correct.
+        decision: { verdict: 'deny', code: 'peer_admission_refused', detail },
+        phase: 'sequential',
+      });
+      const peerAdmissionDenial = await (async (): Promise<PolicyGateDenial | undefined> => {
+        if (!executionSourceHasContract(executionSource)) return undefined;
+        // ⛔⛔ THE KERNEL CARRIER IS NEVER SUBJECT TO THE CEILING, AND A WILDCARD
+        // FOUND THIS THE FIRST TIME IT RAN. `run-ingredient` is what a fire
+        // dispatches THROUGH, and it inherits the peer's execution source — so a
+        // peer-wide `'*': 'refuse'` matched the carrier and refused the OWNER'S
+        // OWN ANSWER, one hop after the ceiling had explicitly admitted the
+        // recipe that was answering. Worse, the failure surfaces at the asker as
+        // a refusal the owner never made.
+        //
+        // § 20.19 already states the line this crosses: the carrier "IS the
+        // declaring recipe's op-step, wearing a recipe's costume", and recipes
+        // are the grantable unit while ops inside one are not. A ceiling is an
+        // opinion about a RECIPE an owner installed; nobody has an opinion about
+        // kernel plumbing. Compared against the carrier's own definition rather
+        // than a repeated literal, so this cannot drift from what actually
+        // carries a fire.
+        if (recipe.recipe_id === RUN_INGREDIENT_RECIPE.recipe_id) return undefined;
+        const contractId = executionSourceContractId(executionSource);
+        if (contractId === undefined) return undefined;
+        const connectionName = peerConnectionForContract(deps, contractId);
+        if (!connectionName) return undefined;
+        const record = deps.connectionStore?.get('mcp', connectionName);
+        if (!record) return undefined;
+        let declared: unknown;
+        try {
+          declared = (JSON.parse(record.config_json ?? '{}') as Record<string, unknown>)[
+            MCP_PEER_ADMISSION_CONFIG_KEY
+          ];
+        } catch {
+          // ⚠ A connection whose config will not parse says nothing about
+          // willingness. Falling through to the default is the same posture the
+          // resolver takes for an absent key — this gate must not become the
+          // place a malformed record starts refusing peers.
+          return undefined;
+        }
+        const admission = resolveExchangeAdmission(declared, recipe.recipe_id);
+        if (admission === 'auto_accept') return undefined;
+        // ── D-234 § 234.1 — `ask`: has the owner already answered for THIS
+        //    message? ────────────────────────────────────────────────────────
+        //
+        // ⛔⛔ NOTHING IS RE-DISPATCHED WHEN AN ASK IS ANSWERED, because you can
+        // re-dispatch a REQUEST but not an IDENTITY: a peer's authority comes
+        // from their live token presentation, and running their request later as
+        // the OWNER would be escalation. So the decision is recorded and claimed
+        // HERE, on a call the peer made themselves — authority is always live.
+        //
+        // ⚠ The identity is the message's CONTENT (contract + recipe + canonical
+        // payload), hashed host-side. Keying on `exchange_ref` would be
+        // forgeable: it is caller-supplied so it can round-trip, so a peer could
+        // get message A approved and send B under A's ref.
+        // ── D-234 § 234.2 — is this a REPLY WE ASKED FOR? ────────────────────
+        //
+        // ⛔ ORDER MATTERS AND `refuse` HAS ALREADY WON ABOVE. A durable "never
+        // run this for this peer" means never, even for an answer we solicited;
+        // correlation only relaxes the ASK.
+        //
+        // 🔑 THE PEER'S REF IS A LOOKUP KEY, NOT A CREDENTIAL — authority comes
+        // from OUR OWN ROWS, so a ref we never opened finds nothing and falls
+        // through to the ask. And correlation ADMITS but never AUTHORIZES: the
+        // reply still runs under their contract, which still fences what the
+        // landing recipe may do.
+        if (admission === 'ask' && deps.auditLog !== undefined) {
+          const inboundRef = (request.config as Record<string, unknown> | undefined)
+            ?.exchange_ref;
+          if (typeof inboundRef === 'string' && inboundRef !== '') {
+            try {
+              const rows = await deps.auditLog.listByExchangeRef(inboundRef, 200);
+              if (isSolicitedReply(
+                rows.map((r) => ({
+                  recipe_id: r.recipe_id,
+                  ...(r.contract_snapshot?.contract_id !== undefined
+                    ? { contract_id: r.contract_snapshot.contract_id }
+                    : {}),
+                  ...(r.exchange_callback_op !== undefined
+                    ? { callback_op: r.exchange_callback_op }
+                    : {}),
+                })),
+                { recipe_id: recipe.recipe_id, caller_contract_id: contractId },
+              )) return undefined;
+            } catch (e) {
+              // ⚠ A failed lookup is NOT an admission. Falling through to the ask
+              // is the safe direction: the owner is asked about something they
+              // may well have solicited, which is a nuisance; admitting on a
+              // failed read would be a peer walking past the gate because our
+              // own store hiccuped.
+              console.warn(
+                '[peer-admission] correlation lookup failed: '
+                + (e instanceof Error ? e.message : String(e)),
+              );
+            }
+          }
+        }
+        if (admission === 'ask') {
+          let identity: string;
+          try {
+            identity = peerAdmissionIdentity({
+              contract_id: contractId,
+              recipe_id: recipe.recipe_id,
+              config: (request.config ?? {}) as Record<string, unknown>,
+            });
+          } catch {
+            // ⛔ FAIL CLOSED, per `canonicalArgHash`'s own contract: a payload
+            // whose identity cannot be computed must never MATCH a decision — a
+            // collapsed hash would let one peer's approval admit another's
+            // message. Refuse rather than ask, because an ask we cannot key
+            // could never be answered for this message either.
+            return admissionDenial(
+              `'${recipe.recipe_id}' carries arguments whose identity cannot be computed, `
+              + 'so it cannot be put to the owner. Refusing rather than guessing.',
+            );
+          }
+          const claimed = deps.peerAdmissionStore?.claim(identity);
+          if (claimed?.decision === 'accepted') return undefined;
+          if (claimed?.decision === 'declined') {
+            return admissionDenial(
+              `the owner declined this request from the peer bound to connection `
+              + `'${connectionName}'. This is a decision, not a fault.`,
+            );
+          }
+          // No decision yet — raise once and refuse THIS attempt. ⚠ Best-effort:
+          // a raise that fails must not become an accept, so the denial stands
+          // either way and the peer simply asks again later.
+          if (deps.preflightNotifier !== undefined && deps.peerAdmissionStore !== undefined) {
+            void raisePeerAdmissionAsk(deps.preflightNotifier, {
+              admission_identity: identity,
+              recipe_id: recipe.recipe_id,
+              contract_id: contractId,
+              connection_name: connectionName,
+              // § 234.3 — the RECIPE names where its output is read; the HOST
+              // turns that into an absolute link, because the public base URL is
+              // a boot fact and `context.server.name` is only a display label.
+              //
+              // ⛔ THREE WAYS TO HAVE NO LINK, AND A LINK IS EMITTED ONLY WHEN
+              // NONE OF THEM HOLD: the recipe named no surface, this server has
+              // no public base URL, or the named recipe IS NOT INSTALLED HERE.
+              // The third is the one worth code: the name travels in the SENDER's
+              // recipe and is resolved on the RECEIVER, so it can name something
+              // this server has never had. A dead link in the only notification
+              // the owner gets reads as "nothing here" and as "couldn't find it"
+              // at the same time — no link at all is the honest version.
+              ...((): { owner_surface_url?: string } => {
+                const url = resolveOwnerSurfaceUrl(
+                  recipe.metadata?.owner_surface,
+                  (id) => deps.recipeStore.get(id) !== null,
+                  deps.ownerSurfaceLink,
+                );
+                return url !== undefined ? { owner_surface_url: url } : {};
+              })(),
+            }).catch((e: unknown) => {
+              console.warn(
+                `[peer-admission] raise failed for '${recipe.recipe_id}': `
+                + (e instanceof Error ? e.message : String(e)),
+              );
+            });
+          }
+          return admissionDenial(
+            `'${recipe.recipe_id}' needs the owner's decision before this server will `
+            + 'run it for the peer bound to connection '
+            + `'${connectionName}'. They have been asked. This is not a fault and not a `
+            + 'retryable outage — ask again once they have answered.',
+          );
+        }
+        return admissionDenial(
+          `this server declines to run '${recipe.recipe_id}' for the peer bound to `
+          + `connection '${connectionName}'. The owner set `
+          + `\`${MCP_PEER_ADMISSION_CONFIG_KEY}\` to 'refuse' for it. This is a `
+          + 'decision, not a fault — do not retry.',
+        );
+      })();
+      if (peerAdmissionDenial !== undefined) {
+        return await handlePolicyGateDenial({
+          deps,
+          recipe,
+          request,
+          internal,
+          denials: [peerAdmissionDenial],
+          lifecycle_run_id,
+          run_id,
+          dish_id,
+          recipe_insight_id,
+          commitFields,
+        });
+      }
       const gateResult = gateRecipeAgainstPolicy(
         recipe,
         executionSource,
@@ -4749,6 +5002,10 @@ export const handleExecute = async (
     let askId: string | undefined;
     let pauseFailureError: RecipeError | undefined;
     let raisePreflightAskAfterAnchor: (() => Promise<void>) | undefined;
+    /** D-234 § 234.4 — deferred delivery, for the SAME reason its sibling above
+     *  is deferred: the durable anchor is the boundary, and nothing may leave
+     *  this server before it exists. */
+    let deliverPeerAskAfterAnchor: (() => Promise<void>) | undefined;
     // Owner termination wins over an engine pause observed in the same turn.
     // A killed run is terminal: it must not leave a resumable checkpoint or
     // surface both `run_terminated` and `awaiting_approval` to callers.
@@ -5139,11 +5396,15 @@ export const handleExecute = async (
                       ...(awaitingApproval.tool_slug !== undefined
                         ? { tool_slug: awaitingApproval.tool_slug }
                         : {}),
-                      // WHICH account the held call lands in — the ask
-                      // renders it, so it has to reach the context.
-                      ...(awaitingApproval.connection_name !== undefined
-                        ? { connection_name: awaitingApproval.connection_name }
-                        : {}),
+                      // ⚠ NO `connection_name` HERE, DELIBERATELY. It used to be
+                      // spread in with the note "the ask renders it, so it has to
+                      // reach the context" — but `ask_context` does not declare
+                      // the field, and `raiseBatchAsk` sources it OFF THE ROW by
+                      // design ("the row is the authority for what the whole
+                      // approval lands on", batch-approval.ts). The write reached
+                      // nobody; only the SPREAD kept the compiler quiet about a
+                      // field the type does not have. The ask still renders the
+                      // connection — by the row route.
                       ...(awaitingApproval.risk_tier !== undefined
                         ? { risk_tier: awaitingApproval.risk_tier }
                         : {}),
@@ -5252,6 +5513,324 @@ export const handleExecute = async (
       }
     }
 
+    // ── D-234 § 234.4 — THE PEER PAUSE ──────────────────────────────────
+    //
+    // The twin of the block above, and deliberately its own branch rather than a
+    // widened condition. Everything inside that one goes on to raise or pair a
+    // LOCAL ask; a peer hold has none to raise, so folding them would mean
+    // threading "except when it is a peer" through the whole approval flow.
+    //
+    // ⚠ SAME INVARIANT AS D-157's: the anchor may only carry the held status when
+    // the checkpoint is durable. An `awaiting_peer` row with no `checkpoint_id`
+    // is an unresumable ghost — the boot sweep pairs anchor to checkpoint and
+    // would find nothing, and (since slice 2) the retention scan would leave it
+    // forever because it looks held. Absent store or failed write ⇒ terminal
+    // `failed` with a CHECKPOINT_* error and the user re-runs.
+    //
+    // ⛔ NOTHING IS DELIVERED FROM HERE. Persisting the hold and SENDING the
+    // question to the peer are separate concerns, and this one must be durable
+    // first: a question delivered before the hold exists is a conversation whose
+    // answer has nowhere to land.
+    if (result.awaiting_peer && runTermination === undefined && !result.awaiting_approval) {
+      const awaitingPeer = result.awaiting_peer;
+      if (!deps.auditLog) {
+        pauseFailureError = buildPauseFailureError(
+          recipe.recipe_id,
+          awaitingPeer.gated_step_id,
+          'CHECKPOINT_WRITE_FAILED',
+          'a peer ask paused the run but no audit log is wired — the hold anchor '
+            + 'cannot be persisted; re-run after configuring durable storage',
+        );
+      } else if (!deps.checkpointStore) {
+        pauseFailureError = buildPauseFailureError(
+          recipe.recipe_id,
+          awaitingPeer.gated_step_id,
+          'CHECKPOINT_STORE_UNAVAILABLE',
+          'a peer ask paused the run but no checkpoint store is wired — the run '
+            + 'cannot be paused durably; re-run after configuring durable storage',
+        );
+      } else {
+        try {
+          const peerCheckpoint = {
+            checkpoint_id: randomUUID(),
+            run_id,
+            recipe_id: recipe.recipe_id,
+            gated_step_id: awaitingPeer.gated_step_id,
+            step_state: awaitingPeer.step_state,
+            // ⚠ Same reason the approval branch snapshots it: an INLINE run's
+            // recipe is nowhere the resumer could load it from.
+            ...(preEngineRecipeSnapshot !== undefined
+              ? { recipe_snapshot: preEngineRecipeSnapshot as unknown as Record<string, unknown> }
+              : {}),
+            created_at: Date.now(),
+          };
+          await deps.checkpointStore.write(peerCheckpoint as never);
+          checkpointId = peerCheckpoint.checkpoint_id;
+
+          // ── DELIVERY, DEFERRED ────────────────────────────────────────
+          //
+          // ⛔⛔ THIS RAN INLINE HERE AND THE LIVE DRIVE PROVED IT NEVER LANDED.
+          // Alice's carrier was raised and approved, and bob logged no inbound
+          // call while alice logged no failure — the carrier was held and never
+          // re-fired. The cause is the ORDER, not the call: dispatching a nested
+          // `handleExecute` from inside the pause block runs it while the OUTER
+          // run is still being finalized, BEFORE its own `awaiting_peer` anchor
+          // exists. A § 232 exchange fire dispatches its carrier at the END of a
+          // run, which is why those land and this did not.
+          //
+          // ⇒ Deferred to after the anchor write, exactly like
+          // `raisePreflightAskAfterAnchor` — whose comment already states the
+          // rule this violated: "the durable anchor is the authorization
+          // boundary. Only now may an actionable ask be created."
+          //
+          // ⚠ Still best-effort: the hold is durable either way, and a failed
+          // delivery leaves a run legitimately waiting on a conversation the peer
+          // has not seen — recoverable by re-delivering, where a discarded hold
+          // is not.
+          deliverPeerAskAfterAnchor = async () => {
+            // ⚠ INSTRUMENTATION, and it exists because four readings of this
+            // code were wrong. Reporting only on THROW makes "never invoked" and
+            // "invoked, carrier came back held" indistinguishable from outside —
+            // the exact shape that defeated each guess. `via` joins it because
+            // the two routes fail in different places and the log line is the
+            // only thing that says which one was taken.
+            console.warn(`[peer-ask] delivering ref '${awaitingPeer.exchange_ref}' `
+              + `to '${awaitingPeer.spec.connection}' via ${awaitingPeer.spec.via}`);
+            // ⛔⛔ THE OUTBOX ROW GOES DOWN BEFORE THE QUESTION GOES OUT, and the
+            // order is the whole correctness argument. The answer can come back
+            // at any moment after the send — a peer's owner may be sitting on
+            // their phone — and an answer that arrives before its outbox row is
+            // an answer to a question this server cannot prove it asked, which
+            // `receiveAnswer` refuses. Writing it after the send would make that
+            // a live race rather than an impossible state. Same shape as
+            // "raise first, ledger second" on the receiving side, pointed the
+            // other way: there, the ask must exist before it is recorded; here,
+            // the record must exist before the ask can be answered.
+            //
+            // ⚠ Best-effort like the delivery around it: no store (dbless) ⇒ the
+            // question still goes, and the answer is refused as unsolicited when
+            // it returns. That degrades to today's behaviour — a durable hold
+            // nobody can close — rather than to a silent accept.
+            try {
+              deps.peerAskOutbox?.open({
+                exchange_ref: awaitingPeer.exchange_ref,
+                run_id,
+                gated_step_id: awaitingPeer.gated_step_id,
+                connection: awaitingPeer.spec.connection,
+                label: awaitingPeer.spec.label,
+                offered: awaitingPeer.spec.options.map((o) => o.id),
+                ...(awaitingPeer.spec.deadline_at !== undefined
+                  ? { deadline_at: awaitingPeer.spec.deadline_at }
+                  : {}),
+                created_at: Date.now(),
+              });
+            } catch (e) {
+              console.warn('[peer-ask] outbox write failed for ref '
+                + `'${awaitingPeer.exchange_ref}': `
+                + (e instanceof Error ? e.message : String(e))
+                + ' — the question still goes; its answer will be refused as '
+                + 'unsolicited.');
+            }
+            // ⛔ ONE WIRE SHAPE, BUILT ONCE, SPENT BY BOTH ROUTES. The two carry
+            // the SAME question, and writing the object twice is precisely how a
+            // field added to one path goes missing on the other with no type
+            // error to say so — `exchangeFireArgs` a few thousand lines up
+            // carries a note about the third field it lost that way.
+            const wireArgs: Record<string, unknown> = {
+              exchange_ref: awaitingPeer.exchange_ref,
+              label: awaitingPeer.spec.label,
+              question: awaitingPeer.spec.question,
+              options: awaitingPeer.spec.options,
+              ...(awaitingPeer.spec.deadline_at !== undefined
+                ? { deadline_at: awaitingPeer.spec.deadline_at }
+                : {}),
+              on_timeout: awaitingPeer.spec.on_timeout,
+              // D-234 § 234.4e — the note prompt travels WITH the question. The
+              // receiver installs nothing, so the wire is the only way their
+              // surface can learn a written reason is wanted.
+              ...(awaitingPeer.spec.note_prompt !== undefined
+                ? { note_prompt: awaitingPeer.spec.note_prompt }
+                : {}),
+              // D-234 § 234.4f — the document travels server→server on the
+              // already-authenticated connection, NOT in the notification. It
+              // lands on the receiver's ask record and is readable only through
+              // their own paired surfaces.
+              ...(awaitingPeer.spec.body !== undefined
+                ? { body: awaitingPeer.spec.body }
+                : {}),
+            };
+            try {
+              // ── DIRECT (§ 234.4a) — THE HOST CALLS THE PEER ITSELF ──────
+              //
+              // 🔑🔑 AND THE REASON IT ESCAPES THE DOUBLE-PROMPT IS THAT
+              // PREFLIGHT IS A PROPERTY OF THE RUN, NOT OF THE CALL. The
+              // approval gate is composed per-run in `handleExecute` (the commit
+              // Gateway + `evaluateAdmission`, ~1700 lines up) around a bound
+              // executor; `createServerExecutor` builds the SAME adapter
+              // registry — the same connection adapter, the same MCP transport —
+              // with none of that wrapping. So there is no second run to gate,
+              // and the one approval the owner already gave when `core.peer.ask`
+              // (write risk) paused this run stands as the only one.
+              //
+              // ⛔ NOT `createBoundExecutor`: that one closes `resolveRefs` over
+              // the run's stores, and the question is ALREADY RESOLVED text. A
+              // question that happened to contain `{{…}}` would be re-resolved
+              // against empty stores and silently mangled on its way to a person.
+              //
+              // ⛔ THE TOOL NAME IS A LITERAL AND THE KIND IS PINNED. The author
+              // names a CONNECTION and never a tool on someone else's server —
+              // the same property the carrier's catalog binding gives the recipe
+              // route, kept here rather than dropped with it.
+              if (awaitingPeer.spec.via === 'direct') {
+                const direct = await createServerExecutor(deps.executorConfig)(
+                  CONNECTION_DIRECT_SLUG,
+                  {
+                    connection_kind: 'mcp',
+                    connection: awaitingPeer.spec.connection,
+                    tool: PEER_RECEIVE_ASK_TOOL,
+                    args: wireArgs,
+                  },
+                );
+                console.warn(
+                  `[peer-ask] direct ${JSON.stringify(direct ?? null).slice(0, 240)}`,
+                );
+                return;
+              }
+              // ── RECIPE (§ 234.4a) — THE § 232 CARRIER ───────────────────
+              //
+              // ⛔⛔ DO NOT DELETE THIS BRANCH AS DEAD WEIGHT. I concluded twice
+              // in one session that it was redundant and was wrong both times.
+              // § 234.4a's separating rule — does the receiver do anything other
+              // than answer? — is what picks between the two, not which one is
+              // newer. ⚠ What HAS gone is the "its second approval is correct
+              // here" rationale that used to sit in this comment: § 234.4o put
+              // the one approval on the `core.peer.ask` op-step for BOTH roads,
+              // so this carrier is delivery machinery for an already-approved
+              // question, not a second act to authorize.
+              // ⛔⛔ D-234 § 234.4p Step 1 — THE DESTINATION IS DATA NOW, AND
+              // THIS WAS THE HARDCODED HALF OF A FUNCTION THAT ALREADY TOOK ONE.
+              // Its § 232 sibling a few thousand lines up passes
+              // `payload.deliver_to`; this caller passed a literal, so every ask
+              // could only ever land on the receiver's native door — attention,
+              // never a recipe. The narrowings that make a data-driven name safe
+              // are INSIDE `resolveExchangeFireTarget` and were already
+              // owner-ratified for a peer-supplied one: it must match an
+              // INSTALLED binding, the binding must be `mcp`, and AMBIGUITY
+              // REFUSES. So this line inherits all three by passing the field.
+              //
+              // ⛔ `?? `, AND IT IS SAFE HERE FOR THE ONE REASON § 28 CARES
+              // ABOUT: `parsePeerAskArgs` has already collapsed all three
+              // spellings of unset (`undefined` / `null` / `''`) to ABSENT, so
+              // the empty string cannot reach this operator. A `??` over a raw
+              // authored value is what routed a peer answer LOCAL once; a `??`
+              // over a field a parser guarantees is absent-or-real is not the
+              // same expression.
+              const target = resolveExchangeFireTarget(
+                deps.executorConfig.manifests,
+                awaitingPeer.spec.deliver_to ?? PEER_RECEIVE_ASK_TOOL,
+              );
+              console.warn(`[peer-ask] target ${target.slug} / ${target.operation_key}`
+                + ` (deliver_to=${awaitingPeer.spec.deliver_to ?? '(native door)'})`);
+              const carrier = await handleExecute(deps, {
+                recipe: RUN_INGREDIENT_RECIPE as unknown as Record<string, unknown>,
+                config: {
+                  ingredient_slug: target.slug,
+                  input: {
+                    operation: target.operation_key,
+                    args: wireArgs,
+                    // ⛔ `!== ''`, NOT `??`. § 28 records that `??` here once
+                    // routed a peer answer LOCAL and the server answered itself,
+                    // reporting success: an unset config var resolves to the
+                    // empty string, not undefined.
+                    ...(awaitingPeer.spec.connection !== ''
+                      ? { connection: awaitingPeer.spec.connection }
+                      : {}),
+                  },
+                },
+                // ⛔⛔ D-234 § 234.4o — THE CARRIER INHERITS THE DECLARING RUN'S
+                // AUTHORIZATION CONTEXT, AND ITS ABSENCE HERE WAS AN OMISSION
+                // RATHER THAN A DESIGN. The § 232 exchange-fire carrier a few
+                // thousand lines up passes exactly these two fields; this one
+                // never did, so its nested run was SOURCE-LESS — and a
+                // source-less run has three consequences nobody intended:
+                //   1. no trust ceiling, so the catalog `ask.send` sat at the
+                //      `write` RISK FLOOR and prompted a second time for a
+                //      question the owner had already approved;
+                //   2. `resolveSessionGrantOffer` is gated on
+                //      `executionSource !== undefined`, so that prompt carried
+                //      NO `allow_session` — the one prompt on this road was the
+                //      only UNLEARNABLE approval in the feature;
+                //   3. it was not an op-step of the owner's run at all, so it
+                //      showed a wire-shaped catalog send where the direct road
+                //      shows the question.
+                // ⇒ Inheriting the source relaxes the send at the owner's
+                // `admin` ceiling, which is what leaves § 234.4o's ONE approval
+                // where the ruling put it: on `core.peer.ask`, learnable, on
+                // both roads. ⚠ `contract_snapshot` travels WITH it and is not
+                // optional — `evaluatePreflightAdmission` THROWS for a
+                // contract-bearing source with no snapshot.
+                ...(executionSource !== undefined
+                  ? { execution_source: executionSource }
+                  : {}),
+                ...(request.contract_snapshot !== undefined
+                  ? { contract_snapshot: request.contract_snapshot }
+                  : {}),
+              } as never) as { success?: boolean; awaiting_approval?: unknown;
+                errors?: unknown[] };
+              // ⚠ `=== true`, NOT `!== undefined`. `awaiting_approval` is a
+              // BOOLEAN present on every execute result, so the old expression
+              // would print `held=true` for a run that had SUCCEEDED and merely
+              // carried `false`. Latent rather than active: on this path the
+              // value is genuinely `true`, so both expressions happened to
+              // agree — which is exactly why it survived. Fixed anyway.
+              //
+              // ⛔⛔⛔ AND THE THING THIS LINE REPORTS IS NOT UNDERSTOOD. Driven
+              // 2026-08-11 with timestamps on both servers: the carrier returns
+              // `{success:false, errors:[], awaiting_approval:true}` after 3ms —
+              // a genuine hold, too fast to have crossed the wire — and bob's
+              // `recued_peerAsk` door is nonetheless entered ~57ms LATER, with
+              // no second approval answered on this side (the drive's 8k2 probe
+              // read alice's queue as EMPTY at that point). So the question
+              // arrives AFTER the send reported itself held, by a path this
+              // session did not identify. It is not the § 24 exchange-retry
+              // sweep — those refs do not match. ⇒ Either the hold is not
+              // preventing the dispatch, or something resumes it unattended;
+              // both are worth knowing before `via: 'recipe'` is trusted with
+              // anything whose send the owner must authorize. See
+              // decisions-log § 234.4c.
+              // ⚠ 500, NOT 200, AND THE OLD WIDTH HID THE ANSWER. § 234.4p Step 1
+              // drove a destination whose far side refused; the gateway's
+              // `MCP_TOOL_ERROR` says WHICH tool it invoked and what came back,
+              // and both sat past character 200 — so the one line written to
+              // explain a failed carrier truncated exactly where it started
+              // explaining. Same lesson as never `head`-ing a command you will
+              // claim from, applied to a log this code writes itself.
+              console.warn('[peer-ask] carrier '
+                + `success=${String(carrier?.success)} `
+                + `held=${carrier?.awaiting_approval === true} `
+                + `errors=${JSON.stringify(carrier?.errors ?? []).slice(0, 500)}`);
+            } catch (e) {
+              console.warn(
+                `[peer-ask] delivery failed for ref '${awaitingPeer.exchange_ref}' on `
+                + `connection '${awaitingPeer.spec.connection}': `
+                + (e instanceof Error ? e.message : String(e))
+                + ' — the hold is durable; re-deliver to reach them.',
+              );
+            }
+          };
+        } catch (e) {
+          pauseFailureError = buildPauseFailureError(
+            recipe.recipe_id,
+            awaitingPeer.gated_step_id,
+            'CHECKPOINT_WRITE_FAILED',
+            'a peer ask paused the run but its checkpoint could not be persisted: '
+              + (e instanceof Error ? e.message : String(e)),
+          );
+        }
+      }
+    }
+
+
     // D-179 P1 — persist the standing dish's `context.recipe.*`
     // snapshot for the NEXT run. Non-reactive runs snapshot every run
     // (D-120 Phase 4.5); reactive (`auto_run`) snapshots belong at
@@ -5324,11 +5903,20 @@ export const handleExecute = async (
           // `ask_id` is added in a follow-up rewrite only after the base anchor
           // succeeds; a checkpoint-only awaiting anchor is intentional and the
           // boot sweep reconciles its missing ask (A.3).
+          //
+          // D-234 § 234.4 — `awaiting_peer` follows the SAME rule and for the
+          // same reason: held only when the checkpoint is durable, `failed`
+          // otherwise. An `awaiting_peer` anchor without a `checkpoint_id` is
+          // worse than D-157's ghost, because slice 2 taught the retention scan
+          // that a held anchor is not garbage — it would sit there forever,
+          // unresumable and never reclaimed.
           commit_status: runTermination === 'killed'
             ? 'killed'
             : result.awaiting_approval
               ? (checkpointId !== undefined ? 'awaiting_approval' : 'failed')
-              : result.success ? 'succeeded' : 'failed',
+              : result.awaiting_peer
+                ? (checkpointId !== undefined ? 'awaiting_peer' : 'failed')
+                : result.success ? 'succeeded' : 'failed',
           duration_ms: result.duration_ms,
           errors: pauseFailureError ? [pauseFailureError] : result.errors,
           // D-157 server-wiring (codex BLOCKER 3 fold) — capture the
@@ -5415,6 +6003,14 @@ export const handleExecute = async (
           ...(result.exchange_peer_ack !== undefined
             ? { exchange_peer_ack: result.exchange_peer_ack }
             : {}),
+          // D-234 § 234.2 — where THIS run said the conversation would be
+          // answered. Stamped on the run that OPENED the exchange so the reply
+          // that eventually arrives can be admitted against what we actually
+          // asked for, rather than against the ref alone — which says "this
+          // conversation exists", not "and this is where I said to answer".
+          ...(result.exchange_ack?.callback_op
+            ? { exchange_callback_op: result.exchange_ack.callback_op }
+            : {}),
           // § 20.19 — record WHICH grant this run's steps rode, so the
           // approval-resume authority can re-check it after a pause.
           ...(grantedByRecipe !== undefined
@@ -5444,6 +6040,12 @@ export const handleExecute = async (
         // leader can safely collapse. (Settled `status: 'durable'` in the outer
         // `finally`; any earlier-exit path leaves this false → `status: 'failed'`,
         // so the follower re-attempts rather than reporting a phantom hold.)
+        // D-234 § 234.4 — the peer hold's own post-anchor step. Same boundary,
+        // same reason: the question may only leave once the hold that will catch
+        // its answer is durable.
+        if (entry.commit_status === 'awaiting_peer') {
+          await deliverPeerAskAfterAnchor?.();
+        }
         if (entry.commit_status === 'awaiting_approval') {
           heldActionDurable = true;
           // The durable anchor is the authorization boundary. Only now may an

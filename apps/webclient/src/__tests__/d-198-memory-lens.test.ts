@@ -11,6 +11,8 @@ import { describe, expect, it } from 'vitest';
 import type { MemoryListEntry } from '@recued/contracts';
 import {
   MEMORY_ADD_ACTION,
+  MEMORY_BODY_PLACEHOLDER,
+  MEMORY_KEYWORDS_HINT,
   MEMORY_MORE_ACTION,
   MEMORY_COMPOSE_CANCEL_ACTION,
   MEMORY_COMPOSE_DISCARD_COMMIT_ACTION,
@@ -387,6 +389,43 @@ describe('renderMemoryLens — Slice 2 CRUD affordances', () => {
     expect(html).toContain(MEMORY_COMPOSE_SUBMIT_ACTION);
     expect(html).toContain('data-memory-field="kind"');
     expect(html).not.toContain('memory-list'); // the list is replaced by the form
+  });
+
+  /* The keywords convention is taught HERE or nowhere.
+   *
+   * There is no `keywords` field and none is needed: recall indexes summary +
+   * body as one document, so a `keywords:` line in the body already matches
+   * exactly like any other text — measured, an entry carrying
+   * `keywords: 2FA, MFA, OTP` answers "2FA" at the EXACT rung while the same
+   * entry without it is missed entirely. What was missing was never a schema,
+   * it was telling the owner the convention exists. Delete the placeholder and
+   * the capability silently stops being used. */
+  it('teaches the keywords convention in the compose form', () => {
+    const compose: MemoryComposeState = {
+      open: true, mode: 'create', kind: 'note', summary: '', body: '', submitting: false,
+    };
+    const html = renderMemoryLens({ ...baseProps, entries: [], canWrite: true, compose });
+
+    expect(html).toContain(MEMORY_BODY_PLACEHOLDER);
+    // ⚠ The hint is compared by its distinctive parts, not whole: it contains
+    // double quotes, which the renderer escapes to `&quot;`, so the raw
+    // constant is correctly ABSENT from the markup. Hard-coding the escaped
+    // form would pin the escaper's output rather than the copy. The browser
+    // verify reads it back as textContent, where it round-trips intact.
+    expect(html).toContain('keywords:');
+    expect(html).toContain('2FA, MFA, OTP');
+    expect(html).toContain('&quot;'); // …and it IS escaped, not injected raw
+    // Names concrete abbreviations — "add keywords" without an example reads as
+    // boilerplate and gets skipped.
+    for (const term of ['2FA', 'MFA', 'OTP']) expect(MEMORY_KEYWORDS_HINT).toContain(term);
+    // ⛔ Keywords go LAST: `body_preview` is the first 280 chars and is what the
+    // feed row shows, so a leading keywords line makes every entry preview as a
+    // list of terms instead of its content.
+    expect(MEMORY_BODY_PLACEHOLDER.indexOf('keywords:'))
+      .toBeGreaterThan(MEMORY_BODY_PLACEHOLDER.indexOf('The answer'));
+    // The summary prompt asks for the QUESTION, which is what real queries look
+    // like — "How do I get a refund?" is found by more of them than "Refunds".
+    expect(html).toContain('The question this answers');
   });
 
   it('prefills the compose form in edit mode', () => {

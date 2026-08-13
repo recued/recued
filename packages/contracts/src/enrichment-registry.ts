@@ -166,7 +166,7 @@ export type EnrichmentRecomputeCadence = '6h' | '24h' | '7d' | 'never';
  *    the trajectory; `recompute_on_drift` is forbidden).
  *  - `'aggregate_window'` — function of `(as_of, window)` over many
  *    source rows (replayable iff sources are time-travelable —
- *    `memory` and `data_enrichment` only). */
+ *    `audit` and `data_enrichment` only). */
 export type TemporalClass = 'stable_truth' | 'time_bound' | 'aggregate_window';
 
 /** D-136 §A.1 — what kind of identity the row keys on.
@@ -537,10 +537,28 @@ export interface EnrichmentDefinition {
    *  from. Cascade engine narrows by `(scope === members_scope)`. */
   members_scope?: EnrichmentScope;
   /** `aggregate` only — collections the housekeeping fold reads from.
-   *  `'memory'` and `'data_enrichment'` are time-travelable per audit §5
+   *  `'audit'` and `'data_enrichment'` are time-travelable per audit §5
    *  (append-only); other scopes are not (mail/calendar/contact/CRM
-   *  surface fields can change). */
-  aggregates_from?: ReadonlyArray<EnrichmentScope | 'memory' | 'data_enrichment'>;
+   *  surface fields can change).
+   *
+   *  ⚠ `'audit'` WAS SPELLED `'memory'` until 2026-08-11. It always meant the
+   *  run-provenance trail (`audit_entries` / `audit_activities`) — D-120's
+   *  `data.memory.*`, before D-231 split that namespace and promoted
+   *  `data.audit.*` to canonical. It has NEVER meant `user_memory`, the owner's
+   *  curated pool: nothing in `housekeeping/` or the enrichment store has ever
+   *  read that table, and the append-only claim above would be FALSE of it
+   *  (D-198 gave it update + delete).
+   *
+   *  ⛔ THE OLD NAME WAS A LOADED GUN, not just confusing. The cascade routes
+   *  with `def.aggregates_from.includes(scope)` — so the day someone added a
+   *  `'memory'` arm to `EnrichmentScope` for the owner pool, every write to it
+   *  would have fanned into the three `connection_*` topics that aggregate the
+   *  AUDIT log, marking them stale and enqueuing recompute. TypeScript could
+   *  not have caught it: `EnrichmentScope | 'memory'` with `'memory'` already
+   *  in `EnrichmentScope` collapses to one union, silently. A member of this
+   *  list must never also be an `EnrichmentScope` (ratcheted in
+   *  `d-136-phase-1-lifecycle.test.ts`). */
+  aggregates_from?: ReadonlyArray<EnrichmentScope | 'audit' | 'data_enrichment'>;
   /** `aggregate` only — drift-correction interval. Producers may
    *  ignore + run incremental-only when `'never'`. */
   recompute_cadence?: EnrichmentRecomputeCadence;
@@ -3667,7 +3685,16 @@ const isCommitmentStatus = (v: unknown): boolean =>
  *  collections (`mail` / `calendar` / `memory`) + per-type CRM
  *  engagement scopes + standalone `attachment` for attachment-by-
  *  vendor-URL evidence. Closed list — no free-form source strings can
- *  pass through this slot. */
+ *  pass through this slot.
+ *
+ *  ⛔ `'memory'` HERE IS DELIBERATELY NOT RENAMED, and the mismatch with
+ *  `aggregates_from`'s `'audit'` (2026-08-11) is intentional. This list is a
+ *  PERSISTED value taxonomy — `evidence_links[].source` is written into the
+ *  stored enrichment row and validated against this enum on read, so renaming
+ *  the member would invalidate every row already carrying it. That is a data
+ *  migration, not a rename. It means the same thing the old `aggregates_from`
+ *  member did (the run-provenance trail, never `user_memory`); do not
+ *  "reconcile" the two by editing this list. */
 export const COMMITMENT_EVIDENCE_SOURCES = [
   'mail',
   'calendar',
@@ -4651,7 +4678,7 @@ export const ENRICHMENT_REGISTRY = {
     valid_scopes: ['contact'],
     policy: 'aggregate',
     producer_kind: 'reactive',
-    aggregates_from: ['mail', 'calendar', 'memory'],
+    aggregates_from: ['mail', 'calendar', 'audit'],
     recompute_cadence: '6h',
     supports_unfold: true,
     value_schema: ContactTimelineRollupSchema,
@@ -5042,7 +5069,7 @@ export const ENRICHMENT_REGISTRY = {
     shape: 'per_record',
     valid_scopes: ['connection.api', 'connection.mcp', 'connection.notification'],
     policy: 'aggregate',
-    aggregates_from: ['memory'],
+    aggregates_from: ['audit'],
     recompute_cadence: '24h',
     producer_kind: 'housekeeping',
     value_schema: ConnectionHealthTrendSchema,
@@ -5065,7 +5092,7 @@ export const ENRICHMENT_REGISTRY = {
     shape: 'per_record',
     valid_scopes: ['connection.api', 'connection.mcp', 'connection.notification'],
     policy: 'aggregate',
-    aggregates_from: ['memory'],
+    aggregates_from: ['audit'],
     recompute_cadence: '24h',
     producer_kind: 'housekeeping',
     value_schema: ConnectionLastUsedPatternSchema,
@@ -5088,7 +5115,7 @@ export const ENRICHMENT_REGISTRY = {
     shape: 'per_record',
     valid_scopes: ['connection.api', 'connection.mcp'],
     policy: 'aggregate',
-    aggregates_from: ['memory'],
+    aggregates_from: ['audit'],
     recompute_cadence: '7d',
     producer_kind: 'housekeeping',
     value_schema: ConnectionOptimalBatchSizeSchema,
@@ -5868,7 +5895,7 @@ export const ENRICHMENT_REGISTRY = {
     aggregates_from: [
       'mail',
       'calendar',
-      'memory',
+      'audit',
       'connection.api.hubspot.email',
       'connection.api.hubspot.meeting',
       'connection.api.hubspot.note',
@@ -6355,7 +6382,7 @@ export const ENRICHMENT_REGISTRY = {
     // Spec § A.7.3 documents `aggregates_from = ['source_registry',
     // 'connection']` on the producer; the registry-side
     // `aggregates_from` is typed against the closed warehouse-scope
-    // enum (`EnrichmentScope | 'memory' | 'data_enrichment'`) and
+    // enum (`EnrichmentScope | 'audit' | 'data_enrichment'`) and
     // doesn't carry operational tables. The declaration-side
     // `operates_on: ['source_registry', 'connection']` (open string
     // list) in `enrichment-declarations/source-freshness-degradation.ts`
@@ -6386,7 +6413,7 @@ export const ENRICHMENT_REGISTRY = {
   context_packet_quality: {
     shape: 'derived_entity',
     policy: 'aggregate',
-    aggregates_from: ['memory'],
+    aggregates_from: ['audit'],
     recompute_cadence: '24h',
     producer_kind: 'reactive',
     value_schema: PsiEligibleScoreSchema,
@@ -6657,15 +6684,17 @@ export const assertEnrichmentTrustDefaults = (
 /** Time-travelable source list (audit §5). Other sources are
  *  non-travelable, so `recompute_on_drift` is rejected for
  *  `aggregate_window` topics whose `aggregates_from` includes any
- *  non-travelable scope. `'memory'` (audit log) and `'data_enrichment'`
- *  (per-topic enrichment rows) are append-only by construction. */
+ *  non-travelable scope. `'audit'` (the run-provenance trail) and
+ *  `'data_enrichment'` (per-topic enrichment rows) are append-only by
+ *  construction — which is exactly why the owner's `user_memory` pool could
+ *  never have belonged here: it has update + delete. */
 const TIME_TRAVELABLE_AGGREGATES_FROM: ReadonlySet<string> = new Set([
-  'memory',
+  'audit',
   'data_enrichment',
 ]);
 
 const sourcesAreTimeTravelable = (
-  aggregates_from: ReadonlyArray<EnrichmentScope | 'memory' | 'data_enrichment'> | undefined,
+  aggregates_from: ReadonlyArray<EnrichmentScope | 'audit' | 'data_enrichment'> | undefined,
 ): boolean => {
   if (!aggregates_from || aggregates_from.length === 0) return false;
   return aggregates_from.every((s) => TIME_TRAVELABLE_AGGREGATES_FROM.has(s));
@@ -6684,7 +6713,7 @@ const sourcesAreTimeTravelable = (
  *    2. Non-stable_truth topics MUST declare `as_of_field`.
  *    3. `time_bound + recompute_on_drift` is forbidden (corrupts history).
  *    4. `aggregate_window + recompute_on_drift` requires fully-time-travelable
- *       `aggregates_from` (audit §5: only `memory` qualifies today).
+ *       `aggregates_from` (audit §5: only `audit` qualifies today).
  *    5. `lifecycle_policy: 'ttl'` requires `ttl_days`.
  *    6. `perspective` topics MUST declare `identity_extractor`.
  *    7. `aggregate_window` topics MUST declare `aggregate_window_axis`.
@@ -6744,7 +6773,7 @@ export const validateLifecycleDefinition = (
       `enrichment_lifecycle_invariant: topic '${topic}' has lifecycle_policy: 'recompute_on_drift' ` +
         `but aggregates from non-time-travelable sources ` +
         `(${(def.aggregates_from ?? []).join(', ')}). Replay against original snapshot impossible — ` +
-        `only 'memory' is time-travelable today (audit §5).`,
+        `only 'audit' is time-travelable today (audit §5).`,
     );
   }
 

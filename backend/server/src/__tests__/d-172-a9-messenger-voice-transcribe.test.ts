@@ -82,6 +82,11 @@ interface ScenarioInput {
   parsedText?: string;
   transcript?: string;
   transcribeThrows?: boolean;
+  /** D-172 P2 — wire the tail/turn attachment-marker's name resolver. Absent
+   *  (the default, and what every pre-existing case here uses) means the
+   *  marker degrades to empty, which is why those cases still pin a bare
+   *  `user_message`. */
+  fileNames?: ReadonlyMap<string, string>;
 }
 
 const runScenario = async (input: ScenarioInput) => {
@@ -137,6 +142,9 @@ const runScenario = async (input: ScenarioInput) => {
       registry: internalRegistry(),
       selfSignature,
       executeAiCall,
+      ...(input.fileNames
+        ? { resolveFileNames: () => input.fileNames! }
+        : {}),
       messengerVoiceTranscription: {
         getFileReadDeps: () => ({ registry, blobs }),
         transcribeDeps: {
@@ -283,6 +291,68 @@ describe('D-172 A.9 messenger voice transcription', () => {
     expect(result.sends.map((send) => send.text)).toEqual(['assistant heard it']);
   });
 
+  // ⛔⛔ THE CURRENT TURN, NOT THE TAIL. `buildChatTail` runs BEFORE the user
+  // row is appended (so the message does not appear twice in the packet), which
+  // means the file the person JUST dropped is NOT in the tail. Marking only the
+  // tail shipped a discovery guarantee that fired one turn LATE — the
+  // motivating case, drop a file and say "send this to Bob", reached the model
+  // with no marker at all. The seam tests over `buildChatTail` all passed
+  // throughout; only driving a real messenger turn shows it.
+  it('names the file on the SAME turn it arrived on, not one turn later', async () => {
+    const bytes = Buffer.from('voice bytes');
+    const result = await runScenario({
+      mediaRef: {
+        type: 'voice',
+        mime: 'audio/ogg',
+        size: bytes.length,
+        remote_id: 'F-voice-marked',
+      },
+      bytes,
+      transcript: 'send this to Bob',
+      fileNames: new Map([
+        // The scenario's own ingest mints this id; resolve ANY id to a name so
+        // the assertion does not have to predict it.
+      ]),
+    });
+    const marked = promptBody<{ user_message: string }>(result.aiInputs[0]).user_message;
+    // With an empty resolver nothing resolves, so the marker is empty — REAL
+    // FILENAMES OR NOTHING. This half pins the safe degradation.
+    expect(marked).toBe('send this to Bob');
+  });
+
+  it('marks the current turn once the name resolves', async () => {
+    const bytes = Buffer.from('voice bytes');
+    let capturedId = '';
+    const result = await runScenario({
+      mediaRef: {
+        type: 'voice',
+        mime: 'audio/ogg',
+        size: bytes.length,
+        remote_id: 'F-voice-named',
+      },
+      bytes,
+      transcript: 'send this to Bob',
+      // Resolve whatever id the ingest minted — the harness hands the resolver
+      // the real ids, so echoing a fixed name proves the wiring without
+      // predicting the hash.
+      fileNames: new Proxy(new Map<string, string>(), {
+        get(target, prop) {
+          if (prop === 'get') {
+            return (id: string) => { capturedId = id; return 'voice.ogg'; };
+          }
+          return Reflect.get(target, prop);
+        },
+      }) as ReadonlyMap<string, string>,
+    });
+    const marked = promptBody<{ user_message: string }>(result.aiInputs[0]).user_message;
+    expect(marked).toBe(
+      `send this to Bob\n[files attached to this message: voice.ogg (${capturedId})]`,
+    );
+    // ⚠ The STORED message keeps what the person sent — the marker is on the
+    // model's copy only.
+    expect(result.userMessage).toMatchObject({ content: 'send this to Bob' });
+  });
+
   it('falls back to the pending affordance when transcription fails', async () => {
     const bytes = Buffer.from('voice bytes');
     const result = await runScenario({
@@ -327,9 +397,39 @@ describe('D-172 A.9 messenger voice transcription', () => {
       attachments: [{ file_id: result.fileId, media_class: 'image' }],
     });
     expect(result.transcribeRequests).toHaveLength(0);
+    // ⛔ ZERO AI CALLS ON A WORDLESS DROP, and this is the assertion that keeps
+    // it that way. A file arriving is not a question; running a turn would
+    // spend a provider call guessing an intent nobody has stated.
     expect(result.executeAiCall).not.toHaveBeenCalled();
+    // ⚠ Was "Attachment received." — a dead end that reports an event and
+    // invites nothing. The reply now ASKS, so the person's next message carries
+    // the intent and the model gets `{file_refs, user_prompt}` on ONE call.
     expect(result.sends.map((send) => send.text)).toEqual([
-      'Attachment received.',
+      'Stored your file. What would you like me to do with it?',
     ]);
+  });
+
+  it('names the stored file in the ask when the name resolves', async () => {
+    const bytes = Buffer.from('image bytes');
+    const result = await runScenario({
+      mediaRef: {
+        type: 'image',
+        mime: 'image/png',
+        size: bytes.length,
+        remote_id: 'F-image-named',
+      },
+      bytes,
+      fileNames: new Proxy(new Map<string, string>(), {
+        get(target, prop) {
+          if (prop === 'get') return () => 'site-photo.png';
+          return Reflect.get(target, prop);
+        },
+      }) as ReadonlyMap<string, string>,
+    });
+    expect(result.sends.map((send) => send.text)).toEqual([
+      'Stored site-photo.png. What would you like me to do with it?',
+    ]);
+    // Still free.
+    expect(result.executeAiCall).not.toHaveBeenCalled();
   });
 });

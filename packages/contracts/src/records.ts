@@ -86,6 +86,22 @@ export const RECORDS_ACTIONS = [
   // planned, deduped and written inside the store — they never enter step
   // state. Writes `create` only, to the bound entity only; that is why it
   // needs no allow-list where `batch` does.
+  //
+  // ⛔⛔ AND WHY IT IS AN ACTION RATHER THAN A KERNEL OP — the owner's reason,
+  // recorded 2026-08-12 because it was nowhere in the tree. ONE USER INTENT
+  // SHOULD NOT COST TWO APPROVALS. Getting the CSV in front of the recipe is
+  // already an ask; a kernel op would raise its own gate immediately after, for
+  // the same intent the owner just granted. The action route inherits the
+  // binding, grants, risk floor, audit and principal check the read already
+  // established (D-221, `76d461f77`) instead of re-asking.
+  //
+  // ⚠ So "promote `import` to `core.records.import` for consistency with the
+  // other kernel ops" is the tempting change that must not be made: it reads as
+  // tidying and lands as a second prompt. The commit body records the MECHANISM
+  // ("inherits … what the kernel-op route would have had to rebuild"); this is
+  // the reason the mechanism was chosen. ⚠ Recorded as stated intent — the
+  // no-second-ask consequence follows from the action route reusing the read's
+  // grant, not from anything asserted here about a specific risk tier.
   'import',
 ] as const;
 
@@ -190,6 +206,10 @@ export interface RecordsImportUnparsedCell {
  *  last import) from a fact about the namespace (`records_quota_exceeded`). */
 export interface RecordsImportFailure {
   line: number;
+  /** ⚠ EMPTY on a natural-key entity, and deliberately so: the store derives the id from
+   *  the key's own fields and a refused row never got one. Reporting the planner's
+   *  internal handle here would name a row that does not exist under that id. `line` is
+   *  the handle that always works — it is where the owner opens the file. */
   id: string;
   code: RecordsErrorCode;
   reason: string;
@@ -231,6 +251,22 @@ export interface RecordsImportResult {
    *  the remaining rows could only reproduce it, and reporting 195,000 identical
    *  failures would bury the one thing that actually happened. */
   halted_reason?: string;
+  /** ⛔⛔ PRESENT ⇒ NOTHING WAS WRITTEN, and every count above is what WOULD
+   *  have happened. The rows were planned and put through the real write path —
+   *  same validation, same conflict checks, same quota accounting — inside a
+   *  transaction that is then rolled back, so the numbers are measured rather
+   *  than predicted.
+   *
+   *  🔑 IT EXISTS FOR THE ONE FAILURE NEITHER THE RESULT SHAPE NOR ATOMICITY
+   *  CATCHES: a mapping that is VALID but points at the wrong column. That
+   *  imports a thousand successful, wrong rows — `failed: 0`, nothing to
+   *  re-run, and the cleanup is manual because the ids were derived from the
+   *  wrong values. Seeing the first rows before committing is the only thing
+   *  that stops it.
+   *
+   *  ⚠ A reader must never take `written` from a dry run as rows that exist.
+   *  Anything rendering this result has to say "would" when this is set. */
+  dry_run?: true;
 }
 
 export const RECORDS_SLOT_FAMILIES = {

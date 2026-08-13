@@ -263,6 +263,12 @@ describe('D-158 durable ask recovery over real SQLite', () => {
       title: message.title,
       text: message.text,
       options: options.map((o) => ({ id: o.id, label: o.label })),
+      // ⛔ D-234 § 234.3 — THE LINK IS PART OF THE RECOVERED ASK. A card that
+      // comes back from disk without its "read it here" affordance is answerable
+      // but not readable, which for a peer ask means deciding on a document you
+      // cannot open. The bus frame is an ENUMERATING COPIER: a field it does not
+      // name never reaches a live card, and nothing else notices.
+      link_url: message.link_url,
     });
     // Still open + still answerable after recovery (no premature transition).
     const row = await blockB.block.listOpenAsks();
@@ -414,6 +420,12 @@ describe('D-158 durable ask recovery over real SQLite', () => {
       title: message.title,
       text: message.text,
       options: options.map((o) => ({ id: o.id, label: o.label })),
+      // ⛔ D-234 § 234.3 — THE LINK IS PART OF THE RECOVERED ASK. A card that
+      // comes back from disk without its "read it here" affordance is answerable
+      // but not readable, which for a peer ask means deciding on a document you
+      // cannot open. The bus frame is an ENUMERATING COPIER: a field it does not
+      // name never reaches a live card, and nothing else notices.
+      link_url: message.link_url,
     });
     // The row genuinely round-tripped through disk, not a shared handle.
     const reopened = createAskStore(

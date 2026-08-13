@@ -920,6 +920,17 @@ export const validateTriggerSteps = (
       continue;
     }
     validateStepId(s.id, path, declared, add);
+      // A `defaults` step DECLARES each of its field names as a step id — the
+      // runtime publishes them into `stores.step` (step-runner), so a ref to one
+      // resolves. Without this the validator raises `undeclared_step_ref` for
+      // every ref that survived a fold, which is how the corpus fold first
+      // failed. Keep the two in lockstep.
+      if ((s as { transform?: string }).transform === 'defaults') {
+        const f = (s as { fields?: unknown }).fields;
+        if (f !== null && typeof f === 'object' && !Array.isArray(f)) {
+          for (const name of Object.keys(f as Record<string, unknown>)) declared.add(name);
+        }
+      }
 
     // D-182 watcher — a `core.watch.*` trigger-position op IS allowed here (it
     // produces the `should_run` gate and the lowering, now over trigger_steps,
@@ -1239,6 +1250,17 @@ export const validateSteps = (r: Record<string, unknown>, add: AddFn): Set<strin
         continue;
       }
       validateStepId(s.id, path, declared, add);
+      // A `defaults` step DECLARES each of its field names as a step id — the
+      // runtime publishes them into `stores.step` (step-runner), so a ref to one
+      // resolves. Without this the validator raises `undeclared_step_ref` for
+      // every ref that survived a fold, which is how the corpus fold first
+      // failed. Keep the two in lockstep.
+      if ((s as { transform?: string }).transform === 'defaults') {
+        const f = (s as { fields?: unknown }).fields;
+        if (f !== null && typeof f === 'object' && !Array.isArray(f)) {
+          for (const name of Object.keys(f as Record<string, unknown>)) declared.add(name);
+        }
+      }
       // D-182 Slice 4 — a `prefetch_steps` entry may now name a two-tier `op`
       // (owner decision (a): "read ops ALLOWED in prefetch"), but ONLY for ops
       // that lower to a SINGLE fetch — kernel closed-kind reads and Tier-P vendor
@@ -1283,6 +1305,17 @@ export const validateSteps = (r: Record<string, unknown>, add: AddFn): Set<strin
         continue;
       }
       validateStepId(s.id, path, declared, add);
+      // A `defaults` step DECLARES each of its field names as a step id — the
+      // runtime publishes them into `stores.step` (step-runner), so a ref to one
+      // resolves. Without this the validator raises `undeclared_step_ref` for
+      // every ref that survived a fold, which is how the corpus fold first
+      // failed. Keep the two in lockstep.
+      if ((s as { transform?: string }).transform === 'defaults') {
+        const f = (s as { fields?: unknown }).fields;
+        if (f !== null && typeof f === 'object' && !Array.isArray(f)) {
+          for (const name of Object.keys(f as Record<string, unknown>)) declared.add(name);
+        }
+      }
 
       // Exactly one discriminator: transform | ingredient | guard | op.
       // `op` is the connection-agnostic canonical op-step (D-170 N.18) — bound

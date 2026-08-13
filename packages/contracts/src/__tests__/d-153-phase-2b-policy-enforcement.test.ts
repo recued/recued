@@ -29,6 +29,13 @@ const EXPECTED_DENY_CODES: readonly AdmissionDenyCode[] = [
   'op_not_granted',
   // D-188 — the master "Pause server" circuit-breaker denies at admission.
   'server_paused',
+  // D-234 § 234.1 — the owner's per-peer CEILING declined to answer this peer
+  // with this recipe. ⛔ Deliberately NOT `tool_not_in_contract`: the tool IS in
+  // the contract and the peer IS admitted and granted, so reusing that code
+  // would send whoever diagnoses it to inspect a contract that is correct. Also
+  // distinct from `server_paused` — that is a whole-server condition that clears
+  // itself; this is a durable, per-peer, per-recipe decision.
+  'peer_admission_refused',
 ] as const;
 
 const expectDeny = (
@@ -42,7 +49,7 @@ const expectDeny = (
 };
 
 describe('D-153 / D-187 — closed-list invariants', () => {
-  it('ADMISSION_DENY_CODES is the ordered six-code closed list', () => {
+  it('ADMISSION_DENY_CODES is the ordered seven-code closed list', () => {
     expect(ADMISSION_DENY_CODES).toEqual(EXPECTED_DENY_CODES);
   });
 

@@ -1995,12 +1995,14 @@ export const installPackBySlug = async (
   const resolveMarketplaceRecipe = async (slug: string): Promise<MarketplaceRecipeResult | null> => {
     const prepared = preparedRecipeRows.get(slug);
     if (prepared !== undefined) {
+      // No `recipe_hash`: a prepared row carries none, and the field is
+      // optional precisely so this path does not have to invent one.
       return {
         recipe_id: slug,
         publisher_id: prepared.publisher_id,
         version: prepared.version,
         recipe: prepared.recipe,
-      } as MarketplaceRecipeResult;
+      };
     }
     // Marked: a pack install DOES install each constituent recipe, so each ref
     // is a real recipe install. One N-recipe pack install therefore contributes

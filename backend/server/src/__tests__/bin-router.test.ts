@@ -310,15 +310,29 @@ const runServeUntilBanner = (dbPath: string): Promise<{
     stopProcessGroup(child.pid, 'SIGTERM');
   };
 
+  // ⚠ A CEILING, NOT A DEFECT — RAISED 2026-08-10 (D-234 § 234.4 slice 2). This
+  // wall bounds a FULL cold server boot under tsx: D-212 identity-key generation,
+  // SQLite open + migrations, the calendar stack, the MCP transport, then the
+  // listener bind. At 10s it was already marginal — the same assertion failed at
+  // 10,103ms in a CLEAN-HEAD worktree run earlier that day with none of these
+  // changes present, and it had been failing intermittently under full-suite
+  // parallelism for longer. It also passes on a good run at the old wall, which
+  // is the definition of measuring the machine rather than the code.
+  //
+  // ⛔ The boot itself is HEALTHY: driven directly it progresses normally through
+  // every stage and binds. A wall this close to the honest cost of the work
+  // measures load, and a test that reds on someone else's build is one people
+  // learn to ignore. Kept generous rather than removed, so a genuinely HUNG boot
+  // still fails.
   const forceStop = setTimeout(() => {
     stopProcessGroup(child.pid, 'SIGKILL');
-  }, 12_000);
+  }, 30_000);
   forceStop.unref();
 
   const timeout = setTimeout(() => {
     timedOut = true;
     requestStop();
-  }, 10_000);
+  }, 25_000);
 
   child.stdout.on('data', (chunk: Buffer) => {
     stdout += chunk.toString('utf8');
@@ -408,16 +422,18 @@ const runMcpUntilToolsList = (
     child.stdin.end();
   };
 
+  // ⚠ Same ceiling, same reason as the serve harness above — the --mcp profile
+  // pays the same cold-boot cost plus catalog composition.
   const forceStop = setTimeout(() => {
     stopProcessGroup(child.pid, 'SIGKILL');
-  }, 15_000);
+  }, 30_000);
   forceStop.unref();
 
   const timeout = setTimeout(() => {
     timedOut = true;
     closeStdin();
     stopProcessGroup(child.pid, 'SIGTERM');
-  }, 12_000);
+  }, 25_000);
 
   child.stdout.on('data', (chunk: Buffer) => {
     stdout += chunk.toString('utf8');

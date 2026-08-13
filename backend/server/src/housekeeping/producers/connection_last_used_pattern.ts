@@ -207,7 +207,7 @@ export const computeLastUsedPatternValue = (
  *
  *  Same orphan-cleanup-by-sweep pattern A.18 uses — cascade engine
  *  has no source-delete hook for connection records (the
- *  `aggregates_from` source is `memory`, not the source connection
+ *  `aggregates_from` source is `audit`, not the source connection
  *  record), so the manual sweep is the sole orphan-cleanup path. */
 export const sweepStaleLastUsedPatternRows = (
   ctx: HousekeepingContext,
@@ -317,7 +317,7 @@ export const connectionLastUsedPatternScopeReadDeclaration = [
     sample_field_paths: ['kind', 'name'],
   },
   {
-    collection: 'data.memory',
+    collection: 'data.audit',
     sample_field_paths: [
       'action',
       'target',

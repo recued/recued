@@ -147,6 +147,18 @@ export const isTerminalCommitStatus = (status: CommitStatus): boolean =>
 export const RUN_ANCHOR_STATUSES = [
   ...COMMIT_STATUSES,
   'awaiting_approval',
+  /** D-234 § 234.4 — held for a PEER'S answer, not the owner's.
+   *
+   *  ⛔⛔ A DISTINCT STATUS, NOT A FLAG BESIDE `awaiting_approval`, AND THE
+   *  REASON IS THE FAILURE DIRECTION. `commit_status` is carried verbatim and
+   *  surfaces switch on it (`DishLastRun` — "so the surface can distinguish a
+   *  hold from a failure"). A flag makes any surface that does not know the flag
+   *  render an APPROVE BUTTON ON SOMETHING IT CANNOT APPROVE — the owner cannot
+   *  answer this hold, only cancel it or keep waiting. A distinct status makes an
+   *  unaware surface render "a hold I do not recognise", which is the harmless
+   *  direction. Adding it obliges a sweep of every `awaiting_approval` consumer;
+   *  that is the intended cost. */
+  'awaiting_peer',
 ] as const;
 
 /** String-literal union derived from `RUN_ANCHOR_STATUSES` — equivalent
@@ -159,6 +171,29 @@ export type RunAnchorStatus = (typeof RUN_ANCHOR_STATUSES)[number];
 export const isRunAnchorStatus = (value: unknown): value is RunAnchorStatus =>
   typeof value === 'string'
   && (RUN_ANCHOR_STATUSES as readonly string[]).includes(value);
+
+/** D-234 § 234.4 — is this anchor HELD, i.e. suspended into a live `Checkpoint`
+ *  that something must eventually resume or sweep?
+ *
+ *  ⛔⛔ THIS PREDICATE EXISTS BECAUSE THE ALTERNATIVE WAS 54 EDITS THAT WOULD
+ *  NEVER CONVERGE. `awaiting_peer` doubled the meanings of a literal that ~54
+ *  non-test sites compare against, and adding `|| 'awaiting_peer'` at each is a
+ *  per-site sweep with no completion criterion — you cannot tell a site you
+ *  finished from a site you never saw.
+ *
+ *  🔑 EVERY SITE NOW HAS TO ANSWER ONE QUESTION, AND THE TWO ANSWERS ARE
+ *  DIFFERENT CODE: does it mean "a run is HELD" (use this) or "held for MY
+ *  OWNER'S APPROVAL specifically" (keep the literal)? A resumer, a boot sweep and
+ *  a retention scan mean the first. An approvals queue, an approve/deny
+ *  affordance and an ask-pairing mean the second.
+ *
+ *  ⛔ THE SITE THAT PROVES THE POINT: `checkpoint-retention.ts` deletes the
+ *  checkpoint of any anchor whose status `!== 'awaiting_approval'` as "crash
+ *  residue". Left alone it would sweep away every run waiting on a peer, after a
+ *  grace period, silently — and no test would have caught it, because nothing
+ *  writes the new status in a fixture. */
+export const isHeldRunAnchorStatus = (value: unknown): boolean =>
+  value === 'awaiting_approval' || value === 'awaiting_peer';
 
 /** Closed set of post-execution observability degradation reasons.
  *  These do not change the run's side-effect outcome: the recipe

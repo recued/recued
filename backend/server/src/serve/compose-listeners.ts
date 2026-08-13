@@ -1046,11 +1046,15 @@ export const composeListeners = async (
           // answer arrives on the `ui` inbound path; the first-class
           // `bridge` channel is notify-only), so the handler stays
           // channel-agnostic.
-          submitAnswer: (ask_id: string, option_id: string) =>
+          submitAnswer: (ask_id: string, option_id: string, note?: string) =>
             execution.notificationBlock!.submitAnswer({
               ask_id,
               option: option_id,
               via: 'ui',
+              // D-234 § 234.4e — forwarded verbatim; the block decides whether
+              // this ask invited a note, caps it, and refuses a missing required
+              // one. Nothing here re-judges any of that.
+              ...(note !== undefined ? { note } : {}),
             }),
         }
       : {}),
@@ -1285,11 +1289,15 @@ export const composeListeners = async (
       : {}),
     ...(execution.notificationBlock
       ? {
-          submitAnswer: (ask_id: string, option_id: string) =>
+          submitAnswer: (ask_id: string, option_id: string, note?: string) =>
             execution.notificationBlock!.submitAnswer({
               ask_id,
               option: option_id,
               via: 'ui',
+              // D-234 § 234.4e — forwarded verbatim; the block decides whether
+              // this ask invited a note, caps it, and refuses a missing required
+              // one. Nothing here re-judges any of that.
+              ...(note !== undefined ? { note } : {}),
             }),
           // D-177 N.14 — the allow-for-this-form offer, read off the REAL
           // ask (as raised, never recomputed): present iff the ask is

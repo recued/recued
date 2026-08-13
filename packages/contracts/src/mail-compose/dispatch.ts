@@ -54,6 +54,57 @@ export interface ComposeMailSendPayload {
   attachments?: string[];
 }
 
+/** D-177 N.12 — the recipe the compose surface dispatches THROUGH.
+ *
+ *  ⛔ THE COMPOSE DIALOG CANNOT CALL AN RPC TO SEND MAIL, AND THAT IS
+ *  DELIBERATE. `collection.mail.send` was removed from the wire method set
+ *  (with a ratchet pinning its absence) because outbound mail is a
+ *  side-effecting action and every action is gated at the ONE enforcement
+ *  boundary. `handleCollectionMailSend` survives only as the gateway's
+ *  INTERNAL executor, called after the gate decides.
+ *
+ *  So a host dispatches a RUN, not a send: `execute({ recipe_id, config })`.
+ *  The server runs the engine, the `core.mail.send` step lifts to `ask` at the
+ *  D-157 preflight gate, and the owner approves in Approvals before anything
+ *  leaves the machine. `attachments` rides in `mail-send`'s `authority_args`,
+ *  so the approval is bound to those exact files — swap one and it is a
+ *  different action needing fresh approval. */
+export const SEND_COMPOSED_MAIL_RECIPE_ID = 'send-composed-mail';
+
+/** Payload → the `execute` config for `SEND_COMPOSED_MAIL_RECIPE_ID`.
+ *
+ *  The two shapes differ and the difference is not cosmetic:
+ *  `ComposeMailSendPayload` mirrors the D-127 *rpc* input (`instance`,
+ *  `body_text`), while the recipe's variables mirror the *ingredient* input
+ *  (`sender_mail_instance`, `body` + `body_format`). Hand-mapping that at each
+ *  call site is how a field goes missing on one surface and not another, so
+ *  it lives here next to the payload builder and is tested with it.
+ *
+ *  Optional fields are OMITTED rather than sent empty — the kernel already
+ *  drops empty optionals, but an absent key keeps the audited config equal to
+ *  what the user actually chose. */
+export const composePayloadToSendRecipeConfig = (
+  payload: ComposeMailSendPayload,
+): Record<string, unknown> => {
+  const config: Record<string, unknown> = {
+    sender_mail_instance: payload.instance,
+    to: [...payload.to],
+    subject: payload.subject,
+    body: payload.body_text,
+    body_format: 'text',
+  };
+  if (payload.cc !== undefined && payload.cc.length > 0) config.cc = [...payload.cc];
+  if (payload.bcc !== undefined && payload.bcc.length > 0) config.bcc = [...payload.bcc];
+  if (payload.attachments !== undefined && payload.attachments.length > 0) {
+    config.attachments = [...payload.attachments];
+  }
+  if (payload.in_reply_to !== undefined) config.in_reply_to = payload.in_reply_to;
+  if (payload.references !== undefined && payload.references.length > 0) {
+    config.references = [...payload.references];
+  }
+  return config;
+};
+
 /** Hooks the dispatch helper needs from the host. */
 export interface ComposeDispatchHooks {
   /** Resolve a recipient ref (contact id, contact email, raw email) to

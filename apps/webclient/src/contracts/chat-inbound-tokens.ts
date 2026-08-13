@@ -294,6 +294,8 @@ const TIER1_TO_INGREDIENT_KIND: Readonly<Record<Tier1ToolName, IngredientKind>> 
   // gateway-gated follow-on inside the handler, not the tool's home).
   'work.search': 'storage',
   'work.read': 'storage',
+  // D-172 P2 — file.search reads the data.file warehouse collection.
+  'file.search': 'storage',
   'recipe.run': 'storage',
 } as const;
 

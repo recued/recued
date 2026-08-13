@@ -123,7 +123,12 @@ import {
 } from '../storage/hostname-registry.js';
 import type { BaseVaultQuotas } from './compose-base-context.js';
 import type { BootTrace } from '../cli/boot-trace.js';
-import { createRecordsStore, type RecordsStore } from '../records/index.js';
+import {
+  createRecordsStore,
+  createRecordsImportAuditEmitter,
+  type RecordsImportAudit,
+  type RecordsStore,
+} from '../records/index.js';
 
 type PerPairStore<K extends keyof PerPairStoresBundle> =
   PerPairStoresBundle[K] | undefined;
@@ -314,7 +319,20 @@ export const composeStorageContext = async (
   // step: a draft is an in-progress composition, not an installed capability.
   const draftStore = createDraftStore(db);
   const recipeStore = createRecipeStore(undefined, db);
-  const recordsStore = createRecordsStore(db);
+  // D-221 — the import-audit sink is LATE-BOUND because the records store is
+  // built here and the audit log only exists ~70 lines below (it needs the gate
+  // registry and the signing identity). Reordering either is a bigger change
+  // than a one-line indirection.
+  //
+  // ⛔ AN UNASSIGNED SINK IS SILENCE — a bulk write over the owner's data with
+  // no durable record, and nothing anywhere would say so. The assignment below
+  // is asserted by `records-import-audit.test.ts` against THIS composer, not
+  // against a hand-built store, precisely because "someone forgot to wire it"
+  // is the failure this shape invites.
+  let emitRecordsImportAudit: ((event: RecordsImportAudit) => void) | undefined;
+  const recordsStore = createRecordsStore(db, {
+    onImport: (event) => emitRecordsImportAudit?.(event),
+  });
   const eventBus = createEventBus();
   const approvalStore = createApprovalStore(undefined, {
     onPending: (id) => emitApprovalPending(eventBus, id),
@@ -413,6 +431,10 @@ export const composeStorageContext = async (
   });
   const drainableAuditLog = createDrainableAuditLog(signingAuditLog);
   const auditLog: AuditLogStore = drainableAuditLog.auditLog;
+  // D-221 — close the late binding opened at the records-store construction
+  // above. Bound to the DRAINABLE log so an import row emitted late in a
+  // shutdown still drains with everything else.
+  emitRecordsImportAudit = createRecordsImportAuditEmitter(auditLog);
   const drainAuditWrites = drainableAuditLog.closeAndDrain;
   const bootSigningIdentity = async (): Promise<void> => {
     if (signingIdentityRef) return;

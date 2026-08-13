@@ -89,6 +89,13 @@ export interface PreflightBootSweepResult {
    *  the checkpoint for the D-157 N.8 retention sweep
    *  (`checkpoint-retention.ts`) to garbage-collect past its grace. */
   orphaned: number;
+  /** D-234 § 234.4 — checkpoints held for a PEER'S answer. Skipped like a
+   *  terminal row (this sweep re-raises PREFLIGHT asks, and a peer hold has no
+   *  local ask to re-raise — its answer arrives over the wire), but counted
+   *  apart from `terminal` because it is NOT terminal: the run is live and
+   *  waiting, and telemetry that folds the two makes an accumulating backlog of
+   *  peer holds read as an accumulating backlog of dead rows. */
+  heldForPeer: number;
   /** Checkpoints whose audit row is in a terminal state. The run
    *  completed on a prior attempt (or the checkpoint was never
    *  successfully consumed). Counted but not re-raised; the D-157 N.8
@@ -115,6 +122,7 @@ export const sweepAwaitingCheckpoints = async (
     leftPassive: 0,
     failed: 0,
     orphaned: 0,
+    heldForPeer: 0,
     terminal: 0,
   };
 
@@ -151,6 +159,14 @@ export const sweepAwaitingCheckpoints = async (
     }
     if (anchor === null) {
       result.orphaned++;
+      continue;
+    }
+    // D-234 § 234.4 — a peer hold is skipped for the same reason a terminal row
+    // is (nothing here to re-raise) but is NOT the same fact, so it is counted
+    // apart. ⚠ Ordering matters: this must precede the terminal branch, or the
+    // held run is silently absorbed into it.
+    if (anchor.commit_status === 'awaiting_peer') {
+      result.heldForPeer++;
       continue;
     }
     if (anchor.commit_status !== 'awaiting_approval') {

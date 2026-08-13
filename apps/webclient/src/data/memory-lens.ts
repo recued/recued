@@ -74,6 +74,30 @@ export const MEMORY_COMPOSE_DISCARD_COMMIT_ATTR =
   'data-recued-memory-compose-discard-commit';
 export const MEMORY_DETAIL_CLOSE_ACTION = 'memory-detail-close';
 export const MEMORY_DETAIL_HEADING_ATTR = 'data-recued-memory-detail-heading';
+/** The compose form's body placeholder — and the only place the keywords
+ *  convention is taught at the point of writing.
+ *
+ *  ⚠ THERE IS NO `keywords` FIELD, DELIBERATELY. Recall indexes `summary` +
+ *  `body` as ONE document, so a `keywords:` line typed into the body is already
+ *  matched exactly like any other text — measured: an entry carrying
+ *  `keywords: 2FA, MFA, OTP` answers "2FA" and "MFA" at the EXACT rung, while
+ *  the same entry without them is missed entirely. A structured field would buy
+ *  bm25 column weighting and nothing else; what was actually missing was
+ *  telling the owner the convention exists, which is a placeholder, not a
+ *  schema.
+ *
+ *  ⚠ KEYWORDS GO LAST. `body_preview` is the first 280 characters and is what
+ *  the feed row shows — a keywords line at the top makes every entry preview as
+ *  a list of terms instead of its content. */
+export const MEMORY_BODY_PLACEHOLDER =
+  'The answer, in full.\n\nkeywords: any other words someone might search for '
+  + '— abbreviations, product names, synonyms';
+
+export const MEMORY_KEYWORDS_HINT =
+  'Tip: end with a "keywords:" line. Recall searches the whole entry, so '
+  + 'listing abbreviations and synonyms (2FA, MFA, OTP) finds it when the '
+  + 'wording differs.';
+
 export const MEMORY_IMPORT_ACTION = 'memory-import';
 export const MEMORY_IMPORT_SUBMIT_ACTION = 'memory-import-submit';
 export const MEMORY_IMPORT_CANCEL_ACTION = 'memory-import-cancel';
@@ -446,11 +470,13 @@ const renderComposeForm = (
       </label>
       <label class="memory-field">
         <span class="memory-field-label">Summary <span class="memory-field-hint">(optional)</span></span>
-        <input class="memory-input" type="text" value="${e(compose.summary)}" ${MEMORY_FIELD_ATTR}="summary"${readonlyAttr} />
+        <input class="memory-input" type="text" placeholder="The question this answers, in the words someone would ask it"
+          value="${e(compose.summary)}" ${MEMORY_FIELD_ATTR}="summary"${readonlyAttr} />
       </label>
       <label class="memory-field">
         <span class="memory-field-label">Body</span>
-        <textarea class="memory-textarea" rows="6" ${MEMORY_FIELD_ATTR}="body"${readonlyAttr}>${e(compose.body)}</textarea>
+        <textarea class="memory-textarea" rows="6" placeholder="${e(MEMORY_BODY_PLACEHOLDER)}" ${MEMORY_FIELD_ATTR}="body"${readonlyAttr}>${e(compose.body)}</textarea>
+        <span class="memory-field-hint">${e(MEMORY_KEYWORDS_HINT)}</span>
       </label>
       ${err}
       <footer class="memory-compose-actions">

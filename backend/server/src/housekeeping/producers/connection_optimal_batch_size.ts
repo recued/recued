@@ -332,7 +332,7 @@ export const connectionOptimalBatchSizeScopeReadDeclaration = [
     sample_field_paths: ['kind', 'name'],
   },
   {
-    collection: 'data.memory',
+    collection: 'data.audit',
     sample_field_paths: [
       'action',
       'target',

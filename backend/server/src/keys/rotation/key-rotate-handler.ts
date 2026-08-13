@@ -38,11 +38,11 @@
  *  `register` (instance_id === null) is rejected with `forbidden` rather
  *  than running with a sentinel id (mirrors `tls.renew`). */
 
-import { KEY_CLASSES, RpcError } from '@recued/contracts';
+import { KEY_CLASSES, RpcError, totalRecord } from '@recued/contracts';
 import type {
   HandlerSlice,
   KeyClass,
-  KeyHealthBundle,
+  KeyHealthEntry,
   KeyHealthView,
   KeyRotateRequest,
   RotationAvailability,
@@ -92,14 +92,16 @@ export const buildKeyHealthView = async (args: {
   availability: Record<KeyClass, RotationAvailability>;
   isCompromised: (key_class: KeyClass) => Promise<boolean>;
 }): Promise<KeyHealthView> => {
-  const key_health = {} as KeyHealthBundle;
+  // Resolved first, sequentially, because `totalRecord` builds synchronously —
+  // and sequential is what the loop did, so the store sees the same call order.
+  const compromised = new Map<KeyClass, boolean>();
   for (const key_class of KEY_CLASSES) {
-    const compromised = await args.isCompromised(key_class);
-    key_health[key_class] = {
-      status: 'healthy',
-      ...(compromised ? { compromise_alert: true } : {}),
-    };
+    compromised.set(key_class, await args.isCompromised(key_class));
   }
+  const key_health = totalRecord(KEY_CLASSES, (key_class): KeyHealthEntry => ({
+    status: 'healthy',
+    ...(compromised.get(key_class) === true ? { compromise_alert: true } : {}),
+  }));
   return { key_health, availability: args.availability };
 };
 

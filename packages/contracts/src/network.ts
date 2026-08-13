@@ -20,6 +20,8 @@
  *  helpers) live below — they are the source of truth for the new model.
  */
 
+import { totalRecord } from './total-record.js';
+
 /** Telegram's documented webhook ports. Closed list per § A.6 +
  *  § A.13. Setup that binds Telegram to a port outside this set
  *  raises `telegram_port_unsupported`. Under path consolidation, the
@@ -286,7 +288,14 @@ export type PathRole =
   | 'ask'
   | 'webclient';
 
-export const PATH_ROLES: ReadonlyArray<PathRole> = [
+/** ⚠ NO `: ReadonlyArray<PathRole>` ANNOTATION — it would WIDEN the `as const`
+ *  below back to `PathRole[]`, so `(typeof PATH_ROLES)[number]` would be the
+ *  whole union again and the exhaustiveness proof underneath would be vacuous.
+ *  `satisfies` gives the same "every entry is a real role" check without the
+ *  widening. This is what lets `totalRecord(PATH_ROLES, …)` be SOUND rather
+ *  than an assertion: K is inferred from the tuple, and the tuple is proven to
+ *  cover the union. */
+export const PATH_ROLES = [
   'health',
   'ws',
   'mcp',
@@ -305,7 +314,16 @@ export const PATH_ROLES: ReadonlyArray<PathRole> = [
   // (the D-152 off-grid-Mary case), public exposure is an explicit
   // per-row opt-in (the `public` preset deliberately leaves it off).
   'webclient',
-] as const;
+] as const satisfies readonly PathRole[];
+
+/** Compile-time proof that no `PathRole` is missing above. A new union member
+ *  makes `Exclude<…>` non-`never` and this alias resolves to `never`, so the
+ *  assignment stops compiling — and every `totalRecord(PATH_ROLES, …)` caller
+ *  stays sound instead of silently building a record with a hole in it. */
+type PathRolesAreExhaustive =
+  Exclude<PathRole, (typeof PATH_ROLES)[number]> extends never ? true : never;
+const _pathRolesAreExhaustive: PathRolesAreExhaustive = true;
+void _pathRolesAreExhaustive;
 
 /** D-148 § A.6 — canonical path string per role. The dispatcher fans
  *  inbound requests to per-channel handlers based on URL path; this
@@ -484,10 +502,10 @@ export const applyPreset = (
   acknowledgement: PublicMcpAcknowledgement,
 ): Record<PathRole, PathResolution> => {
   const base = EXPOSURE_PRESET_PATH_MAP[preset];
-  const out = {} as Record<PathRole, PathResolution>;
-  for (const role of PATH_ROLES) {
-    out[role] = { lan: base[role].lan, public: base[role].public };
-  }
+  const out = totalRecord(PATH_ROLES, (role) => ({
+    lan: base[role].lan,
+    public: base[role].public,
+  }));
   if (preset === 'public' && isAcknowledgementWellFormed(acknowledgement) && acknowledgement.acknowledged) {
     out.mcp = { lan: out.mcp.lan, public: true };
   }
@@ -504,12 +522,9 @@ export const applyPathResolution = (
   path: PathRole,
   resolution: PathResolution,
 ): Record<PathRole, PathResolution> => {
-  const out = {} as Record<PathRole, PathResolution>;
-  for (const role of PATH_ROLES) {
-    out[role] = role === path
-      ? { lan: resolution.lan, public: resolution.public }
-      : { lan: current[role].lan, public: current[role].public };
-  }
+  const out = totalRecord(PATH_ROLES, (role) => (role === path
+    ? { lan: resolution.lan, public: resolution.public }
+    : { lan: current[role].lan, public: current[role].public }));
   return out;
 };
 

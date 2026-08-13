@@ -307,6 +307,38 @@ describe('D-214 presentation — the card must say WHY, not only THAT', () => {
     expect(card.flows[0]!.failure_codes).toEqual(['MAIL_SEND_SELF_LOOP_TO']);
   });
 
+  // ⛔⛔ AN UNKNOWN CODE LOSES ITS PROSE GLOSS, NOT ITS DIAGNOSIS — and that
+  // split is the design, not an oversight. I proposed making the renderer
+  // "never drop the line", on the reading that an unknown code made the
+  // explanation vanish. It does not. `flow.failure_codes` is assigned
+  // UNCONDITIONALLY in execution-case-core.ts, so EVERY code reaches the card
+  // machine-readably whatever copy this build happens to carry. Only the
+  // interpretation is withheld — see the sibling test "says nothing when a code
+  // has no static message, rather than guessing".
+  //
+  // 🔑 Bench 161 (above) says an UNEXPLAINED failure changes nothing. It does
+  // NOT say an UNINTERPRETABLE string beats silence. Handing a model-bound card
+  // a bare token it cannot read is shape without meaning, which is the
+  // condition under which a card invents one — the more expensive failure of
+  // the two. Both findings hold together precisely because the code still ships
+  // on the flow, where a consumer can act on it without guessing.
+  it('an unknown code keeps its machine-readable diagnosis on the flow', () => {
+    const card = renderExecutionCaseCard(failedWithCode('SOME_CODE_FROM_A_NEWER_SERVER'));
+    // The diagnosis survives where a consumer can act on it...
+    expect(card.flows[0]!.failure_codes).toEqual(['SOME_CODE_FROM_A_NEWER_SERVER']);
+    // ...while the prose stays silent rather than glossing a token it cannot read.
+    expect(card.applicability_notes.join(' ')).not.toContain('A previous attempt failed');
+  });
+
+  it('KIND_NOT_YET_IMPLEMENTED, removed 2026-08-11, takes that same path', () => {
+    // A pre-removal server can still emit it. The code reaches the card; the
+    // retired copy ("…has not shipped yet. Update Recued") must not come back,
+    // since it pointed operators at an upgrade for an unwired connectionStore.
+    const card = renderExecutionCaseCard(failedWithCode('KIND_NOT_YET_IMPLEMENTED'));
+    expect(card.flows[0]!.failure_codes).toEqual(['KIND_NOT_YET_IMPLEMENTED']);
+    expect(JSON.stringify(card)).not.toMatch(/has not shipped yet|Update Recued/);
+  });
+
   it('⛔ never ships the THROWN message, which interpolates a recipient', () => {
     // The thrown text reads "...send mail to itself (someone@example.com)...".
     // Shipping it would put an address on a model-bound card — the same egress

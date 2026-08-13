@@ -176,9 +176,19 @@ const isTaskDisabled = (
  *  the static `meta.idle_eligible !== false` filter D-123 used.
  *
  *  Semantics, in order of precedence:
- *    - Core (deterministic) tasks always run when idle. The trust
- *      gate is for enrichment producers; deterministic maintenance
- *      (audit-compaction, link-discovery, …) is unaffected.
+ *    - Core tasks run when idle UNLESS they opt out with
+ *      `meta.idle_eligible: false`. The trust gate is for enrichment
+ *      producers; deterministic maintenance (audit-compaction,
+ *      link-discovery, …) is unaffected because it never opts out.
+ *      ⛔ THE OPT-OUT USED TO BE IGNORED HERE. This branch returned a
+ *      bare `true`, so `meta.idle_eligible: false` — whose own contract
+ *      says *"the scheduler's idle-cycle path skips this task; it can
+ *      only fire via the Run now rpc"* — did nothing on a core task. It
+ *      was latent (no core task set it) right up until one wanted to:
+ *      `memory-embed-backlog` spends embedding tokens and must never
+ *      fire without the owner asking. A core task that costs money is
+ *      exactly the case the field was written for, and the gate that
+ *      replaced the old static filter dropped it on the floor.
  *    - Without a trust store wired (older harness wiring + tests not
  *      threading P2 substrate), fall back to `meta.idle_eligible`. The
  *      enrichment-producer harness now stamps `idle_eligible:
@@ -194,7 +204,7 @@ export const isEligibleForIdleCycle = (
   task: HousekeepingTaskInstance,
   ctx: { ctx: HousekeepingContext; trustStore?: TrustStore; now: number },
 ): boolean => {
-  if (task.meta.kind !== 'enrichment') return true;
+  if (task.meta.kind !== 'enrichment') return task.meta.idle_eligible !== false;
 
   if (!ctx.trustStore) {
     return task.meta.idle_eligible !== false;

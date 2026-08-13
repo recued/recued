@@ -21,6 +21,7 @@ import type {
   ConnectionRow,
   ConnectionKind,
 } from '@recued/contracts';
+import { NOTIFICATION_DELIVERY_CHANNELS, totalRecord } from '@recued/contracts';
 import type { ConnectionKindHandler } from '@recued/ingredients';
 import { IngredientError } from '@recued/ingredients';
 import { NOTIFICATION_CHANNEL_REGISTRY } from '../data/notification-channel-registry.js';
@@ -67,15 +68,24 @@ const buildAllDispatchersViaRegistry = (deps: {
   connectionStore: ConnectionStoreSqlite;
   notificationHandler: ConnectionKindHandler;
 }): Record<NotificationChannel, NotificationChannelDispatcher> => {
-  const dispatchers = {} as Record<NotificationChannel, NotificationChannelDispatcher>;
+  // Mirrors the production wiring (`wire-connection-notification`), which builds
+  // by LOOKUP over the derived channel list and throws on a gap — so this helper
+  // cannot quietly return a map missing a channel while claiming to be total.
+  const booted = new Map<NotificationChannel, NotificationChannelDispatcher>();
   for (const entry of NOTIFICATION_CHANNEL_REGISTRY) {
-    dispatchers[entry.channel] = entry.boot({
+    booted.set(entry.channel, entry.boot({
       ...deps,
       channel: entry.channel,
       subtype: entry.subtype,
-    });
+    }));
   }
-  return dispatchers;
+  return totalRecord(NOTIFICATION_DELIVERY_CHANNELS, (channel) => {
+    const dispatcher = booted.get(channel);
+    if (dispatcher === undefined) {
+      throw new Error(`no dispatcher booted for channel '${channel}'`);
+    }
+    return dispatcher;
+  });
 };
 
 // ────────────────────────────────────────────────────────────────

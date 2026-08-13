@@ -92,6 +92,18 @@ export const ADMISSION_DENY_CODES = [
   'op_risk_denied',
   'op_not_granted',
   'server_paused',
+  /** D-234 § 234.1 — the owner's CEILING declined to answer this peer.
+   *
+   *  ⛔ NOT `tool_not_in_contract`, WHICH WAS THE FIRST SPELLING AND WAS A LIE.
+   *  The tool IS in the contract — the peer is admitted, granted, and the recipe
+   *  is installed; the owner simply declined to answer them with it. Reusing that
+   *  code sends whoever diagnoses it to look at a contract that turns out to be
+   *  correct, which is the same misnamed-vocabulary failure § 21 spent four
+   *  commits undoing for `NETWORK_ERROR`.
+   *
+   *  ⚠ Distinct from `server_paused` too: that is a whole-server condition that
+   *  clears on its own. This is a durable, per-peer, per-recipe DECISION. */
+  'peer_admission_refused',
 ] as const;
 
 /** String-literal union derived from `ADMISSION_DENY_CODES`. */

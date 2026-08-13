@@ -39,16 +39,18 @@
   ],
   "steps": [
     {
-      "id": "subject",
-      "transform": "default",
-      "value": "{{step.message.record.hot_fields.subject}}",
-      "fallback": ""
-    },
-    {
-      "id": "from_email",
-      "transform": "default",
-      "value": "{{step.message.record.hot_fields.from}}",
-      "fallback": ""
+      "id": "defaults",
+      "transform": "defaults",
+      "fields": {
+        "subject": {
+          "value": "{{step.message.record.hot_fields.subject}}",
+          "fallback": ""
+        },
+        "from_email": {
+          "value": "{{step.message.record.hot_fields.from}}",
+          "fallback": ""
+        }
+      }
     },
     {
       "id": "body_read",
@@ -87,9 +89,18 @@
         "body": "{{step.body}}"
       },
       "fields": [
-        { "path": "from", "kind": "email" },
-        { "path": "subject", "kind": "content" },
-        { "path": "body", "kind": "content" }
+        {
+          "path": "from",
+          "kind": "email"
+        },
+        {
+          "path": "subject",
+          "kind": "content"
+        },
+        {
+          "path": "body",
+          "kind": "content"
+        }
       ]
     },
     {
@@ -118,16 +129,18 @@
       "ledger_handle": "{{step.protect.ledger_handle}}"
     },
     {
-      "id": "category",
-      "transform": "default",
-      "value": "{{step.classify.category}}",
-      "fallback": "fyi"
-    },
-    {
-      "id": "confidence",
-      "transform": "default",
-      "value": "{{step.classify.confidence}}",
-      "fallback": 0
+      "id": "defaults_2",
+      "transform": "defaults",
+      "fields": {
+        "category": {
+          "value": "{{step.classify.category}}",
+          "fallback": "fyi"
+        },
+        "confidence": {
+          "value": "{{step.classify.confidence}}",
+          "fallback": 0
+        }
+      }
     },
     {
       "id": "is_actionable",
@@ -178,13 +191,34 @@
       "id": "card",
       "transform": "to_summary",
       "fields": [
-        { "label": "Mail thread",  "value": "{{step.message.record.hot_fields.thread_id}}" },
-        { "label": "From",         "value": "{{step.from_email}}" },
-        { "label": "Subject",      "value": "{{step.subject}}" },
-        { "label": "Category",     "value": "{{step.category}}" },
-        { "label": "Confidence",   "value": "{{step.confidence:percent}}" },
-        { "label": "Notified",     "value": "{{step.notify.delivered_to}}" },
-        { "label": "Skipped",      "value": "{{step.skip_notify}}" }
+        {
+          "label": "Mail thread",
+          "value": "{{step.message.record.hot_fields.thread_id}}"
+        },
+        {
+          "label": "From",
+          "value": "{{step.from_email}}"
+        },
+        {
+          "label": "Subject",
+          "value": "{{step.subject}}"
+        },
+        {
+          "label": "Category",
+          "value": "{{step.category}}"
+        },
+        {
+          "label": "Confidence",
+          "value": "{{step.confidence:percent}}"
+        },
+        {
+          "label": "Notified",
+          "value": "{{step.notify.delivered_to}}"
+        },
+        {
+          "label": "Skipped",
+          "value": "{{step.skip_notify}}"
+        }
       ]
     }
   ],

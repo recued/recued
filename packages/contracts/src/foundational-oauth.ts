@@ -505,7 +505,16 @@ export interface OpenerRelayMessage {
  *  create, not one per mailbox-vs-calendar. */
 export type OAuthAppIssuer = 'google' | 'microsoft';
 
-export const OAUTH_APP_ISSUERS: readonly OAuthAppIssuer[] = ['google', 'microsoft'] as const;
+/** ⚠ NO `: readonly OAuthAppIssuer[]` annotation — it would WIDEN the
+ *  `as const` and make the proof below vacuous. See PATH_ROLES in `network.ts`. */
+export const OAUTH_APP_ISSUERS = ['google', 'microsoft'] as const satisfies readonly OAuthAppIssuer[];
+
+/** Compile-time proof that no `OAuthAppIssuer` is missing above — what keeps
+ *  `totalRecord(OAUTH_APP_ISSUERS, …)` sound rather than an assertion. */
+type OAuthAppIssuersAreExhaustive =
+  Exclude<OAuthAppIssuer, (typeof OAUTH_APP_ISSUERS)[number]> extends never ? true : never;
+const _oauthAppIssuersAreExhaustive: OAuthAppIssuersAreExhaustive = true;
+void _oauthAppIssuersAreExhaustive;
 
 /** Map a foundational provider/adapter slug to its issuer. gmail + gcal are one
  *  Google app; graph (mail or calendar) is one Microsoft app. */

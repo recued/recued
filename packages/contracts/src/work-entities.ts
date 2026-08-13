@@ -388,7 +388,13 @@ export const COMMITMENT_MESSAGE_EVIDENCE_SNIPPET_MAX = 200;
  *  promise text lives in a message/engagement, not an attachment blob).
  *  Kept a local closed list on the ENTRY so `work-entities.ts` stays
  *  free of an `enrichment-registry` import; that module's
- *  `CommitmentEvidenceSource` is the producer-side twin. */
+ *  `CommitmentEvidenceSource` is the producer-side twin.
+ *
+ *  ⛔ `'memory'` HERE IS DELIBERATELY NOT RENAMED to match `aggregates_from`'s
+ *  `'audit'` (2026-08-11) — same reason as its `CommitmentEvidenceSource` twin:
+ *  this is a PERSISTED value taxonomy written into stored evidence entries, so
+ *  renaming the member is a data migration, not a rename. It denotes the
+ *  run-provenance trail, never `user_memory`. Change both twins or neither. */
 export const COMMITMENT_MAIL_EVIDENCE_SOURCES = [
   'mail',
   'calendar',

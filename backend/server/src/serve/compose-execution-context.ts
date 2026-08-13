@@ -20,6 +20,7 @@ import {
 import { scopedCandidatesForChannelSession } from '../chat-forwarded-sender-index.js';
 import {
   buildAskLandingAnswerLink,
+  buildOwnerSurfaceLink,
   resolvePublicBaseUrl,
 } from '../ask-landing-answer-link.js';
 import { buildMessengerRemoteChannels } from '../composition/bin/messenger-transport-leaves.js';
@@ -304,6 +305,11 @@ export const composeExecutionContext = async (
   lateBound.publishCollectionRegistry(collection.collectionRegistry);
 
   const executorConfig = await composeExecutorConfig({
+    // D-234 § 234.4 — the inbound peer door needs the notification block, which
+    // is composed after this config. Same late-binding seam the container-pick
+    // and saga wirings use. ⚠ `lateBound` already publishes this exact getter,
+    // so there is no second ref and one place where execute deps become visible.
+    getExecuteDeps: () => lateBound.getExecuteDeps(),
     // D-216 — the same CAS byte reader the cli `input_materialize` path
     // uses, so a `connection.api` op declaring `bind.upload` can send a file.
     ...(collection.inboundFileCollection
@@ -500,6 +506,11 @@ export const composeExecutionContext = async (
   const askAnswerLink =
     buildAskLandingAnswerLink(resolvePublicBaseUrl(env.RECUED_PUBLIC_BASE_URL)) ??
     undefined;
+  // D-234 § 234.3 — the same base-URL decision, one line down, so "reachable
+  // enough to answer" and "reachable enough to read" can never disagree.
+  const ownerSurfaceLink =
+    buildOwnerSurfaceLink(resolvePublicBaseUrl(env.RECUED_PUBLIC_BASE_URL)) ??
+    undefined;
   const emailChannel = app.connectionStoreRef && emailMailRpc
     ? composeEmailChannel({
         connectionStore: app.connectionStoreRef,
@@ -603,6 +614,8 @@ export const composeExecutionContext = async (
     // deliberately not re-resolved: one public-base-URL decision, so a
     // deployment can never end up with a link on one surface and not the other.
     ...(askAnswerLink ? { askAnswerLink } : {}),
+    // D-234 § 234.3 — same resolved base, same reason.
+    ...(ownerSurfaceLink ? { ownerSurfaceLink } : {}),
     recipeStore: storage.recipeStore,
     recordsStore: storage.recordsStore,
     executorConfig,

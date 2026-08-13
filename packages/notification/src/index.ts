@@ -27,6 +27,7 @@
  */
 
 import { CHANNEL_ROLES } from '@recued/contracts';
+import { ASK_BODY_MAX, ASK_NOTE_MAX } from './types.js';
 import type { AskStore, NewPendingAsk } from './ask-store.js';
 import {
   createAskSerializer,
@@ -71,6 +72,8 @@ import type {
   NotificationSettings,
   PendingAsk,
   AnswerAuditRecord,
+  AskExtras,
+  AskNotePrompt,
 } from './types.js';
 
 // ── Public surface ───────────────────────────────────────────────
@@ -151,6 +154,7 @@ export {
   type AskLandingRenderInput,
   type AskLandingSubmission,
 } from './channels/ask-landing.js';
+export { ASK_BODY_MAX, ASK_NOTE_MAX } from './types.js';
 export type {
   Answer,
   AnswerAuditRecord,
@@ -168,6 +172,8 @@ export type {
   PendingAsk,
   PendingAskStatus,
   RemoteChannelName,
+  AskExtras,
+  AskNotePrompt,
 } from './types.js';
 
 /** What `createNotificationBlock` is wired with. The block is channel-
@@ -260,6 +266,11 @@ export interface NotificationBlock {
     options: readonly AskOption[],
     handler: AskHandlerRef,
     channels?: ChannelSelector,
+    /** D-234 § 234.4e/f — everything an ask carries besides its message: the
+     *  note prompt and the readable body. ⛔ ONE OBJECT, not a tail of
+     *  positionals — `body` would have been the sixth parameter, which is where
+     *  callers start passing `undefined` to reach the one they want. */
+    extras?: AskExtras,
   ): Promise<{ ask_id: string }>;
 
   /** Boot-time: wire the function a persisted `handler.kind` re-
@@ -625,10 +636,16 @@ export const createNotificationBlock = (
     ask_id: string,
     message: NotificationMessage,
     options: readonly AskOption[],
+    /** D-234 § 234.4e/f — carried to every adapter that can use them. Threaded
+     *  rather than read off the ask row because this helper also serves the BOOT
+     *  RE-DELIVERY path, where the row is the only source. */
+    extras?: AskExtras,
   ): Promise<void> => {
     for (const channel of targets) {
       try {
-        await channel.deliverAsk(ask_id, withAnswerLink(channel, ask_id, message), options);
+        await channel.deliverAsk(
+          ask_id, withAnswerLink(channel, ask_id, message), options, extras,
+        );
       } catch {
         // best-effort — the ask stays durably `open`; the boot sweep
         // re-delivers when the channel recovers (TR-10).
@@ -700,7 +717,7 @@ export const createNotificationBlock = (
       }
     },
 
-    async ask(message, options, handler, channels) {
+    async ask(message, options, handler, channels, extras) {
       const ask_id = mint();
       const { deliver, passiveNotify, bridgeAsk, bridgePassiveNotify } =
         await resolveAskChannels(channels);
@@ -710,6 +727,19 @@ export const createNotificationBlock = (
         options,
         handler_kind: handler.kind,
         handler_payload: handler.payload,
+        // D-234 § 234.4e — persisted WITH the ask, so the answer path can tell an
+        // invited note from an uninvited one long after the raise site is gone.
+        // Deriving it later from the handler kind would make the rule "some kinds
+        // take notes", which is exactly the coupling the per-ask flag avoids.
+        ...(extras?.note_prompt !== undefined
+          ? { note_prompt: extras.note_prompt }
+          : {}),
+        // D-234 § 234.4f — TRUNCATED at entry, not refused: the far side wrote
+        // it, and a reviewer who can read four pages of five is better served
+        // than one who gets an error where the draft should be.
+        ...(extras?.body !== undefined && extras.body !== ''
+          ? { body: extras.body.slice(0, ASK_BODY_MAX) }
+          : {}),
         // The resolved fan-out target set, persisted with the ask
         // BEFORE any delivery: the close-broadcast set is then correct
         // the instant a card can be visible, with no post-delivery
@@ -728,7 +758,7 @@ export const createNotificationBlock = (
       // delivery failure (handled inside `fanOutAsk` /
       // `firePassiveNotify`) does not.
       await store.create(fresh);
-      await fanOutAsk(deliver, ask_id, message, options);
+      await fanOutAsk(deliver, ask_id, message, options, extras);
       // D-163 N.3 / I-3 — passive notify to notify-only channels so
       // the user learns approval is pending on those surfaces (e.g.
       // OS notification via Bridge). Best-effort per channel; a
@@ -748,7 +778,7 @@ export const createNotificationBlock = (
       if (bridgeChannel) {
         for (let i = 0; i < bridgeAsk; i += 1) {
           try {
-            await bridgeChannel.deliverAsk(ask_id, message, options);
+            await bridgeChannel.deliverAsk(ask_id, message, options, extras);
           } catch {
             // best-effort — the ask stays durably `open` on its inbound
             // channels; the bridge surface converges via the bus.
@@ -804,7 +834,30 @@ export const createNotificationBlock = (
         // valid answer.
         if (selectAskOption(ask, reply.option) === undefined) return;
 
-        const answer: Answer = { option: reply.option, answered_at: now() };
+        // D-234 § 234.4e — THE NOTE, admitted only if this ask invited one.
+        //
+        // ⛔ AN UNINVITED NOTE IS DROPPED, NOT REFUSED. The option is the
+        // decision and it is already valid; rejecting a recorded decision over an
+        // extra field is TR-4's forbidden failure. Dropping also means a surface
+        // that always sends a note cannot write prose onto asks that never asked
+        // for any.
+        const trimmedNote = typeof reply.note === 'string' ? reply.note.trim() : '';
+        const invited = ask.note_prompt !== undefined;
+        const note = invited && trimmedNote !== ''
+          ? trimmedNote.slice(0, ASK_NOTE_MAX)
+          : undefined;
+        // ⚠ REQUIRED MEANS THE REPLY IS INVALID WITHOUT ONE — the same no-op the
+        // block gives an option it never offered, and for the same reason: a
+        // half-answer must not become the durable, once-only recorded answer.
+        // The surface is expected to enforce this before sending; this is the
+        // backstop for one that does not.
+        if (ask.note_prompt === 'required' && note === undefined) return;
+
+        const answer: Answer = {
+          option: reply.option,
+          answered_at: now(),
+          ...(note !== undefined ? { note } : {}),
+        };
         // `open → answered` — the durable, once-only dedup point (A.5).
         await store.recordAnswer(reply.ask_id, answer, reply.via);
 
@@ -874,6 +927,16 @@ export const createNotificationBlock = (
           ask.ask_id,
           ask.message,
           ask.options,
+          // ⚠ OFF THE PERSISTED ROW, not a caller argument — this is the BOOT
+          // re-delivery path, where the raise site is long gone. An ask that
+          // invited a reason must still invite one after a restart, and the
+          // document must still be there to read.
+          {
+            ...(ask.note_prompt !== undefined
+              ? { note_prompt: ask.note_prompt }
+              : {}),
+            ...(ask.body !== undefined ? { body: ask.body } : {}),
+          },
         );
       }
       // `answered` — finish the post-answer steps a crash interrupted.

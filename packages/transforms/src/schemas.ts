@@ -346,6 +346,12 @@ export const TRANSFORM_SCHEMAS: Record<string, TransformSchema> = {
     value: REQ('any'),
     fallback: OPT('any'),
   },
+  // N defaults in one step. `fields` is a MAP of name -> { value, fallback };
+  // the runtime resolves nested refs before the transform runs (step-runner
+  // `resolveDeep`), so each `value` arrives already resolved.
+  defaults: {
+    fields: REQ('object'),
+  },
   not: {
     input: REQ('any'),
   },

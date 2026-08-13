@@ -5,6 +5,8 @@
  *  It intentionally stays a thin DOM host instead of rewriting the chat engine.
  */
 
+import type { Upload } from '@recued/ui-shared';
+import { createComposerAttachments } from './composer-attachments.js';
 import {
   transparencyStreamSettingsFromPrefs,
   DEFAULT_TRANSPARENCY_STREAM_SETTINGS,
@@ -232,6 +234,13 @@ export const CHAT_ROUTE_AI_UNAVAILABLE_ID = 'recued-chat-ai-unavailable';
 // Shell-frame Step 3 — composer L1 upgrades (§D.L1 chat home).
 /** The composer container (toolbar row + input row). */
 export const CHAT_ROUTE_COMPOSER_ATTR = 'data-recued-chat-route-composer';
+/** D-172 P2 — the composer's attach control, its hidden file input, the chip
+ *  row, and one chip's remove button. */
+export const CHAT_ROUTE_ATTACH_ATTR = 'data-recued-chat-route-attach';
+export const CHAT_ROUTE_ATTACH_INPUT_ATTR = 'data-recued-chat-route-attach-input';
+export const CHAT_ROUTE_ATTACHMENTS_ATTR = 'data-recued-chat-route-attachments';
+export const CHAT_ROUTE_ATTACHMENT_ATTR = 'data-recued-chat-route-attachment';
+export const CHAT_ROUTE_ATTACHMENT_REMOVE_ATTR = 'data-recued-chat-route-attachment-remove';
 /** The in-composer model picker `<select>` — lists only CONFIGURED
  *  routing layers (Local / Free pool / BYOK); selecting drives
  *  `chat.session.set_model_pref` (active session) or seeds the draft
@@ -343,6 +352,8 @@ export interface ChatRouteConn {
       session_id: string;
       message: string;
       picker_state: ChatSession['picker_state'];
+      /** D-172 P2 — finalized `data.file` ids attached to this turn. */
+      attachments?: Array<{ file_id: string; media_class: string }>;
       model_pref: {
         current: ChatModelRoutingLayer;
         model_hint?: ChatModelHint;
@@ -1435,6 +1446,52 @@ const CHAT_ROUTE_CHROME_STYLES = `
   padding: 8px;
   font: inherit;
 }
+[${CHAT_ROUTE_ATTACHMENTS_ATTR}] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 0 0;
+}
+[${CHAT_ROUTE_ATTACHMENT_ATTR}] {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+}
+.chat-composer-attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+.chat-composer-attachment-note { color: var(--fg-muted); }
+/* Colour REINFORCES the note, never replaces it — each chip already says
+   "attached" / a percentage / the error in words. */
+[${CHAT_ROUTE_ATTACHMENT_ATTR}='failed'] { border-color: var(--danger, #b3261e); }
+[${CHAT_ROUTE_ATTACHMENT_ATTR}='failed'] .chat-composer-attachment-note {
+  color: var(--danger, #b3261e);
+}
+[${CHAT_ROUTE_ATTACHMENT_REMOVE_ATTR}] {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 2px;
+}
+[${CHAT_ROUTE_ATTACH_INPUT_ATTR}] { display: none; }
+[${CHAT_ROUTE_ATTACH_ATTR}] {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  cursor: pointer;
+  padding: 7px 11px;
+  font-size: 15px;
+  line-height: 1;
+}
 [${CHAT_ROUTE_SEND_ATTR}],
 [${CHAT_ROUTE_NEW_SESSION_ATTR}] {
   border: 1px solid var(--border);
@@ -2167,6 +2224,12 @@ export interface BootstrapChatRouteOptions {
   root: HTMLElement;
   document?: Document;
   conn: ChatRouteConn;
+  /** D-172 P2 — the `upload.*` control plane + the binary socket factory, the
+   *  same pair Data → Files already receives. BOTH must be present for the
+   *  attach control to render: half-wired, the button would open a picker that
+   *  can never finish, which is worse than no button. */
+  uploadCallers?: Upload.UploadCallers;
+  uploadConnect?: Upload.UploadConnectFactory;
   subscribe?: BroadcastSubscriber['on'];
   /** Reconcile the open session from durable state after every successful
    * transport reconnect (including a server restart with a fresh event epoch). */
@@ -6572,12 +6635,25 @@ export const bootstrapChatRoute = (
             ? 'Send'
             : 'Ask Chat';
     const aiUnavailable = state.aiAvailable === false;
+    // ⛔ D-172 P2 — Send WAITS on a climbing upload. Sending now would drop the
+    // file silently: only finalized ids ride on `chat.send`, so the message
+    // would go without an attachment the person can see on screen.
+    const uploadInFlight = composerAttachments?.hasInFlight() === true;
+    // D-172 P2 — a WORDLESS drop is a real send, mirroring messenger: the file
+    // is stored and Chat replies "Stored X. What would you like me to do with
+    // it?" with NO ai call. So attached files satisfy the non-empty rule that
+    // otherwise keeps an empty turn from being sent.
+    const hasAttached = (composerAttachments?.payload().length ?? 0) > 0;
     if (
       state.sending
       || aiUnavailable
-      || composerDraft.trim().length === 0
+      || uploadInFlight
+      || (composerDraft.trim().length === 0 && !hasAttached)
     ) {
       send.disabled = true;
+    }
+    if (uploadInFlight && !state.sending && !aiUnavailable) {
+      send.setAttribute('title', 'Waiting for the attachment to finish uploading.');
     }
     if (aiUnavailable) {
       // Accessible disabled reason: tooltip for sighted users + an
@@ -6605,11 +6681,90 @@ export const bootstrapChatRoute = (
       event.preventDefault();
       void sendMessage(composerDraft);
     });
+    // D-172 P2 — the attach control. A hidden native input does the picking;
+    // the visible button is what the person clicks and what a test drives.
+    if (composerAttachments !== null) {
+      const fileInput = doc.createElement('input');
+      fileInput.type = 'file';
+      fileInput.multiple = true;
+      fileInput.setAttribute(CHAT_ROUTE_ATTACH_INPUT_ATTR, '');
+      // ⚠ `hidden`, NOT `.style` — the webclient's fake-document double has no
+      // `style` on a created element, and touching it throws for every mount
+      // (47 suite failures on the first cut). The CSS below does the hiding.
+      fileInput.setAttribute('hidden', '');
+      fileInput.addEventListener('change', () => {
+        for (const f of Array.from(fileInput.files ?? [])) {
+          composerAttachments.attach(f);
+        }
+        // Reset so re-picking the SAME file fires `change` again — otherwise a
+        // failed upload could not be retried by choosing the same file.
+        fileInput.value = '';
+      });
+      const attach = doc.createElement('button');
+      attach.type = 'button';
+      attach.setAttribute(CHAT_ROUTE_ATTACH_ATTR, '');
+      attach.setAttribute('aria-label', 'Attach a file');
+      attach.textContent = '+';
+      if (state.sending) attach.disabled = true;
+      attach.addEventListener('click', () => { fileInput.click(); });
+      inputRow.appendChild(fileInput);
+      inputRow.appendChild(attach);
+    }
     inputRow.appendChild(input);
     inputRow.appendChild(send);
+    // The chip row sits BELOW the input, so a growing list never pushes the
+    // textarea around mid-sentence.
+    if (composerAttachments !== null && composerAttachments.rows().length > 0) {
+      const chips = doc.createElement('div');
+      chips.className = 'chat-composer-attachments';
+      chips.setAttribute(CHAT_ROUTE_ATTACHMENTS_ATTR, '');
+      for (const row of composerAttachments.rows()) {
+        const chip = doc.createElement('span');
+        chip.className = 'chat-composer-attachment';
+        chip.setAttribute(CHAT_ROUTE_ATTACHMENT_ATTR, row.phase);
+        const name = doc.createElement('span');
+        name.className = 'chat-composer-attachment-name';
+        name.textContent = row.filename;
+        chip.appendChild(name);
+        const note = doc.createElement('span');
+        note.className = 'chat-composer-attachment-note';
+        // Each phase SAYS which it is. A chip that looked the same while
+        // climbing, attached, and failed would let someone send believing a
+        // file went with it.
+        note.textContent = row.phase === 'attached'
+          ? 'attached'
+          : row.phase === 'failed'
+            ? (row.error ?? 'upload failed')
+            : `${Math.round(row.progress * 100)}%`;
+        chip.appendChild(note);
+        const remove = doc.createElement('button');
+        remove.type = 'button';
+        remove.setAttribute(CHAT_ROUTE_ATTACHMENT_REMOVE_ATTR, String(row.id));
+        remove.setAttribute('aria-label', `Remove ${row.filename}`);
+        remove.textContent = '\u00d7';
+        remove.addEventListener('click', () => {
+          composerAttachments.remove(row.id);
+        });
+        chip.appendChild(remove);
+        chips.appendChild(chip);
+      }
+      composer.appendChild(chips);
+    }
     composer.appendChild(inputRow);
     return composer;
   };
+
+  // D-172 P2 — files attached to the turn being composed. Created only when
+  // BOTH upload seams are wired; `null` means the attach control never renders.
+  const composerAttachments = opts.uploadCallers && opts.uploadConnect
+    ? createComposerAttachments({
+      callers: opts.uploadCallers,
+      connect: opts.uploadConnect,
+      // Every phase change repaints the composer: the chips, and Send's
+      // disabled state while a file is still climbing.
+      onChange: () => { render(); },
+    })
+    : null;
 
   const render = (): void => {
     if (disposed) return;
@@ -8773,7 +8928,13 @@ export const bootstrapChatRoute = (
 
   const sendMessage = async (message: string): Promise<void> => {
     const trimmed = message.trim();
-    if (trimmed.length === 0 || state.sending) return;
+    // D-172 P2 — a wordless drop IS a send (see the composer guard). Without
+    // this the button would enable and clicking it would do nothing.
+    if (
+      (trimmed.length === 0
+        && (composerAttachments?.payload().length ?? 0) === 0)
+      || state.sending
+    ) return;
     const activeBeforeSend = doc.activeElement as HTMLElement | null | undefined;
     const composerInputBeforeSend = routeRoot.querySelector?.(
       `[${CHAT_ROUTE_INPUT_ATTR}]`,
@@ -8872,6 +9033,11 @@ export const bootstrapChatRoute = (
         session_id: session.id,
         message: trimmed,
         picker_state: session.picker_state,
+        // D-172 P2 — finalized ids only; a climbing file cannot reach here
+        // because Send is disabled while one is in flight.
+        ...(composerAttachments && composerAttachments.payload().length > 0
+          ? { attachments: composerAttachments.payload() }
+          : {}),
         model_pref: {
           current: session.model_routing.current,
           ...(session.model_routing.model_hint
@@ -8900,6 +9066,10 @@ export const bootstrapChatRoute = (
           : {}),
       });
       const { turn_id } = sendAck;
+      // D-172 P2 — the turn owns them now. Cleared only AFTER the ack, so a
+      // send that threw leaves the chips in place and the person can retry
+      // without re-uploading.
+      composerAttachments?.clear();
       if (disposed) return;
       if (pendingConnectedSourceAnswer !== null) {
         const pendingAnswer = pendingConnectedSourceAnswer;
@@ -9380,6 +9550,9 @@ export const bootstrapChatRoute = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      // D-172 P2 — cancel any climbing upload with the route. Leaving an engine
+      // running would keep a socket open against a surface nobody is watching.
+      composerAttachments?.destroy();
       doc.removeEventListener(
         'pointerdown',
         handleActionDisclosurePointerDown,
