@@ -55,7 +55,6 @@ const registerTaskSource = (
     source_kind,
     source_label: id,
     write_capable: source_kind === 'builtin',
-    mcp_exposed: false,
     registered_at: NOW,
     ...overrides,
   });
@@ -178,55 +177,7 @@ describe('D-192 work_entity CRUD freshness metadata', () => {
     expect('source_freshness' in out).toBe(false);
   });
 
-  it('returns an empty source_freshness array for a scoped list on a disabled source and restores it with include_disabled', async () => {
-    const source_id = 'hubspot.acme.disabled-task';
-    registerTaskSource(source_id, 'connection', { enabled: false });
-    seedSyncState(source_id, { last_success_at: NOW - 100, stale_after_ms: 1_000 });
-    seedTask('disabled-row', source_id);
 
-    const hidden = await handleWorkEntityList(deps(), {
-      kind: 'task',
-      source_id,
-    });
-    const visible = await handleWorkEntityList(deps(), {
-      kind: 'task',
-      source_id,
-      include_disabled: true,
-    });
-
-    expect(hidden.entities).toEqual([]);
-    expect(hidden.total).toBe(0);
-    expect(hidden.source_freshness).toEqual([]);
-    expect(visible.entities.map((entity) => entity.id)).toEqual(['disabled-row']);
-    expect(visible.source_freshness).toEqual([
-      {
-        source_id,
-        state: 'fresh',
-        last_success_at: NOW - 100,
-        stale_after_ms: 1_000,
-      },
-    ]);
-  });
-
-  it('returns the entity source freshness on get even when the source is disabled', async () => {
-    const source_id = 'hubspot.acme.disabled-get-task';
-    registerTaskSource(source_id, 'connection', { enabled: false });
-    seedSyncState(source_id, { last_success_at: NOW - 1_001, stale_after_ms: 1_000 });
-    seedTask('disabled-get-row', source_id);
-
-    const out = await handleWorkEntityGet(deps(), {
-      kind: 'task',
-      id: 'disabled-get-row',
-    });
-
-    expect(out.entity?.id).toBe('disabled-get-row');
-    expect(out.source_freshness).toEqual({
-      source_id,
-      state: 'stale',
-      last_success_at: NOW - 1_001,
-      stale_after_ms: 1_000,
-    });
-  });
 
   it('returns a null entity without source_freshness for a missing get row', async () => {
     registerTaskSource(BUILTIN_TASK_SOURCE, 'builtin');

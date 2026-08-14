@@ -71,10 +71,6 @@ export const handleContactSourceList = async (
       // Pre-composed by the boot wire as `${display_name} (${connection.name})`.
       // Do NOT re-derive it by splitting `source_id`.
       source_label: registration.source_label,
-      // `enabled` is optional on the registration and absent means ON (the
-      // registry's own default). A disabled Source is not a broken one — it is
-      // simply not running, and the strip must say that rather than call it stale.
-      enabled: registration.enabled ?? true,
       last_success_at: freshness.last_success_at,
       degraded: freshness.degraded,
       stale: freshness.stale,

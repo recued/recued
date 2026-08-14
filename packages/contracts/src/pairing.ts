@@ -68,7 +68,6 @@ export const DEFAULT_SUBSCRIPTIONS: BroadcastEventKind[] = [
   'chat.disambiguation_proposed',
   'chat.inbound_token_changed',
   'chat.message_complete',
-  'chat.picker_entries_changed',
   'chat.plan_proposed',
   'chat.plan_resolved',
   'chat.session_changed',

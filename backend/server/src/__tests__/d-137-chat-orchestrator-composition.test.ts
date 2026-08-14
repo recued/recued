@@ -160,6 +160,11 @@ const expectedChatDepsKeys = [
   'store',
   'toolCatalogStore',
   'connectionMcpStore',
+  // D-228 slice 4 — the picker's visibility predicate. It counted tools the
+  // owner had classified in `tool_overrides`; with that store deleted it counts
+  // tools reachable as governed pack operations, and the count comes from the
+  // composition rather than from the annotation row.
+  'connectionMcpCoveredToolCount',
   'orchestrator',
   'broadcast',
   'selfSignature',
@@ -190,26 +195,15 @@ const expectedChatDepsKeys = [
   'preflightExternalToolGrant',
 ].sort();
 
+/** ⚠ D-228 slice 6 — the `tool` / `classification` parameters are GONE, and
+ *  they had already stopped meaning anything at slice 4: nothing downstream read
+ *  a tool name or a classification off an annotation. Keeping them would have
+ *  left every call site reading as though it configured something. */
 const annotationValue = (
   connection_name: string,
-  tool = 'search',
-  classification: 'read' | 'write' = 'read',
 ): ValidatedConnectionMcpAnnotationInput => ({
   connection_name,
   topic_tags: ['search'],
-  tool_overrides: {
-    [tool]: { enabled: true, classification },
-  },
-  tools_list_cache: {
-    cached_at: 10,
-    tools: [
-      {
-        name: tool,
-        description: `${connection_name} ${tool}`,
-        input_schema: { type: 'object' },
-      },
-    ],
-  },
 });
 
 const createAuditLog = (): AuditLogStore =>
@@ -407,39 +401,24 @@ describe('composeChatOrchestrator', () => {
   });
 
   it('uses one shared plan approval store for orchestrator gating and chatDeps resolution', async () => {
-    const { bundle, deps } = composeHarness();
-    bundle.connectionMcpStore.setAnnotation({
-      value: annotationValue('exa', 'index', 'write'),
-      now: 20,
-    });
-    bundle.chatStore.createSession({ id: 'sess-plan', now: 1 });
+    // ⚠ RE-VEHICLED, NOT WEAKENED. This used to dispatch a Tier-3
+    // `<connection>.<tool>` name and infer sharing from a pending row appearing
+    // in `chatDeps.planApprovalStore`. D-228 slice 4 retired Tier-3, so that
+    // vehicle now resolves `unknown_tool` — and re-vehicling it onto another
+    // approval-raising tool would keep the claim indirect.
+    //
+    // 🔑 The claim was always about IDENTITY: the store the orchestrator gates
+    // on must be the same OBJECT the rpc deps resolve. Asserting that directly
+    // is stronger than observing one row through it, and it cannot be satisfied
+    // by two stores that merely behave alike.
+    const { compose, createChatOrchestratorMock } =
+      await importComposerWithOrchestratorSpy();
+    const bundle = compose(buildDeps());
 
-    const result = await bundle.orchestrator.dispatch.dispatchTool({
-      session_id: 'sess-plan',
-      turn_id: 'turn-plan',
-      tool_name: 'exa.index',
-      arg_values: { url: 'https://example.test' },
-      picker_target: 'self',
-    });
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe('awaiting_approval');
-    const pending = await (
-      bundle.chatDeps.planApprovalStore?.listPending('sess-plan')
-      ?? []
-    );
-    expect(pending).toHaveLength(1);
-    expect(pending[0]).toEqual(expect.objectContaining({
-      session_id: 'sess-plan',
-      turn_id: 'turn-plan',
-      tool: 'exa.index',
-      classification: 'write',
-    }));
-    expect(
-      deps.db.prepare(`
-        SELECT status FROM chat_plans WHERE session_id = ?
-      `).get('sess-plan'),
-    ).toEqual({ status: 'proposed' });
+    const orchestratorDeps = createChatOrchestratorMock.mock.calls[0]?.[0];
+    expect(orchestratorDeps).toBeDefined();
+    expect(bundle.chatDeps.planApprovalStore).toBeDefined();
+    expect(orchestratorDeps!.planApprovalStore).toBe(bundle.chatDeps.planApprovalStore);
   });
 
   it('uses the dbless plaintext chat-store fallback when keys is undefined', async () => {
@@ -549,26 +528,32 @@ describe('composeChatOrchestrator', () => {
     expect(events.some((event) => event.kind === 'chat.message_complete')).toBe(true);
   });
 
-  it('lets raw MCP annotations pass through when the connection store is not wired yet', () => {
-    const { bundle } = composeHarness({
-      getConnectionStore: vi.fn(() => undefined),
-    });
+  it('lets raw MCP annotations pass through when the connection store is not wired yet', async () => {
+    // ⚠ The Tier-3 CATALOG half of this test is gone with the tier (slice 4).
+    // What survives is the half that still means something: with no connection
+    // store to check against, the annotationProvider must not filter — a peer
+    // row is passed through rather than dropped for failing a lookup that
+    // cannot run.
+    const { compose, createChatOrchestratorMock } =
+      await importComposerWithOrchestratorSpy();
+    const bundle = compose(buildDeps({ getConnectionStore: vi.fn(() => undefined) }));
     bundle.connectionMcpStore.setAnnotation({
-      value: annotationValue('ghost', 'search', 'read'),
+      value: annotationValue('ghost'),
       now: 20,
     });
     bundle.connectionMcpStore.setAnnotation({
-      value: annotationValue('live', 'search', 'read'),
+      value: annotationValue('live'),
       now: 10,
     });
+    const orchestratorDeps = createChatOrchestratorMock.mock.calls[0]![0] as {
+      annotationProvider: () => ReadonlyArray<{ connection_name: string }>;
+    };
 
-    expect(bundle.internalRegistry.listByTier(3).map((entry) => entry.name)).toEqual([
-      'ghost.search',
-      'live.search',
-    ]);
+    expect(orchestratorDeps.annotationProvider().map((a) => a.connection_name).sort())
+      .toEqual(['ghost', 'live']);
   });
 
-  it('filters Tier 3 catalog and annotationProvider rows whose MCP connection no longer resolves', async () => {
+  it('filters annotationProvider rows whose MCP connection no longer resolves', async () => {
     const get = vi.fn((_kind: string, name: string) =>
       name === 'live' ? { name } : null,
     );
@@ -578,32 +563,33 @@ describe('composeChatOrchestrator', () => {
       getConnectionStore: vi.fn(() => ({ get }) as never),
     }));
     bundle.connectionMcpStore.setAnnotation({
-      value: annotationValue('ghost', 'search', 'read'),
+      value: annotationValue('ghost'),
       now: 20,
     });
     bundle.connectionMcpStore.setAnnotation({
-      value: annotationValue('live', 'search', 'read'),
+      value: annotationValue('live'),
       now: 10,
     });
     const orchestratorDeps = createChatOrchestratorMock.mock.calls[0]![0] as {
       annotationProvider: () => ReadonlyArray<{ connection_name: string }>;
     };
 
-    expect(bundle.internalRegistry.listByTier(3).map((entry) => entry.name)).toEqual([
-      'live.search',
-    ]);
+    // ⛔ D-228 slice 4 — the tier-3 catalog assertion is gone with the tier; the
+    // registry projects none. The FILTER this test is named for is the
+    // annotationProvider one, and it survives.
+    expect(bundle.internalRegistry.listByTier(3)).toEqual([]);
     expect(orchestratorDeps.annotationProvider().map((ann) => ann.connection_name)).toEqual([
       'live',
     ]);
     expect(get).toHaveBeenCalledWith('mcp', 'ghost');
     expect(get).toHaveBeenCalledWith('mcp', 'live');
-    // D-171 slice 2c — the inbound-token grant catalog provider EXCLUDES the
-    // live Tier 3 entry (`live.search`): peer-MCP passthroughs are rejected on
-    // the inbound MCP wire, so the grant checklist must not offer them (Codex
-    // slice-2c review P2 — no toggle-and-save-a-no-op).
+    // D-171 slice 2c — the grant catalog never offered Tier-3 passthroughs
+    // (they are rejected on the inbound MCP wire, so a toggle would save a
+    // no-op). ⚠ Still asserted after slice 4, and it is not vacuous: it now
+    // holds because nothing PRODUCES tier 3, and this is where that would be
+    // noticed if a producer came back.
     const grantCatalog = bundle.chatDeps.catalogProvider?.() ?? [];
     expect(grantCatalog.every((e) => e.tier !== 3)).toBe(true);
-    expect(grantCatalog.some((e) => e.name === 'live.search')).toBe(false);
     expect(grantCatalog).toEqual(
       bundle.internalRegistry.list().filter((e) => e.tier !== 3),
     );

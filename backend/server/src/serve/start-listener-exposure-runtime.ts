@@ -76,6 +76,12 @@ export const startListenerExposureRuntime = async (
     // D-178 slice 4b — on-boot update reconcile thunk; the post-housekeeping
     // tail runs it after markBooted.
     runUpdateBootReconcile: listeners.runUpdateBootReconcile,
+    // D-225 auto-mint — the first-mint sweep's deps, bound to the
+    // composition-capable seam in `composeListeners` and carried here rather
+    // than rebuilt (see the const's own comment on why rebuilding is the bug).
+    ...(listeners.mcpPackFirstMintDeps
+      ? { mcpPackFirstMintDeps: listeners.mcpPackFirstMintDeps }
+      : {}),
   });
 
   return {

@@ -24,9 +24,6 @@ import {
   isTier3ToolClassification,
   buildDefaultConnectionMcpAnnotation,
   formatTier3ToolName,
-  buildTier3ToolEntry,
-  buildTier3Catalog,
-  computeConnectionMcpDisabledTier3Names,
   CONNECTION_MCP_ANNOTATION_VALIDATION_ISSUE_CODES,
   validateConnectionMcpAnnotationInput,
   type ConnectionMcpAnnotationState,
@@ -39,8 +36,6 @@ const baseAnnotation = (
 ): ConnectionMcpAnnotationState => ({
   connection_name,
   topic_tags: [],
-  tool_overrides: {},
-  tools_list_cache: { tools: [], cached_at: 0 },
   updated_at: 0,
   ...overrides,
 });
@@ -78,404 +73,48 @@ describe('D-137 W2.3 — buildDefaultConnectionMcpAnnotation', () => {
     const def = buildDefaultConnectionMcpAnnotation('exa');
     expect(def.connection_name).toBe('exa');
     expect([...def.topic_tags]).toEqual([]);
-    expect(Object.keys(def.tool_overrides)).toEqual([]);
-    expect(def.tools_list_cache.tools.length).toBe(0);
-    expect(def.tools_list_cache.cached_at).toBe(0);
+    // ⛔ D-228 slice 4 — `tool_overrides` is GONE from the shape. Asserting its
+    // absence rather than deleting the line: a default annotation that grew the
+    // field back would mean a second classification store had returned.
+    // ⛔ D-228 slices 4 + 6 — FOUR fields are GONE from the shape. Asserting
+    // their absence rather than deleting the lines: a default annotation that
+    // grew one back would mean a second store of the same fact had returned.
+    for (const key of ['tool_overrides', 'tools_list_cache', 'recued_signature', 'chat_mode']) {
+      expect(key in def).toBe(false);
+    }
     expect(def.updated_at).toBe(0);
   });
 });
 
-describe('D-137 W2.3 — buildTier3ToolEntry projection (both gates)', () => {
-  const descriptor: McpToolDescriptor = {
-    name: 'search',
-    description: 'Search the exa index for relevant web pages',
-    destructive_hint: false,
-  };
-  const annotation = baseAnnotation('exa', {
-    topic_tags: ['web', 'research'],
-    tool_overrides: {
-      search: { enabled: true, classification: 'read' },
-    },
-    tools_list_cache: { tools: [descriptor], cached_at: 100 },
-  });
+/** ⛔ D-228 slice 4 — THREE SUITES REMOVED HERE, NOT LOST.
+ *
+ *  `buildTier3ToolEntry`, `buildTier3Catalog` and
+ *  `computeConnectionMcpDisabledTier3Names` projected the chat Tier-3 catalog
+ *  from `tool_overrides`. That store is deleted (D-225 named it as the standing
+ *  defect; an MCP tool now reaches chat once, as a contract-governed pack op),
+ *  and with it every gate those ~350 lines exercised: enabled / classification /
+ *  custom topic tags / the Tier-1 name-collision refusal.
+ *
+ *  What the deletion must not lose is the CLAIM that the surface is gone, and
+ *  that lives where the surface did: `packages/middleware`'s tier-3 suite now
+ *  pins the projection at zero and `getByName` at null. The validator + picker
+ *  suites below are the parts of this file whose subject survives. */
 
-  it('surfaces when enabled + classified (read / write)', () => {
-    const entry = buildTier3ToolEntry(annotation, descriptor);
-    expect(entry).not.toBeNull();
-    expect(entry!.name).toBe('exa.search');
-    expect(entry!.tier).toBe(3);
-    expect(entry!.classification).toBe('read');
-    expect(entry!.description).toBe(
-      'Search the exa index for relevant web pages',
-    );
-    expect([...entry!.topic_tags]).toEqual(['web', 'research']);
-    expect(entry!.destructive_hint).toBe(false);
-  });
-
-  // D-164 § 6 — Tier 3 vendor APIs are sealed sequential. External
-  // services carry their own rate-limit budgets; concurrent dispatch
-  // corrupts the budget without per-vendor knowledge. A future
-  // override hook on `ConnectionMcpToolOverride` (or upstream
-  // `tools/list` metadata) flips known-safe entries.
-  it('emits concurrency_safe: false on every projected Tier 3 entry (sealed sequential)', () => {
-    const entry = buildTier3ToolEntry(annotation, descriptor);
-    expect(entry?.concurrency_safe).toBe(false);
-  });
-
-  it('emits concurrency_safe: false even for read-classified Tier 3 entries', () => {
-    // Defensive — a read-classification Tier 3 entry could be mistaken
-    // for "safe to batch" by symmetry with Tier 1 reads. The sealed-
-    // false rule applies to ALL Tier 3 projections regardless of
-    // classification.
-    const readDescriptor: McpToolDescriptor = {
-      name: 'fetch',
-      destructive_hint: false,
-    };
-    const ann = baseAnnotation('exa', {
-      tool_overrides: {
-        fetch: { enabled: true, classification: 'read' },
-      },
-      tools_list_cache: { tools: [readDescriptor], cached_at: 100 },
-    });
-    const entry = buildTier3ToolEntry(ann, readDescriptor);
-    expect(entry?.concurrency_safe).toBe(false);
-  });
-
-  it('returns null when the override is missing entirely', () => {
-    const ann = baseAnnotation('exa', {
-      tools_list_cache: { tools: [descriptor], cached_at: 100 },
-    });
-    expect(buildTier3ToolEntry(ann, descriptor)).toBeNull();
-  });
-
-  it('returns null when override is disabled', () => {
-    const ann = baseAnnotation('exa', {
-      tool_overrides: {
-        search: { enabled: false, classification: 'read' },
-      },
-      tools_list_cache: { tools: [descriptor], cached_at: 100 },
-    });
-    expect(buildTier3ToolEntry(ann, descriptor)).toBeNull();
-  });
-
-  it('returns null when classification is unknown', () => {
-    const ann = baseAnnotation('exa', {
-      tool_overrides: {
-        search: { enabled: true, classification: 'unknown' },
-      },
-      tools_list_cache: { tools: [descriptor], cached_at: 100 },
-    });
-    expect(buildTier3ToolEntry(ann, descriptor)).toBeNull();
-  });
-
-  it('per-tool custom_topic_tags override connection-level topic_tags', () => {
-    const ann = baseAnnotation('exa', {
-      topic_tags: ['web', 'research'],
-      tool_overrides: {
-        search: {
-          enabled: true,
-          classification: 'read',
-          custom_topic_tags: ['search', 'lookup'],
-        },
-      },
-      tools_list_cache: { tools: [descriptor], cached_at: 100 },
-    });
-    const entry = buildTier3ToolEntry(ann, descriptor);
-    expect([...entry!.topic_tags]).toEqual(['search', 'lookup']);
-  });
-
-  it('falls back to connection-level topic_tags when no per-tool override', () => {
-    const entry = buildTier3ToolEntry(annotation, descriptor);
-    expect([...entry!.topic_tags]).toEqual(['web', 'research']);
-  });
-
-  it('surfaces destructive_hint from upstream descriptor', () => {
-    const writeDescriptor: McpToolDescriptor = {
-      name: 'delete_index',
-      destructive_hint: true,
-    };
-    const ann = baseAnnotation('exa', {
-      tool_overrides: {
-        delete_index: { enabled: true, classification: 'write' },
-      },
-      tools_list_cache: { tools: [writeDescriptor], cached_at: 100 },
-    });
-    const entry = buildTier3ToolEntry(ann, writeDescriptor);
-    expect(entry!.destructive_hint).toBe(true);
-    expect(entry!.classification).toBe('write');
-  });
-
-  it('synthesizes a fallback description when upstream omits one', () => {
-    const sparse: McpToolDescriptor = { name: 'search' };
-    const ann = baseAnnotation('exa', {
-      tool_overrides: {
-        search: { enabled: true, classification: 'read' },
-      },
-      tools_list_cache: { tools: [sparse], cached_at: 100 },
-    });
-    const entry = buildTier3ToolEntry(ann, sparse);
-    expect(entry!.description).toMatch(/^exa MCP tool/);
-  });
-
-  it('rejects descriptors with empty / non-string names', () => {
-    const bad = { name: '' } as McpToolDescriptor;
-    expect(buildTier3ToolEntry(annotation, bad)).toBeNull();
-  });
-
-  it('Codex W2.3 review P2 fold — refuses names that collide with Tier 1 primitives', () => {
-    // Connection literally named `contact` advertising a tool named
-    // `search` would produce `contact.search`, colliding with the
-    // Tier 1 `contact.search` primitive. The registry's dispatch
-    // routes Tier 1 first, so Stage 2 would see the Tier 3 schema
-    // while the call routes to the built-in. Substrate refusal at
-    // projection time is the load-bearing fix.
-    const collidingAnn = baseAnnotation('contact', {
-      tool_overrides: {
-        search: { enabled: true, classification: 'read' },
-      },
-      tools_list_cache: {
-        tools: [{ name: 'search' }],
-        cached_at: 100,
-      },
-    });
-    expect(
-      buildTier3ToolEntry(collidingAnn, { name: 'search' }),
-    ).toBeNull();
-  });
-
-  it('Codex W2.3 review P2 fold — preserves explicit empty custom_topic_tags verbatim', () => {
-    // Mary cleared per-tool tags to suppress connection-level topic
-    // matching. The projection MUST honor the empty array; falling
-    // back to the connection-level tags silently re-enables what she
-    // turned off.
-    const ann = baseAnnotation('exa', {
-      topic_tags: ['web', 'research'],
-      tool_overrides: {
-        search: {
-          enabled: true,
-          classification: 'read',
-          custom_topic_tags: [],
-        },
-      },
-      tools_list_cache: { tools: [descriptor], cached_at: 100 },
-    });
-    const entry = buildTier3ToolEntry(ann, descriptor);
-    expect(entry).not.toBeNull();
-    expect([...entry!.topic_tags]).toEqual([]);
-  });
-});
-
-describe('D-137 W2.3 — buildTier3Catalog flat-map projection', () => {
-  it('returns the empty array when annotations is empty', () => {
-    expect(buildTier3Catalog([])).toEqual([]);
-  });
-
-  it('flat-maps across connections and sorts by formatted name asc', () => {
-    const exaAnn = baseAnnotation('exa', {
-      tool_overrides: {
-        search: { enabled: true, classification: 'read' },
-        contents: { enabled: true, classification: 'read' },
-        delete_index: { enabled: true, classification: 'write' },
-      },
-      tools_list_cache: {
-        tools: [
-          { name: 'search' },
-          { name: 'contents' },
-          { name: 'delete_index', destructive_hint: true },
-        ],
-        cached_at: 100,
-      },
-    });
-    const githubAnn = baseAnnotation('github', {
-      tool_overrides: {
-        list_issues: { enabled: true, classification: 'read' },
-      },
-      tools_list_cache: {
-        tools: [{ name: 'list_issues' }],
-        cached_at: 100,
-      },
-    });
-    const catalog = buildTier3Catalog([exaAnn, githubAnn]);
-    expect(catalog.map((e) => e.name)).toEqual([
-      'exa.contents',
-      'exa.delete_index',
-      'exa.search',
-      'github.list_issues',
-    ]);
-  });
-
-  it('Codex W2.3 review P2 fold — Tier 1 colliding names are dropped from buildTier3Catalog', () => {
-    const ann = baseAnnotation('contact', {
-      tool_overrides: {
-        search: { enabled: true, classification: 'read' },
-        scoped_lookup: { enabled: true, classification: 'read' },
-      },
-      tools_list_cache: {
-        tools: [{ name: 'search' }, { name: 'scoped_lookup' }],
-        cached_at: 100,
-      },
-    });
-    const catalog = buildTier3Catalog([ann]);
-    // `contact.search` colliding with Tier 1 — dropped.
-    // `contact.scoped_lookup` non-colliding — surfaces.
-    expect(catalog.map((e) => e.name)).toEqual(['contact.scoped_lookup']);
-  });
-
-  it('drops disabled + unclassified tools from the catalog projection', () => {
-    const ann = baseAnnotation('exa', {
-      tool_overrides: {
-        search: { enabled: true, classification: 'read' },
-        contents: { enabled: false, classification: 'read' }, // disabled
-        delete_index: { enabled: true, classification: 'unknown' }, // unclassified
-        // similar: missing override entirely → invisible
-      },
-      tools_list_cache: {
-        tools: [
-          { name: 'search' },
-          { name: 'contents' },
-          { name: 'delete_index' },
-          { name: 'similar' },
-        ],
-        cached_at: 100,
-      },
-    });
-    const catalog = buildTier3Catalog([ann]);
-    expect(catalog.map((e) => e.name)).toEqual(['exa.search']);
-  });
-});
-
-describe('D-137 W2.3 — computeConnectionMcpDisabledTier3Names', () => {
-  it('returns an empty set when no annotations exist', () => {
-    expect(computeConnectionMcpDisabledTier3Names([]).size).toBe(0);
-  });
-
-  it('flags every cached descriptor that does NOT pass both gates', () => {
-    const ann = baseAnnotation('exa', {
-      tool_overrides: {
-        search: { enabled: true, classification: 'read' },
-        contents: { enabled: false, classification: 'read' },
-        delete_index: { enabled: true, classification: 'unknown' },
-      },
-      tools_list_cache: {
-        tools: [
-          { name: 'search' },
-          { name: 'contents' },
-          { name: 'delete_index' },
-          { name: 'similar' }, // no override at all
-        ],
-        cached_at: 100,
-      },
-    });
-    const disabled = computeConnectionMcpDisabledTier3Names([ann]);
-    expect([...disabled].sort()).toEqual([
-      'exa.contents',
-      'exa.delete_index',
-      'exa.similar',
-    ]);
-    expect(disabled.has('exa.search')).toBe(false);
-  });
-
-  it('handles empty-name descriptors defensively', () => {
-    const ann = baseAnnotation('exa', {
-      tools_list_cache: {
-        tools: [
-          { name: '' } as McpToolDescriptor,
-          { name: 'search' },
-        ],
-        cached_at: 100,
-      },
-    });
-    const disabled = computeConnectionMcpDisabledTier3Names([ann]);
-    // Only `search` surfaces (empty-name descriptor is silently dropped).
-    expect(disabled.has('exa.search')).toBe(true);
-    expect(disabled.size).toBe(1);
-  });
-
-  it('Codex W2.3 review P2 fold — Tier 1 colliding names are excluded from the disabled set', () => {
-    // `contact.search` colliding with Tier 1 must not surface as
-    // "disabled" either — the substrate refused it entirely; from
-    // the user's perspective the tool acts as if it was never
-    // advertised (preserves the Tier 1 primitive's identity).
-    const ann = baseAnnotation('contact', {
-      tool_overrides: {
-        search: { enabled: true, classification: 'read' },
-        scoped_lookup: { enabled: false, classification: 'read' },
-      },
-      tools_list_cache: {
-        tools: [{ name: 'search' }, { name: 'scoped_lookup' }],
-        cached_at: 100,
-      },
-    });
-    const disabled = computeConnectionMcpDisabledTier3Names([ann]);
-    expect(disabled.has('contact.search')).toBe(false);
-    expect(disabled.has('contact.scoped_lookup')).toBe(true);
-  });
-
-  it('aggregates across multiple connections', () => {
-    const exa = baseAnnotation('exa', {
-      tools_list_cache: {
-        tools: [{ name: 'search' }, { name: 'delete_index' }],
-        cached_at: 100,
-      },
-      tool_overrides: {
-        search: { enabled: true, classification: 'read' },
-      },
-    });
-    const github = baseAnnotation('github', {
-      tools_list_cache: {
-        tools: [{ name: 'list_issues' }],
-        cached_at: 100,
-      },
-      // no overrides at all → list_issues is disabled
-    });
-    const disabled = computeConnectionMcpDisabledTier3Names([exa, github]);
-    expect([...disabled].sort()).toEqual([
-      'exa.delete_index',
-      'github.list_issues',
-    ]);
-  });
-});
-
-describe('D-137 W2.3 — CONNECTION_MCP_ANNOTATION_VALIDATION_ISSUE_CODES closed list', () => {
-  it('exports every issue code (15 base + 4 P4 recued_signature codes + 5 P5 chat_mode codes)', () => {
-    expect(CONNECTION_MCP_ANNOTATION_VALIDATION_ISSUE_CODES.length).toBe(24);
-    expect([...CONNECTION_MCP_ANNOTATION_VALIDATION_ISSUE_CODES]).toContain(
-      'connection_name_invalid',
-    );
-    expect([...CONNECTION_MCP_ANNOTATION_VALIDATION_ISSUE_CODES]).toContain(
-      'tool_overrides_not_object',
-    );
-    // D-137 P4 § A.3 — recued_signature payload validation codes.
-    expect([...CONNECTION_MCP_ANNOTATION_VALIDATION_ISSUE_CODES]).toContain(
-      'recued_signature_shape_invalid',
-    );
-    expect([...CONNECTION_MCP_ANNOTATION_VALIDATION_ISSUE_CODES]).toContain(
-      'recued_signature_server_kind_invalid',
-    );
-    expect([...CONNECTION_MCP_ANNOTATION_VALIDATION_ISSUE_CODES]).toContain(
-      'recued_signature_version_invalid',
-    );
-    expect([...CONNECTION_MCP_ANNOTATION_VALIDATION_ISSUE_CODES]).toContain(
-      'recued_signature_instance_id_invalid',
-    );
-    // D-137 P5 § A.7.1 + § A.10 — chat_mode payload validation codes.
-    expect([...CONNECTION_MCP_ANNOTATION_VALIDATION_ISSUE_CODES]).toContain(
-      'chat_mode_shape_invalid',
-    );
-    expect([...CONNECTION_MCP_ANNOTATION_VALIDATION_ISSUE_CODES]).toContain(
-      'chat_mode_offered_invalid',
-    );
-    expect([...CONNECTION_MCP_ANNOTATION_VALIDATION_ISSUE_CODES]).toContain(
-      'chat_mode_session_cap_shape_invalid',
-    );
-    expect([...CONNECTION_MCP_ANNOTATION_VALIDATION_ISSUE_CODES]).toContain(
-      'chat_mode_session_cap_per_day_invalid',
-    );
-    expect([...CONNECTION_MCP_ANNOTATION_VALIDATION_ISSUE_CODES]).toContain(
-      'chat_mode_session_cap_concurrent_invalid',
-    );
-  });
-});
+/** ⛔⛔ D-228 slice 6 — THE HAND-WRITTEN CLOSED-LIST TWIN IS DELETED, AND ITS
+ *  DELETION IS THE POINT.
+ *
+ *  This suite asserted `.length === 24` and spot-checked members by name. It was
+ *  green the entire time 19 of those 24 codes had become unemittable — slices 4
+ *  and 6 moved four fields to tolerate-and-ignore, and a tolerated key raises
+ *  nothing. A count plus a `toContain` list cannot notice that a code stopped
+ *  being produced; it only notices that someone edited the array, which is the
+ *  half that was never the risk.
+ *
+ *  🔑 REPLACED BY A DERIVED RATCHET, in
+ *  `backend/server/src/__tests__/d-228-slice-6-annotation-collapse.test.ts`: it
+ *  parses the validator's own `code:` emissions out of the source and asserts
+ *  set equality in BOTH directions. A second hand-written list is exactly what
+ *  drifted here, so the replacement deliberately has no list to maintain. */
 
 describe('D-137 W2.3 — validateConnectionMcpAnnotationInput', () => {
   it('rejects non-object input with input_not_object', () => {
@@ -500,9 +139,9 @@ describe('D-137 W2.3 — validateConnectionMcpAnnotationInput', () => {
     if (r.ok) {
       expect(r.value.connection_name).toBe('exa');
       expect([...r.value.topic_tags]).toEqual([]);
-      expect(Object.keys(r.value.tool_overrides)).toEqual([]);
-      expect(r.value.tools_list_cache.tools).toEqual([]);
-      expect(r.value.tools_list_cache.cached_at).toBe(0);
+      // ⛔ D-228 slice 4 — the validated value no longer CARRIES the field.
+      expect('tool_overrides' in r.value).toBe(false);
+      expect('tools_list_cache' in r.value).toBe(false);
     }
   });
 
@@ -533,79 +172,41 @@ describe('D-137 W2.3 — validateConnectionMcpAnnotationInput', () => {
     }
   });
 
-  it('rejects tool_overrides shape errors', () => {
-    const r1 = validateConnectionMcpAnnotationInput({
-      connection_name: 'exa',
-      tool_overrides: [],
-    });
-    expect(r1.ok).toBe(false);
-    if (!r1.ok) {
-      expect(r1.issues.some((i) => i.code === 'tool_overrides_not_object')).toBe(true);
-    }
-    const r2 = validateConnectionMcpAnnotationInput({
-      connection_name: 'exa',
-      tool_overrides: { search: { enabled: 'yes', classification: 'read' } },
-    });
-    expect(r2.ok).toBe(false);
-    if (!r2.ok) {
-      expect(r2.issues.some((i) => i.code === 'tool_override_enabled_invalid')).toBe(true);
-    }
-    const r3 = validateConnectionMcpAnnotationInput({
-      connection_name: 'exa',
-      tool_overrides: { search: { enabled: true, classification: 'execute' } },
-    });
-    expect(r3.ok).toBe(false);
-    if (!r3.ok) {
-      expect(r3.issues.some((i) => i.code === 'tool_override_classification_invalid')).toBe(true);
+  it('⛔⛔ D-228 slice 4 — ACCEPTS AND IGNORES a retired `tool_overrides` key, however malformed', () => {
+    // THIS TEST INVERTED, and the inversion is the wire-compatibility claim.
+    // It used to assert three REJECTIONS (`tool_overrides_not_object`,
+    // `tool_override_enabled_invalid`, `tool_override_classification_invalid`).
+    // The field is retired, and a cached older webclient still sends it — so
+    // failing its payload would break a client that is otherwise perfectly able
+    // to set topic tags. What you ACCEPT is not what you ADVERTISE.
+    for (const tool_overrides of [
+      [],
+      { search: { enabled: 'yes', classification: 'read' } },
+      { search: { enabled: true, classification: 'execute' } },
+    ]) {
+      const r = validateConnectionMcpAnnotationInput({
+        connection_name: 'exa',
+        tool_overrides,
+      });
+      expect(r.ok).toBe(true);
+      // ⚠ AND IT MUST NOT COME BACK OUT. Accepting the key is compatibility;
+      // carrying it forward would be a second classification store returning.
+      if (r.ok) expect('tool_overrides' in r.value).toBe(false);
     }
   });
 
-  it('rejects tools_list_cache shape errors', () => {
-    const r1 = validateConnectionMcpAnnotationInput({
-      connection_name: 'exa',
-      tools_list_cache: { tools: 'not an array', cached_at: 0 },
-    });
-    expect(r1.ok).toBe(false);
-    if (!r1.ok) {
-      expect(r1.issues.some((i) => i.code === 'tools_list_cache_shape_invalid')).toBe(true);
-    }
-    const r2 = validateConnectionMcpAnnotationInput({
-      connection_name: 'exa',
-      tools_list_cache: {
-        tools: [{ name: 'search' }, { name: 'search' }],
-        cached_at: 0,
-      },
-    });
-    expect(r2.ok).toBe(false);
-    if (!r2.ok) {
-      expect(r2.issues.some((i) => i.code === 'tools_list_cache_duplicate_tool')).toBe(true);
-    }
-    const r3 = validateConnectionMcpAnnotationInput({
-      connection_name: 'exa',
-      tools_list_cache: { tools: [], cached_at: -1 },
-    });
-    expect(r3.ok).toBe(false);
-    if (!r3.ok) {
-      expect(r3.issues.some((i) => i.code === 'tools_list_cache_cached_at_invalid')).toBe(true);
-    }
-  });
+  // ⛔ D-228 slice 6 — the `tools_list_cache` REJECTION tests are deleted with
+  // their subject, and INVERTED rather than dropped: the validator now accepts
+  // every one of those malformed shapes and ignores them. That claim is pinned
+  // in the slice-6 suite ("accepts a MALFORMED legacy key"), because tolerance
+  // that still runs the shape check is not tolerance — it would 400 a caller
+  // over a field the server no longer stores.
 
-  it('rejects custom_topic_tags shape errors', () => {
-    const r1 = validateConnectionMcpAnnotationInput({
-      connection_name: 'exa',
-      tool_overrides: {
-        search: {
-          enabled: true,
-          classification: 'read',
-          custom_topic_tags: 'web',
-        },
-      },
-    });
-    expect(r1.ok).toBe(false);
-    if (!r1.ok) {
-      expect(r1.issues.some((i) => i.code === 'tool_override_custom_tag_invalid')).toBe(true);
-    }
-  });
+  // ⛔ D-228 slice 4 — the `custom_topic_tags` rejection tests are DELETED with
+  // their subject. Those tags lived INSIDE a `tool_overrides` entry (per-tool
+  // topic chips overriding the connection-level ones); the whole entry shape is
+  // retired, so there is no longer a place for them to be malformed. The
+  // CONNECTION-level `topic_tags` validation, which survives, is covered above.
 
   it('canonicalizes a full valid payload', () => {
     const r = validateConnectionMcpAnnotationInput({
@@ -634,12 +235,11 @@ describe('D-137 W2.3 — validateConnectionMcpAnnotationInput', () => {
     if (r.ok) {
       expect(r.value.connection_name).toBe('exa');
       expect([...r.value.topic_tags]).toEqual(['web', 'research']);
-      expect(Object.keys(r.value.tool_overrides).sort()).toEqual([
-        'delete_index',
-        'search',
-      ]);
-      expect(r.value.tools_list_cache.cached_at).toBe(1700000000);
-      expect(r.value.tools_list_cache.tools.length).toBe(2);
+      // ⛔⛔ ACCEPTED, IGNORED, NOT REJECTED. The input above still SENDS
+      // `tool_overrides` — a cached older webclient does — and the validator
+      // must not fail its payload over a retired key. It reads past it.
+      expect('tool_overrides' in r.value).toBe(false);
+      expect('tools_list_cache' in r.value).toBe(false);
     }
   });
 });

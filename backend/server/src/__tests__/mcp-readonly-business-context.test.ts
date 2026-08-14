@@ -34,7 +34,6 @@ describe('standalone MCP business-context readers', () => {
         source_kind: 'builtin',
         source_label: 'Recued tasks',
         write_capable: true,
-        mcp_exposed: false,
         registered_at: 100,
       });
       workEntities.writeTask({

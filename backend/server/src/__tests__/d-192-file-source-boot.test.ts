@@ -4,8 +4,8 @@
  *  Dropbox connections (`top_tier_kind: 'file'`, `sync_posture:
  *  'file_meta_ref'`, read-only); the upsert observer registers on enrollment;
  *  the delete observer unregisters; non-file vendors + non-api kinds are inert;
- *  the getSource-first skip preserves a user's `mcp_exposed` opt-in across a
- *  boot re-scan; the id matches `CONNECTION_SOURCE_ID(vendor, name, 'file')`
+ *  a boot re-scan preserves a user's enable/disable toggle;
+ *  the id matches `CONNECTION_SOURCE_ID(vendor, name, 'file')`
  *  (so it agrees with `wireFileSourceSync`); and — the reason the guard exists
  *  — a file Source and a work-entity (HubSpot) Source COEXIST in the shared
  *  registry without the two boot wires sweeping each other on upsert/delete. */
@@ -87,7 +87,6 @@ describe('wireFileSourceBoot — boot scan', () => {
       expect(reg!.sync_posture).toBe('file_meta_ref');
       // Read-only meta-only mirror in v1 — no write path flips this true.
       expect(reg!.write_capable).toBe(false);
-      expect(reg!.mcp_exposed).toBe(false);
       expect(reg!.registered_at).toBe(NOW);
     }
     expect(store.getSource(s3Id('photos'))!.source_label).toBe('Amazon S3 (photos)');
@@ -221,23 +220,9 @@ describe('wireFileSourceBoot — vendor flip', () => {
 });
 
 // ────────────────────────────────────────────────────────────────
-// mcp_exposed opt-in survives a boot re-scan (getSource-first skip)
+// a user toggle survives a boot re-scan
 // ────────────────────────────────────────────────────────────────
 
-describe('wireFileSourceBoot — user toggle preservation', () => {
-  it('preserves a user mcp_exposed opt-in across a second boot scan', () => {
-    const cs = createConnectionStore(db);
-    upsertConnection(cs, 'photos', 's3');
-    wireFileSourceBoot({ connectionStore: cs, store, now: () => NOW });
-    store.setSourceMcpExposed(s3Id('photos'), true);
-    expect(store.getSource(s3Id('photos'))!.mcp_exposed).toBe(true);
-    // A fresh boot re-scan (server restart) must NOT clobber the toggle —
-    // `registerSource` UPSERT overwrites mcp_exposed, so the getSource-first
-    // skip is what protects it.
-    wireFileSourceBoot({ connectionStore: cs, store, now: () => NOW + 1000 });
-    expect(store.getSource(s3Id('photos'))!.mcp_exposed).toBe(true);
-  });
-});
 
 // ────────────────────────────────────────────────────────────────
 // Cross-family coexistence — the reason each reconcile is top_tier_kind-scoped

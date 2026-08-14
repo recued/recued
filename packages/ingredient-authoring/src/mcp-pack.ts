@@ -16,10 +16,12 @@
 import {
   BULK_PACK_INSTALL_PERMISSION,
   GENERATED_PACK_PUBLISHER,
+  RAW_OP_TOOL_PREFIX,
   type CompositionIngredient,
   type IngredientManifest,
   type McpPackReviewRow,
   type McpToolDescriptor,
+  type OperationSpec,
   type OperationApproval,
   type OperationRiskTier,
   type PackOperationRow,
@@ -237,7 +239,16 @@ export const generateMcpPackComposition = async (
     // becomes unreachable by any contract grant — the exact opposite of what
     // generating a declaration is for.
     ingredients: [
-      { slug: INGREDIENT_SLUG, kind: 'connection', connection: { connection: input.connection.kind } },
+      // ⛔⛔ `.name`, NOT `.kind`. This bound the catalog to a connection
+      // literally called 'mcp' (the KIND) instead of the enrolled connection it
+      // was minted for, so no `connection_catalog_binding` row ever named the
+      // real connection. Everything downstream then failed closed and looked
+      // like an authorization problem: the profile reconciler had no target, the
+      // pack grants could not be recorded (the grant scope REQUIRES a
+      // connection_name), and the D-165 gateway denied every op —
+      // `no_connection_profile` when the recipe named the connection,
+      // `operation_not_granted` when it did not. § 234.4p.16d.
+      { slug: INGREDIENT_SLUG, kind: 'connection', connection: { connection: input.connection.name } },
     ],
     operations,
   } as unknown as CompositionIngredient;
@@ -488,6 +499,69 @@ export const mcpMintedHashesFromCatalog = async (
   return mcpMintedHashes(descriptors);
 };
 
+/** D-228 slice 3 — the UPSTREAM TOOL NAMES an installed catalog already
+ *  dispatches, so a second surface offering the same tools can stand down.
+ *
+ *  🔑 **NAMES, NOT HASHES, AND THE DIFFERENCE IS THE POINT.** Its sibling above
+ *  answers *"has this pack gone stale"*, which is a question about SHAPE — so it
+ *  hashes `{name, input_schema}` and a tool mutated in place reads as drift.
+ *  This answers *"is this tool reachable as a governed pack op"*, which is a
+ *  question about REACHABILITY, and reachability is by name: `bind.tool` is the
+ *  string that goes on the wire. A tool whose schema changed is still dispatched
+ *  by the same op — staler than the owner thinks, which the drift badge is what
+ *  reports, but not UNREACHABLE. Keying this on hashes would resurrect a
+ *  duplicate Tier-3 entry for every drifted tool, which is the two-faces defect
+ *  coming back through the door built to close it.
+ *
+ *  ⚠ SYNC, deliberately. Its only consumer is the chat catalog builder, which is
+ *  synchronous and runs per turn; an async coverage lookup there would need a
+ *  cache, and a cache is a second copy of the inventory that can disagree with
+ *  the catalog it claims to describe.
+ *
+ *  ⚠ Not generated-pack-specific. Any composition catalog bound to an mcp
+ *  connection dispatches its tools through the same `bind.tool`, so an ordinary
+ *  marketplace pack covering a tool counts too — and should, for the same
+ *  reason. */
+export const mcpToolNamesFromCatalog = (
+  catalog: IngredientManifest,
+): Set<string> => new Set(mcpToolOperationsFromCatalog(catalog).keys());
+
+/** D-228 slice 4 — the same walk, keeping the OPERATION each tool is dispatched
+ *  through rather than only its name.
+ *
+ *  🔑 **THE TIER HAS TO COME FROM SOMEWHERE ONCE `tool_overrides` IS GONE.** The
+ *  `connection-mcp-read` / `-write` kernel slugs must carry a TRUE tier — a
+ *  read-tier dispatch of a write tool is a spoof past the preflight — and until
+ *  now the truth came from a per-tool value the owner typed into a side store.
+ *  The pack op IS that truth: it declares a `risk_tier`, and the owner's ruling
+ *  can lower it through the gated editor. So the caller resolves the risk the
+ *  same way the DOOR does, off the same rows.
+ *
+ *  ⚠ Returns the operation KEY, and the SPEC beside it. The key is what indexes
+ *  `manifest.operations`; the spec carries the qualified `operation_id` an owner
+ *  ruling is keyed on. Handing back only one of them is how a caller ends up
+ *  reading a ruling row that nothing wrote. */
+export const mcpToolOperationsFromCatalog = (
+  catalog: IngredientManifest,
+): Map<string, { operation: string; spec: OperationSpec }> => {
+  const out = new Map<string, { operation: string; spec: OperationSpec }>();
+  const operations = catalog.operations ?? {};
+  for (const [operation, binding] of Object.entries(catalog.surfaces?.api?.executes ?? {})) {
+    if (binding.kind !== 'mcp') continue;
+    if (typeof binding.tool !== 'string' || binding.tool === '') continue;
+    const spec = operations[operation];
+    if (spec === undefined) continue;
+    // ⛔ FIRST WINS. Two operations binding one tool would make the tool's tier
+    // ambiguous, and picking the looser one silently is how a write becomes a
+    // read. A generated pack cannot produce this (one op per descriptor, and
+    // duplicate op ids THROW at mint), so it can only arrive from a hand-authored
+    // pack — where refusing to answer twice is the conservative reading.
+    if (out.has(binding.tool)) continue;
+    out.set(binding.tool, { operation, spec });
+  }
+  return out;
+};
+
 /** Which enrolled connection minted this generated pack?
  *
  *  🔑 **Recomputes the derivation instead of storing a mapping.** The pack slug
@@ -522,3 +596,97 @@ export const mcpConnectionForPackSlug = async (
  *  and nothing should act on its shape alone. */
 export const looksLikeGeneratedMcpPackSlug = (slug: string): boolean =>
   /^mcp-[a-f0-9]{32}$/.test(slug);
+
+/** The trailing `_<descriptor-hash-8>` every generated op segment carries
+ *  (`mcpToolOpSegment`). Anchored at the END so a label that itself contains an
+ *  8-hex run is not mis-split. */
+const OP_SEGMENT_HASH_SUFFIX_RE = new RegExp(`^(.+)_[a-f0-9]{${String(ID_HASH_LEN)}}$`);
+
+/** Read a peer's tool name as a REFLECTION of some other server's tool, and
+ *  return the label of that upstream tool.
+ *
+ *  A generated pack's ops reach a peer's wire as
+ *  `recued_op_recued-local.mcp-<32hex>.<label>_<8hex>`, where `<label>` is
+ *  `readableLabel(<the upstream tool's own name>)`. So a name of that exact
+ *  shape says "this tool of mine is really someone else's, relayed" — and the
+ *  label is the only part of the upstream identity that survives the trip.
+ *
+ *  `undefined` for every tool a peer owns itself, including its native
+ *  `recued_*` verbs and its ordinary marketplace pack ops. */
+const reflectedUpstreamLabel = (toolName: string): string | undefined => {
+  if (!toolName.startsWith(RAW_OP_TOOL_PREFIX)) return undefined;
+  const segments = toolName.slice(RAW_OP_TOOL_PREFIX.length).split('.');
+  if (segments.length !== 3) return undefined;
+  const [publisher, pack, operation] = segments as [string, string, string];
+  if (publisher !== GENERATED_PACK_PUBLISHER) return undefined;
+  if (!looksLikeGeneratedMcpPackSlug(pack)) return undefined;
+  return OP_SEGMENT_HASH_SUFFIX_RE.exec(operation)?.[1];
+};
+
+/** What a loopback subtraction kept and what it removed. `dropped` is not
+ *  bookkeeping — an auto-mint reports it, so an owner who wonders where a tool
+ *  went reads "we were looking at ourselves" rather than nothing. */
+export interface McpReflectionSubtraction {
+  kept: McpToolDescriptor[];
+  dropped: McpToolDescriptor[];
+}
+
+/** ⛔⛔ D-225 auto-mint — SUBTRACT THE TOOLS THIS SERVER IS SEEING REFLECTED
+ *  BACK AT ITSELF, before anything is minted from them.
+ *
+ *  **The situation.** Recued server A enrols Recued server B as an mcp
+ *  connection. B has already enrolled A. So B's `tools/list` is
+ *  `{B's own tools} ∪ {A's tools, relayed through B's generated pack}` — and a
+ *  naive mint pulls A's OWN tools back into A's pack as ops that call B to call
+ *  A. Owner, naming it: *"recued-a: recued-b tools {b.tools, b.mcp.a.tools}, so
+ *  it creates a loopback duplicated tools if b didn't set it right."*
+ *
+ *  **The subtraction is EXACT, not a name heuristic.** `exposedToolNames` is what
+ *  WE expose to THAT peer — derived from the contract it presents when it calls
+ *  us (`MCP_PEER_CONTRACT_CONFIG_KEY` on the connection). A reflection of one of
+ *  those is the only thing removed:
+ *
+ *      drop D  ⟺  D is shaped like a relayed generated-pack op
+ *                 AND its upstream label is `readableLabel(N)` for some N we expose
+ *
+ *  ⚠ **BOTH terms are load-bearing, and the second alone is WRONG.** A peer's own
+ *  native `recued_listRecipes` has the SAME NAME as ours — subtracting on the
+ *  bare name would delete the peer's legitimate tool and leave the reflection
+ *  (which is named nothing like it) in place. Exactly backwards.
+ *
+ *  ⚠ A NAME FILTER (`recued_op_recued-local.mcp-*` alone — the first term
+ *  without the second) was considered and rejected: it cannot tell OUR
+ *  reflection from the peer's legitimate relay of a THIRD server, and would
+ *  silently strip every tool a Recued peer honestly re-offers.
+ *
+ *  🔑 **DEGRADES CORRECTLY.** An ordinary third-party MCP server carries no
+ *  `peer_contract_id`, so `exposedToolNames` is empty, so nothing is subtracted
+ *  and everything mints. The filter only ever fires where a relationship exists
+ *  to reflect through.
+ *
+ *  ⚠ It matches on the LABEL, not the descriptor hash, and that direction is
+ *  chosen. The hash would need our own advertised `input_schema` for each tool
+ *  to be byte-identical to what the peer probed; a schema that has changed since
+ *  would silently stop matching and mint the loopback — a false negative that
+ *  fails OPEN. The label survives that drift. Its cost is the opposite error: a
+ *  third server's tool whose label collides with one of ours, relayed by this
+ *  peer, is dropped — an absent op the owner can re-mint, which fails CLOSED and
+ *  is visible in `dropped`.
+ *
+ *  ⛔ **CALL IT BEFORE `mcpPackManifest`, never after.** Minting first and hiding
+ *  later would put the reflected op id into the composition, into the inventory
+ *  and into the grant surface, where a row can outlive the hiding. */
+export const subtractReflectedMcpTools = (
+  descriptors: readonly McpToolDescriptor[],
+  exposedToolNames: readonly string[],
+): McpReflectionSubtraction => {
+  const exposedLabels = new Set(exposedToolNames.map(readableLabel));
+  const kept: McpToolDescriptor[] = [];
+  const dropped: McpToolDescriptor[] = [];
+  for (const descriptor of descriptors) {
+    const upstream = reflectedUpstreamLabel(descriptor.name);
+    if (upstream !== undefined && exposedLabels.has(upstream)) dropped.push(descriptor);
+    else kept.push(descriptor);
+  }
+  return { kept, dropped };
+};

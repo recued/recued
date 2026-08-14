@@ -89,7 +89,6 @@ beforeEach(() => {
     source_kind: 'builtin',
     source_label: 'Recued built-in (bookings)',
     write_capable: true,
-    mcp_exposed: false,
   });
   // The SAME composer production uses — a hand-rolled dispatcher object here
   // would prove nothing about what actually ships.

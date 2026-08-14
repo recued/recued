@@ -347,3 +347,145 @@ export interface CollectionInstanceRow {
    *  first tick. */
   last_synced_at: number | null;
 }
+
+// ────────────────────────────────────────────────────────────────
+// D-236 — source freshness, on the read that consumes the source
+// ────────────────────────────────────────────────────────────────
+
+/** D-236 — how long a collection may go without a clean sync before its reads
+ *  are considered stale by default. Matches `FILE_SOURCE_STALE_AFTER_MS` and the
+ *  work-entity Source declarations so the project has ONE default, not three. */
+export const COLLECTION_SOURCE_STALE_AFTER_MS = 21_600_000; // 6h
+
+/** D-236 — the freshness verdict for a collection instance, returned ALONGSIDE
+ *  the records of the read that consumed it (`collection.list` → the kernel's
+ *  `email-list` / `file-list` / `webhook-list` → `{{step.<id>.source_freshness}}`).
+ *
+ *  ⛔ WHY IT RIDES WITH THE READ RATHER THAN SITTING IN A NAMESPACE.
+ *  `last_synced_at` has been stored per collection instance since D-110 and
+ *  `CollectionHealth` has aggregated it since Phase D — and in 2,200 recipes
+ *  NOTHING consumed either, because reaching them required a separate lookup a
+ *  recipe author had to think to write. A fact that must be fetched separately
+ *  from the data it qualifies is a fact that does not get fetched. Attaching it
+ *  to the read makes it impossible to hold the records without also holding the
+ *  verdict on how current they are.
+ *
+ *  🔑 `age_ms` IS THE LOAD-BEARING FIELD, not `stale`. The correct staleness
+ *  threshold is a property of the DECISION, not of the source: a recipe asking
+ *  "anything renewing this year?" tolerates hours of lag, while one asking "any
+ *  reply in the last 3 days?" does not. `stale` is a convenience default at
+ *  `COLLECTION_SOURCE_STALE_AFTER_MS`; a recipe inferring non-occurrence over a
+ *  window should compare `age_ms` against ITS OWN window instead.
+ *
+ *  Mirrors `FileSourceFreshness` (`last_success_at` / `degraded` / `stale`) so
+ *  there is one vocabulary for source freshness across the codebase, and adds
+ *  the two facts a per-instance adapter can supply that a file Source cannot:
+ *  `age_ms` (so a recipe can pick its own threshold) and `pending` (the adapter
+ *  is mid-catch-up RIGHT NOW, which no timestamp can express). */
+export interface CollectionSourceFreshness {
+  /** Unix-ms of the most recent successful sync tick; `null` = never synced. */
+  last_success_at: number | null;
+  /** `now - last_success_at`; `null` when never synced. The field a recipe
+   *  should compare against its own decision window. */
+  age_ms: number | null;
+  /** The instance cannot currently be trusted to be current regardless of
+   *  time — auth is not healthy, the adapter is in `error`, or it logged
+   *  errors in the last 24 h. */
+  degraded: boolean;
+  /** Adapter backlog at read time. `> 0` means records are known to be
+   *  outstanding — the strongest available "this read is incomplete" signal,
+   *  and the only one that does not depend on a threshold. */
+  pending: number;
+  /** Degraded, never-synced, backlogged, or older than the stale threshold.
+   *  A convenience default — prefer `age_ms` for a window-relative decision. */
+  stale: boolean;
+}
+
+/** D-236 — derive the freshness verdict from a live `CollectionHealth`. Pure.
+ *
+ *  `health === null` (no such instance, or an adapter whose `health()` threw)
+ *  → never-synced + stale, matching `deriveFileSourceFreshness`'s treatment of a
+ *  missing Source row. Fails toward "you cannot trust this read", which is the
+ *  only safe direction for a fact whose whole purpose is to qualify an absence. */
+export const deriveCollectionSourceFreshness = (
+  health: CollectionHealth | null,
+  now: number,
+  staleAfterMs: number = COLLECTION_SOURCE_STALE_AFTER_MS,
+): CollectionSourceFreshness => {
+  if (health === null) {
+    return { last_success_at: null, age_ms: null, degraded: false, pending: 0, stale: true };
+  }
+  // `last_indexed_at` is documented as 0 before the first successful sync.
+  const last_success_at = health.last_indexed_at > 0 ? health.last_indexed_at : null;
+  const age_ms = last_success_at === null ? null : Math.max(0, now - last_success_at);
+  const pending = health.pending_queue_size;
+  const degraded =
+    (health.auth_state !== undefined && health.auth_state !== 'healthy')
+    || health.state === 'error'
+    || health.error_count_24h > 0;
+  const stale =
+    degraded || last_success_at === null || pending > 0 || (age_ms ?? 0) > staleAfterMs;
+  return { last_success_at, age_ms, degraded, pending, stale };
+};
+
+/** D-236 — derive the verdict from a collection's `health()` THUNK, tolerating a
+ *  throwing adapter.
+ *
+ *  ⛔ Exists so the try/catch is written ONCE. Six call sites now need it —
+ *  `collection.list` / `.get` / `.search` plus `calendar-list` / `-get` /
+ *  `-search` — and six hand-rolled copies of "swallow the throw, fail toward
+ *  stale" is six chances for one of them to quietly fail toward FRESH instead,
+ *  which is the one direction that turns this fact back into the bug it exists
+ *  to fix. A misbehaving adapter must never fail the read the caller actually
+ *  asked for (the policy `handleCollectionListEndpoints` already applies), but
+ *  it must also never render as "current". */
+export const collectionSourceFreshnessOf = (
+  health: () => CollectionHealth,
+  now: number,
+  staleAfterMs: number = COLLECTION_SOURCE_STALE_AFTER_MS,
+): CollectionSourceFreshness => {
+  let snapshot: CollectionHealth | null;
+  try {
+    snapshot = health();
+  } catch {
+    snapshot = null;
+  }
+  return deriveCollectionSourceFreshness(snapshot, now, staleAfterMs);
+};
+
+/** D-237 P1 — one instance's verdict, keyed by the slug it qualifies.
+ *
+ *  The AI-facing reads fan out across EVERY instance of a platform, so a single
+ *  verdict cannot describe them: one mailbox synced a minute ago and another
+ *  broken for a week are one `mail.search` result. Mirrors the shape the CRM
+ *  trio already ships (`crm_freshness: CrmConnectionFreshness[]`, keyed by
+ *  `connection_name`) rather than inventing a second convention for the same
+ *  question. */
+export interface CollectionSourceFreshnessEntry extends CollectionSourceFreshness {
+  /** The instance this verdict is about — joins to the `collection_slug`
+   *  carried on each match. */
+  collection_slug: string;
+}
+
+/** D-237 P1 — derive the per-instance verdicts for a fan-out read.
+ *
+ *  ⛔ Exists for the reason `collectionSourceFreshnessOf` exists one level down:
+ *  the three AI-facing handlers would otherwise each hand-roll the same map, and
+ *  a per-handler copy is a per-handler chance to drop an instance from the array
+ *  — which renders as "that mailbox is fine" rather than as an error. Fails the
+ *  same direction as its callee: an adapter whose `health()` throws is reported
+ *  stale, never omitted.
+ *
+ *  ⚠ An EMPTY input yields an EMPTY array, and that is not the same fact as "the
+ *  sources are fresh". A caller with no instances at all must say so separately
+ *  — the AI reads `collections: []` for that, and the two are different
+ *  questions (no mailbox enrolled vs. an enrolled mailbox that is behind). */
+export const collectionSourceFreshnessFanOut = (
+  collections: ReadonlyArray<{ slug: string; health: () => CollectionHealth }>,
+  now: number,
+  staleAfterMs: number = COLLECTION_SOURCE_STALE_AFTER_MS,
+): CollectionSourceFreshnessEntry[] =>
+  collections.map((c) => ({
+    collection_slug: c.slug,
+    ...collectionSourceFreshnessOf(c.health, now, staleAfterMs),
+  }));

@@ -26,7 +26,6 @@ const registration = (
   source_kind: 'connection',
   source_label: 'HubSpot (work)',
   write_capable: false,
-  mcp_exposed: false,
   registered_at: 1,
   ...over,
 });
@@ -172,25 +171,7 @@ describe('D-205 #2c — contact.source.list', () => {
     expect(sources.map((s) => s.source_id)).toEqual(['hubspot.work.contact']);
   });
 
-  it('a DISABLED Source is not a broken one', async () => {
-    const { sources } = await handleContactSourceList(
-      deps(
-        [registration({ id: 'hubspot.work.contact', enabled: false })],
-        [state({ source_id: 'hubspot.work.contact', last_success_at: NOW })],
-      ),
-    );
-    expect(sources[0]?.enabled).toBe(false);
-    expect(sources[0]?.degraded).toBe(false);
-  });
 
-  it('absent `enabled` means ON — the registry default, not off', async () => {
-    // `SourceRegistration.enabled` is optional. Reading a missing field as `false`
-    // would render every Source that never touched the toggle as disabled.
-    const { sources } = await handleContactSourceList(
-      deps([registration({ id: 'hubspot.work.contact' })], []),
-    );
-    expect(sources[0]?.enabled).toBe(true);
-  });
 });
 
 describe('D-205 #2c — deriveContactSourceFreshness', () => {

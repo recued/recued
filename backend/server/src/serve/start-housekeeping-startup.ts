@@ -61,6 +61,11 @@ export interface StartHousekeepingStartupOptions {
    *  register and drift detection stays inert. */
   readonly mcpToolsDriftProbeDeps?:
     StartServeHousekeepingSchedulerOptions['mcpToolsDriftProbeDeps'];
+  /** D-225 auto-mint — deps for the first-mint retry + backfill sweep. Absent ⇒
+   *  the task does not register and a connection whose server was down at enroll
+   *  stays packless. */
+  readonly mcpPackFirstMintDeps?:
+    StartServeHousekeepingSchedulerOptions['mcpPackFirstMintDeps'];
 }
 
 export const startHousekeepingStartup = async (
@@ -110,6 +115,9 @@ export const startHousekeepingStartup = async (
       : {}),
     ...(options.mcpToolsDriftProbeDeps
       ? { mcpToolsDriftProbeDeps: options.mcpToolsDriftProbeDeps }
+      : {}),
+    ...(options.mcpPackFirstMintDeps
+      ? { mcpPackFirstMintDeps: options.mcpPackFirstMintDeps }
       : {}),
   });
 };

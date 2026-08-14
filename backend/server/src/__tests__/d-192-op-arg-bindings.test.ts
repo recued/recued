@@ -279,7 +279,7 @@ beforeEach(() => {
   syncState = createWorkEntitySourceSyncStateStore(db);
   store.registerSource({
     id: SOURCE, top_tier_kind: 'task', source_kind: 'connection',
-    source_label: SOURCE, write_capable: false, mcp_exposed: false, registered_at: NOW,
+    source_label: SOURCE, write_capable: false, registered_at: NOW,
   });
   // Real boot seeds the sync-state row at registration (`seedSyncState`);
   // `markStarted`/`markCompleted` are UPDATEs that need it present.

@@ -105,12 +105,27 @@ const probe = async (
   fetcher: HttpFetcher,
   streamDeps: { wsConnect?: WsConnect; spawnStdioMcp?: StdioSpawn } = {},
 ): Promise<ConnectionHealth> => {
+  const effectiveFetcher: HttpFetcher = kind === 'mcp'
+    ? async (url, init) => {
+        const body = typeof init?.body === 'string'
+          ? JSON.parse(init.body) as { id?: number; method?: string }
+          : undefined;
+        if (body?.method === 'server/discover') {
+          return jsonResponse(200, {
+            jsonrpc: '2.0',
+            id: body.id,
+            result: { supportedVersions: ['2026-07-28'], capabilities: { tools: {} } },
+          });
+        }
+        return fetcher(url, init);
+      }
+    : fetcher;
   const result = await handleConnectionProbe(
     {
       store,
       now: () => NOW + 1_000,
       getEncryptionKey,
-      fetcher,
+      fetcher: effectiveFetcher,
       ...streamDeps,
     },
     { kind, name },
@@ -126,6 +141,7 @@ const makeMcpStream = (
     (request) => request.method === 'initialize'
       ? { result: { protocolVersion: '2024-11-05' } }
       : { result: { tools: [{ name: 'search' }, { name: 'write-note' }] } },
+  options: { legacy?: boolean } = {},
 ): { handle: McpStreamHandle; sent: Record<string, unknown>[]; close: ReturnType<typeof vi.fn> } => {
   let onMessage: ((data: string) => void) | undefined;
   const sent: Record<string, unknown>[] = [];
@@ -135,10 +151,15 @@ const makeMcpStream = (
       const request = JSON.parse(data) as Record<string, unknown>;
       sent.push(request);
       if (typeof request.id !== 'number') return;
+      const reply = request.method === 'server/discover'
+        ? (options.legacy
+            ? { error: { code: -32601, message: 'Method not found' } }
+            : { result: { supportedVersions: ['2026-07-28'], capabilities: { tools: {} } } })
+        : responseFor(request);
       onMessage?.(JSON.stringify({
         jsonrpc: '2.0',
         id: request.id,
-        ...responseFor(request),
+        ...reply,
       }));
     },
     onMessage: (listener) => { onMessage = listener; },
@@ -526,7 +547,7 @@ describe('handleConnectionProbe real health probes', () => {
     expect(health.last_error).toBe('dns failed');
   });
 
-  it('runs mcp initialize then tools/list and caches tool names', async () => {
+  it('discovers modern MCP then lists and caches tool names', async () => {
     const name = await enroll('mcp', { subtype: 'sse' });
     const fetcher = vi.fn<HttpFetcher>(async (_url, init) => {
       const body = JSON.parse(init?.body ?? '{}') as { method?: string };
@@ -545,8 +566,141 @@ describe('handleConnectionProbe real health probes', () => {
 
     expect(health.status).toBe('ok');
     expect(health.tools).toEqual(['search', 'write-note']);
+    expect(health.mcp_tool_schemas).toEqual({ search: {}, 'write-note': {} });
     expect(storedHealth('mcp', name).tools).toEqual(['search', 'write-note']);
-    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(storedHealth('mcp', name).mcp_tool_schemas)
+      .toEqual({ search: {}, 'write-note': {} });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back from HTTP discovery to the validated legacy lifecycle', async () => {
+    const name = await enroll('mcp', { subtype: 'sse' });
+    const methods: string[] = [];
+    const fetcher = vi.fn<HttpFetcher>(async (_url, init) => {
+      const body = JSON.parse(init?.body ?? '{}') as { id?: number; method?: string };
+      methods.push(body.method ?? '');
+      if (body.method === 'server/discover') {
+        return jsonResponse(200, {
+          jsonrpc: '2.0', id: body.id,
+          error: { code: -32601, message: 'Method not found' },
+        });
+      }
+      if (body.method === 'initialize') {
+        return jsonResponse(200, {
+          jsonrpc: '2.0', id: body.id,
+          result: { protocolVersion: '2024-11-05', capabilities: {} },
+        });
+      }
+      if (body.method === 'notifications/initialized') {
+        return jsonResponse(202, {});
+      }
+      return jsonResponse(200, {
+        jsonrpc: '2.0', id: body.id,
+        result: { tools: [{ name: 'legacy-tool' }] },
+      });
+    });
+
+    const result = await handleConnectionProbe(
+      { store, now: () => NOW + 1_000, getEncryptionKey, fetcher },
+      { kind: 'mcp', name },
+    );
+
+    expect(result.health).toMatchObject({ status: 'ok', tools: ['legacy-tool'] });
+    expect(methods).toEqual([
+      'server/discover',
+      'initialize',
+      'notifications/initialized',
+      'tools/list',
+    ]);
+    expect(fetcher.mock.calls[0]?.[1]?.headers).toMatchObject({
+      'MCP-Protocol-Version': '2026-07-28',
+    });
+    expect(fetcher.mock.calls.at(-1)?.[1]?.headers).not.toHaveProperty(
+      'MCP-Protocol-Version',
+    );
+  });
+
+  it('reaches a handshake-era Streamable HTTP server with NO injected fetcher', async () => {
+    // ⛔ The handshake-era fallback used to be gated on `deps.fetcher !== undefined`
+    // — a fixture seam production never supplies. Every test therefore proved a
+    // path no user could take, while the real composition fell straight through
+    // to the 2024-11-05 two-endpoint transport and 405'd on its opening GET.
+    // This test deliberately injects NO fetcher, so it runs what ships.
+    const name = await enroll('mcp', { subtype: 'sse' });
+    const methods: string[] = [];
+    const realFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'GET') {
+        return new Response('Method Not Allowed', { status: 405 });
+      }
+      const body = JSON.parse(String(init?.body ?? '{}')) as { id?: number; method?: string };
+      methods.push(body.method ?? '');
+      if (body.method === 'server/discover') {
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0', id: body.id,
+          error: { code: -32601, message: 'Method not found' },
+        }), { status: 404, headers: { 'content-type': 'application/json' } });
+      }
+      if (body.method === 'initialize') {
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0', id: body.id,
+          result: { protocolVersion: '2025-11-25', capabilities: {} },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (body.method === 'notifications/initialized') {
+        return new Response(null, { status: 202 });
+      }
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0', id: body.id,
+        result: { tools: [{ name: 'handshake-era-tool' }] },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', realFetch);
+    try {
+      const result = await handleConnectionProbe(
+        { store, now: () => NOW + 1_000, getEncryptionKey },
+        { kind: 'mcp', name },
+      );
+      expect(result.health).toMatchObject({
+        status: 'ok',
+        tools: ['handshake-era-tool'],
+      });
+      expect(methods).toEqual([
+        'server/discover',
+        'initialize',
+        'notifications/initialized',
+        'tools/list',
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('does not downgrade a recognized modern HTTP protocol error', async () => {
+    const name = await enroll('mcp', { subtype: 'sse' });
+    const methods: string[] = [];
+    const fetcher = vi.fn<HttpFetcher>(async (_url, init) => {
+      const body = JSON.parse(init?.body ?? '{}') as { id?: number; method?: string };
+      methods.push(body.method ?? '');
+      return jsonResponse(400, {
+        jsonrpc: '2.0', id: body.id,
+        error: {
+          code: -32022,
+          message: 'Unsupported protocol version',
+          data: { supported: ['2099-01-01'], requested: '2026-07-28' },
+        },
+      });
+    });
+
+    const result = await handleConnectionProbe(
+      { store, now: () => NOW + 1_000, getEncryptionKey, fetcher },
+      { kind: 'mcp', name },
+    );
+
+    expect(result.health).toMatchObject({
+      status: 'unreachable',
+      last_error: 'jsonrpc_discover_modern_error_-32022',
+    });
+    expect(methods).toEqual(['server/discover']);
   });
 
   it('D-225 — PERSISTS descriptor hashes beside the names, and they track the SCHEMA', async () => {
@@ -619,7 +773,7 @@ describe('handleConnectionProbe real health probes', () => {
       status: 'ok',
       tools: ['first-page', 'second-page'],
     });
-    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
   it('probes MCP websocket through the live connector and caches tool names', async () => {
@@ -642,8 +796,7 @@ describe('handleConnectionProbe real health probes', () => {
     expect(opts.headers).toEqual({ Authorization: 'Bearer secret' });
     expect(opts.signal).toBeInstanceOf(AbortSignal);
     expect(stream.sent.map((message) => message.method)).toEqual([
-      'initialize',
-      'notifications/initialized',
+      'server/discover',
       'tools/list',
     ]);
     expect(stream.close).toHaveBeenCalledTimes(1);
@@ -687,7 +840,7 @@ describe('handleConnectionProbe real health probes', () => {
     const health = await probe('mcp', name, fetcher, { wsConnect });
 
     expect(health).toMatchObject({ status: 'ok', tools: ['legacy-tool'] });
-    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher).toHaveBeenCalledTimes(1);
     expect(wsConnect).not.toHaveBeenCalled();
   });
 
@@ -709,8 +862,8 @@ describe('handleConnectionProbe real health probes', () => {
 
     expect(health).toMatchObject({ status: 'ok', tools: ['page-one', 'page-two'] });
     expect(stream.sent.filter((message) => message.method === 'tools/list')).toMatchObject([
-      { params: {} },
-      { params: { cursor: 'next' } },
+      { params: { _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' } } },
+      { params: { cursor: 'next', _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' } } },
     ]);
     expect(stream.close).toHaveBeenCalledTimes(1);
   });
@@ -783,8 +936,7 @@ describe('handleConnectionProbe real health probes', () => {
     });
     expect(opts.signal).toBeInstanceOf(AbortSignal);
     expect(stream.sent.map((message) => message.method)).toEqual([
-      'initialize',
-      'notifications/initialized',
+      'server/discover',
       'tools/list',
     ]);
     expect(stream.close).toHaveBeenCalledTimes(1);
@@ -797,7 +949,7 @@ describe('handleConnectionProbe real health probes', () => {
     });
     const stream = makeMcpStream(() => ({
       error: { code: -32_001, message: 'unauthorized' },
-    }));
+    }), { legacy: true });
     const wsConnect = vi.fn<WsConnect>(async () => stream.handle);
 
     const health = await probe('mcp', name, vi.fn<HttpFetcher>(), { wsConnect });
@@ -806,7 +958,7 @@ describe('handleConnectionProbe real health probes', () => {
       status: 'auth_failed',
       last_error: 'jsonrpc_initialize_error',
     });
-    expect(stream.close).toHaveBeenCalledTimes(1);
+    expect(stream.close).toHaveBeenCalledTimes(2);
   });
 
   it('never persists a query credential echoed by a websocket connect error', async () => {
@@ -1185,7 +1337,7 @@ describe('handleConnectionProbe real health probes', () => {
     }));
 
     expect(health.status).toBe('auth_failed');
-    expect(health.last_error).toBe('jsonrpc_initialize_error');
+    expect(health.last_error).toBe('jsonrpc_tools_list_error');
   });
 
   it('maps mcp transport failures to unreachable', async () => {

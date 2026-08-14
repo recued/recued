@@ -119,6 +119,14 @@ export const ROTATION_ERROR_COPY: Record<RotationErrorCode, string> = {
     'A cert rotation notice arrived without a valid signature + was rejected. Review Settings → Server → Reachability for cert rotation status.',
   storage_io_error:
     'The rotation could not persist the new key material. Check disk space + filesystem permissions.',
+  // ⛔ SAY "NOTHING IS WRONG" FIRST. Every other line here describes a fault
+  //    the operator must go fix; these two describe a healthy server
+  //    declining to spend certificate quota. Copy that opened with the
+  //    failure would send someone debugging a system that is working.
+  renew_cooldown:
+    'A certificate renewal already ran recently, so this one was skipped — nothing is wrong. Certificates are renewed automatically well before they expire; renewing again now would spend your issuer\'s duplicate-certificate allowance without changing anything.',
+  renew_rate_limited:
+    'This server has issued as many certificates as it is allowed today, so the request was declined before reaching the certificate authority. The allowance resets 24 hours after the first issuance in the current window. Your existing certificate is untouched and still valid.',
 };
 
 /** Build the dispatch payload for a confirmation flow. The UI calls

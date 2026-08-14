@@ -146,8 +146,34 @@ export interface PublisherIdentityHooks {
 export interface TlsRenewalHook {
   renew(): Promise<
     | { ok: true; new_fingerprint: string; previous_fingerprint?: string }
-    | { ok: false; reason: 'helper_unavailable' | 'subscription_required' | 'storage_io_error' }
+    | { ok: false; reason: TlsRenewalFailureReason }
   >;
+}
+
+/** Closed list of renewal failure reasons the hook may report.
+ *
+ *  `rate_limited` is the cloud helper's HTTP 429 — kept SEPARATE from
+ *  `helper_unavailable` all the way up to the operator, because the two
+ *  remediations point in opposite directions ("fix your setup" vs "stop and
+ *  wait"). It used to collapse into `helper_unavailable` at
+ *  `mapAcmeFailure`, and the panel then told the operator to go inspect their
+ *  DDNS configuration. */
+export type TlsRenewalFailureReason =
+  | 'helper_unavailable'
+  | 'subscription_required'
+  | 'storage_io_error'
+  | 'rate_limited';
+
+/** Durable clock shared by every caller of `renewTls`. See
+ *  `./tls-renew-cooldown-store.ts` for why it is a store and not a field. */
+export interface TlsRenewCooldownStore {
+  /** Unix-ms before which a renewal is refused. 0 ⇒ never throttled. */
+  readNotBefore(): Promise<number>;
+  writeNotBefore(args: {
+    not_before: number;
+    set_at: number;
+    outcome: 'success' | 'failure';
+  }): Promise<void>;
 }
 
 /** Per-bridge token store. The rotation flow revokes the old hash +
@@ -262,6 +288,17 @@ export interface RotationEngineOptions {
   webclient_tokens?: ClientTokenStore;
   webhook_secrets?: WebhookSecretStore;
   compromise_ledger: CompromiseLedger;
+  /** Shared post-attempt cooldown for `renewTls`. Absent ⇒ NO cooldown is
+   *  enforced — kept optional so the many test harnesses that build a bare
+   *  engine keep working, and so a dbless subcommand composes without one.
+   *  Production wiring (`wire-cert-stack.ts`) always supplies the SQLite
+   *  store when a db is present. */
+  tls_renew_cooldown?: TlsRenewCooldownStore;
+  /** Interval a consumed attempt blocks the next one. Defaults to
+   *  `DEFAULT_TLS_RENEW_COOLDOWN_MS` (6h — the same figure the housekeeping
+   *  task has used since D-148, deliberately, so the two paths behave
+   *  identically rather than merely similarly). */
+  tls_renew_cooldown_ms?: number;
   effects: RotationSideEffects;
   /** CSPRNG hook for the master DEK. Defaults to `crypto.randomBytes(32)`. */
   generate_master_dek?: () => Uint8Array;
@@ -342,6 +379,12 @@ const isAlreadyRotating = (key: string, set: Set<string>): boolean => set.has(ke
  *  the next fingerprint before the active cert changes. Tests can
  *  pass `rotation_at_offset_ms: 0` for synchronous flip semantics. */
 export const DEFAULT_TLS_ROTATION_NOTICE_LEAD_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Interval a quota-consuming renewal blocks the next one. 6h — the SAME
+ *  figure `tls-cert-renewal`'s `RENEWAL_COOLDOWN_MS` has used since D-148, on
+ *  purpose: two paths obeying one rule should obey one number, or the first
+ *  bug report is "why did the button say wait 6h when the task waits 4". */
+export const DEFAULT_TLS_RENEW_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 const generateMasterDek = (): Uint8Array => {
   // Lazy import to keep contracts compatibility — the substrate runs
@@ -598,9 +641,105 @@ export const createRotationEngine = (
       if (!opts.tls || !opts.server_identity) {
         return { ok: false, op: 'tls_renew', error: 'key_not_loaded' };
       }
+
+      // ── Shared cooldown gate ────────────────────────────────────────
+      // 🔑 THE ENFORCEMENT POINT FOR BOTH CALLERS. The operator `tls.renew`
+      // rpc and the `tls-cert-renewal` housekeeping task both arrive here,
+      // so this is the only layer where one clock can cover both. The task
+      // keeps its own cursor check upstream as a cheap pre-filter — it can
+      // only make the task call LESS often, never more, so the two cannot
+      // drift into disagreement about whether a renewal is permitted.
+      const cooldownStore = opts.tls_renew_cooldown;
+      const cooldownMs = opts.tls_renew_cooldown_ms ?? DEFAULT_TLS_RENEW_COOLDOWN_MS;
+
+      // ⛔⛔ A COMPROMISED KEY IS EXEMPT, AND THIS IS NOT OPTIONAL.
+      //     `markCompromised` cascades into this method for
+      //     `tls_private_key` (see the `case 'tls_private_key'` arm below).
+      //     Throttling that path would refuse the emergency replacement of a
+      //     key the operator has just declared burned — turning a rate limit
+      //     into a security failure — and it would surface as a
+      //     `cascade_failures` entry rather than anything loud.
+      //
+      // 🔑 DERIVED, NOT PASSED. A `bypass_cooldown` argument would be
+      //    reachable from the `tls.renew` rpc, which is the surface the
+      //    cooldown exists to gate; asking the ledger instead means the
+      //    exemption requires a real compromise mark that someone had to
+      //    record. `renewTls` already reads this ledger further down, so it
+      //    is the same fact, read once earlier.
+      //    ⚠ Read AT ENTRY and deliberately NOT reused by the post-renewal
+      //      `compromise` read below. That one asks a different question at a
+      //      different time ("was this key compromised by the time we
+      //      finished, so should the mark be cleared and the audit row
+      //      stamped"), across an ACME round trip a mark can land in the
+      //      middle of. Same ledger, two moments; collapsing them would
+      //      change clear-semantics for a compromise recorded mid-renewal.
+      const compromisedAtEntry = await opts.compromise_ledger.isMarked('tls_private_key');
+
+      if (cooldownStore && !compromisedAtEntry) {
+        const notBefore = await cooldownStore.readNotBefore();
+        const now = clock();
+        if (now < notBefore) {
+          return {
+            ok: false,
+            op: 'tls_renew',
+            error: 'renew_cooldown',
+            // ⚠ SET `message` ON PURPOSE. `renew_cooldown` is a new member of
+            // `RotationErrorCode`; a webclient older than this server has no
+            // copy for it and falls back to `result.message` verbatim
+            // (`tls-renew-panel.ts` → `remediationFor(code, lastErrorMessage)`).
+            // Without this the older panel renders an empty remediation.
+            message:
+              `A TLS renewal was already run. The next one is available at ${new Date(notBefore).toISOString()}.`,
+          };
+        }
+      }
+
+      /** Record that this attempt consumed remote issuance quota.
+       *
+       *  ⛔ NOT CALLED ON EVERY FAILURE, and that is the whole design. A
+       *  `helper_unavailable` / `subscription_required` / `storage_io_error`
+       *  attempt never reached the CA, so it burned no certificate quota —
+       *  blocking the operator for 6h after they failed to authenticate,
+       *  when the fix is to re-authenticate and click again, would make the
+       *  button feel broken and teach people to restart the server to clear
+       *  it. The housekeeping task still backs off on those via its own
+       *  cursor, which is the layer that cares about attempt thrashing.
+       *  This clock cares about ISSUANCE.
+       *
+       *  Success anchors to `rotated_at`, not `now`: until the staged cert
+       *  actually flips, the cert source still reports the OLD cert, so an
+       *  earlier unblock would re-issue against a cert that looks unrenewed
+       *  and pile up conflicting staged fingerprints. Same reasoning — and
+       *  the same anchor — as the housekeeping task's Codex P2 #1 fold. */
+      const consumeCooldown = async (
+        anchor: number,
+        outcome: 'success' | 'failure',
+      ): Promise<void> => {
+        if (!cooldownStore) return;
+        await cooldownStore.writeNotBefore({
+          not_before: anchor + cooldownMs,
+          set_at: clock(),
+          outcome,
+        });
+      };
+
       const result = await guard<RotationResult>('tls_private_key', async () => {
         const renewal = await opts.tls!.renew();
         if (!renewal.ok) {
+          if (renewal.reason === 'rate_limited') {
+            // The cloud helper refused on quota. Back off exactly as if we
+            // had succeeded-and-must-wait: another attempt now would be
+            // refused again and spend a round trip proving it.
+            await consumeCooldown(clock(), 'failure');
+            return {
+              ok: false,
+              op: 'tls_renew',
+              error: 'renew_rate_limited',
+              // Same forward-compat reason as `renew_cooldown` above.
+              message:
+                "Today's certificate issuance allowance for this server is spent. It resets 24 hours after the first issuance in the current window.",
+            } as RotationResult;
+          }
           const code: 'acme_helper_unavailable' | 'subscription_required' | 'storage_io_error' =
             renewal.reason === 'helper_unavailable' ? 'acme_helper_unavailable' : renewal.reason;
           return { ok: false, op: 'tls_renew', error: code } as RotationResult;
@@ -656,6 +795,12 @@ export const createRotationEngine = (
           repair_required: false,
           compromise,
         });
+        // A certificate was issued — this is the outcome that spends the CA's
+        // duplicate-certificate allowance, so it is the one the shared clock
+        // exists for. Written LAST so a throw anywhere above leaves the
+        // operator able to retry rather than locked out by a rotation that
+        // did not complete.
+        await consumeCooldown(rotated_at, 'success');
         return {
           ok: true,
           op: 'tls_renew',
@@ -664,6 +809,10 @@ export const createRotationEngine = (
           rotated_at,
         };
       });
+      // ⛔ NO COOLDOWN CONSUMED HERE. `rotation_in_progress` means the guard
+      // refused before running anything — nothing reached the CA, and the
+      // caller that IS running will write the clock on its own outcome.
+      // Consuming here would let a losing racer push out the winner's window.
       if ('rotation_in_progress' in result) {
         return { ok: false, op: 'tls_renew', error: 'rotation_in_progress' };
       }

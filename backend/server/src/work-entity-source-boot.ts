@@ -6,8 +6,7 @@
  *     `recued.task` / `recued.note` / `recued.commitment` /
  *     `recued.project` — registered idempotently on first server init.
  *     The Source is the local-first canonical source for users who
- *     don't pair an external CRM. `write_capable: true`, `mcp_exposed:
- *     false` (user opts in via Settings — PA11).
+ *     don't pair an external CRM. `write_capable: true`.
  *
  *  2. **Connection-derived Sources — DECLARATION-DRIVEN since D-192
  *     P2.** The hardcoded `TASK_CAPABLE_VENDORS` closed list is
@@ -488,10 +487,6 @@ export const autoRegisterRecuedBuiltinSources = (
       source_kind: 'builtin',
       source_label: RECUED_BUILTIN_LABEL[kind],
       write_capable: true,
-      // MCP-exposure default off per the privacy posture established
-      // in D-136 P7.E (`mcp_exposed` per-topic gate). User opts in
-      // through Settings — PA11 surfaces the toggle.
-      mcp_exposed: false,
       registered_at: now,
     });
   }
@@ -829,7 +824,6 @@ const reconcileConnectionSources = (
       sync_posture: d.sync_posture,
       source_label: d.source_label,
       write_capable: false,
-      mcp_exposed: false,
       registered_at: now,
     });
   }

@@ -151,11 +151,23 @@ import {
   composeApiUrl,
   MCP_TOOL_LIST_PROBE_MAX_PAGES,
   parseMcpToolListPage,
+  probeMcpLegacySseTools,
   probeMcpStreamTools,
+  readMcpHttpEnvelope,
   refreshOAuth2,
   resolveStdioMcpLaunchSpec,
 } from '@recued/ingredients';
 import type { StdioSpawn, WsConnect } from '@recued/ingredients';
+import {
+  MCP_LEGACY_PROTOCOL_VERSION,
+  MCP_MODERN_PROTOCOL_VERSION,
+  isModernMcpProtocolError,
+  modernMcpHttpHeaders,
+  modernMcpRequestMeta,
+  selectMcpDiscoverVersion,
+  selectMcpLegacyInitializeVersion,
+  withModernMcpRequestMeta,
+} from '@recued/ingredients/mcp-protocol.js';
 import type { McpToolDescriptor } from '@recued/contracts';
 // D-225 Slice 2 — descriptor hashes for drift detection, computed at probe.
 import {
@@ -165,6 +177,7 @@ import {
   mcpPackManifest,
   mcpPackReviewRows,
   mcpToolsDriftFromHashes,
+  subtractReflectedMcpTools,
 } from '@recued/ingredient-authoring';
 import type { McpPackReviewRow } from '@recued/contracts';
 import { resolveSharePointDriveId } from './sharepoint-drive-resolver.js';
@@ -234,6 +247,34 @@ export interface ConnectionRpcDeps {
    *  the manifest registry's whole surface. Absent ⇒ the badge reports
    *  `unknown` rather than a false all-clear. */
   getInstalledCatalog?: (slug: string) => IngredientManifest | null;
+  /** D-225 auto-mint — the tool names this server exposes to the contract a peer
+   *  presents when it calls us (`config.peer_contract_id`). The ONLY input to the
+   *  loopback diff; see `peer-exposed-tools.ts` for what it reads and why both of
+   *  its axes are needed.
+   *
+   *  A closure for the same reason `installGeneratedPack` is one: this handler
+   *  needs one question answered, not two stores threaded in.
+   *
+   *  ⚠ Absent (dbless / partial harness) ⇒ NO subtraction, so a mint against a
+   *  Recued peer would take the reflection. That direction is chosen: an absent
+   *  filter must not silently REMOVE ops, and a generated pack installs inert
+   *  (`write` + `ask`, `grant_default: off`), so the cost of the open direction
+   *  is a duplicate op nobody has granted rather than an authority leak. */
+  exposedToolNamesForPeerContract?: (contract_id: string) => readonly string[];
+  /** D-228 slice 3 — carry the owner's existing per-tool `read` classification
+   *  onto the freshly minted pack ops, so the chat swap does not silently add an
+   *  approval prompt to a tool the owner already classified.
+   *
+   *  A closure for the same reason `installGeneratedPack` is one, and invoked
+   *  from ONE place (`applyGeneratedPackInstall`) so the auto-mint and the
+   *  owner's Save cannot diverge on it.
+   *
+   *  ⚠ Absent ⇒ no carry-over ⇒ every op keeps `write` + `ask`. Safe, and merely
+   *  the friction the swap would otherwise introduce; never a loosening. */
+  carryMcpToolClassifications?: (input: {
+    connection_name: string;
+    pack_slug: string;
+  }) => void;
   /** D-225 Slice 2 — tear down the generated pack when its MCP connection is
    *  deleted. Uninstalls the pack AND purges its owner rulings.
    *
@@ -1460,7 +1501,13 @@ export const handleConnectionEnroll = async (
      *  re-enroll → the existing set is preserved. */
     granted_scopes?: string[];
   },
-): Promise<{ connection: ConnectionView; probe?: ConnectionHealth }> => {
+): Promise<{
+  connection: ConnectionView;
+  probe?: ConnectionHealth;
+  /** D-225 auto-mint — what happened to this mcp connection's generated pack.
+   *  Absent for every non-mcp enroll. */
+  generated_pack?: McpFirstMintOutcome;
+}> => {
   const a = ensureRecordArgs('collection.connection.enroll', args);
   const name = ensureEnrollmentName('collection.connection.enroll', a.name);
   const kind = ensureKind('collection.connection.enroll', a.kind);
@@ -1563,9 +1610,30 @@ export const handleConnectionEnroll = async (
   // recipes runnable; recompute + broadcast (only `api` carries a vendor profile
   // runnability reads). Best-effort, post-commit — the broadcaster swallows.
   if (kind === 'api') deps.recipeRunnabilityBroadcast?.recomputeAndEmit();
+  // D-225 auto-mint — enrolling an mcp connection mints its pack, without a
+  // second owner Save.
+  //
+  // ⛔ AFTER the durable upsert and NEVER ABLE TO UNDO IT. Minting needs a live
+  // `tools/list`, and a server that is down at this instant must still ENROL —
+  // otherwise the owner cannot save a connection to a machine that is merely
+  // asleep, and the retry sweep would have nothing to walk. `firstMintGeneratedPack`
+  // returns its failures rather than throwing, so this cannot reach the caller
+  // as an enroll error; the outcome rides the response so the UI can say
+  // "enrolled — pack pending" instead of implying a finished chain.
+  //
+  // ⚠ THIS ADDS A PROBE TO THE ENROLL'S LATENCY — bounded at `probeTimeoutMs`
+  // (10s), so an unreachable endpoint costs up to that before the response
+  // lands. Accepted rather than fire-and-forget: a mint nobody waits for has no
+  // witness, and the whole point of returning `generated_pack` is that the owner
+  // learns at Save time whether their pack exists. The retry sweep is what makes
+  // the slow case merely slow instead of lost.
+  const generated_pack = kind === 'mcp'
+    ? await firstMintGeneratedPack(deps, { kind, name })
+    : undefined;
   return {
     connection: connectionViewFromRow(row),
     probe,
+    ...(generated_pack !== undefined ? { generated_pack } : {}),
   };
 };
 
@@ -1989,6 +2057,7 @@ export const handleConnectionProbe = async (
     last_error?: string,
     tools?: string[],
     tool_hashes?: string[],
+    mcp_tool_schemas?: Record<string, unknown>,
   ): PersistedProbeHealth => ({
     status,
     last_probed_at: now,
@@ -2004,6 +2073,7 @@ export const handleConnectionProbe = async (
     ...(last_error ? { last_error: truncateError(last_error) } : {}),
     ...(tools !== undefined ? { tools } : {}),
     ...(tool_hashes !== undefined ? { tool_hashes } : {}),
+    ...(mcp_tool_schemas !== undefined ? { mcp_tool_schemas } : {}),
   });
   const errorMessage = (err: unknown): string =>
     err instanceof Error ? err.message : String(err);
@@ -2284,10 +2354,23 @@ export const handleConnectionProbe = async (
       headers,
       body: JSON.stringify(body),
     }, timeoutMs);
-    if (!response.ok) return { httpStatus: response.status };
-    const parsed = await response.json();
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return { httpStatus: response.status, envelope: parsed as Record<string, unknown> };
+    try {
+      if (typeof body.id !== 'number') return { httpStatus: response.status };
+      const shaped = response as typeof response & {
+        headers?: Headers;
+        text?: () => Promise<string>;
+      };
+      const parsed = shaped.headers?.get !== undefined && typeof shaped.text === 'function'
+        ? (await readMcpHttpEnvelope(response as unknown as Response, body.id)).envelope
+        : await response.json();
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return {
+          httpStatus: response.status,
+          envelope: parsed as unknown as Record<string, unknown>,
+        };
+      }
+    } catch {
+      // An unrecognized/empty 4xx response is the legacy-era fallback signal.
     }
     return { httpStatus: response.status };
   };
@@ -2441,24 +2524,91 @@ export const handleConnectionProbe = async (
     headers['Content-Type'] = 'application/json';
     headers.Accept = 'application/json';
     try {
-      const initialize = await jsonRpc(url.toString(), headers, {
+      const discoverHeaders = {
+        ...headers,
+        ...modernMcpHttpHeaders('server/discover', {}),
+      };
+      const discover = await jsonRpc(url.toString(), discoverHeaders, {
         jsonrpc: '2.0',
         id: 1,
-        method: 'initialize',
+        method: 'server/discover',
         params: {
-          protocolVersion: '2024-11-05',
-          capabilities: {},
-          clientInfo: { name: 'recued-connection-probe', version: '1' },
+          _meta: modernMcpRequestMeta({ name: 'recued-connection-probe', version: '1' }),
         },
       }, remainingProbeMs());
-      if (initialize.httpStatus === 401 || initialize.httpStatus === 403) {
-        return healthOf('auth_failed', `http_status_${initialize.httpStatus}`);
+      if (discover.httpStatus === 401 || discover.httpStatus === 403) {
+        return healthOf('auth_failed', `http_status_${discover.httpStatus}`);
       }
-      if (!initialize.envelope) {
-        return healthOf('unreachable', `http_status_${initialize.httpStatus}`);
+      if (discover.httpStatus === 429) {
+        return healthOf('unreachable', 'http_status_429');
       }
-      if (initialize.envelope.error !== undefined) {
-        return healthOf('auth_failed', 'jsonrpc_initialize_error');
+      if (discover.httpStatus >= 500) {
+        return healthOf('unreachable', `http_status_${discover.httpStatus}`);
+      }
+
+      const clientInfo = { name: 'recued-connection-probe', version: '1' };
+      const modern = discover.envelope?.error === undefined
+        && selectMcpDiscoverVersion(discover.envelope?.result) === MCP_MODERN_PROTOCOL_VERSION;
+      if (!modern && isModernMcpProtocolError(discover.envelope)) {
+        const code = (discover.envelope?.error as { code?: unknown } | undefined)?.code;
+        return healthOf('unreachable', `jsonrpc_discover_modern_error_${String(code)}`);
+      }
+      let requestHeaders = headers;
+      if (modern) {
+        requestHeaders = discoverHeaders;
+      } else {
+        // Handshake era, one POST endpoint (`2025-03-26` … `2025-11-25`).
+        // Attempt it before the 2024-11-05 two-endpoint transport, whose
+        // opening GET such a server answers with 405. This must run in
+        // PRODUCTION, not only behind the injected-fetcher fixture seam —
+        // gating it on `deps.fetcher` left the whole era reachable in tests
+        // and unreachable for real users.
+        const initialize = await jsonRpc(url.toString(), headers, {
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'initialize',
+          params: {
+            protocolVersion: MCP_LEGACY_PROTOCOL_VERSION,
+            capabilities: {},
+            clientInfo,
+          },
+        }, remainingProbeMs());
+        if (initialize.httpStatus === 401 || initialize.httpStatus === 403) {
+          return healthOf('auth_failed', `http_status_${initialize.httpStatus}`);
+        }
+        const selectedLegacy = initialize.envelope?.error === undefined
+          ? selectMcpLegacyInitializeVersion(initialize.envelope?.result)
+          : undefined;
+        if (selectedLegacy !== undefined) {
+          await fetchTimed(url.toString(), {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              method: 'notifications/initialized',
+              params: {},
+            }),
+          }, remainingProbeMs());
+        } else if (deps.fetcher !== undefined) {
+          // The narrow injected fetcher cannot model the two-endpoint SSE
+          // transport (it has no streaming GET), so under that fixture seam a
+          // failed handshake is terminal and keeps its specific diagnostic —
+          // rather than silently escaping to the network-backed fetch below.
+          if (!initialize.envelope) {
+            return healthOf('unreachable', `http_status_${initialize.httpStatus}`);
+          }
+          if (initialize.envelope.error !== undefined) {
+            return healthOf('auth_failed', 'jsonrpc_initialize_error');
+          }
+          return healthOf('unreachable', 'jsonrpc_initialize_unsupported_version');
+        } else {
+          return await streamHealth(await probeMcpLegacySseTools(
+            deps.resolveFetch ?? globalThis.fetch.bind(globalThis),
+            url.toString(),
+            headers,
+            remainingProbeMs(),
+          ));
+        }
       }
       const tools = new Set<string>();
       // D-225 Slice 2 — deduped on NAME like the name set, so a tool repeated
@@ -2467,11 +2617,17 @@ export const handleConnectionProbe = async (
       const seenCursors = new Set<string>();
       let cursor: string | undefined;
       for (let pageIndex = 0; pageIndex < MCP_TOOL_LIST_PROBE_MAX_PAGES; pageIndex += 1) {
-        const toolsList = await jsonRpc(url.toString(), headers, {
+        const listParams = cursor === undefined ? {} : { cursor };
+        const toolsListHeaders = modern
+          ? { ...requestHeaders, ...modernMcpHttpHeaders('tools/list', listParams) }
+          : requestHeaders;
+        const toolsList = await jsonRpc(url.toString(), toolsListHeaders, {
           jsonrpc: '2.0',
-          id: 2 + pageIndex,
+          id: 3 + pageIndex,
           method: 'tools/list',
-          params: cursor === undefined ? {} : { cursor },
+          params: modern
+            ? withModernMcpRequestMeta(listParams, clientInfo)
+            : listParams,
         }, remainingProbeMs());
         if (toolsList.httpStatus === 401 || toolsList.httpStatus === 403) {
           return healthOf('auth_failed', `http_status_${toolsList.httpStatus}`);
@@ -2482,7 +2638,9 @@ export const handleConnectionProbe = async (
         if (toolsList.envelope.error !== undefined) {
           return healthOf('auth_failed', 'jsonrpc_tools_list_error');
         }
-        const page = parseMcpToolListPage(toolsList.envelope.result);
+        const page = parseMcpToolListPage(toolsList.envelope.result, {
+          validateHttpHeaders: modern,
+        });
         if (!page.ok) {
           return healthOf('unreachable', 'jsonrpc_tools_list_invalid_response');
         }
@@ -2495,6 +2653,10 @@ export const handleConnectionProbe = async (
             undefined,
             [...tools],
             await mcpMintedHashes(capturedDescriptors),
+            Object.fromEntries(capturedDescriptors.map((descriptor) => [
+              descriptor.name,
+              descriptor.input_schema ?? {},
+            ])),
           );
         }
         if (seenCursors.has(page.nextCursor)) {
@@ -2989,6 +3151,178 @@ export const handleMcpPackStatus = async (
   };
 };
 
+/** D-225 auto-mint — probe an mcp connection and hand back the tools this
+ *  server may actually mint from it.
+ *
+ *  ⛔⛔ **THE LOOPBACK SUBTRACTION HAPPENS HERE, BEFORE ANY CALLER SEES A
+ *  DESCRIPTOR** — so the preview, the owner's commit and the auto-mint all
+ *  reason about the same list. That is not tidiness: `mcpPackCommit`'s
+ *  `reviewed_ops` TOCTOU guard compares what the owner reviewed against a fresh
+ *  probe, so a filter applied on only one of the two paths would make every
+ *  commit fail `conflict` with a message about the server's tools changing —
+ *  blaming the third party for our own asymmetry.
+ *
+ *  ⚠ `dropped` is returned, not swallowed. A tool that vanished from the review
+ *  screen with no explanation is indistinguishable from a server that stopped
+ *  publishing it. */
+const probeMintableDescriptors = async (
+  deps: ConnectionRpcDeps,
+  method: string,
+  connection: { name: string; kind: ConnectionKind },
+): Promise<{ descriptors: McpToolDescriptor[]; dropped: McpToolDescriptor[] }> => {
+  const { health, descriptors } = await handleConnectionProbe(deps, connection);
+  if (health.status !== 'ok' || descriptors === undefined) {
+    // ⛔ Fail rather than offer an empty list. A probe that did not succeed tells
+    // us nothing about the server's tools, and zero rows would read as "this
+    // server has no tools" — which an owner could Save believing they reviewed it.
+    throw new RpcError(
+      'unavailable',
+      `${method}: probe did not return a tool list `
+        + `(status '${health.status}'${health.last_error ? `: ${health.last_error}` : ''})`,
+    );
+  }
+  const row = deps.store.get(connection.kind, connection.name);
+  const peerContractId = (() => {
+    if (!row) return '';
+    const cfg = parseStoredConfig(row.config_json);
+    const raw = cfg[MCP_PEER_CONTRACT_CONFIG_KEY];
+    return typeof raw === 'string' ? raw.trim() : '';
+  })();
+  // No bound peer contract ⇒ an ordinary third-party MCP server ⇒ nothing of
+  // ours can be coming back through it ⇒ nothing to subtract.
+  const exposed = peerContractId === ''
+    ? []
+    : deps.exposedToolNamesForPeerContract?.(peerContractId) ?? [];
+  const subtraction = subtractReflectedMcpTools(descriptors, exposed);
+  return { descriptors: subtraction.kept, dropped: subtraction.dropped };
+};
+
+/** D-228 slice 3 — install a generated pack AND carry the owner's existing
+ *  classifications onto it, as one step.
+ *
+ *  ⛔ ONE PLACE, because there are TWO mint paths — the enrol-time auto-mint and
+ *  the owner's explicit Save — and a carry-over wired into only one of them
+ *  produces a server where the same tool asks for approval or does not depending
+ *  on which route minted it. That is the § 234.4p.16d shape (a second caller
+ *  built without a field) and this is the shared step that forecloses it. */
+const applyGeneratedPackInstall = async (
+  deps: ConnectionRpcDeps,
+  connection_name: string,
+  manifest: Record<string, unknown>,
+  install_scope?: unknown,
+): Promise<void> => {
+  await deps.installGeneratedPack!(manifest, install_scope);
+  // ⚠ AFTER the install, never before: the carry-over reads the INSTALLED
+  // catalog to resolve each operation's spec hash, so a row written first would
+  // stamp a hash for an operation that does not exist yet.
+  deps.carryMcpToolClassifications?.({
+    connection_name,
+    pack_slug: String(manifest.slug),
+  });
+};
+
+/** D-225 auto-mint — the outcome of a FIRST mint. Three states, kept apart on
+ *  purpose: a mint that did not happen because there was already a pack is a
+ *  different fact from one that could not happen yet, and only the second is
+ *  worth retrying. */
+export type McpFirstMintOutcome =
+  | {
+      status: 'minted';
+      pack_slug: string;
+      operations: number;
+      /** How many reflected tools the loopback diff removed before minting. */
+      reflected_dropped: number;
+    }
+  | {
+      status: 'skipped';
+      /** `already_installed` — this connection has a pack; a RE-mint is the
+       *  owner's decision (see the header). `installer_unavailable` /
+       *  `catalog_lookup_unavailable` — a partial host that cannot install or
+       *  cannot tell whether a pack exists. */
+      reason: 'already_installed' | 'installer_unavailable' | 'catalog_lookup_unavailable';
+      pack_slug: string;
+    }
+  | { status: 'deferred'; pack_slug: string; reason: string };
+
+/** D-225 auto-mint — mint an mcp connection's pack WITHOUT an owner Save, exactly
+ *  once, and only when there is no pack yet.
+ *
+ *  ⛔⛔ **FIRST MINT AND RE-MINT ARE DIFFERENT IN KIND, and this function only
+ *  ever does the first.** `mcp-tools-drift-probe` states the governing principle
+ *  — *"auto-applying a re-mint would hand a third party the ability to change
+ *  what it may do on the owner's server by editing its own `tools/list`. The
+ *  probe writes a HASH; only the owner writes a GRANT."* That is a rule about
+ *  RE-minting: it forbids letting a third party EDIT PAST an authorization the
+ *  owner already gave.
+ *
+ *  A first mint has no such authorization to edit past, and grants nothing of its
+ *  own: every generated op is `write` + `ask` with `grant_default: off`
+ *  (`GENERATED_RISK`), and since § 234.4p.16e every Tier-P op is
+ *  owner-default-only, so the pack installs INERT and reaches no door until the
+ *  owner names an op. What auto-mint replaces is a Save that only ever created a
+ *  declaration; the consent step — the grant — is untouched and still the
+ *  owner's.
+ *
+ *  ⇒ The pack-exists check is not an optimisation. It is the whole boundary, so
+ *  it is enforced here rather than at each call site, and a host that CANNOT
+ *  check (`getInstalledCatalog` absent) refuses rather than guesses.
+ *
+ *  ⚠ NO `reviewed_ops` guard, and none is needed: nobody reviewed. That guard
+ *  exists so a commit installs the tool set the owner was LOOKING at; here there
+ *  is no such claim to protect, and the fresh probe is by definition current.
+ *
+ *  ⚠ NO `install_scope`, deliberately — that argument carries the owner's
+ *  install-point grant selection, and auto-mint has no owner in the loop to make
+ *  one. Omitting it takes `packs.install`'s fail-closed default. */
+export const firstMintGeneratedPack = async (
+  deps: ConnectionRpcDeps,
+  connection: { name: string; kind: 'mcp' },
+): Promise<McpFirstMintOutcome> => {
+  const pack_slug = await mcpGeneratedPackSlug(connection);
+  if (!deps.installGeneratedPack) {
+    return { status: 'skipped', reason: 'installer_unavailable', pack_slug };
+  }
+  if (deps.getInstalledCatalog === undefined) {
+    // "Cannot look up" is not "looked, found nothing" — the same distinction
+    // `mcpPackStatus` keeps, pointed the same way. Guessing `no pack` here would
+    // turn every enroll into an unattended RE-mint on a host with no registry.
+    return { status: 'skipped', reason: 'catalog_lookup_unavailable', pack_slug };
+  }
+  if (deps.getInstalledCatalog(pack_slug) !== null) {
+    return { status: 'skipped', reason: 'already_installed', pack_slug };
+  }
+
+  try {
+    // ⚠ NOT AN RPC NAME — the label rides into the failure text, and this path
+    // has no rpc of its own. Naming a method that does not exist would send the
+    // next reader looking for a handler.
+    const { descriptors, dropped } = await probeMintableDescriptors(
+      deps,
+      'generated-pack auto-mint',
+      connection,
+    );
+    const manifest = await mcpPackManifest({ connection, descriptors });
+    await applyGeneratedPackInstall(deps, connection.name, manifest);
+    return {
+      status: 'minted',
+      pack_slug: String(manifest.slug),
+      operations: descriptors.length,
+      reflected_dropped: dropped.length,
+    };
+  } catch (err) {
+    // ⛔ NEVER FATAL TO THE CALLER. The enroll must land even when the server is
+    // unreachable — that is the case the retry sweep exists for — and a failed
+    // mint leaves the connection at `no_pack`, which is exactly the state the
+    // sweep looks for. Returning the reason rather than throwing is what lets
+    // the enroll response say "enrolled, pack pending" honestly.
+    return {
+      status: 'deferred',
+      pack_slug,
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
+};
+
 /** D-225 Slice 2 — install the generated pack. The **Save** of the owner's
  *  enrollment chain.
  *
@@ -3044,14 +3378,14 @@ export const handleMcpPackCommit = async (
     );
   }
 
-  const { health, descriptors } = await handleConnectionProbe(deps, { name, kind });
-  if (health.status !== 'ok' || descriptors === undefined) {
-    throw new RpcError(
-      'unavailable',
-      `collection.connection.mcpPackCommit: probe did not return a tool list `
-        + `(status '${health.status}'${health.last_error ? `: ${health.last_error}` : ''})`,
-    );
-  }
+  // ⛔ The SAME probe + loopback subtraction the preview ran. See
+  // `probeMintableDescriptors` on why an asymmetry here would surface as a
+  // `conflict` blaming the third party.
+  const { descriptors } = await probeMintableDescriptors(
+    deps,
+    'collection.connection.mcpPackCommit',
+    { name, kind },
+  );
 
   const rows = await mcpPackReviewRows(descriptors);
   const fresh = rows.map((r) => r.op).sort();
@@ -3076,7 +3410,7 @@ export const handleMcpPackCommit = async (
   // duplicate or bypass `confirm_risk_downgrade`. This is the other axis: a
   // grant says *may you ever*, a ruling says *does THIS call hold*. Threading
   // one does not reopen the other.
-  await deps.installGeneratedPack(manifest, a.install_scope);
+  await applyGeneratedPackInstall(deps, name, manifest, a.install_scope);
   return { pack_slug: String(manifest.slug), operations: rows.length };
 };
 
@@ -3101,6 +3435,10 @@ export const handleMcpPackPreview = async (
   pack_slug: string;
   connection: { kind: string; name: string };
   rows: McpPackReviewRow[];
+  /** D-225 auto-mint — tools the loopback diff removed because they are this
+   *  server's own, coming back through the peer. Named so the review screen can
+   *  say why a tool the peer advertises is not on the form. */
+  reflected_dropped?: string[];
 }> => {
   const a = ensureRecordArgs('collection.connection.mcpPackPreview', args);
   const name = ensureName('collection.connection.mcpPackPreview', a.name);
@@ -3111,22 +3449,16 @@ export const handleMcpPackPreview = async (
       `collection.connection.mcpPackPreview: only an mcp connection can back a generated pack (got '${kind}')`,
     );
   }
-  const { health, descriptors } = await handleConnectionProbe(deps, { name, kind });
-  if (health.status !== 'ok' || descriptors === undefined) {
-    // ⛔ Fail rather than offer an empty form. A probe that did not succeed
-    // tells us nothing about the server's tools, and a review screen showing
-    // zero rows would read as "this server has no tools" — an owner could Save
-    // that and believe they had reviewed something.
-    throw new RpcError(
-      'unavailable',
-      `collection.connection.mcpPackPreview: probe did not return a tool list `
-        + `(status '${health.status}'${health.last_error ? `: ${health.last_error}` : ''})`,
-    );
-  }
+  const { descriptors, dropped } = await probeMintableDescriptors(
+    deps,
+    'collection.connection.mcpPackPreview',
+    { name, kind },
+  );
   return {
     pack_slug: await mcpGeneratedPackSlug({ kind, name }),
     connection: { kind, name },
     rows: await mcpPackReviewRows(descriptors),
+    ...(dropped.length > 0 ? { reflected_dropped: dropped.map((d) => d.name) } : {}),
   };
 };
 

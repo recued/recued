@@ -1009,6 +1009,9 @@ export interface ExecutionResult {
    *  correspondent. Absence therefore means "they said nothing", never "they said
    *  it was fine". */
   exchange_peer_ack?: ExchangeAcknowledgement;
+  /** Host-derived contract bound to the outbound connection used by an
+   *  exchange. Kept separate from the wire acknowledgement. */
+  exchange_expected_contract_id?: string;
   /** D-115 Phase 5 — dynamic-interval override the recipe wrote via a
    *  step with id `next_run_at`. The engine reads
    *  `stores.step.next_run_at` after all sequential steps finish; when

@@ -322,20 +322,6 @@ describe('warehouse status reader — null/degrade paths', () => {
     ).toBeNull();
   });
 
-  it('returns null when the entity Source is disabled (parity with data.* reads)', () => {
-    const store = buildWorkStore();
-    store.writeProject(
-      { id: 'p-dis', title: 'Hidden', state: 'active', source_id: RECUED_BUILTIN_SOURCE_ID('project') },
-      NOW,
-    );
-    const read = () =>
-      reader(store).read({ projection_kind: 'project', source_entity_kind: 'data.project', source_entity_id: 'p-dis' });
-    // Enabled by default → resolves.
-    expect(read()).not.toBeNull();
-    // User disables the Source → the public status link must stop serving it.
-    store.setSourceEnabled(RECUED_BUILTIN_SOURCE_ID('project'), false);
-    expect(read()).toBeNull();
-  });
 });
 
 // ────────────────────────────────────────────────────────────────

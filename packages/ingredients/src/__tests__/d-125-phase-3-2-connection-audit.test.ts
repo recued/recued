@@ -315,6 +315,13 @@ describe('connection adapter audit (P3.2) — error paths emit one row', () => {
         connection: 'fixture-provider',
         'body.callback_url': callbackUrl,
       }),
+      // ⛔ A CATALOG-GATEWAY surface dispatch, so NOT the bare `connection`
+      // hatch slug: § 234.4p.16c refuses that slug whenever a `stepMeta` is
+      // present. The gateway only ever dispatches CATALOG ingredients over a
+      // declared binding, so this combination could not occur in production —
+      // the fence is deliberately NOT exempted for `surface_dispatch`, which
+      // would add an unreachable branch and a hole if anything ever set it.
+      slug: 'ticket-reader-hubspot',
       stepMeta: {
         step_id: 'attach-resource',
         surface_dispatch: true,

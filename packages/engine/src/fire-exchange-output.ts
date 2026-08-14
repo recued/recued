@@ -113,6 +113,9 @@ export interface ExchangeFireOutcome {
    *  their response carried one. ⚠ Theirs, not ours: `exchange_ack` is what we
    *  hand our caller, this is what they handed us. */
   readonly peer_ack?: ExchangeAcknowledgement;
+  /** Host-derived identity of the contract bound to the connection that was
+   *  actually used. Local control-plane fact; never part of the peer wire ack. */
+  readonly expected_contract_id?: string;
 }
 
 export type ExchangeFireHandler = (
@@ -424,6 +427,9 @@ export const fireExchangeOutput = async (
     ...result,
     exchange_ack: acknowledgementFor(payload),
     ...(outcome?.peer_ack !== undefined ? { exchange_peer_ack: outcome.peer_ack } : {}),
+    ...(outcome?.expected_contract_id !== undefined
+      ? { exchange_expected_contract_id: outcome.expected_contract_id }
+      : {}),
   };
 };
 

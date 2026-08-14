@@ -84,12 +84,13 @@ const workCoverage = (
   store: Pick<WorkEntityStore, 'listSources'>,
   kind: 'task' | 'booking' | 'project',
 ): ContactBusinessContextCoverage => {
-  const enabled = store.listSources(kind).filter((source) => source.enabled !== false);
-  if (enabled.length === 0) return 'not_configured';
+  // D-187 Sources half — read is always fan-out; every registered Source counts.
+  const registered = store.listSources(kind);
+  if (registered.length === 0) return 'not_configured';
   // Only Recued's local built-in is structurally complete. Connection/adapter
   // mirrors have no universal sync-complete/freshness bit; read-through stores
   // no rows at all. Their positive rows are useful, but a zero remains partial.
-  return enabled.some((source) => (
+  return registered.some((source) => (
     source.source_kind !== 'builtin' || source.sync_posture === 'read_through'
   ))
     ? 'partial'

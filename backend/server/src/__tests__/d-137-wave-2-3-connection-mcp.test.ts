@@ -18,6 +18,7 @@ import {
   RpcError,
   buildDefaultConnectionMcpAnnotation,
   type ConnectionMcpAnnotationState,
+  type ValidatedConnectionMcpAnnotationInput,
   type RecuedServerSignature,
   type ToolEntry,
 } from '@recued/contracts';
@@ -28,6 +29,7 @@ import {
 } from '../storage/chat-store.js';
 import {
   createChatConnectionMcpStore,
+  legacyToolOverrides,
   ensureChatConnectionMcpAnnotationSchema,
   type ChatConnectionMcpStore,
 } from '../storage/chat-connection-mcp-store.js';
@@ -56,8 +58,6 @@ const baseAnnotation = (
 ): ConnectionMcpAnnotationState => ({
   connection_name,
   topic_tags: [],
-  tool_overrides: {},
-  tools_list_cache: { tools: [], cached_at: 0 },
   updated_at: 0,
   ...overrides,
 });
@@ -70,9 +70,10 @@ describe('D-137 W2.3 — ChatConnectionMcpStore', () => {
     const ann = store.getAnnotation('exa');
     expect(ann.connection_name).toBe('exa');
     expect(ann.topic_tags).toEqual([]);
-    expect(Object.keys(ann.tool_overrides)).toEqual([]);
-    expect(ann.tools_list_cache.tools).toEqual([]);
-    expect(ann.tools_list_cache.cached_at).toBe(0);
+    // ⛔ D-228 slices 4 + 6 — the substrate default is EXACTLY these three keys.
+    for (const key of ['tool_overrides', 'tools_list_cache', 'recued_signature', 'chat_mode']) {
+      expect(key in ann).toBe(false);
+    }
     expect(ann.updated_at).toBe(0);
   });
 
@@ -83,14 +84,12 @@ describe('D-137 W2.3 — ChatConnectionMcpStore', () => {
     const value = {
       connection_name: 'exa',
       topic_tags: ['web'] as ReadonlyArray<string>,
+      // ⚠ Both retired keys stay in the INPUT on purpose — a cached older
+      // webclient still sends them, and the write must not choke.
       tool_overrides: {
         search: { enabled: true, classification: 'read' as const },
       },
-      tools_list_cache: {
-        tools: [{ name: 'search' }],
-        cached_at: 100,
-      },
-    };
+    } as unknown as ValidatedConnectionMcpAnnotationInput;
     const persisted = store.setAnnotation({ value, now: 5_000 });
     expect(persisted.connection_name).toBe('exa');
     expect(persisted.updated_at).toBe(5_000);
@@ -98,8 +97,7 @@ describe('D-137 W2.3 — ChatConnectionMcpStore', () => {
     const reread = store.getAnnotation('exa');
     expect(reread.connection_name).toBe('exa');
     expect(reread.topic_tags).toEqual(['web']);
-    expect(reread.tool_overrides.search?.classification).toBe('read');
-    expect(reread.tools_list_cache.tools.length).toBe(1);
+    expect('tools_list_cache' in reread).toBe(false);
     expect(reread.updated_at).toBe(5_000);
   });
 
@@ -111,8 +109,6 @@ describe('D-137 W2.3 — ChatConnectionMcpStore', () => {
       value: {
         connection_name: 'old',
         topic_tags: [],
-        tool_overrides: {},
-        tools_list_cache: { tools: [], cached_at: 0 },
       },
       now: 1_000,
     });
@@ -120,8 +116,6 @@ describe('D-137 W2.3 — ChatConnectionMcpStore', () => {
       value: {
         connection_name: 'new',
         topic_tags: [],
-        tool_overrides: {},
-        tools_list_cache: { tools: [], cached_at: 0 },
       },
       now: 5_000,
     });
@@ -142,35 +136,35 @@ describe('D-137 W2.3 — ChatConnectionMcpStore', () => {
     const store = createChatConnectionMcpStore(db);
     const ann = store.getAnnotation('exa');
     expect(ann.connection_name).toBe('exa');
-    expect(ann.tool_overrides).toEqual({});
     // updated_at carries through even on parse failure
     expect(ann.updated_at).toBe(9_000);
   });
 
-  it('Codex W2.3 review P2 fold — preserves an explicit empty custom_topic_tags through write/read round-trip', () => {
+  it('⛔⛔ D-228 slice 4 — a legacy `tool_overrides` column SURVIVES a rewrite', () => {
+    // THE MIGRATION HAZARD THIS PINS. `tool_overrides` left the live shape, but
+    // `carryMcpToolClassifications` still has to drain it onto the pack ops. If
+    // an ordinary write (a topic-tag edit, a picker refresh) erased the column
+    // before the migration ran, every owner who upgraded and then touched a
+    // connection would silently lose their recorded classifications.
     const db = new Database(':memory:');
     ensureChatConnectionMcpAnnotationSchema(db);
+    db.exec(`
+      INSERT INTO chat_connection_mcp_annotations (connection_name, annotation_json, updated_at)
+        VALUES ('exa', '{"topic_tags":[],"tool_overrides":{"search":{"enabled":true,"classification":"read"}},"tools_list_cache":{"tools":[],"cached_at":0},"updated_at":1}', 1)
+    `);
     const store = createChatConnectionMcpStore(db);
+
+    // An ordinary write that says nothing about overrides.
     store.setAnnotation({
       value: {
         connection_name: 'exa',
-        topic_tags: ['web', 'research'],
-        tool_overrides: {
-          search: {
-            enabled: true,
-            classification: 'read',
-            custom_topic_tags: [], // Mary cleared per-tool tags
-          },
-        },
-        tools_list_cache: { tools: [{ name: 'search' }], cached_at: 100 },
+        topic_tags: ['web'],
       },
-      now: 1_000,
+      now: 2_000,
     });
-    const reread = store.getAnnotation('exa');
-    const ovr = reread.tool_overrides.search;
-    expect(ovr).toBeDefined();
-    expect(ovr!.custom_topic_tags).toBeDefined();
-    expect([...ovr!.custom_topic_tags!]).toEqual([]);
+
+    expect(legacyToolOverrides(store.getAnnotation('exa')))
+      .toEqual({ search: { enabled: true, classification: 'read' } });
   });
 
   it('deleteAnnotation removes the row', () => {
@@ -181,8 +175,6 @@ describe('D-137 W2.3 — ChatConnectionMcpStore', () => {
       value: {
         connection_name: 'exa',
         topic_tags: [],
-        tool_overrides: {},
-        tools_list_cache: { tools: [], cached_at: 0 },
       },
       now: 1_000,
     });
@@ -278,10 +270,6 @@ describe('D-137 W2.3 — chat.connection_mcp.list rpc', () => {
       value: {
         connection_name: 'exa',
         topic_tags: ['web'],
-        tool_overrides: {
-          search: { enabled: true, classification: 'read' },
-        },
-        tools_list_cache: { tools: [{ name: 'search' }], cached_at: 100 },
       },
       now: 3_000,
     });
@@ -328,15 +316,10 @@ describe('D-137 W2.3 — chat.connection_mcp.get rpc', () => {
       value: {
         connection_name: 'exa',
         topic_tags: ['web'],
-        tool_overrides: {
-          search: { enabled: true, classification: 'read' },
-        },
-        tools_list_cache: { tools: [{ name: 'search' }], cached_at: 100 },
       },
       now: 3_000,
     });
     const result = handleConnectionMcpGet(rig.deps, { connection_name: 'exa' });
-    expect(result.annotation.tool_overrides.search?.classification).toBe('read');
     expect(result.annotation.updated_at).toBe(3_000);
   });
 });
@@ -354,66 +337,56 @@ describe('D-137 W2.3 — chat.connection_mcp.set rpc', () => {
       tool_overrides: {
         search: { enabled: true, classification: 'read' },
       },
-      tools_list_cache: {
-        tools: [{ name: 'search' }],
-        cached_at: 100,
-      },
     });
     expect(result.annotation.connection_name).toBe('exa');
     expect(result.annotation.updated_at).toBe(7_000);
     // D-137 P4 § A.7.1 — annotation writes now emit two broadcasts:
     // the W2.3 annotation_changed (for Settings → Connections + Tier
-    // 3 catalog consumers) AND the P4 picker_entries_changed (for
-    // the picker dropdown). Order is annotation-then-picker so the
-    // catalog consumers see the new annotation before the picker
-    // projection re-derives.
-    expect(rig.broadcastedEvents.length).toBe(2);
+    // 3 catalog consumers).
+    //
+    // ⛔ D-228 slice 5 — ONE event now, not two. The second was
+    // `chat.picker_entries_changed`, emitted so a client could re-render the
+    // Self/peer dropdown; the MCP scope-picker is retired and that kind is
+    // deleted. Asserting the exact COUNT rather than just the first event, so a
+    // stray companion broadcast reappearing is a visible red.
+    expect(rig.broadcastedEvents.length).toBe(1);
     const evt = rig.broadcastedEvents[0] as {
       kind: string;
       connection_name: string;
     };
     expect(evt.kind).toBe('chat.connection_mcp_annotation_changed');
     expect(evt.connection_name).toBe('exa');
-    const picker_evt = rig.broadcastedEvents[1] as { kind: string };
-    expect(picker_evt.kind).toBe('chat.picker_entries_changed');
   });
 
   it('emits a chat_connection_mcp_annotation_set audit row', () => {
     handleConnectionMcpSet(rig.deps, {
       connection_name: 'exa',
       topic_tags: ['web'],
-      tool_overrides: {
-        search: { enabled: true, classification: 'read' },
-        delete_index: { enabled: true, classification: 'write' },
-        contents: { enabled: false, classification: 'unknown' },
-      },
-      tools_list_cache: {
-        tools: [
-          { name: 'search' },
-          { name: 'delete_index' },
-          { name: 'contents' },
-        ],
-        cached_at: 100,
-      },
     });
     expect(rig.auditRows.length).toBe(1);
     expect(rig.auditRows[0].action).toBe('chat_connection_mcp_annotation_set');
     expect(rig.auditRows[0].target).toBe('exa');
     const detail = JSON.parse(rig.auditRows[0].detail as string);
     expect(detail.topic_tag_count).toBe(1);
-    expect(detail.override_count).toBe(3);
-    // classified_count: only classification !== 'unknown' counts (2 of 3)
-    expect(detail.classified_count).toBe(2);
-    expect(detail.cached_tool_count).toBe(3);
+    // ⛔ D-228 slices 4 + 6 — `override_count` / `classified_count` /
+    // `cached_tool_count` are GONE from the audit detail with the fields they
+    // counted. Asserting ABSENCE, because a per-tool count reappearing here
+    // would mean a second store of per-tool facts had.
+    //
+    // 🔑 The detail is now asserted WHOLE rather than key-by-key: three separate
+    // absence checks are three chances to forget the fourth.
+    expect(detail).toEqual({ topic_tag_count: 1 });
   });
 
   it('rejects malformed args with bad_request', () => {
+    // ⚠ RE-AIMED, not deleted. It used to malform `tool_overrides`, which the
+    // validator now ACCEPTS AND IGNORES for wire compatibility — so that input
+    // is no longer a rejection at all. The claim (a shape error is a
+    // `bad_request`) survives on a field that still exists.
     expect(() =>
       handleConnectionMcpSet(rig.deps, {
         connection_name: 'exa',
-        tool_overrides: {
-          search: { enabled: 'yes', classification: 'read' },
-        },
+        topic_tags: 'not-an-array',
       }),
     ).toThrow(RpcError);
   });
@@ -485,19 +458,6 @@ describe('D-137 W2.3 — chat-orchestrator passes disabled_tier3_names', () => {
       value: {
         connection_name: 'exa',
         topic_tags: ['web'],
-        tool_overrides: {
-          search: { enabled: true, classification: 'read' },
-          delete_index: { enabled: true, classification: 'unknown' },
-          contents: { enabled: false, classification: 'read' },
-        },
-        tools_list_cache: {
-          tools: [
-            { name: 'search' },
-            { name: 'delete_index' },
-            { name: 'contents' },
-          ],
-          cached_at: 100,
-        },
       },
       now: 1_000,
     });

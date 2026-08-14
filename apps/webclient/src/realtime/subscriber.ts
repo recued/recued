@@ -72,11 +72,28 @@ export const WEBCLIENT_DEFAULT_SUBSCRIPTIONS: ReadonlyArray<BroadcastEventKind> 
   // paired client so Settings → Chat → Tool Catalog Scope stays in
   // sync across devices without a manual refresh.
   'chat.tool_catalog_scope_changed',
-  // D-137 W2.3 § A.1.1 + § A.10 — Mary's per-connection MCP tool
-  // annotation. Fans the Settings → Connections → <name> → Tools
-  // changes to every paired client; the Tier 3 catalog projection
-  // refreshes on next chat turn server-side.
-  'chat.connection_mcp_annotation_changed',
+  // ⛔ D-228 slice 4 — `chat.connection_mcp_annotation_changed` REMOVED. Its
+  // stated job was fanning "Settings → Connections → <name> → Tools" edits so
+  // the Tier 3 catalog projection refreshed. That panel is deleted (it had zero
+  // importers — it was never mounted) and the tier is retired, and a sweep of
+  // `apps/webclient/src` finds NO consumer: the kind appeared only in this list.
+  //
+  // ⚠ The event still FIRES server-side (topic tags / peer signature / chat mode
+  // ride it) — this only stops the server fanning it to a client that ignores it.
+  //
+  // 🔑 THE ZERO IS TRUSTED BECAUSE IT WAS CHECKED AGAINST KNOWN POSITIVES. A
+  // literal sweep is exactly the kind that reads the same whether a consumer is
+  // absent or merely named differently — so the same sweep was run over four
+  // other subscribed `chat.*` kinds first: `chat.tool_catalog_scope_changed`
+  // (2 consumer files) and `chat.inbound_token_changed` (4) both surfaced, which
+  // is what proves the method can see a consumer when there is one. There is no
+  // `onAny` listener in this app, so a kind absent from a literal sweep is
+  // absent, full stop.
+  //
+  // 🔑 The ratchet in `subscriber.test.ts` derives "handled ⇒ subscribed" from
+  // the reducer's own predicate; it does NOT check the reverse, so a
+  // subscribed-but-unhandled kind like this one is invisible to it. Found by
+  // inventory, not by a test.
   // D-171 slice-2c follow-on #2 — the inbound MCP token registry mutated
   // (`chat.inbound_token.{issue,update_grants,update_contract,revoke,delete}`).
   // Subscribed so the #contracts **mcp door** (token reveal + grant
@@ -97,15 +114,25 @@ export const WEBCLIENT_DEFAULT_SUBSCRIPTIONS: ReadonlyArray<BroadcastEventKind> 
   //     model default; reduced by `apps/webclient/src/chat/state.ts`.
   //   - `chat.disambiguation_proposed` (D-137 P3 § A.5) — scope-search
   //     disambiguation chips / open-question surface.
-  //   - `chat.picker_entries_changed` (D-137 P4 § A.7.1) — server picker
-  //     dropdown visibility shift.
   //   - `chat.plan_resolved` (D-137 P3 § A.11) — write-plan approve/cancel
   //     resolution; re-renders the per-message approval card.
   // A lockstep ratchet (`__tests__/subscriber.test.ts`) now pins this list
   // to the closed enum so the class can't silently drift again.
+  //
+  // ⛔ D-228 slice 5 — `chat.picker_entries_changed` REMOVED with the MCP
+  // scope-picker itself. It fanned a `PickerEntry[]` so a client could re-render
+  // the Self/peer dropdown; no client ever consumed it, and the surface behind it
+  // was dead on both ends (`PeerDispatcher` had zero implementors). A peer's
+  // tools now reach chat as ordinary `recued_op_*` pack operations governed by
+  // the contract, so there is nothing to switch between.
+  //
+  // ⚠ Removing it, I also took `chat.default_model_pref_changed` and
+  // `chat.disambiguation_proposed` out by anchoring the cut on a comment block
+  // that spanned more than its own kind. THE RATCHET BELOW CAUGHT IT — "the
+  // reducer handles this and the client never asks for it" is precisely the
+  // 2½-week outage it was written for, and it fired within the minute.
   'chat.default_model_pref_changed',
   'chat.disambiguation_proposed',
-  'chat.picker_entries_changed',
   'chat.plan_resolved',
   // D-165 slice 3 — vendor OAuth completion. The server fans only the kinds
   // each client subscribes to (D-169 TR-10), so the Settings → Connections

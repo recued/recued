@@ -450,7 +450,15 @@ describe('createAcmeDomainRenewer — success path', () => {
       generateCsr,
     });
     const out = await renewer.renewDomain({ domain: 'alice.recued.net' });
-    expect(out).toEqual({ ok: true, new_fingerprint: 'FRESH_FP' });
+    // D-235 P4 — `cert_expires_at` rides along so a per-row renewal caller
+    // learns when to come back without re-reading the store (or calling
+    // `issueInitialDomain` as a read). It comes from the post-upload lookup
+    // the renewer already performed and used to discard.
+    expect(out).toEqual({
+      ok: true,
+      new_fingerprint: 'FRESH_FP',
+      cert_expires_at: 2_700_000_000_000,
+    });
 
     // ACME invoked with the Pro DDNS handle STEM (for the cloud's
     // authority + issuer-affinity gates), the FULL domain (the host

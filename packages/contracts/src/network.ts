@@ -145,6 +145,16 @@ export type NetworkErrorCode =
    *  `tls_domain.remove` on Pro-managed rows; the caller (Settings
    *  page) routes the removal through the Pro unbind flow first. */
   | 'tls_pro_acme_unbind_required'
+  /** D-235 — the `pro_acme_custom` sibling of the code above, and a SEPARATE
+   *  code because the remedy is different: a custom domain has no DDNS
+   *  subdomain to unbind (the user owns the zone), so directing them to the Pro
+   *  unbind flow would be wrong advice for a real refusal. What holds the row
+   *  is the hostname-registry entry: remove that (`collection.hostname.remove`)
+   *  and the cert goes with it. ⚠ Refusing at all matters — the custom-domain
+   *  enrollment service re-orders any enrolled hostname it finds without a
+   *  certificate, so a bare cert deletion is not a removal, it is a loop that
+   *  spends the publisher's daily issuance ceiling. */
+  | 'tls_custom_domain_unenroll_required'
   /** D-148 follow-up #5 — `pro_acme.unbind` was called for a domain
    *  that either doesn't exist in the TLS domain store at all, OR
    *  exists with `source: 'byo_upload'` (not Pro-managed). Idempotent
@@ -157,6 +167,14 @@ export type NetworkErrorCode =
    *  user can retry. Transient failure (network / cloud quota /
    *  signature reject) — operator-visible. */
   | 'pro_acme_ddns_release_failed'
+  /** The cloud ACME helper answered HTTP 429: this publisher has spent its
+   *  daily issuance allowance (`ACME_ISSUE_CERT_RATE_LIMIT_PER_DAY`).
+   *
+   *  ⛔ WAS COLLAPSING INTO `storage_io_error` ON THIS SURFACE — an initial
+   *  custom-domain issuance that hit the ceiling told the operator their
+   *  certificate "could not be stored", which is not what happened and
+   *  points the investigation at the disk. The helper answered; it said no. */
+  | 'acme_rate_limited'
   /** R26.2 Delta 2 — apex (`GET /` on the public listener) setter codes.
    *  `apex_mode_unknown` — the requested mode is not one of
    *  `ROOT_APEX_MODES`. `apex_reception_not_public` — `serve_reception`
@@ -188,8 +206,10 @@ export const NETWORK_ERROR_CODES: ReadonlyArray<NetworkErrorCode> = [
   'tls_chain_invalid',
   'tls_cert_expired_at_upload',
   'tls_pro_acme_unbind_required',
+  'tls_custom_domain_unenroll_required',
   'pro_acme_not_found',
   'pro_acme_ddns_release_failed',
+  'acme_rate_limited',
   'apex_mode_unknown',
   'apex_reception_not_public',
   'apex_webclient_unavailable',
@@ -684,19 +704,43 @@ export const DEFAULT_PATH_RESOLUTION: Record<PathRole, PathResolution> = {
  *  - `pro_acme` — Pro DDNS hostname (`<handle>.recued.cloud`); auto-
  *    managed via the existing ACME-DNS-01 helper (P7 substrate);
  *    auto-renewed; one entry per Pro subscription.
+ *  - `pro_acme_custom` — D-235: a hostname the USER owns, issued and
+ *    renewed by the fleet through a `_acme-challenge` CNAME delegated
+ *    into the fleet's zone. Auto-renewed like `pro_acme`, but its
+ *    renewal depends on a record in a zone the fleet does NOT control,
+ *    so it fails in ways `pro_acme` cannot (§ 5.1) and carries its own
+ *    delegation watch.
  *  - `byo_upload` — user-uploaded cert + private key for any domain
  *    Mary owns. User is responsible for renewal; the Reachability
  *    Doctor flags expiry per-domain at 30 / 14 / 7 day windows. */
-export type TLSDomainCertSource = 'pro_acme' | 'byo_upload';
+export type TLSDomainCertSource = 'pro_acme' | 'pro_acme_custom' | 'byo_upload';
 
 export const TLS_DOMAIN_CERT_SOURCES: ReadonlyArray<TLSDomainCertSource> = [
   'pro_acme',
+  'pro_acme_custom',
   'byo_upload',
 ] as const;
 
-/** Type predicate — is the value a known TLSDomainCertSource? */
+/** Type predicate — is the value a known TLSDomainCertSource?
+ *
+ *  ⛔ USE THIS RATHER THAN A LOCAL `s === 'a' || s === 'b'`. `domain-store.ts`
+ *  carried its own copy, and a copy of a closed vocabulary is a vocabulary that
+ *  will be one member behind exactly once — silently, because the miss reads as
+ *  "unknown source", which the store treats as a row that does not exist. */
 export const isTLSDomainCertSource = (value: unknown): value is TLSDomainCertSource =>
   typeof value === 'string' && (TLS_DOMAIN_CERT_SOURCES as ReadonlyArray<string>).includes(value);
+
+/** D-235 — does the FLEET issue and renew this source? Both ACME sources do;
+ *  they differ only in whose zone the challenge is served from.
+ *
+ *  🔑 Every "is this ours to renew / stamp / auto-manage" branch must ask THIS,
+ *  not `=== 'pro_acme'`. A missed site does not fail loudly: it treats a
+ *  fleet-issued custom cert as user-managed, which means nobody renews it and
+ *  the first anyone hears is a browser error ~90 days later. */
+export const isFleetIssuedTlsDomainSource = (
+  source: TLSDomainCertSource,
+): source is 'pro_acme' | 'pro_acme_custom' =>
+  source === 'pro_acme' || source === 'pro_acme_custom';
 
 /** D-148 § A.6.3 — bundle returned by `TLSDomainStore.lookup()`. Plugs
  *  directly into Node's https `SNICallback` (the bundle is what the

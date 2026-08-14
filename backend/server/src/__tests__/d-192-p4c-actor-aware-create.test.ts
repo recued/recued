@@ -40,7 +40,6 @@ const registerSource = (
     source_kind,
     source_label: id,
     write_capable: true,
-    mcp_exposed: false,
     registered_at: NOW,
   });
 
@@ -55,7 +54,6 @@ beforeEach(() => {
   for (const kind of WORK_ENTITY_KINDS) {
     registerSource(kind, RECUED_BUILTIN_SOURCE_ID(kind), 'builtin');
     registerSource(kind, pinnedSourceId(kind), 'adapter');
-    store.setDefaultSource(kind, pinnedSourceId(kind), NOW);
   }
 
   dispatchers = createWorkEntityDispatchers({
@@ -70,39 +68,32 @@ afterEach(() => {
 });
 
 describe('D-192 P4c dispatcher create-source resolution', () => {
-  it('keeps the sticky default for human task creates with no origin fields', async () => {
-    const out = await dispatchers.taskCreate({ title: 'manual task' });
+  // ⛔ REWRITTEN for D-187 Sources half. This suite used to pin the sticky
+  // per-kind default and the LLM-origin carve-out that skipped it — an
+  // `isLlmOriginCreate` axis over (trigger_source, actor). Both are deleted:
+  // resolution is now `explicit source_id ?? RECUED_BUILTIN_SOURCE_ID(kind)`.
+  //
+  // 🔑 The invariant worth pinning is therefore the OPPOSITE of the old one:
+  // ORIGIN CANNOT STEER THE DESTINATION. Asserting only "chat goes local"
+  // would pass vacuously now, so every origin the old suite separated is
+  // driven here against the SAME expectation — that is what makes the
+  // assertion mean something after the carve-out is gone.
 
-    expect(out.task.source_id).toBe(pinnedSourceId('task'));
+  it('an explicit source_id wins, whatever the origin', async () => {
+    for (const origin_trigger_source of ['chat', 'mcp', 'manual', 'reactive', 'auto_run']) {
+      const out = await dispatchers.taskCreate({
+        title: `explicit ${origin_trigger_source}`,
+        source_id: pinnedSourceId('task'),
+        origin_trigger_source,
+      });
+      expect(out.task.source_id).toBe(pinnedSourceId('task'));
+    }
   });
 
   it.each([
-    ['chat', { origin_trigger_source: 'chat' }],
-    ['mcp', { origin_trigger_source: 'mcp' }],
-    ['contracted manual', {
-      origin_actor: 'contracted_user' as const,
-      origin_trigger_source: 'manual',
-    }],
-  ])('skips the sticky default for LLM-origin task creates: %s', async (_label, origin) => {
-    const out = await dispatchers.taskCreate({
-      title: `task ${_label}`,
-      ...origin,
-    });
-
-    expect(out.task.source_id).toBe(RECUED_BUILTIN_SOURCE_ID('task'));
-  });
-
-  it('lets an explicit source_id win even for chat-origin task creates', async () => {
-    const out = await dispatchers.taskCreate({
-      title: 'explicit chat task',
-      source_id: pinnedSourceId('task'),
-      origin_trigger_source: 'chat',
-    });
-
-    expect(out.task.source_id).toBe(pinnedSourceId('task'));
-  });
-
-  it.each([
+    ['chat', 'user_self'],
+    ['mcp', 'user_self'],
+    ['manual', 'contracted_user'],
     ['reactive', 'user_self'],
     ['reactive', 'system'],
     ['manual', 'user_self'],
@@ -110,33 +101,27 @@ describe('D-192 P4c dispatcher create-source resolution', () => {
     ['auto_run', 'user_self'],
     ['auto_run', 'system'],
   ] as const)(
-    'keeps the sticky default for %s creates by %s',
+    'with no explicit source_id, %s creates by %s go LOCAL — origin is not a router',
     async (origin_trigger_source, origin_actor) => {
       const out = await dispatchers.taskCreate({
         title: `${origin_trigger_source} ${origin_actor}`,
         origin_trigger_source,
         origin_actor,
       });
-
-      expect(out.task.source_id).toBe(pinnedSourceId('task'));
+      expect(out.task.source_id).toBe(RECUED_BUILTIN_SOURCE_ID('task'));
+      // The registered non-builtin Source must NOT be reachable by inference.
+      expect(out.task.source_id).not.toBe(pinnedSourceId('task'));
     },
   );
 
-  it('skips sticky defaults for LLM-origin note, commitment, and project creates', async () => {
-    const note = await dispatchers.noteCreate({
-      body: 'note body',
-      origin_trigger_source: 'chat',
-    });
+  it('every kind resolves local without an explicit source_id', async () => {
+    const note = await dispatchers.noteCreate({ body: 'note body' });
     const commitment = await dispatchers.commitmentCreate({
       direction: 'outbound',
       statement: 'deliver the report',
       derivation: 'user_declared',
-      origin_trigger_source: 'chat',
     });
-    const project = await dispatchers.projectCreate({
-      title: 'project',
-      origin_trigger_source: 'chat',
-    });
+    const project = await dispatchers.projectCreate({ title: 'project' });
 
     expect(note.note.source_id).toBe(RECUED_BUILTIN_SOURCE_ID('note'));
     expect(commitment.commitment.source_id).toBe(RECUED_BUILTIN_SOURCE_ID('commitment'));

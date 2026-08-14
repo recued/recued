@@ -61,6 +61,10 @@ import {
 } from '../../keys/rotation/index.js';
 import { createSqliteCompromiseLedger } from '../../keys/rotation/compromise-ledger-store.js';
 import {
+  createInMemoryTlsRenewCooldownStore,
+  createSqliteTlsRenewCooldownStore,
+} from '../../keys/rotation/tls-renew-cooldown-store.js';
+import {
   buildKeyHealthView,
   type KeyRotationRpcDeps,
 } from '../../keys/rotation/key-rotate-handler.js';
@@ -70,7 +74,7 @@ import type { ServerAddressHintsSnapshot } from '../../pairing/address-hint-reso
 import { createDomainBackedTlsRenewalHook } from '../../keys/rotation/tls-renewal-hook.js';
 import {
   createAcmeDomainRenewer,
-  type InitialAcmeDomainIssuer,
+  type AcmeManagedDomainIssuer,
 } from '../../keys/rotation/acme-domain-renewer.js';
 import {
   createRecuedAcmeClientFromRefs,
@@ -101,7 +105,7 @@ import {
   type ProEntitlementSource,
 } from '../../pro-convenience/entitlement-source.js';
 
-import { hostnameForHandle } from '@recued/contracts';
+import { hostnameForHandle, resolveProDdnsHost } from '@recued/contracts';
 import type { KeyClass, RotationAvailability } from '@recued/contracts';
 import type { AuditLogStore } from '@recued/storage';
 import type { ClientTokenStore } from '../../pairing/client-tokens.js';
@@ -208,7 +212,7 @@ export interface CertStack {
    *  called (or in dbless harnesses where the late composer no-ops). */
   getTlsCertSourceRef: () => CertSource | undefined;
   getTlsRenewalHookRef: () => TlsRenewalHook | undefined;
-  getInitialAcmeDomainIssuerRef: () => InitialAcmeDomainIssuer | undefined;
+  getInitialAcmeDomainIssuerRef: () => AcmeManagedDomainIssuer | undefined;
   getHandleStateMachineRef: () => HandleStateMachine | undefined;
   /** D-175 — the binding-entitlement resolver the ACME `proAuth` gates
    *  on, exposed so the Pro-convenience handle provisioner can gate the
@@ -281,6 +285,14 @@ export const composeCertStack = async (
   const rotationCompromiseLedger = db
     ? createSqliteCompromiseLedger(db)
     : createInMemoryCompromiseLedger();
+
+  // Shared TLS-renewal cooldown clock. Durable when a db is present: a
+  // cooldown a restart clears is a cooldown an impatient operator clears,
+  // and the thing it protects — the CA's per-week duplicate-certificate
+  // allowance — does not reset when the process does.
+  const tlsRenewCooldown = db
+    ? createSqliteTlsRenewCooldownStore(db)
+    : createInMemoryTlsRenewCooldownStore();
 
   // Forward-declared so the rotation engine composition can capture a
   // closure that resolves the hook lazily. The fill site is inside
@@ -473,6 +485,7 @@ export const composeCertStack = async (
           },
         },
         compromise_ledger: rotationCompromiseLedger,
+        tls_renew_cooldown: tlsRenewCooldown,
         effects: {
           recordAudit: async (entry) => {
             const detail = {
@@ -583,7 +596,7 @@ export const composeCertStack = async (
   // Late phase state.
   let tlsCertSourceRef: CertSource | undefined;
   let passportCertSourceRef: CertSource | undefined;
-  let initialAcmeDomainIssuerRef: InitialAcmeDomainIssuer | undefined;
+  let initialAcmeDomainIssuerRef: AcmeManagedDomainIssuer | undefined;
   let handleStateMachineRef: HandleStateMachine | undefined;
   let publisherIdSnapshot: string | null = null;
   // D-148 § A.9 / slice 117 (Codex P1 fold) — sync snapshot of the
@@ -609,6 +622,19 @@ export const composeCertStack = async (
     // DDNS actually use.
     return hostnameForHandle(state.current_handle);
   };
+
+  /** D-235 — the bare handle the custom-domain order rides on, DERIVED from the
+   *  same snapshot rather than kept as a second field. A parallel
+   *  `currentHandleSnapshot` would be one more thing that can disagree with the
+   *  DDNS host by one state transition; `resolveProDdnsHost` is the exact
+   *  inverse of `hostnameForHandle`, so this round-trips and cannot drift.
+   *  Null whenever the DDNS host is null — released subscription, no handle
+   *  yet, or the state machine never composed — which is precisely when a
+   *  custom-domain order should decline rather than guess. */
+  const currentOwnHandle = (): string | null =>
+    currentDdnsHostSnapshot === null
+      ? null
+      : resolveProDdnsHost(currentDdnsHostSnapshot)?.handle ?? null;
 
   const computeHandleSnapshot = (state: HandleState | null): string | null => {
     // Codex P2 fold #1 (from the 101st slice) — snapshot only carries
@@ -640,7 +666,11 @@ export const composeCertStack = async (
           lan: [`wss://${lanAdvertisedAddress}:${actualPort}/ws`],
         }),
         store: tlsDomainStore,
-        sources: ['pro_acme'],
+        // D-235 — BOTH fleet-issued sources. The filter's job is to keep
+        // user-managed BYO certs out of this consumer, not to name one source;
+        // a custom domain the fleet issued and renews belongs on the same side
+        // of that line as the Pro DDNS host.
+        sources: ['pro_acme', 'pro_acme_custom'],
       });
 
       // D-148 § A.9 / slice 117 (Codex P1 fold) — passport-side cert
@@ -687,6 +717,12 @@ export const composeCertStack = async (
         }),
         store: tlsDomainStore,
         generateCsr,
+        // D-235 — read at CALL time, not captured: the handle state machine
+        // composes AFTER this line (line ~735 below), so a captured value would
+        // pin null and silently disable every custom-domain order with
+        // everything typed and green. Same shape as `resolveProAuth` /
+        // `resolvePublisherId` above, and the same defect they were fixing.
+        resolveOwnHandle: currentOwnHandle,
       });
       initialAcmeDomainIssuerRef = acmeDomainIssuer;
 
@@ -696,7 +732,13 @@ export const composeCertStack = async (
         }),
         store: tlsDomainStore,
         renewer: acmeDomainIssuer,
-        sources: ['pro_acme'],
+        // D-235 — see the note on the cert source above. ⚠ This makes the
+        // EXISTING hook renew a custom domain only when it is the canonical
+        // address a client connects to (`resolveCanonicalDomain` picks exactly
+        // one row). A server with the Pro DDNS host as its canonical address
+        // and N custom domains alongside still needs the per-row walker; that
+        // is P4, and until it lands those rows are issued but not renewed.
+        sources: ['pro_acme', 'pro_acme_custom'],
       });
     }
 

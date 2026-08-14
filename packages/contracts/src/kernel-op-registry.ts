@@ -891,6 +891,29 @@ const KERNEL_OP_BY_MCP_TOOL: ReadonlyMap<string, string> = new Map(
 export const kernelOpForMcpTool = (tool_name: string): string | undefined =>
   KERNEL_OP_BY_MCP_TOOL.get(tool_name);
 
+/** The TRANSPOSE of {@link KERNEL_OP_BY_MCP_TOOL} — op id → static tool name.
+ *
+ *  Built from the same registry rows, so the two can never name different pairs.
+ *  `mcp_tool` is unique per op by construction (one row declares it), and a
+ *  duplicate would collapse here the same way it would collide there. */
+const MCP_TOOL_BY_KERNEL_OP: ReadonlyMap<string, string> = new Map(
+  KERNEL_OP_REGISTRY
+    .filter((e): e is KernelOpEntry & { mcp_tool: string } => e.mcp_tool !== undefined)
+    .map((e) => [e.op, e.mcp_tool] as const),
+);
+
+/** D-225 auto-mint — the static MCP tool a granted kernel op is reached through,
+ *  or undefined when the op fronts no tool.
+ *
+ *  🔑 The reverse of {@link kernelOpForMcpTool}, and needed for the same reason
+ *  that one exists: a contract's grant rows are keyed on OP IDS, while a peer
+ *  probing our `tools/list` sees TOOL NAMES. Answering "what do we expose to this
+ *  peer" in the peer's vocabulary needs the join walked the other way. Without
+ *  it a granted native read-tool is invisible to the loopback filter and its
+ *  reflection mints back into our own pack. */
+export const mcpToolForKernelOp = (opId: string): string | undefined =>
+  MCP_TOOL_BY_KERNEL_OP.get(opId);
+
 export const isNativeKernelOp = (opId: string): boolean =>
   KERNEL_OP_BY_ID.get(opId)?.native === true;
 

@@ -56,10 +56,15 @@ const stubStore = (
 });
 
 const okRenewer = (new_fingerprint: string): DomainRenewer => ({
+  // D-235 P4 — `cert_expires_at` rides along so a per-row renewal caller learns
+  // when to come back without re-reading the store.
   renewDomain: vi.fn(
-    async (): Promise<{ ok: true; new_fingerprint: string }> => ({
+    async (
+      _args: { domain: string },
+    ): Promise<{ ok: true; new_fingerprint: string; cert_expires_at: number }> => ({
       ok: true,
       new_fingerprint,
+      cert_expires_at: 4_000_000_000_000,
     }),
   ),
 });

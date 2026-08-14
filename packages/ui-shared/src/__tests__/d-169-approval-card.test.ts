@@ -370,6 +370,48 @@ describe('D-169 P2 Slice 3 — renderAskCard', () => {
     expect(renderedText).not.toContain('bfcf3d78-5994-449f-be58-0b911f96e11c');
   });
 
+  it('keeps GROUPED metadata out of the card — the prefix is re-applied before the filter', () => {
+    // The notification block now groups fields sharing a path under a
+    // value-less header instead of repeating the path on every line. Read
+    // naively, `metadata.timeline` arrives here as the bare leaf
+    // `timeline` — which passes a filter written to reject exactly that
+    // field, and the card silently starts showing the producer bookkeeping
+    // it exists to keep out. The prefix has to be reconstructed first.
+    const card = render(model({
+      title: 'Approve mail-send (write)',
+      text: [
+        'Recipe send-email wants to run mail-send (step send).',
+        'Write actions change data outside Recued, so Recued held it for you.',
+        '',
+        '  to: sam@example.test',
+        '  subject: Renewal update',
+        '  metadata:',
+        '    timeline: asap',
+        '    budget_range: under_10k',
+        '  attachments: none',
+        '',
+        'Approve?',
+      ].join('\n'),
+    }), () => {});
+
+    const renderedText: string[] = [];
+    const walk = (el: FakeEl): void => {
+      if (el.textContent) renderedText.push(el.textContent);
+      el.children.forEach(walk);
+    };
+    walk(card);
+
+    expect(renderedText).toContain('sam@example.test');
+    expect(renderedText).not.toContain('Timeline');
+    expect(renderedText).not.toContain('Budget range');
+    expect(renderedText).not.toContain('asap');
+    expect(renderedText).not.toContain('under_10k');
+    // A field AFTER the group returns to the top level — the group closes
+    // on the first line back at (or inside) the header's own indent, so a
+    // trailing sibling is not swallowed into it.
+    expect(renderedText).toContain('none');
+  });
+
   it('projects generated write asks that do not name a connection target', () => {
     const card = render(model({
       title: 'Approve mail-send (write)',

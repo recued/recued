@@ -105,6 +105,10 @@ import {
   typeWsLockoutPhrase,
   type WsLockoutModalState,
 } from './ws-lockout-modal.js';
+// ⛔ The SAME builder the contracts route uses, imported rather than copied —
+// two surfaces printing a connection example for one server must not be able to
+// disagree about its endpoint.
+import { buildMcpClientSnippets } from '../contracts/bootstrap-contracts-route.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 
@@ -123,6 +127,18 @@ export const EXPOSURE_APEX_ROW_ATTR = 'data-recued-exposure-apex';
 export const EXPOSURE_APEX_WARNING_ATTR = 'data-recued-exposure-apex-warning';
 export const EXPOSURE_LOAD_ERROR_ATTR = 'data-recued-exposure-load-error';
 export const EXPOSURE_RETRY_BTN_ATTR = 'data-recued-exposure-retry';
+/** The "Connection example" button on the public-MCP card, and its modal.
+ *
+ *  🔑 IT LIVES HERE RATHER THAN IN `#contracts` BECAUSE THIS IS WHERE THE
+ *  ENDPOINT IS DECIDED. `buildMcpClientSnippets` derives the snippet from the
+ *  server URL, so the address it prints is only correct once the owner has
+ *  chosen how the server is reachable — which is this panel. Shown beside the
+ *  public-MCP switch, the example is the answer to "I just enabled this, now
+ *  what do I paste into my agent". The contracts route keeps its own copy for
+ *  the per-contract connect flow; this is the same BUILDER, not a second one. */
+export const EXPOSURE_CONNECT_BTN_ATTR = 'data-recued-exposure-connect-example';
+export const EXPOSURE_CONNECT_MODAL_ATTR = 'data-recued-exposure-connect-modal';
+export const EXPOSURE_CONNECT_SNIPPET_ATTR = 'data-recued-exposure-connect-snippet';
 export const EXPOSURE_MODAL_ATTR = 'data-recued-exposure-modal';
 export const EXPOSURE_MODAL_PHRASE_ATTR = 'data-recued-exposure-modal-phrase';
 export const EXPOSURE_MODAL_SUBMIT_ATTR = 'data-recued-exposure-modal-submit';
@@ -199,6 +215,19 @@ export interface MountExposurePanelOptions {
   /** Live-refresh seam (DD#5). Production wires the bootstrap's
    *  `subscriber.on`; absent ⇒ mount-fetch + post-mutation only. */
   subscribe?: BroadcastSubscriber['on'];
+  /** The paired server's URL, used to derive the MCP endpoint in the
+   *  "Connection example" modal (`buildMcpClientSnippets`).
+   *
+   *  ⚠ OPTIONAL, AND ABSENT MEANS THE BUTTON DOES NOT RENDER — not that it
+   *  renders a guessed endpoint. A snippet naming the wrong host is worse than
+   *  no snippet: the owner pastes it into an agent and debugs a connection that
+   *  was never going to work. The bootstrap reads it from `localStore`
+   *  (`server_url`), which can genuinely be absent.
+   *
+   *  ⚠ A GETTER, not a value: the bootstrap reads `server_url` asynchronously
+   *  while this panel mounts synchronously, so a snapshot taken at mount would
+   *  be `undefined` forever. Read at RENDER time instead. */
+  getServerUrl?: () => string | undefined;
 }
 
 /** A flat snapshot of the mount's internal state — the primary surface
@@ -290,6 +319,15 @@ const PANEL_COPY = {
   ddns_hint: 'Configure DDNS first (Settings → Server → Hostnames).',
   public_mcp_on: 'Public MCP is acknowledged — AI agents can reach /mcp from outside the LAN once the /mcp public bit is on.',
   public_mcp_off: 'Public MCP is not acknowledged. Enabling /mcp public requires typing the confirmation phrase.',
+  connect_example: 'Connection example…',
+  connect_modal_title: 'Connect an AI agent to this server',
+  connect_modal_subtitle:
+    'Paste one of these into your agent, replacing the token placeholder with a '
+    + 'token issued under a contract.',
+  connect_modal_note:
+    'Reaching the endpoint is not access: what the agent may then do is decided '
+    + 'by its contract, not by this page.',
+  connect_modal_close: 'Close',
   public_mcp_enable: 'Enable public MCP…',
   public_mcp_revoke: 'Revoke public MCP',
   any_public_note:
@@ -338,6 +376,7 @@ export const mountExposurePanel = (
   let loadError: string | null = null;
   let actionError: string | null = null;
   let publicMcpModal: PublicMcpModalState = { kind: 'idle' };
+  let connectExampleOpen = false;
   let wsLockoutModal: WsLockoutModalState = { kind: 'idle' };
   const modalIdBase = `recued-exposure-modal-${++exposurePanelIdSequence}`;
   let modalReturnFocus: ModalReturnFocusTarget | null = null;
@@ -411,6 +450,7 @@ export const mountExposurePanel = (
     // Modals render last so they overlay (CSS positions them fixed).
     if (publicMcpModal.kind !== 'idle') renderPublicMcpModal();
     if (wsLockoutModal.kind !== 'idle') renderWsLockoutModal();
+    if (connectExampleOpen) renderConnectExampleModal();
   };
 
   const setBusy = (next: boolean): void => {
@@ -976,7 +1016,53 @@ export const mountExposurePanel = (
       busy,
     );
     card.appendChild(btn);
+    // Rendered whenever the server URL is known, NOT only when public MCP is
+    // on: the snippet is equally the answer for a LAN-only agent, and hiding it
+    // behind the acknowledgement would imply MCP requires public exposure.
+    const exampleUrl = opts.getServerUrl?.();
+    if (exampleUrl !== undefined && exampleUrl !== '') {
+      card.appendChild(makeButton(
+        PANEL_COPY.connect_example,
+        EXPOSURE_CONNECT_BTN_ATTR,
+        'secondary',
+        () => { connectExampleOpen = true; render(); },
+        busy,
+      ));
+    }
     wrapper.appendChild(card);
+  }
+
+  /** The connection-example modal — read-only, no phrase, no mutation. It shows
+   *  what to paste into an agent, derived from the SAME `buildMcpClientSnippets`
+   *  the contracts route uses, so the two surfaces cannot drift into printing
+   *  different endpoints for one server. */
+  function renderConnectExampleModal(): void {
+    const url = opts.getServerUrl?.();
+    if (url === undefined || url === '') return;
+    const { overlay, body, actions } = renderModalShell(
+      PANEL_COPY.connect_modal_title,
+      PANEL_COPY.connect_modal_subtitle,
+      [PANEL_COPY.connect_modal_note],
+    );
+    overlay.setAttribute(EXPOSURE_CONNECT_MODAL_ATTR, '');
+    for (const snippet of buildMcpClientSnippets(url)) {
+      const h = doc.createElement('h5');
+      h.className = 'exposure-connect-snippet-label';
+      h.textContent = snippet.label;
+      body.appendChild(h);
+      const pre = doc.createElement('pre');
+      pre.className = 'exposure-connect-snippet';
+      pre.setAttribute(EXPOSURE_CONNECT_SNIPPET_ATTR, snippet.id);
+      pre.textContent = snippet.body;
+      body.appendChild(pre);
+    }
+    actions.appendChild(makeButton(
+      PANEL_COPY.connect_modal_close,
+      EXPOSURE_MODAL_CANCEL_ATTR,
+      'secondary',
+      () => { connectExampleOpen = false; render(); },
+      false,
+    ));
   }
 
   function renderApexPicker(model: ExposurePageModel): void {

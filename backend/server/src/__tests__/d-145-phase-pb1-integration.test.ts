@@ -2,7 +2,8 @@
  *
  *  End-to-end: composes the substrate from `composeCapacitySpecDeps`,
  *  walks a multi-capacity spec, exercises cache hits + invalidation
- *  (including the PA11 join via `publishSourceEnabledChange`), and
+ *  (the PA11 join via `publishSourceEnabledChange` was retired with the
+ *  `source.enabled_changed` topic — D-187 Sources half), and
  *  asserts audit + transparency events round-trip cleanly through
  *  the real composer wiring. */
 
@@ -17,7 +18,6 @@ import {
 
 import {
   composeCapacitySpecDeps,
-  publishSourceEnabledChange,
 } from '../capacity-spec-deps.js';
 
 const stubDeps = () => {
@@ -126,70 +126,7 @@ describe('D-145 PB1.8 — composeCapacitySpecDeps integration', () => {
     composed.shutdown();
   });
 
-  it('PA11 join — publishSourceEnabledChange invalidates cached connection_active row', async () => {
-    const { state, deps } = stubDeps();
-    const auditLog: { action: string; detail?: string }[] = [];
-    const composed = composeCapacitySpecDeps({
-      ...deps,
-      auditAdapter: {
-        logActivity(entry) {
-          auditLog.push({ action: entry.action, detail: entry.detail });
-        },
-      },
-    });
 
-    state.connections.set('hubspot|task', true);
-    state.sources.set('hubspot|task', true);
-    const spec: CapacitySpec = {
-      capacities: [{ kind: 'connection_active', vendor: 'hubspot', entity: 'task' }],
-      remediations: {
-        'connection_active:hubspot:task': {
-          action: 'enroll_connection',
-          user_facing_copy: 'Enroll.',
-        },
-      },
-    };
-
-    const r1 = await capacity.walkCapacities({
-      spec,
-      registry: composed.registry,
-      cache: composed.cache,
-      ctx: {
-        audit_emitter: composed.audit,
-        transparency_emitter: composed.transparency,
-      },
-    });
-    expect(r1.ok).toBe(true);
-
-    // Disable the source via the PA11 publisher.
-    state.sources.set('hubspot|task', false);
-    publishSourceEnabledChange(
-      composed.invalidationSource,
-      'hubspot.conn-42.task',
-      false,
-    );
-
-    const r2 = await capacity.walkCapacities({
-      spec,
-      registry: composed.registry,
-      cache: composed.cache,
-      ctx: {
-        audit_emitter: composed.audit,
-        transparency_emitter: composed.transparency,
-      },
-    });
-    expect(r2.ok).toBe(false);
-    expect(auditLog.some((e) => e.action === CAPACITY_AUDIT_GAP_ACTION)).toBe(true);
-
-    composed.shutdown();
-  });
-
-  it('publishSourceEnabledChange handles built-in source ids without crashing', () => {
-    const { deps } = stubDeps();
-    const composed = composeCapacitySpecDeps(deps);
-    publishSourceEnabledChange(composed.invalidationSource, 'recued.task', false);
-    composed.shutdown();
-  });
 
   it('shutdown unsubscribes invalidation handlers', () => {
     const { deps } = stubDeps();
@@ -197,7 +134,7 @@ describe('D-145 PB1.8 — composeCapacitySpecDeps integration', () => {
     composed.shutdown();
     // Subsequent publish doesn't crash + has no observable effect.
     composed.invalidationSource.publish({
-      topic: 'source.enabled_changed',
+      topic: 'connection.disabled',
       vendor: 'hubspot',
       entity: 'task',
     });

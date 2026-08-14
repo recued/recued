@@ -34,7 +34,6 @@ import {
   createChatManifestLookup,
   createChatTier2Dispatch,
   createChatTier2Source,
-  createChatTier3Dispatch,
   type ChatToolHandlerDeps,
 } from '../chat-tool-handlers.js';
 import type { ExecuteRequest, ExecuteResponse } from '../types.js';
@@ -145,29 +144,6 @@ const buildDepsStub = (
   ...overrides,
 });
 
-const tier3Annotation = (
-  overrides: Partial<ConnectionMcpAnnotationState> = {},
-): ConnectionMcpAnnotationState => ({
-  connection_name: 'exa',
-  topic_tags: ['research'],
-  tool_overrides: {
-    search: { enabled: true, classification: 'read' },
-  },
-  tools_list_cache: {
-    tools: [
-      {
-        name: 'search',
-        description: 'Search the web',
-        input_schema: { type: 'object' },
-      },
-    ],
-    cached_at: 1_000,
-  },
-  recued_signature: null,
-  chat_mode: null,
-  updated_at: 1_000,
-  ...overrides,
-});
 
 // ────────────────────────────────────────────────────────────────
 // contact.search
@@ -861,191 +837,18 @@ describe('D-137 Trio #A — Tier 2 dispatch', () => {
   });
 });
 
-// ────────────────────────────────────────────────────────────────
-// Tier 3 dispatch
-// ────────────────────────────────────────────────────────────────
+// ⛔⛔ D-228 slice 4 — THE TIER-3 DISPATCH SUITE IS DELETED WITH ITS SUBJECT.
+// It exercised `createChatTier3Dispatch`: resolving `<connection>.<tool>`
+// against `tool_overrides` and routing through the `connection-mcp-read` /
+// `-write` kernel slugs at the tier the owner had typed there. That store is
+// gone (D-225 named it the standing defect) and an MCP tool now reaches chat
+// once, as a contract-governed `recued_op_*` pack operation.
+//
+// ⚠ What those tests really protected — a read-tier slug must not carry a
+// write-tier tool — did NOT go with them. It moved to the gate that still
+// enforces it for every engine caller: `d-177-p2b-connection-mcp-gate`,
+// where it is now resolved from the pack operation instead of a side store.
 
-describe('M-CHAT-2 / D-177 P2b — Tier 3 connection.mcp dispatch (gateway-routed)', () => {
-  it('routes a read-classified entry through run-ingredient with connection-mcp-read', async () => {
-    const executeResponse = buildExecuteResponse('run-ingredient');
-    const execute = vi.fn().mockResolvedValue(executeResponse);
-    const dispatch = createChatTier3Dispatch(
-      buildDepsStub({
-        getConnectionMcpAnnotations: () => [tier3Annotation()],
-        getExecuteRecipe: () => execute,
-      }),
-    );
-
-    const result = await dispatch('exa.search', { query: 'recued' }, ctxInternal());
-
-    expect(result.ok).toBe(true);
-    // Non-held run result passes through unchanged (same posture as
-    // Tier 1 recipe.run / Tier 2 — engine-styled results, no rewrap).
-    if (result.ok) expect(result.result).toBe(executeResponse);
-    expect(execute).toHaveBeenCalledTimes(1);
-    const req = execute.mock.calls[0]![0] as ExecuteRequest;
-    expect((req.recipe as { recipe_id?: unknown }).recipe_id).toBe('run-ingredient');
-    expect(req.recipe_id).toBeUndefined();
-    expect(req.config).toEqual({
-      ingredient_slug: 'connection-mcp-read',
-      input: {
-        connection_kind: 'mcp',
-        connection: 'exa',
-        tool: 'search',
-        args: { query: 'recued' },
-      },
-    });
-    expect(req.trigger_source).toBe('chat');
-    // ctxInternal carries no execution_source — none threaded.
-    expect(req.execution_source).toBeUndefined();
-    expect(req.contract_snapshot).toBeUndefined();
-  });
-
-  it('routes a write-classified entry via connection-mcp-write, preserving dots in the tool name', async () => {
-    const execute = vi.fn().mockResolvedValue(buildExecuteResponse('run-ingredient'));
-    const dispatch = createChatTier3Dispatch(
-      buildDepsStub({
-        getConnectionMcpAnnotations: () => [
-          tier3Annotation({
-            tool_overrides: {
-              'tools.search': { enabled: true, classification: 'write' },
-            },
-            tools_list_cache: {
-              tools: [{ name: 'tools.search', input_schema: { type: 'object' } }],
-              cached_at: 1_000,
-            },
-          }),
-        ],
-        getExecuteRecipe: () => execute,
-      }),
-    );
-
-    const result = await dispatch('exa.tools.search', { q: 'x' }, ctxInternal());
-
-    expect(result.ok).toBe(true);
-    const req = execute.mock.calls[0]![0] as ExecuteRequest;
-    expect(req.config).toEqual({
-      ingredient_slug: 'connection-mcp-write',
-      input: {
-        connection_kind: 'mcp',
-        connection: 'exa',
-        tool: 'tools.search',
-        args: { q: 'x' },
-      },
-    });
-  });
-
-  it('threads execution_source + contract_snapshot from the dispatch ctx', async () => {
-    const execute = vi.fn().mockResolvedValue(buildExecuteResponse('run-ingredient'));
-    const dispatch = createChatTier3Dispatch(
-      buildDepsStub({
-        getConnectionMcpAnnotations: () => [tier3Annotation()],
-        getExecuteRecipe: () => execute,
-      }),
-    );
-    const ctx: ChatDispatchContext = {
-      channel: 'internal_function_call',
-      session_id: 'sess-1',
-      turn_id: 'turn-1',
-      execution_source: mcpExecutionSource,
-      contract_snapshot: mcpContractSnapshot,
-    };
-
-    await dispatch('exa.search', {}, ctx);
-
-    const req = execute.mock.calls[0]![0] as ExecuteRequest;
-    expect(req.execution_source).toBe(mcpExecutionSource);
-    expect(req.contract_snapshot).toBe(mcpContractSnapshot);
-    expect(req.trigger_source).toBe('chat');
-  });
-
-  it('projects a preflight-HELD write dispatch as awaiting_approval for the agent', async () => {
-    const execute = vi.fn().mockResolvedValue(
-      buildExecuteResponse('run-ingredient', {
-        success: false,
-        awaiting_approval: true,
-      }),
-    );
-    const dispatch = createChatTier3Dispatch(
-      buildDepsStub({
-        getConnectionMcpAnnotations: () => [
-          tier3Annotation({
-            tool_overrides: {
-              create_issue: { enabled: true, classification: 'write' },
-            },
-            tools_list_cache: {
-              tools: [{ name: 'create_issue', input_schema: { type: 'object' } }],
-              cached_at: 1_000,
-            },
-          }),
-        ],
-        getExecuteRecipe: () => execute,
-      }),
-    );
-
-    const result = await dispatch('exa.create_issue', { title: 'x' }, ctxInternal());
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expectAwaitingApprovalWrapped(result.result);
-    }
-  });
-
-  it('fails closed when the annotation is no longer enabled and classified', async () => {
-    const execute = vi.fn();
-    const dispatch = createChatTier3Dispatch(
-      buildDepsStub({
-        getConnectionMcpAnnotations: () => [
-          tier3Annotation({
-            tool_overrides: {
-              search: { enabled: false, classification: 'read' },
-            },
-          }),
-        ],
-        getExecuteRecipe: () => execute,
-      }),
-    );
-
-    const result = await dispatch('exa.search', {}, ctxInternal());
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe('classification_blocked');
-    expect(execute).not.toHaveBeenCalled();
-  });
-
-  it('returns execution_error when the recipe executor is not wired', async () => {
-    const dispatch = createChatTier3Dispatch(
-      buildDepsStub({
-        getConnectionMcpAnnotations: () => [tier3Annotation()],
-      }),
-    );
-
-    const result = await dispatch('exa.search', {}, ctxInternal());
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe('execution_error');
-  });
-
-  it('surfaces a throwing executor as execution_error', async () => {
-    const execute = vi.fn(async () => {
-      throw new IngredientError(
-        'CONNECTION_NOT_FOUND',
-        'connection adapter: no mcp connection named exa',
-      );
-    });
-    const dispatch = createChatTier3Dispatch(
-      buildDepsStub({
-        getConnectionMcpAnnotations: () => [tier3Annotation()],
-        getExecuteRecipe: () => execute,
-      }),
-    );
-
-    const result = await dispatch('exa.search', {}, ctxInternal());
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe('execution_error');
-  });
-});
 
 // ────────────────────────────────────────────────────────────────
 // Tier 2 source enumeration
@@ -1521,6 +1324,9 @@ describe('D-137 Trio #A — buildChatToolRegistryInputs', () => {
     expect(typeof inputs.tier2Source.listRecipes).toBe('function');
     expect(typeof inputs.manifestLookup).toBe('function');
     expect(typeof inputs.tier2Dispatch).toBe('function');
-    expect(typeof inputs.tier3Dispatch).toBe('function');
+    // ⛔ D-228 slice 4 — NO `tier3Dispatch`. Asserting its ABSENCE, because a
+    // handler reappearing here would mean a second route to MCP tools had
+    // been rewired without anyone deciding to.
+    expect('tier3Dispatch' in inputs).toBe(false);
   });
 });

@@ -103,17 +103,12 @@ export interface SourceRowIdentity {
   pending_write?: WorkEntityPendingWrite;
 }
 
-/** Default-Source memory key per § A.2.2 (PA2 will write).
- *
- *  Returns the *suffix* used inside the `prefs` namespace — the
- *  prefs accessor stamps the namespace on automatically, matching
- *  the convention `CALENDAR_WATCHER_CURSOR_PREFIX = 'calendar.watcher.'`
- *  established in D-117. Recipes resolve the full path as
- *  `{{prefs.<kind>.last_used_source_id}}`; the constant returns
- *  `<kind>.last_used_source_id` so `prefs.set` / `prefs.get` can
- *  consume it directly without double-prefixing. */
-export const SOURCE_DEFAULT_PREFS_KEY = (kind: WorkEntityKind): string =>
-  `${kind}.last_used_source_id`;
+/* ⛔ `SOURCE_DEFAULT_PREFS_KEY` (`<kind>.last_used_source_id`) was DELETED with
+ *  the per-kind default Source (D-187 Sources half, D-187 § 11).
+ *  It had ZERO production consumers, and the name was a standing lie: nothing
+ *  ever wrote it on use — the create path never called `setDefaultSource`, so
+ *  "last used" was only ever an explicit pin from a Settings page that no
+ *  longer exists. Write routing is now `explicit source_id ?? built-in local`. */
 
 // ────────────────────────────────────────────────────────────────
 // task (§ A.1.1)

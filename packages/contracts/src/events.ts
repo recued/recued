@@ -787,33 +787,7 @@ export type ServerEvent =
       plan: ChatPlanProposal;
       cursor: number;
     }
-  | {
-      /** D-137 P4 § A.7.1 — picker entries changed. Fires when:
-       *    (a) a `chat.picker.refresh` rpc updates an annotation row's
-       *        `recued_signature` + `tools_list_cache`, OR
-       *    (b) a `chat.connection_mcp.set` write modifies any field
-       *        that could shift picker visibility (annotation
-       *        creation, classification flips, signature changes).
-       *  Carries the post-write `PickerEntry[]` array so paired
-       *  clients re-render the picker dropdown without a follow-up
-       *  `chat.picker.entries` round-trip. NOT session-scoped —
-       *  picker entries are per-pair, applied uniformly across every
-       *  chat session. */
-      kind: 'chat.picker_entries_changed';
-      entries: ReadonlyArray<{
-        id: 'self' | string;
-        label: string;
-        kind: 'self' | 'peer_data' | 'peer_chat';
-        signature?: {
-          server_kind: 'recued';
-          version: string;
-          instance_id: string;
-        };
-        version_delta?: 'same' | 'older' | 'newer' | 'unknown';
-        available_tool_count: number;
-      }>;
-      cursor: number;
-    }
+
   | {
       /** D-137 P5 follow-on § A.9 — inbound-token registry mutated.
        *  Fires on every `chat.inbound_token.{issue, update_grants,
@@ -1250,7 +1224,6 @@ export const ALL_BROADCAST_EVENT_KINDS = [
   'chat.disambiguation_proposed',
   'chat.inbound_token_changed',
   'chat.message_complete',
-  'chat.picker_entries_changed',
   'chat.plan_proposed',
   'chat.plan_resolved',
   'chat.session_changed',

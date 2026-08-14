@@ -48,7 +48,7 @@ import {
   type ServerAddressHintsSnapshot,
 } from '../../pairing/address-hint-resolver.js';
 import type { SqliteTlsDomainStore } from '../../tls/domain-store.js';
-import type { TlsRenewalHook } from './index.js';
+import type { TlsRenewalFailureReason, TlsRenewalHook } from './index.js';
 
 /** Per-domain renewer contract. The hook resolves which domain to
  *  renew; the renewer is responsible for the actual issuance + writing
@@ -60,10 +60,19 @@ import type { TlsRenewalHook } from './index.js';
  *  pre-renewal fingerprint — the renewer doesn't need to read it). */
 export interface DomainRenewer {
   renewDomain(args: { domain: string }): Promise<
-    | { ok: true; new_fingerprint: string }
+    | {
+        ok: true;
+        new_fingerprint: string;
+        /** D-235 P4 — the renewed cert's expiry, so a caller tracking per-row
+         *  renewal state does not have to re-read the store (or, worse, call
+         *  `issueInitialDomain` as a read) to learn when to come back. The
+         *  renewer already holds this from its post-upload lookup; it simply
+         *  used to drop it. */
+        cert_expires_at: number;
+      }
     | {
         ok: false;
-        reason: 'helper_unavailable' | 'subscription_required' | 'storage_io_error';
+        reason: TlsRenewalFailureReason;
       }
   >;
 }

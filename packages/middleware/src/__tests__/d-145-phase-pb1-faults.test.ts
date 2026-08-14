@@ -162,7 +162,7 @@ describe('D-145 PB1 — § N.17 FI8 disabled Source after cached pass', () => {
     expect(r1.ok).toBe(true);
     h.controls.enabledSources.set(connKey('hubspot', 'task'), false);
     h.invalidationSource.publish({
-      topic: 'source.enabled_changed',
+      topic: 'connection.disabled',
       vendor: 'hubspot',
       entity: 'task',
     });

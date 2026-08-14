@@ -21,6 +21,8 @@
 import type { AskHandlerRef, AskOption, NotificationMessage } from '@recued/notification';
 import {
   PEER_ASK_BODY_MAX,
+  PEER_ASK_OPTION_ID_MAX,
+  PEER_ASK_OPTION_LABEL_MAX,
   PEER_ASK_OPTIONS_MAX,
   PEER_ASK_QUESTION_MAX,
   isPeerAskNotePrompt,
@@ -140,9 +142,13 @@ export const admitPeerAsk = (
   }
   const seen = new Set<string>();
   for (const o of input.options) {
-    if (typeof o?.id !== 'string' || o.id === ''
-      || typeof o?.label !== 'string' || o.label === '') {
-      return bad('every option needs a non-empty id and label');
+    if (typeof o?.id !== 'string' || o.id === '' || o.id.length > PEER_ASK_OPTION_ID_MAX
+      || typeof o?.label !== 'string' || o.label === ''
+      || o.label.length > PEER_ASK_OPTION_LABEL_MAX) {
+      return bad(
+        `every option needs an id of at most ${PEER_ASK_OPTION_ID_MAX} characters `
+        + `and a label of at most ${PEER_ASK_OPTION_LABEL_MAX} characters`,
+      );
     }
     if (seen.has(o.id)) return bad(`duplicate option id '${o.id}'`);
     seen.add(o.id);

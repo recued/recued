@@ -31,7 +31,6 @@ import {
   type BroadcastChatEvent,
   type ChatCatalogProjectionConfig,
   type ExecuteChatAiCall,
-  type PeerDispatcher,
 } from '../chat-orchestrator.js';
 import {
   createChatStore,
@@ -77,14 +76,6 @@ const mkRegistry = (
   subscribeRefresh: () => () => undefined,
 });
 
-const mkPeerDispatcher = (
-  catalog: ReadonlyArray<ToolEntry>,
-  dispatchImpl?: PeerDispatcher['dispatch'],
-): PeerDispatcher => ({
-  dispatch: dispatchImpl ?? (async () => ({ ok: true, result: { peer: true } })),
-  listToolEntries: () => catalog,
-  getPeerSignature: () => peerSignature,
-});
 
 type AiStep =
   | { body: unknown; usage?: TokenUsageReport }
@@ -151,7 +142,6 @@ const setup = (input: {
   catalog?: ReadonlyArray<ToolEntry>;
   dispatchImpl?: (name: string, args: unknown, ctx: ChatDispatchContext) => Promise<ChatDispatchResult>;
   executeAiCall?: ExecuteChatAiCall;
-  peerDispatcher?: PeerDispatcher;
   scopeProvider?: () => ChatToolCatalogScopeState | null;
   annotationProvider?: () => ReadonlyArray<ConnectionMcpAnnotationState> | null;
   modelRouting?: { current: ChatModelRoutingLayer };
@@ -171,7 +161,6 @@ const setup = (input: {
     mintId: mintCounter(harnessId),
     now: nextClock(),
     ...(input.executeAiCall ? { executeAiCall: input.executeAiCall } : {}),
-    ...(input.peerDispatcher ? { peerDispatcher: input.peerDispatcher } : {}),
     ...(input.scopeProvider ? { scopeProvider: input.scopeProvider } : {}),
     ...(input.annotationProvider ? { annotationProvider: input.annotationProvider } : {}),
     ...(input.catalogProjection ? { catalogProjection: input.catalogProjection } : {}),
@@ -314,8 +303,13 @@ describe('D-164 P6.3 routing options', () => {
 });
 
 describe('D-164 P6.3 catalog projection', () => {
-  it('applies only mechanical Tier 2 and Tier 3 gates to self catalogs', async () => {
+  it('applies the mechanical Tier 2 KIND gate to self catalogs', async () => {
     // Mutation caught: mechanical exclusion logic changes or empty descriptions serialize.
+    // ⛔ D-228 slice 4 — THE TIER-3 ANNOTATION GATE IS GONE, so `peer.blocked`
+    // is no longer withheld. That is not a hole: nothing PRODUCES a tier-3
+    // entry any more (the registry projects none), so the only way one reaches
+    // this projection is a test supplying it by hand. The KIND gate, which
+    // still governs a live surface, is what this ratchet now pins.
     const calls: CapturedAiCall[] = [];
     const executeAiCall = mkExecuteAiCall([{ body: aiOutput('ok') }], calls);
     const catalog = [
@@ -328,8 +322,6 @@ describe('D-164 P6.3 catalog projection', () => {
     const annotationProvider = (): ReadonlyArray<ConnectionMcpAnnotationState> => [{
       connection_name: 'peer',
       topic_tags: [],
-      tool_overrides: Object.create(null) as Record<string, never>,
-      tools_list_cache: { tools: [{ name: 'blocked' }], cached_at: 1 },
       updated_at: 1,
     }];
     const scopeProvider = (): ChatToolCatalogScopeState => ({
@@ -355,6 +347,7 @@ describe('D-164 P6.3 catalog projection', () => {
     expect(tools.map((tool) => tool.recipe_slug)).toEqual([
       'tier1.always',
       'recipe.allowed',
+      'peer.blocked',
       'peer.allowed',
     ]);
     expect(tools.find((tool) => tool.recipe_slug === 'peer.allowed')).not.toHaveProperty('description');
@@ -364,61 +357,10 @@ describe('D-164 P6.3 catalog projection', () => {
     });
   });
 
-  it('isolates peer-target catalogs from self fallback and local gates', async () => {
-    // Mutation caught: peer target falls back to Self catalog or applies Mary's local gates.
-    const peerCalls: CapturedAiCall[] = [];
-    const peerExecute = mkExecuteAiCall([{ body: aiOutput('peer ok') }], peerCalls);
-    const peerCatalog = [
-      mkTool('peer.recipe.blocked-if-self', 2, { requires_kinds: ['dom'] }),
-      mkTool('peer.blocked-if-self', 3),
-    ];
-    const annotationProvider = (): ReadonlyArray<ConnectionMcpAnnotationState> => [{
-      connection_name: 'peer',
-      topic_tags: [],
-      tool_overrides: Object.create(null) as Record<string, never>,
-      tools_list_cache: { tools: [{ name: 'blocked-if-self' }], cached_at: 1 },
-      updated_at: 1,
-    }];
-    const scopeProvider = (): ChatToolCatalogScopeState => ({ enabled_kinds: [], updated_at: 1 });
-    const peerHarness = setup({
-      sessionId: 'sess-peer',
-      catalog: [mkTool('self.only', 1)],
-      executeAiCall: peerExecute,
-      peerDispatcher: mkPeerDispatcher(peerCatalog),
-      scopeProvider,
-      annotationProvider,
-    });
+  // ⛔ D-228 slice 5 — removed with its subject: it asserted a peer-scoped turn saw the peer's catalog and none of Self's.
+  // Peer scoping is retired (`set_picker` refuses a peer target; `PeerDispatcher`
+  // had zero implementors and is deleted), so the situation is unreachable.
 
-    await peerHarness.orchestrator.runTurn({
-      session_id: peerHarness.sessionId,
-      message: 'peer',
-      picker_state: { current: 'connection.mcp.peer' },
-    });
-    const peerTools = promptBody<{ available_tools: Array<Record<string, unknown>> }>(
-      peerCalls[0]!,
-    ).available_tools;
-    expect(peerTools.map((tool) => tool.recipe_slug)).toEqual([
-      'peer.recipe.blocked-if-self',
-      'peer.blocked-if-self',
-    ]);
-
-    const missingPeerCalls: CapturedAiCall[] = [];
-    const missingPeerExecute = mkExecuteAiCall([{ body: aiOutput('empty') }], missingPeerCalls);
-    const missingPeerHarness = setup({
-      sessionId: 'sess-peer-missing',
-      catalog: [mkTool('self.only', 1)],
-      executeAiCall: missingPeerExecute,
-    });
-    await missingPeerHarness.orchestrator.runTurn({
-      session_id: missingPeerHarness.sessionId,
-      message: 'missing peer',
-      picker_state: { current: 'connection.mcp.peer' },
-    });
-    expect(promptBody<{ available_tools: unknown[] }>(missingPeerCalls[0]!).available_tools).toEqual([]);
-  });
-});
-
-describe('Lever-2 index-mode catalog projection', () => {
   const runCatalogTurn = async (
     catalog: ReadonlyArray<ToolEntry>,
     catalogProjection: ChatCatalogProjectionConfig | undefined,
@@ -533,8 +475,6 @@ describe('Lever-2 index-mode catalog projection', () => {
     const annotationProvider = (): ReadonlyArray<ConnectionMcpAnnotationState> => [{
       connection_name: 'peer',
       topic_tags: [],
-      tool_overrides: Object.create(null) as Record<string, never>,
-      tools_list_cache: { tools: [{ name: 'blocked' }], cached_at: 1 },
       updated_at: 1,
     }];
     const calls: CapturedAiCall[] = [];
@@ -561,6 +501,7 @@ describe('Lever-2 index-mode catalog projection', () => {
     expect(tools.map((tool) => tool.recipe_slug)).toEqual([
       'tier1.always',
       'recipe.allowed',
+      'peer.blocked',
       'peer.allowed',
     ]);
     // Only the surviving Tier-2 entry is leaned; Tier-1 + Tier-3 stay full.
@@ -584,9 +525,12 @@ describe('Lever-2 index-mode catalog projection', () => {
   });
 
   it('is presentation-only — lean-core still applies the Tier-3 annotation gate (then drops all Tier-2)', async () => {
-    // Mirror of the index gate ratchet under `{ mode: 'lean-core' }`. What this
-    // MEANINGFULLY proves for lean-core: the Tier-3 annotation gate still drops
-    // peer.blocked (a mutation skipping it would resurrect peer.blocked). The
+    // Mirror of the index gate ratchet under `{ mode: 'lean-core' }`.
+    // ⛔ D-228 slice 4 — what this used to prove (the Tier-3 annotation gate
+    // drops peer.blocked) is gone with that gate; nothing produces a tier-3
+    // entry any more. What it still proves is that lean-core is
+    // PRESENTATION-ONLY: it drops every Tier-2 while leaving Tier-1 and any
+    // other tier untouched. The
     // Tier-2 KIND gate is subsumed here — lean-core drops recipe.blocked AND
     // recipe.allowed regardless of kind, so the projection can't distinguish a
     // kind-gate skip. The authorization-relevant Tier-2 kind gate is the SEARCH
@@ -603,8 +547,6 @@ describe('Lever-2 index-mode catalog projection', () => {
     const annotationProvider = (): ReadonlyArray<ConnectionMcpAnnotationState> => [{
       connection_name: 'peer',
       topic_tags: [],
-      tool_overrides: Object.create(null) as Record<string, never>,
-      tools_list_cache: { tools: [{ name: 'blocked' }], cached_at: 1 },
       updated_at: 1,
     }];
     const calls: CapturedAiCall[] = [];
@@ -626,9 +568,11 @@ describe('Lever-2 index-mode catalog projection', () => {
     });
     const tools = promptBody<{ available_tools: Array<Record<string, unknown>> }>(calls[0]!)
       .available_tools;
-    // Kind + annotation gates applied identically to full mode, THEN every
-    // Tier-2 (incl. the kind-allowed recipe.allowed) dropped by lean-core.
-    expect(tools.map((tool) => tool.recipe_slug)).toEqual(['tier1.always', 'peer.allowed']);
+    // The kind gate applies identically to full mode, THEN every Tier-2 (incl.
+    // the kind-allowed recipe.allowed) is dropped by lean-core. Tier-3 entries
+    // pass through — no gate withholds them, and nothing produces them either.
+    expect(tools.map((tool) => tool.recipe_slug))
+      .toEqual(['tier1.always', 'peer.blocked', 'peer.allowed']);
     expect(bySlug(tools, 'tier1.always')).toHaveProperty('args_schema', { type: 'object' });
     expect(bySlug(tools, 'peer.allowed')).toHaveProperty('args_schema', { type: 'object' });
   });
@@ -1351,73 +1295,9 @@ describe('D-164 § 6 chat-orchestrator dispatchToolCalls wiring', () => {
     ]);
   });
 
-  it('peer-target parallel batch routes through peerDispatcher.listToolEntries and dispatches in parallel', async () => {
-    // Mutation caught: the peer-target branch of the
-    // `resolveConcurrencySafe` helper falls back to `false` regardless
-    // of peer ToolEntry flags (a regression on the
-    // `peerDispatcher.listToolEntries(peerName)` lookup) — the peer-
-    // routed batch would collapse to sequential even when every peer
-    // tool declared `concurrency_safe: true`. Exercises the same
-    // barrier-stub pattern as the self-target case but via the peer
-    // dispatcher.
-    const starts: string[] = [];
-    const settles: string[] = [];
-    const pending: Array<() => void> = [];
-    const peerDispatchImpl: PeerDispatcher['dispatch'] = async (args) => {
-      starts.push(args.tool_name);
-      await new Promise<void>((resolve) => { pending.push(resolve); });
-      settles.push(args.tool_name);
-      return { ok: true, result: { tool: args.tool_name } };
-    };
-    const releaseAll = (): void => {
-      for (const resolve of pending) resolve();
-      pending.length = 0;
-    };
-    const peerCatalog: ReadonlyArray<ToolEntry> = [
-      mkTool('peer.alpha', 3, {
-        classification: 'read',
-        concurrency_safe: true,
-      }),
-      mkTool('peer.beta', 3, {
-        classification: 'read',
-        concurrency_safe: true,
-      }),
-    ];
-    const aiCalls: CapturedAiCall[] = [];
-    const executeAiCall = mkExecuteAiCall([
-      {
-        body: aiOutput('plan', [
-          toolCall('peer.alpha', { q: 'a' }),
-          toolCall('peer.beta', { q: 'b' }),
-        ]),
-      },
-      { body: aiOutput('done') },
-    ], aiCalls);
-    const { orchestrator, sessionId } = setup({
-      // Self registry is empty — peer-target lookups go through the
-      // peer dispatcher's `listToolEntries`. If a mutation swapped the
-      // resolver to use `deps.registry.getByName` on the peer path,
-      // both tools would default to `false` (unknown to the self
-      // registry) and collapse to sequential.
-      catalog: [],
-      peerDispatcher: mkPeerDispatcher(peerCatalog, peerDispatchImpl),
-      executeAiCall,
-    });
-
-    const turnPromise = orchestrator.runTurn({
-      session_id: sessionId,
-      message: 'peer parallel',
-      picker_state: { current: 'connection.mcp.peer' },
-    });
-    await new Promise((resolve) => setImmediate(resolve));
-    expect([...starts]).toEqual(['peer.alpha', 'peer.beta']);
-    expect(settles).toEqual([]);
-    releaseAll();
-    await turnPromise;
-
-    expect([...starts]).toEqual(['peer.alpha', 'peer.beta']);
-    expect([...settles].sort()).toEqual(['peer.alpha', 'peer.beta']);
-  });
+  // ⛔ D-228 slice 5 — removed with its subject: it asserted the parallel-batch path resolved concurrency from the peer catalog.
+  // Peer scoping is retired (`set_picker` refuses a peer target; `PeerDispatcher`
+  // had zero implementors and is deleted), so the situation is unreachable.
 
   it('absent registry entry defaults the per-call flag to false (sequential dispatch)', async () => {
     // Mutation caught: the orchestrator falls through to `true` (or any

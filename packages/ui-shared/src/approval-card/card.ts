@@ -149,15 +149,42 @@ const projectGeneratedApprovalAsk = (text: string): ProjectedApprovalAsk | null 
 
   const fields: Array<{ key: string; value: string }> = [];
   let reason: string | null = null;
+  // The notification block groups fields nested under a shared path beneath
+  // a value-less header (`metadata:` then its leaves, indented further).
+  //
+  // ⛔ THE GROUP PREFIX MUST BE RE-APPLIED BEFORE THE FILTER BELOW READS THE
+  // KEY. Reading a grouped child as its bare leaf makes `metadata.timeline`
+  // arrive as `timeline`, which passes a filter written to reject exactly
+  // that field — so the card would start showing the producer bookkeeping it
+  // exists to keep out, and the change that did it would look like a
+  // rendering tweak two packages away.
+  let group = '';
+  let groupIndent = -1;
   for (const line of lines.slice(1)) {
-    const field = line.match(/^\s{2,}([^:]+):\s*(.*)$/);
+    const field = line.match(/^(\s{2,})([^:]+):\s*(.*)$/);
     if (field !== null) {
-      const key = field[1]!.trim();
+      const indent = field[1]!.length;
+      const leaf = field[2]!.trim();
+      const value = field[3]!.trim();
+      // Back out to (or past) the header's own indent ⇒ the group is over.
+      if (group !== '' && indent <= groupIndent) {
+        group = '';
+        groupIndent = -1;
+      }
+      // A value-less line opens a group. `renderInline` never yields the
+      // empty string — an empty object renders `(empty)` — so this cannot
+      // collide with a real field.
+      if (value === '') {
+        group = leaf;
+        groupIndent = indent;
+        continue;
+      }
+      const key = group === '' ? leaf : `${group}.${leaf}`;
       // Generated metadata is producer bookkeeping, not a decision input.
       // Keep it in the server-side ask for enforcement/audit, but do not
       // project it into the approval card's user-facing technical details.
       if (key !== 'metadata' && !key.startsWith('metadata.')) {
-        fields.push({ key, value: field[2]!.trim() });
+        fields.push({ key, value });
       }
       continue;
     }

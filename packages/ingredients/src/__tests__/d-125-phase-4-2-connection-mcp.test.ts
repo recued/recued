@@ -39,7 +39,10 @@ import {
   MCP_CLIENT_IDLE_TIMEOUT_MS,
 } from '@recued/contracts';
 import type { ConnectionAuth, ConnectionRow } from '@recued/contracts';
-import { createConnectionMcpHandler } from '../connection-mcp.js';
+import {
+  createConnectionMcpHandler,
+  probeMcpLegacySseTools,
+} from '../connection-mcp.js';
 import type {
   ConnectionMcpHandlerDeps,
   McpStreamHandle,
@@ -136,7 +139,24 @@ const mkDeps = (
   responder: (call: FetchCall) => Response | Promise<Response>,
   extra: Partial<ConnectionMcpHandlerDeps> = {},
 ): { deps: ConnectionMcpHandlerDeps; calls: FetchCall[] } => {
-  const { fetch: fetchImpl, calls } = captureFetch(responder);
+  const { fetch: fetchImpl, calls } = captureFetch((call) => {
+    let request: { id?: number; method?: string } | undefined;
+    try {
+      request = call.body === undefined
+        ? undefined
+        : JSON.parse(call.body) as { id?: number; method?: string };
+    } catch {
+      // OAuth token exchanges use form encoding, not JSON.
+    }
+    if (request?.method === 'server/discover') {
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0',
+        id: request.id,
+        result: { supportedVersions: ['2026-07-28'], capabilities: { tools: {} } },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return responder(call);
+  });
   const decodeAuth = typeof authOrFn === 'function'
     ? async (row: ConnectionRow) => authOrFn(row)
     : async () => authOrFn;
@@ -147,6 +167,22 @@ const mkDeps = (
   };
   return { deps, calls };
 };
+
+const modernNegotiatingFetch = (
+  operation: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
+): typeof fetch => (async (input: RequestInfo | URL, init?: RequestInit) => {
+  const body = typeof init?.body === 'string'
+    ? JSON.parse(init.body) as { id?: number; method?: string }
+    : undefined;
+  if (body?.method === 'server/discover') {
+    return new Response(JSON.stringify({
+      jsonrpc: '2.0',
+      id: body.id,
+      result: { supportedVersions: ['2026-07-28'], capabilities: { tools: {} } },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return operation(input, init);
+}) as typeof fetch;
 
 // ────────────────────────────────────────────────────────────────
 // Stream transports — shared mock channel (ws + stdio)
@@ -176,7 +212,11 @@ interface MockChannel {
  *  neutral; the ws + stdio mocks wrap it with their connect / spawn shell. */
 const makeMockChannel = (
   responder: (frame: WsFrame) => MockReply,
-  opts: { initError?: { code: number; message: string } } = {},
+  opts: {
+    discoverError?: { code: number; message: string };
+    initError?: { code: number; message: string };
+    legacy?: boolean;
+  } = {},
 ): MockChannel => {
   const sent: WsFrame[] = [];
   let handleCloses = 0;
@@ -197,7 +237,13 @@ const makeMockChannel = (
         if (frame.id === undefined) return; // notification (notifications/initialized)
         queueMicrotask(() => {
           if (closed) return;
-          const reply: MockReply = frame.method === 'initialize'
+          const reply: MockReply = frame.method === 'server/discover'
+            ? (opts.discoverError
+                ? { error: opts.discoverError }
+                : opts.legacy
+                ? { error: { code: -32601, message: 'Method not found' } }
+                : { result: { supportedVersions: ['2026-07-28'], capabilities: { tools: {} } } })
+            : frame.method === 'initialize'
             ? (opts.initError
                 ? { error: { code: opts.initError.code, message: opts.initError.message } }
                 : { result: { protocolVersion: '2024-11-05', capabilities: {}, serverInfo: { name: 'mock', version: '1' } } })
@@ -250,6 +296,8 @@ const mockWs = (
     failConnect?: Error;
     hangConnect?: boolean;
     initError?: { code: number; message: string };
+    discoverError?: { code: number; message: string };
+    legacy?: boolean;
   } = {},
 ): MockWs => {
   const ch = makeMockChannel(responder, opts);
@@ -280,6 +328,8 @@ const mockStdio = (
     failSpawn?: Error;
     hangSpawn?: boolean;
     initError?: { code: number; message: string };
+    discoverError?: { code: number; message: string };
+    legacy?: boolean;
   } = {},
 ): MockStdio => {
   const ch = makeMockChannel(responder, opts);
@@ -376,7 +426,7 @@ describe('connection.mcp handler — input validation', () => {
     const { deps, calls } = mkDeps({ type: 'none' }, okJsonRpc({ ok: true }));
     const handler = createConnectionMcpHandler(deps);
     await handler(mkRow(), { tool: 'list' }, mkCall());
-    const body = JSON.parse(calls[0]!.body!);
+    const body = JSON.parse(calls.at(-1)!.body!);
     expect(body.params.arguments).toEqual({});
   });
 });
@@ -390,14 +440,305 @@ describe('connection.mcp handler — transport dispatch', () => {
     const { deps, calls } = mkDeps({ type: 'none' }, okJsonRpc({ items: [] }));
     const handler = createConnectionMcpHandler(deps);
     await handler(mkRow(), { tool: 'list_repos' }, mkCall());
+    expect(calls).toHaveLength(2);
     expect(calls[0]?.method).toBe('POST');
     expect(calls[0]?.url).toBe('https://mcp.example/server');
-    const body = JSON.parse(calls[0]!.body!);
+    expect(JSON.parse(calls[0]!.body!).method).toBe('server/discover');
+    expect(calls[0]?.headers['mcp-protocol-version']).toBe('2026-07-28');
+    expect(calls[0]?.headers['mcp-method']).toBe('server/discover');
+    const body = JSON.parse(calls.at(-1)!.body!);
     expect(body).toMatchObject({
       jsonrpc: '2.0',
       method: 'tools/call',
-      params: { name: 'list_repos', arguments: {} },
+      params: {
+        name: 'list_repos',
+        arguments: {},
+        _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' },
+      },
     });
+    expect(calls.at(-1)?.headers['mcp-protocol-version']).toBe('2026-07-28');
+    expect(calls.at(-1)?.headers['mcp-method']).toBe('tools/call');
+    expect(calls.at(-1)?.headers['mcp-name']).toBe('list_repos');
+    expect(calls.at(-1)?.headers.accept).toBe('application/json, text/event-stream');
+  });
+
+  it('mirrors x-mcp-header arguments and reads a response-scoped SSE result', async () => {
+    const encoder = new TextEncoder();
+    const { fetch: fetchImpl, calls } = captureFetch((call) => {
+      const request = JSON.parse(call.body ?? '{}') as { id: number; method: string };
+      if (request.method === 'server/discover') {
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0', id: request.id,
+          result: { supportedVersions: ['2026-07-28'], capabilities: { tools: {} } },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(
+            `event: message\ndata: ${JSON.stringify({
+              jsonrpc: '2.0', method: 'notifications/progress', params: { progress: 0.5 },
+            })}\n\n`,
+          ));
+          controller.enqueue(encoder.encode(
+            `event: message\ndata: ${JSON.stringify({
+              jsonrpc: '2.0', id: request.id, result: { ok: true },
+            })}\n\n`,
+          ));
+          // Deliberately remain open: the client must stop at the final id.
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    });
+    const handler = createConnectionMcpHandler({
+      decodeAuth: async () => ({ type: 'none' }),
+      fetchImpl,
+    });
+    const row = mkRow({
+      health_json: JSON.stringify({
+        status: 'ok',
+        tools: ['execute_sql'],
+        mcp_tool_schemas: {
+          execute_sql: {
+            type: 'object',
+            properties: {
+              region: { type: 'string', 'x-mcp-header': 'Region' },
+            },
+          },
+        },
+      }),
+    });
+
+    await expect(handler(
+      row,
+      { tool: 'execute_sql', args: { region: 'us-west1' } },
+      mkCall(),
+    )).resolves.toMatchObject({ status: 'ok', result: { ok: true } });
+    expect(calls.at(-1)?.headers['mcp-param-region']).toBe('us-west1');
+  });
+
+  it('falls back from HTTP discovery to validated 2024-11-05 initialization', async () => {
+    const encoder = new TextEncoder();
+    let sseController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const { fetch: fetchImpl, calls } = captureFetch((call) => {
+      if (call.method === 'GET') {
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            sseController = controller;
+            controller.enqueue(encoder.encode(
+              'event: endpoint\ndata: /legacy/messages?sessionId=test\n\n',
+            ));
+          },
+        }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      }
+      const request = JSON.parse(call.body ?? '{}') as { id?: number; method?: string };
+      if (request.method === 'server/discover') {
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0', id: request.id,
+          error: { code: -32601, message: 'Method not found' },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (request.method === 'initialize') {
+        sseController?.enqueue(encoder.encode(
+          `event: message\ndata: ${JSON.stringify({
+          jsonrpc: '2.0', id: request.id,
+          result: { protocolVersion: '2024-11-05', capabilities: {} },
+          })}\n\n`,
+        ));
+        return new Response(null, { status: 202 });
+      }
+      if (request.id !== undefined) {
+        sseController?.enqueue(encoder.encode(
+          `event: message\ndata: ${JSON.stringify({
+            jsonrpc: '2.0', id: request.id, result: { ok: true },
+          })}\n\n`,
+        ));
+      }
+      return new Response(null, { status: 202 });
+    });
+    const handler = createConnectionMcpHandler({
+      decodeAuth: async () => ({ type: 'none' }),
+      fetchImpl,
+    });
+
+    await expect(handler(mkRow(), { tool: 'list' }, mkCall()))
+      .resolves.toMatchObject({ status: 'ok' });
+
+    expect(calls.map((call) => ({
+      method: call.method,
+      rpc: JSON.parse(call.body ?? '{}').method as string | undefined,
+    }))).toEqual([
+      { method: 'POST', rpc: 'server/discover' },
+      // The handshake-era Streamable HTTP probe. This server answers it with a
+      // bodyless 202 (it delivers responses on the SSE stream, which is not
+      // open yet), so no legacy version is selected and the fallback continues
+      // to the two-endpoint transport below.
+      { method: 'POST', rpc: 'initialize' },
+      { method: 'GET', rpc: undefined },
+      { method: 'POST', rpc: 'initialize' },
+      { method: 'POST', rpc: 'notifications/initialized' },
+      { method: 'POST', rpc: 'tools/call' },
+    ]);
+    const legacyCall = JSON.parse(calls.at(-1)!.body!);
+    expect(legacyCall.params).toEqual({ name: 'list', arguments: {} });
+    expect(calls.at(-1)?.headers['mcp-protocol-version']).toBeUndefined();
+  });
+
+  it('reaches a handshake-era Streamable HTTP server and echoes its session', async () => {
+    // 2025-03-26 … 2025-11-25: one POST endpoint, an `initialize` handshake,
+    // a minted `Mcp-Session-Id`, and 405 on the GET the 2024-11-05 transport
+    // opens with. Without a path for this shape the whole era is unreachable.
+    const { fetch: fetchImpl, calls } = captureFetch((call) => {
+      if (call.method === 'GET') return new Response('nope', { status: 405 });
+      const request = JSON.parse(call.body ?? '{}') as { id?: number; method?: string };
+      if (request.method === 'server/discover') {
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0', id: request.id,
+          error: { code: -32601, message: 'Method not found' },
+        }), { status: 404, headers: { 'content-type': 'application/json' } });
+      }
+      if (request.method === 'initialize') {
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0', id: request.id,
+          result: { protocolVersion: '2025-11-25', capabilities: {}, serverInfo: { name: 's', version: '1' } },
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json', 'mcp-session-id': 'SESS-9' },
+        });
+      }
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0', id: request.id, result: { content: [{ type: 'text', text: 'hit' }] },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    const handler = createConnectionMcpHandler({
+      decodeAuth: async () => ({ type: 'none' }),
+      fetchImpl,
+    });
+
+    await expect(handler(mkRow(), { tool: 'search' }, mkCall()))
+      .resolves.toMatchObject({ status: 'ok' });
+
+    // No GET: the two-endpoint transport is never attempted once the
+    // handshake-era probe succeeds.
+    expect(calls.map((c) => c.method)).not.toContain('GET');
+    const toolCall = calls.at(-1)!;
+    expect(JSON.parse(toolCall.body!).method).toBe('tools/call');
+    expect(toolCall.headers['mcp-session-id']).toBe('SESS-9');
+    // Per-request metadata and mirrored headers are 2026-07-28 constructs and
+    // must not appear on a handshake-era request.
+    expect(JSON.parse(toolCall.body!).params._meta).toBeUndefined();
+    expect(toolCall.headers['mcp-protocol-version']).toBeUndefined();
+    expect(toolCall.headers['mcp-method']).toBeUndefined();
+  });
+
+  it('refuses a result whose resultType it cannot consume', async () => {
+    // MRTR: the server is asking a QUESTION, not returning an answer. Passing
+    // it through would hand the recipe `inputRequests` as the tool's output.
+    const { deps } = mkDeps({ type: 'none' }, okJsonRpc({
+      resultType: 'input_required',
+      inputRequests: [{ method: 'elicitation/create', params: { message: 'confirm?' } }],
+    }, (body) => JSON.parse(body ?? '{}').id as number));
+    const handler = createConnectionMcpHandler(deps);
+    await expect(handler(mkRow(), { tool: 'search' }, mkCall()))
+      .rejects.toMatchObject({ code: 'INGREDIENT_OUTPUT_VALIDATION_FAILED' });
+  });
+
+  it('falls back rather than failing when the modern probe does not answer', async () => {
+    // The spec names a non-response as a fallback trigger. Failing the whole
+    // dispatch here would strand every server that black-holes an unknown
+    // method instead of refusing it.
+    const calls: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'GET') return new Response('nope', { status: 405 });
+      const request = JSON.parse(String(init?.body ?? '{}')) as { id?: number; method?: string };
+      calls.push(request.method ?? '-');
+      if (request.method === 'server/discover') {
+        // Black-holes the unknown method: the negotiation deadline must abort
+        // it, exactly as a real fetch would on an unresponsive endpoint.
+        await new Promise<void>((_resolve, reject) => {
+          (init?.signal as AbortSignal | undefined)?.addEventListener('abort', () => {
+            const error = new Error('The operation was aborted');
+            error.name = 'AbortError';
+            reject(error);
+          });
+        });
+      }
+      if (request.method === 'initialize') {
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0', id: request.id,
+          result: { protocolVersion: '2025-06-18', capabilities: {} },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0', id: request.id, result: { ok: true },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof fetch;
+    const handler = createConnectionMcpHandler({
+      decodeAuth: async () => ({ type: 'none' }),
+      fetchImpl,
+    });
+
+    // MIN_TIMEOUT_MS floors the per-call budget at 100ms; the negotiation probe
+    // takes the same bound, so the black-holed discover aborts promptly.
+    await expect(handler(mkRow(), { tool: 'search', timeout_ms: 100 }, mkCall()))
+      .resolves.toMatchObject({ status: 'ok' });
+    expect(calls).toEqual(['server/discover', 'initialize', 'notifications/initialized', 'tools/call']);
+  });
+
+  it('probes a real 2024 two-endpoint HTTP+SSE tool list', async () => {
+    const encoder = new TextEncoder();
+    let sseController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const { fetch: fetchImpl, calls } = captureFetch((call) => {
+      if (call.method === 'GET') {
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            sseController = controller;
+            controller.enqueue(encoder.encode('event: endpoint\ndata: /messages?s=1\n\n'));
+          },
+        }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      }
+      const request = JSON.parse(call.body ?? '{}') as { id?: number; method?: string };
+      if (request.id !== undefined) {
+        const result = request.method === 'initialize'
+          ? { protocolVersion: '2024-11-05', capabilities: {} }
+          : { tools: [{ name: 'legacy-search', inputSchema: { type: 'object' } }] };
+        sseController?.enqueue(encoder.encode(
+          `event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: request.id, result })}\n\n`,
+        ));
+      }
+      return new Response(null, { status: 202 });
+    });
+
+    await expect(probeMcpLegacySseTools(
+      fetchImpl,
+      'https://mcp.example/server',
+      { Authorization: 'Bearer test' },
+      1_000,
+    )).resolves.toMatchObject({ ok: true, tools: ['legacy-search'] });
+    expect(calls.map((call) => call.method)).toEqual(['GET', 'POST', 'POST', 'POST']);
+    expect(calls[1]?.url).toBe('https://mcp.example/messages?s=1');
+  });
+
+  it('does not downgrade when HTTP discovery returns a recognized modern error', async () => {
+    const { fetch: fetchImpl, calls } = captureFetch((call) => {
+      const request = JSON.parse(call.body ?? '{}') as { id?: number };
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0', id: request.id,
+        error: {
+          code: -32022,
+          message: 'Unsupported protocol version',
+          data: { supported: ['2099-01-01'], requested: '2026-07-28' },
+        },
+      }), { status: 400, headers: { 'content-type': 'application/json' } });
+    });
+    const handler = createConnectionMcpHandler({
+      decodeAuth: async () => ({ type: 'none' }),
+      fetchImpl,
+    });
+
+    await expect(handler(mkRow(), { tool: 'list' }, mkCall()))
+      .rejects.toMatchObject({ code: 'NETWORK_ERROR' });
+    expect(calls.map((call) => JSON.parse(call.body ?? '{}').method))
+      .toEqual(['server/discover']);
   });
 
   it('websocket without a ws connector → MCP_TRANSPORT_NOT_IMPLEMENTED', async () => {
@@ -668,8 +1009,8 @@ describe('connection.mcp handler — JSON-RPC envelope', () => {
       { tool: 'create_issue', args: { repo: 'foo/bar', title: 'hi' } },
       mkCall(),
     );
-    const body = JSON.parse(calls[0]!.body!);
-    expect(body.params).toEqual({
+    const body = JSON.parse(calls.at(-1)!.body!);
+    expect(body.params).toMatchObject({
       name: 'create_issue',
       arguments: { repo: 'foo/bar', title: 'hi' },
     });
@@ -692,7 +1033,7 @@ describe('connection.mcp handler — resource ops', () => {
       { resource: 'file:///a.txt' },
       mkCall(),
     );
-    const body = JSON.parse(calls[0]!.body!);
+    const body = JSON.parse(calls.at(-1)!.body!);
     expect(body).toMatchObject({
       jsonrpc: '2.0',
       method: 'resources/read',
@@ -712,7 +1053,7 @@ describe('connection.mcp handler — resource ops', () => {
     );
     const handler = createConnectionMcpHandler(deps);
     const result = await handler(mkRow(), { resources_list: true }, mkCall());
-    const body = JSON.parse(calls[0]!.body!);
+    const body = JSON.parse(calls.at(-1)!.body!);
     expect(body).toMatchObject({ jsonrpc: '2.0', method: 'resources/list', params: {} });
     expect(result).toMatchObject({
       status: 'ok',
@@ -724,7 +1065,7 @@ describe('connection.mcp handler — resource ops', () => {
     const { deps, calls } = mkDeps({ type: 'none' }, okJsonRpc({}));
     const handler = createConnectionMcpHandler(deps);
     await handler(mkRow(), { tool: 'list', resource: 'file:///a.txt' }, mkCall());
-    const body = JSON.parse(calls[0]!.body!);
+    const body = JSON.parse(calls.at(-1)!.body!);
     expect(body.method).toBe('tools/call');
   });
 
@@ -738,8 +1079,8 @@ describe('connection.mcp handler — resource ops', () => {
       { resource: 'file:///a.txt' },
       mkCall(),
     );
-    expect(calls).toHaveLength(1);
-    expect(JSON.parse(calls[0]!.body!).method).toBe('resources/read');
+    expect(calls).toHaveLength(2);
+    expect(JSON.parse(calls.at(-1)!.body!).method).toBe('resources/read');
   });
 
   it('throws IOVF when resource is an empty string', async () => {
@@ -1060,7 +1401,9 @@ describe('connection.mcp handler — network errors + timeout', () => {
   });
 
   it('network error (write) → ACTION_DELIVERY_UNCERTAIN', async () => {
-    const fetchImpl = (async () => { throw new TypeError('TLS failure'); }) as unknown as typeof fetch;
+    const fetchImpl = modernNegotiatingFetch(async () => {
+      throw new TypeError('TLS failure');
+    });
     const handler = createConnectionMcpHandler({
       decodeAuth: async () => ({ type: 'none' }),
       fetchImpl,
@@ -1070,7 +1413,7 @@ describe('connection.mcp handler — network errors + timeout', () => {
   });
 
   it('timeout (read) → STEP_TIMEOUT', async () => {
-    const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const fetchImpl = modernNegotiatingFetch(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const signal = init?.signal;
       return new Promise<Response>((_resolve, reject) => {
         signal?.addEventListener('abort', () => {
@@ -1079,7 +1422,7 @@ describe('connection.mcp handler — network errors + timeout', () => {
           reject(err);
         });
       });
-    }) as unknown as typeof fetch;
+    });
     const handler = createConnectionMcpHandler({
       decodeAuth: async () => ({ type: 'none' }),
       fetchImpl,
@@ -1092,7 +1435,7 @@ describe('connection.mcp handler — network errors + timeout', () => {
   });
 
   it('keeps the timeout active while the SSE response body streams', async () => {
-    const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const fetchImpl = modernNegotiatingFetch(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
           const abort = (): void => {
@@ -1105,7 +1448,7 @@ describe('connection.mcp handler — network errors + timeout', () => {
         },
       });
       return new Response(stream, { headers: { 'content-type': 'application/json' } });
-    }) as typeof fetch;
+    });
     const handler = createConnectionMcpHandler({
       decodeAuth: async () => ({ type: 'none' }),
       fetchImpl,
@@ -1179,7 +1522,7 @@ describe('connection.mcp handler — pool semantics', () => {
     // Both succeed — pool independence verified through the URL not
     // colliding (each row's endpoint is the same in this test, but
     // pk differs so distinct entries are allocated).
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(4);
   });
 });
 
@@ -1238,7 +1581,7 @@ describe('connection.mcp handler — SSRF redirect origin pinning', () => {
     const handler = createConnectionMcpHandler(deps);
     await expect(handler(mkRow(), { tool: 'list' }, mkCall()))
       .rejects.toMatchObject({ code: 'URL_REF_INVALID' });
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
     expect(calls[0]!.url).toBe('https://mcp.example/server');
   });
 });
@@ -1248,7 +1591,45 @@ describe('connection.mcp handler — SSRF redirect origin pinning', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('connection.mcp handler — websocket transport', () => {
-  it('opens a socket, runs the initialize handshake, dispatches tools/call, returns the ok shape', async () => {
+  it('falls back on a fresh socket to validated 2024-11-05 initialization', async () => {
+    const { deps, ws } = wsDeps(
+      { type: 'none' },
+      () => ({ result: { ok: true } }),
+      { legacy: true },
+    );
+    const handler = createConnectionMcpHandler(deps);
+
+    await expect(handler(wsRow(), { tool: 'list' }, mkCall()))
+      .resolves.toMatchObject({ status: 'ok' });
+
+    expect(ws.connects).toHaveLength(2);
+    expect(methodsOf(ws.sent)).toEqual([
+      'server/discover',
+      'initialize',
+      'notifications/initialized',
+      'tools/call',
+    ]);
+    expect(ws.sent.find((frame) => frame.method === 'initialize')?.params)
+      .toMatchObject({ protocolVersion: '2024-11-05' });
+    expect(ws.sent.find((frame) => frame.method === 'tools/call')?.params)
+      .toEqual({ name: 'list', arguments: {} });
+  });
+
+  it('does not open a legacy socket after a recognized modern protocol error', async () => {
+    const { deps, ws } = wsDeps(
+      { type: 'none' },
+      () => ({ result: { ok: true } }),
+      { discoverError: { code: -32021, message: 'Missing client capability' } },
+    );
+    const handler = createConnectionMcpHandler(deps);
+
+    await expect(handler(wsRow(), { tool: 'list' }, mkCall()))
+      .rejects.toMatchObject({ code: 'NETWORK_ERROR' });
+    expect(ws.connects).toHaveLength(1);
+    expect(methodsOf(ws.sent)).toEqual(['server/discover']);
+  });
+
+  it('opens a socket, discovers the modern era, dispatches tools/call, returns the ok shape', async () => {
     const { deps, ws } = wsDeps(
       { type: 'bearer', token: 'ws-tok' },
       () => ({ result: { items: [1, 2, 3] } }),
@@ -1258,10 +1639,13 @@ describe('connection.mcp handler — websocket transport', () => {
     // One socket opened to the enrolled wss endpoint.
     expect(ws.connects).toHaveLength(1);
     expect(ws.connects[0]!.url).toBe('wss://mcp.example/ws');
-    // initialize precedes tools/call; the initialized notification fires.
-    expect(methodsOf(ws.sent)).toEqual(['initialize', 'notifications/initialized', 'tools/call']);
+    expect(methodsOf(ws.sent)).toEqual(['server/discover', 'tools/call']);
     const toolFrame = ws.sent.find((f) => f.method === 'tools/call')!;
-    expect(toolFrame.params).toEqual({ name: 'list_repos', arguments: {} });
+    expect(toolFrame.params).toMatchObject({
+      name: 'list_repos',
+      arguments: {},
+      _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' },
+    });
     expect(result).toEqual({ status: 'ok', result: { items: [1, 2, 3] }, headers: undefined });
   });
 
@@ -1295,7 +1679,7 @@ describe('connection.mcp handler — websocket transport', () => {
     const handler = createConnectionMcpHandler(deps);
     const result = await handler(wsRow(), { resource: 'file:///a.txt' }, mkCall());
     const frame = ws.sent.find((f) => f.method === 'resources/read')!;
-    expect(frame.params).toEqual({ uri: 'file:///a.txt' });
+    expect(frame.params).toMatchObject({ uri: 'file:///a.txt' });
     expect(result).toMatchObject({ status: 'ok', result: { contents: [{ uri: 'file:///a.txt', text: 'hi' }] } });
   });
 
@@ -1335,15 +1719,16 @@ describe('connection.mcp handler — websocket transport', () => {
       .resolves.toEqual({ status: 'tool_error', result: toolResult, headers: undefined });
   });
 
-  it('reuses one socket + one handshake across calls to the same record', async () => {
+  it('reuses one socket + one modern discovery across calls to the same record', async () => {
     const { deps, ws } = wsDeps({ type: 'none' }, () => ({ result: { ok: true } }));
     const handler = createConnectionMcpHandler(deps);
     await handler(wsRow(), { tool: 'list' }, mkCall());
     await handler(wsRow(), { tool: 'list' }, mkCall());
     await handler(wsRow(), { tool: 'list' }, mkCall());
-    // One open; initialize sent exactly once; three tools/call frames.
+    // One open; modern discovery sent exactly once; three tools/call frames.
     expect(ws.connects).toHaveLength(1);
-    expect(ws.sent.filter((f) => f.method === 'initialize')).toHaveLength(1);
+    expect(ws.sent.filter((f) => f.method === 'server/discover')).toHaveLength(1);
+    expect(ws.sent.filter((f) => f.method === 'initialize')).toHaveLength(0);
     expect(ws.sent.filter((f) => f.method === 'tools/call')).toHaveLength(3);
   });
 
@@ -1438,7 +1823,7 @@ describe('connection.mcp handler — websocket transport', () => {
     const { deps, ws } = wsDeps(
       { type: 'none' },
       () => ({ result: { ok: true } }),
-      { initError: { code: -32000, message: 'no init' } },
+      { legacy: true, initError: { code: -32000, message: 'no init' } },
     );
     const handler = createConnectionMcpHandler(deps);
     await expect(handler(wsRow(), { tool: 'list' }, mkCall({ risk_tier: 'read' })))
@@ -1518,17 +1903,20 @@ describe('connection.mcp handler — websocket transport', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('connection.mcp handler — stdio transport', () => {
-  it('spawns a child, runs the initialize handshake, dispatches tools/call, returns the ok shape', async () => {
+  it('spawns a child, discovers the modern era, dispatches tools/call, returns the ok shape', async () => {
     const { deps, stdio } = stdioDeps(() => ({ result: { items: [1, 2, 3] } }));
     const handler = createConnectionMcpHandler(deps);
     const result = await handler(stdioRow(), { tool: 'list_repos' }, mkCall());
     // One child spawned with the enrolled command + args.
     expect(stdio.spawns).toHaveLength(1);
     expect(stdio.spawns[0]).toMatchObject({ command: '/usr/local/bin/mcp-server', args: ['--stdio'] });
-    // initialize precedes tools/call; the initialized notification fires.
-    expect(methodsOf(stdio.sent)).toEqual(['initialize', 'notifications/initialized', 'tools/call']);
+    expect(methodsOf(stdio.sent)).toEqual(['server/discover', 'tools/call']);
     const toolFrame = stdio.sent.find((f) => f.method === 'tools/call')!;
-    expect(toolFrame.params).toEqual({ name: 'list_repos', arguments: {} });
+    expect(toolFrame.params).toMatchObject({
+      name: 'list_repos',
+      arguments: {},
+      _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' },
+    });
     expect(result).toEqual({ status: 'ok', result: { items: [1, 2, 3] }, headers: undefined });
   });
 
@@ -1551,7 +1939,7 @@ describe('connection.mcp handler — stdio transport', () => {
     const handler = createConnectionMcpHandler(deps);
     const result = await handler(stdioRow(), { resource: 'file:///a' }, mkCall());
     const frame = stdio.sent.find((f) => f.method === 'resources/read')!;
-    expect(frame.params).toEqual({ uri: 'file:///a' });
+    expect(frame.params).toMatchObject({ uri: 'file:///a' });
     expect(result).toMatchObject({ status: 'ok', result: { contents: [{ uri: 'file:///a', text: 'hi' }] } });
   });
 
@@ -1574,14 +1962,15 @@ describe('connection.mcp handler — stdio transport', () => {
       .resolves.toEqual({ status: 'tool_error', result: toolResult, headers: undefined });
   });
 
-  it('reuses one child + one handshake across calls to the same record', async () => {
+  it('reuses one child + one modern discovery across calls to the same record', async () => {
     const { deps, stdio } = stdioDeps(() => ({ result: { ok: true } }));
     const handler = createConnectionMcpHandler(deps);
     await handler(stdioRow(), { tool: 'list' }, mkCall());
     await handler(stdioRow(), { tool: 'list' }, mkCall());
     await handler(stdioRow(), { tool: 'list' }, mkCall());
     expect(stdio.spawns).toHaveLength(1);
-    expect(stdio.sent.filter((f) => f.method === 'initialize')).toHaveLength(1);
+    expect(stdio.sent.filter((f) => f.method === 'server/discover')).toHaveLength(1);
+    expect(stdio.sent.filter((f) => f.method === 'initialize')).toHaveLength(0);
     expect(stdio.sent.filter((f) => f.method === 'tools/call')).toHaveLength(3);
   });
 
@@ -1687,7 +2076,7 @@ describe('connection.mcp handler — stdio transport', () => {
   it('initialize handshake failure → NETWORK_ERROR, and the next call respawns', async () => {
     const { deps, stdio } = stdioDeps(
       () => ({ result: { ok: true } }),
-      { initError: { code: -32000, message: 'no init' } },
+      { legacy: true, initError: { code: -32000, message: 'no init' } },
     );
     const handler = createConnectionMcpHandler(deps);
     await expect(handler(stdioRow(), { tool: 'list' }, mkCall({ risk_tier: 'read' })))

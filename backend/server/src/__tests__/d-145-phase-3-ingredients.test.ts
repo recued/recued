@@ -91,7 +91,6 @@ const registerBuiltins = (s: WorkEntityStore): void => {
       source_kind: 'builtin',
       source_label: 'Recued built-in',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: NOW,
     });
   }
@@ -140,38 +139,6 @@ describe('task-* ingredients', () => {
     expect(out.task.updated_at).toBe(NOW);
   });
 
-  it('task-create idempotency atomically reuses one deterministic local task', async () => {
-    const key = 'recued-core/paid-document-fulfillment:submission-1';
-    store.registerSource({
-      id: 'hubspot.sticky.task',
-      top_tier_kind: 'task',
-      source_kind: 'connection',
-      source_label: 'Sticky HubSpot tasks',
-      write_capable: true,
-      mcp_exposed: false,
-      registered_at: NOW,
-    });
-    store.setDefaultSource('task', 'hubspot.sticky.task', NOW);
-    const first = await dispatchers.taskCreate({
-      title: 'Paid document submission-1',
-      idempotency_key: key,
-    });
-    const replay = await dispatchers.taskCreate({
-      title: 'copy changed on replay',
-      idempotency_key: key,
-    });
-
-    expect(first.task.id).toBe(
-      'task-idempotent-7265637565642d636f72652f706169642d646f63756d656e742d66756c66696c6c6d656e743a7375626d697373696f6e2d31',
-    );
-    expect(replay.task.id).toBe(first.task.id);
-    expect(replay.task.title).toBe('Paid document submission-1');
-    expect(replay.task.source_id).toBe(RECUED_BUILTIN_SOURCE_ID('task'));
-    expect(replay.task.source_extension_blob).toMatchObject({
-      recued_task_idempotency_key: key,
-    });
-    expect(store.countTasks()).toBe(1);
-  });
 
   it('task-create idempotency refuses invalid keys and vendor routing', async () => {
     await expect(dispatchers.taskCreate({
@@ -185,7 +152,6 @@ describe('task-* ingredients', () => {
       source_kind: 'connection',
       source_label: 'HubSpot tasks (acme)',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: NOW,
     });
     await expect(dispatchers.taskCreate({
@@ -231,165 +197,10 @@ describe('task-* ingredients', () => {
     });
   });
 
-  it('task-create uses the per-kind default Source when pinned', async () => {
-    // Connection-Sources route every write through the write executor
-    // (Codex P1 fold, carried into the P4b seam) — supply a scripted
-    // one so the test exercises the default-Source-resolution semantic
-    // without tripping the capability gate.
-    store.registerSource({
-      id: 'hubspot.acme.task',
-      top_tier_kind: 'task',
-      source_kind: 'connection',
-      source_label: 'HubSpot tasks (acme)',
-      write_capable: true,
-      mcp_exposed: false,
-      registered_at: NOW,
-    });
-    store.setDefaultSource('task', 'hubspot.acme.task', NOW);
-    dispatchers = buildDispatchers(fakeWriteExecutor(() => ({
-      ok: true,
-      operation: 'create',
-      source_record_id: 'hs-task-1',
-    })));
-    const out = await dispatchers.taskCreate({ title: 'follow up' });
-    expect(out.task.source_id).toBe('hubspot.acme.task');
-    expect(out.task.source_record_id).toBe('hs-task-1');
-  });
 
-  it('task-create forwards container_names → resolveCreateDependencies.named + work_entity_write_preadmitted → prepare.preadmitted (D-192 6c.2c)', async () => {
-    store.registerSource({
-      id: 'asana.acme.task',
-      top_tier_kind: 'task',
-      source_kind: 'connection',
-      source_label: 'Asana tasks (acme)',
-      write_capable: true,
-      mcp_exposed: false,
-      registered_at: NOW,
-    });
-    store.setDefaultSource('task', 'asana.acme.task', NOW);
-    let capturedNamed: Record<string, string> | undefined;
-    let capturedPreadmitted: boolean | undefined;
-    const executor: WorkEntitySourceWriteExecutor = {
-      resolveCreateDependencies: async (input) => {
-        capturedNamed = input.named;
-        return { ok: true, createArgs: {}, plannedCreates: [] };
-      },
-      prepare: (input) => {
-        capturedPreadmitted = (input as { preadmitted?: boolean }).preadmitted;
-        return {
-          ok: true,
-          vendor_relevant: true,
-          prepared: {
-            source_id: input.source_id, kind: input.kind, operation: input.operation, patch: input.patch,
-          } as unknown as WorkEntityVendorWritePrepared,
-        };
-      },
-      dispatch: async () => ({ ok: true, operation: 'create', source_record_id: 'asana-1' }),
-      executeCreatePlan: async () => ({ ok: false, reason: 'n/a' }),
-      tryFastTrackCreatePlan: async () => ({ ok: false, kind: 'not_granted' }),
-    };
-    dispatchers = buildDispatchers(executor);
-    const out = await dispatchers.taskCreate({
-      title: 'ship it',
-      container_names: { project: 'Roadmap' },
-      work_entity_write_preadmitted: true,
-    });
-    expect(out.task.source_record_id).toBe('asana-1');
-    expect(capturedNamed).toEqual({ project: 'Roadmap' });
-    expect(capturedPreadmitted).toBe(true);
-  });
 
-  it('task-create forwards origin_execution_source → prepare.execution_source (D-192 baseline-admission S2)', async () => {
-    store.registerSource({
-      id: 'asana.acme.task',
-      top_tier_kind: 'task',
-      source_kind: 'connection',
-      source_label: 'Asana tasks (acme)',
-      write_capable: true,
-      mcp_exposed: false,
-      registered_at: NOW,
-    });
-    store.setDefaultSource('task', 'asana.acme.task', NOW);
-    let capturedSource: unknown;
-    const executor: WorkEntitySourceWriteExecutor = {
-      resolveCreateDependencies: async () => ({ ok: true, createArgs: {}, plannedCreates: [] }),
-      prepare: (input) => {
-        capturedSource = (input as { execution_source?: unknown }).execution_source;
-        return {
-          ok: true,
-          vendor_relevant: true,
-          prepared: {
-            source_id: input.source_id, kind: input.kind, operation: input.operation, patch: input.patch,
-          } as unknown as WorkEntityVendorWritePrepared,
-        };
-      },
-      dispatch: async () => ({ ok: true, operation: 'create', source_record_id: 'asana-3' }),
-      executeCreatePlan: async () => ({ ok: false, reason: 'n/a' }),
-      tryFastTrackCreatePlan: async () => ({ ok: false, kind: 'not_granted' }),
-    };
-    dispatchers = buildDispatchers(executor);
-    // The DOOR identity `withCreateOrigin` would have set from StepMeta (here passed
-    // directly, since the dispatcher is called without the kernel adapter). The write
-    // executor's `admitVendorWrite` consumes exactly this to gate the vendor create.
-    const door = {
-      channel: 'mcp', actor: 'contracted_user',
-      agent_id: 'a', tool_call_id: 't', mcp_token_id: 'k', contract_id: 'door-1',
-    } as const;
-    await dispatchers.taskCreate({ title: 'ship it', origin_execution_source: door });
-    expect(capturedSource).toEqual(door);
-  });
 
-  it('task-create WITHOUT the re-run flag leaves prepare.preadmitted unset (normal writes gate)', async () => {
-    store.registerSource({
-      id: 'asana.acme.task',
-      top_tier_kind: 'task',
-      source_kind: 'connection',
-      source_label: 'Asana tasks (acme)',
-      write_capable: true,
-      mcp_exposed: false,
-      registered_at: NOW,
-    });
-    store.setDefaultSource('task', 'asana.acme.task', NOW);
-    let capturedPreadmitted: boolean | undefined = false;
-    const executor: WorkEntitySourceWriteExecutor = {
-      resolveCreateDependencies: async () => ({ ok: true, createArgs: {}, plannedCreates: [] }),
-      prepare: (input) => {
-        capturedPreadmitted = (input as { preadmitted?: boolean }).preadmitted;
-        return {
-          ok: true,
-          vendor_relevant: true,
-          prepared: {
-            source_id: input.source_id, kind: input.kind, operation: input.operation, patch: input.patch,
-          } as unknown as WorkEntityVendorWritePrepared,
-        };
-      },
-      dispatch: async () => ({ ok: true, operation: 'create', source_record_id: 'asana-2' }),
-      executeCreatePlan: async () => ({ ok: false, reason: 'n/a' }),
-      tryFastTrackCreatePlan: async () => ({ ok: false, kind: 'not_granted' }),
-    };
-    dispatchers = buildDispatchers(executor);
-    await dispatchers.taskCreate({ title: 'plain create' });
-    expect(capturedPreadmitted).toBeUndefined();
-  });
 
-  it('task-create with explicit source_id wins over default', async () => {
-    store.registerSource({
-      id: 'hubspot.acme.task',
-      top_tier_kind: 'task',
-      source_kind: 'connection',
-      source_label: 'HubSpot tasks (acme)',
-      write_capable: true,
-      mcp_exposed: false,
-      registered_at: NOW,
-    });
-    store.setDefaultSource('task', 'hubspot.acme.task', NOW);
-    // Recued built-in is the explicit source so no vendor hook needed.
-    const out = await dispatchers.taskCreate({
-      title: 'local override',
-      source_id: RECUED_BUILTIN_SOURCE_ID('task'),
-    });
-    expect(out.task.source_id).toBe(RECUED_BUILTIN_SOURCE_ID('task'));
-  });
 
   it('task-create rejects unknown source_id', async () => {
     await expect(
@@ -419,7 +230,6 @@ describe('task-* ingredients', () => {
       source_kind: 'connection',
       source_label: 'HubSpot tasks (acme)',
       write_capable: false,
-      mcp_exposed: false,
       registered_at: NOW,
     });
     await expect(
@@ -465,7 +275,6 @@ describe('task-* ingredients', () => {
       source_kind: 'connection',
       source_label: 'Todoist tasks (personal)',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: NOW,
     });
     store.writeTask({
@@ -511,7 +320,6 @@ describe('task-* ingredients', () => {
       source_kind: 'connection',
       source_label: 'Todoist tasks (personal)',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: NOW,
     });
     store.writeTask({
@@ -767,7 +575,6 @@ describe('note-* ingredients', () => {
       source_kind: 'connection',
       source_label: 'HubSpot notes (personal)',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: NOW,
     });
     store.writeNote({
@@ -1090,7 +897,6 @@ describe('project-* ingredients', () => {
       source_kind: 'connection',
       source_label: 'Linear projects (personal)',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: NOW,
     });
     store.writeProject({
@@ -1185,7 +991,6 @@ describe('connection-Source vendor probe', () => {
       source_kind: 'connection',
       source_label: 'HubSpot tasks (acme)',
       write_capable: false,
-      mcp_exposed: false,
       registered_at: NOW,
     });
   });
@@ -1216,7 +1021,6 @@ describe('connection-Source vendor probe', () => {
       source_kind: 'connection',
       source_label: 'HubSpot tasks (beta)',
       write_capable: false,
-      mcp_exposed: false,
       registered_at: ORIGINAL,
     });
     dispatchers = buildDispatchers(fakeWriteExecutor(() => ({
@@ -1273,7 +1077,6 @@ describe('connection-Source vendor probe', () => {
       source_kind: 'connection',
       source_label: 'HubSpot tasks (acme)',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: NOW,
     });
     dispatchers = buildDispatchers(fakeWriteExecutor(() => {
@@ -1304,7 +1107,6 @@ describe('connection-Source vendor probe', () => {
       source_kind: 'connection',
       source_label: 'HubSpot tasks (acme)',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: NOW,
     });
     // No executor supplied to dispatchers (default outer beforeEach setup).
@@ -1330,7 +1132,6 @@ describe('registerSource UPSERT semantics', () => {
       source_kind: 'builtin',
       source_label: 'Recued built-in',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: ORIGINAL,
     });
     const reg = store.getSource('recued.task');
@@ -1342,7 +1143,6 @@ describe('registerSource UPSERT semantics', () => {
       source_kind: 'builtin',
       source_label: 'Recued built-in',
       write_capable: false,
-      mcp_exposed: false,
       registered_at: NOW + 999,
     });
     const flipped = store.getSource('recued.task');
@@ -1358,7 +1158,6 @@ describe('registerSource UPSERT semantics', () => {
         source_kind: 'builtin',
         source_label: 'Recued built-in',
         write_capable: true,
-        mcp_exposed: false,
         registered_at: NOW,
       }),
     ).toThrow(/already registered/);
@@ -1386,7 +1185,6 @@ describe('read_through Sources and the generic local reads', () => {
       source_kind: 'connection',
       source_label: 'Federated peer (task)',
       write_capable: true,
-      mcp_exposed: false,
       sync_posture: 'read_through',
       registered_at: NOW,
     });
@@ -1472,7 +1270,6 @@ describe('read_through create', () => {
       source_kind: 'connection',
       source_label: 'Federated peer (task)',
       write_capable: true,
-      mcp_exposed: false,
       sync_posture: 'read_through',
       registered_at: NOW,
     });

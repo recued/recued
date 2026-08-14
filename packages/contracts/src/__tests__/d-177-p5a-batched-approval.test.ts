@@ -397,6 +397,172 @@ describe('renderBatchItemsBlock', () => {
     ).toBe('  to: ada@example.com\n  subject: Renewal');
   });
 
+  it('folds the absent fields onto one line, naming every one', () => {
+    // A real `mail-send` hold carried SEVEN `(null)` lines out of eleven,
+    // and the four that decided anything scrolled off behind them. The
+    // fold is to the SYNTAX: every field name survives it, so the reader
+    // can still tell an unset field from one that was never in the payload.
+    const block = renderBatchItemsBlock([
+      item('1', {
+        to: 'sam@acme.example',
+        cc: null,
+        bcc: null,
+        subject: 'Renewal',
+        in_reply_to: null,
+        attachments: null,
+      }),
+    ]);
+
+    expect(block).toBe(
+      [
+        '  to: sam@acme.example',
+        '  subject: Renewal',
+        '  not set: cc, bcc, in_reply_to, attachments',
+      ].join('\n'),
+    );
+  });
+
+  it('keeps EMPTY separate from ABSENT — the delete-filter case', () => {
+    // `filter: (empty)` on a delete is the difference between removing one
+    // row and removing the table, so a fold that merged it with "not set"
+    // would erase the whole decision.
+    const block = renderBatchItemsBlock([
+      item('1', { table: 'contacts', filter: '', dry_run: null }),
+    ]);
+
+    expect(block).toBe(
+      ['  table: contacts', '  not set: dry_run', '  empty: filter'].join('\n'),
+    );
+  });
+
+  it('folds identifier fields onto one line and shortens the uuids', () => {
+    const block = renderBatchItemsBlock([
+      item('1', {
+        title: 'Dana Whitfield',
+        id: 'reception_9db309c6-d746-4bdd-8094-13e954bbbbf8',
+        metadata: {
+          reception_form_submission_id: '9db309c6-d746-4bdd-8094-13e954bbbbf8',
+          reception_endpoint_id: '4nzTEHRqMtGOItWeKve_wg',
+          // A readable slug is left WHOLE — a reader can use it, so
+          // shortening it would cost information rather than noise.
+          form_definition_id: 'fd_foundation_client_inquiry_v1',
+        },
+      }),
+    ]);
+
+    expect(block).toBe(
+      [
+        '  title: Dana Whitfield',
+        // Leaves are unique across the payload, so the repeated
+        // `metadata.` is dropped from the folded line too.
+        '  ids: id: reception_9db309c6…'
+          + ' · reception_form_submission_id: 9db309c6…'
+          + ' · reception_endpoint_id: 4nzTEHRqMtGO…'
+          + ' · form_definition_id: fd_foundation_client_inquiry_v1',
+      ].join('\n'),
+    );
+  });
+
+  it('groups fields under a shared path instead of repeating it', () => {
+    const block = renderBatchItemsBlock([
+      item('1', {
+        title: 'Dana Whitfield',
+        metadata: { timeline: 'asap', budget_range: 'under_10k' },
+      }),
+    ]);
+
+    expect(block).toBe(
+      [
+        '  title: Dana Whitfield',
+        '  metadata:',
+        '    timeline: asap',
+        '    budget_range: under_10k',
+      ].join('\n'),
+    );
+  });
+
+  it('leaves a LONE nested field flat — a header would cost more than it saves', () => {
+    expect(
+      renderBatchItemsBlock([item('1', { to: 'ada@x.test', metadata: { timeline: 'asap' } })]),
+    ).toBe('  to: ada@x.test\n  metadata.timeline: asap');
+  });
+
+  it('opens a group with a VALUE-LESS line — never confusable with a field', () => {
+    // The header is parsed BACK by the approval card, which reconstructs
+    // the dotted path and decides its metadata filter on it. That only
+    // works because no DATA can render as a bare `path:` — an empty object
+    // is `(empty)` and an empty string folds onto the `empty:` line, so
+    // `renderInline` never yields the empty string a header is made of.
+    const emptyish = renderBatchItemsBlock([
+      item('1', { a: { x: {}, y: '' }, keep: 'me' }),
+    ]);
+
+    expect(emptyish).toBe('  keep: me\n  empty: x, y');
+    expect(emptyish.split('\n').filter((l) => /:\s*$/.test(l))).toEqual([]);
+
+    // And the only line that IS value-less is a real header.
+    const grouped = renderBatchItemsBlock([
+      item('1', { a: { x: 1, y: 2 } }),
+    ]);
+    expect(grouped.split('\n').filter((l) => /:\s*$/.test(l))).toEqual([
+      '  a:',
+    ]);
+  });
+
+  it('drops a shared prefix on a folded line only while the leaf stays unique', () => {
+    // Unique leaves lose the repeated path…
+    expect(
+      renderBatchItemsBlock([
+        item('1', { to: 'ada@x.test', metadata: { cc: null, bcc: null } }),
+      ]),
+    ).toBe('  to: ada@x.test\n  not set: cc, bcc');
+
+    // …but an ambiguous one keeps it, or the reader cannot tell which of
+    // the two same-named fields the operation actually carries.
+    expect(
+      renderBatchItemsBlock([
+        item('1', { to: 'ada@x.test', cc: null, metadata: { cc: null } }),
+      ]),
+    ).toBe('  to: ada@x.test\n  not set: cc, metadata.cc');
+  });
+
+  it('never folds ids when they are the ONLY fields', () => {
+    // The fold exists to stop bookkeeping crowding out a decision input.
+    // With nothing else on the block there is nothing to crowd, and
+    // hiding an op's only argument behind the word "ids" would leave the
+    // reader approving a call whose target they were never shown.
+    const block = renderBatchItemsBlock([
+      item('1', {
+        id: 'a3f1c2d4-1111-2222-3333-444455556666',
+        record_id: 'rec_ABCdefGHIjklMNO',
+      }),
+    ]);
+
+    expect(block).toBe('  id: a3f1c2d4…\n  record_id: rec_ABCdefGH…');
+  });
+
+  it('shortens the RENDERING only — two uuids sharing a prefix never hoist', () => {
+    // The trap the shortening creates: `rendered` is now lossy, so a
+    // hoist decided on it would assert "All 2 share this id" over two
+    // DIFFERENT records and drop member 2's real target out of the ask.
+    // Commonality is decided on the raw `value`, which the shortening
+    // never touches. (The shared first 8 hex is contrived to force the
+    // case — two real uuids colliding there is a 1-in-4-billion event,
+    // which is why prefix-only rendering is safe for the reader.)
+    const block = renderBatchItemsBlock([
+      item('1', { op: 'archive', id: 'aaaaaaaa-1111-1111-1111-111111111111' }),
+      item('2', { op: 'archive', id: 'aaaaaaaa-2222-2222-2222-222222222222' }),
+    ]);
+
+    expect(block).toBe(
+      [
+        '  All 2 share: op: archive',
+        '  1. id: aaaaaaaa…',
+        '  2. id: aaaaaaaa…',
+      ].join('\n'),
+    );
+  });
+
   it('hoists the fields every member shares and leaves only what varies', () => {
     const block = renderBatchItemsBlock([
       item('1', { connection: 'hubspot-prod', id: 'a', stage: 'won' }),

@@ -362,7 +362,7 @@ export interface ServerConfig {
    *  return `not_configured`. */
   contactDeps?: import('./contact-handler.js').ContactRpcDeps;
   /** D-145 PA11 — Settings → Work Entities Source-management rpc deps.
-   *  Wires `work_entity.source.{list,set_enabled,set_mcp_exposed,
+   *  Wires `work_entity.source.{list,set_enabled,
    *  set_default,clear_default}`. Absent → those methods return
    *  `not_configured`. (D-174 #22: this forward was missing — the deps
    *  were composed in `composeListeners` but never threaded into the WS

@@ -11,7 +11,12 @@
  *  lists these).
  */
 
-import { isMailReconciliationId, isMirrorSearchKind, RpcError } from '@recued/contracts';
+import {
+  collectionSourceFreshnessOf,
+  isMailReconciliationId,
+  isMirrorSearchKind,
+  RpcError,
+} from '@recued/contracts';
 import type {
   CollectionHealth,
   CollectionListQuery,
@@ -19,6 +24,7 @@ import type {
   CollectionRecord,
   CollectionSearchMatch,
   CollectionSearchQuery,
+  CollectionSourceFreshness,
   HandlerSlice,
   MirrorSearchResult,
   ServerRpcRegistry,
@@ -83,6 +89,12 @@ import {
 
 export interface CollectionHandlerDeps {
   registry: CollectionRegistry;
+  /** D-236 — injectable clock for the source-freshness verdict on
+   *  `collection.list` / `.get` / `.search`. Defaults to `Date.now`. Present because a verdict
+   *  derived against a hard-coded clock cannot be asserted at a fixed instant,
+   *  and an age assertion that silently clamps to 0 passes for the wrong
+   *  reason. Mirrors `EnrollOAuthDeps.now`. */
+  now?: () => number;
   /** D-192 Fork B — the remote-file meta-store, so `data.mirror.search`'s
    *  `files` branch surfaces vendor-mirrored files (`storage_ref:remote`)
    *  alongside the CAS `data.file.received` collection. Optional: absent →
@@ -216,7 +228,7 @@ const requireCollection = (
 export const handleCollectionList = async (
   deps: CollectionHandlerDeps,
   args: { platform?: unknown; slug?: unknown; filters?: unknown; since?: unknown; until?: unknown; limit?: unknown },
-): Promise<{ records: CollectionRecord[] }> => {
+): Promise<{ records: CollectionRecord[]; source_freshness: CollectionSourceFreshness }> => {
   const platform = requirePlatform(args.platform);
   const slug = requireSlug(args.slug);
   const collection = requireCollection(deps, platform, slug);
@@ -244,7 +256,11 @@ export const handleCollectionList = async (
     }
     query.limit = args.limit;
   }
-  return { records: collection.list(query) };
+  // D-236 — the freshness verdict rides out with the records it qualifies.
+  return {
+    records: collection.list(query),
+    source_freshness: collectionSourceFreshnessOf(collection.health, (deps.now ?? Date.now)()),
+  };
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -254,7 +270,7 @@ export const handleCollectionList = async (
 export const handleCollectionSearch = async (
   deps: CollectionHandlerDeps,
   args: { platform?: unknown; slug?: unknown; query?: unknown; limit?: unknown },
-): Promise<{ matches: CollectionSearchMatch[] }> => {
+): Promise<{ matches: CollectionSearchMatch[]; source_freshness: CollectionSourceFreshness }> => {
   const platform = requirePlatform(args.platform);
   const slug = requireSlug(args.slug);
   const query = requireString(args.query, 'query');
@@ -266,7 +282,12 @@ export const handleCollectionSearch = async (
     }
     search.limit = args.limit;
   }
-  return { matches: collection.search(search) };
+  // D-236 — a search that finds nothing is an ABSENCE, carrying the same
+  // ambiguity a list does: no match, or not yet synced.
+  return {
+    matches: collection.search(search),
+    source_freshness: collectionSourceFreshnessOf(collection.health, (deps.now ?? Date.now)()),
+  };
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -409,12 +430,18 @@ export const handleMirrorSearch = async (
 export const handleCollectionGet = async (
   deps: CollectionHandlerDeps,
   args: { platform?: unknown; slug?: unknown; record_id?: unknown },
-): Promise<{ record: CollectionRecord | null }> => {
+): Promise<{ record: CollectionRecord | null; source_freshness: CollectionSourceFreshness }> => {
   const platform = requirePlatform(args.platform);
   const slug = requireSlug(args.slug);
   const record_id = requireString(args.record_id, 'record_id');
   const collection = requireCollection(deps, platform, slug);
-  return { record: collection.get(record_id) };
+  // D-236 — a `null` record is an absence too: the id is unknown to the
+  // warehouse, which a lagging source and a genuinely absent record produce
+  // identically.
+  return {
+    record: collection.get(record_id),
+    source_freshness: collectionSourceFreshnessOf(collection.health, (deps.now ?? Date.now)()),
+  };
 };
 
 // ────────────────────────────────────────────────────────────────

@@ -45,12 +45,12 @@ beforeEach(() => {
   for (const id of [SOURCE, OTHER_SOURCE]) {
     store.registerSource({
       id, top_tier_kind: 'task', source_kind: 'connection',
-      source_label: id, write_capable: false, mcp_exposed: false, registered_at: NOW,
+      source_label: id, write_capable: false, registered_at: NOW,
     });
   }
   store.registerSource({
     id: 'hubspot.acme.project', top_tier_kind: 'project', source_kind: 'connection',
-    source_label: 'p', write_capable: false, mcp_exposed: false, registered_at: NOW,
+    source_label: 'p', write_capable: false, registered_at: NOW,
   });
   mirror = createWorkEntitySourceMirrorStore(db, store);
   syncState = createWorkEntitySourceSyncStateStore(db);
@@ -183,7 +183,7 @@ describe('WorkEntitySourceMirrorStore', () => {
   it('note kind roundtrips through writeNote with an empty mirror body (P6)', () => {
     store.registerSource({
       id: 'hubspot.acme.note', top_tier_kind: 'note', source_kind: 'connection',
-      source_label: 'n', write_capable: false, mcp_exposed: false, registered_at: NOW,
+      source_label: 'n', write_capable: false, registered_at: NOW,
     });
     const n = mirror.upsertBySourceIdentity({
       kind: 'note',
@@ -203,7 +203,7 @@ describe('WorkEntitySourceMirrorStore', () => {
   it('note re-upsert preserves last_user_action_at — a sync fold is not a user action', () => {
     store.registerSource({
       id: 'hubspot.acme.note', top_tier_kind: 'note', source_kind: 'connection',
-      source_label: 'n', write_capable: false, mcp_exposed: false, registered_at: NOW,
+      source_label: 'n', write_capable: false, registered_at: NOW,
     });
     const noteWrite = (hash: string) => ({
       kind: 'note' as const,
@@ -225,7 +225,7 @@ describe('WorkEntitySourceMirrorStore', () => {
   it('note re-upsert never clears local-only lanes — body + related_* survive a fold (codex P6 fold)', () => {
     store.registerSource({
       id: 'hubspot.acme.note', top_tier_kind: 'note', source_kind: 'connection',
-      source_label: 'n', write_capable: false, mcp_exposed: false, registered_at: NOW,
+      source_label: 'n', write_capable: false, registered_at: NOW,
     });
     // Seed the mirrored row, then a LOCAL edit writes a complete body +
     // a related contact (what noteUpdate does on a mirrored row).

@@ -284,6 +284,11 @@ describe('D-134 P2 — barrel completeness', () => {
       // Builder ships as `buildMcpToolsDriftProbeTask`; gated on
       // `mcpToolsDriftProbeDeps` (wire-housekeeping-substrate.ts:699).
       'mcp-tools-drift-probe',
+      // D-225 auto-mint — the first-mint retry + backfill. Builder ships as
+      // `buildMcpPackFirstMintTask`; gated on `mcpPackFirstMintDeps`, which are
+      // bound in `composeListeners` (NOT in the post-listener wire — the mint
+      // needs the composition-capable install slice that lives there).
+      'mcp-pack-first-mint',
     ]);
 
     const missing: string[] = [];

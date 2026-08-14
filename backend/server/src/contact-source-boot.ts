@@ -77,10 +77,16 @@ const desiredContactSourceRegistrationsFor = (
  *  never touches the file or work-entity Sources sharing the same registry and the
  *  same connection. `desired` is empty for a deleted row.
  *
- *  Idempotent + toggle-preserving: the desired Source is (re-)registered only when
- *  absent (`getSource` first). `registerSource` is an UPSERT and DOES overwrite
- *  `mcp_exposed` on conflict, so the getSource-first skip is what preserves a user's
- *  Settings opt-in across boot re-scans. */
+ *  Idempotent: the desired Source is (re-)registered only when absent
+ *  (`getSource` first).
+ *
+ *  ⚠ That skip used to be load-bearing for a USER TOGGLE — `registerSource` is
+ *  an UPSERT whose ON CONFLICT overwrote `mcp_exposed`, so skipping was the
+ *  only thing preserving a Settings opt-in across boot re-scans. `mcp_exposed`
+ *  is gone (D-187 Sources half), and the surviving `enabled` toggle is
+ *  preserved by the UPSERT itself (its ON CONFLICT deliberately OMITS the
+ *  column). So the skip now buys idempotence only — keep it, but do not cite
+ *  it as toggle preservation. */
 const reconcileContactSources = (
   store: WorkEntityStore,
   desired: DesiredContactSourceRegistration[],
@@ -115,9 +121,6 @@ const reconcileContactSources = (
       // Read-only in v1: the sync HYDRATES the local contact graph from the CRM and
       // never writes back. There is no write path to flip this true.
       write_capable: false,
-      // MCP-exposure default off (privacy posture — D-136 P7.E); the user opts in
-      // per Source through Settings.
-      mcp_exposed: false,
       registered_at: now,
     });
   }

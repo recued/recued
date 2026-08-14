@@ -870,12 +870,15 @@ describe('D-137 P1.2 — chat.session.set_picker / set_model_pref', () => {
   });
 
   it('set_picker persists + emits chat.session_changed', () => {
+    // ⚠ RE-VEHICLED onto `'self'` — the only target that exists since D-228
+    // slice 5 retired peer scoping. The claim (a set_picker persists and
+    // announces itself) is unchanged; only the value it can carry is.
     handleSetPicker(deps, {
       session_id: 'mint-stub',
-      picker_state: { current: 'connection.mcp.bob' },
+      picker_state: { current: 'self' },
     });
     const session = store.getSession('mint-stub')!;
-    expect(session.picker_state.current).toBe('connection.mcp.bob');
+    expect(session.picker_state.current).toBe('self');
     expect(broadcastedEvents.length).toBe(1);
     const event = broadcastedEvents[0];
     if (event.kind !== 'chat.session_changed') {
@@ -934,16 +937,23 @@ describe('D-137 P1.2 — chat.session.set_picker / set_model_pref', () => {
     ).toThrow(/picker_state\.current must be/);
   });
 
-  it('set_picker accepts connection.mcp.<name> prefix', () => {
+  it('⛔⛔ set_picker REFUSES a connection.mcp.<name> target — peer scoping is retired', () => {
+    // INVERTED, and the inversion is the point. This asserted that a peer target
+    // was ACCEPTED. D-228 slice 5 retired the MCP scope-picker (dead on both
+    // ends; a peer's tools now reach chat as contract-governed pack operations),
+    // so no peer target is valid.
+    //
+    // ⚠ It must REFUSE rather than silently coerce to `'self'`: a caller asking
+    // to scope a conversation at a peer is asking for something this server no
+    // longer does, and answering "fine, I pointed you at yourself" would be a
+    // different conversation than the one they asked for.
     expect(() =>
       handleSetPicker(deps, {
         session_id: 'mint-stub',
         picker_state: { current: 'connection.mcp.carol' },
       }),
-    ).not.toThrow();
-    expect(store.getSession('mint-stub')!.picker_state.current).toBe(
-      'connection.mcp.carol',
-    );
+    ).toThrow(/peer scoping was retired|is not available/);
+    expect(store.getSession('mint-stub')!.picker_state.current).toBe('self');
   });
 
   it('set_picker rejects connection.mcp. with empty <name>', () => {

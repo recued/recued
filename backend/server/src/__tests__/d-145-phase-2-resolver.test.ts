@@ -1,6 +1,6 @@
 /** D-145 PA2 — Source primitive resolver + default-Source memory.
  *
- *  Storage-layer extensions (`getDefaultSource` / `setDefaultSource` /
+ *  ⛔ The default-Source family is DELETED (D-187 Sources half). Formerly (`getDefaultSource` / `setDefaultSource` /
  *  `clearDefaultSource` + `listByKind`) and the substrate-level
  *  `WorkEntityResolver` facade (polymorphic + scoped reads, snapshot
  *  helpers, typed errors). */
@@ -44,7 +44,6 @@ const registerBuiltins = (s: WorkEntityStore): void => {
       source_kind: 'builtin',
       source_label: 'Recued built-in',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: NOW,
     });
   }
@@ -69,109 +68,11 @@ afterEach(() => {
 // Schema — the new default-Source table lands at boot
 // ────────────────────────────────────────────────────────────────
 
-describe('PA2 schema', () => {
-  it('creates the work_entity_default_source table', () => {
-    const row = db
-      .prepare(
-        `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
-      )
-      .get(WORK_ENTITY_DEFAULT_SOURCE_TABLE);
-    expect(row).toBeDefined();
-  });
-
-  it('default-source FK cascades on Source unregister', () => {
-    store.setDefaultSource('task', RECUED_BUILTIN_SOURCE_ID('task'), NOW);
-    expect(store.getDefaultSource('task')).toBe(RECUED_BUILTIN_SOURCE_ID('task'));
-    store.unregisterSource(RECUED_BUILTIN_SOURCE_ID('task'));
-    expect(store.getDefaultSource('task')).toBeNull();
-  });
-});
-
-// ────────────────────────────────────────────────────────────────
-// Default-Source memory — § A.2.2
-// ────────────────────────────────────────────────────────────────
-
-describe('default-Source memory', () => {
-  it('returns null before anything is pinned', () => {
-    for (const kind of WORK_ENTITY_KINDS) {
-      expect(store.getDefaultSource(kind)).toBeNull();
-    }
-  });
-
-  it('round-trips set → get per kind', () => {
-    for (const kind of WORK_ENTITY_KINDS) {
-      const id = RECUED_BUILTIN_SOURCE_ID(kind);
-      store.setDefaultSource(kind, id, NOW);
-      expect(store.getDefaultSource(kind)).toBe(id);
-    }
-  });
-
-  it('per-kind isolation — pinning task does not affect note', () => {
-    store.setDefaultSource('task', RECUED_BUILTIN_SOURCE_ID('task'), NOW);
-    expect(store.getDefaultSource('note')).toBeNull();
-    expect(store.getDefaultSource('commitment')).toBeNull();
-    expect(store.getDefaultSource('project')).toBeNull();
-  });
-
-  it('overwrites on second set', () => {
-    store.registerSource({
-      id: 'hubspot.acme.task',
-      top_tier_kind: 'task',
-      source_kind: 'connection',
-      source_label: 'HubSpot tasks (acme)',
-      write_capable: true,
-      mcp_exposed: false,
-      registered_at: NOW,
-    });
-    store.setDefaultSource('task', RECUED_BUILTIN_SOURCE_ID('task'), NOW);
-    store.setDefaultSource('task', 'hubspot.acme.task', NOW + 1);
-    expect(store.getDefaultSource('task')).toBe('hubspot.acme.task');
-  });
-
-  it('clear removes the pin', () => {
-    store.setDefaultSource('task', RECUED_BUILTIN_SOURCE_ID('task'), NOW);
-    expect(store.clearDefaultSource('task')).toBe(true);
-    expect(store.getDefaultSource('task')).toBeNull();
-  });
-
-  it('clear returns false when nothing was pinned', () => {
-    expect(store.clearDefaultSource('task')).toBe(false);
-  });
-
-  it('rejects unknown source_id', () => {
-    expect(() =>
-      store.setDefaultSource('task', 'recued.nope', NOW),
-    ).toThrow(WorkEntityValidationError);
-  });
-
-  it('rejects kind/Source mismatch (task pinning note Source)', () => {
-    expect(() =>
-      store.setDefaultSource('task', RECUED_BUILTIN_SOURCE_ID('note'), NOW),
-    ).toThrow(/note/);
-  });
-
-  it('rejects unknown kind', () => {
-    expect(() =>
-      store.setDefaultSource('mail_message' as never, 'recued.task', NOW),
-    ).toThrow(WorkEntityValidationError);
-    expect(() => store.getDefaultSource('mail_message' as never)).toThrow(
-      WorkEntityValidationError,
-    );
-    expect(() => store.clearDefaultSource('mail_message' as never)).toThrow(
-      WorkEntityValidationError,
-    );
-  });
-
-  it('rejects empty source_id', () => {
-    expect(() => store.setDefaultSource('task', '', NOW)).toThrow(
-      WorkEntityValidationError,
-    );
-  });
-});
-
-// ────────────────────────────────────────────────────────────────
-// listByKind — store-level polymorphic + scoped read
-// ────────────────────────────────────────────────────────────────
+/* ⛔ The `PA2 schema` (work_entity_default_source table + its FK cascade) and
+ *  `default-Source memory` suites are DELETED (D-187 Sources half). The table
+ *  and the whole get/set/clear family are gone: write routing is
+ *  `explicit source_id ?? built-in local`, so there is no pin to round-trip,
+ *  isolate per kind, or validate against a Source registration. */
 
 describe('store.listByKind', () => {
   beforeEach(() => {
@@ -182,7 +83,6 @@ describe('store.listByKind', () => {
       source_kind: 'connection',
       source_label: 'HubSpot tasks (acme)',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: NOW,
     });
     store.writeTask({ source_id: 'recued.task', title: 'local-task' }, NOW);
@@ -228,7 +128,6 @@ describe('createWorkEntityResolver', () => {
       source_kind: 'connection',
       source_label: 'HubSpot tasks (acme)',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: NOW,
     });
     store.writeTask({ source_id: 'recued.task', title: 'local-task' }, NOW);
@@ -320,7 +219,6 @@ describe('createWorkEntityResolver', () => {
       source_kind: 'connection',
       source_label: 'HubSpot tasks (transient)',
       write_capable: false,
-      mcp_exposed: false,
       registered_at: NOW,
     });
     const t = store.writeTask(
@@ -340,38 +238,8 @@ describe('createWorkEntityResolver', () => {
     expect(all.length).toBe(WORK_ENTITY_KINDS.length + 1); // 4 builtins + 1 hubspot
   });
 
-  it('default-Source memory passthrough', () => {
-    const r = createWorkEntityResolver(store);
-    expect(r.getDefaultSource('task')).toBeNull();
-    r.setDefaultSource('task', RECUED_BUILTIN_SOURCE_ID('task'), NOW);
-    expect(r.getDefaultSource('task')).toBe(RECUED_BUILTIN_SOURCE_ID('task'));
-    expect(r.clearDefaultSource('task')).toBe(true);
-    expect(r.getDefaultSource('task')).toBeNull();
-  });
 
-  it('setDefaultSource wraps storage error in resolver error', () => {
-    const r = createWorkEntityResolver(store);
-    let caught: unknown;
-    try {
-      r.setDefaultSource('task', 'recued.nope', NOW);
-    } catch (e) {
-      caught = e;
-    }
-    expect(caught).toBeInstanceOf(WorkEntityResolverError);
-    expect((caught as WorkEntityResolverError).code).toBe('unknown_source');
-  });
 
-  it('setDefaultSource wraps kind_source_mismatch', () => {
-    const r = createWorkEntityResolver(store);
-    let caught: unknown;
-    try {
-      r.setDefaultSource('task', RECUED_BUILTIN_SOURCE_ID('note'), NOW);
-    } catch (e) {
-      caught = e;
-    }
-    expect(caught).toBeInstanceOf(WorkEntityResolverError);
-    expect((caught as WorkEntityResolverError).code).toBe('kind_source_mismatch');
-  });
 
   it('snapshotByKind returns flat id-keyed map', () => {
     const r = createWorkEntityResolver(store);

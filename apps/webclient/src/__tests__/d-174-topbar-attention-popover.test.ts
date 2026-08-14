@@ -2711,6 +2711,102 @@ describe('D-174 - approval attention top-bar adapter', () => {
     handle.dispose();
   });
 
+  it('collapses the argument payload behind a counted disclosure', async () => {
+    // A real intake hold pushed the Approve button below a dozen lines of
+    // identifiers. The question stays in the open; the payload is one
+    // click away — the shape `renderAskCard` already gives the #approvals
+    // queue and the Bridge panel.
+    const { topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [
+        ask('gw-payload', {
+          title: 'Approve mail-send (write)',
+          text: [
+            'Recipe send-email wants to run mail-send (step send).',
+            'Write actions change data outside Recued, so Recued held it for you.',
+            '',
+            '  to: sam.rivera@meridian-systems.example',
+            '  subject: Re: Renewal',
+            '  not set: cc, bcc, attachments',
+            '',
+            'Approve?',
+          ].join('\n'),
+        }),
+      ],
+    });
+    await handle.whenLoaded();
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    const html = topbar.innerHTML;
+
+    expect(html).toContain('<summary>Details (3)</summary>');
+    // COLLAPSED, NOT DROPPED — the owner decides which fields matter, so
+    // every one of them is still on the surface where they answer.
+    expect(html).toContain('sam.rivera@meridian-systems.example');
+    expect(html).toContain('not set: cc, bcc, attachments');
+    // The question the buttons answer is composed LAST for a reason: it
+    // must not end up behind the disclosure with the payload.
+    const detailsAt = html.indexOf('attention-row-payload');
+    expect(html.indexOf('Approve?')).toBeLessThan(detailsAt);
+    handle.dispose();
+  });
+
+  it('counts FIELDS behind the disclosure, not group headers', async () => {
+    // `metadata:` opens a block and carries no value of its own. Counting
+    // it would promise one more thing behind the disclosure than there is
+    // — and the count is the only thing a reader has to judge a collapsed
+    // payload by before deciding whether to open it.
+    const { topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [
+        ask('gw-grouped', {
+          title: 'Approve intake.materialize (write)',
+          text: [
+            'Recipe intake wants to run intake.materialize (step go).',
+            '',
+            '  title: Dana Whitfield',
+            '  metadata:',
+            '    timeline: asap',
+            '    budget_range: under_10k',
+            '',
+            'Approve?',
+          ].join('\n'),
+        }),
+      ],
+    });
+    await handle.whenLoaded();
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+
+    expect(topbar.innerHTML).toContain('<summary>Details (3)</summary>');
+    // The header and its leaves all survive into the disclosure.
+    expect(topbar.innerHTML).toContain('metadata:');
+    expect(topbar.innerHTML).toContain('budget_range: under_10k');
+    handle.dispose();
+  });
+
+  it('leaves an ask with no indented payload exactly as it was', async () => {
+    // The split is structural, so a custom ask or a peer's question — no
+    // indented lines — renders with no disclosure at all rather than an
+    // empty one.
+    const { topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [
+        ask('gw-plain', {
+          title: 'Review HubSpot write',
+          text: 'Allow update to HubSpot contact?',
+        }),
+      ],
+    });
+    await handle.whenLoaded();
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+
+    expect(topbar.innerHTML).toContain('Allow update to HubSpot contact?');
+    expect(topbar.innerHTML).not.toContain('attention-row-payload');
+    handle.dispose();
+  });
+
   it('renders pending notification.pending_asks entries in the popover list with gateway labels', async () => {
     const { topbar, handle } = mountFor({
       rows: () => [],

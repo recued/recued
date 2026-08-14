@@ -39,9 +39,10 @@
 import type Database from 'better-sqlite3';
 import {
   TLS_CERT_MIN_VALIDITY_MS,
+  isFleetIssuedTlsDomainSource,
+  isTLSDomainCertSource,
   type TLSDomainCertChain,
   type TLSDomainCertListEntry,
-  type TLSDomainCertSource,
   type TLSDomainStore,
   type TLSDomainUploadInput,
   type TLSDomainUploadIssue,
@@ -169,8 +170,13 @@ interface DomainRow {
   last_renewed_at: number | null;
 }
 
-const isKnownSource = (s: string): s is TLSDomainCertSource =>
-  s === 'pro_acme' || s === 'byo_upload';
+/** ⛔ WAS A LOCAL COPY (`s === 'pro_acme' || s === 'byo_upload'`). A copy of a
+ *  closed vocabulary is one that will be a member behind exactly once, and the
+ *  miss is silent: an unrecognized source reads as "row does not exist", so the
+ *  handshake serves nothing and the renewal filter skips it — a certificate
+ *  that is present, valid, and unreachable. D-235 added a third member; the
+ *  copy is now the contract predicate itself. */
+const isKnownSource = isTLSDomainCertSource;
 
 /** Codex W3.6 P2 fold — DNS hostnames are case-insensitive per
  *  RFC 6125 § 6.4.1, but SQLite's default text comparison + our
@@ -315,13 +321,25 @@ export const createSqliteTlsDomainStore = (
     `DELETE FROM tls_domains WHERE domain = @domain`,
   );
 
-  const rowToListEntry = (row: DomainRow): TLSDomainCertListEntry => {
+  /** ⛔⛔ THE FALLBACK USED TO BE `: 'byo_upload'`, AND THAT IS A SILENT
+   *  MIS-LABEL, NOT A GRACEFUL DEGRADATION. `byo_upload` means "the user renews
+   *  this one" — so an unrecognized source (a row written by a newer build the
+   *  operator then rolled back, or a tampered file) would be reported as
+   *  user-managed, excluded from every ACME renewal filter, and expire ~90 days
+   *  later with nothing having said a word. Exactly D-235 § 5.1's shape.
+   *
+   *  Returning `null` and having callers DROP the row makes the same condition
+   *  visible instead: the domain stops resolving to a cert, which is how
+   *  `lookup()` has always treated an unknown source. Absent is loud; mislabelled
+   *  is not. */
+  const rowToListEntry = (row: DomainRow): TLSDomainCertListEntry | null => {
+    if (!isKnownSource(row.source)) return null;
     const entry: TLSDomainCertListEntry = {
       domain: row.domain,
       fingerprint: row.fingerprint,
       expires_at: row.expires_at,
       issuer: row.issuer,
-      source: isKnownSource(row.source) ? row.source : 'byo_upload',
+      source: row.source,
     };
     if (row.last_renewed_at !== null && row.last_renewed_at !== undefined) {
       entry.last_renewed_at = row.last_renewed_at;
@@ -382,7 +400,11 @@ export const createSqliteTlsDomainStore = (
       issuer,
       expires_at: validation.expires_at,
       uploaded_at: at,
-      last_renewed_at: args.source === 'pro_acme' ? at : null,
+      // D-235 — BOTH fleet-issued sources stamp this. Keyed on `=== 'pro_acme'`
+      // it would leave every custom cert with a NULL `last_renewed_at`, which
+      // is the field the Doctor and the UI read to answer "is anything renewing
+      // this?" — so an auto-renewed cert would report as never renewed.
+      last_renewed_at: isFleetIssuedTlsDomainSource(args.source) ? at : null,
     });
     // Warm the decrypted cache with the plaintext we already have.
     // `lookup` from the public listener's SNICallback is synchronous —
@@ -431,7 +453,9 @@ export const createSqliteTlsDomainStore = (
 
   const list = (): TLSDomainCertListEntry[] => {
     const rows = listStmt.all() as DomainRow[];
-    return rows.map(rowToListEntry);
+    return rows
+      .map(rowToListEntry)
+      .filter((e): e is TLSDomainCertListEntry => e !== null);
   };
 
   // D-148 FU2 — same rows as `list()` plus the public `cert_pem` +
@@ -439,17 +463,20 @@ export const createSqliteTlsDomainStore = (
   // private-key blob or the in-RAM decrypted cache.
   const listForHealthCheck = (): SqliteTlsDomainHealthCheckRow[] => {
     const rows = listStmt.all() as DomainRow[];
-    return rows.map((row): SqliteTlsDomainHealthCheckRow => {
-      const base = rowToListEntry(row);
-      const out: SqliteTlsDomainHealthCheckRow = {
-        ...base,
-        cert_pem: row.cert_pem,
-      };
-      if (row.chain_pem !== null && row.chain_pem !== undefined) {
-        out.chain_pem = row.chain_pem;
-      }
-      return out;
-    });
+    return rows
+      .map((row): SqliteTlsDomainHealthCheckRow | null => {
+        const base = rowToListEntry(row);
+        if (base === null) return null;
+        const out: SqliteTlsDomainHealthCheckRow = {
+          ...base,
+          cert_pem: row.cert_pem,
+        };
+        if (row.chain_pem !== null && row.chain_pem !== undefined) {
+          out.chain_pem = row.chain_pem;
+        }
+        return out;
+      })
+      .filter((e): e is SqliteTlsDomainHealthCheckRow => e !== null);
   };
 
   const remove = async (domain: string): Promise<void> => {

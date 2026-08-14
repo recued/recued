@@ -105,6 +105,84 @@ export interface ExecutionGetRequest {
   run_id: string;
 }
 
+/** D-237 P2 — what a run PRODUCED, as opposed to whether it threw.
+ *
+ *  ⛔ WHY THIS EXISTS. `status` ranges over `RunAnchorStatus` and means "no
+ *  exception was thrown"; `output_string` is length-capped free text. Nothing
+ *  else on the run anchor measured output, so **a run that processed 400 items
+ *  and a run that processed none were structurally identical in the audit
+ *  trail** — which is the substrate-level reason this project has repeatedly
+ *  shipped, and only ever caught by a live drive, the same failure: a `foreach`
+ *  whose per-item writes were all rejected reporting `success`, a records import
+ *  that wrote nothing audited `success`, a cursor stall reprocessing nothing
+ *  while reporting `success`. None was findable from the trail, because the
+ *  trail had no field in which the difference could appear.
+ *  Measured at §10.9 of internal design notes.
+ *
+ *  🔑 IT COSTS NO NEW WRITES, AND THAT IS THE DESIGN CONSTRAINT, NOT A BONUS.
+ *  Every number here is derived from the `StepLog`s the engine ALREADY returns
+ *  on `ExecutionResult` and is stamped onto the run-anchor row that is ALREADY
+ *  written once per run. No new row, no new table, no extra store read, and
+ *  nothing added to the per-item path — the audit log grows by four small
+ *  integers per run, not by write frequency.
+ *
+ *  ⛔ AND IT LETS THE COMMIT LOG SHRINK. Per-call commits already cost one row
+ *  per boundary-crossing call (a 400-item `foreach` writes ~400 today, with or
+ *  without this). What the anchor lacked was a durable summary of them, so
+ *  pruning a run's commits destroyed the only evidence of what it did. With the
+ *  yield folded onto the anchor, that evidence survives their eviction — this
+ *  field is a precondition for pruning commits harder, not a reason the log
+ *  grows.
+ *
+ *  ⚠ EMITTED EVEN WHEN EVERY COUNT IS ZERO, deliberately breaking the audit
+ *  substrate's omit-when-falsy convention. A zero yield is the whole signal;
+ *  omitting it would restore exactly the ambiguity this field exists to remove.
+ *  Absent therefore means "row written before D-237", never "produced nothing". */
+export interface RunYield {
+  /** Steps that executed — `skipped === false`. */
+  steps_run: number;
+  /** Steps a condition skipped. 🔑 The field that separates "correctly had
+   *  nothing to do" from "ran and produced nothing", which is the distinction
+   *  the whole field exists for. */
+  steps_skipped: number;
+  /** `foreach` iterations attempted, summed across every step. `0` on a run
+   *  with no `foreach` step — not every run has items. */
+  items_total: number;
+  /** Iterations whose inner step reported an error. ⛔ `items_failed ===
+   *  items_total > 0` is the all-refused run that reports `success: true`,
+   *  because a `foreach` is continue-on-error by design. */
+  items_failed: number;
+}
+
+/** D-237 P2 — derive the run yield from the per-step logs.
+ *
+ *  Pure, and structurally typed rather than importing the engine's `StepLog`,
+ *  which would invert this package's dependency direction. */
+export const deriveRunYield = (
+  steps: ReadonlyArray<{
+    skipped?: boolean;
+    foreach?: { items: number; failed: number };
+  }>,
+): RunYield => {
+  let steps_run = 0;
+  let steps_skipped = 0;
+  let items_total = 0;
+  let items_failed = 0;
+  for (const s of steps) {
+    if (s.skipped === true) steps_skipped += 1;
+    else steps_run += 1;
+    // ⚠ Malformed tallies are SKIPPED, never coerced — a `NaN` total renders a
+    // confident, meaningless yield, which is worse than an absent one. Same
+    // policy the agent-projection tally already applies.
+    const f = s.foreach;
+    if (f !== undefined && Number.isFinite(f.items) && Number.isFinite(f.failed)) {
+      items_total += f.items;
+      items_failed += f.failed;
+    }
+  }
+  return { steps_run, steps_skipped, items_total, items_failed };
+};
+
 export interface RunAuditSummary {
   run_id: string;
   recipe_id: string;
@@ -130,6 +208,9 @@ export interface RunAuditSummary {
   correlation_id?: string;
   checkpoint_id?: string;
   ask_id?: string;
+  /** D-237 P2 — what the run produced. Absent on rows written before D-237;
+   *  present-and-all-zero is a real answer, not a missing one. */
+  run_yield?: RunYield;
 }
 
 export interface RunApprovalCheckpoint {

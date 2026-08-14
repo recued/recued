@@ -91,43 +91,13 @@ export const composeCapacitySpecDeps = (
   };
 };
 
-/** PA11 → PB1 invalidation publisher.
- *
- *  Wraps a `WorkEntityResolver.setSourceEnabled` mutation so that on
- *  toggle the publisher fans out a `source.enabled_changed`
- *  payload. The cache's PA11 join (`connection_active` rows keyed on
- *  the same vendor) drops the row immediately; the next walk halts
- *  with `enroll_connection`.
- *
- *  Source ids follow `<vendor>.<connection_id>.<kind>` (per
- *  `CONNECTION_SOURCE_ID` in `@recued/contracts`) — the publisher
- *  unpacks the parts before publish so the cache layer doesn't need
- *  to re-parse the Source id. Built-in Source ids (`recued.<kind>`)
- *  carry no vendor; the publisher emits a vendor-less payload that
- *  matches every connection_active row (no-op effective-drop). */
-export const publishSourceEnabledChange = (
-  invalidationSource: CapacityInvalidationSource,
-  source_id: string,
-  enabled: boolean,
-): void => {
-  const segments = source_id.split('.');
-  if (segments.length === 3 && segments[0] !== 'recued') {
-    invalidationSource.publish({
-      topic: 'source.enabled_changed',
-      vendor: segments[0]!,
-      entity: segments[2]!,
-      source_id,
-      ...(enabled ? {} : {}),
-    });
-    return;
-  }
-  // Built-in / unknown id shape — fan out vendor-less so the cache
-  // drops every connection_active row (defensive; rare path).
-  invalidationSource.publish({
-    topic: 'source.enabled_changed',
-    source_id,
-  });
-};
+/* ⛔ `publishSourceEnabledChange` was RETIRED here (D-187 Sources half), along
+ *  with the `source.enabled_changed` topic it was the sole publisher for. It
+ *  wrapped `setSourceEnabled`, which is deleted — and it never had a production
+ *  caller even before that: the only references were in
+ *  `d-145-phase-pb1-integration.test.ts`, which invoked it directly and was
+ *  therefore green while certifying nothing about production. */
+
 
 // ── PB3 publish hooks (deferred from PB1 bin wiring) ─────────────────
 //

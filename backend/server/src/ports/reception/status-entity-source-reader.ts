@@ -249,7 +249,7 @@ export const createWarehouseStatusEntitySourceReader = (
     // direct id read that does NOT apply the Source filter, so enforce it
     // here. Missing registration → hide (conservative for a public link).
     const source = deps.workEntityStore.getSource(entity.source_id);
-    if (!source || source.enabled === false) return null;
+    if (!source) return null;
     return buildRow(projection_kind, entity, deps);
   },
 });

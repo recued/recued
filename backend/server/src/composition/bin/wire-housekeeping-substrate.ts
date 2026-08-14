@@ -47,6 +47,9 @@ import type {
 import type {
   McpToolsDriftProbeDeps,
 } from '../../housekeeping/tasks/mcp-tools-drift-probe.js';
+import type {
+  McpPackFirstMintDeps,
+} from '../../housekeeping/tasks/mcp-pack-first-mint.js';
 import type { EnrichmentStore } from '../../storage/enrichment-store.js';
 import type { CrmRecordMirrorStore } from '../../storage/crm-record-mirror-store.js';
 import type { WorkEntityStore } from '../../storage/work-entity-store.js';
@@ -463,6 +466,16 @@ export interface ComposeHousekeepingSchedulerDeps {
    *  not exercising it. */
   mcpToolsDriftProbeDeps?: McpToolsDriftProbeDeps;
 
+  /** D-225 auto-mint — deps for `mcp-pack-first-mint`, the retry + backfill for
+   *  connections that have no generated pack. Built by the caller for the same
+   *  reason as `mcpToolsDriftProbeDeps` above: it needs the connection store AND
+   *  a bound mint, and this composer has neither.
+   *
+   *  ⛔ Absent ⇒ the task does not register ⇒ a connection whose server was down
+   *  at enroll stays at `no_pack` until the owner runs the review chain by hand,
+   *  and the pre-auto-mint backlog is never drained. */
+  mcpPackFirstMintDeps?: McpPackFirstMintDeps;
+
   /** D-148 § A.6.5 TLS cert renewal — registers only when all three
    *  refs are populated (rotation engine + production cert source +
    *  ACME renewer). */
@@ -707,6 +720,19 @@ export const composeHousekeepingScheduler = async (
     );
     registerHousekeepingTask(
       buildMcpToolsDriftProbeTask({ deps: deps.mcpToolsDriftProbeDeps }),
+    );
+  }
+
+  // D-225 auto-mint — `mcp-pack-first-mint`. The enroll-time mint needs a live
+  // `tools/list`, and a server that is asleep must still be enrollable; this is
+  // what comes back for it, and it drains the pre-auto-mint backlog by the same
+  // move. Disjoint population from the drift probe above (no pack vs has one).
+  if (deps.mcpPackFirstMintDeps) {
+    const { buildMcpPackFirstMintTask } = await import(
+      '../../housekeeping/tasks/mcp-pack-first-mint.js'
+    );
+    registerHousekeepingTask(
+      buildMcpPackFirstMintTask({ deps: deps.mcpPackFirstMintDeps }),
     );
   }
 

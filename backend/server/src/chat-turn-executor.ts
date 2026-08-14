@@ -87,7 +87,6 @@ import type {
   ExecuteChatAiCall,
   LlmGatewayToolUsageMeter,
   OrchestratorDispatch,
-  PeerDispatcher,
 } from './chat-orchestrator.js';
 import type {
   ExecutionCaseAugmentationContext,
@@ -1030,7 +1029,6 @@ export interface RunChatTurnDeps {
    *  case stays a quiet substrate signal). */
   readonly executeAiCall?: ExecuteChatAiCall;
   readonly registry: InternalToolRegistry;
-  readonly peerDispatcher?: PeerDispatcher;
   /** The orchestrator's `dispatchTool` — runs the plan-approval gate +
    *  the Self / peer routing split + its own broadcast / audit
    *  envelope. The turn calls it per tool; it is NOT re-implemented
@@ -1669,15 +1667,8 @@ export const runChatTurn = async (
           // Normal chat/MCP omit the meter and retain their existing parallel
           // dispatch behavior.
           if (inputs.llm_gateway_tool_usage !== undefined) return false;
-          if (dispatchPeerName !== null) {
-            // Peer catalogs project as Tier 3 from Mary's side; the
-            // local registry doesn't know them. Sequential is the
-            // safe default until per-peer-tool metadata flows.
-            const peerEntry = deps.peerDispatcher
-              ?.listToolEntries(dispatchPeerName)
-              .find((e) => e.name === toolName);
-            return peerEntry?.concurrency_safe ?? false;
-          }
+          // ⛔ D-228 slice 5 — the peer arm is gone with the scope-picker;
+          // `dispatchPeerName` is always null now.
           return deps.registry.getByName(toolName)?.concurrency_safe ?? false;
         };
         const dispatchOutput = await dispatchToolCalls<ToolCall, ToolCallExecution>({

@@ -37,11 +37,15 @@
 
 import {
   KERNEL_OP_REGISTRY,
+  OWNER_CONTRACT_ID,
+  PEER_ASK_LABEL_MAX,
   READABLE_COLLECTIONS,
   TIER1_TOOL_DESCRIPTORS,
   TIER1_TOOL_NAMES,
   collectionGrantEntry,
   opGrantEntry,
+  parseGrantEntry,
+  peerLabelGrantEntry,
   primitiveGrantEntry,
   topicGrantEntry,
   type CatalogIngredientView,
@@ -273,6 +277,12 @@ export const CONTRACT_GRANTS_OP_FILTER_ATTR = 'data-recued-contract-grants-op-fi
 /** Visible match count / debounce status beside the operation filter. */
 export const CONTRACT_GRANTS_OP_FILTER_STATUS_ATTR =
   'data-recued-contract-grants-op-filter-status';
+export const CONTRACT_GRANTS_PEER_LABEL_INPUT_ATTR =
+  'data-recued-contract-grants-peer-label-input';
+export const CONTRACT_GRANTS_PEER_LABEL_ADD_ATTR =
+  'data-recued-contract-grants-peer-label-add';
+export const CONTRACT_GRANTS_PEER_LABEL_ERROR_ATTR =
+  'data-recued-contract-grants-peer-label-error';
 /** One kind sub-group (Operations / Collections / Topics). Carries `data-kind`. */
 export const CONTRACT_GRANTS_KIND_GROUP_ATTR = 'data-recued-contract-grants-kind';
 /** One toggle-able grant cell. Carries `data-entry` / `data-kind` /
@@ -391,6 +401,8 @@ export interface ContractGrantsPanelMount {
   /** Toggle one entry (grant when off, revoke when on). One `contract.grant.write`
    *  + a reconciling re-read. No-op while that entry's write is in flight. */
   toggleEntry(entryKey: string): Promise<void>;
+  /** Create and grant one default-closed per-peer question label. */
+  addPeerLabel(label: string): Promise<void>;
   /** Host-driven refresh — re-loads the universe + the contract's grants. */
   refresh(): Promise<void>;
   /** Resolves after the most recent load settles. */
@@ -450,6 +462,9 @@ export const mountContractGrantsPanel = (
   let operationFilterDraft = '';
   let operationFilter = '';
   let operationFilterTimer: ReturnType<typeof setTimeout> | null = null;
+  let peerLabelDraft = '';
+  let peerLabelError: string | null = null;
+  let peerLabelAdding = false;
   const renderedCellToggles = new Map<string, HTMLInputElement>();
 
   const opsRoot = doc.createElement('div');
@@ -531,6 +546,17 @@ export const mountContractGrantsPanel = (
         kinds.includes(entry.kind)
         && (entry.kind !== 'op' || operationMatchesFilter(entry)),
     );
+  const peerLabelEntry = (entry_key: string): GrantUniverseEntry | undefined => {
+    const parsed = parseGrantEntry(entry_key);
+    if (parsed.kind !== 'peer_label' || parsed.value === '') return undefined;
+    return {
+      entry_key,
+      kind: 'peer_label',
+      label: parsed.value,
+      group: '',
+      authorDefault: false,
+    };
+  };
   const grantedCount = (kinds: readonly GrantEntryKind[]): { on: number; total: number } => {
     const scoped = entriesOfKinds(kinds);
     let on = 0;
@@ -742,6 +768,38 @@ export const mountContractGrantsPanel = (
       CONTRACT_GRANTS_AXIS_NOTE,
       true,
     );
+    if (contractId !== OWNER_CONTRACT_ID) {
+      const labelForm = doc.createElement('div');
+      labelForm.className = 'cg-peer-label-form';
+      const labelInput = doc.createElement('input');
+      labelInput.setAttribute('type', 'text');
+      labelInput.setAttribute(CONTRACT_GRANTS_PEER_LABEL_INPUT_ATTR, '');
+      labelInput.setAttribute('maxlength', String(PEER_ASK_LABEL_MAX));
+      labelInput.setAttribute('placeholder', 'Question label');
+      labelInput.setAttribute('aria-label', 'Question label this peer may use');
+      labelInput.value = peerLabelDraft;
+      labelInput.addEventListener('input', () => {
+        peerLabelDraft = labelInput.value;
+        peerLabelError = null;
+      });
+      labelForm.appendChild(labelInput);
+      const addLabel = doc.createElement('button');
+      addLabel.setAttribute('type', 'button');
+      addLabel.setAttribute(CONTRACT_GRANTS_PEER_LABEL_ADD_ATTR, '');
+      addLabel.textContent = peerLabelAdding ? 'Adding…' : 'Grant label';
+      if (peerLabelAdding) addLabel.setAttribute('disabled', '');
+      addLabel.addEventListener('click', () => { void runAddPeerLabel(peerLabelDraft); });
+      labelForm.appendChild(addLabel);
+      if (peerLabelError !== null) {
+        appendLine(
+          labelForm,
+          CONTRACT_GRANTS_PEER_LABEL_ERROR_ATTR,
+          'cg-peer-label-error',
+          peerLabelError,
+        );
+      }
+      opsResults.appendChild(labelForm);
+    }
     renderInto(
       entitiesRoot,
       ENTITIES_KINDS,
@@ -805,6 +863,16 @@ export const mountContractGrantsPanel = (
       const universe = buildUniverse(catalog, registry).filter(
         (entry) => opts.explicitGrantRowsOnly !== true || entry.cli === undefined,
       );
+      if (grantsR.status === 'fulfilled') {
+        const known = new Set(universe.map((entry) => entry.entry_key));
+        for (const row of grantsR.value.grants) {
+          if (known.has(row.entry_key)) continue;
+          const entry = peerLabelEntry(row.entry_key);
+          if (entry === undefined) continue;
+          universe.push(entry);
+          known.add(row.entry_key);
+        }
+      }
 
       // The contract's own grant rows are the load's spine — a failure here is a
       // top-level error (the cells would be unanchored author-defaults only).
@@ -856,6 +924,36 @@ export const mountContractGrantsPanel = (
     const m = new Map<string, boolean>();
     for (const g of res.grants) m.set(g.entry_key, g.granted);
     state = { ...state, grants: m };
+  };
+
+  const runAddPeerLabel = async (rawLabel: string): Promise<void> => {
+    if (peerLabelAdding) return;
+    const label = rawLabel.trim();
+    if (label === '' || label.length > PEER_ASK_LABEL_MAX) {
+      peerLabelError = `Enter a label between 1 and ${PEER_ASK_LABEL_MAX} characters.`;
+      render();
+      return;
+    }
+    const entryKey = peerLabelGrantEntry(label);
+    peerLabelAdding = true;
+    peerLabelError = null;
+    render();
+    try {
+      await opts.runGrantWrite({ contract_id: contractId, entry_key: entryKey, granted: true });
+      if (disposed) return;
+      await reloadGrants();
+      if (disposed) return;
+      if (!state.universe.some((entry) => entry.entry_key === entryKey)) {
+        const entry = peerLabelEntry(entryKey);
+        if (entry !== undefined) state = { ...state, universe: [...state.universe, entry] };
+      }
+      peerLabelDraft = '';
+    } catch (err) {
+      if (!disposed) peerLabelError = errMessage(err);
+    } finally {
+      peerLabelAdding = false;
+      if (!disposed) render();
+    }
   };
 
   /** Re-read this contract's cli_reachability rows into `state.cliRows` — the
@@ -950,9 +1048,10 @@ export const mountContractGrantsPanel = (
     isExplicit: (entryKey) => hasExplicit(entryKey),
     getOperationFilter: () => operationFilter,
     toggleEntry: (entryKey) => runToggle(entryKey),
+    addPeerLabel: (label) => runAddPeerLabel(label),
     refresh: () => doRefresh(),
     whenLoaded: () => pendingLoad,
-    hasInFlightWork: () => pendingCells.size > 0,
+    hasInFlightWork: () => pendingCells.size > 0 || peerLabelAdding,
     dispose: () => {
       if (disposed) return;
       disposed = true;
@@ -1042,6 +1141,22 @@ export const CONTRACT_GRANTS_PANEL_STYLES = `
   font-size: 11px;
   color: var(--muted);
   overflow-wrap: anywhere;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-peer-label-form {
+  display: flex;
+  width: 100%;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-peer-label-form input {
+  box-sizing: border-box;
+  flex: 1 1 180px;
+  min-width: 0;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-peer-label-error {
+  flex-basis: 100%;
+  color: var(--danger, #b3261e);
 }
 [${CONTRACT_GRANTS_HOST_ATTR}] .cg-loading,
 [${CONTRACT_GRANTS_HOST_ATTR}] .cg-empty {

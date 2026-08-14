@@ -289,7 +289,6 @@ beforeEach(() => {
     source_kind: 'builtin',
     source_label: 'Recued built-in',
     write_capable: true,
-    mcp_exposed: false,
   });
   calendarCreates = 0;
 });

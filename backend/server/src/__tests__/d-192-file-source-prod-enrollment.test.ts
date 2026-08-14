@@ -202,7 +202,6 @@ describe('D-192 file SOURCE — prod enrollment composition parity', () => {
       source_kind: 'connection',
       sync_posture: 'file_meta_ref',
       write_capable: false,
-      mcp_exposed: false,
     });
   });
 

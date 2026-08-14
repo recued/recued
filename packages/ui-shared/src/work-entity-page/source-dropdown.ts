@@ -95,7 +95,7 @@ const kindShortLabel = (
 
 /** Render Source affordance chips for a single Source — used by the
  *  page header next to the active dropdown selection so the user
- *  sees write-capability / MCP-exposure at a glance without clicking
+ *  sees write-capability at a glance without clicking
  *  through to Settings.  Returns empty string for the All-Sources
  *  sentinel (the chips don't apply at the union level — they're
  *  per-Source affordances). */
@@ -110,10 +110,5 @@ export const renderSourceAffordanceChips = (
       ? `<span class="work-entity-source-chip work-entity-source-chip-write">write</span>`
       : `<span class="work-entity-source-chip work-entity-source-chip-readonly">read-only</span>`,
   );
-  if (option.mcp_exposed) {
-    chips.push(
-      `<span class="work-entity-source-chip work-entity-source-chip-mcp">MCP</span>`,
-    );
-  }
   return `<span class="work-entity-source-chips">${chips.join('')}</span>`;
 };

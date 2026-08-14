@@ -169,6 +169,12 @@ export const proAcmeUnbind = async (
   // Step 1 — validate. The store's `list()` is canonical (lowercase
   // domain key) per W3.6; match by canonical form.
   const existing = opts.store.list().find((e) => e.domain === canonical);
+  // ⚠ D-235 — DELIBERATELY NARROW, do NOT widen to `isFleetIssuedTlsDomainSource`.
+  //   This flow tears down a Pro DDNS SUBDOMAIN plus its cert; a
+  //   `pro_acme_custom` row has no DDNS subdomain to release (the user owns the
+  //   zone), so there is nothing here for it to do and `deriveProAcmeHandle`
+  //   would fail on it a few lines below anyway. Un-enrolling a custom domain
+  //   is `collection.hostname.remove`.
   if (!existing || existing.source !== 'pro_acme') {
     return { ok: false, error: 'pro_acme_not_found', domain: canonical };
   }

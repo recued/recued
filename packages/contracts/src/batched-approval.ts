@@ -338,6 +338,80 @@ const FIELD_SEP_REPLACEMENT = '-';
 const clip = (s: string, max: number): string =>
   s.length <= max ? s : `${s.slice(0, max - 1)}…`;
 
+// ────────────────────────────────────────────────────────────────
+// Shortening + folding — a cut to the SYNTAX, never to the coverage
+// ────────────────────────────────────────────────────────────────
+//
+//  The owner ruling on approval surfaces is that the READER decides which
+//  fields matter, not this module (decisions-log 2026-07-21: *"there's no
+//  way for sure, so the best is laying it out"*). So nothing below removes
+//  a field. What it removes is the space a field costs when it carries
+//  nothing a person can act on:
+//
+//   - A UUID is never verified by eye. It renders as the prefix that still
+//     correlates it with a log line or a vendor console, and no further —
+//     36 characters of hex buy the reader exactly the same decision that 8
+//     do, while pushing the fields that DO decide it off the screen.
+//   - Seven consecutive `(null)` lines are seven lines that say "absent".
+//     The field NAMES are the whole of that information, so they fold onto
+//     one labelled line and every name survives it.
+//   - Identifier bookkeeping folds the same way — but only when it is
+//     actually crowding out something else to read (see `foldIds`), so an
+//     op whose args ARE an id never hides its only argument.
+//
+//  ⚠ Every fold is LABELLED and enumerates its members, because the one
+//  distinction this surface cannot afford to lose is "folded" vs "never in
+//  the payload". `not set: cc, filter` still tells the reader `filter` is
+//  unset on a delete; a field silently omitted does not.
+
+/** A full UUID anywhere inside a value, in any case. */
+const UUID_RE =
+  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+/** How much of an opaque identifier survives: enough to match it against a
+ *  log line, never enough to suggest it was read. The exact bytes stay
+ *  pinned by `canonical_payload_hash` — this bounds the RENDERING. */
+const ID_KEEP = 8;
+
+/** Beyond this an id-ish value is clipped even when it is not a UUID. */
+const ID_VALUE_CLIP = 12;
+
+/** A leaf key whose value is a handle rather than a decision input.
+ *  Matched on the LAST dotted segment, so `metadata.form_definition_id`
+ *  qualifies and a field merely nested under one does not. */
+const ID_KEY_RE = /(?:^|[._-])(id|ids|uuid|guid|hash|etag|token|ref)$/i;
+
+const isIdKey = (label: string): boolean => ID_KEY_RE.test(label);
+
+/** Does this token read as machine entropy rather than as words? Three
+ *  independent tells, any one of which is enough: it is hex, it mixes case
+ *  inside a single unbroken token (base64url ids do; English does not), or
+ *  it is a third digits. Deliberately conservative — a readable slug like
+ *  `fd_foundation_client_inquiry_v1` trips none of them and is left whole,
+ *  because a reader can actually use it. */
+const isOpaqueToken = (t: string): boolean =>
+  t.length >= ID_VALUE_CLIP
+  && /^[A-Za-z0-9]+$/.test(t)
+  && (/^[0-9a-f]+$/i.test(t)
+    || (/[a-z]/.test(t) && /[A-Z]/.test(t))
+    || (t.match(/\d/g) ?? []).length * 3 >= t.length);
+
+/** Shorten the machine identifiers inside one rendered value.
+ *
+ *  UUID collapse applies to EVERY key — a UUID is unreadable wherever it
+ *  appears. The broader opaque-token clip applies only where the KEY says
+ *  the value is an identifier, so a `subject` or a `body` that happens to
+ *  contain a long token is never mangled: prose is the decision input on
+ *  those fields, and this rendering does not get to edit it. */
+const shortenIdentifiers = (label: string, rendered: string): string => {
+  const collapsed = rendered.replace(UUID_RE, (m) => `${m.slice(0, ID_KEEP)}…`);
+  if (!isIdKey(label) || /\s/.test(collapsed)) return collapsed;
+  return collapsed.length > ID_VALUE_CLIP
+    && collapsed.split(/[-_.]/).some(isOpaqueToken)
+    ? `${collapsed.slice(0, ID_VALUE_CLIP)}…`
+    : collapsed;
+};
+
 /** Flatten a value onto one line and strip it of the field separator —
  *  the two characters a value could otherwise use to author the document
  *  it is quoted into, rather than appear inside it.
@@ -448,14 +522,18 @@ const toFields = (
       out.push(...toFields(v, next, depth + 1));
       continue;
     }
+    const label = next.map(neutralize).join('.');
     out.push({
       // `id` is the RAW path — identity must not be neutralized (two keys
       // differing only by a middot are different keys). `label` is the
       // rendering, so it is.
       id: JSON.stringify(next),
-      label: next.map(neutralize).join('.'),
+      label,
       value: v,
-      rendered: renderInline(v),
+      // ⚠ `rendered` is shortened; `value` is NOT. Commonality across batch
+      // members is decided on `value`, so two different uuids can never
+      // hoist into "All N share" on the strength of a shared 8-char prefix.
+      rendered: shortenIdentifiers(label, renderInline(v)),
     });
   }
   return out;
@@ -477,10 +555,124 @@ export const summarizeArgsPreview = (
   );
 };
 
+/** Fold identifier fields onto one line only once there are at least this
+ *  many of them. One id beside four real fields is not what makes a block
+ *  unreadable, and moving it would cost the reader more than it saves. */
+const ID_FOLD_MIN = 2;
+
+/** Members a shared path needs before it earns a header line of its own.
+ *  One `metadata.timeline` reads perfectly well flat, and hoisting it would
+ *  spend a line to save nine characters on the only line under it. */
+const GROUP_MIN = 2;
+
+const parentPath = (label: string): string => {
+  const cut = label.lastIndexOf('.');
+  return cut === -1 ? '' : label.slice(0, cut);
+};
+
+const leafName = (label: string): string =>
+  label.slice(label.lastIndexOf('.') + 1);
+
+/** The label a FOLDED field carries on its one-line row. Dotted paths are
+ *  reduced to the leaf, but ONLY when that leaf names exactly one field in
+ *  the whole payload — otherwise `metadata.contact_id` and `contact_id`
+ *  would both read `contact_id` on the same line, and the reader could no
+ *  longer tell which of the two the operation carries. Ambiguity keeps the
+ *  full path; that is the case worth spending characters on. */
+const foldLabel = (
+  field: PreviewField,
+  all: readonly PreviewField[],
+): string => {
+  const leaf = leafName(field.label);
+  return all.filter((other) => leafName(other.label) === leaf).length === 1
+    ? leaf
+    : field.label;
+};
+
 /** Render `args` as one labeled line per field — the single-member view,
- *  where the reader is judging ONE action and can afford to read it. */
-const renderFieldLines = (fields: readonly PreviewField[]): string =>
-  fields.map((f) => `  ${f.label}: ${f.rendered}`).join('\n');
+ *  where the reader is judging ONE action and can afford to read it.
+ *
+ *  Fields nested under a shared path are GROUPED under a header rather than
+ *  each restating that path: `metadata.timeline` / `metadata.budget_range`
+ *  become a `metadata:` line with its leaves indented under it. The prefix
+ *  is the same on every row it appears on, so repeating it is exactly the
+ *  redundancy that pushes the values — the part being approved — rightward
+ *  off a narrow surface. Grouping is by ADJACENT run: `toFields` emits a
+ *  nested object's leaves contiguously, so runs never reorder the payload.
+ *
+ *  Three kinds of line never earn their own row, and each folds onto one
+ *  labelled line that still names every member (see the shortening block
+ *  above for why folding is not dropping):
+ *
+ *   - `ids:` — identifier bookkeeping, folded ONLY when at least
+ *     {@link ID_FOLD_MIN} of them are competing with a field that actually
+ *     decides something. An op whose only argument is an id keeps it on its
+ *     own line, where it belongs.
+ *   - `not set:` — the absent ones. Wording matches the `/ask` landing
+ *     page's `(not set)`, so the two surfaces the owner reaches from a
+ *     phone say the same word for the same fact.
+ *   - `empty:` — present-and-blank, kept SEPARATE from absent: "the pack
+ *     declared this and nothing filled it" and "this is deliberately
+ *     blank" are different facts about what approve will commit, and on a
+ *     delete `filter` being one or the other is the whole decision. */
+const renderFieldLines = (fields: readonly PreviewField[]): string => {
+  const isBlank = (f: PreviewField): boolean =>
+    f.rendered === NULL_MARK || f.rendered === EMPTY_MARK;
+  const idFields = fields.filter((f) => !isBlank(f) && isIdKey(f.label));
+  // Fold only when something else survives to read. Otherwise the fold
+  // would hide the entire payload behind the word "ids".
+  const foldIds =
+    idFields.length >= ID_FOLD_MIN
+    && fields.some((f) => !isBlank(f) && !isIdKey(f.label));
+  const folded = new Set(foldIds ? idFields.map((f) => f.id) : []);
+
+  const visible = fields.filter((f) => !isBlank(f) && !folded.has(f.id));
+
+  const lines: string[] = [];
+  for (let i = 0; i < visible.length; ) {
+    const parent = parentPath((visible[i] as PreviewField).label);
+    let end = i;
+    while (
+      end < visible.length
+      && parentPath((visible[end] as PreviewField).label) === parent
+    ) {
+      end += 1;
+    }
+    const run = visible.slice(i, end);
+    if (parent !== '' && run.length >= GROUP_MIN) {
+      // ⚠ The header carries NO value, and that is what makes it parseable
+      // as a header rather than as a field: `renderInline` never yields the
+      // empty string (an empty object renders `(empty)` and an empty
+      // string folds onto the `empty:` line), so `<path>:` with nothing
+      // after it can only be a group.
+      lines.push(`  ${parent}:`);
+      for (const f of run) lines.push(`    ${leafName(f.label)}: ${f.rendered}`);
+    } else {
+      for (const f of run) lines.push(`  ${f.label}: ${f.rendered}`);
+    }
+    i = end;
+  }
+
+  if (foldIds) {
+    lines.push(
+      `  ids: `
+        + idFields
+          .map((f) => `${foldLabel(f, fields)}: ${f.rendered}`)
+          .join(FIELD_SEP),
+    );
+  }
+  const absent = fields.filter((f) => f.rendered === NULL_MARK);
+  const empty = fields.filter((f) => f.rendered === EMPTY_MARK);
+  if (absent.length > 0) {
+    lines.push(
+      `  not set: ${absent.map((f) => foldLabel(f, fields)).join(', ')}`,
+    );
+  }
+  if (empty.length > 0) {
+    lines.push(`  empty: ${empty.map((f) => foldLabel(f, fields)).join(', ')}`);
+  }
+  return lines.join('\n');
+};
 
 /** The field ids whose RAW value is identical across every member — the
  *  facts that describe the batch rather than any one item.

@@ -414,10 +414,19 @@ describe('D-145 PB1 — § N.9 cache policies', () => {
     expect(CAPACITY_CACHE_POLICIES.selector_freshness.ttl_ms).toBe(24 * 60 * 60_000);
   });
 
-  it('connection_active subscribes to source.enabled_changed (PA11 join)', () => {
-    expect(CAPACITY_CACHE_POLICIES.connection_active.invalidation_topics).toContain(
-      'source.enabled_changed',
-    );
+  // D-187 Sources half — was 'connection_active subscribes to
+  // source.enabled_changed (PA11 join)'. Inverted: the topic is retired, and
+  // connection_active must keep the three connection-lifecycle topics that
+  // actually invalidated it.
+  it('connection_active no longer subscribes to the retired PA11 topic', () => {
+    const topics: readonly string[] =
+      CAPACITY_CACHE_POLICIES.connection_active.invalidation_topics;
+    expect(topics).not.toContain('source.enabled_changed');
+    expect(topics).toEqual([
+      'connection.enrolled',
+      'connection.disabled',
+      'connection.reprobed',
+    ]);
   });
 
   it('every cache policy invalidation topic is in CAPACITY_INVALIDATION_TOPICS', () => {
@@ -431,8 +440,12 @@ describe('D-145 PB1 — § N.9 cache policies', () => {
 });
 
 describe('D-145 PB1 — § N.11 invalidation topics', () => {
-  it('CAPACITY_INVALIDATION_TOPICS contains source.enabled_changed', () => {
-    expect(CAPACITY_INVALIDATION_TOPICS).toContain('source.enabled_changed');
+  // D-187 Sources half — inverted. The topic is retired from the CLOSED
+  // vocabulary: its only publisher never had a production caller, and the
+  // `setSourceEnabled` toggle it wrapped is deleted, so it could never fire.
+  it('CAPACITY_INVALIDATION_TOPICS no longer carries the retired PA11 topic', () => {
+    expect(CAPACITY_INVALIDATION_TOPICS as readonly string[])
+      .not.toContain('source.enabled_changed');
   });
 });
 

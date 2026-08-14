@@ -264,7 +264,6 @@ const registerNoteSource = (): void => {
     source_kind: 'connection',
     source_label: 'HubSpot notes (acme)',
     write_capable: false,
-    mcp_exposed: false,
     registered_at: NOW,
   });
 };

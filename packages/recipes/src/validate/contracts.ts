@@ -64,6 +64,28 @@ export const validateContracts = (r: Record<string, unknown>, add: AddFn): void 
     if (typeof s.ingredient === 'string' && AI_FUNCTION_REQUIRED_INPUTS[stripCorePrefix(s.ingredient)]) {
       validateAiFunctionInputs(s, path, add);
     }
+
+    // § 234.4p.16c — the `connection` direct-adapter hatch is a HOST
+    // primitive (run-less, kind-pinned, tool-pinned — three D-234
+    // peer-exchange call sites) and recipes may not bind it. The
+    // ENFORCEMENT is at dispatch (`packages/ingredients/src/connection.ts`,
+    // keyed on `stepMeta` presence); this rule exists so the honest
+    // literal case fails at AUTHORING with a message naming the
+    // alternative, rather than at run.
+    //
+    // ⛔ IT IS DELIBERATELY NOT THE ONLY FENCE, and cannot be: a
+    // templated `ingredient: '{{config.slug}}'` is not knowable here,
+    // and inline `recipe.run` payloads never pass through this
+    // validator at all. Anything that reads this rule as the control
+    // will under-fence — the manifest already shipped that mistake as
+    // "Kitchen blocks recipes from binding this", which was never true.
+    if (typeof s.ingredient === 'string'
+      && stripCorePrefix(s.ingredient) === 'connection') {
+      add('error', 'connection_direct_not_recipe_bindable', `${path}.ingredient`,
+        `'${s.ingredient}' is a host dispatch primitive, not a recipe ingredient. `
+        + 'Use the operation the pack declares for this connection — enrolling an MCP '
+        + 'connection generates one op per tool, each with its own risk tier and approval.');
+    }
   }
 };
 

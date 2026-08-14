@@ -44,8 +44,12 @@ import {
   EXPOSURE_PRESET_ROW_ATTR,
   EXPOSURE_PUBLIC_MCP_BTN_ATTR,
   mountExposurePanel,
+  EXPOSURE_CONNECT_BTN_ATTR,
+  EXPOSURE_CONNECT_MODAL_ATTR,
+  EXPOSURE_CONNECT_SNIPPET_ATTR,
   type ExposureMutationResponse,
 } from '../settings/exposure-panel.js';
+import { PUBLIC_MCP_MODAL_COPY } from '../settings/public-mcp-modal.js';
 
 // ──────────────────────────────────────────────────────────────────
 // Fake DOM — TLS-renew panel shape + input value/checked + change-on-
@@ -218,6 +222,9 @@ interface SetupOpts {
   setApexRejectCode?: string;
   /** Omit runSetApex entirely (read-only picker). */
   noSetApex?: boolean;
+  /** Paired server URL for the "Connection example" button. Absent ⇒ the
+   *  button does not render, which is the production fail-quiet. */
+  serverUrl?: string;
 }
 
 const setup = async (over: SetupOpts = {}) => {
@@ -248,6 +255,7 @@ const setup = async (over: SetupOpts = {}) => {
   const mount = mountExposurePanel({
     host: host as unknown as HTMLElement,
     document: doc as unknown as Document,
+    ...(over.serverUrl !== undefined ? { getServerUrl: () => over.serverUrl } : {}),
     runGet: async () => {
       calls.get += 1;
       if (getRejects) throw new Error('boom');
@@ -442,8 +450,13 @@ describe('R26.2 Delta 1 — /mcp.public ack gate', () => {
     expect(findByAttr(host, 'id', titleId ?? '')?.textContent).toBe(
       'Enable public MCP?',
     );
-    expect(findByAttr(host, 'id', descriptionId ?? '')?.textContent).toMatch(
-      /AI agents at remote endpoints/,
+    // ⛔ PIN THE WIRING, NOT THE WORDS. This assertion exists to prove
+    // `aria-describedby` resolves to the acknowledge SUBTITLE; it used to
+    // hardcode a phrase from that copy, so a consent-copy correction broke a
+    // test that was never about the copy. Comparing against the constant keeps
+    // the a11y guarantee and lets the words change.
+    expect(findByAttr(host, 'id', descriptionId ?? '')?.textContent).toBe(
+      PUBLIC_MCP_MODAL_COPY.acknowledge.subtitle,
     );
     expect(mount.getState().publicMcpModal.kind).toBe('open');
   });
@@ -739,5 +752,41 @@ describe('R26.2 Delta 2 — apex picker', () => {
     // Even an otherwise-enabled row is non-interactive without a setter.
     const redirectRow = findByAttr(host, EXPOSURE_APEX_ROW_ATTR, 'redirect');
     expect(redirectRow?.children[0]?.disabled).toBe(true);
+  });
+});
+
+describe('Connection example — the MCP snippet lives where the endpoint is decided', () => {
+  it('renders the button only when a server URL is known', async () => {
+    const withUrl = await setup({ serverUrl: 'ws://127.0.0.1:3001/ws' });
+    expect(findByAttr(withUrl.host, EXPOSURE_CONNECT_BTN_ATTR)).not.toBeNull();
+
+    // ⛔ ABSENT ⇒ NO BUTTON, not a guessed endpoint. A snippet naming the wrong
+    // host sends the owner to debug a connection that was never going to work.
+    const withoutUrl = await setup();
+    expect(findByAttr(withoutUrl.host, EXPOSURE_CONNECT_BTN_ATTR)).toBeNull();
+  });
+
+  it('opens a modal whose snippets carry the REWRITTEN mcp endpoint', async () => {
+    const { host } = await setup({ serverUrl: 'ws://127.0.0.1:3001/ws' });
+    expect(findByAttr(host, EXPOSURE_CONNECT_MODAL_ATTR)).toBeNull();
+
+    const btn = findByAttr(host, EXPOSURE_CONNECT_BTN_ATTR);
+    (btn as unknown as { click: () => void }).click();
+
+    expect(findByAttr(host, EXPOSURE_CONNECT_MODAL_ATTR)).not.toBeNull();
+
+    // 🔑 THE REWRITE IS THE ASSERTION. `ws://…/ws` is the pairing socket; an MCP
+    // client needs `http://…/mcp`. A snippet that echoed the raw server URL
+    // would render, look right, and never connect. Asserted on the snippet
+    // ELEMENT rather than the modal's aggregate text: this suite's fake DOM does
+    // not roll `textContent` up through children, so an aggregate read is
+    // vacuously '' and would pass any assertion phrased as `.not.toContain`.
+    for (const id of ['claude', 'cursor', 'codex', 'custom']) {
+      const pre = findByAttr(host, EXPOSURE_CONNECT_SNIPPET_ATTR, id);
+      expect(pre, id).not.toBeNull();
+      const body = (pre as unknown as { textContent: string }).textContent;
+      expect(body, id).toContain('http://127.0.0.1:3001/mcp');
+      expect(body, id).not.toContain('ws://');
+    }
   });
 });

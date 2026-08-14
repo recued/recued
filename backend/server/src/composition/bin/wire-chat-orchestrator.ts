@@ -119,6 +119,7 @@ import {
 } from '../../storage/execution-case-authored-store.js';
 import { createScopedGrantSuggestionStore } from '../../storage/scoped-grant-suggestion-store.js';
 import { createConnectionCatalogBindingStore } from '../../storage/connection-catalog-binding-store.js';
+import { createChatConnectionPackCoverage } from '../../chat-connection-pack-coverage.js';
 import type { ContractStore } from '../../storage/contract-store.js';
 import { createContractDefinitionStore } from '../../storage/contract-definition-store.js';
 import type { WorkEntityResolver } from '../../work-entity-resolver.js';
@@ -541,6 +542,28 @@ export const composeChatOrchestrator = (
   // D-137 Trio #A — Tier 1 handlers + Tier 2 source/manifest/dispatch.
   // Late-bound getters resolve at dispatch time so the registry
   // composes before collection / executor / executeDeps are built.
+  // ⛔⛔ D-228 slice 3 — ONE coverage lookup, TWO consumers, built ONCE.
+  // The chat CATALOG withdraws a covered Tier-3 name and the Tier-3 DISPATCH
+  // refuses it, and those two must answer identically: a name the catalog still
+  // advertises but the dispatch refuses is a broken tool, and the reverse is the
+  // weaker gate reachable by anyone who remembers the name. Two independently
+  // built closures would be free to drift, which is precisely how
+  // § 234.4p.16d's deps slice went wrong one subsystem over.
+  //
+  // Late-bound off the same getters everything else here uses, so a pack
+  // installed mid-session takes effect on the next turn.
+  const connectionMcpPackCoverage = (
+    connection_name: string,
+  ): ReadonlySet<string> | undefined => {
+    const contractStore = getContractStore?.();
+    const manifests = getExecutorConfig()?.manifests;
+    if (!contractStore || !manifests) return undefined;
+    return createChatConnectionPackCoverage({
+      bindingStore: createConnectionCatalogBindingStore(contractStore),
+      getManifest: (slug) => manifests.get(slug),
+    })(connection_name);
+  };
+
   const chatToolRegistryInputs = buildChatToolRegistryInputs({
     getContactStore,
     getCollectionRegistry,
@@ -593,6 +616,9 @@ export const composeChatOrchestrator = (
       );
     },
     getConnectionMcpAnnotations: () => listLiveMcpAnnotations(),
+    // D-228 slice 3 — the dispatch half of the swap (the catalog half is on the
+    // orchestrator below, and it is the SAME closure).
+    connectionMcpPackCoverage,
     // D-187 AMENDMENT — the chat `enrichment.search` mcp-wire reject resolves a topic's
     // `enrichment.<topic>` grant against the chat's bound contract, gated to standing
     // policy contracts. The resolver is a stateless wrapper over the SAME contract store,
@@ -723,10 +749,9 @@ export const composeChatOrchestrator = (
     manifestLookup: chatToolRegistryInputs.manifestLookup,
     opKindLookup,
     tier2Dispatch: chatToolRegistryInputs.tier2Dispatch,
-    tier3Dispatch: chatToolRegistryInputs.tier3Dispatch,
-    tier3Source: {
-      listAnnotations: () => listLiveMcpAnnotations(),
-    },
+    // ⛔ D-228 slice 4 — no `tier3Dispatch` / `tier3Source`. The tier-3 catalog
+    // projects empty since `tool_overrides` was deleted; wiring a source into a
+    // producer that returns `[]` would only suggest it still does something.
   });
 
   // D-164 per-topic enrichment entries — CHAT-ONLY registry view. The
@@ -1062,6 +1087,9 @@ export const composeChatOrchestrator = (
     // D-225 § 9.8.1 — raw catalog ops, DERIVED per turn from the caller's
     // contract. The source fails closed on an absent turn source, so a bare
     // harness gets no raw ops rather than an unfiltered catalog.
+    // D-228 slice 3 — the catalog half of the swap. SAME closure the Tier-3
+    // dispatch got above; see its definition for why that matters.
+    connectionMcpPackCoverage,
     rawOpSource: chatToolRegistryInputs.rawOpSource,
     // The paired dispatch half. Raw ops stay outside InternalToolRegistry
     // because their visible set is contract-derived per turn; the orchestrator
@@ -1142,6 +1170,11 @@ export const composeChatOrchestrator = (
     store: chatStore,
     toolCatalogStore,
     connectionMcpStore,
+    // D-228 slice 4 — the picker's visibility predicate, off the SAME coverage
+    // closure the chat catalog and the Tier-3 retirement use. A peer surfaces in
+    // the scope switcher iff its tools are reachable as governed pack ops.
+    connectionMcpCoveredToolCount: (name: string) =>
+      connectionMcpPackCoverage(name)?.size ?? 0,
     orchestrator,
     broadcast,
     ...(auditLog ? { auditLog } : {}),

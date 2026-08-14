@@ -117,7 +117,6 @@ describe('D-145 PA6 — renderSourceDropdown', () => {
         label: '<script>alert(1)</script>',
         source_kind: 'connection',
         write_capable: false,
-        mcp_exposed: false,
       },
     ];
     const html = renderSourceDropdown({
@@ -155,11 +154,15 @@ describe('D-145 PA6 — renderSourceAffordanceChips', () => {
     expect(html).toContain('>read-only<');
   });
 
-  it('renders MCP chip for mcp-exposed Sources', () => {
+  // D-187 Sources half — was 'renders MCP chip for mcp-exposed Sources'. The
+  // chip is gone with the flag: the dropdown is a data-plane picker and AI
+  // read access is a contract grant, so there is no exposure state to badge.
+  // Asserted as an ABSENCE so a reintroduced chip reds here.
+  it('renders no MCP chip — exposure is not a Source affordance', () => {
     const opts = buildSourceDropdownOptions('task', [builtinTask()]);
     const html = renderSourceAffordanceChips(opts[1]);
-    expect(html).toContain('work-entity-source-chip-mcp');
-    expect(html).toContain('>MCP<');
+    expect(html).not.toContain('work-entity-source-chip-mcp');
+    expect(html).not.toContain('>MCP<');
   });
 
   it('omits MCP chip when not exposed', () => {

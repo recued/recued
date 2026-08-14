@@ -404,7 +404,9 @@ export const RECEPTION_DESTINATION_SOURCES_OPTIONS_SOURCE =
 export interface ReceptionDestinationOption {
   id: string;
   label: string;
-  sublabel: string;
+  /** Optional second line. Omitted for destinations, whose label already
+   *  names both the kind and the Source — see the mapper below. */
+  sublabel?: string;
 }
 
 /** True for a destination field the inbox can hydrate into a live ref-picker
@@ -416,22 +418,58 @@ export const isReceptionDestinationPickerField = (
 ): boolean =>
   field.options_source === RECEPTION_DESTINATION_SOURCES_OPTIONS_SOURCE;
 
+/** Kind names in the DESTINATION voice. Deliberately not
+ *  {@link SOURCE_TOP_TIER_COPY}, which is PLURAL because it heads a group of
+ *  rows ("Tasks" over N tasks). A destination names the ONE thing this
+ *  request is about to become, so it reads "Task" — and bending one map to
+ *  both jobs would make every group heading singular to fix a picker. */
+const DESTINATION_KIND_COPY: Readonly<
+  Record<ReceptionInboxTopTierKind, string>
+> = {
+  form_response: 'Form response',
+  task: 'Task',
+  note: 'Note',
+  commitment: 'Commitment',
+  project: 'Project',
+  booking: 'Booking',
+  mail_message: 'Mail message',
+  'calendar.event': 'Calendar event',
+  contact: 'Contact',
+  file: 'File',
+};
+
 /** Project the work-entity Source registry into destination ref-picker
  *  options. Only write-capable + enabled Sources can receive a reception
  *  materialisation (the boot wire registers builtins `write_capable: true`;
  *  unproven external Sources stay `false` until a write succeeds), so
  *  read-only / disabled Sources are excluded rather than offered as a
- *  destination that would fail at approve. Label = the human Source name;
- *  sublabel = its top-tier kind for disambiguation. */
+ *  destination that would fail at approve.
+ *
+ *  ⛔ THE KIND LEADS THE LABEL, AND THE LABEL CARRIES BOTH FACTS. The Source
+ *  name alone cannot identify a destination: `autoRegisterRecuedBuiltinSources`
+ *  labels EVERY built-in "Recued built-in" — one per kind — so a label of
+ *  `source_label` rendered four identical rows, and the ref-picker commits
+ *  the LABEL alone into its input (correctly: it is a name→id combobox, and
+ *  a sublabel there is the record id on other consumers). The kind was in
+ *  the sublabel, which the collapsed input never shows, so whichever of the
+ *  four you picked the field then read "Recued built-in".
+ *
+ *  ⚠ And the mirror of that bug is why the Source name stays: a kind-only
+ *  label collides the moment a second Source serves one kind — D-129/D-130
+ *  register `hubspot.<conn>.task` / `salesforce.<conn>.task`, which are
+ *  filtered out here only until their first successful write flips
+ *  `write_capable`. Naming both is what is true in either world. */
 export const mapSourceRegistrationsToDestinationOptions = (
   sources: ReadonlyArray<SourceRegistration>,
 ): ReceptionDestinationOption[] =>
   sources
-    .filter((source) => source.write_capable === true && source.enabled !== false)
+    .filter((source) => source.write_capable === true)
     .map((source) => ({
       id: source.id,
-      label: source.source_label,
-      sublabel: SOURCE_TOP_TIER_COPY[source.top_tier_kind],
+      // No sublabel: it would repeat the half of the label sitting beside
+      // it. The label is self-sufficient because it HAS to be — the commit
+      // path shows nothing else.
+      label: `${DESTINATION_KIND_COPY[source.top_tier_kind]} · ${source.source_label}`,
     }));
 
 /** Decide whether a staged destination pick is a real edit: a non-empty id

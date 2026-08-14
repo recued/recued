@@ -279,17 +279,32 @@ const admitBoundInboundToken = (
   // ordinary/unbound doors use the inbound-token checklist. Reproduce that
   // split exactly. The raw dispatcher still applies its declared-operation
   // gate later, so both the Tier-P wire op and backing catalog op stay live.
-  if (
-    boundContractKind === 'customer_instance'
-    && input.required_raw_op_id !== undefined
-  ) {
+  // § 234.4p.16e — a RAW OP re-presents against the CONTRACT at every door, not
+  // only a D-196 customer instance.
+  //
+  // ⛔⛔ THIS WAS THE FOURTH ENFORCEMENT POINT AND ONLY A DRIVE FOUND IT. The
+  // enumeration and both dispatch gates were widened in `mcp-server.ts`; reading
+  // their call sites found three. This one lives in another file under another
+  // predicate, so an ordinary door's resume still fell to
+  // `requiredGrantAdmitted` — the per-token CHECKLIST, which can never contain a
+  // `recued_op_*` name because `chat.inbound_token.issue` refuses to write one.
+  // The visible effect was a held call the owner APPROVED and that then failed
+  // terminal with "bearer no longer grants the approved top-level tool": a
+  // denial phrased as revocation for a grant that was never expressible.
+  // ⇒ Count enforcement points by driving PAST an approval, never by reading.
+  //
+  // ⚠ The owner is unaffected: `isOpGranted` returns true when no governing
+  // contract gates the op, so a contract-free / unbound resume still admits.
+  if (input.required_raw_op_id !== undefined) {
     if (
       input.required_raw_op_id.length === 0
       || deps.opAdmissionGate?.isOpGranted(source, input.required_raw_op_id) !== true
     ) {
       return deny(
         'contract_grant_revoked',
-        `customer contract '${contractId}' no longer grants raw op '${input.required_raw_op_id}'`,
+        boundContractKind === 'customer_instance'
+          ? `customer contract '${contractId}' no longer grants raw op '${input.required_raw_op_id}'`
+          : `contract '${contractId}' no longer grants raw op '${input.required_raw_op_id}'`,
       );
     }
   } else if (!requiredGrantAdmitted(token, input.required_bearer_tool_names, now)) {

@@ -359,6 +359,25 @@ export const ATTENTION_TOPBAR_STYLES = `
 [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-reason {
   white-space: pre-wrap;
 }
+/* The argument payload, collapsed. The summary carries its own line count,
+   so a reader can tell a short call from a wide one without opening it. */
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-payload {
+  min-width: 0;
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-payload > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--fg-muted, #71717a);
+  /* A 36px row elsewhere in this popover is the touch target; a disclosure
+     twirl that is only as tall as its text is one a thumb misses. */
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-payload > .attention-row-reason {
+  display: block;
+  margin-top: 3px;
+}
 [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-actions {
   display: inline-flex;
   flex-wrap: wrap;
@@ -1122,6 +1141,70 @@ const optionModifierClass = (label: string): string => {
   return '';
 };
 
+/** Split a gateway ask body into the part that asks the question and the
+ *  indented payload that answers "with what?".
+ *
+ *  The split is STRUCTURAL, not a guess: `buildPreflightAsk` writes its
+ *  prose flush-left and every argument line indented by two spaces, so the
+ *  leading whitespace IS the marker — no sentence pattern to drift against
+ *  the server that writes it. An ask with no indented lines (a custom ask,
+ *  a peer's question) yields an empty payload and renders exactly as it
+ *  always did.
+ *
+ *  ⚠ Order is preserved within each part and NOTHING is discarded: the
+ *  closing question is flush-left, so it stays with the prose where the
+ *  buttons are, which is the placement `buildPreflightAsk` composes it last
+ *  to get. */
+const splitGatewayAskBody = (
+  text: string,
+): { prose: string; payload: string; fieldCount: number } => {
+  const lines = text.split(/\r?\n/);
+  const payloadLines = lines.filter((line) => /^\s{2,}\S/.test(line));
+  if (payloadLines.length === 0) {
+    return { prose: text, payload: '', fieldCount: 0 };
+  }
+  const prose = lines
+    .filter((line) => !/^\s{2,}\S/.test(line))
+    .join('\n')
+    // The payload left a blank line behind on both sides of itself.
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return {
+    prose,
+    payload: payloadLines.join('\n'),
+    // ⚠ Group HEADERS are not fields. `metadata:` opens a block and carries
+    // no value of its own, so counting it would tell the reader there is one
+    // more thing behind the disclosure than there is — and the count is the
+    // only thing they have to judge a collapsed payload by.
+    fieldCount: payloadLines.filter((line) => !/:\s*$/.test(line)).length,
+  };
+};
+
+/** The ask body as a popover row: the question in the open, the argument
+ *  payload one click away.
+ *
+ *  ⚠ COLLAPSED, NOT DROPPED, and the summary states HOW MANY lines are
+ *  behind it — the owner ruling on approval surfaces is that the reader
+ *  decides which fields matter (decisions-log 2026-07-21), so the payload
+ *  has to stay reachable from the surface where they answer. This is the
+ *  same shape `renderAskCard` gives the #approvals queue and the Bridge
+ *  panel; the popover was the one surface still rendering the whole
+ *  document inline, which on a real intake hold pushed the buttons below
+ *  a dozen lines of identifiers. */
+const renderGatewayAskBody = (text: string): string => {
+  const { prose, payload, fieldCount } = splitGatewayAskBody(text);
+  const proseHtml =
+    prose === ''
+      ? ''
+      : `<span class="attention-row-reason">${escapeHtml(prose)}</span>`;
+  if (payload === '') return proseHtml;
+  return `${proseHtml}
+        <details class="attention-row-payload">
+          <summary>Details (${fieldCount})</summary>
+          <span class="attention-row-reason">${escapeHtml(payload)}</span>
+        </details>`;
+};
+
 const renderGatewayAskRow = (
   ask: ServerPendingAsk,
   resolving: ReadonlySet<string>,
@@ -1158,7 +1241,7 @@ const renderGatewayAskRow = (
       <div class="attention-row-body">
         <h3 class="attention-row-title">${escapeHtml(title)}</h3>
         <span class="attention-row-meta">Connected action &middot; Answer to continue</span>
-        ${showBody ? `<span class="attention-row-reason">${escapeHtml(ask.text)}</span>` : ''}
+        ${showBody ? renderGatewayAskBody(ask.text) : ''}
       </div>
       <div class="attention-row-actions">
         ${optionButtons}

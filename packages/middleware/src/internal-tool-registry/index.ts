@@ -35,7 +35,6 @@ import {
   TIER1_TOOL_DESCRIPTORS,
   TIER1_TOOL_NAME_SET,
   TIER1_TOOL_NAMES,
-  buildTier3Catalog,
   type ChatDispatchContext,
   type ChatDispatchResult,
   type ConnectionMcpAnnotationState,
@@ -357,15 +356,20 @@ export const createInternalToolRegistry = (
   const projectTier2 = (): ReadonlyArray<ToolEntry> =>
     buildTier2Catalog(tier2Source.listRecipes(), manifestLookup, opKindLookup);
 
-  /** D-137 W2.3 — Build a fresh Tier 3 snapshot. Pulled on every
-   *  catalog read; cost is O(N_connections × N_cached_tools_per_conn).
-   *  Both are bounded — Mary typically has a small number of MCP
-   *  enrollments and each advertises a small tool list — so per-turn
-   *  re-projection is cheap. Settings → Connections classification
-   *  surfaces at the next `list()` call without an explicit refresh
-   *  signal. */
-  const projectTier3 = (): ReadonlyArray<ToolEntry> =>
-    buildTier3Catalog(tier3Source.listAnnotations());
+  /** ⛔⛔ D-228 slice 4 — ALWAYS EMPTY. Tier 3 projected `<connection>.<tool>`
+   *  entries from `tool_overrides`, the chat presentation store D-225 named as
+   *  the standing defect; that store is deleted and an enrolled MCP tool now
+   *  reaches chat exactly once, as a contract-governed `recued_op_*` pack
+   *  operation.
+   *
+   *  ⚠ The TIER ITSELF IS NOT NARROWED OUT of `ToolEntry`, and the seams around
+   *  it (`tier3Source`, `tier3Dispatch`, the prompt-cache's `tier !== 3` filter)
+   *  stay. Narrowing a shipped union is the change that breaks a consumer nobody
+   *  remembered; an empty producer breaks nothing and reads honestly. */
+  const projectTier3 = (): ReadonlyArray<ToolEntry> => {
+    void tier3Source;
+    return [];
+  };
 
   const projectTier1ForList = (): ReadonlyArray<ToolEntry> => {
     if (hiddenUnbackedTier1Tools.size === 0) return tier1Catalog;

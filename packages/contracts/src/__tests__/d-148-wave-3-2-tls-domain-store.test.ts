@@ -60,13 +60,22 @@ import {
 // ────────────────────────────────────────────────────────────────
 
 describe('D-148 W3.2 — TLS_DOMAIN_CERT_SOURCES closed list', () => {
-  it('enumerates exactly 2 distinct sources', () => {
-    expect(TLS_DOMAIN_CERT_SOURCES.length).toBe(2);
-    expect(new Set(TLS_DOMAIN_CERT_SOURCES).size).toBe(2);
+  // D-235 added `pro_acme_custom` — a hostname the USER owns that the fleet
+  // still issues and renews, via a `_acme-challenge` CNAME delegated into the
+  // fleet's zone. It is a separate member rather than a flag on `pro_acme`
+  // because renewal, failure handling and the delegation watch all differ; see
+  // D-235 § 7 / § 8.5.
+  it('enumerates exactly 3 distinct sources', () => {
+    expect(TLS_DOMAIN_CERT_SOURCES.length).toBe(3);
+    expect(new Set(TLS_DOMAIN_CERT_SOURCES).size).toBe(3);
   });
 
-  it('canonical order matches spec § A.6.3', () => {
-    expect([...TLS_DOMAIN_CERT_SOURCES]).toEqual(['pro_acme', 'byo_upload']);
+  it('canonical order matches spec § A.6.3 + D-235', () => {
+    expect([...TLS_DOMAIN_CERT_SOURCES]).toEqual([
+      'pro_acme',
+      'pro_acme_custom',
+      'byo_upload',
+    ]);
   });
 
   it('isTLSDomainCertSource accepts both members', () => {
@@ -105,10 +114,21 @@ describe('D-148 W3.2 — NETWORK_ERROR_CODES TLS widening', () => {
     // `tls_pro_acme_unbind_required` to gate Pro-managed cert removal.
     // FU5 adds the two `pro_acme.unbind`-substrate error codes:
     // `pro_acme_not_found` + `pro_acme_ddns_release_failed`.
+    // D-235 adds `tls_custom_domain_unenroll_required` — the `pro_acme_custom`
+    // sibling of `tls_pro_acme_unbind_required`, separate because the remedy
+    // differs (a custom domain has no DDNS subdomain to unbind; what holds the
+    // row is the hostname-registry entry).
+    // `acme_rate_limited` splits the cloud helper's HTTP 429 out of the
+    // buckets it used to land in. On the initial-issuance rpc it was falling
+    // through to `storage_io_error` — telling an operator who hit the daily
+    // ceiling that their certificate "could not be stored", which points the
+    // investigation at the disk instead of at the clock.
     // Final list: 9 carried-forward legacy + 4 W3.1 path codes + 5 W3.2
-    // TLS codes + 1 FU4 code + 2 FU5 codes + 3 D-176 apex-mode codes = 24 total.
-    expect(NETWORK_ERROR_CODES.length).toBe(24);
-    expect(new Set(NETWORK_ERROR_CODES).size).toBe(24);
+    // TLS codes + 1 FU4 code + 2 FU5 codes + 3 D-176 apex-mode codes
+    // + 1 D-235 code + 1 rate-limit code = 26 total.
+    expect(NETWORK_ERROR_CODES.length).toBe(26);
+    expect(new Set(NETWORK_ERROR_CODES).size).toBe(26);
+    expect(NETWORK_ERROR_CODES).toContain('tls_custom_domain_unenroll_required');
     // Spot-check carried-forward codes still present.
     expect(NETWORK_ERROR_CODES).toContain('preset_unknown');
     expect(NETWORK_ERROR_CODES).toContain('preset_unachievable_no_ddns');

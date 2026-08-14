@@ -17,8 +17,8 @@
  *      permission_revoked; unreachable → quota_suspended; ok / unknown
  *      / null → empty)
  *    - appendUniqueReason pure cases (deduplication invariant)
- *    - detectDegradationReasons pure cases (enabled flag + missing
- *      connection + health-driven reasons; dedup across signals)
+ *    - detectDegradationReasons pure cases (missing connection +
+ *      health-driven reasons; dedup across signals)
  *    - SQL helpers — `findConnectionByName` probe order +
  *      missing-table tolerance; `computeLastSeenAtForSource` MAX
  *      across four tables + tombstone / orphan exclusion + missing
@@ -239,9 +239,7 @@ const fakeSource = (
   source_kind: overrides.source_kind ?? 'builtin',
   source_label: overrides.source_label ?? overrides.id,
   write_capable: overrides.write_capable ?? true,
-  mcp_exposed: overrides.mcp_exposed ?? false,
   registered_at: overrides.registered_at ?? NOW - 30 * ONE_DAY,
-  ...(overrides.enabled !== undefined ? { enabled: overrides.enabled } : {}),
   ...(overrides.schema_extension_blob !== undefined
     ? { schema_extension_blob: overrides.schema_extension_blob }
     : {}),
@@ -484,11 +482,6 @@ describe('parseConnectionHealth', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('reasonsFromConnectionHealth', () => {
-  it('maps auth_failed → permission_revoked', () => {
-    expect(reasonsFromConnectionHealth({ status: 'auth_failed' })).toEqual([
-      'permission_revoked',
-    ]);
-  });
 
   it('maps unreachable → quota_suspended', () => {
     expect(reasonsFromConnectionHealth({ status: 'unreachable' })).toEqual([
@@ -513,32 +506,6 @@ describe('reasonsFromConnectionHealth', () => {
 // Pure helper — appendUniqueReason
 // ────────────────────────────────────────────────────────────────
 
-describe('appendUniqueReason', () => {
-  it('appends a new reason', () => {
-    const r: ('permission_revoked' | 'quota_suspended')[] = [];
-    appendUniqueReason(r, 'permission_revoked');
-    expect(r).toEqual(['permission_revoked']);
-  });
-
-  it('skips a duplicate reason', () => {
-    const r: ('permission_revoked')[] = ['permission_revoked'];
-    appendUniqueReason(r, 'permission_revoked');
-    expect(r).toEqual(['permission_revoked']);
-  });
-
-  it('preserves insertion order across multiple appends', () => {
-    const r: ('permission_revoked' | 'quota_suspended' | 'rate_limit_active')[] = [];
-    appendUniqueReason(r, 'permission_revoked');
-    appendUniqueReason(r, 'quota_suspended');
-    appendUniqueReason(r, 'permission_revoked');
-    appendUniqueReason(r, 'rate_limit_active');
-    expect(r).toEqual([
-      'permission_revoked',
-      'quota_suspended',
-      'rate_limit_active',
-    ]);
-  });
-});
 
 // ────────────────────────────────────────────────────────────────
 // Pure helper — detectDegradationReasons
@@ -547,49 +514,13 @@ describe('appendUniqueReason', () => {
 const noopResolveConnection = (): SourceFreshnessConnectionLookupRow | null => null;
 
 describe('detectDegradationReasons', () => {
-  it('flags permission_revoked on a builtin Source whose enabled=false', () => {
-    const source = fakeSource({
-      id: 'recued.task',
-      source_kind: 'builtin',
-      enabled: false,
-    });
-    expect(detectDegradationReasons(source, noopResolveConnection)).toEqual([
-      'permission_revoked',
-    ]);
-  });
 
-  it('flags permission_revoked on a connection Source with missing backing connection', () => {
-    const source = fakeSource({
-      id: 'hubspot.conn_1.task',
-      source_kind: 'connection',
-      enabled: true,
-    });
-    expect(detectDegradationReasons(source, () => null)).toEqual([
-      'permission_revoked',
-    ]);
-  });
 
-  it('flags permission_revoked on a connection Source whose health is auth_failed', () => {
-    const source = fakeSource({
-      id: 'hubspot.conn_1.task',
-      source_kind: 'connection',
-      enabled: true,
-    });
-    const resolve = (): SourceFreshnessConnectionLookupRow => ({
-      kind: 'api',
-      name: 'conn_1',
-      health_json: JSON.stringify({ status: 'auth_failed' }),
-    });
-    expect(detectDegradationReasons(source, resolve)).toEqual([
-      'permission_revoked',
-    ]);
-  });
 
   it('flags quota_suspended on a connection Source whose health is unreachable', () => {
     const source = fakeSource({
       id: 'hubspot.conn_1.task',
       source_kind: 'connection',
-      enabled: true,
     });
     const resolve = (): SourceFreshnessConnectionLookupRow => ({
       kind: 'api',
@@ -601,20 +532,11 @@ describe('detectDegradationReasons', () => {
     ]);
   });
 
-  it('returns an empty list for a healthy enabled builtin Source', () => {
-    const source = fakeSource({
-      id: 'recued.task',
-      source_kind: 'builtin',
-      enabled: true,
-    });
-    expect(detectDegradationReasons(source, noopResolveConnection)).toEqual([]);
-  });
 
   it('returns an empty list for a healthy connection Source whose health=ok', () => {
     const source = fakeSource({
       id: 'hubspot.conn_1.task',
       source_kind: 'connection',
-      enabled: true,
     });
     const resolve = (): SourceFreshnessConnectionLookupRow => ({
       kind: 'api',
@@ -628,7 +550,6 @@ describe('detectDegradationReasons', () => {
     const source = fakeSource({
       id: 'hubspot.conn_1.task',
       source_kind: 'connection',
-      enabled: true,
     });
     const resolve = (): SourceFreshnessConnectionLookupRow => ({
       kind: 'api',
@@ -642,7 +563,6 @@ describe('detectDegradationReasons', () => {
     const source = fakeSource({
       id: 'hubspot.conn_1.task',
       source_kind: 'connection',
-      enabled: true,
     });
     const resolve = (): SourceFreshnessConnectionLookupRow => ({
       kind: 'api',
@@ -652,38 +572,7 @@ describe('detectDegradationReasons', () => {
     expect(detectDegradationReasons(source, resolve)).toEqual([]);
   });
 
-  it('deduplicates permission_revoked when enabled=false AND health=auth_failed', () => {
-    const source = fakeSource({
-      id: 'hubspot.conn_1.task',
-      source_kind: 'connection',
-      enabled: false,
-    });
-    const resolve = (): SourceFreshnessConnectionLookupRow => ({
-      kind: 'api',
-      name: 'conn_1',
-      health_json: JSON.stringify({ status: 'auth_failed' }),
-    });
-    expect(detectDegradationReasons(source, resolve)).toEqual([
-      'permission_revoked',
-    ]);
-  });
 
-  it('emits both reasons when enabled=false AND health=unreachable', () => {
-    const source = fakeSource({
-      id: 'hubspot.conn_1.task',
-      source_kind: 'connection',
-      enabled: false,
-    });
-    const resolve = (): SourceFreshnessConnectionLookupRow => ({
-      kind: 'api',
-      name: 'conn_1',
-      health_json: JSON.stringify({ status: 'unreachable' }),
-    });
-    expect(detectDegradationReasons(source, resolve)).toEqual([
-      'permission_revoked',
-      'quota_suspended',
-    ]);
-  });
 
   it('skips the connection-resolve branch for builtin Source even with parseable id', () => {
     let called = 0;
@@ -694,7 +583,6 @@ describe('detectDegradationReasons', () => {
     const source = fakeSource({
       id: 'hubspot.conn_1.task',
       source_kind: 'builtin', // mismatched kind for the id format — still skip
-      enabled: true,
     });
     expect(detectDegradationReasons(source, resolve)).toEqual([]);
     expect(called).toBe(0);
@@ -709,7 +597,6 @@ describe('detectDegradationReasons', () => {
     const source = fakeSource({
       id: 'hubspot', // single segment — parseConnectionSourceRef returns null
       source_kind: 'connection',
-      enabled: true,
     });
     expect(detectDegradationReasons(source, resolve)).toEqual([]);
     expect(called).toBe(0);
@@ -719,7 +606,6 @@ describe('detectDegradationReasons', () => {
     const source = fakeSource({
       id: 'hubspot.conn_1.task',
       source_kind: 'connection',
-      enabled: false,
     });
     const resolve = (): SourceFreshnessConnectionLookupRow => ({
       kind: 'api',
@@ -957,68 +843,8 @@ describe('runSourceFreshnessDegradationCycle — happy paths', () => {
     }
   });
 
-  it('marks an enabled=false builtin Source as degraded', () => {
-    const sources = [
-      fakeSource({ id: 'recued.task', enabled: false }),
-      fakeSource({ id: 'recued.note', top_tier_kind: 'note', enabled: true }),
-    ];
-    const ctx = buildCtx(buildFakeWorkEntityStore(sources) as unknown as WorkEntityStore);
-    runSourceFreshnessDegradationCycle(ctx);
-    const disabled = store.list({
-      topic: SOURCE_FRESHNESS_DEGRADATION_TOPIC,
-      fresh_only: false,
-      limit: 100,
-    }).find((r) => r._id === 'recued.task');
-    expect(disabled).toBeDefined();
-    const v = disabled!.value as SourceFreshnessDegradationValue;
-    expect(v.degraded).toBe(true);
-    expect(v.reasons).toEqual(['permission_revoked']);
-  });
 
-  it('marks a connection Source with auth_failed health as degraded', () => {
-    insertConnection({
-      kind: 'api',
-      name: 'conn_1',
-      health: { status: 'auth_failed' },
-    });
-    const sources = [
-      fakeSource({
-        id: 'hubspot.conn_1.task',
-        source_kind: 'connection',
-        enabled: true,
-      }),
-    ];
-    const ctx = buildCtx(buildFakeWorkEntityStore(sources) as unknown as WorkEntityStore);
-    runSourceFreshnessDegradationCycle(ctx);
-    const row = store.list({
-      topic: SOURCE_FRESHNESS_DEGRADATION_TOPIC,
-      fresh_only: false,
-      limit: 100,
-    })[0];
-    const v = row!.value as SourceFreshnessDegradationValue;
-    expect(v.degraded).toBe(true);
-    expect(v.reasons).toEqual(['permission_revoked']);
-  });
 
-  it('marks a connection Source with no backing connection as degraded', () => {
-    const sources = [
-      fakeSource({
-        id: 'hubspot.orphan_conn.task',
-        source_kind: 'connection',
-        enabled: true,
-      }),
-    ];
-    const ctx = buildCtx(buildFakeWorkEntityStore(sources) as unknown as WorkEntityStore);
-    runSourceFreshnessDegradationCycle(ctx);
-    const row = store.list({
-      topic: SOURCE_FRESHNESS_DEGRADATION_TOPIC,
-      fresh_only: false,
-      limit: 100,
-    })[0];
-    const v = row!.value as SourceFreshnessDegradationValue;
-    expect(v.degraded).toBe(true);
-    expect(v.reasons).toEqual(['permission_revoked']);
-  });
 
   it('populates last_seen_at from the per-Source MAX across entity tables', () => {
     insertEntity({
@@ -1270,7 +1096,6 @@ describe('source_freshness_degradation registry round-trip', () => {
       fakeSource({
         id: 'hubspot.conn_1.task',
         source_kind: 'connection',
-        enabled: false,
       }),
     ];
     const ctx = buildCtx(buildFakeWorkEntityStore(sources) as unknown as WorkEntityStore);
@@ -1299,7 +1124,6 @@ describe('source_freshness_degradation registry round-trip', () => {
       fakeSource({
         id: 'hubspot.conn_1.task',
         source_kind: 'connection',
-        enabled: false,
       }),
     ];
     const ctx = buildCtx(buildFakeWorkEntityStore(sources) as unknown as WorkEntityStore);
@@ -1336,7 +1160,7 @@ describe('runSourceFreshnessDegradationCycle — file Sources (D-192)', () => {
     // file-sync signal is the only thing that can mark the Source degraded.
     insertConnection({ kind: 'api', name: 'conn_1' });
     const sources = [
-      fakeSource({ id: FILE_SID, top_tier_kind: 'file', source_kind: 'connection', enabled: true }),
+      fakeSource({ id: FILE_SID, top_tier_kind: 'file', source_kind: 'connection' }),
     ];
     const ctx = buildCtx(buildFakeWorkEntityStore(sources) as unknown as WorkEntityStore);
     runSourceFreshnessDegradationCycle(ctx);
@@ -1370,19 +1194,6 @@ describe('runSourceFreshnessDegradationCycle — file Sources (D-192)', () => {
     expect(v.reasons).toEqual([]);
   });
 
-  it('tolerates the file_source_sync_state table being absent (work-entity-only pair)', () => {
-    // No `ensureFileSourceSyncStateSchema` — the table is never installed.
-    insertConnection({ kind: 'api', name: 'conn_1' });
-    const sources = [
-      fakeSource({ id: FILE_SID, top_tier_kind: 'file', source_kind: 'connection', enabled: true }),
-    ];
-    const ctx = buildCtx(buildFakeWorkEntityStore(sources) as unknown as WorkEntityStore);
-    expect(() => runSourceFreshnessDegradationCycle(ctx)).not.toThrow();
-    const row = store
-      .list({ topic: SOURCE_FRESHNESS_DEGRADATION_TOPIC, fresh_only: false, limit: 100 })
-      .find((r) => r._id === FILE_SID);
-    expect((row!.value as SourceFreshnessDegradationValue).last_seen_at).toBeNull();
-  });
 });
 
 // ────────────────────────────────────────────────────────────────
@@ -1411,7 +1222,6 @@ describe('runSourceFreshnessDegradationCycle — contact Sources (D-205 item #1)
         id: CONTACT_SID,
         top_tier_kind: 'contact',
         source_kind: 'connection',
-        enabled: true,
       }),
     ];
     const ctx = buildCtx(buildFakeWorkEntityStore(sources) as unknown as WorkEntityStore);
@@ -1466,7 +1276,6 @@ describe('runSourceFreshnessDegradationCycle — contact Sources (D-205 item #1)
         id: CONTACT_SID,
         top_tier_kind: 'contact',
         source_kind: 'connection',
-        enabled: true,
       }),
     ];
     const ctx = buildCtx(buildFakeWorkEntityStore(sources) as unknown as WorkEntityStore);

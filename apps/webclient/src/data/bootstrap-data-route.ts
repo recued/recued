@@ -497,7 +497,6 @@ const DATA_RECEIVED_CLUSTER: readonly DataTabId[] = [...DATA_RECEIVED_TABS, 'web
 
 export type WorkEntitySourceListCaller = () => Promise<{
   sources: ReadonlyArray<SourceRegistration>;
-  defaults_by_kind: Readonly<Partial<Record<WorkEntityKind, string>>>;
 }>;
 
 export type DataWorkEntityListCaller = (
@@ -2300,9 +2299,7 @@ const enabledSourcesForKind = (
   sources: readonly SourceRegistration[],
   kind: WorkEntityKind,
 ): readonly SourceRegistration[] =>
-  sources.filter((source) =>
-    source.top_tier_kind === kind && source.enabled !== false,
-  );
+  sources.filter((source) => source.top_tier_kind === kind);
 
 const sourceOptionsForKind = (
   sources: readonly SourceRegistration[],
@@ -2321,7 +2318,6 @@ const joinRowsWithSources = (
       label: entity.source_id,
       source_kind: 'adapter' as const,
       write_capable: false,
-      mcp_exposed: false,
     };
     return { entity, source };
   });
@@ -3201,9 +3197,7 @@ const cycleFailures = (counts: ContactSourceHealth['last_cycle']): string[] => {
 
 const renderContactSourceRow = (source: ContactSourceHealth, now: number): string => {
   const failures = cycleFailures(source.last_cycle);
-  const status = !source.enabled
-    ? { label: 'Off', tone: 'off' }
-    : source.degraded
+  const status = source.degraded
       ? { label: 'Degraded', tone: 'bad' }
       : source.stale
         ? { label: 'Stale', tone: 'warn' }
@@ -3224,9 +3218,7 @@ const renderContactSourceRow = (source: ContactSourceHealth, now: number): strin
       <span class="data-source-head">
         <span class="data-source-status data-source-status--${e(status.tone)}">${e(status.label)}</span>
         <span class="data-source-label">${e(source.source_label)}</span>
-        <span class="data-row-subtle">${e(
-          source.enabled ? relativeSyncTime(source.last_success_at, now) : 'not running',
-        )}</span>
+        <span class="data-row-subtle">${e(relativeSyncTime(source.last_success_at, now))}</span>
       </span>
       <span class="data-row-subtle">${e(cycleSummary(source.last_cycle))}</span>
       ${failures.length > 0
@@ -3246,7 +3238,7 @@ const renderContactSourcesStrip = (
   // No contact Sources enrolled is not a problem to report — it is the default
   // state, and the list's own empty-state already points at Connections.
   if (sources.length === 0) return '';
-  const unhealthy = sources.filter((s) => s.enabled && (s.degraded || s.stale)).length;
+  const unhealthy = sources.filter((s) => s.degraded || s.stale).length;
   return `
     <details class="data-sources-strip" ${DATA_ROUTE_CONTACT_SOURCES_ATTR}
       ${unhealthy > 0 ? 'open' : ''}>
@@ -4655,7 +4647,6 @@ const renderWorkEntitySurface = (
     resolveCreateDialogSourceId(
       state.kind,
       state.selected_source_id,
-      defaults[state.kind] ?? null,
       enabledSourcesForKind(sources, state.kind),
     ) !== null;
   // Load-more paginates the raw (server kind/Source) set. It stays visible under
@@ -7012,7 +7003,6 @@ export const bootstrapDataRoute = (
       const response = await opts.workEntitySourceListCaller();
       if (disposed || generation !== loadGeneration) return;
       sources = [...response.sources];
-      defaultsByKind = { ...response.defaults_by_kind };
     } catch (err) {
       if (disposed || generation !== loadGeneration) return;
       sources = [];
@@ -9911,7 +9901,6 @@ export const bootstrapDataRoute = (
     const sourceId = resolveCreateDialogSourceId(
       workEntityState.kind,
       workEntityState.selected_source_id,
-      defaultsByKind[workEntityState.kind] ?? null,
       enabledSourcesForKind(sources, workEntityState.kind),
     );
     if (sourceId === null) return;

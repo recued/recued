@@ -53,6 +53,18 @@ export interface McpPackBadge {
  *  connections most likely to have drifted are precisely the ones nobody has
  *  probed, so silence there is the worst available answer.
  *
+ *  ⚠ **`no_pack` NO LONGER MEANS "the owner has not got round to it".** Since
+ *  D-225 auto-mint, enrolling an mcp connection mints its pack, and
+ *  `mcp-pack-first-mint` retries every connection that still has none. So this
+ *  state now means one of two things — the server was unreachable when it was
+ *  saved, or the connection predates auto-mint — and both are retried. The offer
+ *  stays, because an owner who does not want to wait for an idle cycle should be
+ *  able to act; what changed is that the copy no longer implies they MUST.
+ *
+ *  ⚠ It says "once it can read them" rather than promising a schedule: the sweep
+ *  registers only where the connection substrate is wired, and a badge that
+ *  guaranteed a retry the host might not run would be assurance-shaped with none.
+ *
  *  ⚠ `drifted` deliberately does NOT name tools. The status carries counts,
  *  because resolving a descriptor hash back to a tool needs a live probe — that
  *  is the review screen's job. The badge exists to prompt one decision, and
@@ -66,7 +78,7 @@ export const mcpPackBadge = (status: McpPackStatusView): McpPackBadge => {
         label: 'No pack',
         detail:
           'This server’s tools are reachable only through raw MCP calls. '
-          + 'Generate a pack to grant them individually.',
+          + 'Recued generates a pack once it can read them — generate now to skip the wait.',
         action: 'generate',
       };
     case 'unknown':

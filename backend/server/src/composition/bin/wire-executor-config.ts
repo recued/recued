@@ -597,19 +597,31 @@ export const composeExecutorConfig = async (
               spawnStdioMcp: createStdioSpawn(),
             };
           })(),
-          // D-177 P2b — per-tool classification gate for the kernel
-          // connection-mcp-{read,write} dispatch surfaces. Closes over
-          // the chat MCP-tool annotation store (lazily — the annotation
-          // schema is ensured by the chat substrate, which composes
-          // after this config; see connection-mcp-gate.ts). No-op for
-          // every other slug; absent without a db (dbless harness).
+          // D-177 P2b / D-228 slice 4 — per-tool TIER gate for the kernel
+          // connection-mcp-{read,write} dispatch surfaces. No-op for every other
+          // slug; absent without a db (dbless harness).
+          //
+          // ⛔⛔ IT NO LONGER READS THE CHAT PRESENTATION STORE. The tier used to
+          // come from `tool_overrides`; it now comes from the pack operation the
+          // tool is dispatched through, resolved through the SAME contract rows
+          // the door reads. So the gate needs the contract store (for the
+          // connection→catalog binding AND the owner's ruling) and the manifest
+          // registry — both threaded here rather than re-derived, so the gate
+          // cannot disagree with the dispatcher about what is installed.
+          //
+          // ⚠ Resolution stays LAZY inside the gate: this config composes before
+          // the stores are guaranteed populated, and an eager read would crash a
+          // fresh-db boot (the D-164 trust-store lesson).
           ...(deps.db
             ? await (async () => {
                 const { createConnectionMcpGateFromDb } = await import(
                   '../../connection-mcp-gate.js'
                 );
                 return {
-                  connectionGateDispatch: createConnectionMcpGateFromDb(deps.db!),
+                  connectionGateDispatch: createConnectionMcpGateFromDb(deps.db!, {
+                    ...(deps.contractStore ? { contractStore: deps.contractStore } : {}),
+                    getManifest: (slug: string) => deps.manifests.get(slug),
+                  }),
                 };
               })()
             : {}),
@@ -891,7 +903,11 @@ export const composeExecutorConfig = async (
           { registry: deps.collectionRegistry },
           { platform, slug, filters, since, until, limit },
         );
-        return { records: res.records };
+        // D-236 — forward the freshness verdict. ⛔ This closure previously
+        // narrowed the handler's result to `{ records }`, which is exactly how
+        // a fact that already existed server-side stayed invisible to every
+        // recipe: nothing was missing, something was being DROPPED in transit.
+        return { records: res.records, source_freshness: res.source_freshness };
       },
       collectionGet: async ({ platform, slug, record_id }) => {
         const { handleCollectionGet } = await import('../../collections/collection-handler.js');
@@ -906,7 +922,12 @@ export const composeExecutorConfig = async (
           { registry: deps.collectionRegistry },
           { platform, slug, query, limit },
         );
-        return { matches: res.matches };
+        // D-236 — forward the verdict. ⛔ This closure narrowed to `{ matches }`
+        // for the same reason its `collectionList` sibling narrowed to
+        // `{ records }`: the extra key looked like noise. It is the SECOND
+        // instance of the exact defect D-236 exists to fix, found by sweeping
+        // for siblings rather than by fixing only the one that was reported.
+        return { matches: res.matches, source_freshness: res.source_freshness };
       },
       // D-122 Phase 2 — graph-builder kernel ingredients. Each dispatcher
       // is gated on its underlying store/deps; absent → kernel adapter

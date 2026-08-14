@@ -1302,7 +1302,7 @@ export interface AttachWebSocketOptions {
    *  link walk wired). */
   receptionManageMintDeps?: ReceptionManageMintDeps;
   /** D-145 PA11 — Settings → Work Entities Source management rpc.
-   *  Wires `work_entity.source.{list,set_enabled,set_mcp_exposed,
+   *  Wires `work_entity.source.{list,set_enabled,
    *  set_default,clear_default}` so the panel can render + persist
    *  per-Source toggles + per-kind defaults. Absent → those methods
    *  return `not_configured` (e.g. db-less harnesses). */
@@ -2000,7 +2000,7 @@ const buildWsBinding = (
     // Admin-gated in the handler; the `reception.` reserved prefix keeps it off MCP.
     makeReceptionManageMintRpcHandlers(receptionManageMintDeps),
     // D-145 PA11 — Settings → Work Entities panel rpc. Wires
-    // `work_entity.source.{list,set_enabled,set_mcp_exposed,
+    // `work_entity.source.{list,set_enabled,
     // set_default,clear_default}` against the work-entity resolver +
     // store. Threads through the same resolver instance the kernel
     // ingredients use (constructed in bin.ts) so toggle writes are

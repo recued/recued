@@ -624,11 +624,12 @@ export const CAPACITY_INVALIDATION_TOPICS = [
   'connection.enrolled',
   'connection.disabled',
   'connection.reprobed',
-  // PA11 join — the load-bearing PA11 → PB1 contract. Disabling a
-  // Source via `WorkEntityStore.setSourceEnabled(id, false)`
-  // publishes this topic; the cache invalidates every
-  // `connection_active` row keyed on the same vendor/entity.
-  'source.enabled_changed',
+  /* ⛔ `source.enabled_changed` was RETIRED here (D-187 Sources half). It was
+   *  the PA11 → PB1 join — disabling a Source published it and the cache dropped
+   *  the matching `connection_active` rows. `setSourceEnabled` is deleted, and
+   *  its publisher never had a production caller in the first place, so the
+   *  topic could never fire. `connection_active` keeps its three
+   *  connection-lifecycle topics, which is what actually invalidated it. */
   'quota.headroom_changed',
 ] as const;
 export type CapacityInvalidationTopic = (typeof CAPACITY_INVALIDATION_TOPICS)[number];
@@ -645,7 +646,6 @@ export interface CapacityInvalidationPayload {
   vendor?: string;
   entity?: string;
   connection_id?: string;
-  source_id?: string;
   pool?: PoolKind;
 }
 
@@ -662,8 +662,7 @@ export interface CapacityInvalidationSource {
   /** Source-store wiring — each underlying store calls publish() to
    *  fan out its specific invalidation topic. The PB1.7 server
    *  composer wires the publish() calls into each store's existing
-   *  emit hook (PA11 `setSourceEnabled` → `source.enabled_changed`,
-   *  D-125 connection enroll/disable → `connection.*`, etc.). */
+   *  emit hook (D-125 connection enroll/disable → `connection.*`, etc.). */
   publish(payload: CapacityInvalidationPayload): void;
 }
 
@@ -721,7 +720,6 @@ export const CAPACITY_CACHE_POLICIES: Readonly<Record<CapacityKind, CapacityCach
       'connection.enrolled',
       'connection.disabled',
       'connection.reprobed',
-      'source.enabled_changed',
     ],
   },
   pool_quota_available: {

@@ -242,8 +242,6 @@ const sourceRegistration = (kind: WorkEntityKind): SourceRegistration => ({
   source_kind: 'builtin',
   source_label: `Recued ${kind}`,
   write_capable: true,
-  mcp_exposed: false,
-  enabled: true,
   registered_at: 1,
 });
 
@@ -401,7 +399,6 @@ const cycleCounts = (
 const sourceHealth = (
   over: Partial<ContactSourceHealth> & { source_id: string; source_label: string },
 ): ContactSourceHealth => ({
-  enabled: true,
   last_success_at: NOW,
   degraded: false,
   stale: false,
@@ -3311,7 +3308,13 @@ describe('D-174 P5 Data route', () => {
     rig.route.dispose();
   });
 
-  it('D-205 #2c: a DISABLED Source reads as off, not broken; and no caller means no strip', async () => {
+  // D-187 Sources half — was 'a DISABLED Source reads as off, not broken'. The
+  // `enabled` flag on `ContactSourceHealth` is deleted along with the toggle
+  // that set it, so there is no Off state left to distinguish: a Source that
+  // stopped syncing is STALE, and one whose pack was uninstalled is simply
+  // unregistered and absent from the strip. The half that still holds — an
+  // unwired caller renders no strip at all — is kept verbatim.
+  it('D-205 #2c: a stale Source reads stale (never Off); and no caller means no strip', async () => {
     const off = mountRoute({
       now: () => NOW,
       contactSourceListCaller: vi.fn<DataContactSourceListCaller>(async () => ({
@@ -3319,9 +3322,6 @@ describe('D-174 P5 Data route', () => {
           sourceHealth({
             source_id: 'hubspot.work.contact',
             source_label: 'HubSpot (work)',
-            enabled: false,
-            // A Source that is not running is stale by the clock — but it is not
-            // BROKEN, and the strip must not cry wolf about a switch the user threw.
             stale: true,
           }),
         ],
@@ -3329,9 +3329,11 @@ describe('D-174 P5 Data route', () => {
     });
     await off.route.whenLoaded();
     const offHtml = off.root.children[0]?.innerHTML ?? '';
-    expect(offHtml).toContain('Off');
-    expect(offHtml).toContain('not running');
+    expect(offHtml).toContain('Stale');
     expect(offHtml).not.toContain('Degraded');
+    // The deleted state must not reappear.
+    expect(offHtml).not.toContain('Off');
+    expect(offHtml).not.toContain('not running');
     off.route.dispose();
 
     // Unwired → no strip at all. A Source list we cannot read is not one to guess at.

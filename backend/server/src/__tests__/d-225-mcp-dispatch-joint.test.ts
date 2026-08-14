@@ -73,6 +73,14 @@ beforeEach(async () => {
       const parsed = JSON.parse(body || '{}') as Record<string, unknown>;
       received.push(parsed);
       res.writeHead(200, { 'content-type': 'application/json' });
+      if (parsed.method === 'server/discover') {
+        res.end(JSON.stringify({
+          jsonrpc: '2.0',
+          id: parsed.id,
+          result: { supportedVersions: ['2026-07-28'], capabilities: { tools: {} } },
+        }));
+        return;
+      }
       res.end(JSON.stringify({
         jsonrpc: '2.0',
         id: parsed.id,
@@ -201,6 +209,9 @@ describe('D-225 — the dispatch joint, over a real socket', () => {
     // passed — the structural property the whole declared path rests on.
     expect((call!.params as { name: string }).name).toBe('project.list');
     expect((call!.params as { arguments: unknown }).arguments).toMatchObject({ limit: 50 });
+    expect(call!.params).toMatchObject({
+      _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' },
+    });
   });
 
   it('⛔ a NON-admitted run reaches the server NOT AT ALL', async () => {

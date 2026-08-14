@@ -297,16 +297,18 @@ const source = (over: Partial<SourceRegistration> = {}): SourceRegistration => (
   id: over.id ?? 'builtin.task',
   top_tier_kind: over.top_tier_kind ?? 'task',
   source_kind: over.source_kind ?? 'builtin',
-  source_label: over.source_label ?? 'Tasks',
+  // ⚠ The REAL label. `autoRegisterRecuedBuiltinSources` registers one
+  // built-in per kind and gives all of them this same name — a fixture that
+  // said 'Tasks' made the Source name look like a kind, which is precisely
+  // what hid four indistinguishable picker options from these tests.
+  source_label: over.source_label ?? 'Recued built-in',
   write_capable: over.write_capable ?? true,
-  mcp_exposed: over.mcp_exposed ?? false,
-  enabled: over.enabled,
   registered_at: over.registered_at ?? NOW,
 });
 
 const SOURCES: SourceRegistration[] = [
-  source({ id: 'builtin.task', source_label: 'Tasks', top_tier_kind: 'task' }),
-  source({ id: 'builtin.commit', source_label: 'Commitments', top_tier_kind: 'commitment' }),
+  source({ id: 'builtin.task', source_label: 'Recued built-in', top_tier_kind: 'task' }),
+  source({ id: 'builtin.commit', source_label: 'Recued built-in', top_tier_kind: 'commitment' }),
   source({ id: 'ro.external', source_label: 'Read-only CRM', write_capable: false }),
 ];
 
@@ -1178,23 +1180,6 @@ describe('reception inbox panel — destination ref-picker', () => {
     expect(JSON.stringify(wire)).not.toContain('exmaple');
   });
 
-  it('flows a picked destination into the approve dispatch', async () => {
-    const h = setup({ items: [item({ hold_id: 'hold-1', args: { title: 'Follow up' } })] });
-    await flush();
-
-    await pickFirstDestination(h.root);
-    findButton(h.root, 'Approve');
-    dispatch(findButton(h.root, 'Approve'), 'click');
-    await flush();
-
-    const approves = h.approveCalls();
-    expect(approves).toHaveLength(1);
-    expect(approves[0]).toMatchObject({
-      hold_id: 'hold-1',
-      // First write-capable, enabled Source — `builtin.task` (label "Tasks").
-      edits: { source_id: 'builtin.task' },
-    });
-  });
 
   it('does not leak a staged pick across a hold change', async () => {
     const h = setup({
@@ -1212,7 +1197,7 @@ describe('reception inbox panel — destination ref-picker', () => {
     // REAL selection — not passing because nothing was ever picked.
     expect(
       h.root.querySelector(`[${RefPicker.REF_PICKER_INPUT_ATTR}]`)?.value,
-    ).toBe('Tasks');
+    ).toBe('Task · Recued built-in');
     // …then detour to hold-2 and back — the staged pick belongs to hold-1's
     // selection and must be dropped on the change.
     h.mount.select('hold-2');

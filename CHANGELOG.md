@@ -7,6 +7,89 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.8.14 — 2026-08-14
+
+One capability leads this release: your server can serve a domain you already
+own, with a certificate Recued issues and renews for you. Alongside it, Recued
+now talks to considerably more of the MCP ecosystem than it did, and a tool
+reached over MCP is governed in one place instead of two.
+
+### Added
+
+- **Bring your own domain.** Pro can issue and renew a certificate for a name
+  you own — `recued.yourcompany.com` rather than a subdomain under
+  `recued.net`. Settings → Server → Hostnames walks it: two DNS records,
+  presented as one indivisible step, each with its own check. The second record
+  is the one that does the work, and the panel says so, because "point my domain
+  at Recued and I'm done" is half right — the first record makes the server
+  *reachable* while issuance still fails, since the certificate authority
+  validates a different name in a zone Recued cannot write. The cards show the
+  relative name your DNS provider's form actually wants beside the full one,
+  warn about Cloudflare's proxy default next to the record it breaks rather than
+  after the check fails, and state that the trailing dot does not matter.
+- **Renewal, and a watch on the record it all depends on.** Every custom domain
+  renews, not only the address your clients happen to connect to. And because a
+  domain whose delegation record was deleted keeps a valid certificate and keeps
+  reporting "Verified" for about sixty days before everything fails at once, the
+  delegation is now checked on its own and shown in the row beside the
+  certificate status. The warning escalates a week out rather than two days out:
+  repairing it means editing DNS and waiting for propagation.
+- **Somewhere to upload your own certificate.** "Upload my own certificate" had
+  been offered as a certificate source with nowhere in the app to upload one.
+
+### Changed
+
+- **Recued negotiates the newest MCP protocol, and its fallback covers the whole
+  legacy era.** Recued speaks the current revision to servers that have it. The
+  larger fix is underneath: three of the four legacy handshake revisions in
+  common use were being refused outright, and the single-endpoint shape most
+  deployed remote servers still speak had no path at all. If a remote MCP server
+  would not connect, try it again.
+- **A tool reached over MCP is governed in one place.** An enrolled MCP tool
+  used to be reachable from chat by two routes with two separate gates, so one
+  decision was enforced by whichever surface the model happened to pick. The
+  per-tool classification you used to set in chat is gone: enrolling an MCP
+  connection mints a pack for it on the spot — no second save — and the tool's
+  risk tier comes from that pack's operation, resolved through the same rules the
+  door reads. Classifications you had made by hand are migrated. The
+  per-conversation scope picker retires with it; a peer's tools now arrive in
+  the ordinary catalog already governed, so there is nothing to switch between.
+- **Settings → Work Entities is gone.** Reads fan out across every source and
+  writes are addressed by id, which left a default source and a per-source mute
+  with nothing to decide. A Source is a pack, and is managed where packs are.
+- **Approval asks are readable.** One live mail-send hold spent seven of its
+  eleven lines printing `(null)`. Nothing was dropped — the reader still decides
+  which fields matter — but absent, empty and identifier fields each fold onto a
+  single labelled line that still names every member, and long ids render as a
+  short correlatable prefix instead of in full. An approval surface you skim is
+  an approval surface that approves everything.
+
+### Fixed
+
+- **A recipe can tell "it did not happen" from "it has not arrived."** A read
+  against a collection now carries a verdict on how current its source is.
+  Nothing failed while this was wrong, which is the point: the list call
+  succeeds, the filter runs, the count is legitimately zero, and the run is
+  legitimately green. The same verdict now rides the searches the AI itself uses
+  — mail, calendar and files — which had been the ones dropping it, so a bare
+  empty result was reading as a verified absence.
+- **A run that refused every item now says so to the agent.** A loop continues
+  on error, so a step that refused all ten of its items reported success with no
+  errors. Both human surfaces already showed the tally; the agent's view did
+  not. It also declines to suggest retrying a partly-refused run, which would
+  have re-created the items that did land.
+- **The "Renew now" button had no cooldown.** Repeat clicks issued repeat
+  certificates against a certificate authority's weekly duplicate allowance,
+  which once exhausted breaks automatic renewal too — near expiry, a
+  self-inflicted outage.
+- **An MCP protocol error no longer rides out on a 200.** A correct error body
+  under a success status is read by nobody.
+- **Operations belonging to an installed pack are governed at every door**, not
+  only the one they were designed for. At the others they had been ungrantable
+  rather than merely ungranted. Separately, the internal connection dispatch
+  primitive can no longer be bound by an arbitrary recipe; it remains available
+  as what it always was, host code.
+
 ## 26.8.13 — 2026-08-13
 
 Two capabilities, both about a conversation that leaves your own machine. A

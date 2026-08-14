@@ -80,11 +80,16 @@ const desiredFileSourceRegistrationsFor = (
  *  to `top_tier_kind: 'file'` so it never touches work-entity Sources sharing
  *  the same registry + connection name. `desired` is empty for a deleted row.
  *
- *  Idempotent + toggle-preserving: the desired Source is (re-)registered only
- *  when absent (`getSource` first). `registerSource` is UPSERT and DOES
- *  overwrite `mcp_exposed` on conflict, so the getSource-first skip is what
- *  preserves a user's Settings opt-in across boot re-scans (the same reason
- *  the work-entity boot skips existing rows). */
+ *  Idempotent: the desired Source is (re-)registered only when absent
+ *  (`getSource` first).
+ *
+ *  ⚠ That skip used to be load-bearing for a USER TOGGLE — `registerSource` is
+ *  an UPSERT whose ON CONFLICT overwrote `mcp_exposed`, so skipping was the
+ *  only thing preserving a Settings opt-in across boot re-scans. `mcp_exposed`
+ *  is gone (D-187 Sources half), and the surviving `enabled` toggle is
+ *  preserved by the UPSERT itself (its ON CONFLICT deliberately OMITS the
+ *  column). So the skip now buys idempotence only — keep it, but do not cite
+ *  it as toggle preservation. */
 const reconcileFileSources = (
   store: WorkEntityStore,
   desired: DesiredFileSourceRegistration[],
@@ -117,9 +122,6 @@ const reconcileFileSources = (
       // The Source sync is a read-only metadata mirror. Lazy remote-byte reads
       // do not create a provider write path, so this remains false.
       write_capable: false,
-      // MCP-exposure default off (privacy posture — D-136 P7.E); the user opts
-      // in per Source through Settings.
-      mcp_exposed: false,
       registered_at: now,
     });
   }

@@ -238,7 +238,6 @@ const registerTaskSource = (): void => {
     source_kind: 'connection',
     source_label: 'HubSpot tasks (acme)',
     write_capable: false,
-    mcp_exposed: false,
     registered_at: NOW,
   });
 };
@@ -1396,7 +1395,6 @@ describe('dispatch update', () => {
       sync_posture: 'read_through',
       source_label: 'HubSpot tasks (acme)',
       write_capable: false,
-      mcp_exposed: false,
       registered_at: NOW,
     });
     expect(store.deleteRecordsForSource(SOURCE_ID)).toBe(1);
@@ -2860,7 +2858,6 @@ describe('dispatch delete — a 2xx is not proof', () => {
       sync_posture: 'read_through',
       source_label: 'HubSpot tasks (acme)',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: NOW,
     });
     const recordDeterministicVerification = vi.fn();
@@ -2914,7 +2911,6 @@ describe('dispatch delete — a 2xx is not proof', () => {
       sync_posture: 'read_through',
       source_label: 'HubSpot tasks (acme)',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: NOW,
     });
     const recordDeterministicVerification = vi.fn();
@@ -2979,7 +2975,6 @@ describe('D-192 — read-through create', () => {
       sync_posture: 'read_through',
       source_label: 'HubSpot tasks (acme)',
       write_capable: false,
-      mcp_exposed: false,
       registered_at: NOW,
     });
   };

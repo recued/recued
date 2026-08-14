@@ -48,9 +48,14 @@ import { isEphemeralDishId } from '@recued/contracts';
 import type { Dish, RecipeError } from '@recued/contracts';
 
 import type { PeerAskOutboxRow, PeerAskOutboxStore } from './storage/peer-ask-outbox-store.js';
+import type { PeerAnswerStore } from './storage/peer-answer-store.js';
+
+const PEER_HOLD_ABANDONER = '__peer_hold_abandoner__';
 
 export interface PeerHoldAbandonDeps {
   readonly outbox: Pick<PeerAskOutboxStore, 'list' | 'close'>;
+  /** First-write-wins ownership shared with real answers and timeouts. */
+  readonly answers: Pick<PeerAnswerStore, 'record' | 'get'>;
   readonly auditLog: Pick<AuditLogStore, 'get' | 'append'>;
   /** `null` ⇒ the dish is gone. ⚠ Must be the LIVE store, not a snapshot: a
    *  cached list taken at boot would abandon holds whose dish was recreated. */
@@ -187,12 +192,29 @@ export const abandonOrphanedPeerHolds = async (
     if (!isOrphanedHold(anchor, deps.dishes)) continue;
     orphaned += 1;
 
-    // ⛔ THE LOCAL TERMINATION FIRST, AND IT IS NOT CONDITIONAL ON THE NOTICE.
-    // Ordering the courtesy first would make an unreachable peer a reason to
-    // keep a hold that nothing will ever resume — the accumulation this exists
-    // to stop, reintroduced by the politeness added to stop it.
-    deps.outbox.close(row.exchange_ref);
+    // Claim the conversation in the SAME first-write-wins store used by answers
+    // and deadlines. The audit read above yields, so the peer may have answered
+    // since `list()`; only the winner may retire the anchor.
+    const claimed = deps.answers.record({
+      exchange_ref: row.exchange_ref,
+      peer_contract_id: PEER_HOLD_ABANDONER,
+      answered: false,
+      unanswered_because: 'withdrawn',
+      at,
+    });
+    if (!claimed) {
+      const existing = deps.answers.get(row.exchange_ref);
+      // A previous abandonment may have claimed successfully and then lost the
+      // audit write. Retry that transition; every other answer owns the run.
+      if (existing?.peer_contract_id !== PEER_HOLD_ABANDONER
+        || existing.unanswered_because !== 'withdrawn') continue;
+    }
+
+    // Audit BEFORE deleting the live row. If this write fails, the next sweep
+    // sees the outbox row and retries; the durable withdrawal claim prevents a
+    // late peer answer from racing in meanwhile.
     await deps.auditLog.append(buildAbandonEntry(anchor!, row, at));
+    deps.outbox.close(row.exchange_ref);
     abandoned += 1;
 
     deps.logActivity?.({

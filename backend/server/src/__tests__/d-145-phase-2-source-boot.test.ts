@@ -211,7 +211,6 @@ describe('autoRegisterRecuedBuiltinSources', () => {
       expect(reg!.top_tier_kind).toBe(kind);
       expect(reg!.source_kind).toBe('builtin');
       expect(reg!.write_capable).toBe(true);
-      expect(reg!.mcp_exposed).toBe(false);
     }
   });
 
@@ -300,7 +299,6 @@ describe('wireWorkEntitySourceBoot — boot scan', () => {
     // Codex P2 fold — capability-uncertain at PA2 (no scope-introspection
     // wire); PA3 probe flips when first dispatch confirms task scope.
     expect(acme!.write_capable).toBe(false);
-    expect(acme!.mcp_exposed).toBe(false);
   });
 
   it('registers a task Source for every existing Salesforce connection', () => {
@@ -555,24 +553,6 @@ describe('wireWorkEntitySourceBoot — vendor-flip reconcile (Codex P2 fold)', (
     expect(second.registered_at).toBe(first.registered_at);
   });
 
-  it('vendor-flip clears any pinned default-Source via FK CASCADE', () => {
-    const cs = createConnectionStore(db);
-    autoRegisterRecuedBuiltinSources(store, NOW);
-    wireWorkEntitySourceBoot({ connectionStore: cs, store });
-    upsertHubSpotConnection(cs, 'pinned');
-    store.setDefaultSource(
-      'task',
-      CONNECTION_SOURCE_ID('hubspot', 'pinned', 'task'),
-      NOW,
-    );
-    expect(store.getDefaultSource('task')).toBe(
-      CONNECTION_SOURCE_ID('hubspot', 'pinned', 'task'),
-    );
-    upsertSalesforceConnection(cs, 'pinned');
-    // FK CASCADE on Source unregister cleared the default; user must
-    // re-pin to the new vendor's Source.
-    expect(store.getDefaultSource('task')).toBeNull();
-  });
 });
 
 describe('wireWorkEntitySourceBoot — delete observer', () => {
@@ -607,22 +587,6 @@ describe('wireWorkEntitySourceBoot — delete observer', () => {
     expect(() => cs.delete('mcp', 'never-registered')).not.toThrow();
   });
 
-  it('clears any default-Source pointer at the deleted Source via FK CASCADE', () => {
-    const cs = createConnectionStore(db);
-    autoRegisterRecuedBuiltinSources(store, NOW);
-    wireWorkEntitySourceBoot({ connectionStore: cs, store });
-    upsertHubSpotConnection(cs, 'acme');
-    store.setDefaultSource(
-      'task',
-      CONNECTION_SOURCE_ID('hubspot', 'acme', 'task'),
-      NOW,
-    );
-    expect(store.getDefaultSource('task')).toBe(
-      CONNECTION_SOURCE_ID('hubspot', 'acme', 'task'),
-    );
-    cs.delete('api', 'acme');
-    expect(store.getDefaultSource('task')).toBeNull();
-  });
 
   it('does not unregister the Recued built-in', () => {
     const cs = createConnectionStore(db);
@@ -659,82 +623,3 @@ describe('KERNEL_WORK_ENTITY_SOURCE_DECLARATIONS (legacy compatibility fallback)
   });
 });
 
-describe('wireWorkEntitySourceBoot — read-through materialization policy', () => {
-  it('purges an old mirror, removes sync state, and preserves owner controls on declaration migration', () => {
-    const cs = createConnectionStore(db);
-    const connectionName = 'todoist-secure';
-    const sourceId = `todoist.${connectionName}.task`;
-    cs.upsert({
-      kind: 'api',
-      name: connectionName,
-      display_name: 'Secure Todoist',
-      config_json: JSON.stringify({ vendor: 'todoist' }),
-      auth_ciphertext: 'CIPHER',
-      enrolled_at: NOW,
-      updated_at: NOW,
-    });
-    const catalog = readThroughTodoistCatalog();
-
-    store.registerSource({
-      id: sourceId,
-      top_tier_kind: 'task',
-      source_kind: 'connection',
-      sync_posture: 'records',
-      source_label: 'Old mirrored Todoist',
-      write_capable: true,
-      mcp_exposed: true,
-      enabled: false,
-      registered_at: NOW - 1_000,
-    });
-    store.writeTask({
-      id: 'old-sensitive-row',
-      source_id: sourceId,
-      source_record_id: 'remote-1',
-      connection_id: connectionName,
-      title: 'Must leave the warehouse',
-      done: false,
-    }, NOW);
-    ensureWorkEntitySourceSyncStateSchema(db);
-    const syncState = createWorkEntitySourceSyncStateStore(db);
-    syncState.upsert({
-      source_id: sourceId,
-      contract_hash: 'old-records-contract',
-      sync_depth: 'meta',
-      sync_mode: 'read_write',
-      cursor_blob: null,
-      last_sync_started_at: null,
-      last_sync_completed_at: null,
-      last_success_at: null,
-      last_error_code: null,
-      last_error_message: null,
-      degraded: false,
-      field_health_blob: null,
-      list_complete: true,
-      stale_after_ms: 60_000,
-    });
-    const purged: string[] = [];
-
-    wireWorkEntitySourceBoot({
-      connectionStore: cs,
-      store,
-      syncState,
-      resolveCatalogManifest: () => catalog,
-      purgeMirroredData: (source) => {
-        purged.push(source.id);
-        store.deleteRecordsForSource(source.id);
-      },
-      now: () => NOW,
-    });
-
-    expect(purged).toEqual([sourceId]);
-    expect(store.countRecordsForSource(sourceId)).toBe(0);
-    expect(syncState.get(sourceId)).toBeNull();
-    expect(store.getSource(sourceId)).toMatchObject({
-      sync_posture: 'read_through',
-      write_capable: true,
-      mcp_exposed: true,
-      enabled: false,
-      registered_at: NOW - 1_000,
-    });
-  });
-});

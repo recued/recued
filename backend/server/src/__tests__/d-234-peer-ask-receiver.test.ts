@@ -9,6 +9,8 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import {
+  PEER_ASK_OPTION_ID_MAX,
+  PEER_ASK_OPTION_LABEL_MAX,
   PEER_ASK_OPTIONS_MAX,
   PEER_ASK_QUESTION_MAX,
   peerLabelGrantEntry,
@@ -184,6 +186,12 @@ describe('§ 234.4 — a malformed payload from an ADMITTED peer', () => {
       options: Array.from({ length: PEER_ASK_OPTIONS_MAX + 1 }, (_, i) => ({
         id: `o${i}`, label: `O${i}`,
       })),
+    }).refusal).toBe('malformed');
+    expect(refuse({
+      options: [{ id: 'x'.repeat(PEER_ASK_OPTION_ID_MAX + 1), label: 'Choice' }],
+    }).refusal).toBe('malformed');
+    expect(refuse({
+      options: [{ id: 'choice', label: 'x'.repeat(PEER_ASK_OPTION_LABEL_MAX + 1) }],
     }).refusal).toBe('malformed');
   });
 

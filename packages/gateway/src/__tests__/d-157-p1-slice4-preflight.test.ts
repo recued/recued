@@ -826,6 +826,98 @@ describe('buildPreflightAsk', () => {
     expect(ask.message.text).toContain('core.mail.send on gmail-personal');
   });
 
+  it('drops the connection clause when the op id already names it', () => {
+    // "…/reception-intake.intake.materialize on reception-intake" spends a
+    // clause restating a segment the reader just read, and a sentence that
+    // repeats itself is a sentence people learn to skim.
+    const ask = buildPreflightAsk({
+      checkpoint: checkpoint(),
+      context: askContext({
+        tool_slug: 'recued-core/reception-intake.intake.materialize',
+        connection_name: 'reception-intake',
+      }),
+    });
+
+    expect(ask.message.text).not.toContain(' on reception-intake');
+    // Not dropped from the ask — it was never a second fact.
+    expect(ask.message.text).toContain(
+      'recued-core/reception-intake.intake.materialize',
+    );
+  });
+
+  it('keeps the connection when it DIFFERS — the sandbox-vs-production case', () => {
+    // The dedup compares whole segments, so the one difference that
+    // decides the blast radius survives it.
+    const ask = buildPreflightAsk({
+      checkpoint: checkpoint(),
+      context: askContext({
+        tool_slug: 'recued-core/hubspot.deal.update',
+        connection_name: 'hubspot-prod',
+      }),
+    });
+
+    expect(ask.message.text).toContain(
+      'recued-core/hubspot.deal.update on hubspot-prod',
+    );
+  });
+
+  it('clips a generated recipe id MIDDLE-OUT so the numbered tail survives', () => {
+    // Hand-written recipe ids are short and are left alone; the pack
+    // machinery generates 56-character ones that mostly restate the
+    // operation named later in the same sentence, in front of every word
+    // that decides anything.
+    const short = buildPreflightAsk({
+      checkpoint: checkpoint(),
+      context: askContext({ recipe_id: 'send-email', tool_slug: 'mail-send' }),
+    });
+    expect(short.message.text).toContain('Recipe send-email wants to run');
+
+    // ⚠ These ids are NUMBERED. A tail cut would render `…-1` and `…-2`
+    // identically — two different recipes reading as one, which is worse
+    // than the length it fixed.
+    const one = buildPreflightAsk({
+      checkpoint: checkpoint(),
+      context: askContext({
+        recipe_id: 'reception-intake-review-then-approve-intake-materialize-1',
+        tool_slug: 'recued-core/reception-intake.intake.materialize',
+      }),
+    });
+    const two = buildPreflightAsk({
+      checkpoint: checkpoint(),
+      context: askContext({
+        recipe_id: 'reception-intake-review-then-approve-intake-materialize-2',
+        tool_slug: 'recued-core/reception-intake.intake.materialize',
+      }),
+    });
+
+    expect(one.message.text).toContain(
+      'Recipe reception-intake-review-…ke-materialize-1 wants to run',
+    );
+    expect(one.message.text).not.toBe(two.message.text);
+  });
+
+  it('drops the publisher handle from the TITLE and keeps it in the body', () => {
+    // The title is also the Slack / Telegram / OS notification preview —
+    // the one line a reader is guaranteed to see, and the part a phone
+    // truncates from the front. `recued-core/` is the same on every
+    // first-party op, so it buys nothing and costs the distinguishing half.
+    const ask = buildPreflightAsk({
+      checkpoint: checkpoint(),
+      context: askContext({
+        tool_slug: 'recued-core/reception-intake.intake.materialize',
+        risk_tier: 'write',
+      }),
+    });
+
+    expect(ask.message.title).toBe(
+      'Approve reception-intake.intake.materialize (write)',
+    );
+    // Identity still stated in full, once, where identity belongs.
+    expect(ask.message.text).toContain(
+      'recued-core/reception-intake.intake.materialize',
+    );
+  });
+
   it('renders an unknown risk tier as no clause rather than "undefined"', () => {
     // `risk_tier` is a widened string across JSON persistence, so it can
     // carry a value the tier table has no row for.

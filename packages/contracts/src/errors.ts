@@ -57,6 +57,12 @@ export type RecipeErrorCode =
   | 'INGREDIENT_OUTPUT_VALIDATION_FAILED'
   | 'INGREDIENT_ADAPTER_ALL_FAILED'
   // Connection / OAuth
+  /** § 234.4p.16c — a RECIPE reached the `connection` direct-adapter hatch.
+   *  The slug is a HOST primitive (run-less, kind-pinned, tool-pinned; three
+   *  D-234 peer-exchange call sites) and is not recipe-bindable: a recipe
+   *  binding it would get an ARBITRARY-tool dispatch carrying no
+   *  per-operation declaration, which is the pre-D-165 call shape. */
+  | 'CONNECTION_DIRECT_NOT_RECIPE_BINDABLE'
   | 'CONNECTION_NOT_BOUND'
   | 'CONNECTION_NOT_FOUND'
   | 'CONNECTION_AUTH_EXPIRED'
@@ -516,6 +522,7 @@ export const ERR: Record<RecipeErrorCode, ErrorSeverity> = {
   INGREDIENT_ENDPOINT_BLOCKED: 'error',
   INGREDIENT_OUTPUT_VALIDATION_FAILED: 'error',
   INGREDIENT_ADAPTER_ALL_FAILED: 'error',
+  CONNECTION_DIRECT_NOT_RECIPE_BINDABLE: 'error',
   CONNECTION_NOT_BOUND: 'error',
   CONNECTION_NOT_FOUND: 'error',
   CONNECTION_AUTH_EXPIRED: 'error',
@@ -674,6 +681,7 @@ export const ERROR_MESSAGES: Record<RecipeErrorCode, string> = {
   INGREDIENT_ENDPOINT_BLOCKED: 'The endpoint this ingredient calls is on the block list. Pick a different ingredient or self-host.',
   INGREDIENT_OUTPUT_VALIDATION_FAILED: 'The service returned data in an unexpected shape. The ingredient author needs to update the parser.',
   INGREDIENT_ADAPTER_ALL_FAILED: 'Every fallback for this ingredient failed. Check the underlying service status.',
+  CONNECTION_DIRECT_NOT_RECIPE_BINDABLE: 'This recipe calls the low-level `connection` adapter directly, which recipes may not do. Use the operation the pack provides for this connection — enrolling an MCP connection generates one per tool, each with its own approval and risk tier.',
   CONNECTION_NOT_BOUND: 'A connection-using ingredient was installed without choosing a connection. Edit the recipe in Kitchen and bind one.',
   CONNECTION_NOT_FOUND: 'No matching connection saved. Add one in Settings → Connections.',
   CONNECTION_AUTH_EXPIRED: 'The saved credential is expired. Sign in again from Settings → Connections.',
@@ -856,6 +864,7 @@ export const ERROR_ATTRIBUTION: Record<RecipeErrorCode, ErrorAttribution> = {
   INGREDIENT_ENDPOINT_BLOCKED: 'owner',
   INGREDIENT_OUTPUT_VALIDATION_FAILED: 'choice',
   INGREDIENT_ADAPTER_ALL_FAILED: 'environment',
+  CONNECTION_DIRECT_NOT_RECIPE_BINDABLE: 'choice',
   CONNECTION_NOT_BOUND: 'choice',
   CONNECTION_NOT_FOUND: 'choice',
   CONNECTION_AUTH_EXPIRED: 'environment',

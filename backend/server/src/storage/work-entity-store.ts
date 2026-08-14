@@ -202,11 +202,9 @@ export const ensureWorkEntitySchema = (db: Database.Database): void => {
       source_kind            TEXT NOT NULL,
       source_label           TEXT NOT NULL,
       write_capable          INTEGER NOT NULL,
-      mcp_exposed            INTEGER NOT NULL,
       schema_extension_blob  TEXT,
       registered_at          INTEGER NOT NULL,
       config_blob            TEXT,
-      enabled                INTEGER NOT NULL DEFAULT 1,
       sync_posture           TEXT NOT NULL DEFAULT 'records'
     );
     CREATE INDEX IF NOT EXISTS idx_source_registry_kind
@@ -220,13 +218,16 @@ export const ensureWorkEntitySchema = (db: Database.Database): void => {
   // migration script. SQLite raises a `duplicate column name` error
   // when the column already exists; swallow that exact error so boot
   // stays idempotent. Any other error propagates.
+  // D-187 Sources half — `enabled` LEFT source_registry with the Settings →
+  // Work Entities page that set it. Guarded DROP, the mirror of the ADD this
+  // replaces: the upsert names its columns explicitly, so an existing dev
+  // database that kept the column would fail every Source INSERT. "no such
+  // column" is swallowed so boot stays idempotent.
   try {
-    db.exec(
-      `ALTER TABLE ${SOURCE_REGISTRY_TABLE} ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`,
-    );
+    db.exec(`ALTER TABLE ${SOURCE_REGISTRY_TABLE} DROP COLUMN enabled`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (!/duplicate column name: enabled/i.test(msg)) throw err;
+    if (!/no such column: "?enabled"?/i.test(msg)) throw err;
   }
 
   // D-192 P-1 — `sync_posture` joins source_registry at P-1 (the file
@@ -240,6 +241,24 @@ export const ensureWorkEntitySchema = (db: Database.Database): void => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (!/duplicate column name: sync_posture/i.test(msg)) throw err;
+  }
+
+  // D-187 Sources half — `mcp_exposed` LEFT source_registry. It was a GLOBAL
+  // per-Source AI-read gate standing in for a verb grant that did not exist
+  // yet; the contract now governs the work graph through
+  // `core.work-entity.read` (owner-on / door-off) ∧ the `data.<kind>`
+  // collection grant, so nothing reads the column. Same pre-launch
+  // zero-migration idiom as the ADDs above, in the DROP direction — and it is
+  // not optional tidying: the column is NOT NULL with no default, and the
+  // upsert below names its columns explicitly, so an existing dev database
+  // that kept the column would fail every Source INSERT. SQLite raises "no
+  // such column" once it is gone; swallow that exact error so boot stays
+  // idempotent. Any other error propagates.
+  try {
+    db.exec(`ALTER TABLE ${SOURCE_REGISTRY_TABLE} DROP COLUMN mcp_exposed`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/no such column: "?mcp_exposed"?/i.test(msg)) throw err;
   }
 
   db.exec(`
@@ -588,14 +607,11 @@ export const ensureWorkEntitySchema = (db: Database.Database): void => {
       WHERE slot_start_at IS NOT NULL;
   `);
 
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS ${WORK_ENTITY_DEFAULT_SOURCE_TABLE} (
-      kind          TEXT PRIMARY KEY,
-      source_id     TEXT NOT NULL,
-      updated_at    INTEGER NOT NULL,
-      FOREIGN KEY (source_id) REFERENCES ${SOURCE_REGISTRY_TABLE}(id) ON DELETE CASCADE
-    );
-  `);
+  // D-187 Sources half — the `work_entity_default_source` table is DROPPED
+  // with the per-kind default it held. Write routing is `explicit source_id ??
+  // RECUED_BUILTIN_SOURCE_ID(kind)`, which is what the LLM path already did
+  // deliberately. Pre-launch, zero installs ⇒ drop outright, no migration.
+  db.exec(`DROP TABLE IF EXISTS ${WORK_ENTITY_DEFAULT_SOURCE_TABLE};`);
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS ${NOTE_ACCESS_LEDGER_TABLE} (
@@ -881,13 +897,6 @@ export interface WorkEntityListQuery {
   /** When true, returns rows even when `deleted_at IS NOT NULL`.
    *  Default false — § A.1.6 "All Sources" filter. */
   include_deleted?: boolean;
-  /** D-145 PA11 — when true, polymorphic reads include rows whose
-   *  Source is disabled in `source_registry`. Default false: a
-   *  user-disabled Source's rows do NOT appear in `data.<kind>.*`
-   *  reads. Bypassed automatically when `source_id` is set (explicit
-   *  scope wins; admin tools can read a disabled Source's rows by
-   *  scoping to it directly). */
-  include_disabled?: boolean;
   /** Task/project-only exact parent scope. Used by recipe-callable native
    *  reads and the federated-project Source so a project board never has to
    *  materialize every private task and filter after the fact. */
@@ -949,7 +958,6 @@ const normalizeListQuery = (q?: WorkEntityListQuery): Required<WorkEntityListQue
     sync_states,
     source_id: q?.source_id ?? '',
     include_deleted: q?.include_deleted ?? false,
-    include_disabled: q?.include_disabled ?? false,
     parent_project_id: q?.parent_project_id ?? '',
     limit,
     offset,
@@ -974,26 +982,14 @@ const buildListWhere = (
     clauses.push('source_id = ?');
     params.push(q.source_id);
   }
-  if (!q.include_disabled) {
-    // D-145 PA11 — reads exclude rows whose Source is EXPLICITLY
-    // disabled. NOT IN against the disabled-rows subquery so the
-    // predicate doesn't accidentally drop orphan rows (Source row
-    // deleted via `unregisterSource`; row's source_id no longer in
-    // source_registry at all). Orphan rows are filtered separately
-    // via the default `sync_state` filter (`'live' |
-    // 'stale_unreachable'`); the disabled filter only targets live +
-    // still-registered Sources whose user toggle was flipped off.
-    //
-    // D-145 PA11 Codex P2 fold (finding 3) — apply the disabled
-    // filter even when an explicit `source_id` is supplied. Recipe-
-    // side `data.<kind>.<source_id>.*` paths that scope to a Source
-    // the user later disabled would otherwise silently leak rows
-    // back into reads. Admin / debug surfaces opt out via
-    // `include_disabled: true`.
-    clauses.push(
-      `source_id NOT IN (SELECT id FROM ${SOURCE_REGISTRY_TABLE} WHERE enabled = 0)`,
-    );
-  }
+  // ⛔ READ IS ALWAYS FAN-OUT (D-187 Sources half). The `enabled = 0` exclusion
+  // that stood here is gone with the toggle that set it: every registered
+  // Source contributes to a `data.<kind>` read, identically for the owner and
+  // for a door. Muting is not a Source property — a Source is declared by a
+  // PACK (`work_entity_sources[]`), so uninstalling the pack is how its rows
+  // stop arriving. Orphan rows (Source unregistered, `source_id` no longer in
+  // source_registry) stay handled by the default `sync_state` filter, which is
+  // a separate concern and untouched.
   if (!q.include_deleted) {
     clauses.push('deleted_at IS NULL');
   }
@@ -1303,11 +1299,9 @@ interface SourceRegistryRow {
   source_kind: SourceKind;
   source_label: string;
   write_capable: number;
-  mcp_exposed: number;
   schema_extension_blob: string | null;
   registered_at: number;
   config_blob: string | null;
-  enabled: number;
   sync_posture: string;
 }
 
@@ -1325,8 +1319,6 @@ const rowToSourceRegistration = (row: SourceRegistryRow): SourceRegistration => 
     sync_posture: coerceSourceSyncPosture(row.sync_posture),
     source_label: row.source_label,
     write_capable: intToBool(row.write_capable),
-    mcp_exposed: intToBool(row.mcp_exposed),
-    enabled: intToBool(row.enabled),
     registered_at: row.registered_at,
   };
   const ext = parseJsonObject(row.schema_extension_blob);
@@ -1892,27 +1884,6 @@ export interface WorkEntityStore {
   unregisterSource(id: string): boolean;
   getSource(id: string): SourceRegistration | null;
   listSources(top_tier_kind?: SourceTopTierKind): SourceRegistration[];
-  /** D-145 PA11 — flip the user-driven enable/disable toggle. Returns
-   *  the post-write Source row; throws `SourceRegistrationError` when
-   *  the id is not registered. Idempotent — writing the same value is
-   *  a no-op. */
-  setSourceEnabled(id: string, enabled: boolean): SourceRegistration;
-  /** D-145 PA11 — flip the per-Source MCP exposure boolean. Returns
-   *  the post-write Source row; throws when unregistered. The
-   *  per-(bound contract, topic) read-visibility override
-   *  (`contract.enrichment.*`, D-187) layers on top of this column at MCP
-   *  read time; this method only writes the registry-level boolean. */
-  setSourceMcpExposed(id: string, mcp_exposed: boolean): SourceRegistration;
-  // ── default-Source memory (D-145 PA2 — § A.2.2) ────────────────
-  /** Read the per-kind default Source id, or `null` when the user
-   *  has not pinned one yet. Backs `prefs.<kind>.last_used_source_id`
-   *  in recipe land. */
-  getDefaultSource(kind: WorkEntityKind): string | null;
-  /** Pin the default Source id for a kind. The Source must be
-   *  registered for that kind — cross-kind / unknown ids reject. */
-  setDefaultSource(kind: WorkEntityKind, source_id: string, now?: number): void;
-  /** Drop the per-kind default. No-op when nothing was set. */
-  clearDefaultSource(kind: WorkEntityKind): boolean;
   // ── polymorphic ────────────────────────────────────────────────
   /** Generic by-kind read. Returns the row tagged with `_kind`. */
   readByKind<K extends WorkEntityKind>(kind: K, id: string): WorkEntity | null;
@@ -2021,17 +1992,16 @@ export const createWorkEntityStore = (
   const insertSourceStmt = db.prepare(`
     INSERT INTO ${SOURCE_REGISTRY_TABLE}
       (id, top_tier_kind, source_kind, source_label, write_capable,
-       mcp_exposed, schema_extension_blob, registered_at, config_blob,
-       enabled, sync_posture)
+       schema_extension_blob, registered_at, config_blob,
+       sync_posture)
     VALUES
       (@id, @top_tier_kind, @source_kind, @source_label, @write_capable,
-       @mcp_exposed, @schema_extension_blob, @registered_at, @config_blob,
-       @enabled, @sync_posture)
+       @schema_extension_blob, @registered_at, @config_blob,
+       @sync_posture)
     ON CONFLICT(id) DO UPDATE SET
       source_kind            = excluded.source_kind,
       source_label           = excluded.source_label,
       write_capable          = excluded.write_capable,
-      mcp_exposed            = excluded.mcp_exposed,
       schema_extension_blob  = excluded.schema_extension_blob,
       config_blob            = excluded.config_blob,
       sync_posture           = CASE
@@ -2070,24 +2040,15 @@ export const createWorkEntityStore = (
     // the first-seen timestamp (boot-wire idempotent re-registers would
     // otherwise drift it on every restart).
     const registered_at = existingRow ? existingRow.registered_at : (reg.registered_at ?? Date.now());
-    // D-145 PA11 — first-registration default `enabled = 1`. UPSERT's
-    // ON CONFLICT clause omits `enabled` so the user toggle survives
-    // boot-wire re-registers. Caller-supplied `reg.enabled` only takes
-    // effect on first insert; subsequent registers keep the persisted
-    // value. The bound parameter still has to be supplied because
-    // better-sqlite3 doesn't allow named-parameter omission.
-    const enabledFirstInsert = reg.enabled === false ? 0 : 1;
     insertSourceStmt.run({
       id: reg.id,
       top_tier_kind: reg.top_tier_kind,
       source_kind: reg.source_kind,
       source_label: reg.source_label,
       write_capable: reg.write_capable ? 1 : 0,
-      mcp_exposed: reg.mcp_exposed ? 1 : 0,
       schema_extension_blob: stringifyJsonObject(reg.schema_extension_blob),
       registered_at,
       config_blob: stringifyJsonObject(reg.config_blob),
-      enabled: enabledFirstInsert,
       // D-192 P-1 — first-insert posture (default `records`). On conflict an
       // omitted posture preserves the structural value (capability probes and
       // old callers must not reset it); an explicit declaration posture updates
@@ -2106,8 +2067,6 @@ export const createWorkEntityStore = (
       sync_posture: coerceSourceSyncPosture(persisted.sync_posture),
       source_label: reg.source_label,
       write_capable: reg.write_capable,
-      mcp_exposed: reg.mcp_exposed,
-      enabled: intToBool(persisted.enabled),
       registered_at,
     };
     if (reg.schema_extension_blob) out.schema_extension_blob = reg.schema_extension_blob;
@@ -2213,157 +2172,14 @@ export const createWorkEntityStore = (
     return rows.map(rowToSourceRegistration);
   };
 
-  // D-145 PA11 — user-toggle setters for the Settings → Work Entities
-  // panel. Both methods validate the Source is registered, write the
-  // single column, and return the post-write registration row. The
-  // mutation is column-scoped (no UPSERT) so concurrent writes against
-  // the same Source row don't clobber unrelated columns.
-  const setSourceEnabledStmt = db.prepare(
-    `UPDATE ${SOURCE_REGISTRY_TABLE} SET enabled = ? WHERE id = ?`,
-  );
-  const setSourceMcpExposedStmt = db.prepare(
-    `UPDATE ${SOURCE_REGISTRY_TABLE} SET mcp_exposed = ? WHERE id = ?`,
-  );
+  /* ⛔ NO SOURCE-POLICY WRITERS REMAIN (D-187 Sources half). `setSourceEnabled`
+   *  and the default-Source family below it were deleted with the Settings →
+   *  Work Entities page. A Source is declared by a PACK, so `registerSource` /
+   *  `unregisterSource` at pack boundaries are its only lifecycle writers, and
+   *  reads fan out over whatever is registered. The auto-clear transaction that
+   *  coupled the two (disabling a Source dropped any default pointing at it)
+   *  goes with both halves — there is nothing left for it to reconcile. */
 
-  // D-145 PA11 Codex P1 fold (finding 5) — disabling a Source that is
-  // currently the per-kind default auto-clears the default. Otherwise
-  // the create-dialog would silently route to a disabled Source on
-  // its next open. Single transaction so the pair commits atomically.
-  const clearDefaultsForDisabledSourceStmt = db.prepare(
-    `DELETE FROM ${WORK_ENTITY_DEFAULT_SOURCE_TABLE} WHERE source_id = ?`,
-  );
-
-  const setSourceEnabled: WorkEntityStore['setSourceEnabled'] = (id, enabled) => {
-    if (typeof id !== 'string' || id.length === 0) {
-      throw new SourceRegistrationError('id is required');
-    }
-    if (typeof enabled !== 'boolean') {
-      throw new SourceRegistrationError('enabled must be a boolean');
-    }
-    const tx = db.transaction((): SourceRegistryRow => {
-      const result = setSourceEnabledStmt.run(enabled ? 1 : 0, id);
-      if (result.changes === 0) {
-        throw new SourceRegistrationError(
-          `source_id '${id}' is not registered in source_registry`,
-        );
-      }
-      // Auto-clear any pinned default that points at this Source on
-      // disable. This is a single statement that drops the row if
-      // present and is a no-op otherwise.
-      if (!enabled) {
-        clearDefaultsForDisabledSourceStmt.run(id);
-      }
-      return getSourceStmt.get(id) as SourceRegistryRow;
-    });
-    return rowToSourceRegistration(tx());
-  };
-
-  const setSourceMcpExposed: WorkEntityStore['setSourceMcpExposed'] = (
-    id,
-    mcp_exposed,
-  ) => {
-    if (typeof id !== 'string' || id.length === 0) {
-      throw new SourceRegistrationError('id is required');
-    }
-    if (typeof mcp_exposed !== 'boolean') {
-      throw new SourceRegistrationError('mcp_exposed must be a boolean');
-    }
-    const result = setSourceMcpExposedStmt.run(mcp_exposed ? 1 : 0, id);
-    if (result.changes === 0) {
-      throw new SourceRegistrationError(
-        `source_id '${id}' is not registered in source_registry`,
-      );
-    }
-    const row = getSourceStmt.get(id) as SourceRegistryRow;
-    return rowToSourceRegistration(row);
-  };
-
-  // ── default-Source memory (PA2 — § A.2.2) ───────────────────────
-  const getDefaultSourceStmt = db.prepare(
-    `SELECT source_id FROM ${WORK_ENTITY_DEFAULT_SOURCE_TABLE} WHERE kind = ?`,
-  );
-  const upsertDefaultSourceStmt = db.prepare(
-    `INSERT INTO ${WORK_ENTITY_DEFAULT_SOURCE_TABLE} (kind, source_id, updated_at)
-       VALUES (?, ?, ?)
-     ON CONFLICT(kind) DO UPDATE SET
-       source_id = excluded.source_id,
-       updated_at = excluded.updated_at`,
-  );
-  const deleteDefaultSourceStmt = db.prepare(
-    `DELETE FROM ${WORK_ENTITY_DEFAULT_SOURCE_TABLE} WHERE kind = ?`,
-  );
-
-  const getDefaultSource: WorkEntityStore['getDefaultSource'] = (kind) => {
-    if (!WORK_ENTITY_KIND_SET.has(kind)) {
-      throw new WorkEntityValidationError(`unknown kind '${kind}'`, 'kind');
-    }
-    const row = getDefaultSourceStmt.get(kind) as { source_id: string } | undefined;
-    return row ? row.source_id : null;
-  };
-
-  const setDefaultSource: WorkEntityStore['setDefaultSource'] = (
-    kind,
-    source_id,
-    now = Date.now(),
-  ) => {
-    if (!WORK_ENTITY_KIND_SET.has(kind)) {
-      throw new WorkEntityValidationError(`unknown kind '${kind}'`, 'kind');
-    }
-    if (typeof source_id !== 'string' || source_id.length === 0) {
-      throw new WorkEntityValidationError('source_id is required', 'source_id');
-    }
-    // D-145 PA11 Codex P1 fold (finding 5) — refuse to pin a disabled
-    // Source. Pinning + then disabling is handled by the auto-clear
-    // path on `setSourceEnabled`, but the inverse (pin a Source the
-    // user already disabled) would silently route create-dialog
-    // writes to a disabled Source. Read the full row up-front so the
-    // existence + kind + enabled checks can short-circuit with typed
-    // errors before the upsert runs.
-    const sourceRow = getSourceStmt.get(source_id) as SourceRegistryRow | undefined;
-    if (sourceRow === undefined) {
-      throw new WorkEntityValidationError(
-        `source_id '${source_id}' is not registered in source_registry`,
-        'source_id',
-      );
-    }
-    if (sourceRow.top_tier_kind !== kind) {
-      throw new WorkEntityValidationError(
-        `source_id '${source_id}' is registered for top_tier_kind '${sourceRow.top_tier_kind}', not '${kind}'`,
-        'source_id',
-      );
-    }
-    if (sourceRow.enabled === 0) {
-      throw new WorkEntityValidationError(
-        `source_id '${source_id}' is disabled; enable it before pinning as default`,
-        'source_id',
-      );
-    }
-    // § A.2 per-kind scoping mirrors `resolveSourceIdentity`: pinning a
-    // task default to a note Source is the same kind-cross that breaks
-    // the polymorphic resolver invariant. Reject at write time.
-    const registeredKind = internal.sourceTopTierKind(source_id);
-    if (registeredKind === null) {
-      throw new WorkEntityValidationError(
-        `source_id '${source_id}' is not registered in source_registry`,
-        'source_id',
-      );
-    }
-    if (registeredKind !== kind) {
-      throw new WorkEntityValidationError(
-        `source_id '${source_id}' is registered for top_tier_kind '${registeredKind}', not '${kind}'`,
-        'source_id',
-      );
-    }
-    upsertDefaultSourceStmt.run(kind, source_id, now);
-  };
-
-  const clearDefaultSource: WorkEntityStore['clearDefaultSource'] = (kind) => {
-    if (!WORK_ENTITY_KIND_SET.has(kind)) {
-      throw new WorkEntityValidationError(`unknown kind '${kind}'`, 'kind');
-    }
-    const result = deleteDefaultSourceStmt.run(kind);
-    return result.changes > 0;
-  };
 
   // ── tasks ───────────────────────────────────────────────────────
   const writeTask: WorkEntityStore['writeTask'] = (input, now = Date.now()) => {
@@ -3562,11 +3378,6 @@ export const createWorkEntityStore = (
     unregisterSource,
     getSource,
     listSources,
-    setSourceEnabled,
-    setSourceMcpExposed,
-    getDefaultSource,
-    setDefaultSource,
-    clearDefaultSource,
     readByKind,
     readBySourceIdentity,
     countByKind,

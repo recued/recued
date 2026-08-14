@@ -45,17 +45,14 @@ import type { WorkEntityEdgeView } from './work-entity-edges.js';
 
 /** List one own-it kind, polymorphic across the kind's registered
  *  Sources (or scoped to one via `source_id`). Mirrors the resolver's
- *  `listByKind` default filters: `live` + `stale_unreachable` only,
- *  user-disabled Sources excluded unless `include_disabled` — ALSO
- *  under an explicit `source_id` scope (the PA11 store fold: a scoped
- *  read of a disabled Source returns no rows unless the caller opts
- *  in). */
+ *  `listByKind` default filters: `live` + `stale_unreachable` only.
+ *  ⛔ No `include_disabled` — reads always fan out over every registered
+ *  Source (D-187 Sources half); there is no disabled state to opt past. */
 export interface WorkEntityListRpcRequest {
   kind: WorkEntityKind;
   source_id?: string;
   sync_states?: readonly SyncState[];
   include_deleted?: boolean;
-  include_disabled?: boolean;
   limit?: number;
   offset?: number;
   /** Booking-only, server-side search across the complete result set. */

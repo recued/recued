@@ -68,12 +68,19 @@ export {
   mcpToolsDriftFromHashes,
   mcpMintedHashes,
   mcpMintedHashesFromCatalog,
+  mcpToolNamesFromCatalog,
+  mcpToolOperationsFromCatalog,
   mcpConnectionForPackSlug,
   looksLikeGeneratedMcpPackSlug,
   mcpPackManifest,
+  subtractReflectedMcpTools,
   GENERATED_PACK_PUBLISHER,
 } from './mcp-pack.js';
-export type { McpPackGenerationInput, McpToolsDrift } from './mcp-pack.js';
+export type {
+  McpPackGenerationInput,
+  McpReflectionSubtraction,
+  McpToolsDrift,
+} from './mcp-pack.js';
 
 // D-228 slice 1b — ingredient op ids. Exported so the wiring slice can reach
 // them; NOTHING consumes these yet, deliberately (see `ingredient-op.ts`).

@@ -43,18 +43,28 @@
  *  to avoid clobbering staged local edits, and a stale-until-next-poll
  *  mirror row is exactly what `source_freshness` already discloses.
  *
- *  Exposure axes (deliberately separate — see
- *  `feedback_separate_authorization_axes`):
- *  - `mcp_wire` (external doors): rows are filtered to Sources the
- *    owner flipped `mcp_exposed: true` (Settings → Work Entities;
- *    default OFF per the D-136 P7.E privacy posture — this module is
- *    the flag's first read-path consumer). The result's
- *    `hidden_sources` count keeps an empty page honest (the
- *    coverage-disclosure precedent from `recued_contactEngagementsList`).
- *  - owner chat: ungated — the owner's own AI reads the owner's
- *    warehouse, like every other Tier-1 read primitive.
- *  - the vendor escalation itself is gated by the connection gateway's
- *    policy matrix on EVERY channel, independent of the flag. */
+ *  Read authority (D-187 Sources half — ONE model, both channels):
+ *  - `core.work-entity.read`, the VERB — an `OWNER_DEFAULT_ONLY_GRANT_ENTRIES`
+ *    member, so owner-on / door-off (including a WILDCARD door) unless the
+ *    owner grants it. Enforced by `isVerbOpGranted` below.
+ *  - `data.<kind>`, the COLLECTION — admit-all author-default, narrowed by an
+ *    explicit revoke. Enforced by `isCollectionReadGranted` below.
+ *  They compose AND: a collection grant does not imply the verb.
+ *
+ *  ⛔ The per-Source `mcp_exposed` flag that used to filter rows here is GONE
+ *  (with its `hidden_sources` disclosure and the Settings → Work Entities
+ *  toggle). It was a GLOBAL switch standing in for the verb grant before that
+ *  verb existed; keeping it alongside the contract meant two gates over one
+ *  read, only one of them per-door. Owner chat and `mcp_wire` now resolve the
+ *  same two grants. Settings → Work Entities keeps the Source registry,
+ *  enable/disable, and the per-kind default — data-plane wiring, not a door.
+ *
+ *  ⚠ `enabled` is a SEPARATE axis and survives: it is enforced in the store's
+ *  read WHERE (for the owner too), plus a channel-scoped re-check on
+ *  `work.read`'s by-id path, which bypasses that WHERE.
+ *
+ *  The vendor escalation itself is gated by the connection gateway on EVERY
+ *  channel, independent of all of the above. */
 
 import type {
   ChatDispatchContext,
@@ -148,6 +158,12 @@ export interface WorkEntityReadToolsDeps {
    *  (Tier-1 + `classification: 'read'` → `buildDefaultMcpInboundTokenGrants` =
    *  true), and the only thing between a door and the whole work graph was the
    *  per-Source `mcp_exposed` flag, which is GLOBAL rather than per-door.
+   *
+   *  🔑 That flag is now DELETED (D-187 Sources half), so this fence is not
+   *  merely the better of two gates — it is the ONLY thing standing between a
+   *  door and the owner's work graph. Its owner-default-only posture is
+   *  load-bearing, and `d-174-p3-contract-grants.test.ts` pins it end-to-end
+   *  through the panel the owner actually uses.
    *
    *  ⚠ **REQUIRED on purpose, not optional** — the same discipline as
    *  `isCollectionReadGranted` above: a fence that can be silently left unwired
@@ -426,19 +442,6 @@ const clampLimit = (v: unknown): number => {
   const n = typeof v === 'number' && Number.isFinite(v) ? Math.floor(v) : DEFAULT_LIMIT;
   return Math.min(Math.max(n, 1), MAX_LIMIT);
 };
-
-/** The external-door reject for a query scoped to a non-exposed
- *  Source. Source EXISTENCE is Settings-level metadata (ids surface in
- *  every search's freshness array), so naming the control here is
- *  honest + actionable — unlike row existence, which `work.read`
- *  deliberately does NOT disclose for hidden Sources. */
-const notExposedRejection = (source_id: string): ChatDispatchResult => ({
-  ok: false,
-  reason: 'classification_blocked',
-  detail:
-    `source '${source_id}' is not MCP-exposed — the owner opts a work Source `
-    + 'in via Settings → Work Entities (read rejected)',
-});
 
 // ────────────────────────────────────────────────────────────────
 // Lean projection
@@ -1052,7 +1055,6 @@ export const runWorkEntitySearchTool = async (
 
   const resolver = deps.getResolver();
   if (!resolver) return executionError('work-entity resolver unavailable');
-  const external = ctx.channel === 'mcp_wire';
   const registrations = resolver.listSources(kind);
   const targeted = deps.getTargetedReadDeps();
   let limitations: Array<{ source_id: string; limitations: string[] }> = [];
@@ -1060,24 +1062,22 @@ export const runWorkEntitySearchTool = async (
   const escalationErrors: WorkEntityEscalationError[] = [];
   const escalatedReads: Array<{ source_id: string; record_ids: string[] }> = [];
 
-  // External doors see only owner-opted-in Sources (mcp_exposed —
-  // default OFF). Disabled Sources are excluded from the row read by
-  // the store already; the hidden count discloses only Sources whose
-  // rows COULD have appeared (enabled, not exposed).
-  let exposed: ReadonlySet<string> | null = null;
-  let hidden_sources = 0;
-  if (external) {
-    exposed = new Set(
-      registrations
-        .filter((s) => s.enabled !== false && s.mcp_exposed)
-        .map((s) => s.id),
-    );
-    hidden_sources = registrations
-      .filter((s) => s.enabled !== false && !s.mcp_exposed).length;
-    if (source_id !== undefined && !exposed.has(source_id)) {
-      return notExposedRejection(source_id);
-    }
-  }
+  // D-187 Sources half — the per-Source `mcp_exposed` filter that used to sit
+  // here is GONE, and nothing replaces it at this level. It was a GLOBAL flag
+  // standing in for a verb grant that did not exist when it was written; the
+  // contract now governs this read per-door, upstream, through
+  // `core.work-entity.read` (owner-on / door-off) ∧ the `data.<kind>`
+  // collection grant — both already enforced above. Disabled Sources are
+  // excluded by the store's own read WHERE, for the owner too, so there is no
+  // per-Source narrowing left to apply and no `hidden_sources` disclosure to
+  // make: a door either holds the verb and sees the kind, or never reaches
+  // here. Both channels now traverse the same two gates for EXPOSURE.
+  //
+  // ⚠ One `mcp_wire` asymmetry deliberately SURVIVES, and it is about
+  // `enabled`, not exposure: `work.read`'s by-id path bypasses the store's
+  // polymorphic read WHERE, so it re-checks `enabled` and hides a disabled
+  // Source's row from an external door while the owner keeps the CRUD `get`
+  // disabled-row visibility. That rule predates this change and is untouched.
 
   let rows: WorkEntity[];
   try {
@@ -1102,10 +1102,6 @@ export const runWorkEntitySearchTool = async (
   // rows beyond it — `total` is then a floor, and the result says so
   // (the D-190 `truncated` honesty precedent).
   let scan_truncated = rows.length >= DISCOVERY_SCAN_CAP;
-  if (exposed !== null) {
-    const allow = exposed;
-    rows = rows.filter((r) => allow.has(r.source_id));
-  }
   if (done !== undefined) {
     rows = rows.filter((r) => r._kind === 'task' && r.done === done);
   }
@@ -1124,9 +1120,7 @@ export const runWorkEntitySearchTool = async (
   // high-security system to query.
   const readThroughSources = registrations.filter((source) =>
     source.sync_posture === 'read_through'
-    && source.enabled !== false
     && (source_id === undefined || source.id === source_id)
-    && (exposed === null || exposed.has(source.id))
   );
   let readThroughItems: WorkEntityToolItem[] = [];
   if (readThroughSources.length > 0) {
@@ -1207,13 +1201,9 @@ export const runWorkEntitySearchTool = async (
   // as the rows (the CRUD handler precedent). Null = sync substrate
   // unwired; the field is then ABSENT (distinguishable from an empty
   // scope, the D-192 wire convention).
-  let freshness = resolver.sourceFreshness(kind, {
+  const freshness = resolver.sourceFreshness(kind, {
     ...(source_id !== undefined ? { source_id } : {}),
   });
-  if (freshness !== null && exposed !== null) {
-    const allow = exposed;
-    freshness = freshness.filter((f) => allow.has(f.source_id));
-  }
 
   if ((needs.detail || needs.current) && freshness !== null && page.length > 0) {
     const verdictBySource = new Map(freshness.map((f) => [f.source_id, f]));
@@ -1340,7 +1330,6 @@ export const runWorkEntitySearchTool = async (
           }
         : {}),
       ...(escalationErrors.length > 0 ? { escalation_errors: escalationErrors } : {}),
-      ...(external && hidden_sources > 0 ? { hidden_sources } : {}),
     },
   };
 };
@@ -1420,14 +1409,6 @@ export const runWorkEntityReadTool = async (
         .listSources(kind)
         .find((source) => source.id === qualified.source_id);
       if (registration?.sync_posture === 'read_through') {
-        if (registration.enabled === false) {
-          return invalidArgs(
-            `source '${registration.id}' is disabled in Settings → Work Entities`,
-          );
-        }
-        if (ctx.channel === 'mcp_wire' && !registration.mcp_exposed) {
-          return { ok: true, result: { entity: null, found: false } };
-        }
         const now = (deps.now ?? Date.now)();
         const freshness = classifyWorkEntitySourceFreshness(registration, null, now);
         const targeted = deps.getTargetedReadDeps();
@@ -1527,35 +1508,20 @@ export const runWorkEntityReadTool = async (
     return { ok: true, result: { entity: null, found: false } };
   }
   const row = entity;
-  if (ctx.channel === 'mcp_wire') {
-    const registration = resolver
-      .listSources(kind)
-      .find((s) => s.id === row.source_id);
-    // A disabled Source's rows are excluded from polymorphic reads
-    // (PA11) — an external door must not keep reading a Source the
-    // owner switched off just because its `mcp_exposed` flag survived
-    // the disable (codex MEDIUM). The owner's own by-id read keeps the
-    // CRUD `get` disabled-row visibility.
-    if (
-      registration === undefined
-      || !registration.mcp_exposed
-      || registration.enabled === false
-    ) {
-      // Deliberately indistinguishable from a missing row: an external
-      // door must not learn row existence inside a Source the owner
-      // kept private. Source-LEVEL coverage is disclosed by
-      // `work.search`'s `hidden_sources` instead.
-      return { ok: true, result: { entity: null, found: false } };
-    }
-  }
+  // ⛔ THE LAST PER-CHANNEL SPECIAL-CASE IN THIS MODULE IS GONE (D-187 Sources
+  // half). This block re-checked `mcp_exposed`, then (after that flag died)
+  // `enabled`, on the by-id path because it bypasses the store's polymorphic
+  // read WHERE. Both flags are now deleted, so `work.read` resolves the same
+  // way for owner chat and for `mcp_wire`: the contract decides
+  // (`core.work-entity.read` ∧ `data.<kind>`, enforced above), and reads fan
+  // out over every registered Source. Do not reintroduce a channel branch
+  // here — a read that differs by channel below the grant layer is exactly the
+  // shape this whole thread removed.
 
   const now = (deps.now ?? Date.now)();
   const targeted = deps.getTargetedReadDeps();
-  // By-id reads surface disabled-Source rows (the CRUD `get`
-  // precedent), so the verdict lookup passes include_disabled too.
   const verdicts = resolver.sourceFreshness(kind, {
     source_id: row.source_id,
-    include_disabled: true,
   });
   const freshness: WorkEntitySourceFreshness = verdicts?.[0]
     ?? classifyWorkEntitySourceFreshness(

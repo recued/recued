@@ -27,6 +27,8 @@ import {
   CONTRACT_GRANTS_KIND_GROUP_ATTR,
   CONTRACT_GRANTS_OP_FILTER_ATTR,
   CONTRACT_GRANTS_OP_FILTER_STATUS_ATTR,
+  CONTRACT_GRANTS_PEER_LABEL_ADD_ATTR,
+  CONTRACT_GRANTS_PEER_LABEL_INPUT_ATTR,
   CONTRACT_GRANTS_PANEL_STYLES,
   CONTRACT_GRANTS_RISK_ATTR,
   CONTRACT_GRANTS_SOURCE_ATTR,
@@ -56,6 +58,7 @@ import {
   TIER1_TOOL_NAMES,
   collectionGrantEntry,
   opGrantEntry,
+  peerLabelGrantEntry,
   primitiveGrantEntry,
   topicGrantEntry,
   type CatalogIngredientView,
@@ -596,6 +599,40 @@ describe('contract-grants panel — universe split across Ops / Entities', () =>
     }
   });
 
+  // D-187 Sources half — this is the witness that made deleting Settings →
+  // Work Entities' per-Source `mcp_exposed` toggle safe. That flag was the only
+  // thing standing between a door and the owner's whole work graph, and it was
+  // GLOBAL rather than per-door. Its replacement is the pair asserted here: the
+  // ops are reachable in the contract panel at all, and the read verb is
+  // owner-on / door-off. If this reds, the deletion left the work graph either
+  // ungoverned or unreachable.
+  it('every core.work-entity.* op is reachable in the panel; the read verb is owner-on / door-off', async () => {
+    // ⚠ DERIVED from the registry, never a literal list — a work-entity op
+    // added later must move this automatically or the assertion stops meaning
+    // anything. Asserts it found something first, so an empty filter (a renamed
+    // op prefix) fails loudly instead of passing vacuously.
+    const workEntityOps = KERNEL_OP_REGISTRY
+      .filter((e) => e.op.startsWith('core.work-entity.'))
+      .map((e) => e.op);
+    expect(workEntityOps.length).toBeGreaterThan(0);
+    const WORK_ENTITY_READ_OP = 'core.work-entity.read';
+    expect(workEntityOps).toContain(WORK_ENTITY_READ_OP);
+
+    const ownerPanel = mountPanelWith({ contractId: OWNER_CONTRACT_ID });
+    await ownerPanel.panel.whenLoaded();
+    const rendered = new Set(
+      ownerPanel.panel.getEntries().map((entry) => entry.entry_key),
+    );
+    for (const op of workEntityOps) expect(rendered.has(op)).toBe(true);
+    // The set must be able to say NO, or `has()` above certifies nothing.
+    expect(rendered.has('core.work-entity.__not-a-real-op')).toBe(false);
+    expect(ownerPanel.panel.getEffective(WORK_ENTITY_READ_OP)).toBe('on');
+
+    const doorPanel = mountPanelWith({ contractId: 'door_x' });
+    await doorPanel.panel.whenLoaded();
+    expect(doorPanel.panel.getEffective(WORK_ENTITY_READ_OP)).toBe('off');
+  });
+
   it('customer-template mode is explicit-only and omits unstamped CLI authority', async () => {
     const { panel, store, runGrantWrite } = mountPanelWith({
       explicitGrantRowsOnly: true,
@@ -616,6 +653,36 @@ describe('contract-grants panel — universe split across Ops / Entities', () =>
     });
     expect(store.get(mailEntry)).toBe(true);
     expect(panel.getEffective(mailEntry)).toBe('on');
+  });
+
+  it('renders stored peer-label grants and lets the owner revoke them', async () => {
+    const entry = peerLabelGrantEntry('review:contract');
+    const { panel, store } = mountPanelWith({ seed: { [entry]: true } });
+    await panel.whenLoaded();
+
+    expect(cellFor(opsRootEl(panel), entry)).toBeDefined();
+    expect(panel.getEffective(entry)).toBe('on');
+    await panel.toggleEntry(entry);
+    expect(store.get(entry)).toBe(false);
+    expect(panel.getEffective(entry)).toBe('off');
+  });
+
+  it('creates a new peer-label grant from the shipped Ops surface', async () => {
+    const { panel, store, runGrantWrite } = mountPanelWith();
+    await panel.whenLoaded();
+    const input = opsRootEl(panel).querySelector(`[${CONTRACT_GRANTS_PEER_LABEL_INPUT_ATTR}]`)!;
+    const add = opsRootEl(panel).querySelector(`[${CONTRACT_GRANTS_PEER_LABEL_ADD_ATTR}]`)!;
+    input.value = 'review:contract';
+    input.dispatch('input');
+    add.click();
+    while (panel.hasInFlightWork()) await Promise.resolve();
+
+    const entry = peerLabelGrantEntry('review:contract');
+    expect(runGrantWrite).toHaveBeenCalledWith({
+      contract_id: 'door_x', entry_key: entry, granted: true,
+    });
+    expect(store.get(entry)).toBe(true);
+    expect(cellFor(opsRootEl(panel), entry)).toBeDefined();
   });
 });
 

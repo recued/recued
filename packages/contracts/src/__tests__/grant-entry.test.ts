@@ -27,6 +27,7 @@ import {
   isOwnerDefaultOnlyEntry,
   ownerOnlyAdjustedAuthorDefault,
   isGeneratedPackOpEntry,
+  isThirdPartyPackOpEntry,
   OWNER_DEFAULT_ONLY_GRANT_ENTRIES,
   resolveGrantEntry,
 } from '../grant-resolve.js';
@@ -218,5 +219,34 @@ describe('D-225 § 9.6 — generated-pack ops are owner-default-only', () => {
     // generated op to a door deliberately; that is the whole point of making it
     // require naming rather than making it unreachable.
     expect(resolveGrantEntry(true, ownerOnlyAdjustedAuthorDefault(GEN_OP, DOOR, true))).toBe(true);
+  });
+});
+
+describe('§ 234.4p.16e — EVERY Tier-P pack op is owner-default-only', () => {
+  it('covers ordinary installed packs, not just runtime-generated ones', () => {
+    // ⛔ THE POINT OF THE GENERALISATION. `opAuthorDefault` reads a WILDCARD
+    // door (empty `scope.operation_ids`) as permissive, and `isOpGranted`
+    // resolves `explicit row ?? author-default` — so before this, a wildcard
+    // door reached any ORDINARY pack op with no grant row anywhere. D-225 § 9.6
+    // had closed exactly that hole for GENERATED packs; the same sentence is
+    // true of a marketplace pack, whose updates can add ops too.
+    expect(isThirdPartyPackOpEntry('recued-core.hubspot.deal_read')).toBe(true);
+    expect(isThirdPartyPackOpEntry('acme.widgets.thing_create')).toBe(true);
+    // A generated op is a SUBSET, still covered.
+    expect(isThirdPartyPackOpEntry('recued-local.mcp-0000.anything_00000000')).toBe(true);
+    // ⇒ and therefore owner-default-only, which is what a door actually reads.
+    expect(isOwnerDefaultOnlyEntry('recued-core.hubspot.deal_read')).toBe(true);
+  });
+
+  it('does NOT sweep in kernel ops', () => {
+    // ⛔ TIGHTEN ONLY WHAT THE REASON COVERS. `core.*` is Recued's own surface,
+    // not a third party's declaration; covering it would silently revoke every
+    // wildcard door's primitives — a far larger behaviour change wearing the
+    // same commit.
+    expect(isThirdPartyPackOpEntry('core.mail.send')).toBe(false);
+    expect(isThirdPartyPackOpEntry('core.storage.shared.list')).toBe(false);
+    // Non-op entry kinds are untouched.
+    expect(isThirdPartyPackOpEntry('data.mail')).toBe(false);
+    expect(isThirdPartyPackOpEntry('enrichment.embedding')).toBe(false);
   });
 });

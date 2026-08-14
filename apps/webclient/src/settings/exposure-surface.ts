@@ -161,10 +161,16 @@ export const EXPOSURE_ERROR_COPY: Record<NetworkErrorCode, string> = {
     'The cert has already expired. Renew with the issuer + retry.',
   tls_pro_acme_unbind_required:
     'Auto-managed (Pro ACME) certs cannot be removed directly. Tear down the DDNS binding first via Settings → Server → DDNS → Unbind, which retires the cert in one transaction.',
+  tls_custom_domain_unenroll_required:
+    'Recued manages this certificate for your own domain, so removing it here would only make Recued issue it again. Remove the hostname in Settings → Server → Domains to un-enrol it — that retires the certificate with it.',
   pro_acme_not_found:
     'No Pro-managed cert exists for this domain. The handle may already be unbound, or it was managed manually (BYO upload) — use Remove on the cert row instead.',
   pro_acme_ddns_release_failed:
     'Releasing the Pro DDNS handle failed at the cloud helper. The cert row is preserved — try again, or check Reachability Doctor for a cloud-side outage.',
+  // Not a cloud outage — the opposite. The helper answered; it said this
+  // server has issued enough certificates for today. Nothing to go fix.
+  acme_rate_limited:
+    'This server has issued as many certificates as it is allowed today. The allowance resets 24 hours after the first issuance in the current window — no action needed, and any existing certificate is untouched.',
   apex_mode_unknown: 'Unknown apex mode. Refresh the page + try again.',
   apex_reception_not_public:
     'Serving Reception at the root needs /reception public. Turn on the /reception public bit in the grid above first, then pick "Serve Reception".',

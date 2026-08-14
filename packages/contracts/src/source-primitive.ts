@@ -89,18 +89,22 @@ export interface SourceRegistration {
   sync_posture?: SourceSyncPosture;
   source_label: string;
   write_capable: boolean;
-  mcp_exposed: boolean;
-  /** D-145 PA11 — Settings → Work Entities user toggle. Disabled
-   *  Sources are excluded from polymorphic `data.<kind>.*` reads + the
-   *  page-header dropdown's concrete-Source list (the All-Sources
-   *  sentinel still resolves; it just walks fewer Sources). Disabled
-   *  Sources continue to receive reconciler updates so re-enabling
-   *  doesn't strand rows behind a stale cursor. Default `true` —
-   *  every Source registers enabled; users opt out per Source via
-   *  Settings. Optional in the type so callers that pre-date PA11
-   *  (e.g. `registerSource({ enabled: undefined })`) keep working;
-   *  the store coerces `undefined → true` at write time. */
-  enabled?: boolean;
+  /** ⛔ NO `enabled`, and NO per-kind default — both were deleted with the
+   *  Settings → Work Entities page (D-187 Sources half, D-187
+   *  § 11). A Source is declared by a PACK (`work_entity_sources[]` on the
+   *  bulk-pack manifest), so its lifecycle control is pack install/uninstall,
+   *  not a per-Source toggle. The two rules that replace them:
+   *
+   *    READ  — always FAN-OUT. Every registered Source contributes to
+   *            `data.<kind>` reads, identically for the owner and for a door;
+   *            what a door may read is a contract grant, not a Source flag.
+   *    WRITE — always SOURCE-AWARE BY ID. `resolveSourceForCreate` is
+   *            `explicit source_id ?? RECUED_BUILTIN_SOURCE_ID(kind)`, which
+   *            is what the LLM path already did deliberately ("source is a
+   *            property of the decisively-resolved row, never an AI guess").
+   *
+   *  Do not reintroduce a Source-level enable/mute here or on the connection —
+   *  muting belongs to the pack that declared the Source. */
   schema_extension_blob?: Record<string, unknown>;
   registered_at: number;
   config_blob?: Record<string, unknown>;
@@ -442,6 +446,10 @@ export interface ExchangeCorrelationRow {
   /** D-234 § 234.2 — where the run that opened the exchange said to answer, as
    *  the WIRE NAME (`<publisher>/<recipe_id>`). */
   readonly callback_op?: string;
+  /** The contract bound to the outbound connection that opened this exchange.
+   *  Absent means the intended caller cannot be proven, so correlation must not
+   *  relax an `ask` ceiling. */
+  readonly expected_contract_id?: string;
 }
 
 /** Should an inbound peer call be admitted as a REPLY we solicited?
@@ -467,9 +475,8 @@ export interface ExchangeCorrelationRow {
  *
  *  Four conditions, and the last two are what keep it narrow:
  *   1. the ref names an exchange we have rows for;
- *   2. at least one of those rows is OURS (not run under the calling peer's
- *      contract) — otherwise a peer who merely called us once could later cite
- *      their own inbound run as evidence that we solicited them;
+ *   2. at least one of those rows is OURS AND names the calling peer as the
+ *      contract bound to the connection we addressed;
  *   3. the recipe being invoked is the one we NAMED as `callback_op`. ⛔ Without
  *      this the admission is far too wide: a peer holding any ref we opened could
  *      skip the entry ask for ANY recipe their contract reaches;
@@ -480,15 +487,19 @@ export const isSolicitedReply = (
   input: { recipe_id: string; caller_contract_id: string },
 ): boolean => {
   if (rows.length === 0) return false;
-  // (2) — evidence that WE participated, not merely that they called.
-  if (!rows.some((r) => r.contract_id !== input.caller_contract_id)) return false;
+  // (2) — evidence that WE addressed THIS caller, not merely that we opened a
+  // conversation under a ref another granted peer later learned.
+  const solicitations = rows.filter((r) =>
+    r.contract_id === undefined
+    && r.expected_contract_id === input.caller_contract_id);
+  if (solicitations.length === 0) return false;
   // (4) — one solicitation, one reply.
   if (rows.some((r) => r.recipe_id === input.recipe_id)) return false;
   // (3) — and it must be where we said to answer. ⚠ Accept either spelling: the
   // stamp is the WIRE NAME a recipe authors, audit rows carry the bare id. The
   // same normalization `deriveExchangeStatus` needed, for the same reason —
   // comparing them raw silently answers "no" for a correct reply.
-  return rows.some((r) => {
+  return solicitations.some((r) => {
     const declared = r.callback_op;
     if (declared === undefined || declared === '') return false;
     return declared.slice(declared.indexOf('/') + 1) === input.recipe_id

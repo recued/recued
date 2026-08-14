@@ -86,10 +86,6 @@ export interface SourceDropdownOption {
    *  sentinel All-Sources option is `false` (caller must pick a
    *  concrete Source before creating). */
   write_capable: boolean;
-  /** Whether this Source's rows are exposed via MCP. The sentinel
-   *  option mirrors the union — `true` if any registered Source is
-   *  exposed; otherwise `false`. */
-  mcp_exposed: boolean;
 }
 
 /** Common dialog-state shape — every member of the discriminated

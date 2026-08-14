@@ -207,10 +207,8 @@ const registerCommitmentBuiltin = (store: WorkEntityStore): void => {
     source_kind: 'builtin',
     source_label: 'Recued built-in commitment',
     write_capable: true,
-    mcp_exposed: false,
     registered_at: NOW,
   });
-  store.setDefaultSource('commitment', sourceId, NOW);
 };
 
 const mkAnchor = (execution_source: ExecutionSource | undefined): AuditEntry => ({

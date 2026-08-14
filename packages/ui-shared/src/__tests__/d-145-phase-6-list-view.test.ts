@@ -50,7 +50,6 @@ const sourceOpt = (over: Partial<SourceDropdownOption> = {}): SourceDropdownOpti
   label: 'Recued built-in (task)',
   source_kind: 'builtin',
   write_capable: true,
-  mcp_exposed: true,
   ...over,
 });
 

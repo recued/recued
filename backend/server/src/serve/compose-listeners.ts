@@ -4,6 +4,7 @@ import { join, dirname } from 'node:path';
 
 import { createCertChainHolder, DEFAULT_PUBLIC_PORT } from '@recued/server-tls';
 import { createCliBinaryReachabilityProbe } from '../cli-binary-reachability.js';
+import { createSqliteHandleStateStore } from '../handle/sqlite-store.js';
 import { composeWebhookAndHookListeners } from '../composition/bin/wire-webhook-and-hook-listeners.js';
 import { composeVendorWebhookPort } from '../composition/bin/wire-vendor-webhook-port.js';
 import { composeInboundAnswerDispatcher } from '../composition/bin/wire-inbound-answer-dispatcher.js';
@@ -155,7 +156,20 @@ import {
 // D-225 Slice 2 — the generated-pack install closure handed to connectionDeps.
 import { handlePacksInstall } from '../pack-install-handler.js';
 import { handlePacksUninstall } from '../pack-uninstall-handler.js';
-import { decodeAuthFromStorage, handleConnectionDelete } from '../connection-handler.js';
+import {
+  decodeAuthFromStorage,
+  firstMintGeneratedPack,
+  handleConnectionDelete,
+} from '../connection-handler.js';
+// D-225 auto-mint — the loopback diff's exposed-tool-set resolver.
+import { exposedToolNamesForPeerContract } from '../peer-exposed-tools.js';
+// D-228 slice 3 — the tool_overrides -> pack-op classification migration.
+import { carryMcpToolClassifications } from '../mcp-classification-carryover.js';
+import {
+  createChatConnectionMcpStore,
+  ensureChatConnectionMcpAnnotationSchema,
+} from '../storage/chat-connection-mcp-store.js';
+import type { McpPackFirstMintDeps } from '../housekeeping/tasks/mcp-pack-first-mint.js';
 import { removePackOwnerRulings } from '../pack-inventory.js';
 import { mcpConnectionForPackSlug } from '@recued/ingredient-authoring';
 import { executeLLM } from '@recued/llm';
@@ -217,6 +231,11 @@ export interface ComposeListenersResult {
    *  The post-housekeeping tail invokes it AFTER markBooted so a healthy
    *  boot of a staged release commits. Best-effort (never throws). */
   runUpdateBootReconcile: (() => Promise<void>) | undefined;
+  /** D-225 auto-mint — deps for the `mcp-pack-first-mint` housekeeping sweep,
+   *  bound to the composition-capable generated-pack seam. Handed to the
+   *  post-listener runtime, which registers the task. Undefined on a boot with no
+   *  connection store ⇒ the retry + backfill never runs. */
+  mcpPackFirstMintDeps: McpPackFirstMintDeps | undefined;
 }
 
 export interface ComposeListenersOptions {
@@ -937,6 +956,27 @@ export const composeListeners = async (
     currentVersion: SERVER_VERSION_DEFINE ?? 'unknown',
   });
   const updateModeDeps = buildUpdateModeDeps(storage.db);
+
+  // D-235 P1 — this server's Pro DDNS reservation, for the custom-domain
+  // preflight's delegation target. Read-only, and a parallel read-only instance
+  // of the very row the cert-stack handle state machine writes — safe.
+  let proDdnsBindingStore: ReturnType<typeof createSqliteHandleStateStore> | undefined;
+  const readProDdnsBinding = async (): Promise<
+    { handle: string; zone_label?: string; subscription_active: boolean } | null
+  > => {
+    proDdnsBindingStore ??= createSqliteHandleStateStore({ db: storage.db });
+    const state = await proDdnsBindingStore.load();
+    if (!state || state.current_handle.length === 0) return null;
+    return {
+      handle: state.current_handle,
+      ...(state.ddns_zone !== undefined ? { zone_label: state.ddns_zone } : {}),
+      // ⚠ `active` ONLY — `grace` is deliberately excluded, the same call
+      //   `wire-pro-cert-enrollment.ts` makes: the cloud has already pulled a
+      //   lapsed subscription's DNS records, so DNS-01 cannot validate and
+      //   every attempt would burn CA quota to fail.
+      subscription_active: state.subscription_state === 'active',
+    };
+  };
   // D-178 slice 4b — apply/rollback orchestrator. Built only on a self-applying
   // channel (binary / docker-thin); the restart port rides the SAME lifecycle
   // drain → supervisor handoff the bootstrap `requestRestart` rpc uses, read
@@ -1639,6 +1679,287 @@ export const composeListeners = async (
   // the execution context, never rebuilt here) — a grant the mint writes must
   // be a grant the gate can see. Absent on partial harnesses ⇒ no door mints
   // and the dispatch path stays fail-closed at the contract floor.
+  /** § 234.4p.16d — `packs.install` deps that can actually PROVISION a
+   *  `composition` content, hoisted so every caller shares ONE definition.
+   *
+   *  ⛔⛔ THE BUG THIS EXISTS TO CLOSE. `canProvisionComposition`
+   *  (`pack-install-handler.ts:664`) requires `contractStore &&
+   *  localManifestStore && registry`. The bare `rpc.packInstallDeps`
+   *  (`wire-pack-install-rpc-deps.ts`) carries only the first, so any caller
+   *  handed that slice DEFERS its composition — silently, because the install
+   *  still returns `ok: true` with `installed: []` and a populated
+   *  `deferred_contents`. The ws rpc registration below used to add the missing
+   *  two INLINE, which meant the one caller that did not go through that literal
+   *  — `installGeneratedPack` — never provisioned anything: a generated MCP pack
+   *  reported `operations: N` and put nothing in the installed-pack inventory,
+   *  so Tier-P resolution said `pack_not_installed` and the raw-op door catalog
+   *  surfaced zero ops (driven three ways in `dev/mcp-two-roads-drive.ts`).
+   *
+   *  🔑 HOISTED RATHER THAN COPIED, and that IS the fix: the enrichment living
+   *  inside one object literal is exactly what let a second caller be built
+   *  without it. A shared const cannot be forgotten by the next one. */
+  const packInstallDepsWithComposition = rpc.packInstallDeps
+    ? {
+        ...rpc.packInstallDeps,
+        ...(app.contractStoreRef
+          ? {
+              localManifestStore: storage.localManifestStore,
+              registry: execution.executorConfig.manifests,
+            }
+          : {}),
+        // ⛔⛔ AND THE PROFILE RECONCILER, for the SAME reason and found the same
+        // way. Provisioning the composition is not enough to make its ops
+        // dispatchable: the D-165 gateway admits on
+        // `source.allowed_operations`, which is DERIVED from granted operation
+        // GROUPS (`deriveAllowedOperations` over the `contract.grant` store) and
+        // only (re)seeded when the connection's operation profile is
+        // reconciled. Without this, a freshly installed pack's ops resolve and
+        // then deny `operation_not_granted` forever — grants recorded, profile
+        // never re-derived. Chased down from that exact deny reason.
+        ...(execution.reconcileConnectionProfile
+          ? { reconcileConnectionProfile: execution.reconcileConnectionProfile }
+          : {}),
+      }
+    : undefined;
+
+
+  /** § 234.4p.16d + D-225 auto-mint — the GENERATED-PACK SEAM: everything a
+   *  caller needs to probe an mcp connection, turn its `tools/list` into an
+   *  installed pack, look that pack up, and tear it down — in ONE place.
+   *
+   *  ⛔⛔ HOISTED FOR THE REASON `packInstallDepsWithComposition` ABOVE WAS.
+   *  That defect was a second caller built without a field that lived inside one
+   *  object literal, and it reported success while installing nothing. This is
+   *  the same shape one level up: auto-mint runs from the connection rpc AND
+   *  from the `mcp-pack-first-mint` housekeeping sweep, which is composed
+   *  elsewhere entirely. Spreading these fields at that second site would
+   *  reproduce the bug exactly — a sweep that probes, mints, and provisions
+   *  nothing. A shared const cannot be forgotten by the next consumer.
+   *
+   *  🔑 The probe seams (`getEncryptionKey` / `wsConnect` / `spawnStdioMcp`) ride
+   *  along for the same reason `mcpToolsDriftProbeDeps` reuses them: the idle
+   *  mint and the owner's manual Save must be the SAME probe, or a connection
+   *  behaves one way when the owner looks and another when nobody does. */
+  const connectionGeneratedPackDeps = {
+    ...(app.keys && app.keys.state() !== 'uninitialized'
+      ? { getEncryptionKey: app.keys.keyProvider('connection') }
+      : {}),
+    // Manual MCP probes use the exact Node transport capabilities already
+    // composed for live recipe execution. Reusing these seams keeps websocket
+    // auth/redirect handling and stdio shell/env hardening identical between
+    // "Probe" and a real MCP call.
+    ...(execution.executorConfig.connectionMcp?.wsConnect
+      ? { wsConnect: execution.executorConfig.connectionMcp.wsConnect }
+      : {}),
+    ...(execution.executorConfig.connectionMcp?.spawnStdioMcp
+      ? { spawnStdioMcp: execution.executorConfig.connectionMcp.spawnStdioMcp }
+      : {}),
+    // D-225 Slice 2 — the Save of the MCP enrollment chain, and (since
+    // auto-mint) of the enroll itself. Supplied as a closure so the connection
+    // handler needs one verb rather than the whole install dep surface; absent
+    // (dbless / partial harness) ⇒ `mcpPackCommit` refuses instead of
+    // half-succeeding, and `firstMintGeneratedPack` skips.
+    ...(packInstallDepsWithComposition
+      ? {
+          installGeneratedPack: async (
+            manifest: unknown,
+            install_scope?: unknown,
+          ): Promise<void> => {
+            // The generated publisher is VERIFIED here, not taken from
+            // the manifest: the runtime authored this derivation, and
+            // nothing on the wire chose the handle.
+            //
+            // ⛔ § 234.4p.16d — the COMPOSITION-CAPABLE deps, not the
+            // bare slice. A generated pack's ONLY content is a
+            // `composition`, so on the bare slice this install deferred
+            // it and wrote no inventory row while still returning
+            // `ok: true`.
+            const installed = await handlePacksInstall(
+              packInstallDepsWithComposition,
+              {
+                manifest,
+                // ⛔⛔ MANDATORY — `parsePacksInstallArgs` rejects
+                // `packs.install` outright unless this is an ARRAY, so
+                // omitting it made this whole closure throw on every
+                // call and slice 3 was inert until a Codex review found
+                // it. `[]` is the correct value, not a placeholder: the
+                // checker seeds `granted` with BULK_PACK_INSTALL_PERMISSION
+                // itself, and that is the only thing a generated pack's
+                // `requires` carries (see `mcp-pack.ts` — it is what the
+                // install is authorized BY, not a capability the pack
+                // requests). A generated pack asks for no capabilities,
+                // so granting none is both correct and fail-closed: if a
+                // future generated pack ever declares a real requirement,
+                // this install fails LOUDLY with `permission_denied`
+                // naming it, rather than silently self-granting.
+                granted_permissions: [],
+                // D-228 slice 3 — spread only when chosen, so an absent
+                // selection stays ABSENT rather than becoming an
+                // explicit `undefined` the parser might read differently
+                // from "not supplied".
+                //
+                // ⛔ The cast is NARROWED to this one field on purpose.
+                // It used to wrap the WHOLE object (`{...} as
+                // Parameters<...>[1]`), which suppressed the missing
+                // `granted_permissions` above — a whole-object cast
+                // silences the very check that would have caught it.
+                // Only `install_scope` genuinely needs one (it arrives
+                // as `unknown` from the connection handler); `manifest`
+                // is typed `unknown` by the callee and needs none.
+                ...(install_scope !== undefined
+                  ? {
+                      install_scope: install_scope as Parameters<
+                        typeof handlePacksInstall
+                      >[1]['install_scope'],
+                    }
+                  : {}),
+              },
+              GENERATED_PACK_PUBLISHER,
+            );
+            // ⛔⛔ § 234.4p.16d — READ THE RESULT. This closure used to
+            // be `Promise<void>` over a discarded return, and that is
+            // what made the first defect invisible: `handlePacksInstall`
+            // reports `ok: true` with `installed: []` when it DEFERS a
+            // composition, so `mcpPackCommit` answered `operations: N`
+            // for a pack that had installed nothing. A deferred
+            // composition is a FAILED generated-pack install — the
+            // composition IS the pack — so it must refuse loudly rather
+            // than hand back a success the inventory cannot honour.
+            const deferred = installed.result.deferred_contents ?? [];
+            if (!installed.result.ok) {
+              throw new Error(
+                `generated pack install failed: ${JSON.stringify(installed.result.failure ?? null)}`,
+              );
+            }
+            if (deferred.length > 0) {
+              throw new Error(
+                'generated pack install deferred its composition '
+                + `(${String(deferred.length)} content(s)) — the pack would report installed `
+                + 'while its operations reach no catalog. This means the install deps could '
+                + 'not provision a composition (contractStore + localManifestStore + registry).',
+              );
+            }
+          },
+        }
+      : {}),
+    // D-225 Slice 2 — destroy, direction 1: deleting an MCP connection
+    // tears down the pack it minted. ⛔ The deps handed to the uninstall
+    // OMIT `removeGeneratedPackConnection`, so the reverse cascade
+    // cannot fire back into the connection delete that is already
+    // running — the cycle is broken by ABSENCE, not by a flag.
+    ...(rpc.packUninstallDeps
+      ? {
+          teardownGeneratedPack: async (packSlug: string): Promise<void> => {
+            await handlePacksUninstall(
+              rpc.packUninstallDeps!,
+              { pack_slug: packSlug } as Parameters<typeof handlePacksUninstall>[1],
+            );
+            // ⛔ And the owner's per-op rulings, which pack uninstall
+            // deliberately does NOT purge (correct for a marketplace
+            // pack; wrong here, where the slug is derived-stable and a
+            // re-enrolled connection would silently re-adopt them).
+            if (rpc.packUninstallDeps!.contractStore) {
+              removePackOwnerRulings(rpc.packUninstallDeps!.contractStore, [packSlug]);
+            }
+          },
+        }
+      : {}),
+    // D-225 Slice 2 — the drift badge's manifest lookup. Reuses the
+    // SAME registry the install path registers into, so the badge reads
+    // the pack that is actually live rather than a second view of it.
+    // ⛔ § 234.4p.16d — off the COMPOSITION-CAPABLE deps. `registry` is
+    // one of the two fields the bare slice never carried, so this read
+    // was permanently undefined and the badge silently had no catalog
+    // lookup at all — the same root cause as the install itself.
+    ...(packInstallDepsWithComposition?.registry
+      ? {
+          getInstalledCatalog: (slug: string) =>
+            packInstallDepsWithComposition.registry!.get(slug),
+        }
+      : {}),
+    // ⛔⛔ D-228 slice 3 — carry the owner's existing per-tool `read`
+    // classification onto the freshly minted pack ops. WITHOUT THIS the chat
+    // swap is a regression wearing a security improvement: every generated op is
+    // `write` + `ask` by construction, so a tool the owner had already
+    // classified `read` (and which dispatched with no prompt through Tier-3)
+    // would start asking on every call.
+    //
+    // ⚠ Lazy store construction, for the D-164 trust-store reason
+    // `connection-mcp-gate.ts` documents: the annotation schema is ensured by
+    // the chat substrate, which composes AFTER this, so an eager `db.prepare`
+    // here would crash a fresh-db boot. `ensure…` is idempotent.
+    ...(app.contractStoreRef && packInstallDepsWithComposition?.registry && storage.db
+      ? {
+          carryMcpToolClassifications: (input: {
+            connection_name: string;
+            pack_slug: string;
+          }): void => {
+            ensureChatConnectionMcpAnnotationSchema(storage.db!);
+            const annotations = createChatConnectionMcpStore(storage.db!);
+            carryMcpToolClassifications(
+              {
+                contractStore: app.contractStoreRef!,
+                getAnnotation: (name) => annotations.getAnnotation(name),
+                getManifest: (slug) =>
+                  packInstallDepsWithComposition.registry!.get(slug),
+              },
+              input,
+            );
+          },
+        }
+      : {}),
+    // D-225 auto-mint — the loopback diff's ONLY input: what this server
+    // exposes to the peer a connection points at. Both stores are the
+    // SAME instances the doors gate on (threaded down, never rebuilt), so
+    // "what we expose" here is what a peer actually receives rather than a
+    // second view that can disagree. Absent stores ⇒ the closure is not
+    // supplied ⇒ no subtraction (see the dep's own doc for why that
+    // direction is the safe one).
+    ...(execution.grantEntryStore || app.chatInboundTokenStoreRef
+      ? {
+          exposedToolNamesForPeerContract: (contract_id: string) =>
+            exposedToolNamesForPeerContract(
+              {
+                ...(execution.grantEntryStore
+                  ? { grantEntryStore: execution.grantEntryStore }
+                  : {}),
+                ...(app.chatInboundTokenStoreRef
+                  ? { inboundTokenStore: app.chatInboundTokenStoreRef }
+                  : {}),
+              },
+              contract_id,
+            ),
+        }
+      : {}),
+  };
+
+  /** D-225 auto-mint — the `mcp-pack-first-mint` sweep's deps, built HERE off the
+   *  hoisted seam above rather than in the post-listener wire.
+   *
+   *  ⛔⛔ THE PLACEMENT IS THE POINT, and it is § 234.4p.16d's lesson applied
+   *  before it can bite again. The natural home would be beside
+   *  `mcpToolsDriftProbeDeps` in `start-post-listener-runtime.ts` — which builds
+   *  its own probe slice from first principles. Doing that here would mean
+   *  re-deriving `installGeneratedPack` at a site that has no
+   *  `packInstallDepsWithComposition`, and a mint on a bare install slice DEFERS
+   *  its composition while reporting `ok: true`. The sweep would run every idle
+   *  cycle, report mints, and provision nothing. So the deps are assembled where
+   *  the composition-capable seam already exists and travel to housekeeping as a
+   *  bound closure.
+   *
+   *  ⚠ `store` is added here rather than living in the seam: it is a single ref,
+   *  not a composed slice, so there is nothing about it to get subtly wrong. */
+  const mcpPackFirstMintDeps: McpPackFirstMintDeps | undefined =
+    app.connectionStoreRef !== undefined
+      ? {
+          listConnections: (query) => app.connectionStoreRef!.list(query),
+          firstMint: (connection) => firstMintGeneratedPack(
+            { store: app.connectionStoreRef!, ...connectionGeneratedPackDeps },
+            connection,
+          ),
+        }
+      : undefined;
+
   const webhookDoorDeps: WebhookDoorEnrollDeps | undefined =
     execution.contractDefinitionStore !== undefined
       && execution.grantEntryStore !== undefined
@@ -2199,111 +2520,7 @@ export const composeListeners = async (
                 return typeof content === 'string' ? content : JSON.stringify(body);
               },
             },
-            ...(app.keys && app.keys.state() !== 'uninitialized'
-              ? { getEncryptionKey: app.keys.keyProvider('connection') }
-              : {}),
-            // Manual MCP probes use the exact Node transport capabilities
-            // already composed for live recipe execution. Reusing these seams
-            // keeps websocket auth/redirect handling and stdio shell/env
-            // hardening identical between "Probe" and a real MCP call.
-            ...(execution.executorConfig.connectionMcp?.wsConnect
-              ? { wsConnect: execution.executorConfig.connectionMcp.wsConnect }
-              : {}),
-            ...(execution.executorConfig.connectionMcp?.spawnStdioMcp
-              ? {
-                  spawnStdioMcp:
-                    execution.executorConfig.connectionMcp.spawnStdioMcp,
-                }
-              : {}),
-            // D-225 Slice 2 — the Save of the MCP enrollment chain. Supplied
-            // as a closure so the connection handler needs one verb rather than
-            // the whole install dep surface; absent (dbless / partial harness)
-            // ⇒ `mcpPackCommit` refuses instead of half-succeeding.
-            ...(rpc.packInstallDeps
-              ? {
-                  installGeneratedPack: async (
-                    manifest: unknown,
-                    install_scope?: unknown,
-                  ): Promise<void> => {
-                    // The generated publisher is VERIFIED here, not taken from
-                    // the manifest: the runtime authored this derivation, and
-                    // nothing on the wire chose the handle.
-                    await handlePacksInstall(
-                      rpc.packInstallDeps!,
-                      {
-                        manifest,
-                        // ⛔⛔ MANDATORY — `parsePacksInstallArgs` rejects
-                        // `packs.install` outright unless this is an ARRAY, so
-                        // omitting it made this whole closure throw on every
-                        // call and slice 3 was inert until a Codex review found
-                        // it. `[]` is the correct value, not a placeholder: the
-                        // checker seeds `granted` with BULK_PACK_INSTALL_PERMISSION
-                        // itself, and that is the only thing a generated pack's
-                        // `requires` carries (see `mcp-pack.ts` — it is what the
-                        // install is authorized BY, not a capability the pack
-                        // requests). A generated pack asks for no capabilities,
-                        // so granting none is both correct and fail-closed: if a
-                        // future generated pack ever declares a real requirement,
-                        // this install fails LOUDLY with `permission_denied`
-                        // naming it, rather than silently self-granting.
-                        granted_permissions: [],
-                        // D-228 slice 3 — spread only when chosen, so an absent
-                        // selection stays ABSENT rather than becoming an
-                        // explicit `undefined` the parser might read differently
-                        // from "not supplied".
-                        //
-                        // ⛔ The cast is NARROWED to this one field on purpose.
-                        // It used to wrap the WHOLE object (`{...} as
-                        // Parameters<...>[1]`), which suppressed the missing
-                        // `granted_permissions` above — a whole-object cast
-                        // silences the very check that would have caught it.
-                        // Only `install_scope` genuinely needs one (it arrives
-                        // as `unknown` from the connection handler); `manifest`
-                        // is typed `unknown` by the callee and needs none.
-                        ...(install_scope !== undefined
-                          ? {
-                              install_scope: install_scope as Parameters<
-                                typeof handlePacksInstall
-                              >[1]['install_scope'],
-                            }
-                          : {}),
-                      },
-                      GENERATED_PACK_PUBLISHER,
-                    );
-                  },
-                }
-              : {}),
-            // D-225 Slice 2 — destroy, direction 1: deleting an MCP connection
-            // tears down the pack it minted. ⛔ The deps handed to the uninstall
-            // OMIT `removeGeneratedPackConnection`, so the reverse cascade
-            // cannot fire back into the connection delete that is already
-            // running — the cycle is broken by ABSENCE, not by a flag.
-            ...(rpc.packUninstallDeps
-              ? {
-                  teardownGeneratedPack: async (packSlug: string): Promise<void> => {
-                    await handlePacksUninstall(
-                      rpc.packUninstallDeps!,
-                      { pack_slug: packSlug } as Parameters<typeof handlePacksUninstall>[1],
-                    );
-                    // ⛔ And the owner's per-op rulings, which pack uninstall
-                    // deliberately does NOT purge (correct for a marketplace
-                    // pack; wrong here, where the slug is derived-stable and a
-                    // re-enrolled connection would silently re-adopt them).
-                    if (rpc.packUninstallDeps!.contractStore) {
-                      removePackOwnerRulings(rpc.packUninstallDeps!.contractStore, [packSlug]);
-                    }
-                  },
-                }
-              : {}),
-            // D-225 Slice 2 — the drift badge's manifest lookup. Reuses the
-            // SAME registry the install path registers into, so the badge reads
-            // the pack that is actually live rather than a second view of it.
-            ...(rpc.packInstallDeps?.registry
-              ? {
-                  getInstalledCatalog: (slug: string) =>
-                    rpc.packInstallDeps!.registry!.get(slug),
-                }
-              : {}),
+            ...connectionGeneratedPackDeps,
             ...(app.enrichmentCascadeRef
               ? {
                   cascadeForConnectionDelete: (
@@ -2554,6 +2771,13 @@ export const composeListeners = async (
       store: storage.hostnameRegistryStore,
       serverIdentityId: storage.serverInstanceId,
       ...(initialAcmeDomainIssuer ? { initialAcmeIssuer: initialAcmeDomainIssuer } : {}),
+      // D-235 P1 — the delegation target `collection.hostname.preflight` checks
+      // against comes from THIS server's own reservation, never from the
+      // request. Lazily constructed on first use (same discipline as the
+      // zone-reader in `compose-storage-context.ts`): this composer can run
+      // before boot has created `server_config`, and a `db.prepare` at compose
+      // time would throw on a fresh install.
+      proDdnsBinding: readProDdnsBinding,
     },
     // LAN-URL kickstart — `network.local_urls` reports the loopback + LAN URLs.
     // `getPort` reads the LIVE listener port at call time via the `server`
@@ -2584,29 +2808,24 @@ export const composeListeners = async (
     // audit log + notification block). Always passed; the slice self-gates
     // per-source on the deps.
     historyDeps,
-    ...(rpc.packInstallDeps
+    ...(packInstallDepsWithComposition
       ? {
           packInstallDeps: {
-            ...rpc.packInstallDeps,
+            ...packInstallDepsWithComposition,
             // D-209 #1 W2b — a successful install mints one webhook door per
             // webhook-declaring recipe (installs default ARMED; the install
             // consent screen is the gesture).
             ...(webhookDoorDeps ? { webhookDoor: webhookDoorDeps } : {}),
-            // D-170 (packs.install composition branch) — thread the local
-            // manifest store + live registry so an app_pack carrying a
-            // `composition` content (N.17) provisions it alongside its recipes
-            // and the gateway resolves its operations (N.16). Gated on the
-            // contract store (the inventory home — already required for the
-            // D-165 P3.1 inventory recording the composer threads onto
-            // `packInstallDeps.contractStore`); reuses the exact handles the
-            // `ingredient.install` rpc deps below take, so both authoring paths
-            // resolve through the same registry instance.
-            ...(app.contractStoreRef
-              ? {
-                  localManifestStore: storage.localManifestStore,
-                  registry: execution.executorConfig.manifests,
-                }
-              : {}),
+            // D-170 (packs.install composition branch) — the local manifest
+            // store + live registry that let an `app_pack` carrying a
+            // `composition` content (N.17) provision it alongside its recipes,
+            // so the gateway resolves its operations (N.16).
+            //
+            // ⛔ § 234.4p.16d — these now come from the HOISTED
+            // `packInstallDepsWithComposition` rather than being spread inline
+            // here. Inline was the defect: this literal was the only place the
+            // two fields existed, so `installGeneratedPack` — built from the
+            // bare slice — deferred every composition it ever installed.
             // D-170 gap #2 live-reconcile — (re)derive the bound connection's
             // operation profile the moment the composition's binding + grants
             // commit, so a connect-BEFORE-install dispatch works at once.
@@ -3260,5 +3479,6 @@ export const composeListeners = async (
     watchManager: watchBundle?.manager,
     messengerIngressSupervisor,
     runUpdateBootReconcile,
+    mcpPackFirstMintDeps,
   };
 };

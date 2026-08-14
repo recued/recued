@@ -583,5 +583,24 @@ describe('D-232 § 24 — the retry sweep is REACHED at boot', () => {
     }).mock.calls.map((c) => c[0]?.name);
     expect(names).not.toContain('exchange-retry');
   });
+
+  it('D-235 — registers the custom-domain enrollment service', async () => {
+    // ⛔ THE JOIN, NOT THE COMPONENT. `composeCustomDomainEnrollment` has its
+    //    own suite asserting it registers an interval named this — but that
+    //    suite calls the composer directly, so it stays green whether or not
+    //    anything ever calls it. This asserts the boot path DOES. (Its sibling
+    //    `composeProCertEnrollment` is mocked in this file, which is exactly
+    //    how a service can be built, typed, tested and unreachable.)
+    runtimeMocks.composeCertStackLate.mockResolvedValue({
+      tlsCertSource: undefined, tlsRenewerConfigured: false,
+    });
+    runtimeMocks.startHousekeepingStartup.mockResolvedValue({ scheduler: undefined });
+    const options = makeOptions();
+    await startPostListenerRuntime(options);
+    const names = (options.backgroundServices.registerInterval as unknown as {
+      mock: { calls: Array<[{ name: string }]> };
+    }).mock.calls.map((c) => c[0]?.name);
+    expect(names).toContain('custom-domain-enrollment');
+  });
 });
 

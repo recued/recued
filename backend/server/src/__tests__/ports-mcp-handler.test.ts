@@ -15,9 +15,21 @@ class FakeRes {
   statusCode = 0;
   headers: Record<string, string> = {};
   body: string | null = null;
+  destroyed = false;
+  writableEnded = false;
   setHeader(key: string, value: string): void { this.headers[key.toLowerCase()] = value; }
   getHeader(key: string): string | undefined { return this.headers[key.toLowerCase()]; }
-  end(body?: string): void { this.body = body ?? ''; }
+  flushHeaders(): void {}
+  write(body: string): boolean {
+    this.body = `${this.body ?? ''}${body}`;
+    return true;
+  }
+  once(): this { return this; }
+  end(body?: string): void {
+    if (body !== undefined) this.body = `${this.body ?? ''}${body}`;
+    else if (this.body === null) this.body = '';
+    this.writableEnded = true;
+  }
 }
 
 interface BuildReqOptions {
@@ -59,6 +71,13 @@ describe('createMcpPortHandler', () => {
     const dispatch = async (envelope: unknown): Promise<unknown> => {
       const msg = envelope as { id?: number; method?: string };
       if (typeof msg.id === 'undefined') return null; // notification
+      if (msg.method === 'missing/method') {
+        return {
+          jsonrpc: '2.0',
+          id: msg.id,
+          error: { code: -32601, message: 'Method not found' },
+        };
+      }
       return { jsonrpc: '2.0', id: msg.id, result: { ok: true, method: msg.method } };
     };
     const handler = createMcpPortHandler({
@@ -89,7 +108,329 @@ describe('createMcpPortHandler', () => {
     expect(body.result.method).toBe('tools/list');
   });
 
-  it('returns 204 on JSON-RPC notifications (no id)', async () => {
+  it('accepts a matching modern protocol header and request metadata', async () => {
+    const { handler } = buildHandler();
+    const res = new FakeRes();
+    await handler(
+      buildReq({
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'tools/list',
+          params: {
+            _meta: {
+              'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+              'io.modelcontextprotocol/clientCapabilities': {},
+            },
+          },
+        }),
+        headers: {
+          authorization: 'Bearer mcp-1',
+          'mcp-protocol-version': '2026-07-28',
+          'mcp-method': 'tools/list',
+        },
+      }),
+      res as unknown as ServerResponse,
+    );
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('returns HTTP 404 with -32601 for an unknown modern method', async () => {
+    const { handler } = buildHandler();
+    const res = new FakeRes();
+    await handler(
+      buildReq({
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 22,
+          method: 'missing/method',
+          params: {
+            _meta: {
+              'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+              'io.modelcontextprotocol/clientCapabilities': {},
+            },
+          },
+        }),
+        headers: {
+          authorization: 'Bearer mcp-1',
+          'mcp-protocol-version': '2026-07-28',
+          'mcp-method': 'missing/method',
+        },
+      }),
+      res as unknown as ServerResponse,
+    );
+    expect(res.statusCode).toBe(404);
+    expect((json(res) as { error: { code: number } }).error.code).toBe(-32601);
+  });
+
+  it('rejects a mismatched browser Origin before dispatch', async () => {
+    const { handler } = buildHandler();
+    const res = new FakeRes();
+    await handler(
+      buildReq({
+        headers: {
+          authorization: 'Bearer mcp-1',
+          host: 'mcp.example.test',
+          origin: 'https://attacker.example',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      }),
+      res as unknown as ServerResponse,
+    );
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('returns HTTP 400 when modern metadata has no matching protocol header', async () => {
+    const { handler } = buildHandler();
+    const res = new FakeRes();
+    await handler(
+      buildReq({
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 3,
+          method: 'tools/list',
+          params: {
+            _meta: {
+              'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+              'io.modelcontextprotocol/clientCapabilities': {},
+            },
+          },
+        }),
+        headers: { authorization: 'Bearer mcp-1' },
+      }),
+      res as unknown as ServerResponse,
+    );
+
+    expect(res.statusCode).toBe(400);
+    expect((json(res) as { error: { code: number } }).error.code).toBe(-32020);
+  });
+
+  it('returns HTTP 400 with supported versions for an unknown revision', async () => {
+    const { handler } = buildHandler();
+    const res = new FakeRes();
+    await handler(
+      buildReq({
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 4,
+          method: 'tools/list',
+          params: {
+            _meta: {
+              'io.modelcontextprotocol/protocolVersion': '2099-01-01',
+              'io.modelcontextprotocol/clientCapabilities': {},
+            },
+          },
+        }),
+        headers: {
+          authorization: 'Bearer mcp-1',
+          'mcp-protocol-version': '2099-01-01',
+        },
+      }),
+      res as unknown as ServerResponse,
+    );
+
+    expect(res.statusCode).toBe(400);
+    expect((json(res) as { error: { code: number; data: { supported: string[] } } }).error)
+      .toMatchObject({
+        code: -32022,
+        data: { supported: ['2026-07-28', '2024-11-05'] },
+      });
+  });
+
+  it('returns HTTP 400 when modern method routing headers are missing', async () => {
+    const { handler } = buildHandler();
+    const res = new FakeRes();
+    await handler(
+      buildReq({
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 5,
+          method: 'tools/list',
+          params: {
+            _meta: {
+              'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+              'io.modelcontextprotocol/clientCapabilities': {},
+            },
+          },
+        }),
+        headers: {
+          authorization: 'Bearer mcp-1',
+          'mcp-protocol-version': '2026-07-28',
+        },
+      }),
+      res as unknown as ServerResponse,
+    );
+
+    expect(res.statusCode).toBe(400);
+    expect((json(res) as { error: { code: number } }).error.code).toBe(-32020);
+  });
+
+  it('validates the modern Mcp-Name header against tools/call params', async () => {
+    const { handler } = buildHandler();
+    const res = new FakeRes();
+    await handler(
+      buildReq({
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 6,
+          method: 'tools/call',
+          params: {
+            name: 'search',
+            arguments: {},
+            _meta: {
+              'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+              'io.modelcontextprotocol/clientCapabilities': {},
+            },
+          },
+        }),
+        headers: {
+          authorization: 'Bearer mcp-1',
+          'mcp-protocol-version': '2026-07-28',
+          'mcp-method': 'tools/call',
+          'mcp-name': 'wrong-tool',
+        },
+      }),
+      res as unknown as ServerResponse,
+    );
+
+    expect(res.statusCode).toBe(400);
+    expect((json(res) as { error: { code: number } }).error.code).toBe(-32020);
+  });
+
+  it('decodes a base64-sentinel Mcp-Name before comparing it to the body', async () => {
+    // The spec requires servers to DECODE an encoded `Mcp-Name` before
+    // comparing it to the body value. Comparing our own re-encoded form
+    // instead rejects any conforming client whose encoding choice differs
+    // from ours — the value below is plain ASCII, so Recued would not encode
+    // it, but a client is free to.
+    const { handler } = buildHandler();
+    const res = new FakeRes();
+    await handler(
+      buildReq({
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 7,
+          method: 'tools/call',
+          params: {
+            name: 'get_weather',
+            arguments: {},
+            _meta: {
+              'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+              'io.modelcontextprotocol/clientCapabilities': {},
+            },
+          },
+        }),
+        headers: {
+          authorization: 'Bearer mcp-1',
+          'mcp-protocol-version': '2026-07-28',
+          'mcp-method': 'tools/call',
+          'mcp-name': '=?base64?Z2V0X3dlYXRoZXI=?=',
+        },
+      }),
+      res as unknown as ServerResponse,
+    );
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('still rejects an encoded Mcp-Name that decodes to the wrong tool', async () => {
+    const { handler } = buildHandler();
+    const res = new FakeRes();
+    await handler(
+      buildReq({
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 8,
+          method: 'tools/call',
+          params: {
+            name: 'get_weather',
+            arguments: {},
+            _meta: {
+              'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+              'io.modelcontextprotocol/clientCapabilities': {},
+            },
+          },
+        }),
+        headers: {
+          authorization: 'Bearer mcp-1',
+          'mcp-protocol-version': '2026-07-28',
+          'mcp-method': 'tools/call',
+          // base64 of 'delete_everything'
+          'mcp-name': '=?base64?ZGVsZXRlX2V2ZXJ5dGhpbmc=?=',
+        },
+      }),
+      res as unknown as ServerResponse,
+    );
+
+    expect(res.statusCode).toBe(400);
+    expect((json(res) as { error: { code: number } }).error.code).toBe(-32020);
+  });
+
+  it('400s a modern request missing the required clientCapabilities', async () => {
+    // `clientCapabilities` is REQUIRED per request; the spec is explicit that
+    // on HTTP the malformed-request status MUST be 400. This returned 200
+    // beside the -32602 body, which a dual-era client never inspects — it only
+    // reads bodies on a 4xx.
+    const { handler } = buildHandler();
+    const res = new FakeRes();
+    await handler(
+      buildReq({
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 9,
+          method: 'tools/list',
+          params: {
+            _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' },
+          },
+        }),
+        headers: {
+          authorization: 'Bearer mcp-1',
+          'mcp-protocol-version': '2026-07-28',
+          'mcp-method': 'tools/list',
+        },
+      }),
+      res as unknown as ServerResponse,
+    );
+
+    expect(res.statusCode).toBe(400);
+    expect((json(res) as { error: { code: number } }).error.code).toBe(-32602);
+  });
+
+  it('400s a protocol error the DISPATCHER raised, not just ones it caught', async () => {
+    // A legacy-shaped request (no header, no _meta) skips this door's own
+    // validation entirely, so an UnsupportedProtocolVersionError from the
+    // dispatcher used to ride out on a 200. The HTTP status for a
+    // protocol-defined error is the transport's obligation either way.
+    let t = 0;
+    const handler = createMcpPortHandler({
+      verifier: (tok) => tok === 'mcp-1',
+      limiter: createRateLimiter({ capacity: 60, refill_window_ms: 60_000, now: () => t }),
+      per_ip_limiter: createRateLimiter({ capacity: 1000, refill_window_ms: 60_000, now: () => t }),
+      dispatch: async (envelope) => ({
+        jsonrpc: '2.0',
+        id: (envelope as { id?: number }).id,
+        error: {
+          code: -32022,
+          message: 'server/discover requires modern MCP request metadata.',
+          data: { supported: ['2026-07-28', '2024-11-05'] },
+        },
+      }),
+    });
+    const res = new FakeRes();
+    await handler(
+      buildReq({
+        body: JSON.stringify({ jsonrpc: '2.0', id: 10, method: 'server/discover' }),
+        headers: { authorization: 'Bearer mcp-1' },
+      }),
+      res as unknown as ServerResponse,
+    );
+
+    expect(res.statusCode).toBe(400);
+    expect((json(res) as { error: { code: number } }).error.code).toBe(-32022);
+  });
+
+  it('returns 202 on accepted JSON-RPC notifications (no id)', async () => {
     const { handler } = buildHandler();
     const res = new FakeRes();
     await handler(
@@ -99,7 +440,7 @@ describe('createMcpPortHandler', () => {
       }),
       res as unknown as ServerResponse,
     );
-    expect(res.statusCode).toBe(204);
+    expect(res.statusCode).toBe(202);
   });
 
   it('returns 401 when bearer is missing', async () => {
@@ -122,11 +463,47 @@ describe('createMcpPortHandler', () => {
     expect(res.statusCode).toBe(401);
   });
 
-  it('returns 405 on non-POST methods', async () => {
+  it('opens the legacy 2024 HTTP+SSE endpoint on GET', async () => {
     const { handler } = buildHandler();
     const res = new FakeRes();
     await handler(
       buildReq({ method: 'GET', headers: { authorization: 'Bearer mcp-1' } }),
+      res as unknown as ServerResponse,
+    );
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toBe('text/event-stream');
+    expect(res.body).toMatch(/^event: endpoint\ndata: \/mcp\?sessionId=/);
+  });
+
+  it('delivers legacy POST responses on the authenticated SSE session', async () => {
+    const { handler } = buildHandler();
+    const stream = new FakeRes();
+    await handler(
+      buildReq({ method: 'GET', headers: { authorization: 'Bearer mcp-1' } }),
+      stream as unknown as ServerResponse,
+    );
+    const endpoint = /data: ([^\n]+)/.exec(stream.body ?? '')?.[1];
+    expect(endpoint).toBeTruthy();
+
+    const post = new FakeRes();
+    await handler(
+      buildReq({
+        url: endpoint,
+        headers: { authorization: 'Bearer mcp-1' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'initialize' }),
+      }),
+      post as unknown as ServerResponse,
+    );
+    expect(post.statusCode).toBe(202);
+    expect(stream.body).toContain('event: message');
+    expect(stream.body).toContain('"id":9');
+  });
+
+  it('returns 405 on unsupported methods', async () => {
+    const { handler } = buildHandler();
+    const res = new FakeRes();
+    await handler(
+      buildReq({ method: 'PATCH', headers: { authorization: 'Bearer mcp-1' } }),
       res as unknown as ServerResponse,
     );
     expect(res.statusCode).toBe(405);

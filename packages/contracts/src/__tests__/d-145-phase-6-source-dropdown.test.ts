@@ -5,7 +5,8 @@
  *    - All-Sources sentinel always first
  *    - Registered Sources matching `kind` follow in registration order
  *    - Sources for OTHER kinds are filtered out
- *    - resolveCreateDialogSourceId obeys preference order
+ *    - resolveCreateDialogSourceId obeys preference order (selected → built-in
+ *      → first write-capable; there is no stored default step)
  *    - dropdown <-> page-state mapping (selected_source_id ↔ dropdown id)
  */
 
@@ -30,7 +31,6 @@ const builtinTask = (): SourceRegistration => ({
   source_kind: 'builtin',
   source_label: 'Recued built-in (task)',
   write_capable: true,
-  mcp_exposed: true,
   registered_at: NOW,
 });
 
@@ -40,7 +40,6 @@ const hubspotTask = (over: Partial<SourceRegistration> = {}): SourceRegistration
   source_kind: 'connection',
   source_label: 'HubSpot tasks (acme)',
   write_capable: true,
-  mcp_exposed: false,
   registered_at: NOW + 1,
   ...over,
 });
@@ -51,7 +50,6 @@ const builtinNote = (): SourceRegistration => ({
   source_kind: 'builtin',
   source_label: 'Recued built-in (note)',
   write_capable: true,
-  mcp_exposed: false,
   registered_at: NOW + 2,
 });
 
@@ -91,26 +89,15 @@ describe('D-145 PA6 — buildSourceDropdownOptions', () => {
     expect(opts[0].id).toBe(SOURCE_DROPDOWN_ALL_VALUE);
   });
 
-  it('mirrors mcp_exposed onto the sentinel as the union over registered Sources', () => {
-    const yes = buildSourceDropdownOptions('task', [
-      builtinTask(),
-      hubspotTask({ mcp_exposed: false }),
-    ]);
-    expect(yes[0].mcp_exposed).toBe(true);
-
-    const no = buildSourceDropdownOptions('task', [
-      builtinTask(),
-      hubspotTask({ mcp_exposed: false }),
-    ].map((s) => ({ ...s, mcp_exposed: false })));
-    expect(no[0].mcp_exposed).toBe(false);
-  });
-
-  it('copies source_kind / write_capable / mcp_exposed onto each option', () => {
+  // The sentinel's `mcp_exposed` union assertion lived here until the flag was
+  // deleted (D-187 Sources half). Nothing replaces it: the dropdown is a
+  // data-plane picker, and AI read access is a contract grant, not a property
+  // the option shape carries.
+  it('copies source_kind / write_capable onto each option', () => {
     const opts = buildSourceDropdownOptions('task', [hubspotTask()]);
     const hub = opts[1];
     expect(hub.source_kind).toBe('connection');
     expect(hub.write_capable).toBe(true);
-    expect(hub.mcp_exposed).toBe(false);
     expect(hub.label).toBe('HubSpot tasks (acme)');
   });
 });
@@ -125,13 +112,13 @@ describe('D-145 PA6 — resolveCreateDialogSourceId', () => {
         write_capable: false,
       }),
     ];
-    expect(resolveCreateDialogSourceId('task', null, null, sources)).toBeNull();
+    expect(resolveCreateDialogSourceId('task', null, sources)).toBeNull();
   });
 
   it('honors the selected Source when it is write-capable', () => {
     const sources = [builtinTask(), hubspotTask()];
     expect(
-      resolveCreateDialogSourceId('task', 'hubspot.acme.task', null, sources),
+      resolveCreateDialogSourceId('task', 'hubspot.acme.task', sources),
     ).toBe('hubspot.acme.task');
   });
 
@@ -141,27 +128,26 @@ describe('D-145 PA6 — resolveCreateDialogSourceId', () => {
       hubspotTask({ write_capable: false }),
     ];
     expect(
-      resolveCreateDialogSourceId('task', 'hubspot.acme.task', null, sources),
+      resolveCreateDialogSourceId('task', 'hubspot.acme.task', sources),
     ).toBe(RECUED_BUILTIN_SOURCE_ID('task'));
   });
 
-  it('honors default-Source memory when selected is null + default is write-capable', () => {
-    const sources = [builtinTask(), hubspotTask()];
-    expect(
-      resolveCreateDialogSourceId('task', null, 'hubspot.acme.task', sources),
-    ).toBe('hubspot.acme.task');
-  });
+  // ⛔ 'honors default-Source memory when selected is null' is DELETED, not
+  // rewritten: with the default gone, a null selection falls straight to the
+  // local built-in, which the next case already pins. Left as-is it would have
+  // asserted 'hubspot.acme.task' and FAILED at runtime while typechecking
+  // clean — the same shape that slipped past the mcp_exposed round.
 
-  it('falls back to Recued built-in when neither selected nor default fits', () => {
+  it('falls back to Recued built-in when there is no usable selection', () => {
     const sources = [builtinTask(), hubspotTask()];
-    expect(resolveCreateDialogSourceId('task', null, null, sources)).toBe(
+    expect(resolveCreateDialogSourceId('task', null, sources)).toBe(
       RECUED_BUILTIN_SOURCE_ID('task'),
     );
   });
 
   it('falls back to first write-capable when Recued built-in is missing', () => {
     const sources = [hubspotTask({ id: 'asana.proj.task' })];
-    expect(resolveCreateDialogSourceId('task', null, null, sources)).toBe(
+    expect(resolveCreateDialogSourceId('task', null, sources)).toBe(
       'asana.proj.task',
     );
   });

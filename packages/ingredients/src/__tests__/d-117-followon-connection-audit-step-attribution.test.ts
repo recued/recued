@@ -43,7 +43,14 @@ const mkCall = (
   input: Record<string, unknown>,
   overrides: Partial<ResolvedCall> = {},
 ): ResolvedCall => ({
-  slug: overrides.slug ?? 'connection',
+  // ⛔ NOT `'connection'`. These cases are about AUDIT IDENTITY ATTRIBUTION on
+  // the shared connection adapter — the slug is incidental, and every one of
+  // them passes a `stepMeta` (that IS the subject). § 234.4p.16c made exactly
+  // that combination impossible: the hatch is a host primitive, so
+  // `slug: 'connection'` + stepMeta now means "a recipe reached it" and is
+  // refused at the adapter. A wrapper slug keeps these tests testing what they
+  // were written to test.
+  slug: overrides.slug ?? 'ticket-reader-hubspot',
   risk_tier: overrides.risk_tier ?? 'admin',
   input,
   output: overrides.output ?? {},

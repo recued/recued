@@ -2972,6 +2972,19 @@ export type {
   FileRecordStat,
   // D-117 — calendar health narrow variant.
   CalendarCollectionHealth,
+  // D-236 — source freshness returned alongside the records of the read
+  // that consumed the source.
+  CollectionSourceFreshness,
+  CollectionSourceFreshnessEntry,
+} from './collections.js';
+
+// D-236 — source freshness: the derivation + its default threshold. Value
+// exports (the type rides in the block above).
+export {
+  COLLECTION_SOURCE_STALE_AFTER_MS,
+  deriveCollectionSourceFreshness,
+  collectionSourceFreshnessOf,
+  collectionSourceFreshnessFanOut,
 } from './collections.js';
 
 // D-117 — calendar warehouse types.
@@ -3283,6 +3296,7 @@ export {
   // D-148 Wave 3 sub-phase 2 — TLSDomainStore + multi-domain SNI
   TLS_DOMAIN_CERT_SOURCES,
   isTLSDomainCertSource,
+  isFleetIssuedTlsDomainSource,
   TLS_CERT_MIN_VALIDITY_MS,
   matchesSANForDomain,
   validateTLSDomainUpload,
@@ -3317,6 +3331,7 @@ export {
   isHostnameTlsTopology,
   isHostnameListenerPort,
   tlsTopologyForHostnameCertSource,
+  isFleetIssuedCertSource,
   isSingleLabelProDdnsHostname,
   normalizeHostname,
   projectHostname,
@@ -3344,6 +3359,55 @@ export type {
   HostnameOwnershipProofFailureCode,
   HostnameOwnershipProofResult,
 } from './hostname.js';
+
+// D-235 P1 — bring-your-own-domain enrolment + preflight.
+export {
+  ACME_CHALLENGE_LABEL,
+  ACME_ROTATION_CAS,
+  CAA_ISSUER_CRITICAL_FLAG,
+  CUSTOM_DOMAIN_PREFLIGHT_CHECKS,
+  CUSTOM_DOMAIN_PREFLIGHT_STATUSES,
+  CUSTOM_DOMAIN_PREFLIGHT_CODES,
+  CUSTOM_DOMAIN_ISSUANCE_BLOCKERS,
+  CUSTOM_DOMAIN_MAX_PER_SERVER,
+  CUSTOM_DOMAIN_DELEGATION_STATES,
+  CUSTOM_DOMAIN_DELEGATION_URGENCIES,
+  evaluateCustomDomainIssuanceEligibility,
+  isCustomDomainIssuanceBlocker,
+  isCustomDomainDelegationState,
+  customDomainDelegationUrgency,
+  delegationStateFromPreflight,
+  normalizeDnsName,
+  acmeChallengeName,
+  customDomainDelegationTarget,
+  caaIssuerDomain,
+  caaClimbNames,
+  isLikelyZoneApex,
+  relativeDnsName,
+  evaluateCaaForRotation,
+  evaluateCustomDomainPreflight,
+  isCustomDomainPreflightStatus,
+  isCustomDomainPreflightCode,
+} from './custom-domain.js';
+export type {
+  AcmeRotationCa,
+  CaaRecord,
+  CaaEvaluation,
+  CustomDomainPreflightCheck,
+  CustomDomainPreflightStatus,
+  CustomDomainPreflightCode,
+  CustomDomainDnsObservation,
+  CustomDomainPreflightCheckResult,
+  CustomDomainPreflightResult,
+  CustomDomainPreflightRequest,
+  CustomDomainPreflightResponse,
+  CustomDomainIssuanceBlocker,
+  CustomDomainIssuanceDecision,
+  CustomDomainIssuanceReadinessRequest,
+  CustomDomainIssuanceReadinessResponse,
+  CustomDomainDelegationState,
+  CustomDomainDelegationUrgency,
+} from './custom-domain.js';
 
 // D-152 P1 — free diagnostic suite substrate.
 export {
@@ -4135,9 +4199,6 @@ export {
   isTier3ToolClassification,
   buildDefaultConnectionMcpAnnotation,
   formatTier3ToolName,
-  buildTier3ToolEntry,
-  buildTier3Catalog,
-  computeConnectionMcpDisabledTier3Names,
   CONNECTION_MCP_ANNOTATION_VALIDATION_ISSUE_CODES,
   validateConnectionMcpAnnotationInput,
   // D-137 W2.4 § A.14 — chat-agent model routing helpers
@@ -4162,19 +4223,14 @@ export {
   CHAT_PLAN_STATUS_SET,
   isChatPlanStatus,
   // D-137 P4 § A.7 + § A.7.1 — Picker entry substrate
-  PICKER_ENTRY_KINDS,
-  PICKER_ENTRY_KIND_SET,
-  isPickerEntryKind,
-  PICKER_VERSION_DELTAS,
-  compareRecuedVersions,
-  buildPickerEntries,
-  isValidPickerTarget,
   // D-137 P5 § A.9 — Inbound MCP token grants substrate
   MCP_INBOUND_CONCURRENCY_LADDER,
   MCP_INBOUND_CONCURRENCY_TIER_SET,
   isMcpInboundConcurrencyTier,
   MCP_INBOUND_TOKEN_DEFAULT_EXPIRY_MS,
   MCP_INBOUND_TOKEN_PREFIX,
+  // D-225 auto-mint — the raw-op wire prefix, shared with the loopback filter.
+  RAW_OP_TOOL_PREFIX,
   buildDefaultMcpInboundTokenGrants,
   isMcpInboundTokenActive,
   isMcpInboundTokenToolAuthorized,
@@ -4262,9 +4318,6 @@ export type {
   ChatAccountCandidate,
   CrmConnectionFreshness,
   // D-137 P4 § A.7 + § A.7.1 — Picker entry substrate
-  PickerEntryKind,
-  PickerVersionDelta,
-  PickerEntry,
   // D-137 P3 § A.5 — confidence-shape dispatch envelope
   ChatConfidencePattern,
   ChatConfidenceMeasures,
@@ -4723,7 +4776,6 @@ export {
   SYNC_STATE_SET,
   CONFLICT_POLICIES,
   CONFLICT_POLICY_SET,
-  SOURCE_DEFAULT_PREFS_KEY,
   TASK_PRIORITIES,
   TASK_PRIORITY_SET,
   TASK_TITLE_MAX,
@@ -4869,6 +4921,7 @@ export type {
   ExecutionListResponse,
   ExecutionGetRequest,
   RunAuditSummary,
+  RunYield,
   RunApprovalCheckpoint,
   RunApprovalOutcome,
   RunApprovalSummary,
@@ -4878,6 +4931,9 @@ export type {
   RunDetail,
   ExecutionGetResponse,
 } from './execution-rpc.js';
+
+// D-237 P2 — the run-yield derivation. Value export (the type rides above).
+export { deriveRunYield } from './execution-rpc.js';
 
 export {
   SOURCE_TOP_TIER_KINDS,

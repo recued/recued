@@ -85,32 +85,10 @@ describe('D-145 PB1.3 — invalidateByTopic dispatcher', () => {
     expect(cache.size()).toBe(0);
   });
 
-  it('source.enabled_changed drops only matching vendor (PA11 join)', () => {
-    cache.write('connection_active:hubspot:task', ctx(), {
-      capacity_kind: 'connection_active',
-      capacity_key: 'connection_active:hubspot:task',
-      vendor: 'hubspot',
-      entity: 'task',
-      result: { ok: true },
-      checked_at: 1,
-    });
-    cache.write('connection_active:salesforce:contact', ctx(), {
-      capacity_kind: 'connection_active',
-      capacity_key: 'connection_active:salesforce:contact',
-      vendor: 'salesforce',
-      entity: 'contact',
-      result: { ok: true },
-      checked_at: 1,
-    });
-    expect(cache.size()).toBe(2);
-    const dropped = cache.invalidateByTopic({
-      topic: 'source.enabled_changed',
-      vendor: 'hubspot',
-      entity: 'task',
-    });
-    expect(dropped).toBe(1);
-    expect(cache.size()).toBe(1);
-  });
+  // ⛔ 'source.enabled_changed drops only matching vendor (PA11 join)' was
+  // DELETED with the topic (D-187 Sources half). Its shape is already covered
+  // by 'connection.disabled drops matching connection_active row' below —
+  // same matcher, same rows, a topic that can actually fire.
 
   it('ingredient.bumped drops the matching selector_freshness row', () => {
     cache.write('selector_freshness:webchat-gemini', ctx(), {
@@ -239,7 +217,7 @@ describe('D-145 PB1.3 — Codex P2 fold: broader-row invalidation', () => {
     expect(cache.size()).toBe(0);
   });
 
-  it('source.enabled_changed for narrow entity drops vendor-wide aggregate row', () => {
+  it('connection.disabled for narrow entity drops vendor-wide aggregate row', () => {
     cache.write('connection_active:hubspot:*', ctx(), {
       capacity_kind: 'connection_active',
       capacity_key: 'connection_active:hubspot:*',
@@ -250,14 +228,14 @@ describe('D-145 PB1.3 — Codex P2 fold: broader-row invalidation', () => {
     });
     expect(cache.size()).toBe(1);
     cache.invalidateByTopic({
-      topic: 'source.enabled_changed',
+      topic: 'connection.disabled',
       vendor: 'hubspot',
       entity: 'task',
     });
     expect(cache.size()).toBe(0);
   });
 
-  it('source.enabled_changed with full narrowing drops both narrow + aggregate rows', () => {
+  it('connection.disabled with full narrowing drops both narrow + aggregate rows', () => {
     cache.write('connection_active:hubspot:task:c1', ctx(), {
       capacity_kind: 'connection_active',
       capacity_key: 'connection_active:hubspot:task:c1',
@@ -277,7 +255,7 @@ describe('D-145 PB1.3 — Codex P2 fold: broader-row invalidation', () => {
     });
     expect(cache.size()).toBe(2);
     cache.invalidateByTopic({
-      topic: 'source.enabled_changed',
+      topic: 'connection.disabled',
       vendor: 'hubspot',
       entity: 'task',
       connection_id: 'c1',
@@ -321,7 +299,7 @@ describe('D-145 PB1.3 — invalidationSource subscriptions', () => {
       checked_at: 1,
     });
     invalidationSource.publish({
-      topic: 'source.enabled_changed',
+      topic: 'connection.disabled',
       vendor: 'hubspot',
       entity: 'task',
     });
@@ -348,20 +326,20 @@ describe('D-145 PB1.3 — invalidation source pub/sub', () => {
   it('subscribers receive published payloads on their topic', () => {
     const src = capacity.createCapacityInvalidationSource();
     const received: string[] = [];
-    const sub = src.subscribe('source.enabled_changed', () => {
+    const sub = src.subscribe('connection.disabled', () => {
       received.push('hit');
     });
-    src.publish({ topic: 'source.enabled_changed' });
+    src.publish({ topic: 'connection.disabled' });
     expect(received).toEqual(['hit']);
     sub.unsubscribe();
-    src.publish({ topic: 'source.enabled_changed' });
+    src.publish({ topic: 'connection.disabled' });
     expect(received).toEqual(['hit']);
   });
 
   it('cross-topic publishes do not fan out to unrelated subscribers', () => {
     const src = capacity.createCapacityInvalidationSource();
     let count = 0;
-    src.subscribe('source.enabled_changed', () => {
+    src.subscribe('connection.disabled', () => {
       count += 1;
     });
     src.publish({ topic: 'bridge.online_state_changed' });

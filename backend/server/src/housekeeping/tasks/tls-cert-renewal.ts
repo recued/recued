@@ -14,12 +14,23 @@
  *  a cert source to be present), so the engine's `acme_helper_unavailable`
  *  return path is reachable only via the `tls.renew` rpc operator path.
  *
- *  Cooldown. Even when the cert is in the renewal window, the task
- *  honours `RENEWAL_COOLDOWN_MS` between attempts via the cursor's
- *  `last_seen_at` timestamp. This prevents thrashing on transient
- *  engine errors (`acme_helper_unavailable` while the helper is
- *  restarting, `storage_io_error` mid-disk-pressure) — operators see
- *  one audit row per cooldown window instead of one per cycle.
+ *  Cooldown — TWO LAYERS, different jobs. Don't collapse them.
+ *
+ *    1. THIS cursor's `last_seen_at` + `RENEWAL_COOLDOWN_MS` guards against
+ *       ATTEMPT THRASHING: transient engine errors (`acme_helper_unavailable`
+ *       while the helper restarts, `storage_io_error` mid-disk-pressure)
+ *       would otherwise emit one audit row per cycle. It is a pre-filter —
+ *       it can only make this task call the engine LESS often.
+ *    2. `RotationEngine`'s `tls_renew_cooldown` store guards ISSUANCE QUOTA
+ *       and is the actual ENFORCEMENT point, because it is the layer the
+ *       operator `tls.renew` rpc also passes through. Before it existed the
+ *       Settings → Certificates "Renew now" button had no cooldown at all,
+ *       so repeat clicks issued repeat certificates and could exhaust a CA's
+ *       weekly duplicate-certificate allowance — after which THIS task's
+ *       renewals failed too.
+ *
+ *  🔑 They cannot drift into disagreeing about whether a renewal is allowed:
+ *  layer 1 only ever suppresses a call layer 2 would have judged anyway.
  *
  *  No retry-without-cooldown on `rotation_in_progress`. The engine's
  *  `inflightOp` guard returns `rotation_in_progress` only when another
@@ -151,7 +162,22 @@ export const buildTlsCertRenewalTask = (
         reason: `auto-renew (cert valid_until=${cert.valid_until})`,
       });
 
-      if (!result.ok && result.error === 'rotation_in_progress') {
+      // ⛔ TWO NON-CONSUMING OUTCOMES, for the same reason: neither reached
+      //    the CA, so neither is an attempt this task should record.
+      //
+      //    `rotation_in_progress` — another caller is executing right now.
+      //    `renew_cooldown` — the engine's SHARED clock says the last
+      //    quota-consuming renewal is still inside its window. That clock now
+      //    covers the operator `tls.renew` rpc too (Settings → Server →
+      //    Certificates → "Renew now"), which is the point: a manual renew
+      //    defers this task, and a scheduled one defers the button. Advancing
+      //    the cursor here would stack this task's own 6h on top of the
+      //    engine's, so a manual renew would silently cost the scheduler an
+      //    extra cycle it never spent.
+      if (
+        !result.ok
+        && (result.error === 'rotation_in_progress' || result.error === 'renew_cooldown')
+      ) {
         return { status: 'complete', cursor };
       }
 

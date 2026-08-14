@@ -36,10 +36,12 @@
  *  recipe execution exposes a precise diagnostic instead of a silent
  *  undefined-adapter crash. */
 
-import type {
-  ChunkedUploadAuditInfo,
-  ConnectionKind,
-  ConnectionRow,
+import {
+  CONNECTION_DIRECT_SLUG,
+  stripCorePrefix,
+  type ChunkedUploadAuditInfo,
+  type ConnectionKind,
+  type ConnectionRow,
 } from '@recued/contracts';
 import { IngredientError, type ResolvedCall } from './types.js';
 import type { Adapter } from './dispatch.js';
@@ -320,6 +322,48 @@ export const createConnectionAdapter = (
 
   return async (call: ResolvedCall): Promise<unknown> => {
     const startedAt = now();
+
+    // ══════════════════════════════════════════════════════════════════
+    // § 234.4p.16c — THE `connection` HATCH IS A HOST PRIMITIVE, NOT A
+    // RECIPE INGREDIENT. Refuse it the moment a RECIPE reaches it.
+    //
+    // 🔑 THE DISCRIMINATOR IS `stepMeta`, AND IT IS SOUND IN BOTH
+    // DIRECTIONS. The engine builds one UNCONDITIONALLY for every step
+    // (`step-runner.ts:735`, off `requireRecipe(ctx).recipe_id`) and
+    // passes it to all three invoke paths; the three D-234 host call
+    // sites call `createServerExecutor(cfg)(SLUG, input)` with TWO
+    // arguments, so theirs is absent. `ResolvedCall.stepMeta`'s own doc
+    // already states the rule — "Absent for direct-rpc callers".
+    //
+    // ⛔⛔ AND IT IS AT DISPATCH, NOT ONLY IN THE VALIDATOR, BECAUSE THE
+    // VALIDATOR CANNOT SEE THE SHAPE THAT MATTERS. A step may declare
+    // `ingredient: '{{config.slug}}'` — the kernel `RUN_INGREDIENT_RECIPE`
+    // does exactly that — so the slug is not known until resolve time.
+    // The escape-hatch drive proved that templated form dispatches
+    // correctly (§ 7, `connection-mcp-write` reached the probe as the
+    // RESOLVED slug), which is precisely why a parse-time-only fence
+    // would be bypassable by one level of indirection. Inline
+    // `recipe.run` payloads and generated recipes reach the engine
+    // without passing Kitchen at all, for the same reason.
+    //
+    // ⚠ `stripCorePrefix` because a `core-<bare>` alias is the SAME
+    // ingredient — the identical hole `isOutboundSendSlug` strips for.
+    //
+    // ⚠ The failure mode if a future engine path ever loses `stepMeta`
+    // is self-announcing rather than silent: the same field carries
+    // approval policy and audit attribution, so that path would break
+    // its approvals and its audit rows in the same breath.
+    if (stripCorePrefix(call.slug) === CONNECTION_DIRECT_SLUG
+      && call.stepMeta !== undefined) {
+      throw new IngredientError(
+        'CONNECTION_DIRECT_NOT_RECIPE_BINDABLE',
+        `connection adapter: '${call.slug}' is a host dispatch primitive and cannot be bound by a recipe `
+        + `(step '${call.stepMeta.step_id}'${call.stepMeta.recipe_id ? ` in '${call.stepMeta.recipe_id}'` : ''}). `
+        + 'Call the operation the pack declares for this connection instead — an enrolled MCP connection '
+        + 'generates one op per tool, each carrying its own risk tier and approval.',
+        { slug: call.slug, step_id: call.stepMeta.step_id, recipe_id: call.stepMeta.recipe_id },
+      );
+    }
 
     // D-117 follow-on (post-D-127) — capture engine-supplied step
     // identity once at adapter entry. Threaded into every `emit()` call

@@ -1,5 +1,5 @@
 import type { RuntimeConfigStore } from '@recued/config';
-import type { LifecycleStatus } from '@recued/contracts';
+import { zoneByLabel, type LifecycleStatus } from '@recued/contracts';
 import type { NotificationBlock } from '@recued/notification';
 
 import type { BackgroundServiceRegistry } from '../composition/bin/wire-background-services.js';
@@ -14,6 +14,11 @@ import type { MessengerIngressSupervisor } from '../messenger-ingress/supervisor
 import type { UpstreamMergeRegistry } from '../data/vendor-boot-registry.js';
 import type { EvictionCascade } from '../eviction-cascade.js';
 import { composeProCertEnrollment } from '../composition/bin/wire-pro-cert-enrollment.js';
+import { composeCustomDomainEnrollment } from '../composition/bin/wire-custom-domain-enrollment.js';
+import {
+  createNodeCustomDomainDnsResolver,
+  runCustomDomainPreflight,
+} from '../hostname/custom-domain-preflight.js';
 import { createSqliteHandleStateStore } from '../handle/sqlite-store.js';
 import { createHostnameRegistryStore } from '../storage/hostname-registry.js';
 import type { BootedServerIdentity } from '../identity/boot.js';
@@ -185,6 +190,12 @@ export interface StartPostListenerRuntimeOptions {
   /** D-178 slice 4b — on-boot update reconcile; the tail runs it after
    *  markBooted. Undefined on a delegated channel / dbless boot. */
   readonly runUpdateBootReconcile: StartPostHousekeepingTailOptions['runUpdateBootReconcile'];
+  /** D-225 auto-mint — the `mcp-pack-first-mint` sweep's deps, ALREADY BOUND by
+   *  `composeListeners`. Deliberately an input rather than something this file
+   *  builds: the mint needs the composition-capable install slice, which lives
+   *  there. Undefined ⇒ the task does not register. */
+  readonly mcpPackFirstMintDeps?:
+    StartHousekeepingStartupOptions['mcpPackFirstMintDeps'];
 }
 
 export interface PostListenerRuntimeResult {
@@ -510,6 +521,12 @@ export const startPostListenerRuntime = async (
     enrichmentProducers: options.enrichmentProducers,
     ...(sellerAccessReconcileDeps ? { sellerAccessReconcileDeps } : {}),
     ...(mcpToolsDriftProbeDeps ? { mcpToolsDriftProbeDeps } : {}),
+    // D-225 auto-mint — arrives already bound from `composeListeners`; NOT built
+    // here, because this site has no composition-capable install slice and a mint
+    // on the bare one defers its composition while reporting success.
+    ...(options.mcpPackFirstMintDeps
+      ? { mcpPackFirstMintDeps: options.mcpPackFirstMintDeps }
+      : {}),
   });
 
   // D-190 MS4 — register the generic CRM reconcilers for bound pack-CRM
@@ -665,6 +682,7 @@ export const startPostListenerRuntime = async (
         import('../storage/peer-answer-store.js'),
         import('../peer-hold-resumer.js'),
       ]);
+      const peerAnswers = createPeerAnswerStore(db);
       composePeerAskTimeoutSweep({
         registry: options.backgroundServices,
         // ⚠ DEV-ONLY OVERRIDE, for the same reason `exchange-retry` has one:
@@ -675,7 +693,7 @@ export const startPostListenerRuntime = async (
           : {}),
         sweep: {
           outbox,
-          answers: createPeerAnswerStore(db),
+          answers: peerAnswers,
           resume: async (target) => {
             await resumePeerHold(target, {
               getExecuteDeps: () => executeDeps,
@@ -696,6 +714,7 @@ export const startPostListenerRuntime = async (
           ? {
               abandon: {
                 outbox,
+                answers: peerAnswers,
                 auditLog: auditLogForTimeout,
                 dishes: executeDeps.dishStore,
                 // ⛔ BEST EFFORT, AND THE CALLER SWALLOWS THE REJECTION. This is
@@ -849,6 +868,49 @@ export const startPostListenerRuntime = async (
       //    a sealed server would have run enrollment anyway. Classic
       //    caller-obligation seam: the factory made the caller do the last
       //    step, and the caller forgot.
+      isVaultUnlocked: options.app.isVaultUnlocked,
+    });
+
+    // D-235 P3 — the bring-your-own-domain sibling. Shares the issuer ref and
+    // the vault gate with the fleet-zone service above but keeps its own
+    // backoff, so a user's broken zone cannot delay the address they need in
+    // order to come back and fix it (§ 4.1 — the Pro DDNS host is the recovery
+    // path).
+    //
+    // ⚠ `isVaultUnlocked` is passed EXPLICITLY. The dep is optional and
+    //   omitting it silently means "treat as unlocked" — the exact
+    //   caller-obligation seam the note above records being burned by.
+    const customDomainHostnameRegistry = createHostnameRegistryStore(options.storage.db);
+    const customDomainHandleStore = createSqliteHandleStateStore({ db: options.storage.db });
+    composeCustomDomainEnrollment({
+      registry: options.backgroundServices,
+      hostnameRegistry: customDomainHostnameRegistry,
+      getInitialAcmeIssuer: () => options.certStack.getInitialAcmeDomainIssuerRef(),
+      runPreflight: async (hostname) => {
+        const state = await customDomainHandleStore.load();
+        const handle = state?.current_handle ?? '';
+        return runCustomDomainPreflight({
+          hostname,
+          handle,
+          ...(state?.ddns_zone !== undefined
+            ? (() => {
+                const zone = zoneByLabel(state.ddns_zone);
+                return zone !== undefined ? { zone } : {};
+              })()
+            : {}),
+          resolver: createNodeCustomDomainDnsResolver(),
+        });
+      },
+      readProDdnsBinding: async () => {
+        const state = await customDomainHandleStore.load();
+        if (!state || state.current_handle.length === 0) return null;
+        // ⚠ `active` ONLY — `grace` is excluded for the same reason the
+        //   fleet-zone service excludes it: the cloud has already pulled a
+        //   lapsed subscription's DNS records, so DNS-01 cannot validate and
+        //   every attempt would burn CA quota to fail.
+        return { subscription_active: state.subscription_state === 'active' };
+      },
+      serverIdentityId: () => options.storage.serverInstanceId,
       isVaultUnlocked: options.app.isVaultUnlocked,
     });
   }

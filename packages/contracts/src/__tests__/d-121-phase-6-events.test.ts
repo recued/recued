@@ -66,7 +66,6 @@ describe('D-121 Phase 6 — broadcast event constants', () => {
       'chat.disambiguation_proposed',
       'chat.inbound_token_changed',
       'chat.message_complete',
-      'chat.picker_entries_changed',
       'chat.plan_proposed',
       'chat.plan_resolved',
       'chat.session_changed',

@@ -182,7 +182,6 @@ const registerSource = (
     source_kind,
     source_label: id,
     write_capable: source_kind === 'builtin',
-    mcp_exposed: false,
     registered_at: NOW,
     ...overrides,
   });
@@ -691,56 +690,68 @@ describe('work.search', () => {
     expect('source_freshness' in noSync).toBe(false);
   });
 
-  it('filters unexposed sources on mcp_wire while owner chat remains ungated', async () => {
-    const exposed = 'hubspot.search-mcp-exposed.task';
-    const hidden = 'hubspot.search-mcp-hidden.task';
-    registerSource(exposed, 'task', 'connection', { mcp_exposed: true });
-    registerSource(hidden, 'task', 'connection', { mcp_exposed: false });
-    seedSyncState(exposed);
-    seedSyncState(hidden);
+  // D-187 Sources half — REPLACES 'filters unexposed sources on mcp_wire while
+  // owner chat remains ungated'. That per-Source `mcp_exposed` filter is
+  // deleted; exposure is decided upstream by the contract
+  // (`core.work-entity.read` ∧ `data.<kind>`), which is channel-agnostic.
+  // So the property to hold is the OPPOSITE of the old one: given the same
+  // grants, both channels see exactly the same rows.
+  //
+  // ⚠ `readToolsDeps()` stubs both grant predicates TRUE — so this asserts
+  // PARITY, not the gate itself. The gate is pinned where it is actually
+  // resolved: `d-174-p3-contract-grants.test.ts` (owner-on / door-off through
+  // the real panel) and the admission tests. A parity test here would pass
+  // vacuously if it were read as gate coverage; it is not.
+  it('mcp_wire and owner chat return the SAME rows — no per-channel Source filter', async () => {
+    const a = 'hubspot.search-parity-a.task';
+    const b = 'hubspot.search-parity-b.task';
+    registerSource(a, 'task', 'connection');
+    registerSource(b, 'task', 'connection');
+    seedSyncState(a);
+    seedSyncState(b);
     seedTask({
-      id: 'search-mcp-exposed-row',
-      source_id: exposed,
-      source_record_id: 'search-mcp-exposed-remote',
-      title: 'visible external local title',
+      id: 'search-parity-a-row',
+      source_id: a,
+      source_record_id: 'search-parity-a-remote',
+      title: 'parity a local title',
     });
     seedTask({
-      id: 'search-mcp-hidden-row',
-      source_id: hidden,
-      source_record_id: 'search-mcp-hidden-remote',
-      title: 'hidden external local title',
+      id: 'search-parity-b-row',
+      source_id: b,
+      source_record_id: 'search-parity-b-remote',
+      title: 'parity b local title',
     });
 
     const external = okResult<SearchResult>(
       await runWorkEntitySearchTool(readToolsDeps(), { kind: 'task', limit: 10 }, MCP_CTX),
     );
-    expect(external.entities.map((entity) => entity.id)).toEqual([
-      qualifiedIdFor('search-mcp-exposed-row'),
-    ]);
-    expect(external.hidden_sources).toBe(1);
-
-    const scopedHidden = rejectedResult(
-      await runWorkEntitySearchTool(
-        readToolsDeps(),
-        { kind: 'task', source_id: hidden },
-        MCP_CTX,
-      ),
+    const owner = okResult<SearchResult>(
+      await runWorkEntitySearchTool(readToolsDeps(), { kind: 'task', limit: 10 }, OWNER_CTX),
     );
-    expect(scopedHidden.reason).toBe('classification_blocked');
-    expect(scopedHidden.detail).toContain('Settings');
-    expect(scopedHidden.detail).toContain('Work Entities');
+    const ids = [
+      qualifiedIdFor('search-parity-a-row'),
+      qualifiedIdFor('search-parity-b-row'),
+    ].sort();
+    expect(external.entities.map((entity) => entity.id).sort()).toEqual(ids);
+    expect(owner.entities.map((entity) => entity.id).sort()).toEqual(ids);
 
-    const ownerScoped = okResult<SearchResult>(
-      await runWorkEntitySearchTool(
-        readToolsDeps(),
-        { kind: 'task', source_id: hidden },
-        OWNER_CTX,
-      ),
+    // The coverage-disclosure field went with the filter it explained.
+    expect('hidden_sources' in external).toBe(false);
+    expect('hidden_sources' in owner).toBe(false);
+
+    // A source-scoped read is no longer refused per channel either.
+    const scopedExternal = okResult<SearchResult>(
+      await runWorkEntitySearchTool(readToolsDeps(), { kind: 'task', source_id: b }, MCP_CTX),
     );
-    expect(ownerScoped.entities.map((entity) => entity.id)).toEqual([
-      qualifiedIdFor('search-mcp-hidden-row'),
+    const scopedOwner = okResult<SearchResult>(
+      await runWorkEntitySearchTool(readToolsDeps(), { kind: 'task', source_id: b }, OWNER_CTX),
+    );
+    expect(scopedExternal.entities.map((entity) => entity.id)).toEqual([
+      qualifiedIdFor('search-parity-b-row'),
     ]);
-    expect('hidden_sources' in ownerScoped).toBe(false);
+    expect(scopedOwner.entities.map((entity) => entity.id)).toEqual([
+      qualifiedIdFor('search-parity-b-row'),
+    ]);
   });
 
   it('escalates owner current queries through targeted reads and overlays only matching remote records', async () => {
@@ -959,7 +970,7 @@ describe('work.search', () => {
 
   it('refuses external-channel escalation fail-closed while serving the exposed local row', async () => {
     const source = 'hubspot.search-external-refusal.task';
-    registerSource(source, 'task', 'connection', { mcp_exposed: true });
+    registerSource(source, 'task', 'connection');
     seedSyncState(source, { last_success_at: NOW - 2_000, stale_after_ms: 1_000 });
     seedTask({
       id: 'search-external-refusal-row',
@@ -996,7 +1007,7 @@ describe('work.search', () => {
 
   it('refuses an mcp_wire escalation whose admission CANNOT run (identity without snapshot/gate)', async () => {
     const source = 'hubspot.search-external-threaded.task';
-    registerSource(source, 'task', 'connection', { mcp_exposed: true });
+    registerSource(source, 'task', 'connection');
     seedSyncState(source, { last_success_at: NOW - 2_000, stale_after_ms: 1_000 });
     seedTask({
       id: 'search-external-threaded-row',
@@ -1051,7 +1062,7 @@ describe('work.search', () => {
 
   it('ADMITS an mcp_wire escalation whose contract allows the catalog tool + op (the admission seam)', async () => {
     const source = 'hubspot.search-external-admitted.task';
-    registerSource(source, 'task', 'connection', { mcp_exposed: true });
+    registerSource(source, 'task', 'connection');
     seedSyncState(source, { last_success_at: NOW - 2_000, stale_after_ms: 1_000 });
     seedTask({
       id: 'search-external-admitted-row',
@@ -1128,7 +1139,7 @@ describe('work.search', () => {
 
   it('DENIES an mcp_wire escalation whose contract lacks the catalog tool (no aliasing at this seam)', async () => {
     const source = 'hubspot.search-external-denied.task';
-    registerSource(source, 'task', 'connection', { mcp_exposed: true });
+    registerSource(source, 'task', 'connection');
     seedSyncState(source, { last_success_at: NOW - 2_000, stale_after_ms: 1_000 });
     seedTask({
       id: 'search-external-denied-row',
@@ -1184,7 +1195,7 @@ describe('work.search', () => {
 
   it('DENIES an mcp_wire escalation whose door scope fence excludes connection.api', async () => {
     const source = 'hubspot.search-external-scopefence.task';
-    registerSource(source, 'task', 'connection', { mcp_exposed: true });
+    registerSource(source, 'task', 'connection');
     seedSyncState(source, { last_success_at: NOW - 2_000, stale_after_ms: 1_000 });
     seedTask({
       id: 'search-external-scopefence-row',
@@ -1237,7 +1248,7 @@ describe('work.search', () => {
 
   it('DENIES an mcp_wire escalation whose governing contract revokes the op (op_not_granted)', async () => {
     const source = 'hubspot.search-external-oprevoked.task';
-    registerSource(source, 'task', 'connection', { mcp_exposed: true });
+    registerSource(source, 'task', 'connection');
     seedSyncState(source, { last_success_at: NOW - 2_000, stale_after_ms: 1_000 });
     seedTask({
       id: 'search-external-oprevoked-row',
@@ -1575,7 +1586,7 @@ describe('work.read', () => {
     registerSource(successSource);
     registerSource(configSource);
     registerSource(policySource);
-    registerSource(externalSource, 'task', 'connection', { mcp_exposed: true });
+    registerSource(externalSource, 'task', 'connection');
     for (const source of [successSource, configSource, policySource, externalSource]) {
       seedSyncState(source, { last_success_at: NOW - 2_000, stale_after_ms: 1_000 });
     }
@@ -1689,7 +1700,7 @@ describe('work.read', () => {
 
   it('refuses a work.read escalation on mcp_wire whose admission cannot run, admits a granted one', async () => {
     const source = 'hubspot.read-external-threaded.task';
-    registerSource(source, 'task', 'connection', { mcp_exposed: true });
+    registerSource(source, 'task', 'connection');
     seedSyncState(source, { last_success_at: NOW - 2_000, stale_after_ms: 1_000 });
     seedTask({
       id: 'read-external-threaded-row',
@@ -1843,64 +1854,11 @@ describe('work.read', () => {
     expect(judged).toEqual([{ source: chatSource, opId: 'task.read' }]);
   });
 
-  it('hides unexposed and disabled source rows from mcp_wire reads but not owner reads', async () => {
-    const hidden = 'hubspot.read-hidden.task';
-    const disabled = 'hubspot.read-disabled.task';
-    registerSource(hidden, 'task', 'connection', { mcp_exposed: false });
-    registerSource(disabled, 'task', 'connection', { mcp_exposed: true, enabled: false });
-    seedSyncState(hidden);
-    seedSyncState(disabled);
-    seedTask({
-      id: 'read-hidden-row',
-      source_id: hidden,
-      source_record_id: 'remote-read-hidden',
-      title: 'local hidden read title',
-    });
-    seedTask({
-      id: 'read-disabled-row',
-      source_id: disabled,
-      source_record_id: 'remote-read-disabled',
-      title: 'local disabled read title',
-    });
-
-    const externalHidden = okResult<ReadResult>(
-      await runWorkEntityReadTool(
-        readToolsDeps(),
-        { kind: 'task', id: 'read-hidden-row' },
-        MCP_CTX,
-      ),
-    );
-    expect(externalHidden).toEqual({ entity: null, found: false });
-
-    const externalDisabled = okResult<ReadResult>(
-      await runWorkEntityReadTool(
-        readToolsDeps(),
-        { kind: 'task', id: 'read-disabled-row' },
-        MCP_CTX,
-      ),
-    );
-    expect(externalDisabled).toEqual({ entity: null, found: false });
-
-    const ownerHidden = okResult<ReadResult>(
-      await runWorkEntityReadTool(
-        readToolsDeps(),
-        { kind: 'task', id: 'read-hidden-row' },
-        OWNER_CTX,
-      ),
-    );
-    expect(ownerHidden.entity?.title).toBe('local hidden read title');
-    expect(ownerHidden.found).toBe(true);
-
-    const ownerDisabled = okResult<ReadResult>(
-      await runWorkEntityReadTool(
-        readToolsDeps(),
-        { kind: 'task', id: 'read-disabled-row' },
-        OWNER_CTX,
-      ),
-    );
-    expect(ownerDisabled.entity?.title).toBe('local disabled read title');
-    expect(ownerDisabled.found).toBe(true);
-  });
+  // D-187 Sources half — the UNEXPOSED half of this test is gone with the flag.
+  // The DISABLED half deliberately survives: `work.read` is by-id and bypasses
+  // the store's polymorphic read WHERE, so it re-checks `enabled` per channel.
+  // That asymmetry is about data-plane wiring, not authority, and is the ONE
+  // `mcp_wire` special-case left in this module.
 
   it('serves note canonical bodies as complete and mirror previews as preview fidelity', async () => {
     const localNoteSource = 'hubspot.read-note-local.note';

@@ -385,12 +385,11 @@ export const detectDegradationReasons = (
 ): SourceDegradationReason[] => {
   const reasons: SourceDegradationReason[] = [];
 
-  // (1) User-disabled or substrate-disabled. `enabled` defaults to
-  // true at the storage layer; `false` is the explicit toggle from
-  // Settings → Work Entities → Sources.
-  if (source.enabled === false) {
-    appendUniqueReason(reasons, 'permission_revoked');
-  }
+  // (1) ⛔ The user-disabled branch is GONE with the per-Source toggle (D-187
+  // Sources half). It mapped a Settings flag onto `permission_revoked`, which
+  // was always a category error — a Source the owner switched off had not had
+  // any permission revoked. An uninstalled pack simply unregisters its Source,
+  // so there is no row left to report degraded.
 
   // (2) Connection-derived Source whose backing connection record is
   // gone or unhealthy. Builtin / adapter / dish Sources skip this

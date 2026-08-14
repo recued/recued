@@ -19,7 +19,6 @@ import {
   createChatOrchestrator,
   type ExecuteChatAiCall,
   type LlmGatewayToolUsageMeter,
-  type PeerDispatcher,
 } from '../chat-orchestrator.js';
 import {
   ChatContextLengthError,
@@ -112,9 +111,6 @@ const createMeter = (
 const createHarness = (input: {
   entries?: readonly ToolEntry[];
   localResult?: ChatDispatchResult;
-  peerEntries?: readonly ToolEntry[];
-  peerResult?: ChatDispatchResult;
-  peerDispatch?: PeerDispatcher['dispatch'];
   withPlanApproval?: boolean;
   executeAiCall?: ExecuteChatAiCall;
   piiResolver?: piiEgress.FieldPrivacyResolver;
@@ -131,24 +127,11 @@ const createHarness = (input: {
     subscribeRefresh: () => () => undefined,
   };
 
-  const peerEntries = input.peerEntries ?? [readEntry('bob.mail.search', 3)];
-  const peerDispatch = vi.fn<PeerDispatcher['dispatch']>(
-    input.peerDispatch ?? (async () => (
-      input.peerResult ?? { ok: true as const, result: { source: 'peer' } }
-    )),
-  );
-  const peerDispatcher: PeerDispatcher = {
-    dispatch: peerDispatch,
-    listToolEntries: () => peerEntries,
-    getPeerSignature: () => SELF_SIGNATURE,
-  };
-
   const db = new Database(':memory:');
   ensureChatSchema(db);
   const orchestrator = createChatOrchestrator({
     chatStore: createChatStore(db),
     registry,
-    peerDispatcher,
     selfSignature: SELF_SIGNATURE,
     ...(input.withPlanApproval
       ? { planApprovalStore: planApproval.createPlanApprovalStore() }
@@ -164,7 +147,7 @@ const createHarness = (input: {
       : {}),
   });
 
-  return { orchestrator, localDispatch, peerDispatch };
+  return { orchestrator, localDispatch };
 };
 
 const gatewayDispatchArgs = (meter: LlmGatewayToolUsageMeter) => ({
@@ -960,46 +943,13 @@ describe('D-196 gateway-only tool usage boundary', () => {
     }));
   });
 
-  it('blocks peer tools before gateway usage admission or dispatch', async () => {
-    const meter = createMeter();
-    const h = createHarness();
-
-    const result = await h.orchestrator.dispatch.dispatchTool({
-      ...gatewayDispatchArgs(meter),
-      tool_name: 'bob.mail.search',
-      picker_target: 'connection.mcp.bob',
-    });
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe('classification_blocked');
-    expect(h.peerDispatch).not.toHaveBeenCalled();
-    expect(h.localDispatch).not.toHaveBeenCalled();
-    expect(meter.admit).not.toHaveBeenCalled();
-    expect(meter.record).not.toHaveBeenCalled();
-    expect(meter.release).not.toHaveBeenCalled();
-  });
-
-  it('releases an admitted reservation when a peer dispatcher throws', async () => {
-    const meter = createMeter();
-    const tool = readEntry('bob.mail.search', 2);
-    const h = createHarness({
-      peerEntries: [tool],
-      peerDispatch: async () => {
-        throw new Error('peer transport failed');
-      },
-    });
-
-    await expect(h.orchestrator.dispatch.dispatchTool({
-      ...gatewayDispatchArgs(meter),
-      tool_name: tool.name,
-      picker_target: 'connection.mcp.bob',
-    })).rejects.toThrow('peer transport failed');
-
-    expect(h.peerDispatch).toHaveBeenCalledTimes(1);
-    expect(meter.admit).toHaveBeenCalledTimes(1);
-    expect(meter.record).not.toHaveBeenCalled();
-    expect(meter.release).toHaveBeenCalledTimes(1);
-  });
+  // ⛔ D-228 slice 5 — two peer-dispatch tests removed with their subject. They
+  // asserted that a peer-routed tool was blocked before gateway usage admission,
+  // and that an admitted reservation was released when the peer dispatcher threw.
+  // Peer scoping is retired: `set_picker` refuses a peer target and
+  // `PeerDispatcher` (which had zero implementors) is deleted, so neither
+  // situation is reachable. The reservation-release property they shared with the
+  // local path is still covered by the Self-dispatch tests above.
 
   it('returns a usage denial without dispatching or recording', async () => {
     const meter = createMeter(false);
@@ -1125,7 +1075,6 @@ describe('D-196 gateway-only tool usage boundary', () => {
 
     expect(result).toEqual({ ok: false, reason: 'unknown_tool' });
     expect(h.localDispatch).not.toHaveBeenCalled();
-    expect(h.peerDispatch).not.toHaveBeenCalled();
     expect(meter.admit).not.toHaveBeenCalled();
     expect(meter.record).not.toHaveBeenCalled();
     expect(meter.release).not.toHaveBeenCalled();

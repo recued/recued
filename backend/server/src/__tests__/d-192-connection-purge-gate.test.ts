@@ -64,7 +64,6 @@ const registerSource = (
     source_kind: 'connection',
     source_label: id,
     write_capable: false,
-    mcp_exposed: false,
   });
 };
 

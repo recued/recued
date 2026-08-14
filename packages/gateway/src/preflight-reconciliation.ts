@@ -457,6 +457,59 @@ const renderOpenGrantBlock = (
  *  that "537 MB" to match marketing decimals would misreport the actual bound).
  *  Rounded to one decimal below GB — the decision is "is that a lot of my data
  *  leaving", not an invoice. */
+/** "WHICH account does this land in" is the first question a reader asks of
+ *  any write, and it is the difference between a sandbox and production —
+ *  so the connection is named, EXCEPT when naming it a second time is all
+ *  the phrase would do. `recued-core/reception-intake.intake.materialize on
+ *  reception-intake` spends a clause restating a segment the reader has
+ *  already read, and a sentence that repeats itself is a sentence people
+ *  learn to skim. Compared against the op id's own segments, so the account
+ *  drops out only when it is LITERALLY already on screen: a `hubspot-prod`
+ *  connection under a `…/hubspot.deal.update` op is a different string and
+ *  survives, which is exactly the sandbox-vs-production case. */
+const connectionPhrase = (
+  connection: string | undefined,
+  named: string | undefined,
+): string =>
+  connection === undefined
+    || (named ?? '').split(/[/.]/).includes(connection)
+    ? ''
+    : ` on ${connection}`;
+
+/** The title is also the Slack / Telegram / OS notification preview — the
+ *  one line a reader is guaranteed to see — so it carries what tells one
+ *  queued ask from another. A publisher handle tells them nothing: it is
+ *  the same `recued-core/` on every first-party op, and it costs the front
+ *  of the line, which is the part that survives truncation on a phone. The
+ *  full id stays in the body sentence, which is where identity belongs. */
+const titleOperation = (named: string): string =>
+  named.slice(named.indexOf('/') + 1);
+
+/** Recipe ids a person wrote are short (`send-email`, `sync-deals`) and are
+ *  left exactly as they are. Ones the pack machinery generates are not:
+ *  `reception-intake-review-then-approve-intake-materialize-1` is 56
+ *  characters that mostly restate the operation named later in the same
+ *  sentence, and it lands in front of every word that decides anything.
+ *
+ *  ⚠ Clipped MIDDLE-OUT, never from the end. These ids are NUMBERED
+ *  (`…-1`, `…-2`) — a tail cut would render two different recipes
+ *  identically, which is worse than the length it fixed. Both ends survive,
+ *  so the id still names one recipe. */
+const RECIPE_ID_CLIP = 44;
+const RECIPE_ID_HEAD = 24;
+const RECIPE_ID_TAIL = 16;
+
+const clipRecipeId = (recipe_id: string | undefined): string => {
+  // `String(...)` rather than a `?? ''` default: an absent recipe id on a
+  // recipe-BOUND hold renders "undefined" here, exactly as the template
+  // literal this replaced did. Papering it over as an empty string would
+  // turn a visible contract violation into a sentence missing a subject.
+  const id = String(recipe_id);
+  return id.length <= RECIPE_ID_CLIP
+    ? id
+    : `${id.slice(0, RECIPE_ID_HEAD)}…${id.slice(-RECIPE_ID_TAIL)}`;
+};
+
 const formatEgressBytes = (bytes: number): string => {
   if (!Number.isFinite(bytes) || bytes < 0) return `${String(bytes)} bytes`;
   if (bytes < 1024) return `${bytes} bytes`;
@@ -503,11 +556,8 @@ export const buildPreflightAsk = (args: {
   // something we don't know.
   const named = context.raw_op?.op_id ?? context.tool_slug;
   const action = named ?? 'a boundary-crossing call';
-  // WHICH account this lands in. The first question a reader asks of any
-  // write is "against what?", and it is the difference between a sandbox
-  // and production.
-  const onConnection =
-    context.connection_name !== undefined ? ` on ${context.connection_name}` : '';
+  // WHICH account this lands in — unless the op id already said so.
+  const onConnection = connectionPhrase(context.connection_name, named);
 
   // Sentence 1 — what wants to happen, where, and who asked.
   // D-182 §8 — a recipe-LESS raw-op door hold has neither recipe nor step
@@ -517,10 +567,11 @@ export const buildPreflightAsk = (args: {
     context.raw_op !== undefined
       ? `An AI agent wants to run ${action}${onConnection}.`
       : count > 1 && batch !== undefined
-        ? `Recipe ${context.recipe_id} wants to run ${count} ${action} `
-          + `actions${onConnection}, all from ${UNIT_PHRASE[batch.unit.kind]}.`
-        : `Recipe ${context.recipe_id} wants to run ${action}${onConnection} `
-          + `(step ${context.gated_step_id}).`;
+        ? `Recipe ${clipRecipeId(context.recipe_id)} wants to run ${count} `
+          + `${action} actions${onConnection}, all from `
+          + `${UNIT_PHRASE[batch.unit.kind]}.`
+        : `Recipe ${clipRecipeId(context.recipe_id)} wants to run `
+          + `${action}${onConnection} (step ${context.gated_step_id}).`;
 
   // Sentence 2 — why it stopped here. The tier IS the reason; naming the
   // consequence answers "should I care?" in a way `risk_tier='write'`
@@ -605,7 +656,7 @@ export const buildPreflightAsk = (args: {
     context.risk_tier !== undefined ? ` (${context.risk_tier})` : '';
   const title =
     named !== undefined
-      ? `Approve ${count > 1 ? `${count} × ` : ''}${named}${tierSuffix}`
+      ? `Approve ${count > 1 ? `${count} × ` : ''}${titleOperation(named)}${tierSuffix}`
       : 'Approval required';
 
   const message: NotificationMessage = {

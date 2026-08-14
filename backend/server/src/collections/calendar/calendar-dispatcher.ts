@@ -38,7 +38,8 @@
  *  sync tick to reconcile whatever actually landed on the provider.
  */
 
-import { RpcError } from '@recued/contracts';
+import { collectionSourceFreshnessOf, RpcError } from '@recued/contracts';
+import type { CollectionSourceFreshness } from '@recued/contracts';
 import type {
   CalendarCollectionCaps,
   CalendarRecordHotFields,
@@ -62,6 +63,9 @@ import type {
 
 export interface CalendarDispatcherDeps {
   instances: CollectionInstanceStore;
+  /** D-236 — injectable clock for the source-freshness verdict. Defaults to
+   *  `Date.now`. Mirrors `CollectionHandlerDeps.now`. */
+  now?: () => number;
   /** Lookup the live `CalendarCollection` for `(platform='calendar',
    *  slug)`. Returns `undefined` when the adapter isn't started yet
    *  (enroll-in-progress, crash-loop recovery, …). The composition
@@ -145,7 +149,10 @@ export const handleCalendarList = async (
     status?: CanonicalEvent['status'];
     limit?: number;
   },
-): Promise<{ records: CalendarRecordHotFields[] }> => {
+): Promise<{
+  records: CalendarRecordHotFields[];
+  source_freshness: CollectionSourceFreshness;
+}> => {
   const { collection } = requireRead(deps, input.slug);
   const records = collection.table.list({
     ...(input.calendar_id !== undefined ? { calendar_id: input.calendar_id } : {}),
@@ -154,22 +161,37 @@ export const handleCalendarList = async (
     ...(input.status !== undefined ? { status: input.status } : {}),
     ...(input.limit !== undefined ? { limit: input.limit } : {}),
   });
-  return { records };
+  // D-236 — calendar has its OWN kernel ingredients and its own dispatcher, so
+  // it does NOT ride the `collection.list` path the mail/file/webhook verdict
+  // travels. Its `health()` supplies the same fields (`last_indexed_at` is the
+  // max of the local index and the provider's last successful sync;
+  // `pending_queue_size` includes pending series expansions), so the verdict is
+  // derived identically rather than approximated.
+  return {
+    records,
+    source_freshness: collectionSourceFreshnessOf(collection.health, (deps.now ?? Date.now)()),
+  };
 };
 
 export const handleCalendarGet = async (
   deps: CalendarDispatcherDeps,
   input: { slug: string; source_id: string },
-): Promise<{ record: CanonicalEvent | null }> => {
+): Promise<{ record: CanonicalEvent | null; source_freshness: CollectionSourceFreshness }> => {
   const { collection } = requireRead(deps, input.slug);
   const snapshot = collection.table.get(input.source_id);
-  return { record: snapshot ? snapshot.event : null };
+  return {
+    record: snapshot ? snapshot.event : null,
+    source_freshness: collectionSourceFreshnessOf(collection.health, (deps.now ?? Date.now)()),
+  };
 };
 
 export const handleCalendarSearch = async (
   deps: CalendarDispatcherDeps,
   input: { slug: string; query: string; limit?: number },
-): Promise<{ matches: Array<CalendarRecordHotFields & { snippet: string }> }> => {
+): Promise<{
+  matches: Array<CalendarRecordHotFields & { snippet: string }>;
+  source_freshness: CollectionSourceFreshness;
+}> => {
   const { collection, caps } = requireRead(deps, input.slug);
   if (caps.search === 'none') {
     throw new RpcError(
@@ -187,6 +209,8 @@ export const handleCalendarSearch = async (
       ...m.hot,
       snippet: m.snippet,
     })),
+    // D-236 — zero matches is an absence, same ambiguity as an empty list.
+    source_freshness: collectionSourceFreshnessOf(collection.health, (deps.now ?? Date.now)()),
   };
 };
 

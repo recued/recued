@@ -139,7 +139,6 @@ const registerSource = (
     source_kind: 'connection',
     source_label: source_id,
     write_capable: false,
-    mcp_exposed: false,
     registered_at: NOW,
   });
 };
@@ -153,7 +152,6 @@ const registerBuiltins = (): void => {
       source_kind: 'builtin',
       source_label: 'Recued built-in',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: NOW,
     });
   }

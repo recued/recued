@@ -261,6 +261,35 @@ const makeDeps = () => {
 };
 
 describe('mountHousekeepingPanel — trust-core slice', () => {
+  it('floors the run-policy control so its three labels cannot close up', () => {
+    // The control lives in a grid cell whose track is `minmax(0, 1fr)` and
+    // whose `td` sets `min-width: 0` — both of which exist to let a child
+    // shrink past its own min-content. Without an explicit floor the
+    // segmented control compresses and Off/Manual/Auto read as one word.
+    expect(HOUSEKEEPING_PANEL_STYLES).toMatch(
+      /\.housekeeping-producer-runpolicy\s*\{[^}]*min-width:\s*144px/s,
+    );
+    // The structural half: a floor stops the control shrinking, nowrap
+    // stops a label breaking onto a second line inside whatever width it
+    // does get.
+    expect(HOUSEKEEPING_PANEL_STYLES).toMatch(
+      /\.housekeeping-producer-runpolicy-seg span\s*\{[^}]*white-space:\s*nowrap/s,
+    );
+  });
+
+  it('floors Last run to its own widest value, and never wraps it', () => {
+    // The column renders relative time, so the ceiling is `999d ago`
+    // (measured 70.5px in Chrome incl. cell padding). 80px is that plus
+    // headroom for a wider default font off macOS — NOT room for an
+    // absolute stamp, which this column deliberately does not show.
+    expect(HOUSEKEEPING_PANEL_STYLES).toMatch(
+      /\.housekeeping-producer-last-run\s*\{[^}]*min-width:\s*80px/s,
+    );
+    expect(HOUSEKEEPING_PANEL_STYLES).toMatch(
+      /\.housekeeping-producer-last-run\s*\{[^}]*white-space:\s*nowrap/s,
+    );
+  });
+
   it('gives producer and drawer controls full targets with mobile cards', () => {
     expect(HOUSEKEEPING_PANEL_STYLES).toMatch(
       /\.housekeeping-producer-cost-segment\s*\{[^}]*min-height:\s*36px/s,

@@ -333,7 +333,6 @@ describe('D-173 A.1 — runReceptionProjection routing (D5)', () => {
       source_kind: 'connection',
       source_label: 'External tasks',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: NOW,
     });
     const res = await runReceptionProjection(env.deps, {

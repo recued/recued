@@ -1311,14 +1311,42 @@ export const HOUSEKEEPING_PANEL_STYLES = `
 .housekeeping-task-error, .housekeeping-producer-status-flag { color: var(--danger); }
 .housekeeping-task-empty, .housekeeping-producer-empty { color: var(--fg-muted); padding: 8px; }
 .housekeeping-producer-action { white-space: nowrap; text-align: right; }
+/* Last run. Sized to the widest value this column can actually hold: the
+   format is relative and stays that way, so 999d ago (2.7 years, well past
+   any real housekeeping cadence) is the ceiling — measured 70.5px in Chrome
+   including the cell padding, with 59m ago at 66px. 80px is that plus
+   headroom for a wider default font on Windows / Linux than the macOS
+   system-ui these were measured in.
+   ⛔ DO NOT re-widen this to fit an absolute stamp. If one ever lands here
+   it must be TIGHT — no milliseconds, no zone abbreviation, no city. Those
+   are Date.toString() / timeZoneName artefacts, they roughly treble the
+   string, and none of them changes whether a producer looks overdue, which
+   is the only question this column answers.
+   nowrap means a longer value widens the cell rather than breaking in two,
+   so the floor never has to cover the absurd case. tabular-nums stops the
+   digits jittering between rows. */
+.housekeeping-producer-last-run { min-width: 80px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 /* Producer row — topic head (name + LLM badge) + inline Run-policy control. */
 .housekeeping-producer-topic-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
 .housekeeping-producer-llm-badge { font-size: 10px; font-weight: 600; letter-spacing: 0.04em; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 4px; }
 .housekeeping-producer-status-flag { font-size: 10px; font-weight: 600; }
-.housekeeping-producer-runpolicy { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; margin: 0; padding: 0; }
-.housekeeping-producer-runpolicy-seg { box-sizing: border-box; min-height: 36px; display: inline-flex; }
-.housekeeping-producer-runpolicy-seg span { box-sizing: border-box; min-height: 36px; display: inline-flex; align-items: center; padding: 4px 10px; font-size: 11px; color: var(--fg-muted); cursor: pointer; border-left: 1px solid var(--border); }
+/* Off / Manual / Auto. ⛔ ESCAPE ANY BACKTICK IN THIS STYLESHEET (see the
+   header comment for the existing ones) — it is one JS template literal, so
+   a bare backtick in a CSS comment ends it mid-file and fails the bundle.
+   The floor is the control's own natural width (measured 144.0px in Chrome
+   at 11px), so it changes nothing at rest and only bites where an ancestor
+   would otherwise compress it: this control sits in a grid cell whose track
+   is minmax(0, 1fr) and whose td sets min-width: 0, and BOTH of those exist
+   precisely to let a child shrink past its own min-content. Without a floor
+   the three labels close up against each other and read as one word.
+   flex: none covers the same hazard under a flex ancestor. */
+.housekeeping-producer-runpolicy { display: inline-flex; flex: none; min-width: 144px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; margin: 0; padding: 0; }
+.housekeeping-producer-runpolicy-seg { box-sizing: border-box; min-height: 36px; display: inline-flex; flex: 1 1 auto; }
+/* nowrap is the structural half of the same fix — a width floor stops the
+   control shrinking, this stops a label breaking onto a second line inside
+   whatever width it does get. */
+.housekeeping-producer-runpolicy-seg span { box-sizing: border-box; min-height: 36px; display: inline-flex; align-items: center; justify-content: center; width: 100%; white-space: nowrap; padding: 4px 10px; font-size: 11px; color: var(--fg-muted); cursor: pointer; border-left: 1px solid var(--border); }
 .housekeeping-producer-runpolicy-seg:first-child span { border-left: 0; }
 .housekeeping-producer-runpolicy-seg input { position: absolute; opacity: 0; width: 0; height: 0; }
 .housekeeping-producer-runpolicy-seg[data-active="true"] span { background: var(--accent); color: var(--on-accent); font-weight: 600; }

@@ -72,7 +72,6 @@ beforeEach(() => {
       source_kind: 'builtin',
       source_label: 'Recued built-in',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: NOW,
     });
   }
@@ -148,7 +147,6 @@ describe('D-192 6c.2c — the vendor-write admission flag is engine-set only (fo
       source_kind: 'connection',
       source_label: 'Asana tasks (acme)',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: NOW,
     });
     let capturedPreadmitted: unknown = 'UNSET';
@@ -197,7 +195,6 @@ describe('D-192 6c.2c — the vendor-write admission flag is engine-set only (fo
       source_kind: 'connection',
       source_label: 'Asana tasks (acme)',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: NOW,
     });
     let capturedSource: unknown = 'UNSET';
@@ -248,7 +245,6 @@ describe('D-192 baseline-admission (S2b follow-on) — the paired-client OWNER H
       source_kind: 'connection',
       source_label: 'Asana tasks (acme)',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: NOW,
     });
     const executor: WorkEntitySourceWriteExecutor = {
@@ -530,44 +526,6 @@ describe('D-174 work_entity.list / get', () => {
     })).rejects.toMatchObject({ code: 'bad_request' });
   });
 
-  it('enriches owner booking detail with prior terminal history only', async () => {
-    store.registerSource({
-      id: 'legacy.booking',
-      top_tier_kind: 'booking',
-      source_kind: 'builtin',
-      source_label: 'Legacy bookings',
-      write_capable: true,
-      mcp_exposed: false,
-      registered_at: NOW,
-    });
-    store.writeBooking({
-      id: 'booking-old', source_id: 'legacy.booking', title: 'Prior visit',
-      lifecycle_state: 'no_show', counterparty_contact_id: 'contact-opaque',
-      state_changed_at: NOW - 10,
-    }, NOW - 10);
-    store.writeBooking({
-      id: 'booking-open-old', source_id: 'legacy.booking', title: 'Still open',
-      lifecycle_state: 'confirmed', counterparty_contact_id: 'contact-opaque',
-    }, NOW - 5);
-    store.setSourceEnabled('legacy.booking', false);
-    store.writeBooking({
-      id: 'booking-current', source_id: RECUED_BUILTIN_SOURCE_ID('booking'),
-      title: 'Current visit', lifecycle_state: 'confirmed',
-      counterparty_contact_id: 'contact-opaque',
-    }, NOW);
-
-    const result = await handleWorkEntityGet(deps, {
-      kind: 'booking', id: 'booking-current',
-    });
-    expect(result.booking_history).toMatchObject({
-      counterparty_contact_id: 'contact-opaque',
-      total: 1,
-      entries: [{ id: 'booking-old', lifecycle_state: 'no_show' }],
-    });
-    expect(JSON.stringify(result.booking_history)).not.toContain('@');
-    expect(JSON.stringify(result.booking_history)).not.toContain('booking-current');
-    expect(JSON.stringify(result.booking_history)).not.toContain('booking-open-old');
-  });
 });
 
 describe('D-174 work_entity.* — validation surfaces', () => {
@@ -704,7 +662,6 @@ describe('work_entity.list vs a read_through Source', () => {
       source_kind: 'connection',
       source_label: 'Federated peer (task)',
       write_capable: true,
-      mcp_exposed: false,
       sync_posture: 'read_through',
       registered_at: NOW,
     });

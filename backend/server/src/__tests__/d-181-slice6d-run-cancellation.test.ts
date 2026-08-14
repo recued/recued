@@ -14,14 +14,12 @@ import { describe, it, expect } from 'vitest';
 import {
   CHAT_DISPATCH_REASONS,
   isChatDispatchReason,
-  formatTier3ToolName,
   type ChatDispatchContext,
   type ConnectionMcpAnnotationState,
 } from '@recued/contracts';
 import {
   buildChatTier1Handlers,
   createChatTier2Dispatch,
-  createChatTier3Dispatch,
   type ChatRecipeExecutor,
   type ChatToolHandlerDeps,
 } from '../chat-tool-handlers.js';
@@ -186,33 +184,13 @@ describe('D-181 § 9 — cancellation echo names the tool the agent called', () 
     });
   });
 
-  it('Tier 3 killed → echoes <connection>.<tool>, NOT the kernel run-ingredient recipe', async () => {
-    const toolName = formatTier3ToolName('mybox', 'long_op');
-    const annotation = {
-      connection_name: 'mybox',
-      tools_list_cache: { tools: [{ name: 'long_op' }] },
-      tool_overrides: { long_op: { enabled: true, classification: 'read' } },
-    } as unknown as ConnectionMcpAnnotationState;
-    const dispatch = createChatTier3Dispatch(
-      deps({
-        // the run-ingredient kernel recipe carries recipe_id 'run-ingredient'
-        getExecuteRecipe: () =>
-          execReturning(baseResult({ recipe_id: 'run-ingredient', success: false, run_terminated: 'killed' })),
-        getConnectionMcpAnnotations: () => [annotation],
-      }),
-    );
-    const result = await dispatch(toolName, {}, ctxInternal());
-    expect(result).toEqual({
-      ok: false,
-      reason: 'run_cancelled',
-      detail: runCancellationMessage('killed', 'mybox.long_op'),
-    });
-  });
-});
+  // ⛔ D-228 slice 4 — the Tier-3 cancellation echo test is DELETED with its
+  // subject. It asserted that a killed `<connection>.<tool>` run echoed the name
+  // the AGENT called rather than the kernel run-ingredient recipe; there is no
+  // Tier-3 dispatch any more (an MCP tool reaches chat as a `recued_op_*` pack
+  // operation). The property it protected — the echo names what the caller
+  // asked for — is still covered by the Tier-2 sibling directly above.
 
-// ── projection (the MCP recued_runRecipe / direct-ingredient surface) ──
-
-describe('D-181 § 9 — projectRunResultForAgent renders a cancelled run as a clear non-result (codex MCP-parity fold)', () => {
   it('a killed run → {status:cancelled, cancelled:true, recipe_id, message}', () => {
     const projected = projectRunResultForAgent(baseResult({ success: false, run_terminated: 'killed' }));
     expect(projected).toEqual({

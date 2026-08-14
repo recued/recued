@@ -41,7 +41,6 @@ const registerBuiltinSources = (s: WorkEntityStore): void => {
     source_kind: 'builtin',
     source_label: 'Recued built-in (tasks)',
     write_capable: true,
-    mcp_exposed: false,
   });
   s.registerSource({
     id: 'recued.note',
@@ -49,7 +48,6 @@ const registerBuiltinSources = (s: WorkEntityStore): void => {
     source_kind: 'builtin',
     source_label: 'Recued built-in (notes)',
     write_capable: true,
-    mcp_exposed: false,
   });
   s.registerSource({
     id: 'recued.commitment',
@@ -57,7 +55,6 @@ const registerBuiltinSources = (s: WorkEntityStore): void => {
     source_kind: 'builtin',
     source_label: 'Recued built-in (commitments)',
     write_capable: true,
-    mcp_exposed: false,
   });
   s.registerSource({
     id: 'recued.project',
@@ -65,7 +62,6 @@ const registerBuiltinSources = (s: WorkEntityStore): void => {
     source_kind: 'builtin',
     source_label: 'Recued built-in (projects)',
     write_capable: true,
-    mcp_exposed: false,
   });
 };
 
@@ -199,7 +195,6 @@ describe('Source registry', () => {
       source_kind: 'connection',
       source_label: 'HubSpot tasks (conn_1)',
       write_capable: false,
-      mcp_exposed: true,
       registered_at: NOW,
       schema_extension_blob: { extra_field: { type: 'text' } },
       config_blob: { connection_id: 'conn_1' },
@@ -212,7 +207,6 @@ describe('Source registry', () => {
       source_kind: 'connection',
       source_label: 'HubSpot tasks (conn_1)',
       write_capable: false,
-      mcp_exposed: true,
       schema_extension_blob: { extra_field: { type: 'text' } },
       config_blob: { connection_id: 'conn_1' },
     });
@@ -233,7 +227,6 @@ describe('Source registry', () => {
         source_kind: 'builtin',
         source_label: 'rogue',
         write_capable: false,
-        mcp_exposed: false,
       }),
     ).toThrow(SourceRegistrationError);
   });
@@ -246,7 +239,6 @@ describe('Source registry', () => {
       source_kind: 'connection',
       source_label: 'hubspot conn_2',
       write_capable: false,
-      mcp_exposed: false,
     });
     expect(store.unregisterSource('hubspot.conn_2.task')).toBe(true);
     expect(store.getSource('hubspot.conn_2.task')).toBeNull();
@@ -259,7 +251,6 @@ describe('Source registry', () => {
       source_kind: 'connection',
       source_label: 'hubspot conn_3',
       write_capable: false,
-      mcp_exposed: false,
     });
     const t = store.writeTask(
       {
@@ -287,7 +278,6 @@ describe('Source registry', () => {
       source_kind: 'connection',
       source_label: 'hubspot conn_4',
       write_capable: false,
-      mcp_exposed: false,
     });
     const t = store.writeTask(
       { title: 'tombstoned then orphaned', source_id: 'hubspot.conn_4.task' },
@@ -816,7 +806,6 @@ describe('Source row identity (§ A.1.6)', () => {
       source_kind: 'connection',
       source_label: 'HubSpot tasks (conn_x)',
       write_capable: false,
-      mcp_exposed: false,
     });
     store.writeTask(
       {

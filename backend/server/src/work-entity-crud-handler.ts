@@ -266,7 +266,6 @@ export const handleWorkEntityList = async (
   if (args.source_id !== undefined) filters.source_id = args.source_id;
   if (args.sync_states !== undefined) filters.sync_states = args.sync_states;
   if (args.include_deleted !== undefined) filters.include_deleted = args.include_deleted;
-  if (args.include_disabled !== undefined) filters.include_disabled = args.include_disabled;
   if (kind === 'booking' && args.search !== undefined) filters.search = args.search;
   if (kind === 'booking' && args.booking_lifecycle_states !== undefined) {
     filters.booking_lifecycle_states = args.booking_lifecycle_states;
@@ -302,9 +301,6 @@ export const handleWorkEntityList = async (
     // distinguishable on the wire (codex fold).
     const source_freshness = deps.resolver.sourceFreshness(kind, {
       ...(args.source_id !== undefined ? { source_id: args.source_id } : {}),
-      ...(args.include_disabled !== undefined
-        ? { include_disabled: args.include_disabled }
-        : {}),
     });
     return {
       entities,
@@ -325,13 +321,9 @@ export const handleWorkEntityGet = async (
   try {
     const entity = deps.resolver.readEntity(kind, id);
     if (entity === null) return { entity };
-    // D-192 read resolution — the row's own Source verdict.
-    // `include_disabled`: a by-id read can surface a row whose Source
-    // the user disabled (the store's by-id path has no disabled
-    // filter) — the returned row still deserves an honest freshness.
+    // D-192 read resolution — the row own Source verdict.
     const [source_freshness] = deps.resolver.sourceFreshness(kind, {
       source_id: entity.source_id,
-      include_disabled: true,
     }) ?? [];
     // D-192 P5 — the row's live work-graph edges. Present (possibly
     // empty) whenever the substrate is wired and the kind carries

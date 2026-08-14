@@ -49,7 +49,6 @@ beforeEach(() => {
       source_kind: 'builtin',
       source_label: `Recued built-in (${kind})`,
       write_capable: true,
-      mcp_exposed: false,
     });
   }
   adapter = createKernelAdapter(createWorkEntityDispatchers({

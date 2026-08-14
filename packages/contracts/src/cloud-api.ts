@@ -10,6 +10,8 @@
  *  per-endpoint timestamp window.
  */
 
+import { CUSTOM_DOMAIN_MAX_PER_SERVER } from './custom-domain.js';
+
 // ────────────────────────────────────────────────────────────────
 // § A.5.2 — DDNS update API
 // ────────────────────────────────────────────────────────────────
@@ -189,13 +191,54 @@ export type AcmeErrorCode =
    *  where `<handle>.recued.net` and `<handle>.recued.cloud` would both
    *  carry the same handle — only the bound one may issue. */
   | 'acme_zone_mismatch'
+  /** D-235 § 8.3 — `domain` is outside the fleet's zones (a bring-your-own
+   *  domain) and its `_acme-challenge` CNAME does not point at the
+   *  authenticated publisher's own challenge name. Covers both "points
+   *  somewhere else" (including at ANOTHER handle's — the case this gate
+   *  exists to refuse) and "no CNAME at all"; the response MESSAGE names
+   *  which, the code stays coarse because a caller branches the same way on
+   *  both. ⛔ This is the boundary: the server-side eligibility gate runs on
+   *  the user's own machine and is local policy only. */
+  | 'acme_delegation_unauthorized'
+  /** D-235 § 8.3 — the delegation lookup itself failed (SERVFAIL, timeout, a
+   *  non-200 from the resolver). ⚠ DELIBERATELY NOT `unauthorized`: we learned
+   *  nothing about the user's zone, so telling them their record is wrong
+   *  would be a lie, and 503 invites the retry that will settle it. Failing
+   *  CLOSED either way — an unresolved delegation never issues. */
+  | 'acme_delegation_unresolved'
   | 'acme_validation_error';
 
 /** D-148 § A.5.3 — Let's Encrypt rate-limit ceiling per publisher
  *  per ACME helper. Real LE limit is 50 certs/registered-domain/wk
  *  but cloud rate-limits at a tighter ceiling so a single
- *  publisher can't burn the per-domain pool. */
-export const ACME_ISSUE_CERT_RATE_LIMIT_PER_DAY = 8;
+ *  publisher can't burn the per-domain pool.
+ *
+ *  ⚠ THE CEILING COUNTS ATTEMPTS, NOT ISSUANCES — `checkRate` runs before the
+ *  CA call, so a server in a retry loop burns it. That is the point: the
+ *  enrollment backoff tops out hourly, which is ~22 attempts a day, so this
+ *  ceiling (not the backoff) is what stops a misconfigured server from
+ *  hammering the CA.
+ *
+ *  D-235 raised it from a flat 8, because the demand changed shape rather than
+ *  the protection weakening. Before D-235 a server needed exactly ONE
+ *  certificate, so 8 was 8× headroom. Now it needs one for the Pro DDNS host
+ *  plus up to `CUSTOM_DOMAIN_MAX_PER_SERVER` custom domains — six — and a
+ *  first-day enrolment of all of them left two attempts for the whole rest of
+ *  the day. Derived from the cap rather than picked so the two cannot drift:
+ *  ×2 permits one complete re-attempt after a transient bad day and still hard-
+ *  stops a retry loop far below the fleet's shared budget (LE allows ~2,400 new
+ *  orders/account/day; one publisher at this ceiling is well under 1% of it).
+ *
+ *  🔑 Raising this does NOT relax the protection D-148 wrote it for. That
+ *  protection is `recued.net`'s shared 50-certs-per-registered-domain-per-week
+ *  pool, and per D-235 § 4.2 a custom domain does not touch it — it lands in
+ *  its OWNER'S bucket. The extra headroom is spent entirely on names that
+ *  contend with nothing.
+ *
+ *  ⚠ Cloud-enforced only; no server reads it, so changing it is a one-sided
+ *  deploy with no ordering hazard. */
+export const ACME_ISSUE_CERT_RATE_LIMIT_PER_DAY =
+  (1 + CUSTOM_DOMAIN_MAX_PER_SERVER) * 2;
 
 /** D-148 § A.5.3 — replay-window for the signed ACME request. */
 export const ACME_REPLAY_WINDOW_MS = 5 * 60 * 1000;

@@ -27,7 +27,6 @@ import {
   PROJECT_TITLE_MAX,
   RECUED_BUILTIN_SOURCE_ID,
   RESERVED_DATA_SUBNAMESPACES,
-  SOURCE_DEFAULT_PREFS_KEY,
   SOURCE_KINDS,
   SOURCE_TOP_TIER_KINDS,
   SYNC_STATES,
@@ -103,15 +102,9 @@ describe('D-145 PA1 — Source primitive', () => {
     );
   });
 
-  it('default-Source prefs key is the suffix consumed by the prefs accessor', () => {
-    // § A.2 spells the full path as `prefs.<kind>.last_used_source_id`.
-    // The constant returns just the suffix because the prefs accessor
-    // stamps the namespace on automatically — same convention as
-    // `CALENDAR_WATCHER_CURSOR_PREFIX = 'calendar.watcher.'` in D-117.
-    // Recipes resolve the full path via `{{prefs.<kind>.last_used_source_id}}`.
-    expect(SOURCE_DEFAULT_PREFS_KEY('task')).toBe('task.last_used_source_id');
-    expect(SOURCE_DEFAULT_PREFS_KEY('note')).toBe('note.last_used_source_id');
-  });
+  /* ⛔ The `SOURCE_DEFAULT_PREFS_KEY` case is DELETED with the constant
+   *  (D-187 Sources half). It had zero production consumers and the name it
+   *  pinned — `<kind>.last_used_source_id` — was never written on use. */
 });
 
 describe('D-145 PA1 — sync_state + conflict_policy closed lists', () => {

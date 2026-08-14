@@ -56,7 +56,6 @@ const registerBuiltins = (s: WorkEntityStore): void => {
       source_kind: 'builtin',
       source_label: 'Recued built-in',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: NOW,
     });
   }

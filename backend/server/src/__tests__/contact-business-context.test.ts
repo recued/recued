@@ -39,7 +39,6 @@ const registerSource = (kind: Extract<WorkEntityKind, 'task' | 'booking' | 'proj
     source_kind: 'builtin',
     source_label: `Recued ${kind}`,
     write_capable: true,
-    mcp_exposed: false,
     registered_at: AS_OF - 1_000,
   });
 };
@@ -363,7 +362,6 @@ describe('resolveContactBusinessContext', () => {
       source_kind: 'connection',
       source_label: 'Linear tasks',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: AS_OF - 800,
     });
 

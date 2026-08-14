@@ -770,6 +770,11 @@ export interface ConnectionHealth {
    *  bindings (`mcpMintedHashesFromCatalog`), so there is exactly one record of
    *  what was minted and it cannot drift from the pack itself. */
   tool_hashes?: string[];
+  /** MCP 2026-07-28 HTTP clients must inspect `x-mcp-header` annotations
+   * before a tool call. Probes retain each accepted tool's input schema so
+   * runtime dispatch can construct those headers without trusting recipe
+   * input or issuing an unbounded discovery call during a write. */
+  mcp_tool_schemas?: Record<string, unknown>;
 }
 
 /** Non-secret receipt returned only after a replacement credential has been

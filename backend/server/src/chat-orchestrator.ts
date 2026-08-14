@@ -13,8 +13,8 @@
  *         - Self-target: union of `InternalToolRegistry.list()`,
  *           minus per-kind-disabled Tier 2 entries (Mary's Settings
  *           scope) and per-MCP-disabled Tier 3 entries.
- *         - Peer-target: `peerDispatcher.listToolEntries(peerName)`
- *           verbatim (peer-side projection already applied).
+ *         (⛔ D-228 slice 5 — the peer-target arm is retired; `picker_target`
+ *         can only be `'self'`.)
  *       The catalog passed to the AI is the post-capability-filter
  *       union — no intent-driven narrowing happens here. The prompt-
  *       cache middleware (D-164 P4) takes over catalog assembly via
@@ -77,7 +77,6 @@
 import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 import {
-  computeConnectionMcpDisabledTier3Names,
   computeKindGatedTier2Names,
   aggregateTokenUsageReports,
   INGREDIENT_KINDS,
@@ -771,13 +770,6 @@ const assembleChatPromptContent = (
  *  harness path that bypasses validation). Module-level (D-160 A.8 step 4)
  *  so the `buildCatalog` projection and the per-turn `dispatch_peer_name`
  *  derivation share one definition. Pure; no closure state. */
-const extractPeerName = (target: ChatPickerTarget): string | null => {
-  if (target === 'self') return null;
-  if (!target.startsWith('connection.mcp.')) return null;
-  const name = target.slice('connection.mcp.'.length);
-  if (name.length === 0) return null;
-  return name;
-};
 
 /** D-164 P6.3 — what the bound executor returns: the raw parsed body
  *  from `executeLLM` + an optional `TokenUsageReport` captured via the
@@ -881,6 +873,15 @@ export interface ChatOrchestratorDeps {
     () => ExecutionCaseProposalCritic | undefined;
   /** Tool-dispatch surface (Tier 1+2+3 via direct function call). */
   registry: InternalToolRegistry;
+  /** D-228 slice 3 — which of a connection's upstream MCP tools a governed pack
+   *  op already reaches. The Tier-3 entries for those stand down, so one tool
+   *  stops being reachable through two surfaces with two different gates.
+   *
+   *  ⛔ Absent ⇒ NO suppression, and that direction is chosen: a host with no
+   *  binding store keeps the Tier-3 surface exactly as it was. The failure of a
+   *  missing coverage lookup must be "the old surface is still there", never
+   *  "the tool is reachable by nothing". */
+  connectionMcpPackCoverage?: (connection_name: string) => ReadonlySet<string> | undefined;
   /** D-225 § 9.8.1 — the raw catalog-op source, DERIVED from the turn's
    *  contract. Optional: absent ⇒ no raw ops, which is the behaviour before
    *  § 9.5.1 and keeps every partial harness working. */
@@ -1021,25 +1022,6 @@ export interface ChatOrchestratorDeps {
    *  dbless harness path); the orchestrator dispatches every tool
    *  through the registry as before. */
   planApprovalStore?: planApprovalModule.PlanApprovalStore;
-  /** D-137 P4 § A.7 — peer-dispatch seam. When wired AND the per-turn
-   *  picker target is `connection.mcp.<name>`:
-   *    - Tool catalog → `peerDispatcher.listToolEntries(name)`
-   *      (the peer's annotation-projected catalog; NOT Mary's local
-   *      Tier 1/2/3 union).
-   *    - Tool dispatch → `peerDispatcher.dispatch({ peer_name, ... })`
-   *      (outbound MCP `tools/call` via the named connection).
-   *    - `picker_at_send.signature` → `peerDispatcher.getPeerSignature
-   *      (name)` (falls back to `selfSignature` if absent so the
-   *      message row always carries a non-null signature).
-   *    - Provenance `target_server: <peer_name>` per § A.8.
-   *
-   *  When undefined OR the dispatcher returns absent metadata, peer-
-   *  target dispatches surface `connection_unavailable` reason —
-   *  substrate-stays-reachable posture; the renderer paints "Bob's
-   *  tools aren't available right now" instead of throwing. The full
-   *  outbound MCP wiring (D-125 P4.2 client + per-peer health
-   *  monitoring) lands as a P4 follow-on slice. */
-  peerDispatcher?: PeerDispatcher;
   /** D-160 Stage 3 — the live first-party middleware registry (built in
    *  `wire-chat-orchestrator.ts`). The orchestrator builds the
    *  source-binding adapters (`chat-stream-middleware.ts`) from it +
@@ -1482,7 +1464,7 @@ export interface OrchestratorDispatch {
    *
    *  D-137 P4 § A.7 — `picker_target` discriminates the dispatch path:
    *    - `'self'`             → InternalToolRegistry (Tier 1/2/3 union).
-   *    - `connection.mcp.<n>` → PeerDispatcher (outbound MCP tools/call
+   *    - (⛔ D-228 slice 5 — the `connection.mcp.<n>` route is retired
    *      via the named connection). The seam stays open: when no
    *      peer dispatcher is wired (current test harnesses), peer-
    *      target dispatches return `connection_unavailable`. */
@@ -1539,51 +1521,14 @@ export interface OrchestratorDispatch {
   }): Promise<ChatDispatchResult>;
 }
 
-/** D-137 P4 § A.7 — peer-dispatch seam. Production wires this through
- *  the D-125 P4.2 outbound MCP client (`packages/ingredients/src/
- *  connection-mcp.ts`); tests inject a synthetic dispatcher that
- *  records call shapes + returns canned results. The orchestrator
- *  never reaches into the outbound MCP wire directly — every cross-
- *  server call funnels through this interface so audit + transparency
- *  + provenance emit uniformly.
- *
- *  When undefined on the orchestrator deps, peer-target dispatches
- *  return `connection_unavailable` (substrate stays reachable; the
- *  AI's chat tail sees a clean "Bob's tools aren't available right
- *  now" path rather than an exception).
- *
- *  The `peer_name` argument is the bare connection name (NOT the
- *  `connection.mcp.<name>` form — the orchestrator strips the prefix
- *  before invocation; the dispatcher looks up the underlying D-125
- *  connection record by `kind: 'mcp'` + `name`).
- *
- *  `tool_name` is the FORMATTED Tier 3 entry name
- *  (`<peer_name>.<upstream_tool>`); the dispatcher strips the
- *  `<peer_name>.` prefix when emitting the upstream MCP `tools/call`
- *  `params.name`. Mirrors `formatTier3ToolName`'s convention — keeps
- *  one identifier shape across the chat substrate + the outbound
- *  wire. */
-export interface PeerDispatcher {
-  dispatch(args: {
-    peer_name: string;
-    tool_name: string;
-    arg_values: unknown;
-  }): Promise<ChatDispatchResult>;
-  /** Project the peer's annotation `tools_list_cache.tools` + per-tool
-   *  classifications into the `ToolEntry[]` the orchestrator's
-   *  catalog selection layer consumes when the picker is on this peer.
-   *  Returning an empty array is valid (peer with zero classified
-   *  tools — picker entry visibility upstream filters this case out;
-   *  the orchestrator's capability-filter layer then sees an empty
-   *  catalog and the main turn surfaces a "no tools available" path). */
-  listToolEntries(peer_name: string): ReadonlyArray<ToolEntry>;
-  /** Returns the peer's most-recent probed signature when known;
-   *  drives `picker_at_send.signature` on the chat message row. When
-   *  absent (no signature in the annotation store), the orchestrator
-   *  falls back to `selfSignature` so the message row always carries
-   *  a non-null signature shape. */
-  getPeerSignature(peer_name: string): RecuedServerSignature | null;
-}
+/** ⛔⛔ D-228 slice 5 — `PeerDispatcher` REMOVED. It described the outbound half
+ *  of the MCP scope-picker: list a peer's tools, dispatch one, read its probed
+ *  signature. **It had ZERO implementors** — nothing in the tree ever
+ *  constructed one — so every peer-scoped dispatch returned
+ *  `connection_unavailable` in production. Specified, never built, and now
+ *  unnecessary: a peer's tools are minted into a local pack and dispatch through
+ *  the ordinary Self path as `recued_op_*` operations. */
+
 
 export interface ChatOrchestrator {
   /** Start a turn — persists the user message, mints a turn_id, and
@@ -1976,7 +1921,7 @@ export const createChatOrchestrator = (
   // post-capability-filter Tier 1/2/3 union → AI-facing `available_tools`),
   // lifted behind a closure the stream adapter calls so the catalog becomes
   // a registered hook (not an inline call). Pure over the per-pair deps
-  // (`registry` / `peerDispatcher` / `scopeProvider` / `annotationProvider`)
+  // (`registry` / `scopeProvider` / `annotationProvider`)
   // + the per-turn picker target; the hook writes the result to shared
   // `state`, the executor ENACTs it. The D-164 P3 6-section catalog
   // substrate is the salvage path that replaces this projection's internals
@@ -1999,33 +1944,29 @@ export const createChatOrchestrator = (
   // at orchestrator construction, where no turn exists yet), so the raw-op half
   // of the catalog can be derived from the caller's contract.
   const buildCatalog: ChatCatalogBuilder = (picker_target, projection, source) => {
-    const peerName = extractPeerName(picker_target);
-    const catalogEntries =
-      peerName !== null
-        ? deps.peerDispatcher
-          ? deps.peerDispatcher.listToolEntries(peerName)
-          : []
-        : deps.registry.list();
+    // ⛔ D-228 slice 5 — no peer branch: `picker_target` can only be `'self'`
+    // now, so the catalog is always this server's own registry.
+    const catalogEntries = deps.registry.list();
     const enabledKinds = resolveEnabledKinds(
       deps.scopeProvider ? deps.scopeProvider() : null,
     );
     const kindGatedTier2Names =
-      peerName !== null
-        ? new Set<string>()
-        : computeKindGatedTier2Names(catalogEntries, enabledKinds);
-    const annotations = deps.annotationProvider ? deps.annotationProvider() : null;
-    const disabledTier3Names =
-      peerName !== null
-        ? new Set<string>()
-        : annotations
-          ? computeConnectionMcpDisabledTier3Names(annotations)
-          : new Set<string>();
+      computeKindGatedTier2Names(catalogEntries, enabledKinds);
+    // ⛔⛔ D-228 slice 4 — THERE IS NO TIER-3 CATALOG ANY MORE. Its entries were
+    // projected from `tool_overrides`, the chat presentation store D-225 named
+    // as the standing defect; slice 3 stood them down per tool as packs covered
+    // them, and this slice deletes the store. An enrolled MCP tool now reaches
+    // chat exactly once — as a `recued_op_*` pack operation governed by the
+    // contract — instead of twice through two different gates.
+    //
+    // ⚠ The empty set is still THREADED rather than removed from
+    // `buildChatMainTurnTools`: its parameter is a general "names to withhold"
+    // seam, and emptying the only current producer is not a reason to delete a
+    // seam the next one would have to re-add.
+    const disabledTier3Names = new Set<string>();
     // D-225 § 9.8.1 — raw catalog ops are DERIVED from the turn's contract
-    // rather than assembled and filtered at dispatch. A peer-scoped turn keeps
-    // the peer's own entries and adds none of ours.
-    const rawOps = peerName !== null || !deps.rawOpSource
-      ? []
-      : deps.rawOpSource(source);
+    // rather than assembled and filtered at dispatch.
+    const rawOps = deps.rawOpSource ? deps.rawOpSource(source) : [];
     return buildChatMainTurnTools(
       [...catalogEntries, ...(rawOps as typeof catalogEntries)],
       kindGatedTier2Names,
@@ -2092,18 +2033,16 @@ export const createChatOrchestrator = (
    *  message row always has a non-null shape — the absent-peer case
    *  surfaces as `connection_unavailable` at dispatch time, never as a
    *  malformed row). */
-  const buildPickerAtSend = (target: ChatPickerTarget): ChatMessage['picker_at_send'] => {
-    if (target === 'self') {
-      return { display_name: selfDisplayName, signature: deps.selfSignature };
-    }
-    const peerName = target.startsWith('connection.mcp.')
-      ? target.slice('connection.mcp.'.length)
-      : target;
-    const peerSig = deps.peerDispatcher?.getPeerSignature(peerName) ?? null;
-    return {
-      display_name: peerName,
-      signature: peerSig ?? deps.selfSignature,
-    };
+  const buildPickerAtSend = (_target: ChatPickerTarget): ChatMessage['picker_at_send'] => {
+    // ⛔ D-228 slice 5 — ALWAYS THIS SERVER. The peer arm read the probed
+    // signature off `PeerDispatcher`; peer scoping is retired and no peer target
+    // can arrive.
+    //
+    // ⚠ THE FIELD STAYS, and that is deliberate: it is PERSISTED on every chat
+    // message row, and rows written before this slice may name a peer. Dropping
+    // it (or narrowing `ChatPickerTarget`) would make the store lie about
+    // history it already holds. New rows simply always record self.
+    return { display_name: selfDisplayName, signature: deps.selfSignature };
   };
 
   const persistPlanExecution = async (
@@ -2149,165 +2088,15 @@ export const createChatOrchestrator = (
   };
 
 
-  /** D-137 P4 § A.7 — peer dispatch path. Routes through
-   *  `peerDispatcher.dispatch` instead of the local InternalToolRegistry.
-   *  Audit + broadcast envelopes mirror the Self path but record the
-   *  channel + tier honestly:
-   *    - `channel: 'mcp_wire'` (peer dispatch goes over the wire from
-   *      Mary's perspective; the audit row distinguishes from internal-
-   *      channel Self dispatches).
-   *    - `tier: 3` (every peer-routed tool is a Tier 3 entry per
-   *      § A.1.1; the peer's own InternalToolRegistry classifies
-   *      Tier 1/2/3 internally, but Mary's side sees only Tier 3
-   *      connection.mcp.* entries).
+  /** ⛔⛔ D-228 slice 5 — `dispatchToolToPeer` REMOVED with the MCP scope-picker.
    *
-   *  When `peerDispatcher` is unwired, returns
-   *  `{ ok: false, reason: 'connection_unavailable' }` so the AI's
-   *  chat tail sees a clean degraded path. */
-  const dispatchToolToPeer = async (args: {
-    session_id: string;
-    turn_id: string;
-    tool_name: string;
-    arg_values: unknown;
-    peerName: string;
-    plan_id?: string;
-  }): Promise<ChatDispatchResult> => {
-    const { session_id, turn_id, tool_name, arg_values, peerName, plan_id } = args;
-    const tier: ToolTier = 3;
-    if (!deps.peerDispatcher) {
-      const result: ChatDispatchResult = {
-        ok: false,
-        reason: 'connection_unavailable',
-        detail: `peer dispatcher not wired for connection.mcp.${peerName}`,
-      };
-      await persistPlanExecution(plan_id, {
-        status: 'failed',
-        turn_id,
-        reason: result.reason,
-        detail: result.detail,
-      });
-      safeBroadcast(deps.broadcast, {
-        kind: 'chat.tool_call_completed',
-        session_id,
-        turn_id,
-        tool_name,
-        tier,
-        status: 'error',
-        reason: result.reason,
-        detail: result.detail!,
-        ...(plan_id !== undefined ? { plan_id } : {}),
-      });
-      return result;
-    }
-    safeBroadcast(deps.broadcast, {
-      kind: 'chat.tool_call_started',
-      session_id,
-      turn_id,
-      tool_name,
-      tier,
-      args: arg_values,
-      ...(plan_id !== undefined ? { plan_id } : {}),
-    });
-    const startedAt = now();
-    const result = await deps.peerDispatcher.dispatch({
-      peer_name: peerName,
-      tool_name,
-      arg_values,
-    });
-    const durationMs = now() - startedAt;
-    if (result.ok) {
-      // D-182 — a failed peer (Tier-3) recipe run (run_failed set by
-      // wrapRecipeRunResult) reads as an ERROR row too, mirroring the local path;
-      // the model-facing result stays ok:true (returned unchanged below).
-      if (result.run_failed) {
-        await persistPlanExecution(plan_id, {
-          status: 'failed',
-          turn_id,
-          reason: 'execution_error',
-          detail: result.run_failed.detail,
-        });
-        safeBroadcast(deps.broadcast, {
-          kind: 'chat.tool_call_completed',
-          session_id,
-          turn_id,
-          tool_name,
-          tier,
-          status: 'error',
-          reason: 'execution_error',
-          detail: result.run_failed.detail,
-          ...(plan_id !== undefined ? { plan_id } : {}),
-        });
-      } else {
-        const result_ref = `${session_id}:${turn_id}:${tool_name}`;
-        await persistPlanExecution(
-          plan_id,
-          result.run_held
-            ? {
-                status: 'held',
-                turn_id,
-                result_ref,
-                hold_kind: result.run_held.kind,
-              }
-            : { status: 'completed', turn_id, result_ref },
-        );
-        safeBroadcast(deps.broadcast, {
-          kind: 'chat.tool_call_completed',
-          session_id,
-          turn_id,
-          tool_name,
-          tier,
-          status: 'ok',
-          result_ref,
-          ...(result.run_held ? { run_held: result.run_held.kind } : {}),
-          ...(plan_id !== undefined ? { plan_id } : {}),
-        });
-      }
-      await safeLogActivity(
-        deps.auditLog,
-        'chat_tool_call',
-        `${session_id}:${turn_id}:${tool_name}`,
-        JSON.stringify({
-          channel: 'mcp_wire' satisfies ChatDispatchChannel,
-          tier,
-          status: result.run_failed ? 'error' : 'ok',
-          peer_name: peerName,
-          duration_ms: durationMs,
-        }),
-      );
-      return result;
-    }
-    await persistPlanExecution(plan_id, {
-      status: 'failed',
-      turn_id,
-      reason: result.reason,
-      ...(result.detail !== undefined ? { detail: result.detail } : {}),
-    });
-    safeBroadcast(deps.broadcast, {
-      kind: 'chat.tool_call_completed',
-      session_id,
-      turn_id,
-      tool_name,
-      tier,
-      status: 'error',
-      reason: result.reason,
-      ...(result.detail ? { detail: result.detail } : {}),
-      ...(plan_id !== undefined ? { plan_id } : {}),
-    });
-    await safeLogActivity(
-      deps.auditLog,
-      'chat_tool_call',
-      `${session_id}:${turn_id}:${tool_name}`,
-      JSON.stringify({
-        channel: 'mcp_wire' satisfies ChatDispatchChannel,
-        tier,
-        status: 'error',
-        reason: result.reason,
-        peer_name: peerName,
-        duration_ms: durationMs,
-      }),
-    );
-    return result;
-  };
+   *  It dispatched a `connection.mcp.<name>`-scoped tool through
+   *  `PeerDispatcher` — an interface with ZERO implementors, so this path always
+   *  returned `connection_unavailable` in production. Its whole reason for
+   *  existing was the per-conversation peer scope switch, which is retired: a
+   *  peer's tools are minted into a LOCAL pack and reach chat as ordinary
+   *  `recued_op_*` operations governed by the contract, dispatched by the same
+   *  Self path as everything else. */
 
   const dispatchTool: OrchestratorDispatch['dispatchTool'] = async ({
     session_id,
@@ -2348,47 +2137,28 @@ export const createChatOrchestrator = (
     // plan-approval card as local writes (Codex P4 review P1 fold
     // #1 — the gate keys off classification, not channel, and must
     // apply uniformly to both paths).
-    const peerName = extractPeerName(picker_target);
-
-    // Codex P2 fold (D-137 P1.2 review) — tier derived from the
-    // resolved ToolEntry. For peer dispatches the entry comes from
-    // the peer's `listToolEntries(peerName)` projection (the local
-    // InternalToolRegistry doesn't know peer tools, so we'd otherwise
-    // mislabel as Tier 2). Falls back to Tier 3 for any peer-routed
-    // dispatch whose name isn't in the peer's catalog — keeps the
-    // audit row honest about the channel even when the catalog is
-    // stale.
-    let entry: ToolEntry | null;
+    // ⛔ D-228 slice 5 — the peer arm of this resolution is gone. It read the
+    // entry from `peerDispatcher.listToolEntries(peerName)` and fell back to
+    // tier 3; no peer target can arrive now, so every dispatch resolves against
+    // the local registry (plus the contract-derived raw ops).
     let rawOpEntry: ToolEntry | null = null;
-    let tier: ToolTier;
-    const internalDispatchCtx = peerName === null
-      ? buildInternalDispatchCtx(
-          session_id,
-          turn_id,
-          execution_source,
-          contract_snapshot,
-          dispatch_depth,
-          turn_state,
-        )
-      : undefined;
-    if (peerName !== null) {
-      entry = deps.peerDispatcher
-        ? (deps.peerDispatcher.listToolEntries(peerName).find(
-            (e) => e.name === tool_name,
-          ) ?? null)
-        : null;
-      tier = entry?.tier ?? 3;
-    } else {
-      const registryEntry = deps.registry.getByName(tool_name);
-      if (registryEntry === null && deps.rawOpSource !== undefined) {
-        rawOpEntry = (deps.rawOpSource(internalDispatchCtx!.execution_source)
-          .find((candidate) => candidate.name === tool_name) as ToolEntry | undefined)
-          ?? null;
-      }
-      entry = registryEntry ?? rawOpEntry;
-      tier = resolveTier(deps.registry, tool_name);
-      if (rawOpEntry !== null) tier = rawOpEntry.tier;
+    const internalDispatchCtx = buildInternalDispatchCtx(
+      session_id,
+      turn_id,
+      execution_source,
+      contract_snapshot,
+      dispatch_depth,
+      turn_state,
+    );
+    const registryEntry = deps.registry.getByName(tool_name);
+    if (registryEntry === null && deps.rawOpSource !== undefined) {
+      rawOpEntry = (deps.rawOpSource(internalDispatchCtx.execution_source)
+        .find((candidate) => candidate.name === tool_name) as ToolEntry | undefined)
+        ?? null;
     }
+    const entry: ToolEntry | null = registryEntry ?? rawOpEntry;
+    let tier: ToolTier = resolveTier(deps.registry, tool_name);
+    if (rawOpEntry !== null) tier = rawOpEntry.tier;
 
     // Guided Data diagnosis is an explanation-only turn. Enforce that at the
     // final tool boundary, before approval lookup/consumption: prompt wording
@@ -2419,14 +2189,13 @@ export const createChatOrchestrator = (
         'chat_tool_call',
         `${session_id}:${turn_id}:${tool_name}`,
         toolCallDetail({
-          channel: (
-            peerName === null ? 'internal_function_call' : 'mcp_wire'
-          ) satisfies ChatDispatchChannel,
+          // ⛔ D-228 slice 5 — always the internal channel now; the `mcp_wire`
+          // arm belonged to peer-scoped dispatch, which is retired.
+          channel: 'internal_function_call' satisfies ChatDispatchChannel,
           tier,
           status: 'error',
           reason: result.reason,
           read_only: true,
-          ...(peerName !== null ? { peer_name: peerName } : {}),
         }),
       );
       return result;
@@ -2786,51 +2555,12 @@ export const createChatOrchestrator = (
       }
     };
 
-    // D-137 P4 Codex review P1 fold #1 — post-gate routing split.
-    // Peer-target dispatches now route through `dispatchToolToPeer`
-    // (which still runs its own broadcast + audit envelope tuned to
-    // `channel: 'mcp_wire'` + `tier: 3`). Self-target falls through
-    // to the local InternalToolRegistry path below. The gate above
-    // ran uniformly for both paths.
-    if (peerName !== null) {
-      let result: ChatDispatchResult;
-      try {
-        result = await dispatchToolToPeer({
-          session_id,
-          turn_id,
-          tool_name,
-          arg_values,
-          peerName,
-          ...(consumedPlanId !== undefined ? { plan_id: consumedPlanId } : {}),
-        });
-      } catch (error) {
-        await releaseLlmGatewayToolUsage();
-        if (consumedPlanId !== undefined) {
-          await persistPlanExecution(consumedPlanId, {
-            status: 'failed',
-            turn_id,
-            reason: 'execution_error',
-          });
-          safeBroadcast(deps.broadcast, {
-            kind: 'chat.tool_call_completed',
-            session_id,
-            turn_id,
-            tool_name,
-            tier,
-            status: 'error',
-            reason: 'execution_error',
-            plan_id: consumedPlanId,
-          });
-        }
-        throw error;
-      }
-      if (result.ok && !result.run_held && !result.run_failed) {
-        await recordLlmGatewayToolUsage();
-      } else {
-        await releaseLlmGatewayToolUsage();
-      }
-      return result;
-    }
+    // ⛔ D-228 slice 5 — THE PEER-DISPATCH BRANCH IS GONE. It routed a
+    // `connection.mcp.<name>` target through `dispatchToolToPeer` with its own
+    // `channel: 'mcp_wire'` / `tier: 3` envelope. No such target can arrive any
+    // more: `set_picker` refuses one, and the MCP scope-picker that produced them
+    // is retired. Every dispatch is now a Self dispatch through the local
+    // registry below.
 
     safeBroadcast(deps.broadcast, {
       kind: 'chat.tool_call_started',
@@ -3170,13 +2900,10 @@ export const createChatOrchestrator = (
       // prevents the model from wasting a round attempting a blocked action.
       let readOnlyToolNames: ReadonlySet<string> | null = null;
       if (params.read_only === true) {
-        const readOnlyPeerName = extractPeerName(picker_target);
-        const readOnlyCatalog =
-          readOnlyPeerName === null
-            ? deps.registry.list()
-            : deps.peerDispatcher?.listToolEntries(readOnlyPeerName) ?? [];
+        // ⛔ D-228 slice 5 — always the local registry; the peer catalog arm
+        // went with the scope-picker.
         readOnlyToolNames = new Set(
-          readOnlyCatalog
+          deps.registry.list()
             .filter((entry) => entry.classification === 'read')
             .map((entry) => entry.name),
         );
@@ -3293,7 +3020,6 @@ export const createChatOrchestrator = (
         {
           ...(executeAiCallForTurn ? { executeAiCall: executeAiCallForTurn } : {}),
           registry: deps.registry,
-          ...(deps.peerDispatcher ? { peerDispatcher: deps.peerDispatcher } : {}),
           dispatchTool: (call) =>
             dispatchTool({
               ...call,
@@ -3506,10 +3232,13 @@ export const createChatOrchestrator = (
     //    the per-turn picker target onto the shared `state` (below), the
     //    hook DECIDES `available_tools` via the bound `buildCatalog`
     //    projection + writes it back, and the executor ENACTs it off
-    //    `state` (N.9). The peer name is still derived here for the
-    //    `runChatTurn` input (`dispatch_peer_name`); `extractPeerName` is
-    //    pure + idempotent, so the hook re-deriving it is free.
-    const dispatchPeerName = extractPeerName(picker_target);
+    //    `state` (N.9).
+    //
+    // ⛔ D-228 slice 5 — `dispatch_peer_name` is now ALWAYS null: peer scoping
+    // is retired and `set_picker` refuses a peer target. Threaded rather than
+    // removed because it is part of `runChatTurn`'s input shape, which several
+    // callers construct.
+    const dispatchPeerName = null;
 
     // 3) Run the turn THROUGH the framework `runStream` loop (Stage 3).
     //    The turn CONCERNS are now registered hooks over the shared

@@ -506,7 +506,12 @@ describe('createRecuedAcmeClientFromRefs — renewer integration', () => {
         '-----BEGIN CERTIFICATE REQUEST-----\nFOO\n-----END CERTIFICATE REQUEST-----',
     });
     const out = await renewer.renewDomain({ domain: 'alice.recued.net' });
-    expect(out).toEqual({ ok: true, new_fingerprint: 'NEWFP' });
+    // D-235 P4 — the renewal result now carries the new expiry too.
+    expect(out).toEqual({
+      ok: true,
+      new_fingerprint: 'NEWFP',
+      cert_expires_at: 2_700_000_000_000,
+    });
     expect(fetchSpy).toHaveBeenCalledOnce();
   });
 });

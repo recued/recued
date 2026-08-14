@@ -118,9 +118,11 @@ export const CHAT_INBOUND_TOKEN_KIND_COPY: Readonly<Record<
       'Calls into your chat agent (Direction C — peer’s AI interprets the call). Gated by chat-mode below.',
   },
   mcp: {
-    label: 'MCP passthrough',
+    label: 'MCP-backed recipes',
     description:
-      'Tools advertised by your connected MCP servers (Tier 3 passthroughs — exa, GitHub, peer Recued).',
+      'Recipes whose steps call an enrolled MCP connection. '
+      + 'The connection’s own tools are NOT here — Recued mints them into a pack, '
+      + 'so they appear under “Direct operation calls” below.',
   },
   service: {
     label: 'Long-running service',
@@ -162,10 +164,11 @@ export const CHAT_INBOUND_TOKEN_KIND_COPY: Readonly<Record<
     label: 'Direct operation calls',
     description:
       'Call a single catalog operation directly — one tool per installed '
-      + 'pack operation (publisher/pack.operation). Advanced — like direct '
-      + 'ingredient calls, these let a connection invoke a raw operation '
-      + 'without a recipe (D-182 §8). Reads default on; writes default off '
-      + '(recipe-preferred).',
+      + 'pack operation (publisher/pack.operation). This is also where an '
+      + 'enrolled MCP server’s own tools live: Recued mints them into a pack, '
+      + 'one operation per tool. Advanced — like direct ingredient calls, these '
+      + 'let a connection invoke a raw operation without a recipe (D-182 §8). '
+      + 'Reads default on; writes default off (recipe-preferred).',
   },
 } as const;
 
@@ -271,9 +274,14 @@ export interface ChatInboundTokenTableRow {
  *  `TIER1_TO_INGREDIENT_KIND`; Tier 2 reads `requires_kinds[0]` (the
  *  primary kind from the recipe's step graph — recipes carrying mixed
  *  kinds default to the first one for grouping; the dispatcher still
- *  enforces Mary's per-kind catalog scope across ALL `requires_kinds`);
- *  Tier 3 always groups under `'mcp'` (passthroughs are always MCP-
- *  shaped from the chat catalog's perspective).
+ *  enforces Mary's per-kind catalog scope across ALL `requires_kinds`).
+ *
+ *  ⚠ D-228 slice 4 — the trailing `'mcp'` is a TOTAL-FUNCTION FALLBACK, not a
+ *  tier rule. It used to read "Tier 3 always groups under `'mcp'`", and that
+ *  tier is retired: an enrolled MCP server's tools are minted into a pack and
+ *  reach this checklist as `recued_op_*` rows, which the prefix branch above
+ *  catches long before any tier check. Nothing produces a tier-3 entry today, so
+ *  this branch is unreachable — kept because the function must be total.
  *
  *  Substrate-pure: same `ToolEntry` → same kind. Returns `'connection'`
  *  for any T1 not in the static map (defensive — the closed Tier1
@@ -338,7 +346,10 @@ export const inferChatInboundTokenToolKind = (
     // warehouse. The renderer paints a "kind unknown" badge alongside.
     return 'storage';
   }
-  // Tier 3 — always 'mcp'.
+  // Unreachable today (see the header): tier 1 and 2 are the only tiers a
+  // producer emits, and the `recued_*` prefixes are handled above. Total by
+  // construction rather than by exhaustiveness, so a future tier groups
+  // somewhere paintable instead of throwing at the renderer.
   return 'mcp';
 };
 

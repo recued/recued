@@ -1016,7 +1016,7 @@ const MANIFESTS = [
   {
     "slug": "connection",
     "name": "Connection (direct)",
-    "description": "Direct adapter access for outbound api / mcp / notification calls keyed off enrolled connection records. High-trust escape hatch for recipes that need to call a specific connection record without going through a wrapper ingredient (slack-post, ticket-reader-hubspot, mcp-tool-call-<vendor>, etc.). Gated by `connection.direct` permission + admin risk_tier — Kitchen blocks recipes from binding this without explicit author intent. Wrapper ingredients with `kind: 'connection'` route through the same adapter at engine dispatch but carry their own per-call permission + risk_tier; this manifest only fronts the unwrapped direct-call path. Per-kind shape lives flat on the recipe step input (e.g. `method` / `path` / `query.<k>` for api; `mcp.tool` / `mcp.args` for mcp; `text` / `title` / `link_url` for notification) — recipe authors using a wrapper never see this layer.",
+    "description": "HOST dispatch primitive for outbound calls against an enrolled connection record — NOT a recipe ingredient. Its three callers are D-234 peer exchange (peer-ask delivery, the answer going home, withdrawal notices); each pins connection_kind and pins the tool to a literal constant, and each dispatches run-less on purpose, because preflight is a property of a RUN and there is none here. Recipes are refused on BOTH roads (§ 234.4p.16c): a literal bind fails authoring validation (connection_direct_not_recipe_bindable) and a resolved bind — including the templated `{{config.slug}}` shape a validator cannot see — fails at the adapter (CONNECTION_DIRECT_NOT_RECIPE_BINDABLE, keyed on `stepMeta` presence, which the engine sets for every step and the host callers never pass). To reach a connection FROM a recipe, call the operation its pack declares: enrolling an MCP connection generates one op per tool, each with its own risk tier and approval. Wrapper ingredients with `kind: 'connection'` share this adapter but are ordinary ingredients carrying their own per-op declarations. ⛔ `permission` here is an AUDIT INTENT string, never a gate (it only fills the activity row's intent column), and `risk_tier: 'admin'` is not one either — at the contract-less owner ceiling admin RELAXES to silent, which is why the run-less host callers raise nothing. Per-kind input, flat: mcp = `tool` + `args` (or `resource` / `resources_list`); notification = the subtype's payload fields (`text` / `title` / `link_url`). ⛔ THE api KIND IS UNREACHABLE THROUGH THIS SLUG: `method` is a D-112 ENGINE_LOCKED_INPUT_KEY, stripped from every untrusted step input, and only a catalog-gateway `surface_dispatch` skips that strip — which never targets this slug. Use a catalog op for HTTP.",
     "author": "recued",
     "kind": "connection",
     "version": 1,
@@ -1030,8 +1030,7 @@ const MANIFESTS = [
     ],
     "input": {
       "connection_kind": null,
-      "connection": null,
-      "params": null
+      "connection": null
     },
     "output": {
       "result": "result",
@@ -1042,7 +1041,7 @@ const MANIFESTS = [
   {
     "slug": "connection-mcp-read",
     "name": "MCP Tool Call (read)",
-    "description": "Kernel dispatch surface for a READ-classified tool on an enrolled MCP connection (D-177 P2b). Backs the chat Tier-3 path: the chat agent's `<connection>.<tool>` call routes through the run-ingredient kernel recipe onto this manifest, so the commit Gateway stamps the action envelope and the policy verdict applies like every other dispatch. The read tier is not self-declared at call time — the server's connection-adapter gate re-checks the user's per-tool classification (Settings → Connections → Tools) at dispatch and refuses any tool the user has not enabled and classified 'read' (MCP_TOOL_NOT_CLASSIFIED). connection_kind is pinned to 'mcp' by the same gate. Recipes may bind this directly, subject to the identical classification gate; for unclassified tools use the admin-tier `connection` escape hatch.",
+    "description": "Kernel dispatch surface for a READ-classified tool on an enrolled MCP connection (D-177 P2b). Backs the chat Tier-3 path: the chat agent's `<connection>.<tool>` call routes through the run-ingredient kernel recipe onto this manifest, so the commit Gateway stamps the action envelope and the policy verdict applies like every other dispatch. The read tier is not self-declared at call time — the server's connection-adapter gate re-checks the user's per-tool classification (Settings → Connections → Tools) at dispatch and refuses any tool the user has not enabled and classified 'read' (MCP_TOOL_NOT_CLASSIFIED). connection_kind is pinned to 'mcp' by the same gate. Recipes may bind this directly, subject to the identical classification gate. ⛔ There is no escape hatch for an UNCLASSIFIED tool: the admin-tier `connection` slug this line used to name is a host primitive recipes are now refused on (§ 234.4p.16c). Classify the tool under Settings → Connections → Tools, or call the op the connection's generated pack declares for it.",
     "author": "recued",
     "kind": "connection",
     "version": 1,
@@ -1068,7 +1067,7 @@ const MANIFESTS = [
   {
     "slug": "connection-mcp-write",
     "name": "MCP Tool Call (write)",
-    "description": "Kernel dispatch surface for a WRITE-classified tool on an enrolled MCP connection (D-177 P2b). Backs the chat Tier-3 path: the chat agent's `<connection>.<tool>` call routes through the run-ingredient kernel recipe onto this manifest, so the commit Gateway stamps the action envelope and the policy verdict applies like every other dispatch — and because this slug is in OUTBOUND_SEND_INGREDIENT_SLUGS, an attended user_self dispatch is lifted to a preflight ask: a write-classified external tool call holds for approval instead of dispatching immediately (the D-177 N.12 hole closure). The server's connection-adapter gate re-checks the user's per-tool classification (Settings → Connections → Tools) at dispatch and refuses any tool the user has not enabled and classified (MCP_TOOL_NOT_CLASSIFIED); read-classified tools pass (over-gating is safe). connection_kind is pinned to 'mcp' by the same gate. Recipes may bind this directly, subject to the identical gates; for unclassified tools use the admin-tier `connection` escape hatch.",
+    "description": "Kernel dispatch surface for a WRITE-classified tool on an enrolled MCP connection (D-177 P2b). Backs the chat Tier-3 path: the chat agent's `<connection>.<tool>` call routes through the run-ingredient kernel recipe onto this manifest, so the commit Gateway stamps the action envelope and the policy verdict applies like every other dispatch — and because this slug is in OUTBOUND_SEND_INGREDIENT_SLUGS, an attended user_self dispatch is lifted to a preflight ask: a write-classified external tool call holds for approval instead of dispatching immediately (the D-177 N.12 hole closure). The server's connection-adapter gate re-checks the user's per-tool classification (Settings → Connections → Tools) at dispatch and refuses any tool the user has not enabled and classified (MCP_TOOL_NOT_CLASSIFIED); read-classified tools pass (over-gating is safe). connection_kind is pinned to 'mcp' by the same gate. Recipes may bind this directly, subject to the identical gates. ⛔ There is no escape hatch for an UNCLASSIFIED tool: the admin-tier `connection` slug this line used to name is a host primitive recipes are now refused on (§ 234.4p.16c). Classify the tool under Settings → Connections → Tools, or call the op the connection's generated pack declares for it.",
     "author": "recued",
     "kind": "connection",
     "version": 1,
@@ -3303,7 +3302,7 @@ const MANIFESTS = [
   {
     "slug": "note-create",
     "name": "Create note",
-    "description": "Create a note on the chosen Source. Default Source is the per-kind pinned default (prefs.note.last_used_source_id) falling back to the Recued built-in. last_user_action_at is stamped to now. Returns the canonical note record. Optional `container_names` names the destination container up front — a map from the Source's container dependency ref (the `dependency_ref` a container pick surfaces, e.g. `project` on Asana / `team` on Linear / `tasklist` on Google Tasks) to that container's name, `{ project: 'Roadmap' }` — so a caller that already knows the destination skips the ambiguous-container pick. A granted name that doesn't exist yet plans the container's creation for the owner to confirm; naming only disambiguates, so the write itself is still approval-gated.",
+    "description": "Create a note on the chosen Source. Default Source is the Recued built-in local Source; pass source_id explicitly to write anywhere else. last_user_action_at is stamped to now. Returns the canonical note record. Optional `container_names` names the destination container up front — a map from the Source's container dependency ref (the `dependency_ref` a container pick surfaces, e.g. `project` on Asana / `team` on Linear / `tasklist` on Google Tasks) to that container's name, `{ project: 'Roadmap' }` — so a caller that already knows the destination skips the ambiguous-container pick. A granted name that doesn't exist yet plans the container's creation for the owner to confirm; naming only disambiguates, so the write itself is still approval-gated.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -3461,7 +3460,6 @@ const MANIFESTS = [
       "source_id": null,
       "sync_states": null,
       "include_deleted": false,
-      "include_disabled": false,
       "parent_project_id": null,
       "limit": null,
       "offset": null
@@ -3952,7 +3950,7 @@ const MANIFESTS = [
   {
     "slug": "task-create",
     "name": "Create task",
-    "description": "Create a task on the chosen Source. Default Source is the per-kind pinned default (prefs.task.last_used_source_id) falling back to the Recued built-in. Connection-derived Sources require write_capable: true (set by the first-dispatch capability probe). Optional idempotency_key switches to atomic create-or-reuse on one deterministic Recued-local task id; it cannot route to a sticky or vendor Source. Returns the canonical task record stamped with _id + _collection. Optional `container_names` names the destination container up front — a map from the Source's container dependency ref (the `dependency_ref` a container pick surfaces, e.g. `project` on Asana / `team` on Linear / `tasklist` on Google Tasks) to that container's name, `{ project: 'Roadmap' }` — so a caller that already knows the destination skips the ambiguous-container pick. A granted name that doesn't exist yet plans the container's creation for the owner to confirm; naming only disambiguates, so the write itself is still approval-gated.",
+    "description": "Create a task on the chosen Source. Default Source is the Recued built-in local Source; pass source_id explicitly to write anywhere else. Connection-derived Sources require write_capable: true (set by the first-dispatch capability probe). Optional idempotency_key switches to atomic create-or-reuse on one deterministic Recued-local task id; it cannot route to a sticky or vendor Source. Returns the canonical task record stamped with _id + _collection. Optional `container_names` names the destination container up front — a map from the Source's container dependency ref (the `dependency_ref` a container pick surfaces, e.g. `project` on Asana / `team` on Linear / `tasklist` on Google Tasks) to that container's name, `{ project: 'Roadmap' }` — so a caller that already knows the destination skips the ambiguous-container pick. A granted name that doesn't exist yet plans the container's creation for the owner to confirm; naming only disambiguates, so the write itself is still approval-gated.",
     "author": "recued",
     "kind": "storage",
     "version": 1,

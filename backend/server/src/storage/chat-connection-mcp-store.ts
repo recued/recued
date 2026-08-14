@@ -148,37 +148,6 @@ const parseAnnotationJson = (
       tool_overrides[k] = entry;
     }
   }
-  // tools_list_cache
-  const cacheRaw = obj.tools_list_cache;
-  let tools: McpToolDescriptor[] = [];
-  let cached_at = 0;
-  if (cacheRaw && typeof cacheRaw === 'object' && !Array.isArray(cacheRaw)) {
-    const cc = cacheRaw as Record<string, unknown>;
-    if (typeof cc.cached_at === 'number' && Number.isFinite(cc.cached_at) && cc.cached_at >= 0) {
-      cached_at = cc.cached_at;
-    }
-    const toolsRaw = cc.tools;
-    if (Array.isArray(toolsRaw)) {
-      const seen = new Set<string>();
-      for (const t of toolsRaw) {
-        if (!t || typeof t !== 'object' || Array.isArray(t)) continue;
-        const to = t as Record<string, unknown>;
-        const name = to.name;
-        if (typeof name !== 'string' || name.length === 0) continue;
-        if (seen.has(name)) continue;
-        seen.add(name);
-        const desc: McpToolDescriptor = { name };
-        if (typeof to.description === 'string' && to.description.length > 0) {
-          desc.description = to.description;
-        }
-        if (to.input_schema !== undefined) desc.input_schema = to.input_schema;
-        if (typeof to.destructive_hint === 'boolean') {
-          desc.destructive_hint = to.destructive_hint;
-        }
-        tools.push(desc);
-      }
-    }
-  }
   const updated_at_raw = obj.updated_at;
   const updated_at =
     typeof updated_at_raw === 'number'
@@ -186,87 +155,55 @@ const parseAnnotationJson = (
     && updated_at_raw >= 0
       ? updated_at_raw
       : 0;
-  // D-137 P4 § A.3 — recued_signature (optional). The JSON blob may
-  // carry the post-probe signature; defensive narrowing rejects any
-  // partial / mistyped persisted shape (treats it as absent — safer
-  // than letting a malformed blob surface as a "Recued peer" in the
-  // picker).
-  let recued_signature: ConnectionMcpAnnotationState['recued_signature'] = null;
-  const sigRaw = obj.recued_signature;
-  if (sigRaw === null) {
-    recued_signature = null;
-  } else if (sigRaw && typeof sigRaw === 'object' && !Array.isArray(sigRaw)) {
-    const so = sigRaw as Record<string, unknown>;
-    if (
-      so.server_kind === 'recued'
-      && typeof so.version === 'string' && so.version.length > 0
-      && typeof so.instance_id === 'string' && so.instance_id.length > 0
-    ) {
-      recued_signature = {
-        server_kind: 'recued',
-        version: so.version,
-        instance_id: so.instance_id,
-      };
-    }
-  }
-  // D-137 P5 § A.7.1 + § A.10 — chat_mode (optional). Mirrors the
-  // `recued_signature` defensive narrowing: corrupted / partial shapes
-  // collapse to `null` so a malformed blob never surfaces as "chat-mode
-  // offered" in the picker. `null` and absent both serialize back as
-  // null on the value (the merge layer applies the absent-preserves-
-  // prior rule, not the parse layer).
+  // ⛔⛔ D-228 slice 6 — `tools_list_cache` / `recued_signature` / `chat_mode`
+  // are GONE FROM THE ROW, not merely from the type, and that is the one place
+  // this slice differs from `tool_overrides` below.
   //
-  // Codex review P2 fold — fail-closed on a present-but-malformed
-  // `session_cap`. The pre-fold behaviour dropped the cap silently
-  // while keeping `offered: true`, converting "chat-mode offered with
-  // cost-controls" into "offered uncapped." Collapsing the whole
-  // chat_mode to null is the safe default.
-  let chat_mode: ConnectionMcpAnnotationState['chat_mode'] = null;
-  const chatModeRaw = obj.chat_mode;
-  if (chatModeRaw === null) {
-    chat_mode = null;
-  } else if (chatModeRaw && typeof chatModeRaw === 'object' && !Array.isArray(chatModeRaw)) {
-    const cm = chatModeRaw as Record<string, unknown>;
-    const offered = cm.offered;
-    if (typeof offered === 'boolean') {
-      const hasCap = Object.prototype.hasOwnProperty.call(cm, 'session_cap');
-      if (!hasCap) {
-        chat_mode = { offered };
-      } else {
-        const capRaw = cm.session_cap;
-        if (capRaw === undefined || capRaw === null) {
-          chat_mode = { offered };
-        } else if (
-          !capRaw
-          || typeof capRaw !== 'object'
-          || Array.isArray(capRaw)
-        ) {
-          chat_mode = null;
-        } else {
-          const co = capRaw as Record<string, unknown>;
-          const per_day = co.per_day;
-          const concurrent = co.concurrent;
-          if (
-            typeof per_day === 'number' && Number.isInteger(per_day) && per_day >= 0
-            && typeof concurrent === 'number' && Number.isInteger(concurrent) && concurrent >= 0
-          ) {
-            chat_mode = { offered, session_cap: { per_day, concurrent } };
-          } else {
-            chat_mode = null;
-          }
-        }
-      }
-    }
-  }
+  // 🔑 THE RULE: PRESERVE WHAT THE OWNER TYPED, DROP WHAT THE MACHINE CACHED.
+  // `tool_overrides` was owner-authored (a classification Mary chose), so it is
+  // parsed and carried until the migration drains it. These three were PROBE
+  // RESULTS — the upstream tool list, the peer's `recued`/version fingerprint,
+  // and what chat-mode that peer advertised. Every one is re-derivable by asking
+  // the server again, which is exactly what `probeMintableDescriptors` already
+  // does at mint. Carrying them would preserve a cache nothing reads and no
+  // migration wants.
+  //
+  // ~110 lines of defensive narrowing lived here (duplicate-tool dedup, the
+  // server_kind/version/instance_id triple, the fail-closed `session_cap`
+  // integer check folded in from a Codex review). Deleted with their fields.
   return {
     connection_name,
     topic_tags,
-    tool_overrides,
-    tools_list_cache: { tools, cached_at },
-    recued_signature,
-    chat_mode,
+    // ⛔⛔ D-228 slice 4 — `tool_overrides` LEFT THE LIVE SHAPE BUT NOT THE ROW.
+    // The column is still parsed above and surfaced through
+    // `legacyToolOverrides` below, because the classification MIGRATION
+    // (`carryMcpToolClassifications`) reads it: deleting the field and its only
+    // reader in one release would strand every owner's recorded classification
+    // in a column nothing drains. A migration that cannot see what it migrates
+    // is not a migration.
+    ...({ [LEGACY_OVERRIDES]: tool_overrides } as Record<string, unknown>),
     updated_at,
   };
+};
+
+/** D-228 slice 4 — the key the retired `tool_overrides` map hides under.
+ *
+ *  ⚠ A SYMBOL-ISH STRING, not a typed field, ON PURPOSE. The field is deleted
+ *  from `ConnectionMcpAnnotationState`, so nothing can read it by accident; only
+ *  the migration, which asks for it by this name, can see it. When the migration
+ *  retires, this and the column go together. */
+export const LEGACY_OVERRIDES = '__legacy_tool_overrides';
+
+/** D-228 slice 4 — read the retired per-tool classifications for one connection.
+ *  The ONLY supported reader; every other consumer moved to the pack operation's
+ *  own risk tier. */
+export const legacyToolOverrides = (
+  annotation: unknown,
+): Readonly<Record<string, { enabled: boolean; classification: string }>> => {
+  const raw = (annotation as Record<string, unknown> | null)?.[LEGACY_OVERRIDES];
+  return raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? (raw as Record<string, { enabled: boolean; classification: string }>)
+    : {};
 };
 
 /** Serialize an annotation for SQLite storage. The store stamps
@@ -279,10 +216,11 @@ const annotationToJson = (
   },
 ): string => JSON.stringify({
   topic_tags: ann.topic_tags,
-  tool_overrides: ann.tool_overrides,
-  tools_list_cache: ann.tools_list_cache,
-  recued_signature: ann.recued_signature ?? null,
-  chat_mode: ann.chat_mode ?? null,
+  // ⚠ PRESERVED ON WRITE, NEVER AUTHORED. Nothing produces new overrides since
+  // slice 4, but a row rewritten before the migration drained it must not lose
+  // the values the migration is coming for.
+  tool_overrides:
+    (ann as unknown as Record<string, unknown>)[LEGACY_OVERRIDES] ?? {},
   updated_at: ann.updated_at,
 });
 
@@ -342,49 +280,45 @@ export const createChatConnectionMcpStore = (
     },
     setAnnotation({ value, now }): ConnectionMcpAnnotationState {
       const updated_at = now ?? Date.now();
-      // D-137 P4 § A.3 / P5 § A.10 — merge rules for nullable optional
-      // fields. Both `recued_signature` and `chat_mode` use the same
-      // posture:
-      //   - undefined on validated input  → preserve the prior persisted
-      //     value (legacy `chat.connection_mcp.set` writes from before
-      //     the field landed must not accidentally clear it).
-      //   - null on validated input        → caller explicitly cleared.
-      //   - object on validated input      → caller stamped fresh state.
+      // ⛔⛔ D-228 slice 6 — THE PRIOR ROW IS READ UNCONDITIONALLY, AND THAT IS A
+      // FIX, NOT A REFACTOR.
       //
-      // Both fields read from the same prior-row parse so we look up
-      // once per `setAnnotation` call.
-      let recued_signature: ConnectionMcpAnnotationState['recued_signature'];
-      let chat_mode: ConnectionMcpAnnotationState['chat_mode'];
-      const hasSig = Object.prototype.hasOwnProperty.call(value, 'recued_signature');
-      const hasChatMode = Object.prototype.hasOwnProperty.call(value, 'chat_mode');
-      let prior: ConnectionMcpAnnotationState | null = null;
-      if (!hasSig || !hasChatMode) {
-        const row = selectStmt.get({ connection_name: value.connection_name }) as Row | undefined;
-        prior = row
-          ? parseAnnotationJson(value.connection_name, row.annotation_json)
-          : null;
-      }
-      recued_signature = hasSig
-        ? (value.recued_signature ?? null)
-        : (prior?.recued_signature ?? null);
-      chat_mode = hasChatMode
-        ? (value.chat_mode ?? null)
-        : (prior?.chat_mode ?? null);
+      // This lookup used to be gated on `!hasSig || !hasChatMode` — it existed to
+      // serve the preserve-on-absent merge rule for `recued_signature` /
+      // `chat_mode`. But slice 4 then hung `legacyToolOverrides(prior)` off the
+      // SAME `prior`, unconditionally. A caller that sent BOTH fields left
+      // `prior` null, and the overrides column the migration is coming for was
+      // silently rewritten to `{}` — the exact loss slice 4's note claims to
+      // prevent.
+      //
+      // ⚠ LATENT, NOT LIVE: the two writers that would naturally stamp the pair
+      // together were `chat.picker.refresh` and the Settings → Tools panel, and
+      // BOTH were clientless surfaces (that is why slices 4 and 5 could delete
+      // them). Nothing was actually wiping anything.
+      //
+      // 🔑 WHY 41 GREEN STORE TESTS COULD NOT SEE IT: the preservation test
+      // writes a value that OMITS both fields — the only shape under which the
+      // guard reads `prior` at all. A fixture that never takes the branch cannot
+      // show what the branch breaks. Deleting the fields removes the condition
+      // and the hazard together; the assertion below pins the survivor.
+      const priorRow = selectStmt.get({
+        connection_name: value.connection_name,
+      }) as Row | undefined;
+      const prior = priorRow
+        ? parseAnnotationJson(value.connection_name, priorRow.annotation_json)
+        : null;
       const annotation: ConnectionMcpAnnotationState = {
         connection_name: value.connection_name,
         topic_tags: value.topic_tags,
-        tool_overrides: value.tool_overrides,
-        tools_list_cache: value.tools_list_cache,
-        recued_signature,
-        chat_mode,
         updated_at,
+        // ⚠ Carried from the PRIOR row, never from the wire. A write can no
+        // longer author a classification; it must also not erase one the
+        // migration has not drained yet.
+        ...({ [LEGACY_OVERRIDES]: legacyToolOverrides(prior) } as Record<string, unknown>),
       };
       const annotation_json = annotationToJson({
         topic_tags: annotation.topic_tags,
-        tool_overrides: annotation.tool_overrides,
-        tools_list_cache: annotation.tools_list_cache,
-        recued_signature: annotation.recued_signature,
-        chat_mode: annotation.chat_mode,
+        ...({ [LEGACY_OVERRIDES]: legacyToolOverrides(prior) } as Record<string, unknown>),
         updated_at: annotation.updated_at,
       });
       upsertStmt.run({

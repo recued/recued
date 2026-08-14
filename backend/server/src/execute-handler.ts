@@ -129,6 +129,8 @@ import {
   type UndeclaredConfigArgumentDetails,
 } from '@recued/contracts';
 import {
+  // D-237 P2 — folds the engine's own step logs into the run anchor's yield.
+  deriveRunYield,
   ephemeralDishId,
   isSolicitedReply,
   parsePeerExchangeAck,
@@ -2649,6 +2651,9 @@ export const handleExecute = async (
                   ...(r.exchange_callback_op !== undefined
                     ? { callback_op: r.exchange_callback_op }
                     : {}),
+                  ...(r.exchange_expected_contract_id !== undefined
+                    ? { expected_contract_id: r.exchange_expected_contract_id }
+                    : {}),
                 })),
                 { recipe_id: recipe.recipe_id, caller_contract_id: contractId },
               )) return undefined;
@@ -2696,11 +2701,12 @@ export const handleExecute = async (
           // a raise that fails must not become an accept, so the denial stands
           // either way and the peer simply asks again later.
           if (deps.preflightNotifier !== undefined && deps.peerAdmissionStore !== undefined) {
-            void raisePeerAdmissionAsk(deps.preflightNotifier, {
-              admission_identity: identity,
-              recipe_id: recipe.recipe_id,
-              contract_id: contractId,
-              connection_name: connectionName,
+            if (deps.peerAdmissionStore.reserveAsk(identity)) {
+              void raisePeerAdmissionAsk(deps.preflightNotifier, {
+                admission_identity: identity,
+                recipe_id: recipe.recipe_id,
+                contract_id: contractId,
+                connection_name: connectionName,
               // § 234.3 — the RECIPE names where its output is read; the HOST
               // turns that into an absolute link, because the public base URL is
               // a boot fact and `context.server.name` is only a display label.
@@ -2713,20 +2719,22 @@ export const handleExecute = async (
               // this server has never had. A dead link in the only notification
               // the owner gets reads as "nothing here" and as "couldn't find it"
               // at the same time — no link at all is the honest version.
-              ...((): { owner_surface_url?: string } => {
-                const url = resolveOwnerSurfaceUrl(
-                  recipe.metadata?.owner_surface,
-                  (id) => deps.recipeStore.get(id) !== null,
-                  deps.ownerSurfaceLink,
+                ...((): { owner_surface_url?: string } => {
+                  const url = resolveOwnerSurfaceUrl(
+                    recipe.metadata?.owner_surface,
+                    (id) => deps.recipeStore.get(id) !== null,
+                    deps.ownerSurfaceLink,
+                  );
+                  return url !== undefined ? { owner_surface_url: url } : {};
+                })(),
+              }).catch((e: unknown) => {
+                deps.peerAdmissionStore?.releaseAsk(identity);
+                console.warn(
+                  `[peer-admission] raise failed for '${recipe.recipe_id}': `
+                  + (e instanceof Error ? e.message : String(e)),
                 );
-                return url !== undefined ? { owner_surface_url: url } : {};
-              })(),
-            }).catch((e: unknown) => {
-              console.warn(
-                `[peer-admission] raise failed for '${recipe.recipe_id}': `
-                + (e instanceof Error ? e.message : String(e)),
-              );
-            });
+              });
+            }
           }
           return admissionDenial(
             `'${recipe.recipe_id}' needs the owner's decision before this server will `
@@ -4504,6 +4512,28 @@ export const handleExecute = async (
           // operation — the right peer, the wrong direction.
           payload.deliver_to,
         );
+        const declaredConnection = payload.connection;
+        const connection = declaredConnection !== undefined && declaredConnection !== ''
+          ? declaredConnection
+          : peerConnectionForContract(
+              deps,
+              request.execution_source !== undefined
+                ? executionSourceContractId(request.execution_source)
+                : undefined,
+            );
+        const expectedContractId = (() => {
+          if (!connection || deps.connectionStore === undefined) return undefined;
+          try {
+            const row = deps.connectionStore.get('mcp', connection);
+            if (row === null) return undefined;
+            const config = JSON.parse(row.config_json ?? '{}') as Record<string, unknown>;
+            return typeof config.peer_contract_id === 'string' && config.peer_contract_id !== ''
+              ? config.peer_contract_id
+              : undefined;
+          } catch {
+            return undefined;
+          }
+        })();
         const fired = await handleExecute(
           deps,
           {
@@ -4531,15 +4561,6 @@ export const handleExecute = async (
                   // that — bob's reply landed on bob, under alice's ref, marked
                   // `succeeded`. An empty declared connection means "I have none
                   // to declare", which is the case § 20.17 exists to serve.
-                  const declared = payload.connection;
-                  const connection = declared !== undefined && declared !== ''
-                    ? declared
-                    : peerConnectionForContract(
-                      deps,
-                      request.execution_source !== undefined
-                        ? executionSourceContractId(request.execution_source)
-                        : undefined,
-                      );
                   // ⛔⛔ D-232 § 28 — FAIL LOUD RATHER THAN ANSWER OURSELVES.
                   // The recipe declared that this answer must LEAVE the server,
                   // and no connection resolved. Falling through to the local
@@ -4618,7 +4639,11 @@ export const handleExecute = async (
         // verdict from), and a failed carrier throws below into the `accepted:
         // false` receipt — where a peer verdict would be claiming knowledge of a
         // conversation that never happened.
-        if (fired.awaiting_approval === true) return;
+        if (fired.awaiting_approval === true) {
+          return expectedContractId !== undefined
+            ? { expected_contract_id: expectedContractId }
+            : {};
+        }
         if (fired.success !== true) {
           // ⛔⛔ CARRY THE CODE, OR THE CLASSIFICATION DIES HERE. This wraps the
           // nested run's errors in a plain `Error`, and a plain Error has no
@@ -4648,7 +4673,12 @@ export const handleExecute = async (
         // correspondent, and every ordinary successful answer. It is never
         // synthesized: an absent verdict must not read as a good one.
         const peer_ack = peerAckFromCarrierOutput(fired.output);
-        return peer_ack !== undefined ? { peer_ack } : {};
+        return {
+          ...(peer_ack !== undefined ? { peer_ack } : {}),
+          ...(expectedContractId !== undefined
+            ? { expected_contract_id: expectedContractId }
+            : {}),
+        };
       },
       // D-165 P3.path-picker (Slice 3b) — resolve a connection's stored
       // `subresource_path` so the catalog gateway can enforce an operation's
@@ -5919,6 +5949,15 @@ export const handleExecute = async (
                 : result.success ? 'succeeded' : 'failed',
           duration_ms: result.duration_ms,
           errors: pauseFailureError ? [pauseFailureError] : result.errors,
+          // D-237 P2 — what the run PRODUCED, folded onto the anchor row that is
+          // already being written right here. Derived from `result.steps`, which
+          // the engine already returns and which already carries each step's
+          // `foreach: { items, failed }` tally — so this costs no extra store
+          // read, no new row, and nothing on the per-item path.
+          // ⛔ Emitted unconditionally, INCLUDING when every count is zero: a run
+          // that did nothing is precisely the run this field exists to make
+          // visible, and a falsy-guard here would restore the ambiguity.
+          run_yield: deriveRunYield(result.steps),
           // D-157 server-wiring (codex BLOCKER 3 fold) — capture the
           // EFFECTIVE config the engine resolved `{{config.*}}` refs
           // against, not just the recipe's variable defaults. The
@@ -6010,6 +6049,9 @@ export const handleExecute = async (
           // conversation exists", not "and this is where I said to answer".
           ...(result.exchange_ack?.callback_op
             ? { exchange_callback_op: result.exchange_ack.callback_op }
+            : {}),
+          ...(result.exchange_expected_contract_id
+            ? { exchange_expected_contract_id: result.exchange_expected_contract_id }
             : {}),
           // § 20.19 — record WHICH grant this run's steps rode, so the
           // approval-resume authority can re-check it after a pause.

@@ -15,8 +15,8 @@
  *       a. explicit `input.source_id` — validates registered + kind
  *          match through the resolver (typed `unknown_source` /
  *          `kind_source_mismatch` errors).
- *       b. per-kind default-Source memory (`prefs.<kind>.last_used_source_id`
- *          via `WorkEntityResolver.getDefaultSource`).
+ *       b. ⛔ DELETED (D-187 Sources half) — there is no per-kind default.
+ *          Resolution is `explicit source_id ?? built-in local`.
  *       c. `RECUED_BUILTIN_SOURCE_ID(kind)` as the final fallback —
  *          PA2 auto-registers this on first server init.
  *     Update / delete / lifecycle ingredients inherit `source_id` from
@@ -424,13 +424,6 @@ const resolveReadThroughWriteTarget = (
       },
     );
   }
-  if (source.enabled === false) {
-    throw new WorkEntityWriteCapabilityError(
-      source.id,
-      kind,
-      'The Source is disabled in Settings → Work Entities',
-    );
-  }
   if (qualified.identity !== 'source') {
     throw new QualifiedWorkEntityIdError(
       'QUALIFIED_ID_LOCAL_ONLY',
@@ -684,32 +677,23 @@ export interface WorkEntityCreateOrigin {
   work_entity_write_preadmitted?: boolean;
 }
 
-/** D-192 P4 (spec § Write policy, owner refinement): is this create
- *  LLM-originated? An AI "make a task" must not inherit the sticky
- *  per-kind default Source a HUMAN pinned (the last human create going
- *  to Salesforce must not make a later AI create silently push
- *  Salesforce). The actor axis alone cannot express this — a chat turn
- *  runs as `user_self` exactly like the human webclient — so the
- *  predicate is the union of the two axes that DO separate it:
- *  `trigger_source ∈ {chat, mcp}` (the LLM-driven channels) or
- *  `actor === 'contracted_user'` (an outside agent under contract).
- *  Human surfaces (`manual` / `user` triggers, paired-UI rpc with no
- *  engine context) and deterministic automation (`reactive` /
- *  `auto_run` / `schedule`, actor `system`) keep sticky — a recipe's
- *  behavior must not change with who last pinned a default. */
-const isLlmOriginCreate = (origin: WorkEntityCreateOrigin | undefined): boolean =>
-  origin !== undefined
-  && (origin.origin_trigger_source === 'chat'
-    || origin.origin_trigger_source === 'mcp'
-    || origin.origin_actor === 'contracted_user');
+/* ⛔ `isLlmOriginCreate` is DELETED (D-187 Sources half). It existed to keep an
+ *  AI create from inheriting a sticky per-kind default a HUMAN pinned. With the
+ *  default itself gone, every caller resolves `explicit source_id ?? built-in
+ *  local` — so the distinction it drew no longer has two outcomes to choose
+ *  between, and the safe branch is now the only branch. */
 
-/** Resolve the Source for a create-ish call. Resolution order:
- *  explicit `source_id` → sticky per-kind default → Recued built-in —
- *  EXCEPT for an LLM-origin create, which skips the sticky step and
- *  defaults LOCAL unless a source was explicitly specified (spec
- *  § Write policy: "source is a property of the decisively-resolved
- *  row, never an AI guess"; the failure mode of default-local is
- *  benign reconcilable divergence, never a wrong-vendor mutation). */
+/** Resolve the Source for a create-ish call: **explicit `source_id` → Recued
+ *  built-in local**. That is the whole rule.
+ *
+ *  ⛔ The sticky per-kind default that sat in the middle is GONE (D-187 Sources
+ *  half). It was only ever consulted for a NON-LLM caller that omitted
+ *  `source_id`, because the LLM path already skipped it deliberately — spec
+ *  § Write policy: "source is a property of the decisively-resolved row, never
+ *  an AI guess", the failure mode of default-local being "benign reconcilable
+ *  divergence, never a wrong-vendor mutation". Removing it makes every caller
+ *  behave the way the AI path already did on purpose. WRITE IS ALWAYS
+ *  SOURCE-AWARE BY ID; nothing infers a destination. */
 const resolveCreateSource = (
   deps: WorkEntityIngredientDeps,
   kind: WorkEntityKind,
@@ -739,7 +723,6 @@ const resolveCreateSource = (
     (typeof explicit_source_id === 'string' && explicit_source_id.length > 0
       ? explicit_source_id
       : null)
-    ?? (isLlmOriginCreate(origin) ? null : deps.resolver.getDefaultSource(kind))
     ?? RECUED_BUILTIN_SOURCE_ID(kind);
   const reg = deps.store.getSource(id);
   if (reg === null) {
@@ -802,7 +785,6 @@ const markSourceWriteCapable = (
     sync_posture: source.sync_posture,
     source_label: source.source_label,
     write_capable: true,
-    mcp_exposed: source.mcp_exposed,
     ...(source.schema_extension_blob ? { schema_extension_blob: source.schema_extension_blob } : {}),
     ...(source.config_blob ? { config_blob: source.config_blob } : {}),
   });
@@ -2905,7 +2887,6 @@ export const createWorkEntityDispatchers = (deps: WorkEntityIngredientDeps) => (
     source_id?: string;
     sync_states?: readonly import('@recued/contracts').SyncState[];
     include_deleted?: boolean;
-    include_disabled?: boolean;
     parent_project_id?: string;
     limit?: number;
     offset?: number;
@@ -2914,7 +2895,6 @@ export const createWorkEntityDispatchers = (deps: WorkEntityIngredientDeps) => (
       ...(input.source_id !== undefined ? { source_id: input.source_id } : {}),
       ...(input.sync_states !== undefined ? { sync_states: input.sync_states } : {}),
       ...(input.include_deleted !== undefined ? { include_deleted: input.include_deleted } : {}),
-      ...(input.include_disabled !== undefined ? { include_disabled: input.include_disabled } : {}),
       ...(input.parent_project_id !== undefined
         ? {
             parent_project_id: resolveWorkEntityInputId(

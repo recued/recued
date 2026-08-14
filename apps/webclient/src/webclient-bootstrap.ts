@@ -286,6 +286,11 @@ import {
   type SettingsRoute,
 } from './settings/bootstrap-settings-route.js';
 import type {
+  TlsDomainListCaller,
+  TlsDomainRemoveCaller,
+  TlsDomainUploadCaller,
+} from './settings/tls-certificates.js';
+import type {
   HousekeepingConfigReadCaller,
   HousekeepingConfigWriteCaller,
   HousekeepingDismissPromotionCaller,
@@ -296,13 +301,6 @@ import type {
   HousekeepingTrustReadCaller,
   HousekeepingTrustWriteCaller,
 } from './settings/housekeeping-panel-mount.js';
-import type {
-  WorkEntitiesPanelClearDefaultCaller,
-  WorkEntitiesPanelSetDefaultCaller,
-  WorkEntitiesPanelSetEnabledCaller,
-  WorkEntitiesPanelSetMcpExposedCaller,
-  WorkEntitiesPanelSourceListCaller,
-} from './settings/work-entities-panel-mount.js';
 import {
   bootstrapApprovalsRoute,
   type ApprovalChangedSubscriber,
@@ -747,6 +745,10 @@ import type {
   HostnamesVerifyOwnershipCaller,
   NetworkLocalUrlsCaller,
 } from './settings/hostnames.js';
+import type {
+  CustomDomainPreflightCaller,
+  CustomDomainReadinessCaller,
+} from './settings/custom-domains.js';
 import type {
   ExposureApplyPresetCaller,
   ExposureGetCaller,
@@ -2085,14 +2087,6 @@ export interface BootstrapWebclientOptions {
    *  trust.read,trust.write}` on the standard pair-WS channel. Tests opt
    *  out by passing `false` when they do not exercise the panel. */
   enableHousekeepingPanel?: boolean;
-  /** D-145 PA11 — when set to `true` (the default), the Settings route
-   *  mounts the Work Entities panel (per-kind Source registry: enable /
-   *  disable, MCP exposure, per-kind default Source). Calls
-   *  `work_entity.source.{list,set_enabled,set_mcp_exposed,set_default,
-   *  clear_default}` on the standard pair-WS channel (local UI only —
-   *  `work_entity.*` is an owner surface a door can never reach). Tests
-   *  opt out by passing `false` when they do not exercise the panel. */
-  enableWorkEntitiesPanel?: boolean;
   /** D-152 P6 — when set to `true` (the default), the Settings route mounts
    *  the Server -> Hostnames panel. Calls
    *  `collection.hostname.{list,get,add,update,remove,verifyOwnership}` on the
@@ -5829,6 +5823,24 @@ export const bootstrapWebclient = async (
             reason !== undefined ? { reason } : {},
           );
 
+  // `tls_domain.*` — the Certificates tab's installed-cert list + BYO upload.
+  // Gated on the SAME `enableTlsRenewPanel` flag rather than a second knob:
+  // that option already means "do not surface cert management against my
+  // fakes", and the two surfaces share one tab. `tls_domain.*` is in
+  // `MCP_RESERVED_RPC_PREFIXES` — these are first-party WS calls only; an AI
+  // agent must never be able to drive a cert upload, because the cert + key
+  // pair IS this server's identity to its pinned clients.
+  const tlsDomainPanelOff = options.enableTlsRenewPanel === false;
+  const tlsDomainListCaller: TlsDomainListCaller | undefined = tlsDomainPanelOff
+    ? undefined
+    : () => rpcConn.call('tls_domain.list', {});
+  const tlsDomainUploadCaller: TlsDomainUploadCaller | undefined = tlsDomainPanelOff
+    ? undefined
+    : (req) => rpcConn.call('tls_domain.upload', req);
+  const tlsDomainRemoveCaller: TlsDomainRemoveCaller | undefined = tlsDomainPanelOff
+    ? undefined
+    : (req) => rpcConn.call('tls_domain.remove', req);
+
   // R26.2 Delta 1 — Settings → Server → Exposure grid callers. Default ON;
   // `enableExposurePanel: false` opts out (same discipline as
   // `enableTlsRenewPanel`). The read + three mutators are first-party WS
@@ -8235,44 +8247,6 @@ export const bootstrapWebclient = async (
       ? undefined
       : (args) => rpcConn.call('housekeeping.topic.reset', args);
 
-  // D-145 PA11 — Settings → Work Entities panel callers. All five run on
-  // the standard pair-WS channel (`work_entity.source.*` is an OWNER
-  // surface — a WS rpc, deliberately unreachable from MCP). Forwarded as
-  // one all-or-nothing group: the panel has no read-only mode, so a
-  // partial wiring would paint dead toggles (see the route's gate).
-  //
-  // `set_mcp_exposed` is why this group exists at all. PA11 shipped the
-  // renderer + rpc + store and nothing ever called it, so the per-Source
-  // `mcp_exposed` flag (boots `false`) had no shipped way to be flipped —
-  // leaving `work.search` / `work.read` returning zero rows to every
-  // external MCP door, permanently.
-  const workEntitiesEnabled = options.enableWorkEntitiesPanel !== false;
-  const workEntitiesPanelSourceListCaller:
-    | WorkEntitiesPanelSourceListCaller
-    | undefined = !workEntitiesEnabled
-      ? undefined
-      : () => rpcConn.call('work_entity.source.list', undefined);
-  const workEntitiesPanelSetEnabledCaller:
-    | WorkEntitiesPanelSetEnabledCaller
-    | undefined = !workEntitiesEnabled
-      ? undefined
-      : (args) => rpcConn.call('work_entity.source.set_enabled', args);
-  const workEntitiesPanelSetMcpExposedCaller:
-    | WorkEntitiesPanelSetMcpExposedCaller
-    | undefined = !workEntitiesEnabled
-      ? undefined
-      : (args) => rpcConn.call('work_entity.source.set_mcp_exposed', args);
-  const workEntitiesPanelSetDefaultCaller:
-    | WorkEntitiesPanelSetDefaultCaller
-    | undefined = !workEntitiesEnabled
-      ? undefined
-      : (args) => rpcConn.call('work_entity.source.set_default', args);
-  const workEntitiesPanelClearDefaultCaller:
-    | WorkEntitiesPanelClearDefaultCaller
-    | undefined = !workEntitiesEnabled
-      ? undefined
-      : (args) => rpcConn.call('work_entity.source.clear_default', args);
-
   // D-152 P6 — Hostname registry panel callers. Default ON; tests opt out via
   // `enableHostnamesPanel: false`. The callers are forwarded as a full
   // CRUD/proof group. A pre-D-152 server surfaces unknown-method errors inside
@@ -8303,6 +8277,19 @@ export const bootstrapWebclient = async (
     options.enableHostnamesPanel === false
       ? undefined
       : (args) => rpcConn.call('collection.hostname.verifyOwnership', args);
+  // D-235 P5 — Settings → Server → Domains. Both are READ-ONLY on the server
+  // (preflight resolves DNS and mutates nothing), so they ride the same gate as
+  // the rest of the hostname surface without further conditions. ⚠ An older
+  // server has neither method; the panel surfaces the rpc error rather than
+  // pretending the DNS check passed.
+  const customDomainPreflightCaller: CustomDomainPreflightCaller | undefined =
+    options.enableHostnamesPanel === false
+      ? undefined
+      : (args) => rpcConn.call('collection.hostname.preflight', args);
+  const customDomainReadinessCaller: CustomDomainReadinessCaller | undefined =
+    options.enableHostnamesPanel === false
+      ? undefined
+      : (args) => rpcConn.call('collection.hostname.issuanceReadiness', args);
   // LAN-URL kickstart (slice 2) — `network.local_urls` powers the Hostnames
   // panel's read-only "Reachable on your network" section. Built + forwarded
   // unconditionally (not bundled into the all-or-nothing hostname-CRUD group):
@@ -10014,6 +10001,18 @@ export const bootstrapWebclient = async (
         ...(tlsRenewCaller !== undefined
           ? { tlsRenewCaller: switchWorkTracker.track(tlsRenewCaller) }
           : {}),
+        // List + upload go together — the route's `canMountTlsCertificates`
+        // gate requires both, because a list with no upload path is the dead
+        // end this panel exists to close.
+        ...(tlsDomainListCaller !== undefined && tlsDomainUploadCaller !== undefined
+          ? {
+              tlsDomainListCaller,
+              tlsDomainUploadCaller: switchWorkTracker.track(tlsDomainUploadCaller),
+            }
+          : {}),
+        ...(tlsDomainRemoveCaller !== undefined
+          ? { tlsDomainRemoveCaller: switchWorkTracker.track(tlsDomainRemoveCaller) }
+          : {}),
         // R26.2 Delta 1 — the Exposure grid mounts only when all four callers
         // are present (the route's `canMountExposure` gate). `runHasDdns` is
         // independently optional.
@@ -10465,28 +10464,6 @@ export const bootstrapWebclient = async (
               ),
             }
           : {}),
-        // D-145 PA11 — all-or-nothing (the panel has no read-only mode).
-        ...(workEntitiesPanelSourceListCaller !== undefined
-          && workEntitiesPanelSetEnabledCaller !== undefined
-          && workEntitiesPanelSetMcpExposedCaller !== undefined
-          && workEntitiesPanelSetDefaultCaller !== undefined
-          && workEntitiesPanelClearDefaultCaller !== undefined
-          ? {
-              workEntitiesPanelSourceListCaller,
-              workEntitiesPanelSetEnabledCaller: switchWorkTracker.track(
-                workEntitiesPanelSetEnabledCaller,
-              ),
-              workEntitiesPanelSetMcpExposedCaller: switchWorkTracker.track(
-                workEntitiesPanelSetMcpExposedCaller,
-              ),
-              workEntitiesPanelSetDefaultCaller: switchWorkTracker.track(
-                workEntitiesPanelSetDefaultCaller,
-              ),
-              workEntitiesPanelClearDefaultCaller: switchWorkTracker.track(
-                workEntitiesPanelClearDefaultCaller,
-              ),
-            }
-          : {}),
         ...(hostnamesListCaller !== undefined
           && hostnamesGetCaller !== undefined
           && hostnamesAddCaller !== undefined
@@ -10507,6 +10484,17 @@ export const bootstrapWebclient = async (
                 hostnamesVerifyOwnershipCaller,
               ),
             }
+          : {}),
+        // D-235 P5 — forwarded independently of the CRUD bundle above. The
+        // Domains panel is useful on its own (checking DNS needs no write
+        // capability at all), so gating it behind the whole CRUD group would
+        // hide the diagnostics precisely when a partial surface made them most
+        // worth having.
+        ...(customDomainPreflightCaller !== undefined
+          ? { customDomainPreflightCaller }
+          : {}),
+        ...(customDomainReadinessCaller !== undefined
+          ? { customDomainReadinessCaller }
           : {}),
         // LAN-URL kickstart (slice 2) — forwarded independently of the CRUD
         // bundle above so it reaches the panel even if a future config gates

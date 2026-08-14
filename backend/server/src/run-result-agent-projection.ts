@@ -308,6 +308,113 @@ export interface AgentCancelledRunResult {
   message: string;
 }
 
+/** ⛔⛔ EVERY ITEM REFUSED, AND THE RUN STILL SAYS `success: true`.
+ *
+ *  A `foreach` is CONTINUE-ON-ERROR by construction, so a per-item write
+ *  rejection never reaches `errors[]` and never flips `success`. That is
+ *  deliberate and is NOT changed here — `packages/engine/src/step-runner.ts`
+ *  records why: routing per-item failures into `errors[]` would stamp an
+ *  `error_category` onto every partially-failing run in history
+ *  (`history-handler.ts` reads `errors[0].code` unconditionally), turning a
+ *  silence bug into a noise bug. The tally rides on the step log instead, and
+ *  both HUMAN surfaces already read it — `console-output.ts` prints
+ *  "Items refused: N of M — every one" and `recipe-result-panel.ts` renders the
+ *  same. The agent was the surface that got the raw counter and no sentence.
+ *
+ *  ⚠ Model-facing string — see `chat-prompt-optimization-log.md`. */
+export const ITEMS_ALL_REFUSED_MESSAGE =
+  'Every item this recipe tried to write was REFUSED. The run reports success '
+  + 'because a per-item refusal is not a run failure — but NOTHING WAS WRITTEN. '
+  + '⛔ Do NOT report this as done and do NOT summarise it as a completed action: '
+  + 'no record was created, updated, or saved. Tell the user that every item was '
+  + 'refused and that nothing was saved. Do not repeat this exact call — it will '
+  + 'be refused again the same way; a refusal of every item is usually a missing '
+  + 'permission or a connection that is not set up, which only the user can fix.';
+
+/** Some items landed, some were refused. Distinct from
+ *  {@link ITEMS_ALL_REFUSED_MESSAGE} because "nothing happened" and "half of it
+ *  happened" must not share a sentence — and because the recovery differs: a
+ *  blind retry here DOUBLES the items that already succeeded.
+ *
+ *  ⚠ Model-facing string — see `chat-prompt-optimization-log.md`. */
+export const ITEMS_PARTIALLY_REFUSED_MESSAGE =
+  'Some of the items this recipe tried to write were REFUSED. The run reports '
+  + 'success because a per-item refusal is not a run failure, so the counts below '
+  + 'are the only place this appears. ⛔ Do NOT report the action as fully '
+  + 'completed. Tell the user how many items were saved and how many were '
+  + 'refused. ⛔ Do NOT repeat this call to retry the refused ones — it would run '
+  + 'over the items that already succeeded and can duplicate them.';
+
+/** One `foreach` step that refused at least one item. */
+export interface AgentRefusedStepSummary {
+  step_id: string;
+  items: number;
+  failed: number;
+}
+
+/** The fields ANNOTATED onto an otherwise-unchanged run result.
+ *
+ *  ⛔ This is the ONE projection that AUGMENTS rather than REPLACES, and the
+ *  difference is load-bearing. Every sibling third-state describes a run that
+ *  STOPPED (cancelled / held / pick / plan / skipped) or one that FIRED instead
+ *  of returning, so replacing the body loses nothing. A partially-refused run
+ *  RAN and produced real output the model still has to answer from — replacing
+ *  it would throw away the items that did land. */
+export interface AgentItemsRefusedAnnotation {
+  status: 'items_refused';
+  items_refused: {
+    total_items: number;
+    total_failed: number;
+    /** `true` only when the run wrote NOTHING — every item of every `foreach`
+     *  step was refused. Selects {@link ITEMS_ALL_REFUSED_MESSAGE}. */
+    every_item: boolean;
+    steps: AgentRefusedStepSummary[];
+  };
+  message: string;
+}
+
+/** Read the per-step `foreach: { items, failed }` tallies the engine already
+ *  emits. Returns `null` when nothing was refused, so the caller can hand back
+ *  the ORIGINAL object by reference — an ordinary run must stay untouched, and
+ *  the permitting witness in the test suite asserts identity, not equality. */
+const collectItemRefusals = (result: object): AgentItemsRefusedAnnotation | null => {
+  const steps = (result as { steps?: unknown }).steps;
+  if (!Array.isArray(steps)) return null;
+  const refused: AgentRefusedStepSummary[] = [];
+  let totalItems = 0;
+  let totalFailed = 0;
+  for (const step of steps) {
+    if (step === null || typeof step !== 'object') continue;
+    const tally = (step as { foreach?: unknown }).foreach;
+    if (tally === null || typeof tally !== 'object') continue;
+    const { items, failed } = tally as { items?: unknown; failed?: unknown };
+    // ⚠ Both counters must be real numbers. A step log from an older server (or
+    // a delegated path whose shape we do not own) may carry neither, and a
+    // coerced `NaN` would silently poison the totals.
+    if (typeof items !== 'number' || typeof failed !== 'number') continue;
+    totalItems += items;
+    if (failed <= 0) continue;
+    totalFailed += failed;
+    const id = (step as { id?: unknown }).id;
+    refused.push({ step_id: typeof id === 'string' ? id : '?', items, failed });
+  }
+  if (refused.length === 0) return null;
+  // ⛔ `every_item` spans ALL foreach steps, not just the refusing ones: a run
+  // whose step A wrote 10/10 and step B refused 5/5 did NOT write nothing, and
+  // telling the model it did would be its own false statement.
+  const everyItem = totalItems > 0 && totalFailed >= totalItems;
+  return {
+    status: 'items_refused',
+    items_refused: {
+      total_items: totalItems,
+      total_failed: totalFailed,
+      every_item: everyItem,
+      steps: refused,
+    },
+    message: everyItem ? ITEMS_ALL_REFUSED_MESSAGE : ITEMS_PARTIALLY_REFUSED_MESSAGE,
+  };
+};
+
 /** Project a recipe-run result into its agent-facing form.
  *
  *  Two outcomes get a clean self-describing third-state shape instead of a
@@ -320,7 +427,16 @@ export interface AgentCancelledRunResult {
  *    - **held for approval** (`awaiting_approval === true`) →
  *      `{ status: 'awaiting_approval', awaiting_approval: true, recipe_id,
  *      message }`.
- *  Anything else passes through unchanged.
+ *  Anything else passes through unchanged, with ONE exception that ANNOTATES
+ *  rather than replaces:
+ *    - **items refused** — one or more `foreach` steps reported
+ *      `foreach: { items, failed }` with `failed > 0`. A `foreach` is
+ *      continue-on-error, so this run says `success: true` with an EMPTY
+ *      `errors[]` even when it wrote nothing at all. The original result is
+ *      spread through (the items that DID land are still the answer) and gains
+ *      `{ status: 'items_refused', items_refused: {…}, message }`. Checked LAST
+ *      — it is the only branch that rides on a run which neither stopped nor
+ *      fired. See {@link AgentItemsRefusedAnnotation}.
  *
  *  This is the projection the MCP `recued_runRecipe` / direct-ingredient paths
  *  surface verbatim (`text(...)`), so both legacy MCP and registry-routed MCP
@@ -502,7 +618,16 @@ export const projectRunResultForAgent = (result: unknown): unknown => {
     } satisfies AgentExchangeAcceptedResult;
   }
   if ((result as { awaiting_approval?: unknown }).awaiting_approval !== true) {
-    return result;
+    // ⛔⛔ THE PASS-THROUGH IS WHERE A REFUSED-EVERY-ITEM RUN WAS ARRIVING.
+    // Checked LAST, and deliberately below `awaiting_approval`: a held run's
+    // clean shape carries the one instruction that matters there (it is queued,
+    // do not resend), and a partial tally beside it would compete with that.
+    // Everything above describes a run that stopped; this describes one that
+    // RAN, so it annotates instead of replacing — see
+    // {@link AgentItemsRefusedAnnotation}. No refusals ⇒ the ORIGINAL object,
+    // by reference.
+    const refusals = collectItemRefusals(result);
+    return refusals === null ? result : { ...result, ...refusals };
   }
   const held = result as ExecuteResponse;
   return {

@@ -586,7 +586,12 @@ describe('generateCsr — integration with createAcmeDomainRenewer', () => {
 
   it('renewer success path passes a valid CSR to the issuer', async () => {
     const { result, captured_csr, key_pem } = await captureIssuance();
-    expect(result).toEqual({ ok: true, new_fingerprint: 'NEWFP' });
+    // D-235 P4 — the renewal result now carries the new expiry too.
+    expect(result).toEqual({
+      ok: true,
+      new_fingerprint: 'NEWFP',
+      cert_expires_at: 2_700_000_000_000,
+    });
     expect(captured_csr).not.toBeNull();
     // CSR must be parseable + signature must verify against the same
     // private key the store handed in.

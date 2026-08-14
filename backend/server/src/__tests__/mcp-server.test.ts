@@ -986,6 +986,116 @@ describe('MCP per-ingredient tool catalog', () => {
 
 import { _testing } from '../mcp-server.js';
 
+describe('MCP protocol version negotiation', () => {
+  const modernMeta = {
+    'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+    'io.modelcontextprotocol/clientInfo': { name: 'test-client', version: '1' },
+    'io.modelcontextprotocol/clientCapabilities': {},
+  };
+
+  it('advertises newest-first multi-version support through server/discover', async () => {
+    const response = await _testing.dispatch({
+      jsonrpc: '2.0',
+      id: 'discover',
+      method: 'server/discover',
+      params: { _meta: modernMeta },
+    }, makeDeps() as McpDeps) as {
+      result: {
+        supportedVersions: string[];
+        ttlMs: number;
+        cacheScope: string;
+        _meta: Record<string, unknown>;
+      };
+    };
+
+    expect(response.result.supportedVersions).toEqual([
+      '2026-07-28',
+      '2024-11-05',
+    ]);
+    expect(response.result).toMatchObject({
+      resultType: 'complete',
+      ttlMs: 300_000,
+      cacheScope: 'private',
+    });
+    expect(response.result._meta).toMatchObject({
+      'io.modelcontextprotocol/serverInfo': { name: 'recued', version: '0.1.0' },
+    });
+  });
+
+  it('stamps ordinary modern results with server identity', async () => {
+    const response = await _testing.dispatch({
+      jsonrpc: '2.0',
+      id: 'list',
+      method: 'tools/list',
+      params: { _meta: modernMeta },
+    }, makeDeps() as McpDeps) as {
+      result: { tools: unknown[]; _meta: Record<string, unknown> };
+    };
+
+    expect(response.result.tools.length).toBeGreaterThan(0);
+    expect(response.result).toMatchObject({ resultType: 'complete' });
+    expect(response.result._meta).toMatchObject({
+      'io.modelcontextprotocol/serverInfo': { name: 'recued', version: '0.1.0' },
+    });
+  });
+
+  it('selects the implemented legacy fallback during initialize', async () => {
+    const response = await _testing.dispatch({
+      jsonrpc: '2.0',
+      id: 'init',
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-11-25',
+        capabilities: {},
+        clientInfo: { name: 'legacy-test', version: '1' },
+      },
+    }, makeDeps() as McpDeps) as { result: { protocolVersion: string } };
+
+    expect(response.result.protocolVersion).toBe('2024-11-05');
+  });
+
+  it('rejects undeclared modern revisions instead of silently serving them', async () => {
+    const response = await _testing.dispatch({
+      jsonrpc: '2.0',
+      id: 'future',
+      method: 'tools/list',
+      params: {
+        _meta: {
+          ...modernMeta,
+          'io.modelcontextprotocol/protocolVersion': '2099-01-01',
+        },
+      },
+    }, makeDeps() as McpDeps) as {
+      error: { code: number; data: { supported: string[]; requested: string } };
+    };
+
+    expect(response.error).toEqual({
+      code: -32022,
+      message: 'Unsupported MCP protocol version: 2099-01-01',
+      data: {
+        supported: ['2026-07-28', '2024-11-05'],
+        requested: '2099-01-01',
+      },
+    });
+  });
+
+  it('rejects incomplete modern request metadata as invalid params', async () => {
+    const response = await _testing.dispatch({
+      jsonrpc: '2.0',
+      id: 'missing-capability',
+      method: 'tools/list',
+      params: {
+        _meta: {
+          'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+          'io.modelcontextprotocol/clientInfo': { name: 'test-client', version: '1' },
+        },
+      },
+    }, makeDeps() as McpDeps) as { error: { code: number } };
+
+    expect(response.error.code).toBe(-32602);
+  });
+});
+
 describe('MCP tool: recued_runRecipe held projection', () => {
   it('projects a held recued_runRecipe result to the clean awaiting_approval shape', async () => {
     const tool: IngredientManifest = {

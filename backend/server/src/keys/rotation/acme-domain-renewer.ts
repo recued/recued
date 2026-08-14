@@ -25,8 +25,9 @@
  *      Production defaults to a fresh Ed25519 PKCS#8 PEM key, scoped to
  *      the TLS-internal ACME path rather than the identity keypair API.
  *
- *  Error mapping. The renewer surfaces three closed-list reasons that
- *  the wrapping `TlsRenewalHook` passes through:
+ *  Error mapping. The renewer surfaces the closed-list
+ *  `TlsRenewalFailureReason` set that the wrapping `TlsRenewalHook` passes
+ *  through:
  *
  *    - `helper_unavailable` — the substrate is not ready for any of:
  *      domain row missing from the cache (vault locked / store hasn't
@@ -36,6 +37,10 @@
  *    - `subscription_required` — ACME returned a 4xx that maps to a
  *      Pro-auth-related failure (401 / 402 / 403). Operator-facing
  *      surfaces map this to the Pro entitlement flow.
+ *    - `rate_limited` — ACME returned 429: this publisher has spent its
+ *      daily issuance allowance. Held apart from `helper_unavailable`
+ *      because the operator remediation is the opposite one (wait, rather
+ *      than go fix your networking).
  *    - `storage_io_error` — `store.upload(...)` threw (validation
  *      gate failure or SQLite write). Rare in steady state — usually
  *      a transient SQLite WAL contention or a mid-flight schema
@@ -45,9 +50,10 @@
 
 import { generateKeyPairSync } from 'node:crypto';
 
-import { resolveProDdnsHost } from '@recued/contracts';
+import { isFleetIssuedTlsDomainSource, resolveProDdnsHost } from '@recued/contracts';
 
 import type { SqliteTlsDomainStore } from '../../tls/domain-store.js';
+import type { TlsRenewalFailureReason } from './index.js';
 import type { DomainRenewer } from './tls-renewal-hook.js';
 
 /** ACME issuer surface — matches the relevant subset of
@@ -66,6 +72,18 @@ export interface AcmeCertIssuer {
 export interface AcmeDomainRenewerOptions {
   /** ACME issuer (production: `RecuedAcmeClient` instance). */
   acme: AcmeCertIssuer;
+  /** D-235 — this server's own reserved Pro DDNS handle.
+   *
+   *  ⛔ REQUIRED FOR CUSTOM DOMAINS AND ONLY FOR THEM. A fleet-zone row carries
+   *  its handle IN the domain (`alice.recued.net` → `alice`), which is why
+   *  `extractHandleStem` has been enough until now; a custom domain carries
+   *  nothing of the sort, so the handle has to come from the reservation. The
+   *  cloud keys its authority + issuer-affinity gates on it and, for a custom
+   *  domain, checks that the delegation CNAME points into THIS handle's zone —
+   *  so passing a handle we do not hold produces a 403, not a wrong cert.
+   *  Absent (or resolving to null) ⇒ custom domains decline; the fleet-zone
+   *  path is unaffected. */
+  resolveOwnHandle?: () => string | null;
   /** Per-domain cert store. `lookup` resolves the existing private key
    *  the CSR generator signs against (renewal reuses the keypair);
    *  `upload` persists the new cert under the same `pro_acme` source. */
@@ -86,7 +104,7 @@ export interface InitialAcmeDomainIssuer {
     | { ok: true; new_fingerprint: string; cert_expires_at: number }
     | {
         ok: false;
-        reason: 'helper_unavailable' | 'subscription_required' | 'storage_io_error';
+        reason: TlsRenewalFailureReason;
       }
   >;
 }
@@ -117,7 +135,7 @@ const extractHandleStem = (domain: string): string | null =>
  *  errors collapse to `helper_unavailable`. */
 const mapAcmeFailure = (
   err: unknown,
-): 'helper_unavailable' | 'subscription_required' => {
+): 'helper_unavailable' | 'subscription_required' | 'rate_limited' => {
   const msg = err instanceof Error ? err.message : '';
   // The HTTP-401 / 402 / 403 family signals subscription / auth
   // failures the operator can fix (Settings → Pro → re-authenticate).
@@ -125,6 +143,16 @@ const mapAcmeFailure = (
   // (whitespace + body) is preserved without splitting.
   if (/\bHTTP 40[123]\b/.test(msg)) {
     return 'subscription_required';
+  }
+  // ⛔ 429 USED TO FALL THROUGH TO `helper_unavailable`, whose operator copy
+  //    reads "ACME helper is unreachable. Check Settings → Server → Pro
+  //    DDNS" — sending someone to debug their networking when the cloud has
+  //    simply told them they have issued too many certificates today
+  //    (`acme_rate_limited`, `ACME_ISSUE_CERT_RATE_LIMIT_PER_DAY`). The
+  //    helper is reachable; it answered. Keep the two apart: the
+  //    remediations are opposites.
+  if (/\bHTTP 429\b/.test(msg)) {
+    return 'rate_limited';
   }
   return 'helper_unavailable';
 };
@@ -145,8 +173,31 @@ export const createAcmeDomainRenewer = (
     acme,
     store,
     generateCsr,
+    resolveOwnHandle,
     generatePrivateKeyPem = generateDefaultTlsPrivateKeyPem,
   } = options;
+
+  /** D-235 — which handle orders this domain, and under which
+   *  `tls_domains` source it is stored. The two answers come from one place so
+   *  a row can never be ordered as one kind and stored as the other. */
+  const classifyDomain = (
+    domain: string,
+  ):
+    | { handle: string; source: 'pro_acme' | 'pro_acme_custom' }
+    | { handle: null; why: string } => {
+    const fleetHandle = extractHandleStem(domain);
+    if (fleetHandle !== null) return { handle: fleetHandle, source: 'pro_acme' };
+    const own = resolveOwnHandle?.() ?? null;
+    if (own === null || own.length === 0) {
+      return {
+        handle: null,
+        why:
+          `${domain} is not a Pro DDNS host for this server's configured zone, and no `
+          + `reserved handle is available to order it as a custom domain`,
+      };
+    }
+    return { handle: own, source: 'pro_acme_custom' };
+  };
 
   const issueAndUpload = async (
     domain: string,
@@ -155,7 +206,7 @@ export const createAcmeDomainRenewer = (
     | { ok: true; new_fingerprint: string; cert_expires_at: number }
     | {
         ok: false;
-        reason: 'helper_unavailable' | 'subscription_required' | 'storage_io_error';
+        reason: TlsRenewalFailureReason;
       }
   > => {
     // ⛔ FOUR DISTINCT CAUSES COLLAPSE INTO ONE `helper_unavailable`, and the
@@ -166,18 +217,15 @@ export const createAcmeDomainRenewer = (
     //    (callers depend on it); only a diagnostic line is added.
     const decline = (
       why: string,
-      reason: 'helper_unavailable' | 'subscription_required' | 'storage_io_error' = 'helper_unavailable',
-    ): { ok: false; reason: 'helper_unavailable' | 'subscription_required' | 'storage_io_error' } => {
+      reason: TlsRenewalFailureReason = 'helper_unavailable',
+    ): { ok: false; reason: TlsRenewalFailureReason } => {
       console.warn(`[acme-domain-renewer] ${domain}: ${reason} — ${why}`);
       return { ok: false, reason };
     };
 
-    const handle = extractHandleStem(domain);
-    if (handle === null) {
-      return decline(
-        `not a Pro DDNS host for this server's configured zone (cannot extract a handle stem from ${domain})`,
-      );
-    }
+    const classified = classifyDomain(domain);
+    if (classified.handle === null) return decline(classified.why);
+    const { handle, source } = classified;
 
     let csr_pem: string;
     try {
@@ -211,7 +259,10 @@ export const createAcmeDomainRenewer = (
     try {
       await store.upload({
         domain,
-        source: 'pro_acme',
+        // D-235 — from `classifyDomain`, never re-derived. The source decides
+        // which renewal filters see this row for the rest of its life, so it
+        // must be the same judgement that chose the handle to order it with.
+        source,
         cert_pem: issued.cert_pem,
         private_key_pem,
         chain_pem: issued.issuer_chain_pem,
@@ -256,13 +307,21 @@ export const createAcmeDomainRenewer = (
       // `lookup` + `upload` slice of the store.
       const renewed = await issueAndUpload(current.domain, current.private_key_pem);
       if (!renewed.ok) return renewed;
-      return { ok: true, new_fingerprint: renewed.new_fingerprint };
+      return {
+        ok: true,
+        new_fingerprint: renewed.new_fingerprint,
+        cert_expires_at: renewed.cert_expires_at,
+      };
     },
 
     async issueInitialDomain(args) {
       const domain = args.domain.trim().toLowerCase();
       const existing = store.lookup(domain);
-      if (existing?.source === 'pro_acme') {
+      // D-235 — idempotence for BOTH fleet-issued sources. Keyed on
+      // `=== 'pro_acme'` a custom domain that already HAS a certificate would
+      // fall through and order another one on every call — burning the
+      // publisher's daily ceiling on a cert it already holds.
+      if (existing !== null && isFleetIssuedTlsDomainSource(existing.source)) {
         return {
           ok: true,
           new_fingerprint: existing.fingerprint,

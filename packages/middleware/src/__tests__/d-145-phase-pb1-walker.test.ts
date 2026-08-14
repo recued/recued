@@ -323,7 +323,7 @@ describe('D-145 PB1.2 — connection_active multi-Source determinism', () => {
 
     h.controls.enabledSources.set(connKey('hubspot', 'task'), true);
     h.composed.invalidationSource.publish({
-      topic: 'source.enabled_changed',
+      topic: 'connection.disabled',
       vendor: 'hubspot',
       entity: 'task',
     });

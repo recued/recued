@@ -324,7 +324,7 @@ export const walkCapacities = async (
 
 /** Project a `CapacityRequirement` into the closed-list cache-row
  *  param fields. The cache layer uses these for invalidation
- *  matching (e.g. `source.enabled_changed` drops every
+ *  matching (e.g. `connection.disabled` drops every
  *  `connection_active` row whose `vendor` matches). */
 const keyPartsFromReq = (
   req: CapacityRequirement,

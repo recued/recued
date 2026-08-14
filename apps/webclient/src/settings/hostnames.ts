@@ -5,6 +5,7 @@
  * update, remove, and drive `verifyOwnership`.
  */
 
+import { HOSTNAME_LISTENER_PORTS } from '@recued/contracts';
 import type {
   DdnsEnabledStatus,
   DdnsSetEnabledRequest,
@@ -13,6 +14,7 @@ import type {
   HostnameCertSource,
   HostnameGetRequest,
   HostnameGetResponse,
+  HostnameListenerPort,
   HostnameListResponse,
   HostnameMutationResponse,
   HostnameOwnershipProofInput,
@@ -45,6 +47,9 @@ export const HOSTNAMES_ROW_STATUS_ATTR = 'data-recued-hostnames-row-status';
 // (`ok` / `warning` / `expired`) so the at-a-glance signal is testable +
 // the host can introspect cert health without parsing copy.
 export const HOSTNAMES_ROW_CERT_EXPIRY_ATTR = 'data-recued-hostnames-row-cert-expiry';
+/** D-235 § 5.1 — carries the delegation URGENCY, not the raw state, so a test
+ *  or a stylesheet targets the thing that decides how loud the row is. */
+export const HOSTNAMES_ROW_DELEGATION_ATTR = 'data-recued-hostnames-row-delegation';
 export const HOSTNAMES_ADD_OPEN_BTN_ATTR = 'data-recued-hostnames-add-open';
 export const HOSTNAMES_ADD_FORM_ATTR = 'data-recued-hostnames-add-form';
 export const HOSTNAMES_ADD_FIELD_ATTR = 'data-recued-hostnames-add-field';
@@ -92,6 +97,16 @@ export const HOSTNAMES_DDNS_STATE_ATTR = 'data-recued-hostnames-ddns-state';
 export const HOSTNAMES_DDNS_TOGGLE_ATTR = 'data-recued-hostnames-ddns-toggle';
 export const HOSTNAMES_DDNS_BLOCKED_ATTR = 'data-recued-hostnames-ddns-blocked';
 export const HOSTNAMES_DDNS_ERROR_ATTR = 'data-recued-hostnames-ddns-error';
+/** Listener-port checkbox group. The FIELDSET carries this attr (value =
+ *  `add` / `update`) so a test can assert the control exists at all; each
+ *  checkbox carries the form's own field attr with value `listener_port_<port>`
+ *  so it is reachable the same way every other field in that form is. */
+export const HOSTNAMES_PORTS_FIELDSET_ATTR = 'data-recued-hostnames-ports';
+/** Present on a `byo_uploaded` row that has no certificate installed — the
+ *  state in which the row can neither serve TLS nor pass `cert_proof`. */
+export const HOSTNAMES_ROW_NEEDS_CERT_ATTR = 'data-recued-hostnames-row-needs-cert';
+export const portFieldName = (port: HostnameListenerPort): string =>
+  `listener_port_${port}`;
 
 const LOCAL_URL_KIND_LABELS: Record<LocalServerUrl['kind'], string> = {
   loopback: 'This device',
@@ -100,6 +115,11 @@ const LOCAL_URL_KIND_LABELS: Record<LocalServerUrl['kind'], string> = {
 
 const CERT_SOURCE_LABELS: Record<HostnameCertSource, string> = {
   recued_acme: 'Managed by Recued',
+  // D-235 — labelled so an existing row renders, but deliberately NOT offered
+  // in the add/update dropdown below: P1 ships enrolment + preflight, and
+  // issuance (P3) does not exist yet. Offering a source that cannot produce a
+  // certificate would read as a broken feature rather than an unbuilt one.
+  recued_acme_custom: 'My own domain, managed by Recued',
   byo_uploaded: 'Upload my own certificate',
   byo_external: 'Handled outside Recued',
 };
@@ -242,6 +262,28 @@ export const HOSTNAMES_PANEL_STYLES = `
   background: var(--danger-bg);
   color: var(--danger);
 }
+/* D-235 § 5.1 — the delegation chip. Shares the cert chip's shape so the two
+   read as one row of status, and escalates colour with remaining lifetime:
+   the same broken CNAME is a footnote three months out and an emergency next
+   week. */
+.hostnames-delegation-chip {
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.hostnames-delegation-chip-notice {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+.hostnames-delegation-chip-warning {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+.hostnames-delegation-chip-incident {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
 .hostnames-form,
 .hostnames-verify-form,
 .hostnames-detail-panel {
@@ -267,6 +309,26 @@ export const HOSTNAMES_PANEL_STYLES = `
   display: flex;
   align-items: center;
   gap: 8px;
+}
+/* Listener ports — spans both grid columns so the four checkboxes sit on one
+   row rather than wrapping inside a half-width cell. */
+.hostnames-ports-field {
+  grid-column: 1 / -1;
+}
+.hostnames-ports {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.hostnames-ports-hint {
+  display: block;
+  color: var(--muted-fg);
+  font-size: 11px;
+  margin-top: 4px;
 }
 .hostnames-actions {
   display: flex;
@@ -435,6 +497,12 @@ type AddValues = {
   cert_source: HostnameCertSource;
   verification_method: HostnameVerificationMethod;
   verification_token_hash: string;
+  /** Ports the public listener answers this hostname on. Always SENT, never
+   *  left to the server's default: `normalizePorts` silently substitutes
+   *  `[443]` for an empty array, so a form that omits the field cannot be
+   *  distinguished from one that chose 443 — and the row then disagrees with
+   *  whatever the user saw. Validated non-empty before submit. */
+  listener_ports: HostnameListenerPort[];
   enabled: boolean;
 };
 
@@ -442,6 +510,7 @@ type UpdateValues = {
   cert_source: HostnameCertSource;
   verification_method: HostnameVerificationMethod;
   verification_token_hash: string;
+  listener_ports: HostnameListenerPort[];
   enabled: boolean;
 };
 
@@ -538,13 +607,19 @@ export interface HostnamesPanelMount {
   dispose(): void;
   openAdd(): void;
   cancelAdd(): void;
-  setAddField(field: keyof AddValues, value: string | boolean): void;
+  setAddField(
+    field: keyof AddValues,
+    value: string | boolean | ReadonlyArray<HostnameListenerPort>,
+  ): void;
   submitAdd(): Promise<void>;
   openDetail(hostname: string): Promise<void>;
   closeDetail(): void;
   openUpdate(hostname: string): void;
   cancelUpdate(): void;
-  setUpdateField(field: keyof UpdateValues, value: string | boolean): void;
+  setUpdateField(
+    field: keyof UpdateValues,
+    value: string | boolean | ReadonlyArray<HostnameListenerPort>,
+  ): void;
   submitUpdate(): Promise<void>;
   openRemove(hostname: string): void;
   cancelRemove(): void;
@@ -563,6 +638,9 @@ const DEFAULT_ADD_VALUES: AddValues = {
   cert_source: 'byo_external',
   verification_method: 'dns_txt',
   verification_token_hash: '',
+  // Matches `DEFAULT_LISTENER_PORTS` in the server's hostname registry — the
+  // form now STATES the default the storage layer would have applied silently.
+  listener_ports: [443],
   enabled: true,
 };
 
@@ -570,6 +648,7 @@ const DEFAULT_UPDATE_VALUES: UpdateValues = {
   cert_source: 'byo_external',
   verification_method: 'dns_txt',
   verification_token_hash: '',
+  listener_ports: [443],
   enabled: true,
 };
 
@@ -603,12 +682,31 @@ const compatibleMethodsFor = (
   certSource: HostnameCertSource,
 ): HostnameVerificationMethod[] => {
   if (certSource === 'recued_acme') return [];
+  // D-235 § 3.2 — a hostname the FLEET will issue for takes only the two
+  // challenge-response methods. `cert_proof` is refused server-side with
+  // `cert_proof_insufficient`; offering it here would let the user pick an
+  // option that always fails.
+  if (certSource === 'recued_acme_custom') return ['dns_txt', 'http_token'];
   if (certSource === 'byo_external') return ['dns_txt', 'http_token'];
   return ['cert_proof', 'dns_txt', 'http_token'];
 };
 
 const defaultMethodFor = (certSource: HostnameCertSource): HostnameVerificationMethod =>
   compatibleMethodsFor(certSource)[0] ?? 'dns_txt';
+
+/** Coerce a `setAddField('listener_ports', …)` value into the contract's own
+ *  order, dropping anything not on the closed list. The test seam accepts
+ *  `string | boolean | array` for every field uniformly, so this is the one
+ *  place that has to be defensive about what it was handed. An empty result is
+ *  ALLOWED here — `validateAdd` / `validateUpdate` is where "none selected"
+ *  becomes an error the user can see, rather than a silent snap back to 443. */
+const normalizePortSelection = (
+  value: string | boolean | ReadonlyArray<HostnameListenerPort>,
+): HostnameListenerPort[] => {
+  if (!Array.isArray(value)) return [];
+  const chosen = value as ReadonlyArray<HostnameListenerPort>;
+  return HOSTNAME_LISTENER_PORTS.filter((port) => chosen.includes(port));
+};
 
 const upsertProjection = (
   rows: HostnameProjection[],
@@ -691,6 +789,13 @@ const proofFailureCopy = (result: Exclude<HostnameOwnershipProofResult, { ok: tr
     return `Expected ${VERIFICATION_METHOD_LABELS[result.expected_method]}.`;
   }
   if (result.code === 'recued_acme_preverified') return 'Recued ACME hostnames are already verified.';
+  // D-235 § 3.2 — say WHY, not just "incompatible". The user reaching this has
+  // a valid certificate in hand and is being told it isn't the right kind of
+  // evidence, which is unintuitive without the reason.
+  if (result.code === 'cert_proof_insufficient') {
+    return 'Certificate proof cannot authorize Recued to issue a new certificate for a domain you own — '
+      + 'use the DNS TXT or HTTP token challenge instead.';
+  }
   if (result.code === 'missing_token_hash') return 'This hostname does not have a token hash saved.';
   if (result.code === 'incompatible_proof_method') return 'Proof method is not compatible with this cert source.';
   if (result.code === 'not_found') return 'Hostname not found.';
@@ -702,6 +807,10 @@ const updateValuesFor = (row: HostnameProjection): UpdateValues => ({
   cert_source: row.cert_source,
   verification_method: row.verification_method ?? defaultMethodFor(row.cert_source),
   verification_token_hash: '',
+  // Seed from the ROW, not from the default — an update form that opened on
+  // `[443]` regardless would silently move an 8447 hostname back to 443 the
+  // moment the user changed something unrelated and hit Save.
+  listener_ports: [...row.listener_ports],
   enabled: row.enabled,
 });
 
@@ -865,6 +974,17 @@ export const mountHostnamesPanel = (
     const select = doc.createElement('select');
     select.className = 'hostnames-select';
     select.setAttribute(attr, 'cert_source');
+    // ⚠ HAND-WRITTEN, NOT DERIVED FROM `HOSTNAME_CERT_SOURCES` — deliberately,
+    //   and P5 KEPT IT THAT WAY rather than adding the member as P1 assumed.
+    //
+    //   `recued_acme_custom` (D-235) is a real source this panel RENDERS but
+    //   does not OFFER, because the Domains panel below is the supported way to
+    //   create one: it runs the DNS preflight, shows the two records
+    //   copy-paste exact, and states the apex caveat. Adding the bare option
+    //   here would let a user create a custom-domain row with none of that —
+    //   a row that then sits `pending` forever while the reason lives in a
+    //   check they were never shown. One guided path beats two paths where one
+    //   silently omits the guidance.
     for (const source of ['byo_external', 'byo_uploaded', 'recued_acme'] as const) {
       const option = doc.createElement('option');
       option.value = source;
@@ -934,6 +1054,60 @@ export const mountHostnamesPanel = (
     select.value = methods.includes(value) ? value : methods[0] ?? 'dns_txt';
     select.addEventListener('change', () => onChange(select.value as HostnameVerificationMethod));
     return select;
+  };
+
+  /** Listener-port checkbox group. One box per member of the closed
+   *  `HOSTNAME_LISTENER_PORTS` list — DERIVED from contracts, not hand-written,
+   *  so a port added there appears here without a second edit (the cert-source
+   *  select above is hand-written for the opposite reason: it deliberately
+   *  withholds a source, which is a product decision; there is no port this
+   *  form means to withhold). */
+  const makePortsField = (
+    attr: string,
+    kind: 'add' | 'update',
+    selected: ReadonlyArray<HostnameListenerPort>,
+    onToggle: (ports: HostnameListenerPort[]) => void,
+  ): HTMLElement => {
+    const wrap = doc.createElement('div');
+    wrap.className = 'hostnames-ports-field';
+    const legend = doc.createElement('span');
+    legend.className = 'hostnames-field-label';
+    legend.textContent = 'Listener ports';
+    wrap.appendChild(legend);
+
+    const group = doc.createElement('div');
+    group.className = 'hostnames-ports';
+    group.setAttribute(HOSTNAMES_PORTS_FIELDSET_ATTR, kind);
+    for (const port of HOSTNAME_LISTENER_PORTS) {
+      const box = doc.createElement('input');
+      box.type = 'checkbox';
+      box.checked = selected.includes(port);
+      box.setAttribute(attr, portFieldName(port));
+      box.addEventListener('change', () => {
+        // Rebuild from the closed list rather than splicing the previous
+        // array, so the result is always in contract order and can never
+        // hold a duplicate.
+        const next = HOSTNAME_LISTENER_PORTS.filter((p) =>
+          p === port ? box.checked : selected.includes(p),
+        );
+        onToggle([...next]);
+      });
+      const label = doc.createElement('label');
+      label.className = 'hostnames-checkbox-label';
+      label.appendChild(box);
+      const text = doc.createElement('span');
+      text.textContent = String(port);
+      label.appendChild(text);
+      group.appendChild(label);
+    }
+    wrap.appendChild(group);
+
+    const hint = doc.createElement('span');
+    hint.className = 'hostnames-ports-hint';
+    hint.textContent =
+      '443 is the standard HTTPS port. Pick an alternate only when something else already holds 443 on this machine.';
+    wrap.appendChild(hint);
+    return wrap;
   };
 
   const renderError = (message: string, attr = HOSTNAMES_PANEL_ERROR_ATTR): HTMLParagraphElement => {
@@ -1017,6 +1191,25 @@ export const mountHostnamesPanel = (
         );
       }
     }
+
+    grid.appendChild(
+      makePortsField(
+        HOSTNAMES_ADD_FIELD_ATTR,
+        'add',
+        state.add.values.listener_ports,
+        (listener_ports) => {
+          state = {
+            ...state,
+            add: {
+              ...state.add,
+              error: null,
+              values: { ...state.add.values, listener_ports },
+            },
+          };
+          render();
+        },
+      ),
+    );
 
     const enabled = doc.createElement('input');
     enabled.type = 'checkbox';
@@ -1123,6 +1316,25 @@ export const mountHostnamesPanel = (
       }
     }
 
+    grid.appendChild(
+      makePortsField(
+        HOSTNAMES_UPDATE_FIELD_ATTR,
+        'update',
+        state.update.values.listener_ports,
+        (listener_ports) => {
+          state = {
+            ...state,
+            update: {
+              ...state.update,
+              error: null,
+              values: { ...state.update.values, listener_ports },
+            },
+          };
+          render();
+        },
+      ),
+    );
+
     const enabled = doc.createElement('input');
     enabled.type = 'checkbox';
     enabled.checked = state.update.values.enabled;
@@ -1182,6 +1394,35 @@ export const mountHostnamesPanel = (
     chip.setAttribute(HOSTNAMES_ROW_CERT_EXPIRY_ATTR, display.severity);
     const prefix = display.severity === 'ok' ? '' : '⚠ ';
     chip.textContent = `${prefix}${display.text}`;
+    parent.appendChild(chip);
+  };
+
+  /** D-235 § 5.1 — the delegation notice.
+   *
+   *  ⛔ THIS IS THE WHOLE POINT OF THE SLICE, AND IT HAS TO SIT NEXT TO A PILL
+   *  THAT SAYS "VERIFIED". A custom domain whose `_acme-challenge` CNAME was
+   *  deleted keeps a valid certificate, keeps serving handshakes, and keeps
+   *  reporting `cert_provisioning: 'ready'` — for about sixty days. Nothing in
+   *  the row would say otherwise, which is exactly how the failure stays
+   *  invisible until it is an outage. The chip is the one thing that does. */
+  const renderDelegationChip = (
+    parent: HTMLElement,
+    row: HostnameProjection,
+  ): void => {
+    const urgency = row.delegation_urgency;
+    if (urgency === undefined || urgency === 'none') return;
+    const chip = doc.createElement('span');
+    chip.className = `hostnames-delegation-chip hostnames-delegation-chip-${urgency}`;
+    chip.setAttribute(HOSTNAMES_ROW_DELEGATION_ATTR, urgency);
+    chip.textContent =
+      row.delegation_state === 'unknown'
+        // ⚠ Never phrased as "your record is gone". A failed lookup is a fact
+        //   about OUR resolver; accusing the user's zone on that evidence is
+        //   how a warning gets ignored the next time it is right.
+        ? '⚠ Delegation unchecked'
+        : urgency === 'incident'
+          ? '⛔ Delegation broken — renewal will fail'
+          : '⚠ Delegation broken';
     parent.appendChild(chip);
   };
 
@@ -1482,6 +1723,7 @@ export const mountHostnamesPanel = (
       main.appendChild(name);
       main.appendChild(pill);
       renderCertExpiryChip(main, row.cert_expires_at);
+      renderDelegationChip(main, row);
 
       const meta = doc.createElement('div');
       meta.className = 'hostnames-row-meta';
@@ -1498,6 +1740,21 @@ export const mountHostnamesPanel = (
 
       item.appendChild(main);
       item.appendChild(meta);
+
+      // A `byo_uploaded` row with no certificate installed is a DEAD ROW: the
+      // SNI dispatcher fails its handshake `tls_domain_unknown`, and the one
+      // proof method this source unlocks (`cert_proof`) asserts a live
+      // handshake served a matching cert — so it can never be verified either.
+      // Nothing else on this row says where the certificate goes.
+      if (row.cert_source === 'byo_uploaded' && row.cert_fingerprint === undefined) {
+        const hint = doc.createElement('p');
+        hint.className = 'hostnames-muted';
+        hint.setAttribute(HOSTNAMES_ROW_NEEDS_CERT_ATTR, row.hostname);
+        hint.textContent =
+          'No certificate installed yet. Upload the certificate and private key under Certificates — '
+          + 'until then this hostname cannot serve TLS or pass certificate proof.';
+        item.appendChild(hint);
+      }
 
       const actions = doc.createElement('div');
       actions.className = 'hostnames-actions';
@@ -1799,6 +2056,12 @@ export const mountHostnamesPanel = (
     ) {
       return 'Token hash is required for HTTP token and DNS TXT proofs.';
     }
+    // ⛔ The server does NOT reject an empty array — `normalizePorts` swaps in
+    // `[443]`. So "no ports checked" would save as 443 and the form would have
+    // lied about what it did. Block it here, where we can still say so.
+    if (values.listener_ports.length === 0) {
+      return 'Select at least one listener port.';
+    }
     return null;
   };
 
@@ -1807,6 +2070,7 @@ export const mountHostnamesPanel = (
     const req: HostnameAddRequest = {
       hostname: values.hostname.trim(),
       cert_source: values.cert_source,
+      listener_ports: [...values.listener_ports],
       enabled: values.enabled,
     };
     if (values.cert_source !== 'recued_acme') {
@@ -1882,6 +2146,15 @@ export const mountHostnamesPanel = (
     return values.verification_token_hash.trim() !== '';
   };
 
+  /** Ports are order-normalized on both sides (the form rebuilds from the
+   *  contract list; the registry stores what it was handed), so an
+   *  element-wise compare is enough — no sort needed. */
+  const portsChanged = (row: HostnameProjection): boolean => {
+    const next = state.update.values.listener_ports;
+    if (next.length !== row.listener_ports.length) return true;
+    return next.some((port, i) => port !== row.listener_ports[i]);
+  };
+
   const validateUpdate = (): string | null => {
     const row = selectedUpdateRow();
     if (row === null) return 'Choose a hostname to update.';
@@ -1898,6 +2171,9 @@ export const mountHostnamesPanel = (
     ) {
       return 'Token hash is required when changing to HTTP token or DNS TXT proof.';
     }
+    if (values.listener_ports.length === 0) {
+      return 'Select at least one listener port.';
+    }
     return null;
   };
 
@@ -1906,6 +2182,10 @@ export const mountHostnamesPanel = (
     const req: HostnameUpdateRequest = { hostname: row.hostname };
     if (values.enabled !== row.enabled) req.enabled = values.enabled;
     if (values.cert_source !== row.cert_source) req.cert_source = values.cert_source;
+    // Sent only when CHANGED — this request is a diff, and an unconditional
+    // `listener_ports` would make every no-op Save look like a real edit to
+    // `Object.keys(req).length > 1` below.
+    if (portsChanged(row)) req.listener_ports = [...values.listener_ports];
 
     if (proofConfigWillChange(row) && values.cert_source !== 'recued_acme') {
       req.verification_method = values.verification_method;
@@ -2247,6 +2527,8 @@ export const mountHostnamesPanel = (
         if (cert_source === 'recued_acme') nextValues.verification_token_hash = '';
       } else if (field === 'verification_method') {
         nextValues.verification_method = value as HostnameVerificationMethod;
+      } else if (field === 'listener_ports') {
+        nextValues.listener_ports = normalizePortSelection(value);
       } else {
         nextValues[field] = String(value);
       }
@@ -2312,6 +2594,8 @@ export const mountHostnamesPanel = (
         nextValues.verification_method = methods.includes(method)
           ? method
           : methods[0] ?? 'dns_txt';
+      } else if (field === 'listener_ports') {
+        nextValues.listener_ports = normalizePortSelection(value);
       } else {
         nextValues.verification_token_hash = String(value);
       }

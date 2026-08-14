@@ -209,7 +209,6 @@ const registerTaskSource = (source_id: string): void => {
     source_kind: 'connection',
     source_label: source_id,
     write_capable: false,
-    mcp_exposed: false,
     registered_at: NOW,
   });
 };

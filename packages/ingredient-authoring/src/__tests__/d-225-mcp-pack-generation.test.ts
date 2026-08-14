@@ -47,6 +47,32 @@ const tool = (over: Partial<McpToolDescriptor> = {}): McpToolDescriptor => ({
 const generate = (descriptors: McpToolDescriptor[]) =>
   generateMcpPackComposition({ connection: CONNECTION, descriptors });
 
+describe('§ 234.4p.16d — the composition binds the connection by NAME', () => {
+  it('binds `ingredients[].connection.connection` to the connection NAME, not its kind', async () => {
+    // ⛔⛔ THIS FIELD HAD NO COVERAGE AND CARRIED A `.kind` WHERE `.name`
+    // BELONGS, so every generated pack bound its catalog to a connection
+    // literally called 'mcp'. Nothing named the enrolled connection, so no
+    // `connection_catalog_binding` row existed, the profile reconciler had no
+    // target, the pack grants could not be recorded (the grant scope REQUIRES a
+    // connection_name) and the D-165 gateway denied every op — as
+    // `no_connection_profile` when a recipe named the connection and
+    // `operation_not_granted` when it did not. It read as an authorization
+    // problem for three rounds of chasing.
+    //
+    // 🔑 The fixture discriminates BY CONSTRUCTION: `CONNECTION.kind` ('mcp')
+    // and `CONNECTION.name` ('recued_peer') differ, so this assertion cannot
+    // pass against the old value. A fixture whose kind and name matched would
+    // have been green either way — which is how the bug survived.
+    const composition = await generate([tool()]);
+    const ingredients = (composition as unknown as {
+      ingredients: { connection?: { connection?: string } }[];
+    }).ingredients;
+    expect(ingredients).toHaveLength(1);
+    expect(ingredients[0]?.connection?.connection).toBe(CONNECTION.name);
+    expect(ingredients[0]?.connection?.connection).not.toBe(CONNECTION.kind);
+  });
+});
+
 describe('D-225 Slice 2 — the publisher must not be the validator bypass', () => {
   it('is NOT the kernel author', () => {
     // ⛔ The whole point. `isKernelManifest` is a validator bypass, not a label:

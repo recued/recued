@@ -304,6 +304,21 @@ export const handleTlsDomainRemove = async (
       400,
     );
   }
+  // D-235 — the same refusal for the same reason, with the OTHER remedy. The
+  // custom-domain enrollment service re-orders any enrolled hostname it finds
+  // without a certificate, so deleting the cert row alone is not a removal — it
+  // is a loop that spends the publisher's daily issuance ceiling. What holds
+  // the row is the hostname-registry entry. ⚠ Not folded into the branch above:
+  // sending a custom-domain user to "unbind the DDNS subdomain" would be advice
+  // for a subdomain they do not have.
+  if (existing?.source === 'pro_acme_custom') {
+    throw new RpcError(
+      'tls_custom_domain_unenroll_required',
+      `${method}: Recued-managed cert for ${canonical} cannot be removed directly; `
+        + `remove the hostname from Settings → Server → Domains to un-enrol it`,
+      400,
+    );
+  }
 
   await store.remove(rawDomain);
   return { removed: existing !== undefined };

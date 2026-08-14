@@ -14,6 +14,7 @@ import {
   classifyRunFailure,
   acknowledgementFor,
   buildExchangeFirePayload,
+  type ExchangeFireOutcome,
   type ExchangeFirePayload,
 } from '../fire-exchange-output.js';
 import { isRetryableRemoteFailure } from '@recued/contracts';
@@ -28,13 +29,15 @@ const recipeWith = (exchange: Record<string, unknown> | undefined, steps: unknow
   output: exchange === undefined ? { render: [] } : { exchange },
 }) as any;
 
-const harness = (recipe: any, opts: { handler?: (p: ExchangeFirePayload) => void } = {}) => {
+const harness = (recipe: any, opts: {
+  handler?: (p: ExchangeFirePayload) => ExchangeFireOutcome | void;
+} = {}) => {
   const fired: ExchangeFirePayload[] = [];
   const ctx: ExecutionContext = {
     recipe,
     stores: { config: {}, step: {}, context: {}, meta: {} } as any,
     ingredientExecutor: async () => ({ ok: true }),
-    exchangeFireHandler: (p) => { fired.push(p); opts.handler?.(p); },
+    exchangeFireHandler: (p) => { fired.push(p); return opts.handler?.(p); },
   } as ExecutionContext;
   return { ctx, fired };
 };
@@ -220,6 +223,16 @@ describe('D-232 § 19.3 — the receipt rides on the RESULT, and only when the l
     expect(r.exchange_ack).toEqual({ ref: 'exch_static', callback_op: 'pub/reply', accepted: true });
   });
 
+  it('keeps the host-derived target contract beside, not inside, the wire receipt', async () => {
+    const { ctx } = harness(
+      recipeWith({ ref: 'exch_static', deliver_to: 'pub/reply', callback_op: 'pub/reply' }),
+      { handler: () => ({ expected_contract_id: 'ct_peer_alice' }) },
+    );
+    const r = await executeRecipe(ctx);
+    expect(r.exchange_expected_contract_id).toBe('ct_peer_alice');
+    expect(r.exchange_ack).not.toHaveProperty('expected_contract_id');
+  });
+
   it('✅ omits `callback_op` when the exchange named none — never an empty string', async () => {
     const { ctx } = harness(recipeWith({ ref: 'exch_static', deliver_to: 'pub/reply' }));
     const r = await executeRecipe(ctx);
@@ -319,4 +332,3 @@ describe('D-232 § 21 — unreachable vs refused', () => {
     expect(isRetryableRemoteFailure('error')).toBe(false);
   });
 });
-

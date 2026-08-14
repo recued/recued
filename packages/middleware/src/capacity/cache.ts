@@ -94,26 +94,6 @@ const buildTopicPredicate = (
         if (!matchesNarrowing(row.connection_id, payload.connection_id)) return false;
         return true;
       };
-    case 'source.enabled_changed':
-      // PA11 join — when a Source is toggled, drop every
-      // connection_active row that the toggle could affect:
-      //   - exact-match (row.vendor=X, row.entity=Y, row.connection_id=Z
-      //     matches a payload with same X/Y/Z)
-      //   - vendor-wide aggregate (row.entity === undefined) when the
-      //     payload narrows to one entity within the vendor
-      //   - entity-wide aggregate (row.connection_id === undefined)
-      //     when the payload narrows to one connection_id
-      //   - vendor aggregate (row.vendor === undefined) — defensive
-      //     coverage for future requirements that span vendors
-      // The publisher unpacks the Source id (`<vendor>.<connection_id>.<kind>`)
-      // before publish so the cache layer doesn't re-parse.
-      return (row) => {
-        if (row.capacity_kind !== 'connection_active') return false;
-        if (!matchesNarrowing(row.vendor, payload.vendor)) return false;
-        if (!matchesNarrowing(row.entity, payload.entity)) return false;
-        if (!matchesNarrowing(row.connection_id, payload.connection_id)) return false;
-        return true;
-      };
     case 'quota.headroom_changed':
       return (row) =>
         row.capacity_kind === 'pool_quota_available' &&

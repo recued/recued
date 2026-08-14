@@ -87,15 +87,17 @@ beforeEach(async () => {
       res.end(JSON.stringify({
         jsonrpc: '2.0',
         id: parsed.id ?? 1,
-        result: parsed.method === 'tools/list'
-          ? {
+        result: parsed.method === 'server/discover'
+          ? { supportedVersions: ['2026-07-28'], capabilities: { tools: {} } }
+          : parsed.method === 'tools/list'
+            ? {
               tools: published.map((t) => ({
                 name: t.name,
                 ...(t.description ? { description: t.description } : {}),
                 ...(t.input_schema ? { inputSchema: t.input_schema } : {}),
               })),
-            }
-          : {},
+              }
+            : {},
       }));
     });
   });

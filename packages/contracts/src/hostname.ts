@@ -6,6 +6,11 @@
  */
 
 import { resolveProDdnsHost } from './network.js';
+import {
+  customDomainDelegationUrgency,
+  type CustomDomainDelegationState,
+  type CustomDomainDelegationUrgency,
+} from './custom-domain.js';
 
 declare const URL: {
   new (input: string): { hostname: string };
@@ -13,10 +18,33 @@ declare const URL: {
 
 export const HOSTNAME_CERT_SOURCES = [
   'recued_acme',
+  /** D-235 — the fleet issues + renews for a hostname the USER owns, via a
+   *  `_acme-challenge` CNAME delegated into the fleet's zone.
+   *
+   *  ⛔ DELIBERATELY NOT A RELAXATION OF `recued_acme`. That value means "the
+   *  fleet owns the zone, so ownership is implicit" and three separate places
+   *  encode that: the registry skips straight to `ownership_status: 'verified'`,
+   *  the registry requires a single-label Pro DDNS hostname, and the
+   *  ownership-proof machine refuses to take a proof at all. Widening
+   *  `recued_acme` to custom hostnames means relaxing all three in agreement,
+   *  and the auto-verify default is the one that fails silently — a custom
+   *  hostname would enrol as `verified` with no proof of anything, which is the
+   *  exact hole D-235 § 2.6 exists to keep shut. A separate member inherits the
+   *  SAFE default (`pending`) by falling into the else branch, and the type
+   *  checker names every site that has to think about it. */
+  'recued_acme_custom',
   'byo_uploaded',
   'byo_external',
 ] as const;
 export type HostnameCertSource = (typeof HOSTNAME_CERT_SOURCES)[number];
+
+/** D-235 — is this source one the FLEET issues certificates for (as opposed to
+ *  a BYO cert the user supplies or terminates upstream)? Both ACME sources are
+ *  fleet-issued; they differ only in how ownership of the name is established. */
+export const isFleetIssuedCertSource = (
+  source: HostnameCertSource,
+): source is 'recued_acme' | 'recued_acme_custom' =>
+  source === 'recued_acme' || source === 'recued_acme_custom';
 
 export const HOSTNAME_VERIFICATION_METHODS = [
   'cert_proof',
@@ -89,6 +117,15 @@ export interface HostnameStorageRow {
   /** Closed-list reason from the last failed attempt, for the UI to explain
    *  WHY rather than just that something is wrong. */
   cert_last_error?: string;
+  /** D-235 § 5.1 — last observed state of the `_acme-challenge` delegation.
+   *  ⛔ Deliberately NOT folded into `cert_provisioning`: a `ready` cert whose
+   *  delegation has been deleted is the exact silent-until-outage case this
+   *  field exists to make visible. Absent on every non-custom row. */
+  delegation_state?: CustomDomainDelegationState;
+  /** Unix-ms of the last delegation check. Absent ⇒ never checked, which is
+   *  distinct from "checked and could not tell" (`delegation_state:
+   *  'unknown'`). */
+  delegation_checked_at?: number;
   ownership_status: HostnameOwnershipStatus;
   verification_method?: HostnameVerificationMethod;
   verification_token_hash?: string;
@@ -111,6 +148,14 @@ export interface HostnameProjection {
   cert_chain_metadata?: HostnameCertChainMetadata;
   cert_provisioning?: HostnameCertProvisioningState;
   cert_last_error?: string;
+  /** D-235 § 5.1 — see `HostnameStorageRow`. Projected so Settings can render
+   *  the degraded state without a second round-trip. */
+  delegation_state?: CustomDomainDelegationState;
+  delegation_checked_at?: number;
+  /** Derived, not stored: how loudly to say it, given how much cert lifetime
+   *  is left. Computed at projection time so the client cannot disagree with
+   *  the server about severity by holding a stale clock. */
+  delegation_urgency?: CustomDomainDelegationUrgency;
   ownership_status: HostnameOwnershipStatus;
   verification_method?: HostnameVerificationMethod;
   listener_ports: ReadonlyArray<HostnameListenerPort>;
@@ -189,6 +234,13 @@ export type HostnameOwnershipProofFailureCode =
   | 'not_found'
   | 'recued_acme_preverified'
   | 'incompatible_proof_method'
+  /** D-235 § 3.2 — `cert_proof` was offered for a hostname the fleet would
+   *  ISSUE for. Distinct from `incompatible_proof_method` on purpose: this is
+   *  not "that method doesn't apply here", it is "that method is not authority
+   *  to mint". Possession of a cert for a name is a fine proof for ADOPTING an
+   *  already-issued `byo_uploaded` hostname, but as authority to have the fleet
+   *  issue a NEW one it is circular, and a stale or leaked chain carries it. */
+  | 'cert_proof_insufficient'
   | 'method_mismatch'
   | 'missing_token_hash';
 
@@ -286,7 +338,12 @@ export const normalizeHostname = (input: string): string | null => {
   return ascii;
 };
 
-export const projectHostname = (row: HostnameStorageRow): HostnameProjection => {
+export const projectHostname = (
+  row: HostnameStorageRow,
+  /** D-235 — needed only to derive `delegation_urgency`; defaults to the wall
+   *  clock so every existing caller is unchanged. */
+  now: number = Date.now(),
+): HostnameProjection => {
   const projection: HostnameProjection = {
     hostname_id: row.hostname_id,
     hostname: row.hostname_normalized,
@@ -303,6 +360,24 @@ export const projectHostname = (row: HostnameStorageRow): HostnameProjection => 
   //   which a missing field cannot express.
   if (row.cert_provisioning !== undefined) projection.cert_provisioning = row.cert_provisioning;
   if (row.cert_last_error !== undefined) projection.cert_last_error = row.cert_last_error;
+  // D-235 § 5.1 — the delegation triple. `delegation_urgency` is DERIVED here
+  // rather than stored: it is a function of the clock, so a persisted copy
+  // would be wrong the moment it was written and would need re-deriving on
+  // every read anyway. Emitted only when there is something to say, so a row
+  // that has never been checked carries no field rather than a cheerful
+  // `'none'` it has not earned.
+  if (row.delegation_state !== undefined) {
+    projection.delegation_state = row.delegation_state;
+    const urgency = customDomainDelegationUrgency({
+      delegation_state: row.delegation_state,
+      cert_expires_at: row.cert_expires_at,
+      now,
+    });
+    if (urgency !== 'none') projection.delegation_urgency = urgency;
+  }
+  if (row.delegation_checked_at !== undefined) {
+    projection.delegation_checked_at = row.delegation_checked_at;
+  }
   if (row.cert_expires_at !== undefined) projection.cert_expires_at = row.cert_expires_at;
   if (row.cert_chain_metadata !== undefined) projection.cert_chain_metadata = row.cert_chain_metadata;
   if (row.verification_method !== undefined) projection.verification_method = row.verification_method;

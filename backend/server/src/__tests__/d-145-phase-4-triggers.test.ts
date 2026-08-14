@@ -60,7 +60,6 @@ const registerBuiltins = (s: WorkEntityStore): void => {
       source_kind: 'builtin',
       source_label: 'Recued built-in',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: NOW,
     });
   }
@@ -306,7 +305,6 @@ describe('task triggers', () => {
       source_kind: 'adapter',
       source_label: 'Fake adapter',
       write_capable: true,
-      mcp_exposed: false,
       registered_at: NOW,
     });
     await dispatchers.taskCreate({

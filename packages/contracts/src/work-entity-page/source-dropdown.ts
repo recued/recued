@@ -5,8 +5,7 @@
  *  prepended, then registered Sources in registration order.
  *
  *  Spec: D-145 § A.2.2 (resolver behavior — `data.<kind>.*`
- *  polymorphic across all registered Sources for that kind; default-
- *  Source memory drives UI default).
+ *  polymorphic across all registered Sources for that kind).
  */
 
 import {
@@ -38,13 +37,11 @@ export const buildSourceDropdownOptions = (
   sources: readonly SourceRegistration[],
 ): readonly SourceDropdownOption[] => {
   const matched = sources.filter((s) => s.top_tier_kind === kind);
-  const anyMcpExposed = matched.some((s) => s.mcp_exposed);
   const sentinel: SourceDropdownOption = {
     id: SOURCE_DROPDOWN_ALL_VALUE,
     label: SOURCE_DROPDOWN_ALL_LABEL,
     source_kind: 'sentinel',
     write_capable: false,
-    mcp_exposed: anyMcpExposed,
   };
   return [
     sentinel,
@@ -53,7 +50,6 @@ export const buildSourceDropdownOptions = (
       label: s.source_label,
       source_kind: s.source_kind,
       write_capable: s.write_capable,
-      mcp_exposed: s.mcp_exposed,
     })),
   ];
 };
@@ -61,20 +57,19 @@ export const buildSourceDropdownOptions = (
 /** Resolve the Source id the create dialog should default to.
  *
  *  Order of preference:
- *    1. `selected_source_id` — when the user has a concrete Source
- *       selected, the create dialog inherits it.
- *    2. The per-kind default-Source memory (`prefs.<kind>.last_used_source_id`)
- *       — supplied by the host as `default_source_id`.
- *    3. The Recued built-in Source for the kind (`recued.<kind>`),
- *       if registered.
- *    4. The first write-capable registered Source.
- *    5. `null` if no Source is write-capable — caller's create-button
+ *    1. `selected_source_id` — the dropdown selection IS the explicit id.
+ *    2. The Recued built-in Source for the kind (`recued.<kind>`), if
+ *       registered.
+ *    3. The first write-capable registered Source.
+ *    4. `null` if no Source is write-capable — caller's create-button
  *       affordance should be hidden in that case.
- */
+ *
+ *  ⛔ There was a per-kind default-Source step between 1 and 2. It is gone
+ *  (D-187 Sources half): write is always source-aware by id, and nothing
+ *  infers a destination from stored state. */
 export const resolveCreateDialogSourceId = (
   kind: WorkEntityKind,
   selected_source_id: string | null,
-  default_source_id: string | null,
   sources: readonly SourceRegistration[],
 ): string | null => {
   const registered = sources.filter((s) => s.top_tier_kind === kind);
@@ -87,9 +82,8 @@ export const resolveCreateDialogSourceId = (
   if (selected_source_id !== null && isWriteCapable(selected_source_id)) {
     return selected_source_id;
   }
-  if (default_source_id !== null && isWriteCapable(default_source_id)) {
-    return default_source_id;
-  }
+  // ⛔ No stored default step (D-187 Sources half) — the dropdown SELECTION is
+  // the explicit id, and absent that the local built-in wins.
   const builtinId = RECUED_BUILTIN_SOURCE_ID(kind);
   if (isWriteCapable(builtinId)) return builtinId;
   return writeCapable[0]?.id ?? null;

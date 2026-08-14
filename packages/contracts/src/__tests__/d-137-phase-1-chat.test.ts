@@ -379,8 +379,6 @@ describe('D-137 P1 — CHAT_RPC_METHODS closed list (§ Wire A)', () => {
       'chat.connection_mcp.get',
       'chat.connection_mcp.set',
       // D-137 P4 § A.7 + § A.7.1 — picker entry projection + refresh.
-      'chat.picker.entries',
-      'chat.picker.refresh',
       // D-137 P5 follow-on § A.9 — Bob's per-pair inbound MCP token
       // registry. Six methods; reserved local-UI only via
       // `chat.inbound_token.` prefix in `MCP_RESERVED_RPC_PREFIXES`.
@@ -469,9 +467,6 @@ describe('D-137 P1 — CHAT_BROADCAST_EVENT_KINDS closed list (§ Wire A)', () =
     // D-137 P3 § A.11 — plan resolved (Mary approved / cancelled a
     // pending write proposal).
     'chat.plan_resolved',
-    // D-137 P4 § A.7.1 — picker entries changed (annotation write or
-    // chat.picker.refresh that shifts picker visibility).
-    'chat.picker_entries_changed',
     // D-137 P5 follow-on § A.9 — inbound-token registry mutated. Fans
     // the canonical record (sans bearer plaintext) on every issue /
     // update_grants / revoke / delete so paired clients re-render the
@@ -479,9 +474,9 @@ describe('D-137 P1 — CHAT_BROADCAST_EVENT_KINDS closed list (§ Wire A)', () =
     'chat.inbound_token_changed',
   ];
 
-  it('lists exactly fifteen event kinds, including safe-check closure', () => {
+  it('lists exactly fourteen event kinds, including safe-check closure', () => {
     expect(CHAT_BROADCAST_EVENT_KINDS).toEqual(expected);
-    expect(CHAT_BROADCAST_EVENT_KIND_SET.size).toBe(15);
+    expect(CHAT_BROADCAST_EVENT_KIND_SET.size).toBe(14);
   });
 
   it('isChatBroadcastEventKind accepts every kind + rejects unknown', () => {

@@ -81,7 +81,6 @@ const registerSource = (
     source_kind: 'connection',
     source_label: `${top_tier_kind} source ${id}`,
     write_capable: false,
-    mcp_exposed: false,
   });
 };
 

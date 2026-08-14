@@ -311,9 +311,19 @@ describe('composeWatchManager — mcp-resource wiring', () => {
         method: (init?.method ?? 'GET').toUpperCase(),
         body,
       });
-      const id = body ? (JSON.parse(body) as { id: number }).id : 1;
+      const request = body ? (JSON.parse(body) as { id: number; method?: string }) : { id: 1 };
+      if (request.method === 'server/discover') {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: request.id,
+            result: { supportedVersions: ['2026-07-28'], capabilities: { resources: {} } },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
       return new Response(
-        JSON.stringify({ jsonrpc: '2.0', id, result: { contents: [{ uri: URI, text: resourceText }] } }),
+        JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { contents: [{ uri: URI, text: resourceText }] } }),
         { status: 200, headers: { 'content-type': 'application/json' } },
       );
     }) as unknown as typeof fetch;
@@ -352,10 +362,10 @@ describe('composeWatchManager — mcp-resource wiring', () => {
     // Baseline poll via the real adapter — pollNow drives it without the
     // 5s initial-delay timer.
     await manager.pollNow(KEY);
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
     expect(calls[0]!.method).toBe('POST');
     expect(calls[0]!.url).toBe('https://mcp.example/server');
-    const sent = JSON.parse(calls[0]!.body!) as { method: string; params: { uri: string } };
+    const sent = JSON.parse(calls.at(-1)!.body!) as { method: string; params: { uri: string } };
     expect(sent.method).toBe('resources/read');
     expect(sent.params.uri).toBe(URI);
     expect(emitted).toEqual([]); // baseline is silent

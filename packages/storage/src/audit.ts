@@ -34,6 +34,7 @@ import type {
   RunDegradation,
   RunAnchorStatus,
   RunMode,
+  RunYield,
   TimelineAxis,
 } from '@recued/contracts';
 // D-161 P3 — actor-lane filter for `listRecent` (the aggregate "Recent
@@ -201,6 +202,14 @@ export interface AuditEntry {
    *  `output.exchange` declares; readers must slice the publisher off before
    *  comparing to an audit `recipe_id`, exactly as `deriveExchangeStatus` does. */
   exchange_callback_op?: string;
+  /** D-234: contract bound to the connection this exchange was addressed
+   *  through. Correlation admission fails closed when this fact is absent. */
+  exchange_expected_contract_id?: string;
+  /** D-237 P2 — what the run PRODUCED, derived from the step logs the engine
+   *  already returns and stamped on the anchor row that is already written once
+   *  per run. ⚠ Present-and-all-zero is a real answer; ABSENT means the row
+   *  predates D-237. See {@link RunYield}. */
+  run_yield?: RunYield;
   /** D-232 § 20.19 — the WIRE NAME of the recipe grant that covered this run's
    *  steps, for a run the host dispatched on a granted recipe's behalf (today:
    *  an exchange fire's `run-ingredient` carrier). `<publisher>/<recipe_id>`.
@@ -1884,6 +1893,10 @@ export interface AuditEntryInput {
   exchange_peer_ack?: ExchangeAcknowledgement;
   /** D-234 § 234.2 — see {@link AuditEntry.exchange_callback_op}. */
   exchange_callback_op?: string;
+  /** See {@link AuditEntry.exchange_expected_contract_id}. */
+  exchange_expected_contract_id?: string;
+  /** D-237 P2 — see {@link AuditEntry.run_yield}. */
+  run_yield?: RunYield;
   /** D-232 § 20.19 — see {@link AuditEntry.granted_by_recipe}. */
   granted_by_recipe?: string;
   /** Run-anchor lifecycle state — a `RunAnchorStatus` (D-157 P1 widened
@@ -2037,6 +2050,16 @@ export const buildAuditEntry = (input: AuditEntryInput): AuditEntry => {
     ...(input.exchange_callback_op
       ? { exchange_callback_op: input.exchange_callback_op }
       : {}),
+    ...(input.exchange_expected_contract_id
+      ? { exchange_expected_contract_id: input.exchange_expected_contract_id }
+      : {}),
+    // D-237 P2 — ⛔ presence-checked, NOT truthiness-checked. Every other spread
+    // here is `? :` on the value itself, which is correct for strings but would
+    // be catastrophic for a yield: `{steps_run: 0, ...}` is a truthy object, but
+    // the moment anyone "tidies" this into a falsy-guard the all-zero run — the
+    // exact run this field exists to make visible — becomes indistinguishable
+    // from a pre-D-237 row again.
+    ...(input.run_yield !== undefined ? { run_yield: input.run_yield } : {}),
     // ⚠ `buildAuditEntry` is an ENUMERATING COPIER — it returns a literal, so a
     // field added to the interface and not to this list is dropped with NO type
     // error. `exchange_ref` was lost exactly here earlier this slice.

@@ -398,6 +398,10 @@ const projectAuditSummary = (entry: AuditEntry): RunAuditSummary => {
   if (entry.correlation_id !== undefined) out.correlation_id = entry.correlation_id;
   if (entry.checkpoint_id !== undefined) out.checkpoint_id = entry.checkpoint_id;
   if (entry.ask_id !== undefined) out.ask_id = entry.ask_id;
+  // D-237 P2 — ⛔ `!== undefined`, never a truthiness or emptiness guard like
+  // the `degraded` line below. An all-zero yield is the run this field exists to
+  // expose; dropping it here would put back the exact ambiguity P2 removes.
+  if (entry.run_yield !== undefined) out.run_yield = entry.run_yield;
   if (entry.degraded !== undefined && entry.degraded.length > 0) {
     out.degraded = [...entry.degraded];
   }

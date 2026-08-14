@@ -85,6 +85,14 @@ import {
   type TlsRenewPanelMount,
 } from './tls-renew-panel.js';
 import {
+  TLS_CERTIFICATES_PANEL_STYLES,
+  mountTlsCertificatesPanel,
+  type TlsCertificatesPanelMount,
+  type TlsDomainListCaller,
+  type TlsDomainRemoveCaller,
+  type TlsDomainUploadCaller,
+} from './tls-certificates.js';
+import {
   EXPOSURE_PANEL_STYLES,
   mountExposurePanel,
   type ExposureApplyPresetCaller,
@@ -228,16 +236,6 @@ import {
   type MaintenancePanelMount,
 } from './maintenance-panel-mount.js';
 import {
-  mountWorkEntitiesPanel,
-  WORK_ENTITIES_PANEL_STYLES,
-  type WorkEntitiesPanelMount,
-  type WorkEntitiesPanelClearDefaultCaller,
-  type WorkEntitiesPanelSetDefaultCaller,
-  type WorkEntitiesPanelSetEnabledCaller,
-  type WorkEntitiesPanelSetMcpExposedCaller,
-  type WorkEntitiesPanelSourceListCaller,
-} from './work-entities-panel-mount.js';
-import {
   HOSTNAMES_PANEL_STYLES,
   ddnsPauseWouldSelfDisconnect,
   mountHostnamesPanel,
@@ -253,6 +251,12 @@ import {
   type HostnamesVerifyOwnershipCaller,
   type NetworkLocalUrlsCaller,
 } from './hostnames.js';
+import {
+  mountCustomDomainsPanel,
+  type CustomDomainPreflightCaller,
+  type CustomDomainReadinessCaller,
+  type CustomDomainsPanelMount,
+} from './custom-domains.js';
 import {
   REACHABILITY_PANEL_STYLES,
   mountReachabilityPanel,
@@ -440,6 +444,17 @@ export interface BootstrapSettingsRouteOptions {
    *  the Server section is NOT rendered (gated mount; an empty
    *  placeholder would suggest a broken UI). */
   tlsRenewCaller?: TlsRenewCaller;
+  /** `tls_domain.list` / `.upload` / `.remove` callers for the Certificates
+   *  tab's installed-cert list + BYO upload form.
+   *
+   *  ⛔ List + upload are ONE gate, not two: a list with no way to add a
+   *  certificate is the exact dead end this panel exists to close (a user who
+   *  picks "Upload my own certificate" in Hostnames had nowhere to put the
+   *  cert). `tlsDomainRemoveCaller` IS independent — a host may wire read +
+   *  write without granting removal. */
+  tlsDomainListCaller?: TlsDomainListCaller;
+  tlsDomainUploadCaller?: TlsDomainUploadCaller;
+  tlsDomainRemoveCaller?: TlsDomainRemoveCaller;
   /** Slice 111 — optional `Date.now`-compatible seam forwarded to the
    *  TLS renew panel for deterministic flip-time formatting. */
   now?: () => number;
@@ -726,21 +741,6 @@ export interface BootstrapSettingsRouteOptions {
   housekeepingPanelDismissPromotionCaller?: HousekeepingDismissPromotionCaller;
   housekeepingPanelRegistryDescribeCaller?: HousekeepingRegistryDescribeCaller;
   housekeepingPanelTopicResetCaller?: HousekeepingTopicResetCaller;
-  /** D-145 PA11 — Settings → Work Entities panel callers. The panel
-   *  mounts only when ALL FIVE are wired, and deliberately has no
-   *  read-only degradation: `renderWorkEntitySourceRow` paints both
-   *  toggles unconditionally, so a missing write seam would render a
-   *  live-looking checkbox that silently does nothing. All-or-nothing
-   *  is the honest posture (see `work-entities-panel-mount.ts` DD#3).
-   *  `set_mcp_exposed` is the load-bearing one: it is the ONLY way to
-   *  flip a Source's `mcp_exposed` (boots `false`), which is what
-   *  gates whether `work.search` / `work.read` return any row at all
-   *  to an external MCP door. */
-  workEntitiesPanelSourceListCaller?: WorkEntitiesPanelSourceListCaller;
-  workEntitiesPanelSetEnabledCaller?: WorkEntitiesPanelSetEnabledCaller;
-  workEntitiesPanelSetMcpExposedCaller?: WorkEntitiesPanelSetMcpExposedCaller;
-  workEntitiesPanelSetDefaultCaller?: WorkEntitiesPanelSetDefaultCaller;
-  workEntitiesPanelClearDefaultCaller?: WorkEntitiesPanelClearDefaultCaller;
   /** D-152 P6 — `collection.hostname.list` rpc caller forwarded to the
    *  Server section's Hostnames panel. Production wires
    *  `() => conn('collection.hostname.list', undefined)`. The Hostnames panel
@@ -762,6 +762,11 @@ export interface BootstrapSettingsRouteOptions {
   /** D-152 P6 — `collection.hostname.verifyOwnership` rpc caller. Required
    *  alongside the rest of the Hostnames panel caller group. */
   hostnamesVerifyOwnershipCaller?: HostnamesVerifyOwnershipCaller;
+  /** D-235 P5 — Settings → Server → Domains. Independent of the hostname-CRUD
+   *  bundle: checking DNS needs no write capability, so the diagnostics stay
+   *  available even on a surface where the CRUD callers are gated off. */
+  customDomainPreflightCaller?: CustomDomainPreflightCaller;
+  customDomainReadinessCaller?: CustomDomainReadinessCaller;
   /** LAN-URL kickstart (slice 2) — `network.local_urls` rpc caller for the
    *  Hostnames panel's read-only "Reachable on your network" section. Forwarded
    *  independently of the hostname CRUD caller group (the section is a separate
@@ -837,6 +842,10 @@ export interface SettingsRoute {
    *  TLS renew button without reaching into the route's internal DOM;
    *  hosts use it to wire telemetry sinks post-mount. */
   tlsRenewPanel(): TlsRenewPanelMount | null;
+  /** Expose the Certificates tab's installed-cert list + BYO upload panel.
+   *  Returns `null` when the bootstrap omitted `tlsDomainListCaller` /
+   *  `tlsDomainUploadCaller`. Tests drive the upload flow through it. */
+  tlsCertificatesPanel(): TlsCertificatesPanelMount | null;
   /** R26.4 Delta 3 — expose the Server section's Key Health panel mount.
    *  Returns `null` when the bootstrap omitted `keyHealthLoader` /
    *  `keyRotateCaller`. Tests drive the rotation flow through it without
@@ -1202,6 +1211,10 @@ export const bootstrapSettingsRoute = (
       DEVICES_PAGE_STYLES,
       CLEAR_THIS_BROWSER_PANEL_STYLES,
       TLS_RENEW_PANEL_STYLES,
+      // The installed-cert list + BYO upload form. Selectors scope to
+      // `[data-recued-tls-certs-panel]`, so the rules are inert when the
+      // bootstrap omits the `tls_domain.*` callers + the panel never mounts.
+      TLS_CERTIFICATES_PANEL_STYLES,
       // R26.2 Delta 1 — `EXPOSURE_PANEL_STYLES` joins the bundle so a cold
       // `#settings/server` load renders the Exposure grid fully styled.
       // Selectors scope to `[data-recued-exposure-panel]`, so the rules are
@@ -1259,12 +1272,6 @@ export const bootstrapSettingsRoute = (
       // styled. Selectors scope to `.housekeeping-*` so the rules are
       // inert when the bootstrap omits the panel callers + it never mounts.
       HOUSEKEEPING_PANEL_STYLES,
-      // D-145 PA11 — `WORK_ENTITIES_PANEL_STYLES` joins the bundle so a
-      // cold `#settings/work-entities` load renders styled. Selectors
-      // scope to `.rx-work-entities-*` / `.rx-source-row-*`, so the
-      // rules are inert when the bootstrap omits the panel callers + it
-      // never mounts.
-      WORK_ENTITIES_PANEL_STYLES,
     ].join('\n');
     doc.head.appendChild(style);
   }
@@ -1836,38 +1843,6 @@ export const bootstrapSettingsRoute = (
   }
 
   // ── Work Entities section (D-145 PA11) ───────────────────────────
-  // Per-kind Source registry: enable/disable, MCP exposure, and the
-  // per-kind default Source. The renderer + its state + its tests
-  // shipped with PA11; this mount is what finally puts them on screen.
-  //
-  // ALL FIVE seams are required — there is no read-only degradation
-  // (`work-entities-panel-mount.ts` DD#3): the Source row paints both
-  // toggles unconditionally, so mounting half-wired would render a
-  // live-looking checkbox that silently does nothing. Nothing renders
-  // rather than a dead control.
-  let workEntitiesPanel: WorkEntitiesPanelMount | null = null;
-  const weList = opts.workEntitiesPanelSourceListCaller;
-  const weSetEnabled = opts.workEntitiesPanelSetEnabledCaller;
-  const weSetMcpExposed = opts.workEntitiesPanelSetMcpExposedCaller;
-  const weSetDefault = opts.workEntitiesPanelSetDefaultCaller;
-  const weClearDefault = opts.workEntitiesPanelClearDefaultCaller;
-  if (weList && weSetEnabled && weSetMcpExposed && weSetDefault && weClearDefault) {
-    const weSection = doc.createElement('section');
-    weSection.setAttribute(SETTINGS_ROUTE_SECTION_ATTR, 'work-entities');
-    // No section-level <h2>: the panel renders its own header, so a
-    // second heading here would double-title (mirrors housekeeping).
-    const weHost = doc.createElement('div');
-    weSection.appendChild(weHost);
-    registerSubview('work-entities', 'Work Entities', weSection);
-    workEntitiesPanel = mountWorkEntitiesPanel({
-      host: weHost,
-      runSourceList: weList,
-      runSetEnabled: weSetEnabled,
-      runSetMcpExposed: weSetMcpExposed,
-      runSetDefault: weSetDefault,
-      runClearDefault: weClearDefault,
-    });
-  }
 
   // ── Privacy section (directory — R29) ─────────────────────────────
   // Recued's privacy model is architectural: your data lives on your
@@ -2193,9 +2168,11 @@ export const bootstrapSettingsRoute = (
   // Future Server surfaces (Reachability Doctor, ACME status) can
   // append into the same section host under the same gate.
   let tlsRenew: TlsRenewPanelMount | null = null;
+  let tlsCertificates: TlsCertificatesPanelMount | null = null;
   let certPinStale: CertPinStalePanelMount | null = null;
   let keyHealth: KeyHealthPanelMount | null = null;
   let hostnames: HostnamesPanelMount | null = null;
+  let customDomains: CustomDomainsPanelMount | null = null;
   let reachability: ReachabilityPanelMount | null = null;
   let exposure: ExposurePanelMount | null = null;
   let maintenance: MaintenancePanelMount | null = null;
@@ -2249,8 +2226,13 @@ export const bootstrapSettingsRoute = (
     // owner couldn't find), and the default tab on a cold `#settings/server`
     // load. TLS renew + cert-pin overlap share the Certificates tab (both
     // are cert lifecycle).
+    const canMountTlsCertificates =
+      opts.tlsDomainListCaller !== undefined
+      && opts.tlsDomainUploadCaller !== undefined;
     const hasCertificates =
-      opts.tlsRenewCaller !== undefined || opts.certPinWatcher !== undefined;
+      opts.tlsRenewCaller !== undefined
+      || opts.certPinWatcher !== undefined
+      || canMountTlsCertificates;
     const serverHosts = buildSectionTabs(
       serverSection,
       [
@@ -2276,9 +2258,24 @@ export const bootstrapSettingsRoute = (
     );
 
     if (canMountExposure) {
+      // The Exposure panel's "Connection example" needs the paired server URL,
+      // but `localStore` is async and the mount is synchronous — so read it
+      // fire-and-forget into a local the panel reads at RENDER time. Absent
+      // (read fails, or never paired) ⇒ the button simply does not render,
+      // which is the intended fail-quiet: a snippet naming a guessed host is
+      // worse than no snippet.
+      let exposureServerUrl: string | undefined;
+      void (async () => {
+        try {
+          exposureServerUrl = (await opts.localStore.get('server_url')) ?? undefined;
+        } catch {
+          exposureServerUrl = undefined;
+        }
+      })();
       exposure = mountExposurePanel({
         host: serverHosts['exposure']!,
         document: doc,
+        getServerUrl: () => exposureServerUrl,
         // All four narrowed above by `canMountExposure`.
         runGet: opts.exposureGetCaller as ExposureGetCaller,
         runApplyPreset: opts.exposureApplyPresetCaller as ExposureApplyPresetCaller,
@@ -2368,10 +2365,61 @@ export const bootstrapSettingsRoute = (
         // chip's relative copy is deterministic in tests.
         ...(opts.now !== undefined ? { now: opts.now } : {}),
       });
+
+      // D-235 P5 — the Domains flow, mounted under the same Server → Hostnames
+      // host and BELOW the registry list: a user arrives here having already
+      // seen their existing hostnames, and the bring-your-own-domain path is
+      // the thing they came to add.
+      if (opts.customDomainPreflightCaller !== undefined) {
+        const domainsHost = doc.createElement('div');
+        serverHosts['hostnames']!.appendChild(domainsHost);
+        customDomains = mountCustomDomainsPanel({
+          host: domainsHost,
+          document: doc,
+          runPreflight: opts.customDomainPreflightCaller,
+          ...(opts.customDomainReadinessCaller !== undefined
+            ? { runReadiness: opts.customDomainReadinessCaller }
+            : {}),
+          // ⚠ Enrolment reuses the EXISTING add caller rather than a second
+          //   one — one write path, one place where a hostname row is created,
+          //   so the two surfaces cannot drift into disagreeing about what an
+          //   enrolment is.
+          ...(opts.hostnamesAddCaller !== undefined
+            ? {
+                runEnrol: async (args) => {
+                  const result = await opts.hostnamesAddCaller!(args);
+                  return result;
+                },
+                onEnrolled: () => { void hostnames?.refresh?.(); },
+              }
+            : {}),
+        });
+      }
     }
 
     if (hasCertificates) {
       const certsHost = serverHosts['certificates']!;
+      // First in the tab: the installed-cert list + the BYO upload form. It
+      // leads because it is the only thing on this tab a user can be BLOCKED
+      // on — renewal and pin-staleness are both about certs that already
+      // exist. `onUploaded` refreshes Hostnames so the row's cert-expiry chip
+      // reflects the upload without a reload.
+      if (canMountTlsCertificates) {
+        const certsPanelHost = doc.createElement('div');
+        certsHost.appendChild(certsPanelHost);
+        tlsCertificates = mountTlsCertificatesPanel({
+          host: certsPanelHost,
+          document: doc,
+          runList: opts.tlsDomainListCaller!,
+          runUpload: opts.tlsDomainUploadCaller!,
+          ...(opts.tlsDomainRemoveCaller !== undefined
+            ? { runRemove: opts.tlsDomainRemoveCaller }
+            : {}),
+          ...(opts.now !== undefined ? { now: opts.now } : {}),
+          onUploaded: () => { void hostnames?.refresh?.(); },
+        });
+      }
+
       if (opts.tlsRenewCaller !== undefined) {
         const tlsPanelHost = doc.createElement('div');
         certsHost.appendChild(tlsPanelHost);
@@ -2587,7 +2635,9 @@ export const bootstrapSettingsRoute = (
       if (certPinStale !== null) certPinStale.dispose();
       if (keyHealth !== null) keyHealth.dispose();
       if (tlsRenew !== null) tlsRenew.dispose();
+      if (tlsCertificates !== null) tlsCertificates.dispose();
       if (hostnames !== null) hostnames.dispose();
+      if (customDomains !== null) customDomains.destroy();
       if (reachability !== null) reachability.dispose();
       // R26.2 Delta 1 — the Exposure grid was constructed first in the
       // Server section; its dispose drops the `exposure_changed` broadcast
@@ -2595,7 +2645,6 @@ export const bootstrapSettingsRoute = (
       if (exposure !== null) exposure.dispose();
       if (maintenance !== null) maintenance.dispose();
       if (housekeepingPanel !== null) housekeepingPanel.dispose();
-      if (workEntitiesPanel !== null) workEntitiesPanel.dispose();
       // Permissions and Connections now live on top-level routes; their legacy
       // Settings accessors remain null, so there is no Settings child mount to
       // tear down here.
@@ -2620,6 +2669,7 @@ export const bootstrapSettingsRoute = (
     },
     clearThisBrowserPanel: () => panel,
     tlsRenewPanel: () => tlsRenew,
+    tlsCertificatesPanel: () => tlsCertificates,
     keyHealthPanel: () => keyHealth,
     exposurePanel: () => exposure,
     certPinStalePanel: () => certPinStale,

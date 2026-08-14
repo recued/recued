@@ -92,6 +92,9 @@ export interface StartServeHousekeepingSchedulerOptions {
   /** D-225 § 12 — the pre-built mcp tool-drift probe deps. Undefined on a boot
    *  without the connection substrate ⇒ the task doesn't register. */
   readonly mcpToolsDriftProbeDeps?: ComposeHousekeepingSchedulerDeps['mcpToolsDriftProbeDeps'];
+  /** D-225 auto-mint — the pre-built first-mint sweep deps. Undefined on a boot
+   *  without the connection substrate ⇒ the task doesn't register. */
+  readonly mcpPackFirstMintDeps?: ComposeHousekeepingSchedulerDeps['mcpPackFirstMintDeps'];
 }
 
 export const startSchedulers = (

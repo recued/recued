@@ -16,6 +16,7 @@ const LANDING = 'peer-appointment-reply';
 const ours = (over: Partial<ExchangeCorrelationRow> = {}): ExchangeCorrelationRow => ({
   recipe_id: 'request-peer-appointment',
   callback_op: `recued-core/${LANDING}`,
+  expected_contract_id: PEER,
   ...over,
 });
 
@@ -45,6 +46,11 @@ describe('D-234 § 234.2 — a reply we asked for', () => {
      *  run under the ref as proof we asked — bootstrapping themselves past the
      *  ceiling with nothing but their own traffic. */
     expect(ask([theirs({ callback_op: `recued-core/${LANDING}` })])).toBe(false);
+  });
+
+  it('⛔⛔ an exchange addressed to another peer does not admit this caller', () => {
+    expect(ask([ours({ expected_contract_id: 'ct_peer_bob' })])).toBe(false);
+    expect(ask([ours({ expected_contract_id: undefined })])).toBe(false);
   });
 
   it('⛔⛔ a ref alone does NOT admit any recipe they can reach', () => {

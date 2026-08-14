@@ -46,6 +46,11 @@ import {
   crmRefFields,
   composePlatformRecordTargetId,
   executionSourceContractId,
+  // D-237 P1 — the per-instance freshness verdict the AI-facing collection
+  // reads now carry, alongside the CRM trio's `crm_freshness`.
+  collectionSourceFreshnessFanOut,
+  type CollectionHealth,
+  type CollectionSourceFreshnessEntry,
   type ExecutionSource,
   type ChatConfidenceEnvelope,
   type ChatContactCandidate,
@@ -162,6 +167,11 @@ export type ChatRecipeExecutor = (request: ExecuteRequest) => Promise<ExecuteRes
  *  stores wired after the chat orchestrator (enrichment, the enrichment-
  *  visibility resolver, the executor composite) are picked up live. */
 export interface ChatToolHandlerDeps {
+  /** D-237 P1 — injectable clock for the source-freshness verdicts the
+   *  collection reads now carry. Absent ⇒ `Date.now`, matching every D-236 call
+   *  site. Present so a test can pin an age rather than infer one from wall
+   *  clock, which is how a staleness assertion becomes a flake. */
+  now?: () => number;
   getContactStore: () => ContactStore | undefined;
   getCollectionRegistry: () => CollectionRegistry | undefined;
   /** D-172 P2 — the session's own message rows, for `file.search`'s default
@@ -236,6 +246,13 @@ export interface ChatToolHandlerDeps {
    *  before dispatch. Optional for tests / dbless harnesses; absent
    *  means Tier 3 dispatch fails closed with `unknown_tool`. */
   getConnectionMcpAnnotations?: () => ReadonlyArray<ConnectionMcpAnnotationState> | undefined;
+  /** D-228 slice 3 — which upstream MCP tools a governed pack op already
+   *  reaches, for the connection named. The SAME lookup the chat catalog
+   *  consults, so a name the catalog withdrew cannot be dispatched anyway.
+   *
+   *  ⛔ Absent ⇒ no suppression, matching the catalog's own absent branch. The
+   *  two must agree on that default or a tool would be advertised and refused. */
+  connectionMcpPackCoverage?: (connection_name: string) => ReadonlySet<string> | undefined;
   /** D-187 AMENDMENT — per-contract read-grant resolver. Threaded into the
    *  channel-aware gate for `enrichment.search` so Settings → MCP grant toggles take
    *  effect against external-agent dispatches the way they do for the
@@ -1034,7 +1051,10 @@ const createMailSearchHandler =
         : undefined;
     const collections = registry.list().filter((c) => c.platform === 'mail');
     if (collections.length === 0) {
-      return { ok: true, result: { matches: [], collections: [] } };
+      // D-237 P1 — no mailbox is enrolled. `collections: []` is the fact, and
+      // `source_freshness: []` must not be read as "the sources are fine": the
+      // two empties answer different questions and the descriptor says so.
+      return { ok: true, result: { matches: [], collections: [], source_freshness: [] } };
     }
     try {
       // FTS5 path when the agent supplied a free-text query. Hot-field
@@ -1088,11 +1108,19 @@ const createMailSearchHandler =
       // for FTS path stays the natural FTS5 BM25 order; hot-field path
       // keeps registration order across collections).
       const truncated = aggregated.slice(0, limit);
+      // D-237 P1 — the verdict rides out with the records it qualifies, exactly
+      // as D-236 made it ride `collection.list`. An empty `matches` here is an
+      // ABSENCE, and an absence is only a fact once you know the source was
+      // current when it was read.
       return {
         ok: true,
         result: {
           matches: truncated,
           collections: collections.map((c) => c.slug),
+          source_freshness: collectionSourceFreshnessFanOut(
+            collections,
+            (deps.now ?? Date.now)(),
+          ),
         },
       };
     } catch (e) {
@@ -1147,7 +1175,9 @@ const createCalendarSearchHandler =
       .filter((c) => c.platform === 'calendar')
       .filter(isCalendarCollection);
     if (collections.length === 0) {
-      return { ok: true, result: { matches: [], collections: [] } };
+      // D-237 P1 — see `mail.search`: no calendar enrolled is a different fact
+      // from an enrolled calendar that is behind.
+      return { ok: true, result: { matches: [], collections: [], source_freshness: [] } };
     }
     try {
       const perCollectionLimit = Math.max(
@@ -1195,11 +1225,19 @@ const createCalendarSearchHandler =
         }
       }
       const truncated = aggregated.slice(0, limit);
+      // D-237 P1 — calendar reads its own `CalendarCollectionTable` rather than
+      // the `collection.list` path, exactly as `calendar-dispatcher.ts` does, so
+      // the verdict is DERIVED here from the same `health()` rather than
+      // approximated or omitted.
       return {
         ok: true,
         result: {
           matches: truncated,
           collections: collections.map((c) => c.slug),
+          source_freshness: collectionSourceFreshnessFanOut(
+            collections,
+            (deps.now ?? Date.now)(),
+          ),
         },
       };
     } catch (e) {
@@ -1547,12 +1585,34 @@ const createFileSearchHandler =
     if (!args) return invalidArgs('args must be an object');
 
     const registry = deps.getCollectionRegistry();
+    // D-237 P1 — `health` is widened into the structural cast so this handler
+    // can reach the same verdict the collection reads carry. ⚠ Typed
+    // non-optional deliberately: if the object somehow has no `health`, the
+    // call throws INSIDE `collectionSourceFreshnessOf`'s try and yields the
+    // never-synced/stale verdict — which is the direction this fact must always
+    // fail, and is why no extra guard is written here.
     const collection = registry?.get('file', DATA_FILE_RECEIVED_SLUG) as
-      | { get(id: string): unknown; list?: (limit?: number) => unknown[] }
+      | {
+          get(id: string): unknown;
+          list?: (limit?: number) => unknown[];
+          health: () => CollectionHealth;
+        }
       | undefined;
     if (!collection) {
-      return { ok: true, result: { files: [], hint: 'the file store is not available on this server' } };
+      return {
+        ok: true,
+        result: {
+          files: [],
+          source_freshness: [],
+          hint: 'the file store is not available on this server',
+        },
+      };
     }
+    const fileSourceFreshness = (): CollectionSourceFreshnessEntry[] =>
+      collectionSourceFreshnessFanOut(
+        [{ slug: DATA_FILE_RECEIVED_SLUG, health: collection.health }],
+        (deps.now ?? Date.now)(),
+      );
 
     const rawScope = typeof args.scope === 'string' ? args.scope : 'session';
     // An unrecognized scope falls back to the NARROW one. A typo must never be
@@ -1575,6 +1635,7 @@ const createFileSearchHandler =
           result: {
             files: [],
             scope,
+            source_freshness: fileSourceFreshness(),
             hint: 'no conversation files are readable here — this turn has no session context',
           },
         };
@@ -1604,11 +1665,16 @@ const createFileSearchHandler =
     const truncated = rows.length > limit;
     rows = rows.slice(0, limit);
 
+    // D-237 P1 — session scope reads the conversation's attachments THROUGH the
+    // file collection (`collection.get`), and a referenced file whose record has
+    // not landed yet is SKIPPED by design a few lines up. So a lagging file
+    // source silently shortens this list, and the verdict qualifies both scopes.
     return {
       ok: true,
       result: {
         files: rows,
         scope,
+        source_freshness: fileSourceFreshness(),
         ...(truncated ? { truncated: true } : {}),
         // The scope is stated back on EVERY result, not just when widened. A
         // model that forgot which set it searched will otherwise report an
@@ -2858,139 +2924,32 @@ export const createChatTier2Dispatch =
 // Tier 3 dispatch (`<connection_name>.<mcp_tool_name>`)
 // ────────────────────────────────────────────────────────────────
 
-type Tier3DispatchTarget =
-  | {
-      ok: true;
-      connection_name: string;
-      tool_name: string;
-      classification: 'read' | 'write';
-    }
-  | {
-      ok: false;
-      result: ChatDispatchResult;
-    };
-
-const resolveTier3DispatchTarget = (
-  formattedName: string,
-  annotations: ReadonlyArray<ConnectionMcpAnnotationState>,
-): Tier3DispatchTarget => {
-  const dot = formattedName.indexOf('.');
-  if (dot <= 0 || dot === formattedName.length - 1) {
-    return {
-      ok: false,
-      result: invalidArgs(
-        `malformed Tier 3 tool name "${formattedName}" — expected "<connection_name>.<tool_name>"`,
-      ),
-    };
-  }
-  const connectionName = formattedName.slice(0, dot);
-  const upstreamToolName = formattedName.slice(dot + 1);
-  for (const ann of annotations) {
-    if (ann.connection_name !== connectionName) continue;
-    const descriptor = ann.tools_list_cache.tools.find(
-      (d) =>
-        d.name === upstreamToolName
-        && formatTier3ToolName(ann.connection_name, d.name) === formattedName,
-    );
-    if (!descriptor) break;
-    const override = ann.tool_overrides[descriptor.name];
-    if (!override || !override.enabled || override.classification === 'unknown') {
-      return {
-        ok: false,
-        result: {
-          ok: false,
-          reason: 'classification_blocked',
-          detail: `Tier 3 tool '${formattedName}' is no longer enabled and classified`,
-        },
-      };
-    }
-    return {
-      ok: true,
-      connection_name: ann.connection_name,
-      tool_name: descriptor.name,
-      classification: override.classification,
-    };
-  }
-  return {
-    ok: false,
-    result: {
-      ok: false,
-      reason: 'unknown_tool',
-      detail: `no live Tier 3 annotation for tool name "${formattedName}"`,
-    },
-  };
-};
-
-export const createChatTier3Dispatch =
-  (deps: ChatToolHandlerDeps): Tier3Handler =>
-  async (toolName, raw, ctx) => {
-    const annotations = deps.getConnectionMcpAnnotations?.() ?? [];
-    const target = resolveTier3DispatchTarget(toolName, annotations);
-    if (!target.ok) return target.result;
-    const args = asObject(raw);
-    if (!args) return invalidArgs('args must be an object');
-    const execute = deps.getExecuteRecipe();
-    if (!execute) return executionError('recipe executor unavailable');
-    // D-177 P2b — route the outbound MCP call through the run-ingredient
-    // kernel recipe + `handleExecute` (the same path Tier 1 `recipe.run` /
-    // Tier 2 / MCP per-ingredient dispatches take) instead of calling the
-    // connection adapter directly. The N.12 scan found the direct path
-    // audited but UNGATED — no commit, no policy verdict, no ask. Through
-    // the engine, the dispatch gets the full boundary: the P1b envelope
-    // hashes stamp onto a pending commit, the per-call admission probe
-    // evaluates the `(channel × actor)` cell, and a write-classified call
-    // holds for preflight approval (`connection-mcp-write` is in
-    // `OUTBOUND_SEND_INGREDIENT_SLUGS`) with the engine's checkpoint /
-    // resume / session-grant machinery — no second enforcement path.
-    //
-    // Mary's per-tool `read` / `write` classification picks the kernel
-    // dispatch manifest, so the manifest `risk_tier` carries the
-    // classification into the verdict; the server's connection-adapter
-    // gate re-checks the classification at dispatch depth (a recipe
-    // binding the slug directly cannot launder a write-classified tool
-    // through the read-tier surface).
-    const ingredient_slug =
-      target.classification === 'write'
-        ? CONNECTION_MCP_WRITE_SLUG
-        : CONNECTION_MCP_READ_SLUG;
-    const req: ExecuteRequest = {
-      recipe: RUN_INGREDIENT_RECIPE as unknown as Record<string, unknown>,
-      config: {
-        ingredient_slug,
-        input: {
-          connection_kind: 'mcp',
-          connection: target.connection_name,
-          tool: target.tool_name,
-          args,
-        },
-      },
-      trigger_source: channelTriggerSource(ctx),
-      ...(ctx.execution_source ? { execution_source: ctx.execution_source } : {}),
-      ...(ctx.contract_snapshot ? { contract_snapshot: ctx.contract_snapshot } : {}),
-      // The I-7 hop token rides beside the source (D-160 P3) — same
-      // truth-telling as the Tier 2 builder above.
-      ...(ctx.dispatch_depth !== undefined ? { dispatch_depth: ctx.dispatch_depth } : {}),
-    };
-    try {
-      const result = await execute(req);
-      // A run HELD at the preflight gate projects to the same honest
-      // `awaiting_approval` shape Tier 1/2 dispatches surface (the
-      // shared `projectRunResultForAgent`); engine-styled errors pass
-      // through the run result like every other recipe dispatch.
-      // D-181 § 9 — the cancellation echo must name the tool the AGENT
-      // called (`<connection>.<tool>`), not the run-ingredient kernel
-      // recipe that `result.recipe_id` carries on this path.
-      return wrapRecipeRunResult(result, [target.connection_name, target.tool_name].join('.'));
-    } catch (e) {
-      return executionError(errMessage(e));
-    }
-  };
+/** ⛔⛔ D-228 slice 4 — THE TIER-3 DISPATCH IS GONE, and its absence is the
+ *  point.
+ *
+ *  It resolved `<connection>.<tool>` against `tool_overrides` — the chat
+ *  PRESENTATION store — and dispatched through the `connection-mcp-*` kernel
+ *  slugs at whatever tier the owner had typed there. D-225 named that surface as
+ *  the standing defect: one enrolled MCP tool was reachable from chat twice,
+ *  through two different gates, so the owner's single decision about it was
+ *  enforced by whichever one the model happened to pick.
+ *
+ *  🔑 The replacement was already live before this deletion: the tool's
+ *  generated pack operation, in the catalog as `recued_op_*`, governed by the
+ *  contract and dispatched by `createChatRawOpDispatch`. Slice 3 stood Tier-3
+ *  down per tool as packs covered them; this removes what was left.
+ *
+ *  ⚠ `Tier3Handler` still exists in the registry's vocabulary and this file no
+ *  longer supplies one. That is deliberate — see `buildChatToolRegistryInputs`. */
 
 // ────────────────────────────────────────────────────────────────
 // work.search / work.read — D-192 read-resolution consumers. Thin
-// adapters over the neutral core (`work-entity-read-tools.ts`); the
-// ctx threads through so the core applies the per-channel exposure
-// axis (`mcp_wire` → `mcp_exposed`-filtered, owner chat → ungated).
+// adapters over the neutral core (`work-entity-read-tools.ts`). Read
+// authority is the contract: `core.work-entity.read` (owner-on /
+// door-off) ∧ the `data.<kind>` collection grant, both applied here.
+// The former per-channel exposure axis (`mcp_wire` → `mcp_exposed`-
+// filtered, owner chat → ungated) is GONE with the flag itself
+// (D-187 Sources half); both channels resolve the same two grants.
 // ────────────────────────────────────────────────────────────────
 
 /** The `core.work-entity.read` grant op governing the Tier-1 work READ tools. */
@@ -3386,7 +3345,11 @@ export const buildChatToolRegistryInputs = (deps: ChatToolHandlerDeps) => ({
   tier2Source: createChatTier2Source(deps),
   manifestLookup: createChatManifestLookup(deps),
   tier2Dispatch: createChatTier2Dispatch(deps),
-  tier3Dispatch: createChatTier3Dispatch(deps),
+  // ⛔ D-228 slice 4 — NO `tier3Dispatch`. The registry's parameter is optional
+  // and the catalog now emits no tier-3 entry, so a dispatch could only ever be
+  // reached by a name nothing advertised. Supplying a handler that refuses
+  // everything would be a second, silent gate; supplying none says the surface
+  // does not exist, which is the truth.
   rawOpSource: createChatRawOpSource(deps),
   rawOpDispatch: createChatRawOpDispatch(deps),
 });

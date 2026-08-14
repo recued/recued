@@ -28,6 +28,7 @@
 
 import { GENERATED_PACK_PUBLISHER } from './ingredient.js';
 import { OWNER_CONTRACT_ID } from './contract-definition.js';
+import { isPackOp } from './op-model.js';
 
 /** The three-state grant rule. `explicit` is the contract's stored value for the
  *  entry — `true` (grant) / `false` (explicit revoke) / `undefined` (no row). A
@@ -98,6 +99,13 @@ export const OWNER_DEFAULT_ONLY_GRANT_ENTRIES: ReadonlySet<string> = new Set([
   // between a door and the owner's whole work graph was the per-Source
   // `mcp_exposed` flag — which is GLOBAL, not per-door.
   //
+  // 🔑 That flag is now DELETED (D-187 Sources half, D-187 § 11),
+  // so this membership is no longer the BETTER of two gates — it is the ONLY
+  // one. Removing `core.work-entity.read` from this set opens the owner's whole
+  // work graph to every door, including a wildcard one. Pinned end-to-end
+  // through the owner's real grants panel by
+  // `apps/webclient/src/__tests__/d-174-p3-contract-grants.test.ts`.
+  //
   // ⚠ This does NOT contradict the 2026-07-12 raw-collection ruling ("raw
   // collections stay author-default ADMIT … do not harden it by adding
   // `data.contact` to OWNER_DEFAULT_ONLY"). That ruling governs the DATA axis,
@@ -122,7 +130,38 @@ export const OWNER_DEFAULT_ONLY_GRANT_ENTRIES: ReadonlySet<string> = new Set([
  *  ({@link OWNER_DEFAULT_ONLY_GRANT_ENTRIES}). */
 export const isOwnerDefaultOnlyEntry = (entryKey: string): boolean =>
   OWNER_DEFAULT_ONLY_GRANT_ENTRIES.has(entryKey)
-  || isGeneratedPackOpEntry(entryKey);
+  || isThirdPartyPackOpEntry(entryKey);
+
+/** § 234.4p.16e — EVERY Tier-P pack op is owner-default-only, not just a
+ *  runtime-generated one.
+ *
+ *  ⛔⛔ THE GENERALISATION OF D-225 § 9.6, AND FOR ITS OWN REASON. That rule
+ *  closed the wildcard hole for GENERATED packs because a third party can add a
+ *  tool at any time. The same sentence is true of an ORDINARY installed pack:
+ *  its ops are a third party's declaration, a pack update can add one, a new op
+ *  has no grant row, and `opAuthorDefault` reads a wildcard door as permissive —
+ *  so the new op is admitted and the owner never acted. The only thing that made
+ *  generated packs special was that they were noticed first.
+ *
+ *  🔑 IT IS WHAT MAKES "WIDEN THE CONTRACT PATH" SAFE. Raw pack ops are now
+ *  reachable at any bound door through `isOpGranted` (`mcp-server.ts`), instead
+ *  of being structurally ungrantable via the per-token checklist. Without this
+ *  tighten that widening would hand a WILDCARD door every installed pack's ops
+ *  with no grant row anywhere — the loosening the door change must not smuggle
+ *  in. Owner ruling 2026-08-13: an op reaches a door by an EXPLICIT ROW, never
+ *  by an author default.
+ *
+ *  ⛔ KERNEL ops are deliberately NOT covered (`isPackOp`, not `isOpGrantEntry`).
+ *  `core.*` is Recued's own surface, not a third party's, and sweeping it in
+ *  would silently revoke every wildcard door's primitives — a much larger
+ *  behaviour change wearing the same commit. TIGHTEN ONLY WHAT THE REASON
+ *  COVERS.
+ *
+ *  ⚠ A TIGHTEN, so it can only turn a permissive default into a deny for a door,
+ *  never the reverse — an explicit grant row still wins, and the OWNER is
+ *  unaffected. */
+export const isThirdPartyPackOpEntry = (entryKey: string): boolean =>
+  isGeneratedPackOpEntry(entryKey) || isPackOp(entryKey);
 
 /** D-225 § 9.6 — every op of a RUNTIME-GENERATED pack is owner-default-only.
  *

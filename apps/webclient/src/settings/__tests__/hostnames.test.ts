@@ -532,6 +532,10 @@ describe('D-152 P6 hostnames panel', () => {
       hostname: 'token.example',
       cert_source: 'byo_external',
       enabled: true,
+      // The add form now STATES the listener ports rather than letting the
+      // registry's `normalizePorts` substitute `[443]` silently — the request
+      // carries the field on every add, defaulted or not.
+      listener_ports: [443],
       verification_method: 'dns_txt',
       verification_token_hash: 'sha256:expected',
     });

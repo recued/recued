@@ -264,8 +264,9 @@ export interface ContactSourceHealth {
    *  `${declaration.display_name} (${connection.name})` — e.g. "HubSpot (work)".
    *  ⚠ Read this; do NOT re-parse `source_id`. */
   source_label: string;
-  /** A disabled Source is not a broken one — it simply is not running. */
-  enabled: boolean;
+  /* ⛔ No `enabled` — the per-Source toggle was deleted (D-187 Sources half).
+   *  A Source is declared by a PACK, so "is it running" is answered by whether
+   *  the pack is installed, not by a flag on the health strip. */
   /** The last CLEAN cycle. A DEGRADED cycle does not bump it, so a broken Source
    *  reads stale however recently it ran. Null = never synced. */
   last_success_at: number | null;

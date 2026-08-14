@@ -12,7 +12,13 @@ import {
   isHostnameCertSource,
   isHostnameOwnershipStatus,
   isHostnameVerificationMethod,
+  evaluateCustomDomainIssuanceEligibility,
   projectHostname,
+  zoneByLabel,
+  type CustomDomainIssuanceReadinessRequest,
+  type CustomDomainIssuanceReadinessResponse,
+  type CustomDomainPreflightRequest,
+  type CustomDomainPreflightResponse,
   type HandlerSlice,
   type HostnameAddRequest,
   type HostnameCertChainMetadata,
@@ -28,7 +34,13 @@ import {
   type ServerRpcRegistry,
 } from '@recued/contracts';
 import type { InitialAcmeDomainIssuer } from './keys/rotation/acme-domain-renewer.js';
+import type { TlsRenewalFailureReason } from './keys/rotation/index.js';
 import { applyHostnameOwnershipProof } from './hostname/ownership-proof.js';
+import {
+  createNodeCustomDomainDnsResolver,
+  runCustomDomainPreflight,
+  type CustomDomainDnsResolver,
+} from './hostname/custom-domain-preflight.js';
 import {
   HostnameRegistryError,
   type HostnameRegistryStore,
@@ -36,10 +48,34 @@ import {
 } from './storage/hostname-registry.js';
 import type { WsClient } from './ws-server.js';
 
+/** D-235 P1 — the server's own Pro DDNS binding. Preflight derives the
+ *  delegation target from THIS, never from the request: a caller that could
+ *  name the handle could ask us to certify that someone else's domain is
+ *  correctly delegated to a zone they don't hold. */
+export interface HostnameProDdnsBinding {
+  handle: string;
+  /** `DdnsZone.label` (e.g. `net`). Absent ⇒ the registry default. */
+  zone_label?: string;
+  /** D-235 P2 § 3.2 gate 4 — is the reservation currently paid for?
+   *
+   *  ⚠ Computed by the composer, not here: `grace` is deliberately NOT active.
+   *  The cloud pulls a lapsed subscription's DNS records, so DNS-01 cannot
+   *  validate and every attempt would burn CA quota to fail — the same call
+   *  `wire-pro-cert-enrollment.ts` already makes for the fleet-zone path. */
+  subscription_active: boolean;
+}
+
 export interface HostnameRpcDeps {
   store: HostnameRegistryStore;
   serverIdentityId: string;
   initialAcmeIssuer?: () => InitialAcmeDomainIssuer | undefined;
+  /** Resolves the server's reserved handle + bound zone. Absent (or resolving
+   *  to null) means no Pro handle is reserved, so there is no delegation target
+   *  to preflight against and `collection.hostname.preflight` declines. */
+  proDdnsBinding?: () => Promise<HostnameProDdnsBinding | null>;
+  /** DNS seam — injected by tests. Production builds a Node resolver lazily so
+   *  a server that never opens the Domains panel never constructs one. */
+  dnsResolver?: CustomDomainDnsResolver;
 }
 
 type HostnameMethods =
@@ -48,7 +84,9 @@ type HostnameMethods =
   | 'collection.hostname.add'
   | 'collection.hostname.update'
   | 'collection.hostname.remove'
-  | 'collection.hostname.verifyOwnership';
+  | 'collection.hostname.verifyOwnership'
+  | 'collection.hostname.preflight'
+  | 'collection.hostname.issuanceReadiness';
 
 const requireCallerInstance = (
   caller: { instance_id: string | null | undefined } | undefined,
@@ -208,7 +246,7 @@ const fillOptionalUpsertFields = (
 
 const initialAcmeFailureToRpc = (
   method: string,
-  reason: 'helper_unavailable' | 'subscription_required' | 'storage_io_error',
+  reason: TlsRenewalFailureReason,
 ): RpcError => {
   if (reason === 'helper_unavailable') {
     return new RpcError(
@@ -222,6 +260,16 @@ const initialAcmeFailureToRpc = (
       'subscription_required',
       `${method}: Recued ACME certificate issuance requires an active Pro subscription`,
       402,
+    );
+  }
+  // 429 from the cloud helper. Answered explicitly rather than left to fall
+  // through to `storage_io_error` below — nothing failed to store; the
+  // issuance was refused on quota, and 503-with-retry is the honest shape.
+  if (reason === 'rate_limited') {
+    return new RpcError(
+      'acme_rate_limited',
+      `${method}: this server has spent its daily certificate issuance allowance; retry after the 24h window resets`,
+      429,
     );
   }
   return new RpcError(
@@ -485,6 +533,88 @@ export const handleHostnameVerifyOwnership = async (
   return applyHostnameOwnershipProof(deps.store, ensureProofInput(method, args));
 };
 
+/** D-235 P1 — read-only DNS preflight for a bring-your-own-domain hostname.
+ *
+ *  Reads nothing from the registry and writes nothing anywhere: the hostname
+ *  need not be enrolled yet, which is the point — the user checks their two
+ *  CNAMEs BEFORE committing to a row. Failures are reported in the payload,
+ *  not thrown, so the Settings panel can render per-record guidance; the only
+ *  throws are "you didn't give me a hostname" and "this server has no Pro
+ *  handle, so there is no delegation target to check against". */
+export const handleHostnamePreflight = async (
+  deps: HostnameRpcDeps,
+  args: CustomDomainPreflightRequest,
+  caller: { instance_id: string | null | undefined } | undefined,
+): Promise<CustomDomainPreflightResponse> => {
+  const method = 'collection.hostname.preflight';
+  requireCallerInstance(caller, method);
+  const a = ensureRecordArgs(method, args);
+  const hostname = ensureString(method, 'hostname', a.hostname);
+
+  const binding = deps.proDdnsBinding ? await deps.proDdnsBinding() : null;
+  if (!binding || binding.handle.length === 0) {
+    throw new RpcError(
+      'not_configured',
+      `${method}: no Pro DDNS handle is reserved on this server, so there is no `
+        + `_acme-challenge delegation target to check a custom domain against`,
+      // 503, not 4xx: the handle is reserved by a background service ~26s into
+      // boot, so a client that asks too early should retry rather than be told
+      // its request was wrong.
+      503,
+    );
+  }
+  // An unknown label falls back to the registry default rather than failing —
+  // same forward-compat rule the rest of the D-176 zone plumbing follows.
+  const zone = binding.zone_label !== undefined
+    ? zoneByLabel(binding.zone_label)
+    : undefined;
+
+  const preflight = await runCustomDomainPreflight({
+    hostname,
+    handle: binding.handle,
+    ...(zone !== undefined ? { zone } : {}),
+    resolver: deps.dnsResolver ?? createNodeCustomDomainDnsResolver(),
+  });
+  return { preflight };
+};
+
+/** D-235 P2 — would the fleet issue for this hostname right now?
+ *
+ *  Runs a LIVE preflight and composes § 3.2's four gates over it. Returns the
+ *  preflight alongside the decision so the panel renders one consistent view
+ *  rather than asking twice and getting two answers from a zone mid-edit.
+ *
+ *  ⛔ Local policy, not authority — see `evaluateCustomDomainIssuanceEligibility`
+ *  and spec § 8.2. A hostname this says is ready can still be refused by the
+ *  cloud, which re-resolves the delegation itself. */
+export const handleHostnameIssuanceReadiness = async (
+  deps: HostnameRpcDeps,
+  args: CustomDomainIssuanceReadinessRequest,
+  caller: { instance_id: string | null | undefined } | undefined,
+): Promise<CustomDomainIssuanceReadinessResponse> => {
+  const method = 'collection.hostname.issuanceReadiness';
+  const { preflight } = await handleHostnamePreflight(deps, args, caller);
+  const row = withRegistryErrors(method, () => deps.store.get(preflight.hostname));
+  const binding = deps.proDdnsBinding ? await deps.proDdnsBinding() : null;
+
+  // An un-enrolled hostname is not a custom-ACME row, so the gate declines with
+  // `not_a_custom_acme_hostname` — which is the honest answer to "would you
+  // issue for this?" before the user has asked us to.
+  const decision = evaluateCustomDomainIssuanceEligibility({
+    row: row ?? {
+      cert_source: 'unregistered',
+      ownership_status: 'pending',
+      enabled: false,
+    },
+    preflight,
+    subscription_active: binding?.subscription_active === true,
+    enrolled_custom_count: deps.store
+      .list()
+      .filter((h) => h.cert_source === 'recued_acme_custom').length,
+  });
+  return { decision, preflight };
+};
+
 export const makeHostnameHandlers = (
   deps: HostnameRpcDeps | undefined,
 ): HandlerSlice<ServerRpcRegistry, HostnameMethods, WsClient> | undefined => {
@@ -497,6 +627,8 @@ export const makeHostnameHandlers = (
       'collection.hostname.update',
       'collection.hostname.remove',
       'collection.hostname.verifyOwnership',
+      'collection.hostname.preflight',
+      'collection.hostname.issuanceReadiness',
     ],
     handlers: {
       'collection.hostname.list': async (args, client) =>
@@ -533,6 +665,18 @@ export const makeHostnameHandlers = (
         handleHostnameVerifyOwnership(
           deps,
           args as HostnameOwnershipProofInput,
+          client ? { instance_id: client.instance_id ?? null } : undefined,
+        ),
+      'collection.hostname.preflight': async (args, client) =>
+        handleHostnamePreflight(
+          deps,
+          args as CustomDomainPreflightRequest,
+          client ? { instance_id: client.instance_id ?? null } : undefined,
+        ),
+      'collection.hostname.issuanceReadiness': async (args, client) =>
+        handleHostnameIssuanceReadiness(
+          deps,
+          args as CustomDomainIssuanceReadinessRequest,
           client ? { instance_id: client.instance_id ?? null } : undefined,
         ),
     },

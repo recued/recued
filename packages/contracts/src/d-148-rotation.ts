@@ -89,7 +89,24 @@ export type RotationErrorCode =
    *  D-212 derives the database key from the Master DEK, so rotating without
    *  that step leaves the file readable by neither the keyfile nor the recovery
    *  key. Refused rather than attempted. */
-  | 'database_rekey_unsupported';
+  | 'database_rekey_unsupported'
+  /** A TLS renewal was attempted while the LOCAL post-attempt cooldown is
+   *  still running. Distinct from `rotation_in_progress` (which means another
+   *  caller is executing RIGHT NOW): this one means the last attempt already
+   *  finished and the next one is not due yet. Both the operator `tls.renew`
+   *  rpc and the `tls-cert-renewal` housekeeping task contend on the one
+   *  clock, so a manual renew also defers the scheduler and vice-versa. */
+  | 'renew_cooldown'
+  /** The cloud ACME helper answered HTTP 429 — this publisher has spent its
+   *  daily issuance allowance (`ACME_ISSUE_CERT_RATE_LIMIT_PER_DAY`).
+   *
+   *  ⛔ SPLIT OUT OF `acme_helper_unavailable` DELIBERATELY. A 429 used to
+   *  collapse into that bucket, whose remediation copy tells the operator to
+   *  go check their DDNS configuration — sending someone to debug networking
+   *  when the real cause is that they clicked Renew too many times. The
+   *  remediations are opposites: one says "fix your setup", this one says
+   *  "stop and wait". */
+  | 'renew_rate_limited';
 
 export const ROTATION_ERROR_CODES: ReadonlyArray<RotationErrorCode> = [
   'op_unknown',
@@ -104,6 +121,8 @@ export const ROTATION_ERROR_CODES: ReadonlyArray<RotationErrorCode> = [
   'unsigned_notice',
   'database_rekey_unsupported',
   'storage_io_error',
+  'renew_cooldown',
+  'renew_rate_limited',
 ] as const;
 
 /** Rotation result shape. The server-side primitive returns this

@@ -130,10 +130,22 @@ export const PER_DOMAIN_TLS_RENEWAL_OVERDUE_WINDOW_DAYS = 7;
 
 const MS_PER_DAY = 86_400_000;
 
-const remediationForSource = (source: TLSDomainCertSource, domain: string): string =>
-  source === 'pro_acme'
-    ? `Trigger an ACME renewal for '${domain}' via Settings → Server → TLS Certificates.`
-    : `Upload a renewed cert for '${domain}' via Settings → Server → TLS Certificates.`;
+const remediationForSource = (source: TLSDomainCertSource, domain: string): string => {
+  if (source === 'pro_acme') {
+    return `Trigger an ACME renewal for '${domain}' via Settings → Server → TLS Certificates.`;
+  }
+  // D-235 § 5.1 — a fleet-issued CUSTOM domain must not fall into the BYO
+  // branch, which tells the user to upload a cert Recued is supposed to be
+  // renewing for them. And the copy names the delegation rather than promising
+  // a renewal: this cert's renewal depends on a CNAME in a zone the fleet does
+  // not control, so "it stopped renewing" and "you deleted the record" are the
+  // same event, and that is the first thing worth checking.
+  if (source === 'pro_acme_custom') {
+    return `Recued renews '${domain}' for you. A renewal that has not run usually means its `
+      + `_acme-challenge delegation stopped resolving — check Settings → Server → Domains.`;
+  }
+  return `Upload a renewed cert for '${domain}' via Settings → Server → TLS Certificates.`;
+};
 
 /** Codex FU2 P2 #3 fold — imminent (warning-band) remediation
  *  must distinguish auto-managed certs from BYO. The webclient
@@ -144,10 +156,20 @@ const remediationForSource = (source: TLSDomainCertSource, domain: string): stri
 const imminentRemediationForSource = (
   source: TLSDomainCertSource,
   domain: string,
-): string =>
-  source === 'pro_acme'
-    ? `Auto-renewal will run for '${domain}' within the next 14 days. No action required.`
-    : `Upload a renewed cert for '${domain}' via Settings → Server → TLS Certificates before the expiry window enters the error band.`;
+): string => {
+  if (source === 'pro_acme') {
+    return `Auto-renewal will run for '${domain}' within the next 14 days. No action required.`;
+  }
+  // D-235 — "No action required" would be the wrong promise for a custom
+  // domain: the renewal runs only while a record in the USER'S zone still
+  // points at ours, so the honest version states the condition instead of
+  // asserting the outcome.
+  if (source === 'pro_acme_custom') {
+    return `Recued will renew '${domain}' automatically, as long as its _acme-challenge `
+      + `delegation still resolves. Confirm it in Settings → Server → Domains.`;
+  }
+  return `Upload a renewed cert for '${domain}' via Settings → Server → TLS Certificates before the expiry window enters the error band.`;
+};
 
 /** Pure assembly: walk pre-verified inputs + produce per-domain
  *  entries + the per-domain recommendation feed. The caller (the

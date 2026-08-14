@@ -354,6 +354,12 @@ import type {
   HostnameUpdateRequest,
 } from '../hostname.js';
 import type {
+  CustomDomainPreflightRequest,
+  CustomDomainPreflightResponse,
+  CustomDomainIssuanceReadinessRequest,
+  CustomDomainIssuanceReadinessResponse,
+} from '../custom-domain.js';
+import type {
   SellerManualCustomerCloseRequest,
   SellerManualCustomerCloseResponse,
   SellerManualCustomerExtendRequest,
@@ -3357,6 +3363,26 @@ export type ServerRpcRegistry = {
     HostnameOwnershipProofResult
   >;
 
+  /** D-235 P1 — read-only DNS preflight for a bring-your-own-domain
+   *  hostname: does it route through the Pro DDNS name, is `_acme-challenge`
+   *  delegated into the fleet's zone, and does CAA permit every CA the cloud
+   *  may fail over to. Issues nothing and mutates nothing — the diagnostics
+   *  ship ahead of the capability so P3's failures are legible. */
+  'collection.hostname.preflight': RpcMethodSpec<
+    CustomDomainPreflightRequest,
+    CustomDomainPreflightResponse
+  >;
+
+  /** D-235 P2 — "would the fleet issue for this hostname right now, and if not,
+   *  what must I do?". Composes § 3.2's four gates over a LIVE preflight and
+   *  returns every blocker at once. ⛔ Local policy, not authority — the gate
+   *  that binds is cloud-side (spec § 8.2); this exists so the server does not
+   *  burn CA quota on orders the cloud will refuse. */
+  'collection.hostname.issuanceReadiness': RpcMethodSpec<
+    CustomDomainIssuanceReadinessRequest,
+    CustomDomainIssuanceReadinessResponse
+  >;
+
   /** Probe an existing connection and persist its fresh health snapshot.
    *  API connections run an authenticated HTTP reachability check; MCP
    *  connections initialize + enumerate tools over SSE, WebSocket, or stdio;
@@ -4527,67 +4553,25 @@ export type ServerRpcRegistry = {
 
   // ── Settings → Work Entities (D-145 PA11) ───────────────────────
   //
-  // Per-kind Source list + enable/disable + mcp_exposed toggle +
-  // default-Source pin/clear. Backs `apps/webclient/.../settings/
-  // work-entities/` panel rendered via `packages/ui-shared/src/
-  // server-settings/work-entities/`. Read consolidates the per-pair
-  // Source rows + per-kind defaults so the panel can render the full
-  // UI without N+1 round-trips. Writes are column-scoped (one toggle
-  // per call) so concurrent writes against the same Source row don't
-  // clobber unrelated columns.
-  /** D-145 PA11 — read every registered Source + per-kind default in
-   *  one round-trip. Drives the Settings panel render; the
-   *  `defaults_by_kind` map is the per-kind `prefs.<kind>.last_used_source_id`
-   *  surface for the four work-entity kinds. */
+  /** Read every registered Source in one round-trip. READ-ONLY — this family
+   *  has no writers left (D-187 Sources half): a Source is declared by a PACK
+   *  (`work_entity_sources[]`), so install/uninstall is its lifecycle, and
+   *  there is no per-Source toggle and no per-kind default to pin.
+   *
+   *  Live consumers: the Data route's Source view-filter dropdown and the
+   *  Reception inbox panel. The Settings → Work Entities page it was written
+   *  for is gone. */
   'work_entity.source.list': RpcMethodSpec<
     void,
     {
       sources: ReadonlyArray<import('../source-primitive.js').SourceRegistration>;
-      defaults_by_kind: Readonly<
-        Partial<
-          Record<
-            import('../work-entities.js').WorkEntityKind,
-            string
-          >
-        >
-      >;
     }
   >;
-  /** D-145 PA11 — flip the user-driven enable/disable toggle on one
-   *  Source. Returns the post-write Source row so the UI can update
-   *  state without a follow-up read. */
-  'work_entity.source.set_enabled': RpcMethodSpec<
-    { source_id: string; enabled: boolean },
-    {
-      ok: true;
-      effective: import('../source-primitive.js').SourceRegistration;
-    }
-  >;
-  /** D-145 PA11 — flip the per-Source MCP exposure boolean. Layers
-   *  underneath the per-(bound contract, topic) read-visibility override
-   *  (`contract.enrichment.*`, D-187) at MCP read time. */
-  'work_entity.source.set_mcp_exposed': RpcMethodSpec<
-    { source_id: string; mcp_exposed: boolean },
-    {
-      ok: true;
-      effective: import('../source-primitive.js').SourceRegistration;
-    }
-  >;
-  /** D-145 PA11 — pin a per-kind default Source. Validates the Source
-   *  is registered + matches the kind via the underlying store. */
-  'work_entity.source.set_default': RpcMethodSpec<
-    {
-      kind: import('../work-entities.js').WorkEntityKind;
-      source_id: string;
-    },
-    { ok: true }
-  >;
-  /** D-145 PA11 — drop the per-kind default. Returns `cleared: true`
-   *  when a row was removed; `false` when nothing was pinned. */
-  'work_entity.source.clear_default': RpcMethodSpec<
-    { kind: import('../work-entities.js').WorkEntityKind },
-    { ok: true; cleared: boolean }
-  >;
+  /* ⛔ `set_enabled` / `set_default` / `clear_default` were DELETED with the
+   *  Settings → Work Entities page (D-187 Sources half). A Source is declared
+   *  by a PACK, so its lifecycle is pack install/uninstall; reads always
+   *  fan out and writes always carry an explicit source_id. `list` survives —
+   *  the Data route and the Reception inbox both read it. */
 
   // ── Work-entity warehouse CRUD (D-174 #22 — Data route) ─────────
   //
@@ -5839,40 +5823,14 @@ export type ServerRpcRegistry = {
       annotations: ReadonlyArray<{
         connection_name: string;
         topic_tags: ReadonlyArray<string>;
-        tool_overrides: Readonly<Record<string, {
+        /** D-228 slice 4 — RETIRED. Always `{}`; kept on the wire for one
+         *  release so a cached older webclient renders "nothing classified"
+         *  instead of crashing on an absent key. */
+        tool_overrides?: Readonly<Record<string, {
           enabled: boolean;
           classification: 'read' | 'write' | 'unknown';
           custom_topic_tags?: ReadonlyArray<string>;
         }>>;
-        tools_list_cache: {
-          tools: ReadonlyArray<{
-            name: string;
-            description?: string;
-            input_schema?: unknown;
-            destructive_hint?: boolean;
-          }>;
-          cached_at: number;
-        };
-        /** D-137 P4 Codex review P3 fold — typed clients need the
-         *  field to drive picker visibility from a `list` response.
-         *  Optional: absent = legacy row written before P4; null =
-         *  generic MCP; object = Recued peer. */
-        recued_signature?: {
-          server_kind: 'recued';
-          version: string;
-          instance_id: string;
-        } | null;
-        /** D-137 P5 § A.7.1 + § A.10 / Codex review P2 fold — Bob's
-         *  per-contract chat-mode metadata mirrored from his MCP
-         *  server's `serverInfo._meta.recued.chat_mode`. `null` =
-         *  chat-mode not offered (substrate default); object stamps
-         *  the offered+session_cap state. The picker emitter still
-         *  ignores `offered: true` until the Direction C runtime
-         *  ships post-D-145 federation. */
-        chat_mode?: {
-          offered: boolean;
-          session_cap?: { per_day: number; concurrent: number };
-        } | null;
         updated_at: number;
       }>;
     }
@@ -5883,37 +5841,14 @@ export type ServerRpcRegistry = {
       annotation: {
         connection_name: string;
         topic_tags: ReadonlyArray<string>;
-        tool_overrides: Readonly<Record<string, {
+        /** D-228 slice 4 — RETIRED. Always `{}`; kept on the wire for one
+         *  release so a cached older webclient renders "nothing classified"
+         *  instead of crashing on an absent key. */
+        tool_overrides?: Readonly<Record<string, {
           enabled: boolean;
           classification: 'read' | 'write' | 'unknown';
           custom_topic_tags?: ReadonlyArray<string>;
         }>>;
-        tools_list_cache: {
-          tools: ReadonlyArray<{
-            name: string;
-            description?: string;
-            input_schema?: unknown;
-            destructive_hint?: boolean;
-          }>;
-          cached_at: number;
-        };
-        /** D-137 P4 Codex review P3 fold — same field as the `list`
-         *  variant; typed clients need it on the single-row read
-         *  too (Settings → Connections → <name> renders the picker
-         *  state from this response). */
-        recued_signature?: {
-          server_kind: 'recued';
-          version: string;
-          instance_id: string;
-        } | null;
-        /** D-137 P5 § A.7.1 + § A.10 / Codex review P2 fold — same
-         *  field as the `list` variant; typed clients need it on the
-         *  single-row read so the Settings UI surfaces the per-peer
-         *  chat-mode state. */
-        chat_mode?: {
-          offered: boolean;
-          session_cap?: { per_day: number; concurrent: number };
-        } | null;
         updated_at: number;
       };
     }
@@ -5927,164 +5862,35 @@ export type ServerRpcRegistry = {
         classification: 'read' | 'write' | 'unknown';
         custom_topic_tags?: ReadonlyArray<string>;
       }>;
-      tools_list_cache?: {
-        tools: ReadonlyArray<{
-          name: string;
-          description?: string;
-          input_schema?: unknown;
-          destructive_hint?: boolean;
-        }>;
-        cached_at: number;
-      };
-      /** D-137 P4 § A.3 — when present, updates the annotation's
-       *  Recued signature. Explicit `null` clears the prior signature
-       *  (peer no longer advertises Recued metadata). */
-      recued_signature?: {
-        server_kind: 'recued';
-        version: string;
-        instance_id: string;
-      } | null;
-      /** D-137 P5 § A.7.1 + § A.10 / Codex review P2 fold — when
-       *  present, updates the annotation's chat-mode metadata. The
-       *  validator's `absent / null / object` merge posture (parallel
-       *  to `recued_signature`) applies: absent ⇒ preserve prior; null
-       *  ⇒ clear; object ⇒ replace. */
-      chat_mode?: {
-        offered: boolean;
-        session_cap?: { per_day: number; concurrent: number };
-      } | null;
     },
     {
       annotation: {
         connection_name: string;
         topic_tags: ReadonlyArray<string>;
-        tool_overrides: Readonly<Record<string, {
+        /** D-228 slice 4 — RETIRED. Always `{}`; kept on the wire for one
+         *  release so a cached older webclient renders "nothing classified"
+         *  instead of crashing on an absent key. */
+        tool_overrides?: Readonly<Record<string, {
           enabled: boolean;
           classification: 'read' | 'write' | 'unknown';
           custom_topic_tags?: ReadonlyArray<string>;
         }>>;
-        tools_list_cache: {
-          tools: ReadonlyArray<{
-            name: string;
-            description?: string;
-            input_schema?: unknown;
-            destructive_hint?: boolean;
-          }>;
-          cached_at: number;
-        };
-        recued_signature?: {
-          server_kind: 'recued';
-          version: string;
-          instance_id: string;
-        } | null;
-        chat_mode?: {
-          offered: boolean;
-          session_cap?: { per_day: number; concurrent: number };
-        } | null;
         updated_at: number;
       };
     }
   >;
 
-  // ── D-137 P4 § A.7 + § A.7.1 — Picker entry projection + refresh ──
+  // ⛔ D-228 slice 5 — `chat.picker.entries` / `chat.picker.refresh` RETIRED with
+  // the MCP scope-picker. Neither had a caller in `apps/`, and the surface they
+  // fed was dead on BOTH ends: no client rendered it, and `PeerDispatcher` had
+  // ZERO implementors, so selecting a peer would have produced an empty catalog.
+  // A peer's tools now reach chat as ordinary `recued_op_*` pack operations
+  // governed by the contract, so no catalog swap — and no picker — is needed.
   //
-  // `chat.picker.entries` is read-only — returns the current
-  // `PickerEntry[]` projection (always carries `'self'`; per-peer
-  // entries surface per `buildPickerEntries`'s closed-list gates).
-  // `chat.picker.refresh` updates one peer's `recued_signature` +
-  // `tools_list_cache` after a caller-driven probe. Both writes flow
-  // through the `chat.connection_mcp.set` validator; the refresh rpc
-  // is a thin wrapper that emits `chat.picker_entries_changed`
-  // alongside the existing `chat.connection_mcp_annotation_changed`
-  // broadcast.
-  'chat.picker.entries': RpcMethodSpec<
-    void,
-    {
-      entries: ReadonlyArray<{
-        id: 'self' | string;
-        label: string;
-        kind: 'self' | 'peer_data' | 'peer_chat';
-        signature?: {
-          server_kind: 'recued';
-          version: string;
-          instance_id: string;
-        };
-        version_delta?: 'same' | 'older' | 'newer' | 'unknown';
-        available_tool_count: number;
-      }>;
-    }
-  >;
-  'chat.picker.refresh': RpcMethodSpec<
-    {
-      connection_name: string;
-      recued_signature: {
-        server_kind: 'recued';
-        version: string;
-        instance_id: string;
-      } | null;
-      tools_list_cache: {
-        tools: ReadonlyArray<{
-          name: string;
-          description?: string;
-          input_schema?: unknown;
-          destructive_hint?: boolean;
-        }>;
-        cached_at: number;
-      };
-      /** D-137 P5 § A.7.1 + § A.10 / Codex review P2 fold — when the
-       *  upstream advertises `serverInfo._meta.recued.chat_mode` in
-       *  its MCP `initialize` response, the probe forwards it here so
-       *  Mary's annotation row carries the per-peer chat-mode state.
-       *  Optional: absent ⇒ preserve prior; null ⇒ clear (peer no
-       *  longer offers chat-mode); object ⇒ stamp fresh probe result. */
-      chat_mode?: {
-        offered: boolean;
-        session_cap?: { per_day: number; concurrent: number };
-      } | null;
-    },
-    {
-      annotation: {
-        connection_name: string;
-        topic_tags: ReadonlyArray<string>;
-        tool_overrides: Readonly<Record<string, {
-          enabled: boolean;
-          classification: 'read' | 'write' | 'unknown';
-          custom_topic_tags?: ReadonlyArray<string>;
-        }>>;
-        tools_list_cache: {
-          tools: ReadonlyArray<{
-            name: string;
-            description?: string;
-            input_schema?: unknown;
-            destructive_hint?: boolean;
-          }>;
-          cached_at: number;
-        };
-        recued_signature?: {
-          server_kind: 'recued';
-          version: string;
-          instance_id: string;
-        } | null;
-        chat_mode?: {
-          offered: boolean;
-          session_cap?: { per_day: number; concurrent: number };
-        } | null;
-        updated_at: number;
-      };
-      entries: ReadonlyArray<{
-        id: 'self' | string;
-        label: string;
-        kind: 'self' | 'peer_data' | 'peer_chat';
-        signature?: {
-          server_kind: 'recued';
-          version: string;
-          instance_id: string;
-        };
-        version_delta?: 'same' | 'older' | 'newer' | 'unknown';
-        available_tool_count: number;
-      }>;
-    }
-  >;
+  // ⚠ `refresh` was also the ONLY writer of the annotation's `recued_signature`,
+  // `tools_list_cache` and `chat_mode`. Those three are now writerless and unread;
+  // removing them shrinks `chat.connection_mcp.*` to topic tags alone, which is
+  // the natural next slice rather than a rider on this one.
 
   // ── D-137 P5 follow-on § A.9 — Inbound MCP token registry ──
   //
@@ -7066,6 +6872,10 @@ export const SERVER_RPC_METHODS = [
   'collection.hostname.update',
   'collection.hostname.remove',
   'collection.hostname.verifyOwnership',
+  // D-235 P1 — bring-your-own-domain DNS preflight.
+  'collection.hostname.preflight',
+  // D-235 P2 — the composed issuance gate.
+  'collection.hostname.issuanceReadiness',
   // D-129 Phase 1.2 — vendor OAuth code-exchange.
   'collection.connection.completeVendorOAuth',
   // D-148 § A.12 / D-165 enroll-host #1 — vendor OAuth-start.
@@ -7196,10 +7006,6 @@ export const SERVER_RPC_METHODS = [
   'ingredient.preview',
   // D-145 PA11 — Settings → Work Entities Source management.
   'work_entity.source.list',
-  'work_entity.source.set_enabled',
-  'work_entity.source.set_mcp_exposed',
-  'work_entity.source.set_default',
-  'work_entity.source.clear_default',
   // D-174 #22 — work-entity warehouse CRUD + timeline read (Data route).
   'work_entity.list',
   'work_entity.get',
@@ -7387,13 +7193,6 @@ export const SERVER_RPC_METHODS = [
   'chat.connection_mcp.list',
   'chat.connection_mcp.get',
   'chat.connection_mcp.set',
-  // D-137 P4 § A.7 + § A.7.1 — Picker projection + refresh. Reuses
-  // the per-pair annotation store as its backing; the refresh rpc
-  // emits `chat.picker_entries_changed` alongside the existing
-  // `chat.connection_mcp_annotation_changed` broadcast so paired
-  // clients re-render the picker dropdown without re-querying.
-  'chat.picker.entries',
-  'chat.picker.refresh',
   // D-137 P5 follow-on § A.9 — Inbound MCP token registry. Six
   // methods; reserved for local-UI only (`chat.inbound_token.` is in
   // `MCP_RESERVED_RPC_PREFIXES`). The verifier swap-in at the MCP

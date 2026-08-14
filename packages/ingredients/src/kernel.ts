@@ -117,6 +117,8 @@ import {
   // truth, never taken on the caller's word.
   verifySellerOrderArtifactPin,
   type PinnedCasFileRef,
+  // D-236 — the source-freshness verdict that rides out with a collection read.
+  type CollectionSourceFreshness,
 } from '@recued/contracts';
 
 /** D-119 Phase 12 — stamp `_id` + `_collection` onto every record
@@ -846,7 +848,14 @@ export interface KernelDispatchers {
   // Phase D (D-106) — warehouse reader slots. Dispatched by platform
   // extracted from the kernel slug (`file-list` → platform='file').
 
-  /** Backs `file-list`, `webhook-list`, `email-list`. */
+  /** Backs `file-list`, `webhook-list`, `email-list`.
+   *
+   *  D-236 — `source_freshness` is how current the collection instance was at
+   *  read time, returned WITH the records it qualifies so a recipe cannot hold
+   *  the records without also holding the verdict. Optional on the dispatcher so
+   *  a harness that stands up a bare list dispatcher keeps working; absent →
+   *  the kernel omits the field and a recipe reading it resolves undefined
+   *  (null-safe, same as any other missing step field). */
   collectionList?: (input: {
     platform: KernelCollectionPlatform;
     slug: string;
@@ -854,13 +863,20 @@ export interface KernelDispatchers {
     since?: number;
     until?: number;
     limit?: number;
-  }) => Promise<{ records: KernelCollectionRecord[] }>;
-  /** Backs `file-get`, `webhook-get`, `email-get`. */
+  }) => Promise<{
+    records: KernelCollectionRecord[];
+    source_freshness?: CollectionSourceFreshness;
+  }>;
+  /** Backs `file-get`, `webhook-get`, `email-get`. D-236 — `source_freshness`
+   *  optional, same contract as `collectionList`. */
   collectionGet?: (input: {
     platform: KernelCollectionPlatform;
     slug: string;
     record_id: string;
-  }) => Promise<{ record: KernelCollectionRecord | null }>;
+  }) => Promise<{
+    record: KernelCollectionRecord | null;
+    source_freshness?: CollectionSourceFreshness;
+  }>;
   /** Backs `email-search`. Mail is the only platform that exposes a
    *  search kernel in Phase D (file + webhook defer FTS to a later
    *  commit — see spec §kernel-ingredients). */
@@ -869,7 +885,10 @@ export interface KernelDispatchers {
     slug: string;
     query: string;
     limit?: number;
-  }) => Promise<{ matches: KernelCollectionSearchMatch[] }>;
+  }) => Promise<{
+    matches: KernelCollectionSearchMatch[];
+    source_freshness?: CollectionSourceFreshness;
+  }>;
 
   // D-117 Phase 6 — eight calendar dispatcher slots. Reads
   // (list/get/search/stat) hit the server-side warehouse only;
@@ -887,14 +906,20 @@ export interface KernelDispatchers {
     until?: number;
     status?: 'confirmed' | 'cancelled' | 'tentative';
     limit?: number;
-  }) => Promise<{ records: KernelCalendarHotFields[] }>;
+  }) => Promise<{
+    records: KernelCalendarHotFields[];
+    source_freshness?: CollectionSourceFreshness;
+  }>;
 
   /** Backs `calendar-get`. Returns the full canonical event JSON or
    *  null when the source_id is unknown. */
   calendarGet?: (input: {
     slug: string;
     source_id: string;
-  }) => Promise<{ record: KernelCanonicalEvent | null }>;
+  }) => Promise<{
+    record: KernelCanonicalEvent | null;
+    source_freshness?: CollectionSourceFreshness;
+  }>;
 
   /** Backs `calendar-search`. FTS5 over summary + description +
    *  location. */
@@ -904,6 +929,7 @@ export interface KernelDispatchers {
     limit?: number;
   }) => Promise<{
     matches: Array<KernelCalendarHotFields & { snippet: string }>;
+    source_freshness?: CollectionSourceFreshness;
   }>;
 
   /** Backs `calendar-stat`. `event_not_found` collapses to
@@ -2048,12 +2074,22 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         // D-119 Phase 12 — stamp `_id` (= record_id) + `_collection` on
         // every returned record so recipes can `foreach` and reference
         // `{{item._id}}` / `{{item._collection}}` uniformly.
+        //
+        // D-236 — carry `source_freshness` out alongside the records, so
+        // `{{step.<id>.source_freshness.age_ms}}` is reachable from the SAME
+        // step that read the data. Spread-when-present: a dispatcher that
+        // doesn't supply it leaves the key absent rather than null, so a
+        // recipe's `is_null` check reads "no verdict available" identically
+        // either way.
         return {
           records: stampMany(
             records,
             collectionForKernelPlatform(platform),
             (r) => r.record_id,
           ),
+          ...(out.source_freshness !== undefined
+            ? { source_freshness: out.source_freshness }
+            : {}),
         };
       }
       case 'file-get':
@@ -2069,6 +2105,8 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         const platform = platformForSlug(slug);
         const input = call.input as { slug: string; record_id: string };
         const out = await dispatchers.collectionGet({ platform, ...input });
+        // D-236 — a `null` record is an absence too, and carries the same
+        // ambiguity as an empty list: unknown id, or not yet synced.
         return {
           record: out.record
             ? stampOne(
@@ -2077,6 +2115,9 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
                 out.record.record_id,
               )
             : null,
+          ...(out.source_freshness !== undefined
+            ? { source_freshness: out.source_freshness }
+            : {}),
         };
       }
       case 'email-search': {
@@ -2093,8 +2134,12 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           limit?: number;
         };
         const out = await dispatchers.collectionSearch({ platform: 'mail', ...input });
+        // D-236 — zero matches is an absence; same ambiguity.
         return {
           matches: stampMany(out.matches, 'mail', (m) => m.record_id),
+          ...(out.source_freshness !== undefined
+            ? { source_freshness: out.source_freshness }
+            : {}),
         };
       }
 
@@ -2414,8 +2459,13 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         // D-119 Phase 12 — `ical_uid` is the cross-provider stable id
         // for events (gcal source_id, microsoft graph eventId, caldav
         // UID all collapse to the iCalendar UID). Use it as `_id`.
+        // D-236 — calendar rides its OWN dispatcher, so the verdict is carried
+        // here explicitly rather than inherited from the collectionList path.
         return {
           records: stampMany(out.records, 'calendar', (r) => r.ical_uid),
+          ...(out.source_freshness !== undefined
+            ? { source_freshness: out.source_freshness }
+            : {}),
         };
       }
       case 'calendar-get': {
@@ -2433,12 +2483,28 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         // for `_id` so refs stay portable across re-syncs from a
         // different provider; fall back to `source_id` if missing.
         const record = out.record;
-        if (!record) return { record: null };
+        if (!record) {
+          // ⛔ The null branch carries the verdict too. An unknown source_id and
+          // a not-yet-synced event are the same observation here, and dropping
+          // the verdict on exactly the absent case would remove it from the one
+          // outcome that needs it most.
+          return {
+            record: null,
+            ...(out.source_freshness !== undefined
+              ? { source_freshness: out.source_freshness }
+              : {}),
+          };
+        }
         const id =
           (typeof record.ical_uid === 'string' && record.ical_uid)
           || (typeof record.source_id === 'string' && record.source_id)
           || input.source_id;
-        return { record: stampOne(record, 'calendar', id) };
+        return {
+          record: stampOne(record, 'calendar', id),
+          ...(out.source_freshness !== undefined
+            ? { source_freshness: out.source_freshness }
+            : {}),
+        };
       }
       case 'calendar-search': {
         if (!dispatchers.calendarSearch) {
@@ -2450,8 +2516,12 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         }
         const input = call.input as Parameters<NonNullable<KernelDispatchers['calendarSearch']>>[0];
         const out = await dispatchers.calendarSearch(input);
+        // D-236 — zero matches is an absence; same ambiguity.
         return {
           matches: stampMany(out.matches, 'calendar', (m) => m.ical_uid),
+          ...(out.source_freshness !== undefined
+            ? { source_freshness: out.source_freshness }
+            : {}),
         };
       }
       case 'calendar-stat': {

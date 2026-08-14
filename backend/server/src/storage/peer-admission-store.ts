@@ -47,6 +47,10 @@ export interface PeerAdmissionStore {
   claim(admission_identity: string): PeerAdmissionRecord | null;
   /** Non-consuming read — for surfaces that want to show what is pending. */
   peek(admission_identity: string): PeerAdmissionRecord | null;
+  /** First caller reserves the one outstanding owner prompt for this message. */
+  reserveAsk(admission_identity: string): boolean;
+  /** Used only when durable prompt creation failed. */
+  releaseAsk(admission_identity: string): void;
 }
 
 export const ensurePeerAdmissionSchema = (db: Database): void => {
@@ -58,6 +62,9 @@ export const ensurePeerAdmissionSchema = (db: Database): void => {
       recipe_id          TEXT NOT NULL,
       decided_at         INTEGER NOT NULL,
       ask_id             TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS peer_admission_pending (
+      admission_identity TEXT PRIMARY KEY
     );
   `);
 };
@@ -98,23 +105,40 @@ export const createPeerAdmissionStore = (db: Database): PeerAdmissionStore => {
   const take = db.prepare(
     `DELETE FROM ${TABLE} WHERE admission_identity = ? RETURNING *`,
   );
+  const reserveAsk = db.prepare(
+    `INSERT OR IGNORE INTO peer_admission_pending (admission_identity) VALUES (?)`,
+  );
+  const releaseAsk = db.prepare(
+    `DELETE FROM peer_admission_pending WHERE admission_identity = ?`,
+  );
+  const recordDecision = db.transaction((record: PeerAdmissionRecord) => {
+    insert.run(
+      record.admission_identity,
+      record.decision,
+      record.contract_id,
+      record.recipe_id,
+      record.decided_at,
+      record.ask_id,
+    );
+    releaseAsk.run(record.admission_identity);
+  });
 
   return {
     record(record) {
-      insert.run(
-        record.admission_identity,
-        record.decision,
-        record.contract_id,
-        record.recipe_id,
-        record.decided_at,
-        record.ask_id,
-      );
+      recordDecision(record);
     },
     claim(admission_identity) {
       return rowToRecord(take.get(admission_identity) ?? null);
     },
     peek(admission_identity) {
       return rowToRecord(select.get(admission_identity) ?? null);
+    },
+    reserveAsk(admission_identity) {
+      if (admission_identity === '') return false;
+      return reserveAsk.run(admission_identity).changes > 0;
+    },
+    releaseAsk(admission_identity) {
+      if (admission_identity !== '') releaseAsk.run(admission_identity);
     },
   };
 };

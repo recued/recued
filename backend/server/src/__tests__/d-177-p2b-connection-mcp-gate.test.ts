@@ -1,24 +1,32 @@
-/** D-177 P2b -- connection MCP classification gate tests. */
+/** D-177 P2b / D-228 slice 4 — the connection-MCP TIER gate.
+ *
+ *  The gate exists for one reason: `connection-mcp-read` claims a read tier to
+ *  the preflight, so a read-tier dispatch of a tool that is actually a write is
+ *  a spoof past the approval hold. Everything here is that claim, or a way it
+ *  could be dodged.
+ *
+ *  ⚠ **THE SOURCE OF TRUTH MOVED, THE CLAIM DID NOT.** The tier used to come
+ *  from `tool_overrides` — a value the owner typed into the chat presentation
+ *  store — and now comes from the pack operation the tool is dispatched through,
+ *  resolved through the same contract rows the door reads. So the vocabulary of
+ *  these tests changed (`enabled` / `classification` are gone) while the
+ *  properties did not: an unresolvable tier still refuses, and a write still
+ *  cannot ride the read surface.
+ */
 
 import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 import {
   CONNECTION_MCP_READ_SLUG,
   CONNECTION_MCP_WRITE_SLUG,
-  buildDefaultConnectionMcpAnnotation,
-  type ConnectionKind,
-  type ConnectionMcpAnnotationState,
   type ConnectionRow,
+  type OperationRiskTier,
 } from '@recued/contracts';
 import { IngredientError, type ConnectionAdapterDeps, type ResolvedCall } from '@recued/ingredients';
 import {
   createConnectionMcpClassificationGate,
   createConnectionMcpGateFromDb,
 } from '../connection-mcp-gate.js';
-import {
-  createChatConnectionMcpStore,
-  ensureChatConnectionMcpAnnotationSchema,
-} from '../storage/chat-connection-mcp-store.js';
 
 type GateArgs = Parameters<NonNullable<ConnectionAdapterDeps['gateDispatch']>>[0];
 
@@ -53,12 +61,9 @@ const mkArgs = (
   };
 };
 
-const annotation = (
-  tool_overrides: ConnectionMcpAnnotationState['tool_overrides'] = {},
-): ConnectionMcpAnnotationState => ({
-  ...buildDefaultConnectionMcpAnnotation('exa'),
-  tool_overrides,
-});
+/** The pack-resolved tiers for connection `exa`. */
+const tiers = (map: Record<string, OperationRiskTier> = {}) =>
+  vi.fn(() => new Map(Object.entries(map)) as ReadonlyMap<string, OperationRiskTier>);
 
 const expectMcpGateError = (fn: () => void): IngredientError => {
   try {
@@ -71,18 +76,10 @@ const expectMcpGateError = (fn: () => void): IngredientError => {
   throw new Error('expected MCP_TOOL_NOT_CLASSIFIED');
 };
 
-const annotationTableExists = (db: Database.Database): boolean =>
-  Boolean(
-    db.prepare(
-      `SELECT name FROM sqlite_master
-         WHERE type = 'table' AND name = 'chat_connection_mcp_annotations'`,
-    ).get(),
-  );
-
-describe('D-177 P2b createConnectionMcpClassificationGate', () => {
-  it('passes non-listed slugs untouched and does not read annotations', () => {
-    const getAnnotation = vi.fn(() => annotation());
-    const gate = createConnectionMcpClassificationGate({ getAnnotation });
+describe('D-228 slice 4 createConnectionMcpClassificationGate', () => {
+  it('passes non-listed slugs untouched and resolves NOTHING', () => {
+    const resolveToolTiers = tiers({ search: 'read' });
+    const gate = createConnectionMcpClassificationGate({ resolveToolTiers });
 
     expect(() => gate(mkArgs({
       slug: 'slack-post',
@@ -91,14 +88,16 @@ describe('D-177 P2b createConnectionMcpClassificationGate', () => {
       params: {},
     }))).not.toThrow();
 
-    expect(getAnnotation).not.toHaveBeenCalled();
+    expect(resolveToolTiers).not.toHaveBeenCalled();
   });
 
   it.each([CONNECTION_MCP_READ_SLUG, CONNECTION_MCP_WRITE_SLUG])(
-    'throws MCP_TOOL_NOT_CLASSIFIED when %s dispatches with kind other than mcp',
+    'throws when %s dispatches with kind other than mcp',
     (slug) => {
-      const getAnnotation = vi.fn(() => annotation());
-      const gate = createConnectionMcpClassificationGate({ getAnnotation });
+      // The manifests pin `connection_kind`, but step input can override it, and
+      // an `api` swap would reroute to a handler with no tier concept at all.
+      const resolveToolTiers = tiers({ search: 'read' });
+      const gate = createConnectionMcpClassificationGate({ resolveToolTiers });
 
       const error = expectMcpGateError(() => gate(mkArgs({
         slug,
@@ -107,7 +106,7 @@ describe('D-177 P2b createConnectionMcpClassificationGate', () => {
       })));
 
       expect(error.details).toMatchObject({ slug, kind: 'api', name: 'hubspot' });
-      expect(getAnnotation).not.toHaveBeenCalled();
+      expect(resolveToolTiers).not.toHaveBeenCalled();
     },
   );
 
@@ -115,134 +114,151 @@ describe('D-177 P2b createConnectionMcpClassificationGate', () => {
     ['missing', {}],
     ['empty', { tool: '' }],
     ['blank', { tool: '   ' }],
-  ])('throws MCP_TOOL_NOT_CLASSIFIED when tool param is %s', (_label, params) => {
-    const getAnnotation = vi.fn(() => annotation());
-    const gate = createConnectionMcpClassificationGate({ getAnnotation });
+  ])('throws when the tool param is %s', (_label, params) => {
+    const resolveToolTiers = tiers({ search: 'read' });
+    const gate = createConnectionMcpClassificationGate({ resolveToolTiers });
 
     expectMcpGateError(() => gate(mkArgs({ params })));
 
-    expect(getAnnotation).not.toHaveBeenCalled();
+    expect(resolveToolTiers).not.toHaveBeenCalled();
   });
 
-  it('throws when the annotation has no override for the named tool', () => {
-    const getAnnotation = vi.fn(() => annotation({}));
-    const gate = createConnectionMcpClassificationGate({ getAnnotation });
+  it('⛔ throws when NO pack covers the tool — the tier is unknown and is not guessed', () => {
+    const gate = createConnectionMcpClassificationGate({ resolveToolTiers: tiers({}) });
 
-    expectMcpGateError(() => gate(mkArgs({ params: { tool: 'search' } })));
+    const error = expectMcpGateError(() => gate(mkArgs()));
 
-    expect(getAnnotation).toHaveBeenCalledWith('exa');
+    expect(error.details).toMatchObject({ name: 'exa', tool: 'search' });
+    // The message must point at the cause an owner can act on, not at a code.
+    expect(error.message).toMatch(/not covered by an installed operation/);
   });
 
-  it('throws when the tool override is disabled', () => {
-    const getAnnotation = vi.fn(() => annotation({
-      search: { enabled: false, classification: 'read' },
-    }));
-    const gate = createConnectionMcpClassificationGate({ getAnnotation });
-
+  it('⛔ throws when the connection has NO bound catalog at all', () => {
+    // Distinct input (undefined vs empty map), same refusal — a connection whose
+    // server was never reachable has no governed operation to take a tier from.
+    const gate = createConnectionMcpClassificationGate({
+      resolveToolTiers: () => undefined,
+    });
     expectMcpGateError(() => gate(mkArgs()));
   });
 
-  it('throws when the tool override classification is unknown', () => {
-    const getAnnotation = vi.fn(() => annotation({
-      search: { enabled: true, classification: 'unknown' },
-    }));
-    const gate = createConnectionMcpClassificationGate({ getAnnotation });
-
-    expectMcpGateError(() => gate(mkArgs()));
-  });
-
-  it('throws when the read kernel slug dispatches a write-classified tool', () => {
-    const getAnnotation = vi.fn(() => annotation({
-      search: { enabled: true, classification: 'write' },
-    }));
-    const gate = createConnectionMcpClassificationGate({ getAnnotation });
+  it('⛔⛔ throws when the READ slug dispatches a write-tier tool — THE TIER SPOOF', () => {
+    // The whole reason this gate exists. A write riding the read surface reaches
+    // the preflight labelled `read` and never holds.
+    const gate = createConnectionMcpClassificationGate({
+      resolveToolTiers: tiers({ search: 'write' }),
+    });
 
     const error = expectMcpGateError(() => gate(mkArgs({ slug: CONNECTION_MCP_READ_SLUG })));
 
-    expect(error.details).toMatchObject({ classification: 'write' });
+    expect(error.details).toMatchObject({ risk_tier: 'write' });
+    expect(error.message).toMatch(new RegExp(CONNECTION_MCP_WRITE_SLUG));
   });
 
-  it('passes when the read kernel slug dispatches a read-classified tool', () => {
-    const getAnnotation = vi.fn(() => annotation({
-      search: { enabled: true, classification: 'read' },
-    }));
-    const gate = createConnectionMcpClassificationGate({ getAnnotation });
-
+  it('passes when the READ slug dispatches a read-tier tool', () => {
+    const gate = createConnectionMcpClassificationGate({
+      resolveToolTiers: tiers({ search: 'read' }),
+    });
     expect(() => gate(mkArgs({ slug: CONNECTION_MCP_READ_SLUG }))).not.toThrow();
   });
 
-  it('passes when the write kernel slug dispatches a write-classified tool', () => {
-    const getAnnotation = vi.fn(() => annotation({
-      search: { enabled: true, classification: 'write' },
-    }));
-    const gate = createConnectionMcpClassificationGate({ getAnnotation });
+  it.each<[OperationRiskTier]>([['read'], ['write']])(
+    'passes when the WRITE slug dispatches a %s-tier tool',
+    (tier) => {
+      // Over-gating a read is safe — it only adds the approval hold.
+      const gate = createConnectionMcpClassificationGate({
+        resolveToolTiers: tiers({ search: tier }),
+      });
+      expect(() => gate(mkArgs({ slug: CONNECTION_MCP_WRITE_SLUG }))).not.toThrow();
+    },
+  );
 
-    expect(() => gate(mkArgs({ slug: CONNECTION_MCP_WRITE_SLUG }))).not.toThrow();
-  });
-
-  it('passes when the write kernel slug dispatches a read-classified tool', () => {
-    const getAnnotation = vi.fn(() => annotation({
-      search: { enabled: true, classification: 'read' },
-    }));
-    const gate = createConnectionMcpClassificationGate({ getAnnotation });
-
-    expect(() => gate(mkArgs({ slug: CONNECTION_MCP_WRITE_SLUG }))).not.toThrow();
-  });
+  it.each<[OperationRiskTier]>([['admin'], ['destructive']])(
+    '⛔ refuses a %s-tier tool on BOTH slugs',
+    (tier) => {
+      // These kernel surfaces are the untyped escape hatch. An operation the
+      // owner marked this dangerous must be reached through its own op id, where
+      // the contract governs it by name.
+      for (const slug of [CONNECTION_MCP_READ_SLUG, CONNECTION_MCP_WRITE_SLUG]) {
+        const gate = createConnectionMcpClassificationGate({
+          resolveToolTiers: tiers({ search: tier }),
+        });
+        expectMcpGateError(() => gate(mkArgs({ slug })));
+      }
+    },
+  );
 
   it.each(['__proto__', 'constructor'])(
-    'does not match prototype-polluted override key %s',
+    'does not resolve a prototype key as a tier (%s)',
     (tool) => {
-      const pollutedPrototype = Object.create(null) as Record<string, unknown>;
-      Object.defineProperty(pollutedPrototype, tool, {
-        value: { enabled: true, classification: 'read' },
-        enumerable: true,
+      // The old gate walked a plain object and needed `hasOwnProperty`. A Map is
+      // immune by construction — asserted so the immunity survives a refactor
+      // back to an object literal.
+      const gate = createConnectionMcpClassificationGate({
+        resolveToolTiers: tiers({ search: 'read' }),
       });
-      const pollutedOverrides =
-        Object.create(pollutedPrototype) as ConnectionMcpAnnotationState['tool_overrides'];
-      const getAnnotation = vi.fn(() => annotation(pollutedOverrides));
-      const gate = createConnectionMcpClassificationGate({ getAnnotation });
-
       expectMcpGateError(() => gate(mkArgs({ params: { tool } })));
     },
   );
 });
 
-describe('D-177 P2b createConnectionMcpGateFromDb', () => {
-  it('is lazy, skips db access for non-listed slugs, then ensures schema and reads rows for kernel slugs', () => {
+describe('D-228 slice 4 createConnectionMcpGateFromDb', () => {
+  it('⛔ FAILS CLOSED when the stores are unwired — a gate that admits is not a gate', () => {
     const db = new Database(':memory:');
     try {
       const gate = createConnectionMcpGateFromDb(db);
-      expect(annotationTableExists(db)).toBe(false);
 
-      expect(() => gate(mkArgs({
-        slug: 'slack-post',
-        params: {},
-      }))).not.toThrow();
-      expect(annotationTableExists(db)).toBe(false);
-
+      // Non-listed slugs still pass untouched.
+      expect(() => gate(mkArgs({ slug: 'slack-post', params: {} }))).not.toThrow();
+      // Kernel slugs refuse, because no tier can be resolved.
       expectMcpGateError(() => gate(mkArgs({
         slug: CONNECTION_MCP_READ_SLUG,
         params: { tool: 'search' },
       })));
-      expect(annotationTableExists(db)).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
 
-      ensureChatConnectionMcpAnnotationSchema(db);
-      createChatConnectionMcpStore(db).setAnnotation({
-        value: {
-          connection_name: 'exa',
-          topic_tags: [],
-          tool_overrides: {
-            search: { enabled: true, classification: 'read' },
-          },
-          tools_list_cache: { tools: [{ name: 'search' }], cached_at: 1 },
-        },
-        now: 2,
+  it('admits a read tool once a bound catalog declares it', () => {
+    const db = new Database(':memory:');
+    try {
+      const PACK = 'mcp-0123456789abcdef0123456789abcdef';
+      const gate = createConnectionMcpGateFromDb(db, {
+        contractStore: {
+          get: (scope: string, segments: readonly string[]) =>
+            (scope === 'connection_catalog_binding' && segments[0] === 'exa'
+              // ⚠ `installed_pack_id` is REQUIRED by `readBinding` — omit it and
+              // the binding resolves to undefined, which reads as "no pack" and
+              // makes this permitting witness silently assert the refusal.
+              ? {
+                  segments: [...segments],
+                  value: { catalog_slug: PACK, installed_pack_id: 'pack_1' },
+                }
+              : null),
+          scan: () => [],
+        } as never,
+        getManifest: (slug) => (slug === PACK
+          ? ({
+              slug: PACK,
+              operations: { search_op: { risk_tier: 'read', operation_id: `x.${PACK}.search_op` } },
+              surfaces: { api: { executes: { search_op: { kind: 'mcp', tool: 'search' } } } },
+            } as never)
+          : null),
       });
 
       expect(() => gate(mkArgs({
         slug: CONNECTION_MCP_READ_SLUG,
         params: { tool: 'search' },
       }))).not.toThrow();
+
+      // ⚠ THE PERMITTING WITNESS'S SIBLING — the same wiring must still refuse a
+      // tool the catalog does not declare, or "it admits" proves only that the
+      // gate stopped working.
+      expectMcpGateError(() => gate(mkArgs({
+        slug: CONNECTION_MCP_READ_SLUG,
+        params: { tool: 'not_declared' },
+      })));
     } finally {
       db.close();
     }

@@ -81,7 +81,10 @@ const setup = async (): Promise<Harness> => {
   const dispatchers: KernelDispatchers = {
     collectionList: async (input) => {
       const res = await handleCollectionList({ registry }, input);
-      return { records: res.records };
+      // D-236 — forward `source_freshness` exactly as the production closure in
+      // wire-executor-config does. A harness that narrows where production does
+      // not is a stub that diverges from the thing it stands in for.
+      return { records: res.records, source_freshness: res.source_freshness };
     },
     collectionGet: async (input) => handleCollectionGet({ registry }, input),
   };

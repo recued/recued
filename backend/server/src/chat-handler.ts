@@ -39,7 +39,6 @@ import {
   MCP_INBOUND_TOKEN_VALIDATION_ISSUE_CODES,
   RpcError,
   buildDefaultConnectionMcpAnnotation,
-  buildPickerEntries,
   isChatDataDiagnosisIntent,
   isChatDataDiagnosisRelationship,
   isChatDataDiagnosisResolutionStatus,
@@ -48,7 +47,6 @@ import {
   isChatModelHint,
   isChatModelSourceId,
   isReservedOwnerContractId,
-  isValidPickerTarget,
   validateChatToolCatalogScopeInput,
   validateConnectionMcpAnnotationInput,
   validateInboundTokenChatModeUpdate,
@@ -75,7 +73,6 @@ import {
   type IngredientKind,
   type IssuedMcpInboundToken,
   type McpInboundTokenRecord,
-  type PickerEntry,
   type RecuedServerSignature,
   type ServerRpcRegistry,
   type ToolEntry,
@@ -116,6 +113,14 @@ export interface ChatRpcDeps {
    *  throw `not_configured` (501) — same posture as the per-kind scope
    *  store. */
   connectionMcpStore?: ChatConnectionMcpStore;
+  /** D-228 slice 4 — how many of a peer's tools are reachable as governed pack
+   *  operations. The picker's visibility predicate: it used to count tools the
+   *  owner had classified in `tool_overrides`, which no longer exists, so a peer
+   *  with working tools would otherwise vanish from the scope switcher.
+   *
+   *  ⚠ Absent ⇒ zero ⇒ no peer surfaces, which is the pre-existing
+   *  "nothing classified yet" posture rather than a new failure mode. */
+  connectionMcpCoveredToolCount?: (connection_name: string) => number;
   /** D-137 P3 § A.11 — Mary's plan-approval registry. Same store the
    *  orchestrator's `dispatchTool` gate consults;
    *  the rpc handlers flip status on approve / cancel + emit the
@@ -239,8 +244,6 @@ type ChatMethods =
   | 'chat.connection_mcp.list'
   | 'chat.connection_mcp.get'
   | 'chat.connection_mcp.set'
-  | 'chat.picker.entries'
-  | 'chat.picker.refresh'
   | 'chat.inbound_token.list'
   | 'chat.inbound_token.get'
   | 'chat.inbound_token.issue'
@@ -394,24 +397,28 @@ const ensureValidPickerTarget = (
 const ensurePeerPickerTargetIsLive = (
   method: string,
   target: string,
-  deps: ChatRpcDeps,
+  _deps: ChatRpcDeps,
 ): void => {
   if (target === 'self') return;
-  if (!deps.connectionMcpStore) return;
-  const annotations = deps.connectionMcpStore.listAnnotations();
-  const ok = isValidPickerTarget(
-    target,
-    annotations,
-    deps.selfSignature,
-    deps.selfDisplayName ?? 'Self',
+  // ⛔ D-228 slice 5 — NO PEER TARGET IS VALID ANY MORE, so this refuses outright
+  // instead of consulting a projection that no longer exists. It used to ask
+  // `isValidPickerTarget` whether the peer had a live picker entry; the MCP
+  // scope-picker is retired (dead on both ends, and its routing purpose is
+  // subsumed — a peer's tools are minted into a local pack and reach chat as
+  // ordinary `recued_op_*` operations governed by the contract).
+  //
+  // ⚠ STRICTLY TIGHTER, and deliberately still a REFUSAL rather than a silent
+  // coercion to `'self'`: a caller asking to scope a conversation at a peer is
+  // asking for something this server no longer does, and answering "fine, I
+  // pointed you at yourself" would be a different conversation than the one
+  // they asked for.
+  throw new RpcError(
+    'bad_request',
+    `${method}: picker target '${target}' is not available — per-conversation peer `
+    + 'scoping was retired. An enrolled MCP connection\'s tools are minted into a '
+    + 'pack and are already callable from this conversation as pack operations.',
+    400,
   );
-  if (!ok) {
-    throw new RpcError(
-      'bad_request',
-      `${method}: picker target '${target}' does not match a live peer picker entry — no annotation row OR missing recued_signature OR zero classified tools (probe the peer + classify ≥1 tool first)`,
-      400,
-    );
-  }
 };
 
 export const handleSessionsList = (
@@ -1766,40 +1773,20 @@ export const handleConnectionMcpSet = (
     } catch {
       // observability-only; never abort the rpc on emit failure
     }
-    // D-137 P4 § A.7.1 — every annotation write may shift picker
-    // visibility (new annotation row / classification flip /
-    // signature change). Emit the picker broadcast alongside so paired
-    // clients re-render the picker dropdown without round-tripping
-    // `chat.picker.entries`. Always-emit posture (matches the
-    // annotation broadcast's "bus is the multi-client coherence path
-    // — no-op overwrites still fan" stance).
-    try {
-      deps.broadcast.emit({
-        kind: 'chat.picker_entries_changed',
-        entries: projectPickerEntries(deps),
-      });
-    } catch {
-      // observability-only
-    }
   }
   // Summary stats only — body of tool descriptions / classifications
   // stays out of the audit log (matches the spec's per-event privacy
   // posture; the audit feed renders "Mary classified 3 tools" without
   // leaking the descriptions themselves).
-  let classified_count = 0;
-  for (const o of Object.values(persisted.tool_overrides)) {
-    if (o.classification !== 'unknown') classified_count += 1;
-  }
+  // ⚠ D-228 slices 4 + 6 — the per-tool counts went with `tool_overrides`, and
+  // `cached_tool_count` with `tools_list_cache`. What remains is the whole of
+  // what this rpc still carries: the owner's connection-level topic chips. A
+  // tool's risk tier is not set here, and its descriptors are not cached here.
   void safeLogActivity(
     deps.auditLog,
     'chat_connection_mcp_annotation_set',
     persisted.connection_name,
-    JSON.stringify({
-      topic_tag_count: persisted.topic_tags.length,
-      override_count: Object.keys(persisted.tool_overrides).length,
-      classified_count,
-      cached_tool_count: persisted.tools_list_cache.tools.length,
-    }),
+    JSON.stringify({ topic_tag_count: persisted.topic_tags.length }),
   );
   // Defensive narrowing — the store always returns a fully-shaped
   // annotation, but the type check keeps the contract surface honest.
@@ -1810,181 +1797,20 @@ export const handleConnectionMcpSet = (
   return { annotation: persisted };
 };
 
-/** D-137 P4 § A.7 + § A.7.1 — pure projection over the annotation
- *  store + self signature. Reads the *current* annotations on each
- *  call so a Settings-side classification flip or a fresh
- *  `chat.picker.refresh` is reflected on the next renderer pull. */
-const projectPickerEntries = (deps: ChatRpcDeps): ReadonlyArray<PickerEntry> => {
-  if (!deps.connectionMcpStore) {
-    // Substrate-stays-reachable fallback — Self only. The renderer
-    // sees the picker hidden state (length === 1 && id === 'self'),
-    // which matches the "Picker hidden when zero peers" acceptance
-    // test for dbless harness paths.
-    return buildPickerEntries(
-      [],
-      deps.selfSignature,
-      deps.selfDisplayName ?? 'Self',
-    );
-  }
-  return buildPickerEntries(
-    deps.connectionMcpStore.listAnnotations(),
-    deps.selfSignature,
-    deps.selfDisplayName ?? 'Self',
-  );
-};
-
-/** D-137 P4 § A.7 — `chat.picker.entries` handler. Read-only.
- *  Always returns at least the `'self'` entry. */
-export const handlePickerEntries = (
-  deps: ChatRpcDeps,
-): { entries: ReadonlyArray<PickerEntry> } => {
-  return { entries: projectPickerEntries(deps) };
-};
-
-/** D-137 P4 § A.7.1 — `chat.picker.refresh` handler. Updates one
- *  annotation row's `recued_signature` + `tools_list_cache` after a
- *  caller-driven probe of the peer's MCP `initialize` + `tools/list`.
- *  Preserves Mary's `topic_tags` + `tool_overrides` verbatim — a
- *  refresh never erases her classification work.
+/** ⛔⛔ D-228 slice 5 — THE MCP SCOPE-PICKER HANDLERS ARE RETIRED.
  *
- *  Flow:
- *    1. Read the existing annotation (or the empty default).
- *    2. Build a merged write payload (preserve overrides + topic
- *       tags; replace cache + signature with the caller's values).
- *    3. Validate via `validateConnectionMcpAnnotationInput` (closed
- *       issue codes — `recued_signature_*` apply).
- *    4. Persist + emit both broadcasts:
- *       - `chat.connection_mcp_annotation_changed` (existing W2.3
- *         broadcast; per-pair annotation projection consumers).
- *       - `chat.picker_entries_changed` (new P4 broadcast; picker
- *         dropdown re-renders).
- *    5. Best-effort audit emit.
- *    6. Return the post-write annotation + the post-write picker
- *       entries (so the caller can rehydrate both surfaces in one
- *       round-trip).
+ *  `projectPickerEntries` / `handlePickerEntries` / `handlePickerRefresh` served
+ *  a per-conversation scope switch (`Self` / `Bob (data)`) that swapped the chat
+ *  catalog wholesale to a peer's tools. It was dead on BOTH ends — no client in
+ *  `apps/` consumed `chat.picker.entries` or the broadcast, and `PeerDispatcher`
+ *  had ZERO implementors — and its purpose is subsumed: since auto-mint a peer's
+ *  tools are minted into a LOCAL pack and reach chat as ordinary `recued_op_*`
+ *  operations governed by the contract.
  *
- *  The probe substrate (server-side MCP-client driven probe) lands
- *  alongside the outbound dispatch wiring in a P4 follow-on. Until
- *  then the rpc accepts caller-supplied probe results so the
- *  Settings UI + tests + (eventually) the orchestrator's per-session
- *  refresh hook can populate the substrate. */
-export const handlePickerRefresh = (
-  deps: ChatRpcDeps,
-  args: unknown,
-): {
-  annotation: ConnectionMcpAnnotationState;
-  entries: ReadonlyArray<PickerEntry>;
-} => {
-  if (!deps.connectionMcpStore) {
-    throw new RpcError(
-      'not_configured',
-      'chat.picker.refresh: annotation store is not wired (dbless / pre-init)',
-      501,
-    );
-  }
-  const safe = ensureRecordArgs('chat.picker.refresh', args);
-  const connection_name = safe.connection_name;
-  if (typeof connection_name !== 'string' || connection_name.length === 0) {
-    throw new RpcError(
-      'bad_request',
-      'chat.picker.refresh: connection_name must be a non-empty string',
-      400,
-    );
-  }
-  if (!('recued_signature' in safe)) {
-    throw new RpcError(
-      'bad_request',
-      'chat.picker.refresh: recued_signature is required (pass null to clear, or the probed signature)',
-      400,
-    );
-  }
-  if (!('tools_list_cache' in safe)) {
-    throw new RpcError(
-      'bad_request',
-      'chat.picker.refresh: tools_list_cache is required (caller probes upstream + supplies the result)',
-      400,
-    );
-  }
-  // Read existing annotation so the refresh preserves Mary's
-  // classification + topic tags verbatim. `getAnnotation` always
-  // returns a shape (empty default when no row exists).
-  const existing = deps.connectionMcpStore.getAnnotation(connection_name);
-  // Validate the merged payload through the W2.3 validator so all
-  // closed-list issue codes (including the new
-  // `recued_signature_*` codes + P5 `chat_mode_*` codes) apply
-  // uniformly. Note: we feed the validator a full annotation-shaped
-  // object; topic_tags + tool_overrides come from the existing row.
-  //
-  // D-137 P5 / Codex review P2 fold — `chat_mode` is optional on the
-  // refresh args. The presence-check threads `absent → preserve prior`
-  // through the validator + store merge (matches the W2.3 / P4
-  // `recued_signature` posture). When the upstream's `serverInfo._-
-  // meta.recued.chat_mode` block is part of the probe result, the
-  // caller forwards it here; otherwise the prior persisted value
-  // survives.
-  const payload: Record<string, unknown> = {
-    connection_name,
-    topic_tags: [...existing.topic_tags],
-    tool_overrides: { ...existing.tool_overrides },
-    tools_list_cache: safe.tools_list_cache,
-    recued_signature: safe.recued_signature,
-  };
-  if (Object.prototype.hasOwnProperty.call(safe, 'chat_mode')) {
-    payload.chat_mode = (safe as { chat_mode?: unknown }).chat_mode;
-  }
-  const validation = validateConnectionMcpAnnotationInput(payload);
-  if (!validation.ok) {
-    const codes = validation.issues.map((i) => i.code).join(', ');
-    const details = validation.issues.map((i) => i.detail).join('; ');
-    throw new RpcError(
-      'bad_request',
-      `chat.picker.refresh: ${codes} (${details})`,
-      400,
-    );
-  }
-  const now = deps.now ?? Date.now;
-  const persisted = deps.connectionMcpStore.setAnnotation({
-    value: validation.value,
-    now: now(),
-  });
-  // Emit the annotation broadcast first (W2.3 consumers expect it on
-  // every annotation write), then the picker broadcast (new at P4 —
-  // picker dropdown re-renders).
-  if (deps.broadcast) {
-    try {
-      deps.broadcast.emit({
-        kind: 'chat.connection_mcp_annotation_changed',
-        connection_name: persisted.connection_name,
-        annotation: persisted,
-      });
-    } catch {
-      // observability-only
-    }
-  }
-  const entries = projectPickerEntries(deps);
-  if (deps.broadcast) {
-    try {
-      deps.broadcast.emit({
-        kind: 'chat.picker_entries_changed',
-        entries,
-      });
-    } catch {
-      // observability-only
-    }
-  }
-  void safeLogActivity(
-    deps.auditLog,
-    'chat_picker_refreshed',
-    persisted.connection_name,
-    JSON.stringify({
-      recued_signature_present: persisted.recued_signature !== null
-        && persisted.recued_signature !== undefined,
-      cached_tool_count: persisted.tools_list_cache.tools.length,
-      entry_count: entries.length,
-    }),
-  );
-  return { annotation: persisted, entries };
-};
+ *  ⚠ `handlePickerRefresh` was the only writer of the annotation's
+ *  `recued_signature` / `tools_list_cache` / `chat_mode`. Those are now
+ *  writerless and unread — see the note on the retired rpc specs.
+ */
 
 /** D-137 P5 follow-on § A.9 — `chat.inbound_token.list`. Returns
  *  every persisted token row in `created_at DESC` order; the Settings
@@ -2648,8 +2474,6 @@ export const makeChatHandlers = (
       'chat.connection_mcp.list',
       'chat.connection_mcp.get',
       'chat.connection_mcp.set',
-      'chat.picker.entries',
-      'chat.picker.refresh',
       'chat.inbound_token.list',
       'chat.inbound_token.get',
       'chat.inbound_token.issue',
@@ -2729,9 +2553,6 @@ export const makeChatHandlers = (
         ),
       'chat.connection_mcp.set': async (args) =>
         handleConnectionMcpSet(deps, args),
-      'chat.picker.entries': async () => handlePickerEntries(deps),
-      'chat.picker.refresh': async (args) =>
-        handlePickerRefresh(deps, args),
       'chat.inbound_token.list': async () => handleInboundTokenList(deps),
       'chat.inbound_token.get': async (args) =>
         handleInboundTokenGet(deps, args),

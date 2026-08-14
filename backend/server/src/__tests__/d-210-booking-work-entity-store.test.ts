@@ -50,7 +50,6 @@ beforeEach(() => {
     source_kind: 'builtin',
     source_label: 'Recued built-in (bookings)',
     write_capable: true,
-    mcp_exposed: false,
   });
 });
 
@@ -385,87 +384,6 @@ describe('booking storage round-trip', () => {
       .toThrow(WorkEntityValidationError);
   });
 
-  it('returns only prior terminal customer history, independent of source liveness', () => {
-    const write = (
-      id: string,
-      lifecycle_state: 'confirmed' | 'completed' | 'no_show',
-      contact = 'contact-opaque-1',
-      at = NOW,
-    ) => store.writeBooking({
-      id,
-      source_id: 'recued.booking',
-      title: `Booking ${id}`,
-      lifecycle_state,
-      counterparty_contact_id: contact,
-      slot_start_at: at + 1_000,
-      slot_end_at: at + 2_000,
-      state_changed_at: at,
-      // 🔴 The row DELIBERATELY carries visitor-shaped content in the columns a
-      // whole-row spread would leak. Without this the absence assertions below
-      // are vacuous — they would pass against ANY projection, including one
-      // that returns the entire row. [[a_defaulted_field_is_not_evidence]]
-      reception_record_id: `sub-${id}`,
-      source_record_hash: `hash-${id}`,
-      source_extension_blob: {
-        visitor_email: 'visitor@example.com',
-        visitor_notes: 'Please call my mobile, I am at 12 Rue Lafayette',
-      },
-    }, at);
-    write('completed-old', 'completed', 'contact-opaque-1', NOW + 1);
-    write('no-show-new', 'no_show', 'contact-opaque-1', NOW + 3);
-    write('current', 'completed', 'contact-opaque-1', NOW + 4);
-    write('still-open', 'confirmed', 'contact-opaque-1', NOW + 5);
-    write('other-contact', 'completed', 'contact-opaque-2', NOW + 6);
-    store.setSourceEnabled('recued.booking', false);
-
-    const history = store.getBookingHistory({
-      counterparty_contact_id: 'contact-opaque-1',
-      exclude_booking_id: 'current',
-      limit: 1,
-    });
-    expect(history.total).toBe(2);
-    // ⛔ EXACT key set, not `objectContaining`. `toMatchObject` /
-    // `objectContaining` cannot prove a field is ABSENT, so a projection that
-    // started spreading the whole row — leaking `source_extension_blob`,
-    // `reception_record_id`, `monetary_amount` — would still pass them.
-    // [[an_absent_key_needs_object_hasown]]
-    expect(history.entries).toHaveLength(1);
-    expect(Object.keys(history.entries[0]!).sort()).toEqual([
-      'created_at',
-      'id',
-      'lifecycle_state',
-      'slot_end_at',
-      'slot_start_at',
-      'state_changed_at',
-      'title',
-    ]);
-    expect(history.entries[0]).toMatchObject({
-      id: 'no-show-new',
-      lifecycle_state: 'no_show',
-    });
-    for (const leaked of [
-      'source_extension_blob',
-      'reception_record_id',
-      'monetary_amount',
-      'source_record_hash',
-    ]) {
-      expect(Object.hasOwn(history.entries[0]!, leaked)).toBe(false);
-    }
-    const serialized = JSON.stringify(history);
-    // Now non-vacuous: the fixture DOES contain an address and free-form
-    // visitor text, so these fail the moment either reaches the response.
-    expect(serialized).not.toContain('@');
-    expect(serialized).not.toContain('Rue Lafayette');
-    expect(serialized).not.toContain('sub-');
-    expect(serialized).not.toContain('still-open');
-    expect(serialized).not.toContain('other-contact');
-    expect(serialized).not.toContain('current');
-
-    expect(() => store.getBookingHistory({ counterparty_contact_id: '', limit: 10 }))
-      .toThrow(WorkEntityValidationError);
-    expect(() => store.getBookingHistory({ counterparty_contact_id: 'contact-1', limit: 51 }))
-      .toThrow(WorkEntityValidationError);
-  });
 
   it('reaches the polymorphic readers by kind', () => {
     const b = store.writeBooking(

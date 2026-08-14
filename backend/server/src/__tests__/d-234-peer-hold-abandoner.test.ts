@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { abandonOrphanedPeerHolds, isOrphanedHold } from '../peer-hold-abandoner.js';
 import { createPeerAskOutboxStore } from '../storage/peer-ask-outbox-store.js';
+import { createPeerAnswerStore } from '../storage/peer-answer-store.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -36,6 +37,7 @@ const harness = (opts: {
 } = {}) => {
   const db = new Database(':memory:');
   const outbox = createPeerAskOutboxStore(db);
+  const answers = createPeerAnswerStore(db);
   for (const r of opts.rows ?? [{ ref: 'ref_1', run_id: 'run_1' }]) {
     outbox.open({
       exchange_ref: r.ref,
@@ -54,6 +56,7 @@ const harness = (opts: {
   });
   return {
     outbox,
+    answers,
     appended,
     notifyWithdrawn,
     auditLog: {
@@ -164,7 +167,8 @@ describe('§ 234.4n — what abandoning does', () => {
   it('⚠ works with NO notifier at all — the local half is not optional', async () => {
     const h = harness();
     const r = await abandonOrphanedPeerHolds({
-      outbox: h.outbox, auditLog: h.auditLog, dishes: h.dishes, now: h.now, log: () => {},
+      outbox: h.outbox, answers: h.answers, auditLog: h.auditLog,
+      dishes: h.dishes, now: h.now, log: () => {},
     });
 
     expect(r).toMatchObject({ abandoned: 1, noticed: 0, noticeFailed: 0 });
@@ -184,6 +188,42 @@ describe('§ 234.4n — what abandoning does', () => {
 
     expect(r).toMatchObject({ examined: 2, orphaned: 2, abandoned: 2, noticeFailed: 2 });
     expect(h.appended.map((e) => e.run_id).sort()).toEqual(['run_a', 'run_b']);
+  });
+
+  it('⛔ a real answer that wins during the audit read prevents abandonment', async () => {
+    const h = harness();
+    let release!: (entry: AuditEntry) => void;
+    const get = new Promise<AuditEntry>((resolve) => { release = resolve; });
+    const run = abandonOrphanedPeerHolds({
+      ...h,
+      auditLog: { get: async () => get, append: h.auditLog.append },
+      log: () => {},
+    });
+    await Promise.resolve();
+    expect(h.answers.record({
+      exchange_ref: 'ref_1', peer_contract_id: 'ct_peer_bob', answered: true,
+      option: 'yes', at: NOW,
+    })).toBe(true);
+    release(anchorOf());
+
+    expect(await run).toMatchObject({ orphaned: 1, abandoned: 0 });
+    expect(h.appended).toHaveLength(0);
+    expect(h.outbox.get('ref_1')).not.toBeNull();
+  });
+
+  it('⛔ an audit failure leaves the outbox row for a later retry', async () => {
+    const h = harness();
+    await expect(abandonOrphanedPeerHolds({
+      ...h,
+      auditLog: { get: h.auditLog.get, append: async () => { throw new Error('offline'); } },
+      log: () => {},
+    })).rejects.toThrow('offline');
+    expect(h.outbox.get('ref_1')).not.toBeNull();
+    expect(h.answers.get('ref_1')).toMatchObject({ unanswered_because: 'withdrawn' });
+
+    expect(await abandonOrphanedPeerHolds({ ...h, log: () => {} }))
+      .toMatchObject({ abandoned: 1 });
+    expect(h.outbox.get('ref_1')).toBeNull();
   });
 
   it('names the abandonment in the activity log', async () => {

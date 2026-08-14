@@ -34,7 +34,6 @@ const buildSourceWithCapture = () => {
     'connection.enrolled',
     'connection.disabled',
     'connection.reprobed',
-    'source.enabled_changed',
     'quota.headroom_changed',
   ] as const;
   for (const topic of topics) {

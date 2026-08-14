@@ -291,8 +291,6 @@ describe('reception destination picker helpers (D-174 ref-picker)', () => {
     source_kind: over.source_kind ?? 'builtin',
     source_label: over.source_label ?? 'Tasks',
     write_capable: over.write_capable ?? true,
-    mcp_exposed: over.mcp_exposed ?? false,
-    enabled: over.enabled,
     registered_at: over.registered_at ?? NOW,
   });
 
@@ -305,31 +303,35 @@ describe('reception destination picker helpers (D-174 ref-picker)', () => {
     ).toBe(false);
   });
 
-  it('projects only write-capable, enabled Sources into picker options', () => {
+
+  it('gives every destination a label that identifies it ON ITS OWN', () => {
+    // The ref-picker commits the LABEL alone into its input (correctly — a
+    // sublabel is the record id on other consumers). So a label that needs
+    // its sublabel to disambiguate reads correctly in the open list and
+    // then collapses to something ambiguous the moment it is chosen, which
+    // is exactly what "Recued built-in" did four times over.
     const options = mapSourceRegistrationsToDestinationOptions([
-      source({ id: 'builtin.task', source_label: 'Tasks', top_tier_kind: 'task' }),
-      source({ id: 'builtin.commit', source_label: 'Commitments', top_tier_kind: 'commitment' }),
-      source({ id: 'ro.external', source_label: 'Read-only CRM', write_capable: false }),
-      source({ id: 'off.source', source_label: 'Disabled', enabled: false }),
+      source({ id: 'recued.task', source_label: 'Recued built-in', top_tier_kind: 'task' }),
+      source({ id: 'recued.note', source_label: 'Recued built-in', top_tier_kind: 'note' }),
+      source({ id: 'recued.project', source_label: 'Recued built-in', top_tier_kind: 'project' }),
+      // The mirror case: a second Source serving the SAME kind. A kind-only
+      // label would collide here just as badly, so the Source name stays.
+      source({ id: 'hubspot.acme.task', source_label: 'HubSpot (acme)', top_tier_kind: 'task' }),
     ]);
-    expect(options).toEqual([
-      { id: 'builtin.task', label: 'Tasks', sublabel: 'Tasks' },
-      { id: 'builtin.commit', label: 'Commitments', sublabel: 'Commitments' },
+
+    const labels = options.map((o) => o.label);
+    expect(labels).toEqual([
+      'Task · Recued built-in',
+      'Note · Recued built-in',
+      'Project · Recued built-in',
+      'Task · HubSpot (acme)',
     ]);
+    expect(new Set(labels).size).toBe(labels.length);
+    // The kind leads: it is the first thing read, and the part a narrow
+    // field keeps when it truncates.
+    expect(labels.every((l) => /^(Task|Note|Project) ·/.test(l))).toBe(true);
   });
 
-  it('treats an undefined `enabled` Source as enabled (default true)', () => {
-    const options = mapSourceRegistrationsToDestinationOptions([
-      source({
-        id: 'builtin.note',
-        source_label: 'Notes',
-        top_tier_kind: 'note',
-        enabled: undefined,
-      }),
-    ]);
-    expect(options).toHaveLength(1);
-    expect(options[0]?.id).toBe('builtin.note');
-  });
 
   it('stages a destination pick only when it is non-empty and changed', () => {
     const field = destinationField('hubspot.primary.commitment');

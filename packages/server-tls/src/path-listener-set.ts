@@ -120,12 +120,38 @@ export type SniCertDispatchResult =
   | { ok: true; entry: TLSDomainCertChain }
   | { ok: false; reason: SniCertDispatchFailureReason };
 
+/** Map a registry `cert_source` onto the `tls_domains` row source the SNI
+ *  dispatcher must find. `null` means "this source never serves a cert from the
+ *  per-domain store", which fails the handshake closed.
+ *
+ *  ⛔ EXHAUSTIVE ON PURPOSE. A `Record`-shaped or `if`-chain-with-fallthrough
+ *  mapping over a closed vocabulary fails OPEN: a member added later silently
+ *  takes the default branch and nothing tells you. The `never` assignment below
+ *  turns that into a compile error at the site that has to make the decision. */
 export const tlsDomainSourceForHostnameCertSource = (
   source: HostnameCertSource,
 ): TLSDomainCertSource | null => {
-  if (source === 'recued_acme') return 'pro_acme';
-  if (source === 'byo_uploaded') return 'byo_upload';
-  return null;
+  switch (source) {
+    case 'recued_acme':
+      return 'pro_acme';
+    case 'byo_uploaded':
+      return 'byo_upload';
+    case 'byo_external':
+      // TLS terminates upstream — there is no local cert to dispatch.
+      return null;
+    case 'recued_acme_custom':
+      // D-235 P3 — the fleet issues this one too; it is stored under its own
+      // `tls_domains` source so renewal, failure handling and the delegation
+      // watch can differ from `pro_acme` without a second field to keep in
+      // agreement. The SNI comparison below is what makes the split
+      // load-bearing: a row whose stored source disagrees with the registry's
+      // closes the connection rather than serving the wrong certificate.
+      return 'pro_acme_custom';
+    default: {
+      const unreachable: never = source;
+      return unreachable;
+    }
+  }
 };
 
 export const selectSniCertChain = (options: {

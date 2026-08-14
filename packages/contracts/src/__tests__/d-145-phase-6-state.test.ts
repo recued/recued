@@ -403,7 +403,6 @@ describe('D-145 PA6 — selectSourceTransition optional validation (Codex P2 fol
         source_kind: 'builtin',
         source_label: 'Recued (task)',
         write_capable: true,
-        mcp_exposed: true,
         registered_at: 1,
       },
     ]);

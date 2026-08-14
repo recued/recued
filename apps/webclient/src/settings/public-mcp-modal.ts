@@ -70,12 +70,34 @@ export type PublicMcpModalState =
 export const PUBLIC_MCP_MODAL_COPY = {
   acknowledge: {
     title: 'Enable public MCP?',
+    // ⛔⛔ THIS IS CONSENT COPY, SO A STALE MECHANISM HERE IS NOT DOC DRIFT —
+    // the owner types an exact phrase on the strength of this explanation, and
+    // a wrong description makes the informed half of informed consent false.
+    //
+    // What it used to say, and why each line went:
+    //   · "AI agents … can read warehouse topics scoped to the granted MCP
+    //     token" — the token binds a `contract_id`; the SCOPE lives on the
+    //     contract, not the token.
+    //   · "Per-pair MCP visibility tokens (D-137) gate which topics are
+    //     exposed" — false since D-187. `read-grant-checker.ts:137`: a topic is
+    //     read-granted by an explicit `enrichment.<topic>` grant row resolved
+    //     AGAINST THE BOUND CONTRACT. The copy named the thing that replaced it.
+    //
+    // 🔑 And the framing correction underneath both: this switch decides
+    // REACHABILITY (whether the MCP port binds beyond the LAN — D-148 P6 § A.7),
+    // never authorization. Nothing in the dispatch path reads the
+    // acknowledgement. Saying "agents reach MCP after acknowledgement" invited
+    // exactly the misreading that this is an access grant.
     subtitle:
-      'AI agents at remote endpoints can read warehouse topics scoped to the granted MCP token.',
+      'Binds the MCP port beyond your LAN. What a remote agent may then do is '
+      + 'governed by its contract, not by this switch.',
     bullets: [
-      'AI agents at remote endpoints can read warehouse topics scoped to the granted MCP token.',
-      'Prompt-injection is a substrate risk — a topic\'s content can manipulate agent behavior.',
-      'Per-pair MCP visibility tokens (D-137) gate which topics are exposed.',
+      'Remote AI agents can reach the MCP port. Every call is still gated by the '
+        + 'agent\'s contract — its granted ops and its granted reads.',
+      'Prompt-injection is a substrate risk — content an agent reads can steer its '
+        + 'behavior, and a contract bounds what that steering can reach.',
+      'Contract grants decide what is exposed: `enrichment.<topic>` per topic, '
+        + '`data.<collection>` per collection, resolved against the bound contract.',
       'Recommendation: keep MCP LAN-only unless a specific use case requires public access.',
     ],
     phrase_prompt: `Type "${PUBLIC_MCP_ACKNOWLEDGEMENT_PHRASE}" to confirm`,

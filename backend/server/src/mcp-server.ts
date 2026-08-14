@@ -148,6 +148,15 @@ import {
   assertRecordsNonOwnerRecipeExposure,
   recipeUsesInstalledRecordsOperation,
 } from './records/non-owner-exposure.js';
+import {
+  MCP_LEGACY_PROTOCOL_VERSION,
+  MCP_MODERN_PROTOCOL_VERSION,
+  MCP_SUPPORTED_PROTOCOL_VERSIONS,
+  MCP_UNSUPPORTED_PROTOCOL_VERSION,
+  hasModernMcpClientCapabilities,
+  mcpServerResultMeta,
+  readMcpRequestProtocolVersion,
+} from '@recued/ingredients/mcp-protocol.js';
 
 // ────────────────────────────────────────────────────────────────
 // JSON-RPC 2.0 types
@@ -177,9 +186,9 @@ interface JsonRpcNotification {
 // MCP protocol constants
 // ────────────────────────────────────────────────────────────────
 
-const MCP_PROTOCOL_VERSION = '2024-11-05';
 const SERVER_NAME = 'recued';
 const SERVER_VERSION = '0.1.0';
+const SERVER_INFO = { name: SERVER_NAME, version: SERVER_VERSION } as const;
 
 /** Prefix every dynamically-generated per-ingredient tool with this. Keeps
  *  them visually grouped in MCP clients and prevents collision with the
@@ -736,6 +745,8 @@ const inferInputSchema = (manifest: IngredientManifest): {
 
 /** Test-only exports. Not part of the public API. */
 export const _testing = {
+  /** Full JSON-RPC boundary for protocol-version negotiation tests. */
+  dispatch: (message: unknown, deps: McpDeps) => dispatch(message, deps),
   /** Build the extension-first route map. Test harnesses use this to
    *  assert catalog-merge semantics without spinning up full JSON-RPC. */
   buildRouteMap: (deps: McpDeps) => buildRouteMap(deps),
@@ -1103,19 +1114,44 @@ const isCustomerStatusGranted = (deps: McpDeps): boolean => {
     .isVerbOpGranted(CUSTOMER_STATUS_OP_ID);
 };
 
-/** For an admitted D-196 customer only, raw pack ops are governed by the
- *  customer instance's self-contained contract grant list. `null` means this is
- *  not the customer-raw-op path and the ordinary inbound-token checklist keeps
- *  authority. Missing liveness/gate dependencies fail closed. */
-const customerRawOpGrant = (deps: McpDeps, toolName: string): boolean | null => {
-  if (deps.customerContractGrants !== true || !toolName.startsWith(OP_TOOL_PREFIX)) {
-    return null;
-  }
+/** § 234.4p.16e — raw pack ops are governed by the CONTRACT at every bound door,
+ *  not only for a D-196 customer instance.
+ *
+ *  ⛔⛔ WHAT THIS REPLACED WAS UNGRANTABLE, NOT UNGRANTED. The enumeration and
+ *  dispatch gates filter raw ops through the per-token CHECKLIST, and
+ *  `chat.inbound_token.issue` refuses a `recued_op_*` key outright because it
+ *  validates every grant name against the internal tool REGISTRY, which raw pack
+ *  ops are never in (`wire-chat-orchestrator.ts`). So an ordinary door could not
+ *  see or call a pack op by any route — driven in
+ *  `dev/mcp-two-roads-drive.ts`, road C: a real minted contract with a real
+ *  `granted: true` row still produced zero `recued_op_*` at `tools/list`. The
+ *  correct gate existed and was fenced to one special case.
+ *
+ *  🔑 `null` = "not this path, keep the existing precedence" — which is how the
+ *  OWNER stays whole. An unbound / stdio caller has no contract to consult, so it
+ *  falls through to the `ownerAdmitAll` branch exactly as before; returning
+ *  `false` here would have denied the owner their own ops.
+ *
+ *  ⛔ A CUSTOMER INSTANCE STILL FAILS CLOSED on missing liveness or a missing
+ *  gate, unchanged: its authority IS a finite stamped snapshot, so "no contract"
+ *  must mean deny rather than fall through to a checklist.
+ *
+ *  ⚠ SAFE ONLY BECAUSE OF THE PAIRED TIGHTEN. `isOpGranted` resolves
+ *  `explicit row ?? author-default`, and `opAuthorDefault` reads a WILDCARD door
+ *  as permissive — so widening alone would hand such a door every installed
+ *  pack's ops with no grant row. `isThirdPartyPackOpEntry` (grant-resolve.ts)
+ *  makes every Tier-P op owner-default-only, so a door reaches one by an EXPLICIT
+ *  ROW or not at all. Do not land one of these without the other. */
+const rawOpContractGrant = (deps: McpDeps, toolName: string): boolean | null => {
+  if (!toolName.startsWith(OP_TOOL_PREFIX)) return null;
+  const isCustomer = deps.customerContractGrants === true;
   if (deps.boundContractId === undefined || deps.boundContractActive !== true) {
-    return false;
+    return isCustomer ? false : null;
   }
   const opId = toolName.slice(OP_TOOL_PREFIX.length);
-  if (opId.length === 0 || deps.opAdmissionGate === undefined) return false;
+  if (opId.length === 0 || deps.opAdmissionGate === undefined) {
+    return isCustomer ? false : null;
+  }
   return deps.opAdmissionGate.isOpGranted(buildMcpExecutionSource(deps), opId);
 };
 
@@ -1423,7 +1459,7 @@ export const buildMcpGrantCatalogLegacyEntries = (
 // MCP message handlers
 // ────────────────────────────────────────────────────────────────
 
-const handleInitialize = (deps: McpDeps): unknown => {
+const mcpServerCapabilities = (deps: McpDeps): Record<string, unknown> => {
   const recipeCallbacksAvailable =
     deps.mcpRecipeCallbackNotifications === true
     && deps.sharedStore !== undefined
@@ -1455,12 +1491,48 @@ const handleInitialize = (deps: McpDeps): unknown => {
       : {}),
   };
   return {
-    protocolVersion: MCP_PROTOCOL_VERSION,
-    capabilities: {
-      tools: {},
-      ...(Object.keys(experimental).length > 0 ? { experimental } : {}),
+    tools: {},
+    ...(Object.keys(experimental).length > 0 ? { experimental } : {}),
+  };
+};
+
+const handleInitialize = (_params: unknown, deps: McpDeps): unknown => {
+  // Recued currently implements one legacy wire revision. Per the legacy MCP
+  // negotiation rule, select the newest legacy version the server actually
+  // implements even when the client's proposal differs.
+  return {
+    protocolVersion: MCP_LEGACY_PROTOCOL_VERSION,
+    capabilities: mcpServerCapabilities(deps),
+    serverInfo: SERVER_INFO,
+  };
+};
+
+const handleDiscover = (deps: McpDeps): unknown => ({
+  supportedVersions: [...MCP_SUPPORTED_PROTOCOL_VERSIONS],
+  capabilities: mcpServerCapabilities(deps),
+  // Discovery is bearer/grant scoped on the HTTP door. The current schema's
+  // CacheableResult fields are required, and `private` prevents a gateway from
+  // sharing one token's capability view with another.
+  ttlMs: 300_000,
+  cacheScope: 'private',
+  _meta: mcpServerResultMeta(SERVER_INFO),
+});
+
+const modernMcpResult = (result: unknown, modern: boolean): unknown => {
+  if (!modern || result === null || typeof result !== 'object' || Array.isArray(result)) {
+    return result;
+  }
+  const record = result as Record<string, unknown>;
+  const existingMeta = record._meta;
+  return {
+    ...record,
+    resultType: typeof record.resultType === 'string' ? record.resultType : 'complete',
+    _meta: {
+      ...(existingMeta !== null && typeof existingMeta === 'object' && !Array.isArray(existingMeta)
+        ? existingMeta as Record<string, unknown>
+        : {}),
+      ...mcpServerResultMeta(SERVER_INFO),
     },
-    serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
   };
 };
 
@@ -1645,7 +1717,7 @@ const handleToolsList = async (deps: McpDeps): Promise<unknown> => {
       if (t.name === CUSTOMER_STATUS_TOOL_NAME) {
         return deps.customerStatus !== undefined && isCustomerStatusGranted(deps);
       }
-      const customerGrant = customerRawOpGrant(deps, t.name);
+      const customerGrant = rawOpContractGrant(deps, t.name);
       if (customerGrant !== null) return customerGrant;
       // The authenticated owner (verified CLI bearer) carries no checklist and
       // is admit-all by design; everyone else needs one and is denied without.
@@ -2319,7 +2391,7 @@ const preflightMcpCustomerUsage = (
       return { ok: false, result: err('customer.status does not accept arguments.') };
     }
   } else {
-    const customerGrant = customerRawOpGrant(deps, params.name);
+    const customerGrant = rawOpContractGrant(deps, params.name);
     if (customerGrant === false) {
       return {
         ok: false,
@@ -2483,7 +2555,7 @@ const handleToolCall = async (
       return err('customer.status does not accept arguments.');
     }
   } else {
-    const customerGrant = customerRawOpGrant(deps, params.name);
+    const customerGrant = rawOpContractGrant(deps, params.name);
     if (customerGrant === false) {
       return err(`Tool '${params.name}' is not granted by this customer contract.`);
     }
@@ -3674,30 +3746,83 @@ const dispatch = async (
   }
   const request = msg as JsonRpcRequest;
   const id = request.id ?? null;
+  const declaredProtocolVersion = readMcpRequestProtocolVersion(request.params);
+  const modern = declaredProtocolVersion === MCP_MODERN_PROTOCOL_VERSION;
+
+  if (
+    declaredProtocolVersion !== undefined
+    && declaredProtocolVersion !== MCP_MODERN_PROTOCOL_VERSION
+  ) {
+    return {
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code: MCP_UNSUPPORTED_PROTOCOL_VERSION,
+        message: `Unsupported MCP protocol version: ${String(declaredProtocolVersion)}`,
+        data: {
+          supported: [...MCP_SUPPORTED_PROTOCOL_VERSIONS],
+          requested: String(declaredProtocolVersion),
+        },
+      },
+    };
+  }
+  if (modern && !hasModernMcpClientCapabilities(request.params)) {
+    return {
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code: -32602,
+        message: 'Modern MCP requests require clientCapabilities in params._meta.',
+      },
+    };
+  }
+
+  const resultResponse = (result: unknown): JsonRpcResponse => ({
+    jsonrpc: '2.0',
+    id,
+    result: modernMcpResult(result, modern),
+  });
 
   try {
     switch (request.method) {
       case 'initialize':
-        return { jsonrpc: '2.0', id, result: handleInitialize(deps) };
+        return { jsonrpc: '2.0', id, result: handleInitialize(request.params, deps) };
+
+      case 'server/discover':
+        if (!modern) {
+          return {
+            jsonrpc: '2.0',
+            id,
+            error: {
+              code: MCP_UNSUPPORTED_PROTOCOL_VERSION,
+              message: 'server/discover requires modern MCP request metadata.',
+              data: {
+                supported: [...MCP_SUPPORTED_PROTOCOL_VERSIONS],
+                requested: String(declaredProtocolVersion),
+              },
+            },
+          };
+        }
+        return resultResponse(handleDiscover(deps));
 
       case 'notifications/initialized':
         // Client acknowledgement — no response needed
         return null;
 
       case 'tools/list':
-        return { jsonrpc: '2.0', id, result: await handleToolsList(deps) };
+        return resultResponse(await handleToolsList(deps));
 
       case 'tools/call': {
         const rawParams = request.params;
         if (!rawParams || typeof rawParams !== 'object' || Array.isArray(rawParams)) {
-          return { jsonrpc: '2.0', id, result: err('tools/call params must be an object.') };
+          return resultResponse(err('tools/call params must be an object.'));
         }
         const params = rawParams as {
           name?: unknown;
           arguments?: unknown;
         };
         if (typeof params.name !== 'string' || params.name.length === 0) {
-          return { jsonrpc: '2.0', id, result: err('tools/call params.name is required.') };
+          return resultResponse(err('tools/call params.name is required.'));
         }
         if (
           params.arguments !== undefined
@@ -3707,11 +3832,7 @@ const dispatch = async (
             || Array.isArray(params.arguments)
           )
         ) {
-          return {
-            jsonrpc: '2.0',
-            id,
-            result: err('tools/call params.arguments must be an object when present.'),
-          };
+          return resultResponse(err('tools/call params.arguments must be an object when present.'));
         }
         const callParams = params as {
           name: string;
@@ -3721,7 +3842,7 @@ const dispatch = async (
           ? preflightMcpCustomerUsage(callParams, deps)
           : { ok: true as const, usage: null, deferReservation: false };
         if (!usagePreflight.ok) {
-          return { jsonrpc: '2.0', id, result: usagePreflight.result };
+          return resultResponse(usagePreflight.result);
         }
         if (
           deps.customerUsage
@@ -3733,14 +3854,10 @@ const dispatch = async (
             usagePreflight.usage,
           );
           if (!admission.admitted) {
-            return {
-              jsonrpc: '2.0',
-              id,
-              result: err(
-                admission.message
-                  ?? 'This customer has exceeded the seller usage policy for tool calls.',
-              ),
-            };
+            return resultResponse(err(
+              admission.message
+                ?? 'This customer has exceeded the seller usage policy for tool calls.',
+            ));
           }
         }
         let result: unknown;
@@ -3753,12 +3870,12 @@ const dispatch = async (
         const usageDenial = deps.customerUsage?.denialMessage();
         if (usageDenial !== undefined) {
           deps.customerUsage!.release();
-          return { jsonrpc: '2.0', id, result: err(usageDenial) };
+          return resultResponse(err(usageDenial));
         }
         if (deps.customerUsage && usagePreflight.usage) {
           if (!isBillableMcpToolResult(result)) {
             deps.customerUsage.release();
-            return { jsonrpc: '2.0', id, result };
+            return resultResponse(result);
           }
           if (usagePreflight.deferReservation) {
             // A successful execute-backed call with no actual dispatch still
@@ -3774,7 +3891,7 @@ const dispatch = async (
               );
               if (!admission.admitted) {
                 deps.customerUsage.release();
-                return { jsonrpc: '2.0', id, result: err(admission.message) };
+                return resultResponse(err(admission.message));
               }
             }
           }
@@ -3788,7 +3905,7 @@ const dispatch = async (
             );
           }
         }
-        return { jsonrpc: '2.0', id, result };
+        return resultResponse(result);
       }
 
       default:

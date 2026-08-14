@@ -13,10 +13,11 @@
  *    the registry so a recipe scoping `data.task.recued.note.*` errors
  *    cleanly instead of silently returning empty.
  *
- *  Plus default-Source memory passthrough (`getDefaultSource` /
- *  `setDefaultSource` / `clearDefaultSource`) and snapshot helpers
- *  that future engine-prefetch wiring (PA3 + later) can call to seed
+ *  Plus snapshot helpers that engine-prefetch wiring can call to seed
  *  `stores.data.<kind>.*` for recipe-time `{{ref}}` resolution.
+ *
+ *  ⛔ The default-Source passthrough is GONE (D-187 Sources half) — write
+ *  routing is `explicit source_id ?? built-in local`, never a stored pin.
  *
  *  Spec: D-145 § A.2 + Phase PA2. */
 
@@ -61,9 +62,8 @@ export interface WorkEntityResolver {
   /** Polymorphic list across all registered Sources for `kind`.
    *  Default `sync_states` filter is applied by the underlying store
    *  (`live` + `stale_unreachable` only — tombstoned + orphaned
-   *  excluded). Default `enabled` filter is also applied (PA11 —
-   *  user-disabled Sources excluded; bypass via
-   *  `query.include_disabled: true`). Pass `query.source_id` to scope
+   *  excluded). ⛔ There is NO `enabled` filter — read is always FAN-OUT
+   *  over every registered Source (D-187 Sources half). Pass `query.source_id` to scope
    *  to one Source — same shape as `listByKindScoped` but lets
    *  generic callers stay on one method. */
   listByKind(kind: WorkEntityKind, query?: WorkEntityListQuery): WorkEntity[];
@@ -89,31 +89,10 @@ export interface WorkEntityResolver {
     source_record_id: string,
   ): WorkEntity | null;
   /** Sources for one kind (or all kinds when `kind` is omitted).
-   *  Returns the registry rows in registration order. PA11 — surface
-   *  carries the `enabled` field; Settings UI consumes it directly.
-   *  No filtering at the resolver layer — all Sources visible so the
-   *  Settings panel can manage them. Polymorphic recipe reads enforce
-   *  the disabled filter at the storage layer (see `listByKind`). */
+   *  Returns the registry rows in registration order, unfiltered — the
+   *  same set a polymorphic read draws from, since reads fan out over
+   *  everything registered. */
   listSources(kind?: SourceTopTierKind): SourceRegistration[];
-  /** D-145 PA11 — flip the user-driven enable/disable toggle on one
-   *  Source. Wrapper over the store mutation; surfaces the
-   *  post-write registration row. */
-  setSourceEnabled(source_id: string, enabled: boolean): SourceRegistration;
-  /** D-145 PA11 — flip the per-Source MCP exposure boolean. */
-  setSourceMcpExposed(
-    source_id: string,
-    mcp_exposed: boolean,
-  ): SourceRegistration;
-  /** Default-Source memory passthrough — `null` when no default
-   *  pinned. Backs the `prefs.<kind>.last_used_source_id` recipe
-   *  read path. */
-  getDefaultSource(kind: WorkEntityKind): string | null;
-  /** Pin a per-kind default. Re-validates the Source registration
-   *  + kind match through the underlying store. */
-  setDefaultSource(kind: WorkEntityKind, source_id: string, now?: number): void;
-  /** Drop the per-kind default. Returns `true` when a row was
-   *  cleared; `false` when nothing was pinned. */
-  clearDefaultSource(kind: WorkEntityKind): boolean;
   /** Snapshot the polymorphic union under a kind into a flat
    *  `{ [entity_id]: WorkEntity }` map suitable for splicing into
    *  `stores.data.<kind>` ahead of recipe-time ref resolution.
@@ -129,19 +108,16 @@ export interface WorkEntityResolver {
     query?: Omit<WorkEntityListQuery, 'source_id'>,
   ): Record<string, WorkEntity>;
   /** D-192 read resolution — per-Source freshness verdicts for the
-   *  Sources a polymorphic read under `kind` can draw from. The filter
-   *  set COMPOSES exactly like the store's list filters (disabled
-   *  Sources excluded unless `include_disabled` — also under an
-   *  explicit `source_id` scope, matching the PA11 store fold), so the
-   *  metadata never claims freshness for a Source the result cannot
-   *  contain. Computed from each connection Source's sync-state row;
+   *  Sources a polymorphic read under `kind` can draw from — i.e. every
+   *  registered Source, optionally narrowed to one by `source_id`, since
+   *  reads fan out. Computed from each connection Source's sync-state row;
    *  built-in Sources report `local`. Rides read-result metadata so
    *  callers surface staleness honestly (spec § Read resolution policy
    *  — poll is the freshness baseline). Null when no sync-state store
    *  is wired (distinct from an empty verdict set on an empty scope). */
   sourceFreshness(
     kind: WorkEntityKind,
-    opts?: { source_id?: string; include_disabled?: boolean },
+    opts?: { source_id?: string },
   ): WorkEntitySourceFreshness[] | null;
 }
 
@@ -167,11 +143,8 @@ const requireWorkEntityKind = (kind: WorkEntityKind): void => {
   }
 };
 
-/** Validate the Source is registered and bound to `kind`. The
- *  underlying `setDefaultSource` runs the same check at write time
- *  via `internal.sourceTopTierKind`; we re-run it here for the
- *  scoped-read path (where the validation gives a typed error
- *  instead of an empty list). */
+/** Validate the Source is registered and bound to `kind` — the scoped-read
+ *  path, where the validation gives a typed error instead of an empty list. */
 const requireSourceForKind = (
   store: WorkEntityStore,
   kind: WorkEntityKind,
@@ -254,54 +227,6 @@ export const createWorkEntityResolver = (
   const listSources: WorkEntityResolver['listSources'] = (kind) =>
     store.listSources(kind);
 
-  const setSourceEnabled: WorkEntityResolver['setSourceEnabled'] = (
-    source_id,
-    enabled,
-  ) => store.setSourceEnabled(source_id, enabled);
-
-  const setSourceMcpExposed: WorkEntityResolver['setSourceMcpExposed'] = (
-    source_id,
-    mcp_exposed,
-  ) => store.setSourceMcpExposed(source_id, mcp_exposed);
-
-  const getDefaultSource: WorkEntityResolver['getDefaultSource'] = (kind) => {
-    requireWorkEntityKind(kind);
-    return store.getDefaultSource(kind);
-  };
-
-  const setDefaultSource: WorkEntityResolver['setDefaultSource'] = (
-    kind,
-    source_id,
-    now,
-  ) => {
-    requireWorkEntityKind(kind);
-    // Defer the kind/Source-registration check to the store so the
-    // resolver doesn't double-throw on the same condition; the store
-    // raises `WorkEntityValidationError` which is the canonical error
-    // for the storage-layer validation. Wrap in the resolver-error
-    // shape for consistency at the substrate-facing boundary.
-    try {
-      store.setDefaultSource(kind, source_id, now);
-    } catch (err) {
-      if (err instanceof WorkEntityValidationError) {
-        const isUnknown = err.message.includes('not registered');
-        throw new WorkEntityResolverError(
-          isUnknown ? 'unknown_source' : 'kind_source_mismatch',
-          err.message,
-          { source_id, kind },
-        );
-      }
-      throw err;
-    }
-  };
-
-  const clearDefaultSource: WorkEntityResolver['clearDefaultSource'] = (
-    kind,
-  ) => {
-    requireWorkEntityKind(kind);
-    return store.clearDefaultSource(kind);
-  };
-
   const snapshotByKind: WorkEntityResolver['snapshotByKind'] = (
     kind,
     query,
@@ -332,13 +257,6 @@ export const createWorkEntityResolver = (
     if (syncState === undefined) return null;
     const now = (deps.now ?? Date.now)();
     let sources = store.listSources(kind);
-    // Compose the filters exactly like the store's list WHERE (codex
-    // fold): the disabled filter applies even under an explicit
-    // `source_id` scope — a scoped list on a disabled Source returns
-    // zero rows, so it must report zero freshness too.
-    if (opts?.include_disabled !== true) {
-      sources = sources.filter((s) => s.enabled !== false);
-    }
     if (opts?.source_id !== undefined) {
       sources = sources.filter((s) => s.id === opts.source_id);
     }
@@ -353,11 +271,6 @@ export const createWorkEntityResolver = (
     readEntity,
     readEntityBySourceIdentity,
     listSources,
-    setSourceEnabled,
-    setSourceMcpExposed,
-    getDefaultSource,
-    setDefaultSource,
-    clearDefaultSource,
     snapshotByKind,
     snapshotByKindScoped,
     sourceFreshness,

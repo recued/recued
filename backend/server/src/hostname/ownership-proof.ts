@@ -34,7 +34,17 @@ const isCompatibleMethod = (
   row: HostnameStorageRow,
   method: HostnameVerificationMethod,
 ): boolean => {
+  // `recued_acme` is pre-verified by construction (fleet-owned zone) and never
+  // takes a proof; `evaluateProof` returns `recued_acme_preverified` before
+  // this is reached.
   if (row.cert_source === 'recued_acme') return false;
+  // D-235 § 3.2 — a custom hostname the FLEET will issue for takes only the two
+  // challenge-response methods. `cert_proof` is refused with its own code (see
+  // `evaluateProof`), not folded in here, so the user is told WHY rather than
+  // just that the pairing is invalid.
+  if (row.cert_source === 'recued_acme_custom') {
+    return method === 'http_token' || method === 'dns_txt';
+  }
   if (method === 'cert_proof') return row.cert_source === 'byo_uploaded';
   return row.cert_source === 'byo_uploaded' || row.cert_source === 'byo_external';
 };
@@ -49,6 +59,22 @@ const evaluateProof = (
     return {
       ok: false,
       code: 'recued_acme_preverified',
+      hostname: row.hostname_normalized,
+      method: input.method,
+      cert_source: row.cert_source,
+    };
+  }
+
+  // D-235 § 3.2 ⛔ — `cert_proof` must NOT satisfy the gate that lets the fleet
+  // MINT a certificate. Possessing a cert for a name proves someone once got
+  // one; as authority to issue a new one it is circular, and a stale or leaked
+  // chain carries it just as well as a live one. Checked ahead of the generic
+  // compatibility test so the failure names the reason instead of collapsing
+  // into "that method doesn't apply to this source".
+  if (row.cert_source === 'recued_acme_custom' && input.method === 'cert_proof') {
+    return {
+      ok: false,
+      code: 'cert_proof_insufficient',
       hostname: row.hostname_normalized,
       method: input.method,
       cert_source: row.cert_source,
