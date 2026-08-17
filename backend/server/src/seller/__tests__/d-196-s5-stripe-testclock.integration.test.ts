@@ -384,13 +384,16 @@ describe('D-196 S5 — Stripe test-clock E2E (issue → extend → reissue → f
     expect(issued.customer.grace_until).toBe(periodEndMs + DEFAULT_GRACE_MS);
   }, 60_000);
 
-  it('phase 2 — reissue: rotates the bearer while preserving the contract and access', async () => {
+  it('phase 2 — reissue: rotates the bearer AND the contract, preserving access', async () => {
     const before = sellerStore.getCustomer(localCustomerId)!;
     const reissued = lifecycle.reissueCustomerToken({ customer_id: localCustomerId });
 
     // A new bearer id, the same bound contract, access untouched.
     expect(reissued.customer.inbound_token_id).not.toBe(issuedTokenId);
-    expect(reissued.customer.contract_id).toBe(before.contract_id);
+    // ⛔ The contract ROTATES with the bearer. It used to be reused, which made
+    // contract:token 1:many; a fresh contract per rotation is what keeps
+    // revocation exact. The retired one is revoked, and access is unbroken.
+    expect(reissued.customer.contract_id).not.toBe(before.contract_id);
     expect(reissued.customer.access_state).toBe('active');
     // The old bearer is revoked; rotation is a real security replace.
     expect(inboundTokenStore.getTokenById(issuedTokenId)?.revoked_at ?? null).not.toBeNull();

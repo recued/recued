@@ -78,6 +78,7 @@ import {
   connectionSetupGuideReturnTarget,
 } from './setup-guide.js';
 import {
+  connectionFormRunsOAuthDance,
   connectionOAuthCredentialReadiness,
   connectionOAuthHttpsEndpointIssue,
   isConnectionOAuthLockedField,
@@ -2282,8 +2283,7 @@ const renderVendorOAuth = (dialog: ConnectionsDialogState): string => {
   // remains a manual fallback, and the host validates typed endpoints on click.
   const isGeneric =
     !dialog.vendor
-    && dialog.kind === 'api'
-    && dialog.values['auth.type'] === 'oauth2_refresh';
+    && connectionFormRunsOAuthDance({ kind: dialog.kind, values: dialog.values });
   const isRegisteredRefreshFlow =
     dialog.vendor !== null
     && dialog.values['auth.type'] === 'oauth2_refresh';

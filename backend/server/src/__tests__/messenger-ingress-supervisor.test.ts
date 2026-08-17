@@ -47,6 +47,7 @@ describe('messenger ingress supervisor', () => {
         telegram(options) { telegramOptions = options; return runner; },
         slack() { throw new Error('unexpected Slack runner'); },
         discord() { throw new Error('unexpected Discord runner'); },
+        teams() { throw new Error('unexpected Teams runner'); },
       },
     });
 
@@ -189,6 +190,7 @@ describe('messenger ingress supervisor', () => {
         },
         slack() { throw new Error('unexpected Slack runner'); },
         discord() { throw new Error('unexpected Discord runner'); },
+        teams() { throw new Error('unexpected Teams runner'); },
       },
     });
     connectionStore.upsert({
@@ -260,6 +262,7 @@ describe('messenger ingress supervisor', () => {
         telegram() { return { start: localStart, stop: localStop }; },
         slack() { throw new Error('unexpected Slack runner'); },
         discord() { throw new Error('unexpected Discord runner'); },
+        teams() { throw new Error('unexpected Teams runner'); },
       },
     });
 
@@ -317,6 +320,7 @@ describe('messenger ingress supervisor', () => {
         telegram() { return { start: vi.fn(), stop: failedStop }; },
         slack() { return { start: vi.fn(), stop: slowStop }; },
         discord() { throw new Error('unexpected Discord runner'); },
+        teams() { throw new Error('unexpected Teams runner'); },
       },
     });
     await supervisor.start();

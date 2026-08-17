@@ -384,6 +384,28 @@ export const composeInboundAnswerDispatcher = (
       // messenger turn (D-160 A.8 step 6 — orthogonal consumers); anything else
       // (`url_verification`, bot echoes, control events) preserves the log + drop
       // shape so trace continuity holds.
+      //
+      // ⛔⛔ D-238 — BOTH consumers are gated on the vendor's DECLARED
+      // `messenger` role, and neither used to be. A vendor declaring
+      // `messenger: false` is saying its conversation is not Recued's business:
+      // it is an approval surface, not a chat one. Emitting anyway would make
+      // ordinary office chatter a recipe TRIGGER
+      // (`data.messenger.<vendor>.message.created`) and route it into an LLM
+      // turn — precisely the trigger-source and warehouse non-goals D-238 § 6
+      // records, and precisely why the seat was declined in § 0. The role was
+      // declared and then not consulted, which is the worst of both.
+      //
+      // 🔑 Read from the declaration, never a vendor list: the next
+      // approval-only vendor is covered with no edit here.
+      const conversational =
+        getMessengerVendorDeclaration(vendor)?.roles.messenger === true;
+      if (!conversational) {
+        log?.('info', `messenger inbound (${vendor}) — not a conversational vendor; dropped`, {
+          connection_name,
+          ...idLog,
+        });
+        return;
+      }
       const emitted = emitInboundMessage(vendor, connection_name, channel, payload);
       const turnQueued = await offerMessengerTurn(vendor, connection_name, payload);
       log?.('info', emitted ? `messenger inbound (${vendor}) — message event emitted` : `messenger inbound (${vendor})`, {

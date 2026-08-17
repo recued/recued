@@ -2337,6 +2337,128 @@ const MANIFESTS = [
     }
   },
   {
+    "slug": "file-put-ref",
+    "name": "Write a file into a record you named",
+    "description": "Write one data.file record's bytes into a record on a named file instance, server-side. `ref` takes EITHER a CAS record-id string OR a run-scoped temp file_ref object — a cli op's shape:'ref' output defaults to temp, so demanding a string rejected the convert-then-keep path outright. Closes the knot that a CAS id is content-derived — so a recipe cannot name its own file in advance — while the only writer for a named {slug, path} record is file-write, which takes body_b64 and therefore round-trips a large file through recipe step state. This gives a stable name AND memory-safe bytes: the content moves inside the server and never enters an op-step value. Pair with file-stat, which reports {exists, modified_at_ms} and treats a missing record as exists:false rather than an error, to decide whether to refill it. Requires the write capability on the destination instance — naming a file does not grant writing to it. Creates the record when absent, overwrites in place when present.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "data",
+    "mcp_exposed": false,
+    "risk_tier": "write",
+    "tags": [
+      "kernel",
+      "file",
+      "write",
+      "warehouse",
+      "artifact"
+    ],
+    "input": {
+      "slug": null,
+      "path": null,
+      "ref": null,
+      "mime": null
+    },
+    "output": {
+      "ok": "ok",
+      "bytes_written": "bytes_written",
+      "slug": "slug",
+      "path": "path"
+    }
+  },
+  {
+    "slug": "csv-columns",
+    "name": "Read a stored CSV's column names",
+    "description": "Return the header row of one stored CSV, in order. Cheap enough to run before a search, which is how 'no such column' stays distinguishable from 'no such record' — and it is what lets a recipe name the columns that DO exist when the one asked for does not.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "data",
+    "mcp_exposed": true,
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "file",
+      "csv",
+      "read",
+      "warehouse"
+    ],
+    "input": {
+      "record_id": null,
+      "slug": null,
+      "path": null,
+      "delimiter": null
+    },
+    "output": {
+      "columns": "columns"
+    }
+  },
+  {
+    "slug": "csv-stats",
+    "name": "Summarise a stored CSV",
+    "description": "Per-column statistics for one stored CSV: row count, and for each column how many cells are filled or empty, the longest value, the distinct-value count, and — only when EVERY non-empty cell parses as a finite number — min, max, sum and mean. One stray non-number makes a column non-numeric and those fields null, because a mean over most of a column reads as a mean over the column. An empty cell is never treated as a zero (Number('') is 0, which would drag a mean down with values that were never there). Distinct counting is capped and unique_capped says so, since a capped count read as an exact one is a quiet lie. Returns a VALUE, not a file: every field is a scalar, so the result cannot grow with the sheet.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "data",
+    "mcp_exposed": true,
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "file",
+      "csv",
+      "stats",
+      "read",
+      "warehouse"
+    ],
+    "input": {
+      "record_id": null,
+      "slug": null,
+      "path": null,
+      "delimiter": null
+    },
+    "output": {
+      "rows": "rows",
+      "columns": "columns"
+    }
+  },
+  {
+    "slug": "csv-filter",
+    "name": "Search a stored CSV",
+    "description": "Keep the rows of one stored CSV whose named column matches, and return the result as a new data.file record. The source bytes never enter recipe step state: reading a sheet to search it with data-file-read holds the base64, the decoded text AND the parsed rows for the rest of the run, which is what makes a large sheet unsearchable that way. Parsing is the same code csv_parse uses, so a file reads identically through either. Returns column_found separately from matched — zero rows because the column is missing and zero rows because nothing matched are the same count and completely different facts, and over a customer list conflating them answers 'no such customer' about a spelling mistake. No file_ref is returned when the column is absent, because a parseable empty file would be indistinguishable from a real miss. mode is 'contains' (default) or 'equal'; every cell is text, so contains matches numbers too.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "data",
+    "mcp_exposed": true,
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "file",
+      "csv",
+      "search",
+      "read",
+      "warehouse"
+    ],
+    "input": {
+      "record_id": null,
+      "slug": null,
+      "path": null,
+      "column": null,
+      "match": null,
+      "mode": null,
+      "ignore_case": null,
+      "delimiter": null
+    },
+    "output": {
+      "file_ref": "file_ref",
+      "matched": "matched",
+      "scanned": "scanned",
+      "column_found": "column_found",
+      "columns": "columns"
+    }
+  },
+  {
     "slug": "data-file-read",
     "name": "Read inbound file content",
     "description": "Read one inbound data.file.received record by record_id through the Gateway-gated content boundary. The handler re-reads the CAS blob and verifies its bytes against the content-addressed blob_hash. By default it returns base64-encoded bytes plus mime_type, filename, size_bytes, and blob_hash. With metadata_only=true, the kernel strips bytes_b64 before the result enters recipe step state while still requiring the verified blob read; this is the D-200 exact-artifact approval probe.",
@@ -3103,6 +3225,131 @@ const MANIFESTS = [
       "found": "found",
       "size_bytes": "size_bytes",
       "truncated": "truncated"
+    }
+  },
+  {
+    "slug": "mail-mark",
+    "name": "Mark a mail message read or unread",
+    "description": "Sets or clears the read state of one message in data.mail.{slug}, at the provider AND in the warehouse. Address the message by record_id (from mail-list, mail-get, or a mail-watcher trigger) and pass read: true to mark it read, false to mark it unread. Verified-then-reflected: the provider must confirm the change before the local row moves, so a warehouse that says a message is read is a warehouse the mail server agrees with. If the call fails ambiguously — a timeout or a 5xx, surfaced as MAIL_IO_ERROR — the local row is deliberately left alone and the next sync reconciles whatever actually happened; a recipe that must distinguish 'definitely failed' from 'might have worked' branches on MAIL_IO_ERROR in fail_on. Requires a mailbox enrolled with write access (gmail: gmail.modify, microsoft: Mail.ReadWrite, imap: a read-write mailbox); a read-only enrollment refuses with MAIL_MUTATION_UNSUPPORTED rather than silently doing nothing. Returns { record_id, is_read, is_flagged, folder } — the message's verified state, not the state you asked for.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "action",
+    "risk_tier": "write",
+    "tags": [
+      "kernel",
+      "mail",
+      "warehouse",
+      "write-back"
+    ],
+    "input": {
+      "slug": null,
+      "record_id": null,
+      "read": null
+    },
+    "output": {
+      "record_id": "record_id",
+      "is_read": "is_read",
+      "is_flagged": "is_flagged",
+      "folder": "folder"
+    },
+    "writes": {
+      "collection": "mail",
+      "id_output_field": "record_id"
+    }
+  },
+  {
+    "slug": "mail-flag",
+    "name": "Flag or unflag a mail message",
+    "description": "Sets or clears the flagged state of one message in data.mail.{slug} — the star in Gmail, the flag in Outlook, the \\Flagged keyword over IMAP — at the provider AND in the warehouse. Address the message by record_id and pass flagged: true or false. Verified-then-reflected, with the same MAIL_IO_ERROR contract as mail-mark: an ambiguous failure leaves the local row untouched for the next sync to settle. Requires a write-enrolled mailbox (gmail: gmail.modify, microsoft: Mail.ReadWrite, imap: a read-write mailbox). Note that flagging is a signal your other mail clients see immediately — this is the op for 'surface this to me in the app I actually read mail in', which is often more useful than writing a note only Recued can see. Returns { record_id, is_read, is_flagged, folder }.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "action",
+    "risk_tier": "write",
+    "tags": [
+      "kernel",
+      "mail",
+      "warehouse",
+      "write-back"
+    ],
+    "input": {
+      "slug": null,
+      "record_id": null,
+      "flagged": null
+    },
+    "output": {
+      "record_id": "record_id",
+      "is_read": "is_read",
+      "is_flagged": "is_flagged",
+      "folder": "folder"
+    },
+    "writes": {
+      "collection": "mail",
+      "id_output_field": "record_id"
+    }
+  },
+  {
+    "slug": "mail-move",
+    "name": "File a mail message into another folder or label",
+    "description": "Relocates one message in data.mail.{slug} at the provider AND in the warehouse. The destination is named the way the PROVIDER models placement, and the two forms are not interchangeable: pass folder for IMAP and Microsoft (a mailbox path like 'INBOX/Archive', or a Graph folder id / well-known name like 'archive'), or add_labels / remove_labels for Gmail (which has labels, not folders — 'archive' on Gmail means remove_labels: ['INBOX']). Naming the wrong form for the provider is refused with MAIL_FOLDER_NOT_FOUND rather than translated, because a guessed nearest-folder is how mail ends up somewhere you did not ask for. ⚠ A MOVE CAN CHANGE THE MESSAGE'S record_id: IMAP re-keys on move and Microsoft mints a new id, so read record_id back from this step rather than reusing the one you passed in — rekeyed tells you whether it changed. On IMAP servers without UIDPLUS the move is confirmed but the new identity is unknowable; the local row is dropped and the destination folder's next sync re-ingests it, so record_id comes back empty with rekeyed: true. That is a success, not a failure. Requires a write-enrolled mailbox. Returns { record_id, is_read, is_flagged, folder, rekeyed }.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "action",
+    "risk_tier": "write",
+    "tags": [
+      "kernel",
+      "mail",
+      "warehouse",
+      "write-back"
+    ],
+    "input": {
+      "slug": null,
+      "record_id": null,
+      "folder": null,
+      "add_labels": null,
+      "remove_labels": null
+    },
+    "output": {
+      "record_id": "record_id",
+      "is_read": "is_read",
+      "is_flagged": "is_flagged",
+      "folder": "folder",
+      "rekeyed": "rekeyed"
+    },
+    "writes": {
+      "collection": "mail",
+      "id_output_field": "record_id"
+    }
+  },
+  {
+    "slug": "mail-delete",
+    "name": "Delete a mail message",
+    "description": "Removes one message in data.mail.{slug} from the provider, then drops the warehouse row. Uses the provider's own REVERSIBLE delete gesture, never a hard purge: Gmail messages.trash (recoverable for 30 days), Microsoft Graph DELETE (files to Deleted Items), IMAP \\Deleted + EXPUNGE (whatever your server's trash behaviour is). Recovering the message afterwards is done in your mail client, not here. Provider first, warehouse second — if the provider refuses, the local row stays, because a warehouse missing a message that still exists is invisible to every recipe and re-ingests as NEW on the next sync, re-firing any watcher on that folder. Deleting also cascades locally: annotations and enrichments keyed to the message are removed with it. Address the message by record_id; requires a write-enrolled mailbox. Returns { deleted, record_id } — record_id echoes what was removed so provenance can name it after the row is gone.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "action",
+    "risk_tier": "destructive",
+    "tags": [
+      "kernel",
+      "mail",
+      "warehouse",
+      "write-back",
+      "delete"
+    ],
+    "input": {
+      "slug": null,
+      "record_id": null
+    },
+    "output": {
+      "deleted": "deleted",
+      "record_id": "record_id"
+    },
+    "writes": {
+      "collection": "mail",
+      "id_output_field": "record_id"
     }
   },
   {

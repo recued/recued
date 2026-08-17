@@ -196,7 +196,13 @@ export type ReceptionTableName =
   // tenth Reception table; stores `(endpoint_id, source_ip_hash)`
   // ban tuples the path-listener enforces before the rate-limit check.
   // Server-internal — no cross-cloud sync (D-097 / D-168).
-  | 'reception_ip_block_list';
+  | 'reception_ip_block_list'
+  // D-240 slice 3b — the endpoint → LOOKUP-recipe binding. Its own table rather
+  // than a slot on `reception_intake_recipe_pair`: that row's binding is a
+  // three-revision union carrying a form-definition cross-check and paid-checkout
+  // claim configuration, none of which a read-only viewback recipe has, and it
+  // holds ONE `contract_id` where D-207 §5.1c requires one per RECIPE.
+  | 'reception_lookup_recipe_pair';
 
 export const RECEPTION_TABLES: ReadonlyArray<ReceptionTableName> = [
   'public_endpoint_registry',
@@ -209,6 +215,7 @@ export const RECEPTION_TABLES: ReadonlyArray<ReceptionTableName> = [
   'reception_status_projection',
   'reception_rate_limiter',
   'reception_ip_block_list',
+  'reception_lookup_recipe_pair',
 ] as const;
 
 export const RECEPTION_TABLE_SET: ReadonlySet<ReceptionTableName> =

@@ -126,6 +126,11 @@ import {
   RECEPTION_MANAGE_PATH,
   type ReceptionManageRescheduleRun,
 } from './handlers/manage.js';
+import {
+  createReceptionLookupHandler,
+  parseLookupSecretFromPath,
+} from './handlers/lookup.js';
+import { RECEPTION_LOOKUP_PATH } from './handlers/visitor-lookup-mint.js';
 
 /** D-149 § A.2 — canonical Reception health-probe path. */
 export const RECEPTION_HEALTH_PATH = '/reception/_health' as const;
@@ -198,6 +203,13 @@ export interface ReceptionPortHandlerDeps {
    *  booking-PII key by HKDF info label so the two streams stay
    *  cryptographically distinct. Throws when the FileVault is locked. */
   readonly getIntakeFormSubmissionPiiKey?: () => Uint8Array;
+  /** D-240 slice 3b — run an endpoint's bound viewback recipe. Absent ⇒ the
+   *  lookup page renders the substrate-projected status instead. */
+  readonly runReceptionLookupRecipe?: (input: {
+    readonly endpoint_id: string;
+    readonly record_id: string;
+    readonly record: Readonly<Record<string, unknown>>;
+  }) => Promise<import('../../reception-lookup-recipe-runner.js').ReceptionLookupRunOutcome>;
   /** D-149 P7 § A.5.4 — drop_link dependencies. All four are required
    *  for the kind's GET render + POST upload flow to be live; when any
    *  is absent the dispatcher falls back to the kind-registry 503 stub.
@@ -557,6 +569,10 @@ export const createReceptionPortHandler = (
           ...(deps.receptionDeploymentMode !== undefined
             ? { receptionDeploymentMode: deps.receptionDeploymentMode }
             : {}),
+          // D-240 — the booking arm of the viewback mint.
+          ...(deps.getReceptionManageCredentialStore
+            ? { getCredentialStore: deps.getReceptionManageCredentialStore }
+            : {}),
         })
       : null;
 
@@ -623,8 +639,31 @@ export const createReceptionPortHandler = (
         ...(deps.receptionDeploymentMode !== undefined
           ? { receptionDeploymentMode: deps.receptionDeploymentMode }
           : {}),
+        // D-240 slice 2 — the submit-time viewback mint. OPTIONAL: a server
+        // without the credential store simply renders receipts with no link,
+        // which is the pre-D-240 behaviour byte for byte.
+        ...(deps.getReceptionManageCredentialStore
+          ? { getCredentialStore: deps.getReceptionManageCredentialStore }
+          : {}),
       })
     : null;
+
+  // D-240 slice 3 — the submitter's viewback route. Live only when the
+  // credential store + the submission store are both wired; otherwise the path
+  // 404s exactly as it did before D-240.
+  const lookupHandler =
+    deps.getReceptionManageCredentialStore && deps.getIntakeFormSubmissionStore
+      ? createReceptionLookupHandler({
+          getCredentialStore: deps.getReceptionManageCredentialStore,
+          findRecord: (id) => deps.getIntakeFormSubmissionStore!().findById(id),
+          now: deps.now,
+          // D-240 slice 3b — optional: without it the page renders the substrate
+          // status, which is what slice 3 shipped and remains correct.
+          ...(deps.runReceptionLookupRecipe
+            ? { runLookupRecipe: deps.runReceptionLookupRecipe }
+            : {}),
+        })
+      : null;
 
   // D-149 P7 § A.5.4 — drop_link GET render + POST upload handlers.
   // GET only needs the nonce store; POST needs the metadata store + CAS
@@ -759,7 +798,12 @@ export const createReceptionPortHandler = (
     // swallows a hypothetical future `/reception/manage-*` sibling.
     const isManagePath =
       pathname === RECEPTION_MANAGE_PATH || pathname.startsWith(`${RECEPTION_MANAGE_PATH}/`);
-    if (isSellerClaimPath || isManagePath) {
+    // D-240 — the viewback URL carries its credential in the PATH too, so it
+    // takes the same no-store / no-referrer posture, and takes it here so an
+    // outer gate rejecting before the handler still answers with it.
+    const isLookupPath =
+      pathname === RECEPTION_LOOKUP_PATH || pathname.startsWith(`${RECEPTION_LOOKUP_PATH}/`);
+    if (isSellerClaimPath || isManagePath || isLookupPath) {
       // This URL carries a short-lived claim credential. Keep the sensitive
       // response posture even when an outer gate rejects before the HTML
       // handler runs (including the server-pause gate immediately below).
@@ -939,6 +983,106 @@ export const createReceptionPortHandler = (
         action_taken: manageResult.action_taken,
         outcome: manageResult.outcome,
         url_path_redacted: manageUrlPathRedacted,
+      });
+      return;
+    }
+
+    // D-240 slice 3 — `/reception/lookup/<secret>`. Same gate order as the
+    // manage door above (IP block → rate limit → handler → access log) and for
+    // the same reasons: the URL carries its credential, so it runs BEFORE
+    // `parsePath` (it is not one of the six kinds), and a probe hammering
+    // invalid links must surface as `rejected` in the Abuse Inbox rather than
+    // silently.
+    //
+    // ⚠ It reuses `RECEPTION_MANAGE_ENDPOINT_ID` for IP-hash scoping and the
+    // access log. That is deliberate: the endpoint-scoped hash exists so the
+    // SAME visitor at DIFFERENT endpoints produces different hashes (§ A.16.3),
+    // and both of these are per-server credential doors rather than per-endpoint
+    // ones — giving the viewback its own scope id would split one abuser's
+    // traffic across two buckets and weaken exactly the correlation the Abuse
+    // Inbox needs.
+    if (isLookupPath) {
+      const lookupSecret = pathname === null ? null : parseLookupSecretFromPath(pathname);
+      if (!lookupHandler || lookupSecret === null) {
+        writeJson(res, 404, { error: { code: 'not_found' } });
+        return;
+      }
+      let lookupPepper: Buffer;
+      try {
+        lookupPepper = deps.getPepper();
+      } catch (err) {
+        if (err instanceof RpcError) {
+          writeJson(res, err.status ?? 503, { error: { code: err.code } });
+          return;
+        }
+        throw err;
+      }
+      const lookupIp = clientIp(req, deps.trustForwardedFor === true);
+      const lookupRateKey = hashSourceIpServerWide(lookupIp, lookupPepper);
+      const lookupSourceHash = hashSourceIpEndpointScoped(
+        lookupIp,
+        RECEPTION_MANAGE_ENDPOINT_ID,
+        lookupPepper,
+      );
+      const lookupNow = deps.now();
+      // The secret is in the PATH, so redact the path explicitly — otherwise a
+      // live credential sits in the access log in plaintext, and this one lives
+      // for weeks rather than a day.
+      const lookupUrlPathRedacted = `${RECEPTION_LOOKUP_PATH}/<redacted>`;
+      if (isIpBlocked(deps, RECEPTION_MANAGE_ENDPOINT_ID, lookupSourceHash)) {
+        writeAccessLog(deps, {
+          endpoint_id: RECEPTION_MANAGE_ENDPOINT_ID,
+          accessed_at: lookupNow,
+          source_ip_hash: lookupSourceHash,
+          action_taken: 'reject',
+          outcome: 'rejected',
+          url_path_redacted: lookupUrlPathRedacted,
+          metadata: { rejection_reason: RECEPTION_IP_BLOCKED_REJECTION_REASON },
+        });
+        writeJson(res, 403, { error: { code: 'forbidden' } });
+        return;
+      }
+      const lookupRate = deps.getRateLimiter().consumePreVerify({
+        source_ip_hash: lookupRateKey,
+        endpoint_kind: 'reception_page',
+        now: lookupNow,
+      });
+      if (!lookupRate.ok) {
+        writeAccessLog(deps, {
+          endpoint_id: RECEPTION_MANAGE_ENDPOINT_ID,
+          accessed_at: lookupNow,
+          source_ip_hash: lookupSourceHash,
+          action_taken: 'rate_limited',
+          outcome: 'rate_limited',
+          url_path_redacted: lookupUrlPathRedacted,
+        });
+        const retryAfterSeconds = Math.max(
+          1,
+          Math.ceil((lookupRate.retry_after_at - lookupNow) / 1000),
+        );
+        res.setHeader('Retry-After', String(retryAfterSeconds));
+        writeJson(res, 429, { error: { code: 'rate_limited' } });
+        return;
+      }
+      // ⚠ AWAITED. The handler became async when the viewback recipe landed, and
+      // the access-log line below reads `res.statusCode` — which is 0 until the
+      // response is written. An unawaited call would log every request as a
+      // rejection while serving it correctly, i.e. an Abuse Inbox full of
+      // fictional failures.
+      await lookupHandler(req, res, lookupSecret);
+      writeAccessLog(deps, {
+        endpoint_id: RECEPTION_MANAGE_ENDPOINT_ID,
+        accessed_at: lookupNow,
+        source_ip_hash: lookupSourceHash,
+        action_taken: 'view',
+        // ⚠ `ok` / `invalid_token`, not a hand-rolled pair — this vocabulary is
+        // closed (`ReceptionAccessOutcome`) and the Abuse Inbox groups on it. A
+        // 404 here is always an unresolvable credential (expired, revoked, wrong
+        // purpose, or never real); the handler deliberately does not tell the
+        // VISITOR which, and the log records the class rather than inventing a
+        // distinction the handler did not make.
+        outcome: res.statusCode === 200 ? 'ok' : 'invalid_token',
+        url_path_redacted: lookupUrlPathRedacted,
       });
       return;
     }

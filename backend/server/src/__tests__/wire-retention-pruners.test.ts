@@ -131,6 +131,76 @@ describe('composeRetentionPruners per-pruner gating', () => {
   });
 });
 
+describe('D-240 slice 4 — reception credential retention', () => {
+  const credentialStore = () => ({
+    purge: vi.fn(() => 0),
+    listDeferred: vi.fn(() => []),
+    resolveDeferred: vi.fn(() => true),
+    issue: vi.fn(),
+    peek: vi.fn(),
+    consume: vi.fn(),
+  });
+
+  it('⛔⛔ REGISTERS — the whole slice turns on this, and `purge` had no caller at all', () => {
+    // D-210 Appendix B shipped `purge` and never registered it, so
+    // `reception_manage_credentials` has been append-only — and D-240 slice 2's
+    // `ceiling_at` backstop was resting on a collector that never ran. A
+    // registration that compiles but is never reached would repeat exactly that,
+    // one layer up. So this asserts the NAME appears.
+    const names = composeWithDeps({ receptionCredentialStore: credentialStore() })
+      .map((r) => r.name);
+    expect(names).toContain('reception-credential-retention');
+  });
+
+  it('⚠ and does NOT register without the store — the db-less posture', () => {
+    expect(composeWithDeps().map((r) => r.name))
+      .not.toContain('reception-credential-retention');
+  });
+
+  it('the tick PURGES, with the injected clock', () => {
+    const store = credentialStore();
+    const [registration] = composeWithDeps({
+      receptionCredentialStore: store,
+      now: () => 4_242,
+    }).filter((r) => r.name === 'reception-credential-retention');
+    registration!.tick();
+    expect(store.purge).toHaveBeenCalledWith(4_242);
+  });
+
+  it('⛔ STAMPS BEFORE IT PURGES — reversed costs an interval of retention', () => {
+    const order: string[] = [];
+    const store = {
+      ...credentialStore(),
+      listDeferred: vi.fn(() => { order.push('stamp'); return []; }),
+      purge: vi.fn(() => { order.push('purge'); return 0; }),
+    };
+    const [registration] = composeWithDeps({
+      receptionCredentialStore: store,
+      receptionRecordCompletion: () => null,
+    }).filter((r) => r.name === 'reception-credential-retention');
+    registration!.tick();
+    expect(order).toEqual(['stamp', 'purge']);
+  });
+
+  it('⚠ purges even with NO completion reader — the collector is not optional', () => {
+    // The stamp needs a reader; the collector does not. Gating both on the
+    // reader would leave a server with no work-entity store append-only forever.
+    const store = credentialStore();
+    const [registration] = composeWithDeps({ receptionCredentialStore: store })
+      .filter((r) => r.name === 'reception-credential-retention');
+    registration!.tick();
+    expect(store.purge).toHaveBeenCalled();
+    expect(store.listDeferred).not.toHaveBeenCalled();
+  });
+
+  it('a throwing pass does not crash the tick', () => {
+    const store = { ...credentialStore(), purge: vi.fn(() => { throw new Error('db gone'); }) };
+    const [registration] = composeWithDeps({ receptionCredentialStore: store })
+      .filter((r) => r.name === 'reception-credential-retention');
+    expect(() => registration!.tick()).not.toThrow();
+  });
+});
+
 describe('composeRetentionPruners MCP recipe callback retention', () => {
   it('runs the real mailbox sweep with the injected clock and contains failures', async () => {
     const mailbox = {

@@ -73,6 +73,7 @@ const makeStubProvider = (): StubHandle => {
     kind: 'imap',
     slug: 'work',
     sendCapable: true,
+    mutationCapable: false,
     accountEmail: 'alice@example.com',
     async connect() { /* no-op */ },
     async initialScan() { /* no-op */ },

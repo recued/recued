@@ -65,6 +65,7 @@
  */
 
 import { htmlEscape, safeHttpUrl } from '../html.js';
+import { isChannelName } from '../types.js';
 import type {
   AskOption,
   ChannelName,
@@ -98,7 +99,36 @@ import type {
  *  `email` only when absent (an old link). Left NAMED rather than half-done,
  *  because a wrong attribution that looks deliberate is worse than one that is
  *  documented as wrong. ⇒ [[a_reversed_rulings_reasoning_outlives_its_location]] */
-const LANDING_REPLY_VIA: ChannelName = 'email';
+/** D-238 — attribution DEFAULT, not attribution answer.
+ *
+ *  ⛔⛔ This used to be the whole story: every landing-page submission was
+ *  recorded as an `email` reply, on the ask row AND in the durable audit
+ *  activity. That was already wrong for Slack (the D-210 finding 15 note above),
+ *  and D-238 makes it materially worse — a Teams ask now carries this link too,
+ *  so an office's approval trail would claim `email` for decisions taken in
+ *  Teams. A false approval trail is a worse defect than a missing one.
+ *
+ *  🔑 The fix the note specified: the ORIGINATING channel is stamped into the
+ *  link at fan-out, ridden through the form, and read back here. This constant
+ *  survives only as the fallback for a link minted before that existed — an old
+ *  emailed ask is genuinely an email reply. */
+const LANDING_REPLY_VIA_FALLBACK: ChannelName = 'email';
+
+/** The query/form key carrying the originating channel. */
+export const ASK_LANDING_VIA_KEY = 'via';
+
+/** Resolve an untrusted `via` value to a real channel.
+ *
+ *  ⚠ Validated against the closed channel set rather than trusted: the value
+ *  arrives from a URL the owner could have edited and lands in a durable audit
+ *  row. An unrecognised value falls back rather than being written through —
+ *  a wrong-but-plausible channel name in the trail is worse than the honest
+ *  legacy default. */
+export const resolveAskLandingVia = (raw: string | null | undefined): ChannelName => {
+  const candidate = (raw ?? '').trim();
+  if (candidate.length === 0) return LANDING_REPLY_VIA_FALLBACK;
+  return isChannelName(candidate) ? candidate : LANDING_REPLY_VIA_FALLBACK;
+};
 
 /** The closed list of form keys the POST decoder accepts — any other key
  *  rejects the submission (`unknown_field`). Defense-in-depth, mirroring
@@ -107,6 +137,12 @@ const ALLOWED_SUBMISSION_KEYS: ReadonlySet<string> = new Set([
   'form_nonce',
   'ask_id',
   'option',
+  // D-238 — the originating channel (see `resolveAskLandingVia`). ⚠ ADDING THE
+  // HIDDEN FIELD WITHOUT ADDING IT HERE REJECTS THE WHOLE SUBMISSION as
+  // `unknown_field`: the allowlist is closed by design, so every landing answer
+  // would have broken at once. Its VALUE is still untrusted — admitted here,
+  // validated against the closed channel set at read time.
+  ASK_LANDING_VIA_KEY,
 ]);
 
 /** D-210 A.8 3d-2c — the namespace every arg-edit field submits under.
@@ -235,6 +271,10 @@ export interface AskLandingRenderInput {
    *  its own routing, so the route supplies this. Used only for an
    *  `open` ask. */
   action: string;
+  /** D-238 — the channel whose message carried the link here, read off the
+   *  request query and ridden through the form so the POST can attribute the
+   *  answer to it. Absent ⇒ the `email` fallback (a legacy link). */
+  via?: ChannelName;
 }
 
 /** A decoded landing-page POST. The `reply` is ready for
@@ -462,7 +502,8 @@ const renderOpenBody = (input: AskLandingRenderInput): string => {
   )}
 <form method="POST" action="${htmlEscape(input.action)}">
 <input type="hidden" name="form_nonce" value="${htmlEscape(input.form_nonce)}">
-<input type="hidden" name="ask_id" value="${htmlEscape(ask.ask_id)}">${detailsBlock}
+<input type="hidden" name="ask_id" value="${htmlEscape(ask.ask_id)}">
+<input type="hidden" name="${ASK_LANDING_VIA_KEY}" value="${htmlEscape(input.via ?? LANDING_REPLY_VIA_FALLBACK)}">${detailsBlock}
 <fieldset>
 <legend>Choose one</legend>
 ${renderOptionInputs(ask.options)}
@@ -569,7 +610,7 @@ export const parseAskLandingSubmission = (
     return { error: 'malformed' };
   }
   return {
-    reply: { ask_id, option, via: LANDING_REPLY_VIA },
+    reply: { ask_id, option, via: resolveAskLandingVia(params.get(ASK_LANDING_VIA_KEY)) },
     form_nonce,
     ...(sawEdit ? { edits } : {}),
   };

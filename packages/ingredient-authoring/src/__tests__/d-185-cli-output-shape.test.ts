@@ -35,6 +35,14 @@ const cliComposition = (
         ...bindExtra,
       } as unknown as PackOperationRow['bind'],
       description: 'A gh api call.',
+      editable_args: [
+        // ⚠ `'string'`, not `'file_ref'`. `ArgEditField.type` is `MetaFieldType`
+        // (string | number | boolean | datetime | json) — `file_ref` lives in
+        // OperationArgType / ValueHint, never here. The arg's type is incidental
+        // to what this file asserts (CLI output shape).
+        { key: 'source', type: 'string', label: 'Source file', required: true, affects_target: true },
+        { key: 'match', type: 'string', label: 'Match', required: true, affects_target: true },
+      ],
     },
   ],
 });
@@ -127,5 +135,93 @@ describe('D-185 — cli output storage validator', () => {
     const result = validateComposition(cliComposition({ storage: 'temp' }));
     expect(issuesWithCode(result, 'composition_cli_output_storage_no_capture')).toHaveLength(1);
     expect(result.valid).toBe(false);
+  });
+});
+
+/** A cli composition whose op MATERIALIZES a warehouse file and captures what
+ *  the tool printed — the csvgrep / ripgrep / jq shape. */
+const stdoutCapture = (
+  captureExtra: Record<string, unknown> = {},
+  bindExtra: Partial<CliMethodBinding> = {},
+): CompositionIngredient =>
+  cliComposition(
+    {
+      shape: 'ref',
+      input_materialize: { kind: 'file_ref', arg: 'source' },
+      output_capture: {
+        from_stdout: true,
+        mime_type: 'text/csv',
+        filename: 'matched.csv',
+        ...captureExtra,
+      },
+      ...bindExtra,
+    } as Partial<CliMethodBinding>,
+    // argv[0] must be the ingredient's declared binary, and the materialize arg
+    // must be caller-supplied (hence declared in editable_args) — both are
+    // pre-existing rules this arm does not change.
+    ['gh', 'search', '{match}', '{source}'],
+  );
+
+describe('stdout output_capture — the arm that lets a printing tool read a warehouse file', () => {
+  /** 🔑 Before this arm, a tool that only prints could not declare `shape: 'ref'`
+   *  (no output path for `dir_arg`, no edited input for `from_input_arg`) and a
+   *  VALUE shape is refused alongside `input_materialize` — so NO filter could
+   *  read a warehouse file at all. */
+  it('accepts a materializing op that captures its print', () => {
+    const result = validateComposition(stdoutCapture());
+    expect(result.issues.filter((i) => i.severity === 'error')).toEqual([]);
+  });
+
+  /** ⛔ The tool printed, so it named nothing. Without a filename the ingested
+   *  record carries no extension, and every downstream converter that dispatches
+   *  on one silently fails to classify it. */
+  it('requires a filename, because the tool supplies none', () => {
+    const result = validateComposition(stdoutCapture({ filename: undefined }));
+    expect(issuesWithCode(result, 'composition_cli_output_capture_stdout_filename')).toHaveLength(1);
+  });
+
+  it('refuses a non-literal from_stdout', () => {
+    const result = validateComposition(stdoutCapture({ from_stdout: 'yes' }));
+    expect(issuesWithCode(result, 'composition_cli_output_capture_stdout_flag')).toHaveLength(1);
+  });
+
+  /** Exactly one arm. Declaring two leaves it ambiguous which file is the result,
+   *  and the executor discriminates on one key. */
+  it.each([['dir_arg', { dir_arg: 'out' }], ['from_input_arg', { from_input_arg: 'source' }]])(
+    'refuses from_stdout alongside %s',
+    (_label, extra) => {
+      const result = validateComposition(stdoutCapture(extra));
+      expect(issuesWithCode(result, 'composition_cli_output_capture_stdout_exclusive')).toHaveLength(1);
+    },
+  );
+
+  /** ⛔⛔ THE REFUSALS THIS ARM MUST NOT WEAKEN. A value shape would put the
+   *  materialized file's bytes into an op-step value (the D-185 Slice 3 echo
+   *  channel), and a detached job RETURNS its `log_path` — which is exactly why
+   *  capturing stdout to a gated file_ref is safe while logging it to a
+   *  recipe-visible path is not. */
+  it('still refuses a VALUE shape on a materializing op', () => {
+    const result = validateComposition(stdoutCapture({}, { shape: 'text' }));
+    expect(issuesWithCode(result, 'composition_cli_input_materialize_stdout')).toHaveLength(1);
+    expect(issuesWithCode(result, 'composition_cli_output_capture_shape')).toHaveLength(1);
+  });
+
+  it('still refuses a detached job', () => {
+    // ⚠ `'runtime_managed'` is now the ONLY CliDetachedMode — c2f9bc3ae removed
+    // `'supervised'` in the same commit that wrote this case. Refusing a
+    // CURRENTLY-VALID detached mode is the stronger assertion anyway: refusing
+    // one the union no longer admits would prove nothing about the gate.
+    const result = validateComposition(stdoutCapture({}, {
+      detached: { mode: 'runtime_managed', completion: { kind: 'marker_file', exit_pattern: 'x' } },
+    } as Partial<CliMethodBinding>));
+    expect(issuesWithCode(result, 'composition_cli_output_capture_detached')).toHaveLength(1);
+    expect(issuesWithCode(result, 'composition_cli_input_materialize_detached')).toHaveLength(1);
+  });
+
+  /** ⚠ A stdout capture needs no argv token — that is the point. The `dir_arg`
+   *  arm's token requirement must not leak onto it. */
+  it('requires no output token in argv', () => {
+    const result = validateComposition(stdoutCapture());
+    expect(issuesWithCode(result, 'composition_cli_output_capture_dir_arg')).toEqual([]);
   });
 });

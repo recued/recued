@@ -549,6 +549,17 @@ export interface VisitorReceipt {
   /** Resolved delivery mode — `config.via` when set, else
    *  `VISITOR_RECEIPT_DEFAULT_VIA` ('page'). */
   readonly via: VisitorReceiptVia;
+  /** D-240 — the submitter's viewback link, RELATIVE (`/reception/lookup/<secret>`).
+   *
+   *  ⚠ RELATIVE ON PURPOSE, unlike `reception.manage.mint`'s path — which is
+   *  relative because a WS rpc has no request Host to build an absolute URL
+   *  from. This one is rendered into a page the visitor is ALREADY on, so a
+   *  relative href is not a compromise: it is correct on every host the server
+   *  answers to, with no host to guess wrong.
+   *
+   *  `null` when the endpoint has no `visitor_lookup` enabled — which is the
+   *  common case, and is why the receipt renders identically without it. */
+  readonly lookup_path: string | null;
 }
 
 export interface VisitorReceiptInput {
@@ -560,6 +571,11 @@ export interface VisitorReceiptInput {
   /** Pre-built trust footer (from `buildTrustFooter`) — `null` when the
    *  footer is disabled server-wide. */
   readonly privacy_footer: string | null;
+  /** D-240 — the minted viewback path, or absent when the endpoint has no
+   *  `visitor_lookup` enabled. Optional on the INPUT and non-optional on the
+   *  built receipt: a caller that has no link says nothing, and every reader of
+   *  a receipt gets an explicit `null` rather than a missing key. */
+  readonly lookup_path?: string | null;
 }
 
 /** Build a Visitor Receipt (§ A.20.3) — "Submitted at X, reference ID
@@ -576,6 +592,7 @@ export const buildVisitorReceipt = (input: VisitorReceiptInput): VisitorReceipt 
     fields_echo: input.fields_echo.map((f) => ({ label: f.label, value: f.value })),
     privacy_footer: input.privacy_footer,
     via: input.config.via ?? VISITOR_RECEIPT_DEFAULT_VIA,
+    lookup_path: input.lookup_path ?? null,
   };
 };
 

@@ -84,6 +84,12 @@ export interface ComposeFileStackOptions {
 export interface FileStack {
   instances: CollectionInstanceStore;
   adapters: FileAdapterRegistry;
+  /** D-245 — the LIVE adapter for a slug, or undefined when it is not started.
+   *  Exposed because `file-put-ref` is wired outside this module (it needs the
+   *  CAS reader, which lives with the executor deps) but must go through the
+   *  same live map — re-deriving one there could write through an adapter this
+   *  stack considers stopped. */
+  getLiveAdapter: (slug: string) => FileAdapterInstance | undefined;
   extDownloads: ExtDownloadsRegistry;
   kernelDispatchers: FileKernelDispatchers;
   /** Feed to `collectionDeps.fileEnroll`. Carries `onEnrolled` /
@@ -380,6 +386,7 @@ export const composeFileStack = (
 
   return {
     instances,
+    getLiveAdapter: (slug: string) => liveAdapters.get(slug),
     adapters,
     extDownloads,
     kernelDispatchers,

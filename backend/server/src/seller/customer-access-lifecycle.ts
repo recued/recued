@@ -666,7 +666,6 @@ export const createSellerCustomerAccessLifecycle = (
             peer_handle: peerHandle(lifecycle_source, source_customer_id, door_id),
             grants: grantMapForContract(contract.contract_id),
             concurrency_tier: 3,
-            expires_at: 0,
             chat_mode: null,
             contract_id: contract.contract_id,
           },
@@ -857,7 +856,28 @@ export const createSellerCustomerAccessLifecycle = (
           `tier '${existing.tier_id}' was not found`,
         );
       }
-      const replacement_grants = grantMapForContract(existing.contract_id);
+      // ⛔⛔ ROTATION MINTS A FRESH CONTRACT. It used to bind the replacement to
+      // `existing.contract_id`, which made contract:token 1:many and left
+      // per-token `revoked_at` as the only thing that could kill the OLD bearer
+      // without killing the contract the NEW one needs. A fresh contract per
+      // rotation restores 1:1, so revoking a contract revokes exactly one
+      // bearer — which is what lets the token stop carrying its own revocation.
+      //
+      // ⚠ The customer's `contract_id` therefore ROTATES. It was previously
+      // stable identity; the owner ruled it may move. Grants are re-seeded from
+      // the TIER TEMPLATE (`stampCustomerContract` copies them), not carried
+      // across from the old contract — so a rotation lands the tier's current
+      // grants rather than a snapshot taken whenever the customer was opened.
+      const template = requireTemplate(tier.template_contract_id);
+      const rotated_contract_id = clean(newContractId(), 'generated contract_id');
+      if (
+        contractDefinition(rotated_contract_id)
+        || deps.sellerStore.listCustomers({ contract_id: rotated_contract_id }).length > 0
+      ) {
+        throw new SellerStoreConflictError(
+          `generated contract_id '${rotated_contract_id}' is already in use`,
+        );
+      }
       const oldTokenIds = new Set(
         [existing.inbound_token_id, existing.mcp_token_id].filter(
           (token_id): token_id is string => token_id !== null,
@@ -869,9 +889,24 @@ export const createSellerCustomerAccessLifecycle = (
 
       return runAtomic(deps.transaction, () => {
         const issuedAt = now();
+        // ⛔⛔ THE OLD TOKENS ARE STILL REVOKED PER TOKEN, and that is not
+        // belt-and-braces — it is REQUIRED. The partial unique index
+        // `uq_chat_inbound_tokens_peer_active` is
+        // `(peer_handle) WHERE peer_handle IS NOT NULL AND revoked_at IS NULL`,
+        // so "one ACTIVE token per peer" is enforced by the token row's own
+        // `revoked_at`. Drop this and issuing the replacement under the same
+        // peer_handle throws `peer_handle_conflict`.
+        //
+        // 🔑 This is why `revoked_at` cannot follow `expires_at` onto the
+        // contract: a SQLite partial index cannot consult another table's
+        // liveness. Found by driving the rotation, not by reading.
         for (const token_id of oldTokenIds) {
           deps.inboundTokenStore.revokeToken({ token_id, now: issuedAt });
         }
+        const rotated = stampCustomerContract(template, {
+          contract_id: rotated_contract_id,
+          display_name: `${tier.display_name} customer ${existing.source_customer_id}`,
+        });
         const issued_token = deps.inboundTokenStore.issueToken({
           value: {
             label: previousToken?.label ?? `${tier.display_name} customer token`,
@@ -880,21 +915,25 @@ export const createSellerCustomerAccessLifecycle = (
               existing.source_customer_id,
               existing.door_id,
             ),
-            grants: replacement_grants,
+            grants: grantMapForContract(rotated.contract_id),
             concurrency_tier: previousToken?.concurrency_tier ?? 3,
-            expires_at: previousToken?.expires_at ?? 0,
             chat_mode: previousToken?.chat_mode ?? null,
-            contract_id: existing.contract_id,
+            contract_id: rotated.contract_id,
           },
           now: issuedAt,
         });
+        // ⛔ THE OLD CONTRACT DIES AFTER the replacement exists, never before —
+        // the same retire-after-mint ordering the reception door bind uses, so
+        // there is no instant with no live credential. Revoking it is what kills
+        // the old bearers; they are no longer revoked one by one.
+        revokeContract(existing.contract_id, 'rotated by reissueCustomerToken');
         const customer = deps.sellerStore.upsertCustomer({
           customer_id: existing.customer_id,
           lifecycle_source: existing.lifecycle_source,
           source_customer_id: existing.source_customer_id,
           door_id: existing.door_id,
           tier_id: existing.tier_id,
-          contract_id: existing.contract_id,
+          contract_id: rotated.contract_id,
           inbound_token_id: issued_token.record.token_id,
           mcp_token_id: issued_token.record.token_id,
           claim_email_sent_at: null,
@@ -904,7 +943,10 @@ export const createSellerCustomerAccessLifecycle = (
         });
         const issued_claim = issueClaim({
           customer,
-          contract: requireCustomerContract(existing.contract_id),
+          // ⛔ THE ROTATED contract, not `existing` — which is now revoked, and
+          // `requireCustomerContract` refuses a dead one. The claim describes
+          // what the customer is being handed, and that is the new credential.
+          contract: rotated,
           issued_token,
           now: issuedAt,
         });

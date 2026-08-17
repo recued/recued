@@ -638,12 +638,27 @@ const buildMcpContractSnapshot = (
         // authorizer, so this is a configuration step rather than a dead end.
         // The CLI logs that instruction to stderr when it starts without one.
         : [];
+  // Door standing closure, MCP arm. ⛔ GATED ON `allowed_tools` BEING NON-EMPTY,
+  // which is precisely the dead-bound-contract kill-switch above: a revoked /
+  // expired / exhausted contract collapses the allowlist to `[]`, and a standing
+  // closure surviving that would be authority outliving its contract. Two axes,
+  // one switch — the same fence the reception door's "a dead door collapses to
+  // empty" states.
+  const standing_closure_operation_ids =
+    allowed_tools.length > 0
+    && deps.standingClosureOperationIds !== undefined
+    && deps.standingClosureOperationIds.length > 0
+      ? deps.standingClosureOperationIds
+      : undefined;
   return buildVersionedContractSnapshot({
     contract_id: source.contract_id,
     allowed_tools,
     approval_required: [],
     scope_restrictions: resolveMcpDoorScopeRestrictions(deps),
     resolved_at: Date.now(),
+    ...(standing_closure_operation_ids === undefined
+      ? {}
+      : { standing_closure_operation_ids }),
   });
 };
 
@@ -1243,11 +1258,16 @@ const admitMcpDirectDispatch = (
   const decision = admitByOpRisk({
     slug: toolName,
     risk_tier: mcpNativeToolRiskTier(toolName),
-    // `resolveTrustCeiling` reads boundness off the source: a bound door (real
-    // `contract_id` ≠ `mcp_token_id`) → contracted LOW (a native `write` like
-    // `recued_saveRecipe` surfaces → refuses on this synchronous path); the unbound owner
-    // (synthetic `contract_id === mcp_token_id`) → contract-less `admin` (full owner
-    // trust). Same signal every other mcp path resolves, so they cannot drift.
+    // ⚠ CORRECTED — this comment misled a reviewer into reporting a privilege
+    // escalation that does not exist. `resolveTrustCeiling` does NOT key on
+    // `contract_id === mcp_token_id`; it keys on `isDelegatedMcpToken`, i.e.
+    // `mcp_token_id !== STDIO_MCP_TOKEN_ID`. So:
+    //   - ANY remote token, bound or unbound → delegated → contracted LOW
+    //     (`read`); a native `write` like `recued_saveRecipe` refuses here.
+    //   - ONLY the stdio client → contract-less `admin` (full owner trust).
+    // "the unbound owner" meant STDIO specifically; read as "any unbound token"
+    // it says the opposite of what the code does. Same signal every other mcp
+    // path resolves, so they cannot drift.
     ceiling: resolveTrustCeiling(source),
     source,
     ...(ownerOverride !== undefined ? { owner_override: ownerOverride } : {}),
@@ -1881,6 +1901,21 @@ export interface McpDeps extends ExecuteHandlerDeps {
    *  exhaustion of the bound contract is a live kill-switch. Only meaningful when
    *  `boundContractId` is set. */
   boundContractActive?: boolean;
+  /** Door standing closure, MCP arm — resolved from the BOUND CONTRACT at
+   *  request entry (`contractOverlay.standingClosureOperationIds`), never from
+   *  the token record. Threaded onto the dispatch snapshot so
+   *  `standingClosureAdmits` (the one predicate both gates read) admits these
+   *  ops without asking, bounded to `STANDING_CLOSURE_RISK_TIERS`.
+   *
+   *  ⛔ THE CONTRACT OWNS LIFECYCLE AND LIMITATION; the token is a bearer. This
+   *  was briefly stored on the token record and threaded through the transport
+   *  — two storage shapes for one concept, while the reception arm already read
+   *  it off `door_execution_policy` + `scope.operation_ids`. Both arms now read
+   *  the same field off the same row.
+   *
+   *  ⚠ Absent on stdio and on any contract without the opt-in ⇒ no closure ⇒
+   *  unchanged behaviour. */
+  standingClosureOperationIds?: ReadonlyArray<string>;
   /** D-196 customer-contract grant authority. Set only after fresh seller
    *  admission succeeds for a live customer token. Raw `recued_op_*` listing and
    *  calls then resolve from the bound customer contract instead of the ordinary
@@ -2603,6 +2638,13 @@ const handleToolCall = async (
   // resolution (next block) gated behind a real dispatch.
   const registryEntry = deps.internalRegistry?.getByName(params.name) ?? null;
   if (registryEntry) {
+    // Tier-2 recipes advertise a closed JSON schema on every MCP transport.
+    // Enforce it here as well as in the optional seller-usage preflight: an
+    // ordinary inbound-token call has no customerUsage session, and must not
+    // be able to smuggle undeclared arguments through the registry adapter.
+    const schemaIssue = validateMcpSchemaValue(registryEntry.arg_schema, args, 'arguments');
+    if (schemaIssue) return err(schemaIssue);
+
     // Codex P1 fold (Trio #D) — refuse Tier 3 (`connection.mcp.*`)
     // dispatches on the MCP wire even if a stale client holds onto a
     // cached `tools/list` entry from a pre-filter window. Tier 3 are

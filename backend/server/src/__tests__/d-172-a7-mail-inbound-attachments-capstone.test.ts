@@ -82,6 +82,7 @@ const mkMessage = (
   thread_id: 'thread-1',
   folder_or_label: 'INBOX',
   is_read: false,
+  is_flagged: false,
   has_attachments: false,
   received_at: NOW - 1_000,
   body_text: 'body text',
@@ -99,6 +100,7 @@ const makeStubProvider = (scanMessages: CanonicalMessage[]): StubHandle => {
     kind: 'imap',
     slug: 'work',
     sendCapable: false,
+    mutationCapable: false,
     accountEmail: 'alice@example.com',
     async connect() { /* no-op */ },
     async initialScan(opts) {

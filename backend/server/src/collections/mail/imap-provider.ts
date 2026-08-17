@@ -54,6 +54,7 @@ import { IngredientError } from '@recued/ingredients';
 import {
   isMailReconciliationId,
   MAIL_RECONCILIATION_ID_HEADER,
+  MailAdapterError,
 } from '@recued/contracts';
 import {
   createMailSyncOutcomeReporter,
@@ -70,6 +71,9 @@ import {
   type MailSyncOutcomeListener,
   type InboundMailAttachmentPart,
   type MailMessageDirection,
+  type MailMoveDestination,
+  type MailMoveOutcome,
+  type MailMutationResult,
   type MailProvider,
   type MailSentReconciliationCandidate,
   type MailSentReconciliationQuery,
@@ -119,6 +123,45 @@ export interface ImapClient extends EventEmitter {
     content: string | Buffer,
     flags?: string[],
   ): Promise<unknown>;
+
+  // ── D-239 write-back verbs ──────────────────────────────────────
+  //
+  // Optional for the same reason `list` / `append` are: in-tree fakes
+  // predate them and out-of-tree clients need not grow. `mutationCapable`
+  // probes for the whole group at connect time, so a client missing any
+  // one of them reports incapable rather than half-capable.
+  //
+  // All four take a UID range and are called with `{ uid: true }`, because
+  // this provider addresses messages by UID everywhere else and a sequence
+  // number is a mailbox POSITION that shifts under any concurrent EXPUNGE
+  // — using one here would eventually mutate the wrong message.
+
+  /** IMAP `UID STORE +FLAGS`. */
+  messageFlagsAdd?(
+    range: string | number[],
+    flags: string[],
+    options?: { uid?: boolean },
+  ): Promise<boolean>;
+  /** IMAP `UID STORE -FLAGS`. */
+  messageFlagsRemove?(
+    range: string | number[],
+    flags: string[],
+    options?: { uid?: boolean },
+  ): Promise<boolean>;
+  /** IMAP `UID MOVE` (or the COPY+STORE+EXPUNGE fallback imapflow runs on
+   *  servers without the MOVE extension). `destination.uidMap` carries the
+   *  source→destination UID mapping when the server supports UIDPLUS. */
+  messageMove?(
+    range: string | number[],
+    destination: string,
+    options?: { uid?: boolean },
+  ): Promise<{ path?: string; destination?: string; uidMap?: Map<number, number> } | boolean>;
+  /** IMAP `UID STORE +FLAGS (\Deleted)` + EXPUNGE, which is what a mail
+   *  client's delete button does. */
+  messageDelete?(
+    range: string | number[],
+    options?: { uid?: boolean },
+  ): Promise<boolean>;
 }
 
 export type ImapClientFactory = (
@@ -592,6 +635,7 @@ export const canonicalizeImap = async (
     folder_or_label: opts.folder,
     direction: opts.direction ?? imapMessageDirectionForMailbox(opts.folder),
     is_read: flags.has('\\Seen'),
+    is_flagged: flags.has('\\Flagged'),
     has_attachments: hasAttachments(parsed) || attachments.length > 0,
     received_at: Number.isFinite(receivedAt) ? receivedAt : Date.now(),
     body_text: bodyTextFor(parsed),
@@ -1539,6 +1583,314 @@ export const createImapProvider = (
     }
   };
 
+  // ── D-239 write-back ────────────────────────────────────────────
+  //
+  // IMAP is the adapter where the write-back is genuinely awkward, and the
+  // shape below is the consequence of three facts about the protocol:
+  //
+  //  1. A message is addressed by `UID@folder`, so the FOLDER is part of
+  //     the identity and a mutation must open the right mailbox first.
+  //  2. `UID MOVE` re-keys the message, and only tells you the new UID on
+  //     servers advertising UIDPLUS. See `MailMoveOutcome` for what we do
+  //     when it does not.
+  //  3. STORE does not echo the resulting flag set, so "verified" here
+  //     means a FETCH after the write — not the write's own return value.
+  //     imapflow's `messageFlagsAdd` resolves `true` on a server that
+  //     accepted the command; that is an acknowledgement, not a reading.
+
+  /** Split `UID@folder` back into its parts. Splits at the FIRST `@`
+   *  because a UID is an unsigned integer and cannot contain one, while a
+   *  folder path very much can (`INBOX/a@b` is a legal mailbox name). A
+   *  `lastIndexOf` here would truncate such a folder and open the wrong
+   *  mailbox. */
+  const parseSourceId = (
+    source_id: string,
+  ): { uid: number; folder: string } => {
+    const at = source_id.indexOf('@');
+    const uid = at > 0 ? Number(source_id.slice(0, at)) : NaN;
+    const folder = at > 0 ? source_id.slice(at + 1) : '';
+    if (!Number.isSafeInteger(uid) || uid <= 0 || folder.length === 0) {
+      throw new MailAdapterError(
+        'message_not_found',
+        `imap source_id '${source_id}' is not a 'UID@folder' identity`,
+      );
+    }
+    return { uid, folder };
+  };
+
+  /** Translate a thrown imapflow error into the typed adapter error.
+   *
+   *  ⛔ THE DEFAULT IS `io_error`, AND THAT IS THE WHOLE POINT. An IMAP
+   *  command that fails for an unrecognized reason has an UNKNOWN outcome
+   *  — the server may have applied it and dropped the connection before
+   *  acknowledging. Classifying an unknown failure as a definite one would
+   *  let the warehouse move on a mutation that never happened, or stay put
+   *  on one that did. Only the two structurally-identifiable cases below
+   *  are claimed with confidence. */
+  const imapMutationError = (
+    err: unknown,
+    verb: string,
+    source_id: string,
+  ): MailAdapterError => {
+    if (err instanceof MailAdapterError) return err;
+    if (isImapAuthFailure(err)) {
+      return new MailAdapterError(
+        'auth_expired',
+        `imap ${verb} on '${source_id}' failed authentication`,
+        err,
+      );
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    if (/\[TRYCREATE\]|NONEXISTENT|no such mailbox/i.test(message)) {
+      return new MailAdapterError(
+        'folder_not_found',
+        `imap ${verb} on '${source_id}': ${message}`,
+        err,
+      );
+    }
+    if (/READ-ONLY/i.test(message)) {
+      return new MailAdapterError(
+        'permission_denied',
+        `imap ${verb} on '${source_id}': the mailbox is open read-only`,
+        err,
+      );
+    }
+    return new MailAdapterError(
+      'io_error',
+      `imap ${verb} on '${source_id}' failed — outcome unknown, the change may have been applied: ${message}`,
+      err,
+    );
+  };
+
+  /** Run a mutation against a DEDICATED short-lived client, mirroring
+   *  `lookupSentByReconciliationId`.
+   *
+   *  ⛔ IT DOES NOT REUSE THE WATCHER'S CONNECTION, deliberately. The
+   *  per-folder clients in `folders` sit in IDLE; issuing commands on one
+   *  means interrupting and restarting that IDLE, which turns every
+   *  mark-read into a reconnect risk on the mailbox the user is actually
+   *  watching. Worse, a mutation may target a folder that is not watched
+   *  at all, in which case there is no connection to borrow. One
+   *  short-lived client is slower per call and cannot disturb sync. */
+  const withMutationClient = async <T>(
+    verb: string,
+    source_id: string,
+    folder: string,
+    fn: (client: ImapClient) => Promise<T>,
+  ): Promise<T> => {
+    const client = makeClient(`__mutate_${verb}__`);
+    try {
+      await client.connect();
+      await client.mailboxOpen(folder);
+      return await fn(client);
+    } catch (err) {
+      const mapped = imapMutationError(err, verb, source_id);
+      // `io_error` is the ambiguous class, so it is the one worth counting
+      // toward instance health; a definite refusal (auth, read-only, no
+      // such mailbox) is a configuration answer, not a flapping mailbox.
+      if (mapped.code === 'io_error' || mapped.code === 'auth_expired') {
+        markError(`imap ${verb} failed`, err);
+      }
+      throw mapped;
+    } finally {
+      try {
+        if (client.usable) await client.logout();
+        else client.close();
+      } catch {
+        try { client.close(); } catch { /* best-effort dedicated client close */ }
+      }
+    }
+  };
+
+  /** Read the message's flags back after a STORE, so the reflected state is
+   *  something the server SAID rather than something we assumed. Absence
+   *  here is meaningful: a message that no longer matches its UID was moved
+   *  or expunged out from under us, which is a verified `message_not_found`
+   *  and lets the caller drop a stale warehouse row. */
+  const fetchVerifiedState = async (
+    client: ImapClient,
+    uid: number,
+    folder: string,
+  ): Promise<MailMutationResult> => {
+    const iter = client.fetch([uid], { uid: true, flags: true }, { uid: true });
+    for await (const message of iter) {
+      if (message.uid !== uid) continue;
+      const flags = message.flags ?? new Set<string>();
+      return {
+        source_id: sourceIdFor(uid, folder),
+        is_read: flags.has('\\Seen'),
+        is_flagged: flags.has('\\Flagged'),
+        folder_or_label: folder,
+      };
+    }
+    throw new MailAdapterError(
+      'message_not_found',
+      `imap could not re-read UID ${uid} in '${folder}' after the write — the message is no longer there`,
+    );
+  };
+
+  const requireFlagVerbs = (
+    client: ImapClient,
+  ): {
+    add: NonNullable<ImapClient['messageFlagsAdd']>;
+    remove: NonNullable<ImapClient['messageFlagsRemove']>;
+  } => {
+    if (
+      typeof client.messageFlagsAdd !== 'function'
+      || typeof client.messageFlagsRemove !== 'function'
+    ) {
+      throw new MailAdapterError(
+        'permission_denied',
+        'the IMAP client does not expose the flag verbs',
+      );
+    }
+    return { add: client.messageFlagsAdd, remove: client.messageFlagsRemove };
+  };
+
+  /** Set or clear one system flag, then read the result back. Shared by
+   *  `markImpl` (`\Seen`) and `flagImpl` (`\Flagged`) — the two differ only
+   *  in which flag they name, and writing them twice is how the two
+   *  drift. */
+  const storeFlag = async (
+    verb: string,
+    source_id: string,
+    flag: string,
+    on: boolean,
+  ): Promise<MailMutationResult> => {
+    const { uid, folder } = parseSourceId(source_id);
+    return withMutationClient(verb, source_id, folder, async (client) => {
+      const verbs = requireFlagVerbs(client);
+      const applied = on
+        ? await verbs.add.call(client, [uid], [flag], { uid: true })
+        : await verbs.remove.call(client, [uid], [flag], { uid: true });
+      if (applied === false) {
+        // imapflow resolves `false` when the range matched nothing — a
+        // definite answer, not an ambiguous one: the server processed the
+        // command and found no such message.
+        throw new MailAdapterError(
+          'message_not_found',
+          `imap ${verb}: UID ${uid} is not in '${folder}'`,
+        );
+      }
+      return fetchVerifiedState(client, uid, folder);
+    });
+  };
+
+  const markImpl = async (args: {
+    source_id: string;
+    read: boolean;
+  }): Promise<MailMutationResult> =>
+    storeFlag('mark', args.source_id, '\\Seen', args.read);
+
+  const flagImpl = async (args: {
+    source_id: string;
+    flagged: boolean;
+  }): Promise<MailMutationResult> =>
+    storeFlag('flag', args.source_id, '\\Flagged', args.flagged);
+
+  const moveImpl = async (args: {
+    source_id: string;
+    destination: MailMoveDestination;
+  }): Promise<MailMoveOutcome> => {
+    const target = args.destination.folder;
+    if (!target) {
+      throw new MailAdapterError(
+        'folder_not_found',
+        'imap move requires a destination folder — Gmail label sets have no IMAP equivalent',
+      );
+    }
+    const { uid, folder } = parseSourceId(args.source_id);
+    if (target === folder) {
+      // A move to the folder the message is already in is a no-op the
+      // server may or may not accept; answering from what we know avoids
+      // an EXPUNGE round-trip that could genuinely lose the message on a
+      // server that implements MOVE as COPY-then-delete.
+      return withMutationClient('move', args.source_id, folder, (client) =>
+        fetchVerifiedState(client, uid, folder));
+    }
+    return withMutationClient('move', args.source_id, folder, async (client) => {
+      if (typeof client.messageMove !== 'function') {
+        throw new MailAdapterError(
+          'permission_denied',
+          'the IMAP client does not expose the move verb',
+        );
+      }
+      const result = await client.messageMove([uid], target, { uid: true });
+      if (result === false) {
+        throw new MailAdapterError(
+          'message_not_found',
+          `imap move: UID ${uid} is not in '${folder}'`,
+        );
+      }
+      const uidMap = typeof result === 'object' && result !== null
+        ? result.uidMap
+        : undefined;
+      const newUid = uidMap?.get(uid);
+      if (newUid === undefined) {
+        // UIDPLUS absent — the move is CONFIRMED, its result unnameable.
+        // See `MailMoveOutcome` for why this is `null` rather than a throw
+        // or an echo of the old id.
+        return null;
+      }
+      return {
+        source_id: sourceIdFor(newUid, target),
+        // ⚠ Carried over, NOT re-read. The message now lives in the
+        // destination mailbox, which this client does not have open, and
+        // reopening to FETCH would cost a round-trip to learn flags that
+        // MOVE preserves by definition (RFC 6851 §3.3). The destination
+        // folder's own sync is the authority from here on.
+        is_read: false,
+        is_flagged: false,
+        folder_or_label: target,
+      } satisfies MailMutationResult;
+    });
+  };
+
+  const deleteImpl = async (args: { source_id: string }): Promise<void> => {
+    const { uid, folder } = parseSourceId(args.source_id);
+    await withMutationClient('delete', args.source_id, folder, async (client) => {
+      if (typeof client.messageDelete !== 'function') {
+        throw new MailAdapterError(
+          'permission_denied',
+          'the IMAP client does not expose the delete verb',
+        );
+      }
+      const removed = await client.messageDelete([uid], { uid: true });
+      if (removed === false) {
+        throw new MailAdapterError(
+          'message_not_found',
+          `imap delete: UID ${uid} is not in '${folder}'`,
+        );
+      }
+    });
+  };
+
+  /** Whether this instance's IMAP client exposes the whole write-back
+   *  group. Probed once against a throwaway client — `clientFactory`
+   *  CONSTRUCTS without connecting (imapflow opens its socket in
+   *  `connect()`), so this costs an object and no I/O.
+   *
+   *  ⚠ Probed uniformly for production and for injected fakes rather than
+   *  branching on whether a factory was supplied. A `opts.clientFactory
+   *  === undefined ⇒ capable` shortcut would make the real path the one
+   *  path no test ever evaluates. */
+  let mutationCapableMemo: boolean | undefined;
+  const probeMutationCapable = (): boolean => {
+    if (mutationCapableMemo !== undefined) return mutationCapableMemo;
+    try {
+      const probe = makeClient('__mutation_probe__');
+      mutationCapableMemo =
+        typeof probe.messageFlagsAdd === 'function'
+        && typeof probe.messageFlagsRemove === 'function'
+        && typeof probe.messageMove === 'function'
+        && typeof probe.messageDelete === 'function';
+    } catch {
+      // A factory that cannot even construct is certainly not capable.
+      mutationCapableMemo = false;
+    }
+    return mutationCapableMemo;
+  };
+
   const sendCapable = !!opts.config().smtp;
   // D-127 P1.6 — accountEmail derives from the SMTP block's `from`
   // override, falling back to the IMAP username (which IS the email
@@ -1621,6 +1973,14 @@ export const createImapProvider = (
     kind: 'imap',
     slug: opts.slug,
     sendCapable,
+    // D-239 — a GETTER, not a captured value: the probe constructs a client
+    // and we do not want to pay for that (nor to run an injected factory)
+    // during provider construction, which happens on every boot for every
+    // enrolled mailbox. Memoized inside, so the cost is once per instance
+    // and only if something actually asks.
+    get mutationCapable() {
+      return probeMutationCapable();
+    },
     accountEmail,
 
     async connect() {
@@ -1775,6 +2135,18 @@ export const createImapProvider = (
     lookupSentByReconciliationId,
 
     ...(sendCapable ? { send: sendImpl } : {}),
+
+    // D-239 — attached UNCONDITIONALLY, unlike gmail/graph, because IMAP's
+    // capability is a property of the CLIENT rather than of a grant, and
+    // probing it here would run `probeMutationCapable()` during
+    // construction — the exact cost the getter above exists to defer. The
+    // dispatcher's gate reads `mutationCapable` before it calls any of
+    // these, and each one re-checks the specific verb it needs, so an
+    // incapable client refuses legibly instead of throwing a TypeError.
+    markMessage: markImpl,
+    flagMessage: flagImpl,
+    moveMessage: moveImpl,
+    deleteMessage: deleteImpl,
   };
 
   return provider;

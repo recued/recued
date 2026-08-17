@@ -1819,7 +1819,7 @@ describe('manual customer lifecycle owner handlers', () => {
       }));
   });
 
-  it('reissues a manual customer token while preserving the customer contract', async () => {
+  it('reissues a manual customer token, ROTATING the customer contract', async () => {
     putTemplate('ct_template_basic', {
       display_name: 'Basic template',
       scope: { operation_ids: ['core.current'], channels: ['mcp'] },
@@ -1860,7 +1860,7 @@ describe('manual customer lifecycle owner handlers', () => {
     expect(JSON.stringify(reissued)).not.toContain('bearer_plaintext');
     expect(reissued.customer).toEqual(expect.objectContaining({
       customer_id: issued.customer.customer_id,
-      contract_id: 'ct_customer_1',
+      contract_id: 'ct_customer_2',
       tier_id: 'tier_basic',
       inbound_token_id: reissued.customer.inbound_token_id,
       mcp_token_id: reissued.customer.inbound_token_id,
@@ -1876,8 +1876,7 @@ describe('manual customer lifecycle owner handlers', () => {
     )).toEqual(expect.objectContaining({
       label: 'Basic customer token',
       peer_handle: 'seller:manual:door_llm:manual-1',
-      contract_id: 'ct_customer_1',
-      expires_at: 0,
+      contract_id: 'ct_customer_2',
       grants: {
         'core.current': true,
         'core.disabled': false,
@@ -1886,7 +1885,7 @@ describe('manual customer lifecycle owner handlers', () => {
     expect(inboundTokenStore.verifyBearer({
       bearer: consumeClaim(reissued.claim).bearer_plaintext,
       now: NOW,
-    })?.contract_id).toBe('ct_customer_1');
+    })?.contract_id).toBe('ct_customer_2');
     expect(reissued.overview.counts).toMatchObject({
       customers: 1,
       active_customers: 1,

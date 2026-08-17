@@ -35,6 +35,12 @@ export type {
   ClosePrompt,
 } from './types.js';
 export { createSlackTransport, type SlackTransportOptions } from './slack.js';
+/** D-238 — the first base-`Transport` vendor: send-only, no prompt surface. */
+export {
+  createTeamsTransport,
+  normalizeTeamsChatId,
+  type TeamsTransportOptions,
+} from './teams.js';
 // D-192 M1b — Slack `users.info` profile-email leaf (the per-vendor adapter
 // behind the messenger declaration's `platform_id_source: 'profile_email'`).
 export { fetchSlackUserEmail, type FetchSlackUserEmailOptions } from './slack-users.js';

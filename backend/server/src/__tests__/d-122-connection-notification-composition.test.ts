@@ -175,6 +175,10 @@ const importComposerWithFactoryMocks = async () => {
     whatsapp: vi.fn(async () => ({ ok: true })),
     discord: vi.fn(async () => ({ ok: true })),
     email: vi.fn(async () => ({ ok: true })),
+    // D-238 — Teams joined `NotificationChannel`. The mock is typed as a
+    // Record over the FULL union, so a missing member is a compile error as
+    // well as a boot failure ("no dispatcher registered for channel 'teams'").
+    teams: vi.fn(async () => ({ ok: true })),
     in_app: vi.fn(async () => ({ ok: true })),
   };
   const createConnectionNotificationHandlerMock =

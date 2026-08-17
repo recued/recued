@@ -138,7 +138,7 @@ describe('D-210 Appendix B — reception.manage.mint', () => {
     // The credential resolves to the BOOKING's scope — that is what makes the
     // manage handler target this booking's event, never a form-supplied one.
     const secret = res.manage_path.slice('/reception/manage/'.length);
-    expect(store.peek(secret, NOW)).toMatchObject({
+    expect(store.peek(secret, NOW, 'manage')).toMatchObject({
       status: 'ok',
       scope: { kind: 'scheduling_link', endpoint_id: ENDPOINT_ID, record_id: BOOKING_ID },
     });

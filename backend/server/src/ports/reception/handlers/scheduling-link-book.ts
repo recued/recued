@@ -81,6 +81,10 @@ import {
   renderSchedulingLinkSuccessHtml,
 } from './scheduling-link-render.js';
 import { resolveVisitorReceipt } from './visitor-receipt.js';
+import { mintVisitorLookupPath } from './visitor-lookup-mint.js';
+import type {
+  ReceptionManageCredentialStore,
+} from '../../../storage/reception-manage-credential-store.js';
 import type { ReceptionEndpointContext } from '../redacted-packet.js';
 import type { SchedulingCalendarEventsReader } from './scheduling-link.js';
 import type { PublicEndpointRegistryStore } from '../../../storage/public-endpoint-registry-store.js';
@@ -242,6 +246,9 @@ export interface SchedulingLinkBookHandlerDeps {
    *  Absent ⇒ the receipt renders without a privacy footer (no trust
    *  footer at all when the substrate has no deployment mode wired). */
   readonly receptionDeploymentMode?: TrustFooterDeploymentMode;
+  /** D-240 — the per-record credential store the viewback link is minted from.
+   *  Absent ⇒ no link, and the receipt renders exactly as it did before D-240. */
+  readonly getCredentialStore?: () => ReceptionManageCredentialStore;
 }
 
 export const createSchedulingLinkBookHandler = (
@@ -561,6 +568,23 @@ export const createSchedulingLinkBookHandler = (
     if (input.visitor_phone) fieldsEcho.push({ label: 'Phone', value: input.visitor_phone });
     if (input.visitor_notes) fieldsEcho.push({ label: 'Notes', value: input.visitor_notes });
     fieldsEcho.push({ label: 'Time', value: slotLabel });
+    // D-240 — the booking arm of the submitter viewback. The mint helper's
+    // header always claimed two callers; until this landed there was only one,
+    // so `after_event` was declared, unit-tested and unreachable on the real
+    // request path.
+    //
+    // ⚠ `slot_end_at` is what makes this mode work at all: the booking's own end
+    // is the anchor, which is why a booking needs no configurable one.
+    const lookupPath = mintVisitorLookupPath({
+      config: config.visitor_lookup,
+      store: deps.getCredentialStore?.(),
+      endpoint_id,
+      record_id: request_id,
+      now,
+      record_kind: 'scheduling_link',
+      slot_end_at: input.selected_slot_end_at,
+    });
+
     const receipt = resolveVisitorReceipt({
       store: deps.getStore(),
       receptionDeploymentMode: deps.receptionDeploymentMode,
@@ -569,6 +593,7 @@ export const createSchedulingLinkBookHandler = (
       submitted_at: now,
       endpoint_kind: 'scheduling_link',
       fields_echo: fieldsEcho,
+      lookup_path: lookupPath,
     });
 
     writeHtmlResponse(

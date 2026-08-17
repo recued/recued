@@ -51,6 +51,10 @@ import {
   type SchedulingLinkVisitorFieldRequirements,
 } from './redacted-packets.js';
 import {
+  validateVisitorLookupConfig,
+  type VisitorLookupConfig,
+} from './visitor-lookup-config.js';
+import {
   validateVisitorReceiptConfig,
   type VisitorReceiptConfig,
 } from './visitor-receipt-config.js';
@@ -228,6 +232,10 @@ export interface SchedulingLinkConfig {
    *  /book handler renders a receipt (reference id + field echo +
    *  privacy footer) on the booking success page. */
   readonly visitor_receipt?: VisitorReceiptConfig;
+  /** D-240 — optional submitter viewback. On a booking the only permitted mode
+   *  is `after_event`: the slot's own end IS the lifecycle, so no other anchor
+   *  applies (`VISITOR_LOOKUP_MODES_PERMITTED_PER_RECORD_KIND`). */
+  readonly visitor_lookup?: VisitorLookupConfig;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -255,6 +263,8 @@ export type SchedulingLinkConfigValidationCode =
   | 'auto_confirm_ref_invalid'
   | 'standing_instructions_ref_invalid'
   | 'visitor_receipt_invalid'
+  // D-240 — the viewback config failed its own validator.
+  | 'visitor_lookup_invalid'
   | 'config_shape_invalid';
 
 export interface SchedulingLinkConfigValidationFailure {
@@ -582,6 +592,27 @@ export const validateSchedulingLinkConfig = (
   // config; absent ⇒ receipts disabled. A present value delegates to
   // the shared contract validator (closed-list `via` + boolean
   // `enabled`).
+  // visitor_lookup — D-240. Same shape as the receipt below, with
+  // `record_kind: 'scheduling_link'` so the per-kind mode gate admits ONLY
+  // `after_event`. No field types: a booking has no form to anchor on.
+  if (c.visitor_lookup !== undefined) {
+    const receiptOn =
+      typeof c.visitor_receipt === 'object'
+      && c.visitor_receipt !== null
+      && (c.visitor_receipt as { enabled?: unknown }).enabled === true;
+    const vlFailures = validateVisitorLookupConfig(c.visitor_lookup, {
+      record_kind: 'scheduling_link',
+      receipt_enabled: receiptOn,
+      field_types: new Map<string, string>(),
+    });
+    if (vlFailures.length > 0) {
+      failures.push({
+        code: 'visitor_lookup_invalid',
+        detail: `visitor_lookup: ${vlFailures[0]!.code} — ${vlFailures[0]!.detail}`,
+      });
+    }
+  }
+
   if (c.visitor_receipt !== undefined) {
     const vrFailures = validateVisitorReceiptConfig(c.visitor_receipt);
     if (vrFailures.length > 0) {

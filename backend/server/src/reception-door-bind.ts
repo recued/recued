@@ -41,6 +41,7 @@ import {
   kernelVerbRiskTier,
   parseOpId,
   recipeOutputSections,
+  STANDING_CLOSURE_RISK_TIERS,
   type RecipeDefinition,
 } from '@recued/contracts';
 
@@ -117,8 +118,26 @@ export type ReceptionDoorRefusal =
   | ReceptionDoorWriteRefusal
   | ReceptionRecipeCostRefusal;
 
+/** D-240 slice 3b — the ONLY two things a door bind needs from a pair store.
+ *
+ *  🔑 NARROWED FROM `ReceptionIntakeRecipePairStore` RATHER THAN COPIED, so a
+ *  second kind of door reuses the whole bind: capability derivation, the §5.1a
+ *  eligibility rule, the §3c refusal that a door which OWES the visitor a
+ *  synchronous response cannot write, the cost policy, the widening-consent
+ *  diff, and the retire-before-mint ordering. All of that is generic over
+ *  `(recipeId, recipe)`; only the contract LINK was ever pair-specific.
+ *
+ *  ⛔ The alternative — a bespoke bind for the lookup door — would have had to
+ *  re-derive every one of those rules, and the one it would most plausibly have
+ *  dropped is the §3c write refusal, which is precisely the rule a read-only
+ *  viewback door most needs. */
+export interface ReceptionDoorContractLink {
+  findByEndpoint(endpoint_id: string): { readonly contract_id: string | null } | null;
+  setContractId(input: { endpoint_id: string; contract_id: string | null }): unknown;
+}
+
 export interface ReceptionDoorBindDeps extends MintDoorDeps {
-  readonly pairStore: ReceptionIntakeRecipePairStore;
+  readonly pairStore: ReceptionDoorContractLink;
   /** The installed dish's resolved `config_overlay` for this recipe — where the connection
    *  values actually live (a Recipe is a pure paper record; D-179). */
   readonly resolveConfig: (recipeId: string) => Record<string, unknown> | undefined;
@@ -143,6 +162,11 @@ export type ReceptionDoorBindResult =
    *  `confirmed: true`. This is the consent moment. */
   | {
       readonly kind: 'needs_consent';
+      /** Ops a standing closure could never admit (tier above `write`, or
+       *  unclassifiable) — they still ask per dispatch. USUALLY EMPTY: a
+       *  responding door cannot carry one at all, because
+       *  `refuseWriteOnRespondingDoor` refuses the bind first. */
+      readonly asks_anyway: readonly string[];
       readonly added: string[];
       readonly removed: string[];
       readonly capability: RecipeCapability;
@@ -199,12 +223,76 @@ const canonicalConventionRisk = (opId: string): string | undefined => {
   return kernelVerbRiskTier(parsed.op.slice(finalDot + 1)) ?? undefined;
 };
 
-/** Refuse a responding door that can write. `null` ⇒ nothing to refuse. */
+/** One op's risk, resolved the one way. The fence AND the consent payload read
+ *  it — two spellings is how the screen comes to promise something the gate
+ *  does not do. `undefined` ⇒ unclassifiable, which every caller treats as
+ *  "cannot be admitted". */
+const resolveDoorOpRisk = (
+  op: string,
+  resolveOpRisk: ((opId: string) => string | undefined) | undefined,
+): string | undefined =>
+  resolveOpRisk?.(op) ?? getKernelOp(op)?.risk ?? canonicalConventionRisk(op);
+
+/** The ops a standing closure could NEVER admit — `destructive`, `admin`, and
+ *  anything unclassifiable. They stay in the closure (the owner is granting
+ *  ACCESS to them) but keep asking per dispatch, so the consent screen must be
+ *  able to say so — and, when the list is empty, to say NOTHING rather than
+ *  warn about a delete this form does not have. */
+const opsThatAskAnyway = (
+  capability: RecipeCapability,
+  resolveOpRisk: ((opId: string) => string | undefined) | undefined,
+): string[] =>
+  [...capability.operation_ids].filter((op) => {
+    const risk = resolveDoorOpRisk(op, resolveOpRisk);
+    return risk === undefined || !STANDING_CLOSURE_RISK_TIERS.includes(risk);
+  });
+
+/** Refuse a responding door that can write. `null` ⇒ nothing to refuse.
+ *
+ *  ⛔⛔ `standingClosure` IS NOT A BYPASS — IT FALSIFIES THIS FENCE'S PREMISE.
+ *  The refusal below says, in the owner's own error message, *"it would pause
+ *  for your approval — and a paused run produces no response at all."* That is
+ *  the entire argument. A standing closure is precisely the thing that stops
+ *  the write pausing, so under it the visitor DOES get their response and the
+ *  premise is simply untrue.
+ *
+ *  🔑 The two are ONE RULE READ FROM TWO ENDS: this fence refuses at BIND
+ *  because `standingClosureAdmits` would hold at DISPATCH. Leaving them
+ *  independent is how they contradict — and they DID: the dispatch gate was
+ *  built first and this end was not revisited, so ticking the box made the door
+ *  refuse to bind AT ALL. The feature was unreachable for the exact case it was
+ *  designed for, and three green suites could not see it because none of them
+ *  bound a responding recipe through the real risk resolver.
+ *
+ *  ⚠ They therefore share `STANDING_CLOSURE_RISK_TIERS` rather than each
+ *  spelling out `read`/`write`. If this end admitted a tier the gate holds, the
+ *  door would bind and then stay silent forever — bound, and answering nobody.
+ *
+ *  ⚠⚠ THE TWO ENDS READ DIFFERENT RISK VALUES, AND THAT IS NOT FIXABLE HERE.
+ *  This fence classifies the op's MANIFEST `risk_tier`; the gate classifies
+ *  `resolution.effective_risk_tier`, which a D-211 owner override may REPLACE
+ *  and a source `risk_overrides` entry may escalate (`stricterRisk`) — values
+ *  that do not exist at bind and can change after it. So the two can disagree.
+ *
+ *  🔑 DRIVEN OUT, BOTH DIRECTIONS FAIL SAFE — this is precision, not a hole:
+ *    - manifest `write` → effective `destructive`: this fence admits under the
+ *      opt-in, the GATE then holds. A hold, never a leak. The cost is the bad
+ *      outcome this fence exists to prevent (a responding door showing a bare
+ *      thank-you page), so it is a UX regression in a rare case, not authority.
+ *    - manifest `destructive` → effective `write` (owner de-escalation): this
+ *      fence refuses a bind the gate would have admitted. A false refusal.
+ *  The GATE is the authority and it re-reads the effective tier every dispatch,
+ *  which is why the imprecision cannot widen what actually runs. ⛔ The prior
+ *  fence had the same mismatch (it read the manifest tier too), so this is a
+ *  pre-existing approximation my relaxation inherits — NOT one it introduces.
+ *  Recorded because "the fence says write and the gate says destructive" reads
+ *  like a bypass until you check which way it fails. */
 const refuseWriteOnRespondingDoor = (
   recipe: RecipeDefinition,
   config: Record<string, unknown> | undefined,
   capability: RecipeCapability,
   resolveOpRisk: ((opId: string) => string | undefined) | undefined,
+  standingClosure: boolean,
 ): ReceptionDoorWriteRefusal | null => {
   const responds = respondsWith(recipe, config);
   if (responds === null) return null;
@@ -212,7 +300,17 @@ const refuseWriteOnRespondingDoor = (
   // Sorted, so the op we name is stable across binds — an owner who fixes one write and
   // re-binds should be told about the NEXT one, not a different one at random.
   for (const op of capability.operation_ids) {
-    const risk = resolveOpRisk?.(op) ?? getKernelOp(op)?.risk ?? canonicalConventionRisk(op);
+    const risk = resolveDoorOpRisk(op, resolveOpRisk);
+    // ⛔ An opted-in door admits exactly the tiers its gate admits — no more. A
+    // resolved `destructive` / `admin` still refuses here, because the gate
+    // still ASKS for those, so the run would still pause and the visitor would
+    // still get a bare thank-you. And `undefined` still refuses on BOTH paths:
+    // the gate cannot admit what it cannot classify either, so an unclassifiable
+    // op on an opted-in door would hold at fire. Fail-closed is not weakened by
+    // the opt-in; it is the reason the opt-in can be safe at all.
+    if (standingClosure && risk !== undefined && STANDING_CLOSURE_RISK_TIERS.includes(risk)) {
+      continue;
+    }
     // ⛔ `!== 'read'` — NOT `=== 'write'`. This catches `destructive` and `admin`, and it
     // catches an op whose risk we could not resolve AT ALL (`undefined`). An unresolvable
     // op is refused because we cannot prove it will not hold, and a fence that admits what
@@ -239,6 +337,13 @@ export const bindReceptionDoor = (
     readonly mintedBy: string;
     /** The owner has seen the widening diff and accepted it. */
     readonly confirmed?: boolean;
+    /** D-207 follow-on — the owner opts this door's CONFIRMED closure into
+     *  standing approval, so the ops they just reviewed stop asking per
+     *  dispatch. Absent ⇒ off, which is every door bound before this existed.
+     *  ⚠ Carried on the BIND rather than set later, deliberately: the closure
+     *  the owner is consenting to is the one on the screen in front of them,
+     *  and a re-bind that widens it re-asks for the consent. */
+    readonly standingClosure?: boolean;
   },
   deps: ReceptionDoorBindDeps,
 ): ReceptionDoorBindResult => {
@@ -269,6 +374,7 @@ export const bindReceptionDoor = (
     config,
     derived.capability,
     deps.resolveOpRisk,
+    input.standingClosure === true,
   );
   if (responding !== null) return { kind: 'refused', refusal: responding };
 
@@ -308,6 +414,7 @@ export const bindReceptionDoor = (
       added: diff.added,
       removed: diff.removed,
       capability: derived.capability,
+      asks_anyway: opsThatAskAnyway(derived.capability, deps.resolveOpRisk),
     };
   }
 
@@ -325,6 +432,7 @@ export const bindReceptionDoor = (
       capability: derived.capability,
       mintedBy: input.mintedBy,
       doorExecutionPolicy: executionPolicy,
+      ...(input.standingClosure === true ? { standingClosure: true } : {}),
     },
     deps,
   );

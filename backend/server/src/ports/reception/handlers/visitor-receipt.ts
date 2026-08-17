@@ -60,6 +60,9 @@ export interface ResolveVisitorReceiptArgs {
    *  `request_id` / `submission_id` / `blob_id` / `intent_id`). */
   readonly reference_id: string;
   readonly submitted_at: number;
+  /** D-240 — the minted viewback path (`/reception/lookup/<secret>`), or
+   *  absent when the endpoint has no `visitor_lookup` enabled. */
+  readonly lookup_path?: string | null;
   readonly endpoint_kind: ReceptionEndpointKind;
   /** Verbatim echo of the visitor-submitted fields ("what was shared").
    *  Per-kind: the caller builds this from the parsed submission. */
@@ -88,6 +91,7 @@ export const resolveVisitorReceipt = (
     fields_echo: args.fields_echo,
     config: args.config,
     privacy_footer,
+    lookup_path: args.lookup_path ?? null,
   });
 };
 
@@ -118,10 +122,25 @@ ${receipt.fields_echo
     typeof receipt.privacy_footer === 'string' && receipt.privacy_footer.length > 0
       ? `\n<p class="rcp-trust-footer">${receipt.privacy_footer}</p>`
       : '';
+  // D-240 — the viewback link. ⚠ HTML-ESCAPED like every other interpolation
+  // here, even though the secret is server-generated base64url and cannot carry
+  // markup: the escape is the file's invariant ("every other interpolation IS
+  // escaped"), and an exception argued from the CURRENT shape of a value is how
+  // that invariant stops holding later.
+  //
+  // ⛔ RELATIVE HREF, so it needs no absolute-HTTPS fence: it cannot leave this
+  // origin, which is the property the D-207 `link_button` fence has to CHECK for
+  // a recipe-produced href. Same-origin by construction beats same-origin by
+  // validation.
+  const lookupBlock =
+    typeof receipt.lookup_path === 'string' && receipt.lookup_path.length > 0
+      ? `\n<p class="rcp-receipt-lookup">Check on this later: `
+        + `<a href="${htmlEscape(receipt.lookup_path)}">${htmlEscape(receipt.lookup_path)}</a></p>`
+      : '';
   return `<div class="rcp-section rcp-receipt">
 <p class="rcp-section-title">Your receipt</p>
 <p class="rcp-receipt-ref">Reference ID: <code>${htmlEscape(receipt.reference_id)}</code></p>
-<p class="rcp-receipt-meta">Submitted ${htmlEscape(submittedIso)}</p>
+<p class="rcp-receipt-meta">Submitted ${htmlEscape(submittedIso)}</p>${lookupBlock}
 ${fieldsBlock}${footerBlock}
 </div>`;
 };

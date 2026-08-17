@@ -206,6 +206,7 @@ const okSettings = (
     telegram: { notification: false, approval: false, messenger: false },
     whatsapp: { notification: false, approval: false, messenger: false },
     discord: { notification: false, approval: false, messenger: false },
+    teams: { notification: false, approval: false, messenger: false },
     email: { notification: false, approval: false, messenger: false },
     bridges: { [id]: modes },
   },

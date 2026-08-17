@@ -63,6 +63,13 @@ import {
 } from '../../mcp-recipe-callback.js';
 import type { SharedStore } from '../../storage/shared-store.js';
 import type { ChatInboundTokenStore } from '../../storage/chat-inbound-token-store.js';
+import type {
+  ReceptionManageCredentialStore,
+} from '../../storage/reception-manage-credential-store.js';
+import {
+  runReceptionLookupExpirySweep,
+  type ReceptionLookupExpirySweepDeps,
+} from '../../reception-lookup-expiry-sweep.js';
 
 export interface ComposeRetentionPrunersDeps {
   readonly backgroundServices: BackgroundServiceRegistry;
@@ -98,6 +105,26 @@ export interface ComposeRetentionPrunersDeps {
   readonly auditLog?: AuditLogStore | undefined;
   /** D-214 closure observer for D-157 approval expiries. */
   readonly executionCaseLifecycle?: ExecutionCaseLifecycle | undefined;
+  /** D-240 slice 4 — the reception credential store, for TWO passes:
+   *
+   *  1. ⛔⛔ ITS `purge` HAD NO CALLER AT ALL. D-210 Appendix B shipped the
+   *     method and never registered it, so `reception_manage_credentials` has
+   *     been append-only since — and D-240 slice 2's `ceiling_at` backstop,
+   *     which I described as closing the deferred-credential leak, was resting
+   *     on a collector that never ran. Wiring it here is the repair.
+   *  2. The `until_resolved` stamp sweep.
+   *
+   *  Absent ⇒ neither runs (db-less harness), same posture as every store here. */
+  readonly receptionCredentialStore?:
+    | ReceptionManageCredentialStore
+    | undefined;
+  /** D-240 slice 4 — forward lookup from a deferred credential's record to its
+   *  durable target's completion. Absent ⇒ the stamp sweep is skipped and
+   *  deferred credentials live to their ceiling, which is the documented
+   *  fail-safe rather than a leak. */
+  readonly receptionRecordCompletion?:
+    | ReceptionLookupExpirySweepDeps['readCompletion']
+    | undefined;
   /** D-157 N.8 — the notification block's ask-state reads (the
    *  never-drop-a-decision check + the race-safe prompt close).
    *  Narrowed to exactly the two methods the sweep consumes. Absent ⇒
@@ -176,6 +203,36 @@ export const composeRetentionPruners = (
           store.pruneExpired(nowOf());
         } catch {
           // Best-effort — a prune failure must not crash the server.
+        }
+      },
+      fireImmediate: true,
+    });
+  }
+
+  // D-240 slice 4 — the reception credential passes.
+  //
+  // ⚠ ONE registration, TWO passes, in this order on purpose: STAMP first, then
+  // PURGE. A credential whose record just resolved should have its shortened
+  // expiry applied before the collector looks, so it can be reclaimed in the
+  // same tick rather than waiting a full interval. Reversing them costs an hour
+  // of retention on every resolved request, for nothing.
+  if (deps.receptionCredentialStore) {
+    const credentialStore = deps.receptionCredentialStore;
+    const readCompletion = deps.receptionRecordCompletion;
+    deps.backgroundServices.registerInterval({
+      name: 'reception-credential-retention',
+      intervalMs: HOUR_MS,
+      tick: () => {
+        try {
+          // The stamp pass is skipped when no completion reader is wired —
+          // deferred credentials then live to their ceiling, which is the
+          // documented fail-safe rather than a leak.
+          if (readCompletion !== undefined) {
+            runReceptionLookupExpirySweep({ credentialStore, readCompletion, now: nowOf });
+          }
+          credentialStore.purge(nowOf());
+        } catch {
+          // Best-effort — a retention failure must not crash the server.
         }
       },
       fireImmediate: true,

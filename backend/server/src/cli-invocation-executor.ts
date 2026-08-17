@@ -13,6 +13,7 @@ import {
   rmSync,
   statSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -21,6 +22,7 @@ import type { CliInvocationCall, CliInvocationExecutor } from '@recued/engine';
 import {
   cliSpawnErrorReason,
   isInPlaceCapture,
+  isStdoutCapture,
   isPinnedCasFileRef,
   isTempFileRef,
   runAttentionForTriggerSource,
@@ -39,6 +41,27 @@ import {
 import { allocateRunScratchDir } from './execution/run-scratch.js';
 import type { InFlightRegistry } from './execution/in-flight-registry.js';
 import { isInboundFileRecordId } from './collections/file/inbound-file-collection.js';
+import { parseRemoteFileRecordId } from './file-view-resolver.js';
+
+/** D-241 P4 — the two id shapes `input_materialize` will fetch: a CAS
+ *  `data.file.received` record (`file:<32 hex>`) and a File Source MIRROR row
+ *  (`file:remote:<scope>:<target>`), whose bytes the wired reader pulls from the
+ *  vendor.
+ *
+ *  ⛔ **`isInboundFileRecordId` is deliberately NOT widened to cover both.** It
+ *  means "a CAS record id" and `file-view-resolver.ts` uses it to ROUTE cas-vs-
+ *  remote — widening it there would make the router answer "cas" for a remote
+ *  row. The union belongs here, at the one caller that treats both the same.
+ *
+ *  ⚠ Anything else is a literal path / URL and passes through to the cli
+ *  untouched (docling's `source` serves both lanes) — which is exactly why a
+ *  remote id had to JOIN this predicate rather than rely on the reader: an
+ *  unrecognized ref is not an error, it is a filename, so the failure would
+ *  have been the tool reporting it could not open a file called
+ *  `file:remote:ZHJvcGJveC…`. */
+const isMaterializableFileRef = (value: unknown): value is string =>
+  isInboundFileRecordId(value)
+  || (typeof value === 'string' && parseRemoteFileRecordId(value) !== null);
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MIN_TIMEOUT_MS = 100;
@@ -93,6 +116,22 @@ export interface CliInvocationExecutorOptions {
   readFileBytes?: (
     record_id: string,
   ) => Promise<{ bytes: Buffer; mime_type: string; filename: string }>;
+  /** Parent directory for this executor's throwaway `recued-cli-in-*` /
+   *  `recued-cli-out-*` dirs. Defaults to `os.tmpdir()`, which is what the
+   *  server uses.
+   *
+   *  ⛔ **Exists because "did the executor clean up after itself?" was being
+   *  asserted against `os.tmpdir()` GLOBALLY, and a global surface is not the
+   *  asserting suite's to own.** Under `pool: 'threads'` any concurrently
+   *  running suite's in-flight dir enters the snapshot, so two sibling suites
+   *  red each other for reasons neither one caused. Injecting the root makes the
+   *  claim local and exact: a suite owns its own directory, so "empty afterwards"
+   *  is both attributable and STRONGER than the old form — it catches a leaked
+   *  EMPTY dir, which no content-based attribution can.
+   *
+   *  ⚠ A seam of the same class as `spawn` and `now`, which this executor
+   *  already takes. Nothing in production passes it. */
+  tempRoot?: string;
 }
 
 /** A captured cli output file, handed to the ingest sink to become a
@@ -432,6 +471,15 @@ const buildForegroundMonitor = (
   });
 };
 
+/** A stdout capture's sink: the child's stdout is written to an ENGINE-CHOSEN
+ *  path as it arrives, instead of being buffered into a value. Passed only by
+ *  the `from_stdout` capture branch — every other caller leaves it undefined and
+ *  the stream behaves exactly as before. */
+export interface StdoutFileSink {
+  /** Append one chunk. Throws once the byte ceiling is passed. */
+  write: (chunk: Buffer) => void;
+}
+
 const runForeground = async (
   call: CliInvocationCall,
   argv: string[],
@@ -439,6 +487,7 @@ const runForeground = async (
   now: () => number,
   tuning: StallTuning,
   registry: InFlightRegistry | undefined,
+  stdoutSink?: StdoutFileSink,
 ): Promise<unknown> =>
   new Promise((resolve, reject) => {
     if (argv.length === 0) {
@@ -451,6 +500,10 @@ const runForeground = async (
     const started = now();
     const stdout: CapturedStream = { chunks: [], bytes: 0, truncated: false };
     const stderr: CapturedStream = { chunks: [], bytes: 0, truncated: false };
+    // Set when the stdout sink refuses a chunk (ceiling). Surfaced on exit in
+    // preference to the exit code — a SIGKILLed child would otherwise report as
+    // a generic tool failure and hide the real reason.
+    let sinkFailure: Error | undefined;
     // D-182 — a bounded TAIL of stderr for a failure detail (the `stderr`
     // CapturedStream above is head-biased; a tool's real error is at the END).
     const stderrTail: StderrTail = { buf: Buffer.alloc(0), truncated: false };
@@ -537,6 +590,22 @@ const runForeground = async (
       // D-185 Slice 3 — capture stdout only for a VALUE shape (and never for an
       // output_capture op); `ref`/omitted discard.
       if (capturesStdoutValue(call.binding)) appendCapture(stdout, chunk);
+      // STDOUT CAPTURE — the bytes go to an engine-chosen FILE, never into a
+      // value. Written as they arrive so output larger than memory is fine,
+      // which is the whole reason this arm exists. A sink write that throws
+      // (the ceiling) kills the child rather than filling the disk.
+      if (stdoutSink !== undefined) {
+        try {
+          stdoutSink.write(chunk);
+        } catch (err) {
+          sinkFailure ??= err as Error;
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            /* already exited */
+          }
+        }
+      }
       if (heartbeat) monitor?.signal();
     });
     child.stderr?.on('data', (chunk: Buffer) => {
@@ -574,6 +643,14 @@ const runForeground = async (
       if (timer !== undefined) clearTimeout(timer);
       monitor?.stop();
       detachKill();
+      // ⛔ Reported BEFORE the exit code. The ceiling kills the child with
+      // SIGKILL, so without this the run surfaces as a generic tool failure and
+      // the owner is told the tool crashed rather than that their output was too
+      // large — the wrong thing to go and investigate.
+      if (sinkFailure !== undefined) {
+        reject(sinkFailure);
+        return;
+      }
       const exitCode = (timedOut || stalled) ? -9 : normalizeExitCode(rawCode, signal);
       const durationMs = now() - started;
       const result: Record<string, unknown> = {
@@ -1131,6 +1208,9 @@ export const createCliInvocationExecutor = (
   const registry = options.inFlightRegistry;
   const ingestToolOutput = options.ingestToolOutput;
   const readFileBytes = options.readFileBytes;
+  // Defaults to os.tmpdir(); a suite injects its own so its cleanup assertions
+  // are about a directory it owns rather than a global one it shares.
+  const tempRoot = options.tempRoot ?? tmpdir();
   const outputCaptureMaxBytes = options.outputCaptureMaxBytes ?? DEFAULT_OUTPUT_CAPTURE_MAX_BYTES;
   const launchTimeoutMs = resolveTimeoutMs(
     options.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS,
@@ -1188,6 +1268,84 @@ export const createCliInvocationExecutor = (
     // than hand back the materialized path — a `TempFileRef` pointing into a
     // directory about to be removed is a dangling ref the next step would fail
     // on. The copy lands in run-scratch, which outlives the call by design.
+    // STDOUT capture: the tool prints, and the engine streams that to a file in
+    // a dir it owns. Same posture as `dir_arg` — the recipe never names the
+    // path and never sees it; the bytes come back only as a Gateway-gated
+    // `file_ref`. This is what lets a stdout-only filter (csvgrep, ripgrep, jq)
+    // run against a materialized warehouse file at all: before it, such an op
+    // could not declare `shape: 'ref'`, and a value shape is refused alongside
+    // `input_materialize`.
+    if (isStdoutCapture(capture)) {
+      const outDir = mkdtempSync(join(tempRoot, 'recued-cli-out-'));
+      const filePath = join(outDir, basename(capture.filename));
+      const fd = openSync(filePath, 'w');
+      let written = 0;
+      let closed = false;
+      const closeFd = (): void => {
+        if (closed) return;
+        closed = true;
+        try {
+          closeSync(fd);
+        } catch {
+          /* already closed */
+        }
+      };
+      try {
+        const base = (await runForeground(
+          call,
+          resolveArgv(call),
+          spawn,
+          now,
+          tuning,
+          registry,
+          {
+            write: (chunk) => {
+              written += chunk.length;
+              // The same ceiling the other arms enforce at selection time —
+              // applied HERE because there is no file to inspect afterwards, and
+              // an unbounded print would otherwise fill the data dir.
+              if (written > outputCaptureMaxBytes) {
+                throw new Error(
+                  `cli_invocation '${call.operation_id}': stdout exceeded the ${outputCaptureMaxBytes}-byte capture ceiling`,
+                );
+              }
+              writeSync(fd, chunk);
+            },
+          },
+        )) as Record<string, unknown>;
+        // Closed before the read. ⚠ NOT load-bearing for correctness, and the
+        // first version of this comment claimed it was: `writeSync` writes
+        // through synchronously, so the bytes are already visible to a reader
+        // with the fd still open — a mutation that moved this line kept every
+        // test green, which is what exposed the false rationale. It stays
+        // because holding a write handle across the ingest is pointless, and
+        // the `finally` below would close it anyway.
+        closeFd();
+        const selected = { filePath, filename: basename(capture.filename) };
+        if (storage === 'temp') {
+          const scratchDir = allocateRunScratchDir(call.stepMeta?.run_id ?? '');
+          const keptPath = join(scratchDir, selected.filename);
+          copyFileSync(selected.filePath, keptPath);
+          return {
+            ...base,
+            ...captureToolOutputToTemp(
+              { filePath: keptPath, filename: selected.filename },
+              capture,
+            ),
+          };
+        }
+        if (!ingestToolOutput) {
+          throw new Error(
+            `cli_invocation '${call.operation_id}' declares output_capture but no tool-output ingestor is wired`,
+          );
+        }
+        return { ...base, ...await captureToolOutputToCas(selected, capture, call, ingestToolOutput) };
+      } finally {
+        closeFd();
+        rmSync(outDir, { recursive: true, force: true });
+      }
+    }
+
     if (isInPlaceCapture(capture)) {
       const base = (await runForeground(
         call,
@@ -1265,7 +1423,7 @@ export const createCliInvocationExecutor = (
         `cli_invocation '${call.operation_id}' declares output_capture but no tool-output ingestor is wired`,
       );
     }
-    const tempDir = mkdtempSync(join(tmpdir(), 'recued-cli-out-'));
+    const tempDir = mkdtempSync(join(tempRoot, 'recued-cli-out-'));
     try {
       const callWithDir: CliInvocationCall = {
         ...call,
@@ -1325,7 +1483,7 @@ export const createCliInvocationExecutor = (
     if (!materialize) return runResolved(call);
     const tempDir: { path?: string } = {};
     const ensureTempDir = (): string => {
-      tempDir.path ??= mkdtempSync(join(tmpdir(), 'recued-cli-in-'));
+      tempDir.path ??= mkdtempSync(join(tempRoot, 'recued-cli-in-'));
       return tempDir.path;
     };
     // IN-PLACE capture changes what this arg IS: the tool will WRITE to the path
@@ -1356,14 +1514,15 @@ export const createCliInvocationExecutor = (
         }
         return value.path;
       }
-      // The materialize arg can otherwise carry EITHER a CAS file_ref (the
-      // storage-gdrive download lane) OR a literal local path / URL (the manual
-      // lane — docling's `source` serves both). Only a recognized
-      // `data.file.received` record_id is materialized from the CAS; anything else
-      // passes through to the cli as-is.
+      // The materialize arg can otherwise carry EITHER a file_ref — a CAS
+      // record (the storage-gdrive download lane) or a File Source MIRROR row
+      // (D-241 P4: bytes fetched from the vendor on demand) — OR a literal local
+      // path / URL (the manual lane — docling's `source` serves both). Only a
+      // recognized record_id is materialized; anything else passes through to
+      // the cli as-is.
       const pinned = isPinnedCasFileRef(value) ? value : null;
       const recordId = pinned?.record_id ?? value;
-      if (!isInboundFileRecordId(recordId)) {
+      if (!isMaterializableFileRef(recordId)) {
         // ⛔ The passthrough lane is REFUSED for an in-place capture. Letting a
         // literal path through would hand the tool a location the RECIPE named,
         // and this op then ingests whatever is there — the caller would both

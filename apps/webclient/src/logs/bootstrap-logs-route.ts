@@ -43,6 +43,7 @@ import type {
   RunGatewayCallTraceEntry,
   RunOrigin,
   RunProvenanceLink,
+  RunYield,
   SessionGrantListRequest,
   SessionGrantListResponse,
   SessionGrantRevokeRequest,
@@ -90,6 +91,10 @@ export const LOGS_ROUTE_AFFECTED_ITEMS_ATTR =
   'data-recued-logs-affected-items';
 export const LOGS_ROUTE_GATEWAY_TRACE_ATTR = 'data-recued-logs-gateway-trace';
 export const LOGS_ROUTE_DEGRADED_ATTR = 'data-recued-logs-degraded';
+/** D-237 P2 yield notice — carries the notice KIND so a test (and a reader
+ *  inspecting the DOM) can tell an all-refused run from a partial one without
+ *  parsing the sentence. */
+export const LOGS_ROUTE_YIELD_ATTR = 'data-recued-logs-yield';
 export const LOGS_ROUTE_REDACTED_IO_ATTR = 'data-recued-logs-redacted-io';
 export const LOGS_ROUTE_LOAD_MORE_ATTR = 'data-recued-logs-load-more';
 export const LOGS_ROUTE_ERROR_ATTR = 'data-recued-logs-error';
@@ -276,6 +281,19 @@ export interface RunOutcomeSummary {
   readonly nextStep?: string;
   readonly action?: RunOutcomeAction;
   readonly recordWarnings: ReadonlyArray<RunRecordWarning>;
+  /** D-237 P2 yield, read at the one surface that can contradict the status.
+   *  Absent whenever the tally says nothing worth saying — see
+   *  {@link projectRunYieldNotice}. */
+  readonly yieldNotice?: RunYieldNotice;
+}
+
+/** `all-refused` is the run that finished clean having accomplished nothing;
+ *  `partial-failure` is the same shape, smaller, and deliberately quieter. */
+export type RunYieldNoticeKind = 'all-refused' | 'partial-failure';
+
+export interface RunYieldNotice {
+  readonly kind: RunYieldNoticeKind;
+  readonly message: string;
 }
 
 export type RunAffectedItemRelationship =
@@ -648,6 +666,22 @@ const LOGS_ROUTE_STYLES = `
 }
 [${LOGS_ROUTE_HOST_ATTR}] .logs-outcome-next {
   color: var(--fg);
+}
+/* D-237 P2 yield notice. The all-refused case contradicts a green status, so it
+   is given the accent rule the outcome section itself uses for attention; the
+   partial case states a fact and stays muted, because a rule down the side of
+   every run that dropped 3 of 400 items is a rule nobody reads. */
+[${LOGS_ROUTE_HOST_ATTR}] .logs-outcome-yield {
+  margin: 7px 0 0;
+  padding: 6px 0 6px 9px;
+  border-left: 3px solid var(--muted);
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.45;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-outcome-yield[${LOGS_ROUTE_YIELD_ATTR}="all-refused"] {
+  border-left-color: var(--accent);
+  font-weight: 600;
 }
 [${LOGS_ROUTE_HOST_ATTR}] .logs-outcome-action {
   min-height: 44px;
@@ -1474,18 +1508,84 @@ export const projectRunOutcomeSummary = (
     message: DEGRADATION_MESSAGES[code],
   }));
   const hasRecordWarning = recordWarnings.length > 0;
+  const yieldNotice = projectRunYieldNotice(detail.audit.run_yield);
+  // An all-refused run is the one case where a positive status is not merely
+  // incomplete but actively misleading, so it escalates tone by exactly the
+  // mechanism a record warning uses. A partial failure is REPORTED and does not
+  // escalate: real work landed, and raising attention every time one item of
+  // four hundred fails teaches the reader to stop reading the tone.
+  const positiveIsMisleading = yieldNotice?.kind === 'all-refused';
+  const escalates = hasRecordWarning || positiveIsMisleading;
   return {
     ...core,
-    ...(hasRecordWarning && core.tone === 'positive'
+    ...(escalates && core.tone === 'positive'
       ? { tone: 'attention' as const }
       : {}),
-    ...(hasRecordWarning && core.nextStep === undefined
+    ...(core.nextStep === undefined && positiveIsMisleading
       ? {
           nextStep:
-            'Review the record warning before relying on this run history.',
+            'Check the steps below to see what was refused before treating '
+            + 'this run as done.',
         }
-      : {}),
+      : core.nextStep === undefined && hasRecordWarning
+        ? {
+            nextStep:
+              'Review the record warning before relying on this run history.',
+          }
+        : {}),
     recordWarnings,
+    ...(yieldNotice !== undefined ? { yieldNotice } : {}),
+  };
+};
+
+/** D-237 P2's yield, read for the one thing `status` structurally cannot say.
+ *
+ *  `status: 'succeeded'` means no exception was thrown. A `foreach` whose every
+ *  per-item write was refused throws nothing — so the run that did all of its
+ *  work and the run that did none of it are the same green row. That is the
+ *  failure class D-237 P2 exists to expose (its own entry lists three real
+ *  incidents: a foreach with all writes rejected, an import that wrote nothing,
+ *  a stalled cursor — each reporting `success`), and P2 shipped it as far as the
+ *  wire: derived on the anchor, persisted on the audit entry, projected onto
+ *  `RunAuditSummary`, and then read by nobody. This is the first surface to read
+ *  it; the data has been arriving here since P2 shipped.
+ *
+ *  ⛔ ABSENT IS NOT ZERO. `run_yield === undefined` means the anchor was written
+ *  before D-237 — never "produced nothing". Rendering a yield for those rows
+ *  would manufacture a pathology out of an old row, which is the same reason the
+ *  server's projection guards on `!== undefined` rather than on truthiness.
+ *
+ *  ⛔ A malformed tally is SKIPPED, never coerced — matching `deriveRunYield`'s
+ *  own rule that a NaN total must not render a confident, meaningless claim.
+ *  `items_failed > items_total` is impossible from the deriver and is treated as
+ *  malformed rather than clamped, because a clamp would report a fabricated
+ *  all-refused run as fact.
+ *
+ *  A zero-item run yields nothing here: recipes without a `foreach` legitimately
+ *  touch no items, and flagging them would bury the real signal in noise.
+ */
+export const projectRunYieldNotice = (
+  runYield: RunYield | undefined,
+): RunYieldNotice | undefined => {
+  if (runYield === undefined) return undefined;
+  const total = runYield.items_total;
+  const failed = runYield.items_failed;
+  if (!Number.isFinite(total) || !Number.isFinite(failed)) return undefined;
+  if (total <= 0 || failed <= 0 || failed > total) return undefined;
+  if (failed === total) {
+    return {
+      kind: 'all-refused',
+      message: total === 1
+        ? 'The only item this run touched failed. It finished without an error, '
+          + 'but nothing it set out to do actually happened.'
+        : `All ${total} items this run touched failed. It finished without an `
+          + 'error, but nothing it set out to do actually happened.',
+    };
+  }
+  return {
+    kind: 'partial-failure',
+    message: `${failed} of ${total} items failed. The rest went through, which `
+      + 'is why the run still finished without an error.',
   };
 };
 
@@ -2444,6 +2544,9 @@ const renderOutcome = (detail: RunDetail): string => {
         : ''}
       ${summary.action !== undefined
         ? `<a class="logs-outcome-action" href="${e(summary.action.href)}">${e(summary.action.label)}</a>`
+        : ''}
+      ${summary.yieldNotice !== undefined
+        ? `<p class="logs-outcome-yield" ${LOGS_ROUTE_YIELD_ATTR}="${e(summary.yieldNotice.kind)}" role="note">${e(summary.yieldNotice.message)}</p>`
         : ''}
       ${renderRecordWarnings(summary.recordWarnings)}
     </section>

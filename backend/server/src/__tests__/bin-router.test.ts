@@ -883,7 +883,7 @@ describe('production router', () => {
             label: 'e2e',
             grants: Object.fromEntries(GRANTED.map((n) => [n, true])),
             concurrency_tier: 3,
-            expires_at: 0, // sentinel: never expires
+            // sentinel: never expires
             chat_mode: null,
           },
           now: Date.now(),

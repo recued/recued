@@ -168,6 +168,19 @@ export interface ReceptionIntakeRecipePairBindInput {
    *  the recipe does not derive, because the server re-derives the closure from the saved
    *  recipe and this flag only decides whether to PROMPT. */
   readonly confirm_capability?: boolean;
+  /** D-207 follow-on — the owner grants this door's CONFIRMED closure standing
+   *  approval: the ops they just read may run without asking again, on this
+   *  door, bounded by tier (`destructive` / `admin` still ask).
+   *
+   *  ⛔ REQUIRES `confirm_capability`. The server refuses the pair otherwise:
+   *  "I have read this closure" is the precondition for "and it may run without
+   *  asking me" — granting standing authority over a list the owner never saw
+   *  is precisely what the confirm step exists to prevent.
+   *
+   *  Absent ⇒ off, which is every door bound before this existed. A re-bind
+   *  that WIDENS the closure re-mints the contract, so the opt-in is re-earned
+   *  against the new list rather than inherited by it. */
+  readonly standing_closure?: boolean;
 }
 
 /** D-207 — why a recipe cannot back a public door.
@@ -223,6 +236,12 @@ export type ReceptionDoorBindView =
       readonly status: 'needs_consent';
       readonly added: readonly string[];
       readonly removed: readonly string[];
+      /** Ops that keep asking per dispatch even with the standing-closure tick
+       *  (tier above `write`, or unclassifiable). ⚠ USUALLY EMPTY — a
+       *  responding door cannot carry one, the bind refuses it first — and the
+       *  consent copy must then say NOTHING about deletes rather than warn
+       *  about one this form does not have. */
+      readonly asks_anyway?: readonly string[];
       readonly operation_ids: readonly string[];
     }
   /** The recipe cannot back a public door at all. The pair is saved; no door exists. */

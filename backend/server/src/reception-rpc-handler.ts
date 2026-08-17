@@ -258,7 +258,12 @@ import {
   type ReceptionRecordDeps,
 } from './reception-record-handler.js';
 import {
+  makeReceptionLookupRevokeHandlers,
+  type ReceptionLookupRevokeDeps,
+} from './reception-lookup-revoke-handler.js';
+import {
   makeReceptionManageMintHandlers,
+
   type ReceptionManageMintDeps,
 } from './reception-manage-mint-handler.js';
 import {
@@ -1849,7 +1854,7 @@ const PAIR_BIND_KEYS = new Set(['endpoint_id', 'recipe_id', 'expected_updated_at
 /** D-207 slice 1c — the owner has seen the capability widening and accepts it. OPTIONAL:
  *  a first bind and a narrowing never send it, and the closed-args check is an exact key-set
  *  match, so listing it as required would reject every caller that omits it. */
-const PAIR_BIND_OPTIONAL_KEYS = new Set(['confirm_capability']);
+const PAIR_BIND_OPTIONAL_KEYS = new Set(['confirm_capability', 'standing_closure']);
 const PAIR_CONFIGURE_KEYS = new Set([
   'endpoint_id',
   'expected_updated_at',
@@ -2183,6 +2188,7 @@ const bindPairDoor = (
     readonly recipe: RecipeDefinition;
     readonly actor: string;
     readonly confirm_capability: boolean;
+    readonly standing_closure: boolean;
   },
 ): ReceptionDoorBindView => {
   const result = bindReceptionDoor(
@@ -2192,6 +2198,7 @@ const bindPairDoor = (
       recipe: input.recipe,
       mintedBy: input.actor,
       confirmed: input.confirm_capability,
+      ...(input.standing_closure ? { standingClosure: true } : {}),
     },
     doorDeps,
   );
@@ -2209,6 +2216,7 @@ const bindPairDoor = (
       added: result.added,
       removed: result.removed,
       operation_ids: result.capability.operation_ids,
+      asks_anyway: result.asks_anyway,
     };
   }
   return {
@@ -2682,6 +2690,27 @@ export const handleReceptionIntakeRecipePairBind = async (
     );
   }
   const confirm_capability = input.confirm_capability === true;
+  // Same posture as `confirm_capability`: a standing approval is a BOOLEAN the
+  // owner sets, never a truthy coincidence.
+  if (input.standing_closure !== undefined
+    && typeof input.standing_closure !== 'boolean') {
+    throw badRequest(
+      'intake_recipe_pair_invalid',
+      `${method}: standing_closure must be a boolean`,
+    );
+  }
+  // ⛔ A STANDING APPROVAL REQUIRES THE OWNER TO HAVE SEEN WHAT THEY ARE
+  // APPROVING. `confirm_capability` is "I have read this closure";
+  // `standing_closure` is "and it may run without asking me again". The second
+  // without the first would let a caller grant standing authority over a list
+  // the owner never saw — which is the whole thing the confirm step exists for.
+  if (input.standing_closure === true && input.confirm_capability !== true) {
+    throw badRequest(
+      'intake_recipe_pair_invalid',
+      `${method}: standing_closure requires confirm_capability — the owner must have seen the closure they are granting`,
+    );
+  }
+  const standing_closure = input.standing_closure === true;
   const endpoint = requirePairableEndpoint(deps, endpoint_id, method);
   if (endpoint.revoked_at !== null) {
     throw new RpcError(
@@ -2858,6 +2887,7 @@ export const handleReceptionIntakeRecipePairBind = async (
     recipe,
     actor,
     confirm_capability,
+    standing_closure,
   });
 
   // The door mint is the moment the ANONYMOUS PUBLIC gains authority on this server, so it
@@ -4529,3 +4559,18 @@ export const makeReceptionManageMintRpcHandlers = (
 };
 
 export type { ReceptionManageMintDeps } from './reception-manage-mint-handler.js';
+
+/** D-240 § D11 — the per-record viewback revoke rpc slice, re-exported here for
+ *  the same reason as its neighbours: `ws-server` keeps ONE import site for
+ *  every reception handler factory, and a real `HandlerSlice` type means the
+ *  registry's exhaustiveness check applies. */
+export const makeReceptionLookupRevokeRpcHandlers = (
+  deps: ReceptionLookupRevokeDeps | undefined,
+): HandlerSlice<ServerRpcRegistry, 'reception.lookup.revoke', WsClient> | undefined => {
+  const slice = makeReceptionLookupRevokeHandlers<WsClient>(deps);
+  return slice === undefined
+    ? undefined
+    : { methods: slice.methods, handlers: slice.handlers };
+};
+
+export type { ReceptionLookupRevokeDeps } from './reception-lookup-revoke-handler.js';

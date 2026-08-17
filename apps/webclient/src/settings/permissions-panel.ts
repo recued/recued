@@ -208,7 +208,6 @@ export interface PermissionsIssueInboundTokenArgs {
   label: string;
   grants: Readonly<Record<string, boolean>>;
   concurrency_tier: McpInboundConcurrencyTier;
-  expires_at: number;
   chat_mode: McpInboundTokenChatMode;
 }
 
@@ -768,8 +767,6 @@ const activeDoorToken = (
  *    the door opens with a least-privilege token (the safe posture for a
  *    security surface). The Chat row + per-tool checklist later add grants
  *    WITHOUT re-issuing — the token value stays stable (decision 6).
- *  - **Never expires (`expires_at: 0`):** D-171 makes expiry an opt-in
- *    Advanced limit; the value is destroyed only on door-disable (decision
  *    6), so the door uses the "never" sentinel rather than D-137's 1-year
  *    default (which would silently break clients after a year).
  *  - **`concurrency_tier: 5`** — the documented "Balanced" middle default.
@@ -778,7 +775,6 @@ const buildMcpDoorIssueArgs = (): PermissionsIssueInboundTokenArgs => ({
   label: MCP_DOOR_TOKEN_LABEL,
   grants: {},
   concurrency_tier: 5,
-  expires_at: 0,
   chat_mode: null,
 });
 
@@ -2025,26 +2021,24 @@ export const mountPermissionsPanel = (
     state = { ...state, doorBusy: true, advancedError: null, doorError: null };
     render();
     try {
-      if (!wantLimit) {
-        // Clear: unbind the live token first (so it is never bound to a
-        // revoked contract), then revoke the prior envelope.
-        const { token: updated } = await rebind({
-          token_id: token.token_id,
-          contract_id: null,
-        });
-        if (disposed) return;
-        foldUpdatedToken(updated);
-        if (priorId !== null) {
-          await revoke({ contract_id: priorId });
-        }
-      } else {
-        // Set / change: mint the new envelope, rebind the live token to it,
-        // then retire any prior envelope.
+      {
+        // ⛔⛔ ONE PATH, and clearing is no longer a special case. This used to
+        // fork: turning the LAST limit off unbound the token (`contract_id:
+        // null`) and revoked the envelope, so a token with no limits had no
+        // contract — *"a contract exists ONLY while a limit is on"*. That is
+        // what left the common token carrying a synthetic `contract_id` naming
+        // no row. Now clearing mints an UNBOUNDED carrier and rebinds to it,
+        // exactly as changing a limit already did; the only difference between
+        // the two cases is whether `max_uses` / `expiry_at` are included.
+        //
+        // ⚠ The rpc now REFUSES `contract_id: null`, so the old branch would
+        // fail loudly rather than silently unbind — but the fix is here, not a
+        // caught error: the owner turning a limit off is not an error.
         const minted = await mint({
           display_name: MCP_DOOR_CONTRACT_NAME,
           scope: MCP_DOOR_CONTRACT_SCOPE,
-          ...(nextMaxUses !== null ? { max_uses: nextMaxUses } : {}),
-          ...(nextExpiryAt !== null ? { expiry_at: nextExpiryAt } : {}),
+          ...(wantLimit && nextMaxUses !== null ? { max_uses: nextMaxUses } : {}),
+          ...(wantLimit && nextExpiryAt !== null ? { expiry_at: nextExpiryAt } : {}),
         });
         if (disposed) return;
         try {

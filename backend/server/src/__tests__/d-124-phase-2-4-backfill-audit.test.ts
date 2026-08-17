@@ -274,6 +274,7 @@ const sampleMessage = (overrides: Partial<CanonicalMessage> = {}): CanonicalMess
   thread_id: 'T-1',
   folder_or_label: 'INBOX',
   is_read: false,
+  is_flagged: false,
   has_attachments: false,
   received_at: 1_700_000_000_000,
   body_text: 'body',
@@ -288,6 +289,7 @@ const stubMailProvider = (
     kind: 'imap',
     slug: 'inbox',
     sendCapable: false,
+    mutationCapable: false,
     accountEmail: '',
     async connect() {},
     async initialScan(opts) {

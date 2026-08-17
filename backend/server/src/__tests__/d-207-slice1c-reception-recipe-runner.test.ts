@@ -241,7 +241,21 @@ describe('D-207 slice 1c — outcomes', () => {
     expect(r.kind).toBe('held');
   });
 
+  it('D-234 § 234.4 — a PEER hold is HELD too, not a failure', async () => {
+    // ⛔⛔ IT REPORTED `failed`, AND THE RUN WAS ALIVE. A paired recipe that asks a peer for
+    // an approval pauses with `awaiting_peer` — durable, checkpointed, resumable — and this
+    // classifier only knew `awaiting_approval`, so the visitor got a 503 for a run that was
+    // waiting on a department head. Worse than the lie: `run_id` is anchored on the
+    // SUBMISSION, so a visitor who believed the error and resubmitted minted a second run and
+    // the peer was asked the same question twice.
+    const h = harness({ execute: { success: false, awaiting_peer: true, errors: [] } });
+    const r = await run(h);
+    expect(r.kind).toBe('held');
+  });
+
   it('a real failure is a FAILURE — the visitor must be told', async () => {
+    // ⚠ The permitting case for the two above: a refusal that returned `held` for everything
+    // would satisfy both hold tests while destroying the one distinction they exist to keep.
     const h = harness({ execute: { success: false, errors: ['boom'] } });
     const r = await run(h);
     expect(r.kind).toBe('failed');

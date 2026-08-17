@@ -113,9 +113,27 @@ const alwaysKernelKeys = [
   'collectionGet',
   'collectionList',
   'collectionSearch',
+  // D-244 — the CSV readers, wired unconditionally alongside the other file
+  // primitives. Read-tier storage ops over a file the caller already named, so
+  // there is no capability to gate the WIRING on; like the mail four below,
+  // the dispatcher fails closed at call time if the underlying store is absent.
+  'csvColumns',
+  'csvFilter',
+  'csvStats',
   'filePersist',
+  'filePutRef',
   'fileSetScanStatus',
+  // D-239 — the mail write-back four. Always-present ON PURPOSE: the
+  // capability question ("may this mailbox be written?") belongs to the
+  // ENROLLMENT and is answered by the dispatcher's `mutationCapable` gate.
+  // Gating the WIRING on it instead would surface a read-only mailbox as
+  // SERVER_NOT_REACHABLE — "your server is unreachable" for a server that is
+  // right here and simply was not granted write access.
+  'mailDelete',
+  'mailFlag',
   'mailGet',
+  'mailMark',
+  'mailMove',
   'mailSend',
   // D-207 3d·2d — the no-resend mail-claim reconciler is wired always-present
   // alongside mailSend (baseline repair: the census lagged that commit).
@@ -300,6 +318,9 @@ const notificationDispatchers = (): Record<NotificationChannel, NotificationChan
   whatsapp: vi.fn(async () => ({ ok: true })),
   discord: vi.fn(async () => ({ ok: true })),
   email: vi.fn(async () => ({ ok: true })),
+  // D-238 — Teams joined `NotificationChannel`; the Record is over the FULL
+  // union, so a missing member is a compile error.
+  teams: vi.fn(async () => ({ ok: true })),
   in_app: vi.fn(async () => ({ ok: true })),
 });
 const workEntityDispatchers = (): WorkEntityDispatchers => ({
@@ -339,6 +360,8 @@ const buildDeps = (
   db: undefined,
   annotationStore: undefined,
   enrichmentStore: undefined,
+  // D-239 — the mail write-back's delete cascade.
+  enrichmentCascade: undefined,
   readGrantResolver: undefined,
   notificationChannelDispatchers: undefined,
   housekeepingState: undefined,

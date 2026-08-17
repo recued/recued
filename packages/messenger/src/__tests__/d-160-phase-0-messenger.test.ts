@@ -544,6 +544,10 @@ describe('D-160 I-10 ratchet -- Slack / Telegram stay BYO leaf transports', () =
       'packages/transport/src/index.ts',
       'packages/transport/src/slack-users.ts',
       'packages/transport/src/slack.ts',
+      // D-238 — the Teams leaf. In the scan for the same reason as its siblings:
+      // it is a BYO vendor transport, and the ratchet exists to prove none of
+      // them grows a hosted dependency.
+      'packages/transport/src/teams.ts',
       'packages/transport/src/telegram.ts',
       'packages/transport/src/types.ts',
       // D-192 make-live — the third BYO leaf transport. Listed, not derived, on

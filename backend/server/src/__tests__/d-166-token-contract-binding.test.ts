@@ -60,7 +60,6 @@ const tokenValue = (
   label: 'Mary',
   grants: { 'tool.allowed': true, 'tool.denied': false },
   concurrency_tier: 3,
-  expires_at: 0,
   chat_mode: null,
   ...overrides,
 });
@@ -71,7 +70,6 @@ const validPayload = (
   label: 'Mary',
   grants: { 'tool.allowed': true },
   concurrency_tier: 3,
-  expires_at: 0,
   chat_mode: null,
   ...overrides,
 });
@@ -324,6 +322,71 @@ describe('D-166 P2 MCP source and snapshot builders', () => {
     const unresolvedSource = _testing.buildMcpExecutionSource(unresolvedDeps);
     expect(_testing.buildMcpContractSnapshot(unresolvedSource, unresolvedDeps).allowed_tools)
       .toEqual([]);
+  });
+
+  /** Door standing closure, MCP arm — the hop from the transport dep onto the
+   *  dispatch snapshot. It lives HERE, not in the closure's own e2e, because it
+   *  shares a fence with `allowed_tools`: a dead bound contract must collapse
+   *  BOTH, and two adjacent tests are the only way that stays true. */
+  it('⛔ carries the token\'s standing closure onto the snapshot — and drops it with the allowlist', () => {
+    const closure = ['pack.entity.update', 'pack.entity.get'];
+    const liveDeps = makeMcpDeps({
+      boundContractId: 'ct_live',
+      boundContractActive: true,
+      inboundTokenAuthorize: (slug) => slug.startsWith('allowed-'),
+      standingClosureOperationIds: closure,
+    });
+    const live = _testing.buildMcpContractSnapshot(
+      _testing.buildMcpExecutionSource(liveDeps), liveDeps,
+    );
+    expect(live.standing_closure_operation_ids).toEqual(closure);
+
+    // ⛔ THE SHARED FENCE. Revoking the bound contract empties `allowed_tools`,
+    // and a standing closure surviving that would be authority outliving its
+    // contract — the kill-switch has to work on both axes at once.
+    const deadDeps = makeMcpDeps({
+      boundContractId: 'ct_dead',
+      boundContractActive: false,
+      inboundTokenAuthorize: (slug) => slug.startsWith('allowed-'),
+      standingClosureOperationIds: closure,
+    });
+    const dead = _testing.buildMcpContractSnapshot(
+      _testing.buildMcpExecutionSource(deadDeps), deadDeps,
+    );
+    expect(dead.allowed_tools).toEqual([]);
+    expect(dead.standing_closure_operation_ids).toBeUndefined();
+
+    // ⚠ And a token with no closure is unchanged — every token issued before
+    // this field existed.
+    const plainDeps = makeMcpDeps({
+      boundContractId: 'ct_live',
+      boundContractActive: true,
+      inboundTokenAuthorize: (slug) => slug.startsWith('allowed-'),
+    });
+    expect(_testing.buildMcpContractSnapshot(
+      _testing.buildMcpExecutionSource(plainDeps), plainDeps,
+    ).standing_closure_operation_ids).toBeUndefined();
+  });
+
+  /** ⛔ The authority digest moves when the closure moves. Without this two
+   *  different standing authorities share a `contract_version`, and every audit
+   *  row claiming "this is the exact policy that was in force" is untrue for
+   *  one of them. */
+  it('⛔ the contract_version moves when the standing closure moves', () => {
+    const snap = (ids?: readonly string[]) => {
+      const d = makeMcpDeps({
+        boundContractId: 'ct_live',
+        boundContractActive: true,
+        inboundTokenAuthorize: (slug) => slug.startsWith('allowed-'),
+        ...(ids === undefined ? {} : { standingClosureOperationIds: ids }),
+      });
+      return _testing.buildMcpContractSnapshot(
+        _testing.buildMcpExecutionSource(d), d,
+      ).contract_version;
+    };
+    expect(snap(['pack.entity.update'])).not.toBe(snap());
+    expect(snap(['pack.entity.update'])).not.toBe(snap(['pack.entity.delete']));
+    expect(snap(['pack.entity.update'])).toBe(snap(['pack.entity.update']));
   });
 
   it('keeps the normal grant-filtered allowlist for live-bound and unbound tokens', () => {

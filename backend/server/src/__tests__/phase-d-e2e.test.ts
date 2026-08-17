@@ -61,6 +61,7 @@ const makeStubProvider = (slug: string): {
   const provider: MailProvider = {
     kind: 'imap', slug,
     sendCapable: false,
+    mutationCapable: false,
     accountEmail: '',
     async connect() { /* noop */ },
     async initialScan(opts) {
@@ -268,6 +269,7 @@ describe('Phase D e2e — mail collection', () => {
       thread_id: 'T-1',
       folder_or_label: 'INBOX',
       is_read: false,
+      is_flagged: false,
       has_attachments: false,
       received_at: Date.now(),
       body_text: 'planning notes for the quarter',
@@ -312,6 +314,7 @@ describe('Phase D e2e — heartbeat roll-up', () => {
       source_id: 'msg-1', from: 'a@x', to: ['b@x'], cc: [],
       subject: 's', thread_id: 't', folder_or_label: 'INBOX',
       is_read: false, has_attachments: false, received_at: Date.now(),
+      is_flagged: false,
       body_text: 'x',
     });
     const deps: CollectionHandlerDeps = { registry: w.registry };

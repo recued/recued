@@ -144,6 +144,11 @@ const setup = (): TestRig => {
       auditLog,
       selfSignature,
       now: () => 10_000,
+      // ⛔ ALWAYS-CONTRACTED: issuance mints a carrier when the caller names no
+      // contract, and REFUSES if the minter is unwired rather than falling back
+      // to an unbound token. A harness that omits this is not exercising the
+      // shipped path.
+      mintTokenContract: ({ label }: { label: string }) => `ct_for_${label}`,
     },
     inboundTokenStore,
     callbackStore,
@@ -736,10 +741,14 @@ describe('MCP callback mailbox follows inbound-token authority lifecycle', () =>
   });
 });
 
-describe('D-137 P5 follow-on — validator ratchet (14 closed-list codes)', () => {
-  it('MCP_INBOUND_TOKEN_VALIDATION_ISSUE_CODES carries 14 entries', () => {
+describe('D-137 P5 follow-on — validator ratchet (15 closed-list codes)', () => {
+  it('MCP_INBOUND_TOKEN_VALIDATION_ISSUE_CODES carries 15 entries', () => {
     // D-166 P2 — `contract_id_invalid` added for the token↔contract binding.
-    expect(MCP_INBOUND_TOKEN_VALIDATION_ISSUE_CODES.length).toBe(14);
+    // Standing closure (MCP arm) — `standing_closure_invalid`. The code exists
+    // so the wire can be REFUSED an op list: the closure is derived from the
+    // granted recipes, and a caller naming its own is a validation error rather
+    // than a quietly-honoured standing authority.
+    expect(MCP_INBOUND_TOKEN_VALIDATION_ISSUE_CODES.length).toBe(15);
   });
 });
 
@@ -935,33 +944,37 @@ describe('D-171 slice 3 — chat.inbound_token.update_contract', () => {
     expect(detail).toEqual({ bound: true, contract_id: 'ct_bound' });
   });
 
-  it('unbinds contract_id with null and emits unbound audit detail without contract_id', async () => {
+  /** ⛔⛔ UNBINDING IS GONE, and this slot used to prove it worked. A token is
+   *  always contracted now: `null` left a live token with no contract row and
+   *  only a synthetic `contract_id` naming nothing, which is the confusion the
+   *  always-contracted change removes. Removing limits means rebinding to an
+   *  UNBOUNDED carrier — the limits are the contract's fields, not its reason
+   *  to exist. */
+  it('⛔⛔ refuses to unbind — a token is always contracted', async () => {
     const issued = await handleInboundTokenIssue(
       rig.deps,
       validIssuanceArgs({ contract_id: 'ct_old' }),
     );
-    rig.broadcastedEvents.length = 0;
-    rig.auditRows.length = 0;
-
-    const result = await updateContract(rig.deps, {
+    await expect(updateContract(rig.deps, {
       token_id: issued.record.token_id,
       contract_id: null,
-    });
+    })).rejects.toThrow(/always contracted/);
+    // …and the binding is untouched: a refused call changes nothing.
+    expect(rig.inboundTokenStore.getTokenById(issued.record.token_id)?.contract_id)
+      .toBe('ct_old');
+  });
 
-    expect(result.token.contract_id).toBeUndefined();
-    expect(result.token).not.toHaveProperty('contract_id');
-    const fan = rig.broadcastedEvents.find(
-      (e) => e.kind === 'chat.inbound_token_changed' && e.op === 'update_contract',
+  /** …and REBINDING still works, which is the path that replaces unbinding. */
+  it('rebinds to an unbounded carrier instead — how limits are removed now', async () => {
+    const issued = await handleInboundTokenIssue(
+      rig.deps,
+      validIssuanceArgs({ contract_id: 'ct_limited' }),
     );
-    expect(fan).toBeDefined();
-    expect(fan!.record).not.toHaveProperty('contract_id');
-    const audit = rig.auditRows.find(
-      (r) => r.action === 'chat_inbound_token_contract_updated',
-    );
-    expect(audit).toBeDefined();
-    const detail = JSON.parse(audit!.detail!);
-    expect(detail.bound).toBe(false);
-    expect(detail).not.toHaveProperty('contract_id');
+    const result = await updateContract(rig.deps, {
+      token_id: issued.record.token_id,
+      contract_id: 'ct_unbounded',
+    });
+    expect(result.token.contract_id).toBe('ct_unbounded');
   });
 
   it('returns success when update_contract broadcast throws', async () => {

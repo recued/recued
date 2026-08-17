@@ -156,6 +156,7 @@ import {
   connectionSetupGuideContextsMatch,
   canApplyConnectionSetupGuideSuggestion,
   connectionSetupGuideReturnTarget,
+  connectionFormRunsOAuthDance,
   connectionOAuthCredentialReadiness,
   invalidatesConnectionOAuthResult,
   isConnectionOAuthLockedField,
@@ -1378,6 +1379,12 @@ const seedSchemaDefaults = (schema: ConnectionSchema): ConnectionFormValues => {
     ) {
       values[field.key] = field.options[0]!;
     }
+    // D-238 — a declared constant (an OAuth token endpoint, a fixed API root).
+    // A hidden field with only a `placeholder` projects as ABSENT, so the form
+    // blocks on a value the owner cannot see or supply.
+    if (field.initial !== undefined && field.initial.length > 0) {
+      values[field.key] = field.initial;
+    }
   }
   return values;
 };
@@ -2392,12 +2399,14 @@ export const mountConnectionsEnrollPanel = (
   const startVendorOAuthFromClick = (): void => {
     const dialog = state.dialog;
     const vendor = dialog.vendor;
-    // R14 — a generic `api` oauth2_refresh form (no registered vendor) runs the
-    // dance with the typed authorize/token URLs + scopes.
+    // R14 — a generic oauth2_refresh form (no registered vendor) runs the dance
+    // with the typed authorize/token URLs + scopes. D-238 widened this beyond
+    // `api`: the predicate is shared with the renderer and the readiness
+    // projection precisely so a Teams card cannot render an Authorize button the
+    // handler then refuses, or the reverse.
     const isGeneric =
       vendor === null
-      && dialog.kind === 'api'
-      && dialog.values['auth.type'] === 'oauth2_refresh';
+      && connectionFormRunsOAuthDance({ kind: dialog.kind, values: dialog.values });
     if (
       (!vendorOAuthWired() && !loopbackSelfServeWired())
       || oauthEnv === undefined

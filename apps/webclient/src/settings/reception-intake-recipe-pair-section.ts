@@ -58,6 +58,9 @@ const PAIR_SECTION_ACTIONS = [
   // D-207 slice 1c — the owner accepts (or declines) the door's capability list.
   'reception-pair-consent-confirm',
   'reception-pair-consent-cancel',
+  // D-207 follow-on — the owner also grants the confirmed closure standing
+  // approval, so these ops stop asking per submission on THIS door.
+  'reception-pair-consent-standing',
   'reception-pair-config-connection',
   'reception-pair-config-success-url',
   'reception-pair-config-cancel-url',
@@ -74,6 +77,8 @@ type PairSectionAction = (typeof PAIR_SECTION_ACTIONS)[number];
 
 const PAIR_SECTION_CHANGE_ACTIONS: ReadonlySet<PairSectionAction> = new Set([
   'reception-pair-select',
+  // A checkbox reports through `change`, not `input`.
+  'reception-pair-consent-standing',
 ]);
 
 const PAIR_SECTION_CONFIG_INPUT_ACTIONS: ReadonlySet<PairSectionAction> = new Set([
@@ -186,7 +191,18 @@ interface PairSectionState {
   /** D-207 slice 1c — the door WIDENED and is waiting on the owner. The pair is saved; the
    *  door is SHUT until they accept. `added` is the list of ops the anonymous public could
    *  not reach before and now could — it is the prompt, not a footnote to it. */
-  pendingDoorConsent: { added: readonly string[]; recipeId: string } | null;
+  pendingDoorConsent: {
+    added: readonly string[];
+    recipeId: string;
+    /** Ops that keep asking even with the tick. ⚠ Usually EMPTY — a responding
+     *  door cannot carry one — and an empty list must render NOTHING, not a
+     *  warning about a delete this form does not have. */
+    asksAnyway: readonly string[];
+  } | null;
+  /** The owner's standing-approval choice for the consent block on screen.
+   *  ⛔ Reset to false every time a NEW consent block is raised — a choice made
+   *  about one closure must never carry onto a different one. */
+  standingClosure: boolean;
   error: string | null;
   notice: string | null;
 }
@@ -593,8 +609,33 @@ const renderPairSection = (
           ${state.pendingDoorConsent.added.map((op) => `<li><code>${e(op)}</code></li>`).join('')}
         </ul>
         <p class="reception-pair-help">
-          Anyone who can reach this form can trigger these. Actions that write still need
-          your approval each time; reads do not. The form will not run until you allow this.
+          Anyone who can reach this form can trigger these.
+          ${state.standingClosure
+            ? `They will run <strong>without asking you</strong>, on every submission to
+               <strong>this form</strong> — that is what the box below grants.${
+                 state.pendingDoorConsent.asksAnyway.length > 0
+                   ? ` ${state.pendingDoorConsent.asksAnyway.length === 1
+                       ? 'One action still asks'
+                       : `${state.pendingDoorConsent.asksAnyway.length} actions still ask`
+                     } every time: ${state.pendingDoorConsent.asksAnyway
+                       .map((op) => `<code>${e(op)}</code>`).join(', ')}.`
+                   : ''
+               }`
+            : `Actions that write still need your approval each time; reads do not.`}
+          The form will not run until you allow this.
+        </p>
+        <label class="reception-pair-help reception-door-consent-standing">
+          <input type="checkbox" data-action="reception-pair-consent-standing"
+                 ${state.standingClosure ? 'checked' : ''} />
+          Let this form run unattended
+        </label>
+        <p class="reception-pair-help">
+          ${state.standingClosure
+            ? `You are approving the list above ONCE instead of once per submission.
+               <strong>Only this form</strong> — another form, or this one re-bound to a
+               recipe that needs something new, asks you again.`
+            : `Leave this off and every write pauses for you — right for a form you want to
+               watch, and unworkable for one that takes hundreds of submissions a day.`}
         </p>
         ${actionBar({
           gap: 4,
@@ -738,6 +779,7 @@ export const mountReceptionIntakeRecipePairSection = (
     configurationDraft: EMPTY_CLAIM_CONFIGURATION_DRAFT,
     confirmingClear: false,
     pendingDoorConsent: null,
+    standingClosure: false,
     error: null,
     notice: null,
   };
@@ -906,7 +948,10 @@ export const mountReceptionIntakeRecipePairSection = (
    *  never inferred, never defaulted. It does not grant anything by itself: the server
    *  re-derives the closure from the saved recipe and this flag decides only whether to
    *  PROMPT. */
-  const bindSelected = async (confirmCapability = false): Promise<void> => {
+  const bindSelected = async (
+    confirmCapability = false,
+    standingClosure = false,
+  ): Promise<void> => {
     const observed = state.pair;
     if (
       disposed
@@ -928,6 +973,7 @@ export const mountReceptionIntakeRecipePairSection = (
       saving: true,
       confirmingClear: false,
       pendingDoorConsent: null,
+      standingClosure: false,
       error: null,
       notice: null,
     };
@@ -938,6 +984,9 @@ export const mountReceptionIntakeRecipePairSection = (
         recipe_id: recipeId,
         expected_updated_at: observed.updated_at,
         ...(confirmCapability ? { confirm_capability: true } : {}),
+        // ⛔ Only ever alongside the confirm — the server refuses the pair
+        // otherwise, and the UI must not be the thing that tries.
+        ...(confirmCapability && standingClosure ? { standing_closure: true } : {}),
       });
       if (disposed) return;
       applyPair(result.pair);
@@ -949,7 +998,12 @@ export const mountReceptionIntakeRecipePairSection = (
         // "something changed, approve again?" trains the owner to click through unread.
         state = {
           ...state,
-          pendingDoorConsent: { added: door.added, recipeId },
+          pendingDoorConsent: {
+            added: door.added,
+            recipeId,
+            asksAnyway: door.asks_anyway ?? [],
+          },
+          standingClosure: false,
           notice: null,
           error: null,
         };
@@ -961,6 +1015,7 @@ export const mountReceptionIntakeRecipePairSection = (
         state = {
           ...state,
           pendingDoorConsent: null,
+          standingClosure: false,
           notice: null,
           error: `This recipe cannot run on a public form: ${door.detail}`,
         };
@@ -1187,13 +1242,19 @@ export const mountReceptionIntakeRecipePairSection = (
     },
     // D-207 slice 1c — re-bind with consent. The server re-derives the closure from the
     // saved recipe; this flag only tells it the owner has SEEN the list.
-    'reception-pair-consent-confirm': () => void bindSelected(true),
+    'reception-pair-consent-confirm': () => void bindSelected(true, state.standingClosure),
+    'reception-pair-consent-standing': (_d: DOMStringMap, event: Event) => {
+      const checked = (event.target as HTMLInputElement | null)?.checked === true;
+      state = { ...state, standingClosure: checked };
+      render();
+    },
     'reception-pair-consent-cancel': () => {
       // The pair stays saved and the door stays SHUT. That is a coherent state, not a
       // half-finished one: the form denies every submission until a door is minted.
       state = {
         ...state,
         pendingDoorConsent: null,
+        standingClosure: false,
         notice: 'Not allowed. This form is paired but will not run until you allow it.',
       };
       render();

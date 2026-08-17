@@ -161,6 +161,18 @@ export interface MailRpcSendInput {
   in_reply_to?: string;
   references?: string[];
   reply_to?: string;
+  /** D-207 slice 3d — opt into the no-resend fence for THIS send.
+   *
+   *  The fence lives in `MailCollection.send`, which this handler is a façade
+   *  over, and it is opt-in PER CALL by design: supplying an id is opting into
+   *  "never double-send this", and the price is that an unresolved attempt gets
+   *  RESOLVED rather than repeated. Omitting it keeps ordinary retry semantics —
+   *  which is the right default for a fan-out notification.
+   *
+   *  It was previously unreachable from this surface: the façade built its send
+   *  args without the field, so no `mail-post` recipe could ask for the
+   *  guarantee however much it wanted it. Forwarding it changes no default. */
+  reconciliation_id?: string;
 }
 
 /** D-127 P3.1 — return shape from `MailCollection.send`. Structurally
@@ -175,6 +187,13 @@ export interface MailRpcSendResult {
   sent_at: number;
   thread_id?: string;
   warnings?: Array<{ code: string; message: string }>;
+  /** D-207 slice 3d — TRUE when the fence answered instead of the provider: a
+   *  claim for this `reconciliation_id` was already `sent`/`reconciled`, so
+   *  nothing was dispatched and the ids above describe the ORIGINAL send.
+   *  Dropping it here would make "sent now" and "already sent an hour ago"
+   *  indistinguishable to the recipe — the precise ambiguity the claim exists
+   *  to remove. */
+  already_sent?: boolean;
 }
 
 /** D-127 P3.1 — minimal mail-rpc surface the email subhandler needs.
@@ -828,12 +847,24 @@ const sendEmail = async (
     ? params.subject
     : (typeof params.title === 'string' && params.title.length > 0 ? params.title : '(no subject)');
   const isHtml = params.body_format === 'html';
+  // D-207 slice 3d — forward the fence opt-in. Only a non-empty string is
+  // passed through: the id's SHAPE is the claim store's own invariant and is
+  // enforced there, so this layer does not second-guess it (a validator here
+  // could be wrong; the store's cannot). Anything else is treated as absent,
+  // which is the existing behaviour and the safe default.
+  const reconciliationId = typeof params.reconciliation_id === 'string'
+    && params.reconciliation_id.length > 0
+    ? params.reconciliation_id
+    : undefined;
   const sendArgs: MailRpcSendInput = {
     instance: senderInstance,
     to,
     subject,
     body_text: body,
     ...(isHtml ? { body_html: body } : {}),
+    ...(reconciliationId !== undefined
+      ? { reconciliation_id: reconciliationId }
+      : {}),
   };
   const bytesOut = new TextEncoder().encode(JSON.stringify(sendArgs)).byteLength;
   const result = await mailRpc.send(sendArgs);
@@ -844,6 +875,11 @@ const sendEmail = async (
       message_id: result.message_id,
       sent_at: result.sent_at,
       ...(result.thread_id !== undefined ? { thread_id: result.thread_id } : {}),
+      // Only when the fence answered. Emitted as `true` and never as `false`,
+      // so its ABSENCE keeps meaning "this handler sent it", exactly as it did
+      // before — an added `already_sent: false` on every ordinary send would
+      // read as a claim about a fence that was never armed.
+      ...(result.already_sent === true ? { already_sent: true } : {}),
     },
     headers: undefined,
   };

@@ -56,6 +56,7 @@ const message = (source_id: string): CanonicalMessage => ({
   thread_id: `thread-${source_id}`,
   folder_or_label: 'INBOX',
   is_read: false,
+  is_flagged: false,
   has_attachments: false,
   received_at: START_TIME - 1_000,
   body_text: 'hello',
@@ -85,6 +86,7 @@ const makeFakeProvider = (hooks: FakeProviderOptions = {}): FakeProviderHandle =
     kind: 'gmail',
     slug: SLUG,
     sendCapable: false,
+    mutationCapable: false,
     accountEmail: 'me@example.com',
     async connect() {
       if (hooks.connectError !== undefined) throw hooks.connectError;

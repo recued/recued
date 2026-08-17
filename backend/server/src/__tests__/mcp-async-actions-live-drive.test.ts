@@ -172,7 +172,6 @@ const seedHeldInvocation = async (dbPath: string): Promise<SeedResult> => {
         label: 'MCP action live drive',
         grants: { [HELD_TOOL.name]: true },
         concurrency_tier: 3,
-        expires_at: 0,
         chat_mode: null,
       },
       now: Date.now(),

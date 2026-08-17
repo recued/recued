@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 
 import {
   getMessengerVendorDeclaration,
+  MESSENGER_AUTH_KIND_CONNECTION_TYPES,
+  resolveBearerAccessToken,
   resolveMessengerConnectionIngressMode,
   type ConnectionAuth,
   type ConnectionRow,
@@ -26,6 +28,8 @@ import {
   type SlackSocketRunnerOptions,
   type TelegramPollRunnerOptions,
 } from './local-runners.js';
+import { createTeamsPollRunner, type TeamsPollRunnerOptions } from './teams-poll.js';
+import type { MessengerNotificationRefresher } from '../messenger-notification-refresh.js';
 
 export type MessengerIngressSupervisorState =
   | MessengerIngressRunnerState
@@ -45,6 +49,7 @@ export interface MessengerIngressRunnerFactory {
   telegram(options: TelegramPollRunnerOptions): MessengerLocalIngressRunner;
   slack(options: SlackSocketRunnerOptions): MessengerLocalIngressRunner;
   discord(options: DiscordGatewayRunnerOptions): MessengerLocalIngressRunner;
+  teams(options: TeamsPollRunnerOptions): MessengerLocalIngressRunner;
 }
 
 export interface MessengerIngressSupervisor {
@@ -63,6 +68,18 @@ export interface MessengerIngressSupervisorOptions {
   isVaultUnlocked?: () => boolean;
   subscribeVault?: (listener: (state: VaultState, previous: VaultState) => void) => () => void;
   runnerFactory?: MessengerIngressRunnerFactory;
+  /** D-238 § 2a — renew an expiring `connection.notification` credential.
+   *
+   *  ⛔ Pass the SAME INSTANCE the send path uses. The refresher is single-flight
+   *  per vendor, and that guarantee is per-instance: with two of them, a poll and
+   *  a send can exchange concurrently, and refresh-token ROTATION means each
+   *  invalidates the other's token — leaving a stored credential the provider
+   *  already consumed, unrecoverable without re-consent. One instance, both
+   *  consumers.
+   *
+   *  Absent ⇒ credentials are used as stored, which is correct for every
+   *  `bot_token` vendor. */
+  refreshAuth?: MessengerNotificationRefresher;
   /** Replay fence for local ingress. Defaults to a fresh ledger with the
    *  same 24-hour window the webhook port uses. Injectable for tests. */
   ledger?: IdempotencyLedger;
@@ -77,6 +94,7 @@ interface ActiveRunner {
 }
 
 const defaultRunnerFactory: MessengerIngressRunnerFactory = {
+  teams: createTeamsPollRunner,
   telegram: createTelegramPollRunner,
   slack: createSlackSocketRunner,
   discord: createDiscordGatewayRunner,
@@ -215,12 +233,53 @@ export const createMessengerIngressSupervisor = (
     // shutdown can observe no active runner, wait for this chain, and return just
     // after the chain creates a network loop that nobody owns anymore.
     if (stopped) return;
-    if (auth.type !== 'bearer' || auth.token.trim().length === 0) {
+    // ⛔ D-238 — the deliverable credential SHAPE is per vendor, read from the
+    // same authority the enroll gate uses. This was a flat
+    // `auth.type !== 'bearer'` guard, which rejected every valid Teams row
+    // ("messenger bot token is missing") BEFORE its own branch below could run —
+    // so the poll runner could never start, and no test saw it because they all
+    // drive the runner directly.
+    const declaredShapes = MESSENGER_AUTH_KIND_CONNECTION_TYPES[declaration.auth];
+    if (!declaredShapes.includes(auth.type)) {
+      setStatus(
+        vendor,
+        row.name,
+        mode,
+        'invalid',
+        `messenger credential shape '${auth.type}' is not one ${vendor} can send with`,
+      );
+      return;
+    }
+    // A STATIC bearer must carry its token now — there is nothing to mint it
+    // later. A refreshable credential legitimately may not: a freshly enrolled
+    // row holds a refresh token and no access token until the first exchange,
+    // and rejecting it here would make enrolment look broken.
+    const bearerToken = auth.type === 'bearer' ? auth.token.trim() : null;
+    if (auth.type === 'bearer' && (bearerToken === null || bearerToken.length === 0)) {
       setStatus(vendor, row.name, mode, 'invalid', 'messenger bot token is missing');
       return;
     }
+    const appToken = auth.type === 'bearer' ? auth.app_token : undefined;
+    // D-238 — the cursor's identity must survive a ROUTINE TOKEN ROTATION.
+    //
+    // This hashed `row.auth_ciphertext`, which changes on every refresh. For a
+    // static bot token that is exactly right: the ciphertext only moves when the
+    // owner re-enrols, and resuming another account's cursor would be wrong.
+    // For an OAuth vendor it is a slow leak. The refresher rewrites the row
+    // roughly hourly, the fingerprint moves, the saved state is DELETED, and the
+    // replacement runner starts at `now` — dropping every message between the
+    // last persisted cursor and the restart. An approval reply landing in that
+    // gap is never seen, with nothing anywhere reporting a fault.
+    //
+    // So hash what identifies the ACCOUNT rather than the current secret. For
+    // `oauth2_refresh` that is the app plus the tenant endpoint the grant
+    // belongs to: stable across rotation, and different after a genuine
+    // re-enrolment against another app. Every other shape keeps the ciphertext.
+    const credentialIdentity = auth.type === 'oauth2_refresh'
+      ? `oauth2_refresh ${auth.client_id} ${auth.token_endpoint}`
+      : row.auth_ciphertext;
     const credentialFingerprint = createHash('sha256')
-      .update(row.auth_ciphertext)
+      .update(credentialIdentity)
       .digest('hex');
     const savedState = options.stateStore.get(vendor, row.name);
     if (
@@ -286,14 +345,45 @@ export const createMessengerIngressSupervisor = (
     };
 
     let runner: MessengerLocalIngressRunner | null = null;
-    if (vendor === 'telegram' && mode === 'poll') {
-      runner = factory.telegram({ ...common, botToken: auth.token });
+    if (vendor === 'teams' && mode === 'poll') {
+      const chatId = config[declaration.recipient.field];
+      if (typeof chatId !== 'string' || chatId.trim().length === 0) {
+        setStatus(vendor, row.name, mode, 'invalid', 'Teams chat id is missing');
+        return;
+      }
+      runner = factory.teams({
+        ...common,
+        chatId: chatId.trim(),
+        // ⛔ A PROVIDER, re-resolved per poll — never the `auth` decoded above.
+        // That value is captured once per reconcile; a Graph delegated token
+        // dies in about an hour, so a runner holding it works until it doesn't
+        // and then 401s forever. Re-reading the row also means a re-enrolment
+        // or a rotation lands without restarting the runner.
+        getAccessToken: async () => {
+          const current = options.connectionStore.get('notification', row.name);
+          if (current === null) return null;
+          try {
+            const decoded = await options.decodeAuth(current);
+            const usable = options.refreshAuth === undefined
+              ? decoded
+              : await options.refreshAuth.refreshIfNeeded(vendor, decoded);
+            return resolveBearerAccessToken(usable) ?? null;
+          } catch {
+            // A locked keystore or a decrypt failure is transient from the
+            // runner's point of view — it backs off and re-asks rather than
+            // treating it as a dead credential.
+            return null;
+          }
+        },
+      });
+    } else if (vendor === 'telegram' && mode === 'poll') {
+      runner = factory.telegram({ ...common, botToken: bearerToken ?? '' });
     } else if (vendor === 'slack' && mode === 'socket') {
-      if (typeof auth.app_token !== 'string' || auth.app_token.trim().length === 0) {
+      if (typeof appToken !== 'string' || appToken.trim().length === 0) {
         setStatus(vendor, row.name, mode, 'invalid', 'Slack app-level token is missing');
         return;
       }
-      runner = factory.slack({ ...common, appToken: auth.app_token });
+      runner = factory.slack({ ...common, appToken });
     } else if (vendor === 'discord' && mode === 'socket') {
       // The declared recipient field IS the bound conversation the rest of the
       // messenger layer gates on — read it from the same row so a rebind moves
@@ -301,7 +391,7 @@ export const createMessengerIngressSupervisor = (
       const boundChannel = config[declaration.recipient.field];
       runner = factory.discord({
         ...common,
-        botToken: auth.token,
+        botToken: bearerToken ?? '',
         ...(typeof boundChannel === 'string' && boundChannel.trim().length > 0
           ? { boundChannelId: boundChannel.trim() }
           : {}),

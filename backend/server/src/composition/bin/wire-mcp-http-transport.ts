@@ -356,6 +356,37 @@ export const composeMcpHttpTransport = (
     // bearer + stdio carry no `contract_id` (`boundContractId === undefined`) and
     // skip it. An absent `permitsDoorType` (test stub) or absent/empty
     // `door_types` is the wildcard (admit) — behaviour-preserving at zero installs.
+    // ⛔⛔ AN INBOUND TOKEN WITH NO CONTRACT IS REFUSED. Codex found the hole:
+    // the token's own `expires_at` is retired, `verifyBearer` no longer checks
+    // one, and an UNBOUND row skips `isContractLive` entirely — so a legacy
+    // bearer the boot backfill failed to contract would authenticate with its
+    // lifetime enforced by nothing at all.
+    //
+    // ⚠ THE ESCALATION HALF OF THAT REPORT WAS WRONG, and the distinction is
+    // worth keeping: `resolveTrustCeiling` keys on `isDelegatedMcpToken`
+    // (`mcp_token_id !== 'stdio_local'`), so a remote unbound token still takes
+    // the contracted `read` ceiling — driven, it returns `'read'`. It does NOT
+    // inherit owner trust; the comment in `mcp-server.ts` that says so is about
+    // the STDIO client and has been corrected. What was real is the EXPIRY
+    // bypass, and this closes it.
+    //
+    // 🔑 Refused rather than deny-all, because unlike a dead contract there is
+    // no contract to attribute the denial to — the operator needs to know the
+    // token is un-migrated, not that "everything is denied".
+    if (resolved && resolved.kind === 'inbound' && boundContractId === undefined) {
+      return {
+        jsonrpc: '2.0',
+        id: envelopeId(envelope),
+        error: {
+          code: -32001,
+          message:
+            'This inbound token carries no contract. Every token is contracted; '
+            + 'the boot backfill contracts legacy tokens automatically, so this one '
+            + 'failed to migrate — check the [mcp-token-backfill] startup log and '
+            + 're-issue the token.',
+        },
+      };
+    }
     if (boundContractId !== undefined && boundContractActive === true) {
       const permitsMcpDoor =
         deps.executeDeps.contractOverlay?.permitsDoorType?.(boundContractId, 'mcp') ?? true;
@@ -462,6 +493,18 @@ export const composeMcpHttpTransport = (
               boundContractId: record.contract_id,
               boundContractActive: boundContractActive === true,
             }
+          : {}),
+        // Door standing closure, MCP arm — read off the BOUND CONTRACT, live per
+        // dispatch, never off the token record. Lifecycle and limitation are the
+        // contract's job; the token authenticates. Gated on the contract being
+        // ACTIVE, so revoke / expiry / exhaustion drops the standing authority
+        // in the same instant it drops the allowlist.
+        ...(record.contract_id !== undefined && boundContractActive === true
+          ? (() => {
+              const closure = deps.executeDeps.contractOverlay
+                ?.standingClosureOperationIds?.(record.contract_id);
+              return closure === undefined ? {} : { standingClosureOperationIds: closure };
+            })()
           : {}),
       };
     })();

@@ -55,6 +55,10 @@ import {
   type IntakeFormVisitorFieldType,
 } from './redacted-packets.js';
 import {
+  validateVisitorLookupConfig,
+  type VisitorLookupConfig,
+} from './visitor-lookup-config.js';
+import {
   validateVisitorReceiptConfig,
   type VisitorReceiptConfig,
 } from './visitor-receipt-config.js';
@@ -478,6 +482,16 @@ export interface IntakeFormConfig {
    *  submit handler renders a receipt (reference id + field echo +
    *  privacy footer) on the success page. */
   readonly visitor_receipt?: VisitorReceiptConfig;
+  /** D-240 — optional per-endpoint submitter-viewback config. Absent ⇒
+   *  disabled (opt-in, like `visitor_receipt` above). When `enabled`, the
+   *  submit handler mints a per-record credential and the receipt carries
+   *  its link, so the submitter can come back and read progress + outcome.
+   *
+   *  ⚠ REQUIRES `visitor_receipt.enabled` — the receipt is the only surface
+   *  that hands the submitter anything, so a lookup without one mints a
+   *  credential that reaches nobody. Refused at write time
+   *  (`visitor_lookup_requires_receipt`), not left to fail silently. */
+  readonly visitor_lookup?: VisitorLookupConfig;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -530,6 +544,10 @@ export type IntakeFormConfigValidationCode =
   | 'domain_allowlist_entry_too_long'
   | 'visitor_fields_invalid'
   | 'visitor_receipt_invalid'
+  // D-240 — the viewback config failed its own validator; the detail carries
+  // that validator's specific code so a caller can tell a bad ttl from a
+  // missing receipt without re-deriving it.
+  | 'visitor_lookup_invalid'
   | 'config_shape_invalid';
 
 export interface IntakeFormConfigValidationFailure {
@@ -1291,6 +1309,52 @@ export const validateIntakeFormConfig = (
       failures.push({
         code: 'visitor_receipt_invalid',
         detail: `visitor_receipt: ${vrFailures[0]!.code} — ${vrFailures[0]!.detail}`,
+      });
+    }
+  }
+
+  // visitor_lookup — D-240. Same shape as the receipt above, with one
+  // difference that is the point: the viewback validator is CONTEXTUAL. It
+  // needs the record kind (which modes are available), whether the receipt
+  // that delivers the link is on, and which fields the form collects (so an
+  // `after_field` anchor is checked while the author is still here to fix it).
+  // Those three facts are all properties of THIS authoring act, which is why
+  // they travel as one context rather than as three separate checks a caller
+  // could run partially.
+  if (c.visitor_lookup !== undefined) {
+    const receiptEnabled =
+      typeof c.visitor_receipt === 'object'
+      && c.visitor_receipt !== null
+      && (c.visitor_receipt as { enabled?: unknown }).enabled === true;
+    const fieldTypes = new Map<string, string>();
+    const definition = c.form_definition as { fields?: unknown } | undefined;
+    if (definition !== undefined && Array.isArray(definition.fields)) {
+      for (const field of definition.fields) {
+        const name = (field as { name?: unknown } | null)?.name;
+        const type = (field as { type?: unknown } | null)?.type;
+        if (typeof name === 'string' && typeof type === 'string') fieldTypes.set(name, type);
+      }
+    }
+    const vlFailures = validateVisitorLookupConfig(c.visitor_lookup, {
+      // An intake form's records are `intake_form` records by construction —
+      // this validator IS the intake-form one. The `scheduling_link` arm is
+      // reached from `scheduling-link-config.ts`, which passes its own kind.
+      record_kind: 'intake_form',
+      receipt_enabled: receiptEnabled,
+      field_types: fieldTypes,
+      // § D7 — so `until_resolved` can be refused on a destination that never
+      // finishes. Read off the same config being validated.
+      ...(typeof (c.submission_processing_rule as { target_kind?: unknown } | undefined)
+        ?.target_kind === 'string'
+        ? {
+            target_kind: (c.submission_processing_rule as { target_kind: string }).target_kind,
+          }
+        : {}),
+    });
+    if (vlFailures.length > 0) {
+      failures.push({
+        code: 'visitor_lookup_invalid',
+        detail: `visitor_lookup: ${vlFailures[0]!.code} — ${vlFailures[0]!.detail}`,
       });
     }
   }

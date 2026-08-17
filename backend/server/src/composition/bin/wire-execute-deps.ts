@@ -87,6 +87,11 @@ import {
   type ToolOutputIngestInput,
 } from '../../cli-invocation-executor.js';
 import type { InboundFileCollection } from '../../collections/file/inbound-file-collection.js';
+import {
+  resolveRemoteFileBytes,
+  type RemoteFileReadDeps,
+} from '../../collections/file/remote-file-byte-resolver.js';
+import { parseRemoteFileRecordId } from '../../file-view-resolver.js';
 import type { UploadStagingRegistry } from '../../collections/file/upload-staging.js';
 import { composeNotificationBlock } from './wire-notification-block.js';
 import {
@@ -291,6 +296,20 @@ export interface ComposeExecuteDepsDeps {
    *  becomes `result.file_ref`. Absent (dbless / no-CAS harness) ⇒ an
    *  output_capture op fails closed in the executor. */
   inboundFileCollection?: InboundFileCollection;
+  /** D-241 P4 — the D-192 remote byte bundle, so the cli executor's
+   *  `input_materialize` reader can answer for a `file:remote:*` id (a File
+   *  Source mirror row) and not just a CAS blob.
+   *
+   *  ⛔ **This is what stood between a synced Dropbox / Box / Notion document
+   *  and a converter, and it was never a missing capability — the per-vendor
+   *  resolvers have shipped since D-192 and already serve three other read
+   *  channels.** The cli reader simply had one branch: CAS or refuse. A
+   *  converter wants BYTES on a temp path, not a CAS record, so routing a
+   *  remote id to `resolveRemoteFileBytes` is the whole fix.
+   *
+   *  Undefined ⇒ a remote id refuses exactly as it did before (the standalone
+   *  MCP boot composes no file-source stores). */
+  getRemoteFileReadDeps?: (() => RemoteFileReadDeps | undefined) | undefined;
   /** D-217 slice 2b-ii — staged plaintext for a chunked upload's egress. The
    *  engine stages once per walk and disposes in a `finally`; the connection
    *  adapter reads one range per APPEND against the same registry, addressed by
@@ -708,8 +727,38 @@ export const composeExecuteDeps = (
     : undefined;
   // SMB-finance slice 3 — read CAS bytes for a `file_ref` so the cli executor
   // can materialize a docling `source` arg to a temp file (`input_materialize`).
+  //
+  // D-241 P4 — …and read a MIRRORED vendor file's bytes for the same arg. A
+  // `file:remote:*` id is a File Source mirror row whose bytes live at the
+  // vendor; `resolveRemoteFileBytes` fetches them through the per-vendor
+  // resolver, enforcing `REMOTE_FILE_READ_MAX_BYTES` and returning the same
+  // `{ bytes, mime_type, filename }` shape (filename/mime falling back to the
+  // mirror `meta`, which is where the extension every converter dispatches on
+  // comes from). The two ids are disjoint by construction —
+  // `parseRemoteFileRecordId` returns null for a CAS record — so this routes
+  // rather than guesses.
+  //
+  // ⛔ SCOPED TO THE CLI READER ON PURPOSE. `compose-execution-context.ts`
+  // builds its OWN `readFileBytes` from the same collection for the D-216
+  // `bind.upload` egress path; that one stays CAS-only. Widening it would let a
+  // mirrored file from one vendor be uploaded to another, which is a different
+  // question from "can a converter read this" — and the chunked path already
+  // refuses mirrored files for its own reason (`upload-staging.ts:100`).
+  const remoteFileReadDeps = deps.getRemoteFileReadDeps;
   const readFileBytes = inboundFileCollection
-    ? (record_id: string) => inboundFileCollection.readBytes(record_id)
+    ? async (record_id: string) => {
+        if (parseRemoteFileRecordId(record_id) === null) {
+          return inboundFileCollection.readBytes(record_id);
+        }
+        const remote = remoteFileReadDeps?.();
+        if (!remote) {
+          throw new Error(
+            `cli input_materialize: '${record_id}' is a mirrored provider file and no remote byte reader is wired`,
+          );
+        }
+        const { bytes, mime_type, filename } = await resolveRemoteFileBytes(remote, record_id);
+        return { bytes, mime_type, filename };
+      }
     : undefined;
   const cliInvocationExecutor = createCliInvocationExecutor({
     inFlightRegistry,

@@ -70,6 +70,7 @@ const validEntry = (): MessengerVendorDeclaration => ({
   projection: { structured_tags: false, structured_mentions: false },
   auth: 'bot_token',
   roles: { notification: true, approval: true, messenger: true },
+  capability: 'inline' as const,
   health_probe: {
     url: 'https://test.invalid/me',
     method: 'GET',
@@ -97,7 +98,35 @@ describe('D-192 M1 — MessengerVendorDeclaration registry', () => {
       // deriving away. Contrast the `undeclared vendor` fixture below, which named
       // `whatsapp` and quietly became WRONG the day WhatsApp landed: a fixture
       // whose meaning is "a vendor we haven't built yet" has an expiry date.
-      expect(listMessengerVendors()).toEqual(['slack', 'telegram', 'whatsapp', 'discord']);
+      expect(listMessengerVendors()).toEqual([
+        'slack', 'telegram', 'whatsapp', 'discord', 'teams',
+      ]);
+    });
+
+    /** D-238 — Teams is the first vendor that is none of the things the other
+     *  four are, and each difference is load-bearing rather than incidental. A
+     *  regression on any one of them is silent: the wrong auth kind dies at the
+     *  top of the hour, the wrong capability throws only on a first ask, and the
+     *  wrong role opens an LLM-egress surface nobody asked for. */
+    it('grounds Teams as the first oauth / non-inline / poll-only transport', () => {
+      const teams = getMessengerVendorDeclaration('teams');
+      expect(teams).not.toBeNull();
+      // ⛔ oauth, not bot_token — a Graph delegated token expires hourly, so this
+      // vendor is only deliverable because the kind:'notification' refresher
+      // exists (§ 2a). The registry boot check enforces that pairing.
+      expect(teams!.auth).toBe('oauth');
+      // ⛔ Cannot render an ask inline: a Teams card action goes to a Bot
+      // Framework endpoint, and Graph polling returns messages, never
+      // interactions. `inline` here would throw at channel construction.
+      expect(teams!.capability).toBe('landing-page');
+      // ⛔ NOT because poll is too slow — that argument was tested and failed.
+      // The seat gates recipe TRIGGERS and LLM egress; see spec § 0.
+      expect(teams!.roles).toEqual({
+        notification: true, approval: true, messenger: false,
+      });
+      // Poll is the only mode Graph leaves available, and it is a real one.
+      expect(teams!.ingress.supported_modes).toEqual(['poll']);
+      expect(teams!.ingress.mode).toBe('poll');
     });
 
     it('grounds Slack in the live substrate (HMAC / signing_secret / string channel_id / profile_email)', () => {
@@ -548,23 +577,72 @@ describe('D-192 M1 — MessengerVendorDeclaration registry', () => {
       }
     });
 
-    it('diverges from resolveBearerAccessToken on oauth2_refresh — and THAT was the bug', () => {
-      // This one assertion IS the defect, in two lines. The health probe reads the
-      // credential through `resolveBearerAccessToken`, which happily hands back
-      // `current_access_token` — so an oauth2_refresh chat-transport row probed
-      // GREEN. The send path could not use it and dropped every message in silence.
-      // Green, ready, and mute. The two seams are SUPPOSED to disagree here, and
-      // the enroll gate is what makes the disagreement unreachable rather than fatal.
+    it('CONVERGES with resolveBearerAccessToken on oauth2_refresh — the bug is closed', () => {
+      // These two seams used to disagree here, and the disagreement WAS the
+      // defect: the health probe reads through `resolveBearerAccessToken`, which
+      // happily hands back `current_access_token`, so an oauth2_refresh chat-
+      // transport row probed GREEN while the send path could not use it and
+      // dropped every message in silence. Green, ready, and mute.
+      //
+      // D-238 § 2a closed it from the OTHER end. Rather than keeping the send
+      // path blind to a shape the probe called healthy, the missing half was
+      // built — a `kind: 'notification'` refresher — so the credential is
+      // genuinely deliverable and the probe's green is genuinely earned.
+      //
+      // ⚠ Agreement is therefore the FIX, not a regression. But it is only safe
+      // while something actually renews the token: if the refresher is ever
+      // removed or unwired from `createRemoteCredentialResolver`, this
+      // convergence becomes the original silent-death bug wearing a green suite.
+      // The guard against that is `d-238-remote-credential-refresh-seam.test.ts`,
+      // which pins that the resolver sends with the REFRESHED credential.
       expect(resolveBearerAccessToken(oauthRefresh)).toBe('looks-perfectly-healthy');
-      expect(resolveMessengerSendToken(oauthRefresh)).toBeUndefined();
+      expect(resolveMessengerSendToken(oauthRefresh)).toBe('looks-perfectly-healthy');
     });
 
-    it('is not wired for oauth — deliberately, and the map says so out loud', () => {
+    it('refuses notify-only paired with approval: true (D-238 § 2)', () => {
+      // ⛔ You cannot approve where you cannot render. The two facts are declared
+      // apart — capability here, roles beside it — and this is one of only two
+      // places both are in scope. Without it an ask fans out to a channel
+      // structurally unable to carry it: accepted, counted as delivered, never
+      // answerable. The sibling check runs at channel construction
+      // (`createNotificationBlock`), because a hand-built adapter never passes
+      // through this validator at all.
+      const issues = assertMessengerVendorDeclarationShape({
+        ...validEntry(),
+        capability: 'notify-only',
+        roles: { notification: true, approval: true, messenger: false },
+      });
+      expect(issues.join(' ')).toContain('cannot approve where you cannot render');
+    });
+
+    it('accepts notify-only when approval is correctly declined', () => {
+      const issues = assertMessengerVendorDeclarationShape({
+        ...validEntry(),
+        capability: 'notify-only',
+        roles: { notification: true, approval: false, messenger: false },
+      });
+      expect(issues).toEqual([]);
+    });
+
+    it('is wired for oauth — all three preconditions landed (D-238 § 2a)', () => {
       // Not an oversight to be "fixed" by adding 'oauth2_refresh' here. Wiring oauth
       // needs a notification-kind token refresher (both refreshers are hard-scoped
       // to kind: 'api') and an enroll card carrying the OAuth fields. Until then the
       // empty list is what keeps the boot check honest.
-      expect(MESSENGER_AUTH_KIND_CONNECTION_TYPES.oauth).toEqual([]);
+      //
+      // D-238 § 2a UPDATE (2026-08-15) — the REFRESHER now exists and is wired:
+      // `backend/server/src/messenger-notification-refresh.ts`, consulted by
+      // `createRemoteCredentialResolver` before the send-token read. Do not build
+      // it again. The remaining precondition is the ENROLL CARD carrying the OAuth
+      // fields — without it a user cannot reach the flow anyway, so flipping this
+      // list early would only widen what rpc accepts. When the card lands, this
+      // assertion and `d-238-remote-credential-refresh-seam.test.ts`'s last case
+      // are the two that should go red together, deliberately.
+      // ⛔ `oauth2_refresh` ONLY — never `bearer`. A bearer row would store a
+      // snapshot of a one-hour Graph token: enrolls, probes green, dies at the
+      // top of the hour. If this list ever grows a static shape, that is the
+      // regression, not a widening.
+      expect(MESSENGER_AUTH_KIND_CONNECTION_TYPES.oauth).toEqual(['oauth2_refresh']);
     });
   });
 

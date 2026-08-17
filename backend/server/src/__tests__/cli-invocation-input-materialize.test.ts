@@ -16,7 +16,19 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createCliInvocationExecutor } from '../cli-invocation-executor.js';
 
 const execPath = process.execPath;
-const tmpInDirs = (): string[] => readdirSync(tmpdir()).filter((n) => n.startsWith('recued-cli-in-'));
+
+/** ⛔ THIS SUITE OWNS ITS TEMP ROOT, and that is the whole point of the change.
+ *  These assertions used to read `os.tmpdir()` and compare the global
+ *  `recued-cli-in-*` set before and after — a claim about state this suite does
+ *  not own. Under `pool: 'threads'` any concurrently-running suite's in-flight
+ *  dir lands in one snapshot and not the other, so this file and
+ *  `cli-invocation-in-place-capture` RED EACH OTHER for reasons neither caused
+ *  (reproduced by running just those two). Injecting the root makes the claim
+ *  local: nothing else writes here, so "empty afterwards" is exact — and
+ *  STRONGER than the old form, which could not see a leaked EMPTY dir. */
+const TEMP_ROOT = mkdtempSync(join(tmpdir(), 'cli-materialize-root-'));
+const tmpInDirs = (): string[] =>
+  readdirSync(TEMP_ROOT).filter((n) => n.startsWith('recued-cli-in-'));
 
 const FILE_REF = `file:${'a'.repeat(32)}`;
 const FILE_REF_B = `file:${'b'.repeat(32)}`;
@@ -71,12 +83,12 @@ describe('cli_invocation input_materialize', () => {
   it('materializes a file_ref arg to a temp file the cli reads, then cleans up', async () => {
     const reads: string[] = [];
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       readFileBytes: async (record_id) => {
         reads.push(record_id);
         return { bytes: Buffer.from('FILE REF BYTES'), mime_type: 'application/pdf', filename: 'invoice.pdf' };
       },
     });
-    const before = tmpInDirs();
     const dest = newDest();
 
     await exec(call(copyBinding(), { source: FILE_REF, dest }));
@@ -85,19 +97,19 @@ describe('cli_invocation input_materialize', () => {
     // The cli read the materialized temp file and copied its bytes out.
     expect(readFileSync(dest).toString('utf8')).toBe('FILE REF BYTES');
     // the input temp dir is removed in a finally
-    expect(tmpInDirs()).toEqual(before);
+    expect(tmpInDirs()).toEqual([]);
   });
 
   it('materializes a content-pinned CAS ref only when the exact bytes match', async () => {
     const bytes = Buffer.from('PINNED FILE REF BYTES');
     const reads: string[] = [];
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       readFileBytes: async (record_id) => {
         reads.push(record_id);
         return { bytes, mime_type: 'application/pdf', filename: 'invoice.pdf' };
       },
     });
-    const before = tmpInDirs();
     const dest = newDest();
 
     await exec(call(copyBinding(), {
@@ -111,12 +123,13 @@ describe('cli_invocation input_materialize', () => {
 
     expect(reads).toEqual([FILE_REF]);
     expect(readFileSync(dest)).toEqual(bytes);
-    expect(tmpInDirs()).toEqual(before);
+    expect(tmpInDirs()).toEqual([]);
   });
 
   it('refuses content-pin drift before spawning the cli', async () => {
     const reads: string[] = [];
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       readFileBytes: async (record_id) => {
         reads.push(record_id);
         return {
@@ -126,7 +139,6 @@ describe('cli_invocation input_materialize', () => {
         };
       },
     });
-    const before = tmpInDirs();
     const dest = newDest();
 
     await expect(exec(call(copyBinding(), {
@@ -140,18 +152,18 @@ describe('cli_invocation input_materialize', () => {
 
     expect(reads).toEqual([FILE_REF]);
     expect(existsSync(dest)).toBe(false);
-    expect(tmpInDirs()).toEqual(before);
+    expect(tmpInDirs()).toEqual([]);
   });
 
   it('refuses a non-closed content-pin carrier before reading or spawning', async () => {
     let readCalled = false;
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       readFileBytes: async () => {
         readCalled = true;
         return { bytes: Buffer.from('x'), mime_type: 'application/pdf', filename: 'x.pdf' };
       },
     });
-    const before = tmpInDirs();
     const dest = newDest();
 
     await expect(exec(call(copyBinding(), {
@@ -166,12 +178,13 @@ describe('cli_invocation input_materialize', () => {
 
     expect(readCalled).toBe(false);
     expect(existsSync(dest)).toBe(false);
-    expect(tmpInDirs()).toEqual(before);
+    expect(tmpInDirs()).toEqual([]);
   });
 
   it('passes a NON-file_ref source through unchanged (manual local-path lane — no materialize)', async () => {
     let readCalled = false;
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       readFileBytes: async () => {
         readCalled = true;
         return { bytes: Buffer.from('x'), mime_type: 'text/plain', filename: 'x' };
@@ -183,15 +196,15 @@ describe('cli_invocation input_materialize', () => {
       exit_code_handling: 'zero_is_success' as const,
       input_materialize: { kind: 'file_ref' as const, arg: 'source' },
     };
-    const before = tmpInDirs();
     await exec(call(noopBinding, { source: '/local/path/to/invoice.pdf' }));
     expect(readCalled).toBe(false);
-    expect(tmpInDirs()).toEqual(before); // no input temp dir created
+    expect(tmpInDirs()).toEqual([]); // no input temp dir created
   });
 
   it('D-189 materializes a file_ref array in order and expands it as argv elements', async () => {
     const reads: string[] = [];
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       readFileBytes: async (record_id) => {
         reads.push(record_id);
         return record_id === FILE_REF
@@ -199,25 +212,24 @@ describe('cli_invocation input_materialize', () => {
           : { bytes: Buffer.from('RIGHT'), mime_type: 'text/plain', filename: 'right.txt' };
       },
     });
-    const before = tmpInDirs();
     const dest = newDest();
 
     await exec(call(concatArrayBinding(), { sources: [FILE_REF, FILE_REF_B], dest }));
 
     expect(reads).toEqual([FILE_REF, FILE_REF_B]);
     expect(readFileSync(dest).toString('utf8')).toBe('LEFT|RIGHT');
-    expect(tmpInDirs()).toEqual(before);
+    expect(tmpInDirs()).toEqual([]);
   });
 
   it('D-189 enforces file_ref array item bounds at runtime', async () => {
-    const exec = createCliInvocationExecutor({});
+    const exec = createCliInvocationExecutor({ tempRoot: TEMP_ROOT });
 
     await expect(exec(call(concatArrayBinding(), { sources: ['/tmp/one.txt'], dest: newDest() })))
       .rejects.toThrow(/below min_items 2/);
   });
 
   it('fails closed when a file_ref must be materialized but no file reader is wired', async () => {
-    const exec = createCliInvocationExecutor({}); // no readFileBytes
+    const exec = createCliInvocationExecutor({ tempRoot: TEMP_ROOT }); // no readFileBytes
     await expect(exec(call(copyBinding(), { source: FILE_REF, dest: newDest() }))).rejects.toThrow(/no file reader is wired/);
   });
 
@@ -230,6 +242,7 @@ describe('cli_invocation input_materialize', () => {
   // but no `data-file-read` exfiltrates content via `{{step.<id>.stderr}}`.
   it('suppresses stderr from the op-step value for an input_materialize op (no content echo)', async () => {
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       readFileBytes: async () => ({
         bytes: Buffer.from('TOP SECRET FILE CONTENT'),
         mime_type: 'application/pdf',
@@ -256,7 +269,7 @@ describe('cli_invocation input_materialize', () => {
   });
 
   it('still surfaces stderr for a NON-materialize op (suppression is scoped, not blanket)', async () => {
-    const exec = createCliInvocationExecutor({});
+    const exec = createCliInvocationExecutor({ tempRoot: TEMP_ROOT });
     const binding = {
       kind: 'cli_invocation' as const,
       argv_template: [execPath, '-e', `process.stderr.write('diagnostic line');`],
@@ -268,6 +281,7 @@ describe('cli_invocation input_materialize', () => {
 
   it('refuses a detached + input_materialize op (a detached log would re-open the stderr channel)', async () => {
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       readFileBytes: async () => ({ bytes: Buffer.from('x'), mime_type: 'text/plain', filename: 'x' }),
     });
     const binding = {

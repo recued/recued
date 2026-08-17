@@ -441,6 +441,32 @@ const validateCliOutputCapture = (
   if (row.bind.shape !== 'ref') {
     add('error', 'composition_cli_output_capture_shape', `${path}.bind.shape`, "an output_capture op must declare shape: 'ref' — a value shape would capture stdout and leak the file content into op-step values; the file content flows only via result.file_ref");
   }
+  // STDOUT capture (`from_stdout`) — the tool PRINTS its output and offers no
+  // output path at all, so there is neither a `dir_arg` to bind nor an edited
+  // input to capture. The engine streams the child's stdout to a path it chose
+  // and ingests that, so the posture matches `dir_arg` exactly: the bytes come
+  // back as a Gateway-gated `file_ref` and the path is never handed to the
+  // recipe. (A DETACHED job also redirects stdout to a file and is refused
+  // alongside `input_materialize` — because it RETURNS its `log_path`. Capturing
+  // is safe; handing back the path is not.)
+  const fromStdout = capture.from_stdout;
+  if (fromStdout !== undefined) {
+    if (fromStdout !== true) {
+      add('error', 'composition_cli_output_capture_stdout_flag', `${capturePath}.from_stdout`, 'output_capture.from_stdout must be literal true when present');
+      return;
+    }
+    if (capture.dir_arg !== undefined || capture.from_input_arg !== undefined) {
+      add('error', 'composition_cli_output_capture_stdout_exclusive', capturePath, 'output_capture declares from_stdout alongside dir_arg or from_input_arg — a stdout capture has no output dir and no edited input; declare exactly one arm');
+      return;
+    }
+    // The tool named nothing (it printed), so the op must — otherwise the
+    // ingested record carries no extension and every downstream converter that
+    // dispatches on one silently fails to classify it.
+    if (typeof capture.filename !== 'string' || capture.filename.length === 0) {
+      add('error', 'composition_cli_output_capture_stdout_filename', `${capturePath}.filename`, 'output_capture.filename must be a non-empty string for a stdout capture — the tool printed, so it named nothing, and a record with no extension cannot be classified downstream');
+    }
+    return;
+  }
   // IN-PLACE capture (`from_input_arg`) — the tool edits its materialized input
   // and offers no output path, so there is no `dir_arg` to bind. Mutually
   // exclusive with `dir_arg`: an op declaring both is ambiguous about which file

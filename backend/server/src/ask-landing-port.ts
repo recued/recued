@@ -47,6 +47,8 @@ import {
   ASK_LANDING_RESPONSE_HEADERS,
   parseAskLandingSubmission,
   renderAskLandingHtml,
+  resolveAskLandingVia,
+  type ChannelName,
   type AskLandingDetail,
   type InboundReply,
   type PendingAsk,
@@ -163,6 +165,18 @@ const readBodyCapped = (
     req.on('error', () => done({ ok: false }));
     req.on('close', () => done({ ok: false }));
   });
+
+/** Pull the `via` query value out of a request URL, or null.
+ *
+ *  Hand-parsed rather than `new URL(...)` because the handler only ever sees a
+ *  path-relative url; the value is validated downstream by
+ *  `resolveAskLandingVia`, so this only has to find it. */
+export const parseAskLandingViaFromUrl = (url: string | undefined): string | null => {
+  const q = (url ?? '').indexOf('?');
+  if (q < 0) return null;
+  const params = new URLSearchParams((url ?? '').slice(q + 1));
+  return params.get('via');
+};
 
 /** Pull the `ask_id` out of a `/ask/<ask_id>` request path (query stripped).
  *  Returns null for any shape that is not exactly one path segment under the
@@ -303,6 +317,11 @@ const respondWithAskPage = async (
   verification_phrase: string | undefined,
   now: number,
   details_error?: string,
+  /** D-238 — the channel whose message carried this link, read off the request
+   *  query. Ridden into the form so the POST can attribute the answer to it
+   *  instead of the `email` default that made every Teams approval audit as an
+   *  email reply. */
+  via?: ChannelName,
 ): Promise<ReceptionAccessOutcome> => {
   if (ask === null) {
     writeHtml(res, UNAVAILABLE_HTML, 404);
@@ -335,6 +354,7 @@ const respondWithAskPage = async (
       ...(details_error !== undefined ? { details_error } : {}),
       form_nonce,
       action: `${ASK_BASE}/${encodeURIComponent(ask_id)}`,
+      ...(via !== undefined ? { via } : {}),
     });
     writeHtml(res, html, 200);
     return 'ok';
@@ -501,6 +521,12 @@ export const createAskLandingPortHandler = (
           ask,
           verification_phrase,
           requestNow,
+          undefined,
+          // D-238 — the originating channel, stamped into the link at fan-out.
+          // Untrusted (the owner could edit the URL), so it is validated against
+          // the closed channel set and falls back to `email` rather than being
+          // written through into a durable audit row.
+          resolveAskLandingVia(parseAskLandingViaFromUrl(req.url)),
         );
         if (outcome === 'expired') action = 'expired';
         if (outcome === 'invalid_token') action = 'invalid_token';

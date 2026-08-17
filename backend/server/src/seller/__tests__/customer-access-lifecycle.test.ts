@@ -247,7 +247,6 @@ describe('seller customer access lifecycle', () => {
     expect(result.issued_claim).toEqual(expect.objectContaining({
       claim_id: expect.stringMatching(/^seller_claim_/u),
       claim_secret: expect.stringMatching(/^recued_claim_/u),
-      expires_at: NOW + 60 * 60 * 1000,
     }));
     expect(result.customer).toEqual(expect.objectContaining({
       customer_id: 'seller_customer_1',
@@ -287,7 +286,6 @@ describe('seller customer access lifecycle', () => {
     expect(token).toEqual(expect.objectContaining({
       contract_id: 'ct_customer_1',
       peer_handle: 'seller:stripe:door_mcp:cus_1',
-      expires_at: 0,
       revoked_at: null,
       concurrency_tier: 3,
       chat_mode: null,
@@ -490,7 +488,6 @@ describe('seller customer access lifecycle', () => {
         peer_handle: 'seller:stripe:door_mcp:cus_1:second',
         grants: { 'core.stale': true },
         concurrency_tier: 3,
-        expires_at: 0,
         chat_mode: null,
         contract_id: issued.customer.contract_id,
       },
@@ -675,7 +672,11 @@ describe('seller customer access lifecycle', () => {
     })).toThrow(/cannot modify closed customer/);
   });
 
-  it('reissues a fresh customer token against the existing customer contract', () => {
+  /** ⛔⛔ ROTATION MINTS A FRESH CONTRACT — it used to reuse the customer's.
+   *  Reuse made contract:token 1:many, which left per-token `revoked_at` as the
+   *  only way to kill the OLD bearer without killing the contract the NEW one
+   *  needs. 1:1 is what lets revocation live on the contract alone. */
+  it('reissues a fresh customer token against a ROTATED customer contract', () => {
     putTemplate('ct_template_basic', {
       scope: { operation_ids: ['core.current'] },
       door_types: ['mcp'],
@@ -729,7 +730,6 @@ describe('seller customer access lifecycle', () => {
       door_id: 'door_mcp',
       email: 'buyer@example.com',
       tier_id: 'tier_basic',
-      contract_id: 'ct_customer_1',
       inbound_token_id: reissued.issued_token.record.token_id,
       mcp_token_id: reissued.issued_token.record.token_id,
       source_status: 'past_due',
@@ -739,18 +739,25 @@ describe('seller customer access lifecycle', () => {
       claim_email_marker: null,
       access_state: 'grace',
     }));
-    expect(inboundTokenStore.getTokenById(oldTokenId)).toEqual(expect.objectContaining({
-      revoked_at: NOW + 25_000,
-      contract_id: 'ct_customer_1',
-    }));
+    // ⛔ The customer's contract MOVED, and the old one is dead. That — not a
+    // per-token stamp — is what kills the old bearer now.
+    expect(reissued.customer.contract_id).not.toBe('ct_customer_1');
+    expect(customerDefinition('ct_customer_1').revoked_at).toBeTruthy();
+    // …and the old token still points at that dead contract, which is how the
+    // transport denies it (`boundContractActive` collapses the allowlist).
+    expect(inboundTokenStore.getTokenById(oldTokenId)?.contract_id).toBe('ct_customer_1');
+    // ⛔ AND it is still revoked per token — required by the partial unique
+    // index `(peer_handle) WHERE revoked_at IS NULL`, which is what enforces
+    // "one active token per peer". Without it the replacement cannot be issued.
+    expect(inboundTokenStore.getTokenById(oldTokenId)?.revoked_at).toBe(NOW + 25_000);
     expect(inboundTokenStore.verifyBearer({ bearer: oldBearer, now })).toBeNull();
 
     const newToken = inboundTokenStore.getTokenById(reissued.issued_token.record.token_id);
     expect(newToken).toEqual(expect.objectContaining({
+      // ⛔ The ROTATED contract — the replacement never shares the retired one.
+      contract_id: reissued.customer.contract_id,
       label: 'Basic customer token',
       peer_handle: 'seller:stripe:door_mcp:cus_1',
-      contract_id: 'ct_customer_1',
-      expires_at: 0,
       revoked_at: null,
       grants: {
         'core.current': true,
@@ -760,7 +767,7 @@ describe('seller customer access lifecycle', () => {
     expect(inboundTokenStore.verifyBearer({
       bearer: reissued.issued_token.bearer_plaintext,
       now,
-    })?.contract_id).toBe('ct_customer_1');
+    })?.contract_id).toBe(reissued.customer.contract_id);
     expect(sellerClaimStore.consume(
       reissued.issued_claim!.claim_secret,
       now,
@@ -977,7 +984,6 @@ describe('seller customer access lifecycle', () => {
         peer_handle: 'seller:stripe:door_mcp:cus_1:second',
         grants: { 'core.second': true },
         concurrency_tier: 3,
-        expires_at: 0,
         chat_mode: null,
         contract_id: issued.customer.contract_id,
       },

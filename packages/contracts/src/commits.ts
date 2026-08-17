@@ -732,7 +732,68 @@ export interface ContractSnapshot {
    *  raising the ceiling turns `ask` into `admit`, skipping the taint check —
    *  a public form must never be raisable). */
   max_risk_without_approval?: TrustCeiling;
+  /** The ops this door's owner CONFIRMED at bind, resolved at snapshot-build
+   *  time — present exactly when the door carries
+   *  `DoorExecutionPolicy.standing_closure`.
+   *
+   *  A gate reading this admits an `ask` verdict for an op NAMED HERE, at or
+   *  below `write`, instead of raising. Absent (every mcp / webhook snapshot,
+   *  and every reception door without the opt-in) ⇒ the field is never read and
+   *  behaviour is unchanged.
+   *
+   *  ⛔ IT IS AN AUTHORITY FIELD, so it is IN `contract_version`. A closure that
+   *  moved without moving the version would make an audit row's "this is the
+   *  exact policy that was in force" untrue. */
+  standing_closure_operation_ids?: ReadonlyArray<string>;
 }
+
+/** Tiers a standing closure may admit. ⛔ `destructive` and `admin` are absent
+ *  DELIBERATELY: the closure is an approval for the ordinary work a door does,
+ *  never for deleting or for administering. The same bound the contract-less
+ *  `admin` ceiling already keeps ("only destructive asks") — kept explicitly
+ *  here rather than inherited, so widening it is a visible edit. */
+export const STANDING_CLOSURE_RISK_TIERS: ReadonlyArray<string> =
+  Object.freeze(['read', 'write']);
+
+/** D-207 follow-on — does this dispatch's door admit `operation_id` on its
+ *  owner-confirmed standing closure?
+ *
+ *  ⛔⛔ ONE PREDICATE, TWO GATES. The catalog gate (`runCatalogOperation`) and
+ *  the commit Gateway both consult it, because a door recipe dispatches through
+ *  BOTH — a Records/API op through the catalog, a simple-form kernel op like
+ *  `core.mail.send` through the commit gate. Two copies of this rule is how one
+ *  of them would keep asking, or worse, keep admitting after the other stopped.
+ *
+ *  Fail-closed on every axis: no snapshot, no closure field, an op not named, a
+ *  tier above `write`, or a snapshot for some OTHER contract than the one this
+ *  dispatch runs under ⇒ `false`, and the gate raises exactly as before. */
+export const standingClosureAdmits = (
+  snapshot: ContractSnapshot | undefined,
+  // ⛔ THE REAL `ExecutionSource`, not a structural `{ contract_id?: string }`.
+  // That shape is a TS *weak type* — every property optional — so a union member
+  // with no overlap (`{channel:'messenger', actor:'user_self', …}`) is rejected
+  // at the call site, which is how this signature failed to compile at all.
+  // Naming the union also stops a caller handing it an arbitrary object that
+  // happens to carry a `contract_id`.
+  source: ExecutionSource | undefined,
+  operation_id: string | undefined,
+  risk_tier: string | undefined,
+): boolean => {
+  if (snapshot === undefined || operation_id === undefined) return false;
+  const closure = snapshot.standing_closure_operation_ids;
+  if (closure === undefined) return false;
+  if (risk_tier === undefined || !STANDING_CLOSURE_RISK_TIERS.includes(risk_tier)) {
+    return false;
+  }
+  // ⛔ The snapshot must be THIS dispatch's own door — the same contract_id
+  // match `authoredWebhookDoorCeiling` insists on, and for the same reason: a
+  // snapshot resolved for another contract must never authorize this call.
+  // Read through `executionSourceContractId`, the one accessor that already
+  // knows a self-restricted `user_self` carries a contract too.
+  const contractId = source === undefined ? undefined : executionSourceContractId(source);
+  if (typeof contractId !== 'string' || contractId !== snapshot.contract_id) return false;
+  return closure.includes(operation_id);
+};
 
 /** Completeness pin for the snapshot ceiling vocabulary. A `Record` keyed on
  *  the FULL `TrustCeiling` union: a value added to (or dropped from) the union

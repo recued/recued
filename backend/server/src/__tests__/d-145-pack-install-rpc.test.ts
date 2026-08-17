@@ -287,7 +287,6 @@ describe('handlePacksInstall — happy path', () => {
         peer_handle: 'customer:recipe',
         grants: { 'core.existing': true },
         concurrency_tier: 3,
-        expires_at: 0,
         chat_mode: null,
         contract_id: customerId,
       },

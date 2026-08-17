@@ -219,9 +219,6 @@ export interface ChatInboundTokenDetailModel {
   active: boolean;
   /** Wall-clock when this token was issued. */
   created_at: number;
-  /** Wall-clock when the token expires. `0` = never expires (substrate
-   *  sentinel; renderer paints "Does not expire"). */
-  expires_at: number;
   /** Wall-clock when revoked. `null` = active. Renderer paints the
    *  banner "Revoked at <date>" when set. */
   revoked_at: number | null;
@@ -255,7 +252,6 @@ export interface ChatInboundTokenTableRow {
   peer_handle?: string;
   active: boolean;
   created_at: number;
-  expires_at: number;
   revoked_at: number | null;
   concurrency_tier: McpInboundConcurrencyTier;
   /** Pre-counted "N tools allowed" stat the table column renders
@@ -452,7 +448,6 @@ export const buildChatInboundTokenDetailModel = (args: {
     label: token.label,
     active: isMcpInboundTokenActive(token, now),
     created_at: token.created_at,
-    expires_at: token.expires_at,
     revoked_at: token.revoked_at,
     updated_at: token.updated_at,
     concurrency_tier: token.concurrency_tier,
@@ -487,8 +482,7 @@ export const buildChatInboundTokenTableRows = (args: {
       label: token.label,
       active: isMcpInboundTokenActive(token, now),
       created_at: token.created_at,
-      expires_at: token.expires_at,
-      revoked_at: token.revoked_at,
+        revoked_at: token.revoked_at,
       concurrency_tier: token.concurrency_tier,
       granted_count,
       catalog_count,
@@ -574,11 +568,15 @@ export const buildChatInboundTokenConcurrencyOptions = (): ReadonlyArray<{
 export interface ChatInboundTokenIssuanceDefaults {
   grants: Record<string, boolean>;
   concurrency_tier: McpInboundConcurrencyTier;
-  /** `now + MCP_INBOUND_TOKEN_DEFAULT_EXPIRY_MS` per spec § A.9 ("default
-   *  1 year, configurable; safety net against abandoned tokens"). The
-   *  caller is expected to pass `Date.now()` for `now` — the substrate
-   *  doesn't reach for the wall-clock so the helper stays pure. */
-  expires_at: number;
+  /** § A.9's *"default 1 year, configurable; safety net against abandoned
+   *  tokens"* — now expressed as a CONTRACT limit, because the token no longer
+   *  has a lifetime of its own.
+   *
+   *  ⚠ The shipped panel does not call this helper (it issues with expiry as a
+   *  D-171 opt-in via the Advanced toggles), so this is the spec's default
+   *  preserved rather than live behaviour. Translated instead of deleted so the
+   *  safety net has a home if it is ever wired. */
+  contract_limits: { readonly expiry_at: number };
   /** Default `null` per spec — Bob explicitly opts in to chat-mode per
    *  token. */
   chat_mode: McpInboundTokenChatMode;
@@ -592,7 +590,7 @@ export const buildChatInboundTokenIssuanceDefaults = (args: {
   // Spec § A.9 default ladder: 3 / 5 / 10 — `5` ("Balanced") is the
   // implicit middle / typical-trust default.
   concurrency_tier: 5,
-  expires_at: args.now + MCP_INBOUND_TOKEN_DEFAULT_EXPIRY_MS,
+  contract_limits: { expiry_at: args.now + MCP_INBOUND_TOKEN_DEFAULT_EXPIRY_MS },
   chat_mode: null,
 });
 

@@ -1432,7 +1432,10 @@ const tokenAuthorityKey = (token: McpInboundTokenRecord): string => JSON.stringi
   bearer_hash: token.bearer_hash,
   contract_id: token.contract_id,
   peer_handle: token.peer_handle,
-  expires_at: token.expires_at,
+  // ⚠ No `expires_at` — the token has none. Expiry is the CONTRACT's, and the
+  // mid-flight guard re-runs the whole `authorize`, which re-checks
+  // `isContractLive` (:1126). So a contract dying between admission and
+  // provider work still aborts with 403; it just aborts there rather than here.
   revoked_at: token.revoked_at,
   grants: Object.fromEntries(
     Object.entries(token.grants).sort(([left], [right]) => left.localeCompare(right)),

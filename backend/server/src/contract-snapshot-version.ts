@@ -24,6 +24,11 @@ export type ContractSnapshotAuthority = Pick<
   | 'approval_required'
   | 'scope_restrictions'
   | 'max_risk_without_approval'
+  // ⛔ THIS `Pick` IS THE DECLARATION OF WHAT COUNTS AS AUTHORITY, so a field
+  // hashed below but missing here is a compile error, not a silent omission.
+  // ⚠ vitest stayed green on the missing key — the runtime spread works either
+  // way; only `tsc` sees it. Same shape as the recorded `npm run ci` scar.
+  | 'standing_closure_operation_ids'
 >;
 
 export type ContractSnapshotResolution = Omit<
@@ -47,6 +52,14 @@ export const deriveContractSnapshotVersion = (
     approval_required: canonicalStringSet(authority.approval_required),
     scope_restrictions: canonicalStringSet(authority.scope_restrictions),
     max_risk_without_approval: authority.max_risk_without_approval ?? null,
+    // ⛔⛔ IN THE DIGEST, NOT BESIDE IT. The standing closure IS authority — it
+    // decides which ops admit without asking. Two doors whose closures differ
+    // but whose versions matched would make every audit row claiming "this is
+    // the exact policy that was in force" untrue for one of them.
+    standing_closure_operation_ids:
+      authority.standing_closure_operation_ids === undefined
+        ? null
+        : canonicalStringSet(authority.standing_closure_operation_ids),
   });
   const digest = createHash('sha256').update(canonical, 'utf8').digest('hex');
   return `${CONTRACT_SNAPSHOT_VERSION_SCHEME}:${digest}`;
@@ -66,6 +79,12 @@ export const buildVersionedContractSnapshot = (
     ...(input.max_risk_without_approval !== undefined
       ? { max_risk_without_approval: input.max_risk_without_approval }
       : {}),
+    ...(input.standing_closure_operation_ids === undefined
+      ? {}
+      : {
+          standing_closure_operation_ids:
+            Object.freeze([...new Set(input.standing_closure_operation_ids)]),
+        }),
   };
 
   return Object.freeze({
@@ -78,5 +97,8 @@ export const buildVersionedContractSnapshot = (
     ...(authority.max_risk_without_approval !== undefined
       ? { max_risk_without_approval: authority.max_risk_without_approval }
       : {}),
+    ...(authority.standing_closure_operation_ids === undefined
+      ? {}
+      : { standing_closure_operation_ids: authority.standing_closure_operation_ids }),
   });
 };

@@ -376,6 +376,13 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
     db,
     annotationStore,
     enrichmentStore,
+    // D-239 — the standalone stdio MCP profile composes no cascade engine
+    // (it registers mail READ-ONLY — see `mcp-readonly-mail-collections.ts`,
+    // which never opens a provider socket), so there is no write-back to
+    // cascade for. Explicit `undefined` rather than an omission: this
+    // profile's divergences from the serve path are the kind that go stale
+    // silently, and a named field is one a reader can question.
+    enrichmentCascade: undefined,
     // D-187 AMENDMENT — the per-(bound contract) read-grant resolver for the
     // recipe-channel dispatchers (wraps this MCP boot path's local contract store;
     // gates to standing policy contracts).

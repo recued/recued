@@ -89,9 +89,22 @@ describe('D-192 CORE #6 — a chat transport may only enroll a credential it can
   // Iterates the LIVE registry, so a newly declared vendor is covered here with
   // zero edits to this file — the same posture as the seam-10 lock test.
   describe.each(MESSENGER_VENDOR_SLUGS.map((v) => [v] as const))('%s', (vendor) => {
-    it('rejects oauth2_refresh — the shape that would probe green and never deliver', async () => {
-      await expect(enroll(vendor, oauthRefresh)).rejects.toThrow(RpcError);
-      await expect(enroll(vendor, oauthRefresh)).rejects.toThrow(/auth\.type 'bearer'/);
+    // D-238 — the deliverable shape is now PER VENDOR, not universally `bearer`.
+    // Teams is `auth: 'oauth'` (a Graph delegated token expires hourly), so for it
+    // `oauth2_refresh` is the good shape and a static `bearer` is the one that
+    // would probe green and die at the top of the hour. Derived from the same map
+    // the enroll gate reads, so a future vendor is covered here with no edit —
+    // hard-spelling `bearer` was what made this file wrong the day Teams landed.
+    const deliverable: ConnectionAuth = MESSENGER_AUTH_KIND_CONNECTION_TYPES[
+      getMessengerVendorDeclaration(vendor)!.auth
+    ].includes('bearer')
+      ? { type: 'bearer', token: 'xoxb-real' }
+      : oauthRefresh;
+    const undeliverable: ConnectionAuth =
+      deliverable.type === 'bearer' ? oauthRefresh : { type: 'bearer', token: 'xoxb-real' };
+
+    it('rejects the shape that would probe green and never deliver', async () => {
+      await expect(enroll(vendor, undeliverable)).rejects.toThrow(RpcError);
       // Fail loud means fail BEFORE the row exists — a persisted row would still
       // be green, ready and mute no matter how good the error message was.
       expect(store.get('notification', vendor)).toBeNull();
@@ -102,20 +115,20 @@ describe('D-192 CORE #6 — a chat transport may only enroll a credential it can
       expect(store.get('notification', vendor)).toBeNull();
     });
 
-    it('accepts the bearer bot token it actually sends with', async () => {
-      await expect(enroll(vendor, { type: 'bearer', token: 'xoxb-real' })).resolves.toBeDefined();
+    it('accepts the credential shape it actually sends with', async () => {
+      await expect(enroll(vendor, deliverable)).resolves.toBeDefined();
       expect(store.get('notification', vendor)).not.toBeNull();
     });
 
-    it('closes the update back door — a bearer row cannot be patched to an undeliverable shape', async () => {
-      await enroll(vendor, { type: 'bearer', token: 'xoxb-real' });
+    it('closes the update back door — a good row cannot be patched to an undeliverable shape', async () => {
+      await enroll(vendor, deliverable);
       await expect(
         handleConnectionUpdate(
           { store },
-          { name: vendor, kind: 'notification', patch: { auth: oauthRefresh } },
+          { name: vendor, kind: 'notification', patch: { auth: undeliverable } },
         ),
       ).rejects.toThrow(RpcError);
-      // And the row is untouched — still the bearer it was enrolled with.
+      // And the row is untouched — still what it was enrolled with.
       expect(store.get('notification', vendor)).not.toBeNull();
     });
 

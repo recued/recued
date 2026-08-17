@@ -34,7 +34,11 @@ import { CORE_CAPABILITY_SLUGS, stripCorePrefix } from '../core-pack.js';
  *  `customer` +1 (`core.customer.status`, D-196 S2b). */
 const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   ai: 11,
-  mail: 9, // D-210 §7 — + core.mail.notify-booking-visitor
+  // D-210 §7 — + core.mail.notify-booking-visitor (8 → 9).
+  // D-239 — + the four write-back ops (9 → 13): mark / flag / move / delete.
+  // `data.mail` mutates an EXISTING message for the first time here; the prior
+  // nine were reads plus the two send-side verbs, which only ever created.
+  mail: 13,
   contact: 4,
   customer: 1,
   notification: 2,
@@ -65,7 +69,8 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   webhook: 1,
   // D-232 § 23 — +1 for `core.storage.exchange.status`, the asker's own
   // "what happened to my letter" read.
-  storage: 19,
+  // 19 → 23 on 2026-08-16: D-244 csv.filter/columns/stats, D-245 file.put-ref.
+  storage: 23,
   schedule: 1,
   // D-207 §4.5 — 14 offer/order + the 4 D-196 `customer-access` ops merged in
   // from their retired top-level domain (`core.seller.customer-access.*`), + the
@@ -216,10 +221,17 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.dom.read|dom|dom-read|read',
       'core.dom.write|dom|dom-write|write',
       'core.mail.body-read|mail|mail-body-read|read',
+      // D-239 — the write-back four. `delete` is the only `destructive` op in
+      // the mail domain; mark / flag / move are internal `write`s that stay
+      // silent at the owner ceiling and surface under a contract.
+      'core.mail.delete|mail|mail-delete|destructive',
       'core.mail.email.get|mail|email-get|read',
       'core.mail.email.list|mail|email-list|read',
       'core.mail.email.search|mail|email-search|read',
+      'core.mail.flag|mail|mail-flag|write',
       'core.mail.get|mail|mail-get|read',
+      'core.mail.mark|mail|mail-mark|write',
+      'core.mail.move|mail|mail-move|write',
       'core.mail.notify-booking-visitor|mail|notify-booking-visitor|write',
       'core.mail.send|mail|mail-send|write',
       'core.mail.sent.reconcile|mail|mail-sent-reconcile|write',
@@ -276,6 +288,12 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.seller.order.transition|seller|seller-order-transition|write',
       'core.seller.tier.get|seller|seller-tier-get|read',
       'core.seller.tier.list|seller|seller-tier-list|read',
+      // D-244 — CSV filtering as a KERNEL op rather than a CLI pack: csvkit is a
+      // Python install an owner may not have, and a spreadsheet used as a customer
+      // list is too common to have its search silently absent on a fresh box.
+      'core.storage.csv.columns|storage|csv-columns|read',
+      'core.storage.csv.filter|storage|csv-filter|read',
+      'core.storage.csv.stats|storage|csv-stats|read',
       'core.storage.data-file-read|storage|data-file-read|read',
       'core.storage.exchange.status|storage|exchange-status|read',
       'core.storage.file.delete|storage|file-delete|destructive',
@@ -283,6 +301,8 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.storage.file.list|storage|file-list|read',
       'core.storage.file.move|storage|file-move|destructive',
       'core.storage.file.persist|storage|file-persist|write',
+      // D-245 — the ref → named-record writer.
+      'core.storage.file.put-ref|storage|file-put-ref|write',
       'core.storage.file.read|storage|file-read|read',
       'core.storage.file.render-markdown-template|storage|file-render-markdown-template|write',
       'core.storage.file.set-scan-status|storage|file-set-scan-status|write',

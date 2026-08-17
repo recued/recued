@@ -213,6 +213,7 @@ describe('D-164 P7 backend mail from-count — sender-only over a real MailColle
     kind: 'imap',
     slug: 'work',
     sendCapable: false,
+    mutationCapable: false,
     accountEmail: '',
     async connect() { /* no-op */ },
     async initialScan() { /* no-op */ },

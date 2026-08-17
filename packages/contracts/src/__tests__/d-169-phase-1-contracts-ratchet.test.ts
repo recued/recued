@@ -110,6 +110,7 @@ describe('D-169 P1 contracts ratchet', () => {
           telegram: { notification: false, approval: false, messenger: false },
           whatsapp: { notification: false, approval: false, messenger: false },
           discord: { notification: false, approval: false, messenger: false },
+          teams: { notification: false, approval: false, messenger: false },
           email: { notification: false, approval: false, messenger: false },
           bridges: { 'ct-1': { notification: true, approval: false } },
         },
@@ -141,6 +142,7 @@ describe('D-169 P1 contracts ratchet', () => {
         telegram: { notification: false, approval: false, messenger: false },
         whatsapp: { notification: false, approval: false, messenger: false },
         discord: { notification: false, approval: false, messenger: false },
+        teams: { notification: false, approval: false, messenger: false },
         email: { notification: false, approval: false, messenger: false },
       };
       expect(legacy.bridges).toBeUndefined();
@@ -153,6 +155,7 @@ describe('D-169 P1 contracts ratchet', () => {
         telegram: { notification: false, approval: false, messenger: false },
         whatsapp: { notification: false, approval: false, messenger: false },
         discord: { notification: false, approval: false, messenger: false },
+        teams: { notification: false, approval: false, messenger: false },
         email: { notification: false, approval: false, messenger: false },
         bridges: {
           'ct-1': { notification: true, approval: false },

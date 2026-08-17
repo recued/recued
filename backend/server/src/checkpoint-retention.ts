@@ -71,7 +71,18 @@ export interface CheckpointRetentionConfig {
    *  the staleness guard expires it. `null` disables the guard (the
    *  wire format carries `0` as the off sentinel; the composer
    *  collapses `0 → null` here — mirrors `audit.retention_days`).
-   *  Garbage collection runs either way. */
+   *  Garbage collection runs either way.
+   *
+   *  ⛔ `awaiting_approval` ONLY, AND THAT ASYMMETRY IS THE DESIGN — a peer
+   *  hold never expires by age. Ruled 2026-08-14 after an audit raised the
+   *  asymmetry as a defect (AUD-1). It is not one: an approval hold waits on
+   *  the OWNER, whose silence this server is entitled to interpret, while a
+   *  peer hold waits on ANOTHER PRINCIPAL, whose answer is theirs to give when
+   *  they are ready. Timing it out would be this server deciding another
+   *  owner's question went unanswered. Do not "fix" the scope to
+   *  `isHeldRunAnchorStatus` for symmetry — the GC half already uses that
+   *  predicate precisely so peer holds are never collected as crash residue,
+   *  and the two halves differ on purpose. */
   staleAfterDays: number | null;
 }
 

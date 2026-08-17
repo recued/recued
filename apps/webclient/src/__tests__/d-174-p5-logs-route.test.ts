@@ -40,9 +40,11 @@ import {
   LOGS_ROUTE_ROW_ATTR,
   LOGS_ROUTE_STATUS_ATTR,
   LOGS_ROUTE_STYLES_MARKER,
+  LOGS_ROUTE_YIELD_ATTR,
   bootstrapLogsRoute,
   projectRunAffectedItems,
   projectRunOutcomeSummary,
+  projectRunYieldNotice,
   type RunsActiveCaller,
   type RunsCancelCaller,
   type RunsGetCaller,
@@ -236,6 +238,7 @@ const runDetail = (
     errorCategory?: HeavyOpErrorCategory;
     errors?: RecipeError[];
     trace?: RunDetail['gateway']['per_call_trace'];
+    runYield?: RunDetail['audit']['run_yield'];
   } = {},
 ): RunDetail => ({
   audit: {
@@ -255,6 +258,7 @@ const runDetail = (
     ...(opts.errorCategory !== undefined
       ? { error_category: opts.errorCategory }
       : {}),
+    ...(opts.runYield !== undefined ? { run_yield: opts.runYield } : {}),
   },
   approvals: {
     checkpoints: [
@@ -2412,5 +2416,134 @@ describe('D-186 slice C — Runs Active passes section', () => {
     expect(rig.root.children).toHaveLength(0);
     // Every subscription (incl. the passes one) was torn down.
     expect(unsubscribe.mock.calls.length).toBe(subscribeKinds.length);
+  });
+});
+
+describe('D-237 P2 residual — the all-refused run is visible to a reader', () => {
+  // ⛔ P2's own suite passed once with its wiring SEVERED, which is why the
+  // first test here starts where the value ARRIVES (the `execution.get`
+  // response) and asserts the rendered DOM. A pure-projection test cannot tell
+  // "the notice is computed" from "the notice is computed and shown".
+  it('renders the notice and refuses to leave a succeeded run reading positive', async () => {
+    const getCaller = vi.fn<RunsGetCaller>(async () => ({
+      run: runDetail('succeeded', 'allowed', {
+        errors: [],
+        runYield: {
+          steps_run: 1,
+          steps_skipped: 0,
+          items_total: 12,
+          items_failed: 12,
+        },
+      }),
+    }));
+    const rig = mountRoute({ getCaller, initialRunId: 'run-1' });
+    await rig.route.whenLoaded();
+
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain(`${LOGS_ROUTE_YIELD_ATTR}="all-refused"`);
+    expect(html).toContain('All 12 items this run touched failed.');
+    // The whole point: a green status must not read green here.
+    expect(html).toContain(
+      `${LOGS_ROUTE_OUTCOME_ATTR}="succeeded" data-tone="attention"`,
+    );
+    expect(html).toContain('Check the steps below to see what was refused');
+
+    rig.route.dispose();
+  });
+
+  it('reports a partial failure without escalating the tone', async () => {
+    const getCaller = vi.fn<RunsGetCaller>(async () => ({
+      run: runDetail('succeeded', 'allowed', {
+        errors: [],
+        runYield: {
+          steps_run: 2,
+          steps_skipped: 0,
+          items_total: 400,
+          items_failed: 3,
+        },
+      }),
+    }));
+    const rig = mountRoute({ getCaller, initialRunId: 'run-1' });
+    await rig.route.whenLoaded();
+
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain(`${LOGS_ROUTE_YIELD_ATTR}="partial-failure"`);
+    expect(html).toContain('3 of 400 items failed.');
+    expect(html).toContain(
+      `${LOGS_ROUTE_OUTCOME_ATTR}="succeeded" data-tone="positive"`,
+    );
+
+    rig.route.dispose();
+  });
+
+  it('says nothing at all when the anchor predates D-237', async () => {
+    const getCaller = vi.fn<RunsGetCaller>(async () => ({
+      run: runDetail('succeeded', 'allowed', { errors: [] }),
+    }));
+    const rig = mountRoute({ getCaller, initialRunId: 'run-1' });
+    await rig.route.whenLoaded();
+
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).not.toContain(LOGS_ROUTE_YIELD_ATTR);
+    expect(html).toContain(
+      `${LOGS_ROUTE_OUTCOME_ATTR}="succeeded" data-tone="positive"`,
+    );
+
+    rig.route.dispose();
+  });
+
+  describe('projectRunYieldNotice', () => {
+    const y = (items_total: number, items_failed: number) => ({
+      steps_run: 1,
+      steps_skipped: 0,
+      items_total,
+      items_failed,
+    });
+
+    it('is silent on absence — absent means pre-D-237, never "produced nothing"', () => {
+      expect(projectRunYieldNotice(undefined)).toBeUndefined();
+    });
+
+    it('is silent on a run that legitimately touched no items', () => {
+      // A recipe without a `foreach` is not a pathology.
+      expect(projectRunYieldNotice(y(0, 0))).toBeUndefined();
+    });
+
+    it('is silent when every item succeeded', () => {
+      expect(projectRunYieldNotice(y(400, 0))).toBeUndefined();
+    });
+
+    it('flags the all-refused run, and says "the only item" for one', () => {
+      expect(projectRunYieldNotice(y(12, 12))?.kind).toBe('all-refused');
+      expect(projectRunYieldNotice(y(1, 1))?.message).toContain(
+        'The only item this run touched failed.',
+      );
+    });
+
+    it('SKIPS a malformed tally rather than coercing it', () => {
+      // Matches deriveRunYield's own rule: a confident, meaningless yield is
+      // worse than none. `failed > total` cannot come from the deriver, so it
+      // is malformed — clamping it would report a fabricated all-refused run.
+      expect(projectRunYieldNotice(y(Number.NaN, 3))).toBeUndefined();
+      expect(projectRunYieldNotice(y(3, Number.NaN))).toBeUndefined();
+      expect(projectRunYieldNotice(y(2, 5))).toBeUndefined();
+      expect(projectRunYieldNotice(y(-1, -1))).toBeUndefined();
+    });
+  });
+
+  it('does not touch the tone of a run that already failed', () => {
+    const summary = projectRunOutcomeSummary(
+      runDetail('failed', 'allowed', {
+        errors: [],
+        runYield: {
+          steps_run: 1,
+          steps_skipped: 0,
+          items_total: 5,
+          items_failed: 5,
+        },
+      }),
+    );
+    expect(summary.yieldNotice?.kind).toBe('all-refused');
+    expect(summary.tone).not.toBe('attention');
   });
 });

@@ -55,7 +55,18 @@ import type {
 import { primitiveGrantEntry,
   isGrantableKernelOp,
   isRegisteredKernelOp,
+  RAW_OP_TOOL_PREFIX,
 } from '@recued/contracts';
+import { deriveResolvedRecipeCapability } from '../../derive-recipe-capability.js';
+import {
+  composeRecipeIngredientKindResolver,
+  composeRecipeOpKindsResolver,
+  composeRecipeOpResolver,
+} from '../../recipe-capability-wiring.js';
+import {
+  analyzeReceptionRecipeCost,
+  RECEPTION_RECIPE_MAX_STEPS,
+} from '../../reception-recipe-cost-policy.js';
 import {
   KERNEL_OP_REGISTRY,
   CHAT_CATALOG_DELIVERY_MODES,
@@ -122,6 +133,8 @@ import { createConnectionCatalogBindingStore } from '../../storage/connection-ca
 import { createChatConnectionPackCoverage } from '../../chat-connection-pack-coverage.js';
 import type { ContractStore } from '../../storage/contract-store.js';
 import { createContractDefinitionStore } from '../../storage/contract-definition-store.js';
+import { createContractStore } from '../../storage/contract-store.js';
+import { backfillInboundTokenContracts } from '../../storage/inbound-token-contract-backfill.js';
 import type { WorkEntityResolver } from '../../work-entity-resolver.js';
 import type { WorkEntityTargetedReadDeps } from '../../work-entity-write-executor.js';
 import { createGatedReadGrantResolver } from '../../read-grant-checker.js';
@@ -431,6 +444,36 @@ export const composeChatOrchestrator = (
         }
       : {}),
   });
+
+  // ⛔⛔ BOOT BACKFILL — give every UNBOUND inbound token a contract, and
+  // TRANSFER its lifecycle onto that contract rather than minting an empty
+  // carrier. Always-contracted issuance was forward-only, so tokens already in
+  // the field carry none — and those are exactly the ones nothing is watching:
+  // `shouldMeterUse` requires a MINTED contract, so for them the contract
+  // enforces nothing at all.
+  //
+  // Kicked HERE because this is where the token table is guaranteed to exist
+  // (`createChatInboundTokenStore` runs its schema guard). `createContractStore`
+  // is a stateless db wrapper — the same reasoning the storage composer states
+  // for building a fresh one — so there is no boot-ordering dependency.
+  //
+  // ⚠ Idempotent (only `contract_id IS NULL` rows) and best-effort per row: a
+  // failed row stays unbound and the next boot retries it. Never throws — one
+  // bad row must not block startup.
+  try {
+    const backfill = backfillInboundTokenContracts(
+      db,
+      createContractDefinitionStore(createContractStore(db)),
+    );
+    if (backfill.unbound > 0) {
+      console.warn(
+        `[mcp-token-backfill] contracted ${backfill.bound}/${backfill.unbound} unbound tokens`
+        + ` (${backfill.revoked} carried a revocation, ${backfill.failed} failed — retried next boot)`,
+      );
+    }
+  } catch {
+    // Best-effort; the sweep already swallows per-row failures.
+  }
 
   // D-160 O-5 (light slice) — read view over the per-pair correction
   // stream (D-145 PB14) for the `correction-learning` middleware's
@@ -1213,7 +1256,47 @@ export const composeChatOrchestrator = (
       if (separator <= 0 || separator === toolName.length - 1) return;
       const recipe = recipeStore.get(toolName.slice(separator + 1));
       const recordsStore = getExecuteDeps()?.recordsStore;
-      if (recipe === null || recordsStore === undefined) return;
+      if (recipe === null) return;
+      // ⛔⛔ THE COST BOUND, the same analysis a reception door runs at bind.
+      // Its own header: *"Request buckets bound how often a visitor can submit;
+      // they do not bound what one accepted submit spends."* A token had
+      // NEITHER half — `concurrency_tier` caps simultaneous calls, nothing
+      // capped what one call costs.
+      //
+      // ⚠ AI IS A REFUSAL HERE, not an opt-in as it is on a reception door.
+      // `core.ai.*` kernel ops are ALREADY ungrantable to a door — *"a door is
+      // already an LLM, and the grant would spend the owner's inference
+      // budget"* — and a recipe carrying an `ai-*` step is that same spend
+      // through a different door. Refusing closes an existing inconsistency
+      // rather than inventing policy; a reception door can opt in because its
+      // bind has a consent screen to opt in ON, and token issuance does not.
+      // ⚠ The SAME resolvers the reception door bind composes, so a recipe
+      // classified unbindable there is classified unbindable here. Absent deps
+      // leave the analyzer to fail closed on an unresolvable dispatch kind.
+      const costExecuteDeps = getExecuteDeps();
+      const opKinds = costExecuteDeps === undefined
+        ? undefined
+        : composeRecipeOpKindsResolver(costExecuteDeps);
+      const cost = analyzeReceptionRecipeCost(recipe, {
+        ...(costExecuteDeps === undefined
+          ? {}
+          : { resolveIngredientKind: composeRecipeIngredientKindResolver(costExecuteDeps) }),
+        ...(opKinds === undefined ? {} : { resolveOpKinds: opKinds }),
+      });
+      if (!cost.ok) {
+        throw new Error(
+          `recipe '${toolName}' cannot be granted to a token: ${cost.refusal.reason}`
+          + ` (step '${cost.refusal.step_id ?? '<recipe>'}')`,
+        );
+      }
+      if (cost.profile.uses_ai) {
+        throw new Error(
+          `recipe '${toolName}' runs AI (${cost.profile.ai_steps.join(', ')}), which would`
+          + ' spend the owner\'s inference budget on every call — kernel `core.ai.*` ops are'
+          + ' already ungrantable to a door for the same reason',
+        );
+      }
+      if (recordsStore === undefined) return;
       assertRecordsNonOwnerRecipeExposure(
         recipe,
         'mcp',
@@ -1223,6 +1306,110 @@ export const composeChatOrchestrator = (
             recordsStore.isInstalledCatalogOperation(catalogSlug, operationKey),
         },
       );
+    },
+    /** Door standing closure, MCP arm — what the owner's tick actually means.
+     *
+     *  ⛔⛔ THE SAME DERIVATION THE RECEPTION DOOR BIND USES
+     *  (`deriveResolvedRecipeCapability` over `composeRecipeOpResolver`'s
+     *  lowering), not a second walk of the recipe. A door and a token that
+     *  disagreed about which ops a recipe runs would put standing authority on
+     *  one list while the gate checked another — and the gate would silently
+     *  win, in whichever direction happened to be wrong.
+     *
+     *  ⚠ NO TIER FILTER HERE, deliberately. `standingClosureAdmits` bounds to
+     *  `STANDING_CLOSURE_RISK_TIERS` at dispatch; filtering here as well would
+     *  be the same rule in two places, which is exactly how the bind fence and
+     *  the gate came apart on the reception arm.
+     *
+     *  A recipe that fails capability derivation contributes NOTHING rather
+     *  than throwing: the owner is issuing a token over several tools, and one
+     *  unanalysable recipe should narrow the closure, not refuse the token. If
+     *  that empties the closure entirely, the rpc refuses. */
+    /** Always-contracted — the limits carrier every newly issued token binds
+     *  to. Deliberately the SAME shape the Advanced panel mints
+     *  (`scope: { channels: ['mcp'] }`), so a token minted here and one the
+     *  panel re-mints when limits change are the same kind of row.
+     *
+     *  ⚠ NO `expiry_at` / `max_uses`: contracted is not bounded, and minting a
+     *  silent default limit would cap tokens the owner never asked to cap. */
+    mintTokenContract: ({ label, standingClosureOperationIds, limits }) => {
+      const store = getContractStore?.();
+      if (!store) {
+        throw new Error('contract store is not ready — cannot issue a contracted token');
+      }
+      return createContractDefinitionStore(store).mint({
+        minted_by: 'operator',
+        display_name: `MCP door — ${label}`,
+        // ⛔ The closure rides on the CONTRACT: its ops in `scope`, its opt-in
+        // in `door_execution_policy` — the same two fields the reception door
+        // uses, read by the same overlay accessor at dispatch.
+        scope: {
+          channels: ['mcp'],
+          ...(standingClosureOperationIds === undefined
+            ? {}
+            : { operation_ids: [...standingClosureOperationIds] }),
+        },
+        door_types: ['mcp'],
+        ...(standingClosureOperationIds === undefined
+          ? {}
+          : {
+              door_execution_policy: {
+                // The cost bound, same numbers the reception door carries.
+                max_steps: RECEPTION_RECIPE_MAX_STEPS,
+                allow_ai: false,
+                standing_closure: true,
+              },
+            }),
+        ...(limits?.max_uses === undefined ? {} : { max_uses: limits.max_uses }),
+        ...(limits?.expiry_at === undefined ? {} : { expiry_at: limits.expiry_at }),
+      }).contract_id;
+    },
+    /** Best-effort orphan cleanup when an issuance fails after minting. */
+    revokeTokenContract: (contractId) => {
+      const store = getContractStore?.();
+      if (!store) return;
+      createContractDefinitionStore(store).revoke(
+        contractId,
+        'issuance failed after the carrier was minted',
+      );
+    },
+    deriveGrantedToolClosure: (grants) => {
+      const out = new Set<string>();
+      const executeDeps = getExecuteDeps();
+      // ⚠ No execute deps ⇒ no op lowering ⇒ recipe closures resolve to
+      // nothing. The rpc refuses an empty closure, so a pre-init server cannot
+      // mint a token whose promise it could not compute.
+      const resolveOp =
+        executeDeps === undefined ? undefined : composeRecipeOpResolver(executeDeps);
+      for (const [toolName, allowed] of Object.entries(grants)) {
+        if (!allowed) continue;
+        // A kernel op granted by its own op id (D-232 § 20.20) IS the op id.
+        if (isRegisteredKernelOp(toolName) && isGrantableKernelOp(toolName)) {
+          out.add(toolName);
+          continue;
+        }
+        if (toolName.startsWith(RAW_OP_TOOL_PREFIX)) {
+          const opId = toolName.slice(RAW_OP_TOOL_PREFIX.length);
+          if (opId.length > 0) out.add(opId);
+          continue;
+        }
+        const entry = internalRegistry.getByName(toolName);
+        if (entry === null || entry.tier !== 2) continue;
+        const separator = toolName.indexOf('/');
+        if (separator <= 0 || separator === toolName.length - 1) continue;
+        const recipe = recipeStore.get(toolName.slice(separator + 1));
+        if (recipe === null) continue;
+        try {
+          const derived = deriveResolvedRecipeCapability(recipe, recipe, {
+            ...(resolveOp === undefined ? {} : { resolveOp }),
+          });
+          if (!derived.ok) continue;
+          for (const op of derived.capability.operation_ids) out.add(op);
+        } catch {
+          // An unanalysable recipe narrows the closure; it never widens it.
+        }
+      }
+      return [...out].sort();
     },
     executionCaseFeedbackRecorder:
       executionCases.feedbackRecorder,

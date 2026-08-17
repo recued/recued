@@ -83,8 +83,13 @@ const makeInboundTokenRecord = (
   bearer_hash: 'hash',
   label: 'External door',
   created_at: 1_000,
-  expires_at: 0,
   revoked_at: null,
+  // ⚠ CONTRACTED BY DEFAULT. Every token carries a contract now (issuance mints
+  // a carrier; the boot backfill contracted legacy rows), and the transport
+  // REFUSES an unbound one as a failed migration. A fixture without this is not
+  // an ordinary token — it is the error case, and one test opts into it
+  // explicitly by overriding `contract_id` back to undefined.
+  contract_id: 'ct_door',
   grants: {
     [GRANTED_TOOL]: true,
     [DENIED_TOOL]: false,
@@ -337,7 +342,7 @@ describe('D-171 external-door HTTP MCP transport verifier', () => {
 });
 
 describe('D-171 external-door HTTP MCP dispatch deps', () => {
-  it('threads token id, peer handle, grants, and no bound-contract fields', async () => {
+  it('threads token id, peer handle, grants, and the bound-contract fields', async () => {
     const record = makeInboundTokenRecord({
       token_id: 'door-token-peer',
       peer_handle: 'peer-mary',
@@ -356,8 +361,11 @@ describe('D-171 external-door HTTP MCP dispatch deps', () => {
     expect(deps.inboundTokenAuthorize(GRANTED_TOOL)).toBe(true);
     expect(deps.inboundTokenAuthorize(DENIED_TOOL)).toBe(false);
     expect(deps.inboundTokenAuthorize(MISSING_TOOL)).toBe(false);
-    expect(deps).not.toHaveProperty('boundContractId');
-    expect(deps).not.toHaveProperty('boundContractActive');
+    // ⚠ A token is CONTRACTED now, so the bound-contract fields ARE threaded.
+    // This used to assert their absence, which was correct only while an
+    // unbound token was an ordinary state rather than a failed migration.
+    expect(deps).toHaveProperty('boundContractId', 'ct_door');
+    expect(deps).toHaveProperty('boundContractActive');
     expect(lastDispatcher()).toHaveBeenCalledWith(envelope, undefined);
   });
 
@@ -791,24 +799,38 @@ describe('D-187 step 7 — HTTP MCP transport door-type gate', () => {
     expect(noId).toMatchObject({ id: null, error: { code: -32001 } });
   });
 
-  it('skips the door-type gate for an UNBOUND inbound token (no contract_id)', async () => {
+  /** ⛔⛔ AN UNBOUND INBOUND TOKEN IS NOW REFUSED, not waved past the gates.
+   *
+   *  This slot asserted the opposite — that neither liveness nor door-type was
+   *  consulted for a token with no `contract_id` — and that was correct while
+   *  a token could legitimately be unbound. It cannot now: issuance always
+   *  mints a carrier and the boot backfill contracts legacy rows. A surviving
+   *  unbound token is a FAILED MIGRATION, and with the token's own `expires_at`
+   *  retired its lifetime would be enforced by nothing at all. Codex found that
+   *  hole; this is the fence.
+   *
+   *  ⚠ Refused rather than denied-all: unlike a dead contract there is no
+   *  contract to attribute the denial to, so the operator needs to be told the
+   *  token is un-migrated rather than that everything is denied. */
+  it('⛔⛔ REFUSES an UNBOUND inbound token (no contract_id) — a failed migration', async () => {
     const isContractLive = vi.fn(() => true);
     const permitsDoorType = vi.fn(() => false);
-    const record = makeInboundTokenRecord(); // no contract_id
+    const record = { ...makeInboundTokenRecord(), contract_id: undefined };
     const bundle = composeDefined({
       executeDeps: overlay({ isContractLive, permitsDoorType }),
       inboundTokenStore: makeInboundTokenStore(vi.fn(() => record)),
     });
 
-    await bundle.mcpHttpDeps.dispatch(
+    const res = await bundle.mcpHttpDeps.dispatch(
       { jsonrpc: '2.0', id: 'unbound', method: 'tools/list' },
       INBOUND_BEARER,
-    );
+    ) as { error?: { code: number; message: string } };
 
-    // No contract binding ⇒ neither liveness nor door-type is consulted.
+    expect(res.error?.code).toBe(-32001);
+    expect(res.error?.message).toContain('carries no contract');
+    // …and it short-circuits before the door-type gate, so nothing runs under
+    // an unenforced lifetime.
     expect(permitsDoorType).not.toHaveBeenCalled();
-    expect(isContractLive).not.toHaveBeenCalled();
-    expect(mcpServerMocks.createMcpHttpDispatch).toHaveBeenCalled();
   });
 });
 

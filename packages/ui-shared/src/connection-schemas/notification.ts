@@ -21,7 +21,12 @@
  *  present (`connections/payload.ts`), so the projected shape is unchanged.
  *  Same for the in-app subtype below. */
 
-import type { NotificationSubtype } from '@recued/contracts';
+import {
+  MESSENGER_PRINCIPAL_CONFIG_KEY,
+  MICROSOFT_AUTHORIZE_URL,
+  MICROSOFT_TOKEN_URL,
+  type NotificationSubtype,
+} from '@recued/contracts';
 
 import type { ConnectionSchema } from './types.js';
 
@@ -596,6 +601,224 @@ const discord: ConnectionSchema = {
   probe: { description: 'Checks that the token belongs to a Discord bot. No test message is sent.' },
 };
 
+const teams: ConnectionSchema = {
+  kind: 'notification',
+  subtype: 'teams',
+  label: 'Microsoft Teams',
+  description:
+    'Get alerts and approvals in Teams. Recued polls outbound, so it works behind '
+    + 'an office firewall with no public port and no bot registration. \u26a0 Needs a '
+    + 'WORK or SCHOOL Microsoft 365 account, and a one-time app registration by '
+    + 'someone with administrator rights in your organisation \u2014 see the setup '
+    + 'steps for exactly which roles.',
+  onboarding: {
+    selectorKey: 'config.ingress_mode',
+    guides: [
+      {
+        key: 'teams-entra',
+        tone: 'recommended',
+        badge: 'Recommended · no public port',
+        title: 'Connect Teams from this machine',
+        description:
+          'Recued posts and reads through Microsoft Graph as you, over outbound '
+          + 'requests only. No Azure Bot resource, no inbound endpoint. \u26a0 Setup '
+          + 'is TWO jobs with two different owners: an administrator registers one '
+          + 'app for the whole organisation (steps 2\u20136, done once), then each '
+          + 'person connects with the values they publish (steps 7\u20139).',
+        portal: {
+          label: 'Open Microsoft Entra app registrations',
+          url: 'https://entra.microsoft.com',
+        },
+        steps: [
+          {
+            title: '1. Check your account type first',
+            detail: 'Teams messaging needs a WORK or SCHOOL Microsoft 365 account \u2014 the one an employer or school issued. A personal Microsoft account (outlook.com, hotmail.com, live.com) cannot use the Teams API at all, whatever permissions it is granted. Recued checks this at enrolment and refuses, rather than saving a connection that would probe green and never deliver.',
+          },
+          {
+            title: '2. ADMIN \u00b7 who has to do steps 3\u20136',
+            detail: 'Registering the app and approving its permissions is an administrator job, done ONCE for the whole organisation \u2014 not once per person. It needs someone holding Global Administrator, Application Administrator, Cloud Application Administrator, or Privileged Role Administrator. \u26a0 Most organisations block ordinary users from registering apps and from consenting to them: if those buttons are greyed out for you, that is your tenant\u2019s policy and no Recued setting can work around it. Send this page to whoever holds the role \u2014 everyone else then connects using the values they publish.',
+          },
+          {
+            title: '3. ADMIN \u00b7 register the app',
+            detail: 'Entra admin centre \u2192 App registrations \u2192 New registration. Name it something the organisation will recognise \u2014 the name appears on every user\u2019s sign-in screen. Choose "Accounts in this organizational directory only", which keeps the app usable only by your own people. Then under Authentication add a Web redirect URI for each Recued server that will connect. \u26a0 Entra permits plain http ONLY for the literal host `localhost`; an IP address or any other hostname must be https.',
+          },
+          {
+            title: '4. ADMIN \u00b7 add the delegated Graph permissions',
+            detail: 'API permissions \u2192 Add a permission \u2192 Microsoft Graph \u2192 Delegated permissions (NOT Application permissions). Add ChatMessage.Send, Chat.Read, User.Read and offline_access. Delegated means the app can only ever act as the person signed in, limited to what that person could already reach by hand \u2014 it grants no tenant-wide read of anyone\u2019s messages. \u26a0 offline_access is the one that lets a connection renew itself; without it every connection stops delivering about an hour after it is made.',
+          },
+          {
+            title: '5. ADMIN \u00b7 grant consent for the organisation',
+            detail: 'API permissions \u2192 Grant admin consent for <your organisation>. None of those four permissions is individually admin-only, but most tenants disable user consent altogether \u2014 and then this single click is the difference between everyone being able to connect and everyone being blocked with "needs admin approval". Granting it once here also spares each person a separate consent prompt.',
+          },
+          {
+            title: '6. ADMIN \u00b7 publish three values internally',
+            detail: 'From Overview copy the Application (client) ID and the Directory (tenant) ID; from Certificates & secrets \u2192 New client secret copy the Value (shown once only). Give all three to whoever will connect Recued. \u26a0 The secret identifies the APP, not a person \u2014 with delegated-only permissions it opens nothing on its own, because every call still requires that individual to have signed in themselves. Treat it as internal information rather than as a key to the tenant.',
+          },
+          {
+            title: '7. YOU \u00b7 point Recued at your organisation',
+            detail: 'Replace the word `common` with the Directory (tenant) ID from step 6, in BOTH the Authorize URL and the Token Endpoint fields. \u26a0 They must match \u2014 changing only one gives a sign-in that appears to succeed and then fails at the last step. A single-tenant app registration rejects the default `common` outright, with the error AADSTS50194.',
+          },
+          {
+            title: '8. YOU \u00b7 sign in as yourself',
+            detail: 'Paste the Application (client) ID and client secret from step 6, then use Authorize and sign in with your own work account. The token Recued stores is yours: it can reach only the chats you can reach. It is held on this server, encrypted \u2014 nothing goes to Recued\u2019s cloud.',
+          },
+          {
+            title: '9. YOU \u00b7 pick the chat Recued posts to',
+            detail: 'Open the Teams chat you want \u2014 a chat with yourself works well and means nobody else can answer your approvals. Right-click it \u2192 Copy link, and paste that into the Chat field. Recued only ever reads and writes this one chat.',
+          },
+        ],
+        verification:
+          'Save, then use Test connection — it calls Graph as you and reports the signed-in account without posting anything. A first alert should then arrive in the chat you named.',
+      },
+    ],
+  },
+  fields: [
+    { key: 'name', label: 'Name', type: 'select', options: ['teams'], hidden: true },
+    { key: 'display_name', label: 'Display Name', type: 'text', placeholder: 'Microsoft Teams' },
+    {
+      key: 'config.ingress_mode',
+      label: 'How Recued listens',
+      type: 'select',
+      options: ['poll'],
+      optionLabels: { poll: 'Local — outbound polling (only mode)' },
+      optional: true,
+      help:
+        'Graph offers no socket, and its webhook needs a public endpoint plus a subscription lifecycle. Recued polls every couple of seconds, which is imperceptible against the time a reply takes to process.',
+    },
+    {
+      key: 'config.chat_id',
+      label: 'Chat',
+      type: 'text',
+      placeholder: 'Paste a Teams chat link',
+      // ⚠ The old help said "take the 19:…@thread.v2 value from the web URL".
+      // Teams no longer puts it there, so that instruction became impossible to
+      // follow — Copy link is what a client still offers, and the id rides in it.
+      help:
+        'The one chat Recued posts to and reads. In Teams, right-click the chat '
+        + '\u2192 Copy link, and paste it here; the id is taken from the link. A '
+        + 'chat with yourself is the simplest choice, and means nobody else can '
+        + 'answer your approvals. Pasting the raw 19:\u2026@thread.v2 id also works.',
+    },
+    {
+      key: 'auth.type',
+      label: 'Auth',
+      type: 'select',
+      options: ['oauth2_refresh'],
+      // ⛔ NOT `bearer`, and this is the one field that must never become a
+      // free choice. A bearer row stores a snapshot of a ONE-HOUR Graph access
+      // token: it enrols, probes green, and stops delivering at the top of the
+      // hour with nothing saying why. Only the refreshable shape can run
+      // unattended.
+      hidden: true,
+    },
+    {
+      // ⛔ D-238 — the only sender whose typed reply may settle an ask here.
+      // A Teams chat can have other people in it, and without this an exact
+      // `Approve` from a colleague would authorize a side effect on the owner's
+      // data. Autofilled from the signed-in account, never hand-typed: a
+      // hand-editable approver field is itself the escalation.
+      key: `config.${MESSENGER_PRINCIPAL_CONFIG_KEY}`,
+      label: 'Approver',
+      type: 'text',
+      autofilled: true,
+      readonly: true,
+      help:
+        'The Microsoft account allowed to approve by replying in this chat — '
+        + 'filled in from the account you sign in with. Anyone else in the chat '
+        + 'can read the message but cannot answer it; you can always answer in '
+        + 'the Recued app.',
+    },
+    {
+      key: 'auth.client_id',
+      label: 'OAuth Client ID (Application ID)',
+      type: 'text',
+      help:
+        'The Application (client) ID your administrator published for the '
+        + 'organisation\u2019s Recued app. You do not register your own \u2014 everyone '
+        + 'in the organisation uses the same one. (Admins: Entra \u2192 App '
+        + 'registrations \u2192 your app \u2192 Overview.)',
+    },
+    {
+      key: 'auth.client_secret',
+      label: 'OAuth Client Secret',
+      type: 'secret',
+      help:
+        'The client secret your administrator published alongside the client ID. '
+        + 'It identifies the APP rather than you: on its own it reaches no data, '
+        + 'because every Graph call still requires your own sign-in. (Admins: '
+        + 'Entra \u2192 your app \u2192 Certificates & secrets \u2192 New client secret, '
+        + 'the Value, shown once.)',
+    },
+    {
+      // The in-app consent popup opens this. ⛔ Seeded, hidden and fixed: the
+      // generic BYO-OAuth accelerator renders no Authorize button without an
+      // authorize URL, which is what left this card asking for a refresh token
+      // the owner had no way to obtain.
+      key: 'auth.authorize_url',
+      label: 'Authorize URL',
+      type: 'url',
+      initial: MICROSOFT_AUTHORIZE_URL,
+      placeholder: MICROSOFT_AUTHORIZE_URL,
+      // ⛔ VISIBLE, and it has to be. An app registered "this organizational
+      // directory only" — which is what a sane admin picks, and what step 3 asks
+      // for — REFUSES the `/common/` endpoint outright: AADSTS50194, at the
+      // consent screen, naming a fix the owner had no field to apply. Hidden
+      // here it made the card's own instructions impossible to complete.
+      help:
+        'Microsoft sign-in endpoint. \u26a0 Replace `common` with your Directory '
+        + '(tenant) ID if the app was registered for your organisation only \u2014 '
+        + 'and make the same edit to the Token Endpoint below. Changing only one '
+        + 'of the pair fails part-way through sign-in.',
+    },
+    {
+      key: 'auth.scopes',
+      label: 'Scopes',
+      type: 'text',
+      // ⚠ `offline_access` is the one that makes the credential RENEW itself.
+      // Without it the connection enrols, probes green, and stops delivering
+      // about an hour later — the exact failure the oauth lane was gated on.
+      // Editable rather than hidden so an owner narrowing permissions can SEE
+      // what they would be removing.
+      initial: 'offline_access User.Read ChatMessage.Send Chat.Read',
+      help:
+        'Permissions requested at sign-in. offline_access is what lets the '
+        + 'connection renew itself — removing it means re-authorising every hour. '
+        + 'ChatMessage.Send posts, Chat.Read collects your replies. \u26a0 None of '
+        + 'these is admin-only in itself, but that is not the same as needing no '
+        + 'administrator: most organisations turn off user consent entirely, and '
+        + 'then an admin must approve the app once before anyone can connect.',
+    },
+    {
+      key: 'auth.token_endpoint',
+      label: 'Token Endpoint',
+      type: 'url',
+      // ⛔ `initial`, not `placeholder`. Hidden + fixed + placeholder-only means
+      // the value never reaches the server and the form blocks with nothing the
+      // owner can see or fix.
+      initial: MICROSOFT_TOKEN_URL,
+      placeholder: MICROSOFT_TOKEN_URL,
+      // Visible for the same reason as the Authorize URL above — and this is the
+      // half that fails LATE. A tenant-specific authorize with a `/common/` token
+      // endpoint gets the owner all the way through consent before breaking.
+      help:
+        'Microsoft token endpoint. \u26a0 Must carry the SAME Directory (tenant) ID '
+        + 'as the Authorize URL above.',
+    },
+    {
+      key: 'auth.refresh_token',
+      label: 'Refresh Token',
+      type: 'secret',
+      autofilled: true,
+      help:
+        'Long-lived refresh token from the Microsoft sign-in — filled in automatically. This is what keeps the connection alive without you re-authorising it.',
+    },
+  ],
+  probe: {
+    description:
+      'Calls Microsoft Graph /me with the stored credential. No test message is posted to the chat.',
+  },
+};
+
 const email: ConnectionSchema = {
   kind: 'notification',
   subtype: 'email',
@@ -666,6 +889,7 @@ export const notificationSchemas = {
   telegram,
   whatsapp,
   discord,
+  teams,
   email,
   'in-app': inApp,
 } as const satisfies Record<NotificationSubtype, ConnectionSchema>;

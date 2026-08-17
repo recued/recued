@@ -845,6 +845,14 @@ export const SCHEDULING_LINK_CONFIG_ERROR_COPY: Readonly<
   auto_confirm_ref_invalid: 'The auto-confirm Standing Instruction reference must be a non-empty string.',
   standing_instructions_ref_invalid: 'The Standing Instruction reference must be a non-empty string.',
   visitor_receipt_invalid: 'The visitor-receipt configuration is malformed. Check the receipt delivery setting.',
+  // ⚠ PRE-EXISTING BUILD BREAK, not part of the standing-closure work: `7f0c46d24`
+  // widened `SchedulingLinkConfigValidationCode` with this code and updated the
+  // INTAKE map only, so `tsc -b` has been failing on this file since. Copy mirrors
+  // the intake one, retargeted at the slot picker.
+  visitor_lookup_invalid:
+    'The submitter-viewback configuration is not usable. Check that the visitor receipt '
+    + 'is switched on (the receipt is what hands the visitor their link) and that the '
+    + 'expiry window is set.',
   config_shape_invalid: 'The scheduling link configuration is malformed. Refresh the page + try again.',
 };
 
@@ -1110,6 +1118,13 @@ export const INTAKE_FORM_CONFIG_ERROR_COPY: Readonly<
   domain_allowlist_entry_too_long: 'An allowlisted domain entry is too long or empty.',
   visitor_fields_invalid: 'The visitor-email requirement must be Required, Optional, or Hidden.',
   visitor_receipt_invalid: 'The visitor-receipt configuration is malformed. Check the receipt delivery setting.',
+  // D-240 — the viewback config failed its own validator. The detail the
+  // parent forwards names WHICH rule, so the copy points at the two an owner
+  // can actually act on rather than restating the code.
+  visitor_lookup_invalid:
+    'The submitter-viewback configuration is not usable. Check that the visitor receipt '
+    + 'is switched on (the receipt is what hands the submitter their link) and that the '
+    + 'expiry window is set.',
   config_shape_invalid: 'The intake form configuration is malformed. Refresh the page + try again.',
 };
 

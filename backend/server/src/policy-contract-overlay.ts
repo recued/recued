@@ -162,6 +162,20 @@ export interface ContractOverlayResolver {
    *  its absence as the wildcard-admit `true`. The SOLE production factory
    *  ({@link createContractOverlayResolver}) always implements it. */
   permitsDoorType?(contract_id: string, doorType: DoorType): boolean;
+  /** The door's owner-confirmed standing closure — `scope.operation_ids` iff
+   *  `door_execution_policy.standing_closure` is on, else `undefined`.
+   *
+   *  ⛔⛔ IT LIVES ON THE CONTRACT, NOT THE TOKEN. Lifecycle and limitation are
+   *  the contract's job; a token is a bearer. The MCP arm first stored this on
+   *  the token record and threaded it through the transport — two storage
+   *  shapes for one concept, and the reception arm already had it right
+   *  (`door_execution_policy.standing_closure` + `scope.operation_ids`, read by
+   *  `buildReceptionContractSnapshot`). Both arms now read the same field off
+   *  the same row.
+   *
+   *  ⚠ Liveness is NOT re-checked here, matching `permitsDoorType`: the caller
+   *  already collapses everything on a dead contract. */
+  standingClosureOperationIds?(contract_id: string): readonly string[] | undefined;
   /** D-187 slice 5 — resolve the governing CONTRACT's per-collection EXECUTE-path read
    *  fence for THIS dispatch, DERIVED from the contract's `data.<collection>` grant rows
    *  (the SAME rows {@link resolveReadGrantChecker} reads — one source of truth, so the
@@ -317,6 +331,17 @@ export const createContractOverlayResolver = (
       const def = deps.definitionStore.get(contract_id);
       if (def === null || !isContractActive(def, now())) return undefined;
       return liveBoundContractKind(def);
+    },
+    standingClosureOperationIds(contract_id): readonly string[] | undefined {
+      const def = deps.definitionStore.get(contract_id);
+      if (def === null) return undefined;
+      if (def.door_execution_policy?.standing_closure !== true) return undefined;
+      // ⚠ An EMPTY list is returned as empty, never as absent: a contract whose
+      // scope names no op has nothing to admit, and the gate reads that
+      // correctly as "this op is not in the closure". `undefined` would be
+      // indistinguishable from "no opt-in". Same rule the reception builder
+      // states.
+      return def.scope?.operation_ids ?? [];
     },
     permitsDoorType(contract_id, doorType): boolean {
       // No def ⇒ no door-type restriction to enforce here; the dead/absent case is

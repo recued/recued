@@ -219,6 +219,30 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
    *  forged `matched` could be smuggled — and a forged `matched` is the dangerous
    *  one, because it marks a document DELIVERED that was never sent. */
   op('core.mail.sent.reconcile', 'mail', 'mail-sent-reconcile', 'write'),
+  /** D-239 — the mail WRITE-BACK: mutating the state of a message that already
+   *  exists, as distinct from `core.mail.send`, which creates a new one.
+   *
+   *  ⛔ THESE ARE NOT OUTBOUND SENDS AND MUST NOT JOIN `OUTBOUND_SEND_INGREDIENT_SLUGS`.
+   *  Nothing here crosses the user's trust boundary — marking your own mail read,
+   *  starring it, or filing it in your own folder is an INTERNAL warehouse-and-
+   *  provider write, the same class as `calendar-update` or `annotation-upsert`,
+   *  which are all `write` and all stay silent at the owner ceiling. Adding one of
+   *  these to the send set would prompt the owner for permission to mark their own
+   *  mail read, on every run.
+   *
+   *  The `write` tier still does the real work under a CONTRACT: an AI acting on a
+   *  door takes the LOW ceiling, where a `write` surfaces for approval. So the
+   *  owner's own recipe files mail silently and an agent's request to do it asks —
+   *  which is the split the tier exists to express. */
+  op('core.mail.mark', 'mail', 'mail-mark', 'write'),
+  op('core.mail.flag', 'mail', 'mail-flag', 'write'),
+  op('core.mail.move', 'mail', 'mail-move', 'write'),
+  /** `destructive` — the always-class. No trust ceiling can relax it (the FLOOR
+   *  can't cross an always), so deleting mail asks EVERY time, for every actor,
+   *  including the owner's own unattended automation. Same tier as
+   *  `calendar-delete`, for the same reason: the provider's trash is the only copy
+   *  left once the warehouse row is gone. */
+  op('core.mail.delete', 'mail', 'mail-delete', 'destructive'),
   op('core.mail.email.get', 'mail', 'email-get', 'read'),
   op('core.mail.email.list', 'mail', 'email-list', 'read'),
   op('core.mail.email.search', 'mail', 'email-search', 'read'),
@@ -469,6 +493,12 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   // D-185 Slice 4 — the explicit temp→cas keep step: ingest a run-scoped temp
   // file_ref's bytes into data.file.received, returning a durable cas_ref.
   op('core.storage.file.persist', 'storage', 'file-persist', 'write'),
+  /** D-245 — write a REF's bytes into a record the RECIPE named. Closes the knot
+   *  that a CAS id is content-derived (no name a recipe can choose in advance)
+   *  while the only writer for a named `{slug, path}` record is value-shaped
+   *  (`file-write { body_b64 }`, so a large file round-trips through step state).
+   *  A stable NAME or memory-safe BYTES — this is what makes it both. */
+  op('core.storage.file.put-ref', 'storage', 'file-put-ref', 'write'),
   // D-200 Slice 3 — strict deterministic Markdown substitution from one
   // durable template file ref to one run-scoped temp file ref.
   op(
@@ -482,6 +512,23 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   // verdict. MCP-reserved (the backing kernel ingredient is not in
   // `MCP_EXPOSED_KERNEL_INGREDIENTS`) — only the reactive scan recipe writes it.
   op('core.storage.file.set-scan-status', 'storage', 'file-set-scan-status', 'write'),
+  /** D-244 — whole-file CSV filtering, in the KERNEL rather than a CLI pack.
+   *  csvkit and xlsx2csv are Python tools an owner must install; a spreadsheet
+   *  used as a customer list is too common a case to have its search silently
+   *  absent on a fresh box. CSV is a FORMAT we can own — the parser is already
+   *  shipped as `csv_parse`, and these ops reuse it rather than growing a second
+   *  one. (XLSX stays external: zip + XML + shared strings + date serials is a
+   *  real project, which is why libreoffice exists.)
+   *
+   *  ⛔ Kernel ops, not transforms. Dereferencing a `file_ref` is the
+   *  Gateway-gated content boundary, and `packages/` transforms run on clients
+   *  with no warehouse at all — a file-reading transform would be both an
+   *  unaudited second path to those bytes and undefined on two of three hosts.
+   *  Transforms operate on what is already in step state; kernel ops are how
+   *  bytes enter it. */
+  op('core.storage.csv.filter', 'storage', 'csv-filter', 'read'),
+  op('core.storage.csv.stats', 'storage', 'csv-stats', 'read'),
+  op('core.storage.csv.columns', 'storage', 'csv-columns', 'read'),
   op('core.storage.data-file-read', 'storage', 'data-file-read', 'read'),
 
   // ── schedule — D-193 installed-recipe scheduling control plane.

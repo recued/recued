@@ -52,6 +52,7 @@ export {
   type BuildConnectionSetupGuidePreviewResult,
 } from './setup-guide.js';
 export {
+  connectionFormRunsOAuthDance,
   connectionOAuthCredentialReadiness,
   connectionOAuthHttpsEndpointIssue,
   invalidatesConnectionOAuthResult,

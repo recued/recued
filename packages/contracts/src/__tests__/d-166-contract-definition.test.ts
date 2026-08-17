@@ -254,11 +254,27 @@ describe('D-166 contract_definition schema substrate', () => {
   });
 
   it('pins the derived door execution policy shape', () => {
+    // ⚠ WIDENED for `standing_closure` (D-207 follow-on — the owner's per-door
+    // opt-in that lets a confirmed capability closure stand as the approval for
+    // the ops it names). Recorded as a deliberate change rather than a silent
+    // one: this ratchet exists so growing a STORED AUTHORITY shape is a visible
+    // decision.
+    //
+    // ⛔ `required` is UNCHANGED, and that is what keeps every door minted
+    // before the field existed valid — and reading as OFF, since absence is the
+    // fail-closed default at the gate.
     expect(D165_CONTRACT_SCHEMA.value_shapes.door_execution_policy).toEqual({
-      fields: ['max_steps', 'allow_ai'],
-      types: { max_steps: 'number', allow_ai: 'bool' },
+      fields: ['max_steps', 'allow_ai', 'standing_closure'],
+      types: { max_steps: 'number', allow_ai: 'bool', standing_closure: 'bool' },
       required: ['max_steps', 'allow_ai'],
     });
+  });
+
+  it('⛔ a door minted WITHOUT the opt-in still validates, and reads as off', () => {
+    // The back-compat half the `required` list above is protecting.
+    const shape = D165_CONTRACT_SCHEMA.value_shapes.door_execution_policy;
+    expect(shape.required).not.toContain('standing_closure');
+    expect(shape.fields).toContain('standing_closure');
   });
 
   it('pins the contract_definition value shape and contract_lifecycle composite key', () => {

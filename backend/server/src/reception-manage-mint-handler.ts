@@ -130,6 +130,10 @@ export const handleReceptionManageMint = async (
     kind: 'scheduling_link',
     endpoint_id: booking.endpoint_id,
     record_id: booking.submission_id,
+    // D-240 — the OWNER capability. This rpc is `requireAdmin`-gated and the
+    // link it returns authorizes a reschedule, so it must never be mintable as
+    // the visitor-facing `lookup` purpose the submit path issues.
+    purpose: 'manage',
     now: deps.now(),
   });
 

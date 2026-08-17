@@ -193,6 +193,18 @@ const expectedChatDepsKeys = [
   // exposure, so the grant boundary re-runs the Records first-step refusal
   // check before the token is minted.
   'preflightExternalToolGrant',
+  // Standing closure (MCP arm) — turns the owner's issuance-screen tick into a
+  // bounded op list, using the SAME capability derivation the reception door
+  // bind runs. Listed here because a missing wiring must be a red: without it
+  // `chat.inbound_token.issue` REFUSES a standing_closure request rather than
+  // minting a token whose promise nothing computed.
+  'deriveGrantedToolClosure',
+  // ALWAYS-CONTRACTED — issuance mints the carrier every token binds to, and
+  // REFUSES if this is unwired rather than falling back to an unbound token.
+  'mintTokenContract',
+  // Best-effort orphan cleanup: the carrier is minted BEFORE the token, so a
+  // failed issuance would otherwise leave a live contract bound to nothing.
+  'revokeTokenContract',
 ].sort();
 
 /** ⚠ D-228 slice 6 — the `tool` / `classification` parameters are GONE, and
@@ -694,7 +706,6 @@ describe('composeChatOrchestrator', () => {
         label: 'callback lifecycle',
         grants: { 'recued-core/query': true },
         concurrency_tier: 3,
-        expires_at: 0,
         chat_mode: null,
         contract_id: 'ct_callbacks',
       },

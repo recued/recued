@@ -644,6 +644,20 @@ export const composeReceptionSubstrate = async (
   // record; its values live on the dish), so what the owner consents to is what runs.
   let doorBindDeps: ReceptionDoorBindDeps | undefined;
   let receptionRecipeRunner: ReceptionRecipeRunner | undefined;
+  // D-240 slice 3b — the lookup door's pair store + its run seam. Both stay
+  // `undefined` on a boot without `executeDeps`, so the viewback page renders the
+  // substrate status exactly as it did before the runner existed.
+  let lookupRecipePairStore:
+    | import('../../storage/reception-lookup-recipe-pair-store.js')
+        .ReceptionLookupRecipePairStore
+    | undefined;
+  let runReceptionLookupRecipe:
+    | ((input: {
+        readonly endpoint_id: string;
+        readonly record_id: string;
+        readonly record: Readonly<Record<string, unknown>>;
+      }) => Promise<import('../../reception-lookup-recipe-runner.js').ReceptionLookupRunOutcome>)
+    | undefined;
   // D-210 Appendix B — the held-reschedule runner for the `/reception/manage`
   // door. Built alongside `receptionRecipeRunner` (both need the same contract
   // stores + `executeDeps`), and its door contract is minted directly (see the
@@ -728,6 +742,51 @@ export const composeReceptionSubstrate = async (
           : {}),
         now: () => Date.now(),
       });
+
+      // ── D-240 slice 3b — the LOOKUP door's runner ───────────────────────────────────────
+      //
+      // ⛔⛔ THIS COMPOSITION IS THE WHOLE FEATURE, AND SHIPPING WITHOUT IT MADE THE
+      // SUBSYSTEM DEAD. Slice 3b built the pair store, the bind and the runner, and slice
+      // 3b's second commit wired the HANDLER to call an optional `runLookupRecipe` — but
+      // nothing ever constructed the runner, so `createReceptionLookupRecipeRunner`
+      // appeared only at its own declaration and every viewback silently rendered the
+      // substrate status. Typechecked, tested, and unreachable.
+      //
+      // ⚠ The tests could not see it: the route suite injects a synthetic callback, so it
+      // proved the HANDLER's branch and never the wiring. That is the same
+      // stub-from-both-sides shape this repo keeps paying for — the guard is the
+      // production-wiring assertion in `d-240-slice3b-lookup-door-bind`, not a type.
+      const { createReceptionLookupRecipePairStore } = await import(
+        '../../storage/reception-lookup-recipe-pair-store.js'
+      );
+      const { createReceptionLookupRecipeRunner } = await import(
+        '../../reception-lookup-recipe-runner.js'
+      );
+      // ⚠ Gated on the db, like every other per-pair store here: a db-less boot
+      // keeps the substrate status rather than half-constructing a door.
+      lookupRecipePairStore = deps.db
+        ? createReceptionLookupRecipePairStore(deps.db)
+        : undefined;
+      const lookupRunner = lookupRecipePairStore === undefined
+        ? undefined
+        : createReceptionLookupRecipeRunner({
+        executeDeps: deps.executeDeps,
+        lookupPairStore: lookupRecipePairStore,
+        definitionStore,
+        // Same reasoning as the submit runner above: `handleExecute` skips its
+        // install-dish merge for a run carrying a `run_id`, so the config must be
+        // passed explicitly or `{{config.*}}` resolves to nothing.
+        resolveConfig: resolveInstallConfig,
+        resolveRecipe: (recipeId) => deps.recipeStore?.get(recipeId) ?? null,
+        ...(resolveDoorRecipe ? { resolveDoorRecipe } : {}),
+        ...(resolveOp ? { resolveOp } : {}),
+        ...(resolveIngredientKind ? { resolveIngredientKind } : {}),
+        ...(resolveOpKinds ? { resolveOpKinds } : {}),
+        now: () => Date.now(),
+      });
+      runReceptionLookupRecipe = lookupRunner === undefined
+        ? undefined
+        : (input) => lookupRunner.run(input);
 
       // ── D-210 Appendix B — the on-the-go `/reception/manage` reschedule door ────────────
       //
@@ -916,6 +975,8 @@ export const composeReceptionSubstrate = async (
       ? { getReceptionManageRescheduleRunner: () => manageRescheduleRunner! }
       : {}),
     receptionManageCalendarSlug: DEFAULT_LOCAL_CALENDAR_SLUG,
+    // D-240 slice 3b — the bound viewback recipe. Absent ⇒ the substrate status.
+    ...(runReceptionLookupRecipe ? { runReceptionLookupRecipe } : {}),
     // WatchSource reception push source — verified mutation arrivals
     // emit canonical bus events + stamp the governance row's liveness.
     ...(deps.warehouseBus ? { warehouseBus: deps.warehouseBus } : {}),

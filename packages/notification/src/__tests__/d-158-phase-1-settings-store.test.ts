@@ -43,6 +43,7 @@ describe('D-158 P1 NotificationSettingsStore', () => {
       telegram: { notification: false, approval: false, messenger: false },
       whatsapp: { notification: false, approval: false, messenger: false },
       discord: { notification: false, approval: false, messenger: false },
+      teams: { notification: false, approval: false, messenger: false },
       email: { notification: false, approval: false, messenger: false },
       bridges: {},
     });
@@ -62,6 +63,7 @@ describe('D-158 P1 NotificationSettingsStore', () => {
       telegram: { notification: false, approval: false, messenger: false },
       whatsapp: { notification: false, approval: false, messenger: false },
       discord: { notification: false, approval: false, messenger: false },
+      teams: { notification: false, approval: false, messenger: false },
       email: { notification: false, approval: false, messenger: false },
       bridges: {},
     });
@@ -85,6 +87,7 @@ describe('D-158 P1 NotificationSettingsStore', () => {
       telegram: { notification: true, approval: true, messenger: false },
       whatsapp: { notification: false, approval: false, messenger: false },
       discord: { notification: false, approval: false, messenger: false },
+      teams: { notification: false, approval: false, messenger: false },
       email: { notification: false, approval: false, messenger: false },
       bridges: {},
     });
@@ -99,6 +102,7 @@ describe('D-158 P1 NotificationSettingsStore', () => {
       telegram: { notification: false, approval: false, messenger: false },
       whatsapp: { notification: false, approval: false, messenger: false },
       discord: { notification: false, approval: false, messenger: false },
+      teams: { notification: false, approval: false, messenger: false },
       email: { notification: true, approval: true, messenger: false },
     } as any);
 
@@ -109,6 +113,7 @@ describe('D-158 P1 NotificationSettingsStore', () => {
       telegram: { notification: false, approval: false, messenger: false },
       whatsapp: { notification: false, approval: false, messenger: false },
       discord: { notification: false, approval: false, messenger: false },
+      teams: { notification: false, approval: false, messenger: false },
       email: { notification: true, approval: true, messenger: false },
       bridges: {},
     });
@@ -122,6 +127,7 @@ describe('D-158 P1 NotificationSettingsStore', () => {
       telegram: { notification: false, approval: false, messenger: false },
       whatsapp: { notification: false, approval: false, messenger: false },
       discord: { notification: false, approval: false, messenger: false },
+      teams: { notification: false, approval: false, messenger: false },
       email: { notification: false, approval: false, messenger: false },
     } as any);
 
@@ -132,6 +138,7 @@ describe('D-158 P1 NotificationSettingsStore', () => {
       telegram: { notification: false, approval: false, messenger: false },
       whatsapp: { notification: false, approval: false, messenger: false },
       discord: { notification: false, approval: false, messenger: false },
+      teams: { notification: false, approval: false, messenger: false },
       email: { notification: false, approval: false, messenger: false },
       bridges: {},
     });
@@ -153,6 +160,7 @@ describe('D-158 P1 NotificationSettingsStore', () => {
       telegram: { notification: true, approval: true, messenger: false },
       whatsapp: { notification: false, approval: false, messenger: false },
       discord: { notification: false, approval: false, messenger: false },
+      teams: { notification: false, approval: false, messenger: false },
       email: { notification: false, approval: false, messenger: false },
       bridges: {},
     });
@@ -163,6 +171,7 @@ describe('D-158 P1 NotificationSettingsStore', () => {
       telegram: { notification: true, approval: true, messenger: false },
       whatsapp: { notification: false, approval: false, messenger: false },
       discord: { notification: false, approval: false, messenger: false },
+      teams: { notification: false, approval: false, messenger: false },
       email: { notification: false, approval: false, messenger: false },
       bridges: {},
     });

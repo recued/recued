@@ -166,10 +166,27 @@ export interface RawOpCheckpoint {
  *
  *  - It carries `step_state` — the `step.*` namespace, the ONLY
  *    namespace that accumulates run state. `config` / `meta` /
- *    `context` / `connection` are recipe-static or caller-injected and
- *    are re-seeded at re-instantiation exactly as for a fresh run;
- *    faithful re-seeding of those is the engine pause/resume slice's
- *    concern, not the substrate's.
+ *    `context` / `connection` are recipe-static or caller-injected, so
+ *    the CHECKPOINT does not carry them; re-seeding them is the engine
+ *    pause/resume slice's concern, not the substrate's.
+ *
+ *    ⚠ THAT IS NOT THE SAME AS RE-RESOLVING THEM FRESH — and this
+ *    comment previously said "re-seeded at re-instantiation exactly as
+ *    for a fresh run", which is the opposite of what the slice does.
+ *    The resumer replays the run anchor's FROZEN snapshots:
+ *    `config: { ...anchor.config_snapshot }` and
+ *    `context: { ...anchor.context_snapshot }`
+ *    (`backend/server/src/preflight-resumer.ts:486` / `:494-496`), so
+ *    the resumed gated step dispatches against exactly the values the
+ *    gate evaluated. A resumed run is byte-identical to the paused one
+ *    BY DESIGN: the owner approved a specific call against specific
+ *    values, and re-resolving would silently change what they approved.
+ *    `connection` IS re-resolved, but the `approved_target` guard
+ *    re-asks on drift rather than dispatching against it (below).
+ *    `d-165-op-identity-binding-drift.test.ts` states this correctly in
+ *    its own header; `packages/engine/src/__tests__/`
+ *    `pause-resume-ambient-sealing.test.ts` pins what actually stays
+ *    sealed across a pause while the world moves underneath it.
  *  - It deliberately does NOT carry `vault`. A checkpoint is persisted
  *    to disk; decrypted credentials must never land there. `vault` is
  *    re-seeded fresh at re-instantiation — which also correctly picks

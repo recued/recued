@@ -346,3 +346,151 @@ export interface MailSendAuditDetail {
    *  callers. */
   step_id?: string;
 }
+
+// ════════════════════════════════════════════════════════════════
+// D-239 — mail write-back (message-state mutation)
+// ════════════════════════════════════════════════════════════════
+//
+// `data.mail` was a read mirror plus one outbound verb: `send` creates a
+// NEW message, it never touches an existing one. D-239 closes the gap the
+// other warehouse collections had already closed — `data.calendar` writes
+// back through `create` / `update` / `delete` / `rsvp` (D-117), `data.file`
+// through `write` / `delete` / `move` (D-172) — with the same
+// verified-then-reflected invariant D-117 decision 3 pins:
+//
+//   the warehouse is written ONLY after the provider returns a complete,
+//   verified state for the mutated message. Adapter failure, timeout, or
+//   any unverified outcome throws `MailAdapterError` and leaves the
+//   warehouse untouched; the next sync tick reflects whatever actually
+//   landed.
+//
+// ⛔ THE READ SIDE MOVED WITH THE WRITE SIDE, AND HAD TO. `mail-flag`
+// writes `is_flagged`, which the mirror did not carry before this
+// decision — so all three providers now canonicalize it on the way IN
+// (IMAP `\Flagged`, Gmail's `STARRED` label, Graph's `flag.flagStatus`).
+// Shipping the write alone would have produced a flag that "works", then
+// silently reverts the first time that mailbox syncs: the write lands at
+// the provider, and the next canonicalize overwrites the hot field with a
+// value it never read. A write-back to a field the mirror does not read
+// is not a half-feature, it is a wrong one.
+
+/** Adapter-level error codes for a mail message-state mutation. Sibling
+ *  of `CalendarAdapterErrorCode` and deliberately the same shape: these
+ *  surface at the dispatcher and map onto recipe `fail_on` branches.
+ *
+ *  `io_error` is the load-bearing one — the "outcome unknown" variant.
+ *  The mutation may or may not have landed on the provider, so the
+ *  warehouse is NEVER written on this code. A recipe that must tell a
+ *  verified failure from an ambiguous one gates on it explicitly. */
+export type MailAdapterErrorCode =
+  /** The provider no longer holds this message (already deleted, or moved
+   *  out from under a stale warehouse row). Verified absence — the
+   *  warehouse row may safely be dropped. */
+  | 'message_not_found'
+  /** `mail-move` named a destination folder / label the provider does not
+   *  have. Rejected before any state change. */
+  | 'folder_not_found'
+  /** The grant does not cover mutation (Gmail without `gmail.modify`,
+   *  Graph without `Mail.ReadWrite`, an IMAP mailbox opened read-only). */
+  | 'permission_denied'
+  /** Provider rate limit / quota. Retryable; nothing changed. */
+  | 'quota_exceeded'
+  /** Token expired or revoked mid-call. */
+  | 'auth_expired'
+  /** Network / 5xx / timeout / malformed response. OUTCOME UNKNOWN — may
+   *  have succeeded provider-side. The warehouse stays untouched. */
+  | 'io_error';
+
+/** Thrown from the `MailProvider` mutation methods and caught at the mail
+ *  dispatcher, which maps it to a typed `RpcError`
+ *  (`backend/server/src/collections/mail/mail-errors.ts`). Mirrors
+ *  `CalendarAdapterError` so a reader of either module follows one
+ *  vocabulary. */
+export class MailAdapterError extends Error {
+  readonly code: MailAdapterErrorCode;
+  readonly cause?: unknown;
+  constructor(code: MailAdapterErrorCode, message: string, cause?: unknown) {
+    super(message);
+    this.name = 'MailAdapterError';
+    this.code = code;
+    this.cause = cause;
+  }
+}
+
+/** The verified post-mutation state of one message, returned by every
+ *  `MailProvider` mutation method. This is deliberately NARROW — it is
+ *  not a `CanonicalMessage`.
+ *
+ *  ⛔ WHY NOT THE FULL MESSAGE, the shape `applyVerifiedUpsert` takes on
+ *  calendar: a mail row's body is the expensive part (spilled to CAS
+ *  above 64 KB), and re-fetching an entire RFC822 message to record that
+ *  its `\Seen` flag moved would re-write that blob on every mark-read.
+ *  The mutation touches exactly the mirrored state fields, so the verified
+ *  payload carries exactly those; the collection folds them into the
+ *  existing row's `hot_fields` and leaves body, size, and blob pointer
+ *  alone. An event's canonical payload IS its state, which is why calendar
+ *  can round-trip the whole object and mail should not. */
+export interface MailMutationResult {
+  /** The message's provider-native id AFTER the mutation.
+   *
+   *  ⚠ NOT NECESSARILY THE ID THAT WENT IN. A move re-keys the message on
+   *  two of the three providers: IMAP `source_id` is `UID@folder` and both
+   *  halves change on a COPY+EXPUNGE, and Graph's `POST /messages/{id}/move`
+   *  returns a NEW resource id. Gmail alone keeps a stable id across a
+   *  label change. The collection compares this against the row it read
+   *  and re-keys rather than assuming identity — see
+   *  `MailCollection.applyVerifiedMutation`. */
+  source_id: string;
+  is_read: boolean;
+  is_flagged: boolean;
+  /** Primary folder (IMAP path / Graph `parentFolderId`) or the Gmail
+   *  label chosen by the same `LABEL_PRIORITY` fold the read path uses,
+   *  so a mutated row's `folder` hot field is comparable with a synced
+   *  one. */
+  folder_or_label: string;
+  /** Full post-mutation label set. Gmail only — IMAP and Graph model
+   *  placement as a single folder and omit this, exactly as the read-side
+   *  canonicalizers do. */
+  labels?: string[];
+}
+
+/** What a `moveMessage` can honestly report. Either the message's verified
+ *  new state, or `null`.
+ *
+ *  ⛔ `null` IS NOT A FAILURE — it means "the provider confirmed the move
+ *  and cannot tell us the message's new identity". This is a real IMAP
+ *  case, not a hypothetical: `UID MOVE` only returns a source→destination
+ *  UID mapping on servers advertising UIDPLUS, and plenty do not. The move
+ *  HAPPENED; we simply cannot name the result.
+ *
+ *  The three tempting alternatives are all worse:
+ *    - echo the OLD `source_id` — it names a UID that no longer exists in
+ *      the source folder, so every later mutation on that row 404s;
+ *    - throw `io_error` — claims the outcome is unknown when it is known;
+ *      a recipe would retry a move that already succeeded;
+ *    - re-search the destination by Message-ID — extra round-trips on a
+ *      header that is not guaranteed present, to reconstruct something the
+ *      next sync tick supplies for free.
+ *  So the collection DROPS the local row on `null` and lets the destination
+ *  folder's sync re-ingest the message under its real new id — the same
+ *  "let the next tick reconcile" discipline D-117 uses for a truncated
+ *  recurring series. */
+export type MailMoveOutcome = MailMutationResult | null;
+
+/** Destination for `mail-move`. Exactly one of the two forms, matching how
+ *  the providers actually model placement: a folder path (IMAP, Graph) or
+ *  a label set (Gmail). The dispatcher rejects the form the target
+ *  provider does not support rather than guessing a translation — a
+ *  silent "closest folder" mapping is how mail ends up somewhere the user
+ *  did not ask for. */
+export interface MailMoveDestination {
+  /** IMAP mailbox path (`INBOX/Archive`) or Graph folder id / well-known
+   *  name (`archive`, `deleteditems`). */
+  folder?: string;
+  /** Gmail label ids to add. Combined with `remove_labels` this is a
+   *  full `messages.modify` request. */
+  add_labels?: string[];
+  /** Gmail label ids to remove — pass `['INBOX']` for the archive
+   *  gesture, which is what "move out of the inbox" means on Gmail. */
+  remove_labels?: string[];
+}

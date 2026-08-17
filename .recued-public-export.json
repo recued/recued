@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "a62b8e03b2c32333b59329c1bbfce3edca50174c",
-    "tree": "d10a2c6555ddbbe46ae43143a1104105af3c3200",
-    "committed_at": "2026-08-14T13:19:53-07:00"
+    "commit": "88d15cba1deeb5abe2b0ed7f3eeb563d03f80766",
+    "tree": "951e1a733a55b068e3ebe186f925ec3b3f01ba80",
+    "committed_at": "2026-08-17T09:33:25-07:00"
   },
-  "export_manifest_sha256": "89e71fca4271fa0e92329454eaffc77e1055dab8ac5d873bb7dcb715fb028477",
-  "version": "26.8.14",
+  "export_manifest_sha256": "543158c9dcb6e716b74b4719b24199dd90a78cad137dcf0bb893235fc7c3af8a",
+  "version": "26.8.17",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -68,6 +68,7 @@
       "backend/server/src/__tests__/d-175-p5-binding-exchange-e2e.test.ts",
       "backend/server/src/__tests__/d-175-pro-convenience-server-half-e2e.test.ts",
       "backend/server/src/__tests__/d-176-pro-ddns-local-fakes.test.ts",
+      "backend/server/src/__tests__/d-178-installer-autostart.test.ts",
       "backend/server/src/__tests__/d-178-installer-sidecar.test.ts",
       "backend/server/src/__tests__/d-178-managed-seed-guard.test.ts",
       "backend/server/src/__tests__/d-182-hubspot-tierp-bulk.test.ts",
@@ -130,11 +131,15 @@
       "backend/server/src/__tests__/d-223-corpus-connection-hints.test.ts",
       "backend/server/src/__tests__/d-234-peer-ask-delivery.test.ts",
       "backend/server/src/__tests__/dispatch-canonical-resolve.test.ts",
+      "backend/server/src/__tests__/door-standing-closure-e2e.test.ts",
+      "backend/server/src/__tests__/drives/fleet-money-dispatch-smtp-drive.ts",
       "backend/server/src/__tests__/excel-workbook-semi-live.test.ts",
       "backend/server/src/__tests__/expense-ledger-import-workflow.test.ts",
       "backend/server/src/__tests__/federated-project-business-workflow.test.ts",
       "backend/server/src/__tests__/federated-project-source-sync.test.ts",
       "backend/server/src/__tests__/federated-project-two-node-live-drive.test.ts",
+      "backend/server/src/__tests__/fleet-money-audit-drive.test.ts",
+      "backend/server/src/__tests__/fleet-money-business-workflow.test.ts",
       "backend/server/src/__tests__/foundation-pack-op-step-pre-install.test.ts",
       "backend/server/src/__tests__/helpers/records-pack-harness.ts",
       "backend/server/src/__tests__/horizon-plan-classifier.test.ts",
@@ -142,6 +147,7 @@
       "backend/server/src/__tests__/ledger-book-business-workflow.test.ts",
       "backend/server/src/__tests__/local-cli-pack-live-drive.test.ts",
       "backend/server/src/__tests__/m-reach-full-chain-acceptance-e2e.test.ts",
+      "backend/server/src/__tests__/mcp-token-standing-closure-e2e.test.ts",
       "backend/server/src/__tests__/officecli-template-live-drive.test.ts",
       "backend/server/src/__tests__/pack-cross-pack-tier-p-install.test.ts",
       "backend/server/src/__tests__/pack-install-first-party-op-steps.test.ts",
@@ -153,6 +159,10 @@
       "backend/server/src/__tests__/provider-mock-pack-semi-live.test.ts",
       "backend/server/src/__tests__/provider-mock-semi-live.test.ts",
       "backend/server/src/__tests__/provider-mock-stripe.test.ts",
+      "backend/server/src/__tests__/queue-desk-business-workflow.test.ts",
+      "backend/server/src/__tests__/queue-desk-door-mechanisms.test.ts",
+      "backend/server/src/__tests__/queue-desk-mcp-staff-lane.test.ts",
+      "backend/server/src/__tests__/queue-desk-reception-door-drive.test.ts",
       "backend/server/src/__tests__/records-pack-entry-points.test.ts",
       "backend/server/src/__tests__/records-pack-write-approval.test.ts",
       "backend/server/src/__tests__/release-manifest-per-channel-path.test.ts",
@@ -229,6 +239,7 @@
       "packages/engine/src/__tests__/d-207-slice3d4b-start-execution.test.ts",
       "packages/engine/src/__tests__/d-207-slice3d5-observe-payment-execution.test.ts",
       "packages/engine/src/__tests__/d-207-slice3d5-reconcilers-execution.test.ts",
+      "packages/engine/src/__tests__/d-241-file-download-capture-runtime.test.ts",
       "packages/engine/src/__tests__/deeptutor-daily-mastery-execution.test.ts",
       "packages/engine/src/__tests__/expected-quotation-email-watcher-execution.test.ts",
       "packages/engine/src/__tests__/job-status-board-execution.test.ts",
@@ -339,6 +350,7 @@
       "packages/ingredient-authoring/src/__tests__/exchange-require-connection-corpus.test.ts",
       "packages/ingredient-authoring/src/__tests__/federated-project-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/fireflies-pack-audit.test.ts",
+      "packages/ingredient-authoring/src/__tests__/fleet-money-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/generator-version-drift-corpus.test.ts",
       "packages/ingredient-authoring/src/__tests__/idempotency-declared-corpus.test.ts",
       "packages/ingredient-authoring/src/__tests__/job-status-board-pack-audit.test.ts",
@@ -353,6 +365,7 @@
       "packages/ingredient-authoring/src/__tests__/peer-appointment-receiver-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/peer-exchange-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/placeholder-required-default-corpus.test.ts",
+      "packages/ingredient-authoring/src/__tests__/queue-desk-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/recipe-depends-on-coverage.test.ts",
       "packages/ingredient-authoring/src/__tests__/recipe-description-readability.test.ts",
       "packages/ingredient-authoring/src/__tests__/recipe-owner-surface-reachability.test.ts",
@@ -512,7 +525,7 @@
       "packages/recipes/src/__tests__/zendesk-ticket-count-truth-pack-audit.test.ts",
       "packages/recipes/src/__tests__/zendesk-ticket-reply-closure-loop.test.ts"
     ],
-    "sha256": "119a85c6918177891fdd0f59e46395fd2aad23d99e86db7579ecadb4af43c6cd",
+    "sha256": "082a0a62a69767784748363e3c38dcab5955b1649ac4978ab8fb43336a721c6c",
     "roots": [
       "apps/auth-worker",
       "backend/api",
@@ -523,15 +536,15 @@
     ]
   },
   "internal_reference_scrub": {
-    "files_changed": 1016,
+    "files_changed": 1032,
     "rules": [
       {
         "id": "internal-spec-reference",
-        "comments_rewritten": 983
+        "comments_rewritten": 998
       },
       {
         "id": "internal-design-document",
-        "comments_rewritten": 84
+        "comments_rewritten": 86
       },
       {
         "id": "internal-handover-note",
@@ -619,7 +632,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 5341,
-    "sha256": "bbd47539dc17a1acb78bfa642985690928db893325e716c0a3679ce4c1e7fd5b"
+    "file_count": 5392,
+    "sha256": "bdfed68d63cc03dba6a5cb6f404aaa6476443deafd4221dff14aa5e1e05ca4a7"
   }
 }

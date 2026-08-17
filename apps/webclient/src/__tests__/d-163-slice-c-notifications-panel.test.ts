@@ -484,6 +484,7 @@ describe('mountNotificationsPanel', () => {
             telegram: { notification: false, approval: false, messenger: false },
             whatsapp: { notification: false, approval: false, messenger: false },
             discord: { notification: false, approval: false, messenger: false },
+            teams: { notification: false, approval: false, messenger: false },
             email: { notification: false, approval: false, messenger: false },
           },
         }) satisfies NotificationSetChannelResult,
@@ -583,6 +584,7 @@ describe('mountNotificationsPanel', () => {
             telegram: { notification: false, approval: false, messenger: false },
             whatsapp: { notification: false, approval: false, messenger: false },
             discord: { notification: false, approval: false, messenger: false },
+            teams: { notification: false, approval: false, messenger: false },
             email: { notification: false, approval: false, messenger: false },
           },
         }) satisfies NotificationSetChannelResult,
@@ -619,6 +621,7 @@ describe('mountNotificationsPanel', () => {
             telegram: { notification: false, approval: false, messenger: false },
             whatsapp: { notification: false, approval: false, messenger: false },
             discord: { notification: false, approval: false, messenger: false },
+            teams: { notification: false, approval: false, messenger: false },
             email: { notification: false, approval: false, messenger: false },
           },
         }) satisfies NotificationSetChannelResult,
@@ -661,6 +664,7 @@ describe('mountNotificationsPanel', () => {
             telegram: { notification: false, approval: false, messenger: false },
             whatsapp: { notification: false, approval: false, messenger: false },
             discord: { notification: false, approval: false, messenger: false },
+            teams: { notification: false, approval: false, messenger: false },
             email: { notification: false, approval: false, messenger: false },
             ...(args.phrase !== null
               ? { verification_phrase: args.phrase }
@@ -759,6 +763,7 @@ describe('mountNotificationsPanel', () => {
         telegram: { notification: false, approval: false, messenger: false },
         whatsapp: { notification: false, approval: false, messenger: false },
         discord: { notification: false, approval: false, messenger: false },
+        teams: { notification: false, approval: false, messenger: false },
         email: { notification: false, approval: false, messenger: false },
         verification_phrase: 'green fox',
       },
@@ -801,6 +806,7 @@ describe('mountNotificationsPanel', () => {
             telegram: { notification: false, approval: false, messenger: false },
             whatsapp: { notification: false, approval: false, messenger: false },
             discord: { notification: false, approval: false, messenger: false },
+            teams: { notification: false, approval: false, messenger: false },
             email: { notification: false, approval: false, messenger: false },
           },
         } satisfies NotificationSetChannelResult;
@@ -1018,6 +1024,7 @@ describe('mountNotificationsPanel', () => {
         telegram: { notification: false, approval: false, messenger: false },
         whatsapp: { notification: false, approval: false, messenger: false },
         discord: { notification: false, approval: false, messenger: false },
+        teams: { notification: false, approval: false, messenger: false },
         email: { notification: false, approval: false, messenger: false },
       },
     });

@@ -442,7 +442,7 @@ const tokenRecord = (
   bearer_hash: 'hash',
   label: MCP_DOOR_TOKEN_LABEL,
   created_at: 1,
-  expires_at: 0, // never expires (the door's default)
+  // never expires (the door's default)
   revoked_at: null,
   grants: {},
   concurrency_tier: 5,
@@ -474,7 +474,6 @@ const makeFakeTokenStore = (seed: McpInboundTokenRecord[] = []) => {
       label: args.label,
       grants: args.grants,
       concurrency_tier: args.concurrency_tier,
-      expires_at: args.expires_at,
       chat_mode: args.chat_mode,
     });
     rows.unshift({ ...record });
@@ -1366,7 +1365,6 @@ describe('D-171 mcp door (inbound-token lifecycle)', () => {
       label: MCP_DOOR_TOKEN_LABEL,
       grants: {},
       concurrency_tier: 5,
-      expires_at: 0,
       chat_mode: null,
     });
     expect(mount.getMcpDoorOpen()).toBe(true);
@@ -1580,27 +1578,18 @@ describe('D-171 mcp door (inbound-token lifecycle)', () => {
     expect(mount.getMcpDoorTokenPlaintext()).toBeNull();
   });
 
-  it('honours token expiry via the now seam when deriving open/closed', async () => {
-    // A door-labelled token that expires at t=100.
-    const store = makeFakeTokenStore([
-      tokenRecord({ token_id: 'expiring', expires_at: 100 }),
-    ]);
-    const clock = { t: 50 };
-    const { mount } = mountFor({
-      runListInboundTokens: store.list,
-      runIssueInboundToken: store.issue,
-      runRevokeInboundToken: store.revoke,
-      now: () => clock.t,
-    });
-    await mount.whenTokensLoaded();
-
-    // Before expiry → Open.
-    expect(mount.getMcpDoorOpen()).toBe(true);
-    // After expiry → Closed (re-derived against the now seam).
-    clock.t = 150;
-    expect(mount.getMcpDoorOpen()).toBe(false);
-    mount.dispose();
-  });
+  /** ⛔⛔ THE TOKEN-EXPIRY DOOR TEST IS RETIRED WITH THE FIELD. It drove a
+   *  token expiring at t=100 and asserted the door flipped Open→Closed across
+   *  the `now` seam. A token has no expiry now — the CONTRACT does, and the
+   *  panel's Advanced toggles are where the owner sets it.
+   *
+   *  ⚠ Removed rather than repointed at the contract: this panel derives
+   *  open/closed from the TOKEN list, so re-pointing would mean rebuilding the
+   *  fixture around contract liveness — a different test of a different object,
+   *  better written where contract expiry is enforced (`isContractLive` at the
+   *  transport, `mcp-recipe-callback`, `approval-resume-authority`, and
+   *  `llm_gateway`'s `authorize`, each already covered). Revocation-driven
+   *  open/closed is still asserted by its own test above. */
 
   it('stays non-interactive + enable no-ops when revoke is missing (full three-caller gate)', async () => {
     const store = makeFakeTokenStore([]);
@@ -2603,29 +2592,41 @@ describe('D-171 slice 3b — mcp door Advanced (lazy cap/expiry)', () => {
     mount.dispose();
   });
 
-  it('clearing every limit unbinds the token + revokes the prior contract (no mint)', async () => {
+  /** ⛔⛔ CLEARING NO LONGER UNBINDS — it rebinds to an UNBOUNDED carrier.
+   *
+   *  This slot asserted `updateContract({ contract_id: null })` and a token
+   *  left with no contract at all. That was the shipped behaviour and it is
+   *  what made "a contract exists ONLY while a limit is on" true — leaving the
+   *  common token carrying a synthetic `contract_id` that named no row.
+   *
+   *  A token is always contracted now, so removing limits is the SAME
+   *  mint→rebind→revoke as changing one; the only difference is that
+   *  `max_uses` / `expiry_at` are omitted from the mint. */
+  it('⛔⛔ clearing every limit rebinds to an UNBOUNDED carrier, never unbinds', async () => {
     const { mount, contracts, store } = mountAdvanced(
       [tokenRecord({ token_id: 'door_live', contract_id: 'ct_bound' })],
       [contractView({ contract_id: 'ct_bound', max_uses: 50, uses_remaining: 30 })],
     );
     await settle(mount);
 
-    // The cap seeded ON; turn it off + save → desired (null, null) = clear.
     mount.setAdvancedField('capEnabled', false);
     await mount.submitMcpDoorLimits();
     await tick();
 
-    expect(contracts.mint).not.toHaveBeenCalled();
-    // Unbind first (so the token is never bound to a revoked contract)…
+    // A carrier IS minted — with neither bound on it.
+    expect(contracts.mint).toHaveBeenCalledTimes(1);
+    const mintArgs = contracts.mint.mock.calls[0]![0] as unknown as Record<string, unknown>;
+    expect(mintArgs.max_uses).toBeUndefined();
+    expect(mintArgs.expiry_at).toBeUndefined();
+    // …and the token binds to it. ⛔ NEVER `null` — the rpc refuses that now.
     expect(store.updateContract).toHaveBeenCalledTimes(1);
     expect(store.updateContract.mock.calls[0]![0]).toEqual({
       token_id: 'door_live',
-      contract_id: null,
+      contract_id: 'ct_minted_1',
     });
-    // …then revoke the prior envelope.
+    // …then the old envelope retires, as on any limit change.
     expect(contracts.revoke).toHaveBeenCalledTimes(1);
     expect(contracts.revoke.mock.calls[0]![0]).toEqual({ contract_id: 'ct_bound' });
-    expect(mount.getMcpDoorBoundContract()).toBeNull();
     mount.dispose();
   });
 

@@ -85,11 +85,20 @@ export const resolvePublicBaseUrl = (raw: string | undefined | null): string | n
  *  (`/ask/<ask_id>`); the `ask_id` is URL-encoded. */
 export const buildAskLandingAnswerLink = (
   baseUrl: string | null,
-): ((ask_id: string) => string) | null => {
+): ((ask_id: string, via?: string) => string) | null => {
   if (baseUrl === null) return null;
   const base = baseUrl;
-  return (ask_id: string): string =>
-    `${base}${PATH_FOR_ROLE.ask}/${encodeURIComponent(ask_id)}`;
+  return (ask_id: string, via?: string): string => {
+    const path = `${base}${PATH_FOR_ROLE.ask}/${encodeURIComponent(ask_id)}`;
+    // D-238 — stamp the ORIGINATING channel so the answer can be attributed to
+    // it. Without this every landing-page answer is recorded as `email` (the
+    // D-210 finding 15 default), which was already wrong for Slack and becomes a
+    // false approval TRAIL once a Teams ask carries the same link. Omitted for a
+    // caller that has no channel identity; the page falls back to `email`.
+    return via === undefined || via.length === 0
+      ? path
+      : `${path}?via=${encodeURIComponent(via)}`;
+  };
 };
 
 /** D-234 § 234.3 — resolve a recipe's `metadata.owner_surface` to an ABSOLUTE

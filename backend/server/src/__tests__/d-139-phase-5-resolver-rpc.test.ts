@@ -849,6 +849,7 @@ describe('D-139 P5 — createMailUnionTwinResolver', () => {
         thread_id: 't',
         folder_or_label: 'INBOX',
         is_read: true,
+        is_flagged: false,
         has_attachments: false,
         received_at: receivedAt,
         body_text: 'body',

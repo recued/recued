@@ -42,6 +42,7 @@
 import {
   isMailReconciliationId,
   MAIL_RECONCILIATION_ID_HEADER,
+  MailAdapterError,
   MICROSOFT_TOKEN_URL,
 } from '@recued/contracts';
 import { IngredientError } from '@recued/ingredients';
@@ -65,6 +66,8 @@ import {
   type InitialScanOptions,
   type InboundMailAttachmentPart,
   type MailMessageDirection,
+  type MailMoveDestination,
+  type MailMutationResult,
   type MailProvider,
   type MailSyncFailureKind,
   type MailSyncOutcomeListener,
@@ -145,6 +148,12 @@ export const GRAPH_MESSAGE_SELECT = [
   'conversationId',
   'parentFolderId',
   'isRead',
+  // D-239 — `flag` must be in the projection or `canonicalizeGraph` reads
+  // `undefined` and every synced message reports itself unflagged, silently
+  // reverting whatever `mail-flag` just wrote. A `$select` that omits a field
+  // the canonicalizer reads is indistinguishable from a message that genuinely
+  // lacks it: Graph returns 200 either way.
+  'flag',
   'hasAttachments',
   'receivedDateTime',
   'body',
@@ -155,6 +164,12 @@ export const GRAPH_MESSAGE_SELECT = [
  *  this exact value. Documented at
  *  https://learn.microsoft.com/en-us/graph/permissions-reference#mail-permissions. */
 export const GRAPH_SEND_SCOPE = 'Mail.Send';
+
+/** D-239 — Graph permission that toggles message-state MUTATION.
+ *  `Mail.ReadWrite` covers PATCH `isRead` / `flag`, `POST /move`, and
+ *  `DELETE`; `Mail.Read` alone permits none of them. Separate from
+ *  `Mail.Send` — Microsoft grants the two independently. */
+export const GRAPH_MODIFY_SCOPE = 'Mail.ReadWrite';
 
 // ────────────────────────────────────────────────────────────────
 // Graph message shape + canonicalizer
@@ -178,6 +193,11 @@ export interface GraphMessagePayload {
   conversationId?: string;
   parentFolderId?: string;
   isRead?: boolean;
+  /** D-239 — Graph models the flag as a nested resource with a three-state
+   *  status (`notFlagged` / `flagged` / `complete`), not a boolean. Only
+   *  `flagged` is "flagged" for our purposes: `complete` is a follow-up the
+   *  user has already finished, which reads as done, not as pending. */
+  flag?: { flagStatus?: 'notFlagged' | 'flagged' | 'complete' };
   hasAttachments?: boolean;
   receivedDateTime?: string;
   sentDateTime?: string;
@@ -259,6 +279,7 @@ export const canonicalizeGraph = (
     folder_or_label: msg.parentFolderId ?? '',
     direction,
     is_read: msg.isRead ?? false,
+    is_flagged: msg.flag?.flagStatus === 'flagged',
     has_attachments: (msg.hasAttachments ?? false) || attachments.length > 0,
     received_at: Number.isFinite(received) ? received : Date.now(),
     body_text: body.text,
@@ -1110,6 +1131,211 @@ export const createGraphProvider = (
     }
   };
 
+  // ── D-239 write-back ────────────────────────────────────────────
+  //
+  // Graph splits the four verbs across three HTTP shapes: PATCH for the
+  // two state bits, POST /move for relocation, DELETE for removal. All
+  // three echo or imply a verified outcome, which is what the collection
+  // needs before it touches the warehouse.
+
+  const throwGraphMutationError = (
+    status: number,
+    text: string,
+    verb: string,
+  ): never => {
+    const detail = `graph ${verb} (${status}): ${text.slice(0, 200)}`;
+    if (status === 401) {
+      markError(`graph ${verb} auth ${status}`, text);
+      throw new MailAdapterError('auth_expired', detail);
+    }
+    if (status === 403) {
+      markError(`graph ${verb} forbidden ${status}`, text);
+      throw new MailAdapterError('permission_denied', detail);
+    }
+    if (status === 404) {
+      // Graph returns 404 for both "no such message" and "no such
+      // destination folder". The verb is the only thing that tells them
+      // apart, and it is the discriminator recipe authors branch on.
+      throw new MailAdapterError(
+        verb === 'move' ? 'folder_not_found' : 'message_not_found',
+        detail,
+      );
+    }
+    if (status === 429) throw new MailAdapterError('quota_exceeded', detail);
+    if (status >= 400 && status < 500) {
+      throw new MailAdapterError('folder_not_found', detail);
+    }
+    markError(`graph ${verb} transient ${status}`, text);
+    // ⛔ OUTCOME UNKNOWN — never write the warehouse on this.
+    throw new MailAdapterError(
+      'io_error',
+      `${detail} — outcome unknown, the change may have been applied`,
+    );
+  };
+
+  /** PATCH with the same one-shot 401-refresh contract `postWithRetry`
+   *  and `getWithRetry` use. */
+  const patchWithRetry = async (
+    url: string,
+    body: string,
+  ): ReturnType<HttpFetcher> => {
+    const patch = async (token: string) => fetcher(url, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body,
+    });
+    let res = await patch(await ensureToken(false));
+    if (res.status === 401) res = await patch(await ensureToken(true));
+    return res;
+  };
+
+  const deleteWithRetry = async (url: string): ReturnType<HttpFetcher> => {
+    const del = async (token: string) => fetcher(url, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    let res = await del(await ensureToken(false));
+    if (res.status === 401) res = await del(await ensureToken(true));
+    return res;
+  };
+
+  const messageUrl = (id: string): string =>
+    `${GRAPH_API_BASE}/me/messages/${encodeURIComponent(id)}`;
+
+  /** Read the mutation response body as a Graph message and fold it into
+   *  the shared result shape. Graph's PATCH and POST /move both return the
+   *  updated resource, so the reflected state is the provider's own answer.
+   *
+   *  ⚠ The response comes back in Graph's DEFAULT projection, not our
+   *  `$select`, so `flag` / `isRead` / `parentFolderId` are present but
+   *  everything else may not be — which is fine, because this shape reads
+   *  only those three. */
+  const mutationResultFrom = (
+    data: GraphMessagePayload | null,
+    fallbackId: string,
+    verb: string,
+  ): MailMutationResult => {
+    if (!data || typeof data.id !== 'string' || data.id.length === 0) {
+      // A 2xx whose body we cannot read leaves us with no verified state.
+      // The change almost certainly landed — but "almost certainly" is
+      // exactly what `io_error` exists to express, and the next delta tick
+      // settles it against the provider rather than against a guess.
+      throw new MailAdapterError(
+        'io_error',
+        `graph ${verb} returned a malformed response for '${fallbackId}' — outcome unknown`,
+      );
+    }
+    return {
+      // ⚠ NOT `fallbackId`. `POST /move` mints a NEW resource id — the
+      // message is a different Graph object in its new folder — so echoing
+      // the input here would leave the warehouse keyed to an id that no
+      // longer resolves, and every later mutation on that row would 404.
+      source_id: data.id,
+      is_read: data.isRead ?? false,
+      is_flagged: data.flag?.flagStatus === 'flagged',
+      folder_or_label: data.parentFolderId ?? '',
+    };
+  };
+
+  const runGraphMutation = async (
+    verb: string,
+    fallbackId: string,
+    call: () => ReturnType<HttpFetcher>,
+  ): Promise<GraphMessagePayload | null> => {
+    let res: Awaited<ReturnType<HttpFetcher>>;
+    try {
+      res = await call();
+    } catch (err) {
+      markError(`graph ${verb} transport failure`, err);
+      throw new MailAdapterError(
+        'io_error',
+        `graph ${verb} could not reach the provider for '${fallbackId}' — outcome unknown`,
+        err,
+      );
+    }
+    if (!res.ok) {
+      throwGraphMutationError(res.status, await res.text().catch(() => ''), verb);
+    }
+    lastSuccessfulSyncAt = nowOf();
+    return (await res.json().catch(() => null)) as GraphMessagePayload | null;
+  };
+
+  const markImpl = async (args: {
+    source_id: string;
+    read: boolean;
+  }): Promise<MailMutationResult> => mutationResultFrom(
+    await runGraphMutation('mark', args.source_id, () =>
+      patchWithRetry(messageUrl(args.source_id), JSON.stringify({ isRead: args.read }))),
+    args.source_id,
+    'mark',
+  );
+
+  const flagImpl = async (args: {
+    source_id: string;
+    flagged: boolean;
+  }): Promise<MailMutationResult> => mutationResultFrom(
+    await runGraphMutation('flag', args.source_id, () =>
+      patchWithRetry(
+        messageUrl(args.source_id),
+        // Clearing sets `notFlagged`, never `complete`: "complete" is a
+        // follow-up the user finished, and asserting that on their behalf
+        // would put a claim in their mailbox they never made.
+        JSON.stringify({
+          flag: { flagStatus: args.flagged ? 'flagged' : 'notFlagged' },
+        }),
+      )),
+    args.source_id,
+    'flag',
+  );
+
+  const moveImpl = async (args: {
+    source_id: string;
+    destination: MailMoveDestination;
+  }): Promise<MailMutationResult> => {
+    const folder = args.destination.folder;
+    if (!folder) {
+      // Label sets are Gmail's model. Graph has folders; refusing is
+      // honest, translating would be invention.
+      throw new MailAdapterError(
+        'folder_not_found',
+        'graph move requires a destination folder — Gmail label sets have no Graph equivalent',
+      );
+    }
+    return mutationResultFrom(
+      await runGraphMutation('move', args.source_id, () =>
+        postWithRetry(
+          `${messageUrl(args.source_id)}/move`,
+          JSON.stringify({ destinationId: folder }),
+        )),
+      args.source_id,
+      'move',
+    );
+  };
+
+  const deleteImpl = async (args: { source_id: string }): Promise<void> => {
+    // Graph's DELETE on a message files it to Deleted Items rather than
+    // purging it — the same reversible gesture Outlook's own delete
+    // performs. (A true purge requires deleting from Deleted Items again.)
+    let res: Awaited<ReturnType<HttpFetcher>>;
+    try {
+      res = await deleteWithRetry(messageUrl(args.source_id));
+    } catch (err) {
+      markError('graph delete transport failure', err);
+      throw new MailAdapterError(
+        'io_error',
+        `graph delete could not reach the provider for '${args.source_id}' — outcome unknown`,
+        err,
+      );
+    }
+    if (!res.ok) {
+      throwGraphMutationError(res.status, await res.text().catch(() => ''), 'delete');
+    }
+    lastSuccessfulSyncAt = nowOf();
+  };
+
   // sendCapable lockstep with `send`: derive once at construction
   // from the user's granted-scope list. Re-enrollment with new
   // scopes recreates the provider so a later config() mutation can't
@@ -1122,11 +1348,17 @@ export const createGraphProvider = (
     GRAPH_SEND_SCOPE,
   );
   const accountEmail = opts.config().account_email ?? '';
+  // D-239 — same lockstep + tolerant-match discipline as `sendCapable`.
+  const mutationCapable = grantedScopesInclude(
+    opts.config().granted_scopes ?? [],
+    GRAPH_MODIFY_SCOPE,
+  );
 
   return {
     kind: 'graph',
     slug: opts.slug,
     sendCapable,
+    mutationCapable,
     accountEmail,
 
     async connect() {
@@ -1200,6 +1432,15 @@ export const createGraphProvider = (
     lookupSentByReconciliationId,
 
     ...(sendCapable ? { send: sendImpl } : {}),
+    // D-239 — attached as a group, in lockstep with `mutationCapable`.
+    ...(mutationCapable
+      ? {
+          markMessage: markImpl,
+          flagMessage: flagImpl,
+          moveMessage: moveImpl,
+          deleteMessage: deleteImpl,
+        }
+      : {}),
   };
 };
 

@@ -214,6 +214,10 @@ describe('D-210 Appendix B — /reception/manage dispatch', () => {
       kind: 'scheduling_link',
       endpoint_id: ENDPOINT_ID,
       record_id: BOOKING_ID,
+      // D-240 — the manage door's own capability. These tests are about the
+      // reschedule lifecycle, so the fixture names the purpose that door has
+      // always had; the purpose FENCE itself is tested in the D-240 suite.
+      purpose: 'manage',
       now: NOW,
     }).secret;
 
@@ -302,8 +306,8 @@ describe('D-210 Appendix B — /reception/manage dispatch', () => {
     );
     expect(crossed.statusCode).toBe(403);
     expect(env.runCalls).toHaveLength(0);
-    expect(env.credStore.peek(secretA, NOW).status).toBe('ok');
-    expect(env.credStore.peek(secretB, NOW).status).toBe('ok');
+    expect(env.credStore.peek(secretA, NOW, 'manage').status).toBe('ok');
+    expect(env.credStore.peek(secretB, NOW, 'manage').status).toBe('ok');
 
     // The nonce still authorizes only the credential that minted it.
     const correct = fakeResponse();
@@ -344,7 +348,7 @@ describe('D-210 Appendix B — /reception/manage dispatch', () => {
       bad.response,
     );
     expect(bad.statusCode).toBe(403);
-    expect(env.credStore.peek(secret, NOW).status).toBe('ok');
+    expect(env.credStore.peek(secret, NOW, 'manage').status).toBe('ok');
 
     const retry = fakeResponse();
     await env.handler(

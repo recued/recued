@@ -193,14 +193,26 @@ export const mintDoorContract = (
     /** Reception only. Omit for the fail-closed no-AI default; webhook doors do not consume
      *  this policy because their machine-trigger cost posture is separate. */
     readonly doorExecutionPolicy?: DoorExecutionPolicy;
+    /** The owner's standing-closure opt-in, carried from the bind. Reception
+     *  only — a webhook door consumes no execution policy. Absent ⇒ off, which
+     *  is what every door minted before this field gets. */
+    readonly standingClosure?: boolean;
   },
   deps: MintDoorDeps,
 ): { readonly contract_id: string } => {
   const ts = deps.now();
   const profile = DOOR_MINT_PROFILES[input.door];
-  const doorExecutionPolicy = input.door === 'reception'
+  const basePolicy = input.door === 'reception'
     ? input.doorExecutionPolicy ?? DEFAULT_RECEPTION_DOOR_EXECUTION_POLICY
     : undefined;
+  // ⚠ The flag rides the door's EXISTING policy object rather than a new
+  // column: `allow_ai` is already a per-door owner opt-in resolved at bind, and
+  // a second home for the same kind of decision is how the two drift.
+  const doorExecutionPolicy = basePolicy === undefined
+    ? undefined
+    : input.standingClosure === true
+      ? { ...basePolicy, standing_closure: true }
+      : basePolicy;
 
   const def = deps.definitionStore.mint({
     minted_by: input.mintedBy,

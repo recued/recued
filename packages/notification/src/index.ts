@@ -147,7 +147,9 @@ export {
 } from './channels/email.js';
 export {
   ASK_LANDING_RESPONSE_HEADERS,
+  ASK_LANDING_VIA_KEY,
   parseAskLandingSubmission,
+  resolveAskLandingVia,
   renderAskLandingHtml,
   type AskLandingDetail,
   type AskLandingEditControl,

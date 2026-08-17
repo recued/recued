@@ -98,6 +98,17 @@ export interface ConnectionField {
   help?: string;
   /** Placeholder for text/url/secret. */
   placeholder?: string;
+  /** D-238 — a value SEEDED into form state when the form opens.
+   *
+   *  ⛔ Distinct from `placeholder`, and the difference is the whole point: a
+   *  placeholder is grey text that projects as ABSENT. A fixed, hidden field
+   *  carrying only a placeholder therefore reaches the server empty, and the
+   *  owner cannot fill it because they cannot see it — the form simply refuses
+   *  to submit with no visible cause. `seedSchemaDefaults` writes this into
+   *  state, so a locked constant (an OAuth token endpoint, a fixed API root)
+   *  actually arrives. Vendor flows have `initialVendorSchemaValues` for the
+   *  same job; a bare-kind subtype schema had nothing until this. */
+  initial?: string;
   /** True -> field is rendered read-only but still projected into the
    *  rpc payload from form state. Used for provider-owned values that
    *  users may need to inspect but must not hand-edit. */

@@ -118,6 +118,7 @@ describe('D-127 P1.1 — assertSendCapable', () => {
     kind: 'gmail',
     slug: 'work',
     sendCapable: false,
+    mutationCapable: false,
     accountEmail: '',
     async connect() {},
     async initialScan() {},

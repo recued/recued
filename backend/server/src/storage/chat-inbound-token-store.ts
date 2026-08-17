@@ -207,7 +207,6 @@ const rowToRecord = (row: Row): McpInboundTokenRecord => {
     bearer_hash: row.bearer_hash,
     label: row.label,
     created_at: row.created_at,
-    expires_at: row.expires_at,
     revoked_at: row.revoked_at,
     grants,
     concurrency_tier,
@@ -343,7 +342,8 @@ export const createChatInboundTokenStore = (
       (token_id, bearer_hash, label, peer_handle, created_at, expires_at,
        revoked_at, grants_json, concurrency_tier, chat_mode_json, contract_id, updated_at)
       VALUES (@token_id, @bearer_hash, @label, @peer_handle, @created_at, @expires_at,
-              @revoked_at, @grants_json, @concurrency_tier, @chat_mode_json, @contract_id, @updated_at)
+              @revoked_at, @grants_json, @concurrency_tier, @chat_mode_json, @contract_id,
+              @updated_at)
   `);
   const selectByIdStmt = db.prepare<{ token_id: string }>(
     `SELECT * FROM chat_inbound_tokens WHERE token_id = @token_id`,
@@ -436,7 +436,6 @@ export const createChatInboundTokenStore = (
         bearer_hash,
         label: value.label,
         created_at: now,
-        expires_at: value.expires_at,
         revoked_at: null,
         grants: value.grants,
         concurrency_tier: value.concurrency_tier,
@@ -453,7 +452,11 @@ export const createChatInboundTokenStore = (
         label: value.label,
         peer_handle: value.peer_handle ?? null,
         created_at: now,
-        expires_at: value.expires_at,
+        // ⚠ The COLUMN survives (NOT NULL) and is written with the old
+        // never-expires sentinel. The token no longer HAS an expiry — the
+        // contract does — but dropping a column is a destructive migration with
+        // no rollback, and a constant 0 is inert on every remaining read path.
+        expires_at: 0,
         revoked_at: null,
         grants_json: grantsToJson(value.grants),
         concurrency_tier: value.concurrency_tier,
@@ -551,7 +554,12 @@ export const createChatInboundTokenStore = (
       if (!timingSafeEqual(expectedBuf, candidateBuf)) return null;
       const record = rowToRecord(row);
       if (record.revoked_at !== null) return null;
-      if (record.expires_at !== 0 && record.expires_at <= now) return null;
+      // ⛔ Expiry is the CONTRACT's, checked by `isContractLive` at each
+      // consumer — the transport (`boundContractActive`, which collapses the
+      // allowlist), `mcp-recipe-callback`, and `approval-resume-authority`. A
+      // dead contract already yields connect-then-deny rather than a 401, and
+      // an expired one now takes the same path, which is the posture that
+      // preserves audit attribution.
       return record;
     },
     async drainAuthorityChanges() {

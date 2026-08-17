@@ -36,6 +36,7 @@ const mkMessage = (overrides: Partial<CanonicalMessage> = {}): CanonicalMessage 
   folder_or_label: 'INBOX',
   direction: 'inbound',
   is_read: false,
+  is_flagged: false,
   has_attachments: false,
   received_at: 1_700_000_000_000,
   body_text: 'body text contents',
@@ -77,6 +78,7 @@ const makeStubProvider = (slug: string, hooks: StubProviderHooks = {}): StubProv
     kind: 'imap',
     slug,
     sendCapable: false,
+    mutationCapable: false,
     accountEmail: '',
     async connect() {
       connectCalls++;

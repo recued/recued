@@ -181,7 +181,6 @@ describe('D-137 P5 — isMcpInboundTokenActive', () => {
     bearer_hash: 'a'.repeat(64),
     label: 'mary',
     created_at: 1_000,
-    expires_at: 100_000,
     revoked_at: null,
     grants: {},
     concurrency_tier: 3,
@@ -190,34 +189,29 @@ describe('D-137 P5 — isMcpInboundTokenActive', () => {
     ...overrides,
   });
 
-  it('returns true for an active token within its expiry window', () => {
-    expect(isMcpInboundTokenActive(baseRecord({ expires_at: 50_000 }), 10_000)).toBe(true);
+  it('returns true for a token that is not revoked', () => {
+    expect(isMcpInboundTokenActive(baseRecord({}), 10_000)).toBe(true);
   });
 
   it('returns false when revoked_at is set', () => {
     expect(isMcpInboundTokenActive(baseRecord({ revoked_at: 5_000 }), 10_000)).toBe(false);
   });
 
-  it('returns false past the expiry window', () => {
-    expect(isMcpInboundTokenActive(baseRecord({ expires_at: 100 }), 10_000)).toBe(false);
-  });
-
-  it('treats expires_at: 0 as the substrate "never expires" sentinel', () => {
-    expect(isMcpInboundTokenActive(baseRecord({ expires_at: 0 }), Number.MAX_SAFE_INTEGER)).toBe(true);
-  });
-
-  it('respects revocation even when expires_at: 0 sentinel applies', () => {
-    expect(isMcpInboundTokenActive(
-      baseRecord({ expires_at: 0, revoked_at: 5_000 }),
-      10_000,
-    )).toBe(false);
-  });
-
-  it('matches the boundary case (expires_at === now → expired)', () => {
-    // The predicate uses `expires_at > now` ⇒ expires_at === now means
-    // the window just closed. UX surfaces "expired" on boundary.
-    expect(isMcpInboundTokenActive(baseRecord({ expires_at: 10_000 }), 10_000)).toBe(false);
-  });
+  /** ⛔⛔ THE EXPIRY TESTS ARE GONE BECAUSE THE PROPERTY IS. Four of them lived
+   *  here — past the window, the `expires_at: 0` never-expires sentinel,
+   *  revocation-beats-sentinel, and the `expires_at === now` boundary. The
+   *  token no longer HAS an expiry: it carried one alongside its contract's
+   *  `expiry_at`, two lifetimes for one credential, and which applied depended
+   *  on whether a contract happened to exist.
+   *
+   *  Expiry is now the contract's alone, enforced by `isContractLive` at each
+   *  consumer — `mcp-recipe-callback` (destination contract),
+   *  `approval-resume-authority` (`admitBoundInboundToken`), the HTTP transport
+   *  (`boundContractActive`), and `llm_gateway`'s `authorize`. Deleting these
+   *  rather than rewriting them here is deliberate: re-asserting contract
+   *  expiry against a token predicate would test the wrong object.
+   *
+   *  What remains is the one thing the predicate still answers. */
 });
 
 describe('D-137 P5 — isMcpInboundTokenToolAuthorized', () => {
@@ -229,7 +223,6 @@ describe('D-137 P5 — isMcpInboundTokenToolAuthorized', () => {
     bearer_hash: 'a'.repeat(64),
     label: 'mary',
     created_at: 1_000,
-    expires_at: 100_000,
     revoked_at: null,
     grants,
     concurrency_tier: 3,
@@ -261,8 +254,12 @@ describe('D-137 P5 — isMcpInboundTokenToolAuthorized', () => {
     expect(isMcpInboundTokenToolAuthorized(r, 'contact.search', 50_000)).toBe(false);
   });
 
-  it('returns false when the token is expired, even with grant=true', () => {
-    const r = record({ 'contact.search': true }, { expires_at: 100 });
+  /** ⛔ The "expired token, grant=true ⇒ false" case is retired with the field.
+   *  A token has no expiry; the CONTRACT does, enforced by `isContractLive` at
+   *  each consumer. Revocation still short-circuits the grant, which is the
+   *  half of the old assertion that survives — and it is asserted above. */
+  it('returns false for a REVOKED token, even with grant=true', () => {
+    const r = record({ 'contact.search': true }, { revoked_at: 5_000 });
     expect(isMcpInboundTokenToolAuthorized(r, 'contact.search', 50_000)).toBe(false);
   });
 });
@@ -329,7 +326,6 @@ describe('D-137 P5 — validateMcpInboundTokenInput', () => {
     label: 'mary',
     grants: { 'contact.search': true },
     concurrency_tier: 3,
-    expires_at: 0,
     chat_mode: null,
     ...overrides,
   });
@@ -341,7 +337,6 @@ describe('D-137 P5 — validateMcpInboundTokenInput', () => {
       expect(r.value.label).toBe('mary');
       expect(r.value.grants).toEqual({ 'contact.search': true });
       expect(r.value.concurrency_tier).toBe(3);
-      expect(r.value.expires_at).toBe(0);
       expect(r.value.chat_mode).toBeNull();
     }
   });
@@ -371,18 +366,10 @@ describe('D-137 P5 — validateMcpInboundTokenInput', () => {
     }
   });
 
-  it('rejects a negative expires_at', () => {
-    const r = validateMcpInboundTokenInput(validInput({ expires_at: -1 }));
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.issues.some((i) => i.code === 'expires_at_invalid')).toBe(true);
-  });
-
-  it('rejects a non-integer expires_at', () => {
-    const r = validateMcpInboundTokenInput(validInput({ expires_at: 1.5 }));
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.issues.some((i) => i.code === 'expires_at_invalid')).toBe(true);
-  });
-
+  /** ⛔ `expires_at_invalid` is retired with the field it guarded. Expiry is a
+   *  CONTRACT limit now (`contract_limits.expiry_at`), validated by
+   *  `contract_limits_invalid`. Removed rather than repointed: these asserted a
+   *  negative / non-integer TOKEN expiry, and there is no such thing. */
   it('rejects non-boolean grants values', () => {
     const r = validateMcpInboundTokenInput(validInput({
       grants: { 'contact.search': 'yes' as unknown as boolean },
@@ -443,8 +430,10 @@ describe('D-137 P5 — validateMcpInboundTokenInput', () => {
       'grants_shape_invalid',
       'grants_key_invalid',
       'grants_value_invalid',
+      // ⚠ `expires_at_invalid` retired here: the token has no expiry, so there
+      // is no negative / non-integer token expiry to reject. Expiry is a
+      // CONTRACT limit, guarded by `contract_limits_invalid` below.
       'concurrency_tier_invalid',
-      'expires_at_invalid',
       'chat_mode_shape_invalid',
       'chat_mode_offered_invalid',
       'chat_mode_session_cap_shape_invalid',
@@ -452,8 +441,15 @@ describe('D-137 P5 — validateMcpInboundTokenInput', () => {
       'chat_mode_session_cap_concurrent_invalid',
       // D-166 P2 — token↔contract binding issuance field.
       'contract_id_invalid',
+      // Standing closure (MCP arm) — a BOOLEAN-only field. The code is what
+      // makes "derived, never declared" structural: an op list on the wire is
+      // rejected here, not silently dropped.
+      'standing_closure_invalid',
+      // Lifecycle + limitation live on the CONTRACT, so the limits ride on the
+      // issuance payload that mints it — and `standing_closure` requires them.
+      'contract_limits_invalid',
     ]);
-    expect(MCP_INBOUND_TOKEN_VALIDATION_ISSUE_CODES.length).toBe(14);
+    expect(MCP_INBOUND_TOKEN_VALIDATION_ISSUE_CODES.length).toBe(15);
   });
 });
 
@@ -593,7 +589,6 @@ describe('D-137 P5 — ChatInboundTokenStore', () => {
     label: 'mary',
     grants: { 'contact.search': true, 'mail.search': true },
     concurrency_tier: 3,
-    expires_at: 0,
     chat_mode: null,
     ...overrides,
   });
@@ -609,7 +604,6 @@ describe('D-137 P5 — ChatInboundTokenStore', () => {
     expect(issued.record.token_id).toMatch(/^[0-9a-f]{16}$/);
     expect(issued.record.bearer_hash).toMatch(/^[0-9a-f]{64}$/);
     expect(issued.record.created_at).toBe(1_000);
-    expect(issued.record.expires_at).toBe(0);
     expect(issued.record.revoked_at).toBeNull();
     expect(issued.record.grants).toEqual({
       'contact.search': true,
@@ -901,7 +895,7 @@ describe('D-137 P5 — ChatInboundTokenStore', () => {
     const db = newDb();
     const store = createChatInboundTokenStore(db);
     const issued = store.issueToken({
-      value: validValue({ expires_at: 10_000 }),
+      value: validValue({}),
       now: 1_000,
     });
     const bearer = issued.bearer_plaintext;
@@ -911,8 +905,11 @@ describe('D-137 P5 — ChatInboundTokenStore', () => {
     expect(store.verifyBearer({ bearer: 'recued_garbage', now: 5_000 })).toBeNull();
     // Empty bearer
     expect(store.verifyBearer({ bearer: '', now: 5_000 })).toBeNull();
-    // Past expiry
-    expect(store.verifyBearer({ bearer, now: 20_000 })).toBeNull();
+    // ⛔ NO "past expiry" case — `verifyBearer` no longer checks one, because
+    // the token has no expiry. Contract expiry is enforced at each consumer via
+    // `isContractLive`, which yields connect-then-deny (an empty allowlist)
+    // rather than a 401 — the same posture a dead contract already had, chosen
+    // there to preserve audit attribution.
     // Revoked
     store.revokeToken({ token_id: issued.record.token_id, now: 2_000 });
     expect(store.verifyBearer({ bearer, now: 5_000 })).toBeNull();
@@ -971,7 +968,6 @@ describe('D-137 P5 — Codex review P1 fold: one token per peer constraint', () 
     label: 'mary',
     grants: { 'contact.search': true },
     concurrency_tier: 3,
-    expires_at: 0,
     chat_mode: null,
     ...overrides,
   });

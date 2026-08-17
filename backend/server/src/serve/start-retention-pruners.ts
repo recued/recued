@@ -17,6 +17,12 @@ import type {
 } from '../execution-case-compiler.js';
 import type { SharedStore } from '../storage/shared-store.js';
 import type { ChatInboundTokenStore } from '../storage/chat-inbound-token-store.js';
+import type {
+  ReceptionManageCredentialStore,
+} from '../storage/reception-manage-credential-store.js';
+import type {
+  ReceptionLookupExpirySweepDeps,
+} from '../reception-lookup-expiry-sweep.js';
 
 export interface StartRetentionPrunersOptions {
   readonly backgroundServices: BackgroundServiceRegistry;
@@ -47,6 +53,13 @@ export interface StartRetentionPrunersOptions {
   readonly executionCaseLifecycle: ExecutionCaseLifecycle | undefined;
   readonly notificationBlock:
     | Pick<NotificationBlock, 'getAsk' | 'cancelAsk' | 'pruneHandledAsks'>
+    | undefined;
+  /** D-240 slice 4 — the reception credential store (stamp + the purge that
+   *  D-210 shipped without a caller) and the record-completion reader the stamp
+   *  needs. Absent ⇒ both passes skip, per `composeRetentionPruners`. */
+  readonly receptionCredentialStore?: ReceptionManageCredentialStore | undefined;
+  readonly receptionRecordCompletion?:
+    | ReceptionLookupExpirySweepDeps['readCompletion']
     | undefined;
 }
 

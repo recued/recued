@@ -756,6 +756,65 @@ export interface KernelDispatchers {
     filename: string;
     size_bytes: number;
   }>;
+  /** D-244 — backs `csv-filter`. Reads one stored CSV, keeps the rows whose
+   *  named column matches, and ingests the RESULT as a new record. The source
+   *  bytes never enter recipe step state — which is the point: the old route
+   *  (`data-file-read → decode_base64 → csv_parse → filter`) retains the base64,
+   *  the decoded text AND the parsed rows for the rest of the run.
+   *
+   *  ⛔ `column_found` is separate from `matched` on purpose. Zero rows because
+   *  the column is missing and zero rows because nothing matched are the same
+   *  count and completely different facts — over a customer list, conflating
+   *  them answers "no such customer" about a spelling mistake. */
+  csvFilter?: (input: {
+    record_id?: string;
+    slug?: string;
+    path?: string;
+    column: string;
+    match: string;
+    mode?: 'contains' | 'equal';
+    ignore_case?: boolean;
+    delimiter?: string;
+    /** Provenance scoping for the ingested result, exactly as `file-persist`
+     *  keys its record — distinct runs/steps keep distinct provenance while an
+     *  identical re-filter stays idempotent on the content hash. */
+    run_id?: string;
+    step_id?: string;
+  }) => Promise<{
+    file_ref?: string;
+    matched: number;
+    scanned: number;
+    column_found: boolean;
+    columns: readonly string[];
+  }>;
+  /** D-245 — backs `file-put-ref`: writes a REF's bytes into a record the RECIPE
+   *  named, server-side. The bytes never enter an op-step value, which is what
+   *  separates "a file I own at a name I chose" from a base64 round trip. */
+  filePutRef?: (input: {
+    slug: string;
+    path: string;
+    ref: string | { path: string; filename?: string; mime_type?: string };
+    run_id?: string;
+    mime?: string;
+  }) => Promise<{ ok: true; bytes_written: number; slug: string; path: string }>;
+  /** D-244 — backs `csv-stats`: per-column summary of one stored CSV, as a
+   *  VALUE. Deliberately not the `csvstat` CLI on the stdout-capture arm — that
+   *  would hand back a FILE, costing three steps to read a small result — and it
+   *  needs no Python install. */
+  csvStats?: (input: {
+    record_id?: string;
+    slug?: string;
+    path?: string;
+    delimiter?: string;
+  }) => Promise<{ rows: number; columns: readonly unknown[] }>;
+  /** D-244 — backs `csv-columns`: the header row, so a caller can name the
+   *  columns that DO exist when the one asked for does not. */
+  csvColumns?: (input: {
+    record_id?: string;
+    slug?: string;
+    path?: string;
+    delimiter?: string;
+  }) => Promise<{ columns: readonly string[] }>;
   /** D-200 Slice 3 — backs `file-render-markdown-template`. Reads one durable
    *  Markdown file ref, performs strict bounded scalar substitution, and emits
    *  one temp file_ref under the current run's scratch root. */
@@ -1260,6 +1319,50 @@ export interface KernelDispatchers {
    *  `max_chars`, when set, caps the returned body and flags `truncated`. */
   mailBodyRead?: (input: { slug: string; record_id: string; max_chars?: number }) =>
     Promise<{ body: string | null; found: boolean; size_bytes: number; truncated: boolean }>;
+
+  // ── D-239 mail write-back ────────────────────────────────────────
+  //
+  // The first `data.mail` ops that change a message that already exists.
+  // Each is verified-then-reflected at the server: the provider confirms
+  // before the warehouse moves, and an ambiguous outcome (`MAIL_IO_ERROR`)
+  // leaves the warehouse alone for the next sync to reconcile.
+  //
+  // Every one returns the message's `record_id` because a MOVE can re-key
+  // the row — a recipe chaining two steps on one message must read the id
+  // back rather than reuse the one it passed in.
+
+  /** Backs `mail-mark`. Sets or clears the read/seen state. */
+  mailMark?: (input: { slug: string; record_id: string; read: boolean }) =>
+    Promise<{ record_id: string; is_read: boolean; is_flagged: boolean; folder: string }>;
+
+  /** Backs `mail-flag`. Sets or clears the flagged/starred state. */
+  mailFlag?: (input: { slug: string; record_id: string; flagged: boolean }) =>
+    Promise<{ record_id: string; is_read: boolean; is_flagged: boolean; folder: string }>;
+
+  /** Backs `mail-move`. `folder` targets IMAP / Microsoft; `add_labels` /
+   *  `remove_labels` target Gmail. The dispatcher REFUSES the form the
+   *  provider does not model rather than translating between them —
+   *  a guessed "closest folder" is how mail lands somewhere nobody named.
+   *  `rekeyed` is true when the message's local id changed. */
+  mailMove?: (input: {
+    slug: string;
+    record_id: string;
+    folder?: string;
+    add_labels?: string[];
+    remove_labels?: string[];
+  }) => Promise<{
+    record_id: string;
+    is_read: boolean;
+    is_flagged: boolean;
+    folder: string;
+    rekeyed: boolean;
+  }>;
+
+  /** Backs `mail-delete`. The provider's own reversible delete gesture
+   *  (Gmail trash / Graph Deleted Items / IMAP \Deleted+EXPUNGE), never a
+   *  hard purge. */
+  mailDelete?: (input: { slug: string; record_id: string }) =>
+    Promise<{ deleted: true; record_id: string }>;
 
   /** Backs `notification-send`. Routes per channel; result shape
    *  reports per-channel delivery outcome. `link_url` is the deep
@@ -2216,6 +2319,131 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           ref: input.ref,
           run_id,
           ...(call.stepMeta?.step_id ? { step_id: call.stepMeta.step_id } : {}),
+        });
+      }
+      case 'csv-filter': {
+        if (!dispatchers.csvFilter) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            'csv-filter unavailable — no paired server or csv dispatcher',
+            { slug },
+          );
+        }
+        const input = call.input as {
+          record_id?: unknown; column?: unknown; match?: unknown;
+          mode?: unknown; ignore_case?: unknown; delimiter?: unknown;
+        };
+        // ⛔ EITHER address. The handler was widened to take `{slug, path}` and
+        // this gate was not, so every named-file search failed BAD_INPUT before
+        // reaching it — the recipe and the handler each read as correct, and
+        // only the join was wrong.
+        const csvAddressed = (typeof input.record_id === 'string' && input.record_id.length > 0)
+          || (typeof (input as { slug?: unknown }).slug === 'string'
+            && typeof (input as { path?: unknown }).path === 'string');
+        if (!csvAddressed) {
+          throw new IngredientError(
+            'BAD_INPUT', "csv-filter: 'record_id', or 'slug' + 'path', is required", { slug },
+          );
+        }
+        if (typeof input.column !== 'string' || input.column.length === 0) {
+          throw new IngredientError('BAD_INPUT', "csv-filter: 'column' is required", { slug });
+        }
+        return dispatchers.csvFilter({
+          ...(typeof input.record_id === 'string' ? { record_id: input.record_id } : {}),
+          ...(typeof (input as { slug?: unknown }).slug === 'string'
+            ? { slug: (input as { slug: string }).slug } : {}),
+          ...(typeof (input as { path?: unknown }).path === 'string'
+            ? { path: (input as { path: string }).path } : {}),
+          column: input.column,
+          match: typeof input.match === 'string' ? input.match : '',
+          ...(input.mode === 'equal' || input.mode === 'contains' ? { mode: input.mode } : {}),
+          ...(typeof input.ignore_case === 'boolean' ? { ignore_case: input.ignore_case } : {}),
+          ...(typeof input.delimiter === 'string' ? { delimiter: input.delimiter } : {}),
+          ...(call.stepMeta?.run_id ? { run_id: call.stepMeta.run_id } : {}),
+          ...(call.stepMeta?.step_id ? { step_id: call.stepMeta.step_id } : {}),
+        });
+      }
+      case 'file-put-ref': {
+        if (!dispatchers.filePutRef) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            'file-put-ref unavailable — no paired server or file writer',
+            { slug },
+          );
+        }
+        const input = call.input as {
+          slug?: unknown; path?: unknown; ref?: unknown; mime?: unknown;
+        };
+        for (const key of ['slug', 'path'] as const) {
+          const v = input[key];
+          if (typeof v !== 'string' || v.length === 0) {
+            throw new IngredientError('BAD_INPUT', `file-put-ref: '${key}' is required`, { slug });
+          }
+        }
+        // ⛔ EITHER a CAS record-id string OR a temp ref OBJECT. A CLI op's
+        // `shape: 'ref'` output defaults to `storage: 'temp'`, so demanding a
+        // string here rejected the `to_csv → put-ref` path outright — the
+        // handler was widened for two addresses while this gate stayed at one.
+        const isTemp = isTempFileRef(input.ref);
+        if (!isTemp && (typeof input.ref !== 'string' || input.ref.length === 0)) {
+          throw new IngredientError('BAD_INPUT', "file-put-ref: 'ref' is required", { slug });
+        }
+        return dispatchers.filePutRef({
+          slug: input.slug as string,
+          path: input.path as string,
+          ref: input.ref as never,
+          ...(typeof input.mime === 'string' ? { mime: input.mime } : {}),
+          ...(call.stepMeta?.run_id ? { run_id: call.stepMeta.run_id } : {}),
+        });
+      }
+      case 'csv-stats': {
+        if (!dispatchers.csvStats) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            'csv-stats unavailable — no paired server or csv dispatcher',
+            { slug },
+          );
+        }
+        const input = call.input as { record_id?: unknown; delimiter?: unknown };
+        if (!((typeof input.record_id === 'string' && input.record_id.length > 0)
+          || (typeof (input as { slug?: unknown }).slug === 'string'
+            && typeof (input as { path?: unknown }).path === 'string'))) {
+          throw new IngredientError(
+            'BAD_INPUT', "csv-stats: 'record_id', or 'slug' + 'path', is required", { slug },
+          );
+        }
+        return dispatchers.csvStats({
+          ...(typeof input.record_id === 'string' ? { record_id: input.record_id } : {}),
+          ...(typeof (input as { slug?: unknown }).slug === 'string'
+            ? { slug: (input as { slug: string }).slug } : {}),
+          ...(typeof (input as { path?: unknown }).path === 'string'
+            ? { path: (input as { path: string }).path } : {}),
+          ...(typeof input.delimiter === 'string' ? { delimiter: input.delimiter } : {}),
+        });
+      }
+      case 'csv-columns': {
+        if (!dispatchers.csvColumns) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            'csv-columns unavailable — no paired server or csv dispatcher',
+            { slug },
+          );
+        }
+        const input = call.input as { record_id?: unknown; delimiter?: unknown };
+        if (!((typeof input.record_id === 'string' && input.record_id.length > 0)
+          || (typeof (input as { slug?: unknown }).slug === 'string'
+            && typeof (input as { path?: unknown }).path === 'string'))) {
+          throw new IngredientError(
+            'BAD_INPUT', "csv-columns: 'record_id', or 'slug' + 'path', is required", { slug },
+          );
+        }
+        return dispatchers.csvColumns({
+          ...(typeof input.record_id === 'string' ? { record_id: input.record_id } : {}),
+          ...(typeof (input as { slug?: unknown }).slug === 'string'
+            ? { slug: (input as { slug: string }).slug } : {}),
+          ...(typeof (input as { path?: unknown }).path === 'string'
+            ? { path: (input as { path: string }).path } : {}),
+          ...(typeof input.delimiter === 'string' ? { delimiter: input.delimiter } : {}),
         });
       }
       case 'file-render-markdown-template': {
@@ -3295,6 +3523,116 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           record_id: input.record_id,
           ...(input.max_chars != null ? { max_chars: input.max_chars as number } : {}),
         });
+      }
+
+      // ── D-239 mail write-back ──────────────────────────────────
+      //
+      // All four validate `(slug, record_id)` identically, so that check
+      // is factored out. The per-verb argument is validated inline
+      // because each one differs, and a shared "validate the rest"
+      // helper would have to know every shape anyway.
+
+      case 'mail-mark': {
+        if (!dispatchers.mailMark) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            `mail-mark unavailable — no paired server or mail-mark dispatcher`,
+            { slug },
+          );
+        }
+        const target = requireMailTarget(call.input, 'mail-mark', slug);
+        const read = (call.input as { read?: unknown }).read;
+        // ⛔ STRICT BOOLEAN, no truthiness coercion. `read: 'false'` is a
+        // plausible authoring slip (a template resolves to a STRING), and
+        // coercing it would mark the message READ — the exact opposite of
+        // what the recipe says. Refusing is the only safe reading.
+        if (typeof read !== 'boolean') {
+          throw new IngredientError(
+            'BAD_INPUT',
+            'mail-mark: read must be true or false',
+            { slug },
+          );
+        }
+        return dispatchers.mailMark({ ...target, read });
+      }
+
+      case 'mail-flag': {
+        if (!dispatchers.mailFlag) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            `mail-flag unavailable — no paired server or mail-flag dispatcher`,
+            { slug },
+          );
+        }
+        const target = requireMailTarget(call.input, 'mail-flag', slug);
+        const flagged = (call.input as { flagged?: unknown }).flagged;
+        if (typeof flagged !== 'boolean') {
+          throw new IngredientError(
+            'BAD_INPUT',
+            'mail-flag: flagged must be true or false',
+            { slug },
+          );
+        }
+        return dispatchers.mailFlag({ ...target, flagged });
+      }
+
+      case 'mail-move': {
+        if (!dispatchers.mailMove) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            `mail-move unavailable — no paired server or mail-move dispatcher`,
+            { slug },
+          );
+        }
+        const target = requireMailTarget(call.input, 'mail-move', slug);
+        const input = call.input as {
+          folder?: unknown;
+          add_labels?: unknown;
+          remove_labels?: unknown;
+        };
+        const folder = typeof input.folder === 'string' && input.folder.length > 0
+          ? input.folder
+          : undefined;
+        const addLabels = input.add_labels != null
+          ? coerceStringArray(input.add_labels, 'mail-move: add_labels')
+          : undefined;
+        const removeLabels = input.remove_labels != null
+          ? coerceStringArray(input.remove_labels, 'mail-move: remove_labels')
+          : undefined;
+        // ⛔ A move with NO destination is refused here rather than passed
+        // down. An empty destination reaches the provider as "modify
+        // nothing", which succeeds — so the run would report a successful
+        // move that moved nothing, and the recipe would carry on believing
+        // the message had been filed.
+        if (
+          folder === undefined
+          && (addLabels === undefined || addLabels.length === 0)
+          && (removeLabels === undefined || removeLabels.length === 0)
+        ) {
+          throw new IngredientError(
+            'BAD_INPUT',
+            'mail-move: name a destination — folder (imap / microsoft) '
+              + 'or add_labels / remove_labels (gmail)',
+            { slug },
+          );
+        }
+        return dispatchers.mailMove({
+          ...target,
+          ...(folder !== undefined ? { folder } : {}),
+          ...(addLabels !== undefined ? { add_labels: addLabels } : {}),
+          ...(removeLabels !== undefined ? { remove_labels: removeLabels } : {}),
+        });
+      }
+
+      case 'mail-delete': {
+        if (!dispatchers.mailDelete) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            `mail-delete unavailable — no paired server or mail-delete dispatcher`,
+            { slug },
+          );
+        }
+        return dispatchers.mailDelete(requireMailTarget(call.input, 'mail-delete', slug));
       }
 
       case 'notification-send': {
@@ -5359,6 +5697,30 @@ const coerceStringArray = (value: unknown, fieldHint: string): string[] => {
     `${fieldHint} must be a string or array of strings`,
     {},
   );
+};
+
+/** D-239 — validate the `(slug, record_id)` pair every mail write-back op
+ *  addresses a message by.
+ *
+ *  Shared across all four verbs on purpose. These two checks are identical
+ *  and load-bearing: an empty `record_id` reaching the dispatcher resolves
+ *  to no row and surfaces as `MAIL_RECORD_NOT_FOUND`, which reads like the
+ *  message was deleted rather than like the recipe passed nothing — and
+ *  that is exactly the confusion an unresolved `{{step.x.record_id}}`
+ *  template produces. Catching it here names the real problem. */
+const requireMailTarget = (
+  raw: unknown,
+  op: string,
+  slug: string,
+): { slug: string; record_id: string } => {
+  const input = raw as { slug?: unknown; record_id?: unknown };
+  if (typeof input.slug !== 'string' || input.slug.length === 0) {
+    throw new IngredientError('BAD_INPUT', `${op}: slug is required`, { slug });
+  }
+  if (typeof input.record_id !== 'string' || input.record_id.length === 0) {
+    throw new IngredientError('BAD_INPUT', `${op}: record_id is required`, { slug });
+  }
+  return { slug: input.slug, record_id: input.record_id };
 };
 
 /** D-127 P2.1 — duck-type the rpc-layer "slug not registered" error.

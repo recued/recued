@@ -65,7 +65,11 @@ import type {
 import { createBackfillAuditRecorder } from '../../triggers/backfill-audit.js';
 // `classifyOAuthStatus` is shared with the providers so the token-endpoint
 // status policy (notably 400 = invalid_grant = auth) cannot drift between them.
-import { classifyOAuthFailure, type MailSyncOutcome } from './provider.js';
+import {
+  classifyOAuthFailure,
+  type MailMutationResult,
+  type MailSyncOutcome,
+} from './provider.js';
 // The auth-vs-transient discriminant for `classifySyncFailure`. Same module the
 // providers throw from, so the classification cannot drift from the thrower.
 import { OAuthError } from './oauth.js';
@@ -184,7 +188,13 @@ const recordIdFor = (sourceId: string): string =>
  *  aliased, never copied. */
 export { MAIL_SEND_ATTACHMENT_MAX_BYTES, MAIL_SEND_ATTACHMENT_OVERSIZE_WARNING };
 
-const pickPrimaryFolder = (folderOrLabel: string, labels: string[] = []): string => {
+/** Exported so the dispatcher folds a mutation result's folder the SAME way
+ *  the ingest path folds a synced message's. Two copies of this priority
+ *  list would let a mutated row and a synced row disagree about which
+ *  folder a Gmail message is "in", and `folder` is a filterable hot field —
+ *  the disagreement would surface as a recipe's list query intermittently
+ *  missing a message depending on how it was last touched. */
+export const pickPrimaryFolder = (folderOrLabel: string, labels: string[] = []): string => {
   // Gmail: the first label in a deterministic priority order so
   // searches like `folder = 'INBOX'` behave predictably across
   // providers. `folder_or_label` is the provider's pick; fall back
@@ -271,6 +281,11 @@ export const buildRecord = (
     folder: pickPrimaryFolder(msg.folder_or_label, msg.labels),
     direction: resolveMailMessageDirection(msg, accountEmail),
     is_read: msg.is_read,
+    // D-239 — mirrored so `mail-flag` has a field to write and the next
+    // sync has the same field to confirm. Both halves shipped together;
+    // see `CanonicalMessage.is_flagged` for why a write-back to an
+    // unmirrored field is worse than no write-back at all.
+    is_flagged: msg.is_flagged,
     has_attachments: msg.has_attachments,
     message_id: msg.source_id,
   };
@@ -389,7 +404,25 @@ type ResolvedAttachment = OutgoingAttachment & { blob_hash: string };
 export interface MailCollection extends Collection {
   readonly platform: 'mail';
   readonly sendCapable: boolean;
+  /** D-239 — mirrors `MailProvider.mutationCapable` so the dispatcher's
+   *  capability gate reads it without reaching through the provider, the
+   *  same way `sendCapable` is surfaced for the sender picker. */
+  readonly mutationCapable: boolean;
   readonly accountEmail: string;
+  /** D-239 — the live provider, for the dispatcher's verified-then-
+   *  reflected write path. Exposed rather than proxying all four verbs
+   *  through this interface: the dispatcher already owns the gate /
+   *  error-translation / reflect sequencing (mirroring
+   *  `CalendarCollection.provider`), and a second set of pass-throughs
+   *  here would be four more places for the two to drift. */
+  readonly provider: MailProvider;
+  /** D-239 — fold a provider-verified mutation into the warehouse row.
+   *  `null` when the row is gone. See the implementation for why the body
+   *  blob is never rewritten and `direction` is never recomputed. */
+  applyVerifiedMutation(
+    record_id: string,
+    result: MailMutationResult,
+  ): CollectionRecord | null;
   send(args: MailSendInput): Promise<MailSendResult>;
   /** Server-internal D-200 source-truth lookup. It is intentionally absent
    * from the generic collection rpc surface; only a source-checked workflow
@@ -737,6 +770,76 @@ export const createMailCollection = (
       throw new Error(`mail sync event '${event.source_id}' is missing its message payload`);
     }
     await upsertMessage(event.message, shouldContinue);
+  };
+
+  /** D-239 — reflect a provider-VERIFIED mutation into the warehouse row.
+   *
+   *  Called only after the adapter returned a complete post-mutation state
+   *  (never on `io_error` — see `MailAdapterError`). Folds that state into
+   *  the existing row's hot fields by read-modify-upsert, which is what
+   *  keeps this cheap: `body_inline` / `blob_hash` / `size_bytes` /
+   *  `received_at` are carried through UNTOUCHED, so marking a 4 MB
+   *  message read does not rewrite its CAS blob.
+   *
+   *  Returns the updated record, or `null` when the row is no longer here
+   *  — a concurrent retention pass or provider-side delete can remove it
+   *  while the mutation is in flight, and re-creating it from a state
+   *  fragment would resurrect a row with no body.
+   *
+   *  ⚠ `direction` is deliberately NOT recomputed on a folder change. It
+   *  derives from the folder AND the enrolled account address
+   *  (`resolveMailMessageDirection`), and a mutation result is not a
+   *  `CanonicalMessage` — recomputing it from the fragment would mean
+   *  guessing. Moving a message into Sent leaves `direction` stale until
+   *  that folder's next sync, which is the same "let the tick reconcile"
+   *  posture the rest of this path takes. */
+  const applyVerifiedMutation = (
+    record_id: string,
+    result: MailMutationResult,
+  ): CollectionRecord | null => {
+    const prev = table.get(record_id);
+    if (!prev) return null;
+
+    const hot_fields: Record<string, unknown> = {
+      ...prev.hot_fields,
+      is_read: result.is_read,
+      is_flagged: result.is_flagged,
+      // Same fold the read path uses, so a mutated row's `folder` is
+      // directly comparable with a synced one rather than being a second
+      // dialect of the same field.
+      folder: pickPrimaryFolder(result.folder_or_label, result.labels),
+      message_id: result.source_id,
+    };
+    if (result.labels !== undefined) {
+      // Mirrors `buildRecord`: the key is PRESENT only when non-empty.
+      // Assigning `[]` instead of deleting would leave a row whose shape
+      // differs from every synced row, and `labels` is a filterable hot
+      // field — a stale empty array is a query result nobody expects.
+      if (result.labels.length > 0) hot_fields.labels = result.labels;
+      else delete hot_fields.labels;
+    }
+
+    const nextRecordId = recordIdFor(result.source_id);
+    const next: CollectionRecord = {
+      ...prev,
+      record_id: nextRecordId,
+      source_id: result.source_id,
+      hot_fields,
+      modified_at: nowOf(),
+    };
+
+    // ⛔ UPSERT BEFORE DELETE on a re-key (IMAP / Graph mint a new id on
+    // move). Both rows point at the SAME CAS blob, and deleting the old
+    // one first would leave that blob momentarily unreferenced — a window
+    // an orphan sweep running concurrently could collect, taking the body
+    // of a message that still exists. Byte accounting nets to zero either
+    // way; the ordering is purely about never dropping the last reference.
+    table.upsert(next);
+    if (nextRecordId !== record_id) table.delete(record_id);
+
+    emitter.updated(nextRecordId, prev.hot_fields);
+    lastIndexedAt = next.modified_at;
+    return next;
   };
 
   const isCurrentGeneration = (generation: number): boolean =>
@@ -1348,6 +1451,15 @@ export const createMailCollection = (
     gate,
     sync,
     sendCapable: provider.sendCapable,
+    // D-239 — a getter, because IMAP's `mutationCapable` is itself a lazy
+    // getter on the provider. Reading it eagerly here would force that
+    // probe at collection construction, i.e. on every boot for every
+    // enrolled mailbox, which is exactly what the provider defers.
+    get mutationCapable() {
+      return provider.mutationCapable;
+    },
+    provider,
+    applyVerifiedMutation,
     accountEmail: provider.accountEmail,
     upsert: (record) => { table.upsert(record); },
     delete: (record_id) => table.delete(record_id) !== null,

@@ -125,11 +125,18 @@ if (_rolelessChannels.length > 0) {
   );
 }
 
-/** D-163 N.1 — three capability classes. */
-export type NotificationChannelCapability =
-  | 'inline'
-  | 'landing-page'
-  | 'notify-only';
+/** D-163 N.1 — three capability classes. DEFINED in the `channel-roles.ts` leaf
+ *  (see its header) because `messenger-vendors.ts` validates a per-vendor
+ *  `capability` and this module spreads that registry — defining it here would
+ *  close a runtime import cycle. Re-exported so existing importers are
+ *  unaffected. */
+import type { NotificationChannelCapability } from './channel-roles.js';
+
+export {
+  NOTIFICATION_CHANNEL_CAPABILITIES,
+  NOTIFICATION_CHANNEL_CAPABILITY_SET,
+  type NotificationChannelCapability,
+} from './channel-roles.js';
 
 // ── Settings record + toggle view ──────────────────────────────────────
 

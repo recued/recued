@@ -188,7 +188,14 @@ const mailRowToMessage = (row: MailRow): CanonicalMessage | null => {
     subject: '',
     thread_id: '',
     folder_or_label: '',
+    // ⚠ These are PLACEHOLDERS, not readings — the same as `subject`,
+    // `thread_id` and `body_text` above. The contact deriver consumes only
+    // `from` / `to` / `cc` / `received_at`; every other field exists to
+    // satisfy the type. Do NOT start trusting `is_read` / `is_flagged` from
+    // a message reconstructed here: the row's real values are in
+    // `hot_fields` and were deliberately not parsed.
     is_read: false,
+    is_flagged: false,
     has_attachments: false,
     received_at: row.received_at,
     body_text: '',

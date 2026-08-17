@@ -52,8 +52,39 @@ export interface ReceptionContractSnapshotDeps {
    *  (`deriveRecipeCapability`). The SAME derivation the mint writes its grant rows
    *  from, so the two axes can never disagree about what the door may do. */
   readonly allowedTools: (contractId: string) => readonly string[];
+  /** The ops the owner CONFIRMED at bind — the door's derived capability
+   *  closure, the SAME derivation `mintDoorContract` writes its grant rows
+   *  from. Read only when the door carries the standing-closure opt-in.
+   *
+   *  ⛔⛔ REQUIRED, AND THAT IS THE WHOLE POINT. It was optional, on the
+   *  reasoning that an absent dep fails closed — which is true, and is exactly
+   *  how the feature shipped DEAD: optional meant no caller had to pass it, and
+   *  none did, so the opt-in could never reach either gate on any production
+   *  path. "Fail closed" described the bug perfectly and therefore hid it.
+   *
+   *  Required makes "nobody wired it" a COMPILE ERROR instead of a silent
+   *  permanent refusal. Same lesson as `ContractSnapshotAuthority`'s `Pick`:
+   *  the type is where you say a thing is mandatory, because that is the only
+   *  place a missing wiring cannot pass a green test suite. */
+  readonly grantedOperations: (contractId: string) => readonly string[];
   readonly now: () => number;
 }
+
+/** The door's owner-confirmed operation closure, read from its own stored scope —
+ *  the SAME `scope.operation_ids` `mintDoorContract` wrote from the derived
+ *  capability, so the closure and the grant rows cannot disagree. Mirrors the
+ *  runners' `allowedToolsFor` exactly, one field over.
+ *
+ *  ⛔⛔ EXPORTED AND SHARED BY ALL THREE RUNNERS, NOT COPIED INTO EACH. This
+ *  feature shipped once already with the resolver declared, read, tested — and
+ *  wired by NOBODY, because every test supplied its own. A single exported
+ *  resolver is what makes "did production wire it" one question instead of
+ *  three, and lets the e2e call the same function the runner does rather than
+ *  hand one in. */
+export const grantedOperationsFor = (
+  definitionStore: ContractDefinitionStore,
+): ((contractId: string) => readonly string[]) => (contractId) =>
+  definitionStore.get(contractId)?.scope?.operation_ids ?? [];
 
 /** Build the snapshot for a reception dispatch, or fail closed.
  *
@@ -86,11 +117,24 @@ export const buildReceptionContractSnapshot = (
   // dispatch (`tool_not_in_contract`) — the live kill-switch over an already-public form.
   const allowed_tools = live ? [...deps.allowedTools(contractId)] : [];
 
+  // ⛔ THE OPT-IN IS READ OFF THE LIVE DOOR, and gated on the same `live` check
+  // as the tools: a revoked / expired / deleted door authorizes NOTHING on
+  // either axis, so deleting the contract stays a true kill-switch rather than
+  // leaving a standing closure behind it.
+  const standing = live && def?.door_execution_policy?.standing_closure === true
+    ? [...deps.grantedOperations(contractId)]
+    : undefined;
+
   return buildVersionedContractSnapshot({
     contract_id: contractId,
     allowed_tools,
     approval_required: [],
     scope_restrictions: [],
     resolved_at: resolvedAt,
+    // ⚠ An EMPTY closure is not the same as an absent one and must not be sent
+    // as one: a door whose recipe dispatches no ops has nothing to admit, and
+    // an empty array reads at the gate as "this op is not in the closure" —
+    // correct — where `undefined` would be indistinguishable from "no opt-in".
+    ...(standing === undefined ? {} : { standing_closure_operation_ids: standing }),
   });
 };

@@ -40,3 +40,36 @@ const _channelRoleAxesAreExhaustive: Exclude<keyof ChannelRoles, ChannelRoleAxis
   ? true
   : never = true;
 void _channelRoleAxesAreExhaustive;
+
+/** D-163 N.1 — HOW an ask renders on a channel, as opposed to WHAT the channel
+ *  may be used for (`ChannelRoles` above).
+ *
+ *  ⚠ Lives in this leaf for the same reason the axes do. `messenger-vendors.ts`
+ *  now declares a `capability` per vendor and validates it, while
+ *  `notifications.ts` builds the per-channel table by spreading
+ *  `MESSENGER_VENDOR_SLUGS` — so defining the vocabulary in `notifications.ts`
+ *  and importing it into the registry would close exactly the runtime cycle this
+ *  file was created to break.
+ *
+ *   - `inline`       — "Answer here". The medium renders option buttons and
+ *                      decodes the press (an `InteractiveTransport`).
+ *   - `landing-page` — "Answer via [link]". The medium carries a link to a
+ *                      surface that renders the ask; `email` ships this.
+ *   - `notify-only`  — cannot carry an ask at all. Receives a passive notify
+ *                      that one is pending. ⛔ A `notify-only` channel MUST
+ *                      declare `approval: false` — you cannot approve where you
+ *                      cannot render — and that pairing is enforced at both
+ *                      declaration load and channel construction. */
+export const NOTIFICATION_CHANNEL_CAPABILITIES = [
+  'inline',
+  'landing-page',
+  'notify-only',
+] as const;
+
+export type NotificationChannelCapability =
+  (typeof NOTIFICATION_CHANNEL_CAPABILITIES)[number];
+
+export const NOTIFICATION_CHANNEL_CAPABILITY_SET: ReadonlySet<string> = new Set(
+  NOTIFICATION_CHANNEL_CAPABILITIES,
+);
+

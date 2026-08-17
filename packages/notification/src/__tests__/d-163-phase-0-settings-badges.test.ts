@@ -54,6 +54,9 @@ describe('D-163 I-6 — capability badges on Settings render model', () => {
       // D-192 — Discord (notify + approve + Gateway chat) appears; WhatsApp does
       // not. The panel is derived from `CHANNEL_ROLES`, not hand-spelled.
       'discord',
+      // D-238 — Teams appears for the same derived reason, and is the first row
+      // whose capability badge is not `inline`: it answers by link, not button.
+      'teams',
       'email',
     ]);
   });

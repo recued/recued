@@ -36,6 +36,7 @@ const baseSettings = (
   telegram: { notification: false, approval: false, messenger: false },
   whatsapp: { notification: false, approval: false, messenger: false },
   discord: { notification: false, approval: false, messenger: false },
+  teams: { notification: false, approval: false, messenger: false },
   email: { notification: false, approval: false, messenger: false },
   bridges: {},
   ...patch,
@@ -145,6 +146,7 @@ describe('D-169 P1 notification bridge mode settings', () => {
       telegram: { notification: false, approval: false, messenger: false },
       whatsapp: { notification: false, approval: false, messenger: false },
       discord: { notification: false, approval: false, messenger: false },
+      teams: { notification: false, approval: false, messenger: false },
       email: { notification: false, approval: false, messenger: false },
     } as NotificationSettings);
 
@@ -155,6 +157,7 @@ describe('D-169 P1 notification bridge mode settings', () => {
       telegram: { notification: false, approval: false, messenger: false },
       whatsapp: { notification: false, approval: false, messenger: false },
       discord: { notification: false, approval: false, messenger: false },
+      teams: { notification: false, approval: false, messenger: false },
       email: { notification: false, approval: false, messenger: false },
       bridges: {},
     });

@@ -1890,7 +1890,8 @@ export interface CliProgressSpec {
  *  ordinary op-step values. */
 export type CliOutputCaptureSpec =
   | CliOutputDirCaptureSpec
-  | CliOutputInPlaceCaptureSpec;
+  | CliOutputInPlaceCaptureSpec
+  | CliOutputStdoutCaptureSpec;
 
 export interface CliOutputDirCaptureSpec {
   /** The argv-template token (e.g. `output_dir`) the executor fills with the
@@ -1929,6 +1930,49 @@ export interface CliOutputInPlaceCaptureSpec {
   mime_type: string;
   dir_arg?: never;
 }
+
+/** STDOUT capture — the op's output IS what the tool printed, streamed to an
+ *  engine-owned file rather than into a value.
+ *
+ *  🔑 **The variant that makes a FILTER usable on a warehouse file.** A tool
+ *  that only prints (`csvgrep`, `ripgrep`, `jq`, `dasel`, `csvcut`, `sqlite3`)
+ *  has no output path for `dir_arg` to bind and never edits its input, so
+ *  before this it could not declare `shape: 'ref'` at all — and a value shape is
+ *  refused alongside `input_materialize`. The result was that no filter could
+ *  read a warehouse file: the only way to search one was to pull the whole thing
+ *  through recipe step state. The executor's own cap error even advised
+ *  "declare shape:'ref' for large output", which such an op had no way to do.
+ *
+ *  ⛔ **The content-isolation posture is UNCHANGED, and that is the point.** The
+ *  bytes go to a path the ENGINE chose and come back as a Gateway-gated
+ *  `file_ref`; they never enter an op-step value and the path is never returned
+ *  to the recipe. That is the same trade `dir_arg` makes. Contrast a DETACHED
+ *  job, which also redirects stdout to a file and is REFUSED alongside
+ *  `input_materialize` — because it hands the recipe its `log_path`, re-opening
+ *  the echo channel. Capturing is safe; handing back the path is not.
+ *
+ *  ⚠ STDOUT ONLY. stderr keeps its existing suppression on a materialize op —
+ *  merging the two would also corrupt any structured output (a diagnostic line
+ *  in the middle of a CSV). */
+export interface CliOutputStdoutCaptureSpec {
+  /** Discriminator. Always `true` — the op captures what the tool printed. */
+  from_stdout: true;
+  /** mime_type stamped on the captured record. Unlike `dir_arg` capture this
+   *  never selects among sidecars — there is exactly one stream — but it still
+   *  stamps the record and drives the envelope assertion. */
+  mime_type: string;
+  /** Display filename for the captured record. The tool names nothing here (it
+   *  printed), so the op must. */
+  filename: string;
+  dir_arg?: never;
+  from_input_arg?: never;
+}
+
+/** Narrow a capture spec to the stdout variant. */
+export const isStdoutCapture = (
+  capture: CliOutputCaptureSpec,
+): capture is CliOutputStdoutCaptureSpec =>
+  (capture as CliOutputStdoutCaptureSpec).from_stdout === true;
 
 /** Narrow a capture spec to the in-place variant. Presence of `from_input_arg`
  *  is the discriminator; `?: never` on each sibling keeps a both-keys literal

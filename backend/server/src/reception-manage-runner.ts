@@ -37,7 +37,10 @@ import {
 } from '@recued/contracts';
 
 import { handleExecute, type ExecuteHandlerDeps } from './execute-handler.js';
-import { buildReceptionContractSnapshot } from './reception-contract-snapshot.js';
+import {
+  buildReceptionContractSnapshot,
+  grantedOperationsFor,
+} from './reception-contract-snapshot.js';
 import type { ContractDefinitionStore } from './storage/contract-definition-store.js';
 
 /** The pseudo reception-id the manage door dispatches under — a dedicated path,
@@ -66,9 +69,11 @@ export interface ReceptionManageRescheduleInput {
 }
 
 export type ReceptionManageRunOutcome =
-  /** Durably PAUSED at the D-157 gate (`awaiting_approval`). Queued, not failed:
-   *  the owner approves in the Inbox and the run resumes. This is the honest
-   *  success the manage page reports. */
+  /** Durably PAUSED — at the D-157 gate (`awaiting_approval`, the owner approves in
+   *  the Inbox) or on a peer's answer (`awaiting_peer`, D-234 § 234.4, which no
+   *  owner affordance resolves). Queued, not failed either way: this is the honest
+   *  success the manage page reports, because what it claims — "your change is
+   *  recorded and will be applied" — is true of both. */
   | { readonly kind: 'held' }
   /** Ran to completion without a hold — rare (only if the owner has a policy
    *  that admits an anonymous write, which the D-209 ceiling normally forbids). */
@@ -127,6 +132,7 @@ export const createReceptionManageRescheduleRunner = (
       {
         definitionStore: deps.definitionStore,
         allowedTools: allowedToolsFor(deps.definitionStore),
+        grantedOperations: grantedOperationsFor(deps.definitionStore),
         now: deps.now,
       },
     );
@@ -167,7 +173,14 @@ export const createReceptionManageRescheduleRunner = (
     );
 
     if (!result.success) {
-      if (result.awaiting_approval === true) return { kind: 'held' };
+      // D-234 § 234.4 — both holds, for the reason spelled out in
+      // `reception-recipe-runner.ts`: this site decides what the VISITOR is told, and a peer
+      // hold is exactly as durable as an approval one. The two runners are the same rule
+      // block, so they move together — a fix to one and not the other would leave the manage
+      // door reporting a live run as failed.
+      if (result.awaiting_approval === true || result.awaiting_peer === true) {
+        return { kind: 'held' };
+      }
       return { kind: 'failed', errors: result.errors };
     }
     return { kind: 'completed' };

@@ -5872,6 +5872,14 @@ export const handleExecute = async (
       && deps.dishContextStore !== undefined
       && !result.trigger_skipped
       && !result.awaiting_approval
+      // D-234 § 234.4 — a peer hold is a paused run for the same reason an approval hold
+      // is, so it must not write a NEXT-RUN snapshot out of a run that has not reached its
+      // end. Its `step` store holds only the work done BEFORE the gate; persisting that as
+      // continuity state would hand the next run of this dish a half-finished picture, and
+      // the resume — which reaches this same line with the run complete — overwrites it
+      // anyway. Left out, `!result.awaiting_approval` beside it read as though it covered
+      // "paused" when it covered one WAY of being paused.
+      && !result.awaiting_peer
       && request.trigger_source !== 'auto_run'
     ) {
       try {
@@ -6234,10 +6242,41 @@ export const handleExecute = async (
     // checkpoint store, or checkpoint write failed —
     // `pauseFailureError !== undefined`) emits `'error'` like any
     // other terminal failure.
-    const isDurablyPaused =
-      runTermination === undefined
-      && result.awaiting_approval !== undefined
-      && pauseFailureError === undefined;
+    // D-234 § 234.4 — AND A PEER HOLD IS DURABLY PAUSED TOO. It was not in this
+    // expression, so every consequence below fired on a run that was alive and
+    // checkpointed: paired clients got `op: 'error'` ("your recipe failed"), the
+    // warehouse bus got `outcome: 'failed'` — a run-outcome TRIGGER, so recipes
+    // watching for failure fired on a hold — the torn-saga detector ran, and the
+    // response carried a bare `success: false` with empty errors and no marker at
+    // all. The run anchor said `awaiting_peer` the whole time, so the audit row
+    // and the event bus disagreed about the same run.
+    //
+    // ⚠ WHY NO TEST CAUGHT IT: `d-234-peer-hold-anchor.test.ts` proves the anchor
+    // rule by MIRRORING the host's status expression rather than driving it (it
+    // says so), so the sweep `commits.ts` warned `awaiting_peer` would oblige —
+    // *"adding it obliges a sweep of every `awaiting_approval` consumer; that is
+    // the intended cost"* — reached the anchor and stopped one expression short.
+    //
+    // ⛔ THE MARKER STAYS DISCRIMINATED WHILE THE PREDICATE MERGES, and that split
+    // is the whole point. "Is the run held?" is one question (this predicate);
+    // "held for whose answer?" is a different one the caller must still be able to
+    // ask, because the owner cannot resolve a peer hold. Computing both from one
+    // expression is what stops them drifting into disagreement.
+    //
+    // ⚠ APPROVAL WINS WHEN BOTH ARE SET — the same precedence the anchor takes
+    // (`d-234-peer-hold-anchor`: *"the approval branch is the one with a local ask
+    // to pair, so resolving to the peer status would strand that ask"*). The peer
+    // pause block at § 234.4 above is itself skipped when `awaiting_approval` is
+    // set, so only the approval checkpoint exists in that case.
+    const durablePauseMarker: { awaiting_approval: true } | { awaiting_peer: true } | undefined =
+      runTermination !== undefined || pauseFailureError !== undefined
+        ? undefined
+        : result.awaiting_approval !== undefined
+          ? { awaiting_approval: true }
+          : result.awaiting_peer !== undefined
+            ? { awaiting_peer: true }
+            : undefined;
+    const isDurablyPaused = durablePauseMarker !== undefined;
     if (!result.trigger_skipped && !isDurablyPaused) {
       const terminalSuccess = result.success && !pauseFailureError;
       emitExecution(deps.eventBus, {
@@ -6383,7 +6422,10 @@ export const handleExecute = async (
       // (esp. the chat tool-loop) can tell the model the action is queued for
       // approval, not silently failed. Only when the pause is durable (the
       // checkpoint was written); a downgraded pause stays a terminal failure.
-      ...(isDurablyPaused ? { awaiting_approval: true } : {}),
+      // D-234 § 234.4 — and WHICH hold it is, from the one expression that
+      // decided the run was paused at all, so the flag and the predicate cannot
+      // disagree about the same run.
+      ...(durablePauseMarker ?? {}),
       // D-232 § 19.3 — the exchange receipt, and NOTE WHERE IT IS: inside the
       // enumerating copier the comment above warns about. The engine derived
       // this so no recipe could forget it; naming it here is what stops the

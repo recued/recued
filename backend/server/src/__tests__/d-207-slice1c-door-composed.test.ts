@@ -240,6 +240,7 @@ const harness = () => {
 
 const bind = (h: ReturnType<typeof harness>, opts: {
   confirm?: boolean;
+  standing?: boolean;
   expected_updated_at?: number | null;
 } = {}) =>
   handleReceptionIntakeRecipePairBind(
@@ -249,9 +250,54 @@ const bind = (h: ReturnType<typeof harness>, opts: {
       recipe_id: RECIPE_ID,
       expected_updated_at: opts.expected_updated_at ?? null,
       ...(opts.confirm === undefined ? {} : { confirm_capability: opts.confirm }),
+      ...(opts.standing === undefined ? {} : { standing_closure: opts.standing }),
     },
     CALLER,
   );
+
+describe('D-207 follow-on — the standing-closure opt-in at the bind rpc', () => {
+  it('⛔⛔ REFUSES a standing approval the owner has not been shown', async () => {
+    // ⛔⛔⛔ `confirm_capability` is "I have read this closure"; `standing_closure`
+    // is "and it may run without asking me again". The second without the first
+    // would grant standing authority over a list the owner never saw — the exact
+    // thing the confirm step exists to prevent. The UI never sends that pair;
+    // this is the fence that does not depend on the UI being right.
+    const h = harness();
+    await expect(bind(h, { standing: true })).rejects.toThrow(/standing_closure requires confirm_capability/);
+    await expect(bind(h, { standing: true, confirm: false }))
+      .rejects.toThrow(/standing_closure requires confirm_capability/);
+  });
+
+  it('refuses a non-boolean, exactly as the confirm flag does', async () => {
+    const h = harness();
+    await expect(handleReceptionIntakeRecipePairBind(
+      h.deps,
+      {
+        endpoint_id: ENDPOINT_ID, recipe_id: RECIPE_ID, expected_updated_at: null,
+        confirm_capability: true, standing_closure: 'yes',
+      } as never,
+      CALLER,
+    )).rejects.toThrow(/standing_closure must be a boolean/);
+  });
+
+  it('a bind with BOTH persists the opt-in onto the minted door', async () => {
+    const h = harness();
+    await bind(h, { confirm: true, standing: true });
+    const minted = [...h.definitions.values()] as any[];
+    const door = minted.find((d) => d.door_types?.includes('reception'));
+    expect(door?.door_execution_policy?.standing_closure).toBe(true);
+  });
+
+  it('⛔ and a bind WITHOUT it leaves the door exactly as before', async () => {
+    const h = harness();
+    await bind(h, { confirm: true });
+    const minted = [...h.definitions.values()] as any[];
+    const door = minted.find((d) => d.door_types?.includes('reception'));
+    expect(door?.door_execution_policy?.standing_closure).toBeUndefined();
+    // …and the rest of the policy is untouched.
+    expect(door?.door_execution_policy?.allow_ai).toBe(false);
+  });
+});
 
 // ────────────────────────────────────────────────────────────────────────────────────────
 // The bind rpc mints the door — the hop that did not exist
@@ -274,6 +320,12 @@ describe('D-207 slice 1c — the bind rpc HANGS the door', () => {
       ],
       removed: [],
       operation_ids: ['core.crm.contact.create'],
+      // ⚠ `[]`, not absent. Computed-and-empty is a different fact from
+      // not-computed, and the consent copy branches on it: an empty list must
+      // render NOTHING about deletes rather than a warning about a capability
+      // this form does not have. Same rule as the standing closure's own
+      // empty-vs-absent distinction.
+      asks_anyway: [],
     });
     // And until they do, the door is SHUT. Not "open pending" — shut: with no contract_id a
     // dispatch floors to PUBLIC_CONTRACT_ID, which grants nothing.

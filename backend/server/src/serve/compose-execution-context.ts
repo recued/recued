@@ -24,6 +24,7 @@ import {
   resolvePublicBaseUrl,
 } from '../ask-landing-answer-link.js';
 import { buildMessengerRemoteChannels } from '../composition/bin/messenger-transport-leaves.js';
+import { getMessengerNotificationRefresher } from '../composition/bin/wire-messenger-refresher.js';
 import { composeEmailChannel } from '../composition/bin/wire-email-channel.js';
 import type { PreflightResumer } from '@recued/gateway';
 import type { ExecuteHandlerDeps } from '../execute-handler.js';
@@ -163,6 +164,8 @@ export interface ComposeExecutionContextOptions {
     | 'annotationDeps'
     | 'annotationStoreRef'
     | 'enrichmentStoreRef'
+    // D-239 — mail write-back delete cascade.
+    | 'enrichmentCascadeRef'
     | 'housekeepingStateRef'
     | 'engagementRateControlStoreRef'
     // D-192 Slice 6c — the boot-singleton work-entity write executor ref, for the
@@ -405,6 +408,10 @@ export const composeExecutionContext = async (
     db: storage.db,
     annotationStore: app.annotationStoreRef,
     enrichmentStore: app.enrichmentStoreRef,
+    // D-239 — the mail write-back's delete path cascades through the same
+    // engine `collection.deleteRecord` uses, so it needs the same ref
+    // `compose-listeners` already hands that rpc.
+    enrichmentCascade: app.enrichmentCascadeRef,
     // D-187 AMENDMENT — the per-(bound contract) read-grant resolver (wraps the real
     // contract store; no SQL at construction; gates to standing policy contracts) for the
     // recipe-channel enrichment-list + timeline-read dispatchers.
@@ -480,10 +487,33 @@ export const composeExecutionContext = async (
   // re-reads `keys.state()` per dispatch, so a mid-process unlock transparently
   // switches decode paths (see `composeRemoteChannel` for the rationale). Empty
   // when there is no connection store (daemon-only / dbless harness).
+  // D-238 — HOISTED above the registry below. A `landing-page` channel composes
+  // its OWN answer affordance at `deliverAsk` time (`withAnswerLink` skips it so
+  // the URL is not appended twice), so the builder has to exist before the
+  // channels do. Absent on a non-public deployment, where the ask carries the
+  // typed-reply hint alone.
+  const askAnswerLink =
+    buildAskLandingAnswerLink(resolvePublicBaseUrl(env.RECUED_PUBLIC_BASE_URL)) ??
+    undefined;
+
   const messengerChannels: Record<string, RemoteChannel> = app.connectionStoreRef
     ? buildMessengerRemoteChannels({
         connectionStore: app.connectionStoreRef,
         ...(app.keys ? { keys: app.keys } : {}),
+        ...(askAnswerLink !== undefined ? { answerLink: askAnswerLink } : {}),
+        // D-238 — the process-shared refresher (memoized per connection store),
+        // so an expiring Graph credential is renewed before the send path reads
+        // it. The SAME instance reaches the ingress supervisor, which is what
+        // keeps single-flight covering both.
+        refreshAuth: getMessengerNotificationRefresher({
+          connectionStore: app.connectionStoreRef,
+          ...(app.keys ? { keys: app.keys } : {}),
+          onFailure: (failure) => {
+            console.warn(
+              `[messenger-refresh] ${failure.vendor}: ${failure.reason} — ${failure.detail}`,
+            );
+          },
+        }),
       })
     : {};
   // D-158 P2b email-adapter slice — OUTBOUND server-wiring for the
@@ -503,9 +533,7 @@ export const composeExecutionContext = async (
   // ⇒ text-only asks (answerable on `ui` + by reply). When present, the
   // `/ask/<ask_id>` route serves the landing page (mounted in
   // `composeListeners`).
-  const askAnswerLink =
-    buildAskLandingAnswerLink(resolvePublicBaseUrl(env.RECUED_PUBLIC_BASE_URL)) ??
-    undefined;
+  // (hoisted above the messenger channel registry — see there.)
   // D-234 § 234.3 — the same base-URL decision, one line down, so "reachable
   // enough to answer" and "reachable enough to read" can never disagree.
   const ownerSurfaceLink =
@@ -649,6 +677,12 @@ export const composeExecutionContext = async (
     ...(collection.inboundFileCollection
       ? { inboundFileCollection: collection.inboundFileCollection }
       : {}),
+    // D-241 P4 — and the remote half of that same reader: a `file:remote:*` id
+    // (a File Source mirror row) resolves its bytes through the per-vendor
+    // resolver, so a synced Dropbox / Box / Notion / Drive document can be
+    // materialized to a temp file and converted. Same bundle the `data-file-read`
+    // ingredient already uses above — one remote reader, four channels.
+    getRemoteFileReadDeps: app.getRemoteFileReadDeps,
     // D-217 slice 2b-ii — the engine half of chunked-upload staging: stage a
     // file's plaintext once before the walk, dispose it after. The adapter half
     // (`readUploadChunk`, wired into the executor config above) reads the same

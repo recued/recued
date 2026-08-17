@@ -533,3 +533,75 @@ describe('D-127 P3.1 — auth handling', () => {
     expect(decodeAuth).not.toHaveBeenCalled();
   });
 });
+
+// ────────────────────────────────────────────────────────────────
+// D-207 slice 3d — the no-resend fence is reachable from mail-post
+// ────────────────────────────────────────────────────────────────
+
+describe('D-207 3d — fence opt-in through the email façade', () => {
+  it('forwards reconciliation_id so a mail-post recipe can arm the fence', async () => {
+    // The fence lives in MailCollection.send, which this façade calls. It is
+    // opt-in PER CALL by design; the defect was that this surface built its
+    // send args without the field, so no mail-post recipe could opt in at all.
+    const { rpc, calls } = mkMailRpc(() => okMeta());
+    const handler = createConnectionNotificationHandler(mkDeps({ mailRpc: rpc }));
+    await handler(
+      mkRow(),
+      { to: ['a@b.com'], body: 'b', reconciliation_id: 'recon-abc-123' },
+      mkCall(),
+    );
+    expect(calls[0].args.reconciliation_id).toBe('recon-abc-123');
+  });
+
+  it('keeps ordinary retry semantics when no id is supplied', async () => {
+    const { rpc, calls } = mkMailRpc(() => okMeta());
+    const handler = createConnectionNotificationHandler(mkDeps({ mailRpc: rpc }));
+    await handler(mkRow(), { to: ['a@b.com'], body: 'b' }, mkCall());
+    expect(calls[0].args.reconciliation_id).toBeUndefined();
+    expect('reconciliation_id' in calls[0].args).toBe(false);
+  });
+
+  it('treats a non-string or empty id as absent rather than passing junk on', async () => {
+    // The id's SHAPE is the claim store's invariant, enforced there. This layer
+    // only refuses to forward something that is plainly not an id.
+    for (const bad of [42, '', null, {}, ['x']]) {
+      const { rpc, calls } = mkMailRpc(() => okMeta());
+      const handler = createConnectionNotificationHandler(mkDeps({ mailRpc: rpc }));
+      await handler(
+        mkRow(),
+        { to: ['a@b.com'], body: 'b', reconciliation_id: bad },
+        mkCall(),
+      );
+      expect(calls[0].args.reconciliation_id).toBeUndefined();
+    }
+  });
+
+  it('surfaces already_sent so a recipe can tell a fence answer from a send', async () => {
+    // Without this the recipe sees an ordinary success and cannot distinguish
+    // "sent now" from "already sent an hour ago" — the exact ambiguity the
+    // claim exists to remove.
+    const { rpc } = mkMailRpc(() => ({
+      ...okMeta({ message_id: '<original@example.com>' }),
+      already_sent: true,
+    }));
+    const handler = createConnectionNotificationHandler(mkDeps({ mailRpc: rpc }));
+    const result = await handler(
+      mkRow(),
+      { to: ['a@b.com'], body: 'b', reconciliation_id: 'recon-1' },
+      mkCall(),
+    );
+    expect(result).toMatchObject({
+      status: 'ok',
+      result: { message_id: '<original@example.com>', already_sent: true },
+    });
+  });
+
+  it('omits already_sent entirely on an ordinary send', async () => {
+    // Absence keeps meaning "this handler sent it"; an explicit `false` would
+    // read as a claim about a fence that was never armed.
+    const { rpc } = mkMailRpc(() => okMeta());
+    const handler = createConnectionNotificationHandler(mkDeps({ mailRpc: rpc }));
+    const result = await handler(mkRow(), { to: ['a@b.com'], body: 'b' }, mkCall());
+    expect('already_sent' in (result as { result: object }).result).toBe(false);
+  });
+});

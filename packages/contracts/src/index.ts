@@ -884,10 +884,12 @@ export type {
   WebhookExecutionBinding, QueueSubscriptionBinding, PushChannelBinding,
   ConnectorRuntimeSpec, ConnectorLifecycleSpec, ConnectorExecutionBinding,
   ConnectorMethodBinding, CliArgvTemplateEntry, CliInvocationCwdSpec, CliMethodBinding, CliInputMaterializeSpec, CliProgressSpec, CliOutputCaptureSpec, CliDetachedMarkerCompletion,
-  // In-place capture — the two `CliOutputCaptureSpec` arms. `dir_arg` is the
-  // historical engine-owned output dir; `from_input_arg` captures the file the
-  // tool edited in place at its materialized input path.
-  CliOutputDirCaptureSpec, CliOutputInPlaceCaptureSpec,
+  // The three `CliOutputCaptureSpec` arms. `dir_arg` is the historical
+  // engine-owned output dir; `from_input_arg` captures the file the tool edited
+  // in place at its materialized input path; `from_stdout` streams what the tool
+  // PRINTED to an engine-owned file — the arm that lets a stdout-only filter
+  // (csvgrep, ripgrep, jq) read a warehouse file at all.
+  CliOutputDirCaptureSpec, CliOutputInPlaceCaptureSpec, CliOutputStdoutCaptureSpec,
   CliDetachedCancelSpec, CliDetachedJobSpec, ConnectorEventSpec,
   ApiTransport, McpPackReviewRow, AuthKind, OAuth2Flow, CallbackUrlStrategy, OAuthScopeSeparator,
   RestMethod, GraphQLOperationType, QueueKind, ApiExecutionBindingKind,
@@ -914,9 +916,9 @@ export type {
 } from './ingredient-catalog.js';
 export {
   isCatalogForm, resolveCatalogOperationPolicy, resolveCliReachabilityPolicy, isRiskTierAtMost,
-  // In-place capture — narrows a `CliOutputCaptureSpec` to its `from_input_arg`
-  // arm. Both validators and the executor discriminate through this one helper.
-  isInPlaceCapture,
+  // Capture-arm narrowing. Both validators and the executor discriminate
+  // through these helpers rather than sniffing keys.
+  isInPlaceCapture, isStdoutCapture,
   // D-209 §1.3 — the op-risk APPROVAL FLOOR (the single source the runtime clamp +
   // the composition/manifest authoring validators derive from). D-211 §2 adds
   // `clampToFloor` — the owner-override clamp (write-gate + fail-closed resolve) —
@@ -1693,6 +1695,8 @@ export {
   isChannel,
   isExecutionSource,
   isContractSnapshot,
+  standingClosureAdmits,
+  STANDING_CLOSURE_RISK_TIERS,
   MAX_DISPATCH_DEPTH,
   nextDispatchDepth,
   isCommit,
@@ -2501,6 +2505,7 @@ export {
   MESSENGER_SURFACES,
   MESSENGER_SURFACE_SET,
   MESSENGER_INGRESS_MODES,
+  MESSENGER_PRINCIPAL_CONFIG_KEY,
   MESSENGER_INGRESS_MODE_SET,
   MESSENGER_INGRESS_MODE_CONFIG_KEY,
   MESSENGER_VERIFICATIONS,
@@ -3220,8 +3225,16 @@ export {
   // over-cap file is marked before send rather than warned about after.
   MAIL_SEND_ATTACHMENT_MAX_BYTES,
   MAIL_SEND_ATTACHMENT_OVERSIZE_WARNING,
+  // D-239 — mail write-back. The error class is a runtime value (thrown by
+  // the providers, `instanceof`-checked at the dispatcher), so it exports
+  // here rather than in the type-only block below.
+  MailAdapterError,
 } from './mail.js';
 export type {
+  MailAdapterErrorCode,
+  MailMoveDestination,
+  MailMoveOutcome,
+  MailMutationResult,
   MailSendAuditDetail,
   MailSentAttachmentReconciliationMatch,
   MailSentAttachmentReconciliationQuery,
@@ -3578,6 +3591,15 @@ export type {
   ReceptionRecordSummary,
   ReceptionSubmissionRecordSummary,
 } from './reception-record.js';
+// D-240 § D11 — the per-record viewback revoke rpc.
+export {
+  RECEPTION_LOOKUP_REVOKE_ERROR_CODES,
+} from './reception-lookup-revoke.js';
+export type {
+  ReceptionLookupRevokeInput,
+  ReceptionLookupRevokeResult,
+  ReceptionLookupRevokeErrorCode,
+} from './reception-lookup-revoke.js';
 // D-210 Appendix B — the on-the-go `/reception/manage` reschedule-link mint rpc.
 export type {
   ReceptionManageMintInput,
@@ -3953,6 +3975,39 @@ export type {
   VisitorReceiptConfigValidationCode,
   VisitorReceiptConfigValidationFailure,
 } from './visitor-receipt-config.js';
+// D-240 — submitter viewback config (spec D-240).
+export {
+  VISITOR_LOOKUP_MODES,
+  VISITOR_LOOKUP_MODE_SET,
+  isVisitorLookupMode,
+  VISITOR_LOOKUP_MODES_PERMITTED_PER_RECORD_KIND,
+  VISITOR_LOOKUP_COMPLETABLE_TARGET_KINDS,
+  VISITOR_LOOKUP_COMPLETABLE_TARGET_KIND_SET,
+  VISITOR_LOOKUP_ANCHOR_FIELD_TYPES,
+  VISITOR_LOOKUP_ANCHOR_FIELD_TYPE_SET,
+  VISITOR_LOOKUP_MIN_TTL_MS,
+  VISITOR_LOOKUP_MAX_TTL_MS,
+  VISITOR_LOOKUP_ABSOLUTE_CEILING_MS,
+  VISITOR_LOOKUP_DEFAULT_TTL_MS,
+  VISITOR_LOOKUP_DEFAULT_GRACE_MS,
+  VISITOR_LOOKUP_CONFIG_VALIDATION_CODES,
+  VISITOR_LOOKUP_SUPPORTED_MODES,
+  VISITOR_LOOKUP_SUPPORTED_MODE_SET,
+  validateVisitorLookupConfig,
+  resolveVisitorLookupExpiry,
+  parseVisitorLookupAnchor,
+} from './visitor-lookup-config.js';
+export type {
+  VisitorLookupMode,
+  VisitorLookupSupportedMode,
+  VisitorLookupExpiry,
+  VisitorLookupExpiryInputs,
+  VisitorLookupExpiryResolution,
+  VisitorLookupConfig,
+  VisitorLookupValidationContext,
+  VisitorLookupConfigValidationCode,
+  VisitorLookupConfigValidationFailure,
+} from './visitor-lookup-config.js';
 export type {
   TrustFooterDeploymentMode,
   TrustFooterInput,

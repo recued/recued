@@ -194,6 +194,50 @@ export interface ChatRpcDeps {
    * token issuance/grant replacement commits. Production resolves Tier 2
    * recipe tools against the live Records operation inventory. */
   preflightExternalToolGrant?: (toolName: string) => void;
+  /** Door standing closure, MCP arm — derive the operation closure a token's
+   *  granted tools would run, so the owner's tick becomes a bounded list of op
+   *  ids rather than an open promise.
+   *
+   *  ⛔ THE ONLY WAY A CLOSURE IS EVER PRODUCED. The wire carries a boolean;
+   *  this computes what it means. Absent ⇒ `standing_closure: true` is REFUSED
+   *  (not silently downgraded to off): a token issued as "won't ask" that then
+   *  asks every time is a broken promise the owner acted on, and a harness
+   *  missing this dep must not be able to mint one.
+   *
+   *  Production wires the SAME capability derivation the reception door bind
+   *  uses, so a door and a token can never disagree about what a recipe does. */
+  deriveGrantedToolClosure?: (
+    grants: Readonly<Record<string, boolean>>,
+  ) => ReadonlyArray<string>;
+  /** Mint the limits-carrier contract a newly issued token binds to, returning
+   *  its `contract_id`.
+   *
+   *  ⛔ ALWAYS-CONTRACTED. A token used to be UNBOUND by default: a contract
+   *  was minted lazily by the Advanced panel only when the owner switched on a
+   *  cap or an expiry, and unbound again when they switched the last one off —
+   *  *"a contract exists ONLY while a limit is on"*. That left the common token
+   *  with no contract at all, and the wire papering over it by synthesising
+   *  `contract_id = mcp_token_id`: an id that names no row, indistinguishable
+   *  downstream from a real one. Every token now carries a real contract from
+   *  issuance, so lifetime, scope and revocation have exactly one home.
+   *
+   *  ⚠ CONTRACTED IS NOT BOUNDED. The carrier is minted with no `expiry_at` and
+   *  no `max_uses` — absent means unbounded — so this does NOT make a token
+   *  limited on its own — a token issued WITHOUT the standing tick carries no
+   *  limits, because the owner is the bound when every write asks. What this
+   *  removes is the id that pointed at nothing. */
+  mintTokenContract?: (input: {
+    label: string;
+    /** The owner-confirmed closure, minted onto `scope.operation_ids` with
+     *  `door_execution_policy.standing_closure`. */
+    standingClosureOperationIds?: ReadonlyArray<string>;
+    /** `expiry_at` / `max_uses` for the carrier. */
+    limits?: { readonly max_uses?: number; readonly expiry_at?: number };
+  }) => string;
+  /** Revoke a carrier this issuance minted, when the issuance then fails.
+   *  Absent ⇒ the orphan is left (best-effort cleanup, never a hard dependency
+   *  — the issuance error is what the caller needs to see). */
+  revokeTokenContract?: (contractId: string) => void;
   orchestrator: ChatOrchestrator;
   broadcast?: ChatBroadcastEmitter;
   auditLog?: AuditLogStore;
@@ -1907,14 +1951,96 @@ export const handleInboundTokenIssue = async (
       );
     }
   }
+  // ── Door standing closure, MCP arm ──────────────────────────────────
+  // Derive BEFORE minting, and refuse rather than degrade. The closure is
+  // minted ONTO THE CONTRACT (scope + door policy), never stored on the token:
+  // lifecycle and limitation are the contract's job, the token authenticates.
+  let standingClosure: ReadonlyArray<string> | undefined;
+  if (validation.value.standing_closure === true) {
+    // ⛔ THE LIMIT IS ISSUED WITH THE TICK. A contract cannot be edited after
+    // mint — changing a limit re-mints — so a closure minted onto an unbounded
+    // contract could never acquire a bound afterwards without losing the
+    // closure. One mint carries the closure, the limit and the door policy.
+    if (validation.value.contract_limits === undefined) {
+      throw new RpcError(
+        'bad_request',
+        'chat.inbound_token.issue: standing_closure requires contract_limits (max_uses and/or expiry_at) — a token that stops asking is issued with its limit, because the contract carrying the closure cannot be given one later',
+        400,
+      );
+    }
+    if (validation.value.contract_id !== undefined) {
+      throw new RpcError(
+        'bad_request',
+        'chat.inbound_token.issue: standing_closure mints its own contract, so contract_id must be omitted — an existing contract cannot be given a closure (no patch rpc; changing a contract re-mints it)',
+        400,
+      );
+    }
+    if (!deps.deriveGrantedToolClosure) {
+      throw new RpcError(
+        'not_configured',
+        'chat.inbound_token.issue: standing_closure requires the capability derivation, which is not wired — refusing rather than issuing a token that would ask every time',
+        501,
+      );
+    }
+    standingClosure = deps.deriveGrantedToolClosure(validation.value.grants);
+    if (standingClosure.length === 0) {
+      throw new RpcError(
+        'bad_request',
+        'chat.inbound_token.issue: standing_closure was requested but the granted tools resolve to no operation closure — grant the recipe this token should run without asking',
+        400,
+      );
+    }
+  }
   const now = deps.now ?? Date.now;
+  // ⛔ ALWAYS-CONTRACTED — mint the carrier when the caller named none, and
+  // REFUSE rather than fall back to an unbound token if the minter is unwired.
+  // Falling back is what the synthetic `contract_id` did for two years.
+  let boundContractId = validation.value.contract_id;
+  if (boundContractId === undefined) {
+    if (!deps.mintTokenContract) {
+      throw new RpcError(
+        'not_configured',
+        'chat.inbound_token.issue: the contract minter is not wired, and a token is never issued unbound — every token carries a contract so its lifetime and revocation have one home',
+        501,
+      );
+    }
+    boundContractId = deps.mintTokenContract({
+      label: validation.value.label,
+      ...(standingClosure === undefined
+        ? {}
+        : { standingClosureOperationIds: standingClosure }),
+      ...(validation.value.contract_limits === undefined
+        ? {}
+        : { limits: validation.value.contract_limits }),
+    });
+  }
+  const valueWithContract: typeof validation.value = {
+    ...validation.value,
+    contract_id: boundContractId,
+  };
+  // ⚠ Track whether WE minted the carrier: only a contract this call created is
+  // ours to clean up. A caller-supplied `contract_id` must survive a failed
+  // issuance untouched.
+  const mintedHere = validation.value.contract_id === undefined;
   let issued: IssuedMcpInboundToken;
   try {
     issued = deps.inboundTokenStore.issueToken({
-      value: validation.value,
+      value: valueWithContract,
       now: now(),
     });
   } catch (err) {
+    // ⛔ THE CARRIER IS MINTED BEFORE THE TOKEN, so a failed issuance (a
+    // peer_handle conflict, a storage error) leaves a LIVE contract bound to
+    // nothing. Each retry would leave another. Best-effort revoke — the same
+    // orphan cleanup the Advanced panel already does when its rebind fails,
+    // and for the same reason.
+    if (mintedHere && boundContractId !== undefined) {
+      try {
+        deps.revokeTokenContract?.(boundContractId);
+      } catch {
+        // Cleanup only; the issuance error below is what the caller needs.
+      }
+    }
     const message = err instanceof Error ? err.message : String(err);
     if (message.startsWith(PEER_HANDLE_CONFLICT_PREFIX)) {
       // Spec § A.9 "Multiple tokens per peer: not supported initially.
@@ -1966,7 +2092,6 @@ export const handleInboundTokenIssue = async (
         ? { peer_handle: issued.record.peer_handle }
         : {}),
       concurrency_tier: issued.record.concurrency_tier,
-      expires_at: issued.record.expires_at,
       grants_total,
       grants_allowed_count,
       chat_mode_offered:
@@ -2180,7 +2305,8 @@ export const handleInboundTokenUpdateGrants = async (
  *  resolves liveness against the new (or no) contract.
  *
  *  `contract_id` is REQUIRED: a non-empty string ≤256 (bind) or `null`
- *  (unbind). Opaque here — liveness resolves at dispatch (the MCP transport's
+ *  ⛔ `null` is REFUSED — a token is always contracted. Opaque here — liveness
+ *  resolves at dispatch (the MCP transport's
  *  per-request `isContractLive`), so binding an id that names no contract
  *  fails closed (denies) rather than being rejected at rebind time. 404 when
  *  the token doesn't exist. */
@@ -2201,20 +2327,37 @@ export const handleInboundTokenUpdateContract = async (
     'token_id',
     safe.token_id,
   );
-  // `contract_id` is required (string ⇒ bind, null ⇒ unbind). A missing key is
-  // a caller bug — the rpc's whole purpose is to set/clear the binding.
+  // `contract_id` is required. A missing key is a caller bug — the rpc's whole
+  // purpose is to set the binding.
   if (!Object.prototype.hasOwnProperty.call(safe, 'contract_id')) {
     throw new RpcError(
       'bad_request',
-      'chat.inbound_token.update_contract: contract_id is required (a non-empty string to bind, or null to unbind)',
+      'chat.inbound_token.update_contract: contract_id is required (a non-empty string naming the contract to bind)',
+      400,
+    );
+  }
+  // ⛔⛔ UNBINDING IS GONE. `null` used to mean "clear the binding", and the
+  // Advanced panel sent it whenever the owner switched the last limit off —
+  // which left a live token with no contract, only a synthetic `contract_id`
+  // naming no row. Turning limits off must REBIND to an unbounded carrier, not
+  // strip the contract: the limits are the contract's fields, not its reason to
+  // exist. ⚠ Refused here rather than silently coerced, because a caller that
+  // still sends `null` believes it is clearing something.
+  if (safe.contract_id === null) {
+    throw new RpcError(
+      'bad_request',
+      'chat.inbound_token.update_contract: a token is always contracted — to remove its limits, bind it to a contract minted without expiry_at / max_uses rather than unbinding',
       400,
     );
   }
   const rawContractId = safe.contract_id;
-  let contract_id: string | null;
-  if (rawContractId === null) {
-    contract_id = null;
-  } else if (
+  // ⚠ NOT nullable. The `null` branch is gone with unbinding — the guard above
+  // rejects it, so a branch here would be unreachable code advertising a
+  // capability that no longer exists. (Codex flagged the earlier version: the
+  // docs said null unbinds, the parser kept a null branch, and the guard
+  // refused it — three statements, two of them false.)
+  let contract_id: string;
+  if (
     typeof rawContractId === 'string'
     && rawContractId.length > 0
     && rawContractId.length <= 256
@@ -2236,7 +2379,7 @@ export const handleInboundTokenUpdateContract = async (
   } else {
     throw new RpcError(
       'bad_request',
-      'chat.inbound_token.update_contract: contract_id must be a non-empty string up to 256 characters, or null to unbind',
+      'chat.inbound_token.update_contract: contract_id must be a non-empty string up to 256 characters naming the contract to bind',
       400,
     );
   }

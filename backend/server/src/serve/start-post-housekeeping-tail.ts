@@ -35,12 +35,20 @@ export type PostHousekeepingTailStorageContext = Pick<
   | 'checkpointStore'
   | 'auditLog'
   | 'drainAuditWrites'
+  // D-240 slice 4 — the two readers the viewback stamp joins: a deferred
+  // credential names a SUBMISSION, whose resolved target is a work entity whose
+  // `done` is the fact the stamp waits on.
+  | 'intakeFormSubmissionStoreRef'
+  | 'workEntityStoreRef'
+  | 'formResponseStoreRef'
 >;
 
 export type PostHousekeepingTailAppContext = Pick<
   AppContext,
   'llmConfig' | 'executionCaseLifecycle' | 'executionCaseArgumentStore'
   | 'executionCaseSourcePruner' | 'sharedStoreRef' | 'chatInboundTokenStoreRef'
+  // D-240 slice 4 — the credential store the retention pass owns.
+  | 'receptionManageCredentialStoreRef'
 >;
 
 export type PostHousekeepingTailCollectionContext = Pick<
@@ -111,6 +119,82 @@ export const startPostHousekeepingTail = (
       ? { executionCaseSourcePruner: options.app.executionCaseSourcePruner }
       : {}),
     notificationBlock: options.notificationBlock,
+    // D-240 slice 4 — the reception credential retention pass.
+    //
+    // ⛔⛔ THIS THREAD IS THE POINT OF THE SLICE, NOT PLUMBING. `purge` has had
+    // NO caller since D-210 Appendix B shipped it, so
+    // `reception_manage_credentials` has been append-only — and slice 2's
+    // `ceiling_at` backstop was resting on a collector that never ran. A
+    // registration nobody supplies deps to would have repeated the same mistake
+    // one layer up, which is why the reader is built HERE from the two stores
+    // that already exist rather than left as an unfilled option.
+    ...(options.app.receptionManageCredentialStoreRef
+      ? { receptionCredentialStore: options.app.receptionManageCredentialStoreRef }
+      : {}),
+    ...(storage.intakeFormSubmissionStoreRef && storage.workEntityStoreRef
+      ? {
+          receptionRecordCompletion: ({ record_id }: { record_id: string }) => {
+            const submission = storage.intakeFormSubmissionStoreRef!.findById(record_id);
+            // No row, or nothing materialized yet ⇒ keep waiting. Both are the
+            // ordinary open-request state, not a fault.
+            if (submission === null) return null;
+            const targetId = submission.resolved_target_id;
+            if (typeof targetId !== 'string' || targetId.length === 0) return null;
+            // § D7 — every destination that can REPORT completion, which the
+            // config validator now also enforces at write time
+            // (`visitor_lookup_target_has_no_completion`). The two must agree:
+            // a kind accepted there and unreadable here would leave the
+            // credential alive to its ceiling, silently.
+            switch (submission.resolved_target_kind) {
+              case 'task': {
+                const task = storage.workEntityStoreRef!.readTask(targetId);
+                if (task === null) return null;
+                return {
+                  done: task.done === true,
+                  ...(typeof task.completed_at === 'number'
+                    ? { completed_at: task.completed_at }
+                    : {}),
+                };
+              }
+              case 'booking': {
+                // ⚠ `cancelled` and `no_show` are ENDINGS too. A viewback that
+                // stayed live to the ceiling because the booking was cancelled
+                // would outlive the thing it reports on by months.
+                const booking = storage.workEntityStoreRef!.readBooking(targetId);
+                if (booking === null) return null;
+                const ended = booking.lifecycle_state === 'completed'
+                  || booking.lifecycle_state === 'cancelled'
+                  || booking.lifecycle_state === 'no_show';
+                return {
+                  done: ended,
+                  ...(typeof booking.state_changed_at === 'number'
+                    ? { completed_at: booking.state_changed_at }
+                    : {}),
+                };
+              }
+              case 'form_response': {
+                if (storage.formResponseStoreRef === undefined) return null;
+                const response = storage.formResponseStoreRef.findById(targetId);
+                if (response === null || response === undefined) return null;
+                const ended = response.lifecycle_state === 'accepted'
+                  || response.lifecycle_state === 'declined'
+                  || response.lifecycle_state === 'no_show';
+                return {
+                  done: ended,
+                  ...(typeof response.updated_at === 'number'
+                    ? { completed_at: response.updated_at }
+                    : {}),
+                };
+              }
+              default:
+                // `note` / `calendar` / `contact` never finish — refused at
+                // config write, so reaching here means a config stored before
+                // that refusal existed. Keep waiting; the ceiling collects it.
+                return null;
+            }
+          },
+        }
+      : {}),
   });
 
   startDdnsUpdatePoller({

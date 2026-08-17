@@ -44,7 +44,6 @@ const token = (over: Partial<McpInboundTokenRecord>): McpInboundTokenRecord => (
   bearer_hash: 'h',
   label: 'peer b',
   created_at: NOW,
-  expires_at: NOW + 1_000_000,
   revoked_at: null,
   grants: {},
   // ⚠ Both are CLOSED vocabularies: the tier is `3 | 5 | 10`, and chat_mode is
@@ -125,7 +124,6 @@ describe('exposedToolNamesForPeerContract', () => {
     const dead = token({
       contract_id: CONTRACT,
       revoked_at: NOW - 1,
-      expires_at: NOW - 10,
       grants: { recued_listRecipes: true },
     });
 

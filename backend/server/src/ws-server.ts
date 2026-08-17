@@ -284,10 +284,12 @@ import {
   makeReceptionHandlers,
   makeReceptionInboxRpcHandlers,
   makeReceptionRecordRpcHandlers,
+  makeReceptionLookupRevokeRpcHandlers,
   makeReceptionManageMintRpcHandlers,
   type ReceptionInboxDeps,
   type ReceptionRecordDeps,
   type ReceptionManageMintDeps,
+  type ReceptionLookupRevokeDeps,
   type ReceptionRpcDeps,
 } from './reception-rpc-handler.js';
 // D-145 PA11 — Settings → Work Entities Source management rpc slice.
@@ -1301,6 +1303,9 @@ export interface AttachWebSocketOptions {
    *  Absent ⇒ the method is not registered (no credential store / booking store /
    *  link walk wired). */
   receptionManageMintDeps?: ReceptionManageMintDeps;
+  /** D-240 § D11 — per-record viewback revoke. Absent ⇒ the method is simply not
+   *  registered (db-less boot), same posture as its neighbours. */
+  receptionLookupRevokeDeps?: ReceptionLookupRevokeDeps;
   /** D-145 PA11 — Settings → Work Entities Source management rpc.
    *  Wires `work_entity.source.{list,set_enabled,
    *  set_default,clear_default}` so the panel can render + persist
@@ -1511,6 +1516,7 @@ const buildWsBinding = (
     receptionInboxDeps,
     receptionRecordDeps,
     receptionManageMintDeps,
+    receptionLookupRevokeDeps,
     workEntitySourceDeps,
     contactSourceDeps,
     contactImportDeps,
@@ -1999,6 +2005,11 @@ const buildWsBinding = (
     // D-210 Appendix B — `reception.manage.mint` (on-the-go reschedule link).
     // Admin-gated in the handler; the `reception.` reserved prefix keeps it off MCP.
     makeReceptionManageMintRpcHandlers(receptionManageMintDeps),
+    // D-240 § D11 — `reception.lookup.revoke`. Per-RECORD, because
+    // `reception.endpoint.rotate_token` is per-ENDPOINT and would cut off every
+    // submitter at once. Admin-gated in the handler; the reserved prefix keeps
+    // it off MCP.
+    makeReceptionLookupRevokeRpcHandlers(receptionLookupRevokeDeps),
     // D-145 PA11 — Settings → Work Entities panel rpc. Wires
     // `work_entity.source.{list,set_enabled,
     // set_default,clear_default}` against the work-entity resolver +

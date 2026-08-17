@@ -466,10 +466,15 @@ const VALUE_SHAPES: Readonly<Record<string, ValueShape>> = {
   // Derived door execution limits. Scope pins WHAT may run; this pins how much one
   // anonymous invocation may execute and whether it may consume AI quota.
   door_execution_policy: {
-    fields: ['max_steps', 'allow_ai'],
+    // ⚠ `standing_closure` is OPTIONAL and absent by default: every door minted
+    // before it existed validates unchanged, and absence reads as off. It lives
+    // here rather than in a new shape because it is the same KIND of decision
+    // `allow_ai` already is — a per-door owner opt-in resolved at bind.
+    fields: ['max_steps', 'allow_ai', 'standing_closure'],
     types: {
       max_steps: 'number',
       allow_ai: 'bool',
+      standing_closure: 'bool',
     },
     required: ['max_steps', 'allow_ai'],
   },

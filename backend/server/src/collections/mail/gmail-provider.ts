@@ -49,6 +49,7 @@ import {
   GOOGLE_TOKEN_URL,
   isMailReconciliationId,
   MAIL_RECONCILIATION_ID_HEADER,
+  MailAdapterError,
 } from '@recued/contracts';
 import {
   ProviderPaginationGuard,
@@ -74,6 +75,8 @@ import {
   type MailProvider,
   type MailSyncFailureKind,
   type MailSyncOutcomeListener,
+  type MailMoveDestination,
+  type MailMutationResult,
   type MailSentReconciliationCandidate,
   type MailSentReconciliationQuery,
   type MailSentReconciliationResult,
@@ -153,6 +156,18 @@ const DELETED_LABEL = 'TRASH';
  *  this exact value. Documented at
  *  https://developers.google.com/identity/protocols/oauth2/scopes#gmail. */
 export const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
+
+/** D-239 — OAuth scope that toggles message-state MUTATION. Distinct from
+ *  `GMAIL_SEND_SCOPE`: a grant may allow composing new mail while not
+ *  allowing the account's existing mail to be altered, and the reverse. */
+export const GMAIL_MODIFY_SCOPE = 'https://www.googleapis.com/auth/gmail.modify';
+
+/** D-239 — Gmail's system labels for the two state bits the write-back
+ *  owns. `UNREAD` is present when the message has NOT been read (so
+ *  marking read REMOVES it); `STARRED` is present when flagged (so
+ *  flagging ADDS it). */
+const GMAIL_UNREAD_LABEL = 'UNREAD';
+const GMAIL_STARRED_LABEL = 'STARRED';
 
 // ────────────────────────────────────────────────────────────────
 // Canonicalizer — shared body extraction with IMAP
@@ -246,6 +261,17 @@ export interface GmailMessagePayload {
   internalDate?: string; // epoch ms as string
 }
 
+/** D-239 — what `messages/{id}/modify` and `messages/{id}/trash` echo back.
+ *  Narrower than `GmailMessagePayload` on purpose: those endpoints return a
+ *  Message resource in its `minimal` projection, so `threadId` is present in
+ *  practice but nothing in the mutation path READS it, and declaring it
+ *  required would be a promise this code never checks. `labelIds` is the
+ *  only field the reflect step needs. */
+interface GmailMessageLabelsPayload {
+  id: string;
+  labelIds?: string[];
+}
+
 interface GmailMessagePartBody {
   attachmentId?: string;
   data?: string;
@@ -313,6 +339,12 @@ export const canonicalizeGmail = async (
     folder_or_label: pickFolder(labels),
     direction: gmailMessageDirection(labels),
     is_read: !labels.includes('UNREAD'),
+    // D-239 — Gmail models "starred" as a system label, so the flag is a
+    // membership test on the same list `is_read` reads. Note the polarity
+    // difference: `UNREAD` is a NEGATIVE label (present ⇒ unread) while
+    // `STARRED` is positive (present ⇒ flagged); mixing them up is the
+    // easy mistake here, so they read as different shapes on purpose.
+    is_flagged: labels.includes(GMAIL_STARRED_LABEL),
     has_attachments: hasAttachments(parsed) || attachments.length > 0,
     received_at: receivedAt,
     body_text: bodyTextFor(parsed),
@@ -1185,6 +1217,188 @@ export const createGmailProvider = (
     }
   };
 
+  // ── D-239 write-back ────────────────────────────────────────────
+  //
+  // All four verbs ride one endpoint family. `messages/{id}/modify`
+  // echoes the FULL post-modification resource (including `labelIds`),
+  // which is what makes this verified-then-reflected for free: the state
+  // we hand back to the collection is Gmail's own answer, not our
+  // optimistic guess at what the request did.
+
+  /** Translate a mutation response's status into the typed adapter error.
+   *  Deliberately NOT shared with `throwSendError`'s vocabulary: a send's
+   *  4xx means "bad recipient", a mutation's 4xx means "no such message
+   *  or label", and collapsing them would hand recipe authors a
+   *  `fail_on` branch that names the wrong cause. */
+  const throwGmailMutationError = (
+    status: number,
+    text: string,
+    verb: string,
+  ): never => {
+    const detail = `gmail ${verb} (${status}): ${text.slice(0, 200)}`;
+    if (status === 401) {
+      markError(`gmail ${verb} auth ${status}`, text);
+      throw new MailAdapterError('auth_expired', detail);
+    }
+    if (status === 403) {
+      markError(`gmail ${verb} forbidden ${status}`, text);
+      // 403 on Gmail is overloaded — insufficient scope AND rate limit both
+      // land here — so the body's `reason` is the only honest discriminator.
+      // Guessing "permission" on a rate limit would tell the user to
+      // re-enroll a grant that is perfectly fine.
+      throw new MailAdapterError(
+        /rateLimitExceeded|userRateLimitExceeded/i.test(text)
+          ? 'quota_exceeded'
+          : 'permission_denied',
+        detail,
+      );
+    }
+    if (status === 404) throw new MailAdapterError('message_not_found', detail);
+    if (status === 429) throw new MailAdapterError('quota_exceeded', detail);
+    if (status >= 400 && status < 500) {
+      // A 400 from `modify` is a bad label id — the closest honest code,
+      // since the only caller-named resource besides the message is a label.
+      throw new MailAdapterError('folder_not_found', detail);
+    }
+    markError(`gmail ${verb} transient ${status}`, text);
+    // ⛔ 5xx is the OUTCOME-UNKNOWN case. Gmail may well have applied the
+    // change before failing to tell us. The warehouse must not move.
+    throw new MailAdapterError('io_error', `${detail} — outcome unknown, the change may have been applied`);
+  };
+
+  /** POST to a message sub-resource with the same one-shot 401-refresh
+   *  contract the read paths use. */
+  const mutateMessage = async (
+    id: string,
+    path: string,
+    body: Record<string, unknown>,
+    verb: string,
+  ): Promise<GmailMessageLabelsPayload> => {
+    const url = `${GMAIL_API_BASE}/messages/${encodeURIComponent(id)}/${path}`;
+    const post = async (token: string) => fetcher(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    let res: Awaited<ReturnType<HttpFetcher>>;
+    try {
+      res = await post(await ensureToken(false));
+      if (res.status === 401) res = await post(await ensureToken(true));
+    } catch (err) {
+      // A thrown fetch is a transport failure — no response at all, so we
+      // cannot know whether Gmail saw the request.
+      markError(`gmail ${verb} transport failure`, err);
+      throw new MailAdapterError(
+        'io_error',
+        `gmail ${verb} could not reach the provider — outcome unknown`,
+        err,
+      );
+    }
+    if (!res.ok) {
+      throwGmailMutationError(res.status, await res.text().catch(() => ''), verb);
+    }
+    const data = (await res.json().catch(() => null)) as GmailMessageLabelsPayload | null;
+    if (!data || typeof data.id !== 'string' || data.id.length === 0) {
+      // A 2xx we cannot read is still an unverified outcome: the change
+      // almost certainly landed, but we have no state to reflect, so the
+      // next sync tick — not a guess — settles it.
+      throw new MailAdapterError(
+        'io_error',
+        `gmail ${verb} returned a malformed response — outcome unknown`,
+      );
+    }
+    lastSuccessfulSyncAt = nowOf();
+    return data;
+  };
+
+  /** Fold Gmail's post-mutation `labelIds` into the shared result shape,
+   *  reusing the SAME `pickFolder` priority the read path uses so a
+   *  mutated row's `folder` is comparable with a synced one. */
+  const mutationResultFrom = (data: GmailMessageLabelsPayload): MailMutationResult => {
+    const labels = data.labelIds ?? [];
+    return {
+      // Gmail is the one provider whose id survives a label change, but we
+      // still read it back rather than echoing the input — the response is
+      // the authority on every other field, and making the id the one
+      // exception invites a future divergence nobody would notice.
+      source_id: data.id,
+      is_read: !labels.includes(GMAIL_UNREAD_LABEL),
+      is_flagged: labels.includes(GMAIL_STARRED_LABEL),
+      folder_or_label: pickFolder(labels),
+      labels,
+    };
+  };
+
+  const markImpl = async (args: {
+    source_id: string;
+    read: boolean;
+  }): Promise<MailMutationResult> => mutationResultFrom(
+    await mutateMessage(
+      args.source_id,
+      'modify',
+      args.read
+        ? { removeLabelIds: [GMAIL_UNREAD_LABEL] }
+        : { addLabelIds: [GMAIL_UNREAD_LABEL] },
+      'mark',
+    ),
+  );
+
+  const flagImpl = async (args: {
+    source_id: string;
+    flagged: boolean;
+  }): Promise<MailMutationResult> => mutationResultFrom(
+    await mutateMessage(
+      args.source_id,
+      'modify',
+      args.flagged
+        ? { addLabelIds: [GMAIL_STARRED_LABEL] }
+        : { removeLabelIds: [GMAIL_STARRED_LABEL] },
+      'flag',
+    ),
+  );
+
+  const moveImpl = async (args: {
+    source_id: string;
+    destination: MailMoveDestination;
+  }): Promise<MailMutationResult> => {
+    const add = args.destination.add_labels ?? [];
+    const remove = args.destination.remove_labels ?? [];
+    if (add.length === 0 && remove.length === 0) {
+      // ⛔ Refuse rather than translate. `destination.folder` is the IMAP /
+      // Graph form; Gmail has no folders, and picking "the label that most
+      // resembles that path" is how a message ends up somewhere the caller
+      // never named. The dispatcher raises this before we are reached, so
+      // this is the second fence, not the first.
+      throw new MailAdapterError(
+        'folder_not_found',
+        'gmail move requires add_labels / remove_labels — a folder path has no Gmail equivalent',
+      );
+    }
+    return mutationResultFrom(
+      await mutateMessage(
+        args.source_id,
+        'modify',
+        {
+          ...(add.length > 0 ? { addLabelIds: add } : {}),
+          ...(remove.length > 0 ? { removeLabelIds: remove } : {}),
+        },
+        'move',
+      ),
+    );
+  };
+
+  const deleteImpl = async (args: { source_id: string }): Promise<void> => {
+    // `trash`, never `delete`. Gmail's DELETE is an immediate permanent
+    // purge with no recovery; `trash` is the gesture the user's own client
+    // performs, and it stays reversible for 30 days. The control-plane
+    // promise is that actions are reversible — a kernel op must not be
+    // more destructive than the button next to it in Gmail's own UI.
+    await mutateMessage(args.source_id, 'trash', {}, 'delete');
+  };
+
   // sendCapable lockstep with `send`: derive once at construction
   // from the user's granted-scope list. Re-enrollment with new
   // scopes recreates the provider — config() is read once here so
@@ -1197,11 +1411,20 @@ export const createGmailProvider = (
     GMAIL_SEND_SCOPE,
   );
   const accountEmail = opts.config().account_email ?? '';
+  // D-239 — same lockstep discipline as `sendCapable`, and the same
+  // tolerant scope match. A grant with `gmail.readonly` reads fine and
+  // mutates nothing, so the four verbs are attached only when the user
+  // actually consented to modification.
+  const mutationCapable = grantedScopesInclude(
+    opts.config().granted_scopes ?? [],
+    GMAIL_MODIFY_SCOPE,
+  );
 
   return {
     kind: 'gmail',
     slug: opts.slug,
     sendCapable,
+    mutationCapable,
     accountEmail,
 
     async connect() {
@@ -1256,6 +1479,17 @@ export const createGmailProvider = (
     lookupSentByReconciliationId,
 
     ...(sendCapable ? { send: sendImpl } : {}),
+    // D-239 — attached as a group, mirroring `mutationCapable`. A partial
+    // attach would let the dispatcher's capability gate pass while one verb
+    // was missing, surfacing as a 500 instead of a legible refusal.
+    ...(mutationCapable
+      ? {
+          markMessage: markImpl,
+          flagMessage: flagImpl,
+          moveMessage: moveImpl,
+          deleteMessage: deleteImpl,
+        }
+      : {}),
   };
 };
 

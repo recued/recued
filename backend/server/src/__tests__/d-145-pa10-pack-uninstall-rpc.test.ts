@@ -349,7 +349,6 @@ describe('D-145 PA10 follow-on Slice B — handlePacksUninstall happy path', () 
           'recued-core/alpha-recipe': true,
         },
         concurrency_tier: 3,
-        expires_at: 0,
         chat_mode: null,
         contract_id: contractId,
       },

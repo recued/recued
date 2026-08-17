@@ -46,6 +46,8 @@ import {
   type ReceptionTableName,
 } from '@recued/contracts';
 
+import { ensureReceptionLookupRecipePairSchema } from './reception-lookup-recipe-pair-store.js';
+
 /** Re-exported from contracts so storage callers + tests reference a
  *  single source of truth for the Reception table inventory. */
 export { RECEPTION_TABLES };
@@ -475,4 +477,11 @@ export const ensureReceptionSchema = (db: Database.Database): void => {
       UNIQUE (endpoint_id, source_ip_hash)
     );
   `);
+
+  // D-240 slice 3b — the endpoint → LOOKUP-recipe binding. Created HERE rather
+  // than only inside its own store factory because `RECEPTION_TABLES` is the
+  // closed inventory and its ratchet asserts both directions: every named table
+  // is created at boot, and every created table is named. A store-only DDL would
+  // satisfy neither on a server that never constructs that store.
+  ensureReceptionLookupRecipePairSchema(db);
 };

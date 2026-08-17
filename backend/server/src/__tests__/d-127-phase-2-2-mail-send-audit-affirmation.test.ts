@@ -69,6 +69,7 @@ const mkProvider = (slug: string): { provider: MailProvider; sendCalls: Outgoing
     kind: 'imap',
     slug,
     sendCapable: true,
+    mutationCapable: false,
     accountEmail: 'alice@example.com',
     async connect() { /* no-op */ },
     async initialScan() { /* no-op */ },

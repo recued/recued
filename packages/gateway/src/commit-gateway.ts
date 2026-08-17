@@ -41,6 +41,7 @@ import {
   isTempFileRef,
   projectResolvedArgs,
   resolveQualityGateDecision,
+  standingClosureAdmits,
 } from '@recued/contracts';
 import type {
   AdmissionDecision,
@@ -1078,6 +1079,34 @@ export const wrapWithCommitGateway = (
           const resumeApproved =
             stepMeta?.preflight_admitted === true
             && stepMeta.preflight_approved_target?.ingredient_slug === slug;
+          // D-207 follow-on — the door's owner-CONFIRMED standing closure, the
+          // SAME predicate the catalog gate reads. A door recipe dispatches
+          // through BOTH gates (a pack/API op via the catalog, a simple-form
+          // kernel op like `core.mail.send` via this one), so a closure honored
+          // in only one place would keep asking for half of what the owner
+          // confirmed. The op axis here is the kernel op id the admission
+          // resolved, matching what `mintDoorContract` wrote its grant rows
+          // from.
+          // ⛔ IDENTITY IS OPTIONAL HERE — an identity-less dispatch must HOLD,
+          // never admit. Dereferencing it unguarded turned two existing
+          // "identity-less ask" tests red, which is exactly the failure a
+          // fail-closed predicate is supposed to make impossible.
+          // ⛔⛔ `identity.source`, and this was `identity.execution_source` —
+          // a field that DOES NOT EXIST on `CommitRunIdentity`. It read
+          // `undefined`, so the predicate's contract-id match could never
+          // succeed and THIS GATE NEVER ADMITTED ANYTHING. A fail-closed
+          // predicate reading a nonexistent field is indistinguishable from one
+          // working correctly: the door simply kept asking, which is exactly
+          // what a door without the opt-in does. Only `tsc` saw it — vitest
+          // stayed green, because nothing exercised a kernel op on an opted-in
+          // door. "One predicate, two gates" was true of the predicate and
+          // false of the second gate.
+          const standingAdmit = identity !== undefined && standingClosureAdmits(
+            identity.contract_snapshot,
+            identity.source,
+            surfaceDispatch ? stepMeta?.surface_operation_key ?? slug : slug,
+            decision.risk_tier,
+          );
           // D-177 P3 — mint on a resume-admitted dispatch whose gated step
           // carries the `allow_session` mint instruction (N.5). THIS is the
           // D9 point: `argHashes` above was computed from the MERGED resolved
@@ -1179,7 +1208,10 @@ export const wrapWithCommitGateway = (
               decision,
             };
           }
-          if (!resumeApproved) {
+          // ⛔ The standing closure short-circuits the SAME branch a resume
+          // does: the owner already answered this question at bind, so a
+          // session-grant lookup would be a second answer to it.
+          if (!resumeApproved && !standingAdmit) {
             // D-177 P2 — session-grant lookup, ask-branch ONLY (N.4): the
             // verdict computation above is untouched, 'admit' never involves
             // grants, and 'deny' threw before this point (grants never

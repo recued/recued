@@ -15,7 +15,10 @@ import {
   mintDoorContract,
   doorCapabilityChanged,
 } from '../mint-door-contract.js';
-import { buildReceptionContractSnapshot } from '../reception-contract-snapshot.js';
+import {
+  buildReceptionContractSnapshot,
+  grantedOperationsFor,
+} from '../reception-contract-snapshot.js';
 import type { ContractDefinitionStore } from '../storage/contract-definition-store.js';
 import type { ContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
 
@@ -209,6 +212,7 @@ describe('D-207 — the SNAPSHOT is the tool axis, and a dead door is a kill-swi
   const deps = (s: ReturnType<typeof fakeStores>, tools: string[]) => ({
     definitionStore: s.definitionStore,
     allowedTools: () => tools,
+    grantedOperations: grantedOperationsFor(s.definitionStore),
     now: NOW,
   });
 

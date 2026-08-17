@@ -186,7 +186,17 @@ const gateDeps = (
 ) => ({
   ...(baseDeps as object),
   inboundTokenAuthorize: () => true,
-  internalRegistry: { getByName: (n: string) => ({ name: n, tier: 1, _meta: { tier: 1 } }) },
+  // ⚠ `arg_schema` is REQUIRED on a real `ToolEntry` and every production
+  // Tier-1 entry carries one. This stub omitted it, which was invisible until
+  // D-244 added a schema check ahead of the grant gate — the call then failed
+  // "invalid tool argument schema" and never reached the gate this file exists
+  // to test. A permissive object schema keeps the fixture honest without
+  // asserting anything about schemas.
+  internalRegistry: {
+    getByName: (n: string) => ({
+      name: n, tier: 1, _meta: { tier: 1 }, arg_schema: { type: 'object' },
+    }),
+  },
   opAdmissionGate: {
     isOpGranted: (source: unknown, opId: string) => {
       seen?.push(opId);

@@ -437,7 +437,6 @@ describe('composeExecuteDeps ExecuteHandlerDeps field parity', () => {
       bearer_hash: 'a'.repeat(64),
       label: 'door',
       created_at: NOW - 1_000,
-      expires_at: 0,
       revoked_at: null,
       grants: {
         recued_runRecipe: true,

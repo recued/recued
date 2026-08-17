@@ -28,6 +28,7 @@ const defaultSettings: NotificationSettings = {
   telegram: { notification: false, approval: false, messenger: false },
   whatsapp: { notification: false, approval: false, messenger: false },
   discord: { notification: false, approval: false, messenger: false },
+  teams: { notification: false, approval: false, messenger: false },
   email: { notification: false, approval: false, messenger: false },
   // D-169 P1 — `DEFAULT_NOTIFICATION_SETTINGS` gains an always-present
   // (empty) bridges map; the store's read-merge path forces this even

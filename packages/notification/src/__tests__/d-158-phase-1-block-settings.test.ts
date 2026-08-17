@@ -51,6 +51,7 @@ const DEFAULT_CAPABILITY: Readonly<Record<ChannelName, ChannelCapability>> = {
   telegram: 'inline',
   whatsapp: 'inline',
   discord: 'inline',
+  teams: 'landing-page',
   email:    'landing-page',
 };
 
@@ -278,6 +279,7 @@ describe('D-158 P1 NotificationBlock settings methods', () => {
       telegram: { notification: false, approval: false, messenger: false },
       whatsapp: { notification: false, approval: false, messenger: false },
       discord: { notification: false, approval: false, messenger: false },
+      teams: { notification: false, approval: false, messenger: false },
       email: { notification: true, approval: true, messenger: false },
       bridges: {},
     });
@@ -302,6 +304,7 @@ describe('D-158 P1 NotificationBlock settings methods', () => {
       { channel: 'slack', notification: true, approval: true, ready: true },
       { channel: 'telegram', notification: false, approval: false, ready: false },
       { channel: 'discord', notification: false, approval: false, ready: false },
+      { channel: 'teams', notification: false, approval: false, ready: false },
       { channel: 'email', notification: false, approval: false, ready: false },
     ]);
     expect(readinessProbe).toHaveBeenCalledWith('bridge');
@@ -335,6 +338,7 @@ describe('D-158 P1 NotificationBlock settings methods', () => {
         telegram: { notification: false, approval: false, messenger: false },
         whatsapp: { notification: false, approval: false, messenger: false },
         discord: { notification: false, approval: false, messenger: false },
+        teams: { notification: false, approval: false, messenger: false },
         email: { notification: false, approval: false, messenger: false },
         bridges: {},
       },

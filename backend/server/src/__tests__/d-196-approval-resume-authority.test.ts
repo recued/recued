@@ -37,7 +37,6 @@ const token = (
   bearer_hash: 'a'.repeat(64),
   label: 'Customer door',
   created_at: NOW - 10_000,
-  expires_at: NOW + 60_000,
   revoked_at: null,
   grants: {
     [RECIPE_GRANT]: true,

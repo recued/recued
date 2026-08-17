@@ -4,6 +4,7 @@ import {
   MESSENGER_PROBE_TOKEN_PLACEHOLDER,
   RpcError,
   getMessengerVendorDeclaration,
+  MESSENGER_AUTH_KIND_CONNECTION_TYPES,
   listMessengerVendors,
 } from '@recued/contracts';
 import type { ConnectionAuth, ConnectionHealth, ConnectionKind } from '@recued/contracts';
@@ -2983,6 +2984,33 @@ describe('handleConnectionRotateCredentials', () => {
  *  reads them. The table below iterates the LIVE registry rather than naming
  *  slack/telegram, so a newly-declared vendor (Teams) is covered here the moment
  *  it is declared — with no edit to this file. That is the property under test. */
+/** The auth shape a vendor will actually ACCEPT, derived from its declaration.
+ *
+ *  ⚠ NOT the fixture default `bearer`. D-238's Teams sends with a bot token and
+ *  `enroll` refuses any other credential shape — one would "enroll, report
+ *  healthy, and then silently never deliver a message". Two loops hardcoded
+ *  `bearer`, which asserted that EVERY vendor accepts bearer; that is now false
+ *  and would be false again for the next vendor with its own auth kind.
+ *  Deriving it keeps both loops honest as the registry grows.
+ *
+ *  `token` carries the probe credential into whichever field that shape uses,
+ *  so the probe-URL assertion still sees it. */
+const messengerAuthFor = (vendor: string, token: string): ConnectionAuth => {
+  const declaration = getMessengerVendorDeclaration(vendor)!;
+  const [authType] = MESSENGER_AUTH_KIND_CONNECTION_TYPES[declaration.auth];
+  if (authType === 'oauth2_refresh') {
+    return {
+      type: 'oauth2_refresh',
+      refresh_token: 'refresh',
+      client_id: 'client',
+      client_secret: 'secret',
+      token_endpoint: 'https://example.test/token',
+      current_access_token: token,
+    };
+  }
+  return { type: authType as 'bearer', token };
+};
+
 describe('D-192 seam 8 — registry-driven messenger health probes', () => {
   const TOKEN = 'bot-secret-123:AAH';
 
@@ -2992,7 +3020,7 @@ describe('D-192 seam 8 — registry-driven messenger health probes', () => {
       const probeFacet = getMessengerVendorDeclaration(vendor)!.health_probe;
       const name = await enroll('notification', {
         subtype: vendor,
-        auth: { type: 'bearer', token: TOKEN },
+        auth: messengerAuthFor(vendor, TOKEN),
       });
       const fetcher = vi.fn<HttpFetcher>(async () => jsonResponse(200, { ok: true }));
 
@@ -3256,8 +3284,10 @@ describe('D-192 seam 8 — registry-driven messenger health probes', () => {
     // If a vendor were declared but not enrollable, its `health_probe` facet
     // would be unreachable — the enrollment gate is the other half of seam 8.
     for (const vendor of listMessengerVendors()) {
+      // ⚠ Per-vendor, derived — see `messengerAuthFor`.
+      const auth = messengerAuthFor(vendor, 'secret');
       await expect(
-        enroll('notification', { name: `enroll-${vendor}`, subtype: vendor }),
+        enroll('notification', { name: `enroll-${vendor}`, subtype: vendor, auth }),
       ).resolves.toBe(`enroll-${vendor}`);
     }
   });

@@ -79,7 +79,6 @@ const token = (overrides: Partial<McpInboundTokenRecord> = {}): McpInboundTokenR
   bearer_hash: 'a'.repeat(64),
   label: 'office codex',
   created_at: NOW - 1_000,
-  expires_at: 0,
   revoked_at: null,
   grants: { [TOOL]: true },
   concurrency_tier: 3,

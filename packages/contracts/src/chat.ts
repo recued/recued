@@ -3073,7 +3073,7 @@ export const isMcpInboundConcurrencyTier = (
 /** § A.9 — default expiry window per spec: "Optional expiry (default 1
  *  year, configurable; safety net against abandoned tokens)." Stamped
  *  by the issuance rpc handler when Bob doesn't supply a custom
- *  `expires_at`. */
+ */
 export const MCP_INBOUND_TOKEN_DEFAULT_EXPIRY_MS = 365 * 24 * 60 * 60 * 1000;
 
 /** § Contract Tightening — bearer-string prefix. The handler parses
@@ -3114,18 +3114,17 @@ export type McpInboundTokenChatMode = ConnectionMcpChatMode | null;
  *  via the grants-update rpc (settings UI toggle); the store stamps a
  *  fresh `updated_at`.
  *
- *  `expires_at: 0` is a substrate sentinel for "no expiry" — Bob may
- *  set this explicitly via the issuance rpc to opt out of the 1-year
- *  default. The authorisation predicate treats `expires_at: 0` as
- *  "never expires"; any positive value is enforced. Negative values
- *  are validator-rejected. */
+ *  ⛔ THE TOKEN CARRIES NO EXPIRY. It used to (`expires_at`, with `0` as a
+ *  never-expires sentinel), alongside the contract's `expiry_at` — two
+ *  lifetimes for one credential. Every token is contracted now, so expiry is
+ *  set once, on the contract, via `contract_limits` at issuance or the
+ *  Advanced panel's cap/expiry toggles. */
 export interface McpInboundTokenRecord {
   token_id: string;
   bearer_hash: string;
   label: string;
   peer_handle?: string;
   created_at: number;
-  expires_at: number;
   revoked_at: number | null;
   grants: Readonly<Record<string, boolean>>;
   concurrency_tier: McpInboundConcurrencyTier;
@@ -3217,11 +3216,25 @@ export const buildDefaultMcpInboundTokenGrants = (
  *  Pure: same `(record, now)` → same answer. */
 export const isMcpInboundTokenActive = (
   record: McpInboundTokenRecord,
-  now: number,
+  _now: number,
 ): boolean => {
-  if (record.revoked_at !== null) return false;
-  if (record.expires_at === 0) return true; // sentinel: never expires
-  return record.expires_at > now;
+  // ⛔⛔ EXPIRY MOVED TO THE CONTRACT. The token used to carry its own
+  // `expires_at` alongside the contract's `expiry_at` — two lifecycles for one
+  // credential, and which one applied depended on whether a contract happened
+  // to exist. Every token is contracted now (issuance mints a carrier; the boot
+  // backfill contracted the rest, transferring each token's expiry onto it), so
+  // the contract is the single lifetime and this predicate answers only
+  // "revoked?".
+  //
+  // ⚠ `_now` is kept so every call site stays a one-line edit if a token-scoped
+  // time bound is ever reintroduced — and so this reads as a deliberate
+  // retirement rather than a dropped argument.
+  //
+  // Contract expiry is enforced by `isContractLive` at each consumer:
+  // `mcp-recipe-callback` (destination contract), `approval-resume-authority`
+  // (`admitBoundInboundToken`), and the HTTP transport (`boundContractActive`,
+  // which collapses `allowed_tools` to `[]`).
+  return record.revoked_at === null;
 };
 
 /** § A.9 — pure authorisation predicate: returns true iff the token
@@ -3303,13 +3316,14 @@ export type McpInboundTokenValidationIssueCode =
   | 'grants_key_invalid'
   | 'grants_value_invalid'
   | 'concurrency_tier_invalid'
-  | 'expires_at_invalid'
   | 'chat_mode_shape_invalid'
   | 'chat_mode_offered_invalid'
   | 'chat_mode_session_cap_shape_invalid'
   | 'chat_mode_session_cap_per_day_invalid'
   | 'chat_mode_session_cap_concurrent_invalid'
-  | 'contract_id_invalid';
+  | 'contract_id_invalid'
+  | 'standing_closure_invalid'
+  | 'contract_limits_invalid';
 
 export interface McpInboundTokenValidationIssue {
   code: McpInboundTokenValidationIssueCode;
@@ -3325,30 +3339,45 @@ export const MCP_INBOUND_TOKEN_VALIDATION_ISSUE_CODES:
   'grants_key_invalid',
   'grants_value_invalid',
   'concurrency_tier_invalid',
-  'expires_at_invalid',
   'chat_mode_shape_invalid',
   'chat_mode_offered_invalid',
   'chat_mode_session_cap_shape_invalid',
   'chat_mode_session_cap_per_day_invalid',
   'chat_mode_session_cap_concurrent_invalid',
   'contract_id_invalid',
+  'standing_closure_invalid',
+  'contract_limits_invalid',
 ] as const;
 
 /** § A.9 — validated issuance / edit payload. The store accepts this
- *  shape directly. `expires_at: 0` is the substrate sentinel for "no
- *  expiry"; positive integers are enforced; negative + non-integer
- *  values raise `expires_at_invalid`. */
+ *  shape directly. Expiry is NOT here — it belongs to the contract
+ *  (`contract_limits.expiry_at`), which is the only lifetime a token has. */
 export interface ValidatedMcpInboundTokenInput {
   label: string;
   peer_handle?: string;
   grants: Readonly<Record<string, boolean>>;
   concurrency_tier: McpInboundConcurrencyTier;
-  expires_at: number;
   chat_mode: McpInboundTokenChatMode;
   /** D-166 P2 token↔contract binding — optional minted `contract_id` to bind
    *  this token to (see {@link McpInboundTokenRecord.contract_id}). Carried to
    *  the store verbatim; liveness is resolved at dispatch, not at issuance. */
   contract_id?: string;
+  /** Door standing closure, MCP arm — the owner's TICK, not the closure. The
+   *  handler derives the operation ids from the granted Tier-2 recipes and
+   *  mints them onto the token's CONTRACT (`scope.operation_ids` +
+   *  `door_execution_policy.standing_closure`); the wire never carries an op
+   *  list. Absent ⇒ off. */
+  standing_closure?: boolean;
+  /** The limits minted onto this token's contract. Lifecycle and limitation are
+   *  the CONTRACT's job, so they are set where the contract is minted.
+   *
+   *  ⛔ REQUIRED WHEN `standing_closure` IS SET, and that is the whole rule: a
+   *  token that stops asking is issued WITH its limit. A contract cannot be
+   *  edited after mint (there is no patch rpc — changing a limit re-mints), so
+   *  a standing closure minted onto an unbounded contract could never acquire a
+   *  bound afterwards without losing the closure. One mint carries all three:
+   *  the closure, the limit, and the door policy. */
+  contract_limits?: { readonly max_uses?: number; readonly expiry_at?: number };
 }
 
 /** § A.9 — pure validator over the wire-untrusted issuance / edit
@@ -3424,18 +3453,6 @@ export const validateMcpInboundTokenInput = (
     issues.push({
       code: 'concurrency_tier_invalid',
       detail: `concurrency_tier must be one of ${MCP_INBOUND_CONCURRENCY_LADDER.join(' | ')}`,
-    });
-  }
-  // ── expires_at ──────────────────────────────────────────────
-  const expiresRaw = (input as { expires_at?: unknown }).expires_at;
-  if (
-    typeof expiresRaw !== 'number'
-    || !Number.isInteger(expiresRaw)
-    || expiresRaw < 0
-  ) {
-    issues.push({
-      code: 'expires_at_invalid',
-      detail: 'expires_at must be a non-negative integer (0 = never expires)',
     });
   }
   // ── chat_mode ───────────────────────────────────────────────
@@ -3528,16 +3545,54 @@ export const validateMcpInboundTokenInput = (
       contract_id = contractIdRaw;
     }
   }
+  // ⛔ A BOOLEAN, and only a boolean. Accepting an op list here would let the
+  // wire name its own standing authority; the handler derives the closure from
+  // the granted recipes instead. Rejecting non-booleans (including a stray
+  // array of op ids) is what makes that not merely a convention.
+  // ── contract_limits ─────────────────────────────────────────
+  const limitsRaw = (input as { contract_limits?: unknown }).contract_limits;
+  let contract_limits: { max_uses?: number; expiry_at?: number } | undefined;
+  if (limitsRaw !== undefined && limitsRaw !== null) {
+    const l = limitsRaw as { max_uses?: unknown; expiry_at?: unknown };
+    const okNum = (v: unknown): v is number =>
+      v === undefined || (typeof v === 'number' && Number.isSafeInteger(v) && v > 0);
+    if (typeof limitsRaw !== 'object' || Array.isArray(limitsRaw)
+      || !okNum(l.max_uses) || !okNum(l.expiry_at)
+      || (l.max_uses === undefined && l.expiry_at === undefined)) {
+      issues.push({
+        code: 'contract_limits_invalid',
+        detail: 'contract_limits, when present, must be an object with a positive integer max_uses and/or expiry_at',
+      });
+    } else {
+      contract_limits = {
+        ...(l.max_uses !== undefined ? { max_uses: l.max_uses } : {}),
+        ...(l.expiry_at !== undefined ? { expiry_at: l.expiry_at } : {}),
+      };
+    }
+  }
+  const standingClosureRaw = (input as { standing_closure?: unknown }).standing_closure;
+  let standing_closure: boolean | undefined;
+  if (standingClosureRaw !== undefined && standingClosureRaw !== null) {
+    if (typeof standingClosureRaw !== 'boolean') {
+      issues.push({
+        code: 'standing_closure_invalid',
+        detail: 'standing_closure, when present, must be a boolean — the operation closure is derived server-side from the granted recipes, never supplied',
+      });
+    } else {
+      standing_closure = standingClosureRaw;
+    }
+  }
   if (issues.length > 0) return { ok: false, issues };
   const value: ValidatedMcpInboundTokenInput = {
     label: label as string,
     grants,
     concurrency_tier: concurrencyRaw as McpInboundConcurrencyTier,
-    expires_at: expiresRaw as number,
     chat_mode,
   };
   if (peer_handle !== undefined) value.peer_handle = peer_handle;
   if (contract_id !== undefined) value.contract_id = contract_id;
+  if (standing_closure !== undefined) value.standing_closure = standing_closure;
+  if (contract_limits !== undefined) value.contract_limits = contract_limits;
   return { ok: true, value };
 };
 

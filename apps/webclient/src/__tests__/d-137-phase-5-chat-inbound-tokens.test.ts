@@ -55,7 +55,6 @@ const baseToken = (
   bearer_hash: 'a'.repeat(64),
   label: 'Test',
   created_at: 1_000,
-  expires_at: 0,
   revoked_at: null,
   grants: { 'mail.search': true, 'recipe.run': false },
   concurrency_tier: 5,
@@ -565,7 +564,10 @@ describe('buildChatInboundTokenIssuanceDefaults', () => {
       now: 10_000,
     });
     expect(defaults.concurrency_tier).toBe(5);
-    expect(defaults.expires_at).toBe(10_000 + MCP_INBOUND_TOKEN_DEFAULT_EXPIRY_MS);
+    // ⚠ § A.9's 1-year "safety net against abandoned tokens" survives — as a
+    // CONTRACT limit, because the token no longer has a lifetime of its own.
+    expect(defaults.contract_limits.expiry_at)
+      .toBe(10_000 + MCP_INBOUND_TOKEN_DEFAULT_EXPIRY_MS);
     expect(defaults.chat_mode).toBeNull();
     expect(defaults.grants['mail.search']).toBe(true);
     expect(defaults.grants['publisher.recipe']).toBe(false);

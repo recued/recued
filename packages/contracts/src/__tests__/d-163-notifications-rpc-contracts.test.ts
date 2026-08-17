@@ -102,6 +102,7 @@ describe('D-163 Slice C — notifications rpc contracts', () => {
         telegram: { notification: false, approval: false, messenger: false },
         whatsapp: { notification: false, approval: false, messenger: false },
         discord: { notification: false, approval: false, messenger: false },
+        teams: { notification: false, approval: false, messenger: false },
         email: { notification: false, approval: false, messenger: false },
       };
       expect(row.ui).toBe(true);
@@ -119,6 +120,7 @@ describe('D-163 Slice C — notifications rpc contracts', () => {
         telegram: { notification: false, approval: false, messenger: false },
         whatsapp: { notification: false, approval: false, messenger: false },
         discord: { notification: false, approval: false, messenger: false },
+        teams: { notification: false, approval: false, messenger: false },
         email: { notification: false, approval: false, messenger: false },
         verification_phrase: 'my secret phrase',
       };
@@ -137,6 +139,7 @@ describe('D-163 Slice C — notifications rpc contracts', () => {
           telegram: { notification: false, approval: false, messenger: false },
           whatsapp: { notification: false, approval: false, messenger: false },
           discord: { notification: false, approval: false, messenger: false },
+          teams: { notification: false, approval: false, messenger: false },
           email: { notification: false, approval: false, messenger: false },
         },
       };
@@ -180,6 +183,7 @@ describe('D-163 Slice C — notifications rpc contracts', () => {
           telegram: { notification: false, approval: false, messenger: false },
           whatsapp: { notification: false, approval: false, messenger: false },
           discord: { notification: false, approval: false, messenger: false },
+          teams: { notification: false, approval: false, messenger: false },
           email: { notification: false, approval: false, messenger: false },
         },
       };

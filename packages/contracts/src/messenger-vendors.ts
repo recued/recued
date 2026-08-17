@@ -58,7 +58,12 @@ import type { ConnectionAuth } from './connection.js';
 // the other half-built, and it surfaces as `MESSENGER_VENDOR_SLUGS is not
 // iterable` at import time. A type-only import hid that for as long as the axes
 // were a type; the leaf module is what keeps it one-way now that they are data.
-import { CHANNEL_ROLE_AXES, type ChannelRoles } from './channel-roles.js';
+import {
+  CHANNEL_ROLE_AXES,
+  NOTIFICATION_CHANNEL_CAPABILITY_SET,
+  type ChannelRoles,
+  type NotificationChannelCapability,
+} from './channel-roles.js';
 
 // ────────────────────────────────────────────────────────────────
 // The vendor slugs — the TYPE-LEVEL half of the registry (D-192 seam 10)
@@ -92,7 +97,7 @@ import { CHANNEL_ROLE_AXES, type ChannelRoles } from './channel-roles.js';
  *  ⚠ ADDING A VENDOR: the slug here + a `MESSENGER_VENDOR_DECLARATIONS` entry
  *  (the boot check at the foot of this file enforces both, in BOTH directions) +
  *  the backend adapter leaves. Nothing else to widen. */
-export const MESSENGER_VENDOR_SLUGS = ['slack', 'telegram', 'whatsapp', 'discord'] as const;
+export const MESSENGER_VENDOR_SLUGS = ['slack', 'telegram', 'whatsapp', 'discord', 'teams'] as const;
 export type MessengerVendorSlug = (typeof MESSENGER_VENDOR_SLUGS)[number];
 
 // ────────────────────────────────────────────────────────────────
@@ -109,6 +114,18 @@ export const MESSENGER_SURFACE_SET: ReadonlySet<string> = new Set(MESSENGER_SURF
 /** How inbound messages arrive. A connection persists exactly one of these in
  *  `config.ingress_mode`; local outbound-established transports are the default
  *  where the vendor supports one, while webhook stays an explicit alternative. */
+/** D-238 — the `config_json` key naming the enrolled PRINCIPAL: the only sender
+ *  whose typed reply may settle an ask on this connection.
+ *
+ *  ⛔ A bound conversation is not an authorization boundary. A chat can have
+ *  other people in it, so without a bound principal an exact `Approve` from a
+ *  colleague settles the OWNER's approval. Declared here rather than spelled at
+ *  each site so the enroll card and the credential resolver cannot drift.
+ *
+ *  ⚠ Absent ⇒ typed answers are REFUSED. "We do not know who may approve" must
+ *  resolve to "nobody may", never "anyone may". */
+export const MESSENGER_PRINCIPAL_CONFIG_KEY = 'principal_id';
+
 export const MESSENGER_INGRESS_MODES = ['webhook', 'socket', 'poll'] as const;
 export type MessengerIngressMode = (typeof MESSENGER_INGRESS_MODES)[number];
 export const MESSENGER_INGRESS_MODE_SET: ReadonlySet<string> = new Set(MESSENGER_INGRESS_MODES);
@@ -180,7 +197,15 @@ export const MESSENGER_AUTH_KIND_SET: ReadonlySet<string> = new Set(MESSENGER_AU
  *  `'oauth2_refresh'` here and `resolveMessengerSendToken` picks it up for free),
  *  a token refresher for `kind: 'notification'`, and an enroll card carrying the
  *  OAuth fields. Add the entry only once all three exist — the boot check is what
- *  stops a half-wired vendor from shipping. */
+ *  stops a half-wired vendor from shipping.
+ *
+ *  D-238 § 2a status (2026-08-15): (2) IS BUILT —
+ *  `backend/server/src/messenger-notification-refresh.ts`, proactive rather than
+ *  401-reactive because a notification fan-out swallows errors by contract, and
+ *  single-flight per vendor because refresh-token rotation makes a concurrent
+ *  exchange a permanent re-consent. It is already consulted by
+ *  `createRemoteCredentialResolver`, so it lights up the moment this list widens.
+ *  (1) is this one-line edit. (3) the enroll card is what remains. */
 export const MESSENGER_AUTH_KIND_CONNECTION_TYPES: Record<
   MessengerAuthKind,
   ReadonlyArray<ConnectionAuth['type']>
@@ -190,8 +215,18 @@ export const MESSENGER_AUTH_KIND_CONNECTION_TYPES: Record<
   /** WhatsApp Cloud API — a long-lived bearer access token; same send path, so
    *  this is a statement of fact, not speculative wiring. */
   cloud_api: ['bearer'],
-  /** Not deliverable yet — see above. Declaring a vendor with it fails boot. */
-  oauth: [],
+  /** D-238 § 2a — deliverable as of 2026-08-15, once all three preconditions in
+   *  the comment above were met: the send-path source is this entry, the
+   *  `kind: 'notification'` refresher is
+   *  `backend/server/src/messenger-notification-refresh.ts` (wired at
+   *  `createRemoteCredentialResolver`, BEFORE the send-token read), and the
+   *  enroll card is `notificationSchemas.teams`.
+   *
+   *  ⚠ `oauth2_refresh` and NOT `bearer`. A bearer row would store a snapshot of
+   *  a one-hour Graph access token: it enrolls, probes green, and dies at the top
+   *  of the hour with nothing saying why. The refreshable shape is the whole
+   *  point — an owner must never have to re-authorize on a schedule. */
+  oauth: ['oauth2_refresh'],
 };
 
 /** HTTP method a health probe issues. */
@@ -309,6 +344,14 @@ export interface MessengerRecipient {
 /** The sender-identity facet — see `MESSENGER_PLATFORM_ID_SOURCES`. */
 export interface MessengerIdentity {
   platform_id_source: MessengerPlatformIdSource;
+  /** D-238 — the field on the vendor's identity endpoint carrying the signed-in
+   *  PRINCIPAL's stable id, used to fill `config.principal_id` at enrolment.
+   *
+   *  The endpoint is the vendor's own `health_probe.url`, which is already the
+   *  cheapest authenticated call it declares (`/me` for Graph). Absent ⇒ no
+   *  principal is resolved and typed answers stay refused, which is the correct
+   *  posture for a vendor that cannot identify its senders at all. */
+  principal_id_field?: string;
 }
 
 /** The structured-projection facet — whether a per-vendor projector can supply
@@ -330,6 +373,35 @@ export interface MessengerProjection {
  *  new `switch (subtype)` arm. The response side needs no facet: both vendors'
  *  envelopes (and Graph's) classify off the HTTP status + an `ok: false` +
  *  `error` / `description` body the shared prober already reads. */
+/** D-238 — an endpoint that must SUCCEED for this vendor to work at all, checked
+ *  once at enrolment.
+ *
+ *  ⛔⛔ Distinct from `health_probe`, and the difference is the whole reason it
+ *  exists. A health probe answers "is this credential valid?"; this answers "can
+ *  this account use the thing we are enrolling it for?" — and for Teams those
+ *  come apart completely. Graph's `/me` supports a PERSONAL Microsoft account,
+ *  while every Teams messaging API is work-or-school only. A personal account
+ *  therefore consents cleanly on the `/common/` authorize URL, resolves a
+ *  principal, probes GREEN, and then 403s on every single send. Enrolled,
+ *  healthy, and mute — the exact failure this decision was built to prevent, and
+ *  one the health probe cannot see by construction.
+ *
+ *  🔑 A CAPABILITY probe, deliberately, not an account-type test. Classifying the
+ *  account would be inferring a proxy for the question; calling the API we
+ *  actually need answers it — and catches the other reasons it might fail (a
+ *  scope the owner trimmed, a tenant policy blocking Teams) with no extra work.
+ *
+ *  ⚠ A definitive rejection (4xx) refuses enrolment; a transient failure (5xx /
+ *  network / throttle) must NOT, or an unreachable Graph would mean "you cannot
+ *  add this vendor at all". */
+export interface MessengerCapabilityProbe {
+  /** Absolute `https:` endpoint, called with the credential as a bearer. */
+  url: string;
+  /** What the owner is told when it comes back a definitive no. Written for the
+   *  person reading it, naming the fix rather than the status code. */
+  refusal: string;
+}
+
 export interface MessengerHealthProbe {
   /** Probe endpoint. Absolute + `https:` (it carries the credential). Contains
    *  `MESSENGER_PROBE_TOKEN_PLACEHOLDER` iff `auth` is `url_token`. */
@@ -372,6 +444,21 @@ export interface MessengerVendorDeclaration {
    *  ⚠ These are independent, and all four shipped vendors sit in different quadrants
    *  — see `CHANNEL_ROLES`. A vendor with every role `false` fails the boot check. */
   roles: ChannelRoles;
+  /** D-238 § 2 — HOW an ask renders on this vendor's channel.
+   *
+   *  Was hardcoded to `'inline'` for every chat transport in
+   *  `CHANNEL_CAPABILITY_TABLE`, with a standing note that "a future
+   *  non-interactive transport would need a declared capability facet". This is
+   *  that facet. `inline` still describes every vendor that ships an
+   *  `InteractiveTransport`; a vendor whose ingress cannot carry a button press
+   *  declares `notify-only` (or `landing-page` once it can render a link to the
+   *  ask surface) and supplies only a base `Transport`.
+   *
+   *  ⛔ `notify-only` REQUIRES `roles.approval: false` — you cannot approve
+   *  where you cannot render. Enforced below at declaration load, and again at
+   *  channel construction, because the two facts live in different files and
+   *  nothing else would catch them disagreeing. */
+  capability: NotificationChannelCapability;
   /** Connection-health facet (D-192 CORE #6 seam 8). Required: every chat
    *  transport authenticates a bot credential, so every one of them HAS a cheap
    *  endpoint that verifies it — and a vendor that silently reported `unknown`
@@ -379,6 +466,10 @@ export interface MessengerVendorDeclaration {
    *  genuinely probe-less vendor would widen this to an explicit variant, never
    *  to mere absence. */
   health_probe: MessengerHealthProbe;
+  /** D-238 — optional pre-flight that the account can actually use this vendor.
+   *  Absent ⇒ no probe, which is right for a vendor whose credential validity IS
+   *  its capability (a Slack bot token that authenticates can post). */
+  capability_probe?: MessengerCapabilityProbe;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -594,6 +685,20 @@ export function assertMessengerVendorDeclarationShape(entry: unknown): string[] 
         + 'approve, nor converse cannot do anything',
       );
     }
+    // D-238 § 2 — the pairing that makes `notify-only` safe. Declared apart from
+    // the roles it constrains, so this is the only place both are in scope at
+    // load. Without it an ask would fan out to a channel structurally unable to
+    // carry it: accepted, counted as delivered, never answerable.
+    if (e.capability === 'notify-only' && r.approval === true) {
+      issues.push(
+        "field 'capability' is 'notify-only' but roles.approval is true — you "
+        + 'cannot approve where you cannot render; an ask fanned out here could '
+        + 'never be answered',
+      );
+    }
+  }
+  if (typeof e.capability !== 'string' || !NOTIFICATION_CHANNEL_CAPABILITY_SET.has(e.capability)) {
+    issues.push("field 'capability' must be a NotificationChannelCapability");
   }
 
   // Health probe — the URL carries the vendor's credential (in a header, or in
@@ -728,6 +833,8 @@ export const MESSENGER_VENDOR_DECLARATIONS: ReadonlyArray<MessengerVendorDeclara
     auth: 'bot_token',
     // Everything. Slack is the reference shape.
     roles: { notification: true, approval: true, messenger: true },
+    // Ships an `InteractiveTransport` — renders buttons, decodes the press.
+    capability: 'inline',
     // `auth.test` is Slack's canonical token-verification endpoint: POST with
     // the bot token as a bearer header, `{ ok: false, error: 'invalid_auth' }`
     // on a bad token.
@@ -757,6 +864,8 @@ export const MESSENGER_VENDOR_DECLARATIONS: ReadonlyArray<MessengerVendorDeclara
     // Everything. A user must `/start` the bot once, ever — a ONE-TIME unlock, not a
     // rolling window, so proactive reach never expires (contrast WhatsApp).
     roles: { notification: true, approval: true, messenger: true },
+    // Ships an `InteractiveTransport` — renders buttons, decodes the press.
+    capability: 'inline',
     // Telegram's Bot API takes NO auth header — the bot token is the URL path
     // segment (`/bot<token>/getMe`), so the token is substituted into the
     // template rather than applied as a header. `getMe` answers
@@ -831,6 +940,11 @@ export const MESSENGER_VENDOR_DECLARATIONS: ReadonlyArray<MessengerVendorDeclara
     // on it — real state, real complexity — so the simple honest `false` wins until it
     // actually bites. The follow-on, if it does, is a `reply_only` state on this axis.
     roles: { notification: false, approval: false, messenger: true },
+    // `inline`-capable — the Cloud API renders reply buttons and delivers the
+    // press — even though its ROLES decline notify + approve for reasons that
+    // have nothing to do with rendering (the 24h customer-service window).
+    // Capability and roles are orthogonal, and this vendor is the proof.
+    capability: 'inline',
     // Graph's identity node. It carries NO id, which matters: `health_probe.url`
     // is a static template with no config interpolation, so a per-connection
     // `/{phone_number_id}` endpoint could not be declared here. `/me` also
@@ -885,6 +999,8 @@ export const MESSENGER_VENDOR_DECLARATIONS: ReadonlyArray<MessengerVendorDeclara
     // Gateway MESSAGE_CREATE makes Discord a full conversation channel in local
     // mode; Interactions continues carrying approval presses in either mode.
     roles: { notification: true, approval: true, messenger: true },
+    // Ships an `InteractiveTransport` — renders buttons, decodes the press.
+    capability: 'inline',
     // ⚠ `bot_header`, NOT `bearer_header`. Discord reads `Bearer` as an OAuth2 user
     // token, so probing a perfectly valid BOT token with the wrong scheme returns
     // 401 and reports `auth_failed` on a healthy channel. Verified against the live
@@ -894,6 +1010,69 @@ export const MESSENGER_VENDOR_DECLARATIONS: ReadonlyArray<MessengerVendorDeclara
       url: 'https://discord.com/api/v10/users/@me',
       method: 'GET',
       auth: 'bot_header',
+    },
+  }),
+  buildMessengerVendorDeclaration({
+    vendor: 'teams',
+    display_name: 'Microsoft Teams',
+    // DM only. Posting to a CHANNEL is user-consentable (`ChannelMessage.Send`,
+    // no admin) — but ANSWERING in one is not (`ChannelMessage.Read.All` needs
+    // tenant admin), and a surface that can carry an ask it can never collect is
+    // the shape D-238 exists to avoid. Channel delivery is a later decision with
+    // its own recipient shape (team + channel, not one id).
+    surfaces: ['dm'],
+    ingress: {
+      // Poll is the ONLY mode, and it is a genuine one rather than a placeholder:
+      // Graph offers no socket, its webhook (change notifications) needs a public
+      // endpoint plus a subscription lifecycle, and the delta endpoint is
+      // application-only. Short-poll at 2s is imperceptible against a turn whose
+      // LLM latency is seconds — see `messenger-ingress/teams-poll.ts`.
+      mode: 'poll',
+      supported_modes: ['poll'],
+      // The vendor's native inbound id. ⚠ The runner surfaces the COMPOSITE
+      // `${chatId}:${id}` under this key, because Graph's bare `chatMessage.id`
+      // is epoch-ms unique only WITHIN a chat (§ 3a).
+      id_field: 'message_id',
+    },
+    recipient: { field: 'chat_id', numeric_ok: false },
+    // Graph can resolve a sender to an email, but only through a directory read
+    // this vendor does not request. The link writer stays a structural no-op
+    // rather than widening the consent ask for a feature nothing uses yet.
+    // Graph's `/me` — the health probe's own endpoint — carries the signed-in
+    // user's stable object id. That id becomes `config.principal_id`, the ONLY
+    // sender whose typed reply may settle an ask here.
+    identity: { platform_id_source: 'none', principal_id_field: 'id' },
+    projection: { structured_tags: false, structured_mentions: false },
+    // ⛔ The first `oauth` transport. A Graph delegated token dies in about an
+    // hour, so this depends on the `kind: 'notification'` refresher (§ 2a) — and
+    // the boot check refuses this entry outright unless
+    // MESSENGER_AUTH_KIND_CONNECTION_TYPES.oauth carries a deliverable shape.
+    auth: 'oauth',
+    // ⛔ `messenger: false`, and NOT because poll is too slow — that argument was
+    // tested and failed (§ 0). The seat gates `data.messenger.*.message.created`
+    // as a recipe TRIGGER and the D-160 turn path's LLM egress; taking it in a
+    // corporate tenant is a different consent conversation from notify + approve.
+    roles: { notification: true, approval: true, messenger: false },
+    capability: 'landing-page',
+    // `/me` is the cheapest authenticated Graph call — 401 with
+    // `InvalidAuthenticationToken` on a bad or expired credential.
+    health_probe: {
+      url: 'https://graph.microsoft.com/v1.0/me',
+      method: 'GET',
+      auth: 'bearer_header',
+    },
+    // ⛔ `/me` is NOT enough here. It succeeds for a personal Microsoft account,
+    // which cannot use ANY Teams messaging API — so without this a consumer
+    // account enrols, resolves a principal, probes green, and 403s on every
+    // send. `/me/chats` is the cheapest call that is work-or-school only, so it
+    // answers the question the health probe structurally cannot.
+    capability_probe: {
+      url: 'https://graph.microsoft.com/v1.0/me/chats?$top=1',
+      refusal:
+        'This looks like a personal Microsoft account. Teams messaging needs a '
+        + 'work or school Microsoft 365 account — the kind you sign into at '
+        + 'teams.microsoft.com rather than teams.live.com. Sign in with one of '
+        + 'those and enrol again.',
     },
   }),
 ];

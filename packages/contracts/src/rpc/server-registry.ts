@@ -5933,12 +5933,17 @@ export type ServerRpcRegistry = {
       peer_handle?: string;
       grants: Readonly<Record<string, boolean>>;
       concurrency_tier: McpInboundConcurrencyTier;
-      /** `0` = never expires (substrate sentinel); positive integers
-       *  enforce the wall-clock expiry. The validator raises
-       *  `expires_at_invalid` on negative / non-integer values. The
-       *  Settings → MCP Tokens page defaults to `now() + 1y` per spec
-       *  § A.9 ("Optional expiry, default 1 year, configurable"). */
-      expires_at: number;
+      /** ⛔ EXPIRY IS THE CONTRACT'S. The token used to carry `expires_at`
+       *  (with `0` as a never-expires sentinel) alongside the contract's
+       *  `expiry_at` — two lifetimes for one credential, and which one applied
+       *  depended on whether a contract happened to exist. Every token is
+       *  contracted now, so the lifetime is set once, here, on the contract the
+       *  issuance mints. Required when `standing_closure` is set. */
+      contract_limits?: { max_uses?: number; expiry_at?: number };
+      /** The owner's standing-approval tick. The operation closure is DERIVED
+       *  server-side from the granted Tier-2 recipes and minted onto the
+       *  contract; the wire never carries an op list. */
+      standing_closure?: boolean;
       chat_mode: {
         offered: boolean;
         session_cap?: { per_day: number; concurrent: number };
@@ -6288,6 +6293,13 @@ export type ServerRpcRegistry = {
   'reception.manage.mint': RpcMethodSpec<
     import('../reception-manage.js').ReceptionManageMintInput,
     import('../reception-manage.js').ReceptionManageMintResult
+  >;
+  // D-240 § D11 — revoke ONE submitter's viewback link. Per-RECORD, because
+  // `reception.endpoint.rotate_token` is per-ENDPOINT and would cut off every
+  // submitter at once.
+  'reception.lookup.revoke': RpcMethodSpec<
+    import('../reception-lookup-revoke.js').ReceptionLookupRevokeInput,
+    import('../reception-lookup-revoke.js').ReceptionLookupRevokeResult
   >;
   'reception.emergency_disable_all': RpcMethodSpec<
     import('../reception-registry.js').ReceptionEmergencyDisableAllInput | void,
@@ -7253,6 +7265,7 @@ export const SERVER_RPC_METHODS = [
   'reception.record.list',
   // D-210 Appendix B — mint an on-the-go reschedule link. Admin-only; reserved prefix.
   'reception.manage.mint',
+  'reception.lookup.revoke',
   // D-200 Slice 6g.14 — exact-submission recovery remains owner-local.
   'reception.emergency_disable_all',
   // D-149 P4 § A.5.1 — singleton config rpcs (admin-only; `reception.`

@@ -71,6 +71,7 @@ import {
   projectResolvedArgs,
   projectToResolution,
   readOwnerOperationOverride,
+  standingClosureAdmits,
   operationSpecHash,
   QualifiedWorkEntityIdError,
   resolveCatalogOperationPolicy,
@@ -2725,7 +2726,23 @@ export const runCatalogOperation = async (
   // Slice D — the destinations a `'scoped'` match was evaluated against, kept
   // so the proceed-point consume RE-VERIFIES the same containment (5.a).
   let grantAdmitDestinations: ReadonlyArray<string> | undefined;
-  if (resolution.verdict === 'ask' && !resumeApproved) {
+  // D-207 follow-on — the door's owner-CONFIRMED standing closure. Read on the
+  // ask branch only, BEFORE the session-grant lookup: if the owner already said
+  // "this door may do exactly these ops" at bind, a grant is a second answer to
+  // a question they have answered. Absent field / other contract / tier above
+  // `write` / op not in the closure ⇒ false, and everything below runs as
+  // before.
+  const standingAdmit =
+    resolution.verdict === 'ask'
+    && !resumeApproved
+    && standingClosureAdmits(
+      ctx.contract_snapshot,
+      ctx.execution_source,
+      resolution.operation_id,
+      resolution.effective_risk_tier,
+    );
+
+  if (resolution.verdict === 'ask' && !resumeApproved && !standingAdmit) {
     // Consult a live session grant before raising (N.4, ask-branch only): a
     // match ADMITS the dispatch instead of pausing. Gated on a grantable tier
     // (read / write / admin) and the hashes (a non-canonicalizable payload can't

@@ -360,6 +360,11 @@ const makeReceipt = (over: Partial<VisitorReceipt> = {}): VisitorReceipt => ({
   ],
   privacy_footer: null,
   via: 'page',
+  // D-240 — non-optional on a BUILT receipt so every reader gets an explicit
+  // `null` rather than a missing key. These tests are about the receipt block's
+  // rendering, so the fixture names the no-viewback case and the expectations
+  // are unchanged; the link's own rendering is covered in the D-240 suite.
+  lookup_path: null,
   ...over,
 });
 

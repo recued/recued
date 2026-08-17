@@ -79,7 +79,6 @@ const makeDoorRecord = (
   bearer_hash: 'hash',
   label: 'External door',
   created_at: 1_000,
-  expires_at: 0,
   revoked_at: null,
   grants,
   concurrency_tier: 3,

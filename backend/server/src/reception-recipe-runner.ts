@@ -58,7 +58,10 @@ import {
 } from './derive-recipe-capability.js';
 import { doorCapabilityChanged } from './mint-door-contract.js';
 import { resolveReceptionDoorContractId } from './reception-door-bind.js';
-import { buildReceptionContractSnapshot } from './reception-contract-snapshot.js';
+import {
+  buildReceptionContractSnapshot,
+  grantedOperationsFor,
+} from './reception-contract-snapshot.js';
 import type { ContractDefinitionStore } from './storage/contract-definition-store.js';
 import type { ReceptionIntakeRecipePairStore } from './storage/reception-intake-recipe-pair-store.js';
 import type { SellerStore } from './storage/seller-store.js';
@@ -90,8 +93,17 @@ export type ReceptionRunOutcome =
   /** The recipe ran to completion. `output.render` carries its `OutputSection` blocks —
    *  the substrate Slice 2's `render` response mode consumes. */
   | { readonly kind: 'completed'; readonly output: ExecuteResponse['output'] }
-  /** Durably PAUSED at the D-157 gate (`awaiting_approval`). Queued, not failed: the owner
-   *  approves in the D-173 Inbox and the run resumes. The visitor's success page is honest. */
+  /** Durably PAUSED. Queued, not failed, and the visitor's success page is honest either way
+   *  — their submission is durable and something will resume it.
+   *
+   *  ⚠ TWO HOLDS REACH HERE AND ONLY ONE HAS AN OWNER AFFORDANCE. `awaiting_approval` lands
+   *  in the D-173 Inbox and the owner approves it. `awaiting_peer` (D-234 § 234.4) is waiting
+   *  on ANOTHER SERVER'S owner, so the Inbox deliberately excludes it
+   *  (`reception-inbox-handler.ts`: *"a run held for a peer's answer offers them nothing to
+   *  act on"*) — correct, and it means such a submission sits `pending` in
+   *  `#reception/records` with no inbox row beside it. The distinction is not collapsed here
+   *  because this outcome answers the VISITOR's question, and the visitor's answer is the
+   *  same; a surface that needs to tell them apart reads the run anchor's `commit_status`. */
   | { readonly kind: 'held' }
   /** The run failed. The visitor was promised something and is not getting it — the handler
    *  must TELL them (slice 1c: no silent success page). */
@@ -394,6 +406,7 @@ export const createReceptionRecipeRunner = (
         {
           definitionStore: deps.definitionStore,
           allowedTools: allowedToolsFor(deps.definitionStore),
+          grantedOperations: grantedOperationsFor(deps.definitionStore),
           now: deps.now,
         },
       );
@@ -445,7 +458,17 @@ export const createReceptionRecipeRunner = (
 
       if (!result.success) {
         // `awaiting_approval` is QUEUED, not failed — the run is durably paused at the gate.
-        if (result.awaiting_approval === true) return { kind: 'held' };
+        //
+        // D-234 § 234.4 — AND SO IS `awaiting_peer`. This site asks "is the run HELD?", which
+        // `commits.ts` names as the reading that takes BOTH: what it decides is whether the
+        // visitor's submission is durable, and a peer hold is exactly as durable as an
+        // approval one. Reading `awaiting_approval` alone sent the visitor a 503 for a run
+        // that was alive and checkpointed — and because the run id is anchored on the
+        // submission, a visitor who believed the error and submitted again minted a SECOND
+        // run, so the peer was asked the same question twice.
+        if (result.awaiting_approval === true || result.awaiting_peer === true) {
+          return { kind: 'held' };
+        }
         return { kind: 'failed', errors: result.errors };
       }
       return { kind: 'completed', output: result.output };

@@ -23,7 +23,17 @@ import { describe, expect, it } from 'vitest';
 import { createCliInvocationExecutor } from '../cli-invocation-executor.js';
 
 const execPath = process.execPath;
-const tmpInDirs = (): string[] => readdirSync(tmpdir()).filter((n) => n.startsWith('recued-cli-in-'));
+
+/** ⛔ THIS SUITE OWNS ITS TEMP ROOT. `expect(tmpInDirs()).toEqual([])` used to
+ *  read `os.tmpdir()` — asserting that a GLOBAL surface is empty, which is only
+ *  true when nothing else in the run is materializing. Under `pool: 'threads'`
+ *  it is a coin flip against any sibling that does, and this file and
+ *  `cli-invocation-input-materialize` red each other (reproduced by running just
+ *  those two). The assertion below is unchanged in FORM and now means what it
+ *  says: this directory is ours, so empty is exact. */
+const TEMP_ROOT = mkdtempSync(join(tmpdir(), 'cli-in-place-root-'));
+const tmpInDirs = (): string[] =>
+  readdirSync(TEMP_ROOT).filter((n) => n.startsWith('recued-cli-in-'));
 
 const FILE_REF = `file:${'a'.repeat(32)}`;
 
@@ -68,6 +78,7 @@ describe('cli_invocation in-place output_capture', () => {
   it('captures the edited materialized copy into the CAS', async () => {
     const ingested: Array<{ bytes: Buffer; filename: string; mime_type: string }> = [];
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       readFileBytes,
       ingestToolOutput: async (input) => {
         ingested.push(input as { bytes: Buffer; filename: string; mime_type: string });
@@ -89,7 +100,7 @@ describe('cli_invocation in-place output_capture', () => {
   });
 
   it('temp capture survives the materialize cleanup (copied into run-scratch)', async () => {
-    const exec = createCliInvocationExecutor({ readFileBytes });
+    const exec = createCliInvocationExecutor({ readFileBytes, tempRoot: TEMP_ROOT });
 
     const result = await exec(call(inPlaceBinding('temp'), { source: FILE_REF })) as {
       file_ref: { backing: string; path: string; filename: string; mime_type: string };
@@ -114,6 +125,7 @@ describe('cli_invocation in-place output_capture', () => {
     writeFileSync(victim, 'CALLER OWNED');
 
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       readFileBytes,
       ingestToolOutput: async () => ({ record_id: 'file:out' }),
     });
@@ -130,6 +142,7 @@ describe('cli_invocation in-place output_capture', () => {
     writeFileSync(priorPath, 'PRIOR');
 
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       readFileBytes,
       ingestToolOutput: async (input) => {
         expect((input as { bytes: Buffer }).bytes.toString('utf8')).toBe('PRIOR-EDITED');
@@ -149,6 +162,7 @@ describe('cli_invocation in-place output_capture', () => {
 
   it('fails loud when the tool removes its input instead of editing it', async () => {
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       readFileBytes,
       ingestToolOutput: async () => ({ record_id: 'file:out' }),
     });
@@ -161,6 +175,7 @@ describe('cli_invocation in-place output_capture', () => {
 
   it('rejects captured bytes that are not a ZIP container for an OOXML mime', async () => {
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       readFileBytes,
       ingestToolOutput: async () => ({ record_id: 'file:out' }),
     });

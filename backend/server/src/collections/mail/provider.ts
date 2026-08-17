@@ -43,10 +43,20 @@ import {
   type MailSentEnvelopeReconciliationQuery,
   type MailSentReconciliationQuery,
   type MailSentReconciliationResult,
+  // D-239 — mail write-back.
+  type MailMoveDestination,
+  type MailMoveOutcome,
+  type MailMutationResult,
 } from '@recued/contracts';
 import { IngredientError } from '@recued/ingredients';
 
 export type {
+  // D-239 — re-exported so the providers + dispatcher import the write-back
+  // vocabulary from the same module they already take `CanonicalMessage`
+  // from, rather than half from here and half from contracts.
+  MailMoveDestination,
+  MailMoveOutcome,
+  MailMutationResult,
   MailSentAttachmentReconciliationMatch,
   MailSentAttachmentReconciliationQuery,
   MailSentEnvelopeReconciliationMatch,
@@ -290,6 +300,22 @@ export interface CanonicalMessage {
    * a direction from this field or the enrolled account address. */
   direction?: MailMessageDirection;
   is_read: boolean;
+  /** D-239 — the message's flagged / starred state at the source.
+   *
+   *  ⛔ REQUIRED, DELIBERATELY, even though it made every adapter and
+   *  fixture in the tree declare a value. `mail-flag` WRITES this field,
+   *  so a provider that does not READ it produces a flag that reverts on
+   *  that mailbox's next sync — the write lands, then `buildRecord`
+   *  overwrites the hot field with a value the canonicalizer never
+   *  looked up. Optional would have compiled on all three adapters while
+   *  leaving that hole open in any one of them. Required does not prove
+   *  the mapping is CORRECT (an adapter can still hardcode `false` and
+   *  typecheck) — that is what the per-provider canonicalizer tests are
+   *  for — but it does make the omission impossible to reach by accident.
+   *
+   *  Provider mapping: IMAP `\Flagged`, Gmail's `STARRED` label, Graph's
+   *  `flag.flagStatus === 'flagged'`. */
+  is_flagged: boolean;
   has_attachments: boolean;
   /** Unix-ms receipt timestamp at the source. */
   received_at: number;
@@ -871,6 +897,67 @@ export interface MailProvider {
   lookupSentByReconciliationId?(
     query: MailSentReconciliationQuery,
   ): Promise<MailSentReconciliationResult>;
+
+  // ── D-239 write-back: mutating a message that already exists ──────
+  //
+  // Every method here is VERIFIED-THEN-REFLECTED (D-117 decision 3, held
+  // verbatim for mail): return the message's complete post-mutation state
+  // on provider success, or THROW `MailAdapterError`. There is no third
+  // state. Timeouts / 5xx / malformed responses surface as `io_error`,
+  // explicitly marked "outcome unknown — may have succeeded", and the
+  // collection never writes the warehouse on that code.
+  //
+  // Optional as a group, gated by `mutationCapable`, for the same reason
+  // `send` is optional: a grant may cover reading and not writing (Gmail
+  // without `gmail.modify`, Graph without `Mail.ReadWrite`), and an
+  // out-of-tree adapter should keep compiling. `mutationCapable` and these
+  // four move in LOCKSTEP — a provider sets the flag true only when it
+  // implements all four, and the dispatcher's capability gate reads the
+  // flag rather than probing for methods.
+
+  /** True iff this provider instance is configured to mutate message
+   *  state. IMAP: the mailbox opened read-write and the client exposes the
+   *  flag/move verbs. Gmail: the OAuth grant includes `gmail.modify`.
+   *  Graph: the granted scopes include `Mail.ReadWrite`. Read by
+   *  `MailCollection` and surfaced on the instance row so the dispatcher
+   *  refuses with a legible capability error instead of a 500. */
+  readonly mutationCapable: boolean;
+
+  /** Set or clear the read/seen state. */
+  markMessage?(args: {
+    source_id: string;
+    read: boolean;
+  }): Promise<MailMutationResult>;
+
+  /** Set or clear the flagged/starred state. */
+  flagMessage?(args: {
+    source_id: string;
+    flagged: boolean;
+  }): Promise<MailMutationResult>;
+
+  /** Relocate the message. The returned `source_id` may DIFFER from the
+   *  one passed in — IMAP re-keys on COPY+EXPUNGE and Graph mints a new
+   *  resource id on move; only Gmail keeps the id stable across a label
+   *  change. Callers must key off the returned id, never the input.
+   *
+   *  Resolves `null` when the move is CONFIRMED but the provider cannot
+   *  name the message's new identity (IMAP without UIDPLUS) — see
+   *  {@link MailMoveOutcome}. That is a success, not a failure. */
+  moveMessage?(args: {
+    source_id: string;
+    destination: MailMoveDestination;
+  }): Promise<MailMoveOutcome>;
+
+  /** Remove the message at the provider. Trash / soft-delete where the
+   *  provider offers it (Gmail `messages/trash`, IMAP `\Deleted` +
+   *  EXPUNGE into the server's trash behaviour, Graph `DELETE` which
+   *  files to Deleted Items) — this is the provider's own delete gesture,
+   *  not a hard purge Recued invents.
+   *
+   *  Returns nothing: there is no post-mutation STATE to reflect, only
+   *  the absence. Resolving IS the verification; a throw leaves the
+   *  warehouse row in place. */
+  deleteMessage?(args: { source_id: string }): Promise<void>;
 }
 
 /** D-172 P2 (Attachments-v2) — a single resolved outbound attachment.

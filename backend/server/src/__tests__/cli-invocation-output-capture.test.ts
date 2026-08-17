@@ -6,11 +6,12 @@
  *  and removes the temp dir in a `finally` — on success AND on failure. These
  *  tests drive the real subprocess (`node -e`) like the sibling executor suite;
  *  the ingest sink is a spy. Cleanup is asserted by the absence of any leftover
- *  `recued-cli-out-*` dir in the OS temp root. */
+ *  `recued-cli-out-*` dir in THIS SUITE'S OWN temp root — see `TEMP_ROOT`. */
 
 import { createHash } from 'node:crypto';
-import { readdirSync } from 'node:fs';
+import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -19,8 +20,17 @@ import {
 } from '../cli-invocation-executor.js';
 
 const execPath = process.execPath;
+
+/** ⛔ THIS SUITE OWNS ITS TEMP ROOT. This used to read `os.tmpdir()` and compare
+ *  the GLOBAL `recued-cli-out-*` set before and after — state this suite does
+ *  not own. Under `pool: 'threads'` a concurrent sibling that captures output
+ *  lands in one snapshot and not the other, and the two red each other for
+ *  reasons neither caused (this file vs `d-185-cli-temp-output`, reproduced).
+ *  Injecting the root makes the claim local and exact — and stronger, since an
+ *  owned root that must be EMPTY also catches a leaked empty dir. */
+const TEMP_ROOT = mkdtempSync(join(tmpdir(), 'cli-out-capture-root-'));
 const tmpCaptureDirs = (): string[] =>
-  readdirSync(tmpdir()).filter((n) => n.startsWith('recued-cli-out-'));
+  readdirSync(TEMP_ROOT).filter((n) => n.startsWith('recued-cli-out-'));
 
 // A node one-liner that writes the named files into the engine-injected output
 // dir (always the LAST argv token) and prints that dir to stdout.
@@ -53,12 +63,12 @@ describe('cli_invocation output_capture', () => {
   it('ingests the produced file as result.file_ref, merges base fields, and cleans the temp dir', async () => {
     const ingested: ToolOutputIngestInput[] = [];
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       ingestToolOutput: async (input) => {
         ingested.push(input);
         return { record_id: 'file:abc123' };
       },
     });
-    const before = tmpCaptureDirs();
 
     const result = (await exec(
       call(captureBinding(writeFilesScript([['invoice.md', 'PARSED MD']])), { run_id: 'run-1' }),
@@ -85,12 +95,13 @@ describe('cli_invocation output_capture', () => {
     // D-185 Slice 3 — a shape:'ref' op discards stdout (content flows via file_ref).
     expect(result.stdout).toBeUndefined();
     // The engine-managed temp dir is removed after capture (no leftover).
-    expect(tmpCaptureDirs()).toEqual(before);
+    expect(tmpCaptureDirs()).toEqual([]);
   });
 
   it('selects the file matching the declared mime extension, ignoring sidecars', async () => {
     const ingested: ToolOutputIngestInput[] = [];
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       ingestToolOutput: async (input) => {
         ingested.push(input);
         return { record_id: 'file:md' };
@@ -110,6 +121,7 @@ describe('cli_invocation output_capture', () => {
     const pdf = '%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF\n';
     const ingested: ToolOutputIngestInput[] = [];
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       ingestToolOutput: async (input) => {
         ingested.push(input);
         return { record_id: 'file:pdf' };
@@ -140,12 +152,12 @@ describe('cli_invocation output_capture', () => {
   ])('rejects a .pdf with %s before CAS ingest and cleans the temp dir', async (_label, bytes) => {
     const ingested: ToolOutputIngestInput[] = [];
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       ingestToolOutput: async (input) => {
         ingested.push(input);
         return { record_id: 'file:must-not-exist' };
       },
     });
-    const before = tmpCaptureDirs();
 
     await expect(exec(call(captureBinding(
       writeFilesScript([['document.pdf', bytes]]),
@@ -154,12 +166,13 @@ describe('cli_invocation output_capture', () => {
       cli_failure: expect.objectContaining({ reason: 'bad_output' }),
     });
     expect(ingested).toHaveLength(0);
-    expect(tmpCaptureDirs()).toEqual(before);
+    expect(tmpCaptureDirs()).toEqual([]);
   });
 
   it('keys a fixed output filename by content within one run and reuses the identity for equal bytes', async () => {
     const ingested: ToolOutputIngestInput[] = [];
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       ingestToolOutput: async (input) => {
         ingested.push(input);
         return { record_id: `file:${input.source_id}` };
@@ -197,6 +210,7 @@ describe('cli_invocation output_capture', () => {
   ])('selects the %s output file by extension, ignoring a sidecar', async (mime, produced) => {
     const ingested: ToolOutputIngestInput[] = [];
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       ingestToolOutput: async (input) => {
         ingested.push(input);
         return { record_id: 'file:media' };
@@ -228,12 +242,12 @@ describe('cli_invocation output_capture', () => {
   it('captures a fixed-name file written via a partial-token {out_dir}/file argv', async () => {
     const ingested: ToolOutputIngestInput[] = [];
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       ingestToolOutput: async (input) => {
         ingested.push(input);
         return { record_id: 'file:fixed' };
       },
     });
-    const before = tmpCaptureDirs();
     // Write to the exact last argv path (the resolved <tempDir>/audio.mp3), not
     // into a dir — this is what ffmpeg/magick do.
     const writeToLastArg =
@@ -256,12 +270,13 @@ describe('cli_invocation output_capture', () => {
     expect(ingested[0].filename).toBe('audio.mp3');
     expect(ingested[0].bytes.toString('utf8')).toBe('MP3BYTES');
     // Temp dir cleaned up afterward.
-    expect(tmpCaptureDirs()).toEqual(before);
+    expect(tmpCaptureDirs()).toEqual([]);
   });
 
   it('falls back to run id "cli" in the source_id when no stepMeta run id is present', async () => {
     const ingested: ToolOutputIngestInput[] = [];
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       ingestToolOutput: async (input) => {
         ingested.push(input);
         return { record_id: 'file:x' };
@@ -277,69 +292,68 @@ describe('cli_invocation output_capture', () => {
 
   it('fails closed when output_capture is declared but no ingestor is wired', async () => {
     const exec = createCliInvocationExecutor(); // no ingestToolOutput
-    const before = tmpCaptureDirs();
 
     await expect(
       exec(call(captureBinding(writeFilesScript([['invoice.md', 'MD']])))),
     ).rejects.toThrow(/no tool-output ingestor/);
     // The check precedes mkdtemp — no temp dir is created.
-    expect(tmpCaptureDirs()).toEqual(before);
+    expect(tmpCaptureDirs()).toEqual([]);
   });
 
   it('removes the temp dir when the cli exits non-zero (cleanup on failure)', async () => {
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       ingestToolOutput: async () => ({ record_id: 'file:never' }),
     });
-    const before = tmpCaptureDirs();
 
     await expect(
       exec(call(captureBinding(`${writeFilesScript([['invoice.md', 'MD']])};process.exit(3)`))),
     ).rejects.toThrow(/code 3/);
-    expect(tmpCaptureDirs()).toEqual(before);
+    expect(tmpCaptureDirs()).toEqual([]);
   });
 
   it('rejects (and cleans up) when the cli succeeds but produces no matching file', async () => {
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       ingestToolOutput: async () => ({ record_id: 'file:never' }),
     });
-    const before = tmpCaptureDirs();
 
     await expect(
       exec(call(captureBinding('process.exit(0)'))),
     ).rejects.toThrow(/produced no/);
-    expect(tmpCaptureDirs()).toEqual(before);
+    expect(tmpCaptureDirs()).toEqual([]);
   });
 
   it('rejects (and cleans up) when more than one matching file is produced', async () => {
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       ingestToolOutput: async () => ({ record_id: 'file:never' }),
     });
-    const before = tmpCaptureDirs();
 
     await expect(
       exec(call(captureBinding(writeFilesScript([['a.md', 'A'], ['b.md', 'B']])))),
     ).rejects.toThrow(/expected one/);
-    expect(tmpCaptureDirs()).toEqual(before);
+    expect(tmpCaptureDirs()).toEqual([]);
   });
 
   it('rejects (and cleans up) when the produced file exceeds the size cap', async () => {
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       ingestToolOutput: async () => ({ record_id: 'file:never' }),
       outputCaptureMaxBytes: 4,
     });
-    const before = tmpCaptureDirs();
 
     await expect(
       exec(call(captureBinding(writeFilesScript([['invoice.md', 'WAY TOO LONG']])))),
     ).rejects.toThrow(/over the 4-byte cap/);
-    expect(tmpCaptureDirs()).toEqual(before);
+    expect(tmpCaptureDirs()).toEqual([]);
   });
 
   it('rejects a binding that combines detached with output_capture (foreground-only guard)', async () => {
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       ingestToolOutput: async () => ({ record_id: 'file:never' }),
     });
-    const before = tmpCaptureDirs();
 
     await expect(
       exec(call({
@@ -352,12 +366,13 @@ describe('cli_invocation output_capture', () => {
         detached: { mode: 'runtime_managed', completion: { exit_pattern: '{result_dir}/x.exit.{code}' } },
       })),
     ).rejects.toThrow(/foreground-only/);
-    expect(tmpCaptureDirs()).toEqual(before);
+    expect(tmpCaptureDirs()).toEqual([]);
   });
 
   it('engine-injects the output dir, overriding any recipe-supplied dir_arg value', async () => {
     const ingested: ToolOutputIngestInput[] = [];
     const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
       ingestToolOutput: async (input) => {
         ingested.push(input);
         return { record_id: 'file:ok' };

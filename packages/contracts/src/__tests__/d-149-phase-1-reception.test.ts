@@ -148,9 +148,11 @@ describe('D-149 P1 — RECEPTION_TABLES inventory', () => {
     'reception_status_projection',
     'reception_rate_limiter',
     'reception_ip_block_list',
+    // D-240 slice 3b — the endpoint → LOOKUP-recipe binding.
+    'reception_lookup_recipe_pair',
   ];
 
-  it('lists exactly ten tables in spec order (D-210 A.8 slice 4c drops the booking table)', () => {
+  it('lists exactly eleven tables in spec order (D-210 A.8 slice 4c drops the booking table)', () => {
     expect(RECEPTION_TABLES).toEqual(expected);
   });
 

@@ -96,11 +96,28 @@ describe('the REAL kernel manifests', () => {
     // ⚠ Asserts the sweep FOUND something first — an empty result would satisfy
     // a `toEqual([])`-shaped expectation while meaning the probe was broken.
     expect(flagged.length).toBeGreaterThan(0);
-    expect(flagged).toEqual(['data-file-read']);
+    // ⚠ D-244 added the three CSV readers. Admitted deliberately, not bumped:
+    // each is `kind: 'storage'`, `risk_tier: 'read'`, and carries an EXPLICIT
+    // `mcp_exposed: true` — the same shape as `data-file-read`, which this list
+    // already held. A read-tier storage op costs the owner nothing to run and
+    // reaches only a file the caller already named.
+    //
+    // ⛔ The point of this ratchet is that widening MCP's kernel reach is a
+    // visible decision. If a future entry is not read-tier, do not add it here
+    // — ask why it is exposed at all.
+    expect(flagged).toEqual([
+      'csv-columns', 'csv-filter', 'csv-stats', 'data-file-read',
+    ]);
   });
 
   it('and reproduces the retired whitelist\'s outcome over the real manifests', () => {
     const reachable = KERNEL_MANIFESTS.filter((m) => m.author === 'recued' && exposed(m));
-    expect(reachable.map((m) => m.slug)).toEqual(['data-file-read']);
+    // ⚠ SORTED, like the sibling above. Unsorted this asserted the order the
+    // manifests happen to be DECLARED in — incidental, and it broke the moment
+    // a new entry landed between two existing ones. The property is which slugs
+    // are reachable, not the file's layout.
+    expect(reachable.map((m) => m.slug).sort()).toEqual([
+      'csv-columns', 'csv-filter', 'csv-stats', 'data-file-read',
+    ]);
   });
 });

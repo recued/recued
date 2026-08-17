@@ -47,6 +47,7 @@ const DEFAULT_CAPABILITY: Readonly<Record<ChannelName, ChannelCapability>> = {
   telegram: 'inline',
   whatsapp: 'inline',
   discord: 'inline',
+  teams: 'landing-page',
   email: 'landing-page',
 };
 

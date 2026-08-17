@@ -540,15 +540,23 @@ const CHANNEL_CAPABILITY_TABLE: Readonly<Record<ChannelName, ChannelCapability>>
   ui:     'inline',
   bridge: 'notify-only',
   email:  'landing-page',
-  // D-192 seam 10 — every chat transport is `inline`, and that is a FACT of the
-  // substrate rather than a per-vendor choice: a messenger vendor's channel is
-  // built by `createRemoteChannel`, which declares `capability: 'inline'` because
-  // the vendor implements the INTERACTIVE transport (sendPrompt + close). So this
-  // derives instead of enumerating, and stays aligned with the adapter by
-  // construction — which is exactly what the D-163 ratchet asserts. A future
-  // non-interactive transport would need a declared capability facet; none exists,
-  // so none is invented here.
-  ...totalRecord(MESSENGER_VENDOR_SLUGS, (): ChannelCapability => 'inline'),
+  // D-192 seam 10 / D-238 § 2 — a chat transport's capability is now DECLARED on
+  // its vendor entry rather than assumed. It used to be hardcoded `'inline'` here
+  // with a note that "a future non-interactive transport would need a declared
+  // capability facet"; Teams is that transport (its only ingress is short-poll,
+  // which cannot carry a button press) and `MessengerVendorDeclaration.capability`
+  // is that facet.
+  //
+  // 🔑 Still DERIVED, not enumerated — the property that mattered about the old
+  // line survives: a new vendor arrives with its capability stated in the one
+  // place it is declared, and `createRemoteChannel` reads the same declaration,
+  // so the table and the adapter cannot fall out of step. That is exactly what
+  // the D-163 ratchet asserts.
+  ...totalRecord(
+    MESSENGER_VENDOR_SLUGS,
+    (vendor): ChannelCapability =>
+      getMessengerVendorDeclaration(vendor)?.capability ?? 'inline',
+  ),
 };
 
 /** Per-channel install / connect CTA URL builder. Bridge points at its

@@ -12,6 +12,7 @@ import { composeInboundEmailAnswer } from '../composition/bin/wire-inbound-email
 import { materializeMailBody } from '../mail-body-read-handler.js';
 import { composeMessengerTurnIngest } from '../composition/bin/wire-messenger-turn.js';
 import { composeMessengerLiveControl } from '../composition/bin/wire-messenger-live-control.js';
+import { getMessengerNotificationRefresher } from '../composition/bin/wire-messenger-refresher.js';
 import { composeSessionGrantPasses } from '../composition/bin/wire-session-grant-passes.js';
 import { composeReceptionInboxDeps } from '../composition/bin/wire-reception-inbox-deps.js';
 import { countCalendarOverlap } from '../collections/calendar/overlap-counter.js';
@@ -729,6 +730,20 @@ export const composeListeners = async (
           ? { isPaused: (): boolean => app.serverState!.isPaused() }
           : {}),
         isVaultUnlocked: app.isVaultUnlocked,
+        // D-238 — the SAME process-shared refresher the send path uses
+        // (memoized per connection store). Without it a Teams poll runs on the
+        // stored access token and stops working about an hour after enrolment;
+        // with a SECOND instance, a poll and a send could exchange concurrently
+        // and each invalidate the other's rotated refresh token.
+        refreshAuth: getMessengerNotificationRefresher({
+          connectionStore: messengerIngressStore,
+          ...(app.keys ? { keys: app.keys } : {}),
+          onFailure: (failure) => {
+            console.warn(
+              `[messenger-refresh] ${failure.vendor}: ${failure.reason} — ${failure.detail}`,
+            );
+          },
+        }),
         ...(app.vaultStateBus
           ? { subscribeVault: (listener) => app.vaultStateBus.subscribe(listener) }
           : {}),
@@ -3242,6 +3257,23 @@ export const composeListeners = async (
             getBookingStore: () => storage.intakeFormSubmissionStoreRef!,
             listInboundLinks: (filter: { to_collection: string; to_id: string }) =>
               app.annotationStoreRef!.listLinks(filter),
+            now: () => Date.now(),
+          },
+        }
+      : {}),
+    // D-240 § D11 — `reception.lookup.revoke`. Needs only the credential store:
+    // it revokes CREDENTIALS, and deliberately does not check that the record
+    // still exists (a record collected by retention whose link is still in
+    // someone's inbox is exactly when a revoke is most wanted).
+    //
+    // ⚠ THIS IS A CONDITIONAL SPREAD, so tsc will NOT catch a renamed key —
+    // the same shape that left `receptionManageMintDeps` dead on the wire, as
+    // the note at the top of this file records. The guard is not a type here; it
+    // is `d-240-slice6-lookup-revoke` asserting the METHOD IS REGISTERED.
+    ...(app.receptionManageCredentialStoreRef
+      ? {
+          receptionLookupRevokeDeps: {
+            getCredentialStore: () => app.receptionManageCredentialStoreRef!,
             now: () => Date.now(),
           },
         }

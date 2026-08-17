@@ -81,6 +81,7 @@ const makeStubProvider = (slug: string, hooks: StubSendHooks = {}): StubHandle =
     kind: 'imap',
     slug,
     sendCapable,
+    mutationCapable: false,
     accountEmail: hooks.accountEmail ?? '',
     async connect() { /* no-op */ },
     async initialScan() { /* no-op */ },

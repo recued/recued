@@ -7,6 +7,15 @@ import {
 } from './object.js';
 import { lowercase, uppercase, trim, string_length, split, contains_any, concat, replace, template, truncate, strip_html, encode_base64, decode_base64 } from './string.js';
 export { stripHtmlText, STRIP_HTML_MAX_INPUT } from './string.js';
+/** D-244 — whole-file CSV filtering as PURE functions. Exported for the kernel
+ *  op that owns the I/O (`core.storage.csv.filter`): the op reads the warehouse
+ *  record and writes one back, but parses through the SAME code `csv_parse`
+ *  uses, so the two layers cannot disagree about what a file says. */
+export {
+  csvFilter, csvColumns, csvStats, CSV_STATS_UNIQUE_CAP,
+  type CsvFilterOptions, type CsvFilterResult, type CsvColumnsOptions, type CsvMatchMode,
+  type CsvStatsResult, type CsvColumnStats,
+} from './csv-file.js';
 import { round, clamp, to_number, math, weighted_score } from './numeric.js';
 import { date_diff, date_format, date_add, date_parse, is_past, is_future, date_period, to_recent_date } from './date.js';
 import { compare, coalesce, switch_, all, any, count, default_, defaults_, not_, ternary, pluralize } from './logic.js';

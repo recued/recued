@@ -317,6 +317,27 @@ export interface ExecuteResponse {
    *  action is awaiting approval instead of mistaking the bare `success:
    *  false` for a silent failure and retrying. */
   awaiting_approval?: boolean;
+  /** D-234 § 234.4 — the run is durably PAUSED waiting on a PEER'S answer. Same
+   *  shape of fact as `awaiting_approval` above and the same third state:
+   *  `success` is `false`, the run is queued, not failed.
+   *
+   *  ⛔⛔ A SEPARATE FIELD, NOT A WIDENING OF `awaiting_approval`, FOR THE REASON
+   *  `awaiting_peer` IS A SEPARATE `commit_status` (`commits.ts`
+   *  `RUN_ANCHOR_STATUSES`): the owner cannot ANSWER this hold, only cancel it or
+   *  keep waiting. A caller that read it as `awaiting_approval` would offer an
+   *  approve affordance for something no approval resolves; a caller that does
+   *  not know this field does nothing at all, which is the harmless direction.
+   *
+   *  ⇒ So the question every reader of the pair has to answer is the one
+   *  `isHeldRunAnchorStatus` poses one layer down: does this site mean "the run is
+   *  HELD" (read BOTH — a visitor page, a durability claim, a resumer) or "held
+   *  for MY OWNER'S APPROVAL specifically" (read `awaiting_approval` alone — an
+   *  approvals queue, an approve/deny button)?
+   *
+   *  ⚠ MUTUALLY EXCLUSIVE WITH `awaiting_approval` BY CONSTRUCTION, matching the
+   *  anchor rule that an approval pause wins when both are somehow set: the
+   *  response carries whichever the host wrote the checkpoint for, never both. */
+  awaiting_peer?: boolean;
   /** D-232 § 19.3 — the receipt for an exchange this run FIRED: the ref the
    *  caller asks about later, and where the rest of the answer arrives.
    *

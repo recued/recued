@@ -242,6 +242,32 @@ export interface DoorExecutionPolicy {
   readonly max_steps: number;
   /** Whether this door may spend the owner's configured AI quota. */
   readonly allow_ai: boolean;
+  /** The owner's standing-closure opt-in for THIS door.
+   *
+   *  ⛔⛔ WHAT IT MEANS, AND WHY IT IS A PER-DOOR OPT-IN RATHER THAN A RULE.
+   *  Binding a door is already one owner decision: they review the recipe's
+   *  DERIVED capability closure and confirm it, and `mintDoorContract` writes an
+   *  explicit `contract_grant` row per op in that closure. Those rows make the
+   *  ops REACHABLE and say nothing about approval, so the reader-pinned `read`
+   *  ceiling asks again on every dispatch — the owner is charged twice for one
+   *  intent, once per visitor. `RECORDS_ACTIONS`' `import` note names that
+   *  shape: *"ONE USER INTENT SHOULD NOT COST TWO APPROVALS."*
+   *
+   *  Set, the ops IN the confirmed closure admit on this door without asking,
+   *  bounded by tier (`destructive` / `admin` still ask). Absent — the default,
+   *  and every door minted before this field existed — nothing changes.
+   *
+   *  ⚠ IT IS NOT A CEILING RAISE, and the distinction is the whole design. A
+   *  raised ceiling admits everything the door touches; this admits exactly the
+   *  ops the owner read and confirmed, and a recipe edit that changes the
+   *  closure re-mints the contract (`doorCapabilityChanged`), so the opt-in is
+   *  re-earned rather than inherited.
+   *
+   *  ⚠ AND IT IS A REAL TRADE: an admitted op does not run the D-177 taint walk.
+   *  The mitigation is that the closure was confirmed against a
+   *  capability-pinned recipe and is bounded by tier — not that the visitor's
+   *  input became trustworthy. */
+  readonly standing_closure?: boolean;
 }
 
 // ════════════════════════════════════════════════════════════════

@@ -76,6 +76,7 @@ import {
   resolveMessengerConnectionIngressMode,
   MESSENGER_INGRESS_MODE_CONFIG_KEY,
   MESSENGER_AUTH_KIND_CONNECTION_TYPES,
+  MESSENGER_PRINCIPAL_CONFIG_KEY,
   NOTIFICATION_SUBTYPES as CONTRACT_NOTIFICATION_SUBTYPES,
   resolveBearerAccessToken,
   MESSENGER_PROBE_TOKEN_PLACEHOLDER,
@@ -1424,6 +1425,102 @@ const maybeResolveSharePointDrive = async (
   return { config: { ...config, drive_id: resolved.drive_id }, auth: fresh };
 };
 
+/** D-238 — resolve the enrolled PRINCIPAL at enrol time.
+ *
+ *  A no-op for everything except a `notification` connection whose messenger
+ *  vendor declares `identity.principal_id_field` and whose auth is refreshable.
+ *  Mirrors `maybeResolveSharePointDrive` above, including its hard-won rule:
+ *  Microsoft ROTATES the refresh token on refresh, so the caller MUST persist
+ *  the returned auth, never the pre-refresh one.
+ *
+ *  Why it belongs HERE and not in the OAuth dance: enrolment is the one place
+ *  that already holds the full credential AND is about to write the row, so the
+ *  value lands with no rpc shape change, no form field, and no second network
+ *  round-trip added to the popup. Re-enrolling refreshes it, which is what an
+ *  owner does after switching accounts.
+ *
+ *  BEST-EFFORT, and deliberately so. A failure here must not block enrolment:
+ *  the connection still notifies and still answers by link. What it loses is
+ *  TYPED answers, which fail closed on a missing principal — degraded, never
+ *  unsafe. Throwing instead would make an unreachable Graph mean "you cannot
+ *  add Teams at all", which is a worse trade for a field the owner never sees.
+ */
+const maybeResolveMessengerPrincipal = async (
+  kind: ConnectionKind,
+  subtype: string | undefined,
+  config: Record<string, unknown>,
+  auth: ConnectionAuth,
+  deps: ConnectionRpcDeps,
+  now: () => number,
+): Promise<{ config: Record<string, unknown>; auth: ConnectionAuth }> => {
+  if (kind !== 'notification' || subtype === undefined) return { config, auth };
+  const declaration = getMessengerVendorDeclaration(subtype);
+  const idField = declaration?.identity.principal_id_field;
+  if (declaration === null || idField === undefined) return { config, auth };
+  // An explicit value wins — no resolution, no network. (Nothing sets one today;
+  // the branch exists so a future re-enrol cannot silently overwrite one.)
+  const existing = config[MESSENGER_PRINCIPAL_CONFIG_KEY];
+  if (typeof existing === 'string' && existing.trim() !== '') return { config, auth };
+  if (auth.type !== 'oauth2_refresh') return { config, auth };
+
+  const fetchImpl = deps.resolveFetch ?? fetch;
+  try {
+    // Refresh once for an access token, and persist the ROTATED auth.
+    const fresh = await refreshOAuth2(auth, fetchImpl, now);
+    const token = resolveBearerAccessToken(fresh);
+    if (token === undefined || token.trim() === '') return { config, auth: fresh };
+    // D-238 — CAN THIS ACCOUNT ACTUALLY USE THIS VENDOR? Asked before anything
+    // else, because for Teams the answer comes apart from "is the credential
+    // valid": Graph's `/me` supports a PERSONAL Microsoft account while every
+    // Teams messaging API is work-or-school only. Without this a consumer
+    // account consents cleanly, resolves a principal, probes green, and 403s on
+    // every send — enrolled, healthy and mute.
+    const capability = declaration.capability_probe;
+    if (capability !== undefined) {
+      let capRes: Awaited<ReturnType<typeof fetchImpl>> | null = null;
+      try {
+        capRes = await fetchImpl(capability.url, {
+          method: 'GET',
+          headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+        });
+      } catch {
+        // Unreachable. Transient by assumption — see below.
+        capRes = null;
+      }
+      // A DEFINITIVE no refuses enrolment, at the one point the owner can act on
+      // it. 429 is excluded because throttling says nothing about capability.
+      if (capRes !== null && capRes.status >= 400 && capRes.status < 500 && capRes.status !== 429) {
+        throw new RpcError('bad_request', `collection.connection.enroll: ${capability.refusal}`);
+      }
+      // Anything else — 5xx, a network failure, a throttle — must NOT block:
+      // an unreachable Graph would otherwise mean "you cannot add Teams at all".
+    }
+
+    const res = await fetchImpl(declaration.health_probe.url, {
+      method: 'GET',
+      headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+    });
+    if (!res.ok) return { config, auth: fresh };
+    const body: unknown = await res.json();
+    const value = body !== null && typeof body === 'object'
+      ? (body as Record<string, unknown>)[idField]
+      : undefined;
+    if (typeof value !== 'string' || value.trim() === '') return { config, auth: fresh };
+    return {
+      config: { ...config, [MESSENGER_PRINCIPAL_CONFIG_KEY]: value.trim() },
+      auth: fresh,
+    };
+  } catch (err) {
+    // The capability refusal is a DECISION, not a failure — it must reach the
+    // owner. Swallowing it here would restore the exact green-and-mute enrolment
+    // the probe exists to prevent, and the swallow would be invisible.
+    if (err instanceof RpcError) throw err;
+    // Anything else: unreachable / refused. Enrolment proceeds; typed answers
+    // stay refused, which is degraded rather than unsafe.
+    return { config, auth };
+  }
+};
+
 /** D-232 § 26 — the contract → MCP binding, checked WHERE A HUMAN CAN FIX IT.
  *
  *  `config.peer_contract_id` is how an answering recipe finds its way home: the
@@ -1553,9 +1650,20 @@ export const handleConnectionEnroll = async (
   // fill `config.drive_id`; on any failure it throws a `bad_request` the dialog
   // surfaces. Returns fresh objects — the original `config`/`auth` are unmutated.
   const resolvedSharePoint = await maybeResolveSharePointDrive(config, auth, deps, () => now);
-  const effectiveConfig = resolvedSharePoint.config;
+  // D-238 — fill `config.principal_id` for a messenger vendor that can name its
+  // signed-in user. Runs on the SharePoint result so both resolutions compose and
+  // the rotated auth from either is the one that reaches the row.
+  const resolvedPrincipal = await maybeResolveMessengerPrincipal(
+    kind,
+    subtype,
+    resolvedSharePoint.config,
+    resolvedSharePoint.auth,
+    deps,
+    () => now,
+  );
+  const effectiveConfig = resolvedPrincipal.config;
   assertPeerContractBinding(deps, kind, name, effectiveConfig);
-  const effectiveAuth = resolvedSharePoint.auth;
+  const effectiveAuth = resolvedPrincipal.auth;
   // Preserve enrolled_at across re-enrollments — first sight wins on
   // identity, every patch refreshes updated_at. This matches the
   // `account.*` semantics pre-RIP.

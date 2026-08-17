@@ -63,6 +63,9 @@ import type { AuditLogStore } from '@recued/storage';
 import { buildReceptionPacket } from '../redacted-packet.js';
 import { resolveReceptionTrustFooter } from './trust-footer.js';
 import { resolveVisitorReceipt } from './visitor-receipt.js';
+import { mintVisitorLookupPath } from './visitor-lookup-mint.js';
+import type { ReceptionManageCredentialStore }
+  from '../../../storage/reception-manage-credential-store.js';
 import {
   buildIntakeFormPacketRawInput,
   buildIntakeFormSourceView,
@@ -658,6 +661,11 @@ export interface IntakeFormSubmitHandlerDeps {
    *  Footer carried in the Visitor Receipt's `privacy_footer` slot.
    *  Absent ⇒ the receipt renders without a privacy footer. */
   readonly receptionDeploymentMode?: TrustFooterDeploymentMode;
+  /** D-240 slice 2 — the per-record credential store the viewback link is
+   *  minted from. Absent ⇒ no link is minted and the receipt renders exactly as
+   *  it did before D-240, which is what every server without the store wired
+   *  should see. */
+  readonly getCredentialStore?: () => ReceptionManageCredentialStore;
 }
 
 export const createIntakeFormSubmitHandler = (
@@ -1133,6 +1141,34 @@ export const createIntakeFormSubmitHandler = (
       if (value.length === 0) continue;
       fieldsEcho.push({ label: f.label, value });
     }
+    // D-240 slice 2 — mint the submitter's viewback credential.
+    //
+    // ⚠ MINTED ON EVERY OUTCOME, exactly as the receipt above is BUILT on every
+    // outcome, and for the same reason stated there: "receipt presence must not
+    // fingerprint honeypot / domain-allowlist detection". Minting only for a
+    // clean submission would put the link on one page and not the other, which
+    // hands a bot the oracle the unconditional receipt exists to deny. A spam
+    // submission's link resolves to that submission's own state and discloses
+    // nothing the submitter did not send.
+    //
+    // ⛔ BEST-EFFORT, AND IT MUST BE. The durable submission row is already
+    // committed at this point; a credential-store failure must not turn a
+    // recorded submission into an error page for the visitor. They lose the
+    // link, not the submission — and the reference id still identifies it.
+    const lookupPath = mintVisitorLookupPath({
+      config: config.visitor_lookup,
+      store: deps.getCredentialStore?.(),
+      endpoint_id,
+      record_id: submission_id,
+      now,
+      // D-240 slice 5 — the `after_field` anchor. ⚠ The visitor's OWN submitted
+      // values, which is exactly why the resolver parses them strictly and
+      // clamps the result: this is attacker-controlled input reaching an expiry
+      // computation. Passed whole so the anchor field name stays a config
+      // concern; only the named field is read, and only to compute a number.
+      field_values: parsed.fields,
+    });
+
     const receipt = resolveVisitorReceipt({
       store: deps.getStore(),
       receptionDeploymentMode: deps.receptionDeploymentMode,
@@ -1141,6 +1177,7 @@ export const createIntakeFormSubmitHandler = (
       submitted_at: now,
       endpoint_kind: 'intake_form',
       fields_echo: fieldsEcho,
+      lookup_path: lookupPath,
     });
 
     writeHtmlResponse(

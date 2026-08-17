@@ -88,6 +88,7 @@ export {
   connectionSetupGuideContextsMatch,
   canApplyConnectionSetupGuideSuggestion,
   connectionSetupGuideReturnTarget,
+  connectionFormRunsOAuthDance,
   connectionOAuthCredentialReadiness,
   connectionOAuthHttpsEndpointIssue,
   invalidatesConnectionOAuthResult,

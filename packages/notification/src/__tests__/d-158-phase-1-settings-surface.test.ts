@@ -22,6 +22,7 @@ describe('D-158 P1 / D-163 P0 NotificationSettings surface', () => {
       telegram: { notification: false, approval: false, messenger: false },
       whatsapp: { notification: false, approval: false, messenger: false },
       discord: { notification: false, approval: false, messenger: false },
+      teams: { notification: false, approval: false, messenger: false },
       email: { notification: true, approval: true, messenger: false },
     };
     const store: NotificationSettingsStore = {
@@ -94,6 +95,19 @@ describe('D-158 P1 / D-163 P0 NotificationSettings surface', () => {
         ready: false,
       },
       {
+        // D-238 — the first chat transport whose capability is NOT `inline`.
+        // Its ask is a link to the answer page, because Graph cannot deliver a
+        // button press to a poller. The badge differing from its neighbours is
+        // the point of the row, not an oddity.
+        channel: 'teams',
+        capability: 'landing-page',
+        notification: false,
+        approval: false,
+        notification_togglable: true,
+        approval_togglable: true,
+        ready: false,
+      },
+      {
         channel: 'email',
         capability: 'landing-page',
         notification: false,
@@ -119,6 +133,7 @@ describe('D-158 P1 / D-163 P0 NotificationSettings surface', () => {
       { channel: 'slack', notification: true, approval: true, ready: true },
       { channel: 'telegram', notification: false, approval: false, ready: false },
       { channel: 'discord', notification: false, approval: false, ready: true },
+      { channel: 'teams', notification: false, approval: false, ready: true },
       { channel: 'email', notification: true, approval: true, ready: true },
     ]);
   });
@@ -136,13 +151,14 @@ describe('D-158 P1 / D-163 P0 NotificationSettings surface', () => {
 
     const rows = await surface.describe();
 
-    expect(calls).toEqual(['bridge', 'slack', 'telegram', 'discord', 'email']);
+    expect(calls).toEqual(['bridge', 'slack', 'telegram', 'discord', 'teams', 'email']);
     expect(rows.map((row) => row.ready)).toEqual([
       true,    // ui — always ready
       false,   // bridge — probe false
       false,   // slack — probe false
       false,   // telegram — probe false
       false,   // discord — probe false
+      false,   // teams — probe false
       true,    // email — probe true
     ]);
   });
@@ -197,6 +213,7 @@ describe('D-158 P1 / D-163 P0 NotificationSettings surface', () => {
       telegram: { notification: false, approval: false, messenger: false },
       whatsapp: { notification: false, approval: false, messenger: false },
       discord: { notification: false, approval: false, messenger: false },
+      teams: { notification: false, approval: false, messenger: false },
       email: { notification: false, approval: false, messenger: false },
       // D-169 P1 — `DEFAULT_NOTIFICATION_SETTINGS` gains a per-bridge
       // mode map (defaults empty on a fresh pair). Stored rows that
@@ -293,6 +310,7 @@ describe('D-158 P1 / D-163 P0 NotificationSettings surface', () => {
         telegram: { notification: false, approval: false, messenger: false },
         whatsapp: { notification: false, approval: false, messenger: false },
         discord: { notification: false, approval: false, messenger: false },
+        teams: { notification: false, approval: false, messenger: false },
         email: { notification: false, approval: false, messenger: false },
         bridges: {},
       },
@@ -304,6 +322,7 @@ describe('D-158 P1 / D-163 P0 NotificationSettings surface', () => {
       telegram: { notification: false, approval: false, messenger: false },
       whatsapp: { notification: false, approval: false, messenger: false },
       discord: { notification: false, approval: false, messenger: false },
+      teams: { notification: false, approval: false, messenger: false },
       email: { notification: false, approval: false, messenger: false },
       bridges: {},
     });
@@ -328,6 +347,7 @@ describe('D-158 P1 / D-163 P0 NotificationSettings surface', () => {
         telegram: { notification: false, approval: false, messenger: false },
         whatsapp: { notification: false, approval: false, messenger: false },
         discord: { notification: false, approval: false, messenger: false },
+        teams: { notification: false, approval: false, messenger: false },
         email: { notification: false, approval: false, messenger: false },
         bridges: {},
       },
@@ -375,6 +395,7 @@ describe('D-158 P1 / D-163 P0 NotificationSettings surface', () => {
         telegram: { notification: false, approval: false, messenger: false },
         whatsapp: { notification: false, approval: false, messenger: false },
         discord: { notification: false, approval: false, messenger: false },
+        teams: { notification: false, approval: false, messenger: false },
         email: { notification: true, approval: true, messenger: false },
         bridges: {},
       },

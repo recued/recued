@@ -16,7 +16,12 @@ import {
 } from '../reception-manage-credential-store.js';
 
 const T0 = 1_700_000_000_000;
-const SCOPE = { kind: 'scheduling_link', endpoint_id: 'ep_1', record_id: 'booking_42' } as const;
+// D-240 — the manage door's own capability. These tests are about the manage
+// credential's lifecycle, so the fixture names the purpose it has always had;
+// the purpose FENCE itself is covered in the D-240 suite.
+const SCOPE = {
+  kind: 'scheduling_link', endpoint_id: 'ep_1', record_id: 'booking_42', purpose: 'manage',
+} as const;
 
 describe('reception manage-credential store', () => {
   let db: Database.Database;
@@ -35,46 +40,49 @@ describe('reception manage-credential store', () => {
     expect(issued.credential_id).toMatch(/[0-9a-f-]{36}/);
     expect(issued.expires_at).toBeGreaterThan(T0);
 
-    const peeked = store.peek(issued.secret, T0);
+    const peeked = store.peek(issued.secret, T0, 'manage');
     expect(peeked).toMatchObject({ status: 'ok', scope: SCOPE });
   });
 
   it('peek is NON-consuming — a GET can be repeated, a mail scanner cannot burn it', () => {
     const { secret } = store.issue({ ...SCOPE, now: T0 });
-    expect(store.peek(secret, T0).status).toBe('ok');
-    expect(store.peek(secret, T0).status).toBe('ok');
+    expect(store.peek(secret, T0, 'manage').status).toBe('ok');
+    expect(store.peek(secret, T0, 'manage').status).toBe('ok');
     // A later POST still consumes cleanly.
-    expect(store.consume(secret, T0).status).toBe('ok');
+    expect(store.consume(secret, T0, 'manage').status).toBe('ok');
   });
 
   it('consume is single-use — the second POST is refused, never a second move', () => {
     const { secret } = store.issue({ ...SCOPE, now: T0 });
-    const first = store.consume(secret, T0);
+    const first = store.consume(secret, T0, 'manage');
     expect(first).toMatchObject({ status: 'ok', scope: SCOPE });
-    expect(store.consume(secret, T0).status).toBe('already_consumed');
+    expect(store.consume(secret, T0, 'manage').status).toBe('already_consumed');
     // And a peek after consume reports the spent state, never a usable scope.
-    const after = store.peek(secret, T0);
+    const after = store.peek(secret, T0, 'manage');
     expect(after.status).toBe('already_consumed');
     expect(after).not.toHaveProperty('scope');
   });
 
   it('an expired credential neither peeks nor consumes', () => {
     const { secret, expires_at } = store.issue({ ...SCOPE, now: T0, ttl_ms: 1000 });
-    expect(store.peek(secret, expires_at + 1).status).toBe('expired');
-    const consumed = store.consume(secret, expires_at + 1);
+    expect(store.peek(secret, expires_at + 1, 'manage').status).toBe('expired');
+    const consumed = store.consume(secret, expires_at + 1, 'manage');
     expect(consumed.status).toBe('expired');
     expect(consumed).not.toHaveProperty('scope');
   });
 
   it('an unknown or malformed secret is not_found — never a scope', () => {
-    expect(store.peek(generateReceptionManageSecret(), T0).status).toBe('not_found');
-    expect(store.consume('not-a-manage-secret', T0).status).toBe('not_found');
-    expect(store.peek(`${RECEPTION_MANAGE_SECRET_PREFIX}short`, T0).status).toBe('not_found');
+    expect(store.peek(generateReceptionManageSecret(), T0, 'manage').status).toBe('not_found');
+    expect(store.consume('not-a-manage-secret', T0, 'manage').status).toBe('not_found');
+    expect(store.peek(`${RECEPTION_MANAGE_SECRET_PREFIX}short`, T0, 'manage').status).toBe('not_found');
   });
 
   it('refuses to issue for a non-record kind', () => {
     expect(() =>
-      store.issue({ kind: 'drop_link' as never, endpoint_id: 'ep_1', record_id: 'r', now: T0 }),
+      store.issue({
+        kind: 'drop_link' as never, endpoint_id: 'ep_1', record_id: 'r',
+        purpose: 'manage', now: T0,
+      }),
     ).toThrow(ReceptionManageCredentialValidationError);
   });
 
@@ -82,9 +90,9 @@ describe('reception manage-credential store', () => {
     const a = store.issue({ ...SCOPE, now: T0 });
     const b = store.issue({ ...SCOPE, now: T0 });
     expect(a.secret).not.toEqual(b.secret);
-    expect(store.consume(a.secret, T0).status).toBe('ok');
+    expect(store.consume(a.secret, T0, 'manage').status).toBe('ok');
     // Consuming A leaves B live — a re-mint after one use still works.
-    expect(store.peek(b.secret, T0).status).toBe('ok');
+    expect(store.peek(b.secret, T0, 'manage').status).toBe('ok');
   });
 
   it('purge drops only expired rows', () => {
@@ -92,7 +100,7 @@ describe('reception manage-credential store', () => {
     const dead = store.issue({ ...SCOPE, now: T0, ttl_ms: 1000 });
     const removed = store.purge(T0 + 5000);
     expect(removed).toBe(1);
-    expect(store.peek(live.secret, T0 + 5000).status).toBe('ok');
-    expect(store.peek(dead.secret, T0 + 5000).status).toBe('not_found');
+    expect(store.peek(live.secret, T0 + 5000, 'manage').status).toBe('ok');
+    expect(store.peek(dead.secret, T0 + 5000, 'manage').status).toBe('not_found');
   });
 });

@@ -13,6 +13,32 @@ import {
 } from '@recued/contracts';
 import type { ConnectionFormValues } from '../connection-schemas/types.js';
 
+/** Does THIS enrolment form run the in-app OAuth dance?
+ *
+ *  ⛔⛔ ONE authority for a question three call sites ask — the readiness
+ *  projection, the button renderer, and the click handler. They were three
+ *  hand-spelled copies of `kind === 'api' && auth.type === 'oauth2_refresh'`,
+ *  and a fourth kind arriving meant finding all three. It also meant the
+ *  D-238 Teams card could declare `oauth2_refresh`, seed its endpoints, and
+ *  still render no Authorize button — the form simply blocked on a refresh
+ *  token the owner had no way to obtain.
+ *
+ *  🔑 The rule is about the FORM's shape, never the kind's identity: a form
+ *  with no registered vendor that declares `oauth2_refresh` needs the dance,
+ *  whatever kind it enrols. `api` was never the reason — it was just the only
+ *  kind that had reached this shape before.
+ *
+ *  A REGISTERED vendor flow is separate and unaffected: it has a provider entry
+ *  supplying its own endpoints, and is gated on the vendor rather than here. */
+export const connectionFormRunsOAuthDance = (args: {
+  readonly vendor?: string | null;
+  readonly kind: ConnectionKind | null;
+  readonly values: ConnectionFormValues;
+}): boolean => {
+  if (args.values['auth.type'] !== 'oauth2_refresh') return false;
+  return args.kind === 'api' || args.kind === 'notification';
+};
+
 /** Fields the readiness checklist can name.
  *
  *  ⚠ Deliberately NOT "the fields the authorize call consumes" — it never was a
@@ -106,9 +132,7 @@ export const connectionOAuthCredentialReadiness = (args: {
   readonly kind: ConnectionKind | null;
   readonly values: ConnectionFormValues;
 }): ConnectionOAuthCredentialReadiness | null => {
-  if (args.kind !== 'api' || args.values['auth.type'] !== 'oauth2_refresh') {
-    return null;
-  }
+  if (!connectionFormRunsOAuthDance(args)) return null;
 
   const provider = args.vendor === null ? null : getVendorProvider(args.vendor);
   const providerLabel = provider?.display_name

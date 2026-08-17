@@ -7,6 +7,79 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.8.17 — 2026-08-17
+
+A large release, and most of it is about work you already have somewhere else —
+documents in OneDrive or SharePoint, a spreadsheet used as a customer list, a
+question that needs answering from Teams. Alongside it, a door can now be told
+to stop asking, which is what makes a service desk usable at all.
+
+### Added
+
+- **Recued reaches Microsoft Teams, and a Teams ask can be answered by
+  typing.** Enrolment runs the OAuth dance in the app rather than sending you
+  to a config file. The typed answer is not a nicety: a server on an office LAN
+  cannot be reached from a link by design, and Teams cannot deliver a button
+  press back to a server that polls — so the message carries both the link and
+  the options, and neither is a fallback for the other. The matcher that reads
+  your reply is deliberately unhelpful: several things a smarter one would
+  obviously do are refused, because the failure it must never have is approving
+  something you did not.
+- **Documents you already store can be read, not just listed.** A file source
+  used to sync only metadata, so a OneDrive or SharePoint document could be
+  seen and never opened. Its bytes now reach a converter — and the same path
+  serves a synced Dropbox, Box or Notion document. A **Microsoft document
+  reader** pack uses it.
+- **A spreadsheet becomes answerable.** Look a row up in an Excel workbook and
+  get an honest miss rather than an invented one. The thing that actually
+  unlocked this was searching your own drive for a file: every Excel operation
+  needed two opaque ids, and the only way to get them was to read them by hand
+  first.
+- **CSV search that works on a fresh machine.** Filtering a CSV used to require
+  Python tools you had to install, so a feature could arrive from the
+  marketplace and then not run — the worst shape a failure can take. CSV is a
+  format we can own, so it moved into the server itself. Converting a
+  spreadsheet to CSV still uses an outside tool, deliberately: that one is a
+  real project, not a hundred lines.
+- **A queue desk** — take a number, see how many are ahead, staff take a
+  counter. It fits a bank (types × counters) and a restaurant (table sizes, no
+  counter) without being told which. What a business asks a visitor for is left
+  open, and no no-show policy is baked in.
+- **Fleet Money**, for dispatching a job to a worker and settling it: the job
+  carries what it was agreed to be, the worker answers by replying, and the
+  money never sits with the worker.
+- **Start Recued when you log in** — opt-in, on Windows, macOS and Linux. What
+  it installs depends on the machine, because that choice decides whether the
+  server can unlock its own keys: a login entry where your keyring is involved,
+  a boot service only where nothing needs unlocking.
+- **A tool that prints can capture to a file** instead of only to its output.
+
+### Changed
+
+- **A door can be told to stop asking.** A reception visitor or a delegated
+  token is held to read-only, so every write waits for you — which makes a
+  queue desk unusable, since you would approve every ticket. You can now
+  confirm once that the operations you just saw may run without asking, per
+  door. It is bounded: destructive and administrative actions still ask, every
+  door behaves exactly as before unless you opt it in, and the confirmation is
+  part of what the audit trail records.
+- **Every token issued to an outside caller now carries a contract.** An
+  ordinary token used to have none, and the wire filled the gap with an id that
+  named nothing — indistinguishable, further down, from a real one. Existing
+  tokens are brought into line at startup. A token's limits and lifetime now
+  belong to its contract rather than to the door it came through.
+- **Reception access can be ended for one submitter** rather than for
+  everybody, and a link can be set to expire when the thing it refers to is
+  resolved, or on a date the visitor themselves supplied.
+
+### Fixed
+
+- **A scheduled dispatch said `When: 1583139600000`.** It now says a time.
+- **A widened notification rendered blank**, found by a real run rather than a
+  test, and every fan-out failure now reaches the one place that notifies.
+- **A pack whose release was denied at the scope an owner installs with** — it
+  passed at the scope it was tested with.
+
 ## 26.8.14 — 2026-08-14
 
 One capability leads this release: your server can serve a domain you already

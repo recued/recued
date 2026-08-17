@@ -53,6 +53,7 @@ import type { ConnectionStoreSqlite } from '../../storage/connection-store.js';
 import type { SharedStore } from '../../storage/shared-store.js';
 import type { BlobStore } from '../../storage/blob-store.js';
 import type { EnrichmentStore } from '../../storage/enrichment-store.js';
+import type { CascadeEngine } from '../../storage/enrichment-cascade.js';
 import type { AnnotationStore } from '../../storage/annotation-store.js';
 import type { ContactStore } from '../../storage/contact-store.js';
 import type { CrmRecordMirrorStore } from '../../storage/crm-record-mirror-store.js';
@@ -266,6 +267,16 @@ export interface ComposeExecutorConfigDeps {
   db: Database.Database | undefined;
   annotationStore: AnnotationStore | undefined;
   enrichmentStore: EnrichmentStore | undefined;
+  /** D-239 — the enrichment cascade engine, for the mail write-back's
+   *  delete path. Distinct from `enrichmentStore` above: the store holds
+   *  the rows, the cascade decides what a source delete does to the rows
+   *  that DEPEND on them (`dependent` policies delete, `aggregate` ones
+   *  mark for recompute). Optional in the same way `annotationStore` is —
+   *  a dbless / MCP-only boot composes neither, and a mail delete there
+   *  removes the row with nothing downstream to clean up. */
+  enrichmentCascade:
+    | Pick<CascadeEngine, 'cascadeForSourceDelete'>
+    | undefined;
   /** D-187 AMENDMENT — the per-(bound contract) read-grant resolver, for the
    *  recipe-channel enrichment-list + timeline-read dispatchers' read-grant resolution.
    *  Constructed once at the serve/cli composition site over the real contract store;
@@ -401,6 +412,54 @@ const makeRefreshPersistAuth = (
  *  connection-handler module verbatim (pre-extraction did the same at
  *  the top-level `await`-allowed module scope of `bin.ts`). The
  *  caller in `bin.ts` invokes via `await composeExecutorConfig(...)`. */
+/** D-244 — the dep bundle both csv kernel ops take.
+ *
+ *  🔑 The READ is the same one `markdownTemplateRender` uses, deliberately: a
+ *  stored file should have one gated read path, not one per consumer. The INGEST
+ *  mirrors `file-persist`'s keying — the discriminator is the CONTENT hash
+ *  rather than the filename, so two different filters over one sheet never
+ *  collide on a record and an identical re-filter stays idempotent. */
+const csvFileDeps = async (
+  deps: ComposeExecutorConfigDeps,
+  run_id?: string,
+  step_id?: string,
+): Promise<import('../../collections/file/csv-filter-handler.js').CsvFilterDeps> => {
+  const { handleFileRead } = await import('../../collections/file/file-read-handler.js');
+  const { createHash } = await import('node:crypto');
+  const remote = deps.getRemoteFileReadDeps?.();
+  return {
+    reader: {
+      readFile: (readInput) => handleFileRead(
+        {
+          registry: deps.collectionRegistry,
+          blobs: deps.cacheBlobs!,
+          ...(deps.auditLog ? { auditLog: deps.auditLog } : {}),
+          ...(remote ? { remote } : {}),
+        },
+        readInput,
+      ),
+    },
+    ingest: async ({ bytes, filename, mime_type }) => {
+      const collection = deps.collectionRegistry.get('file', 'received') as
+        | { ingest?: (i: Record<string, unknown>) => Promise<{ record_id: string }> }
+        | undefined;
+      if (!collection || typeof collection.ingest !== 'function') {
+        throw new Error('csv-filter: data.file.received collection is not registered');
+      }
+      const content_hash = createHash('sha256').update(bytes).digest('hex');
+      const record = await collection.ingest({
+        bytes,
+        filename,
+        mime_type,
+        content_hash,
+        origin: 'tool_output',
+        source_id: `${run_id ?? 'csv'}:${step_id ?? 'filter'}:${content_hash}`,
+      });
+      return { record_id: record.record_id };
+    },
+  };
+};
+
 export const composeExecutorConfig = async (
   deps: ComposeExecutorConfigDeps,
 ): Promise<ServerExecutorConfig> => {
@@ -412,6 +471,46 @@ export const composeExecutorConfig = async (
   // recipe's bound contract (the per-dispatch `origin_contract_id`); absent / a grant
   // id ⇒ the author-default checker (registry defaults).
   const readGrantResolver = deps.readGrantResolver;
+
+  /** D-239 — deps for the mail write-back dispatcher.
+   *
+   *  The interesting member is `deleteLocalRecord`, which delegates to
+   *  `handleCollectionDeleteRecord` — the SAME function backing the
+   *  `collection.deleteRecord` rpc. That reuse is not tidiness, it is the
+   *  fix for a specific hole: `bridgeEnrichmentCascade` filters `deleted`
+   *  warehouse events to calendar + platform-reference scopes, so a mail
+   *  delete that merely dropped the row and emitted an event would run NO
+   *  cascade at all and leave every enrichment + annotation keyed to that
+   *  message pointing at nothing. The rpc handler already fires both
+   *  cascades; routing through it means the write-back and the rpc can
+   *  never drift on what "delete a mail record" cleans up. */
+  const mailDispatcherDeps = () => ({
+    registry: deps.collectionRegistry,
+    deleteLocalRecord: async (slug: string, record_id: string): Promise<void> => {
+      const { handleCollectionDeleteRecord } = await import(
+        '../../collections/collection-handler.js'
+      );
+      await handleCollectionDeleteRecord(
+        {
+          registry: deps.collectionRegistry,
+          ...(deps.annotationStore
+            ? {
+                annotationCascade: (col: string, id: string) =>
+                  deps.annotationStore!.cascadeDelete(col, id),
+              }
+            : {}),
+          ...(deps.enrichmentCascade
+            ? {
+                enrichmentCascadeOnDelete: (scope, id) =>
+                  deps.enrichmentCascade!.cascadeForSourceDelete(scope, id),
+              }
+            : {}),
+        },
+        { platform: 'mail', slug, record_id },
+      );
+    },
+  });
+
   const createCustomerAccessLifecycle = async () => {
     if (!deps.sellerStore || !deps.contractStore || !deps.inboundTokenStore) {
       throw new Error('customer-access unavailable — seller lifecycle stores are not wired');
@@ -1157,6 +1256,40 @@ export const composeExecutorConfig = async (
         const { handleMailGet } = await import('../../mail-get-handler.js');
         return handleMailGet({ registry: deps.collectionRegistry }, input);
       },
+      // D-239 — the mail write-back four. Wired unconditionally alongside
+      // the reads: the capability question ("may this mailbox be written?")
+      // belongs to the ENROLLMENT and is answered by the dispatcher's
+      // `mutationCapable` gate with a legible refusal. Gating the wiring
+      // itself on some composition-time condition would surface a
+      // read-only mailbox as SERVER_NOT_REACHABLE — "your server is
+      // unreachable" for a server that is right here and simply was not
+      // granted write access.
+      mailMark: async (input) => {
+        const { handleMailMark } = await import('../../collections/mail/mail-dispatcher.js');
+        return handleMailMark(mailDispatcherDeps(), input);
+      },
+      mailFlag: async (input) => {
+        const { handleMailFlag } = await import('../../collections/mail/mail-dispatcher.js');
+        return handleMailFlag(mailDispatcherDeps(), input);
+      },
+      mailMove: async (input) => {
+        const { handleMailMove } = await import('../../collections/mail/mail-dispatcher.js');
+        return handleMailMove(mailDispatcherDeps(), {
+          slug: input.slug,
+          record_id: input.record_id,
+          destination: {
+            ...(input.folder !== undefined ? { folder: input.folder } : {}),
+            ...(input.add_labels !== undefined ? { add_labels: input.add_labels } : {}),
+            ...(input.remove_labels !== undefined
+              ? { remove_labels: input.remove_labels }
+              : {}),
+          },
+        });
+      },
+      mailDelete: async (input) => {
+        const { handleMailDelete } = await import('../../collections/mail/mail-dispatcher.js');
+        return handleMailDelete(mailDispatcherDeps(), input);
+      },
       // D-172 P1 — content bytes for inbound data.file records leave
       // the warehouse only through this kernel ingredient path. The
       // engine wraps ingredient dispatch with the Commit Gateway, so
@@ -1212,6 +1345,52 @@ export const composeExecutorConfig = async (
       // durable cas_ref. The handler resolves the collection off the registry +
       // does the CAS ingest itself (no `cacheBlobs` dep — the collection owns its
       // blob store); fails closed `collection_not_found` when unregistered.
+      // D-244 — one dep bundle for both csv ops: the SAME gated read the markdown
+      // renderer takes, plus a CAS ingest for the filtered result. Keyed the way
+      // `file-persist` keys its record — the discriminator is the CONTENT hash,
+      // not the filename, so two different filters of one sheet never collide
+      // and an identical re-filter stays idempotent.
+      // D-244 — `csv-filter` / `csv-columns`. Reuses the SAME gated file read the
+      // markdown renderer takes, so a stored CSV has one read path rather than
+      // one per consumer. The parsing itself is `@recued/transforms` code shared
+      // with `csv_parse` — the handler owns only the I/O.
+      csvFilter: async (input) => {
+        const { handleCsvFilter } = await import('../../collections/file/csv-filter-handler.js');
+        return handleCsvFilter(
+          await csvFileDeps(deps, input.run_id, input.step_id),
+          input,
+        );
+      },
+      // D-245 — ref → a record the recipe named. Reuses the same gated read the
+      // csv ops take, and the same `write` capability gate `file-write` enforces:
+      // naming a destination does not grant writing to it.
+      filePutRef: async (input) => {
+        // ⛔ The instance store + live adapters come from the FILE STACK, the one
+        // place that owns adapter lifecycle — not re-derived here, or a
+        // put_ref could write through an adapter the stack considers stopped.
+        const stack = deps.fileStack;
+        if (!stack) {
+          throw new Error('file.put_ref: no file stack — enrol a writable file instance first');
+        }
+        const { handleFilePutRef } = await import('../../collections/file/dispatcher.js');
+        const csv = await csvFileDeps(deps);
+        return handleFilePutRef(
+          {
+            instances: stack.instances,
+            getAdapter: (slug: string) => stack.getLiveAdapter(slug),
+            readFile: csv.reader.readFile,
+          } as never,
+          input,
+        );
+      },
+      csvStats: async (input) => {
+        const { handleCsvStats } = await import('../../collections/file/csv-filter-handler.js');
+        return handleCsvStats(await csvFileDeps(deps), input);
+      },
+      csvColumns: async (input) => {
+        const { handleCsvColumns } = await import('../../collections/file/csv-filter-handler.js');
+        return handleCsvColumns(await csvFileDeps(deps), input);
+      },
       filePersist: async (input) => {
         const { handleFilePersist } = await import('../../collections/file/file-persist-handler.js');
         return handleFilePersist({ registry: deps.collectionRegistry }, input);

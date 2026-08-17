@@ -106,6 +106,7 @@ const mailMsg = (overrides: Partial<CanonicalMessage> = {}): CanonicalMessage =>
   thread_id: 'thread-1',
   folder_or_label: 'INBOX',
   is_read: true,
+  is_flagged: false,
   has_attachments: false,
   received_at: 1_714_867_200_000,
   body_text: 'Full untruncated mail body lives here.',

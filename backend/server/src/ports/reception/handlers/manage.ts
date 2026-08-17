@@ -366,7 +366,7 @@ export const createReceptionManageHandler = (
 
   if (method === 'GET') {
     // GET is NON-consuming (mail scanners must not burn the credential).
-    const resolved = deps.getCredentialStore().peek(secret, deps.now());
+    const resolved = deps.getCredentialStore().peek(secret, deps.now(), 'manage');
     if (resolved.status !== 'ok') {
       writeHtml(res, UNAVAILABLE(), 404);
       return resolved.status === 'expired'
@@ -431,7 +431,7 @@ export const createReceptionManageHandler = (
   // Resolve the credential NON-CONSUMING first so the CSRF nonce can be checked
   // in that credential's own namespace. A bad nonce must not burn the link.
   const now = deps.now();
-  const preflight = deps.getCredentialStore().peek(secret, now);
+  const preflight = deps.getCredentialStore().peek(secret, now, 'manage');
   if (preflight.status !== 'ok') {
     writeHtml(res, UNAVAILABLE(), 410);
     return preflight.status === 'expired'
@@ -448,7 +448,7 @@ export const createReceptionManageHandler = (
     res.end('forbidden');
     return { action_taken: 'reject', outcome: 'rejected' };
   }
-  const consumed = deps.getCredentialStore().consume(secret, now);
+  const consumed = deps.getCredentialStore().consume(secret, now, 'manage');
   if (consumed.status !== 'ok') {
     writeHtml(res, UNAVAILABLE(), 410);
     // A replay of a spent link vs a late click after expiry — both are a
