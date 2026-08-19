@@ -10,7 +10,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { createRuntimeConfigStore } from '@recued/config';
-import type { FreePoolEntry } from '@recued/llm';
+import type { FreePoolEntry, LLMSlot } from '@recued/llm';
+import { resetEndpointCapabilities } from '@recued/llm';
 import { createLLMConfigManager } from '../llm-config.js';
 import { buildSchema, applyField, makeConfigHandlers } from '../config-schema.js';
 
@@ -18,6 +19,11 @@ let db: Database.Database;
 
 beforeEach(() => {
   db = new Database(':memory:');
+  // The endpoint-capability memories are process-global by design (a rejection
+  // is paid once per endpoint, not once per call), so they leak between cases
+  // — a probe that learned "no JSON mode" here would silently change what the
+  // next case's probe sends.
+  resetEndpointCapabilities();
 });
 
 describe('buildSchema', () => {
@@ -249,15 +255,368 @@ describe('applyField — runtime config fields', () => {
 const SLOT: Record<string, unknown> = {
   provider: 'openai', model: 'gpt-4o', api_key: 'sk-a', speed: 'fast', supports_json: true,
 };
-const ENTRY = (id: string): Record<string, unknown> => ({
+const ENTRY = (
+  id: string,
+  over: Record<string, unknown> = {},
+): Record<string, unknown> => ({
   id, type: 'api', provider: 'openai-compatible', model: 'llama', api_key: 'k',
   base_url: 'https://api.groq.com/openai/v1', speed: 'fast', supports_json: true, enabled: true,
+  ...over,
 });
-const handlersFor = (llmManager: ReturnType<typeof createLLMConfigManager>) => {
-  const slice = makeConfigHandlers(llmManager, undefined);
+const handlersFor = (
+  llmManager: ReturnType<typeof createLLMConfigManager>,
+  probe?: Parameters<typeof makeConfigHandlers>[2],
+) => {
+  const slice = makeConfigHandlers(llmManager, undefined, probe);
   if (!slice) throw new Error('expected a config handler slice');
   return slice.handlers;
 };
+
+/** A probe wiring whose adapter records what it was asked to send. */
+const probeDeps = (
+  complete: (messages: Array<{ role: string }>) => unknown = () => ({
+    text: 'ok',
+    usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5, model_id: 'm' },
+  }),
+) => {
+  const seen: Array<{ slot: LLMSlot; roles: string[] }> = [];
+  const usage: Array<[string, number]> = [];
+  const embedSeen: LLMSlot[] = [];
+  const deps = {
+    embeddingsAdapters: ((key: string) => {
+      // ⚠ The embeddings registry THROWS for an unregistered provider where
+      // the chat one returns undefined — mirrored here, or the test double
+      // hides the branch the real handler has to survive.
+      if (key === 'anthropic') {
+        throw new Error('No embeddings adapter registered for: anthropic');
+      }
+      return {
+        provider: key,
+        embed: async (slot: LLMSlot) => {
+          embedSeen.push(slot);
+          return {
+            vector: new Array(1536).fill(0.1),
+            model: slot.model,
+            usage: { input_tokens: 3, output_tokens: 0, total_tokens: 3, model_id: slot.model },
+          };
+        },
+      };
+    }) as never,
+    adapters: ((key: string) => (key === 'nope' ? undefined : {
+      provider: key,
+      complete: async (slot: LLMSlot, messages: Array<{ role: string }>) => {
+        seen.push({ slot, roles: messages.map((m) => m.role) });
+        return complete(messages);
+      },
+    })) as never,
+    quota: {
+      registerRequest: () => {},
+      recordUsage: (id: string, tokens: number) => { usage.push([id, tokens]); },
+    } as never,
+  };
+  return { deps, seen, usage, embedSeen };
+};
+
+/** Test connection — the JOIN.
+ *
+ *  `probe.test.ts` proves the probe reports correctly when something calls it;
+ *  these prove the rpc calls it, with the RIGHT slot. The draft/blank-key rules
+ *  are the part worth pinning: the webclient never receives a stored API key
+ *  (it is redacted to `has_key`), so "test before saving" has to reconstruct
+ *  the credential the same way a save would — or it reports a verdict for a
+ *  configuration that will never exist. */
+describe('makeConfigHandlers — server.probeLlmSource', () => {
+  it('probes the SAVED slot when no draft is supplied', async () => {
+    const llmManager = createLLMConfigManager(db);
+    const { deps, seen } = probeDeps();
+    const h = handlersFor(llmManager, deps);
+    await h['server.setLLMSlot']({ slot_key: 'slot_1', slot: SLOT }, undefined as never);
+
+    const result = await h['server.probeLlmSource'](
+      { target: { kind: 'slot', slot_key: 'slot_1' } }, undefined as never);
+
+    expect(result.ok).toBe(true);
+    expect(result.diagnosis).toBe('ok');
+    expect(seen[0]?.slot.api_key).toBe('sk-a');
+    expect(seen[0]?.slot.model).toBe('gpt-4o');
+    // The system role goes out first — the probe uses the real call path.
+    expect(seen[0]?.roles).toEqual(['system', 'user']);
+  });
+
+  it('meters the probe like any other call', async () => {
+    const llmManager = createLLMConfigManager(db);
+    const { deps, usage } = probeDeps();
+    const h = handlersFor(llmManager, deps);
+    await h['server.setLLMSlot']({ slot_key: 'slot_2', slot: SLOT }, undefined as never);
+    await h['server.probeLlmSource'](
+      { target: { kind: 'slot', slot_key: 'slot_2' } }, undefined as never);
+    // A probe that skipped the tracker would be an unmetered hole in the daily
+    // budget — one the owner can pull on demand, from a button.
+    expect(usage).toEqual([['slot_2', 5]]);
+  });
+
+  /** ⛔ THE DRAFT RULE. A blank key means "keep the stored one" — but only
+   *  while provider + base_url are unchanged, exactly as `setLLMSlot` decides
+   *  it. Probing a NEW endpoint with the previous provider's key would report
+   *  on a configuration that will never exist. */
+  it('resolves a blank draft key against the stored one, and only in context', async () => {
+    const llmManager = createLLMConfigManager(db);
+    const { deps, seen } = probeDeps();
+    const h = handlersFor(llmManager, deps);
+    await h['server.setLLMSlot']({ slot_key: 'slot_1', slot: SLOT }, undefined as never);
+
+    // Same provider, new model, blank key → the stored key carries over.
+    await h['server.probeLlmSource'](
+      {
+        target: { kind: 'slot', slot_key: 'slot_1' },
+        draft: { provider: 'openai', model: 'gpt-4o-mini' },
+      },
+      undefined as never,
+    );
+    expect(seen[0]?.slot.api_key).toBe('sk-a');
+    expect(seen[0]?.slot.model).toBe('gpt-4o-mini');
+
+    // Changed provider, blank key → the old key must NOT follow it.
+    const changed = await h['server.probeLlmSource'](
+      {
+        target: { kind: 'slot', slot_key: 'slot_1' },
+        draft: {
+          provider: 'openai-compatible', model: 'llama', base_url: 'http://x',
+        },
+      },
+      undefined as never,
+    );
+    expect(changed.ok).toBe(false);
+    expect(changed.diagnosis).toBe('auth');
+    expect(seen).toHaveLength(1);
+  });
+
+  it('answers auth without a request when no key is stored at all', async () => {
+    const llmManager = createLLMConfigManager(db);
+    const { deps, seen } = probeDeps();
+    const h = handlersFor(llmManager, deps);
+    const result = await h['server.probeLlmSource'](
+      {
+        target: { kind: 'slot', slot_key: 'slot_1' },
+        draft: { provider: 'openai', model: 'gpt-4o' },
+      },
+      undefined as never,
+    );
+    // Not a provider failure — but it IS the answer, and it names the field.
+    expect(result.diagnosis).toBe('auth');
+    expect(result.detail).toMatch(/No API key/i);
+    expect(seen).toHaveLength(0);
+  });
+
+  /** ⛔ NOT the chat probe pointed at another slot. Embeddings is `embed` vs
+   *  `complete`, its own adapter registry, and none of the chat capability
+   *  questions apply. Sending a chat completion to an embeddings model would
+   *  report its 404 as a missing model — true, and useless. */
+  it('probes the embeddings slot with an EMBEDDINGS call', async () => {
+    const llmManager = createLLMConfigManager(db);
+    const { deps, seen, embedSeen } = probeDeps();
+    const h = handlersFor(llmManager, deps);
+    await h['server.setEmbeddingsSlot'](
+      { slot: { ...SLOT, model: 'text-embedding-3-small' } }, undefined as never);
+
+    const result = await h['server.probeLlmSource'](
+      { target: { kind: 'slot', slot_key: 'embeddings_slot' } }, undefined as never);
+
+    expect(result.ok).toBe(true);
+    // The vector width is the fact an owner actually needs: a model quietly
+    // serving 768-d where they expected 1536-d is a working connection that
+    // produces unusable neighbours.
+    expect(result.dimensions).toBe(1536);
+    expect(embedSeen[0]?.model).toBe('text-embedding-3-small');
+    // …and NOT through the chat registry.
+    expect(seen).toHaveLength(0);
+    // No chat capability claims — there is no system message or JSON mode here.
+    expect(result.accepts_system_role).toBeUndefined();
+    expect(result.supports_json).toBeUndefined();
+  });
+
+  it('turns an unregistered embeddings provider into a verdict, not a crash', async () => {
+    const llmManager = createLLMConfigManager(db);
+    const { deps } = probeDeps();
+    const h = handlersFor(llmManager, deps);
+    await h['server.setEmbeddingsSlot'](
+      { slot: { ...SLOT, provider: 'anthropic', model: 'nope' } }, undefined as never);
+
+    // Anthropic publishes no embeddings model, and the registry THROWS rather
+    // than returning undefined — it has to land as a readable result.
+    const result = await h['server.probeLlmSource'](
+      { target: { kind: 'slot', slot_key: 'embeddings_slot' } }, undefined as never);
+    expect(result.ok).toBe(false);
+    expect(result.detail).toMatch(/embeddings adapter/i);
+  });
+
+  it('probes one free-pool entry by id, with that entry credential', async () => {
+    const llmManager = createLLMConfigManager(db);
+    const { deps, seen, usage } = probeDeps();
+    const h = handlersFor(llmManager, deps);
+    await h['server.upsertFreePoolEntry'](
+      { entry: ENTRY('groq-a', { model: 'llama-8b', api_key: 'k-a' }) as never },
+      undefined as never,
+    );
+    await h['server.upsertFreePoolEntry'](
+      { entry: ENTRY('groq-b', { model: 'llama-70b', api_key: 'k-b' }) as never },
+      undefined as never,
+    );
+
+    const result = await h['server.probeLlmSource'](
+      { target: { kind: 'pool_entry', entry_id: 'groq-b' } }, undefined as never);
+
+    expect(result.ok).toBe(true);
+    expect(seen).toHaveLength(1);
+    // ⛔ The entries differ in exactly these fields on purpose. Identical
+    // fixtures would make a wrong-row lookup send a byte-identical request,
+    // and this assertion would pass on a broken lookup.
+    expect(seen[0]?.slot.api_key).toBe('k-b');
+    expect(seen[0]?.slot.model).toBe('llama-70b');
+    // Metered against THAT entry, not the pool as a whole — the daily caps are
+    // per-entry.
+    expect(usage).toEqual([['pool:groq-b', 5]]);
+  });
+
+  it('answers for a pool id that does not exist instead of probing something else', async () => {
+    const llmManager = createLLMConfigManager(db);
+    const { deps, seen } = probeDeps();
+    const h = handlersFor(llmManager, deps);
+    const result = await h['server.probeLlmSource'](
+      { target: { kind: 'pool_entry', entry_id: 'ghost' } }, undefined as never);
+    expect(result.ok).toBe(false);
+    expect(result.detail).toMatch(/ghost/);
+    expect(seen).toHaveLength(0);
+  });
+
+  it('rejects an unknown target kind with bad_request', async () => {
+    const { deps } = probeDeps();
+    const h = handlersFor(createLLMConfigManager(db), deps);
+    await expect(
+      h['server.probeLlmSource'](
+        { target: { kind: 'whatever' } as never }, undefined as never),
+    ).rejects.toMatchObject({ code: 'bad_request' });
+  });
+
+  it('answers unavailable rather than pretending, when unwired', async () => {
+    const h = handlersFor(createLLMConfigManager(db));
+    await expect(
+      h['server.probeLlmSource']({ target: { kind: 'slot', slot_key: 'slot_1' } }, undefined as never),
+    ).rejects.toMatchObject({ code: 'unavailable' });
+  });
+
+  it('rejects an unknown slot_key with bad_request', async () => {
+    const { deps } = probeDeps();
+    const h = handlersFor(createLLMConfigManager(db), deps);
+    await expect(
+      h['server.probeLlmSource'](
+        { target: { kind: 'slot', slot_key: 'slot_9' as 'slot_1' } },
+        undefined as never,
+      ),
+    ).rejects.toMatchObject({ code: 'bad_request' });
+  });
+});
+
+/** D-208 follow-on — DETECTED capabilities live on the source.
+ *
+ *  🔑 This was a side blob keyed by a content fingerprint. The fingerprint
+ *  existed to auto-invalidate when provider/base_url/model change — but a
+ *  SOURCE EDIT is that moment and the save path already runs then, so the
+ *  content-addressing layer bought what the write path already knew, and
+ *  brought orphan rows, a prune, and a resurrect-on-restart bug with it.
+ *
+ *  ⛔ Still not `supports_json`: that is a MATCH input (`match.ts:121`), so a
+ *  detected value there would make a source unroutable rather than degraded. */
+describe('detected endpoint capabilities live on the source', () => {
+  it('writes a slot observation onto that slot', () => {
+    const m = createLLMConfigManager(db);
+    m.setSlot1({
+      provider: 'openai-compatible', model: 'llama', api_key: 'k',
+      speed: 'fast', supports_json: true,
+    });
+    m.setSourceCapability(
+      { kind: 'slot', slot_key: 'slot_1' },
+      { system_role_ok: false, native_json_ok: true },
+    );
+
+    const reread = createLLMConfigManager(db).getConfig();
+    expect(reread.slot_1?.system_role_ok).toBe(false);
+    // Absent means "not yet known", which reads as yes — writing `true`
+    // everywhere would double the config to record the default.
+    expect(reread.slot_1?.native_json_ok).toBeUndefined();
+    // ⛔ And the ROUTING field is untouched.
+    expect(reread.slot_1?.supports_json).toBe(true);
+  });
+
+  it('writes a pool observation onto that entry, leaving its siblings alone', () => {
+    const m = createLLMConfigManager(db);
+    m.setPool([
+      ENTRY('groq-a', { model: 'llama-8b' }) as never,
+      ENTRY('groq-b', { model: 'llama-70b' }) as never,
+    ]);
+    m.setSourceCapability({ kind: 'pool', entry_id: 'groq-b' }, { system_role_ok: false });
+
+    const pool = createLLMConfigManager(db).getConfig().free_pool ?? [];
+    expect(pool.find((e) => e.id === 'groq-b')?.system_role_ok).toBe(false);
+    expect(pool.find((e) => e.id === 'groq-a')?.system_role_ok).toBeUndefined();
+  });
+
+  /** ⛔ THE ORPHAN CASE THE BLOB HAD TO PRUNE FOR. Here it needs no pruning:
+   *  a removed source cannot be written to, so the observation is simply
+   *  dropped rather than left behind to be resurrected later. */
+  it('drops an observation for a source that was removed mid-flight', () => {
+    // ⚠ KEYED on purpose. Without a DEK the manager stores `setSensitive`
+    // values as PLAINTEXT, so a redundant rewrite is byte-identical and the
+    // raw-row assertion below passes whether or not the write happened — which
+    // is exactly how it was vacuous the first two times. Encryption is what
+    // makes a needless write visible: a fresh IV per write.
+    const dek = new Uint8Array(randomBytes(32));
+    const m = createLLMConfigManager(db, { getEncryptionKey: () => dek });
+    m.setPool([ENTRY('groq-a') as never]);
+    const rawBefore = db
+      .prepare("SELECT value FROM llm_config WHERE key = 'pool'")
+      .get() as { value: string };
+
+    expect(() => m.setSourceCapability(
+      { kind: 'pool', entry_id: 'gone' }, { system_role_ok: false },
+    )).not.toThrow();
+
+    const pool = createLLMConfigManager(db, { getEncryptionKey: () => dek })
+      .getConfig().free_pool ?? [];
+    expect(pool).toHaveLength(1);
+    expect(pool[0]?.id).toBe('groq-a');
+    // ⚠ Asserted on the RAW ROW, not the parsed pool. The pool contains api
+    // keys and is stored `setSensitive`, so a rewrite re-encrypts under a fresh
+    // IV — identical plaintext, different bytes. Comparing the parsed value
+    // would pass whether or not the needless write happened, which is exactly
+    // how this assertion was vacuous the first time.
+    const rawAfter = db
+      .prepare("SELECT value FROM llm_config WHERE key = 'pool'")
+      .get() as { value: string };
+    expect(rawAfter.value).toBe(rawBefore.value);
+  });
+
+  /** …and this is the invalidation the fingerprint was built to provide, which
+   *  the save path was always going to do anyway. */
+  it('clears a stale observation when the slot is re-saved', () => {
+    const m = createLLMConfigManager(db);
+    m.setSlot1({
+      provider: 'openai-compatible', model: 'llama', api_key: 'k',
+      speed: 'fast', supports_json: true,
+    });
+    m.setSourceCapability({ kind: 'slot', slot_key: 'slot_1' }, { system_role_ok: false });
+    expect(createLLMConfigManager(db).getConfig().slot_1?.system_role_ok).toBe(false);
+
+    // The owner points the slot at a different model — everything observed
+    // about the old one is now a guess about an endpoint nobody asked about.
+    m.setSlot1({
+      provider: 'openai-compatible', model: 'other-model', api_key: 'k',
+      speed: 'fast', supports_json: true,
+    });
+    expect(createLLMConfigManager(db).getConfig().slot_1?.system_role_ok)
+      .toBeUndefined();
+  });
+});
 
 describe('makeConfigHandlers — server.setLLMSlot', () => {
   it('writes one slot and reflects it in getConfig', async () => {

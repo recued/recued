@@ -69,6 +69,7 @@ import {
 import { makeRecipeListHandlers } from './recipe-list-handler.js';
 import { makeRecipePiiHandlers } from './recipe-pii-handler.js';
 import { makeRecipeSaveHandlers } from './recipe-save-handler.js';
+import { makeRecipeDeleteHandlers } from './recipe-delete-handler.js';
 import { makeRecipeRunnabilityHandlers } from './recipe-runnability-handler.js';
 import { makeApprovalHandlers, type ApprovalHandlerDeps } from './approval-handler.js';
 import { makeEventsHandlers, type EventsHandlerDeps } from './events/handler.js';
@@ -405,6 +406,11 @@ import {
 } from './bridge-capability-handler.js';
 import { makeRecoveryHandlers } from './recovery-key-processor.js';
 import { makeConfigHandlers } from './config-schema.js';
+import type {
+  AdapterRegistry,
+  EmbeddingsAdapterRegistry,
+  QuotaTracker,
+} from '@recued/llm';
 import { makeSellerOverviewHandlers } from './seller-overview-handler.js';
 import { createSellerStripeEntitlementProvider } from './seller/stripe-entitlement-sync.js';
 import { createRpcDispatcher } from './rpc-dispatcher.js';
@@ -857,6 +863,14 @@ export interface AttachWebSocketOptions {
    *  server.setLLMConfig are dispatched — this is the primary provisioning
    *  path for the paired extension's "Server LLM settings" panel. */
   llmConfigManager?: LLMConfigManager;
+  /** Test connection — the config rpc slice's only execution deps. Absent (a
+   *  db-less / test wiring) registers the method and answers `unavailable`
+   *  rather than pretending it probed. */
+  llmProbe?: {
+    adapters: AdapterRegistry;
+    quota: QuotaTracker;
+    embeddingsAdapters?: EmbeddingsAdapterRegistry;
+  };
   /** Runtime config store (D-103 Phase A). Provides the non-LLM half
    *  of `server.getConfigSchema` / `server.setConfigField` — every
    *  scalar `RUNTIME_SCHEMA` key that isn't LLM-managed routes through
@@ -1470,7 +1484,7 @@ const buildWsBinding = (
 ): WebSocketUpgradeBinding => {
   const {
     executeDeps, scheduleDeps, dishDeps, cacheDeps, sharedDeps, authDeps, migrateDeps,
-    llmConfigManager, runtimeConfig, sellerStore, sellerOrderStore, sellerContractStore, sellerInboundTokenStore,
+    llmConfigManager, llmProbe, runtimeConfig, sellerStore, sellerOrderStore, sellerContractStore, sellerInboundTokenStore,
     sellerClaimStore,
     bootstrapDeps,
     serverId, pairedInstances, pairRevokeAuditLog, accountBindingDeps, proConvenienceDeps, ddnsDeps, updateDeps, recoveryKeyCheck, recoveryVaultDeps, clientTokens, pressureDeps,
@@ -1665,7 +1679,7 @@ const buildWsBinding = (
     makeSupervisionHandlers(supervisionDeps),
     makeUpdateHandlers(updateDeps),
     makeRecoveryHandlers(recoveryKeyCheck, recoveryVaultDeps),
-    makeConfigHandlers(llmConfigManager, runtimeConfig),
+    makeConfigHandlers(llmConfigManager, runtimeConfig, llmProbe),
     makeSellerOverviewHandlers(sellerStore ? {
       sellerStore,
       ...(sellerOrderStore ? { sellerOrderStore } : {}),
@@ -1749,6 +1763,22 @@ const buildWsBinding = (
     // Rides the recipe-list deps too (it only needs the writable store —
     // `recipeListDeps.store` is the full `recipeStore`).
     makeRecipeSaveHandlers(recipeSaveDeps ?? recipeListDeps),
+    // D-247 D14.1 — `recipe.delete`. Rides the same writable store, plus the
+    // `contract.*` store so the pack-ownership refusal can ask whether the owning
+    // pack is still INSTALLED. ⚠ That qualifier is load-bearing: without it a
+    // `pack_slug` naming an uninstalled pack strands the recipe permanently,
+    // because you cannot uninstall a pack that is not installed.
+    makeRecipeDeleteHandlers(
+      recipeListDeps
+        ? {
+            store: recipeListDeps.store,
+            ...(contractDeps?.store ? { contractStore: contractDeps.store } : {}),
+            ...(recipeSaveDeps?.webhookConsumerStore
+              ? { webhookConsumerStore: recipeSaveDeps.webhookConsumerStore }
+              : {}),
+          }
+        : undefined,
+    ),
     // D-119 Phase 10 — approval cross-device sync.
     makeApprovalHandlers(approvalDeps),
     // D-119 Phase 13 — annotation + link warehouse.

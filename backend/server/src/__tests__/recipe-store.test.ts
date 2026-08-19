@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import type { RecipeDefinition } from '@recued/contracts';
-import { createRecipeStore } from '../recipe-store.js';
+import { RecipePackOwnershipError, createRecipeStore } from '../recipe-store.js';
 
 // ────────────────────────────────────────────────────────────────
 // Fixtures
@@ -293,15 +293,26 @@ describe('createRecipeStore — pack_slug provenance', () => {
     expect(row?.pack_slug).toBeNull();
   });
 
-  it('save() with pack_slug=null clears any prior pack ownership (upsert overwrites column)', () => {
+  it('save() with pack_slug=null over a pack-owned row is REFUSED (D-247 D6)', () => {
+    // ⛔⛔ THIS TEST PINNED THE OPPOSITE UNTIL D-247, AND THE OLD SEMANTIC IS
+    // WORTH READING BEFORE CHANGING THIS BACK. It was: "the user has effectively
+    // 'unowned' the row by saving their own content over the pack's version."
+    // Deliberate, and D-247 D6 reverses it by owner ruling — a pack-owned row is
+    // the pack's to change.
+    //
+    // The strip was silent and cost two things at once: the recipe stopped
+    // receiving pack updates (a frozen body under a live grant, no signal), and
+    // D14's uninstall purge still cleared its grant while the recipe survived,
+    // going dark. `recued_saveRecipe` had no ownership check at all, so an AI at
+    // a raised trust ceiling could rewrite a granted recipe under the name the
+    // owner reviewed.
     const store = createRecipeStore(bundleDir, db);
     store.save(mkRecipe('clear'), 'p', 'pair-sync' as never, 1, 'pack-y');
     expect(store.getStored('clear')?.pack_slug).toBe('pack-y');
-    // Manual re-save without a pack_slug arg → upsert sets pack_slug
-    // to NULL. The user has effectively "unowned" the row by saving
-    // their own content over the pack's version.
-    store.save(mkRecipe('clear'), 'p', 'pair-sync' as never, 2);
-    expect(store.getStored('clear')?.pack_slug).toBeNull();
+    expect(() => store.save(mkRecipe('clear'), 'p', 'pair-sync' as never, 2))
+      .toThrow(RecipePackOwnershipError);
+    // …and the row is untouched: no partial write, ownership intact.
+    expect(store.getStored('clear')?.pack_slug).toBe('pack-y');
   });
 
   it('save() with a different pack_slug transfers ownership (last-writer-wins)', () => {

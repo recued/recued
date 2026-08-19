@@ -36,6 +36,8 @@ const recordingStore = (
       return rows;
     },
     put: notCalled('put'),
+    // D-247 — the scan fn must not write, by either door.
+    putIfAbsent: notCalled('putIfAbsent'),
     get: notCalled('get'),
     delete: notCalled('delete'),
     deleteByPrefix: notCalled('deleteByPrefix'),

@@ -16,6 +16,7 @@ import {
   EXECUTION_CASE_COMPILER_VERSION,
   analyzeExecutionCaseRequest,
   deriveExecutionFlowPattern,
+  executionCaseRefusalReason,
   executionCaseKey,
   hashExecutionCaseValue,
   isExecutionCaseIntentGrounded,
@@ -33,6 +34,7 @@ import {
 import {
   D214_INTERNAL_TOOL_NAMES,
   isExecutionCaseGatewayDenialReason,
+  isExecutionCaseUndispatchedReason,
 } from './execution-case-vocabulary.js';
 import type {
   ExecutionCaseFeedback,
@@ -634,6 +636,9 @@ export interface ExecutionCaseCompiler {
     source_observations: number;
     eligible_cases_before_retention: number;
     offerable_observations: number;
+    /** D-219 — the FIRST gate that refused each un-offerable observation, counted
+     *  by reason. Empty when every observation is offerable. */
+    refusal_reasons: Record<string, number>;
     offerable_verdict_counts: Record<string, number>;
     materialized_cases: number;
     storage_pressure_evictions: number;
@@ -696,6 +701,31 @@ const evidenceFromFeedback = (
       : []),
   ];
 };
+
+/** Did this flow BREAK? — the `execution_failure` predicate, exported because a
+ *  wiring it is only reachable through the full compiler is a wiring no test
+ *  covers. (Proved: mutating it in place left 474 tests green.)
+ *
+ *  ⛔ A call the engine REFUSED TO SEND does not count. Nothing ran, so the flow
+ *  did not break — see {@link isExecutionCaseUndispatchedReason}. Filing an
+ *  argument-grounding refusal as a breakage teaches "this flow does not work"
+ *  about a flow that was stopped for a fixable reason and then worked, which is
+ *  the same error the ATTRIBUTION GATE already refuses for a stopwatch.
+ *
+ *  ⚠ `recipe_status === 'failed'` is UNCONDITIONAL: that means the recipe RAN
+ *  and its commit failed, which is a real breakage whatever the dispatch reason
+ *  said. */
+export const flowActivitiesFailed = (
+  activities: ReadonlyArray<{
+    status: 'ok' | 'error';
+    reason?: string;
+    recipe_status?: string;
+  }>,
+): boolean =>
+  activities.some((activity) =>
+    (activity.status === 'error'
+      && !isExecutionCaseUndispatchedReason(activity.reason))
+    || activity.recipe_status === 'failed');
 
 const flowStep = (
   toolName: string,
@@ -1299,9 +1329,12 @@ export const createExecutionCaseCompiler = (
         activity.recipe_error_codes?.includes(
           'RECIPE_APPROVAL_TIMEOUT',
         ) === true);
-      const failed = !abandoned && group.activities.some((activity) =>
-        activity.status === 'error'
-        || activity.recipe_status === 'failed');
+      // ⛔ A call the engine REFUSED TO SEND is not a broken flow — nothing ran.
+      // `isExecutionCaseUndispatchedReason` carries the reasoning; the short
+      // version is that an argument-grounding refusal is instructive and
+      // correctable, and filing it as a breakage teaches a model to avoid a flow
+      // that was stopped for a fixable reason and then worked.
+      const failed = !abandoned && flowActivitiesFailed(group.activities);
       // A denial reaches the span by TWO routes, and reading only the first
       // filed the commoner one as a capability failure.
       //
@@ -1971,6 +2004,17 @@ export const createExecutionCaseCompiler = (
         // because nobody was ASKED. Measurable before anything renders it.
         offerable_observations: observations.filter((observation) =>
           executionCaseOfferableVerdicts(observation).length > 0).length,
+        // D-219 — WHY the un-offerable ones were refused. `offerable_observations: 0`
+        // alone cannot distinguish "nothing happened" from "one gate fired on
+        // everything", and three wrong guesses preceded this counter existing.
+        refusal_reasons: observations.reduce<Record<string, number>>(
+          (acc, observation) => {
+            const reason = executionCaseRefusalReason(observation);
+            if (reason !== null) acc[reason] = (acc[reason] ?? 0) + 1;
+            return acc;
+          },
+          {},
+        ),
         offerable_verdict_counts: observations.reduce<Record<string, number>>(
           (acc, observation) => {
             for (const verdict of executionCaseOfferableVerdicts(observation)) {

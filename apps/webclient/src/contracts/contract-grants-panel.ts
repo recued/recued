@@ -43,6 +43,7 @@ import {
   TIER1_TOOL_DESCRIPTORS,
   TIER1_TOOL_NAMES,
   collectionGrantEntry,
+  recipeGrantEntry,
   opGrantEntry,
   parseGrantEntry,
   peerLabelGrantEntry,
@@ -128,6 +129,49 @@ export type GrantCatalogOperationsCaller = () => Promise<{
   ingredients: ReadonlyArray<CatalogIngredientView>;
 }>;
 
+/** D-247 D8/D11 — `recipe.list`, the recipe half of the grant UNIVERSE.
+ *
+ *  ⛔⛔ WITHOUT THIS THE `recipe` KIND IS A PERMISSION WITH NO WAY TO REACH IT.
+ *  The seed writes a `recipe.*` row per installed recipe and the gate reads it,
+ *  but nothing put those keys on the page — so the owner could not see, let alone
+ *  toggle, the axis D-247 exists to give them. `buildUniverse`'s own doc states
+ *  the rule this violated: *"A registry seeded there but missing here is a
+ *  permission that exists in the store with no way to reach it. Add to both, or
+ *  to neither."* */
+export type GrantRecipeListCaller = () => Promise<{
+  recipes: ReadonlyArray<{
+    recipe_id: string;
+    publisher_id: string;
+    source: 'bundled' | 'pair-sync' | 'inline';
+    recipe: { metadata?: { name?: string; description?: string } | undefined };
+  }>;
+}>;
+
+/** D-247 D11 — `contract.recipeOpUsage`. BOTH halves of the op row in one round
+ *  trip: the STATIC "which recipes could reach this op" and the ACTUAL "which runs
+ *  did, and under whose coverage".
+ *
+ *  ⛔ ONE call, not two. The row puts them side by side, so two fetches could
+ *  describe two different moments and the row would contradict itself on screen.
+ *
+ *  ⛔ `window_days` COMES BACK AND THE COPY MUST USE IT. `data.audit` is quota'd
+ *  and evicts oldest-first, so `count: 0` means NOT IN THE RETAINED WINDOW, never
+ *  "never used". `underivable` names recipes whose closure could not be derived,
+ *  so their absence from `could` is UNKNOWN rather than "does not use it". */
+export type GrantRecipeOpUsageCaller = (args: {
+  window_days?: number;
+}) => Promise<{
+  operations: ReadonlyArray<{
+    operation_id: string;
+    could: readonly string[];
+    count: number;
+    recipes: readonly string[];
+  }>;
+  window_days: number;
+  oldest_scanned_at: number | null;
+  underivable: readonly string[];
+}>;
+
 /** `housekeeping.registry.describe` — the topic universe (+ `mcp_exposed`). */
 export type GrantRegistryDescribeCaller = () => Promise<RegistryDescribeRpcOutput>;
 
@@ -171,6 +215,9 @@ export type GrantCliReachabilitySetCaller = (
 const buildUniverse = (
   catalog: { ingredients: ReadonlyArray<CatalogIngredientView> } | undefined,
   registry: RegistryDescribeRpcOutput | undefined,
+  /** D-247 — installed recipes. Absent/failed ⇒ the recipe slice is empty, like
+   *  every other dynamic source here. */
+  recipes: Awaited<ReturnType<GrantRecipeListCaller>> | undefined,
 ): GrantUniverseEntry[] => {
   const entries: GrantUniverseEntry[] = [];
 
@@ -227,6 +274,34 @@ const buildUniverse = (
 
   // The installed-pack-catalog op slice — shared with the by-PACK view.
   entries.push(...catalogOpUniverseEntries(catalog?.ingredients ?? []));
+
+  // ── D-247 — THE RECIPE SLICE ────────────────────────────────────────────
+  //
+  // ⛔ `authorDefault: false` FOR EVERY RECIPE, and that is the one inverted
+  // default in the whole grant model (D7). Every other kind here is
+  // owner-permissive; `recipe` is not, because what it gates is CATALOG
+  // MEMBERSHIP and the corpus is thousands of recipes at ~160 tok/entry. The
+  // seed writes an explicit row per recipe at install, so in practice a cell
+  // reads its stored value — this default governs only a recipe that reached the
+  // store without one, and closed is the honest answer there.
+  //
+  // ⚠ KERNEL recipes are excluded: `metadata.author === 'recued'` is
+  // runtime-bundled implementation detail, invisible in the marketplace and
+  // filtered out of the Tier-2 catalog, so a switch for one would toggle
+  // something the owner can never see the effect of.
+  for (const r of recipes?.recipes ?? []) {
+    if (r.publisher_id === 'recued') continue;
+    entries.push({
+      entry_key: recipeGrantEntry(r.publisher_id, r.recipe_id),
+      kind: 'recipe',
+      label: r.recipe.metadata?.name?.trim() || r.recipe_id,
+      group: `${r.publisher_id} · recipes`,
+      authorDefault: false,
+      ...(r.recipe.metadata?.description
+        ? { description: r.recipe.metadata.description }
+        : {}),
+    });
+  }
 
   for (const collection of READABLE_COLLECTIONS) {
     entries.push({
@@ -310,6 +385,10 @@ export const CONTRACT_GRANTS_AXIS_NOTE =
 export const CONTRACT_GRANTS_ALSO_READS_ATTR = 'data-recued-contract-grants-also-reads';
 /** The explicit-vs-default source marker on a cell. Carries `data-source`. */
 export const CONTRACT_GRANTS_SOURCE_ATTR = 'data-recued-contract-grants-source';
+/** D-247 D11 — the "Direct calls off — still used by … · ran N×" line on an op
+ *  row whose grant is off. Carries `data-could` (the static list) and `data-ran`
+ *  (the count), so a test can assert BOTH halves rather than a rendered string. */
+export const CONTRACT_GRANTS_STILL_USED_ATTR = 'data-recued-contract-grants-still-used';
 
 // ════════════════════════════════════════════════════════════════
 // Helpers
@@ -323,6 +402,11 @@ const KIND_TITLE: Record<GrantEntryKind, string> = {
   // person reading it, not for the key: "questions they may ask you" is the
   // fact, `peer.label.<label>` is the storage.
   peer_label: 'Questions they may ask you',
+  // D-247 — what the AI may REACH. Titled for the act, not the key: a grant
+  // here makes the recipe findable and callable, and says nothing about
+  // approval (every write inside it still asks). `recipe.<publisher>/<id>` is
+  // the storage; "Recipes the AI can run" is the fact the owner is deciding.
+  recipe: 'Recipes the AI can run',
 };
 
 /** Render order WITHIN each tab. Ops tab shows `op` and the peer labels — both
@@ -336,6 +420,10 @@ const KIND_TITLE: Record<GrantEntryKind, string> = {
  *  or standing means forgotten" would be unmet in the one place it is now met. */
 const OPS_KINDS: readonly GrantEntryKind[] = ['op', 'peer_label'];
 const ENTITIES_KINDS: readonly GrantEntryKind[] = ['collection', 'topic'];
+/** D-247 — the recipe axis gets its OWN root, not a corner of Entities. It is a
+ *  different question ("what may the AI reach") from a different vocabulary,
+ *  and burying it under Entities is how it stays unfound. */
+const RECIPE_KINDS: readonly GrantEntryKind[] = ['recipe'];
 
 const errMessage = (err: unknown): string =>
   humanizeRpcError(err);
@@ -360,6 +448,13 @@ export interface MountContractGrantsPanelOptions {
    * author defaults), and CLI entries are omitted because their separate
    * cli_reachability rows are not part of that stamped grant list. */
   explicitGrantRowsOnly?: boolean;
+  /** D-247 D11 — recipe→op usage for the op row. Absent ⇒ the row renders without
+   *  the "still used by / ran N×" line, which is the honest degradation: no line
+   *  at all rather than a line claiming zero. */
+  runRecipeOpUsage?: GrantRecipeOpUsageCaller;
+  /** D-247 — `recipe.list`, the recipe half of the grant universe. Absent ⇒ the
+   *  Recipes tab is empty, which is honest: no source, no switches. */
+  runRecipeList?: GrantRecipeListCaller;
   /** `collection.contract.listCatalogOperations` — the pack-op universe.
    *  Optional: absent ⇒ kernel ops only. */
   runCatalogOperations?: GrantCatalogOperationsCaller;
@@ -386,6 +481,10 @@ export interface ContractGrantsPanelMount {
   readonly opsRoot: HTMLElement;
   /** The Entities tab content (collection + topic entries). */
   readonly entitiesRoot: HTMLElement;
+  /** D-247 — the Recipes tab content: `recipe.*` entries, one per installed
+   *  non-kernel recipe. ⛔ OWNER-ONLY at the host: a door's recipe authority is
+   *  its inbound token, so a switch here would write a row nothing reads. */
+  readonly recipesRoot: HTMLElement;
   /** Current load phase. */
   getState(): ContractGrantsPanelState;
   /** Top-level load-error message. Null when the last load succeeded. */
@@ -456,6 +555,16 @@ export const mountContractGrantsPanel = (
   // captured generation is still current (the local-tools / grant-matrix idiom).
   let loadGeneration = 0;
   let pendingLoad: Promise<void> = Promise.resolve();
+  /** D-247 D11 — op id → the row's two halves. EMPTY means "not computed", which
+   *  the renderer must not confuse with "no usage": an absence the owner reads as
+   *  proof is the failure mode this substrate names repeatedly. */
+  let recipeOpUsage = new Map<string, {
+    could: readonly string[];
+    count: number;
+    recipes: readonly string[];
+  }>();
+  /** The window the counts describe, or null when nothing was read. */
+  let recipeOpUsageWindowDays: number | null = null;
   // entry_keys with a write in flight — the cell renders disabled while running.
   const pendingCells = new Set<string>();
   const operationFilterDebounceMs = opts.operationFilterDebounceMs ?? 250;
@@ -491,6 +600,9 @@ export const mountContractGrantsPanel = (
   const entitiesRoot = doc.createElement('div');
   entitiesRoot.setAttribute(CONTRACT_GRANTS_HOST_ATTR, '');
   entitiesRoot.setAttribute('data-grant-view', 'entities');
+  const recipesRoot = doc.createElement('div');
+  recipesRoot.setAttribute(CONTRACT_GRANTS_HOST_ATTR, '');
+  recipesRoot.setAttribute('data-grant-view', 'recipes');
 
   const clearChildren = (node: HTMLElement): void => {
     while (node.firstChild) node.removeChild(node.firstChild);
@@ -626,6 +738,46 @@ export const mountContractGrantsPanel = (
         `Granting this also lets it read ${entry.also_reads.map((r) => r.list_op).join(', ')} ` +
         `to resolve the target — no separate grant needed.`;
       rowLabel.appendChild(alsoReads);
+    }
+
+    // ── D-247 D11 — THE OP TOGGLE STOPS LYING ────────────────────────────
+    //
+    // Under D2 an op can be OFF and still run inside a granted recipe. A row
+    // rendering a bare "off" is then a FALSE STATEMENT, and the owner deciding
+    // whether to revoke is the person it misleads.
+    //
+    // ⛔ BOTH HALVES OR NEITHER. The static list answers "which recipes COULD
+    // reach this"; the count answers "which runs DID". A row with only the first
+    // cannot tell a recipe that ran this morning from one that has not run since
+    // it was installed — which is most of what the decision needs.
+    //
+    // ⛔ RETENTION IS NOT HISTORY. `data.audit` evicts oldest-first, so the copy
+    // says "in the last N days" and never "never used". And when the evidence was
+    // not read at all, this renders NOTHING rather than a zero.
+    if (entry.kind === 'op' && eff === 'off') {
+      const usage = recipeOpUsage.get(entry.entry_key);
+      if (usage !== undefined && (usage.could.length > 0 || usage.count > 0)) {
+        const used = doc.createElement('span');
+        used.setAttribute(CONTRACT_GRANTS_STILL_USED_ATTR, '');
+        used.setAttribute('data-could', usage.could.join(','));
+        used.setAttribute('data-ran', String(usage.count));
+        used.className = 'cg-still-used';
+        const parts: string[] = [];
+        if (usage.could.length > 0) parts.push(`still used by: ${usage.could.join(', ')}`);
+        parts.push(
+          usage.count > 0
+            ? `ran ${usage.count}× in the last ${recipeOpUsageWindowDays ?? 30} days`
+              + (usage.recipes.length > 0 ? `, via ${usage.recipes.join(', ')}` : '')
+            : `no runs in the last ${recipeOpUsageWindowDays ?? 30} days`,
+        );
+        used.textContent = `Direct calls off — ${parts.join(' · ')}`;
+        used.title =
+          'Turning an operation off stops the AI calling it DIRECTLY. Recipes you '
+          + 'granted may still use it, and each of those calls still asks. '
+          + `Run counts cover the last ${recipeOpUsageWindowDays ?? 30} days only — `
+          + 'older activity is evicted, so "no runs" is not "never used".';
+        rowLabel.appendChild(used);
+      }
     }
 
     const source = doc.createElement('span');
@@ -805,6 +957,17 @@ export const mountContractGrantsPanel = (
       ENTITIES_KINDS,
       'No collections or topics are available on this server yet.',
     );
+    renderInto(
+      recipesRoot,
+      RECIPE_KINDS,
+      'No recipes are installed yet. Install a pack, or write one in Kitchen.',
+      // ⚠ The two-axis note, because the row is otherwise read as approval.
+      // A recipe grant makes the recipe REACHABLE; every write inside it still
+      // asks, and turning one off does not turn its operations off (D3/D4).
+      'Turning a recipe on lets the AI find and call it. Each write inside it '
+      + 'still asks. Turning it off does not turn its operations off — those are '
+      + 'the Ops tab.',
+    );
     if (focusedEntry !== null) {
       const replacement = renderedCellToggles.get(focusedEntry);
       if (replacement !== undefined && !replacement.disabled) {
@@ -840,7 +1003,7 @@ export const mountContractGrantsPanel = (
   const doRefresh = (): Promise<void> => {
     const gen = ++loadGeneration;
     pendingLoad = (async () => {
-      const [catalogR, registryR, grantsR, cliR] = await Promise.allSettled([
+      const [catalogR, registryR, grantsR, cliR, usageR, recipesR] = await Promise.allSettled([
         opts.runCatalogOperations
           ? opts.runCatalogOperations()
           : Promise.resolve(undefined),
@@ -851,8 +1014,26 @@ export const mountContractGrantsPanel = (
         opts.explicitGrantRowsOnly !== true && opts.runCliReachabilityList
           ? opts.runCliReachabilityList()
           : Promise.resolve(undefined),
+        // D-247 D11 — evidence for the op row. ⚠ NOT part of the load's spine: a
+        // failure here must not blank the grant matrix, so it is read
+        // best-effort and its absence renders as no line rather than a zero.
+        opts.runRecipeOpUsage ? opts.runRecipeOpUsage({}) : Promise.resolve(undefined),
+        // D-247 — the recipe half of the UNIVERSE. Same optionality as the
+        // catalog/registry slices above: a failure drops the slice rather than
+        // failing the load, and the Recipes tab then renders its empty note.
+        opts.runRecipeList ? opts.runRecipeList() : Promise.resolve(undefined),
       ]);
       if (disposed || gen !== loadGeneration) return;
+
+      // D-247 D11 — index the evidence by op. A rejected read leaves the map
+      // EMPTY, which the renderer treats as "not computed" (no line) rather than
+      // "no usage" (a zero the owner would read as proof).
+      recipeOpUsage = new Map();
+      recipeOpUsageWindowDays = null;
+      if (usageR.status === 'fulfilled' && usageR.value !== undefined) {
+        recipeOpUsageWindowDays = usageR.value.window_days;
+        for (const row of usageR.value.operations) recipeOpUsage.set(row.operation_id, row);
+      }
 
       const errors: string[] = [];
       const catalog = catalogR.status === 'fulfilled' ? catalogR.value : undefined;
@@ -860,7 +1041,9 @@ export const mountContractGrantsPanel = (
       const registry = registryR.status === 'fulfilled' ? registryR.value : undefined;
       if (registryR.status === 'rejected') errors.push(errMessage(registryR.reason));
 
-      const universe = buildUniverse(catalog, registry).filter(
+      const recipeList = recipesR.status === 'fulfilled' ? recipesR.value : undefined;
+      if (recipesR.status === 'rejected') errors.push(errMessage(recipesR.reason));
+      const universe = buildUniverse(catalog, registry, recipeList).filter(
         (entry) => opts.explicitGrantRowsOnly !== true || entry.cli === undefined,
       );
       if (grantsR.status === 'fulfilled') {
@@ -1038,6 +1221,7 @@ export const mountContractGrantsPanel = (
   return {
     opsRoot,
     entitiesRoot,
+    recipesRoot,
     getState: () => state.phase,
     getError: () => state.error,
     getEntries: () => state.universe,
@@ -1067,7 +1251,7 @@ export const mountContractGrantsPanel = (
         }
       }
       broadcastUnsubscribers.length = 0;
-      for (const root of [opsRoot, entitiesRoot]) {
+      for (const root of [opsRoot, entitiesRoot, recipesRoot]) {
         const parent = root.parentNode as { removeChild?: (c: unknown) => void } | null;
         try {
           parent?.removeChild?.(root);

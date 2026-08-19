@@ -49,6 +49,8 @@ const makeRecipeStore = (recipes: RecipeDefinition[]): RecipeStore => ({
   updateUpstream: () => {},
   setOnUpgrade: () => {},
   setOnMutated: () => {},
+  // D-247 — required so a store double cannot silently miss the grant seam.
+  addOnMutated: () => {},
 });
 
 const successResponse = (request: ExecuteRequest): ExecuteResponse => ({

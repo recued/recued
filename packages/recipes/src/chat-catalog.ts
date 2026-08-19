@@ -368,17 +368,101 @@ const variableToArgProp = (
  *  invents recipe-config field names. Credential variables are dropped
  *  (see `variableToArgProp`); keys are sorted for the deterministic-
  *  projection ratchet. */
+/** Variables a GUARD refuses the run without — i.e. genuinely required, whatever
+ *  the declaration says.
+ *
+ *  ⛔⛔ THE GUARD ALREADY KNOWS. A recipe that refuses to run when
+ *  `{{config.x}}` is empty has stated that `x` is required; the model-facing
+ *  schema was deriving requiredness from a DIFFERENT fact — whether the author
+ *  wrote a `default` — and the two disagreed. `open-rental-contract` guarded on
+ *  `start_date` while declaring `default: ''`, so the schema said optional, a
+ *  live turn omitted it, and the run died on `RECIPE_GUARD_TRIGGERED`. Reading
+ *  the guard is strictly better than asking every author to remember: the
+ *  requirement is already written down, in the one place that enforces it.
+ *
+ *  ⚠ ONLY A GUARD / `fail_on`, never a `skip_when`. Emptiness that SKIPS a step
+ *  is a documented optional path — `publish-post-social.media_file` is labelled
+ *  "Image or video (optional)" and its absence skips the upload. Marking that
+ *  required would break behaviour the help text promises.
+ *
+ *  ⚠ ONE HOP, because every real case routes through a named boolean: an `all`
+ *  transform collects the conditions, and a `guard` step reads that boolean. A
+ *  check that looked only at direct references would miss all of them.
+ *
+ *  Pure: same recipe → same set. Shared with the `variable_optional_but_required`
+ *  validator rule rather than restated, so a schema and its warning can never
+ *  disagree about what the guard said. */
+export const guardRequiredVariables = (
+  recipe: RecipeDefinition,
+): ReadonlySet<string> => {
+  const steps: Array<Record<string, unknown>> = [
+    ...((recipe.prefetch_steps ?? []) as unknown as Array<Record<string, unknown>>),
+    ...((recipe.steps ?? []) as unknown as Array<Record<string, unknown>>),
+  ];
+  // Step ids whose boolean gates the RUN, plus the guard steps themselves.
+  const gating = new Set<string>();
+  for (const step of steps) {
+    for (const field of ['guard', 'fail_on'] as const) {
+      if (step[field] === undefined) continue;
+      const blob = JSON.stringify(step[field]);
+      for (const other of steps) {
+        const id = typeof other.id === 'string' ? other.id : '';
+        if (id && blob.includes(`{{step.${id}}}`)) gating.add(id);
+      }
+      if (typeof step.id === 'string') gating.add(step.id);
+    }
+  }
+  const required = new Set<string>();
+  for (const key of Object.keys(recipe.variables ?? {})) {
+    // ⛔ A NON-EMPTY DEFAULT ALREADY SATISFIES THE GUARD, so requiredness is
+    // moot — preflight fills it and the run proceeds. Marking it required would
+    // force the caller to restate a working default (`import-expenses` defaults
+    // `column_date` to 'Date' and guards `is_not_empty` on it). Only an
+    // EMPTY-or-absent default leaves the guard reachable by omission.
+    const declared = (recipe.variables ?? {})[key] as unknown;
+    const filled = (declared !== null && typeof declared === 'object' && !Array.isArray(declared))
+      ? ('default' in (declared as Record<string, unknown>)
+        && (declared as Record<string, unknown>).default !== ''
+        && (declared as Record<string, unknown>).default !== null)
+      : (declared !== '' && declared !== null && declared !== undefined
+        && typeof declared !== 'object');
+    if (filled) continue;
+    const ref = `{{config.${key}}}`;
+    for (const step of steps) {
+      const id = typeof step.id === 'string' ? step.id : '';
+      const direct = (['guard', 'fail_on'] as const).some((f) =>
+        step[f] !== undefined && JSON.stringify(step[f]).includes(ref));
+      const viaBoolean = step.conditions !== undefined
+        && JSON.stringify(step.conditions).includes(ref)
+        && gating.has(id);
+      if (!direct && !viaBoolean) continue;
+      // `is_not_empty` on the value, or a `fail_on` that trips when it IS empty.
+      const text = JSON.stringify([step.conditions, step.guard, step.fail_on]);
+      const esc = ref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp(`${esc}\\s+is_(not_)?empty`).test(text)) required.add(key);
+      break;
+    }
+  }
+  return required;
+};
+
 export const deriveTier2ArgSchema = (
   recipe: RecipeDefinition,
 ): Record<string, unknown> => {
   const properties: Record<string, Record<string, unknown>> = {};
   const required: string[] = [];
   const vars = recipe.variables ?? {};
+  // ⛔ The GUARD is the authority on requiredness, not the presence of a default.
+  // See {@link guardRequiredVariables}: a recipe that refuses to run without a
+  // value has already said it is required, and deriving that from whether the
+  // author wrote `default: ''` is how the schema came to invite calls the recipe
+  // then rejected.
+  const guardRequired = guardRequiredVariables(recipe);
   for (const key of Object.keys(vars).sort()) {
     const prop = variableToArgProp(vars[key]);
     if (!prop) continue; // credential → not an AI-settable arg
     properties[key] = prop.schema;
-    if (prop.required) required.push(key);
+    if (prop.required || guardRequired.has(key)) required.push(key);
   }
   // D-196 R4 — Tier-2 recipe tools have a complete variable-derived argument
   // surface. Close the schema so a model cannot smuggle server-owned execution
@@ -416,8 +500,25 @@ export const buildTier2ToolEntry = (
   entry: Tier2RecipeEntry,
   lookup: IngredientKindLookup,
   opKindLookup?: OpKindLookup,
+  /** D-247 D8 — include a recipe whose `chat_exposed` is false.
+   *
+   *  ⛔⛔ WITHOUT THIS THE FLAG IS STILL A GATE, WHICH IS THE THING D-247 SET OUT
+   *  TO STOP. The owner's `recipe.*` grant is authoritative, but it is applied
+   *  AFTER this projection — so a hidden recipe the owner explicitly granted was
+   *  dropped here before any grant could be consulted, and the grant did nothing.
+   *  A filter downstream can only ever NARROW what the projection produced; the
+   *  grant has to be able to WIDEN past the author's default.
+   *
+   *  ⚠ Callers that are NOT owner-governed must leave this false. The door path
+   *  has no `recipe.*` axis (its Tier-2 authority is its inbound token), so
+   *  including hidden recipes there would widen `tools/list` with nothing left to
+   *  narrow it. */
+  includeHidden = false,
 ): ToolEntry | null => {
-  if (!isRecipeChatExposed(entry.recipe, { user_authored: entry.user_authored ?? false })) {
+  if (
+    !includeHidden
+    && !isRecipeChatExposed(entry.recipe, { user_authored: entry.user_authored ?? false })
+  ) {
     return null;
   }
   const meta = entry.recipe.metadata;
@@ -465,10 +566,13 @@ export const buildTier2Catalog = (
   entries: ReadonlyArray<Tier2RecipeEntry>,
   lookup: IngredientKindLookup,
   opKindLookup?: OpKindLookup,
+  /** D-247 D8 — see {@link buildTier2ToolEntry}. Owner-governed callers pass
+   *  `true` and let the `recipe.*` grant decide; every other caller must not. */
+  includeHidden = false,
 ): ReadonlyArray<ToolEntry> => {
   const projected: ToolEntry[] = [];
   for (const e of entries) {
-    const entry = buildTier2ToolEntry(e, lookup, opKindLookup);
+    const entry = buildTier2ToolEntry(e, lookup, opKindLookup, includeHidden);
     if (entry) projected.push(entry);
   }
   projected.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));

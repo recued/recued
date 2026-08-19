@@ -29,6 +29,9 @@ import {
   type MultiTurnTerminationReason,
   type ProcessedActionResult,
 } from '../ai-cooperative.js';
+import {
+  TRANSPARENCY_MULTI_TURN_TERMINATION_REASONS,
+} from '../transparency-stream/events.js';
 
 describe('D-145 PB5 — closed-list pins', () => {
   it('FIXED_SLOT_INVARIANT_VIOLATION_KINDS is exactly 2 entries', () => {
@@ -62,10 +65,30 @@ describe('D-145 PB5 — closed-list pins', () => {
     expect(MULTI_TURN_EVENT_KIND_SET.size).toBe(MULTI_TURN_EVENT_KINDS.length);
   });
 
-  it('MULTI_TURN_TERMINATION_REASONS is exactly 3 entries', () => {
-    expect(MULTI_TURN_TERMINATION_REASONS.length).toBe(3);
+  it('MULTI_TURN_TERMINATION_REASONS is exactly 4 entries', () => {
+    // `output_unreadable` added deliberately: a turn whose last packet could
+    // not be parsed used to report `completed`, so a stalled turn and a
+    // finished one were indistinguishable downstream.
+    expect(MULTI_TURN_TERMINATION_REASONS.length).toBe(4);
     expect(new Set(MULTI_TURN_TERMINATION_REASONS)).toEqual(
-      new Set(['completed', 'max_rounds_exhausted', 'aborted']),
+      new Set([
+        'completed',
+        'output_unreadable',
+        'max_rounds_exhausted',
+        'aborted',
+      ]),
+    );
+  });
+
+  it('⛔ the transparency mirror carries the SAME reasons, derived not retyped', () => {
+    // ⛔ This list is MIRRORED BY HAND into the transparency stream
+    // (`TRANSPARENCY_MULTI_TURN_TERMINATION_REASONS`), because that package
+    // cannot import this one. A hand-copy drifts silently: the mirror stays a
+    // valid closed list of its own type while no longer describing what the
+    // loop actually emits, and the emitter is the authority. Compared as SETS
+    // so ordering is free but membership is not.
+    expect(new Set(TRANSPARENCY_MULTI_TURN_TERMINATION_REASONS)).toEqual(
+      new Set(MULTI_TURN_TERMINATION_REASONS),
     );
   });
 

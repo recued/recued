@@ -882,6 +882,8 @@ export const createNotificationBlock = (
             await deps.recordAnswerAudit({
               ask_id: ask.ask_id,
               handler_kind: ask.handler_kind,
+              // FN-2 — travels UNINTERPRETED; the host extracts identity.
+              handler_payload: ask.handler_payload,
               option: answer.option,
               option_label:
                 selectAskOption(ask, answer.option)?.label ?? answer.option,

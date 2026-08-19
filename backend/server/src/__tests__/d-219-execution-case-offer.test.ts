@@ -128,6 +128,54 @@ describe('D-219 slice 6b-ii — asking the owner', () => {
     }
   });
 
+  it('DOES ask about a chain that repeats `tools.search` — discovery is not a retry', () => {
+    // Amendment 2026-08-18. Under the shipped catalog default (`lean-core` on
+    // every source) a recipe entry is absent from the packet entirely, so the
+    // ONLY route to a second Tier-2 recipe is a second `tools.search`. Counting
+    // that as a repeat made the gate contradict the catalog mode: the deeper the
+    // procedure, the more certainly it was excluded — and depth is what V22 asks
+    // for.
+    const d = decideExecutionCaseOffer(
+      observation({
+        // The realistic lean-core shape: one discovery per recipe the model
+        // did not already know. THREE distinct non-core rounds, which is what
+        // `EXECUTION_CASE_MIN_DISTINCT_ROUNDS` asks for — and three
+        // `tools.search` calls, which is what used to refuse it.
+        flow_pattern: deriveExecutionFlowPattern([
+          { tool_name: 'tools.search', risk_tier: 'read', tier: 1, round_index: 0 },
+          { tool_name: 'acme/list-buildings', risk_tier: 'read', tier: 2, round_index: 1 },
+          { tool_name: 'tools.search', risk_tier: 'read', tier: 1, round_index: 2 },
+          { tool_name: 'acme/add-unit', risk_tier: 'write', tier: 2, round_index: 3 },
+          { tool_name: 'tools.search', risk_tier: 'read', tier: 1, round_index: 4 },
+          { tool_name: 'acme/open-rental-contract', risk_tier: 'write', tier: 2, round_index: 5 },
+        ]),
+      }),
+      NONE,
+      keyOf,
+    );
+    expect(d.ask, 'a thrice-discovered three-recipe chain should still be offerable').toBe(true);
+  });
+
+  it('⛔ the exemption is BY NAME — a repeated data search is still a retry', () => {
+    // The mutation-killer for the test above. `[mail.search, send, mail.search,
+    // send]` is the shape slice 8 measured and refused; exempting Tier 1 as a
+    // CLASS rather than `tools.search` by name would re-admit it, and this test
+    // is the only thing standing between those two one-line implementations.
+    const d = decideExecutionCaseOffer(
+      observation({
+        flow_pattern: deriveExecutionFlowPattern([
+          { tool_name: 'mail.search', risk_tier: 'read', tier: 1, round_index: 0 },
+          { tool_name: 'acme/ledger-post', risk_tier: 'write', tier: 2, round_index: 1 },
+          { tool_name: 'mail.search', risk_tier: 'read', tier: 1, round_index: 2 },
+        ]),
+      }),
+      NONE,
+      keyOf,
+    );
+    expect(d.ask, 'a repeated DATA search is still floundering').toBe(false);
+    expect(d.reason).toBe('not_a_candidate');
+  });
+
   it('⛔ never quotes the request back — the ask can reach Slack or Telegram', async () => {
     // `root_request` is raw owner text and a notification channel may be remote.
     // The turn is identified by what it DID — a closed vocabulary of tool names.

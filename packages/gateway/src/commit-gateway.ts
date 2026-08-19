@@ -1106,6 +1106,7 @@ export const wrapWithCommitGateway = (
             identity.source,
             surfaceDispatch ? stepMeta?.surface_operation_key ?? slug : slug,
             decision.risk_tier,
+            decision.authorization_provenance.lift_reason,
           );
           // D-177 P3 — mint on a resume-admitted dispatch whose gated step
           // carries the `allow_session` mint instruction (N.5). THIS is the

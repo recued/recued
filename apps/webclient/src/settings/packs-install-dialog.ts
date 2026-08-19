@@ -53,6 +53,10 @@ import type { PackGrantOverlap } from './packs-grant-overlap.js';
 export const PACKS_DIALOG_ATTR = 'data-recued-packs-dialog';
 export const PACKS_DIALOG_SLUG_ATTR = 'data-recued-packs-dialog-slug';
 export const PACKS_DIALOG_PERMISSION_ATTR = 'data-recued-packs-dialog-permission';
+/** D-247 D15 — the "installing makes N recipes reachable" disclosure. Carries
+ *  `data-count`, and each row carries `data-recipe` + `data-class`, so a test can
+ *  assert the NAMES and the D10 class rather than a rendered sentence. */
+export const INSTALL_RECIPE_DISCLOSURE_ATTR = 'data-recued-install-recipe-disclosure';
 export const PACKS_DIALOG_BODY_GRANT_ATTR = 'data-recued-packs-dialog-body-grant';
 export const PACKS_DIALOG_INSTALL_BTN_ATTR = 'data-recued-packs-dialog-install';
 export const PACKS_DIALOG_CANCEL_BTN_ATTR = 'data-recued-packs-dialog-cancel';
@@ -210,7 +214,88 @@ export const resolveInstallDialogAudience = (
 // Render
 // ════════════════════════════════════════════════════════════════
 
+/** D-247 D15 — one row of the server-resolved install preview. */
+export interface InstallPreviewRecipe {
+  readonly publisher_id: string;
+  readonly recipe_id: string;
+  readonly name: string;
+  readonly grant_class: 'constraining' | 'read_adapter' | 'open_adapter' | 'unknown';
+  readonly top_risk: 'read' | 'write' | 'admin' | 'destructive' | null;
+  readonly operation_ids: readonly string[];
+}
+
+/** D-247 D15 — the disclosure list, and D15.1's per-recipe tier.
+ *
+ *  ⛔ `resolved: false` ⇒ the dialog renders NOTHING rather than a count it
+ *  cannot verify, and the picker falls back to the flat read tier. */
+export interface InstallPreview {
+  readonly resolved: boolean;
+  readonly will_enable: readonly InstallPreviewRecipe[];
+  readonly hidden_count: number;
+}
+
+/** D-247 D10 — the consent line for one recipe the install will enable.
+ *
+ *  ⛔⛔ THE VERB GOES BEFORE THE TIER, and the "still asks" clause is not
+ *  optional. `key-identity-brief-honeycomb` wraps `auth.read` at ADMIN tier and
+ *  is a read-only brief — "grants auth.read (admin)" is TRUE and reads far
+ *  scarier than the act. And every sentence in this class describes what the AI
+ *  can now SEE AND CALL, never what the owner has approved: a contract grant is
+ *  ACCESS, and the refund still asks. Without the trailing clause, "grants
+ *  destructive" is read as consent to the act by exactly the owner this copy
+ *  exists for. */
+export const recipeConsentLine = (r: InstallPreviewRecipe): string => {
+  if (r.grant_class === 'constraining') {
+    return `${r.name} — a narrower capability than the operations it uses`;
+  }
+  if (r.grant_class === 'unknown') {
+    // ⚠ Honest blank over a confident wrong label: what this reaches could not
+    // be derived, and guessing would be a sentence the owner acts on.
+    return `${r.name} — what this can reach could not be determined`;
+  }
+  const op = r.operation_ids[0] ?? 'its operation';
+  const tier = r.top_risk ?? 'read';
+  const verb = tier === 'read' ? 'read' : tier === 'write' ? 'write' : tier === 'admin' ? 'administer' : 'destroy';
+  return r.grant_class === 'read_adapter'
+    ? `${r.name} — lets the AI ${verb} via \`${op}\` (${tier}) with no added constraint`
+    : `${r.name} — lets the AI ${verb} via \`${op}\` (${tier}) with no added constraint; each call still asks`;
+};
+
+/** D-247 D15 — name the recipes, never just a number. "3 recipes will be
+ *  enabled" tells the owner nothing they can act on; the names are what let them
+ *  cancel or go tighten one afterwards. */
+const renderInstallRecipeDisclosure = (
+  doc: Document,
+  recipes: readonly InstallPreviewRecipe[],
+): HTMLElement => {
+  const box = doc.createElement('div');
+  box.setAttribute(INSTALL_RECIPE_DISCLOSURE_ATTR, '');
+  box.setAttribute('data-count', String(recipes.length));
+  box.className = 'pid-recipe-disclosure';
+  const head = doc.createElement('p');
+  head.className = 'pid-recipe-disclosure-head';
+  // ⚠ "reachable", not "approved" — the grant is ACCESS and nothing else.
+  head.textContent = recipes.length === 1
+    ? 'Installing makes 1 recipe reachable by the AI:'
+    : `Installing makes ${recipes.length} recipes reachable by the AI:`;
+  box.appendChild(head);
+  const list = doc.createElement('ul');
+  list.className = 'pid-recipe-disclosure-list';
+  for (const r of recipes) {
+    const li = doc.createElement('li');
+    li.setAttribute('data-recipe', r.recipe_id);
+    li.setAttribute('data-class', r.grant_class);
+    li.textContent = recipeConsentLine(r);
+    list.appendChild(li);
+  }
+  box.appendChild(list);
+  return box;
+};
+
 export interface PacksInstallDialogProps {
+  /** D-247 D15 — the server-resolved preview. Absent ⇒ no disclosure and the
+   *  flat read tier, which is exactly the pre-D-247 behaviour. */
+  installPreview?: InstallPreview;
   /** DOM document seam (mirrors the panel's). */
   document: Document;
   /** ⛔ Must carry a `manifest`. The consent surface renders the pack's recipes,
@@ -664,7 +749,25 @@ export const renderPacksInstallDialog = (
   // D-182 §7.1 / D-196 — the {Access × Audience} picker for every pack with
   // grantable connection ops or recipe tools. A pure-cli/no-recipe pack has no
   // model and keeps its post-install cli-grant flow.
-  const grantModel = installGrantModelFromManifest(pack.manifest);
+  // ── D-247 D15 + D15.1 — WHAT THIS INSTALL WILL MAKE THE AI ABLE TO REACH ──
+  //
+  // The preview is SERVER-resolved (`packs.install_preview`) because
+  // `chat_exposed` lives on the recipe BODY and the manifest does not carry one
+  // — measured: 0 of 2,310 refs across 340 shipped packs. A client derivation
+  // would be a second copy of a rule the install owns.
+  //
+  // ⛔ Absent or `resolved: false` ⇒ render NOTHING here and fall back to the
+  // flat read tier. A count the picker cannot verify is assurance-shaped
+  // non-assurance; the install then proceeds under the existing pack-level
+  // consent, unchanged.
+  const preview = props.installPreview;
+  const recipeRisk = preview?.resolved === true
+    ? new Map(preview.will_enable.map((r) => [r.recipe_id, r.top_risk ?? 'read' as const]))
+    : undefined;
+  const grantModel = installGrantModelFromManifest(pack.manifest, recipeRisk);
+  if (preview?.resolved === true && preview.will_enable.length > 0) {
+    container.appendChild(renderInstallRecipeDisclosure(doc, preview.will_enable));
+  }
   if (grantModel !== null) {
     container.appendChild(
       renderInstallGrantPicker({

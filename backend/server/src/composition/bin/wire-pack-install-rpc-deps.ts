@@ -12,6 +12,7 @@ import type {
   PackInstallBroadcastEmitter,
   PackInstallRpcDeps,
 } from '../../pack-install-handler.js';
+import type { IngredientManifest } from '@recued/contracts';
 import type { RecipeStore } from '../../recipe-store.js';
 import type { ContractStore } from '../../storage/contract-store.js';
 import type { ChatInboundTokenStore } from '../../storage/chat-inbound-token-store.js';
@@ -58,6 +59,16 @@ export interface ComposePackInstallRpcDepsInput {
   /** Override the default community/packs directory. Tests pass a scratch
    *  directory; production callers leave undefined to use the bundled location. */
   packDir?: string;
+  /** D-247 D15 — ingredient-manifest lookup, so `packs.install_preview` can
+   *  resolve a recipe's ops to a RISK TIER. ⛔ Absent ⇒ every previewed recipe
+   *  reports `grant_class: 'unknown'` ("what this can reach could not be
+   *  determined") — the disclosure renders and says nothing. */
+  getManifest?: (slug: string) => IngredientManifest | undefined;
+  /** D-247 D15.1 — the owner's grant rows, so an install can pre-write each
+   *  recipe's row with the ACCESS CEILING the owner picked applied. ⛔ Absent ⇒
+   *  the store's mutation hook seeds on `chat_exposed` alone and the ceiling is
+   *  silently ignored. */
+  grantEntryStore?: PackInstallRpcDeps['grantEntryStore'];
 }
 
 export interface PackInstallRpcBundle {
@@ -94,6 +105,8 @@ export const composePackInstallRpcDeps = (
     now,
     recipeTrustStore,
     packDir,
+    getManifest,
+    grantEntryStore,
   } = input;
 
   if (!recipeStore) {
@@ -112,6 +125,8 @@ export const composePackInstallRpcDeps = (
     ...(now ? { now } : {}),
     ...(recipeTrustStore ? { recipeTrustStore } : {}),
     ...(packDir !== undefined ? { packDir } : {}),
+    ...(getManifest ? { getManifest } : {}),
+    ...(grantEntryStore ? { grantEntryStore } : {}),
   };
 
   return { packInstallDeps };

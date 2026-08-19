@@ -138,6 +138,8 @@ import {
   type WebhookConsumerStore,
 } from '../storage/webhook-consumer-store.js';
 import { grandfatherPrimitiveGrants, reconcileOwnerGrants } from '../owner-grant-reconcile.js';
+import { installRecipeGrantSeed } from '../recipe-grant-seed.js';
+import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
 import { catalogSlugForConnection } from '../connection-operation-profile-boot.js';
 import { createLocalManifestStore } from '../ingredient-authoring/local-manifest-store.js';
 import { liveVendorRegistry } from '../connection-convention-families.js';
@@ -1022,6 +1024,28 @@ export const composeAppContext = (
     // policy-matrix seed. Makes the owner's "fully-granted contract" DB state mirror the
     // 3c UI 1:1; the owner-permissive author-default covers ids not enumerated here.
     reconcileOwnerGrants(contractStoreRef);
+    // ── D-247 D8 + D14 — the recipe grant seam ──────────────────────────────
+    //
+    // ⛔ DELIBERATELY NOT PART OF `reconcileOwnerGrants`, AND A RATCHET PINS
+    // THAT. The boot reconcile materialises from COMPILED registries precisely
+    // because "new ops arrive ONLY via a server source-code update …
+    // deterministic, never a runtime event". Recipes arrive at RUNTIME, from
+    // seven different `RecipeStore.save` callers, so they are seeded on the
+    // store's mutation seam instead — and PURGED there too when a recipe leaves,
+    // which is what keeps a grant from outliving its subject (D14).
+    //
+    // ⛔ REGISTERED UNCONDITIONALLY. The other `recipeStore` mutation consumer
+    // is wired behind `if (eventTriggersBundle || watchBundle)`; a grant seed
+    // behind a condition like that is a catalog that is empty on every install
+    // without the trigger substrate, and green in every test that has one.
+    //
+    // The corpus pass covers what predates the seam. Idempotent: a second boot
+    // writes nothing, because insert-if-absent skips both a grant and a revoke.
+    installRecipeGrantSeed({
+      store: recipeStore,
+      grants: createContractGrantEntryStore(contractStoreRef),
+      now: () => Date.now(),
+    });
     // D-228 slice 5 — grandfather EXISTING non-owner contracts onto the Tier-1
     // primitives before the gate can deny them. Must run beside the owner
     // reconcile on BOTH surfaces: a scoped door / D-196 customer is fail-closed

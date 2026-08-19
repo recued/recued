@@ -46,6 +46,11 @@ export const RESERVED_HANDLES: ReadonlySet<string> = new Set([
   // so a dotted pack stamp owned by either publisher handle would collide with
   // a genuine Tier-1 / ingredient-tool grant instead of failing structurally.
   'primitive', 'ingredient',
+  // D-247 D1 — `recipe.<publisher>/<recipe_id>`, the fifth grant-entry prefix.
+  // Same fence, same reason as the four above: a publisher holding the handle
+  // `recipe` would mint dotted op ids (`recipe.<pack>.<key>`) that `opGrantEntry`
+  // now throws on and that a stored key would classify as a RECIPE grant.
+  'recipe',
   // D-234 § 234.4h — `peer.label.<label>`, the fourth grant-entry prefix. ⚠ The
   // reserved handle is the FIRST SEGMENT, not the whole prefix: a stamped op id
   // is `<publisher>.<pack>.<key>`, so the collision needs publisher `peer` with

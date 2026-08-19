@@ -187,6 +187,9 @@ export const TRANSPARENCY_TEMPLATES_EN: Readonly<{
     if (e.termination_reason === 'max_rounds_exhausted') {
       return `stopped after ${e.total_rounds} round${e.total_rounds === 1 ? '' : 's'} — round budget reached`;
     }
+    if (e.termination_reason === 'output_unreadable') {
+      return `stopped after ${e.total_rounds} round${e.total_rounds === 1 ? '' : 's'} — the last reply could not be read`;
+    }
     return `stopped after ${e.total_rounds} round${e.total_rounds === 1 ? '' : 's'}`;
   },
 

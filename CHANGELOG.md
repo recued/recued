@@ -7,6 +7,80 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.8.18 — 2026-08-18
+
+This one is mostly about being told the truth. A recipe becomes something you
+grant rather than something a pack install implies on your behalf, so what an
+agent may run is a list you can read and change. Alongside it, a run of fixes to
+the part of chat that reads a model's reply — several shapes of tool call were
+being dropped silently, and a turn nobody could read was still reporting itself
+finished.
+
+### Added
+
+- **A recipe is now a grant of its own.** Installing a pack used to decide, by
+  itself, which of its recipes an agent could reach. `recipe` joins the grant
+  kinds, Contracts → Owner → Recipes gives each one a switch, and the install
+  screen discloses in advance which recipes it would enable — resolved on your
+  server, not guessed by the client. The access ceiling you pick at install time
+  is what seeds the grants, so the narrow choice stays narrow.
+- **Diagnostics name which gate refused an observation.** Five separate readings
+  of the same behaviour were wrong before this existed: a refusal looked
+  identical whichever rule produced it. It now says which one.
+- **A connection can be tested, and its wire role is detected rather than
+  declared.** Settings gets a Test connection button, and the role a provider
+  speaks is read off the wire instead of being a field you have to get right.
+- **A free-tier provider states what it does with your data** before you route
+  anything through it.
+
+### Changed
+
+- **The chat tool loop is a little longer and cheaper to spend.** The main-turn
+  ceiling goes from 8 to 10, and a round that only searched for tools no longer
+  charges against it — discovery is not work. Tool search is queried in plain
+  English.
+- **Recipe authoring derives what a guard requires** instead of asking every
+  author to remember it, and the validator stopped warning about 28 recipes that
+  were fine.
+
+### Fixed
+
+- **The install screen's recipe disclosure had no caller.** The preview shipped
+  complete — the rpc, the server handler, the renderer, the risk-scored access
+  picker — and nothing called it, so the dialog never showed which recipes an
+  install would enable and the access ceiling always fell back to the flattest
+  option. One layer down, the composer was never handed what it needed to
+  answer, so even a call that arrived would have reported "could not be
+  determined" for every recipe on every real server. Both layers were green
+  throughout: the tests called the pure functions directly, and the server suite
+  supplied a dependency the composition root did not. Paired with a server older
+  than this release, the dialog degrades to exactly its pre-disclosure surface
+  rather than failing.
+- **Tool calls the model really made were being dropped.** A bare native
+  tool-use block dispatched nothing at all, silently. Reading now covers every
+  shape a model emits, and refuses the one that is only an echo of a call
+  already made.
+- **A turn that could not be read no longer reports `completed`.** It says so,
+  and earns one guided retry — including when the unreadable output is the first
+  one, which was the case the earlier fix missed.
+- **Every bundled recipe lost its grant on each boot.** The corpus seed rewrote
+  them at startup, which also cost 1.7 seconds of every boot.
+- **The Back button works from Settings.** The rail switched pages without
+  writing an address, so Back left the section entirely rather than returning
+  through it.
+- **An owner's decision is joinable to what it decided about** in the audit
+  trail, which it was not before.
+- **`npm run build` failed on a fresh clone of this repository.** A Pro DDNS
+  drive under `backend/server/src/dev/` imports `miniflare`, which only ever
+  reaches the private tree through a workspace this distribution excludes — so
+  the file shipped without its dependency and the build stopped at TS2307. The
+  drive is omitted from the export now. It also means the `npm run ci` gate in
+  INSTALL.md could not have passed for anyone who cloned; it can now.
+- **Four dependency advisories cleared** — a `deepmerge-ts` pin (no upstream fix
+  exists: the current html-to-text still requires the affected major), a
+  lockfile-lagged `nanoid`, and esbuild moved to 0.28, which also collapses
+  three copies of it in the tree into one.
+
 ## 26.8.17 — 2026-08-17
 
 A large release, and most of it is about work you already have somewhere else —

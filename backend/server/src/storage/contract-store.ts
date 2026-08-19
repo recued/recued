@@ -69,6 +69,10 @@ export interface ContractStore {
    *  broader rows it refines + the row it replaces), throwing
    *  `ContractWriteLoosensError`. Idempotent upsert keyed on `(scope, segments)`. */
   put(scope: string, segments: readonly string[], value: unknown): void;
+  /** D-247 — write only when no row exists for `(scope, segments)`. Returns true
+   *  iff this call wrote. ⛔ Use for a SEED: `get`-then-`put` races another
+   *  process and can overwrite an explicit revoke written in between. */
+  putIfAbsent(scope: string, segments: readonly string[], value: unknown): boolean;
   /** Read one row (DATA or schema); null when absent. */
   get(scope: string, segments: readonly string[]): ContractRow | null;
   /** Prefix-scan — every row in `scope` whose segments START WITH
@@ -191,6 +195,19 @@ export const createContractStore = (
          value_inline = excluded.value_inline,
          written_at   = excluded.written_at`,
   );
+  /** D-247 — INSERT-IF-ABSENT, atomically.
+   *
+   *  ⛔⛔ A READ-THEN-`put` IS NOT THE SAME THING ACROSS TWO PROCESSES, and the
+   *  two boot paths (serve + stdio MCP) share one WAL database. Interleaving:
+   *  A reads absent → B writes the owner's explicit `false` → A's `put`
+   *  overwrites it with the seed's `true`, REOPENING A REVOKE. `DO NOTHING`
+   *  makes the check and the write one statement, so the loser of the race
+   *  simply does not write. */
+  const putIfAbsentStmt = db.prepare(
+    `INSERT INTO ${TABLE} (scope, seg_key, value_inline, written_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT (scope, seg_key) DO NOTHING`,
+  );
   const getStmt = db.prepare(
     `SELECT seg_key, value_inline, written_at FROM ${TABLE} WHERE scope = ? AND seg_key = ?`,
   );
@@ -278,6 +295,16 @@ export const createContractStore = (
   };
 
   return {
+    putIfAbsent(scope, segments, value) {
+      // Same validation the ordinary `put` runs — a seed must not be able to
+      // write a shape the write path would have rejected.
+      const issues = validateContractWrite(registry, scope, segments, value);
+      if (issues.length > 0) throw new ContractWriteInvalidError(scope, segments, issues);
+      const info = putIfAbsentStmt.run(
+        scope, encodeSegKey(segments), JSON.stringify(value), now(),
+      );
+      return info.changes > 0;
+    },
     put(scope, segments, value) {
       const issues = validateContractWrite(registry, scope, segments, value);
       if (issues.length > 0) throw new ContractWriteInvalidError(scope, segments, issues);

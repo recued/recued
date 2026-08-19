@@ -765,8 +765,9 @@ export const STANDING_CLOSURE_RISK_TIERS: ReadonlyArray<string> =
  *  of them would keep asking, or worse, keep admitting after the other stopped.
  *
  *  Fail-closed on every axis: no snapshot, no closure field, an op not named, a
- *  tier above `write`, or a snapshot for some OTHER contract than the one this
- *  dispatch runs under ⇒ `false`, and the gate raises exactly as before. */
+ *  tier above `write`, a snapshot for some OTHER contract than the one this
+ *  dispatch runs under, OR an `ask` that came from the commitment-proposal lift
+ *  ⇒ `false`, and the gate raises exactly as before. */
 export const standingClosureAdmits = (
   snapshot: ContractSnapshot | undefined,
   // ⛔ THE REAL `ExecutionSource`, not a structural `{ contract_id?: string }`.
@@ -778,8 +779,45 @@ export const standingClosureAdmits = (
   source: ExecutionSource | undefined,
   operation_id: string | undefined,
   risk_tier: string | undefined,
+  /** D-192 F1 invariant 3 — why the closure must see a LIFT, not just a tier.
+   *
+   *  ⛔⛔ A LIFT IS NOT A PERMISSION, AND THAT IS THE WHOLE POINT. Standing
+   *  closure answers "MAY this op run?" — the review-once-then-stands model the
+   *  owner confirmed at bind, and nothing here weakens it. A lift answers a
+   *  different question: "what does this op MEAN?". `commitment-propose` has
+   *  the SAME MINT EFFECT as `commitment.create` (kernel-op-registry.ts, its
+   *  own words); the ONLY thing making it a proposal rather than a fait
+   *  accompli is that it HOLDS. Admit it unattended and the two ops become
+   *  functionally identical and the proposal surface stops expressing anything.
+   *
+   *  ⛔ AND THE TIER CANNOT CARRY THIS. `liftCommitmentProposal` is a pure
+   *  tightening that moves the VERDICT to `ask` while deliberately PRESERVING
+   *  `effective_risk_tier` at `write` for audit — so a tier-only test sees an
+   *  ordinary `write` op sitting in the closure and admits it. The lift was
+   *  invisible at BOTH ends: `opsThatAskAnyway` (reception-door-bind.ts) filters
+   *  on raw `risk`, so the consent screen never listed it either. The gate and
+   *  the screen agreed with each other and both were wrong, which is exactly
+   *  why no test saw this.
+   *
+   *  🔑 `'review_send'` deliberately still ADMITS. Its unattended relax IS the
+   *  feature — a form's reply email running without a pause is the point — and
+   *  D-192 F1 enumerates that asymmetry against the commitment lift on purpose.
+   *  Only the commitment lift is closure-proof. `'quality'` also still admits:
+   *  it is not a meaning-bearing surface distinction.
+   *
+   *  ⚠ This costs the unattended-minting use case NOTHING, because it is
+   *  already expressible and always was — use `commitment.create`, which the
+   *  lift's own docblock names as the way to "author it directly via
+   *  commitment-create to skip review".
+   *
+   *  Found by invention round 9 (AUD-T5-A), latent at the time: 0 of 2,274
+   *  shipped recipes name `core.work-entity.commitment.propose`, so this had
+   *  never fired in production — it would have gone live the moment anyone
+   *  bound a door recipe that proposes commitments. */
+  lift_reason: 'review_send' | 'review_commitment' | 'quality' | undefined,
 ): boolean => {
   if (snapshot === undefined || operation_id === undefined) return false;
+  if (lift_reason === 'review_commitment') return false;
   const closure = snapshot.standing_closure_operation_ids;
   if (closure === undefined) return false;
   if (risk_tier === undefined || !STANDING_CLOSURE_RISK_TIERS.includes(risk_tier)) {

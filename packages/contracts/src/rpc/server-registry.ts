@@ -449,11 +449,49 @@ export type ServerLlmCallerSystemPolicy =
  *  READ-ONLY beneath the editor: an owner should be able to SEE everything else
  *  the model is told. A fence you cannot read is indistinguishable from a fence
  *  that is not there. */
+/** Test connection — what one real call against a configured source found.
+ *
+ *  `server.setLLMSlot` is parse-and-persist: nothing in the save path makes a
+ *  network call, so a wrong key / missing model / typo'd base_url is accepted
+ *  silently and surfaces hours later as a failed recipe. This is the answer to
+ *  "did I set this up right?". */
+export type ServerLlmProbeDiagnosis =
+  | 'ok'
+  | 'auth'
+  | 'unreachable'
+  | 'model_missing'
+  | 'rate_limited'
+  | 'provider_error'
+  | 'rejected';
+
+export interface ServerLlmProbeResult {
+  ok: boolean;
+  diagnosis: ServerLlmProbeDiagnosis;
+  /** The provider's own words, truncated upstream. Shown under the verdict —
+   *  an owner debugging a self-hosted endpoint needs the raw text, and
+   *  paraphrasing hides the one detail that identifies the problem. */
+  detail?: string;
+  /** ⚠ Present ONLY when the probe succeeded. A failed call learned nothing
+   *  about capabilities, and shipping a default here as though it were observed
+   *  is how a "verified" badge starts lying. */
+  accepts_system_role?: boolean;
+  supports_json?: boolean;
+  /** Embeddings only, and only on success — the vector width actually
+   *  returned. A model quietly serving 768-d where the owner expected 1536-d
+   *  is a working connection that produces unusable neighbours. */
+  dimensions?: number;
+  elapsed_ms: number;
+}
+
 export interface ServerLlmPrompt {
   surface: ServerLlmPromptSurface;
   /** The owner's block 1 in force (their text when authored, else the built-in). */
   role_instructions: string;
-  /** The built-in block 1. Pre-fills the editor; what "Reset to default" restores. */
+  /** The built-in block 1. Pre-fills the editor, and is what the editor's
+   *  "Load default" drops into the box — a CLIENT-side fill, written back only
+   *  if the owner then saves. A save carrying text equal to this one sends
+   *  `role_instructions: null` rather than a copy, so the row is deleted and
+   *  `is_default` returns to true. */
   default_role_instructions: string;
   /** The blocks the owner cannot edit, in the order the model reads them. */
   always_on_text: string[];
@@ -1318,6 +1356,47 @@ export type ServerRpcRegistry = {
    *
    *  ⚠ `role_instructions` is block 1 ONLY. Recued's core + feature text are
    *  composed around it and are not writable through this rpc, or any rpc. */
+  // ── Test connection ────────────────────────────────────────────
+  /** Send ONE minimal completion to a configured source and report what came
+   *  back: credential valid, endpoint reachable, model present — and, when it
+   *  succeeds, the two capability facts nothing else verifies
+   *  (`supports_json` is owner-DECLARED and defaults on; the `system` wire role
+   *  is detected at runtime but never surfaced).
+   *
+   *  `slot` omitted probes what is SAVED. `slot` present probes a DRAFT before
+   *  the owner commits it — the server resolves a blank `api_key` against the
+   *  stored one using the same rule as `server.setLLMSlot`, including its
+   *  "changed provider/base_url drops the key" guard. Without that, testing an
+   *  unsaved edit would quietly test the old endpoint with the new key.
+   *
+   *  ⚠ Costs a real request against the owner's credential, so it is
+   *  button-driven only, never automatic on save, and its usage is metered like
+   *  any other call. */
+  'server.probeLlmSource': RpcMethodSpec<
+    {
+      /** WHAT to probe. The handler decides HOW: `embeddings_slot` is a
+       *  different provider call (`embed`, its own adapter registry, no chat
+       *  capability questions), not the chat probe pointed elsewhere. */
+      target:
+        | { kind: 'slot'; slot_key: 'slot_1' | 'slot_2' | 'embeddings_slot' }
+        | { kind: 'pool_entry'; entry_id: string };
+      /** Omit to probe what is SAVED; provide to probe an unsaved draft.
+       *
+       *  ⚠ Pool rows have no editable fields in the UI (they are add/remove,
+       *  not edit), so a pool probe always omits this — but the field is not
+       *  target-specific, and gating it in the type would only move the
+       *  "which shapes are legal" question into a place the handler still has
+       *  to answer. */
+      draft?: {
+        provider: string;
+        model: string;
+        api_key?: string;
+        base_url?: string;
+        supports_json?: boolean;
+      } | null;
+    },
+    ServerLlmProbeResult
+  >;
   'server.setLlmPrompt': RpcMethodSpec<
     {
       surface: ServerLlmPromptSurface;
@@ -1750,6 +1829,30 @@ export type ServerRpcRegistry = {
        * replaces its authority in the disarmed state. */
       webhook?: LocalRecipeWebhookStatus;
     }
+  >;
+
+  /** D-247 D14.1 — the owner's DELETE gesture. Owner-only / local-UI; off the
+   *  MCP surface via the `recipe.` reserved prefix, so an authoring agent cannot
+   *  remove the owner's recipes.
+   *
+   *  ⛔⛔ FOUR OUTCOMES, NEVER A BOOLEAN. `bundled` and `pack_owned` are both
+   *  "not deleted" for reasons the caller must act on DIFFERENTLY, and
+   *  `RecipeStore.delete` returns `result.changes > 0` — which for a bundled
+   *  recipe is a silent `false` while the recipe keeps resolving from the
+   *  bundle. "Returned false" reading as "fine, nothing to delete" is how this
+   *  ships broken.
+   *
+   *  ⛔ `pack_owned` iff the row's `pack_slug` is set AND that pack is still
+   *  INSTALLED. A `pack_slug` naming an uninstalled pack must DELETE: the
+   *  refusal fails closed, and with no second path (you cannot uninstall a pack
+   *  that is not installed) a wrong refusal strands the recipe permanently. The
+   *  inventory is known to drift — `pack-inventory.ts` records the case. */
+  'recipe.delete': RpcMethodSpec<
+    { recipe_id: string },
+    | { deleted: true }
+    | { deleted: false; reason: 'not_found' }
+    | { deleted: false; reason: 'bundled' }
+    | { deleted: false; reason: 'pack_owned'; pack_slug: string }
   >;
 
   /** Recipe-editor authoring seam — validate an inline-authored recipe
@@ -3040,6 +3143,42 @@ export type ServerRpcRegistry = {
     { ingredients: CatalogIngredientView[] }
   >;
 
+  /** D-247 D13 + D11 — which ops ran ONLY because a granted recipe covered them,
+   *  over one bounded window. ONE aggregate per RENDER, never per row: the grant
+   *  matrix would otherwise ask this once per cell.
+   *
+   *  ⛔ `window_days` COMES BACK, and the copy must use it. `data.audit` is
+   *  quota'd and evicts oldest-first, so a count of 0 means NOT IN THE RETAINED
+   *  WINDOW — never "never used". `oldest_scanned_at` says how far back the
+   *  ledger actually reaches; when it is newer than the window start, retention
+   *  rather than inactivity bounded the answer.
+   *
+   *  ⚠ An op with no coverage-admitted run is ABSENT from `operations`, not
+   *  present with a zero — a caller cannot accidentally render a confident zero
+   *  for an op the ledger simply never mentioned. */
+  'contract.recipeOpUsage': RpcMethodSpec<
+    { window_days?: number },
+    {
+      operations: Array<{
+        operation_id: string;
+        /** D11's STATIC half — recipe ids whose bodies dispatch this op, derived
+         *  from `buildRecipeOpDependencyIndex`. "Which recipes COULD reach it." */
+        could: string[];
+        /** D11's ACTUAL half — how many dispatches reached it ONLY because a
+         *  recipe covered them, inside `window_days`. */
+        count: number;
+        /** The covering recipes for those dispatches, by wire name. */
+        recipes: string[];
+      }>;
+      window_days: number;
+      oldest_scanned_at: number | null;
+      /** Recipes whose closure could not be derived, so their "could" is unknown
+       *  rather than empty. ⛔ The copy must not render an absence here as
+       *  "nothing uses this" — a templated dispatch is unknowable, not idle. */
+      underivable: string[];
+    }
+  >;
+
   /** D-211 — list every loaded pack operation, including the one slug-keyed
    * operation of simple-form ingredients, for the global owner-default editor. */
   'collection.operation.listOperations': RpcMethodSpec<
@@ -4297,6 +4436,37 @@ export type ServerRpcRegistry = {
    *  Returns the engine's `BulkPackInstallResult` as the rpc result so
    *  the Settings UI can render targeted failure copy per
    *  `failure.code`. */
+  /** D-247 D15 — what installing this manifest will make the AI able to reach.
+   *
+   *  ⛔ SERVER-RESOLVED. `chat_exposed` lives on the recipe BODY, which the
+   *  manifest does not carry (measured: 0 of 2,310 refs across 340 shipped
+   *  packs), and it resolves through the SAME function the install runs so the
+   *  preview cannot name a different set from the one the install enables.
+   *
+   *  ⛔ `resolved: false` ⇒ the picker renders NOTHING. A count it cannot verify
+   *  is assurance-shaped non-assurance; the install then proceeds under the
+   *  existing pack-level consent, unchanged.
+   *
+   *  ⚠ Not a gate. It changes what the owner SEES, never what the install writes. */
+  'packs.install_preview': RpcMethodSpec<
+    { manifest: unknown },
+    {
+      resolved: boolean;
+      will_enable: Array<{
+        publisher_id: string;
+        recipe_id: string;
+        name: string;
+        /** D10's consent-copy class. `unknown` when the closure is underivable —
+         *  a confident wrong label is worse than an honest blank. */
+        grant_class: 'constraining' | 'read_adapter' | 'open_adapter' | 'unknown';
+        top_risk: 'read' | 'write' | 'admin' | 'destructive' | null;
+        operation_ids: string[];
+      }>;
+      /** Refs that resolved but install CLOSED (`chat_exposed` false). */
+      hidden_count: number;
+    }
+  >;
+
   'packs.install': RpcMethodSpec<
     {
       manifest: unknown;
@@ -6628,6 +6798,7 @@ export const SERVER_RPC_METHODS = [
   'server.setChatCatalogMode',
   'server.getLlmPrompts',
   'server.setLlmPrompt',
+  'server.probeLlmSource',
   'server.getConfigSchema',
   'server.setConfigField',
   'server.seller.getOverview',
@@ -6666,6 +6837,7 @@ export const SERVER_RPC_METHODS = [
   // NOT in MCP_TOOL_CATALOG (authoring writes stay off the MCP-channel agent
   // surface, ratchet-enforced by the `recipe.` reserved prefix).
   'recipe.save',
+  'recipe.delete',
   'recipe.validate',
   'recipe.webhook.status',
   'recipe.webhook.arm',
@@ -6844,6 +7016,7 @@ export const SERVER_RPC_METHODS = [
   'collection.contract.deleteOverride',
   'collection.contract.listOverrides',
   'collection.contract.listCatalogOperations',
+  'contract.recipeOpUsage',
   // D-211 global owner operation-default replacements (local owner only).
   'collection.operation.listOperations',
   'collection.operation.upsertOwnerOverride',
@@ -6989,6 +7162,7 @@ export const SERVER_RPC_METHODS = [
   // (`packs.` in MCP_RESERVED_RPC_PREFIXES) so MCP-channel agents
   // cannot ship attacker-controlled SI rules / body grants / recipes.
   'packs.install',
+  'packs.install_preview',
   // Install seam 5c — pack install BY SLUG from the marketplace (the apex
   // `#packs/<slug>` detail/consent handoff + in-app Discover). Same `packs.`
   // reserved-prefix gate as `packs.install`.

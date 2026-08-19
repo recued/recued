@@ -221,6 +221,9 @@ describe('makePackInstallHandlers', () => {
     // Add-a-pack (a3efa387) added the `packs.resolveBySlug` manifest-preview method.
     expect(slice?.methods).toEqual([
       'packs.install',
+      // D-247 D15 — the install PREVIEW rides the same slice, because it must
+      // resolve recipe bodies through the install's own resolver.
+      'packs.install_preview',
       'packs.installBySlug',
       'packs.resolveBySlug',
       'recipe.installBySlug',

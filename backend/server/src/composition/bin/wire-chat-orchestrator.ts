@@ -52,7 +52,8 @@ import type {
   InternalToolRegistry,
   WebChatTab,
 } from '@recued/contracts';
-import { primitiveGrantEntry,
+import type { ExecutionSource, ToolEntry } from '@recued/contracts';
+import { recipeGrantEntry, primitiveGrantEntry,
   isGrantableKernelOp,
   isRegisteredKernelOp,
   RAW_OP_TOOL_PREFIX,
@@ -78,7 +79,7 @@ import {
 import { createMiddlewareRegistry } from '@recued/middleware';
 
 import { createInternalToolRegistry } from '@recued/middleware/internal-tool-registry/index.js';
-import { createOpKindLookup, hashRecipe, parseRecipe } from '@recued/recipes';
+import { buildTier2Catalog, createOpKindLookup, hashRecipe, parseRecipe } from '@recued/recipes';
 import { registerFirstPartyMiddlewares } from '@recued/middleware-recued';
 import { registerPromptCacheMiddleware } from '@recued/middleware-prompt-cache';
 import { buildPackOpResolution } from '../../pack-inventory.js';
@@ -765,6 +766,38 @@ export const composeChatOrchestrator = (
     },
   });
 
+  // ⛔⛔ D-247 D8 — THE OWNER'S TIER-2 CATALOG, PROJECTED WITHOUT THE
+  // `chat_exposed` FILTER, AND THIS IS THE POINT OF THE DECISION.
+  //
+  // `buildTier2ToolEntry` drops a hidden recipe BEFORE any grant is consulted,
+  // and a filter applied downstream can only NARROW what the projection produced.
+  // So an owner who explicitly granted a hidden recipe got nothing back: the flag
+  // was still the gate D-247 exists to demote to a seed. Projecting the full set
+  // and letting the `recipe.*` grant decide is what makes the grant authoritative
+  // rather than advisory.
+  //
+  // ⚠ null for anything NOT owner-governed, leaving the registry's own
+  // (still flag-filtered) entries in place. A door has no `recipe.*` axis, so
+  // handing it the unfiltered set would widen it with nothing left to narrow it.
+  //
+  // ⚠ Shared by BOTH owner exposure surfaces — the main catalog and
+  // `tools.search`. Wiring one and not the other is a grant that works in the
+  // catalog and silently does not in search.
+  const tier2OwnerCatalog = (
+    source?: ExecutionSource,
+  ): ReadonlyArray<ToolEntry> | null => {
+    if (source === undefined) return null;
+    const gate = getExecuteDeps()?.opAdmissionGate;
+    if (gate === undefined || !gate.isOwnerGoverned(source)) return null;
+    const reachable = chatToolRegistryInputs.tier2GrantFilter(source);
+    return buildTier2Catalog(
+      chatToolRegistryInputs.tier2Source.listRecipes(),
+      chatToolRegistryInputs.manifestLookup,
+      opKindLookup,
+      true,
+    ).filter((entry) => reachable(entry.name));
+  };
+
   const internalRegistry = createInternalToolRegistry({
     tier1Handlers: chatToolRegistryInputs.tier1Handlers,
     // ⛔⛔ D-228 slice 5 — the contract gates Tier-1 primitives on the INTERNAL
@@ -787,6 +820,26 @@ export const composeChatOrchestrator = (
       const gate = getExecuteDeps()?.opAdmissionGate;
       if (gate === undefined || ctx.execution_source === undefined) return true;
       return gate.isOpGranted(ctx.execution_source, primitiveGrantEntry(name));
+    },
+    // ⛔ D-247 D9 — the DISPATCH re-check. Visibility is filtered beside the
+    // registry (three surfaces, each holding the turn's source); this is what
+    // stops a name the model already holds from an earlier turn surviving a
+    // revoke. Same late-binding as `admitTier1` above, for the same reason.
+    admitTier2: (name, ctx) => {
+      const gate = getExecuteDeps()?.opAdmissionGate;
+      if (gate === undefined || ctx.execution_source === undefined) return true;
+      // ⛔⛔ ASK "IS THIS THE OWNER" BEFORE "IS IT GRANTED". `isOwnerRecipeGranted`
+      // answers `false` for a DOOR structurally — its recipe authority is its
+      // inbound token, not the owner's contract — so skipping this check would
+      // refuse every Tier-2 dispatch on every door, a total outage that reads
+      // like a working gate.
+      if (!gate.isOwnerGoverned(ctx.execution_source)) return true;
+      const slash = name.indexOf('/');
+      if (slash <= 0 || slash === name.length - 1) return true;
+      return gate.isOwnerRecipeGranted(
+        ctx.execution_source,
+        recipeGrantEntry(name.slice(0, slash), name.slice(slash + 1)),
+      );
     },
     tier2Source: chatToolRegistryInputs.tier2Source,
     manifestLookup: chatToolRegistryInputs.manifestLookup,
@@ -849,22 +902,27 @@ export const composeChatOrchestrator = (
   // `=== '1'`). A per-source override in Settings → AI/Models still wins over
   // the smart default either way.
   //
-  // ⚠ THE MAP IS `index` FOR EVERY SOURCE — see
-  // `CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE`: `{ free_pool, slot_1, slot_2 }` all
-  // resolve to `'index'`. This comment used to say "`free_pool → index`, BYOK
-  // slots stay `full`", and that a deployment thinning everything via
-  // `RECUED_CHAT_CATALOG_MODE=index` would see "its BYOK slots revert to `full`
-  // on upgrade". Both were true of an earlier map and are now the opposite of
-  // what ships. Measured against the live wire (2026-08-05, bench seed, 2,146
-  // recipes, BYOK slot_1) — catalog prefix, and the input tokens it costs:
+  // ⛔ DO NOT RESTATE THE MAP HERE. READ IT:
+  // `CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE` (contracts) is the only statement of
+  // which mode each source gets, and it has now moved TWICE under a comment that
+  // named a value — `full` for BYOK slots, then `index` for every source, and as
+  // of this correction (2026-08-18) `lean-core` for every source. Each revision
+  // fixed the words and left the same defect in place, because the defect is
+  // restating a value that lives somewhere else.
   //
-  //     smart default (ships)  ->  index       232,733 chars   49,091 tok
-  //     SMART_DEFAULTS=0       ->  full        520,418 chars  110,210 tok
-  //     ...=0 + MODE=lean-core ->  lean-core    20,211 chars    5,140 tok
-  //
-  // ⚠ A stale comment here is expensive in a specific way: it makes the DEFAULT
+  // ⚠ A stale value here is expensive in a specific way: it makes the DEFAULT
   // look like the costly branch, so a reader goes hunting for a knob that is
-  // already on. Quote the map, don't restate it.
+  // already on. The previous revision wrote exactly that warning one paragraph
+  // below a restated map, and the map went stale anyway.
+  //
+  // Measured against the live wire (2026-08-05, bench seed, 2,146 recipes, BYOK
+  // slot_1) — catalog prefix, and the input tokens it costs. ⚠ These are the
+  // costs OF EACH MODE, not a claim about which one ships; the shipping default
+  // is whatever the map says today:
+  //
+  //     full        520,418 chars  110,210 tok
+  //     index       232,733 chars   49,091 tok
+  //     lean-core    20,211 chars    5,140 tok
   //
   // ⚠ Precedence (resolveCatalogModeForSource): explicit override → smart
   // default (known source) → env-global `RECUED_CHAT_CATALOG_MODE` → full. With
@@ -925,6 +983,8 @@ export const composeChatOrchestrator = (
       }),
       CHAT_CATALOG_DELIVERY_MODES,
       () => toolCatalogStore.getScope() ?? null,
+      chatToolRegistryInputs.tier2GrantFilter,
+      tier2OwnerCatalog,
     ),
     {
       backend: createRecallSearchBackend(chatStore),
@@ -1134,6 +1194,24 @@ export const composeChatOrchestrator = (
     // dispatch got above; see its definition for why that matters.
     connectionMcpPackCoverage,
     rawOpSource: chatToolRegistryInputs.rawOpSource,
+    // D-247 D9 — the Tier-2 reachability predicate, shared by `tools.search`
+    // and the dispatch re-check.
+    tier2GrantFilter: chatToolRegistryInputs.tier2GrantFilter,
+    // ⛔⛔ D-247 D8 — THE OWNER'S TIER-2 CATALOG IS PROJECTED WITHOUT THE
+    // `chat_exposed` FILTER, AND THIS IS THE WHOLE POINT OF THE DECISION.
+    //
+    // `buildTier2ToolEntry` drops a hidden recipe BEFORE any grant is consulted,
+    // and a filter applied downstream can only NARROW what the projection
+    // produced. So an owner who explicitly granted a hidden recipe got nothing:
+    // the flag was still the gate D-247 exists to demote. Projecting the full set
+    // here and letting the `recipe.*` grant decide is what makes the grant
+    // authoritative rather than advisory.
+    //
+    // ⚠ Returns null for anything NOT owner-governed, which leaves the
+    // registry's own (still `chat_exposed`-filtered) entries in place. A door has
+    // no `recipe.*` axis, so handing it the unfiltered set would widen it with
+    // nothing left to narrow it.
+    tier2OwnerCatalog,
     // The paired dispatch half. Raw ops stay outside InternalToolRegistry
     // because their visible set is contract-derived per turn; the orchestrator
     // resolves the same source row before routing here.
@@ -1675,9 +1753,28 @@ export const composeChatOrchestrator = (
     //      ingredients) — the projection matches that. Undefined executor
     //      config (pre-wire / dbless harness) ⇒ registry-only.
     catalogProvider: () => {
-      const registryEntries = internalRegistry
-        .list()
-        .filter((entry) => entry.tier !== 3);
+      // ⛔⛔ D-247 D8 — THE GRANT PICKER SHOWS HIDDEN RECIPES TOO, AND THIS IS THE
+      // SAME DEFECT CODEX FOUND ON THE OWNER'S CATALOG, ONE SURFACE OVER.
+      //
+      // `internalRegistry.list()` projects Tier 2 through the `chat_exposed`
+      // filter, so a hidden recipe never appeared here — and the owner could not
+      // grant one to a DOOR even deliberately. `chat_exposed` is the AUTHOR's
+      // default; it is a good default and a bad gate (D8), and that thesis does
+      // not stop at the owner's own catalog.
+      //
+      // ⚠ THIS WIDENS NOTHING. It is the list the owner PICKS FROM when granting
+      // an inbound token; every tool still defaults deny per-token, and a door
+      // reaches a recipe only once the owner ticks it. Showing a choice is not
+      // making it.
+      const registryEntries = [
+        ...internalRegistry.list().filter((entry) => entry.tier !== 3 && entry.tier !== 2),
+        ...buildTier2Catalog(
+          chatToolRegistryInputs.tier2Source.listRecipes(),
+          chatToolRegistryInputs.manifestLookup,
+          opKindLookup,
+          true,
+        ),
+      ];
       const executorConfig = getExecutorConfig();
       // D-182 §8 — thread the installed-pack inventory scan so the grant catalog
       // ALSO offers grantable raw catalog ops (`recued_op_<opid>`), plus the

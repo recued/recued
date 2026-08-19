@@ -29,6 +29,7 @@ import {
   AI_MODELS_CHAT_SETUP_STATUS_ATTR,
   AI_MODELS_CHAT_SETUP_SUBMIT_ATTR,
   AI_MODELS_CONTEXT_WINDOW_INPUT_ATTR,
+  AI_MODELS_CONTROL_ATTR,
   AI_MODELS_EMBEDDINGS_FIELD_ATTR,
   AI_MODELS_FAIL_LOUD_ATTR,
   AI_MODELS_MODEL_PREF_BUTTON_ATTR,
@@ -42,14 +43,18 @@ import {
   AI_MODELS_POOL_REMOVE_ATTR,
   AI_MODELS_POOL_TOGGLE_ATTR,
   AI_MODELS_PROMPT_BADGE_ATTR,
-  AI_MODELS_PROMPT_RESET_ATTR,
-  AI_MODELS_PROMPT_ROLE_ATTR,
+  AI_MODELS_PROMPT_LOAD_DEFAULT_ATTR,
   AI_MODELS_PROMPT_SAVE_ATTR,
+  AI_MODELS_PROMPT_STATUS_ATTR,
+  AI_MODELS_PROMPT_TRANSPORT_ATTR,
+  AI_MODELS_PROMPT_TRANSPORT_RESET_ATTR,
   AI_MODELS_PROMPT_ALWAYS_ATTR,
   AI_MODELS_PROMPT_POLICY_ATTR,
   AI_MODELS_PROMPT_SECTION_ATTR,
   AI_MODELS_PROMPT_TEXT_ATTR,
   AI_MODELS_SLOT_FIELD_ATTR,
+  AI_MODELS_SLOT_TEST_ATTR,
+  AI_MODELS_SLOT_TEST_RESULT_ATTR,
   AI_MODELS_SLOT_CLEAR_ATTR,
   AI_MODELS_SLOT_CLEAR_CANCEL_ATTR,
   AI_MODELS_SLOT_CLEAR_CONFIRM_ATTR,
@@ -2396,20 +2401,15 @@ describe('System prompts — the box holds the role, not the whole prompt', () =
       )?.getAttribute('aria-label')).toBe(`${title} system prompt`);
       expect(findByAttrValue(
         host,
-        AI_MODELS_PROMPT_ROLE_ATTR,
-        surface,
-      )?.getAttribute('aria-label')).toBe(`${title} delivery role`);
-      expect(findByAttrValue(
-        host,
         AI_MODELS_PROMPT_SAVE_ATTR,
         surface,
       )?.getAttribute('aria-label')).toBe(`Save ${title} system prompt`);
       expect(findByAttrValue(
         host,
-        AI_MODELS_PROMPT_RESET_ATTR,
+        AI_MODELS_PROMPT_LOAD_DEFAULT_ATTR,
         surface,
       )?.getAttribute('aria-label'))
-        .toBe(`Reset ${title} system prompt to default`);
+        .toBe(`Load the built-in ${title} system prompt into the editor`);
       expect(findByAttrValue(
         host,
         AI_MODELS_PROMPT_ALWAYS_ATTR,
@@ -2443,16 +2443,88 @@ describe('System prompts — the box holds the role, not the whole prompt', () =
     await mount.whenLoaded();
 
     const area = findByAttrValue(host, AI_MODELS_PROMPT_TEXT_ATTR, 'chat')!;
-    const role = findByAttrValue(host, AI_MODELS_PROMPT_ROLE_ATTR, 'chat')!;
+    const status = findByAttrValue(host, AI_MODELS_PROMPT_STATUS_ATTR, 'chat')!;
     area.value = 'A two-keystroke draft';
     for (const listener of area.listeners.get('input') ?? []) listener({});
+    // Element IDENTITY, not just value: a re-render here would rebuild the
+    // textarea and drop the caret mid-word.
     expect(findByAttrValue(host, AI_MODELS_PROMPT_TEXT_ATTR, 'chat')).toBe(area);
-
-    role.value = 'user';
-    for (const listener of role.listeners.get('change') ?? []) listener({});
-    expect(findByAttrValue(host, AI_MODELS_PROMPT_ROLE_ATTR, 'chat')).toBe(role);
+    expect(findByAttrValue(host, AI_MODELS_PROMPT_STATUS_ATTR, 'chat'))
+      .toBe(status);
     expect(findByAttrValue(host, AI_MODELS_PROMPT_TEXT_ATTR, 'chat')?.value)
       .toBe('A two-keystroke draft');
+
+    const policy = findByAttrValue(host, AI_MODELS_PROMPT_POLICY_ATTR, 'llm_gateway')!;
+    policy.value = 'append';
+    for (const listener of policy.listeners.get('change') ?? []) listener({});
+    expect(findByAttrValue(host, AI_MODELS_PROMPT_POLICY_ATTR, 'llm_gateway'))
+      .toBe(policy);
+    mount.dispose();
+  });
+
+  /** ⛔ THE WHOLE POINT OF THE CARD'S SHAPE. A `<select>` offering
+   *  `system / user / assistant` beside a prompt box and a Save button reads as
+   *  "choose which prompt you are writing" / "save the text INTO a role". There
+   *  is ONE stored string per surface delivered as ONE message — three options
+   *  in the save path describe a data shape the substrate does not have. */
+  it('offers no wire-role picker — one string, one message, no destination', async () => {
+    const { host, mount } = mountFixture();
+    await mount.whenLoaded();
+
+    for (const surface of ['chat', 'llm_gateway'] as const) {
+      const section = findByAttrValue(
+        host,
+        AI_MODELS_PROMPT_SECTION_ATTR,
+        surface,
+      )!;
+      const selects: FakeElement[] = [];
+      const walk = (node: FakeElement): void => {
+        if (node.tagName === 'SELECT') selects.push(node);
+        for (const child of node.children) walk(child);
+      };
+      walk(section);
+      // The gateway keeps exactly one — the caller policy, which is a real
+      // decision about a stranger's text, not a transport knob.
+      const expected = surface === 'llm_gateway' ? 1 : 0;
+      expect(selects.length).toBe(expected);
+      for (const select of selects) {
+        expect(select.getAttribute(AI_MODELS_PROMPT_POLICY_ATTR)).toBe(surface);
+      }
+    }
+    mount.dispose();
+  });
+
+  it('says whether the box holds what is saved, and changes when it stops', async () => {
+    const { host, mount } = mountFixture({
+      runGetLlmPrompts: vi.fn(async () => ({
+        prompts: llmPrompts({
+          surface: 'llm_gateway',
+          role_instructions: 'You are a dentist.',
+          is_default: false,
+        }),
+      })),
+    });
+    await mount.whenLoaded();
+
+    // The badge reports the ROW; this reports the BOX. They agree until a
+    // keystroke, which is exactly when the owner needs to be told they differ.
+    expect(findByAttrValue(host, AI_MODELS_PROMPT_STATUS_ATTR, 'chat')?.textContent)
+      .toBe('Showing the built-in default, in force now.');
+    expect(
+      findByAttrValue(host, AI_MODELS_PROMPT_STATUS_ATTR, 'llm_gateway')?.textContent,
+    ).toBe('Showing your saved prompt, in force now.');
+
+    const area = findByAttrValue(host, AI_MODELS_PROMPT_TEXT_ATTR, 'chat')!;
+    area.value = 'You are a lawyer.';
+    for (const listener of area.listeners.get('input') ?? []) listener({});
+    expect(findByAttrValue(host, AI_MODELS_PROMPT_STATUS_ATTR, 'chat')?.textContent)
+      .toBe('Unsaved changes — Save to put this in force.');
+
+    // …and back: typing the saved text again is not a change.
+    area.value = CHAT_ROLE_DEFAULT;
+    for (const listener of area.listeners.get('input') ?? []) listener({});
+    expect(findByAttrValue(host, AI_MODELS_PROMPT_STATUS_ATTR, 'chat')?.textContent)
+      .toBe('Showing the built-in default, in force now.');
     mount.dispose();
   });
 
@@ -2513,26 +2585,32 @@ describe('System prompts — saving, the policy, and the reset that is a delete'
     clickByAttrValue(host, AI_MODELS_PROMPT_SAVE_ATTR, 'chat');
 
     const pending = findByAttrValue(host, AI_MODELS_PROMPT_SAVE_ATTR, 'chat');
-    const reset = findByAttrValue(host, AI_MODELS_PROMPT_RESET_ATTR, 'chat');
+    const loadDefault = findByAttrValue(
+      host,
+      AI_MODELS_PROMPT_LOAD_DEFAULT_ATTR,
+      'chat',
+    );
     expect(pending?.textContent).toBe('Saving…');
     expect(pending?.getAttribute('aria-disabled')).toBe('true');
     expect(pending?.getAttribute('aria-busy')).toBe('true');
     expect(pending?.disabled).toBe(false);
-    expect(reset?.getAttribute('aria-disabled')).toBe('true');
-    expect(reset?.disabled).toBe(false);
+    expect(loadDefault?.getAttribute('aria-disabled')).toBe('true');
+    expect(loadDefault?.disabled).toBe(false);
     expect(findByAttrValue(
       host,
       AI_MODELS_PROMPT_TEXT_ATTR,
       'chat',
     )?.readOnly).toBe(true);
-    expect(findByAttrValue(
-      host,
-      AI_MODELS_PROMPT_ROLE_ATTR,
-      'chat',
-    )?.disabled).toBe(true);
     clickByAttrValue(host, AI_MODELS_PROMPT_SAVE_ATTR, 'chat');
-    clickByAttrValue(host, AI_MODELS_PROMPT_RESET_ATTR, 'chat');
     expect(runSetLlmPrompt).toHaveBeenCalledTimes(1);
+
+    // `Load default` is client-only, so single-flight has to be enforced in the
+    // handler — an `aria-disabled` button still fires its click listener, and
+    // overwriting the box mid-save would strand the owner looking at text the
+    // in-flight request is not carrying.
+    clickByAttrValue(host, AI_MODELS_PROMPT_LOAD_DEFAULT_ATTR, 'chat');
+    expect(findByAttrValue(host, AI_MODELS_PROMPT_TEXT_ATTR, 'chat')?.value)
+      .toBe('A durable owner-authored prompt.');
 
     resolveSave({ ok: true });
     await flush();
@@ -2547,9 +2625,9 @@ describe('System prompts — saving, the policy, and the reset that is a delete'
     )?.readOnly).toBe(false);
     expect(findByAttrValue(
       host,
-      AI_MODELS_PROMPT_ROLE_ATTR,
+      AI_MODELS_PROMPT_LOAD_DEFAULT_ATTR,
       'chat',
-    )?.disabled).toBe(false);
+    )?.getAttribute('aria-disabled')).toBeNull();
     mount.dispose();
   });
 
@@ -2561,15 +2639,40 @@ describe('System prompts — saving, the policy, and the reset that is a delete'
     area.value = 'You are a dentist. Check the calendar before answering.';
     for (const fn of area.listeners.get('input') ?? []) fn({});
     changeSelect(host, AI_MODELS_PROMPT_POLICY_ATTR, 'llm_gateway', 'append');
-    changeSelect(host, AI_MODELS_PROMPT_ROLE_ATTR, 'llm_gateway', 'user');
     clickByAttrValue(host, AI_MODELS_PROMPT_SAVE_ATTR, 'llm_gateway');
     await flush();
 
     expect(opts.runSetLlmPrompt).toHaveBeenCalledWith({
       surface: 'llm_gateway',
       role_instructions: 'You are a dentist. Check the calendar before answering.',
-      role: 'user',
+      role: 'system',
       caller_system_policy: 'append',
+    });
+    mount.dispose();
+  });
+
+  /** ⛔ The card has no role editor, so a save must CARRY the stored value.
+   *  Re-asserting the default would silently undo an owner whose provider
+   *  rejects `system` — a setting they can no longer see would revert on their
+   *  next unrelated wording tweak, and nothing would say so. */
+  it('carries a non-default wire role through a save untouched', async () => {
+    const { host, mount, opts } = mountFixture({
+      runGetLlmPrompts: vi.fn(async () => ({
+        prompts: llmPrompts({ surface: 'chat', role: 'user' }),
+      })),
+    });
+    await mount.whenLoaded();
+
+    const area = findByAttrValue(host, AI_MODELS_PROMPT_TEXT_ATTR, 'chat')!;
+    area.value = 'You are a lawyer.';
+    for (const fn of area.listeners.get('input') ?? []) fn({});
+    clickByAttrValue(host, AI_MODELS_PROMPT_SAVE_ATTR, 'chat');
+    await flush();
+
+    expect(opts.runSetLlmPrompt).toHaveBeenCalledWith({
+      surface: 'chat',
+      role_instructions: 'You are a lawyer.',
+      role: 'user',
     });
     mount.dispose();
   });
@@ -2593,17 +2696,145 @@ describe('System prompts — saving, the policy, and the reset that is a delete'
   });
 
   it('resets by sending null — the server deletes the row, absence IS the default', async () => {
-    const { host, mount, opts } = mountFixture();
+    const { mount, opts } = mountFixture();
     await mount.whenLoaded();
 
-    clickByAttrValue(host, AI_MODELS_PROMPT_RESET_ATTR, 'llm_gateway');
-    await flush();
+    await mount.resetLlmPrompt('llm_gateway');
 
     expect(opts.runSetLlmPrompt).toHaveBeenCalledWith({
       surface: 'llm_gateway',
       role_instructions: null,
       role: null,
       caller_system_policy: null,
+    });
+    mount.dispose();
+  });
+
+  /** `Load default` writes NOTHING. The old control hit the server on first
+   *  click, with the built-in never shown and no confirm — so "let me see what
+   *  I'd be going back to" cost you the thing you were going back FROM. */
+  it('loads the built-in into the box without touching the server', async () => {
+    const { host, mount, opts } = mountFixture({
+      runGetLlmPrompts: vi.fn(async () => ({
+        prompts: llmPrompts({
+          surface: 'chat',
+          role_instructions: 'You are a dentist.',
+          is_default: false,
+        }),
+      })),
+    });
+    await mount.whenLoaded();
+
+    expect(findByAttrValue(host, AI_MODELS_PROMPT_TEXT_ATTR, 'chat')?.value)
+      .toBe('You are a dentist.');
+    clickByAttrValue(host, AI_MODELS_PROMPT_LOAD_DEFAULT_ATTR, 'chat');
+
+    expect(findByAttrValue(host, AI_MODELS_PROMPT_TEXT_ATTR, 'chat')?.value)
+      .toBe(CHAT_ROLE_DEFAULT);
+    expect(findByAttrValue(host, AI_MODELS_PROMPT_STATUS_ATTR, 'chat')?.textContent)
+      .toBe('Unsaved changes — Save to put this in force.');
+    // Still customised on the server: nothing has been written yet.
+    expect(opts.runSetLlmPrompt).not.toHaveBeenCalled();
+    expect(findByAttrValue(host, AI_MODELS_PROMPT_BADGE_ATTR, 'custom'))
+      .not.toBeNull();
+    mount.dispose();
+  });
+
+  /** 🔑 …and this is what makes `Load default` + `Save` the reset the button
+   *  used to be. `null` is the ONLY way the server expresses default (it
+   *  deletes the row); storing a byte-identical copy would badge as Customised
+   *  and PIN the text — a later release changing the built-in would never reach
+   *  this server, silently, because the row still wins. */
+  it('saves a box holding the built-in as null, not as a copy of it', async () => {
+    const { host, mount, opts } = mountFixture({
+      runGetLlmPrompts: vi.fn(async () => ({
+        prompts: llmPrompts({
+          surface: 'chat',
+          role_instructions: 'You are a dentist.',
+          role: 'user',
+          is_default: false,
+        }),
+      })),
+    });
+    await mount.whenLoaded();
+
+    clickByAttrValue(host, AI_MODELS_PROMPT_LOAD_DEFAULT_ATTR, 'chat');
+    clickByAttrValue(host, AI_MODELS_PROMPT_SAVE_ATTR, 'chat');
+    await flush();
+
+    expect(opts.runSetLlmPrompt).toHaveBeenCalledWith({
+      surface: 'chat',
+      role_instructions: null,
+      // A full reset takes the wire role with it — same as the old button.
+      role: null,
+    });
+    mount.dispose();
+  });
+
+  /** ⛔ Hidden must not mean STUCK. The picker is gone, and `setSystemRole` has
+   *  exactly one caller (`server.setLlmPrompt`) — no CLI, no config field — so
+   *  a role left off-default with nothing on screen would be unreachable except
+   *  by wiping the prompt it rides on. */
+  it('announces an off-default wire role and offers the way back', async () => {
+    const { host, mount, opts } = mountFixture({
+      runGetLlmPrompts: vi.fn(async () => ({
+        prompts: llmPrompts({
+          surface: 'chat',
+          role_instructions: 'You are a dentist.',
+          role: 'user',
+          is_default: false,
+        }),
+      })),
+    });
+    await mount.whenLoaded();
+
+    // Silent on every surface still at the default — this is a rare state.
+    expect(findByAttrValue(host, AI_MODELS_PROMPT_TRANSPORT_ATTR, 'llm_gateway'))
+      .toBeNull();
+    const notice = findByAttrValue(host, AI_MODELS_PROMPT_TRANSPORT_ATTR, 'chat');
+    expect(notice).not.toBeNull();
+    expect(hasText(
+      notice!,
+      'Delivered to the model as a user message, not a system message.',
+    )).toBe(true);
+
+    clickByAttrValue(host, AI_MODELS_PROMPT_TRANSPORT_RESET_ATTR, 'chat');
+    await flush();
+
+    // ROLE ONLY. `role_instructions: null` here would take the owner's text
+    // with it, and a control labelled "Deliver as system" must not do that.
+    expect(opts.runSetLlmPrompt).toHaveBeenCalledWith({
+      surface: 'chat',
+      role_instructions: 'You are a dentist.',
+      role: null,
+    });
+    mount.dispose();
+  });
+
+  /** …and it must not commit UNSAVED edits sitting in the box above it. */
+  it('reverts the role without saving the draft the owner is mid-way through', async () => {
+    const { host, mount, opts } = mountFixture({
+      runGetLlmPrompts: vi.fn(async () => ({
+        prompts: llmPrompts({
+          surface: 'chat',
+          role_instructions: 'You are a dentist.',
+          role: 'assistant',
+          is_default: false,
+        }),
+      })),
+    });
+    await mount.whenLoaded();
+
+    const area = findByAttrValue(host, AI_MODELS_PROMPT_TEXT_ATTR, 'chat')!;
+    area.value = 'Half-typed thought I am not done with';
+    for (const fn of area.listeners.get('input') ?? []) fn({});
+    clickByAttrValue(host, AI_MODELS_PROMPT_TRANSPORT_RESET_ATTR, 'chat');
+    await flush();
+
+    expect(opts.runSetLlmPrompt).toHaveBeenCalledWith({
+      surface: 'chat',
+      role_instructions: 'You are a dentist.',
+      role: null,
     });
     mount.dispose();
   });
@@ -2637,6 +2868,292 @@ describe('System prompts — saving, the policy, and the reset that is a delete'
     const section = findByAttrValue(host, AI_MODELS_PROMPT_SECTION_ATTR, 'llm_gateway')!;
     expect(hasText(section, 'used instead of yours')).toBe(true);
     expect(hasText(section, 'your wording no longer applies')).toBe(true);
+    mount.dispose();
+  });
+});
+
+/** Test connection — `server.setLLMSlot` is parse-and-persist, so nothing in
+ *  the save path ever contacts the endpoint. A wrong key, a model that does not
+ *  exist, or a typo'd base_url is accepted silently and surfaces hours later as
+ *  a failed recipe, attributed to whatever happened to run. This is the button
+ *  that asks. */
+describe('Test connection', () => {
+  const probeOk = {
+    ok: true,
+    diagnosis: 'ok' as const,
+    accepts_system_role: true,
+    supports_json: true,
+    elapsed_ms: 240,
+  };
+
+  it('probes the FORM values, not the saved slot', async () => {
+    const runProbeLlmSource = vi.fn(async () => probeOk);
+    const { host, mount } = mountFixture({ runProbeLlmSource });
+    await mount.whenLoaded();
+
+    const model = findByAttrValue(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_1:model')!;
+    model.value = 'gpt-4o-mini';
+    for (const fn of model.listeners.get('input') ?? []) fn({});
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    await flush();
+
+    // Mid-edit the owner is asking "will this work if I save it" — probing the
+    // SAVED slot would answer a question nobody asked.
+    expect(runProbeLlmSource).toHaveBeenCalledWith(expect.objectContaining({
+      target: { kind: 'slot', slot_key: 'slot_1' },
+      draft: expect.objectContaining({ model: 'gpt-4o-mini' }),
+    }));
+    mount.dispose();
+  });
+
+  /** ⚠ The stored key never reaches the client (redacted to `has_key`), so a
+   *  blank field means "use the stored one" and only the SERVER can resolve it.
+   *  Sending `api_key: ''` would read as "no credential". */
+  it('omits the key entirely when the owner has not typed one', async () => {
+    const runProbeLlmSource = vi.fn(
+      async (_args: {
+        target: { kind: string };
+        draft?: Record<string, unknown> | null;
+      }) => probeOk,
+    );
+    const { host, mount } = mountFixture({ runProbeLlmSource });
+    await mount.whenLoaded();
+
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    await flush();
+
+    const sent = runProbeLlmSource.mock.calls[0]![0];
+    expect('api_key' in (sent.draft ?? {})).toBe(false);
+    mount.dispose();
+  });
+
+  it('shows a failure as a verdict naming the field, not a status code', async () => {
+    const { host, mount } = mountFixture({
+      runProbeLlmSource: vi.fn(async () => ({
+        ok: false,
+        diagnosis: 'auth' as const,
+        detail: 'LLM auth failed (401): {"error":"bad key"}',
+        elapsed_ms: 120,
+      })),
+    });
+    await mount.whenLoaded();
+
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    await flush();
+
+    const box = findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, 'slot_1')!;
+    expect(box.getAttribute('data-probe-ok')).toBe('false');
+    // "401 Unauthorized" is the provider's framing; "the API key" is the
+    // owner's, and it is the box they have to go and edit.
+    expect(hasText(box, 'The API key was rejected. Check the key.')).toBe(true);
+    // …and the provider's own words survive underneath, for a self-hosted
+    // endpoint where the raw text is the only thing that identifies the fault.
+    expect(hasText(box, 'bad key')).toBe(true);
+    mount.dispose();
+  });
+
+  /** ⛔ A failed probe learned NOTHING about capabilities. Rendering a default
+   *  as though it were observed is how a "verified" badge starts lying. */
+  it('claims no capability facts on a failed probe', async () => {
+    const { host, mount } = mountFixture({
+      runProbeLlmSource: vi.fn(async () => ({
+        ok: false,
+        diagnosis: 'unreachable' as const,
+        detail: 'LLM call failed: fetch failed',
+        elapsed_ms: 20_000,
+      })),
+    });
+    await mount.whenLoaded();
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    await flush();
+
+    const box = findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, 'slot_1')!;
+    expect(hasText(box, 'JSON mode')).toBe(false);
+    expect(hasText(box, 'system-message')).toBe(false);
+    mount.dispose();
+  });
+
+  it('reports the capability facts nothing else verifies', async () => {
+    const { host, mount } = mountFixture({
+      runProbeLlmSource: vi.fn(async () => ({
+        ok: true,
+        diagnosis: 'ok' as const,
+        accepts_system_role: false,
+        supports_json: false,
+        elapsed_ms: 90,
+      })),
+    });
+    await mount.whenLoaded();
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    await flush();
+
+    const box = findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, 'slot_1')!;
+    // `supports_json` is owner-DECLARED and defaults on — this is the first
+    // thing in the product that has ever checked it.
+    expect(hasText(box, 'JSON mode not supported')).toBe(true);
+    expect(hasText(box, 'no system-message support')).toBe(true);
+    mount.dispose();
+  });
+
+  /** ⚠ Costs a real request against the owner's credential. */
+  it('is single-flight and never fires on its own', async () => {
+    let release!: () => void;
+    const runProbeLlmSource = vi.fn(
+      () => new Promise<typeof probeOk>((resolve) => {
+        release = () => resolve(probeOk);
+      }),
+    );
+    const { host, mount } = mountFixture({ runProbeLlmSource });
+    await mount.whenLoaded();
+    // Nothing probes on load — the owner has to ask.
+    expect(runProbeLlmSource).not.toHaveBeenCalled();
+
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    const button = findByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    expect(button?.textContent).toBe('Testing…');
+    expect(button?.getAttribute('aria-busy')).toBe('true');
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_2');
+    expect(runProbeLlmSource).toHaveBeenCalledTimes(1);
+
+    release();
+    await flush();
+    expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1')?.textContent)
+      .toBe('Test connection');
+    mount.dispose();
+  });
+
+  /** ⚠ Same button, DIFFERENT probe on the far side — `embed`, not a chat
+   *  completion. The fact that comes back is the vector width. */
+  it('reports the vector width for the embeddings slot', async () => {
+    const runProbeLlmSource = vi.fn(async () => ({
+      ok: true,
+      diagnosis: 'ok' as const,
+      dimensions: 1536,
+      elapsed_ms: 88,
+    }));
+    const { host, mount } = mountFixture({ runProbeLlmSource });
+    await mount.whenLoaded();
+
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'embeddings_slot');
+    await flush();
+
+    expect(runProbeLlmSource).toHaveBeenCalledWith(expect.objectContaining({
+      target: { kind: 'slot', slot_key: 'embeddings_slot' },
+    }));
+    const box = findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, 'embeddings_slot')!;
+    // A model quietly serving 768-d where the owner expected 1536-d is a
+    // working connection that produces unusable neighbours.
+    expect(hasText(box, '1536-dimension vectors')).toBe(true);
+    // …and no chat capability claims, because neither question applies here.
+    expect(hasText(box, 'JSON mode')).toBe(false);
+    mount.dispose();
+  });
+
+  it('probes one pool entry by id, and sends no draft for it', async () => {
+    const runProbeLlmSource = vi.fn(
+      async (_args: { target: { kind: string }; draft?: unknown }) => probeOk,
+    );
+    const { host, mount } = mountFixture({
+      runProbeLlmSource,
+      runGetLLMConfig: vi.fn(async () => ({
+        config: {
+          free_pool: [
+            { id: 'groq-a', type: 'api', provider: 'openai-compatible', model: 'llama', enabled: true },
+            { id: 'groq-b', type: 'api', provider: 'openai-compatible', model: 'llama', enabled: true },
+          ],
+        } as never,
+      })),
+    });
+    await mount.whenLoaded();
+
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'pool:groq-b');
+    await flush();
+
+    const sent = runProbeLlmSource.mock.calls[0]![0];
+    expect(sent.target).toEqual({ kind: 'pool_entry', entry_id: 'groq-b' });
+    // A pool row has no editable fields, so there is nothing to draft — sending
+    // one would invent form values the owner never typed.
+    expect('draft' in sent).toBe(false);
+    expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, 'pool:groq-b'))
+      .not.toBeNull();
+    // The sibling row's verdict slot stays empty.
+    expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, 'pool:groq-a'))
+      .toBeNull();
+    mount.dispose();
+  });
+  it('T3-AUD-1 — a pool row DISCLOSES what that provider does with the owner data', async () => {
+    // The composition check. The resolver's own unit tests prove the table is
+    // right; only this proves an owner ever SEES it. The defect was never a
+    // wrong claim — it was the total absence of one, on the surface where the
+    // trade is actually taken.
+    const { host, mount } = mountFixture({
+      runGetLLMConfig: vi.fn(async () => ({
+        config: {
+          free_pool: [
+            // Native Google: no base_url, so the provider id is the only handle.
+            { id: 'gem', type: 'api', provider: 'google', model: 'gemini-flash', enabled: true },
+            // A local endpoint: nothing leaves the machine.
+            { id: 'ollama', type: 'api', provider: 'openai-compatible', model: 'qwen',
+              base_url: 'http://localhost:11434/v1', enabled: true },
+            // A provider whose terms nobody has read.
+            { id: 'other', type: 'api', provider: 'openai-compatible', model: 'x',
+              base_url: 'https://openrouter.ai/api/v1', enabled: true },
+          ],
+        } as never,
+      })),
+    });
+    await mount.whenLoaded();
+
+    const gem = findByAttrValue(host, AI_MODELS_CONTROL_ATTR, 'free_pool:gem:data_use');
+    expect(gem).not.toBeNull();
+    // The clause with legal teeth for a large part of the audience.
+    expect(gem!.textContent).toContain('only PAID use');
+    expect(gem!.textContent).toContain('trains on what you send');
+    // Cited, so the owner can go and read it themselves.
+    expect(gem!.textContent).toContain('https://ai.google.dev/gemini-api/terms');
+
+    // ⛔ SILENT for a local endpoint. A warning here would be false, and noise
+    // is what makes a real warning ignorable.
+    expect(findByAttrValue(host, AI_MODELS_CONTROL_ATTR, 'free_pool:ollama:data_use'))
+      .toBeNull();
+
+    // …but NOT silent for an unread provider: "we have not checked" is
+    // information, and saying nothing would read as approval.
+    const other = findByAttrValue(host, AI_MODELS_CONTROL_ATTR, 'free_pool:other:data_use');
+    expect(other).not.toBeNull();
+    expect(other!.textContent).toContain('not reviewed');
+
+    mount.dispose();
+  });
+
+  /** ⚠ Each probe is a real request against the owner's credential, and a
+   *  column of Test buttons is an invitation to fire five at once. */
+  it('is single-flight ACROSS sources, not just within one', async () => {
+    let release!: () => void;
+    const runProbeLlmSource = vi.fn(
+      () => new Promise<typeof probeOk>((resolve) => { release = () => resolve(probeOk); }),
+    );
+    const { host, mount } = mountFixture({ runProbeLlmSource });
+    await mount.whenLoaded();
+
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'embeddings_slot');
+    expect(runProbeLlmSource).toHaveBeenCalledTimes(1);
+    expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'embeddings_slot')
+      ?.getAttribute('aria-disabled')).toBe('true');
+
+    release();
+    await flush();
+    expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'embeddings_slot')
+      ?.getAttribute('aria-disabled')).toBeNull();
+    mount.dispose();
+  });
+
+  it('hides the button when the caller is not wired', async () => {
+    const { host, mount } = mountFixture({ runProbeLlmSource: undefined });
+    await mount.whenLoaded();
+    expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1')).toBeNull();
     mount.dispose();
   });
 });

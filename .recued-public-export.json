@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "88d15cba1deeb5abe2b0ed7f3eeb563d03f80766",
-    "tree": "951e1a733a55b068e3ebe186f925ec3b3f01ba80",
-    "committed_at": "2026-08-17T09:33:25-07:00"
+    "commit": "48b8cb51b017dd7f36d94dc4a6bcf92914324255",
+    "tree": "a2e4915ccde9e9cab6ba2a3f3cbe7374eb4e86ec",
+    "committed_at": "2026-08-18T21:07:01-07:00"
   },
-  "export_manifest_sha256": "543158c9dcb6e716b74b4719b24199dd90a78cad137dcf0bb893235fc7c3af8a",
-  "version": "26.8.17",
+  "export_manifest_sha256": "9bfaeb0aa6cb4f2a527ff9a11c73609621155578b38c9c93a961a00102480400",
+  "version": "26.8.18",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -446,6 +446,7 @@
       "packages/recipes/src/__tests__/gong-call-capture-gaps-pack-audit.test.ts",
       "packages/recipes/src/__tests__/google-drive-file-comment-closure-loop.test.ts",
       "packages/recipes/src/__tests__/google-task-closure-loop.test.ts",
+      "packages/recipes/src/__tests__/guard-required-reaches-the-schema.test.ts",
       "packages/recipes/src/__tests__/helpscout-conversation-reply-closure-loop.test.ts",
       "packages/recipes/src/__tests__/hex-pack-audit.test.ts",
       "packages/recipes/src/__tests__/inbound-artifact-verification-audit.test.ts",
@@ -513,6 +514,7 @@
       "packages/recipes/src/__tests__/twilio-number-reachability-pack-audit.test.ts",
       "packages/recipes/src/__tests__/validate-apply-target.test.ts",
       "packages/recipes/src/__tests__/vanta-audit-pack-audit.test.ts",
+      "packages/recipes/src/__tests__/variable-optional-but-required.test.ts",
       "packages/recipes/src/__tests__/vercel-edge-config-exposure-pack-audit.test.ts",
       "packages/recipes/src/__tests__/vercel-statuspage-incident-loop.test.ts",
       "packages/recipes/src/__tests__/virustotal-pack-audit.test.ts",
@@ -525,7 +527,7 @@
       "packages/recipes/src/__tests__/zendesk-ticket-count-truth-pack-audit.test.ts",
       "packages/recipes/src/__tests__/zendesk-ticket-reply-closure-loop.test.ts"
     ],
-    "sha256": "082a0a62a69767784748363e3c38dcab5955b1649ac4978ab8fb43336a721c6c",
+    "sha256": "e228892a9cd9dc04f7867befe159f70be20f6d961357a8d19c645d3ffdb1abc7",
     "roots": [
       "apps/auth-worker",
       "backend/api",
@@ -540,11 +542,11 @@
     "rules": [
       {
         "id": "internal-spec-reference",
-        "comments_rewritten": 998
+        "comments_rewritten": 997
       },
       {
         "id": "internal-design-document",
-        "comments_rewritten": 86
+        "comments_rewritten": 87
       },
       {
         "id": "internal-handover-note",
@@ -556,7 +558,7 @@
       },
       {
         "id": "internal-benchmark",
-        "comments_rewritten": 40
+        "comments_rewritten": 41
       },
       {
         "id": "internal-repository-root",
@@ -632,7 +634,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 5392,
-    "sha256": "bdfed68d63cc03dba6a5cb6f404aaa6476443deafd4221dff14aa5e1e05ca4a7"
+    "file_count": 5413,
+    "sha256": "d49063275cabcdf336a86faa67f4446a02e966e4a9aaa5cb423fdaad273efee9"
   }
 }

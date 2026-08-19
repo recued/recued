@@ -81,6 +81,8 @@ import { createSellerStore } from '../storage/seller-store.js';
 import { createSellerOrderStore } from '../storage/seller-order-store.js';
 import { createFormResponseStore } from '../storage/form-response-store.js';
 import { grandfatherPrimitiveGrants, reconcileOwnerGrants } from '../owner-grant-reconcile.js';
+import { installRecipeGrantSeed } from '../recipe-grant-seed.js';
+import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
 import { createSeededCatalogOperationProfileStore } from '../connection-operation-profile-boot.js';
 import { createCollectionRegistry } from '../collections/registry.js';
 import { registerMcpReadonlyMailCollections } from '../mcp-readonly-mail-collections.js';
@@ -260,6 +262,18 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   // the surface that actually dispatches the gated Tier-1 tools, so skipping it
   // here would strip them from every scoped door on the MCP wire.
   grandfatherPrimitiveGrants(contractStore);
+  // D-247 D8 — the recipe grant seam, on THIS boot path too. The serve path
+  // wires it in `compose-app-context.ts`; wiring it on only one surface is the
+  // failure this module's own comments above keep naming — the two boots share a
+  // DB, so a recipe saved here would carry no grant row until something happened
+  // to open the same file under `serve`, and "which binary started last" is not
+  // a thing the owner's catalog should depend on. Idempotent, so both running is
+  // a no-op rather than a conflict.
+  installRecipeGrantSeed({
+    store: recipeStore,
+    grants: createContractGrantEntryStore(contractStore),
+    now: () => Date.now(),
+  });
   // D-165 P3.grant migration — durable user-manual operation-group grants live as
   // `contract.grant` rows, merged into the profile seed below so the MCP (agent →
   // gateway) path honours write grants made via the webclient grant rpc (both

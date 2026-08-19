@@ -59,6 +59,8 @@ import {
   type GrantWriteCaller,
   type GrantContractsCaller,
   type GrantCatalogOperationsCaller,
+  type GrantRecipeOpUsageCaller,
+  type GrantRecipeListCaller,
   type GrantRegistryDescribeCaller,
   type GrantSetDoorTypesCaller,
   type GrantCliReachabilityListCaller,
@@ -953,6 +955,11 @@ export interface BootstrapContractsRouteOptions {
   grantWriteCaller?: GrantWriteCaller;
   grantListContractsCaller?: GrantContractsCaller;
   grantCatalogOperationsCaller?: GrantCatalogOperationsCaller;
+  /** D-247 D11 — `contract.recipeOpUsage`, both halves of the op row's evidence.
+   *  Absent ⇒ the row renders without the line, never with a zero. */
+  grantRecipeOpUsageCaller?: GrantRecipeOpUsageCaller;
+  /** D-247 — `recipe.list`, the recipe half of the grant universe. */
+  grantRecipeListCaller?: GrantRecipeListCaller;
   grantRegistryDescribeCaller?: GrantRegistryDescribeCaller;
   grantSetDoorTypesCaller?: GrantSetDoorTypesCaller;
   /** `cli.reachability.{list,set}` — route CLI ops in the Ops grant panel to the
@@ -1174,6 +1181,15 @@ const tabsFor = (row: ContractRowVM): ReadonlyArray<TabSpec> =>
     ? [
         { id: 'ops', label: 'Ops' },
         { id: 'entities', label: 'Entities' },
+        // ⛔ D-247 — RECIPES IS OWNER-ONLY, and that is not a UI preference. The
+        // `recipe.*` axis is owner-scoped: a DOOR's recipe authority is its
+        // INBOUND TOKEN (`inboundTokenAuthorize` → `allowed_tools`, D-232
+        // § 20.19), and a derived reception/webhook door has no recipe grant at
+        // all. A switch here on a door would write a row nothing reads — a
+        // control that does nothing, which is worse than an absent one.
+        // ⚠ `is_self` is not the only member of this branch (customer templates
+        // and anonymous doors share it), so the tab is filtered again below.
+        ...(row.is_self ? [{ id: 'recipes', label: 'Recipes' }] : []),
       ]
     : [
         { id: 'connect', label: 'Connect' },
@@ -1189,6 +1205,8 @@ const tabPlaceholder = (id: string): string => {
       return 'Per-operation grants, grouped by pack.';
     case 'entities':
       return 'Per-entity grants — collections and enrichment topics.';
+    case 'recipes':
+      return 'Which recipes the AI can find and run. Each write inside one still asks.';
     default:
       return '';
   }
@@ -2433,6 +2451,12 @@ export const bootstrapContractsRoute = (
         ...(opts.grantCatalogOperationsCaller !== undefined
           ? { runCatalogOperations: opts.grantCatalogOperationsCaller }
           : {}),
+        ...(opts.grantRecipeOpUsageCaller !== undefined
+          ? { runRecipeOpUsage: opts.grantRecipeOpUsageCaller }
+          : {}),
+        ...(opts.grantRecipeListCaller !== undefined
+          ? { runRecipeList: opts.grantRecipeListCaller }
+          : {}),
         ...(opts.grantRegistryDescribeCaller !== undefined
           ? { runRegistryDescribe: opts.grantRegistryDescribeCaller }
           : {}),
@@ -2470,10 +2494,16 @@ export const bootstrapContractsRoute = (
       clearChildren(tabBody);
       if (id === 'connect') {
         tabBody.appendChild(ensureConnectHost());
-      } else if (id === 'ops' || id === 'entities') {
+      } else if (id === 'ops' || id === 'entities' || id === 'recipes') {
         const panel = ensureGrantPanel();
         if (panel !== null) {
-          tabBody.appendChild(id === 'ops' ? panel.opsRoot : panel.entitiesRoot);
+          tabBody.appendChild(
+            id === 'ops'
+              ? panel.opsRoot
+              : id === 'recipes'
+                ? panel.recipesRoot
+                : panel.entitiesRoot,
+          );
         } else {
           tabBody.appendChild(makeEl(doc, 'p', undefined, tabPlaceholder(id)));
         }

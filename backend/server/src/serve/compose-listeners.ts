@@ -295,6 +295,7 @@ export interface ComposeListenersOptions {
     | 'resolveLlmConfig'
     | 'llmQuota'
     | 'llmAdapterRegistry'
+    | 'llmEmbeddingsAdapterRegistry'
     | 'emptyTabProbe'
     | 'cacheDeps'
     // D-172 — the CAS root; the messenger media scratch dir is derived as a
@@ -2365,6 +2366,11 @@ export const composeListeners = async (
     authDeps: app.authDeps,
     migrateDeps,
     llmConfigManager: app.llmManager,
+    llmProbe: {
+      adapters: app.llmAdapterRegistry,
+      quota: app.llmQuota,
+      embeddingsAdapters: app.llmEmbeddingsAdapterRegistry,
+    },
     sellerStore: app.sellerStoreRef,
     sellerOrderStore: app.sellerOrderStoreRef,
     ...(app.webhookIngressStoreRef
@@ -2718,6 +2724,13 @@ export const composeListeners = async (
       ? {
           contractDeps: {
             store: app.contractStoreRef,
+            // D-247 D11 — the recipe roster for the op row's STATIC half. Without
+            // it `could` is empty everywhere and the row silently degrades to the
+            // usage half alone, which is the shape that cannot tell "no recipe
+            // reaches this" from "we did not look".
+            recipeStore: execution.executeDeps.recipeStore,
+            // D-247 D13 — the coverage ledger's read side.
+            ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
             // D-177 N.14.8 fork 3 (owner: "surface") — the suggestion card's
             // counter-evidence: how often the owner REFUSED this door over the
             // learner's own lookback. Evidence only; it gates nothing.
@@ -2827,6 +2840,19 @@ export const composeListeners = async (
       ? {
           packInstallDeps: {
             ...packInstallDepsWithComposition,
+            // D-247 D15 — manifest lookup so the install preview can resolve a
+            // catalog op's risk tier. Absent ⇒ the recipe reports `unknown`
+            // rather than a guessed class, which is the honest degradation.
+            // ⚠ `?? undefined` — the registry answers `null` for a miss while the
+            // dep is typed `undefined`; conflating them would be a type-level lie.
+            getManifest: (slug: string) => execution.executorConfig.manifests.get(slug) ?? undefined,
+            // D-247 D15.1 — the grant rows, so the install can PRE-WRITE each
+            // recipe's with the owner's chosen ceiling applied, before the save.
+            // Without it the store hook seeds on `chat_exposed` alone and the
+            // install dialog's answer is decorative.
+            ...(app.contractStoreRef
+              ? { grantEntryStore: createContractGrantEntryStore(app.contractStoreRef) }
+              : {}),
             // D-209 #1 W2b — a successful install mints one webhook door per
             // webhook-declaring recipe (installs default ARMED; the install
             // consent screen is the gesture).

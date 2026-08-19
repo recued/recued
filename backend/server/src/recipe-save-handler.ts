@@ -41,6 +41,7 @@ import {
   hasNonEmptyWebhookDeclarations,
 } from './webhook-declaration-gate.js';
 import type { RecipeStore } from './recipe-store.js';
+import { RecipePackOwnershipError } from './recipe-store.js';
 import {
   describeWebhookDoorRefusal,
   reconcileWebhookDoors,
@@ -441,6 +442,14 @@ export const saveRecipeInline = (
           500,
         );
       }
+    }
+    // D-247 D6 — the store's pack-ownership refusal is a legitimate 409, not an
+    // internal error. Rethrowing it raw surfaces "something broke" to an owner
+    // whose actual problem is "fork it first", which is a refusal nobody can act
+    // on. Mapped AFTER the rollback above so the webhook authority is restored
+    // either way.
+    if (error instanceof RecipePackOwnershipError) {
+      throw new RpcError('invalid_state', `recipe.save: ${error.message}`, 409);
     }
     throw error;
   }

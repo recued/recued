@@ -902,7 +902,30 @@ export type ActivityAction =
   // an investigation starts from, and it is the row an attacker would most like
   // to see evicted.
   | 'peer_ask_received' | 'peer_ask_refused'
-  | 'peer_ask_answered' | 'peer_ask_withdrawn' | 'peer_ask_expired';
+  | 'peer_ask_answered' | 'peer_ask_withdrawn' | 'peer_ask_expired'
+  // ── D-247 D13 — THE COVERAGE LEDGER ─────────────────────────────────────
+  //
+  // One row per op that reached dispatch ONLY because a granted recipe covered
+  // it — its own grant said no. `target` is the `operation_id`; `detail` is JSON
+  // `{ granting_recipe, run_id?, step_id?, recipe_id? }`.
+  //
+  // ⛔ EMITTED AT THE ADMISSION POINT (`admitOne`), which is the one place BOTH
+  // `CanonicalOpStep` and `IngredientStep` pass through. The `connection_gateway`
+  // row would have been the obvious home and covers only the first:
+  // `runCatalogOperation` is reached by canonical op steps, while a bare
+  // ingredient step takes another path and emits nothing — so half of every
+  // covered run would be missing from the answer.
+  //
+  // ⛔ WRITTEN ONLY FOR COVERAGE, never for an ordinary grant. The question this
+  // exists for is "show me every op that ran ONLY because a recipe covered it",
+  // and the `granted` case adds nothing the existing audit does not already say.
+  // Exactly scoped to its consumer: D11's op row renders "direct calls off", and
+  // for such an op EVERY run is via coverage.
+  //
+  // ⚠ NOT reserve-class. Volume is machine-rate, and the row is a usage record
+  // rather than a decision — the copy that reads it must say the window, because
+  // `data.audit` evicts oldest-first and "0 in 30 days" is not "never".
+  | 'recipe_coverage_admission';
 
 /** Activity log entry for non-execution events (install, vault, approval, etc.). */
 export interface ActivityEntry {
@@ -913,6 +936,24 @@ export interface ActivityEntry {
   target: string;
   /** Optional detail for context. */
   detail?: string;
+  /** FN-2 — what this activity was ABOUT, when `target` alone cannot say.
+   *
+   *  ⛔ `target` IS NOT ENOUGH FOR AN ANSWERED ASK, and that was the defect.
+   *  For `approval_allow` / `approval_deny` the target is the `ask_id`, which
+   *  points at a row `AskStore.pruneHandled` removes once the ask goes
+   *  terminal — so the reserve-class decision outlived the only thing that
+   *  said what it decided. These fields are the join keys that survive with it.
+   *
+   *  Optional and absent by default: this is a KV-stored shape, so an older
+   *  row simply lacks them, and `approval_*` is NOT in
+   *  `HIGH_ASSURANCE_AUDIT_KINDS`, so no existing signature covers or is
+   *  invalidated by their addition. Populate only what is genuinely known —
+   *  a recipe-less raw-op hold has an `operation_id` and no `recipe_id`, and
+   *  guessing one would be worse than leaving it absent. */
+  run_id?: string;
+  recipe_id?: string;
+  step_id?: string;
+  operation_id?: string;
   /** Reserve-class flag (Phase B). Reserve rows persist past retention
    *  so the activity log always keeps a ledger of pressure-transition,
    *  kill-switch-toggle, and storage-rejection events — even when quota

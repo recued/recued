@@ -356,8 +356,10 @@ const UPDATES_ROLLBACK = 'data-recued-updates-rollback';
 const UPDATES_MODE = 'data-recued-updates-mode';
 const AI_MODELS_TAB = 'data-recued-ai-models-tab';
 const AI_MODELS_PROMPT_TEXT = 'data-recued-ai-models-prompt-text';
-const AI_MODELS_PROMPT_ROLE = 'data-recued-ai-models-prompt-role';
 const AI_MODELS_PROMPT_SAVE = 'data-recued-ai-models-prompt-save';
+const AI_MODELS_PROMPT_LOAD_DEFAULT =
+  'data-recued-ai-models-prompt-load-default';
+const AI_MODELS_PROMPT_STATUS = 'data-recued-ai-models-prompt-status';
 const AI_MODELS_PROMPT_SECTION = 'data-recued-ai-models-prompt';
 const AI_MODELS_PROMPT_BADGE = 'data-recued-ai-models-prompt-badge';
 const AI_MODELS_SLOT_CLEAR_DIALOG = 'data-recued-ai-models-slot-clear-dialog';
@@ -23421,14 +23423,12 @@ test('Settings AI Models prompt editing preserves focus and caret', async ({ pag
   await expect(prompt).toBeFocused();
   expect(await prompt.evaluate((element) => element.selectionStart)).toBe(5);
 
-  const role = page.getByRole('combobox', {
-    name: 'Chat delivery role',
-    exact: true,
-  });
-  await role.focus();
-  await role.selectOption('user');
-  await expect(role).toBeFocused();
-  await expect(prompt).toHaveValue(`${initial.slice(0, 3)}XY${initial.slice(3)}`);
+  // The status line is mutated in place on input — it must NOT have cost the
+  // caret, which is the whole reason typing does not re-render.
+  await expect(page.locator(`[${AI_MODELS_PROMPT_STATUS}="chat"]`))
+    .toHaveText('Unsaved changes — Save to put this in force.');
+  await expect(prompt).toBeFocused();
+  expect(await prompt.evaluate((element) => element.selectionStart)).toBe(5);
 
   const save = page.getByRole('button', {
     name: 'Save Chat system prompt',
@@ -23452,10 +23452,11 @@ test('Settings AI Models prompt Save owns its reload round trip', async ({ page 
   await page.locator(`[${AI_MODELS_TAB}="prompts"]`).click();
 
   const prompt = page.locator(`[${AI_MODELS_PROMPT_TEXT}="chat"]`);
-  const role = page.locator(`[${AI_MODELS_PROMPT_ROLE}="chat"]`);
   const save = page.locator(`[${AI_MODELS_PROMPT_SAVE}="chat"]`);
-  const reset = page.locator('[data-recued-ai-models-prompt-reset="chat"]');
+  const loadDefault = page.locator(`[${AI_MODELS_PROMPT_LOAD_DEFAULT}="chat"]`);
+  const status = page.locator(`[${AI_MODELS_PROMPT_STATUS}="chat"]`);
   await prompt.fill('A durable owner-authored prompt.');
+  await expect(status).toHaveText('Unsaved changes — Save to put this in force.');
   await save.focus();
   await page.keyboard.press('Enter');
 
@@ -23465,14 +23466,16 @@ test('Settings AI Models prompt Save owns its reload round trip', async ({ page 
   await expect(save).not.toHaveAttribute('disabled');
   await expect(save).toBeFocused();
   await expect(prompt).toHaveAttribute('readonly', '');
-  await expect(role).toBeDisabled();
-  await expect(reset).toHaveAttribute('aria-disabled', 'true');
-  await expect(reset).not.toHaveAttribute('disabled');
+  await expect(loadDefault).toHaveAttribute('aria-disabled', 'true');
+  await expect(loadDefault).not.toHaveAttribute('disabled');
   await save.evaluate((button) => {
     button.click();
     button.click();
   });
-  await reset.evaluate((button) => button.click());
+  // `Load default` is client-only, so nothing but its own guard stops it
+  // repainting the box out from under the in-flight save.
+  await loadDefault.evaluate((button) => button.click());
+  await expect(prompt).toHaveValue('A durable owner-authored prompt.');
   await expect.poll(
     () => page.evaluate(
       () => window.__app.rpcCallCount('server.setLlmPrompt'),
@@ -23484,25 +23487,25 @@ test('Settings AI Models prompt Save owns its reload round trip', async ({ page 
   )).toBeVisible();
   await expect(prompt).toHaveValue('A durable owner-authored prompt.');
   await expect(prompt).not.toHaveAttribute('readonly');
-  await expect(role).toBeEnabled();
+  await expect(status).toHaveText('Showing your saved prompt, in force now.');
   await expect(save).toHaveText('Save');
   await expect(save).not.toHaveAttribute('aria-disabled');
   await expect(save).not.toHaveAttribute('aria-busy');
   await expect(save).toBeFocused();
 
-  await reset.focus();
+  // …and the reset the removed button used to do, in two visible steps: the
+  // built-in lands in the box for the owner to READ, and only Save commits it.
+  await loadDefault.focus();
   await page.keyboard.press('Enter');
-  await expect(reset).toHaveText('Resetting…');
-  await expect(reset).toHaveAttribute('aria-disabled', 'true');
-  await expect(reset).toHaveAttribute('aria-busy', 'true');
-  await expect(reset).not.toHaveAttribute('disabled');
-  await expect(reset).toBeFocused();
-  await expect(prompt).toHaveAttribute('readonly', '');
-  await expect(save).toHaveAttribute('aria-disabled', 'true');
-  await reset.evaluate((button) => {
-    button.click();
-    button.click();
-  });
+  await expect(prompt).toHaveValue(
+    'You are Recued. You speak in plain, calm prose.',
+  );
+  await expect(status).toHaveText('Unsaved changes — Save to put this in force.');
+  await expect(loadDefault).toBeFocused();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.setLlmPrompt'),
+  )).toBe(1);
+
   await save.evaluate((button) => button.click());
   await expect.poll(
     () => page.evaluate(
@@ -23510,6 +23513,8 @@ test('Settings AI Models prompt Save owns its reload round trip', async ({ page 
     ),
   ).toBe(2);
 
+  // Badge back to Default ⇒ the save sent `null` and the server DELETED the
+  // row. A byte-identical copy would still read "Customised" here.
   await expect(page.locator(
     `[${AI_MODELS_PROMPT_SECTION}="chat"] [${AI_MODELS_PROMPT_BADGE}="default"]`,
   )).toBeVisible();
@@ -23517,10 +23522,9 @@ test('Settings AI Models prompt Save owns its reload round trip', async ({ page 
     'You are Recued. You speak in plain, calm prose.',
   );
   await expect(prompt).not.toHaveAttribute('readonly');
-  await expect(reset).toHaveText('Reset to default');
-  await expect(reset).not.toHaveAttribute('aria-disabled');
-  await expect(reset).not.toHaveAttribute('aria-busy');
-  await expect(reset).toBeFocused();
+  await expect(status).toHaveText('Showing the built-in default, in force now.');
+  await expect(loadDefault).toHaveText('Load default');
+  await expect(loadDefault).not.toHaveAttribute('aria-disabled');
 });
 
 test('Settings AI Models prompt failures preserve the exact retry draft', async ({ page }) => {
@@ -23530,10 +23534,9 @@ test('Settings AI Models prompt failures preserve the exact retry draft', async 
   await page.locator(`[${AI_MODELS_TAB}="prompts"]`).click();
 
   const prompt = page.locator(`[${AI_MODELS_PROMPT_TEXT}="chat"]`);
-  const role = page.locator(`[${AI_MODELS_PROMPT_ROLE}="chat"]`);
   const save = page.locator(`[${AI_MODELS_PROMPT_SAVE}="chat"]`);
+  const status = page.locator(`[${AI_MODELS_PROMPT_STATUS}="chat"]`);
   await prompt.fill('Keep this exact failed-save draft.');
-  await role.selectOption('user');
   await save.focus();
   await page.keyboard.press('Enter');
   await expect(save).toHaveText('Saving…');
@@ -23543,8 +23546,9 @@ test('Settings AI Models prompt failures preserve the exact retry draft', async 
     .toHaveText('System prompt save unavailable.');
   await expect(prompt).toHaveValue('Keep this exact failed-save draft.');
   await expect(prompt).not.toHaveAttribute('readonly');
-  await expect(role).toHaveValue('user');
-  await expect(role).toBeEnabled();
+  // The draft survived, so it is still unsaved — the status line has to keep
+  // saying so, or a failed save reads as a successful one.
+  await expect(status).toHaveText('Unsaved changes — Save to put this in force.');
   await expect(save).toHaveText('Save');
   await expect(save).not.toHaveAttribute('aria-disabled');
   await expect(save).not.toHaveAttribute('aria-busy');

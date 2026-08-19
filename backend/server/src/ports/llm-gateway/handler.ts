@@ -17,6 +17,7 @@ import {
   estimateConservativeMessagesTokens,
   LLMError,
   normalizeLLMSlot,
+  completeWithFallbacks,
   type AdapterKey,
   type AdapterRegistry,
   type FreePoolApiEntry,
@@ -861,7 +862,14 @@ export const createLlmGatewayDirectCompletionProvider = (
     // ⚠ `system_prompt_direct`, NOT `system_prompt` — this path returns the
     // model's raw text to the OpenAI client, so it must never be told to emit
     // Recued's AIOutput envelope.
-    const result = await adapter.complete(
+    // The RAW path calls the adapter itself, so it needs the same seam the
+    // executor gives every other call: send `system`, and fold it into the user
+    // turn only if this endpoint actually refuses the role. Without this the
+    // shared path would auto-recover and the direct path would 400 on the same
+    // slot — one door working and its neighbour not, for no reason the owner
+    // could see. See `@recued/llm`'s `system-role-fallback.ts`.
+    const result = await completeWithFallbacks(
+      adapter,
       input.route.slot,
       [
         { role: input.system_role, content: input.system_prompt_direct },

@@ -32,8 +32,13 @@ import {
   LLMConfigValidationError,
   LLM_MESSAGE_ROLES,
   LLM_GATEWAY_CALLER_SYSTEM_POLICIES,
+  probeEmbeddingsSource,
+  probeLlmSource,
+  type AdapterRegistry,
+  type EmbeddingsAdapterRegistry,
   type LLMSlot,
   type LLMConfig,
+  type QuotaTracker,
 } from '@recued/llm';
 import type { LLMConfigManager, LlmPromptSurfaceKey } from './llm-config.js';
 import { LLM_PROMPT_SURFACE_KEYS } from './llm-config.js';
@@ -59,6 +64,17 @@ export interface ConfigSchemaDeps {
    *  scheduler minimums, …). Optional so tests that only exercise the
    *  LLM fields don't need to wire a runtime store. */
   runtimeConfig?: RuntimeConfigStore;
+  /** Test connection — the config slice's FIRST execution deps. Everything
+   *  else here is parse-and-persist; probing is the one operation that leaves
+   *  the process, so the adapter registry and the quota tracker have to reach
+   *  this slice. Optional: a db-less / test wiring registers the method and
+   *  answers `unavailable` rather than pretending it probed. */
+  probe?: {
+    adapters: AdapterRegistry;
+    quota: QuotaTracker;
+    /** Separate registry — embeddings is `embed`, not `complete`. */
+    embeddingsAdapters?: EmbeddingsAdapterRegistry;
+  };
 }
 
 /** Fields handled directly by `LLMConfigManager` — SQLite-backed, not
@@ -258,7 +274,8 @@ export type ConfigMethods =
   | 'server.setFreePoolEntryEnabled'
   | 'server.setChatCatalogMode'
   | 'server.getLlmPrompts'
-  | 'server.setLlmPrompt';
+  | 'server.setLlmPrompt'
+  | 'server.probeLlmSource';
 
 /** Builds the `server.*` config rpc slice. Factory takes just
  *  `llmManager` (required) + optional `runtimeConfig`; the LLM side is
@@ -267,9 +284,10 @@ export type ConfigMethods =
 export const makeConfigHandlers = (
   llmManager: LLMConfigManager | undefined,
   runtimeConfig: RuntimeConfigStore | undefined,
+  probe?: ConfigSchemaDeps['probe'],
 ): HandlerSlice<ServerRpcRegistry, ConfigMethods, WsClient> | undefined => {
   if (!llmManager) return undefined;
-  const deps: ConfigSchemaDeps = { llmManager, runtimeConfig };
+  const deps: ConfigSchemaDeps = { llmManager, runtimeConfig, ...(probe ? { probe } : {}) };
   // Shared locked-server guard for the LLM write paths — a `setSensitive`
   // write on a wired-but-locked server throws "...locked..."; surface it as
   // the 423 `locked` rpc error rather than a 500. Returns `never` so a
@@ -295,6 +313,7 @@ export const makeConfigHandlers = (
       'server.setChatCatalogMode',
       'server.getLlmPrompts',
       'server.setLlmPrompt',
+      'server.probeLlmSource',
     ],
     handlers: {
       'server.getConfigSchema': async () => {
@@ -527,6 +546,167 @@ export const makeConfigHandlers = (
             };
           }),
         };
+      },
+
+      // Test connection — the one operation in this slice that leaves the
+      // process. Everything else is parse-and-persist, which is exactly why a
+      // mistyped key / model / base_url is accepted silently today and only
+      // surfaces hours later as a failed recipe.
+      //
+      // ⚠ Costs a real request against the owner's credential, so it is
+      // button-driven only (never automatic on save) and its usage is metered
+      // through the same QuotaTracker as any other call — an unmetered probe
+      // behind a button is a hole in the daily budget.
+      'server.probeLlmSource': async (args) => {
+        const target = args.target;
+        if (
+          target?.kind !== 'slot' && target?.kind !== 'pool_entry'
+        ) {
+          throw new RpcError('bad_request', "target.kind must be 'slot' | 'pool_entry'", 400);
+        }
+        if (
+          target.kind === 'slot'
+          && target.slot_key !== 'slot_1'
+          && target.slot_key !== 'slot_2'
+          && target.slot_key !== 'embeddings_slot'
+        ) {
+          throw new RpcError(
+            'bad_request',
+            "slot_key must be 'slot_1' | 'slot_2' | 'embeddings_slot'",
+            400,
+          );
+        }
+        if (!deps.probe) {
+          throw new RpcError(
+            'unavailable',
+            'Test connection is not wired on this server',
+            503,
+          );
+        }
+        let config: LLMConfig;
+        try {
+          config = llmManager.getConfig();
+        } catch (e) {
+          return rethrowLocked(e, 'read LLM config');
+        }
+
+        // What is STORED for this target — the credential source of truth, and
+        // the thing a blank draft key falls back to.
+        let stored: LLMSlot | undefined;
+        let sourceId: string;
+        if (target.kind === 'pool_entry') {
+          const entry = (config.free_pool ?? [])
+            .find((e) => e.id === target.entry_id);
+          sourceId = `pool:${target.entry_id}`;
+          stored = entry === undefined ? undefined : {
+            provider: entry.provider,
+            model: entry.model,
+            api_key: entry.api_key,
+            ...(entry.base_url !== undefined ? { base_url: entry.base_url } : {}),
+            supports_json: entry.supports_json,
+          };
+          if (entry === undefined) {
+            return {
+              ok: false,
+              diagnosis: 'rejected' as const,
+              detail: `No free-pool entry with id '${target.entry_id}'.`,
+              elapsed_ms: 0,
+            };
+          }
+        } else {
+          sourceId = target.slot_key;
+          stored = target.slot_key === 'slot_1'
+            ? config.slot_1
+            : target.slot_key === 'slot_2'
+              ? config.slot_2
+              : config.embeddings_slot;
+        }
+
+        // A draft probe answers "will this WORK if I save it" — so it must
+        // resolve a blank key exactly as `server.setLLMSlot` would, including
+        // that rule's guard. The webclient never receives the stored key
+        // (redacted to `has_key`), so a blank field means "keep the existing
+        // one" — but only while the credential CONTEXT is unchanged. Probing a
+        // new endpoint with the previous provider's key would report a result
+        // for a configuration that will never exist.
+        let slot: LLMSlot | undefined = stored;
+        if (args.draft !== null && args.draft !== undefined) {
+          const draft = args.draft;
+          const baseUrl = draft.base_url && draft.base_url.length > 0
+            ? draft.base_url
+            : undefined;
+          const contextUnchanged = stored !== undefined
+            && stored.provider === draft.provider
+            && stored.base_url === baseUrl;
+          const apiKey = draft.api_key && draft.api_key.length > 0
+            ? draft.api_key
+            : (contextUnchanged ? stored?.api_key ?? '' : '');
+          slot = {
+            provider: draft.provider as LLMSlot['provider'],
+            model: draft.model,
+            api_key: apiKey,
+            ...(baseUrl !== undefined ? { base_url: baseUrl } : {}),
+            ...(draft.supports_json !== undefined
+              ? { supports_json: draft.supports_json }
+              : {}),
+          };
+        }
+
+        if (!slot || slot.model.length === 0) {
+          return {
+            ok: false,
+            diagnosis: 'rejected' as const,
+            detail: 'This source has no model configured yet.',
+            elapsed_ms: 0,
+          };
+        }
+        if (slot.api_key.length === 0) {
+          // Not a provider failure, so it never reaches the probe — but it IS
+          // the answer, and it points at the field the owner has to fill.
+          return {
+            ok: false,
+            diagnosis: 'auth' as const,
+            detail: 'No API key is stored for this source. Enter one and test again.',
+            elapsed_ms: 0,
+          };
+        }
+
+        const quota = deps.probe.quota;
+        const onUsage = (tokens: number): void => {
+          quota.recordUsage(sourceId, tokens);
+        };
+        quota.registerRequest(sourceId);
+
+        // ⚠ The embeddings slot is a DIFFERENT PROVIDER CALL, not this probe
+        // pointed at another slot: `embed` vs `complete`, its own registry, and
+        // none of the chat capability questions apply. Sending a chat
+        // completion to an embeddings model would report its 404 as a missing
+        // model — true, and useless.
+        if (target.kind === 'slot' && target.slot_key === 'embeddings_slot') {
+          if (!deps.probe.embeddingsAdapters) {
+            throw new RpcError(
+              'unavailable',
+              'Embeddings test connection is not wired on this server',
+              503,
+            );
+          }
+          return probeEmbeddingsSource({
+            adapters: deps.probe.embeddingsAdapters,
+            slot,
+            onUsage,
+          });
+        }
+
+        const adapter = deps.probe.adapters(slot.provider);
+        if (!adapter) {
+          return {
+            ok: false,
+            diagnosis: 'rejected' as const,
+            detail: `Provider '${slot.provider}' is not available in this runtime.`,
+            elapsed_ms: 0,
+          };
+        }
+        return probeLlmSource({ adapter, slot, onUsage });
       },
 
       // Writes block 1 (+ the transport role, + the gateway's caller policy).

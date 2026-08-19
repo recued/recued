@@ -25,8 +25,58 @@ export const CERT_ROTATION_NOTICE_LEAD_TIME_MS = 7 * 24 * 60 * 60 * 1000;
 export const CERT_ROTATION_OVERLAP_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** D-148 § A.5.4 — kick off cert renewal when current cert is within
- *  this window of expiry. ACME-issued certs from Let's Encrypt are
- *  90-day certs; 30 days lead time is the standard cadence. */
+ *  this window of expiry.
+ *
+ *  ⛔⛔ THE ORIGINAL RATIONALE HERE WAS "ACME-issued certs from Let's
+ *  Encrypt are 90-day certs; 30 days is the standard cadence." THAT
+ *  PREMISE IS FALSE AS OF 2026-08-17 and the value is now a CEILING that
+ *  happens to be safe, not a derivation that is correct. Corrected on
+ *  measured evidence (invention round 9, T5-4 — arithmetic driven, not
+ *  estimated):
+ *
+ *    cert life │ renews at │ overlap as % of life
+ *      200 d   │  day 170  │    3.5 %   ← CA/B cap since 2026-03-15
+ *       47 d   │  day  17  │   14.9 %   ← CA/B cap from 2029-03-15
+ *        6 d   │  day −24  │  116.7 %   ← Let's Encrypt short-lived, GA TODAY
+ *
+ *  🔑 The published CA/Browser step-downs (398 → 200 → 100 → 47 days) are
+ *  NOT the hazard: a 30-day lead simply renews earlier as a fraction of
+ *  life and stays correct all the way down to 47 days. **Short-lived
+ *  certificates are the hazard, and they are available now.** At a 6-day
+ *  lifetime the renewal instant is 24 days in the PAST at issuance, so
+ *  `valid_until - now > threshold` is never true and the renewal path is
+ *  eligible from the moment the cert is minted — bounded only by
+ *  `RENEWAL_COOLDOWN_MS` (6 h) on the housekeeping path and by
+ *  `inFlight`/backoff on the D-235 custom-domain path, neither of which is
+ *  a correct answer, only a survivable one. And
+ *  `CERT_ROTATION_OVERLAP_MS` (7 d) then EXCEEDS THE WHOLE CERTIFICATE
+ *  LIFETIME: a client pinned to the previous fingerprint is still nominally
+ *  "inside overlap" after the NEXT certificate has itself expired.
+ *
+ *  ⛔ AND YET THIS IS NOT BROKEN TODAY — CHECK REACHABILITY BEFORE COSTING A
+ *  FIX. Let's Encrypt's 6-day certs require explicitly requesting the
+ *  `shortlived` PROFILE. This tree requests NO acme profile at all (zero
+ *  matches across `packages/server-network/src/acme-client.ts` and
+ *  `backend/api/src/routes/acme.ts`), so it takes the CA default — still ~90
+ *  days — where a 30-day lead and a 7-day overlap are CORRECT, not merely
+ *  survivable. The hazard above is conditional on a request we do not make.
+ *
+ *  🔑 AND THE INPUT IS NOT MISSING EITHER. An earlier draft of this note
+ *  claimed a lifetime-aware lead time "needs a persisted `valid_from` on the
+ *  cert row first". **That was wrong and is retracted.** The certificate
+ *  itself is already stored — `cert_pem_encrypted BLOB NOT NULL`
+ *  (`backend/server/src/storage/hostname-registry.ts:103`) — and an X.509
+ *  cert carries `notBefore`. Lifetime is already in hand; it is simply not
+ *  parsed out. A `valid_from` column would CACHE a fact we hold, not supply a
+ *  missing one, and is worth adding only if something reads it on a hot path.
+ *
+ *  ⇒ THE TRIPWIRE, which is the whole point of this note: **the day anyone
+ *  adds a profile request to the ACME order, the same change must derive the
+ *  lead time and the rotation overlap from the cert's own lifetime** — parse
+ *  `notBefore`, then `min(CERT_RENEWAL_LEAD_TIME_MS, floor(lifetime / 3))`
+ *  and clamp `CERT_ROTATION_OVERLAP_MS` the same way. Until then this stays a
+ *  fixed ceiling and is correct for every lifetime at or above ~90 days. */
+
 export const CERT_RENEWAL_LEAD_TIME_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** D-148 § A.5.4 — hard expiry warning surfaced at user level. At

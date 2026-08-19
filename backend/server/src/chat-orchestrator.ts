@@ -894,6 +894,22 @@ export interface ChatOrchestratorDeps {
     classification: 'read' | 'write' | 'unknown';
     concurrency_safe: boolean;
   }>;
+  /** D-247 D9 — is a Tier-2 recipe REACHABLE for this turn's source? Kept beside
+   *  the registry for the same reason `rawOpSource` is: recipe visibility became
+   *  contract-derived when D-247 gave it a grant kind.
+   *
+   *  ⚠ Absent ⇒ unfiltered, which is today's behaviour and keeps every partial
+   *  harness working. The FILTER decides fail-closed on an absent source, not
+   *  this optionality. */
+  tier2GrantFilter?: (source?: ExecutionSource) => (toolName: string) => boolean;
+  /** D-247 D8 — the OWNER's Tier-2 catalog, projected WITHOUT the `chat_exposed`
+   *  filter and narrowed by the `recipe.*` grant instead.
+   *
+   *  ⛔ Returns `null` for anything not owner-governed, which leaves the
+   *  registry's own filtered entries in place. Without this the grant could only
+   *  narrow what `chat_exposed` already allowed, and an owner who granted a
+   *  hidden recipe would get nothing — the flag would still be the gate. */
+  tier2OwnerCatalog?: (source?: ExecutionSource) => ReadonlyArray<ToolEntry> | null;
   /** D-225 § 9.5.1 — dispatch for a raw catalog op emitted by
    *  `rawOpSource`. Kept beside (rather than inside) the ordinary registry
    *  because raw visibility is derived from the turn's contract. The raw
@@ -1946,7 +1962,23 @@ export const createChatOrchestrator = (
   const buildCatalog: ChatCatalogBuilder = (picker_target, projection, source) => {
     // ⛔ D-228 slice 5 — no peer branch: `picker_target` can only be `'self'`
     // now, so the catalog is always this server's own registry.
-    const catalogEntries = deps.registry.list();
+    // D-247 D9 — Tier-2 membership reads the owner's `recipe.*` grant. Filtered
+    // HERE because `buildCatalog` already holds the turn's source, one line above
+    // where `rawOpSource(source)` uses it for the same reason. ⛔ This is one of
+    // THREE exposure surfaces (chat catalog / `tools.search` / the MCP door's
+    // `tools/list`) and they fail independently.
+    // D-247 — for an OWNER-governed turn the Tier-2 half is REPLACED by the
+    // grant-decided projection (which sees hidden recipes too, so a grant can
+    // widen past `chat_exposed`). For anything else the registry's own entries
+    // stand, still filtered by the flag, because a door has no `recipe.*` axis.
+    const ownerTier2 = deps.tier2OwnerCatalog?.(source) ?? null;
+    const tier2Reachable = deps.tier2GrantFilter?.(source);
+    const registryEntries = deps.registry.list();
+    const catalogEntries = ownerTier2 !== null
+      ? [...registryEntries.filter((e) => e.tier !== 2), ...ownerTier2]
+      : tier2Reachable
+        ? registryEntries.filter((e) => e.tier !== 2 || tier2Reachable(e.name))
+        : registryEntries;
     const enabledKinds = resolveEnabledKinds(
       deps.scopeProvider ? deps.scopeProvider() : null,
     );

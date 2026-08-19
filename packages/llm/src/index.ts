@@ -84,6 +84,38 @@ export type { PreflightResult, PreflightStepMeta, PreflightIssue, PreflightDeps 
 
 // Executor
 export { executeLLM, deriveRequires, resolveLLMModelId, BATCH_ELEMENT_MEDIA_KEY } from './executor.js';
+// The provider-error classifier. Public because a caller that reacts to a
+// provider failure (the gateway, and any test asserting on one) must be able to
+// produce and recognise the SAME wrapped/truncated message shape the adapters
+// raise — hand-copying that format is how a detector passes its unit test and
+// misses every live rejection.
+export { classifyProviderError } from './adapters/anthropic.js';
+export { completeWithFallbacks } from './executor.js';
+// D-208 follow-on — the wire role is DETECTED, never configured. The gateway's
+// raw direct path calls the adapter itself, so it needs the same seam.
+export {
+  demoteSystemMessages,
+  endpointFingerprint,
+  isJsonModeRejection,
+  isSystemRoleRejection,
+  jsonModeUnsupported,
+  forgetEndpoint,
+  hydrateEndpointCapabilities,
+  onEndpointCapabilityLearned,
+  resetEndpointCapabilities,
+  snapshotEndpointCapabilities,
+  systemRoleUnsupported,
+} from './endpoint-capabilities.js';
+export type { EndpointCapabilityNote } from './endpoint-capabilities.js';
+// Test connection — one real call, reported in terms the owner can act on.
+export {
+  probeLlmSource,
+  probeEmbeddingsSource,
+  diagnoseProbeFailure,
+  LLM_PROBE_TIMEOUT_MS,
+} from './probe.js';
+export type { LlmProbeResult, LlmProbeDiagnosis, ProbeLlmSourceDeps } from './probe.js';
+
 export type { LLMExecutorDeps, MatchContextHook, LLMMatchResolved } from './executor.js';
 
 // Timeout policy

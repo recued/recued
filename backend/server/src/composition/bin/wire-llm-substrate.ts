@@ -45,6 +45,9 @@
 import type Database from 'better-sqlite3';
 import {
   createDefaultRegistry as createLLMAdapterRegistry,
+  endpointFingerprint,
+  hydrateEndpointCapabilities,
+  onEndpointCapabilityLearned,
   createDefaultEmbeddingsRegistry,
   createQuotaTracker,
   createDefaultTranscriptionRegistry,
@@ -55,6 +58,7 @@ import {
   LLMError,
   type ForceLayer,
   type LLMConfig,
+  type LLMSlot,
   type QuotaTracker,
   type TranscribeDeps,
 } from '@recued/llm';
@@ -141,6 +145,83 @@ export const composeLlmSubstrate = (deps: ComposeLlmSubstrateDeps): LlmSubstrate
       return llmConfig;
     }
   };
+
+  // ── D-208 follow-on — durable endpoint capabilities ────────────────
+  //
+  // What a previous process learned about each endpoint (no `system` role, no
+  // `response_format`) is stored ON THE SOURCE — `slot.system_role_ok`,
+  // `entry.native_json_ok` — so the first call after a restart does not re-pay
+  // a rejection the server already knows about.
+  //
+  // 🔑 IT USED TO BE A SIDE BLOB keyed by a content fingerprint
+  // (provider+base_url+model), on the reasoning that the fingerprint
+  // auto-invalidates when any of those change. But a SOURCE EDIT is exactly
+  // that moment and the save path already runs then, so the whole
+  // content-addressing layer — plus its pruning, its orphan rows, and its
+  // resurrect-on-restart failure mode — was buying something the write path
+  // already knew. Storing on the source deletes all of it: a removed source
+  // takes its observations with it.
+  //
+  // ⛔ These fields are inert to routing. `match.ts` gates on `supports_json`;
+  // a capability that only changes how a prompt is PACKED must never be able to
+  // make a source unroutable.
+  if (llmManager) {
+    const manager = llmManager;
+    // Pure: the caller decides WHICH config to read against. Boot passes the
+    // snapshot it already has (no second read); the learn-listener passes the
+    // live one, so a source configured after boot is still findable.
+    const sources = (config: LLMConfig | undefined): Array<{
+      slot: LLMSlot;
+      source: Parameters<typeof manager.setSourceCapability>[0];
+    }> => {
+      if (!config) return [];
+      const out: Array<{ slot: LLMSlot; source: Parameters<typeof manager.setSourceCapability>[0] }> = [];
+      for (const slot_key of ['slot_1', 'slot_2', 'embeddings_slot'] as const) {
+        const slot = config[slot_key];
+        if (slot) out.push({ slot, source: { kind: 'slot', slot_key } });
+      }
+      for (const entry of config.free_pool ?? []) {
+        out.push({
+          slot: {
+            provider: entry.provider,
+            model: entry.model,
+            api_key: entry.api_key,
+            ...(entry.base_url !== undefined ? { base_url: entry.base_url } : {}),
+            ...(entry.system_role_ok !== undefined
+              ? { system_role_ok: entry.system_role_ok } : {}),
+            ...(entry.native_json_ok !== undefined
+              ? { native_json_ok: entry.native_json_ok } : {}),
+          },
+          source: { kind: 'pool', entry_id: entry.id },
+        });
+      }
+      return out;
+    };
+
+    hydrateEndpointCapabilities(sources(llmConfig).map(({ slot }) => ({
+      fingerprint: endpointFingerprint(slot),
+      ...(slot.system_role_ok === false ? { system_role_unsupported: true } : {}),
+      ...(slot.native_json_ok === false ? { json_mode_unsupported: true } : {}),
+    })));
+
+    onEndpointCapabilityLearned((note) => {
+      try {
+        // The in-memory cache is keyed by endpoint so two sources on the same
+        // model share one answer; storage is keyed by SOURCE so it invalidates
+        // with the source. This is the one place the two meet.
+        for (const { slot, source } of sources(resolveLlmConfig())) {
+          if (endpointFingerprint(slot) !== note.fingerprint) continue;
+          manager.setSourceCapability(source, {
+            system_role_ok: note.system_role_unsupported !== true,
+            native_json_ok: note.json_mode_unsupported !== true,
+          });
+        }
+      } catch {
+        // A failed capability WRITE must never fail the call that discovered
+        // it — the call already succeeded, and this is a latency cache.
+      }
+    });
+  }
 
   return {
     llmManager,

@@ -34,6 +34,7 @@ import {
   type InstalledRecipeRow,
 } from '@recued/marketplace';
 
+import type { RecipeDefinition } from '@recued/contracts';
 import type { RecipeStore } from './recipe-store.js';
 import type { McpBodyVisibilityStore } from './storage/mcp-body-visibility-store.js';
 import type {
@@ -172,6 +173,19 @@ const wrapRecipeStore = (
  *  one-click pack provisioning. */
 export interface InstallBulkPackOnServerDeps {
   recipeStore: RecipeStore;
+  /** D-247 D15.1 — write each recipe's grant row with the install's chosen access
+   *  ceiling applied, BEFORE the recipes are saved. The caller closes over the
+   *  tier and the grant store; this seam only supplies the resolved bodies.
+   *
+   *  ⚠ Absent ⇒ the store's mutation hook seeds on `chat_exposed` alone, which
+   *  ignores the ceiling. */
+  seedRecipeGrants?: (
+    recipes: ReadonlyArray<{
+      readonly recipe_id: string;
+      readonly publisher_id: string;
+      readonly recipe: RecipeDefinition;
+    }>,
+  ) => void;
   /** D-201 Slice 4 — exact logical-binding + recipe-trigger store. Absent
    * leaves webhook-declaring packs fail-closed in the pure install engine. */
   webhookConsumerStore?: WebhookConsumerStore;
@@ -222,6 +236,31 @@ export const installBulkPackOnServer = async (
         },
       };
     }
+  }
+  // ── D-247 D15.1 — THE OWNER'S CEILING, WRITTEN BEFORE THE SAVES ──────────
+  //
+  // ⛔⛔ ORDER IS THE MECHANISM. The ordinary grant seed rides `RecipeStore`'s
+  // mutation hook, which knows only a `recipe_id` — the install dialog's chosen
+  // access tier is nowhere in scope there, so a pack recipe would be seeded on
+  // `chat_exposed` ALONE and the owner's "Read only" would mean nothing.
+  // Writing here, BEFORE `markInstalled` reaches `store.save`, lets the hook's
+  // INSERT-IF-ABSENT no-op and carries the answer across without threading
+  // ambient install state through the store.
+  //
+  // ⚠ Absent dep ⇒ the hook seeds as before. That is a real degradation (the
+  // ceiling is ignored) and it is the SAFE direction only because pack content
+  // defaults `chat_exposed: false`; it is not a reason to leave it unwired.
+  if (deps.seedRecipeGrants) {
+    deps.seedRecipeGrants(
+      input.recipes.flatMap((r) =>
+        r.recipe?.recipe
+          ? [{
+              recipe_id: r.recipe.recipe_id,
+              publisher_id: r.recipe.publisher_id,
+              recipe: r.recipe.recipe,
+            }]
+          : []),
+    );
   }
   // D-145 PA10 follow-on — `input.pack_slug` flows through the engine
   // as the pack identity. Capture it as `currentPackSlug` for the

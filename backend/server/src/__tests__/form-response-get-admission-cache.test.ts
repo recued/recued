@@ -104,6 +104,11 @@ const makeHarness = () => {
   const opAdmissionGate: OpAdmissionGate = {
     isFrozenByPause: () => false,
     isOpGranted,
+    // D-247 — this suite drives an MCP DOOR, whose recipe grant lives in its
+    // inbound token (`allowed_tools`), never in the owner's contract. `false`
+    // is the production answer for a door, not a convenience stub.
+    isOwnerRecipeGranted: () => false,
+    isOwnerGoverned: () => false,
   };
   const deps: ExecuteHandlerDeps = {
     recipeStore,

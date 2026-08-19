@@ -177,6 +177,8 @@ const makeRecipeStore = (): RecipeStore => ({
   updateUpstream: vi.fn(),
   setOnUpgrade: vi.fn(),
   setOnMutated: vi.fn(),
+  // D-247 — required so a store double cannot silently miss the grant seam.
+  addOnMutated: vi.fn(),
 });
 
 const makeExecuteDeps = (recipeStore: RecipeStore): ExecuteHandlerDeps =>

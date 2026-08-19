@@ -2740,6 +2740,7 @@ export const runCatalogOperation = async (
       ctx.execution_source,
       resolution.operation_id,
       resolution.effective_risk_tier,
+      resolution.authorization_provenance.lift_reason,
     );
 
   if (resolution.verdict === 'ask' && !resumeApproved && !standingAdmit) {

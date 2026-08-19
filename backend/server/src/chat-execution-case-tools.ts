@@ -84,8 +84,11 @@ export const REQUEST_DISSECTION_TOOL_ENTRY: ToolEntry = {
   name: REQUEST_DISSECTION_TOOL_NAME,
   tier: 1,
   description:
-    'When the current user request requires governed tools, emit this '
-    + 'classification alongside the first proposed tool call. Describe only '
+    'When the current user request requires governed tools, CALL this tool in '
+    + 'the same "tool_calls" array as the first proposed tool call — it is a '
+    + 'tool call like any other, never an object emitted on its own. Calling it '
+    + 'performs NONE of the requested work — it records what was asked, so the '
+    + 'work still needs its own tool calls. Describe only '
     + 'what the user asked, never what tools happened to run. In intent, reuse '
     + 'the root request’s action/object words in their original order; do not '
     + 'paraphrase or supply only a generic noun. Do not include ids, hashes, '

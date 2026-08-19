@@ -2240,3 +2240,63 @@ describe('bootstrapSettingsRoute: D-219 — Learning case callers reach the pane
     route.dispose();
   });
 });
+
+describe('bootstrapSettingsRoute: the rail is addressable', () => {
+  it('reports #settings/<section> as a pushed entry when the rail switches', () => {
+    const writes: Array<[string, string]> = [];
+    const { host, route } = mountRoute({
+      onAddressChange: (hash, mode) => { writes.push([hash, mode]); },
+      tlsRenewCaller: async () => SUCCESS_RESULT,
+    });
+
+    // Mounting must NOT write — only a user's rail click is navigation.
+    expect(writes).toEqual([]);
+
+    findByAttrValue(host, SETTINGS_ROUTE_NAV_ITEM_ATTR, 'server')!.click();
+    expect(writes).toEqual([['#settings/server', 'push']]);
+    expect(
+      findByAttrValue(host, SETTINGS_ROUTE_SECTION_ATTR, 'server')
+        ?.getAttribute(SETTINGS_ROUTE_ACTIVE_ATTR),
+    ).toBe('true');
+    route.dispose();
+  });
+
+  it('switches sections in place, and refuses an id it never registered', () => {
+    const { host, route } = mountRoute({
+      initialSectionId: 'server',
+      tlsRenewCaller: async () => SUCCESS_RESULT,
+    });
+    const activeIds = (): string[] =>
+      ['privacy', 'server'].filter((id) =>
+        findByAttrValue(host, SETTINGS_ROUTE_SECTION_ATTR, id)
+          ?.getAttribute(SETTINGS_ROUTE_ACTIVE_ATTR) === 'true');
+    expect(activeIds()).toEqual(['server']);
+
+    expect(route.navigateToSection('privacy')).toBe(true);
+    expect(activeIds()).toEqual(['privacy']);
+
+    // `null` is the bare `#settings` landing — the first registered section.
+    expect(route.navigateToSection('server')).toBe(true);
+    expect(route.navigateToSection(null)).toBe(true);
+    expect(activeIds()).toEqual(['privacy']);
+
+    // An unknown id changes nothing and says so, so the shell can re-mount.
+    expect(route.navigateToSection('seller')).toBe(false);
+    expect(activeIds()).toEqual(['privacy']);
+
+    route.dispose();
+    expect(route.navigateToSection('privacy')).toBe(false);
+  });
+
+  it('leaves the rail in-page when the host wires no address seam', () => {
+    const { host, route } = mountRoute({
+      tlsRenewCaller: async () => SUCCESS_RESULT,
+    });
+    findByAttrValue(host, SETTINGS_ROUTE_NAV_ITEM_ATTR, 'server')!.click();
+    expect(
+      findByAttrValue(host, SETTINGS_ROUTE_SECTION_ATTR, 'server')
+        ?.getAttribute(SETTINGS_ROUTE_ACTIVE_ATTR),
+    ).toBe('true');
+    route.dispose();
+  });
+});

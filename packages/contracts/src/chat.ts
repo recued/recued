@@ -752,15 +752,77 @@ export const CHAT_MAIN_TURN_INGREDIENT_SLUG = 'recued/chat-main-turn' as const;
  *
  *  Rationale: matches industry-standard agent loop ceilings (OpenAI's
  *  agent SDK defaults to 10; Anthropic's tool-use docs cite 8-10 as
- *  reasonable; LangChain's default is 15). Eight is the chat-side
- *  ceiling because chat turns are interactive (user is waiting in the
- *  webclient; rounds beyond ~8 stretch perceived latency past the
- *  "actively thinking" threshold). For long-horizon agentic work
- *  outside the chat surface (recipes invoked via `recipe.run`), the
- *  recipe's own multi-turn cap (PB5 `runMultiTurnLoop` with
+ *  reasonable; LangChain's default is 15). The ceiling is interactive
+ *  rather than technical — the user is waiting in the webclient, and
+ *  rounds past it stretch perceived latency beyond the "actively
+ *  thinking" threshold. For long-horizon agentic work outside the chat
+ *  surface (recipes invoked via `recipe.run`), the recipe's own
+ *  multi-turn cap (PB5 `runMultiTurnLoop` with
  *  `TIER_PACKET_BUDGETS[tier].max_rounds`) governs independently —
- *  this constant is the chat orchestrator's ceiling alone. */
-export const CHAT_MAIN_TURN_TOOL_LOOP_CAP = 8;
+ *  this constant is the chat orchestrator's ceiling alone.
+ *
+ *  ⚠ RAISED 8 → 10 on 2026-08-18, and the reason is a real ceiling a
+ *  DEEP flow hits rather than a preference for more rounds.
+ *
+ *  ⚠⚠ AND THE COUNTER CHANGED UNDER IT, SAME DAY: a round that dispatched
+ *  NOTHING BUT `tools.search` no longer charges this cap at all — see
+ *  {@link CHAT_MAIN_TURN_DISCOVERY_ROUND_CAP}. So this is now a ceiling on
+ *  WORK rounds, and the arithmetic below (which counted discovery against it)
+ *  is the argument that produced the raise rather than a live constraint.
+ *  🔑 With discovery uncharged, 8 would also be defensible — 8 work rounds is
+ *  more than the ~4 a lean-core procedure used to get. Left at 10 deliberately;
+ *  moving it back is a judgement about interactive latency, not a fix.
+ *  Whenever the resolved catalog mode OMITS Tier-2 entries — `lean-core`
+ *  does, and it is what `CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE` selected when
+ *  this was written — reaching a recipe costs a `tools.search` round BEFORE
+ *  the call. ⚠ The trigger is the OMISSION, not which mode ships: read the map,
+ *  do not trust this sentence for it.
+ *  A multi-recipe procedure therefore spends roughly TWO rounds per
+ *  recipe it did not already know. Measured on bench task 181: five
+ *  rounds bought two recipes (`tools.search` → `list-buildings` →
+ *  `recipe.run` → `tools.search` → `add-unit`), so a three-recipe chain
+ *  needs ~7 and a four-recipe one exceeded 8 and would terminate
+ *  `max_rounds_exhausted` mid-procedure.
+ *
+ *  ⛔ TEN IS STILL A CEILING, NOT HEADROOM TO SPEND. It sits at the
+ *  bottom of the cited industry band, not above it, and a turn that
+ *  needs more than ten rounds is floundering rather than working —
+ *  which is what `max_rounds_exhausted` exists to say. Do not raise
+ *  this again to rescue a flow; fix what makes the flow long. */
+export const CHAT_MAIN_TURN_TOOL_LOOP_CAP = 10;
+
+/** Rounds a turn may spend on CATALOG DISCOVERY without charging
+ *  {@link CHAT_MAIN_TURN_TOOL_LOOP_CAP}.
+ *
+ *  ⛔⛔ **A DISCOVERY ROUND IS THE MODE'S OWN TAX, NOT THE MODEL'S WORK.**
+ *  Whenever the resolved catalog mode OMITS Tier-2 entries (`lean-core` does;
+ *  read `CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE` for which mode a source gets
+ *  today), `tools.search` is the ONLY route to a recipe — and a round spent on
+ *  it converts the catalog into a
+ *  callable name rather than doing anything the owner asked for. Charging it
+ *  against a ceiling that exists to bound WORK means the deeper the procedure
+ *  the less of its budget reaches the procedure. Same reasoning as D-219 slice
+ *  8's `tools.search` exemption, applied to the other counter.
+ *
+ *  ⚠ ONLY A ROUND THAT DISPATCHED **NOTHING BUT** `tools.search` is free. A
+ *  round that searched alongside real tools did work and is charged — rounds
+ *  are batched, and the observed shape mixes them (`[work.search,
+ *  tools.search]` in one round).
+ *
+ *  ⛔ AND IT IS BOUNDED, WHICH THE SLICE-8 EXEMPTION DID NOT HAVE TO BE. That
+ *  one governs ADMISSION — refusing a case costs nothing at runtime. This
+ *  governs LOOP TERMINATION: unbounded free discovery is a model searching
+ *  forever, spending real tokens and real latency on a turn that never ends.
+ *  The prompt already asks it not to reword-and-retry a fruitless search, but a
+ *  prompt is not an enforcement point.
+ *
+ *  Four is one discovery per unknown recipe for a four-recipe procedure, which
+ *  is already an extraordinary single turn. ⚠ The absolute per-turn ceiling is
+ *  therefore `CAP + this` = 14 rounds. That is acceptable only because a
+ *  discovery round is materially cheaper than a work round — one small read,
+ *  and a reinvocation carrying a short result — and unacceptable to raise
+ *  further on the same argument. */
+export const CHAT_MAIN_TURN_DISCOVERY_ROUND_CAP = 4;
 
 /** A short echo of a chat message — the orchestrator passes the
  *  recent tail to the main turn so synthesis has immediate context.

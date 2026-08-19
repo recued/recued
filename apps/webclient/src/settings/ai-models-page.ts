@@ -6,6 +6,7 @@
  */
 
 import { totalRecord } from '@recued/contracts';
+import { resolveFreePoolDataUse, freePoolDataUseNotice } from '@recued/contracts';
 import {
   CHAT_CATALOG_DELIVERY_MODES,
   CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE,
@@ -19,6 +20,7 @@ import {
   type ServerLlmCallerSystemPolicy,
   type ServerLlmMessageRole,
   type ServerLlmPrompt,
+  type ServerLlmProbeResult,
   type ServerLlmPromptSurface,
 } from '@recued/contracts';
 import {
@@ -78,6 +80,12 @@ export const AI_MODELS_SLOT_CLEAR_CANCEL_ATTR =
 export const AI_MODELS_SLOT_CLEAR_CONFIRM_ATTR =
   'data-recued-ai-models-slot-clear-confirm';
 export const AI_MODELS_SLOT_FIELD_ATTR = 'data-recued-ai-models-slot-field';
+/** Test connection — one real request against the slot, reported in the form.
+ *  Nothing else in the save path leaves the process, so this is the only place
+ *  a wrong key / model / base_url can be caught at the moment it is typed. */
+export const AI_MODELS_SLOT_TEST_ATTR = 'data-recued-ai-models-slot-test';
+export const AI_MODELS_SLOT_TEST_RESULT_ATTR =
+  'data-recued-ai-models-slot-test-result';
 export const AI_MODELS_EMBEDDINGS_FIELD_ATTR =
   'data-recued-ai-models-embeddings-field';
 /** Per-source model context-window input. Values are `slot_1`, `slot_2`, or
@@ -107,9 +115,24 @@ export const AI_MODELS_TAB_ATTR = 'data-recued-ai-models-tab';
 export const AI_MODELS_TAB_PANEL_ATTR = 'data-recued-ai-models-tab-panel';
 export const AI_MODELS_PROMPT_SECTION_ATTR = 'data-recued-ai-models-prompt';
 export const AI_MODELS_PROMPT_TEXT_ATTR = 'data-recued-ai-models-prompt-text';
-export const AI_MODELS_PROMPT_ROLE_ATTR = 'data-recued-ai-models-prompt-role';
 export const AI_MODELS_PROMPT_SAVE_ATTR = 'data-recued-ai-models-prompt-save';
-export const AI_MODELS_PROMPT_RESET_ATTR = 'data-recued-ai-models-prompt-reset';
+/** Client-only — drops the built-in into the editor as an UNSAVED draft. It is
+ *  not the old server-side reset: `Load default` + `Save` is, because a save
+ *  whose text equals the built-in sends `null` (see `saveLlmPrompt`). */
+export const AI_MODELS_PROMPT_LOAD_DEFAULT_ATTR =
+  'data-recued-ai-models-prompt-load-default';
+/** Answers "is this box showing what is saved?" — the question the old card
+ *  left the owner to guess at. */
+export const AI_MODELS_PROMPT_STATUS_ATTR =
+  'data-recued-ai-models-prompt-status';
+/** Rendered ONLY when the wire role is off its default. The picker is gone from
+ *  the card (it is a provider-compatibility hatch, not an authoring choice), and
+ *  a setting with no control is stuck unless its non-default state announces
+ *  itself and offers the way back. */
+export const AI_MODELS_PROMPT_TRANSPORT_ATTR =
+  'data-recued-ai-models-prompt-transport';
+export const AI_MODELS_PROMPT_TRANSPORT_RESET_ATTR =
+  'data-recued-ai-models-prompt-transport-reset';
 export const AI_MODELS_PROMPT_BADGE_ATTR = 'data-recued-ai-models-prompt-badge';
 export const AI_MODELS_PROMPT_POLICY_ATTR = 'data-recued-ai-models-prompt-policy';
 export const AI_MODELS_PROMPT_POLICY_HINT_ATTR = 'data-recued-ai-models-prompt-policy-hint';
@@ -316,6 +339,28 @@ export type AiModelsLlmPromptsGetCaller = () => Promise<{
   prompts: ReadonlyArray<ServerLlmPrompt>;
 }>;
 
+/** Test connection — send ONE real completion to a configured slot and report
+ *  what came back. `slot` omitted probes what is saved; `slot` present probes
+ *  the unsaved draft, which is the case that matters while you are typing.
+ *
+ *  ⚠ The draft carries the api_key ONLY when the owner just typed one — the
+ *  stored key never reaches the client (redacted to `has_key`), so a blank key
+ *  means "use the stored one" and the SERVER resolves it. */
+export type AiModelsProbeTarget =
+  | { kind: 'slot'; slot_key: ClearableSlotKey }
+  | { kind: 'pool_entry'; entry_id: string };
+
+export type AiModelsProbeSourceCaller = (args: {
+  target: AiModelsProbeTarget;
+  draft?: {
+    provider: string;
+    model: string;
+    api_key?: string;
+    base_url?: string;
+    supports_json?: boolean;
+  } | null;
+}) => Promise<ServerLlmProbeResult>;
+
 /** Replace one surface's system prompt + wire role. `null` on either clears it
  *  — that IS the reset-to-default, and the server restores the built-in
  *  byte-for-byte by deleting the row. */
@@ -365,6 +410,7 @@ export interface MountAiModelsPageOptions {
   runRemoveFreePoolEntry?: AiModelsFreePoolEntryRemoveCaller;
   runSetFreePoolEntryEnabled?: AiModelsFreePoolEntryEnabledCaller;
   runSetChatCatalogMode?: AiModelsSetChatCatalogModeCaller;
+  runProbeLlmSource?: AiModelsProbeSourceCaller;
   runGetLlmPrompts?: AiModelsLlmPromptsGetCaller;
   runSetLlmPrompt?: AiModelsLlmPromptSetCaller;
   runGetConfigSchema?: AiModelsConfigSchemaGetCaller;
@@ -446,10 +492,15 @@ export interface AiModelsPageMount {
     source: ChatModelSourceId,
     mode: ChatCatalogDeliveryMode | null,
   ): Promise<void>;
-  /** Write one surface's ROLE + INSTRUCTIONS (block 1), its wire role, and — on
-   *  the gateway — the caller-system policy. Block 1 only: Recued's core and
-   *  feature text are composed around it and are not writable from here. A blank
-   *  box is read as a reset. */
+  /** Write one surface's ROLE + INSTRUCTIONS (block 1) and — on the gateway —
+   *  the caller-system policy. Block 1 only: Recued's core and feature text are
+   *  composed around it and are not writable from here.
+   *
+   *  A blank box is read as a reset, AND SO IS ONE HOLDING THE BUILT-IN: both
+   *  send `null`, because `null` is the only way the server expresses "default"
+   *  and a byte-identical copy would badge as Customised and pin the text
+   *  against future releases. The wire role rides through unchanged — the card
+   *  has no editor for it, so a save must never re-assert one. */
   saveLlmPrompt(
     surface: ServerLlmPromptSurface,
     draft: PromptDraft,
@@ -457,6 +508,12 @@ export interface AiModelsPageMount {
   /** Clear the override. The built-in comes back byte-for-byte — the server
    *  deletes the row, and absence IS the default. */
   resetLlmPrompt(surface: ServerLlmPromptSurface): Promise<void>;
+  /** Put the wire role back to `system`, KEEPING the owner's instructions.
+   *  The card's only remaining transport control, shown only when the role is
+   *  already off-default — see {@link describeTransportRole}. */
+  setPromptDeliveryRoleToDefault(
+    surface: ServerLlmPromptSurface,
+  ): Promise<void>;
   setBudget(tokens: number): Promise<void>;
   setAllowByokBackground(allow: boolean): Promise<void>;
   setPauseBackgroundAiUntil(until: number | null): Promise<void>;
@@ -527,6 +584,23 @@ const CATALOG_MODE_LEGEND: Readonly<Record<ChatCatalogDeliveryMode, string>> = {
   'lean-core': 'Only the core tools are listed; the model searches to discover recipes. Biggest savings, best on capable models. Advanced.',
 };
 
+/** Test connection — what each verdict means, in the owner's terms.
+ *
+ *  🔑 Each line names the FIELD TO LOOK AT, not the HTTP status. "401
+ *  Unauthorized" is the provider's framing of the problem; "the API key" is the
+ *  owner's. The raw provider text is still shown underneath — someone debugging
+ *  a self-hosted endpoint needs it, and paraphrasing hides the one detail that
+ *  identifies the problem. */
+const PROBE_VERDICT: Readonly<Record<ServerLlmProbeResult['diagnosis'], string>> = {
+  ok: 'Connected.',
+  auth: 'The API key was rejected. Check the key.',
+  unreachable: 'Could not reach the endpoint. Check the Base URL, and that the server is running.',
+  model_missing: 'The endpoint answered, but does not have that model. Check the Model.',
+  rate_limited: 'The key works — the provider is rate-limiting it right now. Try again shortly.',
+  provider_error: 'The key works — the provider is having trouble. Not your configuration.',
+  rejected: 'The endpoint refused the request. See the detail below.',
+};
+
 /** Per-surface framing for the System prompts tab. The copy's job is to say WHO
  *  reads each block — the gateway one is read by strangers, and that single fact
  *  is what changes how you write it. */
@@ -544,20 +618,27 @@ const PROMPT_SURFACE_COPY: Readonly<Record<ServerLlmPromptSurface, {
   },
 };
 
-/** The wire-role options. A TRANSPORT knob, not the role you write above — it
- *  exists because some OpenAI-compatible endpoints (parts of the free pool, some
- *  reasoning models) reject a `system` role outright. */
-const PROMPT_ROLE_LABELS: Readonly<Record<ServerLlmMessageRole, string>> = {
-  system: 'system (default)',
-  user: 'user',
-  assistant: 'assistant',
-};
-
-const PROMPT_ROLES: ReadonlyArray<ServerLlmMessageRole> = [
-  'system',
-  'user',
-  'assistant',
-];
+/** The wire role is a TRANSPORT knob — it exists because some
+ *  OpenAI-compatible endpoints (parts of the free pool, some reasoning models)
+ *  reject a `system` role outright. It has NO picker on the card.
+ *
+ *  🔑 WHY IT LOST ITS `<select>`: its three options are spelled with the same
+ *  three words as chat message roles, so a dropdown reading
+ *  `system / user / assistant` beside a prompt box and a Save button says
+ *  "choose which prompt you are writing" when it means "choose the envelope
+ *  this one string ships in". The vocabulary lied about the job, and every
+ *  richer presentation of it (tabs, one box per role) makes the misread
+ *  stronger: there is ONE stored string per surface
+ *  (`chat_role_instructions` / `llm_gateway_role_instructions`) delivered as
+ *  ONE message (`chat-turn-executor.ts` / the gateway handler), never three.
+ *
+ *  ⚠ It is also under-designed WHERE IT SITS: the provider that rejects
+ *  `system` is a property of the SLOT, but the role is stored per SURFACE — one
+ *  chat surface can route to a slot that accepts `system` and a free-pool entry
+ *  that does not, and a single surface-level value cannot be right for both. It
+ *  belongs on the slot if it is ever re-exposed. */
+const describeTransportRole = (role: ServerLlmMessageRole): string =>
+  `Delivered to the model as a ${role} message, not a system message.`;
 
 const CALLER_SYSTEM_POLICIES: ReadonlyArray<ServerLlmCallerSystemPolicy> = [
   'context',
@@ -803,9 +884,13 @@ export const mountAiModelsPage = (
   const promptDrafts = new Map<ServerLlmPromptSurface, PromptDraft>();
   const promptMutationPending = new Map<
     ServerLlmPromptSurface,
-    'save' | 'reset'
+    'save' | 'reset' | 'transport'
   >();
   const byokSlotDrafts = new Map<LlmSlotKey, ByokSlotDraft>();
+  // Test connection costs a real request against the owner's credential, so
+  // it is single-flight per slot and never fires on its own.
+  let slotProbePendingKey: string | null = null;
+  const slotProbeResults = new Map<string, ServerLlmProbeResult>();
   let embeddingsSlotDraft: EmbeddingsSlotDraft | null = null;
   const freePoolAddDraft: FreePoolAddDraft = {
     id: '',
@@ -1109,7 +1194,7 @@ export const mountAiModelsPage = (
 
   const submitPromptMutation = async (
     surface: ServerLlmPromptSurface,
-    kind: 'save' | 'reset',
+    kind: 'save' | 'reset' | 'transport',
     run: () => Promise<void>,
   ): Promise<void> => {
     if (disposed || promptMutationPending.has(surface)) return;
@@ -1492,11 +1577,67 @@ export const mountAiModelsPage = (
     ) {
       clear.setAttribute('aria-disabled', 'true');
     }
+    renderProbeControls(
+      card,
+      slotKey,
+      title,
+      { kind: 'slot', slot_key: slotKey },
+      () => ({
+        provider: provider.value,
+        model: model.value,
+        // Blank = "use the stored key". The client never HAD the stored key to
+        // send, so the server resolves it — see the caller doc.
+        ...(apiKey.value.length > 0 ? { api_key: apiKey.value } : {}),
+        ...(baseUrl.value.length > 0 ? { base_url: baseUrl.value } : {}),
+      }),
+    );
     // Instant-apply per-source catalog-mode control (distinct from the
     // Save-gated slot fields above), placed after the buttons so it reads
     // as its own control.
     renderCatalogModeControl(card, slotKey);
     parent.appendChild(card);
+  };
+
+  /** Run one probe and land its verdict in the card.
+   *
+   *  ⚠ Never throws to the caller. A failed connection is the RESULT the owner
+   *  asked for — routing it to the page's `actionError` banner would file it
+   *  next to "couldn't save your settings", which is a different kind of
+   *  problem with a different fix. Only a transport failure (the rpc itself
+   *  could not be made) belongs in the banner. */
+  const submitSlotProbe = async (
+    resultKey: string,
+    target: AiModelsProbeTarget,
+    draft?: {
+      provider: string;
+      model: string;
+      api_key?: string;
+      base_url?: string;
+    },
+  ): Promise<void> => {
+    if (disposed || slotProbePendingKey !== null || !opts.runProbeLlmSource) return;
+    slotProbePendingKey = resultKey;
+    actionError = null;
+    slotProbeResults.delete(resultKey);
+    render();
+    try {
+      const result = await opts.runProbeLlmSource({
+        target,
+        // A pool row has no editable fields (add/remove, not edit), so it sends
+        // no draft and the server probes exactly what is stored.
+        ...(draft !== undefined ? { draft } : {}),
+      });
+      if (disposed) return;
+      slotProbeResults.set(resultKey, result);
+    } catch (err) {
+      if (disposed) return;
+      actionError = stringifyError(err);
+    } finally {
+      if (!disposed) {
+        slotProbePendingKey = null;
+        render();
+      }
+    }
   };
 
   const closeSlotClearDialog = (): void => {
@@ -1738,6 +1879,21 @@ export const mountAiModelsPage = (
       clear.setAttribute('aria-disabled', 'true');
     }
     if (embeddingsSlotSavePending) save.setAttribute('aria-busy', 'true');
+    // ⚠ Same button, DIFFERENT probe on the far side: the server sends an
+    // `embed` call through the embeddings registry, not a chat completion.
+    // What comes back is the vector width, not the chat capability facts.
+    renderProbeControls(
+      card,
+      'embeddings_slot',
+      'Embeddings slot',
+      { kind: 'slot', slot_key: 'embeddings_slot' },
+      () => ({
+        provider: provider.value,
+        model: model.value,
+        ...(apiKey.value.trim().length > 0 ? { api_key: apiKey.value } : {}),
+        ...(baseUrl.value.length > 0 ? { base_url: baseUrl.value } : {}),
+      }),
+    );
     parent.appendChild(card);
   };
 
@@ -1793,6 +1949,90 @@ export const mountAiModelsPage = (
       actionError = stringifyError(err);
       render();
     }
+  };
+
+  /** Test connection — the button plus its verdict, for any probeable source.
+   *
+   *  One helper for BYOK slots, the embeddings slot, and free-pool rows: they
+   *  ask the same question and the answer has the same shape, so three copies
+   *  would be three places for the "what does a failure look like" copy to
+   *  drift. `readDraft` is absent for a pool row — those have no editable
+   *  fields (add/remove, not edit), so there is nothing to probe but what is
+   *  already stored.
+   *
+   *  ⚠ Single-flight across the WHOLE page, not per source: each probe is a
+   *  real request against the owner's credential, and a row of Test buttons is
+   *  an invitation to fire five at once. */
+  const renderProbeControls = (
+    parent: HTMLElement,
+    resultKey: string,
+    label: string,
+    target: AiModelsProbeTarget,
+    readDraft?: () => {
+      provider: string;
+      model: string;
+      api_key?: string;
+      base_url?: string;
+    },
+  ): void => {
+    if (!opts.runProbeLlmSource) return;
+    const probing = slotProbePendingKey === resultKey;
+    const test = appendButton(
+      doc,
+      parent,
+      probing ? 'Testing…' : 'Test connection',
+      () => {
+        if (slotProbePendingKey !== null) return;
+        void submitSlotProbe(resultKey, target, readDraft?.());
+      },
+      [
+        [AI_MODELS_SLOT_TEST_ATTR, resultKey],
+        ['aria-label', `Test the ${label} connection`],
+      ],
+    );
+    if (slotProbePendingKey !== null) {
+      test.setAttribute('aria-disabled', 'true');
+      if (probing) test.setAttribute('aria-busy', 'true');
+    }
+    const probeResult = slotProbeResults.get(resultKey);
+    if (probeResult === undefined) return;
+    const box = doc.createElement('div');
+    box.className = 'ai-models-probe';
+    box.setAttribute(AI_MODELS_SLOT_TEST_RESULT_ATTR, resultKey);
+    box.setAttribute('data-probe-ok', probeResult.ok ? 'true' : 'false');
+    // Announced: the verdict arrives after an async round trip with no focus
+    // change, so a screen-reader user would otherwise never learn it.
+    box.setAttribute('role', 'status');
+    const verdict = doc.createElement('p');
+    verdict.className = 'ai-models-probe-verdict';
+    verdict.textContent = PROBE_VERDICT[probeResult.diagnosis];
+    box.appendChild(verdict);
+    if (probeResult.ok) {
+      // ⚠ Facts are reported ONLY on success — a failed probe learned nothing
+      // about them, and a default shown as though it were observed is how a
+      // "verified" badge starts lying.
+      const facts = doc.createElement('p');
+      facts.className = 'ai-models-probe-facts';
+      const parts = [`answered in ${probeResult.elapsed_ms} ms`];
+      if (probeResult.dimensions !== undefined) {
+        parts.push(`${probeResult.dimensions}-dimension vectors`);
+      }
+      if (probeResult.supports_json === false) {
+        // The owner DECLARED this and nothing has ever checked it.
+        parts.push('JSON mode not supported — Recued will parse the text instead');
+      }
+      if (probeResult.accepts_system_role === false) {
+        parts.push('no system-message support — instructions ride in the first user turn');
+      }
+      facts.textContent = parts.join(' · ');
+      box.appendChild(facts);
+    } else if (probeResult.detail !== undefined) {
+      const detail = doc.createElement('pre');
+      detail.className = 'ai-models-probe-detail';
+      detail.textContent = probeResult.detail;
+      box.appendChild(detail);
+    }
+    parent.appendChild(box);
   };
 
   const renderPoolRemoveDialog = (parent: HTMLElement): void => {
@@ -1945,6 +2185,25 @@ export const mountAiModelsPage = (
         row,
         `${id || 'entry'}: ${asString(entry.provider) || asString(entry.type)} / ${asString(entry.model) || asString(entry.tab)} (${entry.enabled === false ? 'disabled' : 'enabled'})`,
       );
+      // T3-AUD-1 — what this provider's FREE tier does with the owner's data,
+      // stated where they choose it rather than left in a vendor's terms page
+      // they never opened. Renders for a known provider AND for an unreviewed
+      // one ("we have not checked" is information); silent only for a local
+      // endpoint, where nothing leaves the machine and a warning would be the
+      // noise that makes real warnings ignorable.
+      const dataUse = freePoolDataUseNotice(
+        resolveFreePoolDataUse({
+          provider: asString(entry.provider),
+          base_url: asString(entry.base_url),
+        }),
+      );
+      if (dataUse !== undefined) {
+        const note = doc.createElement('p');
+        note.className = 'ai-models-pool-data-use';
+        note.setAttribute(AI_MODELS_CONTROL_ATTR, `free_pool:${id}:data_use`);
+        note.textContent = dataUse;
+        row.appendChild(note);
+      }
       if (id.length > 0) {
         const toggle = appendButton(
           doc,
@@ -1972,6 +2231,14 @@ export const mountAiModelsPage = (
           [[AI_MODELS_POOL_REMOVE_ATTR, id]],
         );
         remove.setAttribute('aria-label', `Remove free-pool entry ${id}`);
+        // No draft: a pool row has no editable fields (add/remove, not edit),
+        // so there is nothing to probe but what is already stored.
+        renderProbeControls(
+          row,
+          `pool:${id}`,
+          `free-pool entry ${id}`,
+          { kind: 'pool_entry', entry_id: id },
+        );
         if (togglePending) {
           toggle.setAttribute('aria-disabled', 'true');
           toggle.setAttribute('aria-busy', 'true');
@@ -2153,7 +2420,36 @@ export const mountAiModelsPage = (
    *  gateway's contract-scoping lines) are composed AROUND it and are not
    *  reachable from here — so the card renders them READ-ONLY underneath. An
    *  owner should be able to SEE everything else the model is told: a fence you
-   *  cannot read is indistinguishable from a fence that is not there. */
+   *  cannot read is indistinguishable from a fence that is not there.
+   *
+   *  ── The shape, and why it is this one ──────────────────────────────
+   *  ONE textarea, `[ Save ] [ Load default ]`, and a status line. Nothing
+   *  else sits between the box and its buttons, because everything that used
+   *  to made the card read as "load a prompt, save it INTO something":
+   *
+   *  DD#1 — The wire-role `<select>` is GONE (see {@link describeTransportRole}).
+   *  A picker offering `system / user / assistant` next to Save reads as a
+   *  destination for the text; it is a provider-compatibility hatch. Saving now
+   *  carries the STORED role through untouched, so hiding the control cannot
+   *  change anyone's delivery. A role that is already off-default announces
+   *  itself in one line and offers the way back — hidden must not mean stuck.
+   *
+   *  DD#2 — `Load default` is CLIENT-ONLY, and it replaces the old
+   *  server-side "Reset to default". The reset is not lost: a save whose text
+   *  equals the built-in sends `null` (`saveLlmPrompt`), which is how the
+   *  server expresses default, so `Load default` + `Save` IS the reset — with
+   *  the built-in visible in the box before it is committed. The old button
+   *  wrote to the server on first click with nothing shown and no confirm.
+   *
+   *  DD#3 — The status line answers "is this what is saved?". The badge says
+   *  Default/Customised, which is a property of the ROW; the owner's question
+   *  is about the BOX, and the two diverge the moment they type. It is mutated
+   *  in place on input rather than re-rendered — see DD#4.
+   *
+   *  DD#4 — Typing NEVER re-renders (pre-existing invariant, kept): the input
+   *  listener writes the draft map and pokes `syncStatus`, both of which touch
+   *  live nodes only. A `render()` here would rebuild the textarea and drop the
+   *  caret mid-word. */
   const renderPrompts = (parent: HTMLElement): void => {
     if (!opts.runGetLlmPrompts || !opts.runSetLlmPrompt) {
       renderPending(parent, 'prompts');
@@ -2208,22 +2504,125 @@ export const mountAiModelsPage = (
       area.spellcheck = false;
       area.value = draft.role_instructions;
       if (pendingMutation !== undefined) area.readOnly = true;
+      section.appendChild(area);
+
+      // DD#3 — about the BOX, not the row. The badge above reports whether the
+      // SERVER holds an override; this reports whether what you are looking at
+      // is that saved text, and the two part company on the first keystroke.
+      const status = doc.createElement('p');
+      status.className = 'ai-models-prompt-status';
+      status.setAttribute(AI_MODELS_PROMPT_STATUS_ATTR, record.surface);
+      const syncStatus = (): void => {
+        const text = currentDraft().role_instructions;
+        status.textContent = text !== record.role_instructions
+          ? 'Unsaved changes — Save to put this in force.'
+          : record.is_default
+            ? 'Showing the built-in default, in force now.'
+            : 'Showing your saved prompt, in force now.';
+      };
+      syncStatus();
+      section.appendChild(status);
+
+      // DD#4 — mutate, never render: a rebuilt textarea loses the caret.
       area.addEventListener('input', () => {
         updateDraft({ role_instructions: area.value });
+        syncStatus();
       });
-      section.appendChild(area);
 
       const controls = doc.createElement('div');
       controls.className = 'ai-models-prompt-controls';
 
-      // llm_gateway only — what a CALLER's own system message may do. The door
-      // is OpenAI-compatible, so a customer sending one is normal; the honest
-      // answer to "what authority does it carry" depends on what the door is
-      // for, which only the owner knows.
+      const save = appendButton(
+        doc,
+        controls,
+        pendingMutation === 'save' ? 'Saving…' : 'Save',
+        () => {
+          const nextDraft = currentDraft();
+          void submitPromptMutation(
+            record.surface,
+            'save',
+            () => api.saveLlmPrompt(record.surface, nextDraft),
+          );
+        },
+        [
+          [AI_MODELS_PROMPT_SAVE_ATTR, record.surface],
+          ['aria-label', `Save ${copy.title} system prompt`],
+        ],
+      );
+      // DD#2 — puts the built-in in the box and stops. Nothing is written until
+      // the owner reads it and presses Save, and Save then sends `null`, so the
+      // row is genuinely deleted rather than overwritten with a copy.
+      const loadDefault = appendButton(
+        doc,
+        controls,
+        'Load default',
+        () => {
+          if (promptMutationPending.has(record.surface)) return;
+          updateDraft({ role_instructions: record.default_role_instructions });
+          area.value = record.default_role_instructions;
+          syncStatus();
+        },
+        [
+          [AI_MODELS_PROMPT_LOAD_DEFAULT_ATTR, record.surface],
+          [
+            'aria-label',
+            `Load the built-in ${copy.title} system prompt into the editor`,
+          ],
+        ],
+      );
+      if (pendingMutation !== undefined) {
+        save.setAttribute('aria-disabled', 'true');
+        loadDefault.setAttribute('aria-disabled', 'true');
+        if (pendingMutation === 'save') save.setAttribute('aria-busy', 'true');
+      }
+      section.appendChild(controls);
+
+      // DD#1 — only when it is off-default, because only then is there anything
+      // to tell or undo. A server that never touched it renders nothing here.
+      if (record.role !== record.default_role) {
+        const transport = doc.createElement('p');
+        transport.className = 'ai-models-prompt-transport';
+        transport.setAttribute(AI_MODELS_PROMPT_TRANSPORT_ATTR, record.surface);
+        appendText(doc, transport, describeTransportRole(record.role));
+        const revert = appendButton(
+          doc,
+          transport,
+          pendingMutation === 'transport' ? 'Switching…' : 'Deliver as system',
+          () => {
+            void submitPromptMutation(
+              record.surface,
+              'transport',
+              () => api.setPromptDeliveryRoleToDefault(record.surface),
+            );
+          },
+          [
+            [AI_MODELS_PROMPT_TRANSPORT_RESET_ATTR, record.surface],
+            [
+              'aria-label',
+              `Deliver the ${copy.title} system prompt as a system message`,
+            ],
+          ],
+        );
+        if (pendingMutation !== undefined) {
+          revert.setAttribute('aria-disabled', 'true');
+          if (pendingMutation === 'transport') {
+            revert.setAttribute('aria-busy', 'true');
+          }
+        }
+        section.appendChild(transport);
+      }
+
+      // llm_gateway only — what a CALLER's own system message may do. NOT a
+      // transport knob and not part of the save form above: it decides whether
+      // a stranger's text can sit beside the owner's instructions or replace
+      // them outright. It keeps its own heading below the editor's buttons so
+      // nothing reads as "save the prompt INTO this".
       if (record.caller_system_policy !== undefined) {
+        const policySection = doc.createElement('div');
+        policySection.className = 'ai-models-prompt-policy';
+        appendHeading(doc, policySection, 'h4', "Customer's own system prompt");
         const policyLabel = doc.createElement('label');
         policyLabel.className = 'ai-models-field';
-        appendText(doc, policyLabel, "Customer's own system prompt");
         const policySelect = doc.createElement('select');
         policySelect.setAttribute(AI_MODELS_PROMPT_POLICY_ATTR, record.surface);
         policySelect.setAttribute(
@@ -2253,79 +2652,9 @@ export const mountAiModelsPage = (
         policyHint.textContent =
           CALLER_SYSTEM_POLICY_HINTS[draft.caller_system_policy];
         policyLabel.appendChild(policyHint);
-        controls.appendChild(policyLabel);
+        policySection.appendChild(policyLabel);
+        section.appendChild(policySection);
       }
-
-      const roleLabel = doc.createElement('label');
-      roleLabel.className = 'ai-models-field';
-      appendText(doc, roleLabel, 'Delivered as');
-      const roleSelect = doc.createElement('select');
-      roleSelect.setAttribute(AI_MODELS_PROMPT_ROLE_ATTR, record.surface);
-      roleSelect.setAttribute('aria-label', `${copy.title} delivery role`);
-      for (const role of PROMPT_ROLES) {
-        const option = doc.createElement('option');
-        option.value = role;
-        option.textContent = PROMPT_ROLE_LABELS[role];
-        roleSelect.appendChild(option);
-      }
-      roleSelect.value = draft.role;
-      if (pendingMutation !== undefined) roleSelect.disabled = true;
-      roleSelect.addEventListener('change', () => {
-        const role = PROMPT_ROLES.includes(roleSelect.value as ServerLlmMessageRole)
-          ? roleSelect.value as ServerLlmMessageRole
-          : 'system';
-        updateDraft({ role });
-      });
-      roleLabel.appendChild(roleSelect);
-      const roleHint = doc.createElement('small');
-      roleHint.textContent =
-        'Transport only. Leave on system unless your provider rejects a system message.';
-      roleLabel.appendChild(roleHint);
-      controls.appendChild(roleLabel);
-
-      const save = appendButton(
-        doc,
-        controls,
-        pendingMutation === 'save' ? 'Saving…' : 'Save',
-        () => {
-          const nextDraft = currentDraft();
-          void submitPromptMutation(
-            record.surface,
-            'save',
-            () => api.saveLlmPrompt(record.surface, nextDraft),
-          );
-        },
-        [
-          [AI_MODELS_PROMPT_SAVE_ATTR, record.surface],
-          ['aria-label', `Save ${copy.title} system prompt`],
-        ],
-      );
-      // Offered even on a Default record: the owner may have typed into the box
-      // without saving, and "put it back" should not require them to have
-      // committed the mistake first.
-      const reset = appendButton(
-        doc,
-        controls,
-        pendingMutation === 'reset' ? 'Resetting…' : 'Reset to default',
-        () => {
-          void submitPromptMutation(
-            record.surface,
-            'reset',
-            () => api.resetLlmPrompt(record.surface),
-          );
-        },
-        [
-          [AI_MODELS_PROMPT_RESET_ATTR, record.surface],
-          ['aria-label', `Reset ${copy.title} system prompt to default`],
-        ],
-      );
-      if (pendingMutation !== undefined) {
-        save.setAttribute('aria-disabled', 'true');
-        reset.setAttribute('aria-disabled', 'true');
-        (pendingMutation === 'save' ? save : reset)
-          .setAttribute('aria-busy', 'true');
-      }
-      section.appendChild(controls);
 
       // Everything the owner CANNOT edit, shown so they know it is there. This
       // is what makes the fence legible instead of merely present.
@@ -2880,13 +3209,14 @@ export const mountAiModelsPage = (
 
   const ownedFocusAttrs = [
     AI_MODELS_PROMPT_TEXT_ATTR,
-    AI_MODELS_PROMPT_ROLE_ATTR,
     AI_MODELS_PROMPT_POLICY_ATTR,
     AI_MODELS_PROMPT_SAVE_ATTR,
-    AI_MODELS_PROMPT_RESET_ATTR,
+    AI_MODELS_PROMPT_LOAD_DEFAULT_ATTR,
+    AI_MODELS_PROMPT_TRANSPORT_RESET_ATTR,
     AI_MODELS_SLOT_FIELD_ATTR,
     AI_MODELS_EMBEDDINGS_FIELD_ATTR,
     AI_MODELS_SLOT_SAVE_ATTR,
+    AI_MODELS_SLOT_TEST_ATTR,
     AI_MODELS_SLOT_CLEAR_ATTR,
     AI_MODELS_SLOT_CLEAR_CANCEL_ATTR,
     AI_MODELS_SLOT_CLEAR_CONFIRM_ATTR,
@@ -3562,12 +3892,28 @@ export const mountAiModelsPage = (
       // A blank box means "reset", not "ship a model with no role at all" — the
       // server reads null and blank identically, and this keeps the local mirror
       // agreeing with it.
+      //
+      // 🔑 …AND SO DOES A BOX HOLDING THE BUILT-IN, which is what makes
+      // `Load default` + `Save` a true reset rather than a copy. `null` is the
+      // ONLY way the server expresses "default" (it deletes the row —
+      // `config-schema.ts`, "absence is how the default is expressed"), so
+      // storing byte-identical text instead would leave `is_default` false and
+      // the badge reading "Customised" over text nobody customised. It would
+      // also PIN that text: a later release changing the built-in would not
+      // reach this server, silently, because the row still wins.
+      const record = llmPrompts.find((p) => p.surface === surfaceId);
       const trimmed = draft.role_instructions.trim();
-      const next = trimmed.length > 0 ? trimmed : null;
+      const isBuiltIn = record !== undefined
+        && trimmed === record.default_role_instructions.trim();
+      const next = trimmed.length > 0 && !isBuiltIn ? trimmed : null;
       await opts.runSetLlmPrompt({
         surface: surfaceId,
         role_instructions: next,
-        role: next === null ? null : draft.role,
+        // ⚠ The wire role has no editor on the card, so a save must CARRY THE
+        // STORED VALUE, never re-assert a client guess: `draft.role` is seeded
+        // from the record and nothing mutates it. Sending the default here
+        // would silently undo an owner whose provider rejects `system`.
+        role: next === null ? null : (record?.role ?? draft.role),
         ...(surfaceId === 'llm_gateway'
           ? { caller_system_policy: draft.caller_system_policy }
           : {}),
@@ -3589,6 +3935,27 @@ export const mountAiModelsPage = (
         ...(surfaceId === 'llm_gateway' ? { caller_system_policy: null } : {}),
       });
       promptDrafts.delete(surfaceId);
+      await reloadLlmPrompts();
+    },
+    setPromptDeliveryRoleToDefault: async (surfaceId) => {
+      if (!opts.runSetLlmPrompt) {
+        throw new Error('AI / Models: server.setLlmPrompt caller is not wired');
+      }
+      // ⚠ ROLE ONLY. `role_instructions: null` here would take the owner's text
+      // with it — `null` is a delete on both fields independently, and this is
+      // the escape hatch for a stuck transport role, not a reset of the prompt.
+      // Re-send the text IN FORCE (the record, never the draft): the button is
+      // beneath an editor that may hold unsaved edits, and a control labelled
+      // "Deliver as system" must not commit them as a side effect.
+      const record = llmPrompts.find((p) => p.surface === surfaceId);
+      const inForce = record?.is_default === false
+        ? record.role_instructions
+        : null;
+      await opts.runSetLlmPrompt({
+        surface: surfaceId,
+        role_instructions: inForce,
+        role: null,
+      });
       await reloadLlmPrompts();
     },
     setBudget: async (tokens) => {
@@ -3838,6 +4205,42 @@ export const AI_MODELS_PAGE_STYLES = `
   background: var(--danger);
   color: var(--on-danger, #fff);
 }
+/* Test connection — a verdict the owner can act on, not a status code. */
+[${AI_MODELS_PAGE_ATTR}] .ai-models-probe {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: var(--bg-elevated, transparent);
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-probe[data-probe-ok='true'] {
+  border-left-color: var(--accent);
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-probe[data-probe-ok='false'] {
+  border-left-color: var(--danger);
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-probe-verdict {
+  margin: 0;
+  font-size: 13px;
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-probe-facts {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-probe-detail {
+  margin: 8px 0 0;
+  padding: 8px;
+  border-radius: 4px;
+  border: 1px dashed var(--border);
+  color: var(--text-dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
 /* System prompts — the textarea is the surface, so give it real room. */
 [${AI_MODELS_PAGE_ATTR}] .ai-models-prompt-head {
   display: flex;
@@ -3902,6 +4305,34 @@ export const AI_MODELS_PAGE_STYLES = `
   flex-wrap: wrap;
   align-items: flex-end;
   gap: 12px;
+}
+/* Sits between the box and its buttons — the one thing that belongs there,
+   because it describes the box. */
+[${AI_MODELS_PAGE_ATTR}] .ai-models-prompt-status {
+  margin: 6px 0 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+/* Off-default wire role. Not an error — a fact plus its undo. */
+[${AI_MODELS_PAGE_ATTR}] .ai-models-prompt-transport {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+/* The caller policy is its own decision, below the save row and fenced off it,
+   so nothing reads as a destination for the prompt above. */
+[${AI_MODELS_PAGE_ATTR}] .ai-models-prompt-policy {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-prompt-policy > h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
 }
 /* Internal sub-view tab strip — Preference / Providers / System prompts / Usage. */
 [${AI_MODELS_PAGE_ATTR}] .ai-models-tabs {

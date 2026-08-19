@@ -7,6 +7,7 @@ import type {
 
 import {
   analyzeExecutionCaseRequest,
+  executionCaseRefusalReason,
   classifyExecutionFlowCases,
   deriveExecutionFlowPattern,
   encodeSupersededCaseHistory,
@@ -921,5 +922,89 @@ describe('D-214 A26 runtime composition diagnostics', () => {
       .independent_roots).toBe(3);
     expect(diagnostics.recurring_dynamic_inline_subgraphs.some((row) =>
       row.signature.includes('vendor/installed'))).toBe(false);
+  });
+});
+
+describe('slice 8 keys on the OPERATION, not the transport that carried it', () => {
+  // ⛔ `recipe.run` is a DISPATCHER. Two DIFFERENT recipes sent through it both
+  // record the string `recipe.run` in `tool_sequence`, so a real procedure read
+  // as one tool called twice and was excluded as a retry. Measured on bench 181:
+  // a lean-core run reached add-customer, list-customers and
+  // open-rental-contract through the dispatcher and lost its observation to
+  // `repeated_tool` with nothing retried.
+  //
+  // ⚠ MODE-COUPLED, which is why it went unnoticed for so long: under a `full`
+  // catalog the model calls recipes by SLUG (which names itself), so only the
+  // catalog mode that ships by default paid for it. The identity has been on the
+  // flow since V21 (`recipe_steps`) for the CARD to render — this gate simply
+  // never read it.
+  // ⚠ Built through the REAL `deriveExecutionFlowPattern` rather than a
+  // hand-written FlowPattern literal. A literal has to be padded with every
+  // field the type carries (and drifts the day one is added), and — more to the
+  // point — `recipe_steps` is exactly what the compiler DERIVES from the steps,
+  // so hand-writing it would test the fixture rather than the derivation.
+  const viaFlow = (
+    steps: Array<{ tool: string; recipe?: string }>,
+  ) => observation('9', {
+    flow_pattern: deriveExecutionFlowPattern(
+      steps.map((st, i) => ({
+        tool_name: st.tool,
+        risk_tier: 'write' as const,
+        dependency_ordinals: i === 0 ? [] : [i - 1],
+        ...(st.recipe ? { recipe_id: st.recipe } : {}),
+      })),
+    ),
+    substantive_call_count: steps.length,
+  });
+
+  it('does NOT refuse a flow because our OWN bookkeeping tool ran twice', () => {
+    // ⛔ MEASURED across 34 live runs: 11 flows were refused as `repeated_tool`
+    // and 5 of them ONLY because `request.dissection` appeared twice — 15% of
+    // all runs losing an execution case to a classification marker that
+    // performs none of the requested work, with nothing retried. It was the
+    // single largest cause of refusal, ahead of every real recipe repeat
+    // combined. Same argument that already exempts `tools.search`.
+    expect(executionCaseRefusalReason(viaFlow([
+      { tool: 'request.dissection' }, { tool: 'recued-core/list-buildings' },
+      { tool: 'request.dissection' }, { tool: 'recued-core/add-unit' },
+    ]))).not.toBe('repeated_tool');
+  });
+
+  it('still refuses a REAL repeat sitting beside the exempt bookkeeping', () => {
+    // The exemption must not become cover for the shape slice 8 exists to catch.
+    expect(executionCaseRefusalReason(viaFlow([
+      { tool: 'request.dissection' }, { tool: 'recued-core/add-unit' },
+      { tool: 'request.dissection' }, { tool: 'recued-core/add-unit' },
+    ]))).toBe('repeated_tool');
+  });
+
+  it('does NOT call three distinct dispatched recipes a repeat', () => {
+    // The defect: `recipe.run` is a DISPATCHER, so `tool_sequence` records that
+    // one name for every recipe and three distinct operations read as one tool
+    // called three times. Measured on bench 181 — a lean-core run reached
+    // add-customer, list-customers and open-rental-contract this way and lost
+    // its observation to `repeated_tool` with nothing retried.
+    expect(executionCaseRefusalReason(viaFlow([
+      { tool: 'recipe.run', recipe: 'recued-core/add-customer' },
+      { tool: 'recipe.run', recipe: 'recued-core/list-customers' },
+      { tool: 'recipe.run', recipe: 'recued-core/open-rental-contract' },
+    ]))).not.toBe('repeated_tool');
+  });
+
+  it('still refuses the SAME recipe dispatched twice — the shape slice 8 exists for', () => {
+    expect(executionCaseRefusalReason(viaFlow([
+      { tool: 'recipe.run', recipe: 'recued-core/add-unit' },
+      { tool: 'recipe.run', recipe: 'recued-core/add-unit' },
+    ]))).toBe('repeated_tool');
+  });
+
+  it('catches a repeat that MIXES routes — slug once, dispatcher once', () => {
+    // What the bare-id normalisation is for: a slug step records
+    // `recued-core/add-unit` while the dispatched one may be qualified
+    // differently, and without it the same recipe would read as two operations.
+    expect(executionCaseRefusalReason(viaFlow([
+      { tool: 'recued-core/add-unit' },
+      { tool: 'recipe.run', recipe: 'rental-book/add-unit' },
+    ]))).toBe('repeated_tool');
   });
 });

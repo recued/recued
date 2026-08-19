@@ -43,7 +43,10 @@ const MIRROR_TARGET_ID = `hubspot_deal_${CONNECTION_NAME}_mirror`;
 const LIVE_TARGET_ID = `hubspot_deal_${CONNECTION_NAME}_live1`;
 const QUERY = 'Escalation';
 
-type Gate = Pick<OpAdmissionGate, 'isFrozenByPause' | 'isOpGranted'>;
+type Gate = Pick<
+  OpAdmissionGate,
+  'isFrozenByPause' | 'isOpGranted' | 'isOwnerRecipeGranted' | 'isOwnerGoverned'
+>;
 type LiveInput = Parameters<NonNullable<ChatToolHandlerDeps['getCrmLiveRecords']>>[0];
 type EscalationBinding = NonNullable<
   ReturnType<NonNullable<ChatToolHandlerDeps['getCrmEscalationBinding']>>
@@ -128,6 +131,11 @@ afterEach(() => {
 const permissiveGate = (overrides: Partial<Gate> = {}): Gate => ({
   isFrozenByPause: () => false,
   isOpGranted: () => true,
+  // D-247 — these suites drive an MCP DOOR. `isOwnerGoverned: false` is the
+  // production answer for one, not a convenience stub: a door's recipe
+  // authority is its inbound token, never the owner's contract.
+  isOwnerGoverned: () => false,
+  isOwnerRecipeGranted: () => false,
   ...overrides,
 });
 

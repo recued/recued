@@ -68,6 +68,11 @@ import type { CacheRpcDeps } from './cache-rpc-handler.js';
 import type { AuthDeps } from './auth-handler.js';
 import type { MigrateDeps } from './migration/auth-migrate-handler.js';
 import type { LLMConfigManager } from './llm-config.js';
+import type {
+  AdapterRegistry,
+  EmbeddingsAdapterRegistry,
+  QuotaTracker,
+} from '@recued/llm';
 import type { RuntimeConfigStore } from '@recued/config';
 import type { ChatInboundTokenStore } from './storage/chat-inbound-token-store.js';
 import type { ContractStore } from './storage/contract-store.js';
@@ -131,6 +136,14 @@ export interface ServerConfig {
    *  over the pair WS — the primary provisioning path for the paired
    *  extension's Server LLM settings panel. */
   llmConfigManager?: LLMConfigManager;
+  /** Test connection — the config rpc slice's only execution deps (adapter
+   *  registry + quota tracker). Absent answers `unavailable` rather than
+   *  pretending it probed. */
+  llmProbe?: {
+    adapters: AdapterRegistry;
+    quota: QuotaTracker;
+    embeddingsAdapters?: EmbeddingsAdapterRegistry;
+  };
   /** D-196 S2 — local seller substrate for the Settings -> Seller overview. */
   sellerStore?: SellerStore;
   /** D-207 order-is-the-lifecycle — `core.seller.order` read store for the
@@ -1378,6 +1391,7 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
     authDeps: config.authDeps,
     migrateDeps: config.migrateDeps,
     llmConfigManager: config.llmConfigManager,
+    ...(config.llmProbe ? { llmProbe: config.llmProbe } : {}),
     sellerStore: config.sellerStore,
     sellerOrderStore: config.sellerOrderStore,
     sellerContractStore: config.sellerContractStore,

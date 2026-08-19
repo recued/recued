@@ -44,9 +44,11 @@ import {
   ungroundedArgumentsInCall,
   ungroundedArgumentsDetail,
 } from './tool-argument-grounding.js';
+import { TOOLS_SEARCH_TOOL_NAME } from './chat-tools-search-name.js';
 import {
   CHAT_MAIN_TURN_INGREDIENT_SLUG,
   CHAT_MAIN_TURN_TOOL_LOOP_CAP,
+  CHAT_MAIN_TURN_DISCOVERY_ROUND_CAP,
   KERNEL_AUTHOR,
   aggregateTokenUsageReports,
   chatModelLayerToForceLayer,
@@ -213,7 +215,7 @@ const EMPTY_AI_OUTPUT_MESSAGE =
 /** Fail-loud message for the cap exit (`max_rounds_exhausted`) when the last
  *  planning response has no renderable text: the model spent every loop round
  *  still asking for more tools and never wrote an answer, so the turn would
- *  otherwise ship an EMPTY assistant bubble after up to 8 rounds of visible
+ *  otherwise ship an EMPTY assistant bubble after every loop round of visible
  *  tool activity — the last silent-ish exit (siblings above cover the
  *  no-source and double-empty turns). Trigger is response-trim-empty ONLY:
  *  `events` feed the after-turn gathers, not the bubble (the orchestrator
@@ -346,6 +348,30 @@ export const buildEmptyAiOutputFeedback = (
   return `Your previous output was ${observed}${situation} If you meant to call a tool, re-emit it as {"tool_calls":[{"tool":"<name from available_tools>","args":{...}}]}. Otherwise answer the user in "response". Emit AIOutput JSON only.`;
 };
 
+/** Feedback for an output the decoder PARSED but could not accept.
+ *
+ *  ⛔⛔ THIS EXISTS BECAUSE AN UNREADABLE OUTPUT USED TO BE FATAL WHILE AN EMPTY
+ *  ONE WAS NOT. An empty AIOutput earns one recovery round; a validation failure
+ *  returned `kind: 'failed'` and ABORTED the turn outright — so an output that
+ *  said LESS survived, and one that said something malformed did not. Measured
+ *  on bench 181 (lean-core): a turn that had already dispatched four recipes and
+ *  materialized an execution case aborted on a bare STRING reply, and another
+ *  aborted on `[{"rec_ea53…": "Flat 2"}, …]` after two steps.
+ *
+ *  🔑 A VALIDATION FAILURE CARRIES MORE INFORMATION THAN AN EMPTY ONE, not less
+ *  — `tool_call_not_shaped` names the offending index — which makes it the
+ *  better candidate for a guided retry, not the worse one.
+ *
+ *  ⚠ ISSUE KINDS ONLY, never `detail`. The all-issues case sets `detail` to
+ *  `String(output)`, which for a bare-string reply is the model's entire text;
+ *  the sibling builder is key-names-only for the same reason. */
+export const buildInvalidAiOutputFeedback = (
+  issues: ReadonlyArray<AIOutputValidationIssue>,
+): string => {
+  const kinds = [...new Set(issues.map((i) => i.kind))].join(', ');
+  return `Your previous output could not be read as AIOutput (${kinds}), so nothing was shown to the user. Re-emit it as {"response":"<text>","events":[],"tool_calls":[{"tool":"<name from available_tools>","args":{...}}]}. Emit AIOutput JSON only — no bare strings, no arrays, no other envelope.`;
+};
+
 /** THE EDITABLE BLOCK — the owner's role + focus + pre-answer procedure.
  *
  *  This, and only this, is what Settings → AI/Models lets an owner rewrite:
@@ -365,7 +391,31 @@ export const DEFAULT_CHAT_ROLE_INSTRUCTIONS =
  *  NOT editable, by anyone, on any surface. This is not a stylistic preference
  *  we are being protective about: strip it and `runChatTurn` cannot parse a
  *  reply or dispatch a tool, so the turn returns nothing usable. It is the
- *  format of the pipe, not a message in it. */
+ *  format of the pipe, not a message in it.
+ *
+ *  ⛔⛔ THE `events` SENTENCE EXISTS BECAUSE A MODEL REPORTED WORK IT NEVER DID.
+ *  Bench 181, seed turn: asked to add a customer, qwen3.7-plus emitted
+ *  `{response: "Added Riverside Holdings to your rental book.", events:
+ *  [{kind: "extraction.customer", payload: {name: "Riverside Holdings"}}]}` —
+ *  an EXTRACTION where a `tool_calls` entry belonged. Nothing was added. 🔑 That
+ *  output is not empty, so the empty-output recovery never fires and the turn
+ *  completes cleanly; the only trace is a row that does not exist. ⚠ The failure
+ *  then MOVES: the next turn has no customer, spends its rounds discovering
+ *  that, and its own failure looks like a chain defect. Recorded because the
+ *  worst class of failure here is not a dropped call — it is a CONFIDENT REPORT
+ *  of work that did not happen.
+ *
+ *  ⛔ THE ECHO SENTENCE, same run: the model emitted its own `prior_tool_calls`
+ *  block back as its output (a 2-entry array of `{tool_name, args, status,
+ *  result}`), and separately a `tools.search` catalog entry (`{recipe_slug,
+ *  args_schema}`). Both are shapes it was SHOWN. ⛔ THE SENTENCE MUST NOT NAME
+ *  `tools.search` — this text is the BASELINE prompt and full mode sends it
+ *  verbatim, where every `arg_schema` is already shipped and the model must
+ *  never be pointed at a search (`lever-2-index-mode-system-prompt.test.ts`
+ *  pins exactly that). "a catalog entry" carries the meaning without the leak.
+ *  ⚠ The echo is doubly harmful
+ *  because the coercer's aliases nearly match it — see `looksLikeToolResultEcho`
+ *  in `ai-output.ts`, which is the parser half of this same defect. */
 export const RECUED_CORE_TEXT = `Emit AIOutput JSON only — never wrap in markdown, never add commentary outside JSON.
 
 AIOutput shape:
@@ -375,11 +425,43 @@ AIOutput shape:
   "tool_calls": [{ "tool": "<recipe_slug>", "args": {...} }]
 }
 
+"events" RECORDS something worth remembering. It never performs an action — only a "tool_calls" entry does anything at all. Never tell the user you have done something unless a tool call in this turn did it.
+
+Never echo back what you were shown. A tool result, a catalog entry, or your own earlier call is INPUT. Your reply is always the AIOutput shape above.
+
 NEVER emit JSON outside the AIOutput shape.`;
 
-/** FEATURE TEXT — tool-calling mechanics. Ships whenever tools are in play. */
+/** FEATURE TEXT — tool-calling mechanics. Ships whenever tools are in play.
+ *
+ *  ⛔⛔ THE SECOND SENTENCE STATES A RULE THE ENGINE ALREADY ENFORCES, and the
+ *  point is that it was previously enforced SILENTLY. `ungroundedArgumentsInCall`
+ *  (`tool-argument-grounding.ts`) refuses a call whose IDENTIFIER argument
+ *  appears nowhere in the packet, and its refusal text is already instructive —
+ *  but the model only ever met the rule by BREAKING it, which costs a round and,
+ *  because the corrective retry re-emits the same tool, trips D-219 slice 8's
+ *  repeat exclusion. Measured: 73 invented arguments across the D-219 A/B rounds,
+ *  and bench 181 fabricated a reference on both runs that reached the recipes
+ *  (`"{{customer_id}}"`, then `"<from list-buildings>"` / `"<from add-unit>"`).
+ *
+ *  🔑 THOSE WERE NOT HALLUCINATED IDS — they were DESCRIPTIONS OF THE DEPENDENCY
+ *  written into the value slot, which is what a model does when it knows a value
+ *  is dependent and has nowhere to say so.
+ *
+ *  ⚠ WORD IT AS THE GATE WORDS IT. The sources named here (this conversation,
+ *  the prefetch block, a completed step's result) are the gate's own three, and
+ *  the remedy mirrors `ungroundedArgumentsDetail`. If the gate's rule changes,
+ *  this sentence changes with it — a prompt that promises a different rule than
+ *  the one enforced is worse than silence. ⚠ The gate has a bench TWIN
+ *  (internal benchmarks) that must agree with it; this
+ *  change states the rule without altering it, so the twin is untouched. */
 export const FEATURE_TEXT_TOOLS =
-  'You have access to a focused set of tools the engine narrowed for this turn.';
+  'You have access to a focused set of tools the engine narrowed for this turn.'
+  + ' Every identifier you pass as an argument — an id, a reference, an email'
+  + ' address — must appear in something you have already been given: this'
+  + ' conversation, the prefetch block, or a completed step\'s result. If you do'
+  + ' not have one yet, call the tool that returns it first and wait for that'
+  + ' result before the call that needs it. A guessed identifier or a placeholder'
+  + ' is refused and the step does not run.';
 
 /** FEATURE TEXT — the D-177 approvals posture. Ships on every turn.
  *
@@ -447,11 +529,22 @@ export const CHAT_MAIN_TURN_SYSTEM_PROMPT = composeSystemPromptBlocks({
  *  backtick collisions). Phrased to avoid the D-177 negative granting-vocabulary
  *  pin (`/you (can|may) (grant|approve|allow)/i`). */
 export const CHAT_INDEX_MODE_CATALOG_GUIDANCE =
-  'Tool catalog (index mode): the installed recipe tools in "available_tools" are listed by "recipe_slug" and a one-line summary, without their argument schema. To use one that is listed, call it by its "recipe_slug". If you need its exact arguments, or no listed tool fits the request, call "tools.search" with a short capability query (for example "draft a follow-up email" or "summarize a PDF") to look one up — it returns matching recipes with their "args_schema". The always-listed core tools already carry their arguments (contact, mail, calendar, memory, enrichment, deal, account, and work search, plus "recipe.run") — call those directly and never search for them. Always emit the tool call you decide on — do not just describe what you would do. If a "tools.search" you actually ran comes back with no match, do not reword the query and search again: satisfy the request with the core tools, answer from your own knowledge, or tell the user that no matching recipe is installed. Never say a recipe is not installed, and never offer to search instead of searching, unless you have already called "tools.search" for it in this turn and it returned nothing.';
+  'Tool catalog (index mode): the installed recipe tools in "available_tools" are listed by "recipe_slug" and a one-line summary, without their argument schema. To use one that is listed, call it by its "recipe_slug". If you need its exact arguments, or no listed tool fits the request, call "tools.search" with a short capability query (for example "draft a follow-up email" or "summarize a PDF") to look one up — it returns matching recipes with their "args_schema". The always-listed core tools already carry their arguments (contact, mail, calendar, memory, enrichment, deal, account, and work search, plus "recipe.run") — call those directly and never search for them. Always emit the tool call you decide on — do not just describe what you would do. If a "tools.search" you actually ran comes back with no match, do not reword the query and search again: satisfy the request with the core tools, answer from your own knowledge, or tell the user that no matching recipe is installed. Never say a recipe is not installed, and never offer to search instead of searching, unless you have already called "tools.search" for it in this turn and it returned nothing. Write every "tools.search" query in English, whatever language you are speaking with the user — the recipe names and summaries it searches are written in English, and a query in another script matches nothing at all. Translate the capability, search in English, then answer in the user\'s language.';
 
 /** Lever-2 v2 (2026-07-03) — the LEAN-CORE catalog guidance, a SEPARATE
  *  variant from the index copy. Emitted under the same `tools.search`-injecting
  *  gate (`catalogModeUsesToolsSearch`), for `mode === 'lean-core'`.
+ *
+ *  ⛔⛔ THE ENVELOPE SENTENCE AT THE END IS THERE FOR POSITION, NOT CONTENT —
+ *  `RECUED_CORE_TEXT` already states the shape. `full` mode sends the base
+ *  prompt and STOPS, so the output contract is the last thing the model reads;
+ *  lean-core appends ~450 words of catalog advice after it, pushing the format
+ *  rule far from the generation point. Measured on bench 181: `full` produced
+ *  0/9 and 0/9 unreadable outputs while lean-core produced 1–2 per run, and the
+ *  lean-core failures were WHOLE WRONG ENVELOPES — `{role, content}`,
+ *  `{available_tools: …}`, `{error: …}`, `{comment: …}` — not malformed calls.
+ *  ⚠ `index` mode has the same structure and no measurement; if a bare-envelope
+ *  failure shows up there, this is the sibling change.
  *
  *  Why a distinct constant, not the index copy (optimization-log 2026-07-03
  *  watch-out #4): in lean-core the Tier-2 recipe LISTING is gone — the catalog
@@ -490,7 +583,7 @@ export const CHAT_INDEX_MODE_CATALOG_GUIDANCE =
  *  D-177 negative granting-vocabulary pin (`/you (can|may) (grant|approve|allow)/i`).
  *  Double-quoted identifiers (plain string constant, no template backticks). */
 export const CHAT_LEAN_CORE_MODE_CATALOG_GUIDANCE =
-  'Tool catalog (lean-core mode): "available_tools" lists only the always-available core tools — contact, mail, calendar, memory, enrichment, deal, and account search, work search and read, plus "recipe.run" and "tools.search". Those are fully defined; call them directly and never search for them. Beyond the core tools, the user has installed MANY recipe tools that are NOT listed here — these produce prepared, curated, or actioned results that the core searches (which only return raw records) do not. Their absence from "available_tools" is a deliberate space saving, NOT evidence that they are missing: if the user names a routine, or asks for something a recipe would do, assume it IS installed and search for it. So: for a plain record lookup (for example "find Pat\'s email" or "what meetings are today") call the core search tool directly. But if the request asks for a prepared view, digest, briefing, triage, or a specific named routine over the user\'s data — even one a core search could partly answer — call "tools.search" FIRST with a short capability query to find the recipe built for it, then invoke it by "recipe_slug"; fall back to a core search tool only if no recipe matches. In particular, a request to review or act on the user\'s own items that need attention or follow-up — not just look one up — usually has a purpose-built recipe: search for it before settling for a raw core-search list. Always emit the tool call you decide on — do not just describe what you would do. Never invoke a "recipe_slug" you have not seen in a "tools.search" result — a guessed recipe name will fail. If "tools.search" finds no match, do not reword the query and search again: satisfy the request with the core tools, answer from your own knowledge, or tell the user that no matching recipe is installed.';
+  'Tool catalog (lean-core mode): "available_tools" lists only the always-available core tools — contact, mail, calendar, memory, enrichment, deal, and account search, work search and read, plus "recipe.run" and "tools.search". Those are fully defined; call them directly and never search for them. Beyond the core tools, the user has installed MANY recipe tools that are NOT listed here — these produce prepared, curated, or actioned results that the core searches (which only return raw records) do not. Their absence from "available_tools" is a deliberate space saving, NOT evidence that they are missing: if the user names a routine, or asks for something a recipe would do, assume it IS installed and search for it. So: for a plain record lookup (for example "find Pat\'s email" or "what meetings are today") call the core search tool directly. The core tools cover only their own subjects — contacts, mail, calendar, memory, enrichment, deals, accounts, work items. A request about anything else — a building, a unit, an invoice, a queue, a job, a booking — has NO core tool at all, so "tools.search" is the only way to reach one; search rather than reporting that nothing is available. But if the request asks for a prepared view, digest, briefing, triage, or a specific named routine over the user\'s data — even one a core search could partly answer — call "tools.search" FIRST with a short capability query to find the recipe built for it, then invoke it by using that "recipe_slug" AS THE TOOL NAME in "tool_calls" — do not wrap a recipe in "recipe.run", because two different recipes sent through "recipe.run" record as the same tool called twice, which reads as a retry rather than a procedure; fall back to a core search tool only if no recipe matches. If a core search comes back EMPTY for something that belongs to a routine — a customer, a tenant, a unit, an invoice, a job — that is not proof the record does not exist; the core tools only see their own subjects, and the record may live in a recipe\'s own store. Search for the recipe that lists it before telling the user it is missing. In particular, a request to review or act on the user\'s own items that need attention or follow-up — not just look one up — usually has a purpose-built recipe: search for it before settling for a raw core-search list. Always emit the tool call you decide on — do not just describe what you would do. Never invoke a "recipe_slug" you have not seen in a "tools.search" result — a guessed recipe name will fail. If "tools.search" finds no match, do not reword the query and search again: satisfy the request with the core tools, answer from your own knowledge, or tell the user that no matching recipe is installed. Never tell the user a capability is missing, and never offer to search instead of searching, unless you have already called "tools.search" for it in this turn and it returned nothing. Write every "tools.search" query in English, whatever language you are speaking with the user — the recipe names and summaries it searches are written in English, and a query in another script matches nothing at all. Translate the capability, search in English, then answer in the user\'s language. Whatever you decide, your reply is ALWAYS the AIOutput shape ({"response", "events", "tool_calls"}) and never any other envelope — not a chat message, not an error object, not a copy of "available_tools" or of a tool result.';
 
 /** Compose the chat main-turn system prompt for the turn's catalog delivery
  *  mode. `'index'` appends {@link CHAT_INDEX_MODE_CATALOG_GUIDANCE};
@@ -1437,8 +1530,37 @@ export const runChatTurn = async (
   // last good round on a mid-loop abort).
   let finalAiOutput: AIOutput | undefined;
 
-  const initialResult = await tryMainTurn();
+  // Own flag: the tool loop's `invalidRecoveryUsed` is declared inside the
+  // loop's scope below and governs a different call. One retry each.
+  let initialInvalidRetryUsed = false;
+  let initialResult = await tryMainTurn();
   totalUsage = aggregateTokenUsageReports(totalUsage, initialResult.usage);
+
+  // ⛔⛔ THE SAME GUIDED RETRY THE MID-LOOP REINVOKE GETS, at the site where an
+  // unreadable output is MOST expensive: the first one, where the turn has done
+  // nothing yet and simply ends. Fixing only the loop site left this one killing
+  // turns on the first packet — measured live: a model emitted
+  // `tool_calls: [{kind: 'extraction.request_dissection', payload}, {tool:
+  // 'tools.search', args}]`, one event-shaped entry among real calls, and the
+  // whole turn ended after ONE model call with `decoder_unavailable
+  // { reason: 'invalid_output', site: 'initial' }`. The `tools.search` beside it
+  // never ran.
+  //
+  // ⚠ Gated identically: only a DECODE failure retries (`validation_issues`
+  // present); a provider outage still fails immediately rather than spending a
+  // second call on the same outage. One retry, its own budget.
+  if (
+    initialResult.kind === 'failed'
+    && initialResult.validation_issues !== undefined
+  ) {
+    initialInvalidRetryUsed = true;
+    const initialRetry = await tryMainTurn(
+      undefined,
+      buildInvalidAiOutputFeedback(initialResult.validation_issues),
+    );
+    totalUsage = aggregateTokenUsageReports(totalUsage, initialRetry.usage);
+    initialResult = initialRetry;
+  }
 
   if (initialResult.kind === 'failed') {
     // Only emit `engine.budget_exceeded` when an executor IS wired
@@ -1462,7 +1584,10 @@ export const runChatTurn = async (
         turn_id,
         event: {
           kind: 'engine.budget_exceeded',
-          total_calls: 1,
+          // ⚠ +1 when the decode retry fired: a turn that made two provider
+          // calls must not report one, or the cost series under-counts exactly
+          // the turns that went wrong.
+          total_calls: initialInvalidRetryUsed ? 2 : 1,
           total_cost_cents: 0,
         },
       });
@@ -1541,14 +1666,29 @@ export const runChatTurn = async (
       const priorToolCalls: ChatPriorToolCall[] = [];
       let nextToolCalls: ReadonlyArray<ToolCall> = currentAiOutput.tool_calls;
       let roundIndex = 0;
+      // The cap counts WORK, not rounds. A round that dispatched nothing but
+      // `tools.search` is the lean-core catalog's own tax — it converts an
+      // omitted recipe entry into a callable name and does nothing the owner
+      // asked for — so it is charged against the bounded discovery budget
+      // instead. `roundIndex` stays the true round ordinal: D-219's flow
+      // compiler keys `round_index` off it, and a gap there would misalign
+      // `nonCoreRoundDepth`.
+      let chargedRounds = 0;
+      let discoveryRounds = 0;
       // Loop-final empty recovery state — the deferred second site of the
       // args-only recovery. Own per-turn budget, separate from the initial
       // site's (distinct failure points; worst case 2 recovery calls per
       // turn, each individually bounded at one).
       let loopRecoveryUsed = false;
+      // Separate budget from `loopRecoveryUsed`: a turn can decode EMPTY once
+      // and MALFORMED once, and they are different failures with different
+      // feedback. Each is individually bounded at one, so the worst case adds
+      // one model call, not a loop.
+      let invalidRecoveryUsed = false;
       let loopEmptyUnrecovered = false;
       let terminationReason:
         | 'completed'
+        | 'output_unreadable'
         | 'max_rounds_exhausted'
         | 'aborted' = 'completed';
 
@@ -1815,8 +1955,28 @@ export const runChatTurn = async (
         const reinvokeResult = await tryMainTurn(priorToolCalls.slice());
         totalUsage = aggregateTokenUsageReports(totalUsage, reinvokeResult.usage);
 
-        if (reinvokeResult.kind !== 'ok') {
-          toolLoopFailure = { detail: reinvokeResult.detail };
+        let effectiveReinvoke = reinvokeResult;
+        // ⛔ ONE GUIDED RETRY FOR AN UNREADABLE OUTPUT, mirroring the
+        // empty-output recovery. Gated on `validation_issues` being present, so
+        // a provider/network failure (no issues) still aborts immediately —
+        // retrying THAT would just spend another call on the same outage.
+        if (
+          effectiveReinvoke.kind !== 'ok'
+          && effectiveReinvoke.validation_issues !== undefined
+          && !invalidRecoveryUsed
+        ) {
+          invalidRecoveryUsed = true;
+          recoveryCalls += 1;
+          const invalidRetry = await tryMainTurn(
+            priorToolCalls.slice(),
+            buildInvalidAiOutputFeedback(effectiveReinvoke.validation_issues),
+          );
+          totalUsage = aggregateTokenUsageReports(totalUsage, invalidRetry.usage);
+          effectiveReinvoke = invalidRetry;
+        }
+
+        if (effectiveReinvoke.kind !== 'ok') {
+          toolLoopFailure = { detail: effectiveReinvoke.detail };
           deps.emit({
             kind: 'chat.transparency',
             session_id,
@@ -1849,7 +2009,7 @@ export const runChatTurn = async (
             turn_id,
             event: {
               kind: 'engine.decoder_unavailable',
-              reason: decoderUnavailableReason(reinvokeResult),
+              reason: decoderUnavailableReason(effectiveReinvoke),
               site: 'tool_loop',
             },
           });
@@ -1865,7 +2025,7 @@ export const runChatTurn = async (
           // reinvoke runs.
           if (currentAiOutput.response.trim().length === 0) {
             assistantContent = NO_LLM_SOURCE_DETAIL_RE.test(
-              reinvokeResult.detail,
+              effectiveReinvoke.detail,
             )
               ? NO_LLM_SOURCE_MESSAGE
               : PROVIDER_FAILED_MID_TURN_MESSAGE;
@@ -1873,7 +2033,7 @@ export const runChatTurn = async (
           break;
         }
 
-        currentAiOutput = reinvokeResult.output;
+        currentAiOutput = effectiveReinvoke.output;
 
         // Loop-final empty recovery. A synthesis reinvoke that decodes
         // EMPTY would otherwise terminate the loop as a silent empty turn
@@ -1885,7 +2045,8 @@ export const runChatTurn = async (
         // moreTools / cap branches below (more tool_calls may continue the
         // loop). Still-empty, failed retry, or budget already consumed →
         // the fail-loud message ships; termination reason + transparency
-        // events stay unchanged (the loop still completes via !moreTools).
+        // events stay unchanged; the loop exits via !moreTools and the
+        // post-loop normalisation relabels it `output_unreadable`.
         if (isEmptyChatAiOutput(currentAiOutput)) {
           if (!loopRecoveryUsed) {
             loopRecoveryUsed = true;
@@ -1931,7 +2092,19 @@ export const runChatTurn = async (
         //    `max_rounds_exhausted` step. Mirrors PB5's
         //    `runMultiTurnLoop` semantics (round outcome vs loop
         //    termination reason are distinct).
-        const atCap = roundIndex + 1 >= CHAT_MAIN_TURN_TOOL_LOOP_CAP;
+        // ⚠ Classified from THIS round's dispatched calls, which `nextToolCalls`
+        // still holds — it is reassigned to the next round's calls at the foot
+        // of the loop. `every` over a non-empty list: a mixed round did work.
+        const discoveryOnlyRound = nextToolCalls.length > 0
+          && nextToolCalls.every((call) => call.tool === TOOLS_SEARCH_TOOL_NAME);
+        if (discoveryOnlyRound && discoveryRounds < CHAT_MAIN_TURN_DISCOVERY_ROUND_CAP) {
+          discoveryRounds += 1;
+        } else {
+          // Charged when the round did real work OR when the discovery budget
+          // is spent — the second arm is what stops a model searching forever.
+          chargedRounds += 1;
+        }
+        const atCap = chargedRounds >= CHAT_MAIN_TURN_TOOL_LOOP_CAP;
         deps.emit({
           kind: 'chat.transparency',
           session_id,
@@ -1970,6 +2143,18 @@ export const runChatTurn = async (
 
         nextToolCalls = currentAiOutput.tool_calls;
         roundIndex += 1;
+      }
+
+      // ⛔ A turn that ended because its last packet could not be READ is not a
+      // completion. Derived from the FLAG, not from one exit: two separate
+      // `break`s leave the loop with `loopEmptyUnrecovered` set — the
+      // `!moreTools` exit and the critique-reinvoke empty exit above — and both
+      // previously reported `completed`, making a stalled turn and a finished
+      // one indistinguishable to telemetry, to D-219's flow compiler, and to
+      // anyone reading a transcript. The `=== 'completed'` guard keeps the more
+      // specific reasons (`aborted`, `max_rounds_exhausted`) authoritative.
+      if (loopEmptyUnrecovered && terminationReason === 'completed') {
+        terminationReason = 'output_unreadable';
       }
 
       deps.emit({

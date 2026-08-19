@@ -3,7 +3,7 @@
  *  Pins:
  *    - FIXED_SLOT_INVARIANT_VIOLATION_KINDS = exactly 2 entries
  *    - MULTI_TURN_EVENT_KINDS = exactly 3 entries (recued.multi_turn.* prefix)
- *    - MULTI_TURN_TERMINATION_REASONS = exactly 3 entries
+ *    - MULTI_TURN_TERMINATION_REASONS = exactly 4 entries
  *    - AI_COOPERATIVE_VALIDATOR_ISSUE_KINDS = exactly 4 entries
  *    - enforceFixedSlots invariant: drops alternatives that drift from
  *      `fixed_slots` exactly + emits one violation per dropped slot
@@ -44,10 +44,19 @@ describe('D-145 PB5 — closed-list ratchets', () => {
     }
   });
 
-  it('MULTI_TURN_TERMINATION_REASONS pinned at 3 entries', () => {
-    expect(MULTI_TURN_TERMINATION_REASONS.length).toBe(3);
+  it('MULTI_TURN_TERMINATION_REASONS pinned at 4 entries', () => {
+    // ⚠ SECOND ratchet over this one list — the contracts package pins it too.
+    // Widening the list reds BOTH, and updating only one leaves a live pin
+    // asserting the old size. `output_unreadable` was added deliberately: a
+    // turn whose last packet could not be parsed used to report `completed`.
+    expect(MULTI_TURN_TERMINATION_REASONS.length).toBe(4);
     expect(new Set(MULTI_TURN_TERMINATION_REASONS)).toEqual(
-      new Set(['completed', 'max_rounds_exhausted', 'aborted']),
+      new Set([
+        'completed',
+        'output_unreadable',
+        'max_rounds_exhausted',
+        'aborted',
+      ]),
     );
   });
 

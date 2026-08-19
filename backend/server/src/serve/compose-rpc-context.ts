@@ -291,6 +291,24 @@ export const composeRpcContext = (
     // emit.
     eventBus: storage.eventBus,
     recipeTrustStore,
+    // D-247 D15 — the preview resolves a recipe's ops to a risk tier through the
+    // SAME manifest registry the executor runs against, so the tier the consent
+    // surface shows and the tier the gate enforces cannot diverge.
+    // ⚠ Conditional because a dbless / partial harness composes an EMPTY
+    // `executeDeps`: absent ⇒ the documented `grant_class: 'unknown'` degrade,
+    // never a throw from inside a consent surface.
+    ...(execution.executeDeps.executorConfig !== undefined
+      ? {
+          getManifest: (slug: string) =>
+            execution.executeDeps.executorConfig.manifests.get(slug) ?? undefined,
+        }
+      : {}),
+    // D-247 D15.1 — the owner's grant rows, so the install applies the access
+    // ceiling the owner picked to each recipe's seeded row. Absent (dbless) ⇒
+    // the mutation hook's `chat_exposed` seed stands.
+    ...(app.contractStoreRef
+      ? { grantEntryStore: createContractGrantEntryStore(app.contractStoreRef) }
+      : {}),
   });
 
   // D-145 PA10 follow-on — `packs.list` rpc. Read counterpart to

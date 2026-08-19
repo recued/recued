@@ -391,6 +391,7 @@ import {
   resolveInstallDialogAccess,
   resolveInstallDialogAudience,
 } from './packs-install-dialog.js';
+import type { InstallPreview } from './packs-install-dialog.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 // Slice C — cross-pack recipe collision detection. Pure function over
 // the panel's `packs` array; recomputed on every render (cheap: bounded
@@ -697,6 +698,20 @@ export type PacksUninstallCaller = (args: {
  *  ({ manifest } | { manifest: null, failure }). */
 export type PacksResolveCaller = (input: string) => Promise<PacksResolveResult>;
 
+/** D-247 D15 — `packs.install_preview`. Resolves the recipe refs a manifest
+ *  carries into the consent disclosure + D15.1's per-recipe closure risk,
+ *  WITHOUT installing. SERVER-resolved because the recipe bodies live
+ *  server-side: a bulk manifest carries refs, not bodies, so the client cannot
+ *  derive a closure and must not guess one.
+ *
+ *  ⛔ A rejection is NOT an error surface here — the dialog degrades to
+ *  `resolved: false` (no disclosure, flat read tier = the pre-D-247 behaviour).
+ *  That is also what a server predating D-247 produces, since it answers
+ *  `packs.install_preview` with an unknown-method rejection. */
+export type PacksInstallPreviewCaller = (args: {
+  manifest: unknown;
+}) => Promise<InstallPreview>;
+
 /** Add-a-pack (2026-07-01) — install a resolved marketplace pack BY SLUG. The
  *  consent dialog for an added pack routes here (NOT the by-value
  *  `PacksInstallCaller`), because a marketplace pack's recipes are not bundled on
@@ -853,6 +868,10 @@ export interface MountPacksPanelOptions {
    *  by-value `runInstall` can't resolve them). Gated together with
    *  {@link runResolvePack}. */
   runInstallBySlug?: PacksInstallBySlugCaller;
+  /** D-247 D15 — install-preview seam for the consent dialog's recipe
+   *  disclosure + grant-picker tier. Absent ⇒ no disclosure and the flat read
+   *  tier; the dialog is fully functional without it. */
+  runInstallPreview?: PacksInstallPreviewCaller;
 }
 
 export interface PacksPanelMount {
@@ -1159,6 +1178,61 @@ export const mountPacksPanel = (
     dialogGrantAudience.delete(slug);
     dialogChosenConnection.delete(slug);
     dialogConnectExpanded.delete(slug);
+  };
+  /** D-247 D15 — the server-resolved install preview, cached against the
+   *  MANIFEST OBJECT it was derived from rather than the slug alone. A detail
+   *  resolve or a list refresh can replace a pack's manifest, and a disclosure
+   *  describing the PREVIOUS one is a consent surface reading a stale input —
+   *  the exact class of defect D-247 kept producing. Identity comparison makes
+   *  the invalidation automatic instead of a second place to remember.
+   *
+   *  ⛔ NOT cleared by `clearDialogGrantPicks`: this is derived from the
+   *  manifest, not an owner pick, so it survives a close/reopen of the same
+   *  unchanged pack. */
+  const dialogInstallPreview = new Map<
+    string,
+    { readonly manifest: unknown; readonly preview: InstallPreview }
+  >();
+  /** Slug whose `packs.install_preview` is in flight (single-dialog, DD#2). */
+  let installPreviewInFlight: string | null = null;
+  /** The preview for a slug, but ONLY when it was derived from the manifest now
+   *  on screen. A mismatch reads as absent, which the dialog renders as the
+   *  pre-D-247 surface — never as a disclosure about a different manifest. */
+  const installPreviewFor = (
+    slug: string,
+    manifest: unknown,
+  ): InstallPreview | undefined => {
+    const entry = dialogInstallPreview.get(slug);
+    return entry !== undefined && entry.manifest === manifest
+      ? entry.preview
+      : undefined;
+  };
+  /** Idempotent + guarded, mirroring `ensureDetailResolved`: at most one call
+   *  per (slug, manifest), re-renders when it lands.
+   *
+   *  ⛔ A rejection is CACHED as `resolved: false`, not surfaced as an error and
+   *  not retried on every render. The disclosure is additive — a host that
+   *  cannot answer (no seam wired, or a server predating D-247, which rejects
+   *  the method as unknown) must render the dialog it always rendered, not an
+   *  error on a consent surface that is otherwise fine. */
+  const ensureInstallPreview = (slug: string, manifest: unknown): void => {
+    const run = opts.runInstallPreview;
+    if (run === undefined) return;
+    if (installPreviewFor(slug, manifest) !== undefined) return;
+    if (installPreviewInFlight === slug) return;
+    installPreviewInFlight = slug;
+    void (async () => {
+      let preview: InstallPreview;
+      try {
+        preview = await run({ manifest });
+      } catch {
+        preview = { resolved: false, will_enable: [], hidden_count: 0 };
+      }
+      if (installPreviewInFlight === slug) installPreviewInFlight = null;
+      if (disposed) return;
+      dialogInstallPreview.set(slug, { manifest, preview });
+      render();
+    })();
   };
   /** In-flight install promise — lets `clickConfirmInstall` await the
    *  same rpc the dialog's Install button fires. */
@@ -2701,9 +2775,17 @@ export const mountPacksPanel = (
       findPackBySlug(pack.slug)?.manifest?.connection_hints,
       connectionRequirement !== undefined,
     );
+    // D-247 D15 — resolve the recipe disclosure for THIS manifest. Idempotent;
+    // re-renders when it lands. Fired here rather than in `openDialog` because
+    // the manifest can still be in flight at open time (`ensureDetailResolved`
+    // backfills it), and the preview is a function of the manifest, not of the
+    // open event.
+    ensureInstallPreview(pack.slug, pack.manifest);
+    const installPreview = installPreviewFor(pack.slug, pack.manifest);
     return renderPacksInstallDialog({
       document: doc,
       pack,
+      ...(installPreview !== undefined ? { installPreview } : {}),
       collision,
       grantOverlap,
       selection: dialogPermissions.get(pack.slug) ?? new Set<string>(),

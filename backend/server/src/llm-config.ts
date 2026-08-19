@@ -11,7 +11,7 @@ import type Database from 'better-sqlite3';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import type {
   FreePoolEntry, LLMConfig, LLMSlot, CoordinationStrategy, LlmGatewayDefaultRoute,
-  LLMMessageRole, LlmGatewayCallerSystemPolicy,
+  LLMMessageRole, LlmGatewayCallerSystemPolicy, EndpointCapabilityNote,
 } from '@recued/llm';
 import {
   isLLMMessageRole, isLlmGatewayCallerSystemPolicy,
@@ -144,6 +144,27 @@ export interface LLMConfigManager {
    *  reject a `system` role) — unrelated to the role the owner writes above. */
   setSystemRole(surface: LlmPromptSurfaceKey, role: LLMMessageRole | null): void;
   getSystemRole(surface: LlmPromptSurfaceKey): LLMMessageRole | undefined;
+  /** D-208 follow-on — record a DETECTED endpoint capability on the source it
+   *  belongs to (`slot.system_role_ok` / `native_json_ok`, or the matching
+   *  free-pool entry).
+   *
+   *  ⛔ NOT a side blob keyed by a content fingerprint, which is what this was
+   *  first built as. The fingerprint existed to auto-invalidate when
+   *  provider/base_url/model change — but a SOURCE EDIT is that moment, and the
+   *  save path already runs then, so the whole content-addressing layer was
+   *  buying something the write path already knew. Storing on the source also
+   *  means a deleted source takes its observations with it: no orphans, no
+   *  prune, nothing to resurrect.
+   *
+   *  ⛔ And still not `supports_json`: that field is a MATCH input, so a
+   *  detected value there would make a source unroutable rather than
+   *  degraded. */
+  setSourceCapability(
+    source:
+      | { kind: 'slot'; slot_key: 'slot_1' | 'slot_2' | 'embeddings_slot' }
+      | { kind: 'pool'; entry_id: string },
+    patch: { system_role_ok?: boolean; native_json_ok?: boolean },
+  ): void;
   /** What the gateway does with a CALLER's OpenAI `system` message. `null`
    *  clears back to `'context'` (the pre-existing behaviour). */
   setCallerSystemPolicy(policy: LlmGatewayCallerSystemPolicy | null): void;
@@ -315,6 +336,10 @@ export const createLLMConfigManager = (
       const parsed = Number(dailyBudgetTokens);
       if (Number.isFinite(parsed) && parsed >= 0) slot.daily_budget_tokens = parsed;
     }
+    // DETECTED capabilities. Only a definite `false` is ever stored — absent
+    // means "not yet known", which reads as yes.
+    if (get(`${prefix}.system_role_ok`) === '0') slot.system_role_ok = false;
+    if (get(`${prefix}.native_json_ok`) === '0') slot.native_json_ok = false;
     const speed = get(`${prefix}.speed`);
     if (speed === 'fast' || speed === 'quality' || speed === 'thinking') slot.speed = speed;
     const sJson = get(`${prefix}.supports_json`);
@@ -351,11 +376,25 @@ export const createLLMConfigManager = (
       'supports_search',
       'modalities',
       'transcription_model',
+      // ⛔ DETECTED capabilities are cleared by every save, on purpose. A save
+      // is the only moment provider/base_url/model can change, and an
+      // observation about the previous endpoint is a guess about one nobody
+      // asked about. This is the invalidation the old fingerprint scheme was
+      // built to provide — the write path had it all along.
+      'system_role_ok',
+      'native_json_ok',
     ];
     if (!slot) {
       for (const k of keys) del(`${prefix}.${k}`);
       return;
     }
+    // ⛔ DETECTED capabilities die on every save. The `keys` list above only
+    // runs on the CLEAR path, so this is not covered by it — and a save is
+    // precisely when provider/base_url/model can change, which is what makes a
+    // prior observation a guess about an endpoint nobody asked about. This is
+    // the invalidation the old content-fingerprint scheme existed to provide.
+    del(`${prefix}.system_role_ok`);
+    del(`${prefix}.native_json_ok`);
     // Read the prior credential context BEFORE overwriting provider/base_url —
     // a blank-key preserve is only honest when the context is unchanged.
     const prevProvider = get(`${prefix}.provider`);
@@ -650,6 +689,44 @@ export const createLLMConfigManager = (
       // role the adapters would choke on.
       const raw = get(`${surface}.system_role`);
       return isLLMMessageRole(raw) ? raw : undefined;
+    },
+    setSourceCapability(source, patch) {
+      // Absent means "not yet known" and reads as YES, so only a definite
+      // `false` is worth a row — writing `1` everywhere would double the
+      // config's size to record the default.
+      const write = (setKey: (k: string, v: string) => void, del: (k: string) => void,
+                     prefix: string): void => {
+        for (const field of ['system_role_ok', 'native_json_ok'] as const) {
+          const value = patch[field];
+          if (value === undefined) continue;
+          if (value === false) setKey(`${prefix}.${field}`, '0');
+          else del(`${prefix}.${field}`);
+        }
+      };
+      if (source.kind === 'slot') {
+        write(set, del, source.slot_key);
+        return;
+      }
+      // Pool entries live in one encrypted blob, so this is a read-modify-write
+      // — the same shape the other field-level pool writes already use.
+      const entries = readPoolStrict();
+      const next = entries.map((e) => (e.id === source.entry_id
+        ? {
+            ...e,
+            ...(patch.system_role_ok !== undefined
+              ? { system_role_ok: patch.system_role_ok }
+              : {}),
+            ...(patch.native_json_ok !== undefined
+              ? { native_json_ok: patch.native_json_ok }
+              : {}),
+          }
+        : e));
+      // Nothing matched — the entry was removed between the discovery and this
+      // write. Drop the observation rather than resurrect a dead entry, and do
+      // not rewrite the pool at all: it holds api keys and is stored
+      // `setSensitive`, so a redundant write re-encrypts every credential in it
+      // under a fresh IV for no reason.
+      if (next.some((e, i) => e !== entries[i])) this.setPool(next);
     },
     setCallerSystemPolicy(policy) {
       if (policy === null) {

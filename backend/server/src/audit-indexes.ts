@@ -30,6 +30,22 @@ export const ensureAuditIndexes = (db: Database.Database): void => {
       ON audit_activities (json_extract(data, '$.reserve'));
     CREATE INDEX IF NOT EXISTS audit_activities_timestamp_idx
       ON audit_activities (json_extract(data, '$.timestamp'));
+    -- D-247 D13 -- the coverage ledger. D11's op row asks one aggregate per
+    -- render ("which ops ran ONLY because a recipe covered them, in the last N
+    -- days"), grouped by target (the operation_id) and filtered on action.
+    -- Without this the row's cost rises with everything the server has done
+    -- rather than with the ops it lists.
+    --
+    -- WARNING: no admission_basis index, and none is wanted -- the ACTION is
+    -- the predicate. The row exists only for coverage, so "was this coverage"
+    -- is already answered by which rows carry recipe_coverage_admission.
+    -- (No backticks in here: this is inside a template literal.)
+    CREATE INDEX IF NOT EXISTS audit_activities_coverage_op_idx
+      ON audit_activities (
+        json_extract(data, '$.action'),
+        json_extract(data, '$.target'),
+        json_extract(data, '$.timestamp')
+      );
     -- The execution-case compiler filters the WHOLE audit log on these two
     -- expressions (execution-case-compiler.ts listRecipeAuditEntries /
     -- listChatToolCallActivities), so without these its cost rises with

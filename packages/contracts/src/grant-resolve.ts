@@ -29,6 +29,7 @@
 import { GENERATED_PACK_PUBLISHER } from './ingredient.js';
 import { OWNER_CONTRACT_ID } from './contract-definition.js';
 import { isPackOp } from './op-model.js';
+import { isRecipeGrantEntry } from './grant-entry.js';
 
 /** The three-state grant rule. `explicit` is the contract's stored value for the
  *  entry — `true` (grant) / `false` (explicit revoke) / `undefined` (no row). A
@@ -219,6 +220,27 @@ export const ownerOnlyAdjustedAuthorDefault = (
   boundContractId: string,
   normalDefault: boolean,
 ): boolean => {
+  // ⛔⛔ D-247 D7 — THE ONE INVERTED KIND, AND THE EXCEPTION IS WRITTEN HERE
+  // BECAUSE AN UNEXPLAINED INVARIANT BREAK IS THE DRIFT D-207 SLICE 1c RECORDED.
+  //
+  // Every other kind is owner-permissive: "the owner is one fully-granted
+  // contract, seeded permissive + tightenable", and the tighten above only ever
+  // closes a DOOR. `recipe` inverts it and closes for EVERYONE, the owner
+  // included, because the thing it gates is CATALOG MEMBERSHIP and the corpus is
+  // ~2,264 recipes at ~160 tok/entry — an owner-permissive default puts 362k
+  // tokens of prefix in front of every turn on day one, which is the exact budget
+  // `chat_exposed` was invented to protect.
+  //
+  // ⚠ This is a DEFAULT, not a gate: D8's seed writes an explicit row per recipe
+  // at the moment it enters the store, so in practice almost nothing resolves
+  // here. What it governs is the recipe that reached the store without a seed —
+  // and for that one, closed is the honest answer.
+  //
+  // ⛔ NOT expressible through `isOwnerDefaultOnlyEntry`: that helper's contract
+  // is "ON for the owner, OFF for a door", and it is relied on to be a tighten
+  // that never touches the owner. Folding an owner-closing kind into it would
+  // silently change what every existing caller means.
+  if (isRecipeGrantEntry(entryKey)) return false;
   if (!isOwnerDefaultOnlyEntry(entryKey)) return normalDefault;
   return boundContractId === OWNER_CONTRACT_ID || boundContractId === '';
 };

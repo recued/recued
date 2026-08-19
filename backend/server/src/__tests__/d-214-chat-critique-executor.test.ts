@@ -131,6 +131,58 @@ describe('D-214 proposal critique in the real cooperative executor', () => {
     );
   });
 
+  it('⛔ reports the critique-reinvoke empty exit as output_unreadable, not completed', async () => {
+    // ⛔ THE SECOND EXIT. `loopEmptyUnrecovered` is set at two different
+    // `break`s — the `!moreTools` exit (covered by the orchestrator ratchet)
+    // and THIS one, where the critique reinvocation itself comes back
+    // unreadable. A fix written against the first branch alone leaves this
+    // path still reporting `completed`, so the reason is derived from the
+    // FLAG after the loop and this test is what proves the pair is covered.
+    const events: Record<string, unknown>[] = [];
+    let round = 0;
+    const executeAiCall = vi.fn(async () => ({
+      body: round++ === 0
+        ? proposed
+        : { response: '', events: [], tool_calls: [] },
+    }));
+    const dispatchTool = vi.fn(async (): Promise<ChatDispatchResult> => ({
+      ok: true,
+      result: { sent: true },
+    }));
+    let critiqueCalls = 0;
+    const result = await runChatTurn(input, {
+      executeAiCall,
+      registry,
+      critiqueProposal: async () => {
+        if (critiqueCalls++ > 0) return null;
+        return {
+          critique: {
+            candidate_pattern: deriveExecutionFlowPattern([
+              { tool_name: 'mail.send', risk_tier: 'write' },
+            ]),
+            support: [],
+            contradictions: [],
+            alternatives: [],
+          },
+        };
+      },
+      dispatchTool,
+      emit: (e) => { events.push(e as Record<string, unknown>); },
+      now: () => 1_000,
+    });
+
+    // The exit is genuinely the critique one: the reinvoke came back empty
+    // BEFORE anything dispatched.
+    expect(dispatchTool).toHaveBeenCalledTimes(0);
+    const terminated = events
+      .map((e) => e.event as { kind?: string; termination_reason?: string })
+      .filter((e) => e?.kind === 'recued.multi_turn.loop_terminated');
+    expect(terminated).toEqual([
+      expect.objectContaining({ termination_reason: 'output_unreadable' }),
+    ]);
+    expect(result.assistant_content).not.toBe('');
+  });
+
   it('adds no model round and no dispatch effect when evidence is absent', async () => {
     let round = 0;
     const executeAiCall = vi.fn(async () => ({
@@ -240,5 +292,128 @@ describe('D-214 cards stay below the cacheable prefix', () => {
     expect(augmented.cacheable_prefix).toBe(baseline.cacheable_prefix);
     expect(augmented.body).toContain('execution_case_context');
     expect(augmented.body).not.toContain('open_items');
+  });
+});
+
+describe('an unreadable mid-loop output earns ONE guided retry, like an empty one', () => {
+  // ⛔ Measured on bench 181 (lean-core): a turn that had already dispatched
+  // four recipes and materialized an execution case ABORTED on a bare string
+  // reply, and another aborted on an array of non-call objects after two
+  // steps. An EMPTY output would have survived both — it earns a recovery
+  // round. The output that said something malformed did not, which is the
+  // asymmetry this covers.
+  const registryOf = (entry: ToolEntry): InternalToolRegistry => ({
+    list: () => [entry],
+    listByTier: () => [entry],
+    getByName: (n) => (n === entry.name ? entry : null),
+    dispatch: async () => ({ ok: true, result: {} }),
+    subscribeRefresh: () => () => {},
+  });
+
+  it('retries a bare-string reinvoke and completes instead of aborting', async () => {
+    const events: Record<string, unknown>[] = [];
+    let round = 0;
+    const executeAiCall = vi.fn(async () => {
+      round += 1;
+      if (round === 1) return { body: proposed };
+      // The synthesis reinvoke comes back as a bare string — parsed, rejected.
+      if (round === 2) return { body: 'Riverside Holdings is added.' };
+      return { body: { response: 'done', events: [], tool_calls: [] } };
+    });
+    const result = await runChatTurn(input, {
+      executeAiCall,
+      registry: registryOf(entry),
+      critiqueProposal: async () => null,
+      dispatchTool: async () => ({ ok: true, result: { sent: true } }),
+      emit: (e) => { events.push(e as Record<string, unknown>); },
+      now: () => 1_000,
+    });
+
+    expect(result.assistant_content).toBe('done');
+    const terminated = events
+      .map((e) => e.event as { kind?: string; termination_reason?: string })
+      .filter((e) => e?.kind === 'recued.multi_turn.loop_terminated');
+    expect(terminated).toEqual([
+      expect.objectContaining({ termination_reason: 'completed' }),
+    ]);
+    // The retry is BOUNDED at one extra call: plan, bad synthesis, retry.
+    expect(executeAiCall).toHaveBeenCalledTimes(3);
+  });
+
+  it('does NOT retry a provider failure — only a decode failure', async () => {
+    // A provider/network error carries no `validation_issues`; retrying it
+    // spends another call on the same outage.
+    let round = 0;
+    const executeAiCall = vi.fn(async () => {
+      round += 1;
+      if (round === 1) return { body: proposed };
+      throw new Error('upstream exploded');
+    });
+    const events: Record<string, unknown>[] = [];
+    await runChatTurn(input, {
+      executeAiCall,
+      registry: registryOf(entry),
+      critiqueProposal: async () => null,
+      dispatchTool: async () => ({ ok: true, result: { sent: true } }),
+      emit: (e) => { events.push(e as Record<string, unknown>); },
+      now: () => 1_000,
+    });
+    expect(executeAiCall).toHaveBeenCalledTimes(2);
+    const terminated = events
+      .map((e) => e.event as { kind?: string; termination_reason?: string })
+      .filter((e) => e?.kind === 'recued.multi_turn.loop_terminated');
+    expect(terminated).toEqual([
+      expect.objectContaining({ termination_reason: 'aborted' }),
+    ]);
+  });
+});
+
+describe('the INITIAL output earns the same guided retry as a mid-loop one', () => {
+  // ⛔ MEASURED LIVE (D-247 probe, lean-core): the model's FIRST output carried
+  // `tool_calls: [{kind: 'extraction.request_dissection', payload}, {tool:
+  // 'tools.search', args}]` — one event-shaped entry among real calls. One bad
+  // entry fails the whole output, so the turn ended after ONE model call with
+  // `decoder_unavailable { reason: 'invalid_output', site: 'initial' }` and the
+  // `tools.search` beside it never ran.
+  //
+  // 🔑 The mid-loop retry had already shipped. Fixing one site is not fixing the
+  // rule, and the initial site is where an unreadable output costs MOST: the
+  // turn has done nothing yet and simply stops.
+  it('retries a malformed first output instead of ending the turn', async () => {
+    let round = 0;
+    const executeAiCall = vi.fn(async () => {
+      round += 1;
+      if (round === 1) {
+        // Verbatim shape from the live probe: an event object inside tool_calls.
+        return { body: { response: 'checking', events: [], tool_calls: [
+          { kind: 'extraction.request_dissection', payload: { schema_version: 1 } },
+          { tool: 'mail.send', args: { recipient: 'alice@example.com' } },
+        ] } };
+      }
+      return { body: { response: 'recovered', events: [], tool_calls: [] } };
+    });
+    const result = await runChatTurn(input, {
+      executeAiCall,
+      registry,
+      critiqueProposal: async () => null,
+      dispatchTool: async () => ({ ok: true, result: {} }),
+      emit: () => {},
+      now: () => 1_000,
+    });
+    expect(result.assistant_content).toBe('recovered');
+    expect(executeAiCall).toHaveBeenCalledTimes(2);
+  });
+
+  it('does NOT retry a provider failure on the first call', async () => {
+    const executeAiCall = vi.fn(async () => { throw new Error('upstream down'); });
+    await runChatTurn(input, {
+      executeAiCall,
+      registry,
+      critiqueProposal: async () => null,
+      dispatchTool: async () => ({ ok: true, result: {} }),
+      emit: () => {},
+      now: () => 1_000,
+    });
+    expect(executeAiCall).toHaveBeenCalledTimes(1);
   });
 });

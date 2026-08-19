@@ -153,12 +153,28 @@ const buildInstallGrantModel = (
  *  every op to its ingredient's `kind` (Table A), and keeps non-`cli` ops. */
 export const installGrantModelFromManifest = (
   manifest: BulkPackManifest,
+  /** D-247 D15.1 — per-recipe closure risk from `packs.install_preview`, keyed by
+   *  `recipe_id`. Absent ⇒ recipes fall back to `read`, which is what shipped
+   *  before and is only safe because the seed then lands them CLOSED. */
+  recipeRisk?: ReadonlyMap<string, RiskTier>,
 ): InstallGrantPickerModel | null => {
-  // Tier-2 recipe tools use their authoritative registry name. They are
-  // read-tier grantable in both v1 `recipes[]` and v2 recipe content refs.
+  // ⛔⛔ D-247 D15.1 — A RECIPE'S TIER IS THE RISK OF WHAT IT CAN REACH, NOT
+  // `read`. This line said `risk: 'read'` flat, whatever the recipe's ops do —
+  // so a pack shipping a `chat_exposed` DESTRUCTIVE open adapter (7 of the 36 in
+  // the shipped corpus) was granted at the picker's default Read, and the owner's
+  // answer to "Read only" had enabled `refund-payment-square`.
+  //
+  // ⚠ THE HARM IS REACHABILITY, NOT AUTHORIZATION. No refund happens without an
+  // approval (D4). But the owner said "read only" and got a refund tool in the
+  // catalog, which is the exposure D-247 exists to control.
+  //
+  // The tier comes from the SERVER-resolved preview because the manifest does not
+  // carry recipe bodies — see `packs.install_preview`. Absent ⇒ `read`, the prior
+  // behaviour, because a guessed higher tier would silently hide recipes the
+  // owner did nothing about.
   const connOps: TieredOp[] = normalizeBulkPackInstallPlan(manifest).recipes.map((recipe) => ({
     id: `${manifest.publisher}/${recipe.slug}`,
-    risk: 'read',
+    risk: recipeRisk?.get(recipe.slug) ?? 'read',
   }));
   for (const content of manifest.contents ?? []) {
     if (content.type !== 'composition') continue;

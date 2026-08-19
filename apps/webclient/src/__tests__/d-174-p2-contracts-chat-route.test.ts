@@ -1068,13 +1068,15 @@ describe('D-174 contracts route — list → detail shell', () => {
     route.dispose();
   });
 
-  it('self DETAIL has no Connect tab (Ops/Entities only) and switches tabs on click', async () => {
+  it('self DETAIL has no Connect tab (Ops/Entities/Recipes) and switches tabs on click', async () => {
     const { root, route } = mount({ initialContractId: 'user_self' });
     await route.whenLoaded();
     expect(route.getViewMode()).toBe('detail');
 
     const tabs = collectByAttr(root, CONTRACTS_ROUTE_TAB_ATTR);
-    expect(tabs.map((t) => t.getAttribute('data-tab'))).toEqual(['ops', 'entities']);
+    // D-247 — the owner gains Recipes; a door does not (its recipe authority is
+    // its inbound token, not the `recipe.*` axis).
+    expect(tabs.map((t) => t.getAttribute('data-tab'))).toEqual(['ops', 'entities', 'recipes']);
     expect(route.getActiveTab()).toBe('ops');
     expect(tabs[0]!.getAttribute('tabindex')).toBe('0');
     expect(tabs[1]!.getAttribute('tabindex')).toBe('-1');
@@ -1099,18 +1101,25 @@ describe('D-174 contracts route — list → detail shell', () => {
     await route.whenLoaded();
     const tabs = collectByAttr(root, CONTRACTS_ROUTE_TAB_ATTR);
 
+    // D-247 — the self contract is now ops / entities / RECIPES, so the
+    // wraparound is over THREE stops. ⚠ Written off `tabs.length` rather than
+    // re-hardcoding 3: this test is about the roving-tabindex behaviour, and a
+    // pinned count makes the next tab addition edit an assertion that was never
+    // about the count.
+    const last = tabs.length - 1;
     tabs[0]!.keydown('ArrowRight');
     expect(route.getActiveTab()).toBe('entities');
     expect(tabs[1]!.getAttribute('aria-selected')).toBe('true');
     expect(doc.activeElement).toBe(tabs[1]);
 
-    tabs[1]!.keydown('ArrowRight');
+    // Right from the LAST stop wraps to the first.
+    tabs[last]!.keydown('ArrowRight');
     expect(route.getActiveTab()).toBe('ops');
     expect(doc.activeElement).toBe(tabs[0]);
 
     tabs[0]!.keydown('End');
-    expect(route.getActiveTab()).toBe('entities');
-    tabs[1]!.keydown('Home');
+    expect(route.getActiveTab()).toBe(tabs[last]!.getAttribute('data-tab'));
+    tabs[last]!.keydown('Home');
     expect(route.getActiveTab()).toBe('ops');
     route.dispose();
   });

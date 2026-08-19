@@ -209,11 +209,17 @@ import {
   SELLER_CUSTOMER_LIFECYCLE_SUBMIT_ATTR,
   SELLER_CUSTOMER_FORM_FIELD_ATTR,
   SELLER_CUSTOMER_FORM_SUBMIT_ATTR,
+  SELLER_DIRECTORY_ROW_ATTR,
   SELLER_OFFER_STATE_ACTION_ATTR,
   SELLER_SETTINGS_FORM_FIELD_ATTR,
   SELLER_SETTINGS_FORM_SUBMIT_ATTR,
   SELLER_TIER_BULK_ADJUST_SUBMIT_ATTR,
 } from '../settings/seller-page.js';
+import {
+  SETTINGS_ROUTE_ACTIVE_ATTR,
+  SETTINGS_ROUTE_NAV_ITEM_ATTR,
+  SETTINGS_ROUTE_SECTION_ATTR,
+} from '../settings/bootstrap-settings-route.js';
 import {
   ARCHIVE_BACKUP_MNEMONIC_ATTR,
   ARCHIVE_BACKUP_RUN_BTN_ATTR,
@@ -1915,6 +1921,263 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     expect(usagePage?.getState().subpage).toBe('usage');
     await handle.dispose();
     await usagePage?.whenLoaded();
+  });
+
+  // ── Seller sub-page Back/Forward (rail addressing) ────────────────
+  // The Seller sub-page links were always real `#settings/seller/<sub>`
+  // anchors, so Back BETWEEN sub-pages worked. What did not: the Settings
+  // rail switched sections with a pure attribute flip, so arriving at Seller
+  // through the rail left the address naming the section the user came FROM —
+  // and Back out of a sub-page landed on that stale address (the first
+  // section), never on the Seller directory. The rail now writes its own
+  // address.
+
+  const answerSellerOverview = (controls: FakeTransportControls): void => {
+    // LATEST, not first — a re-mount issues a second overview request and the
+    // first one is already answered.
+    const call = findLatestRpcCall(controls, 'server.seller.getOverview');
+    if (call === undefined) {
+      throw new Error('missing Seller overview request');
+    }
+    const overview: SellerOverview = {
+      settings: {
+        default_grace_hours: 72,
+        sender_mail_instance_id: null,
+        status_policy_json: {},
+        email_policy_json: {},
+        llm_gateway_paid_ack_at: null,
+        llm_gateway_paid_ack_version: null,
+        created_at: 0,
+        updated_at: 0,
+      },
+      counts: {
+        tiers: 0,
+        active_tiers: 0,
+        customers: 0,
+        active_customers: 0,
+        grace_customers: 0,
+        closed_customers: 0,
+      },
+      readiness: [],
+      llm_gateway: {
+        configured: false,
+        config_readable: true,
+        default_route: null,
+        model_alias: null,
+        paid_ack_at: null,
+        paid_acknowledged: false,
+      },
+      tiers: [],
+      customers: [],
+      usage_rollups: [],
+      offers: [],
+    };
+    controls.fireMessage({
+      type: 'rpc_result',
+      request_id: call.request_id,
+      result: overview,
+    });
+  };
+
+  /** A real-enough browser history: `defaultView.history` writes and hash
+   *  navigations BOTH append entries, and `back()` replays the previous one.
+   *  The point is that a Back target is never hand-written in a test — it is
+   *  whatever address the app itself put on the stack. */
+  const wireHistory = (
+    fixture: ReturnType<typeof buildOpts>,
+  ): {
+    pushState: ReturnType<typeof vi.fn>;
+    replaceState: ReturnType<typeof vi.fn>;
+    stack: string[];
+    back: () => void;
+  } => {
+    const stack: string[] = [fixture.hashSource.getHash()];
+    const pushState = vi.fn((_state: unknown, _title: string, hash: string) => {
+      stack.push(hash);
+    });
+    const replaceState = vi.fn((_state: unknown, _title: string, hash: string) => {
+      stack[stack.length - 1] = hash;
+    });
+    // A hash write (a link click, or the shell's own `navigateHash`) is a
+    // history entry too — record it, then let the real fake source dispatch.
+    const dispatch = fixture.hashSource.setHash.bind(fixture.hashSource);
+    fixture.hashSource.setHash = (hash: string): void => {
+      if (hash !== stack[stack.length - 1]) stack.push(hash);
+      dispatch(hash);
+    };
+    const location: { hash: string } = {} as { hash: string };
+    Object.defineProperty(location, 'hash', {
+      configurable: true,
+      get: () => fixture.hashSource.getHash(),
+      set: (hash: string) => { fixture.hashSource.setHash(hash); },
+    });
+    (fixture.fakeDoc as { defaultView?: unknown }).defaultView = {
+      location,
+      history: { pushState, replaceState },
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+    return {
+      pushState,
+      replaceState,
+      stack,
+      // Traversing back re-dispatches the previous entry WITHOUT recording it,
+      // exactly as a browser does.
+      back: (): void => {
+        if (stack.length < 2) throw new Error('history: nothing to go back to');
+        stack.pop();
+        dispatch(stack[stack.length - 1]!);
+      },
+    };
+  };
+
+  it('the Settings rail pushes #settings/<section> without re-mounting', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#settings');
+    const { pushState } = wireHistory(fixture);
+    const handle = await bootstrapWebclient(fixture.opts);
+    const settingsRoot = findChildByAttr(
+      routeContentRoot(fixture.root),
+      'data-recued-settings-route',
+    )!;
+    const sellerBefore = handle.settingsRoute()!.sellerPage();
+
+    findChildByAttrValue(
+      settingsRoot,
+      SETTINGS_ROUTE_NAV_ITEM_ATTR,
+      'seller',
+    )!.fireClick({});
+
+    // A History write emits no hashchange, so the shell must NOT re-mount —
+    // every section is already built. Only the address moves.
+    expect(pushState).toHaveBeenCalledWith(null, '', '#settings/seller');
+    expect(fixture.hashSource.getHash()).toBe('#settings');
+    expect(handle.settingsRoute()!.sellerPage()).toBe(sellerBefore);
+    expect(
+      findChildByAttrValue(settingsRoot, SETTINGS_ROUTE_SECTION_ATTR, 'seller')
+        ?.getAttribute(SETTINGS_ROUTE_ACTIVE_ATTR),
+    ).toBe('true');
+
+    await handle.dispose();
+    await sellerBefore?.whenLoaded();
+  });
+
+  it('Back from a Seller sub-page returns to the Seller directory', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#settings');
+    const history = wireHistory(fixture);
+    const handle = await bootstrapWebclient(fixture.opts);
+    const settingsRoot = findChildByAttr(
+      routeContentRoot(fixture.root),
+      'data-recued-settings-route',
+    )!;
+    findChildByAttrValue(
+      settingsRoot,
+      SETTINGS_ROUTE_NAV_ITEM_ATTR,
+      'seller',
+    )!.fireClick({});
+    await flush();
+    answerSellerOverview(fixture.transportControls);
+    await flush();
+
+    // Drive the directory's OWN link, not a hand-written hash — the anchor is
+    // what the browser navigates on.
+    const ordersHref = findChildByAttrValue(
+      settingsRoot,
+      SELLER_DIRECTORY_ROW_ATTR,
+      'orders',
+    )!.getAttribute('href');
+    expect(ordersHref).toBe('#settings/seller/orders');
+    fixture.hashSource.setHash(ordersHref!);
+    expect(handle.settingsRoute()!.sellerPage()!.getState().subpage).toBe('orders');
+
+    // Back — whatever the app itself put underneath. Nothing here names the
+    // address: if the rail had left no entry this lands on `#settings` and the
+    // Seller directory never comes back.
+    expect(history.stack).toEqual([
+      '#settings',
+      '#settings/seller',
+      '#settings/seller/orders',
+    ]);
+    history.back();
+
+    const sellerAfter = handle.settingsRoute()!.sellerPage()!;
+    expect(sellerAfter.getState().subpage).toBeNull();
+    const settingsRootAfter = findChildByAttr(
+      routeContentRoot(fixture.root),
+      'data-recued-settings-route',
+    )!;
+    expect(
+      findChildByAttrValue(
+        settingsRootAfter,
+        SETTINGS_ROUTE_SECTION_ATTR,
+        'seller',
+      )?.getAttribute(SETTINGS_ROUTE_ACTIVE_ATTR),
+    ).toBe('true');
+    // Dispose BEFORE awaiting: `whenLoaded()` hands back the LATEST pending
+    // load, and a live mount keeps issuing them.
+    await handle.dispose();
+    await sellerAfter.whenLoaded();
+  });
+
+  it('Back between two Settings sections is served in place', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#settings');
+    const history = wireHistory(fixture);
+    const handle = await bootstrapWebclient(fixture.opts);
+    const settingsRoot = findChildByAttr(
+      routeContentRoot(fixture.root),
+      'data-recued-settings-route',
+    )!;
+    const sellerBefore = handle.settingsRoute()!.sellerPage();
+    findChildByAttrValue(
+      settingsRoot,
+      SETTINGS_ROUTE_NAV_ITEM_ATTR,
+      'seller',
+    )!.fireClick({});
+
+    // Back to the bare `#settings` landing: a section switch, not deep state,
+    // so the mounted route serves it without a re-mount.
+    history.back();
+
+    expect(handle.settingsRoute()!.sellerPage()).toBe(sellerBefore);
+    expect(
+      findChildByAttrValue(settingsRoot, SETTINGS_ROUTE_SECTION_ATTR, 'seller')
+        ?.getAttribute(SETTINGS_ROUTE_ACTIVE_ATTR),
+    ).toBe('false');
+    expect(
+      findChildByAttr(routeContentRoot(fixture.root), 'data-recued-settings-route'),
+    ).toBe(settingsRoot);
+
+    await handle.dispose();
+    await sellerBefore?.whenLoaded();
+  });
+
+  it('a rail switch OUT of a Seller sub-page navigates for real', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#settings/seller/orders');
+    const { pushState } = wireHistory(fixture);
+    const handle = await bootstrapWebclient(fixture.opts);
+    expect(handle.settingsRoute()!.sellerPage()!.getState().subpage).toBe('orders');
+    const settingsRoot = findChildByAttr(
+      routeContentRoot(fixture.root),
+      'data-recued-settings-route',
+    )!;
+
+    // In-place would leave Orders on screen under a `#settings/privacy`
+    // address — the sub-page is mount-time state, so this one re-mounts.
+    findChildByAttrValue(
+      settingsRoot,
+      SETTINGS_ROUTE_NAV_ITEM_ATTR,
+      'privacy',
+    )!.fireClick({});
+
+    expect(pushState).not.toHaveBeenCalled();
+    expect(fixture.hashSource.getHash()).toBe('#settings/privacy');
+    const sellerAfter = handle.settingsRoute()!.sellerPage();
+    expect(sellerAfter!.getState().subpage).toBeNull();
+    await handle.dispose();
+    await sellerAfter?.whenLoaded();
   });
 
   it('D-196 §4.7 wires Seller mail listing independently of Connections enrollment', async () => {

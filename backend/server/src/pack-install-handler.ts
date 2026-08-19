@@ -70,8 +70,12 @@ import {
   type MarketplaceRecipeResult,
 } from '@recued/marketplace';
 import { hashRecipe, validateRecipe } from '@recued/recipes';
+import type { IngredientManifest } from '@recued/contracts';
+import type { ContractGrantEntryStore } from './storage/contract-grant-entry-store.js';
 
 import { assessRecipePiiPosture } from './auto-pii-apply.js';
+import { buildPackInstallPreview } from './pack-install-preview.js';
+import { seedPackRecipeGrants } from './recipe-grant-seed.js';
 import {
   applyInstallAudienceGrantIds,
   provisionPackCompositionForBulkInstall,
@@ -138,6 +142,14 @@ export interface PackInstallRpcDeps {
    *  bundled). Absent → composer returns the undefined-bundle + the
    *  rpc returns `not_configured`. */
   recipeStore: RecipeStore;
+  /** D-247 D15 — manifest lookup for the preview's risk-tier resolution. Absent
+   *  ⇒ a catalog op's tier is unknown and the recipe reports `grant_class:
+   *  'unknown'` rather than a guessed label. */
+  getManifest?: (slug: string) => IngredientManifest | undefined;
+  /** D-247 D15.1 — the owner's grant rows, so the install can pre-write each
+   *  recipe's with the chosen access ceiling applied. ⚠ Absent ⇒ the store's
+   *  mutation hook seeds on `chat_exposed` alone and the ceiling is ignored. */
+  grantEntryStore?: ContractGrantEntryStore;
   /** D-221 namespaced Records authority. A recognized Records composition is
    * never deferred: absence of this store refuses before recipe mutation. */
   recordsStore?: RecordsStore;
@@ -612,6 +624,73 @@ const parsePacksInstallArgs = (args: PacksInstallArgs): { manifest: BulkPackMani
   return { manifest: parsed.manifest };
 };
 
+/** D-247 D15 — resolve every recipe ref in a plan to its BODY, exactly as the
+ *  install does.
+ *
+ *  ⛔⛔ EXTRACTED SO THE INSTALL PREVIEW AND THE INSTALL CANNOT DRIFT.
+ *  `grant-op-universe.ts` states the discipline this follows — *"the derivation
+ *  IS the gate's read path, and two private copies would drift"* — and a preview
+ *  that showed different recipes from the ones the install enables is worse than
+ *  no preview: the owner would have consented to a list that was never true.
+ *
+ *  ⚠ The manifest CANNOT answer this on its own. `chat_exposed` lives on the
+ *  BODY, and 0 of 2,310 shipped recipe refs across 340 packs carry one — a
+ *  client-side derivation would have to reimplement the marketplace/bundled
+ *  precedence AND the `recipes[]` backfill, which is the second copy this exists
+ *  to prevent. */
+export const resolvePackRecipeBodies = async (
+  plan: { readonly recipes: ReadonlyArray<{ readonly slug: string; readonly version: number }> },
+  manifestPublisher: string,
+  deps: {
+    readonly recipeStore: Pick<RecipeStore, 'getBundled'>;
+    readonly resolveMarketplaceRecipe?: (slug: string) => Promise<MarketplaceRecipeResult | null>;
+  },
+): Promise<BulkPackInstallRecipe[]> => {
+  const resolved: BulkPackInstallRecipe[] = [];
+  for (const ref of plan.recipes) {
+    // A marketplace-fetched pack resolves every ref back through the
+    // marketplace, even if a same-slug bundled recipe exists locally. The local
+    // body has no publisher row attached, so preferring it would reintroduce the
+    // pack-publisher identity rewrite this boundary is meant to prevent.
+    const marketplaceRow = deps.resolveMarketplaceRecipe
+      ? await deps.resolveMarketplaceRecipe(ref.slug)
+      : null;
+    const bundledRecipe = deps.resolveMarketplaceRecipe
+      ? null
+      : deps.recipeStore.getBundled(ref.slug);
+    const recipe = bundledRecipe ?? marketplaceRow?.recipe ?? null;
+    if (recipe == null) {
+      resolved.push({
+        slug: ref.slug,
+        pinned_version: ref.version,
+        recipe: null,
+        failure: 'not_found',
+      });
+      continue;
+    }
+    const recipeVersion = marketplaceRow?.version
+      ?? (typeof (recipe as { version?: number }).version === 'number'
+        ? (recipe as { version: number }).version
+        : ref.version);
+    resolved.push({
+      slug: ref.slug,
+      pinned_version: ref.version,
+      recipe: {
+        recipe_id: recipe.recipe_id,
+        // Bundled recipes are pack-authored and retain the manifest publisher.
+        // Marketplace-resolved recipes retain the fetched row's authority even
+        // when the containing pack is published by somebody else.
+        publisher_id: marketplaceRow?.publisher_id ?? manifestPublisher,
+        version: recipeVersion,
+        recipe_hash: hashRecipe(recipe),
+        recipe,
+      },
+      ...(recipeVersion !== ref.version ? { failure: 'version_drift' as const } : {}),
+    });
+  }
+  return resolved;
+};
+
 const installSinglePack = async (
   deps: PackInstallRpcDeps,
   args: PacksInstallArgs,
@@ -769,48 +848,11 @@ const installSinglePack = async (
   //     a cross-publisher pack reference preserves the constituent recipe's own
   //     `publisher_id`. The by-value path has no resolver and remains bundled-
   //     only, preserving its publisher_id-rewrite protection.
-  const resolved: BulkPackInstallRecipe[] = [];
-  for (const ref of plan.recipes) {
-    // A marketplace-fetched pack resolves every ref back through the
-    // marketplace, even if a same-slug bundled recipe exists locally. The local
-    // body has no publisher row attached, so preferring it would reintroduce the
-    // pack-publisher identity rewrite this boundary is meant to prevent.
-    const marketplaceRow = deps.resolveMarketplaceRecipe
-      ? await deps.resolveMarketplaceRecipe(ref.slug)
-      : null;
-    const bundledRecipe = deps.resolveMarketplaceRecipe
-      ? null
-      : deps.recipeStore.getBundled(ref.slug);
-    const recipe = bundledRecipe ?? marketplaceRow?.recipe ?? null;
-    if (recipe == null) {
-      resolved.push({
-        slug: ref.slug,
-        pinned_version: ref.version,
-        recipe: null,
-        failure: 'not_found',
-      });
-      continue;
-    }
-    const recipeVersion = marketplaceRow?.version
-      ?? (typeof (recipe as { version?: number }).version === 'number'
-        ? (recipe as { version: number }).version
-        : ref.version);
-    resolved.push({
-      slug: ref.slug,
-      pinned_version: ref.version,
-      recipe: {
-        recipe_id: recipe.recipe_id,
-        // Bundled recipes are pack-authored and retain the manifest publisher.
-        // Marketplace-resolved recipes retain the fetched row's authority even
-        // when the containing pack is published by somebody else.
-        publisher_id: marketplaceRow?.publisher_id ?? manifest.publisher,
-        version: recipeVersion,
-        recipe_hash: hashRecipe(recipe),
-        recipe,
-      },
-      ...(recipeVersion !== ref.version ? { failure: 'version_drift' as const } : {}),
-    });
-  }
+  const resolved: BulkPackInstallRecipe[] = await resolvePackRecipeBodies(
+    plan,
+    manifest.publisher,
+    deps,
+  );
   let ready = resolved.every((r) => r.recipe != null && r.failure == null);
 
   // Pure-workflow trust is a property of the AUTHORED recipe (an all-entity-op
@@ -1169,6 +1211,28 @@ const installSinglePack = async (
   } else {
     result = await installBulkPackOnServer(input, granted, {
       recipeStore: deps.recipeStore,
+      // ⛔ D-247 D15.1 — carry the owner's chosen ACCESS TIER into the grant
+      // seed. Without this the store's mutation hook seeds on `chat_exposed`
+      // alone and the dialog's answer is decorative: a pack shipping a
+      // `chat_exposed` destructive adapter would be enabled under "Read only".
+      // ⚠ Default `read` when no `install_scope` was sent — the pre-D-182
+      // callers, and the SAFE floor rather than a permissive guess.
+      ...(deps.grantEntryStore
+        ? {
+            seedRecipeGrants: (recipes) => {
+              seedPackRecipeGrants(
+                {
+                  store: deps.recipeStore,
+                  grants: deps.grantEntryStore!,
+                  now: () => now,
+                  ...(deps.getManifest ? { getManifest: deps.getManifest } : {}),
+                },
+                recipes,
+                args.install_scope?.access ?? 'read',
+              );
+            },
+          }
+        : {}),
       ...(deps.webhookConsumerStore
         ? { webhookConsumerStore: deps.webhookConsumerStore }
         : {}),
@@ -2433,6 +2497,7 @@ export const installRecipeBySlug = async (
 
 type PackInstallMethods =
   | 'packs.install'
+  | 'packs.install_preview'
   | 'packs.installBySlug'
   | 'packs.resolveBySlug'
   | 'recipe.installBySlug';
@@ -2442,13 +2507,46 @@ export const makePackInstallHandlers = (
 ): HandlerSlice<ServerRpcRegistry, PackInstallMethods, WsClient> | undefined => {
   if (!deps) return undefined;
   return {
-    methods: ['packs.install', 'packs.installBySlug', 'packs.resolveBySlug', 'recipe.installBySlug'],
+    methods: [
+      'packs.install', 'packs.install_preview', 'packs.installBySlug',
+      'packs.resolveBySlug', 'recipe.installBySlug',
+    ],
     handlers: {
       'packs.install': async (args) =>
         handlePacksInstall(
           deps,
           args as Parameters<typeof handlePacksInstall>[1],
         ),
+      // D-247 D15 — the disclosure the picker reads. Runs the install's OWN
+      // resolver, so it cannot name a different set from the one the install
+      // enables; a malformed manifest resolves to `resolved: false` rather than
+      // throwing, because the picker's honest fallback is to render nothing.
+      'packs.install_preview': async (args) => {
+        const { manifest } = parsePacksInstallArgs({
+          manifest: (args as { manifest: unknown }).manifest,
+          granted_permissions: [],
+        } as never);
+        const preview = await buildPackInstallPreview(manifest, {
+          recipeStore: deps.recipeStore,
+          ...(deps.resolveMarketplaceRecipe
+            ? { resolveMarketplaceRecipe: deps.resolveMarketplaceRecipe }
+            : {}),
+          getManifest: (slug: string) => deps.getManifest?.(slug),
+        });
+        // Widen the readonly view to the rpc's mutable wire shape.
+        return {
+          resolved: preview.resolved,
+          hidden_count: preview.hidden_count,
+          will_enable: preview.will_enable.map((r) => ({
+            publisher_id: r.publisher_id,
+            recipe_id: r.recipe_id,
+            name: r.name,
+            grant_class: r.grant_class,
+            top_risk: r.top_risk,
+            operation_ids: [...r.operation_ids],
+          })),
+        };
+      },
       // Install seam 5c — marketplace-fetch install paths sharing the same
       // `packInstallDeps` (recipeStore + marketplaceFetch). Both inherit the
       // already-forwarded `packInstallDeps` slice registration, so they are live

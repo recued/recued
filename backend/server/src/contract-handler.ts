@@ -112,6 +112,9 @@ import { listScopedConnectionCandidates } from './scoped-grant-binding.js';
 import { operationSpecHash } from './operation-spec-hash.js';
 import { createConnectionCatalogBindingStore } from './storage/connection-catalog-binding-store.js';
 import type { ConnectionStoreSqlite } from './storage/connection-store.js';
+import { readRecipeCoverageUsage } from './recipe-coverage-usage.js';
+import { buildRecipeOpDependencyIndex } from './derive-recipe-capability.js';
+import type { RecipeStore } from './recipe-store.js';
 
 /** D-171 — the contract-family broadcast variants minus the bus-assigned
  *  `cursor` field. Mirrors `ServerEventInput` (events/bus.ts) but narrowed to
@@ -135,6 +138,11 @@ export type ContractBroadcastEvent =
       ? Omit<T, 'cursor'>
       : never
     : never;
+
+/** D-247 D13 — the coverage ledger's default window. 30 days matches the copy
+ *  D11's op row renders ("ran 3× in the last 30 days") and is short enough that
+ *  the answer describes CURRENT usage rather than the whole retained log. */
+const DEFAULT_COVERAGE_WINDOW_DAYS = 30;
 
 export interface ContractRpcDeps {
   /** D-177 N.14.8 fork 3 — counts the owner's D-173 rejects on one door, for the
@@ -180,6 +188,10 @@ export interface ContractRpcDeps {
    *  audit breadcrumb is skipped — same posture as the session-grant
    *  resolver's `auditLog` dep. */
   auditLog?: AuditLogStore;
+  /** D-247 D11 — the recipe roster, for the STATIC half of the op row ("which
+   *  recipes could reach this op"). ⚠ Absent ⇒ `could` is empty everywhere, which
+   *  the copy must render as "not computed" rather than "nothing uses this". */
+  recipeStore?: Pick<RecipeStore, 'ids' | 'get'>;
   /** D-177 N.11 rule 5 (5.c, slice C) — the connection store, for the scoped
    *  accept rpc's LIVE connection-candidate validation (single candidate
    *  auto-filled, multiple human-picked, none ⇒ unmintable). Optional:
@@ -2167,6 +2179,7 @@ type ContractMethods =
   | 'collection.contract.deleteOverride'
   | 'collection.contract.listOverrides'
   | 'collection.contract.listCatalogOperations'
+  | 'contract.recipeOpUsage'
   | 'collection.operation.listOperations'
   | 'collection.operation.upsertOwnerOverride'
   | 'collection.operation.deleteOwnerOverride'
@@ -2218,6 +2231,7 @@ export const makeContractHandlers = (
       'collection.contract.deleteOverride',
       'collection.contract.listOverrides',
       'collection.contract.listCatalogOperations',
+      'contract.recipeOpUsage',
       'collection.operation.listOperations',
       'collection.operation.upsertOwnerOverride',
       'collection.operation.deleteOwnerOverride',
@@ -2258,6 +2272,49 @@ export const makeContractHandlers = (
         ),
       'collection.contract.listCatalogOperations': async () =>
         handleContractListCatalogOperations(deps),
+      // D-247 D13 + D11 — the coverage ledger's READ path. Shipped with the
+      // write, because a capture-only ledger is precisely the artefact this
+      // decision exists to remove (`buildRecipeOpDependencyIndex`: written,
+      // tested, called by nothing).
+      'contract.recipeOpUsage': async (args) => {
+        const window_days = typeof args?.window_days === 'number' && args.window_days > 0
+          ? Math.min(args.window_days, 365)
+          : DEFAULT_COVERAGE_WINDOW_DAYS;
+        // ⚠ No audit store wired ⇒ an EMPTY result carrying its window, never a
+        // throw and never a silent zero: the caller's copy already has to say
+        // "in the retained window", and that sentence is honest here too.
+        // ⛔⛔ BOTH HALVES IN ONE ROUND TRIP, AND THAT IS NOT A PERFORMANCE
+        // CHOICE. D11's row puts the STATIC "which recipes could reach this op"
+        // beside the ACTUAL "which runs did" — two fetches could describe two
+        // different moments, and the row would contradict itself on screen.
+        const dependency = deps.recipeStore === undefined
+          ? { byOp: new Map<string, readonly string[]>(), underivable: [] as readonly string[] }
+          : buildRecipeOpDependencyIndex(
+              deps.recipeStore.ids().flatMap((id) => {
+                const recipe = deps.recipeStore!.get(id);
+                return recipe === null ? [] : [{ id, recipe }];
+              }),
+            );
+        const usage = deps.auditLog
+          ? await readRecipeCoverageUsage(deps.auditLog, { window_days, now: () => Date.now() })
+          : { byOperation: new Map(), window_days, oldest_scanned_at: null };
+
+        // Union the two key sets: an op can have dependents and no runs (never
+        // fired in the window) or runs and no derivable dependents (a templated
+        // recipe). Rendering only the intersection would drop both.
+        const opIds = new Set<string>([...dependency.byOp.keys(), ...usage.byOperation.keys()]);
+        return {
+          operations: [...opIds].sort().map((operation_id) => ({
+            operation_id,
+            could: [...(dependency.byOp.get(operation_id) ?? [])],
+            count: usage.byOperation.get(operation_id)?.count ?? 0,
+            recipes: [...(usage.byOperation.get(operation_id)?.recipes ?? [])],
+          })),
+          window_days: usage.window_days,
+          oldest_scanned_at: usage.oldest_scanned_at,
+          underivable: [...dependency.underivable],
+        };
+      },
       'collection.operation.listOperations': async () =>
         handleOwnerOperationListOperations(deps),
       'collection.operation.upsertOwnerOverride': async (args) =>

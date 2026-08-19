@@ -11,6 +11,7 @@ import {
   CHAT_MAIN_TURN_INGREDIENT_SLUG,
   KERNEL_AUTHOR,
   CHAT_MAIN_TURN_TOOL_LOOP_CAP,
+  CHAT_MAIN_TURN_DISCOVERY_ROUND_CAP,
   modelTierToModelHint,
   type AIOutput,
   type ChatDispatchContext,
@@ -970,6 +971,81 @@ describe('D-164 P6.3 multi-round loop boundaries', () => {
     expect(await finalAssistant(sessionId)).toMatchObject({ content: 'final synthesis' });
   });
 
+  it('a discovery-only round does NOT charge the loop cap — but the budget is bounded', async () => {
+    // 2026-08-18. `lean-core` omits every Tier-2 recipe entry, so `tools.search`
+    // is the only route to a recipe and a round spent on it does nothing the
+    // owner asked for. Charging it against a WORK ceiling means the deeper the
+    // procedure the less of its budget reaches the procedure.
+    //
+    // ⛔ The second half is the one this test exists for: free discovery must
+    // still TERMINATE. A model that searches forever spends real tokens and real
+    // latency, so the budget is bounded and the loop halts at
+    // CAP + DISCOVERY_CAP rather than never.
+    let dispatched = 0;
+    const calls: CapturedAiCall[] = [];
+    const executeAiCall = mkExecuteAiCall(() => ({
+      body: aiOutput('searching', [toolCall('tools.search', { query: 'anything' })]),
+    }), calls);
+    const { orchestrator, sessionId } = setup({
+      catalog: [mkTool('tools.search', 1), mkTool('mail.search', 1)],
+      dispatchImpl: async () => {
+        dispatched += 1;
+        return { ok: true, result: { dispatched } };
+      },
+      executeAiCall,
+    });
+
+    await orchestrator.runTurn({
+      session_id: sessionId,
+      message: 'search forever',
+      picker_state: { current: 'self' },
+    });
+
+    const total = CHAT_MAIN_TURN_TOOL_LOOP_CAP + CHAT_MAIN_TURN_DISCOVERY_ROUND_CAP;
+    expect(dispatched).toBe(total);
+    expect(eventsByKind('recued.multi_turn.round_completed')).toHaveLength(total);
+    expect(eventsByKind('recued.multi_turn.loop_terminated')).toMatchObject([
+      { termination_reason: 'max_rounds_exhausted' },
+    ]);
+  });
+
+  it('⛔ a round that searched AND worked is still charged — the exemption is discovery-ONLY', async () => {
+    // The mutation-killer for the test above. Rounds are batched and the
+    // observed shape mixes them (`[work.search, tools.search]` in one round);
+    // exempting any round that merely CONTAINS a search would hand back a free
+    // round for every batch, which is not the tax lean-core imposes.
+    let dispatched = 0;
+    const calls: CapturedAiCall[] = [];
+    const executeAiCall = mkExecuteAiCall(() => ({
+      body: aiOutput('mixed', [
+        toolCall('tools.search', { query: 'anything' }),
+        toolCall('mail.search'),
+      ]),
+    }), calls);
+    const { orchestrator, sessionId } = setup({
+      catalog: [mkTool('tools.search', 1), mkTool('mail.search', 1)],
+      dispatchImpl: async () => {
+        dispatched += 1;
+        return { ok: true, result: { dispatched } };
+      },
+      executeAiCall,
+    });
+
+    await orchestrator.runTurn({
+      session_id: sessionId,
+      message: 'mixed rounds',
+      picker_state: { current: 'self' },
+    });
+
+    // Two dispatches per round, and the round count is the UNCHANGED cap.
+    expect(eventsByKind('recued.multi_turn.round_completed'))
+      .toHaveLength(CHAT_MAIN_TURN_TOOL_LOOP_CAP);
+    expect(dispatched).toBe(CHAT_MAIN_TURN_TOOL_LOOP_CAP * 2);
+    expect(eventsByKind('recued.multi_turn.loop_terminated')).toMatchObject([
+      { termination_reason: 'max_rounds_exhausted' },
+    ]);
+  });
+
   it('halts always-more-tools exactly at max_rounds_exhausted', async () => {
     // Mutation caught: always-more-tools loop exits before the configured cap.
     let dispatched = 0;
@@ -1476,8 +1552,11 @@ describe('D-164 P6.3 cap-exit empty-content fail-loud', () => {
     ]);
   });
 
-  it('keeps loop-final double-empty recovery on the completed branch', async () => {
+  it('keeps loop-final double-empty recovery off the cap-exit branch', async () => {
     // Mutation caught: loop-final empty recovery collides with the cap-exit budget message.
+    // The exit branch is unchanged (still `!moreTools`, still the empty-reply
+    // message, still NOT the budget message) — only its REASON label is now
+    // distinct, because an unreadable last packet is not a completion.
     let dispatched = 0;
     const calls: CapturedAiCall[] = [];
     const executeAiCall = mkExecuteAiCall([
@@ -1509,7 +1588,7 @@ describe('D-164 P6.3 cap-exit empty-content fail-loud', () => {
       { outcome: 'completed' },
     ]);
     expect(eventsByKind('recued.multi_turn.loop_terminated')).toMatchObject([
-      { total_rounds: 1, termination_reason: 'completed' },
+      { total_rounds: 1, termination_reason: 'output_unreadable' },
     ]);
   });
 
@@ -1871,7 +1950,13 @@ describe('D-164 P6.3 decoder_unavailable emission', () => {
       picker_state: { current: 'self' },
     });
 
-    expect(calls).toHaveLength(1);
+    // ⚠ TWO calls, not one: a DECODE failure on the first output now earns one
+    // guided retry before the turn ends (a wrong-typed field is exactly the
+    // class a model can fix when told which one). The claim this test makes is
+    // about CLASSIFICATION — that a validation failure is not collapsed into
+    // `provider_failure` nor masked by `coerceAIOutput` — and that is unchanged:
+    // the retry decodes badly too, and the event still reads `invalid_output`.
+    expect(calls).toHaveLength(2);
     expect(decoderEvents()).toEqual([
       { reason: 'invalid_output', site: 'initial' },
     ]);

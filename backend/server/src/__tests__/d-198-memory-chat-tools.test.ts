@@ -60,6 +60,11 @@ const makeUserMemoryStore = (): UserMemoryStore => {
 const gateThatGrants = (grant: boolean) => ({
   isFrozenByPause: () => false,
   isOpGranted: vi.fn().mockReturnValue(grant),
+  // D-247 — the owner axis. These suites drive the OWNER's chat, so
+  // `isOwnerGoverned` is true; the recipe grant is irrelevant to memory tools
+  // and answers false rather than pretending otherwise.
+  isOwnerGoverned: () => true,
+  isOwnerRecipeGranted: () => false,
 });
 
 const ownerSource = (contract_id?: string): ExecutionSource => ({

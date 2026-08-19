@@ -324,6 +324,8 @@ import {
   type GrantContractsCaller,
   type GrantContractsCaller as GrantMatrixContractsCaller,
   type GrantCatalogOperationsCaller,
+  type GrantRecipeOpUsageCaller,
+  type GrantRecipeListCaller,
   // The cli reachability pair the by-pack ACCESS panel writes its cli op
   // toggles through (the roster-wide Local tools grid that used to own these
   // rpcs is retired — ACCESS + `#contracts` are the two surviving axes).
@@ -509,6 +511,7 @@ import type {
 } from './settings/notifications-panel.js';
 import type {
   PacksInstallBySlugCaller,
+  PacksInstallPreviewCaller,
   PacksInstallCaller,
   PacksListCaller,
   PacksResolveCaller,
@@ -707,6 +710,7 @@ import type {
   AiModelsSetChatCatalogModeCaller,
   AiModelsLlmPromptsGetCaller,
   AiModelsLlmPromptSetCaller,
+  AiModelsProbeSourceCaller,
   ChatDefaultModelPrefGetCaller,
   ChatDefaultModelPrefSetCaller,
 } from './settings/ai-models-page.js';
@@ -6298,6 +6302,14 @@ export const bootstrapWebclient = async (
   // marketplace slug (or a recued.com/packs/… URL) → `packs.resolveBySlug`; an
   // arbitrary URL is the (deferred) local-import path → surfaced as a failure so
   // the dialog explains it rather than silently trying an unsupported fetch.
+  // D-247 D15 — the install dialog's recipe disclosure + grant-picker tier. The
+  // SERVER resolves it (a manifest carries recipe refs, not bodies). Same
+  // `enablePacksPanel` gate as the other packs callers; the panel treats a
+  // rejection as "no preview", so a server predating D-247 needs no gate here.
+  const packsInstallPreviewCaller: PacksInstallPreviewCaller | undefined =
+    options.enablePacksPanel === false
+      ? undefined
+      : (args) => rpcConn.call('packs.install_preview', args);
   const packsResolveCaller: PacksResolveCaller | undefined =
     options.enablePacksPanel === false
       ? undefined
@@ -7774,6 +7786,20 @@ export const bootstrapWebclient = async (
     options.enableContractsPanel === false
       ? undefined
       : () => rpcConn.call('collection.contract.listCatalogOperations', undefined);
+  // D-247 D11 — the op row's evidence: which recipes COULD reach an op, and which
+  // runs DID because a grant covered them. One rpc for both halves, so the row
+  // cannot show two different moments side by side.
+  const grantRecipeOpUsageCaller: GrantRecipeOpUsageCaller | undefined =
+    options.enableContractsPanel === false
+      ? undefined
+      : (args) => rpcConn.call('contract.recipeOpUsage', args);
+  // D-247 — the recipe half of the grant universe. Without it the `recipe` kind
+  // is a permission with no way to reach it: the seed writes the rows and the
+  // gate reads them, but nothing puts the keys on the page.
+  const grantRecipeListCaller: GrantRecipeListCaller | undefined =
+    options.enableContractsPanel === false
+      ? undefined
+      : () => rpcConn.call('recipe.list', undefined);
   // D-211 — owner replacements for pack-authored operation defaults are
   // global, actorless, and edited only from the pack detail. Keep their
   // inventory reader independent of the contract-grant feature flag: Access
@@ -7936,6 +7962,15 @@ export const bootstrapWebclient = async (
     options.enableAiModelsPage === false
       ? undefined
       : (args) => rpcConn.call('server.setLlmPrompt', args);
+  // Test connection — one real completion against a slot. Button-driven only:
+  // it costs a request against the owner's credential, so nothing calls it on
+  // load, on save, or on a field change.
+  const aiModelsProbeLlmSourceCaller:
+    | AiModelsProbeSourceCaller
+    | undefined =
+    options.enableAiModelsPage === false
+      ? undefined
+      : (args) => rpcConn.call('server.probeLlmSource', args);
   const aiModelsGetConfigSchemaCaller:
     | AiModelsConfigSchemaGetCaller
     | undefined =
@@ -8592,7 +8627,19 @@ export const bootstrapWebclient = async (
               ...(grantListContractsCaller !== undefined
                 ? { grantListContractsCaller }
                 : {}),
-              ...(grantCatalogOperationsCaller !== undefined
+              ...(grantRecipeOpUsageCaller !== undefined
+                ? { grantRecipeOpUsageCaller }
+                : {}),
+              ...(grantRecipeListCaller !== undefined
+                ? { grantRecipeListCaller }
+                : {}),
+              ...(grantRecipeOpUsageCaller !== undefined
+          ? { grantRecipeOpUsageCaller }
+          : {}),
+        ...(grantRecipeListCaller !== undefined
+          ? { grantRecipeListCaller }
+          : {}),
+        ...(grantCatalogOperationsCaller !== undefined
                 ? { grantCatalogOperationsCaller }
                 : {}),
               ...(grantRegistryDescribeCaller !== undefined
@@ -9116,6 +9163,9 @@ export const bootstrapWebclient = async (
           ? { packsUninstallCaller: switchWorkTracker.track(packsUninstallCaller) }
           : {}),
         ...(packsResolveCaller !== undefined ? { packsResolveCaller } : {}),
+        ...(packsInstallPreviewCaller !== undefined
+          ? { packsInstallPreviewCaller }
+          : {}),
         ...(packsInstallBySlugCaller !== undefined
           ? {
               packsInstallBySlugCaller: switchWorkTracker.track(
@@ -9978,6 +10028,41 @@ export const bootstrapWebclient = async (
               initialSellerPage: sellerRouteMode === 'page'
                 ? deepLinkSegment('settings', 3)
                 : undefined,
+              // The rail reports the section it switched to so the address
+              // names what is on screen and Back has somewhere to land. Every
+              // section is already mounted, so the write is a History call —
+              // it emits NO hashchange — and `activeHash` is realigned so the
+              // shell does not re-mount what it is already showing.
+              //
+              // EXCEPT when the current address carries state deeper than a
+              // section (`#settings/seller/orders`, `#settings/server/<tab>`,
+              // `#settings/ai-models/setup`): that state is passed at MOUNT
+              // time, so an in-place write would leave the deep view on screen
+              // under a shallower address. Navigate for real there and let the
+              // hash listener re-mount at the requested section.
+              onAddressChange: (hash: string, mode: 'push' | 'replace') => {
+                if (parseShellRoute(activeHash).segments.length > 1) {
+                  navigateHash(hash);
+                  return;
+                }
+                const history = doc.defaultView?.history;
+                const writer = mode === 'push'
+                  ? history?.pushState
+                  : history?.replaceState;
+                if (writer === undefined) return;
+                try {
+                  writer.call(history, null, '', hash);
+                  activeHash = hash;
+                  appShell.setActiveRoute(
+                    'settings',
+                    parseShellRoute(hash).segments,
+                  );
+                } catch {
+                  // A constrained embedder may reject History writes. The
+                  // section switch still stands; only address continuity
+                  // degrades.
+                }
+              },
             }
           : {}),
         onChatSetupComplete: () => {
@@ -10172,6 +10257,13 @@ export const bootstrapWebclient = async (
           ? {
               aiModelsSetLlmPromptCaller: switchWorkTracker.track(
                 aiModelsSetLlmPromptCaller,
+              ),
+            }
+          : {}),
+        ...(aiModelsProbeLlmSourceCaller !== undefined
+          ? {
+              aiModelsProbeLlmSourceCaller: switchWorkTracker.track(
+                aiModelsProbeLlmSourceCaller,
               ),
             }
           : {}),
@@ -10598,7 +10690,21 @@ export const bootstrapWebclient = async (
         subscribe: subscriber.on,
       }));
       activeSettingsRoute = settings;
-      return settings;
+      return {
+        ...settings,
+        // Back/Forward between plain `#settings/<section>` addresses is the
+        // rail switch in reverse — every section is already built, so the
+        // mounted route serves it in place. Anything deeper on either side
+        // (a Seller sub-page, a Server tab) is mount-time state: return false
+        // and take the shell's re-mount.
+        navigateDeepLink: (hash: string): boolean => {
+          const from = parseShellRoute(activeHash);
+          const to = parseShellRoute(hash);
+          if (to.surface !== 'settings') return false;
+          if (from.segments.length > 1 || to.segments.length > 1) return false;
+          return settings.navigateToSection(to.segments[0] ?? null);
+        },
+      };
     }
     if (
       route === 'approvals'

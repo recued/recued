@@ -46,8 +46,9 @@ import { KERNEL_OP_PREFIX } from './op-model.js';
 
 /** The closed set of grant-entry kinds. `op` = the verb a contract may invoke;
  *  `collection` = a raw warehouse-collection read; `topic` = an enrichment-topic
- *  read. All three live in ONE per-contract grant set (amendment §2). */
-export const GRANT_ENTRY_KINDS = ['op', 'collection', 'topic', 'peer_label'] as const;
+ *  read; `peer_label` = a peer's question label; `recipe` = D-247, a Tier-2 recipe
+ *  the AI may reach. All live in ONE per-contract grant set (amendment §2). */
+export const GRANT_ENTRY_KINDS = ['op', 'collection', 'topic', 'peer_label', 'recipe'] as const;
 
 /** String-literal union derived from {@link GRANT_ENTRY_KINDS}. */
 export type GrantEntryKind = (typeof GRANT_ENTRY_KINDS)[number];
@@ -131,6 +132,34 @@ export const PEER_LABEL_GRANT_PREFIX = 'peer.label.';
 export const peerLabelGrantEntry = (label: string): string =>
   `${PEER_LABEL_GRANT_PREFIX}${label}`;
 
+/** D-247 D1 — the `recipe`-kind entry-key prefix. A key
+ *  `recipe.<publisher>/<recipe_id>` grants this contract the right to REACH that
+ *  Tier-2 recipe: it enters the chat / MCP catalog and may be dispatched.
+ *
+ *  ⛔ ACCESS ONLY. The grant says the AI may see and call the recipe; it says
+ *  NOTHING about risk or approval, which live on the op (`risk_tier`) and in
+ *  D-211's `owner_operation` scope respectively. A granted `refund-payment-square`
+ *  still asks on every call (D-247 D4).
+ *
+ *  ⚠ THE SLASH IS LOAD-BEARING and is why this can share a namespace with op ids:
+ *  an ingredient slug never contains `/`, and an operation id is either `core.*`,
+ *  `<author>/<entity>.<verb>` (slash before any dot) or `<publisher>.<pack>.<key>`
+ *  — none of which can be produced by this formatter. The prefix additionally
+ *  joins {@link RESERVED_GRANT_ENTRY_PREFIXES}, so `opGrantEntry` fails LOUD
+ *  rather than minting an op key that would read back as a recipe grant. */
+export const RECIPE_GRANT_PREFIX = 'recipe.';
+
+/** Format the grant entry-key for one Tier-2 recipe. The publisher is REQUIRED:
+ *  a recipe's identity is `<publisher>/<recipe_id>` everywhere else (the door
+ *  path's `allowed_tools`, `granted_by_recipe`, the marketplace), and a key
+ *  formed without it would write to an address no reader can reconstruct. */
+export const recipeGrantEntry = (publisherId: string, recipeId: string): string =>
+  `${RECIPE_GRANT_PREFIX}${publisherId}/${recipeId}`;
+
+/** True iff `entryKey` is a `recipe`-kind grant entry. Syntactic only. */
+export const isRecipeGrantEntry = (entryKey: string): boolean =>
+  entryKey.startsWith(RECIPE_GRANT_PREFIX);
+
 /** The reserved prefixes an `op`-kind entry-key (an `operation_id`) must NOT
  *  start with — the invariant that lets `classifyGrantEntry` treat "neither
  *  reserved prefix" as `op`. Kernel ops start `core.`; pack ops carry a `/`
@@ -139,6 +168,11 @@ export const RESERVED_GRANT_ENTRY_PREFIXES: readonly string[] = Object.freeze([
   COLLECTION_GRANT_PREFIX,
   TOPIC_GRANT_PREFIX,
   PEER_LABEL_GRANT_PREFIX,
+  // D-247 D1 — `recipe.`. Without this, `opGrantEntry('recipe.x')` would succeed
+  // and the widened `classifyGrantEntry` below would then read that op grant back
+  // as a RECIPE grant: an op silently answering a different question. The fence
+  // and the classifier must be added in the same commit or the pair is a bug.
+  RECIPE_GRANT_PREFIX,
 ]);
 
 /** Prefixes a catalog/manifest-declared operation id may not claim.
@@ -228,6 +262,7 @@ export const classifyGrantEntry = (entryKey: string): GrantEntryKind => {
   if (entryKey.startsWith(COLLECTION_GRANT_PREFIX)) return 'collection';
   if (entryKey.startsWith(TOPIC_GRANT_PREFIX)) return 'topic';
   if (entryKey.startsWith(PEER_LABEL_GRANT_PREFIX)) return 'peer_label';
+  if (entryKey.startsWith(RECIPE_GRANT_PREFIX)) return 'recipe';
   return 'op';
 };
 
@@ -241,7 +276,9 @@ export type ParsedGrantEntry =
   | { readonly kind: 'op'; readonly value: string }
   | { readonly kind: 'collection'; readonly value: string }
   | { readonly kind: 'topic'; readonly value: string }
-  | { readonly kind: 'peer_label'; readonly value: string };
+  | { readonly kind: 'peer_label'; readonly value: string }
+  /** D-247 — `value` is the bare `<publisher>/<recipe_id>`, prefix stripped. */
+  | { readonly kind: 'recipe'; readonly value: string };
 
 /** Parse a stored entry-key into its kind + kind-specific value. Total +
  *  never-throws (the inverse of the `*GrantEntry` formatters). Use when a
@@ -256,6 +293,9 @@ export const parseGrantEntry = (entryKey: string): ParsedGrantEntry => {
   }
   if (entryKey.startsWith(PEER_LABEL_GRANT_PREFIX)) {
     return { kind: 'peer_label', value: entryKey.slice(PEER_LABEL_GRANT_PREFIX.length) };
+  }
+  if (entryKey.startsWith(RECIPE_GRANT_PREFIX)) {
+    return { kind: 'recipe', value: entryKey.slice(RECIPE_GRANT_PREFIX.length) };
   }
   return { kind: 'op', value: entryKey };
 };

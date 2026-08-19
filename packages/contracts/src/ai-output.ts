@@ -180,21 +180,243 @@ export const validateAIOutput = (
  *  surfaces it as the all-issues case). The bare-tool-call branch fires only
  *  when a `tool` key is present AND none of the three wrapper keys are, so a
  *  normal envelope is never reinterpreted. */
+/** Normalize ONE tool call from whatever shape the model emitted.
+ *
+ *  ⛔⛔ THREE ALIASES, ALL OBSERVED LIVE, ALL PREVIOUSLY DROPPED SILENTLY. A call
+ *  the coercer cannot read becomes `tool_calls: []`, the loop reads "no tool
+ *  calls" as done, and the turn ends reporting success having dispatched nothing.
+ *  Measured on bench 181 (qwen3.7-plus): of five slice+lean-core runs, TWO ended
+ *  on a dropped call — and in both the dropped call was the NEXT STEP OF THE
+ *  CHAIN (`add-customer`, `list-customers`). The model was still working.
+ *
+ *    { tool, args }            — the contract shape
+ *    { name, input }           — the provider-native tool_use shape
+ *    { tool_name, args }       — a near-miss on the contract's own field name
+ *
+ *  ⚠ Returns the value UNCHANGED when it matches none of them, so
+ *  `validateAIOutput` still surfaces genuine garbage rather than this quietly
+ *  inventing a call. ⛔ Do NOT add a fourth alias without a transcript showing
+ *  it: each accepted shape is a new way for a malformed envelope to read as a
+ *  confident tool call instead of an error. */
+const TOOL_RESULT_ECHO_KEYS = [
+  'status',
+  'result',
+  'started_at',
+  'completed_at',
+] as const;
+
+/** Is this object a RESULT the model was shown, rather than a call it is making?
+ *
+ *  ⛔⛔ THE ALIASES COLLIDE WITH THE PACKET'S OWN `prior_tool_calls` SHAPE, and
+ *  that collision re-dispatched real work. A result entry is
+ *  `{ tool_name, args, status, result, started_at, completed_at }` — its first
+ *  two fields are EXACTLY the `{tool_name, args}` alias. A model that echoes its
+ *  input (they do) therefore reads as a fresh batch of calls, and the tools run
+ *  a SECOND time. Measured on bench 181: an echoed 2-entry block re-ran
+ *  `list-buildings` and `add-unit` 18ms apart, which is also precisely what
+ *  D-219 slice 8 excludes as "a repeated tool is a retry, not a procedure" — so
+ *  the echo did not merely duplicate work, it destroyed the execution case.
+ *
+ *  ⚠ Checked ONLY on the alias branches. A `{tool, args}` call is the contract
+ *  shape and keeps its existing unconditional pass-through. */
+const looksLikeToolResultEcho = (c: Record<string, unknown>): boolean =>
+  TOOL_RESULT_ECHO_KEYS.some((key) => key in c);
+
+const normalizeToolCall = (call: unknown): unknown => {
+  if (call === null || typeof call !== 'object' || Array.isArray(call)) return call;
+  const c = call as Record<string, unknown>;
+  if ('tool' in c) return c;
+  // ⛔ Every branch below is an ALIAS, and an alias must never eat a result.
+  if (looksLikeToolResultEcho(c)) return c;
+  if (typeof c.tool_name === 'string' && 'args' in c) {
+    return { tool: c.tool_name, args: c.args };
+  }
+  // ⛔⛔ `recipe_slug` IS OUR OWN VOCABULARY, WHICH IS WHY THIS IS NOT A GUESS.
+  // The packet advertises every tool as `{recipe_slug, args_schema}` — in
+  // `available_tools` and in every `tools.search` result — so a model that names
+  // a call by `recipe_slug` is being consistent with what we showed it, and the
+  // decoder was the only thing that disagreed. Measured on bench 181: a run
+  // emitted `{recipe_slug: 'recued-core/open-rental-contract', args: {customer_id,
+  // unit_id, rent, start_date}}` — the complete third step of the chain, every
+  // id correctly grounded — and it was dropped whole for the field name.
+  if (typeof c.recipe_slug === 'string' && 'args' in c) {
+    return { tool: c.recipe_slug, args: c.args };
+  }
+  if (
+    typeof c.name === 'string'
+    && c.input !== null
+    && typeof c.input === 'object'
+    // ⚠ `typeof [] === 'object'`, so without this an array `input` would become
+    // `args`, which no tool accepts. Every sibling branch guards it; this one
+    // predates them and did not.
+    && !Array.isArray(c.input)
+  ) {
+    return { tool: c.name, args: c.input };
+  }
+  // `{kind: '<tool>', args: {…}}` — the name in the field the EVENT shape uses,
+  // paired with call-shaped `args`.
+  //
+  // ⚠ THIS DELIBERATELY LOOSENS AN EARLIER REFUSAL, and the reasoning changed
+  // rather than the appetite. That refusal covered `{kind, payload}` — genuinely
+  // event-shaped — and justified itself as "a dispatch invented from an
+  // unverified name is the silent-wrong-action trade". On re-reading, it is not
+  // silent: an unknown name fails at the dispatcher and surfaces as an error,
+  // and the name came from the model's own object, so the intent is its own.
+  // What stays refused is `{kind, payload}`, where the model expressed an EVENT.
+  // `{name, args}` — the provider's field for the NAME paired with OURS for the
+  // arguments. ⚠ A hybrid, and the fourth shape drawn from vocabulary the packet
+  // itself taught the model: observed live as
+  // `[{type: 'tool_call', id: 'toolu_…', name: 'tools.search', args: {query: …}}]`.
+  // Placed AFTER `{name, input}` so a native block keeps its own reading.
+  if (
+    typeof c.name === 'string'
+    && c.args !== null
+    && typeof c.args === 'object'
+    && !Array.isArray(c.args)
+  ) {
+    return { tool: c.name, args: c.args };
+  }
+  if (
+    typeof c.kind === 'string'
+    && c.kind.length > 0
+    && c.args !== null
+    && typeof c.args === 'object'
+    && !Array.isArray(c.args)
+  ) {
+    return { tool: c.kind, args: c.args };
+  }
+  // The OpenAI function-call shape. ⚠ `arguments` as an OBJECT only — the
+  // JSON-STRING variant stays unhandled, per the standing ruling that a
+  // parse-on-guess trades a visible empty round for a silent wrong one.
+  // Observed live (bench 181): `{ name: 'recipe.run', arguments: { recipe_id,
+  // config } }` carrying the chain's `add-customer` step, dropped entirely.
+  if (
+    typeof c.name === 'string'
+    && c.arguments !== null
+    && typeof c.arguments === 'object'
+    && !Array.isArray(c.arguments)
+  ) {
+    return { tool: c.name, args: c.arguments };
+  }
+  return c;
+};
+
 export const coerceAIOutput = (output: unknown): unknown => {
-  // A bare array → a list of tool calls with no wrapper at all.
+  // A bare array → a list of tool calls with no wrapper at all. ⚠ EACH ELEMENT
+  // is normalized: a model that drops the wrapper also tends to drop the
+  // contract's field names, and an array of `{name, input}` blocks was reaching
+  // `tool_calls` unconverted and failing validation — see `normalizeToolCall`.
   if (Array.isArray(output)) {
-    return { response: '', events: [], tool_calls: output };
+    // ⛔⛔ AN ALL-ECHO ARRAY BECOMES AN EMPTY ENVELOPE, NOT A FAILED ONE — and
+    // the difference is the whole turn. A validation failure returns
+    // `kind: 'failed'`, which ABORTS the turn with no retry; an empty envelope
+    // gets the one recovery round that tells the model what it sent and asks
+    // for a real call. The model echoing its `prior_tool_calls` block has
+    // expressed no intent to lose, so the recoverable path is the honest one.
+    // ⚠ Only when EVERY entry is an echo: a mixed array still carries a real
+    // call, and silently dropping half a plan is worse than halting on it.
+    // ⛔ AN ALL-ECHO ARRAY BECOMES AN EMPTY ENVELOPE, NOT A FAILED ONE — the
+    // model echoed its own `prior_tool_calls` and expressed no intent to lose,
+    // so it earns the recovery round rather than an abort.
+    // ⚠ ANY OTHER unrecognised array is left ALONE for `validateAIOutput` to
+    // flag, deliberately. Swallowing it into an empty envelope would be
+    // recoverable but MUTE: the recovery feedback names the model's stray keys,
+    // and a discarded array has none to name, so the model would be told only
+    // "empty" and repeat the mistake. ⇒ The real defect is that a validation
+    // failure earns NO retry while an empty output earns one — that asymmetry
+    // belongs in the executor's retry policy, not in this parser quietly
+    // dropping content to route around it. Written up in
+    // internal design notes.
+    if (
+      output.length > 0
+      && output.every((entry) =>
+        entry !== null
+        && typeof entry === 'object'
+        && !Array.isArray(entry)
+        && looksLikeToolResultEcho(entry as Record<string, unknown>))
+    ) {
+      return { response: '', events: [], tool_calls: [] };
+    }
+    return { response: '', events: [], tool_calls: output.map(normalizeToolCall) };
   }
   if (output === null || typeof output !== 'object') return output;
   const o = output as Record<string, unknown>;
-  // A bare single tool call (`{ tool, args }`) with none of the wrapper keys.
+  // A BARE TOOL CALL with none of the wrapper keys, in ANY alias
+  // `normalizeToolCall` knows (`{tool,args}`, `{tool_name,args}`,
+  // `{name,input}`, `{name,arguments}`).
+  //
+  // ⛔⛔ ONE BRANCH ON PURPOSE — THIS USED TO BE THREE, AND THE THIRD ALIAS FELL
+  // THROUGH ALL OF THEM. Each branch repeated the wrapper-key guard and added
+  // its own shape test, so `normalizeToolCall` could understand a shape that
+  // nothing ROUTED to it: a bare `{name, arguments}` matched neither the
+  // `tool`/`tool_name` test nor the `name`+`input` one, reached fill-defaults,
+  // and emerged as `tool_calls: []` — dispatching nothing, silently. Asking the
+  // normalizer whether it produced a call cannot drift from what the normalizer
+  // accepts, because it IS what the normalizer accepts.
+  //
+  // ⚠ THE WRAPPER-KEY GUARD IS THE LOAD-BEARING HALF: it fires only when
+  // `response` / `events` / `tool_calls` are ALL absent, so a normal envelope is
+  // never reinterpreted as a call.
+  //
+  // ⚠ `'tool' in o` is kept as a separate disjunct so a malformed `{tool: 123}`
+  // still wraps and still fails `validateAIOutput` loudly with
+  // `tool_call_not_shaped`, rather than becoming a silent empty envelope.
   if (
-    'tool' in o &&
-    !('response' in o) &&
-    !('events' in o) &&
-    !('tool_calls' in o)
+    !('response' in o)
+    && !('events' in o)
+    && !('tool_calls' in o)
   ) {
-    return { response: '', events: [], tool_calls: [o] };
+    const asCall = normalizeToolCall(o) as Record<string, unknown>;
+    if ('tool' in o || typeof asCall.tool === 'string') {
+      return { response: '', events: [], tool_calls: [asCall] };
+    }
+    // A SINGLE-KEY WRAPPER whose key IS the tool name: `{"request.dissection":
+    // {schema_version: 1, …}}`. ⛔ Measured as the single most common unreadable
+    // shape on bench 181 — 8 of 11 across six runs before the tool's description
+    // was reworded, and still the largest residual class afterwards, entirely in
+    // lean-core (full mode produced none).
+    //
+    // ⚠ NARROW BY THREE CONDITIONS, all needed: exactly ONE key (so a catalog
+    // echo `{recipe_slug, args_schema}` and an event `{kind, payload}` are both
+    // excluded on arity alone), a key that LOOKS like a tool name (contains `.`
+    // or `/`, no whitespace), and an object value. An unknown name still fails
+    // at the dispatcher, visibly.
+    const keys = Object.keys(o);
+    const soleKey = keys.length === 1 ? keys[0]! : undefined;
+    const soleValue = soleKey === undefined ? undefined : o[soleKey];
+    if (
+      soleKey !== undefined
+      && /^[^\s]*[./][^\s]*$/.test(soleKey)
+      && soleValue !== null
+      && typeof soleValue === 'object'
+      && !Array.isArray(soleValue)
+    ) {
+      return {
+        response: '',
+        events: [],
+        tool_calls: [{ tool: soleKey, args: soleValue }],
+      };
+    }
+  }
+  // A BARE EXTRACTION EVENT — the documented `events[]` entry shape with the
+  // wrapper stripped off. ⚠ Narrow on purpose: `kind` must start with
+  // `extraction.`, which is the prefix the contract reserves for extractions, so
+  // this cannot swallow an arbitrary `{kind, payload}` object. A bare `kind`
+  // naming a TOOL (`request.dissection` was observed) is deliberately NOT minted
+  // into a call here — the coercer has no tool registry to check against, and
+  // inventing a dispatch from an unverified name is exactly the silent-wrong-
+  // action trade this file refuses. Those fall through to the empty envelope
+  // below and earn the recovery round instead.
+  if (
+    typeof o.kind === 'string'
+    && o.kind.startsWith('extraction.')
+    && o.payload !== null
+    && typeof o.payload === 'object'
+    && !('response' in o)
+    && !('events' in o)
+    && !('tool_calls' in o)
+  ) {
+    return { response: '', events: [o], tool_calls: [] };
   }
   // Common case — fill only MISSING (undefined) optional wrapper fields with
   // documented defaults; a present `null` stays null so validateAIOutput flags
@@ -203,7 +425,12 @@ export const coerceAIOutput = (output: unknown): unknown => {
     ...o,
     response: o.response === undefined ? '' : o.response,
     events: o.events === undefined ? [] : o.events,
-    tool_calls: o.tool_calls === undefined ? [] : o.tool_calls,
+    // ⚠ A PRESENT array is normalized too: a model that gets the wrapper right
+    // can still name the fields wrong, and that call would otherwise be dropped
+    // with the wrapper looking perfectly valid.
+    tool_calls: o.tool_calls === undefined
+      ? []
+      : (Array.isArray(o.tool_calls) ? o.tool_calls.map(normalizeToolCall) : o.tool_calls),
   };
 };
 

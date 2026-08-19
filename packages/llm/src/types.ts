@@ -155,6 +155,30 @@ export interface LLMSlot {
   supports_json?: boolean;
   /** @deprecated Derived from `speed === 'thinking'`. Kept for backward compat. */
   supports_thinking?: boolean;
+  /** DETECTED, never declared — does this endpoint accept a `system` message?
+   *
+   *  `prompt -> system` when true or absent; `prompt -> first user turn` when
+   *  false. Learned from an actual refusal (`endpoint-capabilities.ts`) and
+   *  written back so a restart does not re-pay the rejection on every
+   *  configured source. Absent means "not yet known", which reads as yes — the
+   *  optimistic default, so a lost value costs one probe rather than
+   *  permanently demoting an endpoint that was fine.
+   *
+   *  ⛔ NOT a routing input, and no filter may read it. `match.ts` gates on
+   *  `supports_json`; a capability that merely changes how a prompt is PACKED
+   *  must never be able to make a source unroutable. Cleared by the save path
+   *  when provider / base_url / model change — that edit is what makes the
+   *  observation stale. */
+  system_role_ok?: boolean;
+  /** DETECTED — does this endpoint accept the native JSON-mode param?
+   *
+   *  ⚠ NOT `supports_json`, which sits nearby and means something else:
+   *  `supports_json` is OWNER-DECLARED and is a MATCH input (`match.ts:121`
+   *  excludes a false one from every json call). This one is machine-observed
+   *  and inert to routing — an endpoint that cannot take `response_format`
+   *  still serves json calls fine via the post-hoc parser. Conflating the two
+   *  turns a graceful degradation into an unroutable source. */
+  native_json_ok?: boolean;
   /** Whether this model supports the provider's built-in web search. */
   supports_search?: boolean;
   /** D-172 P5 / Q4 — declared modality capabilities. When a turn carries a
@@ -196,6 +220,11 @@ export interface FreePoolApiEntry {
   base_url?: string;
   speed: ModelHint;
   supports_json: boolean;
+  /** DETECTED — see {@link LLMSlot.system_role_ok}. Same semantics, same
+   *  prohibition on reaching the matcher. */
+  system_role_ok?: boolean;
+  /** DETECTED — see {@link LLMSlot.native_json_ok}. */
+  native_json_ok?: boolean;
   supports_search?: boolean;
   enabled: boolean;
   weight?: number;

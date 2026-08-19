@@ -144,11 +144,61 @@ export interface PolicyGateResult {
 export const grantingRecipeEntry = (
   recipeId: string,
   contractSnapshot: ContractSnapshot | undefined,
-): string | undefined =>
-  contractSnapshot?.allowed_tools.find((entry) => {
+  /** D-247 D5 — the OWNER's arm, and an ADDITION rather than a substitution.
+   *
+   *  ⛔⛔ THE TWO PRINCIPALS KEEP THEIR GRANTS IN DIFFERENT PLACES AND BOTH ARE
+   *  CORRECT. A DOOR's recipe grant is its INBOUND TOKEN, folded into
+   *  `allowed_tools` by `buildMcpContractSnapshot` (D-232 § 20.19); that scan
+   *  above is unchanged and must stay, or every shipped MCP door loses its
+   *  coverage. The OWNER's contract is DERIVED and carries no snapshot at all, so
+   *  the scan is structurally `false` for them — that hole is what D-247 fills,
+   *  with a `contract_grant` `recipe.*` row.
+   *
+   *  ⚠ Returns the ENTRY KEY, never a boolean, on BOTH arms. `preflight-resumer`
+   *  substitutes the grant that ACTUALLY justified a run so revoking THAT grant
+   *  kills an outstanding approval; a yes/no cannot answer it. */
+  ownerRecipeGrantEntry?: () => string | undefined,
+): string | undefined => {
+  const fromSnapshot = contractSnapshot?.allowed_tools.find((entry) => {
     const slash = entry.indexOf('/');
     return slash > 0 && entry.slice(slash + 1) === recipeId;
   });
+  if (fromSnapshot !== undefined) return fromSnapshot;
+  // No snapshot ⇒ not a door. `gateRecipeAgainstPolicy` throws when a
+  // contract-bearing source arrives without one, so this branch is the owner or a
+  // contract-free dispatch; the reader itself resolves `false` for contract-free.
+  return contractSnapshot === undefined ? ownerRecipeGrantEntry?.() : undefined;
+};
+
+/** D-247 D5 — a granted recipe's resolved op closure, for the per-call gate.
+ *
+ *  ⛔ `recipe_id` RIDES ALONG AND IS CHECKED. The whole hazard D2 bounds is a
+ *  NESTED run being admitted under its PARENT's coverage; a closure that does not
+ *  say whose it is cannot refuse that, and the mistake would look like a working
+ *  system. Cheap check, and it is the one that matters. */
+export interface RecipeCoverage {
+  readonly recipe_id: string;
+  readonly operation_ids: ReadonlySet<string>;
+}
+
+/** Does `recipeId`'s granted coverage admit `opId` on the ACCESS axis?
+ *
+ *  ⛔⛔ THE SINGLE ANSWER FOR ALL THREE ENFORCEMENT LAYERS (the pre-run static
+ *  walk, the per-call op-admission gate, the nested carrier run). `policy-gate`'s
+ *  own note names the hazard: they "must answer this identically or a step
+ *  admitted by one is refused by the next". Import this; never re-derive it.
+ *
+ *  ⚠ ACCESS ONLY (D4). `admitByOpRisk` still runs per step, so a covered `write`
+ *  still meets the `ask` floor and a covered `destructive` still gates. */
+export const recipeCoversOp = (
+  recipeId: string,
+  opId: string | undefined,
+  coverage: RecipeCoverage | undefined,
+): boolean =>
+  opId !== undefined
+  && coverage !== undefined
+  && coverage.recipe_id === recipeId
+  && coverage.operation_ids.has(opId);
 
 /** The boolean form of {@link grantingRecipeEntry}. The NAME is what a nested
  *  run and the approval-resume authority need — revoking that exact grant has

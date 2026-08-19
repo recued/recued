@@ -99,6 +99,16 @@ export const buildInternalToolMcpAdapter = (
   const { registry, mcp_token_id, execution_source, contract_snapshot } = options;
 
   const listTools = (): ReadonlyArray<McpInternalToolDescriptor> => {
+    // ⛔⛔ D-247 D9 — DELIBERATELY NOT FILTERED BY THE OWNER'S `recipe.*` GRANT,
+    // and the draft that said this was "the third exposure surface" was wrong.
+    // This adapter serves a DOOR, whose Tier-2 authority is its INBOUND TOKEN
+    // (`buildMcpContractSnapshot` folds granted recipe wire names into
+    // `allowed_tools` under `inboundTokenAuthorize`, D-232 § 20.19) — already
+    // enforced on that path. The `recipe.*` axis is OWNER-scoped (D7), so
+    // `isOwnerRecipeGranted` answers `false` for every door STRUCTURALLY; wiring
+    // it here would hide every Tier-2 recipe from every door and look like a
+    // working gate while doing it. The owner-governed surfaces (the chat catalog
+    // and `tools.search`) are where that filter belongs.
     const entries = registry.list();
     const out: McpInternalToolDescriptor[] = [];
     for (const e of entries) {

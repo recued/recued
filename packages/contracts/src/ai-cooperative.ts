@@ -158,6 +158,23 @@ export const MULTI_TURN_TERMINATION_REASONS = [
   /** Orchestrator-side abort (e.g. cost ceiling halt mid-loop, SI
    *  conflict detected, capacity gap mid-run per § B.15.4). */
   'aborted',
+  /** The loop ended because the model's last output could not be READ as a
+   *  turn — empty after the recovery retry, or carrying tool calls in a shape
+   *  the coercer does not recognise.
+   *
+   *  ⛔⛔ THIS USED TO REPORT `completed`, AND THAT WAS THE EXPENSIVE PART. A
+   *  turn that dispatched nothing because its final packet was unparseable is
+   *  not a happy path, but it exits through the same `!moreTools` branch as one
+   *  that genuinely finished — so telemetry, the D-219 flow compiler and any
+   *  reader all saw a clean completion. Measured on bench 181: of five
+   *  slice+lean-core runs, THREE ended on an unrecovered empty and TWO on a
+   *  dropped tool call whose content was the NEXT STEP OF THE CHAIN. All five
+   *  reported `completed`.
+   *
+   *  ⚠ It is NOT a failure of the run — work already dispatched stands, and the
+   *  owner still gets `EMPTY_AI_OUTPUT_MESSAGE`. It is a statement that the turn
+   *  stopped for a reason nobody chose. */
+  'output_unreadable',
 ] as const;
 export type MultiTurnTerminationReason =
   (typeof MULTI_TURN_TERMINATION_REASONS)[number];

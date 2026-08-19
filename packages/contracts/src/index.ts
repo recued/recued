@@ -1399,6 +1399,10 @@ export {
   isOpGrantEntry,
   isCollectionGrantEntry,
   isTopicGrantEntry,
+  // D-247 D1 — the fifth kind.
+  RECIPE_GRANT_PREFIX,
+  recipeGrantEntry,
+  isRecipeGrantEntry,
 } from './grant-entry.js';
 export type { GrantEntryKind, ParsedGrantEntry } from './grant-entry.js';
 // Grant-foundation slice 3 — the pure grant-resolution rule (`explicit ?? authorDefault`)
@@ -4262,6 +4266,7 @@ export {
   // D-164 P6.3 — chat main-turn kernel manifest + tool-loop cap
   CHAT_MAIN_TURN_INGREDIENT_SLUG,
   CHAT_MAIN_TURN_TOOL_LOOP_CAP,
+  CHAT_MAIN_TURN_DISCOVERY_ROUND_CAP,
   modelTierToModelHint,
   // D-167 (recall path) — recall-tool classification + prior-tool-call partition
   NON_RETAINABLE_RECALL_TOOL_NAMES,
@@ -4773,6 +4778,8 @@ export type {
   ServerConfigField,
   ServerConfigValue,
   ServerLlmPrompt,
+  ServerLlmProbeDiagnosis,
+  ServerLlmProbeResult,
   ServerLlmPromptSurface,
   ServerLlmMessageRole,
   ServerLlmCallerSystemPolicy,
@@ -6280,3 +6287,16 @@ export {
   RECENT_S_MIN,
   RECENT_S_MAX,
 } from './recent-date.js';
+
+// T3-AUD-1 — free-tier data-use disclosure. Pure lookup + one shared notice
+// builder, in contracts (not `@recued/llm`) because the surfaces that must say
+// it are CLIENTS: the webclient has no `@recued/llm` dependency and should not
+// gain one for a table — that package carries adapters and executor code with
+// no business in a browser bundle. Same placement rationale as
+// `messenger-vendors.ts`: vendor facts the whole tree reads live here.
+export {
+  resolveFreePoolDataUse, freePoolDataUseNotice,
+} from './free-pool-data-use.js';
+export type {
+  FreePoolDataUse, FreePoolDataUseTerms,
+} from './free-pool-data-use.js';

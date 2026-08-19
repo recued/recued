@@ -32,6 +32,16 @@ const llmMocks = vi.hoisted(() => {
     executeEmbedding: vi.fn(),
     resolveLLMModelId: vi.fn(),
     transcribe: vi.fn(),
+    // D-208 follow-on phase 4 — durable endpoint capabilities. ⚠ This mock is a
+    // FULL replacement, so an export missing here throws at compose time and
+    // reds every test in the file, not just the ones about capabilities.
+    endpointFingerprint: vi.fn((slot: { provider: string; base_url?: string; model: string }) =>
+      `${slot.provider} ${slot.base_url ?? ''} ${slot.model}`),
+    hydrateEndpointCapabilities: vi.fn(),
+    onEndpointCapabilityLearned: vi.fn(),
+    // ⚠ Declare the return type. `vi.fn(() => [])` infers `never[]`, so a later
+    // `mockReturnValue([...])` fails typecheck — invisible to vitest, caught
+    // only by `typecheck:tests`, which IS in `npm run ci`.
     LLMError: MockLLMError,
   };
 });
@@ -46,6 +56,7 @@ vi.mock('../llm-config.js', () => llmConfigMocks);
 
 type LlmManagerStub = {
   getConfig: ReturnType<typeof vi.fn>;
+  setSourceCapability: ReturnType<typeof vi.fn>;
 };
 
 type ExecuteLLMOptions = {
@@ -132,6 +143,7 @@ beforeEach(() => {
 
   managerStub = {
     getConfig: vi.fn(() => managerConfig),
+    setSourceCapability: vi.fn(),
   };
 
   llmMocks.createQuotaTracker.mockReturnValue(quota);
@@ -579,4 +591,98 @@ describe('composeHousekeepingLlmCallables LLMError throws and model_id derivatio
     });
   });
 
+});
+
+/** D-208 follow-on phase 4 — the JOIN, not the unit.
+ *
+ *  `endpoint-capabilities.test.ts` proves the hydrate/announce seam works when
+ *  something drives it. These prove BOOT drives it — which is the half that
+ *  types clean and silently never runs. (It already did once: this file mocks
+ *  `@recued/llm` wholesale, so the new imports threw at compose time and
+ *  reddened all 39 tests until the mock was widened.)
+ *
+ *  ⛔ And the thing NOT asserted anywhere: a detected capability reaching the
+ *  slot's `supports_json`. That field is a MATCH input (`match.ts:121`), so a
+ *  detected `false` there would make every contracted ai-* call unroutable on a
+ *  server whose one endpoint lacks `response_format` — the opposite of the
+ *  degradation this whole mechanism exists to provide. */
+describe('composeLlmSubstrate — durable endpoint capabilities', () => {
+  const detectedConfig = {
+    slot_1: {
+      provider: 'anthropic', model: 'claude-3-5-sonnet', api_key: 'k',
+      system_role_ok: false,
+    },
+    free_pool: [
+      { id: 'groq-a', provider: 'openai-compatible', model: 'llama', api_key: 'k' },
+    ],
+  } as unknown as LLMConfig;
+
+  /** The JOIN, not the unit: boot has to drive the seam. It already failed
+   *  once — this file mocks `@recued/llm` wholesale, so a missing export threw
+   *  at compose time and reddened all 39 tests. */
+  it('hydrates from the SOURCES, with no side blob to read', () => {
+    managerStub.getConfig.mockReturnValue(detectedConfig);
+    llmConfigMocks.createLLMConfigManager.mockReturnValue(managerStub);
+
+    composeLlmSubstrate({ db: makeDb(), keys: makeKeys('unlocked').keys, envLlmConfig: envConfig });
+
+    expect(llmMocks.hydrateEndpointCapabilities).toHaveBeenCalledWith([
+      { fingerprint: 'anthropic  claude-3-5-sonnet', system_role_unsupported: true },
+      // The pool entry declared nothing, so it contributes no assertion — an
+      // absent flag reads as "supported", the optimistic default.
+      { fingerprint: 'openai-compatible  llama' },
+    ]);
+  });
+
+  it('writes a later finding onto the source it belongs to', () => {
+    managerStub.getConfig.mockReturnValue(detectedConfig);
+    llmConfigMocks.createLLMConfigManager.mockReturnValue(managerStub);
+    composeLlmSubstrate({ db: makeDb(), keys: makeKeys('unlocked').keys, envLlmConfig: envConfig });
+
+    const listener = llmMocks.onEndpointCapabilityLearned.mock.calls.at(-1)?.[0] as
+      (n: { fingerprint: string; json_mode_unsupported?: boolean }) => void;
+    listener({ fingerprint: 'openai-compatible  llama', json_mode_unsupported: true });
+
+    // Keyed by SOURCE, so it invalidates with the source — no fingerprint blob,
+    // no prune, and nothing left behind when the entry is deleted.
+    expect(managerStub.setSourceCapability).toHaveBeenCalledWith(
+      { kind: 'pool', entry_id: 'groq-a' },
+      { system_role_ok: true, native_json_ok: false },
+    );
+  });
+
+  it('ignores a finding for an endpoint no source uses any more', () => {
+    managerStub.getConfig.mockReturnValue(detectedConfig);
+    llmConfigMocks.createLLMConfigManager.mockReturnValue(managerStub);
+    composeLlmSubstrate({ db: makeDb(), keys: makeKeys('unlocked').keys, envLlmConfig: envConfig });
+    const listener = llmMocks.onEndpointCapabilityLearned.mock.calls.at(-1)?.[0] as
+      (n: { fingerprint: string }) => void;
+
+    listener({ fingerprint: 'openai  gone-model' });
+
+    // The blob needed a prune for exactly this. Here there is nowhere to put it.
+    expect(managerStub.setSourceCapability).not.toHaveBeenCalled();
+  });
+
+  it('does not let a failed capability write break the call that found it', () => {
+    managerStub.getConfig.mockReturnValue(detectedConfig);
+    llmConfigMocks.createLLMConfigManager.mockReturnValue(managerStub);
+    managerStub.setSourceCapability.mockImplementation(() => {
+      throw new Error('database is locked');
+    });
+    composeLlmSubstrate({ db: makeDb(), keys: makeKeys('unlocked').keys, envLlmConfig: envConfig });
+    const listener = llmMocks.onEndpointCapabilityLearned.mock.calls.at(-1)?.[0] as
+      (n: { fingerprint: string }) => void;
+    // The LLM call already succeeded. A latency cache must never be able to
+    // fail the thing it optimises.
+    expect(() => listener({ fingerprint: 'anthropic  claude-3-5-sonnet' })).not.toThrow();
+  });
+
+  it('boots when the config is unreadable', () => {
+    llmConfigMocks.createLLMConfigManager.mockReturnValue(managerStub);
+    managerStub.getConfig.mockImplementation(() => { throw new Error('locked'); });
+    expect(() => composeLlmSubstrate({
+      db: makeDb(), keys: makeKeys('locked').keys, envLlmConfig: envConfig,
+    })).not.toThrow();
+  });
 });

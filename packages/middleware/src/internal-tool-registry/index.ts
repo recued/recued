@@ -192,6 +192,14 @@ export interface CreateInternalToolRegistryOptions {
    *  not-implemented handler; a real handler override keeps the tool
    *  visible. */
   hiddenUnbackedTier1Tools?: ReadonlyArray<Tier1ToolName>;
+  /** D-247 D9 — the dispatch re-check for a Tier-2 recipe. Absent ⇒ no contract
+   *  substrate on this host (matches {@link admitTier1}'s contract).
+   *
+   *  ⚠ VISIBILITY IS FILTERED ELSEWHERE, deliberately: the catalog projections
+   *  live beside the registry because they need the turn's source and `list` /
+   *  `listByTier` / `getByName` do not carry one. This callback exists because
+   *  hiding a tool is not the same as refusing it. */
+  admitTier2?: (name: string, ctx: ChatDispatchContext) => boolean;
   /** D-137 Wave 2.1 — Tier 2 source. When absent, Tier 2 catalog is
    *  empty (matches P1 behaviour). When present, the factory pulls
    *  fresh recipes on every catalog read, so installing or removing a
@@ -442,6 +450,20 @@ export const createInternalToolRegistry = (
     const tier2 = projectTier2();
     const t2 = tier2.find((entry) => entry.name === name);
     if (t2) {
+      // ⛔ D-247 D9 — CATALOG MEMBERSHIP IS NOT THE ENFORCEMENT BOUNDARY. Tier-2
+      // visibility is filtered beside the registry (where the turn's source is),
+      // but a name the model already holds from an EARLIER turn survives a
+      // revoke unless dispatch re-asks. Exactly the shape D-228 slice 5 proved on
+      // Tier 1 above: absent callback ⇒ no contract substrate on this host.
+      if (options.admitTier2 && !options.admitTier2(name, ctx)) {
+        return {
+          ok: false,
+          reason: 'classification_blocked',
+          detail:
+            `'${name}' is turned off for this contract. `
+            + 'Re-enable it in Settings → Contracts → Recipes, or tell the user it is unavailable.',
+        };
+      }
       return tier2Dispatch(name, args, ctx);
     }
 

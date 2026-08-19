@@ -173,6 +173,8 @@ import type {
 import {
   gateRecipeAgainstPolicy,
   grantingRecipeEntry,
+  recipeCoversOp,
+  type RecipeCoverage,
   renderPolicyGateDenialSummary,
   type PolicyGateDenial,
 } from './policy-gate.js';
@@ -230,6 +232,8 @@ import {
   type CreatePlanNotifier,
 } from './work-entity-create-plan.js';
 import { buildPackOpResolution, missingPackDependencies } from './pack-inventory.js';
+import { deriveRecipeCapability } from './derive-recipe-capability.js';
+import { recipeGrantKeyFor } from './recipe-grant-identity.js';
 import type { ConnectionStoreSqlite } from './storage/connection-store.js';
 import {
   deriveBoundConventionFamilies,
@@ -2412,8 +2416,98 @@ export const handleExecute = async (
       executionSource !== undefined && executionSourceHasContract(executionSource)
         ? request.contract_snapshot
         : undefined,
+      // D-247 D5 — the OWNER's arm. A door's recipe grant rides its inbound token
+      // into `allowed_tools` (scanned above and UNCHANGED); the owner contract
+      // carries no snapshot, so this reads the `recipe.*` row instead. The gate
+      // resolves the governing contract and answers `false` for anything that is
+      // not the owner, so this cannot widen a door.
+      () => {
+        if (executionSource === undefined) return undefined;
+        const key = recipeGrantKeyFor(deps.recipeStore, recipe.recipe_id, recipe);
+        return deps.opAdmissionGate?.isOwnerRecipeGranted(executionSource, key) === true
+          ? key
+          : undefined;
+      },
     );
   const grantedRecipeSteps = grantedByRecipe !== undefined;
+  // ⛔⛔ D-247 + D-232 § 20.19 — INHERITED COVERAGE IS NOT RE-DERIVABLE FROM THIS
+  // RUN'S BODY, AND RE-DERIVING IT BREAKS THE EXCHANGE CARRIER.
+  //
+  // `internal.granted_by_recipe` is set ONLY by the host, and only from a
+  // coverage it already resolved for the PARENT run. The carrier it sets it on is
+  // `recued/run-ingredient`, whose single step is
+  // `ingredient: '{{config.ingredient_slug}}'` — templated, so
+  // `deriveRecipeCapability` refuses it as `dynamic_dispatch` and the closure
+  // comes back EMPTY. Asking "is this op in the carrier's closure" therefore
+  // answers no for every op, and a granted recipe's exchange delivery would be
+  // refused at the per-call gate the moment its op was directly revoked.
+  //
+  // ⇒ Inherited coverage admits this run's steps wholesale, which is exactly
+  // what `coversStepsOverride === true` already does at the static walk — the
+  // three layers must answer identically, and this is the answer the other two
+  // give. The scope is bounded by who may set the field, not by a closure: the
+  // fence on `ExecuteInternal.granted_by_recipe` is that only `handleExecute`'s
+  // own `exchangeFireHandler` populates it, never anything on the request.
+  const coverageIsInherited = internal.granted_by_recipe !== undefined;
+  // ── D-247 D5 — THE COVERAGE, RESOLVED FROM THE LIVE BODY AND MEMOISED ──
+  //
+  // Lazy because the per-turn cost only lands when a grant EXISTS and an op is
+  // about to be denied; eager derivation would tax every run for a branch most
+  // never take.
+  //
+  // ⛔⛔ THE OP IDS MUST BE DERIVED THE SAME WAY THE GATE DERIVES THEM, OR THE
+  // COVERAGE UNDER-COVERS AND THE RECIPE HALF-RUNS — the exact failure D-247
+  // exists to remove, reintroduced by the mechanism meant to bound it.
+  // `deriveRecipeCapability` records an ingredient step's canonical op ONLY when
+  // an `OpResolver` maps it, so a KERNEL simple-form step (`ingredient:
+  // 'mail-send'`, no `operation`) contributes its SLUG and no op id — while the
+  // gate below derives `core.mail.send` from that same slug via
+  // `kernelOpForBackingSlug`. The union closes that gap on the coverage side by
+  // running the gate's own deriver over the closure's ingredient slugs.
+  //
+  // ⚠ A REFUSAL YIELDS EMPTY COVERAGE, WHICH IS FAIL-CLOSED AND NOT A REGRESSION:
+  // the run falls back to its own op grants, i.e. exactly today's behaviour. A
+  // recipe whose dispatch target is templated (`dynamic_dispatch` —
+  // `run-ingredient` is the canonical case) genuinely cannot cover anything
+  // honestly, and that is the refusal that matters most.
+  let coverageMemo: { readonly v: RecipeCoverage | undefined } | undefined;
+  const resolveRecipeCoverage = (): RecipeCoverage | undefined => {
+    if (coverageMemo !== undefined) return coverageMemo.v;
+    const derived = deriveRecipeCapability(recipe, {
+      // `request.config` is the EFFECTIVE config by this point (folded back at the
+      // resolve step), so `{{config.*}}` connection refs resolve exactly as they do
+      // on the door path rather than refusing.
+      ...(request.config !== undefined ? { config: request.config } : {}),
+      // ⛔⛔ THIS RESOLVER IS THE GATE'S OWN LINE, ON PURPOSE. The gate below
+      // computes `manifest.operations[key].operation_id ?? key` for a catalog
+      // dispatch; supplying the SAME expression here is what makes the two sides
+      // speak one op-id vocabulary. A resolver sourced from the pack inventory
+      // instead would be a second derivation that can disagree — and a coverage
+      // that disagrees with the gate under-covers silently, which is the half-run
+      // this decision exists to remove.
+      //
+      // ⚠ `recipe` is the LOWERED dispatch form here (reassigned from
+      // `dispatchResolve.recipe`), so op steps are already concrete ingredient
+      // steps — the same shape the engine will dispatch and the gate will see.
+      resolveOp: (slug, operation) => [
+        deps.executorConfig.manifests.get(slug)?.operations?.[operation]?.operation_id
+          ?? operation,
+      ],
+    });
+    const v: RecipeCoverage | undefined = derived.ok
+      ? {
+          recipe_id: recipe.recipe_id,
+          operation_ids: new Set<string>([
+            ...derived.capability.operation_ids,
+            ...derived.capability.ingredient_ids
+              .map((slug) => kernelOpForBackingSlug(slug))
+              .filter((opId): opId is string => opId !== undefined),
+          ]),
+        }
+      : undefined;
+    coverageMemo = { v };
+    return v;
+  };
   if (executionSource !== undefined) {
     const channel_session_id = deriveChannelSessionId(executionSource);
     const correlation_id = correlationTracker.assign(
@@ -2955,10 +3049,68 @@ export const handleExecute = async (
                     'server is paused — contracted and AI operations are halted until the owner resumes',
                 });
               }
+              // ── D-247 D5 — THE SECOND CONSUMER OF THE ONE COVERAGE PREDICATE ──
+              //
+              // Before D-247 this gate was the layer coverage did NOT reach: the
+              // static walk consulted `grantedRecipeCoversSteps` and this one did
+              // not, so a granted recipe whose middle op was revoked ran step 1
+              // (side effects and all) and died at step 2 with a message naming
+              // neither the recipe nor a remedy. `policy-gate.ts` states the rule
+              // the two now share: the enforcement layers "must answer this
+              // identically or a step admitted by one is refused by the next".
+              //
+              // ⛔ IMPORTED, NEVER RE-DERIVED. A second copy of this predicate is
+              // the drift the shared export exists to prevent.
+              //
+              // ⚠ ACCESS ONLY (D4). `admitByOpRisk` has already run in
+              // `preflightDecision`; a covered `write` still meets the `ask` floor
+              // and a covered `destructive` still gates. Coverage moves the ACCESS
+              // answer and nothing else — the contract gates the entrance, not the
+              // internals.
+              const coveredByRecipeGrant =
+                grantedRecipeSteps
+                && (coverageIsInherited
+                  || recipeCoversOp(recipe.recipe_id, overlayOpId, resolveRecipeCoverage()));
+              // ── D-247 D13 — THE COVERAGE LEDGER ──────────────────────────
+              //
+              // Written HERE, at the admission point, because this is the one
+              // place both step kinds pass through AND the only place the BASIS
+              // is known by construction. The `connection_gateway` row is
+              // downstream of a branch that only canonical op steps take, and
+              // threading the basis to two emitters means forgetting the one
+              // with no row today.
+              //
+              // ⚠ Only when coverage is what admitted it — an op holding its own
+              // grant writes nothing. And only when the op's own grant said NO:
+              // `coveredByRecipeGrant` is computed above regardless, so the
+              // `isOpGranted` re-ask is what makes this "ONLY because".
+              if (
+                coveredByRecipeGrant
+                && deps.auditLog !== undefined
+                && deps.opAdmissionGate !== undefined
+                && !deps.opAdmissionGate.isOpGranted(executionSource, overlayOpId)
+              ) {
+                void deps.auditLog
+                  .logActivity({
+                    activity_id: `rca_${String(overlayOpId)}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                    timestamp: Date.now(),
+                    action: 'recipe_coverage_admission',
+                    target: String(overlayOpId),
+                    detail: JSON.stringify({
+                      granting_recipe: grantedByRecipe,
+                      recipe_id: recipe.recipe_id,
+                      run_id: lifecycle_run_id,
+                    }),
+                  })
+                  // Audit back-pressure never breaks a dispatch — the same rule
+                  // the gateway emitter states.
+                  .catch(() => {});
+              }
               if (
                 preflightDecision.verdict !== 'deny'
                 && deps.opAdmissionGate
                 && !deps.opAdmissionGate.isOpGranted(executionSource, overlayOpId)
+                && !coveredByRecipeGrant
               ) {
                 return Object.freeze({
                   verdict: 'deny',

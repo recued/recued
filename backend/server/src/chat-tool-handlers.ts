@@ -71,6 +71,7 @@ import {
   type ScopeSearchResult,
   type ScopeSearchSourceId,
   type ScopeSearchCandidate,
+  recipeGrantEntry,
 } from '@recued/contracts';
 import {
   confidenceShape,
@@ -335,7 +336,7 @@ export interface ChatToolHandlerDeps {
    *  for owner chat; EXTERNAL escalation refused outright (fail closed
    *  — a door's admission cannot run without the gate). */
   getOpAdmissionGate?: () =>
-    | Pick<OpAdmissionGate, 'isFrozenByPause' | 'isOpGranted'>
+    | Pick<OpAdmissionGate, 'isFrozenByPause' | 'isOpGranted' | 'isOwnerRecipeGranted' | 'isOwnerGoverned'>
     | undefined;
 }
 
@@ -3204,6 +3205,62 @@ export const wrapEmptyResults = (
  *  form of the same action. That reasoning is the door's; whether chat wants the
  *  same suppression is a UX question nobody has answered, and quietly inheriting
  *  it would answer it by accident. Absent ⇒ no suppression. */
+/** D-247 D9 — is this Tier-2 catalog entry REACHABLE for `source`?
+ *
+ *  ⛔⛔ KEPT BESIDE THE REGISTRY, NOT THREADED THROUGH IT, and that is doctrine
+ *  rather than convenience: `chat-orchestrator.ts` states it for the raw ops —
+ *  *"Kept beside (rather than inside) the ordinary registry because raw
+ *  visibility is derived from the turn's contract"* — and a recipe's visibility
+ *  became contract-derived the moment D-247 gave it a grant. `InternalToolRegistry`
+ *  and its three wrappers stay unchanged; touching them is the sign this drifted
+ *  back to threading a source through `list` / `listByTier` / `getByName`.
+ *
+ *  ⛔ THREE EXPOSURE SURFACES CONSUME THIS AND THEY FAIL INDEPENDENTLY: the chat
+ *  catalog (`buildCatalog`), the `tools.search` handler (which returns Tier-2
+ *  matches straight to the model), and the MCP door's `tools/list`. Each has a
+ *  source in hand; a filter wired into one of them is a hole in the other two.
+ *  Dispatch re-checks separately (`admitTier2`), because a name the model already
+ *  holds from an earlier turn survives a revoke otherwise.
+ *
+ *  ⚠ THE KEY IS DERIVED FROM THE TOOL NAME, not from a store read, and the two
+ *  must agree. A Tier-2 entry's name is `<publisher>/<recipe_id>` where the
+ *  publisher came from `stored.publisher_id ?? metadata.author` — the SAME
+ *  resolution `recipeGrantKeyFor` performs. Deriving from the name keeps this off
+ *  the per-turn hot path (no SQLite read per entry per turn); the equivalence is
+ *  pinned by test, because a key formed two ways is a grant that writes to one
+ *  address and reads from another. */
+export const createChatTier2GrantFilter = (
+  deps: ChatToolHandlerDeps,
+): ((source?: ExecutionSource) => (toolName: string) => boolean) => (source) => {
+  const gate = deps.getOpAdmissionGate?.();
+  // ⚠ No gate wired ⇒ UNFILTERED, which is today's behaviour and keeps every
+  // dbless / partial harness working. Deliberate, and pinned by test so it stays
+  // a decision someone reads rather than a hole. Mirrors `createChatRawOpSource`.
+  if (!gate) return () => true;
+  // ⛔ An ABSENT source DENIES, for the same reason the raw-op source fails
+  // closed: `isOwnerRecipeGranted` answers `false` for anything ungoverned, so a
+  // synthesised source would look identical to a working one while admitting on
+  // a different question.
+  if (!source) return () => false;
+  // ⛔⛔ A DOOR IS NOT OURS TO GATE, AND CONFUSING THAT WITH "NO GRANT" HIDES
+  // EVERY TIER-2 RECIPE ON EVERY DOOR. A door's recipe authority is its INBOUND
+  // TOKEN (`inboundTokenAuthorize` → `allowed_tools`, D-232 § 20.19), already
+  // enforced on that path; the `recipe.*` axis is owner-scoped (D7). Asking
+  // `isOwnerRecipeGranted` without this check reads a door's structural `false`
+  // as a revoke and takes the whole catalog down on a surface that was working.
+  if (!gate.isOwnerGoverned(source)) return () => true;
+  return (toolName: string) => {
+    const slash = toolName.indexOf('/');
+    // Not a `<publisher>/<recipe_id>` name ⇒ not a Tier-2 recipe ⇒ not ours to
+    // gate. An ingredient slug never contains `/`, which is what makes this safe.
+    if (slash <= 0 || slash === toolName.length - 1) return true;
+    return gate.isOwnerRecipeGranted(
+      source,
+      recipeGrantEntry(toolName.slice(0, slash), toolName.slice(slash + 1)),
+    );
+  };
+};
+
 export const createChatRawOpSource = (
   deps: ChatToolHandlerDeps,
 ): ((source?: ExecutionSource) => RawOpToolEntry[]) => (source) => {
@@ -3351,6 +3408,8 @@ export const buildChatToolRegistryInputs = (deps: ChatToolHandlerDeps) => ({
   // everything would be a second, silent gate; supplying none says the surface
   // does not exist, which is the truth.
   rawOpSource: createChatRawOpSource(deps),
+  // D-247 D9 — shared by all three Tier-2 exposure surfaces.
+  tier2GrantFilter: createChatTier2GrantFilter(deps),
   rawOpDispatch: createChatRawOpDispatch(deps),
 });
 

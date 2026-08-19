@@ -177,12 +177,24 @@ foreach ($triple in ($Triples -split ',' | ForEach-Object { $_.Trim() } | Where-
   #
   # !! Installed INSIDE the per-triple loop, after `npm ci` has already run --
   # ci wipes node_modules, so doing it once up front would be undone.
+  # !! Derive the version from the esbuild tsx will actually LOAD, and FAIL if
+  # it cannot be found. This read node_modules\tsx\node_modules\@esbuild until
+  # 26.8.18 -- except the path had been corrupted into a literal tab plus
+  # newline, so it never resolved and $ebVer was ALWAYS null. The old guard
+  # was `if ($ebVer -and ...)`, so a null version SKIPPED the install without
+  # a word, and the build died much later under tsx with 'The package
+  # @esbuild/win32-x64 could not be found'. It survived because tsx used to
+  # carry its own nested esbuild; the moment tsx deduped onto the hoisted one
+  # the mask came off. Check both layouts, nested first -- that is what tsx
+  # resolves when it has its own copy.
   $ebVer = $null
-  $ebPkg = Join-Path $Root 'node_modules	sx
-ode_modules\@esbuild'
-  $host_ = Get-ChildItem $ebPkg -Directory -EA SilentlyContinue | Select-Object -First 1
-  if ($host_) { $ebVer = (Get-Content (Join-Path $host_.FullName 'package.json') -Raw | ConvertFrom-Json).version }
-  if ($ebVer -and -not (Test-Path (Join-Path $Root "node_modules\@esbuild\win32-$arch\esbuild.exe"))) {
+  foreach ($rel in @('node_modules\tsx\node_modules\esbuild\package.json',
+                     'node_modules\esbuild\package.json')) {
+    $cand = Join-Path $Root $rel
+    if (Test-Path $cand) { $ebVer = (Get-Content $cand -Raw | ConvertFrom-Json).version; break }
+  }
+  if (-not $ebVer) { Fail 'could not determine the esbuild version tsx will load (looked nested under tsx, then hoisted)' }
+  if (-not (Test-Path (Join-Path $Root "node_modules\@esbuild\win32-$arch\esbuild.exe"))) {
     Say "  installing @esbuild/win32-$arch@$ebVer (tsx needs a native binary matching the TARGET node)"
     & $nodeExe $npmCli install --no-save --no-audit --no-fund --force "@esbuild/win32-$arch@$ebVer" 2>&1 | Select-Object -Last 1
     if (-not (Test-Path (Join-Path $Root "node_modules\@esbuild\win32-$arch\esbuild.exe"))) {

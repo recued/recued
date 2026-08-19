@@ -228,6 +228,83 @@ describe('D-145 PB6 — assertAIOutputInvariants', () => {
 });
 
 describe('coerceAIOutput — real-model envelope normalization', () => {
+  it('reads a bare NATIVE tool-use block — the shape that silently lost a round', () => {
+    // Verbatim from a live qwen3.7-plus turn (bench 181, 2026-08-18). Before the
+    // branch existed this produced `tool_calls: []` — a well-formed AIOutput that
+    // dispatched nothing, costing one round with no surfaced error.
+    const out = coerceAIOutput({
+      type: 'tool_use',
+      id: 'toolu_bdrk_01F3KZmsZm1U1o2X4Y5V6W7Z',
+      name: 'recipe.run',
+      input: { recipe_id: 'recued-core/add-unit', config: { label: 'Flat 2' } },
+    }) as AIOutput;
+    expect(out.tool_calls).toEqual([
+      { tool: 'recipe.run', args: { recipe_id: 'recued-core/add-unit', config: { label: 'Flat 2' } } },
+    ]);
+    expect(out.response).toBe('');
+  });
+
+  it('reads an ARRAY of native tool_use blocks — bench 181 died on this', () => {
+    // Verbatim final output of a slice+lean-core run. The dropped call was the
+    // NEXT STEP OF THE CHAIN: the model was working, the harness lost the call,
+    // and the loop reported `completed`.
+    const out = coerceAIOutput([
+      { type: 'tool_use', id: 'toolu_01MjFf', name: 'recued-core/add-customer',
+        input: { name: 'Riverside Holdings', payment_method: 'cash' } },
+    ]) as AIOutput;
+    expect(out.tool_calls).toEqual([
+      { tool: 'recued-core/add-customer',
+        args: { name: 'Riverside Holdings', payment_method: 'cash' } },
+    ]);
+    expect(validateAIOutput(out)).toEqual([]);
+  });
+
+  it('reads `{tool_name, args}` — a near-miss on the contract field name', () => {
+    const out = coerceAIOutput([
+      { tool_name: 'recued-core/list-customers', args: { limit: 100 } },
+    ]) as AIOutput;
+    expect(out.tool_calls).toEqual([
+      { tool: 'recued-core/list-customers', args: { limit: 100 } },
+    ]);
+    expect(validateAIOutput(out)).toEqual([]);
+  });
+
+  it('normalizes a PRESENT tool_calls array too — right wrapper, wrong fields', () => {
+    const out = coerceAIOutput({
+      response: 'on it',
+      tool_calls: [{ tool_name: 'mail.search', args: { q: 'x' } }],
+    }) as AIOutput;
+    expect(out.tool_calls).toEqual([{ tool: 'mail.search', args: { q: 'x' } }]);
+    expect(out.response).toBe('on it');
+  });
+
+  it('⛔ leaves an UNRECOGNISED shape alone for the validator to flag', () => {
+    // The guard against inventing calls. A fourth alias needs a transcript,
+    // not a guess — each accepted shape is a new way for garbage to read as a
+    // confident tool call.
+    const out = coerceAIOutput([{ nonsense: true }]) as AIOutput;
+    expect(out.tool_calls).toEqual([{ nonsense: true }]);
+    expect(validateAIOutput(out).length).toBeGreaterThan(0);
+  });
+
+  it('⛔ a normal envelope carrying `name`/`input` is NOT reinterpreted', () => {
+    // The mutation-killer. Dropping any wrapper-key guard would make this
+    // envelope's `response` and `tool_calls` vanish into a fabricated call.
+    const out = coerceAIOutput({
+      response: 'here you go',
+      tool_calls: [{ tool: 'mail.search', args: { q: 'x' } }],
+      name: 'not-a-tool',
+      input: { nope: true },
+    }) as AIOutput;
+    expect(out.response).toBe('here you go');
+    expect(out.tool_calls).toEqual([{ tool: 'mail.search', args: { q: 'x' } }]);
+  });
+
+  it('⛔ `name` without an object `input` is left alone — no garbage tool name', () => {
+    const out = coerceAIOutput({ name: 'recipe.run', input: 'not-an-object' }) as AIOutput;
+    expect(out.tool_calls).toEqual([]);
+  });
+
   it('fills a MISSING events key (model dropped the empty optional)', () => {
     const out = coerceAIOutput({
       response: 'hi',
@@ -318,5 +395,204 @@ describe('coerceAIOutput — real-model envelope normalization', () => {
     expect(coerceAIOutput(42)).toBe(42);
     // and validateAIOutput still rejects them
     expect(validateAIOutput(coerceAIOutput('raw text'))).toHaveLength(3);
+  });
+});
+
+describe('D-145 PB6 — an alias must never eat a tool RESULT', () => {
+  // ⛔⛔ THE REGRESSION THIS EXISTS TO STOP. The packet shows the model its own
+  // `prior_tool_calls` as `{ tool_name, args, status, result, started_at,
+  // completed_at }` — whose first two fields ARE the `{tool_name, args}` alias.
+  // A model that echoes that block back (observed on bench 181, a 2-entry echo)
+  // was re-read as a fresh batch and the tools RAN A SECOND TIME, 18ms apart —
+  // which is also exactly what D-219 slice 8 excludes as a repeat. The echo did
+  // not merely duplicate work; it destroyed the execution case.
+  const echoEntry = {
+    tool_name: 'recued-core/list-buildings',
+    args: { limit: 100 },
+    status: 'ok',
+    result: { success: true },
+    started_at: 1,
+    completed_at: 2,
+  };
+
+  it('turns an all-echo array into a RECOVERABLE empty envelope, not a failed one', () => {
+    const out = coerceAIOutput([echoEntry, { ...echoEntry, tool_name: 'recued-core/add-unit' }]) as {
+      response: string; events: unknown[]; tool_calls: ReadonlyArray<unknown>;
+    };
+    expect(out.tool_calls).toEqual([]);
+    // ⛔ VALID, deliberately. A validation failure returns `kind: 'failed'` and
+    // ABORTS the turn with no retry; an empty envelope earns the one recovery
+    // round that asks the model to re-emit. The echo expressed no intent, so
+    // the recoverable path is the honest one — and it is NOT a re-dispatch.
+    expect(validateAIOutput(out)).toEqual([]);
+  });
+
+  it('keeps a MIXED array failing validation rather than dropping half a plan', () => {
+    const out = coerceAIOutput([echoEntry, { tool: 'recued-core/add-unit', args: {} }]) as {
+      tool_calls: ReadonlyArray<Record<string, unknown>>;
+    };
+    expect(out.tool_calls).toHaveLength(2);
+    expect(validateAIOutput(out).some((i) => i.kind === 'tool_call_not_shaped')).toBe(true);
+  });
+
+  it('still converts a GENUINE {tool_name, args} call that carries no result fields', () => {
+    const out = coerceAIOutput([{ tool_name: 'recued-core/list-customers', args: { limit: 5 } }]) as {
+      tool_calls: ReadonlyArray<Record<string, unknown>>;
+    };
+    expect(out.tool_calls).toEqual([
+      { tool: 'recued-core/list-customers', args: { limit: 5 } },
+    ]);
+    expect(validateAIOutput(out)).toEqual([]);
+  });
+
+  it('reads the OpenAI {name, arguments} shape when arguments is an OBJECT', () => {
+    // Observed live (bench 181): the chain's `add-customer` step, dropped entirely.
+    const out = coerceAIOutput({
+      name: 'recipe.run',
+      arguments: { recipe_id: 'recued-core/add-customer', config: { name: 'Riverside Holdings' } },
+    }) as { tool_calls: ReadonlyArray<Record<string, unknown>> };
+    expect(out.tool_calls).toEqual([
+      {
+        tool: 'recipe.run',
+        args: { recipe_id: 'recued-core/add-customer', config: { name: 'Riverside Holdings' } },
+      },
+    ]);
+  });
+
+  it('leaves the JSON-STRING arguments variant alone', () => {
+    // Standing ruling: a parse-on-guess trades a visible empty round for a
+    // silent wrong one. Unhandled until a transcript shows it.
+    const out = coerceAIOutput({ name: 'recipe.run', arguments: '{"recipe_id":"x"}' }) as {
+      tool_calls?: unknown;
+    };
+    expect(out.tool_calls).toEqual([]);
+  });
+});
+
+describe('D-145 PB6 — shapes drawn from OUR OWN packet vocabulary', () => {
+  it('reads {recipe_slug, args} — the field name the catalog advertises', () => {
+    // ⛔ THE COMPLETE THIRD STEP OF A CHAIN WAS DROPPED ON THIS. Verbatim from
+    // bench 181: every id grounded, the start date present, and unreadable only
+    // because `available_tools` calls the field `recipe_slug` and the decoder
+    // insisted on `tool`.
+    const out = coerceAIOutput({
+      recipe_slug: 'recued-core/open-rental-contract',
+      args: {
+        customer_id: 'rec_bba818eb-6a43-4139-91ed-bf862cc252f2',
+        unit_id: 'rec_3cc9e3ad-3821-465d-9e1a-2a4c1938987e',
+        rent: '1200',
+        start_date: '2026-09-01',
+        end_date: '',
+      },
+    }) as { tool_calls: ReadonlyArray<Record<string, unknown>> };
+    expect(out.tool_calls).toHaveLength(1);
+    expect(out.tool_calls[0]!.tool).toBe('recued-core/open-rental-contract');
+    expect(validateAIOutput(out)).toEqual([]);
+  });
+
+  it('wraps a BARE extraction event back into events[]', () => {
+    const out = coerceAIOutput({
+      kind: 'extraction.intent',
+      payload: { intent: 'Add a customer to the rental book' },
+    }) as { events: ReadonlyArray<Record<string, unknown>>; tool_calls: unknown[] };
+    expect(out.events).toHaveLength(1);
+    expect(out.events[0]!.kind).toBe('extraction.intent');
+    expect(out.tool_calls).toEqual([]);
+  });
+
+  it('does NOT mint a tool call from a bare {kind, payload} naming a TOOL', () => {
+    // `request.dissection` arrived in exactly this shape. Minting a dispatch
+    // from an unverified name is the silent-wrong-action trade; an empty
+    // envelope earns the recovery round instead, which is visible.
+    const out = coerceAIOutput({
+      kind: 'request.dissection',
+      payload: { schema_version: 1, intent: 'list my buildings' },
+    }) as { events: unknown[]; tool_calls: unknown[] };
+    expect(out.tool_calls).toEqual([]);
+    expect(out.events).toEqual([]);
+    expect(validateAIOutput(out)).toEqual([]);
+  });
+
+  it('leaves a result echo carrying recipe_slug alone', () => {
+    // The echo guard must still win over the new alias.
+    const out = coerceAIOutput([{
+      recipe_slug: 'recued-core/add-unit', args: {}, status: 'ok', result: { success: true },
+    }]) as { tool_calls: unknown[] };
+    expect(out.tool_calls).toEqual([]);
+  });
+});
+
+describe('D-145 PB6 — the bare request.dissection shapes', () => {
+  const payload = { schema_version: 1, intent: 'List my buildings' };
+
+  it('reads the single-key wrapper {"request.dissection": {…}}', () => {
+    const out = coerceAIOutput({ 'request.dissection': payload }) as {
+      tool_calls: ReadonlyArray<Record<string, unknown>>;
+    };
+    expect(out.tool_calls).toEqual([{ tool: 'request.dissection', args: payload }]);
+    expect(validateAIOutput(out)).toEqual([]);
+  });
+
+  it('reads {kind: "request.dissection", args: {…}}', () => {
+    const out = coerceAIOutput({ kind: 'request.dissection', args: payload }) as {
+      tool_calls: ReadonlyArray<Record<string, unknown>>;
+    };
+    expect(out.tool_calls).toEqual([{ tool: 'request.dissection', args: payload }]);
+  });
+
+  it('still REFUSES {kind, payload} — the model expressed an event, not a call', () => {
+    const out = coerceAIOutput({ kind: 'request.dissection', payload }) as {
+      tool_calls: unknown[]; events: unknown[];
+    };
+    expect(out.tool_calls).toEqual([]);
+    expect(out.events).toEqual([]);
+  });
+
+  it('does not mistake a two-key catalog echo for a single-key wrapper', () => {
+    const out = coerceAIOutput({
+      recipe_slug: 'recued-core/open-rental-contract',
+      args_schema: { type: 'object' },
+    }) as { tool_calls: unknown[] };
+    expect(out.tool_calls).toEqual([]);
+  });
+
+  it('does not mint a call from a single-key wrapper whose key is a plain word', () => {
+    // `{summary: {...}}` is prose structure, not a tool name. The `.`/`/`
+    // requirement is what keeps ordinary single-key objects out.
+    const out = coerceAIOutput({ summary: { text: 'done' } }) as { tool_calls: unknown[] };
+    expect(out.tool_calls).toEqual([]);
+  });
+
+  it('does not mint a call from a single-key wrapper holding a non-object', () => {
+    const out = coerceAIOutput({ 'a.b': 'not an object' }) as { tool_calls: unknown[] };
+    expect(out.tool_calls).toEqual([]);
+  });
+});
+
+describe('D-145 PB6 — the {name, args} hybrid', () => {
+  it('reads a native-style array whose entries pair `name` with `args`', () => {
+    // Verbatim from a live lean-core turn; it was dropped whole and the round
+    // was only saved by the guided retry.
+    const out = coerceAIOutput([
+      { type: 'tool_call', id: 'toolu_bdrk_01W4', name: 'tools.search', args: { query: 'add customer' } },
+    ]) as { tool_calls: ReadonlyArray<Record<string, unknown>> };
+    expect(out.tool_calls).toEqual([
+      { tool: 'tools.search', args: { query: 'add customer' } },
+    ]);
+    expect(validateAIOutput(out)).toEqual([]);
+  });
+
+  it('still prefers `input` when a native block carries BOTH', () => {
+    const out = coerceAIOutput({ name: 't', input: { a: 1 }, args: { b: 2 } }) as {
+      tool_calls: ReadonlyArray<Record<string, unknown>>;
+    };
+    expect(out.tool_calls[0]!.args).toEqual({ a: 1 });
+  });
+
+  it('does not read a RESULT echo that happens to carry name+args', () => {
+    const out = coerceAIOutput([
+      { name: 'recued-core/add-unit', args: {}, status: 'ok', result: { success: true } },
+    ]) as { tool_calls: unknown[] };
+    expect(out.tool_calls).toEqual([]);
   });
 });

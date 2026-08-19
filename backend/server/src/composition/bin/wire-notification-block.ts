@@ -243,6 +243,43 @@ export interface NotificationBlockBundle {
  *
  *  Pure + exported so the action mapping is testable without booting a
  *  block: "which code does this option mean" is a claim, not plumbing. */
+/** FN-2 — pull the join keys off the ask's own payload.
+ *
+ *  The host may read this shape; the notification leaf may not (see
+ *  `AnswerAuditRecord.handler_payload`). Every field is optional on BOTH
+ *  sides: a `gateway.preflight` payload carries `run_id` + `checkpoint_id`
+ *  always, then EITHER `recipe_id` + `gated_step_id` (a recipe-bound hold)
+ *  OR `raw_op_id` (a recipe-less raw-op door hold) — the checkpoint guard
+ *  enforces that partition, so reading both and emitting what is present is
+ *  correct for either. A non-preflight ask kind carries none of them and
+ *  yields an entry identical to the pre-FN-2 one.
+ *
+ *  ⚠ Reads defensively rather than casting: the payload is
+ *  `Record<string, unknown>` by contract and a pack may register any ask
+ *  kind with any shape, so a non-string under a key we know is silently
+ *  ignored instead of being written into the ledger as a wrong join key. */
+const str = (v: unknown): string | undefined =>
+  typeof v === 'string' && v.length > 0 ? v : undefined;
+
+export const answerActivitySubject = (
+  payload: Record<string, unknown> | undefined,
+): Pick<ActivityEntry, 'run_id' | 'recipe_id' | 'step_id' | 'operation_id'> => {
+  if (payload === undefined) return {};
+  const run_id = str(payload.run_id);
+  const recipe_id = str(payload.recipe_id);
+  const step_id = str(payload.gated_step_id);
+  // A raw-op hold names the op directly; a recipe-bound hold names the
+  // ingredient the gated dispatch targeted. Either is the operation this
+  // decision was about, and they are mutually exclusive by construction.
+  const operation_id = str(payload.raw_op_id) ?? str(payload.tool_slug);
+  return {
+    ...(run_id !== undefined ? { run_id } : {}),
+    ...(recipe_id !== undefined ? { recipe_id } : {}),
+    ...(step_id !== undefined ? { step_id } : {}),
+    ...(operation_id !== undefined ? { operation_id } : {}),
+  };
+};
+
 export const buildAnswerActivity = (record: AnswerAuditRecord): ActivityEntry => ({
   // `(answered_at, ask_id)` is unique by construction — the block calls this
   // once per ask, inside the once-only `open → answered` dedup window.
@@ -250,6 +287,7 @@ export const buildAnswerActivity = (record: AnswerAuditRecord): ActivityEntry =>
   timestamp: record.answered_at,
   action: answerAuditAction(record.option),
   target: record.ask_id,
+  ...answerActivitySubject(record.handler_payload),
   detail:
     `${record.title ?? record.handler_kind}`
     + ` — answered '${record.option_label}' (${record.option})`

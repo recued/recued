@@ -20,6 +20,8 @@ import {
   TTL_FLOOR_AI,
   TTL_FLOOR_DATA,
 } from './constants.js';
+import type { RecipeDefinition } from '@recued/contracts';
+import { guardRequiredVariables } from '../chat-catalog.js';
 import type { AddFn } from './helpers.js';
 
 export const validateQualityChecks = (r: Record<string, unknown>, add: AddFn): void => {
@@ -55,6 +57,54 @@ export const validateQualityChecks = (r: Record<string, unknown>, add: AddFn): v
   checkFormatHints(steps, add);
   detectDuplicateStepContent(prefetch, 'prefetch_steps', add);
   detectDuplicateStepContent(steps, 'steps', add);
+  checkOptionalButRequired(r, prefetch, steps, add);
+};
+
+/** A variable whose EMPTY default is now overridden by the guard — reported so
+ *  the author can drop the dead default, not because the model is misled.
+ *
+ *  🔑 THE SCHEMA NO LONGER LIES. `deriveTier2ArgSchema` unions
+ *  {@link guardRequiredVariables} into `required`, so a guarded variable reaches
+ *  the model as REQUIRED whatever its declaration says — the guard is the
+ *  authority, because it is the thing that enforces. This warning is therefore
+ *  hygiene rather than a defect report: the `default: ''` is now inert for AI
+ *  callers and merely misleads a human reading the recipe.
+ *
+ *  ⚠ It still matters for the FORM. A human surface reads the declaration, not
+ *  the projection, so a dead default there still renders a field that looks
+ *  optional and then fails on submit.
+ *
+ *  ⚠ Shares `guardRequiredVariables` with the projection rather than restating
+ *  it — two copies of "what the guard requires" is how a schema and its warning
+ *  come to disagree. */
+const checkOptionalButRequired = (
+  r: Record<string, unknown>,
+  _prefetch: StepArr,
+  _steps: StepArr,
+  add: AddFn,
+): void => {
+  const vars = (r.variables && typeof r.variables === 'object' && !Array.isArray(r.variables))
+    ? (r.variables as Record<string, unknown>)
+    : {};
+  const guardRequired = guardRequiredVariables(r as unknown as RecipeDefinition);
+  for (const key of guardRequired) {
+    const def = vars[key];
+    const empty = (def !== null && typeof def === 'object' && !Array.isArray(def))
+      ? ('default' in (def as Record<string, unknown>)
+        && ((def as Record<string, unknown>).default === ''
+          || (def as Record<string, unknown>).default === null))
+      : (def === '' || def === null);
+    if (!empty) continue;
+    add(
+      'warn',
+      'variable_optional_but_required',
+      `variables.${key}`,
+      `'${key}' declares an EMPTY default, but a guard refuses the run without it. `
+      + 'The AI-facing schema now marks it required from the guard, so the default '
+      + 'is dead there — but a human form still reads the declaration and will '
+      + 'render an optional-looking field that fails on submit. Drop the default.',
+    );
+  }
 };
 
 type StepArr = Array<Record<string, unknown>>;

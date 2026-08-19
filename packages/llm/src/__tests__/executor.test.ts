@@ -1,9 +1,21 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { executeLLM } from '../executor.js';
+import { resetEndpointCapabilities } from '../endpoint-capabilities.js';
 import { LLMError } from '../types.js';
 import type { LLMAdapter, LLMConfig, LLMMessage } from '../types.js';
 import type { IngredientManifest, WebChatTab } from '@recued/contracts';
 import { createQuotaTracker } from '../quota.js';
+
+// ⚠ The endpoint-capability memories (native JSON mode, the `system` wire role)
+// are PROCESS-GLOBAL by design — they exist so a rejection is paid once per
+// endpoint rather than once per call. That makes them leak between test cases:
+// the json-fallback test below records a rejection for this fixture's slot, and
+// without this reset the NEXT case starts with json mode already suppressed and
+// silently asserts nothing. Any test asserting on per-call request shape needs
+// this.
+beforeEach(() => {
+  resetEndpointCapabilities();
+});
 
 const baseManifest: IngredientManifest = {
   slug: 'ai-classify',

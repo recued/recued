@@ -20,6 +20,7 @@ import {
   CONTRACT_GRANTS_ASKS_ATTR,
   CONTRACT_GRANTS_AXIS_NOTE_ATTR,
   CONTRACT_GRANTS_CELL_ATTR,
+  CONTRACT_GRANTS_STILL_USED_ATTR,
   CONTRACT_GRANTS_CELL_TOGGLE_ATTR,
   CONTRACT_GRANTS_EMPTY_ATTR,
   CONTRACT_GRANTS_ERROR_ATTR,
@@ -349,6 +350,23 @@ interface PanelOpts {
   /** Omit the `cli.reachability.set` caller (cli ops render inert). */
   withCliSet?: boolean;
   operationFilterDebounceMs?: number;
+  /** D-247 D11 — the op row's evidence. Absent ⇒ no caller is wired at all. */
+  usage?: {
+    operations: ReadonlyArray<{
+      operation_id: string; could: readonly string[]; count: number; recipes: readonly string[];
+    }>;
+    window_days: number;
+    oldest_scanned_at: number | null;
+    underivable: readonly string[];
+  };
+  /** D-247 D11 — the caller is wired but REJECTS. */
+  usageRejects?: boolean;
+  /** D-247 — installed recipes for the grant universe. */
+  recipes?: ReadonlyArray<{
+    recipe_id: string; publisher_id: string;
+    source: 'bundled' | 'pair-sync' | 'inline';
+    recipe: { metadata?: { name?: string; description?: string } };
+  }>;
 }
 
 const cliStoreKey = (
@@ -418,6 +436,12 @@ const mountPanelWith = (opts: PanelOpts = {}) => {
     },
   );
 
+  const runRecipeList = vi.fn(async () => ({ recipes: opts.recipes ?? [] }));
+  const runRecipeOpUsage = vi.fn(async () => {
+    if (opts.usageRejects) throw new Error('recipe op usage offline');
+    return opts.usage!;
+  });
+
   const doc = makeFakeDocument();
   const panel = mountContractGrantsPanel({
     document: doc as unknown as Document,
@@ -432,6 +456,10 @@ const mountPanelWith = (opts: PanelOpts = {}) => {
     ...(opts.operationFilterDebounceMs !== undefined
       ? { operationFilterDebounceMs: opts.operationFilterDebounceMs }
       : {}),
+    ...(opts.usage !== undefined || opts.usageRejects === true
+      ? { runRecipeOpUsage }
+      : {}),
+    ...(opts.recipes !== undefined ? { runRecipeList } : {}),
   });
   return {
     panel,
@@ -1113,7 +1141,25 @@ describe('contracts route delta 3 — Ops/Entities tabs', () => {
     expect(ctx.runCatalogOperations).toHaveBeenCalledTimes(1);
   });
 
-  it('self DETAIL gets Ops/Entities via grant.read with no Connect/door/Revoke', async () => {
+  /** ⛔⛔ THE NEGATIVE HALF, and it is the security-relevant one. The `recipe.*`
+   *  axis is OWNER-SCOPED: a door's recipe authority is its INBOUND TOKEN
+   *  (`inboundTokenAuthorize` → `allowed_tools`, D-232 § 20.19), and a derived
+   *  reception/webhook door has no recipe grant at all. A Recipes tab on a door
+   *  would offer switches that write rows nothing reads — a control that does
+   *  nothing, which is worse than an absent one because the owner believes it. */
+  it('a DOOR gets NO Recipes tab — its recipe authority is its token, not this axis', async () => {
+    const ctx = mountRoute('door_alpha');
+    const root = ctx.root as unknown as FakeEl;
+    await ctx.route.whenLoaded();
+    await tick();
+    const tabIds = collectByAttr(root, CONTRACTS_ROUTE_TAB_ATTR).map((t) =>
+      t.getAttribute('data-tab'),
+    );
+    expect(tabIds).not.toContain('recipes');
+    expect(tabIds).toContain('ops');
+  });
+
+  it('self DETAIL gets Ops/Entities/Recipes via grant.read with no Connect/door/Revoke', async () => {
     const ctx = mountRoute(OWNER_CONTRACT_ID);
     const root = ctx.root as unknown as FakeEl;
     await ctx.route.whenLoaded();
@@ -1123,7 +1169,10 @@ describe('contracts route delta 3 — Ops/Entities tabs', () => {
     const tabIds = collectByAttr(root, CONTRACTS_ROUTE_TAB_ATTR).map((t) =>
       t.getAttribute('data-tab'),
     );
-    expect(tabIds).toEqual(['ops', 'entities']);
+    // D-247 — the OWNER gains a Recipes tab. ⛔ Owner-only by design: a door's
+    // recipe authority is its inbound token, so the same tab on a door would
+    // write rows nothing reads. The door assertions below pin that.
+    expect(tabIds).toEqual(['ops', 'entities', 'recipes']);
     // self loads grants under its own id; no door toggle, no Revoke.
     expect(ctx.runGrantRead).toHaveBeenCalledWith({ contract_id: OWNER_CONTRACT_ID });
     expect(collectByAttr(root, CONTRACTS_ROUTE_DOOR_TOGGLE_ATTR)).toHaveLength(0);
@@ -1386,5 +1435,174 @@ describe('contract grants — CLI ops route to cli_reachability (R22 GAP-B fix)'
     await panel.toggleEntry(CLI_ENTRY);
     expect(panel.getEffective(CLI_ENTRY)).toBe('off');
     expect(runCliReachabilitySet).not.toHaveBeenCalled();
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+// D-247 D11 — the op toggle stops lying
+// ════════════════════════════════════════════════════════════════
+
+/** ⛔⛔ AN OP CAN BE OFF AND STILL RUN INSIDE A GRANTED RECIPE (D-247 D2), so a
+ *  row rendering a bare "off" is a FALSE STATEMENT — and the owner deciding
+ *  whether to revoke is exactly the person it misleads.
+ *
+ *  The row carries BOTH halves or it is not worth rendering: the STATIC list
+ *  ("which recipes could reach this") cannot tell a recipe that ran this morning
+ *  from one that has not run since it was installed, and the count alone does not
+ *  say what would break. Both are pinned below, along with the two absences that
+ *  must NOT read as a zero. */
+describe('D-247 D11 — the op row shows what a revoke would actually cost', () => {
+  const usageFor = (
+    row: { could: readonly string[]; count: number; recipes: readonly string[] },
+    window_days = 30,
+  ) => ({
+    operations: [{ operation_id: WRITE_OP, ...row }],
+    window_days,
+    oldest_scanned_at: 1,
+    underivable: [] as readonly string[],
+  });
+
+  const usedLine = (panel: { opsRoot: HTMLElement }): FakeEl | undefined =>
+    collectByAttr(opsRootEl(panel), CONTRACT_GRANTS_STILL_USED_ATTR)[0];
+
+  it('names the recipes that COULD reach it and the runs that DID', async () => {
+    const { panel } = mountPanelWith({
+      seed: { [WRITE_OP]: false },
+      usage: usageFor({
+        could: ['overdue-invoice-chase', 'send-order-customer-reply-shopify'],
+        count: 3,
+        recipes: ['recued-core/overdue-invoice-chase'],
+      }),
+    });
+    await panel.whenLoaded();
+    const line = usedLine(panel);
+    expect(line).toBeDefined();
+    expect(line!.textContent).toContain('Direct calls off');
+    expect(line!.textContent).toContain('still used by: overdue-invoice-chase');
+    expect(line!.textContent).toContain('ran 3× in the last 30 days');
+    // Structured, so a copy edit cannot silently drop one half.
+    expect(line!.getAttribute('data-ran')).toBe('3');
+    expect(line!.getAttribute('data-could')).toContain('overdue-invoice-chase');
+  });
+
+  it('says the WINDOW when nothing ran — retention is not history', async () => {
+    // ⛔ `data.audit` evicts oldest-first, so "no runs in the last 30 days" is the
+    // honest sentence and "never used" is a claim the instrument cannot make.
+    const { panel } = mountPanelWith({
+      seed: { [WRITE_OP]: false },
+      usage: usageFor({ could: ['overdue-invoice-chase'], count: 0, recipes: [] }),
+    });
+    await panel.whenLoaded();
+    const line = usedLine(panel);
+    expect(line!.textContent).toContain('no runs in the last 30 days');
+    expect(line!.textContent).not.toContain('never');
+  });
+
+  it('carries the SERVER’s window, not a hardcoded 30', async () => {
+    const { panel } = mountPanelWith({
+      seed: { [WRITE_OP]: false },
+      usage: usageFor({ could: [], count: 2, recipes: ['x/y'] }, 7),
+    });
+    await panel.whenLoaded();
+    expect(usedLine(panel)!.textContent).toContain('last 7 days');
+  });
+
+  it('renders NOTHING when the evidence read FAILED — not a zero', async () => {
+    // The absence that must not read as proof. A failed evidence read leaves the
+    // grant matrix intact and the line absent, rather than asserting "0 runs".
+    const { panel } = mountPanelWith({ seed: { [WRITE_OP]: false }, usageRejects: true });
+    await panel.whenLoaded();
+    expect(usedLine(panel)).toBeUndefined();
+    // …and the matrix itself still rendered.
+    expect(cellFor(opsRootEl(panel), WRITE_OP)).toBeDefined();
+  });
+
+  it('renders NOTHING when no usage caller is wired', async () => {
+    const { panel } = mountPanelWith({ seed: { [WRITE_OP]: false } });
+    await panel.whenLoaded();
+    expect(usedLine(panel)).toBeUndefined();
+  });
+
+  it('renders NOTHING on a row whose grant is ON — the line is about a REVOKE', async () => {
+    const { panel } = mountPanelWith({
+      seed: { [WRITE_OP]: true },
+      usage: usageFor({ could: ['chase'], count: 3, recipes: ['x/chase'] }),
+    });
+    await panel.whenLoaded();
+    expect(usedLine(panel)).toBeUndefined();
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+// D-247 — the recipe axis reaches the page
+// ════════════════════════════════════════════════════════════════
+
+/** ⛔⛔ THE PANEL SEEDED `recipe.*` ROWS AND SHOWED NONE OF THEM. The gate read
+ *  them, the seed wrote them, and `buildUniverse` never produced one — so the
+ *  owner had a permission that existed in the store with no way to reach it.
+ *  `buildUniverse`'s own doc states the rule it broke: "Add to both, or to
+ *  neither." */
+describe('D-247 — installed recipes are grantable on their own root', () => {
+  const RECIPES = [
+    {
+      recipe_id: 'overdue-invoice-chase', publisher_id: 'recued-core',
+      source: 'pair-sync' as const,
+      recipe: { metadata: { name: 'Chase overdue invoices', description: 'nudges' } },
+    },
+    {
+      recipe_id: 'run-ingredient', publisher_id: 'recued',   // KERNEL — excluded
+      source: 'bundled' as const, recipe: { metadata: { name: 'Run ingredient' } },
+    },
+  ];
+  const recipesRootEl = (panel: { recipesRoot: HTMLElement }): FakeEl =>
+    panel.recipesRoot as unknown as FakeEl;
+
+  it('renders a togglable cell per installed recipe, keyed recipe.<pub>/<id>', async () => {
+    const { panel } = mountPanelWith({ recipes: RECIPES });
+    await panel.whenLoaded();
+    const cell = cellFor(recipesRootEl(panel), 'recipe.recued-core/overdue-invoice-chase');
+    expect(cell).toBeDefined();
+    expect(cell!.getAttribute('data-kind')).toBe('recipe');
+    // The NAME, not the slug — the owner is deciding about a thing, not an id.
+    expect(allText(cell!)).toContain('Chase overdue invoices');
+  });
+
+  it('⛔ defaults OFF — the one inverted author default (D7)', async () => {
+    const { panel } = mountPanelWith({ recipes: RECIPES });
+    await panel.whenLoaded();
+    expect(panel.getEffective('recipe.recued-core/overdue-invoice-chase')).toBe('off');
+  });
+
+  it('reflects a stored grant, and toggling writes the recipe entry key', async () => {
+    const { panel, store } = mountPanelWith({
+      recipes: RECIPES,
+      seed: { 'recipe.recued-core/overdue-invoice-chase': true },
+    });
+    await panel.whenLoaded();
+    expect(panel.getEffective('recipe.recued-core/overdue-invoice-chase')).toBe('on');
+    await panel.toggleEntry('recipe.recued-core/overdue-invoice-chase');
+    expect(store.get('recipe.recued-core/overdue-invoice-chase')).toBe(false);
+  });
+
+  it('excludes KERNEL recipes — a switch whose effect is invisible is not a control', async () => {
+    const { panel } = mountPanelWith({ recipes: RECIPES });
+    await panel.whenLoaded();
+    expect(cellFor(recipesRootEl(panel), 'recipe.recued/run-ingredient')).toBeUndefined();
+  });
+
+  it('keeps recipes OFF the Ops and Entities roots', async () => {
+    // Its own question, its own vocabulary. Buried under Entities it stays
+    // unfound, which is how it shipped invisible in the first place.
+    const { panel } = mountPanelWith({ recipes: RECIPES });
+    await panel.whenLoaded();
+    const key = 'recipe.recued-core/overdue-invoice-chase';
+    expect(cellFor(opsRootEl(panel), key)).toBeUndefined();
+    expect(cellFor(entitiesRootEl(panel), key)).toBeUndefined();
+  });
+
+  it('with no recipe source the root says so rather than rendering empty', async () => {
+    const { panel } = mountPanelWith({});
+    await panel.whenLoaded();
+    expect(allText(recipesRootEl(panel))).toContain('No recipes are installed yet');
   });
 });

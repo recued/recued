@@ -95,6 +95,40 @@ export interface OpAdmissionGate {
    *  paused server never lies as "not granted". Always `false` when no
    *  `isPaused` thunk was injected (pause unenforced — dbless / unit). */
   isFrozenByPause(source: ExecutionSource): boolean;
+
+  /** D-247 D5 — does the OWNER's contract grant this recipe? `entryKey` is the
+   *  `recipe.<publisher>/<recipe_id>` key, formed once in
+   *  `recipe-grant-identity.ts` so the seed and this read cannot disagree.
+   *
+   *  ⛔⛔ THE NAME SAYS OWNER BECAUSE IT ANSWERS ONLY FOR THE OWNER, AND THAT IS
+   *  A DESIGN DECISION, NOT A GAP. A DOOR's recipe authority is its INBOUND TOKEN:
+   *  `buildMcpContractSnapshot` folds granted recipe wire names into
+   *  `allowed_tools` under `inboundTokenAuthorize` (D-232 § 20.19), and a derived
+   *  reception / webhook door has no recipe grant at all — its capability comes
+   *  from the one recipe it is bound to. Answering `true` here for a door would
+   *  WIDEN it past what its token grants, which is a security regression wearing
+   *  the costume of consistency. A non-owner governing contract therefore
+   *  resolves `false`, and the door's answer stays where it already lives.
+   *
+   *  ⚠ CONTRACT-FREE RESOLVES `false`, WHICH INVERTS {@link isOpGranted}'s
+   *  CONVENTION ON PURPOSE. There, absent-governance means "no gate → admit".
+   *  Here the question is "is there a grant to ride", and a dispatch with no
+   *  governing contract has none — it does not need one, because D12's gate is
+   *  skipped for it entirely. Returning `true` would hand every HID run a
+   *  coverage it never has to use, and the first reader to consult this outside
+   *  the gate would inherit a lie. */
+  isOwnerRecipeGranted(source: ExecutionSource, entryKey: string | undefined): boolean;
+
+  /** D-247 — is this dispatch governed by the OWNER contract?
+   *
+   *  ⛔⛔ THIS EXISTS BECAUSE {@link isOwnerRecipeGranted}'s `false` IS AMBIGUOUS
+   *  AND THE AMBIGUITY IS DANGEROUS. It answers `false` both for "the owner holds
+   *  no grant" and for "this is a door, whose recipe authority is its inbound
+   *  token, not the owner's contract". A caller that reads the second as the
+   *  first HIDES OR REFUSES EVERY TIER-2 RECIPE ON EVERY DOOR — a total outage
+   *  that looks like a working gate. Ask this FIRST, and only consult the grant
+   *  when it says yes. */
+  isOwnerGoverned(source: ExecutionSource): boolean;
 }
 
 /** D-196 — customer instances carry a finite stamped grant snapshot. Every
@@ -219,6 +253,30 @@ export const createOpAdmissionGate = (deps: {
           governingId,
           opAuthorDefault(governingId, deps.definitionStore),
         ),
+      );
+    },
+    isOwnerGoverned(source) {
+      return resolveGrantGoverningContractId(source, deps.definitionStore, now)
+        === OWNER_CONTRACT_ID;
+    },
+    isOwnerRecipeGranted(source, entryKey) {
+      // No grant address (no publisher resolved) ⇒ no grant. Never granted-by-absence.
+      if (entryKey === undefined) return false;
+      const governingId = resolveGrantGoverningContractId(source, deps.definitionStore, now);
+      // Contract-free and every DOOR resolve false — see the interface doc. The
+      // same `resolveGrantGoverningContractId` the op axis and the pause axis use,
+      // so the three can never disagree about who is governed.
+      if (governingId !== OWNER_CONTRACT_ID) return false;
+      // The author default is D7's inversion: `ownerOnlyAdjustedAuthorDefault`
+      // short-circuits every `recipe.*` key to FALSE, owner included. The
+      // `normalDefault` passed here is therefore never consulted; it is written as
+      // `true` so that a future reader who removes the inversion gets the
+      // owner-permissive behaviour every other kind has, rather than a silent
+      // deny-everything that would look like this line's intent.
+      return grantResolver.isGranted(
+        governingId,
+        entryKey,
+        ownerOnlyAdjustedAuthorDefault(entryKey, governingId, true),
       );
     },
   };

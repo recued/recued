@@ -38,6 +38,8 @@ import {
 import {
   extractPromptCacheNer as extractNer,
 } from '@recued/middleware-prompt-cache';
+import { TOOLS_SEARCH_TOOL_NAME } from './chat-tools-search-name.js';
+import { REQUEST_DISSECTION_TOOL_NAME } from './execution-case-vocabulary.js';
 
 /** V19 (D-219 consumer) carries `tool_sequence` onto the COMPILED FLOW, so a
  * model-bound card can render the shape of a procedure instead of inferring it.
@@ -877,6 +879,146 @@ export const historicalOutcomeForObservations = (
  *  observation is not one of the excluded kinds. Split out so offerability and
  *  eligibility cannot drift — a prompt that offers what admission would refuse
  *  is worse than no prompt, because the owner answers and nothing happens. */
+/** D-219 — WHY an observation is not offerable, as a closed vocabulary.
+ *
+ *  ⛔ The diagnostics reported `offerable_observations: 0` and nothing else, so
+ *  every investigation of an empty corpus was a guess at which gate fired. Three
+ *  hypotheses were wrong in a row (a missing dissection, an empty intent facet, an
+ *  unknown tool tier) before this existed. A counter that says WHICH gate refused
+ *  turns that into a reading.
+ *
+ *  ⚠ Order matters and mirrors the gate exactly — the FIRST refusal wins, because
+ *  that is the one a reader has to fix first. */
+export type ExecutionCaseRefusalReason =
+  | 'span_open'
+  | 'no_governing_contract'
+  | 'no_principal'
+  | 'no_intent_facet'
+  | 'no_flow_signature'
+  | 'excluded_execution_failure'
+  | 'excluded_gateway_denial'
+  | 'excluded_abandoned'
+  | 'repeated_tool'
+  | 'below_round_depth'
+  /** `nonCoreRoundDepth` returned 0 — the positional arrays were empty or
+   *  misaligned, so the depth could not be MEASURED. Distinct from a genuinely
+   *  shallow flow; see the comment at the check. */
+  | 'round_depth_unmeasurable'
+  | 'no_polarity'
+  | 'below_call_floor'
+  | 'outcome_contradicts';
+
+/** The gate's own reasoning, exposed. Returns `null` when the observation would
+ *  be offered. Pure; shares every predicate with {@link passesStructuralGate} and
+ *  {@link executionCaseOfferableVerdicts} rather than restating them. */
+/** The OPERATION a flow step performed, rather than the transport that carried
+ *  it.
+ *
+ *  ⛔⛔ `recipe.run` IS A DISPATCHER, AND `tool_sequence` RECORDS TOOL NAMES. Two
+ *  DIFFERENT recipes sent through it both record the string `recipe.run`, so a
+ *  procedure reads as one tool called twice and slice 8 excludes it as a retry.
+ *  Measured on bench 181: a lean-core run reached `add-customer`,
+ *  `list-customers` and `open-rental-contract` through the dispatcher and lost
+ *  its observation to `repeated_tool: 1` with nothing retried.
+ *
+ *  ⚠ THE PENALTY IS MODE-COUPLED, which is why it went unnoticed. Under a `full`
+ *  catalog every recipe is listed and the model calls it by SLUG, which already
+ *  names itself; under `lean-core` recipes arrive via `tools.search` and the
+ *  dispatcher is the closer route. The identity has been on the flow since V21
+ *  (`recipe_steps`) for the CARD to render — this check simply never read it.
+ *
+ *  ⚠ KEYED BY ORDINAL, never matched by name — the same discipline
+ *  `annotateRecipeSteps` states: a flow can pair one dispatch and leave another
+ *  unpaired, and a deduped ref then attaches to whichever step you guess.
+ *
+ *  ⚠ NORMALISED TO THE BARE ID because the two routes qualify differently — a
+ *  slug step records `recued-core/add-unit` while a dispatched one may record
+ *  `add-unit` or `rental-book/add-unit`. Without this, the SAME recipe run twice
+ *  by different routes would read as two operations and slip past the check the
+ *  fix exists to serve. ⚠ The residual risk is two publishers' same-named
+ *  recipes in one flow colliding into a false `repeated_tool`; that errs toward
+ *  EXCLUSION, which is the safe direction here and is what happens today anyway. */
+/** Tools whose REPEAT says nothing about the procedure, so slice 8 must not read
+ *  one as a retry.
+ *
+ *  ⛔⛔ BOTH ARE OUR OWN BOOKKEEPING, NOT THE MODEL'S WORK. `tools.search` is the
+ *  lean-core catalog's tax — the only route to a recipe it cannot see.
+ *  `request.dissection` is a classification marker that carries "no hash,
+ *  outcome, identity, or scope" and performs none of the requested work; we
+ *  INVITE the model to call it, and its own handler tolerates a second call by
+ *  answering "do not call request.dissection again in this turn".
+ *
+ *  🔑 MEASURED across 34 live runs: 11 flows were refused as `repeated_tool`,
+ *  and 5 of them ONLY because the dissection appeared twice. That is 15% of all
+ *  runs losing their execution case to a bookkeeping call, with nothing retried
+ *  and no procedure repeated. It was the single largest cause of refusal —
+ *  ahead of every real recipe repeat combined.
+ *
+ *  ⚠ NARROW BY NAME, NOT BY TIER, exactly as the `tools.search` exemption
+ *  already argues: exempting all Tier-1 tools would re-admit
+ *  `[mail.search, send, mail.search, send]`, which is the shape slice 8 exists
+ *  to refuse. ⚠ This widens what is ADMITTED. That is the intended direction
+ *  here — the flows in question are genuine procedures being thrown away — but
+ *  a third entry on this list needs the same standard of evidence. */
+const FLOW_REPEAT_EXEMPT_TOOLS: ReadonlySet<string> = new Set([
+  TOOLS_SEARCH_TOOL_NAME,
+  REQUEST_DISSECTION_TOOL_NAME,
+]);
+
+const flowStepIdentity = (
+  tool: string,
+  ordinal: number,
+  recipeByOrdinal: ReadonlyMap<number, string>,
+): string => {
+  const id = recipeByOrdinal.get(ordinal) ?? tool;
+  const slash = id.lastIndexOf('/');
+  return slash === -1 ? id : id.slice(slash + 1);
+};
+
+export const executionCaseRefusalReason = (
+  observation: CaseSourceObservation,
+): ExecutionCaseRefusalReason | null => {
+  if (!observation.span_closed) return 'span_open';
+  if (!observation.governing_contract_id) return 'no_governing_contract';
+  if (!observation.principal_key) return 'no_principal';
+  if (!observation.request_shape.intent_facets[0]) return 'no_intent_facet';
+  if (observation.flow_pattern.exact_signature.length === 0) return 'no_flow_signature';
+  // ⚠ SPLIT, not one `excluded_evidence`. The three are excluded for three
+  // DIFFERENT reasons (a breakage is not a lesson / a denial is a moment / silence
+  // is not evidence), so a reader who sees one lumped code still has to go and
+  // find out which — and that is the step this whole counter exists to remove.
+  if (observation.evidence_kinds.includes('execution_failure')) {
+    return 'excluded_execution_failure';
+  }
+  if (observation.evidence_kinds.includes('gateway_denial')) {
+    return 'excluded_gateway_denial';
+  }
+  if (observation.evidence_kinds.includes('abandoned')) return 'excluded_abandoned';
+  const seq = observation.flow_pattern.tool_sequence ?? [];
+  const seqRecipes = new Map(
+    (observation.flow_pattern.recipe_steps ?? []).map((step) => [step.ordinal, step.recipe_id]),
+  );
+  const seen = new Set<string>();
+  for (const [ordinal, tool] of seq.entries()) {
+    if (FLOW_REPEAT_EXEMPT_TOOLS.has(tool)) continue;
+    const identity = flowStepIdentity(tool, ordinal, seqRecipes);
+    if (seen.has(identity)) return 'repeated_tool';
+    seen.add(identity);
+  }
+  // ⛔ ZERO IS NOT "SHALLOW" — it is `nonCoreRoundDepth`'s FAIL-CLOSED value,
+  // returned when `round_ordinals` / `tool_tiers` are empty or misaligned (a
+  // pre-V22 row, or a tool the registry could not resolve a tier for). A flow
+  // six rounds deep and a flow the compiler could not measure both refuse here,
+  // and reporting them as one reason sent an investigation looking for a
+  // shallow chain that did not exist. Split, so the counter names which.
+  const depth = nonCoreRoundDepth(observation.flow_pattern);
+  if (depth === 0) return 'round_depth_unmeasurable';
+  if (depth < EXECUTION_CASE_MIN_DISTINCT_ROUNDS) return 'below_round_depth';
+  return executionCaseOfferableVerdicts(observation).length > 0
+    ? null
+    : 'below_call_floor';
+};
+
 const passesStructuralGate = (
   observation: CaseSourceObservation,
 ): boolean => {
@@ -943,11 +1085,38 @@ const passesStructuralGate = (
   // identical to a double-send retry, because the difference is in ARGUMENTS the
   // observation does not record. Excluding is the conservative direction — a
   // missing case costs nothing, a case that teaches "send it twice" does not.
+  //
+  // ⚠ AMENDED 2026-08-18 — `tools.search` IS EXEMPT, and the rule above is why
+  // rather than an exception to it. Slice 8's own examples are `[send, send]`
+  // and `[search, send, search, send]`, where `search` is a DATA read
+  // (`mail.search`, `contact.search`): going back for more records IS
+  // floundering. `tools.search` is not a data read — it is CATALOG DISCOVERY,
+  // the only way to reach a Tier-2 recipe at all whenever the resolved catalog
+  // mode OMITS Tier-2 entries — `lean-core` does, and read
+  // `CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE` for which mode ships. So a second
+  // discovery call is
+  // the model reaching a SECOND recipe, which is the exact opposite of a retry.
+  //
+  // ⛔ WITHOUT THIS THE GATE CONTRADICTS THE CATALOG MODE. A multi-recipe flow
+  // needs one discovery per recipe it did not already know, so under lean-core
+  // the deeper the procedure the more certainly it is excluded — and depth is
+  // what V22 requires. Measured on bench task 181: the model was offered 13
+  // core primitives plus `tools.search` and NO recipe entry, and an earlier run
+  // that did reach the recipes called `tools.search` three times.
+  //
+  // ⚠ NARROW BY NAME, NOT BY TIER. Exempting all Tier-1 tools would re-admit
+  // `[mail.search, send, mail.search, send]`, which is precisely the shape the
+  // slice measured and refused.
   const sequence = observation.flow_pattern.tool_sequence ?? [];
+  const sequenceRecipes = new Map(
+    (observation.flow_pattern.recipe_steps ?? []).map((step) => [step.ordinal, step.recipe_id]),
+  );
   const seen = new Set<string>();
-  for (const tool of sequence) {
-    if (seen.has(tool)) return false;
-    seen.add(tool);
+  for (const [ordinal, tool] of sequence.entries()) {
+    if (FLOW_REPEAT_EXEMPT_TOOLS.has(tool)) continue;
+    const identity = flowStepIdentity(tool, ordinal, sequenceRecipes);
+    if (seen.has(identity)) return false;
+    seen.add(identity);
   }
   return true;
 };

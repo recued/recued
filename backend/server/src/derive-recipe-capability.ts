@@ -35,7 +35,7 @@
  *
  *  Pure: no I/O, no clock. Spec: D-207 §5.1a / §5.1d. */
 
-import { parseOpId, type RecipeDefinition } from '@recued/contracts';
+import { kernelOpForBackingSlug, parseOpId, type RecipeDefinition } from '@recued/contracts';
 
 /** The authority surface of a recipe — exactly the axes `ContractScope` stores. */
 export interface RecipeCapability {
@@ -364,7 +364,20 @@ export const buildRecipeOpDependencyIndex = (
       underivable.push(entry.id);
       continue;
     }
-    for (const opId of derived.capability.operation_ids) {
+    // ⛔⛔ D-247 — THE SAME OP-ID NORMALISATION THE RUNTIME COVERAGE USES, OR THE
+    // TWO HALVES OF D11's ROW CONTRADICT EACH OTHER. `operation_ids` records an
+    // ingredient step's canonical op only when an `OpResolver` maps it, so a bare
+    // kernel step (`ingredient: 'mail-send'`, no `operation`) contributes its SLUG
+    // and no op id — while the gate, the coverage predicate and therefore the
+    // coverage LEDGER all derive `core.mail.send` from that same slug. Without
+    // this the row would read "ran 3× via overdue-invoice-chase" directly above a
+    // "still used by" list that does not mention it.
+    const opIds = new Set<string>(derived.capability.operation_ids);
+    for (const slug of derived.capability.ingredient_ids) {
+      const kernelOp = kernelOpForBackingSlug(slug);
+      if (kernelOp !== undefined) opIds.add(kernelOp);
+    }
+    for (const opId of opIds) {
       const list = byOp.get(opId);
       if (list) list.push(entry.id);
       else byOp.set(opId, [entry.id]);

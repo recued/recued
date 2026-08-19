@@ -74,6 +74,10 @@ export interface ContractGrantEntryStore {
    *  uninstall). Throws on an empty id (a degenerate key the structural gate would reject —
    *  fail loud with a clear error). `now` is epoch-ms. */
   set(contract_id: string, entry_key: string, granted: boolean, now: number, source_pack?: string): void;
+  /** D-247 — seed a row ONLY when none exists. Returns true iff it wrote.
+   *  ⛔ Atomic: `get`-then-`set` races another process and can overwrite an
+   *  explicit revoke written between the two calls. */
+  setIfAbsent(contract_id: string, entry_key: string, granted: boolean, now: number): boolean;
   /** Clear an entry's row under a contract — subsequent reads fall back to the resolver
    *  default. Idempotent: returns `true` iff a row was removed. */
   clear(contract_id: string, entry_key: string): boolean;
@@ -121,6 +125,22 @@ export const createContractGrantEntryStore = (
       return isBool(value?.granted) ? value.granted : undefined;
     },
 
+    setIfAbsent(contract_id, entry_key, granted, now) {
+      if (!contract_id) throw new Error('contract_grant_contract_id_required');
+      if (!entry_key) throw new Error('contract_grant_entry_key_required');
+      if (!isBool(granted)) {
+        throw new Error(`contract_grant_granted_invalid: '${String(granted)}' — must be a boolean`);
+      }
+      // ⛔ D-247 — ONE STATEMENT, because `get`-then-`set` is not atomic across
+      // PROCESSES and the two boot paths share a WAL database. Interleaving:
+      // A reads absent, B writes the owner's explicit `false`, A overwrites it
+      // with the seed's `true` — reopening a revoke nobody reopened.
+      return contractStore.putIfAbsent(
+        CONTRACT_GRANT_SCOPE,
+        [contract_id, entry_key],
+        { granted, set_at: now } satisfies GrantEntryRow,
+      );
+    },
     set(contract_id, entry_key, granted, now, source_pack) {
       if (!contract_id) {
         throw new Error('contract_grant_contract_id_required');

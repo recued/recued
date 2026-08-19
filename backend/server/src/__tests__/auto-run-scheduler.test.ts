@@ -65,6 +65,8 @@ const mkRecipeStore = (recipes: RecipeDefinition[]): RecipeStore => ({
   updateUpstream: () => {},
   setOnUpgrade: () => {},
   setOnMutated: () => {},
+  // D-247 — required so a store double cannot silently miss the grant seam.
+  addOnMutated: () => {},
 });
 
 /** Either a plain boolean/Error outcome (back-compat) or a

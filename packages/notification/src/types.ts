@@ -375,4 +375,20 @@ export interface AnswerAuditRecord {
   title?: string;
   answered_at: number;
   answered_via: ChannelName;
+  /** FN-2 — the ask's own `handler_payload`, passed through UNINTERPRETED.
+   *
+   *  ⛔ WHY A PASS-THROUGH AND NOT PARSED FIELDS. This block treats
+   *  `handler_kind` as "an opaque registry key" and never interprets a
+   *  payload — that is the layering that lets any consumer register any ask
+   *  kind. Reading `run_id` out of it HERE would make the leaf understand
+   *  `gateway.preflight`, which it must not. So the payload travels and the
+   *  HOST — which already knows the preflight shape — extracts identity.
+   *
+   *  🔑 WHAT IT FIXES. `approval_allow` / `approval_deny` are reserve-class
+   *  and outlive normal retention, but the row's only pointer was `ask_id`,
+   *  aimed at a `PendingAsk` that `pruneHandled` deletes, while the run
+   *  anchor's back-pointer is overwritten on resume (`auditLog.append` is
+   *  `set(run_id, …)`). The one durable record of what the owner decided
+   *  could not be joined to what they decided ABOUT. */
+  handler_payload?: Record<string, unknown>;
 }

@@ -180,6 +180,7 @@ import {
   type AiModelsSetChatCatalogModeCaller,
   type AiModelsLlmPromptsGetCaller,
   type AiModelsLlmPromptSetCaller,
+  type AiModelsProbeSourceCaller,
   type AiModelsInitialView,
   type AiModelsPageMount,
   type ChatDefaultModelPrefGetCaller,
@@ -287,6 +288,7 @@ import {
   type ArchiveDownloadFn,
   type ArchiveUploadFn,
 } from './archive-backup-panel.js';
+import { serializeShellRoute } from '../shell/route.js';
 import type { ClearThisBrowserResult } from '../auth/clear-this-browser.js';
 import type { CertPinStateWatcher } from '../realtime/cert-pin-state-watcher.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
@@ -362,6 +364,15 @@ export interface BootstrapSettingsRouteOptions {
    *  `data-recued-settings-section`, the route scrolls that section into view
    *  once after mount. Unknown / absent ids are a safe no-op. */
   initialSectionId?: string | null;
+  /** Address seam for in-page rail navigation. The rail used to switch
+   *  sections with a pure attribute flip, so the URL kept naming whichever
+   *  settings hash the user arrived on — Seller's own `#settings/seller/<sub>`
+   *  links then pushed a history entry whose Back target was the STALE
+   *  address, landing the user on the first section instead of the Seller
+   *  directory. The rail now reports `#settings/<id>` and the host writes it
+   *  (`'push'` = a history entry). Absent ⇒ the rail is in-page only, exactly
+   *  as before. Mirrors Chat's `onAddressChange`. */
+  onAddressChange?: (hash: string, mode: 'push' | 'replace') => void;
   /** Optional `#settings/server/<tab>` deep-link target. The requested tab is
    *  activated when it exists; stale or unavailable ids safely fall back to
    *  the first mounted Server tab. */
@@ -587,6 +598,7 @@ export interface BootstrapSettingsRouteOptions {
   aiModelsSetChatCatalogModeCaller?: AiModelsSetChatCatalogModeCaller;
   aiModelsGetLlmPromptsCaller?: AiModelsLlmPromptsGetCaller;
   aiModelsSetLlmPromptCaller?: AiModelsLlmPromptSetCaller;
+  aiModelsProbeLlmSourceCaller?: AiModelsProbeSourceCaller;
   /** D-174 D14 — scalar config schema (`server.getConfigSchema` /
    *  `server.setConfigField`) for `llm.budget`. */
   aiModelsGetConfigSchemaCaller?: AiModelsConfigSchemaGetCaller;
@@ -829,6 +841,13 @@ export interface SettingsRoute {
   hasUnsavedChanges(): boolean;
   /** Contextual copy for the shell's shared leave guard. */
   unsavedChangesPrompt(): string | null;
+  /** Activate a rail section in place — the Back/Forward counterpart to the
+   *  rail's own `onAddressChange` push. `null` selects the first registered
+   *  section (the bare `#settings` landing). Returns false for an id this
+   *  mount never registered, so the shell can fall back to a full re-mount.
+   *  Sections only: a hash carrying deeper state (a Seller sub-page, a Server
+   *  tab) is passed at MOUNT time, so the shell must re-mount for those. */
+  navigateToSection(sectionId: string | null): boolean;
   /** Opts user-started Settings writes into the shell's in-flight leave
    * guard without misclassifying them as unsaved drafts. */
   inFlightWorkPrompt(): string | null;
@@ -1542,6 +1561,7 @@ export const bootstrapSettingsRoute = (
     || opts.aiModelsSetChatCatalogModeCaller !== undefined
     || opts.aiModelsGetLlmPromptsCaller !== undefined
     || opts.aiModelsSetLlmPromptCaller !== undefined
+    || opts.aiModelsProbeLlmSourceCaller !== undefined
     || opts.aiModelsGetConfigSchemaCaller !== undefined
     || opts.aiModelsSetConfigFieldCaller !== undefined
     || opts.aiModelsHousekeepingConfigReadCaller !== undefined
@@ -1600,6 +1620,9 @@ export const bootstrapSettingsRoute = (
         : {}),
       ...(opts.aiModelsGetLlmPromptsCaller !== undefined
         ? { runGetLlmPrompts: opts.aiModelsGetLlmPromptsCaller }
+        : {}),
+      ...(opts.aiModelsProbeLlmSourceCaller !== undefined
+        ? { runProbeLlmSource: opts.aiModelsProbeLlmSourceCaller }
         : {}),
       ...(opts.aiModelsSetLlmPromptCaller !== undefined
         ? { runSetLlmPrompt: opts.aiModelsSetLlmPromptCaller }
@@ -2548,7 +2571,13 @@ export const bootstrapSettingsRoute = (
       item.appendChild(badge);
       navBadges.set(sv.id, badge);
     }
-    item.addEventListener('click', () => activateSubview(sv.id, { scroll: false }));
+    item.addEventListener('click', () => {
+      activateSubview(sv.id, { scroll: false });
+      // The rail is real navigation, so it owes the address bar a history
+      // entry — otherwise Back from a section's own deep link (a Seller
+      // sub-page) skips the section the user actually came from.
+      opts.onAddressChange?.(serializeShellRoute('settings', sv.id), 'push');
+    });
     navEl.appendChild(item);
     navItems.push({ id: sv.id, el: item });
   }
@@ -2625,6 +2654,15 @@ export const bootstrapSettingsRoute = (
       return learningPanel?.hasInFlightWork() === true
         ? 'A learning change is still updating. Leave Settings anyway?'
         : null;
+    },
+    navigateToSection: (sectionId: string | null): boolean => {
+      if (disposed) return false;
+      const target = sectionId === null || sectionId.trim().length === 0
+        ? subviews[0]?.id ?? null
+        : subviews.find((sv) => sv.id === sectionId)?.id ?? null;
+      if (target === null) return false;
+      activateSubview(target, { scroll: false });
+      return true;
     },
     dispose: () => {
       if (disposed) return;

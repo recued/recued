@@ -86,6 +86,8 @@ describe('D-210 — answer audit', () => {
       {
         ask_id,
         handler_kind: 'gateway.preflight',
+        // FN-2 — the ask payload now travels to the host, uninterpreted.
+        handler_payload: { checkpoint_id: 'cp-1' },
         option: 'approve',
         option_label: 'Approve',
         title: 'Approve scheduling.materialize',
@@ -234,5 +236,29 @@ describe('D-210 — handled-ask retention', () => {
     expect(await h.block.getAsk(ask_id)).toBeNull();
     // The decision survives the row.
     expect(h.records[0]!.option).toBe('approve');
+  });
+
+  it('FN-2 — the ask payload reaches the audit record, UNINTERPRETED', async () => {
+    // ⛔ This is the composition check, and it is the one that matters. The
+    // projection's own unit test proves `buildAnswerActivity` CAN read a
+    // payload; only this proves one actually ARRIVES. The block is a leaf that
+    // treats `handler_kind` as an opaque registry key and must never parse a
+    // payload — so it passes the whole thing through and the host extracts.
+    const h = makeBlock();
+    const payload = {
+      checkpoint_id: 'cp-9',
+      run_id: 'run-42',
+      recipe_id: 'recued-core.book-appointment',
+      gated_step_id: 'send_confirmation',
+      tool_slug: 'mail-send',
+    };
+    const { ask_id } = await h.block.ask(
+      { title: 'Approve mail-send', text: 'Approve?' },
+      [{ id: 'approve', label: 'Approve' }, { id: 'deny', label: 'Deny' }],
+      { kind: 'gateway.preflight', payload },
+    );
+    await h.block.submitAnswer({ ask_id, option: 'approve', via: 'ui' });
+    // Verbatim — not a subset, not a re-shape. The leaf added no interpretation.
+    expect(h.records[0]?.handler_payload).toEqual(payload);
   });
 });

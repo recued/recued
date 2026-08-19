@@ -131,6 +131,10 @@ export interface RecipeStore {
    *  Set lazily — the listener-stage composition (where the
    *  reconciler + manager live) runs after recipe-store creation. */
   setOnMutated(hook: ((recipe_id: string) => void) | undefined): void;
+  /** D-247 — register an ADDITIONAL mutation subscriber. Fired on every write
+   *  AND on delete, with the recipe id. Unlike {@link setOnMutated} this appends
+   *  rather than replacing, so two consumers can coexist. */
+  addOnMutated(hook: (recipe_id: string) => void): void;
 }
 
 /** Scan a directory for *.json files and load each as a RecipeDefinition. */
@@ -162,6 +166,26 @@ const findCommunityDir = (): string => {
 /** Create a recipe store backed by bundled files + an optional SQLite database.
  *  When `db` is provided, user recipes persist across restarts. Without it,
  *  only bundled recipes are available (useful for tests). */
+/** D-247 D6 — thrown when a save would take a recipe's `pack_slug` from non-null
+ *  to null, i.e. strip a pack's ownership of its own content.
+ *
+ *  ⚠ A NAMED CLASS, not a bare `Error`, because three different rpc handlers must
+ *  turn this into three different caller-facing refusals and a message-substring
+ *  match is how that breaks quietly. Carries the owning pack so the refusal can
+ *  say "fork it, or uninstall <pack>" rather than "no". */
+export class RecipePackOwnershipError extends Error {
+  readonly recipe_id: string;
+  readonly pack_slug: string;
+  constructor(recipe_id: string, pack_slug: string) {
+    super(
+      `recipe '${recipe_id}' belongs to pack '${pack_slug}' — change recipe_id to fork it before saving`,
+    );
+    this.name = 'RecipePackOwnershipError';
+    this.recipe_id = recipe_id;
+    this.pack_slug = pack_slug;
+  }
+}
+
 export const createRecipeStore = (
   communityDir?: string,
   db?: import('better-sqlite3').Database,
@@ -243,7 +267,28 @@ export const createRecipeStore = (
   // boot site after the enrichment cascade engine exists.
   let onUpgradeHook: ((recipe_id: string) => void) | undefined;
   let onMutatedHook: ((recipe_id: string) => void) | undefined;
+  /** D-247 — ADDITIONAL mutation subscribers, because `setOnMutated` is a SINGLE
+   *  SLOT and it is already taken.
+   *
+   *  ⛔⛔ THE EXISTING CONSUMER IS ALSO REGISTERED CONDITIONALLY
+   *  (`if (eventTriggersBundle || watchBundle)` in `compose-listeners.ts`), so
+   *  chaining onto it would make the grant seed run only when the trigger
+   *  substrate happens to be wired — a feature that ships dead on every install
+   *  without it, and green in every test that wires one. A list, and an
+   *  UNCONDITIONAL registration, is what makes "did production wire it" one
+   *  question. Mirrors `connectionStore.addOnUpsert`, two lines below the
+   *  `setOnMutated` call site. */
+  const onMutatedSubscribers: Array<(recipe_id: string) => void> = [];
   const fireOnMutated = (recipe_id: string): void => {
+    for (const sub of onMutatedSubscribers) {
+      try {
+        sub(recipe_id);
+      } catch {
+        // A subscriber's failure must never break the write that triggered it —
+        // the row is already committed, and throwing here would report a
+        // successful save as a failed one.
+      }
+    }
     if (!onMutatedHook) return;
     try {
       onMutatedHook(recipe_id);
@@ -348,9 +393,31 @@ export const createRecipeStore = (
       // (when fired) does an indexed `markStaleByAuthor` over a
       // small subset of `data_enrichment`.
       const priorRow = db
-        .prepare('SELECT recipe_hash FROM recipes WHERE recipe_id = ?')
-        .get(recipe.recipe_id) as { recipe_hash: string } | undefined;
+        .prepare('SELECT recipe_hash, pack_slug FROM recipes WHERE recipe_id = ?')
+        .get(recipe.recipe_id) as { recipe_hash: string; pack_slug: string | null } | undefined;
       const isUpgrade = priorRow != null && priorRow.recipe_hash !== hash;
+      // ── D-247 D6 — A PACK-OWNED ROW IS THE PACK'S TO CHANGE ──────────────
+      //
+      // ⛔⛔ THE GUARD IS HERE AND NOT IN THE HANDLERS BECAUSE THIS PAIR HAS
+      // ALREADY DIVERGED TWICE. `recipe.save` refuses a pack-owned WEBHOOK
+      // recipe; the MCP `recued_saveRecipe` tool has no ownership check at all;
+      // `recipe.installBySlug` is a THIRD writer mirroring neither.
+      // `form-contract-gate.ts` records the last divergence in this exact pair.
+      // A fourth handler-level guard is the fifth divergence, already scheduled.
+      //
+      // Without it, a save over a non-webhook pack recipe keeps the recipe_id,
+      // keeps any grant keyed on it, and silently strips `pack_slug` — so the
+      // recipe stops receiving pack updates (a frozen body under a live grant,
+      // with no signal) and D14's uninstall purge clears the grant while the
+      // recipe survives, going dark. Both failures are silent.
+      //
+      // ⚠ SCOPED TO THE TRANSITION, not to "the row is pack-owned": pack install
+      // and bulk install pass an explicit slug (non-null → non-null), a restore
+      // passes `record.pack_slug`, and a new recipe has no prior row. Only the
+      // ownership STRIP is refused.
+      if (priorRow?.pack_slug != null && (pack_slug ?? null) === null) {
+        throw new RecipePackOwnershipError(recipe.recipe_id, priorRow.pack_slug);
+      }
       // D-145 PA10 follow-on — `pack_slug` is undefined for callers
       // that don't track pack provenance (legacy non-pack install
       // paths like mcp-server.ts's recipe upload). Persist as NULL
@@ -509,6 +576,9 @@ export const createRecipeStore = (
       onUpgradeHook = hook;
     },
 
+    addOnMutated(hook) {
+      onMutatedSubscribers.push(hook);
+    },
     setOnMutated(hook) {
       onMutatedHook = hook;
     },

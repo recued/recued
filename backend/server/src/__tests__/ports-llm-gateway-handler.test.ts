@@ -16,7 +16,9 @@ import { LLM_GATEWAY_PAID_ACK_VERSION } from '@recued/contracts';
 import {
   createQuotaTracker,
   estimateConservativeMessagesTokens,
+  classifyProviderError,
   LLMError,
+  resetEndpointCapabilities,
   type LLMConfig,
 } from '@recued/llm';
 
@@ -1822,6 +1824,75 @@ describe('createLlmGatewayDirectCompletionProvider', () => {
     });
 
     expect(result.finish_reason).toBe('length');
+  });
+
+  /** D-208 follow-on — the JOIN, not the transform.
+   *
+   *  `system-role-fallback.test.ts` proves the seam works when something calls
+   *  it; this proves the RAW path calls it. The two used to be a hazard pair:
+   *  the shared path recovers via `executeLLM`, and if the direct path had been
+   *  missed it would 400 on the same slot — one door working and its neighbour
+   *  not, with nothing on screen to explain the difference. */
+  it('recovers when the endpoint refuses the system role', async () => {
+    const config = baseConfig();
+    const resolved = resolveLlmGatewayRoute(config);
+    if (!resolved.ok) throw new Error(resolved.message);
+    resetEndpointCapabilities();
+
+    const seen: string[][] = [];
+    const adapterComplete = vi.fn(async (
+      _slot: unknown,
+      messages: Array<{ role: string; content: string }>,
+    ) => {
+      seen.push(messages.map((m) => m.role));
+      if (messages.some((m) => m.role === 'system')) {
+        // The real classifier, on the real OpenAI reasoning-model body — a
+        // hand-built LLMError would not prove the wrapped/truncated message
+        // still matches.
+        throw classifyProviderError(
+          400,
+          '{"error":{"message":"Unsupported value: \'messages[0].role\' does not'
+            + ' support \'system\' with this model."}}',
+          null,
+        );
+      }
+      return {
+        text: 'recovered',
+        finish_reason: 'stop' as const,
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      };
+    });
+    const provider = createLlmGatewayDirectCompletionProvider({
+      adapters: () => ({ provider: 'openai', complete: adapterComplete }),
+    });
+
+    const result = await provider.complete({
+      route: resolved.route,
+      system_prompt: 'recued gateway system prompt',
+      system_prompt_direct: 'RECUED RAW BLOCK',
+      system_role: 'system',
+      emit_caller_application_instructions: true,
+      messages: [{ role: 'user', content: 'hi' }],
+      requested_model: 'ignored',
+      model_alias: 'seller-primary',
+      config,
+      now: NOW,
+      system_tools_allowed: false,
+      token: makeToken(),
+      contract_id: CONTRACT_ID,
+      allowed_tool_names: [],
+      input_token_budget: 100_000,
+      resolve_contract_snapshot: () => null,
+    });
+
+    expect(result.content).toBe('recovered');
+    // Attempt 1 sends `system` — the role is never pre-emptively downgraded.
+    expect(seen[0]).toEqual(['system', 'user']);
+    // Attempt 2 folds it into the user turn rather than relabelling it, so the
+    // raw path cannot produce two consecutive user turns.
+    expect(seen[1]).toEqual(['user']);
+    expect(adapterComplete).toHaveBeenCalledTimes(2);
+    resetEndpointCapabilities();
   });
 });
 

@@ -18,7 +18,7 @@
  *      type (renamed to `ChatForceLayer`).
  *    - The migrated surfaces ARE present:
  *      `CHAT_MAIN_TURN_INGREDIENT_SLUG = 'recued/chat-main-turn'`,
- *      `CHAT_MAIN_TURN_TOOL_LOOP_CAP = 8`, `ChatTailMessage`,
+ *      `CHAT_MAIN_TURN_TOOL_LOOP_CAP`, `ChatTailMessage`,
  *      `ChatForceLayer`.
  *    - Cross-repo source-grep ratchets that no file under
  *      `backend/` / `packages/` / `apps/` references any retired
@@ -395,9 +395,17 @@ describe('D-164 P6.6 — migrated runtime values are stable', () => {
     expect(CHAT_MAIN_TURN_INGREDIENT_SLUG).toBe('recued/chat-main-turn');
   });
 
-  it('CHAT_MAIN_TURN_TOOL_LOOP_CAP carries the PB17 default (=8)', () => {
+  it('CHAT_MAIN_TURN_TOOL_LOOP_CAP pins the chat loop ceiling (=10)', () => {
     // mutate: change the loop cap → this assertion fails.
-    expect(CHAT_MAIN_TURN_TOOL_LOOP_CAP).toBe(8);
+    //
+    // ⚠ Was `=8`, the PB17 default this ratchet originally proved the D-164
+    // migration had not dropped. Raised to 10 on 2026-08-18 because a
+    // lean-core packet omits Tier-2 entries, so each unknown recipe costs a
+    // `tools.search` round before its call and a deep procedure exhausted the
+    // loop mid-flight (see the constant's own note). The ratchet stays: this
+    // value is a deliberate interactive-latency ceiling, so it should only
+    // ever move by someone editing this line on purpose.
+    expect(CHAT_MAIN_TURN_TOOL_LOOP_CAP).toBe(10);
   });
 
   it('ChatForceLayer typed as `"free" | "byok"` (closed two-value codomain)', () => {

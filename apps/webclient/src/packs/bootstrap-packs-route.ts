@@ -67,6 +67,7 @@ import {
   PACKS_PANEL_STYLES,
   mountPacksPanel,
   type PacksInstallBySlugCaller,
+  type PacksInstallPreviewCaller,
   type PacksInstallCaller,
   type PacksListCaller,
   type PacksPanelMount,
@@ -227,6 +228,10 @@ export interface BootstrapPacksRouteOptions {
    *  renders only when BOTH are present. */
   packsResolveCaller?: PacksResolveCaller;
   packsInstallBySlugCaller?: PacksInstallBySlugCaller;
+  /** D-247 D15 — `packs.install_preview`, feeding the install dialog's recipe
+   *  disclosure + the grant picker's per-recipe tier. Optional: absent ⇒ the
+   *  dialog renders its pre-D-247 surface. */
+  packsInstallPreviewCaller?: PacksInstallPreviewCaller;
   // ── The `cli.reachability.*` trio + its contracts list ──────────────
   // Named for the local-tools CONCEPT (cli binaries), not the retired
   // roster-wide section: each one is read by a surviving pack-detail consumer.
@@ -626,6 +631,9 @@ export const bootstrapPacksRoute = (
           // marketplace pack (not bundled) resolves via these + installs by slug.
           ...(opts.packsResolveCaller !== undefined
             ? { runResolvePack: opts.packsResolveCaller }
+            : {}),
+          ...(opts.packsInstallPreviewCaller !== undefined
+            ? { runInstallPreview: opts.packsInstallPreviewCaller }
             : {}),
           ...(runInstallBySlugWithGrant !== undefined
             ? { runInstallBySlug: runInstallBySlugWithGrant }

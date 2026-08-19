@@ -31,6 +31,7 @@ import {
   type ChatDispatchContext,
   type ChatDispatchResult,
   type ChatToolCatalogScopeState,
+  type ExecutionSource,
   type InternalToolRegistry,
   type ToolEntry,
   type ToolTier,
@@ -110,6 +111,10 @@ export interface ToolsSearchWrapOptions {
   /** Mary's live per-kind catalog scope (same source the main-turn
    *  projection reads), so the search corpus honors the kind gate. */
   getScope: () => ChatToolCatalogScopeState | null;
+  /** D-247 D9 — Tier-2 reachability for the turn's source. */
+  tier2GrantFilter?: (source?: ExecutionSource) => (toolName: string) => boolean;
+  /** D-247 D8 — the owner's unfiltered-then-granted Tier-2 set. */
+  tier2OwnerCatalog?: (source?: ExecutionSource) => ReadonlyArray<ToolEntry> | null;
 }
 
 /** Dispatch the search over the registry's OWN exposed Tier-2 set (so the
@@ -124,8 +129,18 @@ export interface ToolsSearchWrapOptions {
 const dispatchToolsSearch = (
   inner: InternalToolRegistry,
   getScope: () => ChatToolCatalogScopeState | null,
+  /** D-247 D9 — Tier-2 reachability for this turn's source. ⛔ `tools.search`
+   *  RETURNS Tier-2 matches straight to the model, so it is an EXPOSURE surface
+   *  in its own right: filtering only the main catalog would leave a revoked
+   *  recipe one search away. Absent ⇒ unfiltered (partial harnesses). */
+  tier2GrantFilter?: (source?: ExecutionSource) => (toolName: string) => boolean,
+  /** D-247 D8 — the owner's Tier-2 set projected WITHOUT the `chat_exposed`
+   *  filter. Search is an exposure surface in its own right, so a hidden recipe
+   *  the owner granted has to be findable here too — otherwise the grant works in
+   *  the catalog and silently does not in search. */
+  tier2OwnerCatalog?: (source?: ExecutionSource) => ReadonlyArray<ToolEntry> | null,
 ): ((raw: unknown, ctx: ChatDispatchContext) => Promise<ChatDispatchResult>) =>
-  async (raw) => {
+  async (raw, ctx) => {
     const args = asObject(raw);
     if (!args) {
       return { ok: false, reason: 'invalid_args', detail: 'args must be an object' };
@@ -140,7 +155,12 @@ const dispatchToolsSearch = (
     const limit = clampToolsSearchLimit(args.limit);
     const tier2 = inner.listByTier(2);
     const gated = computeKindGatedTier2Names(tier2, resolveEnabledKinds(getScope()));
-    const visible = tier2.filter((entry) => !gated.has(entry.name));
+    // ⚠ `ctx?.` — a handler invoked by a bare harness may pass none, and a
+    // throw here would turn a missing fixture into a failed search.
+    const reachable = tier2GrantFilter?.(ctx?.execution_source);
+    const visible = tier2.filter(
+      (entry) => !gated.has(entry.name) && (reachable === undefined || reachable(entry.name)),
+    );
     const matches = searchToolCatalog(visible, args.query, limit);
     return {
       ok: true,
@@ -212,10 +232,16 @@ export const wrapChatRegistryForCatalogModes = (
   inner: InternalToolRegistry,
   modes: Iterable<ChatCatalogDeliveryMode>,
   getScope: () => ChatToolCatalogScopeState | null,
+  /** D-247 D9 — threaded through to the `tools.search` handler, which is the
+   *  second of three Tier-2 exposure surfaces. */
+  tier2GrantFilter?: (source?: ExecutionSource) => (toolName: string) => boolean,
+  tier2OwnerCatalog?: (source?: ExecutionSource) => ReadonlyArray<ToolEntry> | null,
 ): InternalToolRegistry =>
   wrapRegistryWithToolsSearch(inner, {
     enabled: anyCatalogModeUsesToolsSearch(modes),
     getScope,
+    ...(tier2GrantFilter ? { tier2GrantFilter } : {}),
+    ...(tier2OwnerCatalog ? { tier2OwnerCatalog } : {}),
   });
 
 export const wrapRegistryWithToolsSearch = (
@@ -224,7 +250,9 @@ export const wrapRegistryWithToolsSearch = (
 ): InternalToolRegistry => {
   if (!opts.enabled) return inner;
   const entry = TOOLS_SEARCH_TOOL_ENTRY;
-  const dispatchSearch = dispatchToolsSearch(inner, opts.getScope);
+  const dispatchSearch = dispatchToolsSearch(
+    inner, opts.getScope, opts.tier2GrantFilter, opts.tier2OwnerCatalog,
+  );
   return {
     list: () => insertToolEntryAfterTier1(inner.list(), entry),
     listByTier: (tier: ToolTier) =>

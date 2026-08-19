@@ -290,7 +290,11 @@ export const classifyProviderError = (
     );
   }
   if (status === 413 || PROVIDER_CONTEXT_OVERFLOW_RE.test(body)) {
-    return new LLMError('AI_TOKEN_BUDGET_EXCEEDED', `LLM input too large (${status}): ${truncate(body)}`);
+    return new LLMError(
+      'AI_TOKEN_BUDGET_EXCEEDED',
+      `LLM input too large (${status}): ${truncate(body)}`,
+      { status },
+    );
   }
   if (status >= 500) {
     return new LLMError(
@@ -300,7 +304,15 @@ export const classifyProviderError = (
       true,
     );
   }
-  return new LLMError('AI_LLM_UNAVAILABLE', `LLM error (${status}): ${truncate(body)}`);
+  // `status` on EVERY branch, not just the ones that started with it. A caller
+  // that needs to tell a 404 (wrong model id) from a 400 (bad request) should
+  // read a field, not re-parse the message it was just handed — the message is
+  // also truncated at 200 chars, so parsing it is lossy as well as fragile.
+  return new LLMError(
+    'AI_LLM_UNAVAILABLE',
+    `LLM error (${status}): ${truncate(body)}`,
+    { status },
+  );
 };
 
 /** Parse an HTTP `Retry-After` header into milliseconds.
