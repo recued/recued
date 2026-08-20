@@ -183,6 +183,40 @@ export const deriveRunYield = (
   return { steps_run, steps_skipped, items_total, items_failed };
 };
 
+/** True iff the yield PROVES the run produced nothing — every `foreach` item it
+ *  attempted was refused. D-237 P2 named this case in {@link RunYield}'s own
+ *  doc and shipped the owner-facing notice for it; this is the predicate that
+ *  lets a NON-display reader act on it, so "the run finished" and "the run did
+ *  something" stop being the same question.
+ *
+ *  🔑 IT DOES NOT MEAN "FAILED", AND MUST NOT BE USED TO REWRITE
+ *  `commit_status`. A `foreach` is continue-on-error by design, so the anchor
+ *  is right that the run completed; what is false is the INFERENCE that a
+ *  completed run yielded anything. Readers that care about the outcome ask
+ *  this; readers that care about the lifecycle keep reading the status.
+ *
+ *  ⛔ ABSENT IS NOT ZERO. `undefined` means the row predates D-237, never
+ *  "produced nothing" — such a row returns `false` and keeps its historical
+ *  reading. Getting this backwards would silently reclassify every pre-D-237
+ *  run in the store as a non-event.
+ *
+ *  ⛔ A MALFORMED TALLY IS NOT A REFUSAL. Non-finite counts, or `items_failed`
+ *  above `items_total`, return `false` rather than a confident wrong answer —
+ *  the same policy {@link deriveRunYield} applies when it skips a `NaN` tally.
+ *
+ *  ⚠ Takes `unknown` on purpose: the reactive transforms receive audit rows as
+ *  untyped data, and a cast at the call site would be a lie the compiler could
+ *  not catch. */
+export const runYieldIsTotalRefusal = (runYield: unknown): boolean => {
+  if (runYield === null || typeof runYield !== 'object' || Array.isArray(runYield)) return false;
+  const { items_total: total, items_failed: failed } =
+    runYield as { items_total?: unknown; items_failed?: unknown };
+  if (typeof total !== 'number' || typeof failed !== 'number') return false;
+  if (!Number.isFinite(total) || !Number.isFinite(failed)) return false;
+  if (total <= 0 || failed <= 0 || failed > total) return false;
+  return failed === total;
+};
+
 export interface RunAuditSummary {
   run_id: string;
   recipe_id: string;

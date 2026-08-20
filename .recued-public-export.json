@@ -1,45 +1,45 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "48b8cb51b017dd7f36d94dc4a6bcf92914324255",
-    "tree": "a2e4915ccde9e9cab6ba2a3f3cbe7374eb4e86ec",
-    "committed_at": "2026-08-18T21:07:01-07:00"
+    "commit": "aeebccf053b67f23b3f77e816f0d90cc591b3912",
+    "tree": "9fb226ca7e412b7d9788f6d387bcd20cd18d976b",
+    "committed_at": "2026-08-19T17:43:41-07:00"
   },
-  "export_manifest_sha256": "9bfaeb0aa6cb4f2a527ff9a11c73609621155578b38c9c93a961a00102480400",
-  "version": "26.8.18",
+  "export_manifest_sha256": "e0c97f1960d541ae416227fe1e353ba9c7f53e597d2a0dae2601952d2f1e0efc",
+  "version": "26.8.19",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
     "apps/webclient"
   ],
   "omitted_paths": [
-    "apps/webclient/e2e/harness/kitchen-harness.ts",
-    "apps/webclient/e2e/kitchen-render.spec.ts",
     "apps/webclient/e2e/staging-smoke.spec.ts",
     "apps/webclient/wrangler.toml",
-    "backend/server/scripts/enroll-bench-recovery-key.ts",
     "backend/server/scripts/release-build.mjs",
     "backend/server/scripts/release-keygen.mjs",
     "backend/server/scripts/release-publish.mjs",
-    "backend/server/scripts/seed-bench-warehouse.ts",
+    "backend/server/src/__tests__/d-178-release-publish-signing-gate.test.ts",
     "backend/server/scripts/version-date.mjs",
+    "packages/middleware-recued/prompt-cache/scripts/fts-prefetch-probe.mjs",
+    "backend/server/scripts/enroll-bench-recovery-key.ts",
+    "backend/server/scripts/seed-bench-warehouse.ts",
+    "backend/server/src/__tests__/prefetch-pii-coverage-measure.test.ts",
+    "packages/middleware-recued/prompt-cache/src/__tests__/ner-corpus-eval.report.test.ts",
+    "packages/recipes/src/__tests__/qualify-recipes-output.test.ts",
+    "packages/contracts/src/__tests__/d-149-phase-11-reception-docs-currency.test.ts",
+    "packages/server-network/src/__tests__/setup-guide-currency.test.ts",
+    "packages/contracts/src/__tests__/d-148-phase-1-role-boundary.test.ts",
     "backend/server/src/__tests__/d-148-p10-cloud-narrowing.test.ts",
     "backend/server/src/__tests__/d-148-p11-extension-webapp-retirement.test.ts",
     "backend/server/src/__tests__/d-149-phase-10-deployment-integration.test.ts",
-    "backend/server/src/__tests__/d-178-release-publish-channel-paths.test.ts",
-    "backend/server/src/__tests__/d-178-release-publish-signing-gate.test.ts",
     "backend/server/src/__tests__/phase-e-package.test.ts",
-    "backend/server/src/__tests__/prefetch-pii-coverage-measure.test.ts",
-    "backend/server/src/dev",
-    "packages/contracts/src/__tests__/connection-signing.test.ts",
-    "packages/contracts/src/__tests__/d-148-phase-1-role-boundary.test.ts",
-    "packages/contracts/src/__tests__/d-149-phase-11-reception-docs-currency.test.ts",
-    "packages/crypto/src/__tests__/hmac.test.ts",
+    "apps/webclient/e2e/harness/kitchen-harness.ts",
+    "apps/webclient/e2e/kitchen-render.spec.ts",
     "packages/ingredient-authoring/src/__tests__/d-192-api-pack-authoring-guide.test.ts",
-    "packages/middleware-recued/prompt-cache/scripts/fts-prefetch-probe.mjs",
-    "packages/middleware-recued/prompt-cache/src/__tests__/ner-corpus-eval.report.test.ts",
-    "packages/recipes/src/__tests__/qualify-recipes-output.test.ts",
-    "packages/server-network/src/__tests__/setup-guide-currency.test.ts"
+    "backend/server/src/__tests__/d-178-release-publish-channel-paths.test.ts",
+    "packages/crypto/src/__tests__/hmac.test.ts",
+    "packages/contracts/src/__tests__/connection-signing.test.ts",
+    "backend/server/src/dev"
   ],
   "omitted_private_coupled_tests": {
     "paths": [
@@ -531,22 +531,22 @@
     "roots": [
       "apps/auth-worker",
       "backend/api",
-      "backend/server/src/dev/provider-mock/stripe-mock",
+      "backend/server/src/dev",
       "community",
       "distribution",
       "test/community-pack-catalog"
     ]
   },
   "internal_reference_scrub": {
-    "files_changed": 1032,
+    "files_changed": 1031,
     "rules": [
       {
         "id": "internal-spec-reference",
-        "comments_rewritten": 997
+        "comments_rewritten": 998
       },
       {
         "id": "internal-design-document",
-        "comments_rewritten": 87
+        "comments_rewritten": 86
       },
       {
         "id": "internal-handover-note",
@@ -558,7 +558,7 @@
       },
       {
         "id": "internal-benchmark",
-        "comments_rewritten": 41
+        "comments_rewritten": 40
       },
       {
         "id": "internal-repository-root",
@@ -634,7 +634,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 5413,
-    "sha256": "d49063275cabcdf336a86faa67f4446a02e966e4a9aaa5cb423fdaad273efee9"
+    "file_count": 5392,
+    "sha256": "bb8f3336430bea29ac24c863fada17b27419a3e3d5b9e2e8770ef95bdbae843b"
   }
 }

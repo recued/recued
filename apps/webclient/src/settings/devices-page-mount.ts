@@ -3,8 +3,8 @@
  *  Mounts the restored `renderDevicesPage` renderer (P2) under the
  *  Settings → Devices section, wires `pair.list` for roster reads and
  *  `pair.revoke` for per-row revocation, and drives the inline two-
- *  stage confirm state machine described in `docs/d-156-pair-substrate-
- *  retirement-pending-design.md § Behaviour rules`.
+ *  stage confirm state machine described in
+ *  D-156 § Behaviour rules.
  *
  *  Lifts the surface from the slice-129 `pair-mint-panel` + slice-131
  *  `devices-history-panel` that D-156 P8 will delete. The new surface

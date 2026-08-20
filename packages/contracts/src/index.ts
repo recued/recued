@@ -4995,7 +4995,10 @@ export type {
 } from './execution-rpc.js';
 
 // D-237 P2 — the run-yield derivation. Value export (the type rides above).
-export { deriveRunYield } from './execution-rpc.js';
+// `runYieldIsTotalRefusal` is the shared reading of that yield: one definition
+// for the owner-facing notice, the reactive predicate and the case compiler, so
+// three surfaces cannot drift into three different ideas of "produced nothing".
+export { deriveRunYield, runYieldIsTotalRefusal } from './execution-rpc.js';
 
 export {
   SOURCE_TOP_TIER_KINDS,

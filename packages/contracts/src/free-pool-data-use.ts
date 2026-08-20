@@ -47,6 +47,20 @@ export interface FreePoolDataUseTerms {
    *  travels with the fact rather than living in a changelog. */
   source_url: string;
   effective: string;
+  /** Round-12 audit fix (T3 Q-1 / O-1 rung 1) — the date WE last fetched
+   *  `source_url` and re-verified every boolean above against the live text.
+   *  Distinct from `effective`: that is the document's own effective date, and
+   *  the document can be REVISED while its effective date stands — exactly
+   *  what happened here (revision of 2026-04-28 behind an unchanged
+   *  effective of 2026-03-23, found by an owner-executed re-read on
+   *  2026-08-19, all four facts still true). Required, so an entry cannot be
+   *  added without saying when it was last looked at. */
+  checked_at: string;
+  /** The revision stamp the document itself displayed at `checked_at`
+   *  ("Last updated …"), when it displays one. The stable comparator for a
+   *  re-read: a changed `doc_last_updated` behind unchanged facts is the
+   *  informative middle case a content hash of a dynamic page cannot give. */
+  doc_last_updated?: string;
 }
 
 export type FreePoolDataUse =
@@ -72,6 +86,11 @@ const KNOWN_BY_HOST: ReadonlyMap<string, { label: string; terms: FreePoolDataUse
         no_sensitive_data: true,
         source_url: 'https://ai.google.dev/gemini-api/terms',
         effective: '2026-03-23',
+        // Re-verified against the live document 2026-08-19 (invention round 12,
+        // T3 O-1 rung 1, owner-executed): all four booleans above still hold
+        // verbatim; the document's own "Last updated" stamp had moved.
+        checked_at: '2026-08-19',
+        doc_last_updated: '2026-04-28',
       },
     }],
   ]);
@@ -155,5 +174,7 @@ export const freePoolDataUseNotice = (use: FreePoolDataUse): string | undefined 
       ? ` Its terms permit only PAID use when serving users in ${use.terms.geo_restricted.join(', ')}.`
       : '';
   const body = parts.length > 0 ? ` Free tier: ${parts.join('; ')}.` : '';
-  return `${use.label}.${body}${geo} Source: ${use.terms.source_url} (${use.terms.effective}).`;
+  // Round-12 audit fix (T3 Q-1) — the citation carries its own check age, so
+  // "still true" and "merely not looked at since" stop reading identically.
+  return `${use.label}.${body}${geo} Source: ${use.terms.source_url} (effective ${use.terms.effective}; verified ${use.terms.checked_at}).`;
 };

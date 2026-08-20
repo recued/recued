@@ -18,6 +18,7 @@
  *  Spec: D-115 §"Tier 2 transforms (starter set)".
  */
 
+import { runYieldIsTotalRefusal } from '@recued/contracts';
 import type { TransformFn } from './types.js';
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
@@ -231,7 +232,19 @@ export const attendee_diff: TransformFn = (p) => {
  *  lifecycle enum) directly. The pre-D-153 `outcome ?? status ??
  *  success` defensive fallback was retired with the substrate
  *  replacement; audit rows now carry exactly one `commit_status`
- *  field. */
+ *  field.
+ *
+ *  ⛔ A COMPLETED RUN IS NOT THE SAME AS A RUN THAT DID SOMETHING, and this
+ *  predicate owes the second reading. A `foreach` is continue-on-error by
+ *  design, so a run whose every item was refused still reaches
+ *  `commit_status: 'succeeded'` — the anchor is right about the lifecycle and
+ *  wrong as an answer to "did recipe X succeed", which is the only question
+ *  this transform exists to answer. Such a run is excluded.
+ *
+ *  🔑 THE EXCLUSION IS EVIDENCE-BOUND, NOT PESSIMISTIC. It fires only where the
+ *  row PROVES total refusal; a row with no yield at all (written before D-237)
+ *  passes exactly as it always did. Treating a missing yield as "produced
+ *  nothing" would silently stop every historical run from ever matching. */
 export const recipe_succeeded_since: TransformFn = (p) => {
   const entries = p.entries as unknown;
   if (!Array.isArray(entries)) return [];
@@ -243,6 +256,7 @@ export const recipe_succeeded_since: TransformFn = (p) => {
     const rec = e as Record<string, unknown>;
     if (recipe_id !== null && rec.recipe_id !== recipe_id) return false;
     if (rec.commit_status !== 'succeeded') return false;
+    if (runYieldIsTotalRefusal(rec.run_yield)) return false;
     const finished = Number(rec.finished_at ?? rec.completed_at);
     return Number.isFinite(finished) && finished > since;
   });

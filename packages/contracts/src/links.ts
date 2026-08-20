@@ -14,6 +14,8 @@
  *  Spec: D-120.
  */
 
+import { isEnrichmentTopic } from './enrichment-registry.js';
+
 /** Engine-emitted link kind taxonomy. Aggressive default emission;
  *  per-recipe opt-out via `provenance: false` in `recipe.json`
  *  (wired in Phase 3).
@@ -166,6 +168,8 @@ export const shouldLink = (collection: string, access: AccessKind): boolean => {
  *  Examples:
  *    parseDataEntityRef('data', 'mail.msg-abc.subject')
  *      → { collection: 'mail', entity_id: 'msg-abc' }
+ *    parseDataEntityRef('data', 'enrichment.mail.msg-abc.summary')
+ *      → { collection: 'mail', entity_id: 'msg-abc' }   (the record the fact is ABOUT)
  *    parseDataEntityRef('data', 'mail')                → null
  *    parseDataEntityRef('data', 'shared.deal.42')      → null
  *    parseDataEntityRef('config', 'threshold')         → null */
@@ -182,6 +186,26 @@ export const parseDataEntityRef = (
   // collection. `data.audit` / `data.memory` are read-only memory
   // surfaces (D-120 Phase 4) that shouldn't link onto themselves.
   if (collection === 'shared' || collection === 'audit' || collection === 'memory') {
+    return null;
+  }
+  // Round-12 audit fix (T1 § 8.2, driven): a derived-fact ref keys the
+  // provenance edge on the RECORD the fact is about, never on its scope.
+  // Before this, `data.enrichment.mail.msg-abc.summary` parsed to
+  // `{ collection: 'enrichment', entity_id: 'mail' }`, so every enrichment
+  // read across a whole scope collapsed onto ONE well-formed-but-wrong
+  // link target and the entity timeline never saw it.
+  if (collection === 'enrichment') {
+    return parseEnrichmentRecordRef(segs);
+  }
+  // Vendor read-side aliases (D-129/D-130: `data.hubspot.* / data.salesforce.*`)
+  // and the cross-vendor `data.crm.*` lens are enrichment-only refs onto
+  // PLATFORM-RESIDENT records — there is no local warehouse collection for the
+  // timeline to anchor, so no edge beats a scope-collapsed one. The literal
+  // `enrichments` segment is the alias grammar's own marker
+  // (`<vendor>.<entity>.<id>.enrichments.<topic>`), so a vendor added after
+  // this list still short-circuits here instead of regressing to the
+  // scope-collapsed parse.
+  if (VENDOR_ALIAS_NAMESPACES.has(collection) || segs.includes('enrichments')) {
     return null;
   }
   // Dotted entity ids (canonical contact emails) span multiple segments.
@@ -202,3 +226,49 @@ export const parseDataEntityRef = (
 /** Trailing per-record sidecar tags — keep in sync with the engine's
  *  `parseAnnotationLinkRef` grammar (`shared-prefetch.ts`). */
 const ANNOTATION_LINK_TAGS = new Set(['annotations', 'links', 'inbound_links']);
+
+/** First path segments that are vendor read-side alias namespaces
+ *  (D-129 HubSpot, D-130 Salesforce + the cross-vendor `crm` lens).
+ *  Enrichment-only by construction — the bare-entity read is invalid —
+ *  so none of them names a local warehouse record a link could anchor.
+ *  The `enrichments`-segment marker in `parseDataEntityRef` is the
+ *  fail-closed backstop for vendors added after this list. */
+const VENDOR_ALIAS_NAMESPACES: ReadonlySet<string> = new Set([
+  'crm',
+  'hubspot',
+  'salesforce',
+]);
+
+/** Round-12 audit fix (T1 § 8.2) — parse `data.enrichment.…` onto the
+ *  underlying record. Grammar: `enrichment.<scope>.<target_id…>.<topic>[.field…]`,
+ *  where `<target_id>` may itself be dotted (canonical contact emails), so the
+ *  topic — a member of the closed enrichment registry — is the right anchor:
+ *  scan left-to-right from the first segment that could END a target id and
+ *  take everything between scope and topic as the record id.
+ *
+ *  Only the single-segment warehouse scopes resolve — `mail` / `contact` /
+ *  `calendar` / `file` — because those are the records `data.timeline` serves.
+ *  Platform-reference scopes (`connection.api.<vendor>.<entity>`, D-128) name
+ *  no local record, and an unparseable or topic-less ref yields null: a missing
+ *  edge is honest where a mis-keyed one is silently wrong. */
+const SINGLE_SEGMENT_ENRICHMENT_SCOPES: ReadonlySet<string> = new Set([
+  'mail',
+  'contact',
+  'calendar',
+  'file',
+]);
+
+const parseEnrichmentRecordRef = (
+  segs: readonly string[],
+): { collection: string; entity_id: string } | null => {
+  const scope = segs[1];
+  if (scope === undefined || !SINGLE_SEGMENT_ENRICHMENT_SCOPES.has(scope)) return null;
+  // t >= 3 leaves at least one target segment between scope and topic.
+  for (let t = 3; t < segs.length; t++) {
+    if (isEnrichmentTopic(segs[t])) {
+      const entity_id = segs.slice(2, t).join('.');
+      return entity_id.length > 0 ? { collection: scope, entity_id } : null;
+    }
+  }
+  return null;
+};

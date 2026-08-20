@@ -29,6 +29,7 @@ import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   deriveRunYield,
+  runYieldIsTotalRefusal,
   type Checkpoint,
   type Commit,
   type IngredientManifest,
@@ -54,6 +55,62 @@ import {
   handleExecutionGet,
   type ExecutionFeedRpcDeps,
 } from '../execution-feed-handler.js';
+
+// ────────────────────────────────────────────────────────────────
+// 0. The READING of the yield — the predicate every non-display consumer shares
+//
+//    D-237 P2 made the all-refused run VISIBLE. It did not make anything ACT on
+//    it: the reactive success predicate and the execution-case compiler both
+//    read `commit_status` alone, so a run that refused every item was a success
+//    to both. `runYieldIsTotalRefusal` is the one reading they now share with
+//    the owner-facing logs notice, and its two negative cases matter more than
+//    its positive one — each would silently reclassify history if inverted.
+// ────────────────────────────────────────────────────────────────
+
+describe('runYieldIsTotalRefusal', () => {
+  it('is TRUE only when every attempted item was refused', () => {
+    expect(runYieldIsTotalRefusal(
+      { steps_run: 1, steps_skipped: 0, items_total: 12, items_failed: 12 },
+    )).toBe(true);
+  });
+
+  it('⛔ ABSENT IS NOT ZERO — a pre-D-237 row keeps its historical reading', () => {
+    // Inverting this would reclassify every run written before the field
+    // existed as a non-event, in one line, with no migration and no signal.
+    expect(runYieldIsTotalRefusal(undefined)).toBe(false);
+    expect(runYieldIsTotalRefusal(null)).toBe(false);
+  });
+
+  it('a PARTIAL failure is not a refusal — the rest of the work really happened', () => {
+    expect(runYieldIsTotalRefusal(
+      { steps_run: 1, steps_skipped: 0, items_total: 12, items_failed: 11 },
+    )).toBe(false);
+  });
+
+  it('a run with NO items is not a refusal — it had nothing to refuse', () => {
+    expect(runYieldIsTotalRefusal(
+      { steps_run: 3, steps_skipped: 0, items_total: 0, items_failed: 0 },
+    )).toBe(false);
+  });
+
+  it('⛔ a MALFORMED tally answers FALSE rather than confidently wrong', () => {
+    expect(runYieldIsTotalRefusal({ items_total: Number.NaN, items_failed: Number.NaN })).toBe(false);
+    expect(runYieldIsTotalRefusal({ items_total: 2, items_failed: 5 })).toBe(false);
+    expect(runYieldIsTotalRefusal({ items_total: '3', items_failed: '3' })).toBe(false);
+    expect(runYieldIsTotalRefusal([])).toBe(false);
+    expect(runYieldIsTotalRefusal('all-refused')).toBe(false);
+  });
+
+  it('agrees with deriveRunYield on a genuinely all-refused run', () => {
+    // Composition check rather than two shape checks: the predicate must be
+    // true of what the derivation actually PRODUCES, not of a hand-built object
+    // that happens to have the right keys.
+    const derived = deriveRunYield([{ foreach: { items: 4, failed: 4 } }]);
+    expect(runYieldIsTotalRefusal(derived)).toBe(true);
+    const partial = deriveRunYield([{ foreach: { items: 4, failed: 3 } }]);
+    expect(runYieldIsTotalRefusal(partial)).toBe(false);
+  });
+});
 
 // ────────────────────────────────────────────────────────────────
 // 1. The derivation — pure

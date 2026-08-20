@@ -64,8 +64,12 @@ describe('resolveApexOrigin', () => {
       'https://mirror.example.com',
     );
   });
-  it('maps a staging host to the recued2 apex', () => {
-    expect(resolveApexOrigin({ hostname: 'app.recued2.com' })).toBe('https://recued2.com');
+  it('⛔ the HOST no longer selects the apex — the build does', () => {
+    // Was "maps a staging host to the <mirror> apex". A mirror build sets
+    // `--cloud-apex`; source names only the product domain (see cloud-apex.ts).
+    // Any host resolves to the built-in apex, which pins the removal: if
+    // host-sniffing returns, this fails.
+    expect(resolveApexOrigin({ hostname: 'app.mirror.example' })).toBe('https://recued.com');
   });
   it('maps a prod host to the recued apex', () => {
     expect(resolveApexOrigin({ hostname: 'app.recued.com' })).toBe('https://recued.com');

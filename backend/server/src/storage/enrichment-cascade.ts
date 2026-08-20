@@ -96,6 +96,16 @@ export interface CascadeInvalidationHint {
 
 export type CascadeInvalidationNotifier = (hint: CascadeInvalidationHint) => void;
 
+/** Round-12 audit fix (T1 § 8.1) — result of an all-or-nothing per-topic
+ *  queue-depth reservation (`reserveTopicRecomputeAdmission`). `dropped`
+ *  carries the governor's declined count so callers fold it into
+ *  `rows_queue_depth_capped` (or a skip log) instead of losing it. */
+export interface TopicRecomputeAdmission {
+  admitted: boolean;
+  candidates: number;
+  dropped: number;
+}
+
 /** Aggregate result of a single cascade call. Returned for audit /
  *  test visibility; recipe surface ignores it. */
 export interface CascadeResult {
@@ -288,6 +298,19 @@ export interface CascadeEngine {
     connection_name: string,
     vendor?: string,
   ): CascadeResult;
+  /** Round-12 audit fix (T1 § 8.1) — the ONE all-or-nothing per-topic
+   *  queue-depth admission for a topic-wide recompute enqueue: count the
+   *  REAL fan-out, read the current pending depth, reserve against the
+   *  budget governor, and admit only when the FULL fan-out fits (the P5b
+   *  all-or-nothing semantic — partial admission would let any topic with
+   *  headroom bypass the cap). The engine's own topic-wide sites consult
+   *  it, and the D-136 P4 drift producer consults it through the
+   *  housekeeping ctx BEFORE its signal+enqueue transaction — the third
+   *  writer previously enqueued bare, which is exactly the two-copies
+   *  shape where one path keeps admitting after another stops.
+   *  `admitted: true` with `candidates: 0` means "nothing to reserve —
+   *  proceed" (the enqueue will write zero rows). */
+  reserveTopicRecomputeAdmission(topic: string): TopicRecomputeAdmission;
   /** D-136 §A.14.1 P5b — fired when an external context pulse
    *  (vendor API state, MCP tool result, periodic-check signal)
    *  changes. The cascade walks the producer-context dependency
@@ -425,6 +448,21 @@ export const createEnrichmentCascade = (
     const counts = store.countLifecycleActionPendingByTopic();
     const hit = counts.find((c) => c.topic === topic);
     return hit ? hit.count : 0;
+  };
+
+  // Round-12 audit fix (T1 § 8.1) — the ONE all-or-nothing topic-wide
+  // admission predicate. Extracted from the two P5b sites below (which had
+  // the identical shape hand-copied) so the drift producer's third write
+  // path consults the SAME governor instead of enqueuing bare.
+  const reserveTopicRecomputeAdmission = (topic: string): TopicRecomputeAdmission => {
+    const candidates = store.countTopicEnqueueCandidates(topic);
+    if (candidates === 0) return { admitted: true, candidates: 0, dropped: 0 };
+    const currentDepth = pendingDepthForTopic(topic);
+    const queueRes = governor.reserveForTopic(topic, candidates, currentDepth);
+    if (queueRes.admitted < candidates) {
+      return { admitted: false, candidates, dropped: queueRes.dropped };
+    }
+    return { admitted: true, candidates, dropped: 0 };
   };
 
   const fireNotifier = (hint: CascadeInvalidationHint): void => {
@@ -772,16 +810,14 @@ export const createEnrichmentCascade = (
       if (!def.aggregates_from || !def.aggregates_from.includes(directScope)) {
         return;
       }
-      const candidates = store.countTopicEnqueueCandidates(topic);
-      if (candidates === 0) return;
-      const currentDepth = pendingDepthForTopic(topic);
-      const queueRes = governor.reserveForTopic(topic, candidates, currentDepth);
-      if (queueRes.admitted < candidates) {
+      const admission = reserveTopicRecomputeAdmission(topic);
+      if (admission.candidates === 0) return;
+      if (!admission.admitted) {
         // All-or-nothing — skip the topic entirely. The governor's
         // dropped count records what we passed up; the next cascade
         // fire (or operator pruning the queue) will pick the work
         // back up under fresh headroom.
-        result.rows_queue_depth_capped += queueRes.dropped;
+        result.rows_queue_depth_capped += admission.dropped;
         return;
       }
       const enqueued = store.enqueueLifecycleActionForTopic(topic, 'recompute');
@@ -829,12 +865,10 @@ export const createEnrichmentCascade = (
       // ceiling can't be bypassed by a topic with any headroom.
       // All-or-nothing semantic: skip if the full fan-out doesn't
       // fit.
-      const candidates = store.countTopicEnqueueCandidates(topic);
-      if (candidates === 0) continue;
-      const currentDepth = pendingDepthForTopic(topic);
-      const queueRes = governor.reserveForTopic(topic, candidates, currentDepth);
-      if (queueRes.admitted < candidates) {
-        result.rows_queue_depth_capped += queueRes.dropped;
+      const admission = reserveTopicRecomputeAdmission(topic);
+      if (admission.candidates === 0) continue;
+      if (!admission.admitted) {
+        result.rows_queue_depth_capped += admission.dropped;
         continue;
       }
       const enqueued = store.enqueueLifecycleActionForTopic(topic, 'recompute');
@@ -1025,5 +1059,6 @@ export const createEnrichmentCascade = (
     cascadeForConnectionDelete,
     cascadeForExternalContextPulseChange,
     cascadeForEngagementEvent,
+    reserveTopicRecomputeAdmission,
   };
 };

@@ -18,7 +18,7 @@
  *  "Web browser" (still strictly better than "unknown device"), and the
  *  server's own fallback covers the case where this returns nothing.
  *
- *  Spec: docs/d-156-spec.md (Devices roster). */
+ *  Spec: D-156 (Devices roster). */
 
 export interface DeriveDeviceDisplayNameInput {
   /** `navigator.userAgent`. */

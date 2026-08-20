@@ -465,6 +465,15 @@ body {
   color: var(--fg);
   font-size: 13px;
 }
+/* The AI notice sits INSIDE the form, directly above the submit button, and
+   uses --fg rather than --muted on purpose: it has to be legible at the moment
+   the visitor decides to send, which is what "clear and distinguishable" asks
+   for. Muting it into footer-grey would be a way of technically showing it. */
+.rcp-ai-notice {
+  margin: 0 0 12px 0;
+  color: var(--fg);
+  font-size: 13px;
+}
 .rcp-placeholder {
   margin: 0;
   padding: 14px;

@@ -186,6 +186,20 @@ export interface HousekeepingContext {
    *  connection. Optional — absent ⇒ ungated (tests + non-vendor producers
    *  leave it unwired; production wires one shared instance via composition). */
   rateGate?: VendorRateGate;
+  /** Round-12 audit fix (T1 § 8.1) — all-or-nothing per-topic queue-depth
+   *  admission for a topic-wide recompute enqueue, bound to the SAME cascade
+   *  budget governor the engine's own topic-wide sites consult
+   *  (`CascadeEngine.reserveTopicRecomputeAdmission`). The D-136 P4 drift
+   *  producer asks this BEFORE its signal+enqueue transaction, so a declined
+   *  topic advances no severity and the next cycle re-fires under fresh
+   *  headroom — the transaction's own atomicity invariant, kept. Optional —
+   *  absent ⇒ ungated (tests + dbless harnesses), matching `rateGate`;
+   *  production wires it from the composed cascade engine. */
+  cascadeTopicAdmission?: (topic: string) => {
+    admitted: boolean;
+    candidates: number;
+    dropped: number;
+  };
   /** D-190 — the dedicated CRM record mirror. The vendor reconciliation
    *  harness (`buildVendorReconciliationTask`) upserts one row per CRM record
    *  UNCONDITIONALLY each cycle (independent of any AI producer + of the

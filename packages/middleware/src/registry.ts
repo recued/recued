@@ -32,8 +32,9 @@
  *  never a closed list. The `register()` method's "throws on duplicate
  *  id" remains the only hard constraint; there is no per-id allow-list.
  *
- *  Spec: D-160 § N.3 / A.3 + docs/d-164-prompt-cache-
- *  consolidation-pending-design.md P5 (registry-role clarification).
+ *  Spec: D-160 § N.3 / A.3 +
+ *  D-164 P5
+ *  (registry-role clarification).
  */
 
 import type { Middleware } from './types.js';

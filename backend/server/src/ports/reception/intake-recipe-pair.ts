@@ -9,6 +9,10 @@ import {
   type RecipeDefinition,
 } from '@recued/contracts';
 import type { ReceptionIntakeRecipePairStore } from '../../storage/reception-intake-recipe-pair-store.js';
+import {
+  analyzeReceptionRecipeCost,
+  type ReceptionRecipeCostResolvers,
+} from '../../reception-recipe-cost-policy.js';
 
 export type ReceptionIntakeRecipePairResolution =
   | { readonly kind: 'unpaired' }
@@ -32,6 +36,25 @@ export type ReceptionIntakeRecipePairResolution =
        *  about whether this recipe renders, and would then fire (or fail to fire)
        *  on the wrong forms. */
       readonly renders_response: boolean;
+      /** Does this pair's recipe run AI on the visitor's submission?
+       *
+       *  Drives the visitor-facing AI notice on the rendered form. A public door
+       *  that runs AI already requires a recorded owner opt-in — `allow_ai` on the
+       *  door's execution policy, minted from this same profile at bind time and
+       *  re-checked on every submit — so the owner has consented. **Nothing told
+       *  the VISITOR**, and that is what this field is for.
+       *
+       *  ⛔ Derived with `analyzeReceptionRecipeCost` — the SAME analysis the
+       *  submit runner uses to decide whether the door's policy admits the run.
+       *  A second rule here could claim AI on a form that runs none, or stay
+       *  silent on one that does; both are worse than no notice at all.
+       *
+       *  ⚠ A recipe whose cost profile cannot be computed reports `false`, and
+       *  that is NOT failing open. Such a recipe cannot run at all — the runner
+       *  refuses it with `cost_unknown_dispatch_kind` before any step dispatches,
+       *  so there is no AI interaction to disclose because there is no
+       *  interaction. The form is broken, not silently AI-powered. */
+      readonly uses_ai: boolean;
     }
   | { readonly kind: 'stale' };
 
@@ -56,6 +79,13 @@ export const resolveReceptionIntakeRecipePair = (input: {
     readonly form_config: IntakeFormConfig;
     readonly recipe: RecipeDefinition;
   }) => ReceptionIntakeRecipePairDerivation;
+  /** Optional cost-analysis resolvers, forwarded verbatim to
+   *  `analyzeReceptionRecipeCost` for the `uses_ai` derivation. Absent is safe
+   *  for a kernel-only recipe — `core.ai.*` is a closed namespace the analysis
+   *  classifies without any resolver — and a pack op simply reports an unknown
+   *  dispatch kind, which the runner refuses anyway. */
+  readonly resolveOpKinds?: ReceptionRecipeCostResolvers['resolveOpKinds'];
+  readonly resolveIngredientKind?: ReceptionRecipeCostResolvers['resolveIngredientKind'];
 }): ReceptionIntakeRecipePairResolution => {
   try {
     const stored = input.store.findByEndpoint(input.endpoint_id);
@@ -87,10 +117,23 @@ export const resolveReceptionIntakeRecipePair = (input: {
     // column cached at bind could go stale against a recipe edited afterwards;
     // this cannot, because a drifted recipe never reaches this line (it returns
     // `stale` above).
+    // Same argument as `renders_response` directly above, for the same reason:
+    // the recipe in hand is the one that will process this submission, so the AI
+    // answer is re-derived rather than cached, and a recipe edited after bind can
+    // never leave a stale notice behind (a drifted recipe returns `stale` above).
+    const cost = analyzeReceptionRecipeCost(recipe, {
+      ...(input.resolveOpKinds === undefined
+        ? {}
+        : { resolveOpKinds: input.resolveOpKinds }),
+      ...(input.resolveIngredientKind === undefined
+        ? {}
+        : { resolveIngredientKind: input.resolveIngredientKind }),
+    });
     return {
       kind: 'ready',
       binding: { ...stored.binding },
       renders_response: recipeOutputSections(recipe).length > 0,
+      uses_ai: cost.ok && cost.profile.uses_ai,
     };
   } catch {
     return { kind: 'stale' };

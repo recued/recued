@@ -94,7 +94,7 @@
 // shipped to production: a pre-deploy grep of the minified bundle showed the
 // bearer was still being written into a URL by the four DATA sockets (upload /
 // download / archive-upload), which v10's rpc-socket fix had not touched. v10's
-// shell is therefore live on app.recued2.com with a bundle nobody should keep;
+// shell is therefore live on the staging origin with a bundle nobody should keep;
 // bumping evicts it there and gives production a name that has never served
 // anything else.
 /** Every cache this app owns starts with this — the shell cache below and any

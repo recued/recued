@@ -6,6 +6,8 @@
  *  relay over the paired server RPC (`account.bind`).
  */
 
+import { cloudOrigin } from '../cloud-apex.js';
+
 export interface AccountBindingAuthUser {
   id: string;
   email: string;
@@ -60,23 +62,18 @@ const currentHost = (): string => {
   return typeof locationLike?.hostname === 'string' ? locationLike.hostname : '';
 };
 
+// ⛔ THE HOST NO LONGER SELECTS THE ENVIRONMENT — the BUILD does. Both of these
+// sniffed `location.hostname` for a hardcoded mirror domain, plus one explicit
+// exception for a mirror host that lived on the product apex. See `cloud-apex.ts`
+// for why that moved to build configuration. The `host` parameter is kept so
+// existing call sites and their tests compile unchanged.
 export const resolveAccountBindingAuthWorkerUrl = (
-  host = currentHost(),
-): string => {
-  if (host === 'staging-app.recued.com' || host.endsWith('.recued2.com')) {
-    return 'https://auth.recued2.com';
-  }
-  return 'https://auth.recued.com';
-};
+  _host = currentHost(),
+): string => cloudOrigin('auth');
 
 export const resolveAccountBindingDashboardUrl = (
-  host = currentHost(),
-): string => {
-  if (host === 'staging-app.recued.com' || host.endsWith('.recued2.com')) {
-    return 'https://dashboard.recued2.com/';
-  }
-  return 'https://dashboard.recued.com/';
-};
+  _host = currentHost(),
+): string => `${cloudOrigin('dashboard')}/`;
 
 const normalizeError = (data: unknown, fallback: string): string => {
   if (data && typeof data === 'object') {

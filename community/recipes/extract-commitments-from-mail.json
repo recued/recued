@@ -4,7 +4,7 @@
   "version": 1,
   "ttl": 60,
   "metadata": {
-    "name": "Extract commitments from mail (D-145 PA10)",
+    "name": "Extract commitments from mail",
     "description": "Use “Extract commitments from mail” in Recued. Extract commitments from an inbound email into Recued's commitment tracker — who promised what to whom, with optional deadline and monetary amount. Thread-aware: a reply like 'yes, please send that by Friday' binds to the prior message, not the reply.",
     "author": "recued-core",
     "supported_platforms": [],

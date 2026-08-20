@@ -623,6 +623,10 @@ export const createIntakeFormPacketHandler = (
       bearer_secret: bearer,
       form_nonce: nonce,
       trust_footer,
+      // Only a `ready` pair can run: `unpaired` runs no recipe at all, and
+      // `stale` is refused before dispatch. Neither can put AI in front of this
+      // visitor, so neither earns a notice.
+      uses_ai: pairResolution.kind === 'ready' && pairResolution.uses_ai,
     };
 
     // Defense in depth — assert the substrate's redacted packet didn't

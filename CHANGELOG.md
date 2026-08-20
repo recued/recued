@@ -7,6 +7,37 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.8.19 — 2026-08-19
+
+Housekeeping, mostly, and the honest kind: several things this distribution was
+telling you were either internal noise or quietly wrong.
+
+Seven built-in recipes were displaying an internal tracking tag in their names —
+"Today (D-145 PA10)" and friends. That tag was in the marketplace listing, the
+recipe list, and the tool catalog the assistant reads. It is gone. Existing
+installs keep the old label until the recipe is reinstalled, because the packs
+that ship these pin them by version and bumping that would strand every
+reference; new installs are clean.
+
+The public source no longer carries the operator's own environment. The cloud
+apex used to be a constant in this source with a runtime hostname check to swap
+onto a mirror — a branch nobody running their own server can take, naming a
+domain nobody running their own server can reach. It is configuration now
+(`RECUED_CLOUD_APEX`, and a build define for the webclient), so what you read is
+the deployment you actually get. A handful of comments that described the old
+behaviour were corrected along with it.
+
+Recipe grants finished landing. The access axis added in 26.8.18 now has its
+remaining pieces: the seeding rule is pinned at both ends, chat applies the same
+recipe-preferred suppression the MCP door always has, and the boundary is
+covered end to end — a granted recipe may reach an operation whose own grant is
+revoked, and a recipe it pairs to may not.
+
+Also: a run that refused every item no longer reports itself successful, a
+visitor is told when a public door runs AI before they use it, and the test
+suite defaults to the process pool it always needed — the thread pool crashes
+this suite outright, which had been rediscovered more than once.
+
 ## 26.8.18 — 2026-08-18
 
 This one is mostly about being told the truth. A recipe becomes something you

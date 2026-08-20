@@ -19,6 +19,7 @@
 import type { ProEntitlementClaim } from '@recued/contracts';
 import { ed25519Verify, type StoredAccountBinding } from '../keys/index.js';
 import { makeBoundedOriginHttpFetcher } from '../bounded-origin-http-fetcher.js';
+import { CLOUD_APEX_DEFAULT, resolveCloudApex } from '../account-binding/exchange-url.js';
 
 /** The resolved Pro entitlement — SECRET-FREE. NEVER carries the
  *  `server_scoped_credential` nor the raw signed claim token; only the
@@ -96,22 +97,14 @@ export interface RealProEntitlementSourceDeps {
 const ENTITLEMENT_PREFIX = 'proent.v1';
 const DEFAULT_TIMEOUT_MS = 10_000;
 const CLAIM_FUTURE_SKEW_MS = 60 * 1000;
-const AUTH_WORKER_ORIGIN_PROD = 'https://auth.recued.com';
-const AUTH_WORKER_ORIGIN_STAGING = 'https://auth.recued2.com';
 export const PRO_ENTITLEMENT_MINT_PATH = '/v1/account/entitlement/mint';
-
-const isRecued2CloudHost = (cloudBaseUrl: string | undefined): boolean => {
-  if (!cloudBaseUrl) return false;
-  try {
-    return new URL(cloudBaseUrl).hostname.endsWith('.recued2.com');
-  } catch {
-    return false;
-  }
-};
 
 export interface ResolveProEntitlementMintUrlOptions {
   override?: string;
+  /** ⚠ Retained for callers, no longer read — see `resolveCloudApex`. */
   cloudBaseUrl?: string;
+  /** Apex override for tests; production reads `RECUED_CLOUD_APEX`. */
+  cloudApex?: string;
 }
 
 export const resolveProEntitlementMintUrl = (
@@ -119,10 +112,9 @@ export const resolveProEntitlementMintUrl = (
 ): string => {
   const override = options.override?.trim();
   if (override) return override;
-  const origin = isRecued2CloudHost(options.cloudBaseUrl)
-    ? AUTH_WORKER_ORIGIN_STAGING
-    : AUTH_WORKER_ORIGIN_PROD;
-  return `${origin}${PRO_ENTITLEMENT_MINT_PATH}`;
+  // Single source of truth with the binding exchange — same Worker, same apex.
+  const apex = options.cloudApex?.trim() || resolveCloudApex();
+  return `https://auth.${apex}${PRO_ENTITLEMENT_MINT_PATH}`;
 };
 
 /** The trust anchor for `proent.v1` claims: the Ed25519 SPKI-DER public half
@@ -145,15 +137,15 @@ export const resolveProEntitlementMintUrl = (
  *  D-175. */
 const PRO_ENTITLEMENT_PUBLIC_KEY_PROD =
   'MCowBQYDK2VwAyEAc7SOi3TcGaYFCutsbVZzNEkJDsmWFBILqPp/HxRhp40=';
-const PRO_ENTITLEMENT_PUBLIC_KEY_STAGING =
-  'MCowBQYDK2VwAyEAhGQbD0X9QKJUaC0u1hkGcMYJxYKw9dYJOzCeU0sQ4j8=';
 
 export interface ResolveProEntitlementPublicKeyOptions {
   /** `RECUED_PRO_ENTITLEMENT_PUBLIC_KEY_B64` — wins when set. Kept so a local
    *  rig / a private deployment can point at its own signer without a rebuild. */
   override?: string;
-  /** The configured `cloud.base_url`; a `*.recued2.com` host selects staging. */
+  /** ⚠ Retained for callers, no longer read — see `RECUED_CLOUD_APEX`. */
   cloudBaseUrl?: string;
+  /** Apex override for tests; production reads `RECUED_CLOUD_APEX`. */
+  cloudApex?: string;
 }
 
 export const resolveProEntitlementPublicKey = (
@@ -161,9 +153,22 @@ export const resolveProEntitlementPublicKey = (
 ): string => {
   const override = options.override?.trim();
   if (override) return override;
-  return isRecued2CloudHost(options.cloudBaseUrl)
-    ? PRO_ENTITLEMENT_PUBLIC_KEY_STAGING
-    : PRO_ENTITLEMENT_PUBLIC_KEY_PROD;
+  // ⛔⛔ THE APEX AND THE TRUST ANCHOR ARE ONE DECISION, SO REFUSE THE HALF
+  // CONFIGURATION. A mirror mints from `auth.<its apex>` but would verify with
+  // the PROD key, so every claim fails to verify — closed, but silently and a
+  // long way from the cause. The old code kept a second hardcoded key in step
+  // with a host sniff; now that both are configuration, the pairing has to be
+  // enforced rather than assumed.
+  const apex = options.cloudApex?.trim() || resolveCloudApex();
+  if (apex !== CLOUD_APEX_DEFAULT) {
+    throw new Error(
+      `RECUED_CLOUD_APEX is '${apex}', so entitlements are minted by that apex's `
+        + 'auth Worker, but no RECUED_PRO_ENTITLEMENT_PUBLIC_KEY_B64 is set — every '
+        + 'claim would fail to verify against the default trust anchor. Set the '
+        + "public half of that Worker's PRO_ENTITLEMENT_SIGNING_PRIVATE_KEY_B64.",
+    );
+  }
+  return PRO_ENTITLEMENT_PUBLIC_KEY_PROD;
 };
 
 const base64UrlToBytes = (value: string): Uint8Array => {

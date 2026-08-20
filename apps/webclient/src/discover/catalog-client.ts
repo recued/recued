@@ -23,6 +23,7 @@
  */
 
 import { extractBulkPackRecipeRefs } from '@recued/contracts';
+import { cloudApexOrigin } from '../cloud-apex.js';
 
 // ────────────────────────────────────────────────────────────────
 // Row types — mirror the worker's projection (apps/marketplace/src/ssr/worker.ts
@@ -93,9 +94,8 @@ export type CatalogFetch = (
 
 /** Resolve the marketplace apex origin the catalog lives on. Explicit override
  *  wins (tests / a self-hoster pointing at a private mirror); otherwise derive
- *  prod vs staging from the webclient's own host — `app.recued2.com` → the
- *  `recued2.com` staging apex, everything else (incl. a LAN-IP / localhost
- *  offline webclient) → the public prod apex `recued.com`. Mirrors the
+ *  the apex fixed at BUILD time (`cloud-apex.ts`), so a LAN-IP / localhost
+ *  offline webclient still reaches the public apex `recued.com`. Mirrors the
  *  `probe.recued.com` default-prod pattern in `settings/reachability.ts`. */
 export const resolveApexOrigin = (opts?: {
   override?: string;
@@ -108,7 +108,10 @@ export const resolveApexOrigin = (opts?: {
     opts?.hostname ??
     (globalThis as { location?: { hostname?: string } }).location?.hostname ??
     '';
-  return host.includes('recued2') ? 'https://recued2.com' : 'https://recued.com';
+  // ⛔ Was `host.includes(<mirror>) ? <mirror apex> : <product apex>`. The apex
+  // is build configuration now (see `cloud-apex.ts`); `host` stays for callers.
+  void host;
+  return cloudApexOrigin();
 };
 
 // ────────────────────────────────────────────────────────────────

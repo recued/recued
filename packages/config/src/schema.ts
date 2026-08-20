@@ -690,7 +690,7 @@ export const RUNTIME_SCHEMA = [
     // free-tier endpoints (reachability probe, pair-blob relay,
     // marketplace API). Production override is unnecessary; staging /
     // dev override points at `api.test.recued.cloud` (test fixtures) or
-    // `api.recued2.com` (staging mirror).
+    // a mirror deployment's own API host.
     //
     // ⛔ There is NO env override. `RECUED_RUNTIME_*` was removed 2026-07-28
     // (see `env.ts`), so `RECUED_RUNTIME_CLOUD_BASE_URL` — which this comment

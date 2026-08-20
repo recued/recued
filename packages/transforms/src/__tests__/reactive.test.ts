@@ -292,6 +292,56 @@ describe('recipe_succeeded_since', () => {
     expect(recipe_succeeded_since({ entries: null, since_ms: 0 }, c)).toEqual([]);
     expect(recipe_succeeded_since({ entries, since_ms: NaN }, c)).toEqual([]);
   });
+
+  // ── D-237 P2 yield ────────────────────────────────────────────────
+  // A `foreach` is continue-on-error, so a run whose every item was refused
+  // still reaches `commit_status: 'succeeded'`. The anchor is right about the
+  // lifecycle; it is the wrong answer to "did recipe X succeed", which is the
+  // only question this transform exists to answer.
+
+  it('⛔ EXCLUDES an all-refused run — it completed, it did not succeed', () => {
+    const withYield = [
+      {
+        recipe_id: 'a',
+        commit_status: 'succeeded',
+        finished_at: 300,
+        run_yield: { steps_run: 1, steps_skipped: 0, items_total: 9, items_failed: 9 },
+      },
+    ];
+    expect(recipe_succeeded_since({ entries: withYield, since_ms: 0 }, c)).toEqual([]);
+  });
+
+  it('keeps a PARTIAL failure — the items that went through really went through', () => {
+    const withYield = [
+      {
+        recipe_id: 'a',
+        commit_status: 'succeeded',
+        finished_at: 300,
+        run_yield: { steps_run: 1, steps_skipped: 0, items_total: 9, items_failed: 8 },
+      },
+    ];
+    expect(recipe_succeeded_since({ entries: withYield, since_ms: 0 }, c)).toHaveLength(1);
+  });
+
+  it('⛔ a row with NO yield still matches — absent is pre-D-237, never "produced nothing"', () => {
+    // The whole `entries` fixture above predates the field. If a missing yield
+    // read as a refusal, this transform would stop matching every historical
+    // run at once — a silent, total behaviour change dressed as a bug fix.
+    const r = recipe_succeeded_since({ entries, since_ms: 0 }, c) as unknown[];
+    expect(r).toHaveLength(3);
+  });
+
+  it('a malformed yield does not exclude — no confident wrong answer', () => {
+    const withYield = [
+      {
+        recipe_id: 'a',
+        commit_status: 'succeeded',
+        finished_at: 300,
+        run_yield: { items_total: 'nine', items_failed: 'nine' },
+      },
+    ];
+    expect(recipe_succeeded_since({ entries: withYield, since_ms: 0 }, c)).toHaveLength(1);
+  });
 });
 
 describe('time_within_window', () => {

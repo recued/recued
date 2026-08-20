@@ -709,7 +709,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "version": 1,
     "ttl": 60,
     "metadata": {
-      "name": "Extract commitments from mail (D-145 PA10)",
+      "name": "Extract commitments from mail",
       "description": "Use “Extract commitments from mail” in Recued. Extract commitments from an inbound email into Recued's commitment tracker — who promised what to whom, with optional deadline and monetary amount. Thread-aware: a reply like 'yes, please send that by Friday' binds to the prior message, not the reply.",
       "author": "recued-core",
       "supported_platforms": [],
@@ -1078,7 +1078,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "version": 1,
     "ttl": 60,
     "metadata": {
-      "name": "Extract tasks from mail (D-145 PA10)",
+      "name": "Extract tasks from mail",
       "description": "Use “Extract tasks from mail” in Recued. Extract action items from an inbound email into Recued's task tracker — title, due date, and priority (low / medium / high). Thread-aware; fires automatically on each inbound message; records only extractions above the confidence floor (default 0.7).",
       "author": "recued-core",
       "supported_platforms": [],
@@ -1408,7 +1408,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "version": 1,
     "ttl": 60,
     "metadata": {
-      "name": "Open commitments (D-145 PA10)",
+      "name": "Open commitments",
       "description": "Use “Open commitments” in Recued. Dashboard of open commitments and tasks per contact and project, sorted by each contact's follow-through reliability — dependable counterparties land on top so the easy wins get chased first. Auto-refreshes weekday morning and early afternoon; invoke any time for the current view.",
       "author": "recued-core",
       "supported_platforms": [],
@@ -1610,7 +1610,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "version": 1,
     "ttl": 60,
     "metadata": {
-      "name": "Recent notes by topic (D-145 PA10)",
+      "name": "Recent notes by topic",
       "description": "Use “Recent notes by topic” in Recued. Surface your still-warm notes: ranks notes by ongoing relevance (recently touched and frequently referenced rise; dormant ones decay over 180 days) and shows the freshest decile. Private notes stay private by default.",
       "author": "recued-core",
       "supported_platforms": [],
@@ -2484,7 +2484,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "version": 1,
     "ttl": 60,
     "metadata": {
-      "name": "Stalled projects (D-145 PA10)",
+      "name": "Stalled projects",
       "description": "Use “Stalled projects” in Recued. Today's intervention list for projects: those with no activity past the 14-day stall horizon, plus active projects with no next action (no open task, pending commitment, or recent note) — each with an AI-suggested next step. Auto-refreshes on weekdays.",
       "author": "recued-core",
       "supported_platforms": [],
@@ -2651,7 +2651,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "version": 1,
     "ttl": 60,
     "metadata": {
-      "name": "Today (D-145 PA10)",
+      "name": "Today",
       "description": "Use “Today” in Recued. Morning glance card: today's calendar, the contacts and projects carrying the most open loops (unresolved commitments, tasks, unanswered threads), and active projects with no next action.",
       "author": "recued-core",
       "supported_platforms": [],
@@ -2845,7 +2845,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "version": 1,
     "ttl": 60,
     "metadata": {
-      "name": "Triage inbox (D-145 PA10)",
+      "name": "Triage inbox",
       "description": "Use “Triage inbox” in Recued. Classify each inbound email into urgentaction / awaitingresponse / fyi / promotional / spam and send an in-app notification for urgentaction + awaitingresponse (subject, sender, suggested next action). Promotional / spam classify silently — no notification noise on bulk mail.",
       "author": "recued-core",
       "supported_platforms": [],

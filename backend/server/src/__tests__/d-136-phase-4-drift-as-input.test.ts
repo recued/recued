@@ -326,6 +326,77 @@ describe('D-136 P4 — drift producer enqueues recompute', () => {
   });
 });
 
+// Round-12 audit fix (T1 § 8.1) — the drift producer was the THIRD writer of
+// the topic-wide recompute enqueue and the only one that consulted no queue
+// governor. It now asks `ctx.cascadeTopicAdmission` (bound to the cascade
+// engine's own reservation) BEFORE the signal+enqueue transaction, and a
+// declined topic skips BOTH writes so the prior severity re-fires next cycle.
+describe('round-12 T1 § 8.1 — drift enqueue consults the cascade queue governor', () => {
+  const seedSignificantShift = (): void => {
+    const baselineStart = now - DRIFT_BASELINE_WINDOW_MS - DRIFT_RECENT_WINDOW_MS - 100_000;
+    seedManyPurposeRows(MIN_SAMPLE_COUNT_BASELINE * 2, baselineStart, 0.85, 'b');
+    seedManyPurposeRows(MIN_SAMPLE_COUNT_RECENT * 3, now - DRIFT_RECENT_WINDOW_MS / 2, 0.55, 'r');
+  };
+  const countPending = (): number =>
+    (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS n
+             FROM data_enrichment
+            WHERE topic = 'purpose' AND lifecycle_action_pending IS NOT NULL`,
+        )
+        .get() as { n: number }
+    ).n;
+
+  it('a DECLINED admission skips BOTH writes — and the same transition re-fires next cycle', () => {
+    seedSignificantShift();
+    const admission = vi.fn(() => ({ admitted: false, candidates: 5, dropped: 5 }));
+    const declined = processOneConfidenceDriftTopic(
+      { ...ctx(), cascadeTopicAdmission: admission },
+      'purpose',
+      now,
+    );
+    // Consulted with the topic, before any write.
+    expect(admission).toHaveBeenCalledWith('purpose');
+    expect(declined).toEqual({ processed: true, fired: null });
+    // Neither the enqueue NOR the severity advance happened — the atomicity
+    // invariant the transaction exists for, preserved on the skip path.
+    expect(countPending()).toBe(0);
+    // The falsifiable half: because the prior severity did not advance, the
+    // NEXT cycle sees the same null→significant transition and, under fresh
+    // headroom, performs both writes. Had the signal been upserted on the
+    // declined pass, this would fire null and enqueue nothing — silent loss
+    // of recompute coverage.
+    now += 24 * 60 * 60_000;
+    const retried = processOneConfidenceDriftTopic(
+      { ...ctx(), cascadeTopicAdmission: () => ({ admitted: true, candidates: 5, dropped: 0 }) },
+      'purpose',
+      now,
+    );
+    expect(retried.fired).toBe('significant');
+    expect(countPending()).toBeGreaterThan(0);
+  });
+
+  it('an ADMITTED admission changes nothing — both writes proceed as before', () => {
+    seedSignificantShift();
+    const result = processOneConfidenceDriftTopic(
+      { ...ctx(), cascadeTopicAdmission: () => ({ admitted: true, candidates: 5, dropped: 0 }) },
+      'purpose',
+      now,
+    );
+    expect(result.fired).toBe('significant');
+    expect(countPending()).toBeGreaterThan(0);
+  });
+
+  it('the hook is NOT consulted below significant or off the auto-recompute path', () => {
+    // A moderate/no-transition cycle enqueues nothing, so reserving budget for
+    // it would leak governor reservations on every quiet day.
+    const admission = vi.fn(() => ({ admitted: true, candidates: 0, dropped: 0 }));
+    processOneConfidenceDriftTopic({ ...ctx(), cascadeTopicAdmission: admission }, 'purpose', now);
+    expect(admission).not.toHaveBeenCalled();
+  });
+});
+
 describe('D-136 P4 — enqueueLifecycleActionForTopic store method', () => {
   it('returns 0 for an unregistered topic (no-op)', () => {
     const n = store.enqueueLifecycleActionForTopic(

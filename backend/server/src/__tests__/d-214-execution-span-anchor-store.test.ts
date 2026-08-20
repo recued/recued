@@ -187,7 +187,14 @@ describe('D-214 root request sealing', () => {
       )
       .get('root-1') as { root_request_encrypted: string };
     expect(row.root_request_encrypted).not.toContain('Alice');
-    expect(row.root_request_encrypted).not.toContain('Q3');
+    // ⛔ 'Q3 report', not 'Q3'. The stored value is base64 over RANDOM
+    // ciphertext, and a 2-char canary over a 64-char alphabet collides by
+    // chance: measured at 1.65% per run over 200k samples, which is a red on
+    // roughly one full sweep in sixty and reads as a plaintext leak. It caught
+    // one on 2026-08-19 (`…aevQ3K2lErr…`). The longer fragment carries a space,
+    // which base64 never emits, so it is collision-PROOF while still failing
+    // the moment the plaintext is what got stored.
+    expect(row.root_request_encrypted).not.toContain('Q3 report');
   });
 
   /** The AAD binds `(session_id, root_request_id)`. Moving a sealed prompt

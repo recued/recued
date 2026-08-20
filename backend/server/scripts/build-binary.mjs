@@ -58,6 +58,61 @@ const fail = (msg) => {
   process.exit(1);
 };
 
+// ── 0. Pin the runtime this binary will EMBED ───────────────────────────
+//
+// ⛔⛔⛔ STEP 4 BELOW IS `copyFileSync(process.execPath, binPath)`. THE NODE
+// RUNNING THIS SCRIPT *IS* THE RUNTIME EVERY SELF-HOSTER DOWNLOADS. Nothing
+// used to state that, nothing recorded it, and it had already drifted:
+// measured 2026-08-19, linux shipped Node 24 (`node:24-slim`, see
+// build-binary-docker.mjs) and windows shipped 24 (the VM's own node), while
+// macOS shipped whatever the release engineer had on PATH — 25.9.0, an
+// odd-numbered Current line that never becomes LTS. Three platforms, two
+// runtimes, chosen by nobody.
+//
+// 🔑 So this is an ASSERTION, not a migration: it does not change which Node
+// you run, it makes the choice deliberate and visible in the build log. The
+// target is the LTS line the other two platforms already ship.
+//
+// ⏳ WHY 24 AND NOT 26, ASKED AND ANSWERED 2026-08-19. Node 26 becomes LTS in
+// ~October, so 24 looks like a target you would move off almost immediately.
+// Setting 26 TODAY would be worse in both directions: it ships a Current-line
+// runtime to users for the next six weeks — the exact problem this exists to
+// stop — and it would put ALL THREE platforms out of compliance at once
+// (linux is `node:24-slim`, windows' VM is 24), inverting the signal so the
+// two platforms doing the right thing start warning.
+//
+// ⇒ AND IT DOES NOT COST A SECOND MIGRATION, because this check WARNS rather
+// than blocks. macOS keeps building under the override, linux + windows pass
+// clean, and in October you move all three build hosts ONCE, set this to 26,
+// and delete the override. One migration, and until then the constant states
+// what 2 of 3 platforms actually ship rather than an aspiration.
+const EXPECTED_NODE_MAJOR = 24;
+const nodeMajor = Number(process.versions.node.split('.')[0]);
+console.log(
+  `[build-binary] embedding Node ${process.version} (${process.execPath}) — `
+    + `this is the runtime the downloaded server will run on`,
+);
+if (nodeMajor !== EXPECTED_NODE_MAJOR) {
+  // ⚠ An override rather than a hard stop, because macOS is not on 24 yet and
+  // a build that cannot run is worse than one that says what it is doing.
+  // Moving macOS to 24 is its own piece of work (both sqlite addons are
+  // ABI-locked and need rebuilding). When it lands, delete the override and
+  // this becomes a plain `fail`.
+  const why = `this build embeds Node ${nodeMajor}, but the release target is `
+    + `Node ${EXPECTED_NODE_MAJOR} (the LTS line linux + windows already ship)`;
+  if (process.env.RECUED_ALLOW_NODE_MAJOR !== String(nodeMajor)) {
+    fail(
+      `${why}.\n`
+        + `  Either build under Node ${EXPECTED_NODE_MAJOR} (\`nvm exec ${EXPECTED_NODE_MAJOR}\`, and\n`
+        + `  \`npm rebuild better-sqlite3 better-sqlite3-multiple-ciphers\` first — both are\n`
+        + `  ABI-locked), or state the exception explicitly:\n`
+        + `      RECUED_ALLOW_NODE_MAJOR=${nodeMajor} npm run build:binary\n`
+        + `  ⛔ The override ships Node ${nodeMajor} to every user of this triple. Mean it.`,
+    );
+  }
+  console.warn(`[build-binary] ⚠ ${why} — allowed via RECUED_ALLOW_NODE_MAJOR`);
+}
+
 // ── 1. Resolve the host triple ──────────────────────────────────────────
 const triple = currentPlatformTriple();
 if (!triple) {

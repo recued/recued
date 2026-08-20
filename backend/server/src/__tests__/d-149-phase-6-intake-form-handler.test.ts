@@ -256,7 +256,7 @@ describe('D-149 P6 § A.5.3 — GET /reception/intake/<id>', () => {
       pair_revision: `d200-pair-v1-${'a'.repeat(64)}` as const,
     };
     const withoutClaim = buildHandler(env, undefined, {
-      resolveIntakeFormRecipePair: () => ({ kind: 'ready', binding, renders_response: false }),
+      resolveIntakeFormRecipePair: () => ({ kind: 'ready', binding, renders_response: false, uses_ai: false }),
     });
     const blocked = fakeRes();
     await withoutClaim(
@@ -266,7 +266,7 @@ describe('D-149 P6 § A.5.3 — GET /reception/intake/<id>', () => {
     expect(blocked.status).toBe(503);
 
     const withClaim = buildHandler(env, undefined, {
-      resolveIntakeFormRecipePair: () => ({ kind: 'ready', binding, renders_response: false }),
+      resolveIntakeFormRecipePair: () => ({ kind: 'ready', binding, renders_response: false, uses_ai: false }),
       coordinateIntakeFormPairedRun: async () => ({ kind: 'refused' }),
     });
     const live = fakeRes();

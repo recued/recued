@@ -146,6 +146,7 @@ import type { WorkEntityTargetedReadDeps } from './work-entity-write-executor.js
 import {
   OP_TOOL_PREFIX,
   buildRawOpToolDescriptors,
+  buildRecipeOpCoverage,
   rawOpToolEntriesFrom,
   visibleRawOps,
   type RawOpToolEntry,
@@ -155,7 +156,7 @@ import {
   type RawOpDispatchDeps,
   type RawOpDispatchOutcome,
 } from './raw-op-dispatch.js';
-import type { InstalledPackScan } from './pack-inventory.js';
+import { buildPackOpResolution, type InstalledPackScan } from './pack-inventory.js';
 
 /** Executor closure shape. `chat-tool-handlers` calls this rather than
  *  importing `handleExecute` directly so tests can substitute a fake
@@ -3267,7 +3268,28 @@ export const createChatRawOpSource = (
   const scan = deps.scanInstalledPacks;
   if (!scan) return [];
   const getManifest = (slug: string) => deps.getExecutorConfig().manifests.get(slug);
-  const universe = buildRawOpToolDescriptors(scan, getManifest);
+  // D-247 open item 2 — §8 RECIPE-PREFERRED SUPPRESSION, same as the door.
+  // ⛔ This call passed two args while the MCP door passed three, so a raw WRITE
+  // an installed recipe already covers stayed VISIBLE to chat while the grant
+  // catalog beside it (`wire-chat-orchestrator`, which has always passed
+  // coverage) had already suppressed it — one doctrine answered two ways on one
+  // surface. Under D2 it is not load-bearing (op rows default OFF, so the raw
+  // tool is gated anyway); it is wired because a second answer is how the first
+  // one stops being true.
+  //
+  // 🔑 The pack resolution must be the SAME one the descriptors use, or an
+  // `ingredient:`-authored write maps to no op id and silently fails to suppress.
+  //
+  // ⚠ `getRecipeStore` is DECLARED required, but `wire-reception-substrate.ts:466`
+  // supplies it through a conditional spread, so a real composition can omit it
+  // and the compiler cannot see that. Absent ⇒ no coverage, which is this
+  // module's documented safe direction (over-exposure, never hiding a write) and
+  // leaves the raw op gated by its own grant regardless.
+  const recipeStore = deps.getRecipeStore?.();
+  const coverage = recipeStore
+    ? buildRecipeOpCoverage(recipeStore, buildPackOpResolution(scan, getManifest))
+    : undefined;
+  const universe = buildRawOpToolDescriptors(scan, getManifest, coverage);
   const gate = deps.getOpAdmissionGate?.();
   // ⚠ No gate wired ⇒ unfiltered, which is today's behaviour and keeps every
   // dbless / partial harness working. Deliberate, and pinned by test so it stays

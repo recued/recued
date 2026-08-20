@@ -365,9 +365,13 @@ describe('resolveRecipeInput', () => {
       .toEqual({ slug: 'foo-bar' });
   });
 
-  it('extracts slug from the staging domain recued2.com', () => {
-    expect(resolveRecipeInput('https://recued2.com/marketplace/recipes/staging-recipe'))
-      .toEqual({ slug: 'staging-recipe' });
+  it('⛔ a NON-product domain is not a marketplace URL — it passes through', () => {
+    // Was "extracts slug from the staging domain". The regex accepted an
+    // optional digit so an operator mirror's URL parsed too; source now names
+    // only the product domain. A mirror URL is treated like any other URL —
+    // passed through, not silently resolved to a slug.
+    expect(resolveRecipeInput('https://mirror.example/marketplace/recipes/x'))
+      .not.toEqual({ slug: 'x' });
   });
 
   it('passes through a full non-marketplace URL', () => {

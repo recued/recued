@@ -1,7 +1,7 @@
 /** Marketplace HTTP client — shared between extension and server.
  *
  *  Fetches recipes and ingredients from the Recued marketplace Worker
- *  at marketplace.recued.com (or marketplace.recued2.com on staging).
+ *  at marketplace.recued.com.
  *  The Worker handles Supabase auth server-side with the service key, so
  *  clients carry no credentials and can be loaded on any origin.
  *
@@ -231,7 +231,7 @@ export const resolveRecipeInput = (
 
   // Marketplace URL: recued.com/marketplace/recipes/{id} or legacy /recipe/{id}
   const webUrlMatch = trimmed.match(
-    /^(?:https?:\/\/)?(?:www\.)?(?:app\.)?recued2?\.com(?:\/marketplace)?\/recipes?\/([a-z0-9][a-z0-9-]*[a-z0-9])$/i,
+    /^(?:https?:\/\/)?(?:www\.)?(?:app\.)?recued\.com(?:\/marketplace)?\/recipes?\/([a-z0-9][a-z0-9-]*[a-z0-9])$/i,
   );
   if (webUrlMatch) return { slug: webUrlMatch[1] };
 

@@ -27,6 +27,11 @@ describe('T3-AUD-1 — resolveFreePoolDataUse', () => {
     // about someone else's legal terms is the failure mode here.
     expect(use.terms.source_url).toBe('https://ai.google.dev/gemini-api/terms');
     expect(use.terms.effective).toBe('2026-03-23');
+    // Round-12 audit fix (T3 Q-1) — the check stamp travels too: `effective`
+    // is the DOCUMENT's date and can stand while the document is revised
+    // (observed: revision 2026-04-28 behind an unchanged effective date).
+    expect(use.terms.checked_at).toBe('2026-08-19');
+    expect(use.terms.doc_last_updated).toBe('2026-04-28');
   });
 
   it('knows the same provider reached as openai-compatible via its host', () => {
@@ -111,6 +116,10 @@ describe('T3-AUD-1 — freePoolDataUseNotice', () => {
     expect(text).toContain('only PAID use');
     expect(text).toContain('EEA, Switzerland, UK');
     expect(text).toContain('https://ai.google.dev/gemini-api/terms');
-    expect(text).toContain('2026-03-23');
+    // Round-12 audit fix (T3 Q-1) — the notice distinguishes the document's
+    // own date from when WE last verified it, so "still true" and "not looked
+    // at since" stop reading identically to the owner.
+    expect(text).toContain('effective 2026-03-23');
+    expect(text).toContain('verified 2026-08-19');
   });
 });

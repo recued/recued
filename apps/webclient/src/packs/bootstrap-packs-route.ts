@@ -356,7 +356,7 @@ export const resolvePackInput = (
   if (!trimmed) return null;
   // Marketplace pack URL (apex root or legacy /marketplace prefix) → slug.
   const webUrl = trimmed.match(
-    /^(?:https?:\/\/)?(?:www\.)?recued2?\.com(?:\/marketplace)?\/packs\/([a-z0-9][a-z0-9-]*[a-z0-9])(?:\.json)?$/i,
+    /^(?:https?:\/\/)?(?:www\.)?recued\.com(?:\/marketplace)?\/packs\/([a-z0-9][a-z0-9-]*[a-z0-9])(?:\.json)?$/i,
   );
   if (webUrl) return { slug: webUrl[1] };
   // Any other full URL → pass through (an arbitrary/local JSON — the local-import

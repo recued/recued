@@ -20,7 +20,7 @@ import { createPublicKey } from 'node:crypto';
 import { resolveProEntitlementPublicKey } from '../pro-convenience/entitlement-source.js';
 
 const PROD_CLOUD = 'https://api.recued.com';
-const STAGING_CLOUD = 'https://api.recued2.com';
+const STAGING_CLOUD = 'https://api.mirror.example';
 
 /** Import the base64 SPKI DER exactly as `verifyClaimEnvelope` would need to.
  *  Throws on anything that is not a real Ed25519 public key. */
@@ -45,10 +45,13 @@ describe('resolveProEntitlementPublicKey', () => {
     }
   });
 
-  it('selects per environment, and the two keys are distinct', () => {
-    const prod = resolveProEntitlementPublicKey({ cloudBaseUrl: PROD_CLOUD });
-    const staging = resolveProEntitlementPublicKey({ cloudBaseUrl: STAGING_CLOUD });
-    expect(staging).not.toBe(prod);
+  it('ships exactly ONE trust anchor — a mirror supplies its own', () => {
+    // Was "the two keys are distinct". There is no second key in source now:
+    // a mirror's signer is `RECUED_PRO_ENTITLEMENT_PUBLIC_KEY_B64`, so the
+    // operator's environment identity is not embedded in what self-hosters read.
+    const prod = resolveProEntitlementPublicKey({});
+    expect(prod).toMatch(/^MCowBQYDK2Vw/); // Ed25519 SPKI DER, base64
+    expect(resolveProEntitlementPublicKey({ override: 'OTHER' })).toBe('OTHER');
   });
 
   it('defaults to production for an unknown / absent cloud host', () => {
@@ -58,11 +61,24 @@ describe('resolveProEntitlementPublicKey', () => {
     expect(resolveProEntitlementPublicKey({ cloudBaseUrl: 'not a url' })).toBe(prod);
   });
 
-  it('switches on the recued2 host the same way the mint URL does', () => {
-    const staging = resolveProEntitlementPublicKey({ cloudBaseUrl: STAGING_CLOUD });
-    // Any *.recued2.com cloud host, not just the api subdomain — the key a
-    // server verifies with must always belong to the Worker it minted from.
-    expect(resolveProEntitlementPublicKey({ cloudBaseUrl: 'https://cloud.recued2.com' })).toBe(staging);
+  it('⛔⛔ a configured apex with NO key override REFUSES rather than mis-verifying', () => {
+    // The apex and the trust anchor are one decision. A mirror mints from its
+    // own Worker but would verify with the prod key, so every claim fails —
+    // closed, but silently and a long way from the cause. There used to be a
+    // second hardcoded key kept in step by a host sniff; with both now
+    // configuration, the pairing is enforced instead of assumed.
+    expect(() => resolveProEntitlementPublicKey({ cloudApex: 'mirror.example' })).toThrow(
+      /RECUED_PRO_ENTITLEMENT_PUBLIC_KEY_B64/,
+    );
+    // …and supplying the pair is fine.
+    expect(
+      resolveProEntitlementPublicKey({ cloudApex: 'mirror.example', override: 'KEY' }),
+    ).toBe('KEY');
+  });
+
+  it('the cloud host no longer selects a key — only the apex + override do', () => {
+    const prod = resolveProEntitlementPublicKey({});
+    expect(resolveProEntitlementPublicKey({ cloudBaseUrl: 'https://cloud.mirror.example' })).toBe(prod);
   });
 
   it('an explicit override wins, so a private deployment can point at its own signer', () => {

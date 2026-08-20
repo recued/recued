@@ -33,6 +33,7 @@
 import {
   ACCT_ALIAS_VALUES,
   CRM_ALIAS_VALUES,
+  carryOpStepPassthroughKnobs,
   getKernelDomain,
   isOpStep,
   isPrefetchOpStep,
@@ -169,19 +170,11 @@ const lowerPackOpStep = (step: OpStep, packs: PackOpResolution): IngredientStep 
     ingredient: binding.catalog_slug,
     ...(step.connection !== undefined ? { connection: step.connection } : {}),
     input: { operation: parsed.operation, args: step.args ?? {} },
-    ...(step.skip_when !== undefined ? { skip_when: step.skip_when } : {}),
-    ...(step.fail_on !== undefined ? { fail_on: step.fail_on } : {}),
-    ...(step.cache !== undefined ? { cache: step.cache } : {}),
-    ...(step.foreach !== undefined ? { foreach: step.foreach } : {}),
-    // Carry the step-level PII shorthand onto the concrete catalog step (parity
-    // with the kernel lowering) — a pack `ai` op that opts into bare-name PII
-    // protection keeps it through the lowering.
-    ...(step.pii_fields !== undefined ? { pii_fields: step.pii_fields } : {}),
-    // D-113 approval knobs — a write/destructive pack op-step keeps its authored
-    // prompt / timeout through the lowering (engine reads them off the concrete step).
-    ...(step.timeout_ms !== undefined ? { timeout_ms: step.timeout_ms } : {}),
-    ...(step.on_timeout !== undefined ? { on_timeout: step.on_timeout } : {}),
-    ...(step.prompt !== undefined ? { prompt: step.prompt } : {}),
+    // Round-12 audit fix (T2 Q1) — knobs ride via the ONE shared list
+    // (`OP_STEP_PASSTHROUGH_KNOBS`), parity with the kernel lowering; the
+    // hand-kept spread this replaces had silently dropped `fail_kind`
+    // (D-232 § 21) on both branches.
+    ...carryOpStepPassthroughKnobs(step),
   };
 };
 

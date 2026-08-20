@@ -217,7 +217,7 @@ describe('D-240 slice 3b — a bound viewback recipe replaces the substrate stat
 
   it('the recipe output REPLACES the three-state copy', async () => {
     // The whole point of 3b: the owner's recipe decides what the submitter reads.
-    const out = await drive({ run: async () => ({ kind: 'completed', render: [block] }) });
+    const out = await drive({ run: async () => ({ kind: 'completed', render: [block], uses_ai: false }) });
     expect(out.status).toBe(200);
     expect(out.body).toContain('Shipped on Tuesday');
     expect(out.body).not.toContain('We have your request');
@@ -281,7 +281,7 @@ describe('D-240 slice 3b — a bound viewback recipe replaces the substrate stat
   });
 
   it('an EMPTY render falls back too — a blank page is not an answer', async () => {
-    const out = await drive({ run: async () => ({ kind: 'completed', render: [] }) });
+    const out = await drive({ run: async () => ({ kind: 'completed', render: [], uses_ai: false }) });
     expect(out.body).toContain('We have your request');
   });
 });
@@ -300,5 +300,50 @@ describe('D-240 — path parsing', () => {
     expect(parseLookupSecretFromPath(`${RECEPTION_LOOKUP_PATH}/`)).toBeNull();
     expect(parseLookupSecretFromPath('/reception/lookup-other/x')).toBeNull();
     expect(parseLookupSecretFromPath('/reception/intake/ep-1')).toBeNull();
+  });
+});
+
+describe('D-240 viewback — the AI notice', () => {
+  const block = { type: 'text', data: 'Shipped on Tuesday. Tracking: ABC123.' };
+  const NOTICE = 'Parts of this page were produced using AI.';
+
+  it('renders when the completed run used AI', async () => {
+    const out = await drive({
+      run: async () => ({ kind: 'completed', render: [block], uses_ai: true }),
+    });
+    expect(out.body).toContain(NOTICE);
+  });
+
+  it('⛔ is ABSENT when the same completed run used none', async () => {
+    // Byte-for-byte the same page otherwise — the flag is the only variable.
+    const out = await drive({
+      run: async () => ({ kind: 'completed', render: [block], uses_ai: false }),
+    });
+    expect(out.body).toContain('Shipped on Tuesday');
+    expect(out.body).not.toContain(NOTICE);
+  });
+
+  it('⛔⛔ is ABSENT on the FALLBACK page, which the substrate wrote', async () => {
+    // The sharp case. A `failed` run falls back to the three-state substrate
+    // copy, and a model may well have run before it failed — but the words the
+    // visitor is reading were not produced by one. An AI notice over substrate
+    // text is a false claim about the thing it sits on.
+    const out = await drive({ run: async () => ({ kind: 'failed', errors: ['boom'] }) });
+    expect(out.status).toBe(200);
+    expect(out.body).not.toContain(NOTICE);
+  });
+
+  it('⛔ is ABSENT when no viewback recipe is bound at all', async () => {
+    const out = await drive({ run: async () => ({ kind: 'no_door' }) });
+    expect(out.body).not.toContain(NOTICE);
+  });
+
+  it('LEADS the recipe output rather than trailing it', async () => {
+    // "At the latest at the time of first exposure" — before the content the
+    // visitor came to read, not underneath it.
+    const out = await drive({
+      run: async () => ({ kind: 'completed', render: [block], uses_ai: true }),
+    });
+    expect(out.body.indexOf(NOTICE)).toBeLessThan(out.body.indexOf('Shipped on Tuesday'));
   });
 });

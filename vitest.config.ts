@@ -80,11 +80,29 @@ export default defineConfig({
       '**/node_modules/**',
       '**/dist/**',
     ],
-    // Threads share the V8 module graph across test files, cutting
-    // aggregate import cost. ~11% wall-clock improvement on a 10-core
-    // box. Only 15 files use vi.mock and the SQLite-backed tests are
-    // already process-isolated via tmpdirs, so threads is safe here.
-    pool: 'threads',
+    // ⛔⛔⛔ FORKS, AND THIS IS NOT A PREFERENCE. The threads pool DIES on the
+    // backend suite: SIGSEGV (exit 139) with zero test failures, reproducible
+    // 6/6 at maxWorkers 10, 4, 2 AND 1 — so it is not contention — and
+    // identically on Node 24 LTS and Node 25, so it is not the Node major
+    // either. Every crash stack bottoms out in `node::worker::Worker::Run` /
+    // `MessagePort::OnMessage`; forks spawns child PROCESSES and never
+    // constructs a worker thread, so that code path is absent rather than
+    // merely rarer. Measured 2026-08-19: forks 10/10 clean runs (incl. three
+    // full five-root sweeps, 75,903 tests), threads 0/6.
+    //
+    // ⚠ THE PRIOR COMMENT HERE SAID "threads is safe" AND WAS WRONG BY THREE
+    // MONTHS. `feedback_vitest_pool_forks` recorded the hang on 2026-05-23 and
+    // `reference_session_env_backend_suite` re-derived it on 2026-08-08
+    // ("the death is the WORKER pool, not a file … prefer forks by default"),
+    // while this file kept asserting the opposite — so every fresh `npx vitest
+    // run` walked into it. That is why the fix belongs HERE and not only in
+    // `scripts/vitest.sh`, which has forced `--pool forks` since May: a remedy
+    // that lives only in a wrapper protects only the people who know about it.
+    //
+    // The cost is real and accepted: ~2x wall-clock (≈340s → ≈640s on the full
+    // sweep) because each worker pays its own import graph. A suite that
+    // finishes slowly beats one that segfaults.
+    pool: 'forks',
     maxWorkers: 10,
     minWorkers: 4,
   },

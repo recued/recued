@@ -56,7 +56,23 @@ import type { ReceptionOutputBlock } from './ports/reception/handlers/reception-
  *  mean the gate disagreed with the bind — reported as `failed` so it surfaces
  *  rather than rendering an empty page. */
 export type ReceptionLookupRunOutcome =
-  | { readonly kind: 'completed'; readonly render: ReadonlyArray<ReceptionOutputBlock> }
+  | {
+      readonly kind: 'completed';
+      readonly render: ReadonlyArray<ReceptionOutputBlock>;
+      /** Did the recipe that produced these blocks run AI?
+       *
+       *  Drives the visitor-facing AI notice on the viewback page. Same source
+       *  as the `allow_ai` policy check a few lines above — one analysis, so the
+       *  page cannot claim AI on a run that used none, or stay silent on one
+       *  that did.
+       *
+       *  ⛔ ONLY ON `completed`, and that is the whole distinction. A `failed`
+       *  run falls back to the substrate-rendered status, so what the visitor
+       *  reads was NOT produced by a model even if a model ran before the
+       *  failure — and `no_door` ran no recipe at all. Carrying the flag on
+       *  those branches would put an AI notice over text the substrate wrote. */
+      readonly uses_ai: boolean;
+    }
   /** No lookup recipe is bound to this endpoint. NOT an error — the caller falls
    *  back to the substrate-rendered status, which is what slice 3 shipped. */
   | { readonly kind: 'no_door' }
@@ -227,7 +243,11 @@ export const createReceptionLookupRecipeRunner = (
           // Reported rather than rendered as an empty page.
           return { kind: 'failed', errors: result.errors };
         }
-        return { kind: 'completed', render: result.output.render ?? [] };
+        return {
+          kind: 'completed',
+          render: result.output.render ?? [],
+          uses_ai: cost.profile.uses_ai,
+        };
       } finally {
         activeGlobal -= 1;
         const remaining = (activeByEndpoint.get(input.endpoint_id) ?? 1) - 1;

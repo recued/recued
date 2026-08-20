@@ -115,6 +115,18 @@ const page = (title: string, body: string): string =>
   + `<title>${htmlEscape(title)}</title></head><body>`
   + `<main class="rcp-page">${body}</main></body></html>`;
 
+/** The visitor-facing AI notice for a viewback page.
+ *
+ *  ⚠ PAST TENSE, AND THE DIFFERENCE FROM THE INTAKE FORM'S NOTICE IS REAL. On a
+ *  form the notice is a warning about what will happen to what you are about to
+ *  send; here the run has already finished and the visitor is reading its
+ *  output, so the honest claim is about what produced THIS PAGE.
+ *
+ *  ⛔ The body is a fixed literal taking no input — nothing per-visitor, nothing
+ *  from the record, nothing to escape. Same discipline as the trust footer. */
+const AI_NOTICE_HTML =
+  '<p class="rcp-ai-notice">Parts of this page were produced using AI.</p>';
+
 /** ⚠ ONE BODY FOR EVERY UNRESOLVABLE CREDENTIAL, and the three `peek` statuses
  *  are NOT surfaced separately to the visitor even though § D14 keeps them
  *  distinct internally. A page that said "expired" for one secret and "not
@@ -210,6 +222,10 @@ export const createReceptionLookupHandler = (
     // logged with the endpoint and the reason; the visitor sees the honest
     // narrower answer.
     let blocks: ReadonlyArray<unknown> | null = null;
+    // Tracked beside `blocks` on purpose: the notice belongs to the SAME outcome
+    // that produced them, so a fallback to the substrate status cannot carry an
+    // AI claim over text the substrate wrote.
+    let blocksUsedAi = false;
     if (deps.runLookupRecipe !== undefined) {
       try {
         const outcome = await deps.runLookupRecipe({
@@ -229,7 +245,10 @@ export const createReceptionLookupHandler = (
               : { resolved_target_id: record.resolved_target_id }),
           },
         });
-        if (outcome.kind === 'completed') blocks = outcome.render;
+        if (outcome.kind === 'completed') {
+          blocks = outcome.render;
+          blocksUsedAi = outcome.uses_ai;
+        }
         else if (outcome.kind === 'failed') {
           console.warn(
             `[visitor-lookup] viewback recipe failed for endpoint `
@@ -272,7 +291,12 @@ export const createReceptionLookupHandler = (
           // ⛔ THE ONE PUBLIC RENDER PATH. `RECEPTION_RENDER_CONTEXT` is applied
           // inside `renderReceptionOutputBlocks`, so a caller physically cannot
           // render a run's blocks for a stranger using the owner's context.
-          ? renderReceptionOutputBlocks(blocks as never)
+          //
+          // The notice leads the blocks rather than trailing them: "at the
+          // latest at the time of first exposure" means before the content, not
+          // under it.
+          ? (blocksUsedAi ? AI_NOTICE_HTML : '')
+            + renderReceptionOutputBlocks(blocks as never)
           : substrateBody,
       ),
       200,

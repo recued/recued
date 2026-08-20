@@ -1,7 +1,7 @@
 /** D-214 span closure, source projection, and deterministic case rebuild. */
 
 import type Database from 'better-sqlite3';
-import { isHeldRunAnchorStatus } from '@recued/contracts';
+import { isHeldRunAnchorStatus, runYieldIsTotalRefusal } from '@recued/contracts';
 import {
   type ExecutionCase,
   type ExecutionObservation,
@@ -99,6 +99,16 @@ export interface ParsedRecipeAuditEntry {
   /** Structured codes distinguish a staleness-sweep expiry from an execution
    * failure without retaining external error text. */
   error_codes: string[];
+  /** D-237 P2 run yield, carried UNINTERPRETED so this parser stays a
+   *  projection rather than a second opinion. Read only through
+   *  `runYieldIsTotalRefusal`.
+   *
+   *  ⛔ IT HAS TO BE CARRIED HERE OR THE OUTCOME READING BELOW CANNOT EXIST.
+   *  `commit_status` alone cannot distinguish a run that worked from one whose
+   *  every item was refused, and this shape is the only view of the audit row
+   *  the compiler ever sees — so dropping the field at the parse boundary made
+   *  the distinction unreachable no matter what the decision sites did. */
+  run_yield?: unknown;
 }
 
 interface PlanRow {
@@ -296,6 +306,7 @@ const parseRecipeAuditEntry = (raw: string): ParsedRecipeAuditEntry | null => {
       session_id: executionSource.chat_session_id,
       turn_id: executionSource.turn_id,
       error_codes,
+      ...(value.run_yield !== undefined ? { run_yield: value.run_yield } : {}),
       ...(value.contract_snapshot !== undefined
         ? { contract_snapshot: value.contract_snapshot }
         : {}),
@@ -463,7 +474,13 @@ const pairRecipeRuns = (
       recipe_hash: run.recipe_hash,
       recipe_status: run.commit_status,
       recipe_error_codes: [...run.error_codes],
-      ...(run.commit_status === 'failed'
+      // ⛔ A TOTALLY-REFUSED RUN IS A NEGATIVE OUTCOME EVEN THOUGH IT COMPLETED.
+      // `commit_status` answers the lifecycle question and answers it correctly
+      // — a `foreach` is continue-on-error, so the run really did finish. What
+      // it cannot say is that nothing the run set out to do happened. Learning
+      // from the status alone records such a run as a clean success, which is
+      // the one label this substrate must never invent for itself.
+      ...((run.commit_status === 'failed' || runYieldIsTotalRefusal(run.run_yield))
         && !run.error_codes.includes('RECIPE_APPROVAL_TIMEOUT')
         && activity.status !== 'error'
         ? { status: 'error' as const }
@@ -922,8 +939,13 @@ export const createExecutionCaseCompiler = (
       || activities.some((activity) =>
         activity.status === 'error'
         || isExecutionCaseGatewayDenialReason(activity.reason))
+      // A run that refused every item carries the same independent evidence a
+      // failed one does: the world did not change. Excluding it left the case
+      // resting on weak/model-only signal for exactly the flows most worth
+      // learning a negative about.
       || recipe_runs.some((run) =>
-        run.commit_status === 'failed' && !isApprovalExpiry(run));
+        (run.commit_status === 'failed' || runYieldIsTotalRefusal(run.run_yield))
+        && !isApprovalExpiry(run));
     return {
       root_request_id,
       activities,

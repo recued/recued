@@ -46,15 +46,26 @@
  *  before any completion tokens are billed, so retrying once preserves the
  *  zero-retry policy (one successful call = one billing event).
  *
- *  🔑 THE MEMORY IS IN-PROCESS, NOT PERSISTED, AND THAT IS DELIBERATE. A
- *  persisted "this endpoint refuses system" would be a cache with no way to see
- *  it and no way to clear it — precisely the invisible-stuck-setting the picker
- *  was removed for. A wrong detection would then be permanent and would need a
- *  UI to undo, reintroducing the thing this replaced. In-process, the cost of
- *  being wrong is one probe on the next boot, and an endpoint that GAINS system
- *  support is picked up for free. The price is one extra rejected request per
- *  process per endpoint — zero tokens, on a daemon that runs for weeks.
- *  {@link noteSystemRoleUnsupported} is the seam if that trade ever changes. */
+ *  🔑 THE MEMORY IS IN-PROCESS *AND* PERSISTED — the trade this comment once
+ *  named as hypothetical was taken in `243521a2a`, and the objection was
+ *  ANSWERED rather than overruled. This package still owns the in-memory truth;
+ *  the server owns storage, hydrating at boot via
+ *  {@link hydrateEndpointCapabilities} and writing through the
+ *  {@link onEndpointCapabilityLearned} durability seam (`packages/` cannot
+ *  import `backend/`, so the seam is the whole mechanism).
+ *
+ *  The original objection was that a persisted "this endpoint refuses system"
+ *  becomes a cache with no way to see it and no way to clear it — the
+ *  invisible-stuck-setting the picker was removed for. That is still the
+ *  governing constraint, and it is why durability shipped WITH
+ *  {@link forgetEndpoint} and a re-probe rather than on its own: a wrong
+ *  detection is undoable by the owner instead of permanent. What persistence
+ *  buys is that the cost of being wrong is no longer paid again on every boot.
+ *
+ *  ⛔ SO THE THING TO PRESERVE IS THE CLEARABILITY, NOT THE FORGETFULNESS. A
+ *  future change that keeps the write and drops the forget/re-probe path
+ *  recreates exactly the setting this design was built to avoid, and it will
+ *  look like a simplification when it does. */
 
 import type { ContentPart, LLMMessage, LLMSlot } from './types.js';
 import { LLMError } from './types.js';

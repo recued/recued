@@ -4,7 +4,7 @@
   "version": 1,
   "ttl": 60,
   "metadata": {
-    "name": "Recent notes by topic (D-145 PA10)",
+    "name": "Recent notes by topic",
     "description": "Use “Recent notes by topic” in Recued. Surface your still-warm notes: ranks notes by ongoing relevance (recently touched and frequently referenced rise; dormant ones decay over 180 days) and shows the freshest decile. Private notes stay private by default.",
     "author": "recued-core",
     "supported_platforms": [],

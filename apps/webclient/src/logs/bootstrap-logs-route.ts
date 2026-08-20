@@ -54,6 +54,7 @@ import {
   RUN_ANCHOR_STATUSES,
   isCliFailureDetail,
   parseTimelineEntityId,
+  runYieldIsTotalRefusal,
 } from '@recued/contracts';
 
 import { formatClientDateTime, RefPicker } from '@recued/ui-shared';
@@ -1572,7 +1573,11 @@ export const projectRunYieldNotice = (
   const failed = runYield.items_failed;
   if (!Number.isFinite(total) || !Number.isFinite(failed)) return undefined;
   if (total <= 0 || failed <= 0 || failed > total) return undefined;
-  if (failed === total) {
+  // 🔑 THE SAME PREDICATE THE NON-DISPLAY READERS USE. This notice was the only
+  // place that knew what "all refused" meant; the reactive predicate and the
+  // execution-case compiler now ask the same question, and a second inline
+  // `failed === total` here would be the seam they eventually disagree across.
+  if (runYieldIsTotalRefusal(runYield)) {
     return {
       kind: 'all-refused',
       message: total === 1

@@ -2262,10 +2262,10 @@ export interface BootstrapWebclientOptions {
    *  `account.unbind`. Tests opt out by passing `false`. */
   enableAccountBindingPanel?: boolean;
   /** Optional auth Worker base URL for binding-token minting. Defaults from
-   *  the current host (`auth.recued.com`, staging -> `auth.recued2.com`). */
+   *  the build-time cloud apex (`auth.<apex>`, default `auth.recued.com`). */
   accountBindingAuthWorkerUrl?: string;
   /** Optional dashboard URL for account/billing links. Defaults from the
-   *  current host (`dashboard.recued.com`, staging -> `dashboard.recued2.com`). */
+   *  build-time cloud apex (`dashboard.<apex>`, default `dashboard.recued.com`). */
   accountBindingDashboardUrl?: string;
   /** Optional fetch seam for auth Worker session/token calls. */
   accountBindingFetch?: AccountBindingFetch;

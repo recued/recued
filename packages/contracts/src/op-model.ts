@@ -240,6 +240,68 @@ export interface OpStep extends BaseStep {
   prompt?: string;
 }
 
+/** Round-12 audit fix (T2 Q1) — the ONE list of step-level knobs an op-step
+ *  lowering must carry onto the concrete step it produces.
+ *
+ *  The kernel and Tier-P lowerings each rebuilt their output with a hand-kept
+ *  allowlist while the canonical-convention lowering spreads — so a knob added
+ *  to `OpStep` but missed by one allowlist compiled, type-checked, passed a
+ *  test on the spread branch, and silently no-opped on 5,491 of 5,506 corpus
+ *  op-steps. It had already happened once: `fail_kind` (D-232 § 21, read off
+ *  the concrete step by step-runner) was carried by NEITHER allowlist.
+ *
+ *  Both lowerings now iterate this list via `carryOpStepPassthroughKnobs`, and
+ *  the exhaustiveness proof below makes the list total over `OpStep`: adding a
+ *  knob to the type without classifying it here is a compile error, so one
+ *  branch can no longer drift from the other.
+ *
+ *  ⚠ The PREFETCH projection (`ingredientStepToPrefetchStep`) deliberately
+ *  carries a NARROWER set — prefetch honours fewer knobs by design — and is
+ *  not a consumer of this list. */
+export const OP_STEP_PASSTHROUGH_KNOBS = [
+  'skip_when',
+  'fail_on',
+  'fail_kind',
+  'cache',
+  'foreach',
+  'pii_fields',
+  'timeout_ms',
+  'on_timeout',
+  'prompt',
+] as const satisfies readonly (keyof OpStep)[];
+
+/** The non-knob keys of `OpStep` — consumed structurally by each lowering
+ *  (`id` rides verbatim; `op` is resolved; `args` becomes the concrete input;
+ *  `connection` is emitted or deliberately dropped per tier). */
+type OpStepStructuralKey = 'id' | 'op' | 'args' | 'connection';
+
+/** Compile-time proof that every `OpStep` key is classified as structural or
+ *  as a passthrough knob — the ratchet that reddens the moment a new field
+ *  lands on the type without a carry decision. */
+type OpStepKnobsAreExhaustive = Exclude<
+  keyof OpStep,
+  OpStepStructuralKey | (typeof OP_STEP_PASSTHROUGH_KNOBS)[number]
+> extends never
+  ? true
+  : never;
+const _opStepKnobsAreExhaustive: OpStepKnobsAreExhaustive = true;
+void _opStepKnobsAreExhaustive;
+
+/** Copy every present passthrough knob off an op-step, for a lowering to
+ *  spread onto its concrete output. Presence-preserving: an absent knob stays
+ *  absent (no `undefined`-valued keys), matching the hand-written spreads this
+ *  replaces. */
+export const carryOpStepPassthroughKnobs = (
+  step: OpStep,
+): Partial<Pick<OpStep, (typeof OP_STEP_PASSTHROUGH_KNOBS)[number]>> => {
+  const carried: Record<string, unknown> = {};
+  for (const key of OP_STEP_PASSTHROUGH_KNOBS) {
+    const value = step[key];
+    if (value !== undefined) carried[key] = value;
+  }
+  return carried as Partial<Pick<OpStep, (typeof OP_STEP_PASSTHROUGH_KNOBS)[number]>>;
+};
+
 /** Narrow an arbitrary value to an `OpStep`. Mirrors the legacy
  *  `isCanonicalOpStep` discriminant — a string `op` and none of the concrete
  *  step discriminants (`transform` / `ingredient` / `guard`), so a transform

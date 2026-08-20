@@ -254,7 +254,7 @@ export interface StorageContext {
 }
 
 /** Read `cloud.base_url` defensively — the binding-exchange URL resolver
- *  uses its host to pick prod vs. the `recued2.com` staging auth Worker.
+ *  no longer reads it — the apex is `RECUED_CLOUD_APEX`.
  *  The key carries a schema default, but a missing / non-string value
  *  must not throw on the binding hot path (it just falls back to prod). */
 const readCloudBaseUrl = (
@@ -459,8 +459,8 @@ export const composeStorageContext = async (
   // `saveAccountBinding`), inheriting its at-rest protection. The auth
   // Worker exchange endpoint shipped (D-175 P5 Worker half); the HTTP
   // client resolves its URL per-call via `resolveAccountBindingExchangeUrl`
-  // — defaulting to the prod Worker (`auth.recued.com`, `recued2.com`
-  // staging variant keyed off `cloud.base_url`) so a fresh self-hosted
+  // — defaulting to the prod Worker (`auth.recued.com`; a mirror sets`
+  // `RECUED_CLOUD_APEX`) so a fresh self-hosted
   // server binds out-of-the-box, with `RECUED_ACCOUNT_BINDING_EXCHANGE_URL`
   // as the override. An unreachable Worker still degrades to
   // `exchange_unavailable` at the network layer (see exchange-client.ts).
@@ -483,8 +483,8 @@ export const composeStorageContext = async (
       // Resolved per-call so a config / env change takes effect without a
       // reconstruct. `cloud.base_url` carries the schema default
       // (`https://api.recued.cloud`) so the prod auth Worker is the
-      // out-of-the-box target; a `recued2.com` cloud host routes to the
-      // staging Worker.
+      // out-of-the-box target; a mirror deployment overrides the apex via
+      // that variable.
       getEndpointUrl: () =>
         resolveAccountBindingExchangeUrl({
           override: process.env.RECUED_ACCOUNT_BINDING_EXCHANGE_URL,

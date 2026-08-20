@@ -20,6 +20,7 @@
  *  internal design notes.
  */
 import {
+  carryOpStepPassthroughKnobs,
   getKernelOp,
   type IngredientStep,
   type OpStep,
@@ -59,20 +60,14 @@ export const resolveKernelClosedKindOpStep = (step: OpStep): IngredientStep | nu
     id: step.id,
     ingredient: entry.backing_slug,
     input: step.args ?? {},
-    ...(step.skip_when !== undefined ? { skip_when: step.skip_when } : {}),
-    ...(step.fail_on !== undefined ? { fail_on: step.fail_on } : {}),
-    ...(step.cache !== undefined ? { cache: step.cache } : {}),
-    ...(step.foreach !== undefined ? { foreach: step.foreach } : {}),
-    // The legacy step-level PII shorthand (`hash_replace → ai → hash_restore`,
-    // read off the concrete step by `step-runner`) — the only PII protection the
-    // uncontracted `core.ai.prompt` / multi-data `core.ai.compare` ops support
-    // (`llm.pii_fields` is contracted-single-`llm.data` only). Must ride onto the
-    // lowered step or the protection is silently dropped at lowering.
-    ...(step.pii_fields !== undefined ? { pii_fields: step.pii_fields } : {}),
-    // D-113 approval knobs — the engine reads them off the concrete step, so a
-    // write/destructive kernel op-step keeps its authored prompt / timeout.
-    ...(step.timeout_ms !== undefined ? { timeout_ms: step.timeout_ms } : {}),
-    ...(step.on_timeout !== undefined ? { on_timeout: step.on_timeout } : {}),
-    ...(step.prompt !== undefined ? { prompt: step.prompt } : {}),
+    // Round-12 audit fix (T2 Q1) — every passthrough knob rides via the ONE
+    // shared list (`OP_STEP_PASSTHROUGH_KNOBS`), replacing a hand-kept spread
+    // that had already dropped `fail_kind` (D-232 § 21) silently. The engine
+    // reads each of these off the CONCRETE step: the `pii_fields` shorthand is
+    // the only PII protection the uncontracted `core.ai.prompt` / multi-data
+    // `core.ai.compare` ops support, and the D-113 approval knobs
+    // (`timeout_ms` / `on_timeout` / `prompt`) otherwise silently fall back to
+    // defaults — so a knob missing here is a protection dropped at lowering.
+    ...carryOpStepPassthroughKnobs(step),
   };
 };

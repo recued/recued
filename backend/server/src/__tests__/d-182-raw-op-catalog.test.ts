@@ -497,6 +497,69 @@ describe('D-225 § 9.5.1 — the CHAT catalog gets the same raw-op source', () =
     // than become an accident again.
     expect(createChatRawOpSource(chatDeps())()).toEqual([]);
   });
+
+  // ── D-247 open item 2 — §8 suppression, on the CHAT source ────────────
+  //
+  // ⛔⛔ THE GAP: `createChatRawOpSource` called the descriptor builder with TWO
+  // args while the door passed THREE, so a raw WRITE an installed recipe covers
+  // stayed visible to chat — while `wire-chat-orchestrator`, which has always
+  // passed coverage, had already suppressed it in the GRANT CATALOG next to it.
+  // The owner's checklist and the model's tool list disagreed about the same op.
+
+  /** Deps carrying a recipe store whose recipe covers the write op. */
+  const chatDepsWithRecipe = (
+    steps: ReadonlyArray<unknown>,
+  ): Parameters<typeof createChatRawOpSource>[0] => ({
+    getExecutorConfig: () => ({ manifests: registry() }),
+    scanInstalledPacks,
+    getRecipeStore: () => ({
+      ids: () => ['cover-deal-create'],
+      get: () => ({ steps }) as never,
+    }),
+  }) as unknown as Parameters<typeof createChatRawOpSource>[0];
+
+  it('⛔ suppresses a raw WRITE an installed recipe covers (op-step form)', () => {
+    const names = createChatRawOpSource(
+      chatDepsWithRecipe([{ id: 's', op: 'recued-core.crm-pack.deal.create' }]),
+    )().map((e) => e.name);
+    expect(names).not.toContain(WRITE_OP); // the recipe is the guardrailed path
+    expect(names).toContain(READ_OP); // reads are AI-open, unaffected
+  });
+
+  it('⛔ and via a lowered INGREDIENT step — which needs the same pack resolution', () => {
+    // The half that silently fails if the resolution is omitted: an
+    // `ingredient:`-authored write maps to no op id, so nothing suppresses.
+    const names = createChatRawOpSource(
+      chatDepsWithRecipe([
+        { id: 's', ingredient: 'crm-catalog', input: { operation: 'deal.create' } },
+      ]),
+    )().map((e) => e.name);
+    expect(names).not.toContain(WRITE_OP);
+    expect(names).toContain(READ_OP);
+  });
+
+  it('🔑 chat and the door suppress the SAME op — one doctrine, one answer', () => {
+    const steps = [{ id: 's', op: 'recued-core.crm-pack.deal.create' }];
+    const chat = createChatRawOpSource(chatDepsWithRecipe(steps))();
+    const reg = registry();
+    const coverage = buildRecipeOpCoverage(
+      { ids: () => ['cover-deal-create'], get: () => ({ steps }) as never },
+      buildPackOpResolution(scanInstalledPacks, (slug) => reg.get(slug)),
+    );
+    const door = buildMcpGrantCatalogLegacyEntries(reg, scanInstalledPacks, coverage)
+      .filter((e) => e.name.startsWith('recued_op_'));
+    expect(chat.length).toBeGreaterThan(0);
+    expect(JSON.stringify(chat)).toBe(JSON.stringify(door));
+  });
+
+  it('⚠ no recipe store ⇒ no suppression, and the write stays VISIBLE', () => {
+    // `wire-reception-substrate` supplies `getRecipeStore` through a conditional
+    // spread, so absence is reachable in production despite the required type.
+    // Over-exposure is the module's documented safe direction — the op is still
+    // gated by its own grant — but it must be a decision someone reads.
+    const names = createChatRawOpSource(chatDeps(scanInstalledPacks))().map((e) => e.name);
+    expect(names).toContain(WRITE_OP);
+  });
 });
 
 describe('D-225 § 9.5.1 step 2b — the chat raw-op DISPATCH', () => {

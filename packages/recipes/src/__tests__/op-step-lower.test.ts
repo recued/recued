@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { OpStep, PackResolutionContext, RecipeDefinition, RecipeStep } from '@recued/contracts';
+import { OP_STEP_PASSTHROUGH_KNOBS } from '@recued/contracts';
 import { lowerOpStep, lowerOpStepRecipe, type PackOpResolution } from '../op-step-lower.js';
 import { CanonicalOpResolutionError, resolveConnectionAgnosticRecipe } from '../connection-agnostic.js';
 
@@ -402,5 +403,49 @@ describe('D-182 watcher prototype — core.watch.time lowering', () => {
       input: TIME_ARGS,
       skip_when: '{{context.server.available}} equal false',
     });
+  });
+});
+
+// Round-12 audit fix (T2 Q1) — the Tier-P lowering consumes the same shared
+// knob list as the kernel lowering; this is the pack-branch half of the
+// total-carry ratchet (the old hand-kept spread here also dropped `fail_kind`).
+describe('Tier-P lowering — total knob carry (round-12 T2 Q1)', () => {
+  it('carries every OP_STEP_PASSTHROUGH_KNOBS member onto the concrete catalog step', () => {
+    const out = lowerOpStepRecipe(
+      mkRecipe([
+        {
+          id: 't',
+          op: 'recued-core.whisper.audio.transcribe',
+          args: { source: '{{config.src}}' },
+          skip_when: '{{step.x}} is_null',
+          fail_on: '{{step.y}} equal true',
+          fail_kind: 'policy',
+          cache: 'fresh',
+          foreach: '{{step.rows}}',
+          pii_fields: ['source'],
+          timeout_ms: 60_000,
+          on_timeout: 'reject',
+          prompt: 'Transcribe this file?',
+        },
+      ]),
+      PACKS,
+    );
+    const step = out.steps[0] as Record<string, unknown>;
+    expect(step).toMatchObject({
+      ingredient: 'whisper',
+      input: { operation: 'audio.transcribe', args: { source: '{{config.src}}' } },
+      skip_when: '{{step.x}} is_null',
+      fail_on: '{{step.y}} equal true',
+      fail_kind: 'policy',
+      cache: 'fresh',
+      foreach: '{{step.rows}}',
+      pii_fields: ['source'],
+      timeout_ms: 60_000,
+      on_timeout: 'reject',
+      prompt: 'Transcribe this file?',
+    });
+    for (const knob of OP_STEP_PASSTHROUGH_KNOBS) {
+      expect(knob in step, `knob '${knob}' must survive the Tier-P lowering`).toBe(true);
+    }
   });
 });

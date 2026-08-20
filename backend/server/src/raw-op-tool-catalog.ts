@@ -24,6 +24,7 @@ import {
 } from '@recued/contracts';
 
 import { buildPackOpResolution, type InstalledPackScan } from './pack-inventory.js';
+import type { RecipeStore } from './recipe-store.js';
 
 /** The wire-name prefix a raw catalog-op tool carries. */
 export const OP_TOOL_PREFIX = 'recued_op_';
@@ -101,6 +102,69 @@ export const ingredientRiskToGrantClassification = (
 ): 'read' | 'write' | 'unknown' => {
   if (risk === 'read') return 'read';
   return 'write';
+};
+
+/** D-182 §8 — the set of Tier-P op ids any installed recipe already covers. The
+ *  recipe-preferred catalog filter uses it to suppress a raw WRITE op a recipe
+ *  provides (the recipe is the guardrailed headline tool; the raw primitive would
+ *  let the AI sidestep its preview/normalization/confidence gates).
+ *
+ *  A recipe covers a write via EITHER authored form, and BOTH are detected:
+ *    - an `op:` step names the Tier-P / Tier-K op id directly (op-authored,
+ *      post-D-182-step-4);
+ *    - an `ingredient:` step (legacy / third-party / a lowered op-step persisted
+ *      in that form) names a catalog slug + `input.operation`, which
+ *      `packResolution` maps back to the op id `<publisher>.<pack>.<operation>` —
+ *      the SAME id `buildRawOpToolDescriptors` checks, so the suppression matches.
+ *  When `packResolution` is omitted (dbless / pre-wire harness, or no inventory)
+ *  the walk is op-step-only: an `ingredient:`-covered write simply stays visible
+ *  (the safe direction — over-exposure, never hiding a write; the owner can still
+ *  narrow it). Pass the SAME `(scanInstalledPacks, getManifest)`-derived
+ *  resolution the descriptor builder uses so the op ids align. Pure; never throws. */
+export const buildRecipeOpCoverage = (
+  recipeStore: Pick<RecipeStore, 'ids' | 'get'>,
+  packResolution?: ReturnType<typeof buildPackOpResolution>,
+): Set<string> => {
+  const covered = new Set<string>();
+  // Reverse the resolution (pack_ref → { catalog_slug, operations }) into
+  // catalog_slug → [{ packRef, operations }] so an ingredient-step's catalog slug
+  // maps to its covering op id(s). One entry per installed op-declaring pack; a
+  // slug shared by >1 pack contributes each match (the descriptor builder emits
+  // all of them too).
+  const byCatalog = new Map<string, { packRef: string; operations: ReadonlySet<string> }[]>();
+  if (packResolution) {
+    for (const [packRef, binding] of packResolution) {
+      const entry = { packRef, operations: binding.operations };
+      const list = byCatalog.get(binding.catalog_slug);
+      if (list) list.push(entry);
+      else byCatalog.set(binding.catalog_slug, [entry]);
+    }
+  }
+  for (const id of recipeStore.ids()) {
+    const recipe = recipeStore.get(id);
+    for (const step of recipe?.steps ?? []) {
+      const s = step as { op?: unknown; ingredient?: unknown; input?: unknown };
+      // op-step — names the op id directly.
+      if (typeof s.op === 'string' && s.op.length > 0) {
+        covered.add(s.op);
+        continue;
+      }
+      // ingredient-step — `ingredient` is the catalog slug, `input.operation` the
+      // op; map the pair back to the op id(s) it covers via the resolution.
+      if (typeof s.ingredient === 'string' && s.ingredient.length > 0 && byCatalog.size > 0) {
+        const input = s.input;
+        const operation =
+          input !== null && typeof input === 'object'
+            ? (input as { operation?: unknown }).operation
+            : undefined;
+        if (typeof operation !== 'string' || operation.length === 0) continue;
+        for (const { packRef, operations } of byCatalog.get(s.ingredient) ?? []) {
+          if (operations.has(operation)) covered.add(`${packRef}.${operation}`);
+        }
+      }
+    }
+  }
+  return covered;
 };
 
 export const buildRawOpToolDescriptors = (

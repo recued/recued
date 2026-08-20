@@ -18,7 +18,7 @@ import { describe, expect, it } from 'vitest';
 import { parseToml } from '../parse.js';
 
 const KEY = 'cloud.base_url';
-const VAL = 'https://api.recued2.com';
+const VAL = 'https://api.mirror.example';
 
 describe('misplaced settings', () => {
   it('flags a known runtime key written at the TOP LEVEL — the exact slip', () => {

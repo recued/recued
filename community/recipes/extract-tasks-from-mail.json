@@ -4,7 +4,7 @@
   "version": 1,
   "ttl": 60,
   "metadata": {
-    "name": "Extract tasks from mail (D-145 PA10)",
+    "name": "Extract tasks from mail",
     "description": "Use “Extract tasks from mail” in Recued. Extract action items from an inbound email into Recued's task tracker — title, due date, and priority (low / medium / high). Thread-aware; fires automatically on each inbound message; records only extractions above the confidence floor (default 0.7).",
     "author": "recued-core",
     "supported_platforms": [],

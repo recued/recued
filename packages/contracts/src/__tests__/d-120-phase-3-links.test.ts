@@ -137,6 +137,60 @@ describe('D-120 Phase 3 — parseDataEntityRef', () => {
     expect(parseDataEntityRef('memory', 'contact.some-id')).toBeNull();
   });
 
+  // Round-12 audit fix (T1 § 8.2, driven from the dist build): 500 distinct
+  // enrichment reads collapsed onto ONE provenance target because the parser
+  // took `segs[1]` — the SCOPE — as the entity id. A derived-fact ref must key
+  // on the record the fact is about.
+  describe('derived-fact refs key on the record, not the scope', () => {
+    it('keys an enrichment ref on the underlying record', () => {
+      expect(parseDataEntityRef('data', 'enrichment.mail.msg-abc.summary')).toEqual({
+        collection: 'mail',
+        entity_id: 'msg-abc',
+      });
+      expect(
+        parseDataEntityRef('data', 'enrichment.mail.msg-abc.summary.confidence'),
+      ).toEqual({ collection: 'mail', entity_id: 'msg-abc' });
+    });
+
+    it('handles dotted target ids via the topic anchor', () => {
+      expect(
+        parseDataEntityRef('data', 'enrichment.contact.jane.doe@x.com.behavioral_signature'),
+      ).toEqual({ collection: 'contact', entity_id: 'jane.doe@x.com' });
+    });
+
+    it('returns null — not a scope-collapsed pair — for platform-reference scopes', () => {
+      // D-128 platform-reference rows live on the vendor, not in a local
+      // warehouse collection; a missing edge is honest, a mis-keyed one is not.
+      expect(
+        parseDataEntityRef('data', 'enrichment.connection.api.hubspot.deal.d-1.deal_health_score'),
+      ).toBeNull();
+    });
+
+    it('returns null for topic-less or malformed enrichment refs', () => {
+      expect(parseDataEntityRef('data', 'enrichment.mail.msg-abc')).toBeNull();
+      expect(parseDataEntityRef('data', 'enrichment.mail')).toBeNull();
+      expect(parseDataEntityRef('data', 'enrichment')).toBeNull();
+      expect(parseDataEntityRef('data', 'enrichment.mail.not_a_registry_topic_x')).toBeNull();
+    });
+
+    it('returns null for vendor read-side aliases and the crm lens', () => {
+      expect(
+        parseDataEntityRef('data', 'crm.deal.hubspot_deal_1.enrichments.deal_health_score'),
+      ).toBeNull();
+      expect(
+        parseDataEntityRef('data', 'hubspot.deal.d-1.enrichments.deal_health_score'),
+      ).toBeNull();
+      expect(
+        parseDataEntityRef('data', 'salesforce.opportunity.o-1.enrichments.deal_health_score'),
+      ).toBeNull();
+      // Fail-closed backstop: a vendor alias namespace added AFTER the literal
+      // list still short-circuits on the alias grammar's own `enrichments` marker.
+      expect(
+        parseDataEntityRef('data', 'pipedrive.deal.d-9.enrichments.deal_health_score'),
+      ).toBeNull();
+    });
+  });
+
   it('skips the D-103 user-writable data.shared.* tier', () => {
     expect(parseDataEntityRef('data', 'shared.deal.42')).toBeNull();
   });

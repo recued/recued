@@ -117,6 +117,9 @@ const buildSpyCascade = (): CascadeEngine => ({
     cascadeCalls.push({ method: 'cascadeForEngagementEvent', scope, id: target_id });
     return emptyCascadeResult();
   },
+  reserveTopicRecomputeAdmission() {
+    return { admitted: true, candidates: 0, dropped: 0 };
+  },
 });
 
 beforeEach(() => {

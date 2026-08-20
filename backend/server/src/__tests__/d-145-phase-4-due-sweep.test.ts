@@ -88,6 +88,7 @@ const buildSpyCascade = (): CascadeEngine => ({
   cascadeForConnectionDelete() { return emptyResult(); },
   cascadeForExternalContextPulseChange() { return emptyResult(); },
   cascadeForEngagementEvent() { return emptyResult(); },
+  reserveTopicRecomputeAdmission() { return { admitted: true, candidates: 0, dropped: 0 }; },
 });
 
 beforeEach(() => {

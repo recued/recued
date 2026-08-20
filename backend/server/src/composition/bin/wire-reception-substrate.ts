@@ -607,6 +607,24 @@ export const composeReceptionSubstrate = async (
   let resolveIntakeFormRecipePair:
     | NonNullable<ReceptionPortHandlerDeps['resolveIntakeFormRecipePair']>
     | undefined;
+  // ⛔ HOISTED ON PURPOSE — these are the SAME two resolvers the submit runner and
+  // the door bind both pass to `analyzeReceptionRecipeCost`, and the form path has
+  // to classify with the same inputs or the two can disagree about `uses_ai`: the
+  // runner (with resolvers) admitting an AI run while the rendered form (without
+  // them) showed no notice. A pack op's kind is not encoded in its id, so without
+  // these it reports an unknown dispatch kind rather than AI. Declared once here
+  // and reused below.
+  const {
+    composeRecipeIngredientKindResolver: composeIngredientKindResolver,
+    composeRecipeOpKindsResolver: composeOpKindsResolver,
+  } = await import('../../recipe-capability-wiring.js');
+  const receptionResolveIngredientKind = deps.executeDeps === undefined
+    ? undefined
+    : composeIngredientKindResolver(deps.executeDeps);
+  const receptionResolveOpKinds = deps.executeDeps === undefined
+    ? undefined
+    : composeOpKindsResolver(deps.executeDeps);
+
   if (deps.intakeRecipePairStore) {
     const [
       { resolveReceptionIntakeRecipePair },
@@ -624,6 +642,12 @@ export const composeReceptionSubstrate = async (
         store: pairStore,
         getRecipe: (recipeId) => recipeStore?.get(recipeId) ?? null,
         deriveBinding: deriveReceptionIntakeRecipePairBinding,
+        ...(receptionResolveOpKinds
+          ? { resolveOpKinds: receptionResolveOpKinds }
+          : {}),
+        ...(receptionResolveIngredientKind
+          ? { resolveIngredientKind: receptionResolveIngredientKind }
+          : {}),
       });
   }
 
@@ -686,8 +710,6 @@ export const composeReceptionSubstrate = async (
     const {
       composeInstallConfigResolver,
       composeDoorRecipeResolver,
-      composeRecipeIngredientKindResolver,
-      composeRecipeOpKindsResolver,
     } = await import(
       '../../recipe-capability-wiring.js'
     );
@@ -695,12 +717,10 @@ export const composeReceptionSubstrate = async (
     const resolveDoorRecipe = deps.executeDeps === undefined
       ? undefined
       : composeDoorRecipeResolver(deps.executeDeps);
-    const resolveIngredientKind = deps.executeDeps === undefined
-      ? undefined
-      : composeRecipeIngredientKindResolver(deps.executeDeps);
-    const resolveOpKinds = deps.executeDeps === undefined
-      ? undefined
-      : composeRecipeOpKindsResolver(deps.executeDeps);
+    // Same two resolvers the intake-form path uses, hoisted above. Aliased rather
+    // than re-composed so there is exactly one classification of any given op.
+    const resolveIngredientKind = receptionResolveIngredientKind;
+    const resolveOpKinds = receptionResolveOpKinds;
 
     doorBindDeps = {
       pairStore,

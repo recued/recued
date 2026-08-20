@@ -202,6 +202,10 @@ const addRecipeRun = (
     hash?: string;
     status?: string;
     errorCodes?: string[];
+    /** D-237 P2 run yield, written onto the raw audit row exactly as the engine
+     *  stamps it — so a test of the outcome reading starts where the value is
+     *  BORN and has to survive the compiler's own parse boundary. */
+    runYield?: unknown;
   },
 ): void => {
   const row = {
@@ -211,6 +215,7 @@ const addRecipeRun = (
     started_at: input.at,
     finished_at: input.at + 1,
     commit_status: input.status ?? 'succeeded',
+    ...(input.runYield !== undefined ? { run_yield: input.runYield } : {}),
     errors: (input.errorCodes ?? []).map((code) => ({ code })),
     execution_source: {
       channel: 'chat',
@@ -2102,5 +2107,136 @@ describe('D-214 retrieval and storage mechanism guards', () => {
       .resolves.toBe(1);
     expect(anchorStore.getRoot('session-root')).toBeUndefined();
     expect(anchorStore.listAnchors('session-root')).toEqual([]);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// The outcome reading — a run that COMPLETED and a run that DID SOMETHING
+// stop being the same evidence.
+//
+// WHY THIS EXISTS. The compiler learns from `commit_status`, and a `foreach` is
+// continue-on-error by design, so a run whose every item was refused reaches
+// `'succeeded'`. D-237 P2 already made that visible on the audit row and in the
+// owner's logs; nothing in this substrate READ it. The learner therefore
+// recorded "nothing happened" as a clean success — the one label a system that
+// admits on evidence about its own behaviour must never invent for itself.
+//
+// ⛔ EVERY TEST HERE STARTS AT THE RAW AUDIT ROW, NOT AT A PARSED SHAPE. The
+// field was previously dropped at the compiler's own parse boundary, so a test
+// that handed the decision site a ready-made `ParsedRecipeAuditEntry` would
+// have passed against the severed wiring and proved nothing.
+// ────────────────────────────────────────────────────────────────
+
+describe('D-237 P2 yield — the execution case reads the OUTCOME, not just the status', () => {
+  it('⛔ an all-refused run is EXECUTION FAILURE, though its status says succeeded', async () => {
+    const f = await fixture();
+    await open(f);
+    addActivity(f.db, { id: 'a1', at: 101, tool: 'mail.send' });
+    addRecipeRun(f.db, {
+      id: 'refused-run',
+      at: 101,
+      recipe: 'mail.send',
+      status: 'succeeded',
+      runYield: { steps_run: 1, steps_skipped: 0, items_total: 12, items_failed: 12 },
+    });
+    await f.lifecycle.finalizeTurn({ session_id: 's1', turn_id: 't1' });
+
+    const obs = await f.caseStore.listObservations();
+    expect(obs).toHaveLength(1);
+    expect(obs[0]!.evidence_kinds).toContain('execution_failure');
+    expect(obs[0]!.evidence_kinds).not.toContain('unverified_success');
+  });
+
+  it('a PARTIAL failure stays a success — the items that went through really did', async () => {
+    const f = await fixture();
+    await open(f);
+    addActivity(f.db, { id: 'a1', at: 101, tool: 'mail.send' });
+    addRecipeRun(f.db, {
+      id: 'partial-run',
+      at: 101,
+      recipe: 'mail.send',
+      status: 'succeeded',
+      runYield: { steps_run: 1, steps_skipped: 0, items_total: 12, items_failed: 11 },
+    });
+    await f.lifecycle.finalizeTurn({ session_id: 's1', turn_id: 't1' });
+
+    const obs = await f.caseStore.listObservations();
+    expect(obs).toHaveLength(1);
+    expect(obs[0]!.evidence_kinds).not.toContain('execution_failure');
+  });
+
+  it('⛔ a run with NO yield is unchanged — absent is pre-D-237, never "produced nothing"', async () => {
+    // Every audit row written before D-237 has no yield. If absence read as a
+    // refusal, this change would retroactively relabel the entire history as
+    // failure, in one predicate, with nothing to notice it.
+    const f = await fixture();
+    await open(f);
+    addActivity(f.db, { id: 'a1', at: 101, tool: 'mail.send' });
+    addRecipeRun(f.db, {
+      id: 'legacy-run',
+      at: 101,
+      recipe: 'mail.send',
+      status: 'succeeded',
+    });
+    await f.lifecycle.finalizeTurn({ session_id: 's1', turn_id: 't1' });
+
+    const obs = await f.caseStore.listObservations();
+    expect(obs).toHaveLength(1);
+    expect(obs[0]!.evidence_kinds).not.toContain('execution_failure');
+  });
+
+  it('⛔ THE PARSE BOUNDARY: the two runs differ ONLY in the yield', async () => {
+    // The composition check. Both rows carry `commit_status: 'succeeded'` and
+    // identical everything else, so the differing verdict can only have come
+    // from a value that survived the compiler's projection of the audit row.
+    const refused = await fixture();
+    await open(refused);
+    addActivity(refused.db, { id: 'a1', at: 101, tool: 'mail.send' });
+    addRecipeRun(refused.db, {
+      id: 'r1',
+      at: 101,
+      recipe: 'mail.send',
+      status: 'succeeded',
+      runYield: { steps_run: 1, steps_skipped: 0, items_total: 5, items_failed: 5 },
+    });
+    await refused.lifecycle.finalizeTurn({ session_id: 's1', turn_id: 't1' });
+
+    const worked = await fixture();
+    await open(worked);
+    addActivity(worked.db, { id: 'a1', at: 101, tool: 'mail.send' });
+    addRecipeRun(worked.db, {
+      id: 'r1',
+      at: 101,
+      recipe: 'mail.send',
+      status: 'succeeded',
+      runYield: { steps_run: 1, steps_skipped: 0, items_total: 5, items_failed: 0 },
+    });
+    await worked.lifecycle.finalizeTurn({ session_id: 's1', turn_id: 't1' });
+
+    const refusedObs = await refused.caseStore.listObservations();
+    const workedObs = await worked.caseStore.listObservations();
+    expect(refusedObs[0]!.evidence_kinds).toContain('execution_failure');
+    expect(workedObs[0]!.evidence_kinds).not.toContain('execution_failure');
+  });
+
+  it('an approval expiry is still NOT an execution failure, yield or no yield', async () => {
+    // The pre-existing carve-out must survive: an abandoned approval is a
+    // different fact from a refused item, and the yield must not smuggle it in.
+    const f = await fixture();
+    await open(f);
+    addActivity(f.db, { id: 'a1', at: 101, tool: 'mail.send' });
+    addRecipeRun(f.db, {
+      id: 'expired-run',
+      at: 101,
+      recipe: 'mail.send',
+      status: 'succeeded',
+      errorCodes: ['RECIPE_APPROVAL_TIMEOUT'],
+      runYield: { steps_run: 1, steps_skipped: 0, items_total: 3, items_failed: 3 },
+    });
+    await f.lifecycle.finalizeTurn({ session_id: 's1', turn_id: 't1' });
+
+    const obs = await f.caseStore.listObservations();
+    expect(obs).toHaveLength(1);
+    expect(obs[0]!.evidence_kinds).not.toContain('execution_failure');
   });
 });

@@ -297,7 +297,7 @@ describe('D-200 Slice 6g.2 intake pair registry and source resolution', () => {
       // binding still matches, so it also reports whether that recipe RENDERS.
       // This fixture's recipe declares no output, so its response carries nothing
       // and D-149's silence on a rejected submission still holds for it.
-      renders_response: false,
+      renders_response: false, uses_ai: false,
     });
     expect(resolve({ ...config, display_name: 'Changed form' }, savedRecipe)).toEqual({
       kind: 'stale',
@@ -499,7 +499,7 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
     const resolvePair = (): ReceptionIntakeRecipePairResolution => ({
       kind: 'ready',
       binding: exactBinding,
-      renders_response: false,
+      renders_response: false, uses_ai: false,
     });
     const order: string[] = [];
     const auditCalls: Array<{ detail: string }> = [];
@@ -588,7 +588,7 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
     const resolvePair = (): ReceptionIntakeRecipePairResolution => ({
       kind: 'ready',
       binding: exactBinding,
-      renders_response: false,
+      renders_response: false, uses_ai: false,
     });
     const getHandler = createIntakeFormPacketHandler({
       getStore: () => registry(config) as never,
@@ -653,7 +653,7 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
     const resolvePair = (): ReceptionIntakeRecipePairResolution => ({
       kind: 'ready',
       binding: exactBinding,
-      renders_response: false,
+      renders_response: false, uses_ai: false,
     });
     const getHandler = createIntakeFormPacketHandler({
       getStore: () => registry(config) as never,
@@ -780,7 +780,7 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
       const resolvePair = (): ReceptionIntakeRecipePairResolution => ({
         kind: 'ready',
         binding: exactBinding,
-        renders_response: false,
+        renders_response: false, uses_ai: false,
       });
       const getHandler = createIntakeFormPacketHandler({
         getStore: () => registry(config) as never,
@@ -845,7 +845,7 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
     let resolution: ReceptionIntakeRecipePairResolution = {
       kind: 'ready',
       binding: binding(config, recipe()),
-      renders_response: false,
+      renders_response: false, uses_ai: false,
     };
     const resolvePair = () => resolution;
     const getHandler = createIntakeFormPacketHandler({
@@ -899,7 +899,7 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
       resolveCalls += 1;
       const result: ReceptionIntakeRecipePairResolution =
         input.form_config.display_name === config.display_name
-        ? { kind: 'ready', binding: exactBinding, renders_response: false }
+        ? { kind: 'ready', binding: exactBinding, renders_response: false, uses_ai: false }
         : { kind: 'stale' };
       if (resolveCalls === 2) {
         currentConfig = { ...config, display_name: 'Changed during sealing' };

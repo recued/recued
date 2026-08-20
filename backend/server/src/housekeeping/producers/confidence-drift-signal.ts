@@ -336,6 +336,23 @@ export const processOneTopic = (
   // next cycle, and the rows would never enqueue while the banner stays
   // suppressed — silent loss of recompute coverage.
   const autoRecomputes = sourceTopicAutoRecomputesOnDrift(source_topic);
+  // Round-12 audit fix (T1 § 8.1) — consult the cascade budget governor
+  // BEFORE the transaction. The engine's two other topic-wide writers
+  // reserve against the real fan-out and skip all-or-nothing over
+  // `cascade_queue_depth_max_per_topic`; this third writer enqueued bare.
+  // Declined ⇒ skip BOTH writes: the atomicity comment below is exactly why —
+  // advancing the persisted severity without the enqueue is the silent loss
+  // of recompute coverage the transaction exists to prevent, so a declined
+  // topic leaves the prior severity in place and the next daily cycle sees
+  // the same transition and re-asks under fresh headroom. Absent hook
+  // (tests / dbless harnesses) ⇒ ungated, the ctx's standing optional-gate
+  // semantic.
+  if (fires === 'significant' && autoRecomputes && ctx.cascadeTopicAdmission) {
+    const admission = ctx.cascadeTopicAdmission(source_topic);
+    if (!admission.admitted) {
+      return { processed: true, fired: null };
+    }
+  }
   ctx.db.transaction(() => {
     upsertDriftSignal(ctx, signal);
     if (fires === 'significant' && autoRecomputes) {

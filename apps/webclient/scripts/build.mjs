@@ -81,7 +81,20 @@ console.log('[build-webclient] copying shared design tokens → build/tokens.css
 cpSync(resolve(PKG_ROOT, '../../packages/ui-shared/src/theme/tokens.css'), join(OUT, 'tokens.css'));
 
 console.log('[build-webclient] bundling webclient-main.ts');
+// ⛔ THE CLOUD APEX IS BUILD CONFIGURATION, NOT A SOURCE CONSTANT. The webclient
+// used to sniff its own `location.hostname` against a hardcoded mirror domain to
+// pick sibling services. That shipped an internal environment name to every
+// reader of the public source, for a branch none of them can take. A mirror build
+// passes `--cloud-apex <apex>`; everything else gets the real product domain.
+const cloudApexArg = process.argv.indexOf('--cloud-apex');
+const CLOUD_APEX =
+  (cloudApexArg >= 0 ? process.argv[cloudApexArg + 1] : process.env.RECUED_CLOUD_APEX)?.trim()
+  || 'recued.com';
+console.log(`[build-webclient] cloud apex: ${CLOUD_APEX}`);
+const APEX_DEFINE = { __RECUED_CLOUD_APEX__: JSON.stringify(CLOUD_APEX) };
+
 await build({
+  define: APEX_DEFINE,
   entryPoints: [join(SRC, 'webclient-main.ts')],
   outfile: join(OUT, 'webclient-main.js'),
   bundle: true,

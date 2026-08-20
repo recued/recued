@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { OpStep } from '@recued/contracts';
+import { OP_STEP_PASSTHROUGH_KNOBS, type OpStep } from '@recued/contracts';
 import { resolveKernelClosedKindOpStep } from '../op-step-kernel.js';
 
 describe('resolveKernelClosedKindOpStep (D-182 Slice 5 Increment 1)', () => {
@@ -168,5 +168,71 @@ describe('resolveKernelClosedKindOpStep (D-182 Slice 5 Increment 1)', () => {
     // `core.ai.embed` used to be the excluded-op example; the ai→core migration
     // made it a real kernel op (`core-ai-embed`), so `core.ai.nonexistent` above
     // is now the valid-kind / unknown-op case.
+  });
+});
+
+// Round-12 audit fix (T2 Q1) — the lowering allowlist is now the ONE shared
+// list, and this ratchet pins BOTH halves: the list's contents, and that a
+// lowering carries every member. A knob added to `OpStep` without a carry
+// decision is already a compile error (the exhaustiveness proof beside the
+// constant); this test is the runtime half — a lowering that stops consuming
+// the list reddens here instead of silently no-opping on 99.7 % of op-steps.
+describe('OP_STEP_PASSTHROUGH_KNOBS — total knob carry (round-12 T2 Q1)', () => {
+  it('pins the shared knob list', () => {
+    expect([...OP_STEP_PASSTHROUGH_KNOBS]).toEqual([
+      'skip_when',
+      'fail_on',
+      'fail_kind',
+      'cache',
+      'foreach',
+      'pii_fields',
+      'timeout_ms',
+      'on_timeout',
+      'prompt',
+    ]);
+  });
+
+  it('kernel lowering carries EVERY knob — including fail_kind, which the old hand-kept spread dropped', () => {
+    const step: OpStep = {
+      id: 'notify',
+      op: 'core.notification.send',
+      args: { channels: '{{config.channels}}', title: 'hi' },
+      skip_when: '{{step.x}} is_null',
+      fail_on: '{{step.y}} equal true',
+      fail_kind: 'policy',
+      cache: 'fresh',
+      foreach: '{{step.rows}}',
+      pii_fields: ['title'],
+      timeout_ms: 60_000,
+      on_timeout: 'reject',
+      prompt: 'Send this notification?',
+    };
+    const out = resolveKernelClosedKindOpStep(step);
+    expect(out).toMatchObject({
+      ingredient: 'core-notification-send',
+      skip_when: '{{step.x}} is_null',
+      fail_on: '{{step.y}} equal true',
+      fail_kind: 'policy',
+      cache: 'fresh',
+      foreach: '{{step.rows}}',
+      pii_fields: ['title'],
+      timeout_ms: 60_000,
+      on_timeout: 'reject',
+      prompt: 'Send this notification?',
+    });
+    for (const knob of OP_STEP_PASSTHROUGH_KNOBS) {
+      expect(out, `knob '${knob}' must survive the kernel lowering`).toHaveProperty(knob);
+    }
+  });
+
+  it('absent knobs stay absent — no undefined-valued keys appear', () => {
+    const out = resolveKernelClosedKindOpStep({
+      id: 'bare',
+      op: 'core.notification.send',
+      args: { title: 'hi' },
+    });
+    for (const knob of OP_STEP_PASSTHROUGH_KNOBS) {
+      expect(out !== null && knob in out, `knob '${knob}' must not materialise`).toBe(false);
+    }
   });
 });

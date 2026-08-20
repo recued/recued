@@ -13,13 +13,19 @@ import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { OWNER_CONTRACT_ID, recipeGrantEntry, type RecipeDefinition } from '@recued/contracts';
+import {
+  isRecipeGrantEntry,
+  OWNER_CONTRACT_ID,
+  recipeGrantEntry,
+  type RecipeDefinition,
+} from '@recued/contracts';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createRecipeStore } from '../recipe-store.js';
 import {
   installRecipeGrantSeed, syncRecipeGrant, seedExistingRecipeCorpus, seedPackRecipeGrants,
 } from '../recipe-grant-seed.js';
+import { reconcileOwnerGrants } from '../owner-grant-reconcile.js';
 import { createContractStore } from '../storage/contract-store.js';
 import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
 
@@ -165,6 +171,60 @@ describe('D-247 slice 5 — the corpus pass is idempotent', () => {
  *  ⚠ Counts BOOT PATHS, not files: the unit the rule applies to is "a place that
  *  reconciles owner grants at startup", so the next one added fails here rather
  *  than shipping a half-seeded install. */
+/** D-247 open item 1 — THE OTHER HALF OF THE SEEDING RULE.
+ *
+ *  Recipe rows are written on the store's mutation seam plus an idempotent
+ *  corpus pass, and are NEVER boot-reconciled. `reconcileOwnerGrants`
+ *  materialises from COMPILED registries precisely because their id space
+ *  changes only on a server update; recipes arrive at runtime, from seven
+ *  producers.
+ *
+ *  ⛔⛔ A `recipe` row appearing in the reconcile would re-grant on EVERY BOOT
+ *  what D14's purge removed and what an owner's revoke closed — silently, and on
+ *  a schedule nobody looks at. The corpus pass survives that danger by being
+ *  insert-if-absent over `store.ids()`; the reconcile would not, because it
+ *  materialises from a registry rather than from what exists.
+ *
+ *  🔑 Asserted against what the reconcile WRITES, not against its source text: a
+ *  future `for (const r of …) ensure(recipeGrantEntry(…))` fails here even if it
+ *  spells the call some way a grep would miss. */
+describe('D-247 open item 1 — the boot reconcile never touches the recipe kind', () => {
+  let db: Database.Database;
+  let contractStore: ReturnType<typeof createContractStore>;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    contractStore = createContractStore(db, { now: () => 1_700_000_000_000 });
+  });
+  afterEach(() => db.close());
+
+  it('⛔ a fresh reconcile writes ZERO `recipe.*` rows', () => {
+    const result = reconcileOwnerGrants(contractStore, () => 1_700_000_000_000);
+    // The reconcile must actually have done something, or "no recipe rows" is
+    // vacuously true and this test is decoration.
+    expect(result.seeded).toBeGreaterThan(0);
+    const rows = createContractGrantEntryStore(contractStore).listForContract(
+      OWNER_CONTRACT_ID,
+    );
+    expect(rows.length).toBe(result.seeded);
+    const recipeRows = rows.filter((r) => isRecipeGrantEntry(r.entry_key));
+    expect(recipeRows.map((r) => r.entry_key)).toEqual([]);
+  });
+
+  it('⛔⛔ and a SECOND reconcile does not resurrect a recipe grant the owner revoked', () => {
+    // The failure this guards is not "the reconcile writes a recipe row once" —
+    // it is that it would do so on every boot, undoing the owner each time.
+    const grants = createContractGrantEntryStore(contractStore);
+    const revoked = recipeGrantEntry('recued-core', 'refund-payment-square');
+    grants.set(OWNER_CONTRACT_ID, revoked, false, 1_700_000_000_000);
+
+    reconcileOwnerGrants(contractStore, () => 1_700_000_000_001);
+    reconcileOwnerGrants(contractStore, () => 1_700_000_000_002);
+
+    expect(grants.get(OWNER_CONTRACT_ID, revoked)).toBe(false);
+  });
+});
+
 describe('D-247 — every boot path that reconciles owner grants also seeds recipes', () => {
   const BOOT_PATHS = [
     'backend/server/src/serve/compose-app-context.ts',

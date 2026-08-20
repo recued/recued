@@ -961,6 +961,17 @@ export const composeHousekeepingScheduler = async (
       // resolves per-record forceLayer + skip-and-log paths against
       // the same instance the scheduler reads for eligibility.
       ...(trustStore !== undefined ? { trustStore } : {}),
+      // Round-12 audit fix (T1 § 8.1) — the drift producer's topic-wide
+      // recompute enqueue consults the SAME cascade budget governor the
+      // engine's own topic-wide sites reserve against. Bound here so all
+      // three writers share one predicate; absent cascade ⇒ ungated, the
+      // ctx's standing optional-gate semantic.
+      ...(deps.enrichmentCascade
+        ? {
+            cascadeTopicAdmission: (topic: string) =>
+              deps.enrichmentCascade!.reserveTopicRecomputeAdmission(topic),
+          }
+        : {}),
       // D-133 — eventBus on ctx so the confidence drift task can fan
       // out `enrichment_drift_detected` on severity transitions.
       eventBus: deps.eventBus,

@@ -85,6 +85,19 @@ export interface IntakeFormRenderInput {
    *  footer block). Already HTML-safe — `buildTrustFooter` escapes the
    *  interpolated display name — so the renderer emits it verbatim. */
   readonly trust_footer?: string | null;
+  /** Does the recipe bound to this form run AI on what the visitor submits?
+   *  `true` renders the AI notice immediately above the submit button.
+   *
+   *  🔑 THE NOTICE SITS ON THE FORM, AT ENTRANCE, AND THAT PLACEMENT IS THE
+   *  POINT. It is the earliest moment in the flow, so it also covers what the
+   *  visitor meets later — the rendered response, and any mail the submission
+   *  triggers — without needing a second notice on either.
+   *
+   *  ⛔ NOT PART OF THE TRUST FOOTER, deliberately. That footer is a per-server
+   *  block with a substrate-fixed body and an operator toggle that switches it
+   *  off; this is per-door, driven by what this form's own recipe actually does,
+   *  and an unrelated toggle must not be able to suppress it. */
+  readonly uses_ai?: boolean;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -114,6 +127,23 @@ const renderFooter = (trust_footer?: string | null): string => {
       : '';
   return `<div class="rcp-footer">${trustLine}Powered by Recued</div>`;
 };
+
+/** The visitor-facing AI notice, rendered when this form's bound recipe runs AI.
+ *
+ *  ⛔ THE BODY IS A FIXED LITERAL AND TAKES NO INPUT — no display name, no
+ *  endpoint, no config, nothing per-visitor. So there is nothing to escape and
+ *  no injection surface, which is the same discipline `buildTrustFooter` states
+ *  for its own substrate-fixed body.
+ *
+ *  ⚠ WORDING IS DELIBERATELY NARROW: it says what the form DOES, and claims
+ *  nothing about who reads the result, how long anything is kept, or which model
+ *  runs. A notice that over-claims is a statement the owner may not be able to
+ *  stand behind, and one an operator will want to suppress — which is exactly
+ *  how a disclosure surface ends up switched off. */
+const renderAiNotice = (uses_ai?: boolean): string =>
+  uses_ai === true
+    ? '<p class="rcp-ai-notice">This form uses AI to process what you send.</p>\n'
+    : '';
 
 // ────────────────────────────────────────────────────────────────
 // Field renderers (closed list mirroring IntakeFormVisitorFieldType)
@@ -326,7 +356,7 @@ ${instructionsBlock}
 ${honeypotBlock}
 ${emailBlock}
 ${visibleFields}
-<button type="submit" class="rcp-button rcp-button-primary">${htmlEscape(input.submit_button_label)}</button>
+${renderAiNotice(input.uses_ai)}<button type="submit" class="rcp-button rcp-button-primary">${htmlEscape(input.submit_button_label)}</button>
 </form>
 ${renderFooter(input.trust_footer ?? null)}
 </div>
