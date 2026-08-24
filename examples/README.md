@@ -185,25 +185,30 @@ suits your job, run both against the same data and read your own token bill.
 
 A tool result reaches an agent through its context window — that is what a tool
 result *is* — so whatever you pull through one, you pay to receive at least
-once. For this job that is the whole ballgame: the export is 563,182 characters,
-roughly 140k tokens to receive a single time.
+once. The export here is 563,182 characters.
 
 So the strongest skill does not pull it through at all. It shells out —
-`curl -o week.csv …` — and hands the path to `slate.py`, and the bytes never
-enter a context window. **That is the right way to write this skill, and we
-should say so plainly rather than let the comparison flatter us.** It is not
-merely cheaper. It also removes a failure we hit for real: agent runtimes cap a
-single tool result, and at the default cap this CSV came back truncated
-mid-payload, from which a lane built a slate out of head-and-tail fragments and
-reported success. Fetching to disk makes that class of bug impossible.
+`curl -o week.csv …` — and hands the path to `slate.py`. The bytes never enter a
+context window, so they cost nothing to receive, and the same trick works for
+the per-keyword fetches. **That is the right way to write this skill, and it
+belongs here rather than in a footnote, because the comparison flatters us
+without it.** It is not only cheaper. It also removes a failure we hit for real:
+agent runtimes cap a single tool result, and at the default cap this CSV came
+back truncated mid-payload at 63,998 characters, from which a lane built a slate
+out of head-and-tail fragments and reported success. Bytes that go to disk
+cannot be silently truncated on the way into a context window.
 
-The skill published here does not do it because the benchmark it was written for
-forbids it — `services_invoke` is the channel being measured, so bypassing it
-does not make the lane cheaper, it makes the comparison meaningless. The author
-saw the opening and closed it deliberately ("Never transcribe the CSV to disk
-yourself"). That constraint belongs to the fixture, not to skills. If you adapt
-this one to a real trends URL, moving the fetch to disk is the first change to
-make, and it will take most of the token gap with it.
+⚠ **We have not measured that lane, and this document measures everything else.**
+The skill published here routes through `services_invoke` because that is the
+channel our benchmark counts; a lane that fetched over HTTP instead would be
+cheaper, but its cost would no longer be a measurement of the thing the harness
+was built to compare. The author saw the opening and closed it deliberately
+("Never transcribe the CSV to disk yourself"). That constraint is the fixture's,
+not the technique's — so treat the paragraph above as an argument from mechanism,
+not a result. What is measured is the ceiling it removes: a lane that received
+the CSV through a tool result answered from 4.3% of it. What is not measured is
+where a fully script-driven skill lands against the recipe's ~13k tokens.
+Settling that needs a fourth arm, run the same way as the other three.
 
 What it does not take is the second thing. Look at what that skill has become: a
 program with a natural-language wrapper. The loop is in a script, the parsing is

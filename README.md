@@ -65,13 +65,13 @@ so the input side holds near 3,000 tokens whether the model picks 32 keywords or
 58. Point it at a 6MB export and a 10,000-product catalogue and that figure does
 not move.
 
-The same job as a skill is not a strawman, and the strongest version is not even
-token-hungry: give the agent a shell and it fetches the export straight to disk,
-parses it with a bundled script, and never pays to receive it. But look at what
-it has become — a program with a natural-language wrapper, which needs its own
-credentials, retries, rate limits, a place to keep the file, and a way to run on
-Tuesday when nobody opens a session. A recipe is that program, on a server that
-already has those.
+The same job as a skill is not a strawman. The strongest version does not read
+the export at all: give the agent a shell and it fetches straight to disk and
+parses with a bundled script, so those bytes never enter a context window and
+cost nothing to receive. But look at what it has become — a program with a
+natural-language wrapper, which needs its own credentials, retries, rate limits,
+a place to keep the file, and a way to run on Tuesday when nobody opens a
+session. A recipe is that program, on a server that already has those.
 
 The full write-up is in **[`examples/`](./examples/README.md)** — the
 recipe itself, the blind-authored skill it is measured against, what is real
