@@ -141,6 +141,7 @@ import type {
   UserMemoryStore,
 } from './user-memory-store.js';
 import type { WorkEntityResolver } from './work-entity-resolver.js';
+import type { WorkEntityEdgeStore } from './storage/work-entity-edge-store.js';
 import type { WorkEntityTargetedReadDeps } from './work-entity-write-executor.js';
 // D-225 § 9.5.1 — the raw catalog-op projection, shared with the inbound door.
 import {
@@ -327,6 +328,11 @@ export interface ChatToolHandlerDeps {
    *  Late-populated by the post-listener runtime; absent → remote
    *  escalation degrades to the honest local answer. */
   getWorkEntityTargetedReadDeps?: () => WorkEntityTargetedReadDeps | undefined;
+  /** D-192 P5 edges — backs `work.read`'s `include_related`. Same collection
+   *  and therefore same grants as the owner row (see the dep's note in
+   *  `work-entity-read-tools.ts`); absent → the flag discloses that the store
+   *  is unwired rather than reporting an empty relationship set. */
+  getWorkEntityEdgeStore?: () => Pick<WorkEntityEdgeStore, 'listByOwner'> | undefined;
   /** D-188 + the D-192 admission seam — the op-admission gate
    *  (`isFrozenByPause` + `isOpGranted`) for caller-triggered vendor
    *  escalations, which never traverse the op-admission gate on the
@@ -2992,6 +2998,7 @@ const workEntityReadToolsDeps = (deps: ChatToolHandlerDeps): WorkEntityReadTools
   getResolver: () => deps.getWorkEntityResolver?.(),
   getTargetedReadDeps: () => deps.getWorkEntityTargetedReadDeps?.(),
   getOpAdmissionGate: () => deps.getOpAdmissionGate?.(),
+  getEdgeStore: () => deps.getWorkEntityEdgeStore?.(),
 });
 
 const createWorkSearchHandler =

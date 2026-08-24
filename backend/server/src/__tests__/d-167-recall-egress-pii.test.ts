@@ -305,7 +305,14 @@ describe('D-167 recall egress PII', () => {
     expect(firstOutputString(assistantOnly.packet)).toBe('note about pii.Person1');
   });
 
-  it('does not apply the recall index to non-memory prior_tool_calls entries', async () => {
+  /** ⛔⛔ INVERTED 2026-08-24 — this asserted the OPPOSITE, and the old behaviour
+   *  was the leak. The whole-warehouse resolver was scoped to `memory.*` recall, so
+   *  aliasing engaged only when the turn NAMED a contact or READ one via
+   *  `contact.search`; a `mail.search` result carrying a known contact reached the
+   *  model RAW. Measured: bench 183 aliased the same registered contact in 67
+   *  packets and sent it raw in 63 — of the SAME run, the raw ones preceding its
+   *  first `contact.search`. The resolver now covers `prior_tool_calls` too. */
+  it('applies the recall index to NON-memory prior_tool_calls entries too', async () => {
     const plan = withRecall(makePlan(piiEgress.noopFieldPrivacyResolver));
     const { packet } = await egress(
       plan,
@@ -317,27 +324,28 @@ describe('D-167 recall egress PII', () => {
       }),
     );
 
-    expect(firstOutputString(packet)).toBe('note from Diego Okafor');
+    // A warehouse-known name in a contact.search result is aliased now, exactly as
+    // it already was inside a memory.search result.
+    expect(firstOutputString(packet)).not.toBe('note from Diego Okafor');
+    expect(firstOutputString(packet)).toMatch(/pii\.[A-Za-z]+\d+/);
   });
 
-  it('keeps non-recall packets byte-identical and does not build the recall index', async () => {
+  /** ⚠ NARROWED 2026-08-24. The lazy-build contract still holds, but its SCOPE
+   *  moved: a packet with NEITHER recall context NOR tool results still pays
+   *  nothing. A packet WITH tool results now builds the index, because the gate
+   *  cannot know whether a result carries PII without it — the cost the widening
+   *  buys protection with, stated rather than hidden.
+   *  ⛔ UNMEASURED AT SCALE: the code's own figure is ~180ms @ 50k contacts,
+   *  memoised once per turn. The bench warehouse is far smaller and its turns are
+   *  dominated by provider latency, so the bench cannot see it. */
+  it('keeps a packet with NO recall context and NO tool results byte-identical', async () => {
     let builds = 0;
     const inputPacket = {
       available_tools: [],
       commitment_context: [],
       chat_tail: [],
       user_message: 'hello',
-      prior_tool_calls: [
-        {
-          tool_name: 'contact.search',
-          tier: 1,
-          args: {},
-          status: 'ok',
-          result: { entries: [{ output_string: 'plain result' }] },
-          started_at: 0,
-          completed_at: 1,
-        },
-      ],
+      prior_tool_calls: [],
     };
     const prompt = JSON.stringify(inputPacket);
     const plan = withRecall(makePlan(piiEgress.noopFieldPrivacyResolver), () => {

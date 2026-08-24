@@ -327,6 +327,10 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
         return llmSubstrate.llmConfig;
       }
     },
+    // D-250 § D — same owner daily-counter sink as the serve path; the CLI/MCP
+    // context runs the same chat turns and must not be the door that spends
+    // uncounted.
+    addOwnerTokenUsage: (tokens) => { llmSubstrate.llmManager?.addUsage(tokens); },
     llmQuota: llmSubstrate.llmQuota,
     llmAdapterRegistry: llmSubstrate.llmAdapterRegistry,
     emptyTabProbe: llmSubstrate.emptyTabProbe,

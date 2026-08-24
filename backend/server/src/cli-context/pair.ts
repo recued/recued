@@ -4,7 +4,8 @@ import { getArg, getFlag, parsePositionals } from '../cli/parse.js';
 import { resolveBindPort } from '../cli/resolve-bind-port.js';
 import type { BootTrace } from '../cli/boot-trace.js';
 import { cmdPair } from '../commands/pair.js';
-import { createPairingManager } from '../pairing.js';
+import { createPairingManager, parsePairCodeTtl } from '../pairing.js';
+import { createPairingStateStore } from '../pairing-state-store.js';
 import { createRecoveryKeyCheckStore } from '../recovery-key-store.js';
 import { openDatabase } from '../open-database.js';
 
@@ -15,12 +16,19 @@ export interface PairProfileOptions {
   out?: (line: string) => void;
 }
 
-const ensurePairingManager = (db: Database.Database) => {
+const ensurePairingManager = (db: Database.Database, codeTtlMs?: number) => {
   db.exec(`CREATE TABLE IF NOT EXISTS server_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
   const row = db.prepare(`SELECT value FROM server_config WHERE key = 'realm_token'`).get() as
     | { value: string }
     | undefined;
-  const pairing = createPairingManager({ realmToken: row?.value });
+  const pairing = createPairingManager({
+    realmToken: row?.value,
+    store: createPairingStateStore(db),
+    // Omitted unless the caller passed --pair-code-ttl, so the refresh
+    // INHERITS whatever window the running server was booted with rather than
+    // silently dropping back to 15 minutes.
+    ...(codeTtlMs !== undefined ? { codeTtlMs } : {}),
+  });
   if (!row) {
     db.prepare(`INSERT OR REPLACE INTO server_config (key, value) VALUES ('realm_token', ?)`)
       .run(pairing.getRealmToken());
@@ -49,7 +57,19 @@ export async function runPairProfile(options: PairProfileOptions): Promise<void>
     db.pragma('foreign_keys = ON');
     options.bootTrace?.mark('db-opened');
 
-    const pairing = ensurePairingManager(db);
+    const ttlRaw = getArg(options.args, 'pair-code-ttl');
+    let codeTtlMs: number | undefined;
+    if (ttlRaw !== undefined) {
+      codeTtlMs = parsePairCodeTtl(ttlRaw);
+      if (codeTtlMs === undefined) {
+        console.error(
+          `Invalid --pair-code-ttl '${ttlRaw}'. Use a positive number with an optional unit: 900000, 30m, 12h, 7d.`,
+        );
+        process.exitCode = 1;
+        return;
+      }
+    }
+    const pairing = ensurePairingManager(db, codeTtlMs);
     const recoveryKeyCheck = createRecoveryKeyCheckStore(db);
 
     await cmdPair(

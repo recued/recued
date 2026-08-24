@@ -294,10 +294,29 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
         emitSchedule(config.executeDeps.eventBus, 'updated');
         return true;
       }
+      // ⛔⛔ A DURABLE PAUSE IS NOT AN ERROR, AND CALLING IT ONE DISABLED THE
+      // SCHEDULE. The engine reports a preflight hold as `success: false` with
+      // an EMPTY `errors` array, so deciding on `!success` alone recorded
+      // `last_status: 'error'` with the generic "execution failed" — and for a
+      // ONE-SHOT, `terminalPatch` then set `enabled: false`. The owner would
+      // answer the ask, the run would resume and complete, and the schedule
+      // would sit permanently marked as a failed run that never happened: the
+      // resume path does not come back through here to correct it.
+      //
+      // ⚠ REUSING `'skipped'` RATHER THAN MINTING A STATUS, DELIBERATELY.
+      // `last_status` is a WIRE type (`rpc/server-registry.ts`), read by a
+      // webclient that is versioned separately from a self-hosted server, so a
+      // new member is a compatibility decision and not one to take in passing.
+      // `'skipped'` already means "did not conclude, stays armed, no
+      // failed-run noise", which preserves the two properties that matter here.
+      // A dedicated `awaiting_approval` status would say it better and is worth
+      // doing WITH the wire change, not around it.
+      const heldForAnswer = result.awaiting_approval === true
+        || result.awaiting_peer === true;
       // Runtime execution errors are carried in result.success/result.errors;
       // shape failures (bad_request / recipe_not_found) throw RpcError and
       // land in the catch block below.
-      const lastError = result.success
+      const lastError = result.success || heldForAnswer
         ? null
         : visibleFailure(
           (result.errors[0] as { message?: string } | undefined)?.message
@@ -306,9 +325,11 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
       config.store.updateRun(schedule.schedule_id, {
         last_run_at: fireAt,
         next_run_at: nextRun,
-        last_status: result.success ? 'success' : 'error',
+        last_status: result.success ? 'success' : heldForAnswer ? 'skipped' : 'error',
         last_error: lastError,
-        ...terminalPatch,
+        // A held one-shot must stay ENABLED: it has not run yet, and disabling
+        // it here is what made the approval unanswerable in practice.
+        ...(heldForAnswer ? {} : terminalPatch),
       });
       return true;
     } catch (e) {

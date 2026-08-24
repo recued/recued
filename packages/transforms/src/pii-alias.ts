@@ -1592,6 +1592,20 @@ export const seedKnownValuesFromContent = (
     // replacement, so seeding it minted an alias the packet never carries.
     // Same predicate as the replace site, by construction.
     if (!isBlindReplaceableKnownValue(seed.kind, seed.value)) continue;
+    // ⛔⛔ AN ADDRESS SEED MUST GO THROUGH `aliasAddress`, NOT THE DEFAULT NAMER.
+    // `getOrAllocate` without an `aliasBuilder` mints a bare `pii.AddressN`, so a
+    // recall-discovered address lost the GEO SUFFIX the structured path has always
+    // produced (`pii.Address4.mountain-view.ca.usa`). That suffix is the entire
+    // reason city/state may be swallowed by a composite match at all: the run is
+    // removed, and the region grain comes back in the alias. Without it the model
+    // is handed an address it cannot place — protection bought by destroying the
+    // locale signal the exclusion exists to keep.
+    // ⚠ Same function the structured leaf path uses, so a value discovered either
+    // way lands on ONE ledger row and restores identically.
+    if (seed.kind === 'address') {
+      aliasAddress(ledger, seed.value);
+      continue;
+    }
     getOrAllocate(ledger, seed.kind, seed.value);
   }
 

@@ -725,6 +725,7 @@ import type {
   SellerAcknowledgeLlmGatewayPaidCaller,
   SellerManualTierBulkAdjustCaller,
   SellerManualTierUpsertCaller,
+  SellerTierUsagePolicyCaller,
   SellerCreatePassTierCaller,
   SellerOfferStateTransitionCaller,
   SellerOverviewCaller,
@@ -8026,6 +8027,10 @@ export const bootstrapWebclient = async (
     options.enableSellerPage === false
       ? undefined
       : (args) => rpcConn.call('server.seller.upsertManualTier', args);
+  const sellerTierUsagePolicyCaller: SellerTierUsagePolicyCaller | undefined =
+    options.enableSellerPage === false
+      ? undefined
+      : (args) => rpcConn.call('server.seller.setTierUsagePolicy', args);
   const sellerCreatePassTierCaller: SellerCreatePassTierCaller | undefined =
     options.enableSellerPage === false
       ? undefined
@@ -10308,6 +10313,13 @@ export const bootstrapWebclient = async (
           ? {
               sellerManualTierUpsertCaller: switchWorkTracker.track(
                 sellerManualTierUpsertCaller,
+              ),
+            }
+          : {}),
+        ...(sellerTierUsagePolicyCaller !== undefined
+          ? {
+              sellerTierUsagePolicyCaller: switchWorkTracker.track(
+                sellerTierUsagePolicyCaller,
               ),
             }
           : {}),

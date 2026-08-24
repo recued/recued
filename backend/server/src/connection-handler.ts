@@ -84,6 +84,7 @@ import {
   effectiveConnectionHealth,
   diagnosePeerBinding,
   MCP_PEER_CONTRACT_CONFIG_KEY,
+  MCP_PEER_ADMISSION_CONFIG_KEY,
 } from '@recued/contracts';
 import type {
   ConnectionAuth,
@@ -542,19 +543,50 @@ const readStoredMatchPatterns = (config_json: string): MessageMatchPattern[] => 
   return Array.isArray(raw) ? (raw as MessageMatchPattern[]) : [];
 };
 
-/** D-192 M4c-UI — config keys STRIPPED from `ConnectionView` (server-side only,
- *  un-re-sendable by any client — the messenger triggers `setMatchPatterns`
- *  owns, plus the inbound-webhook secrets). A generic `update` replaces
- *  `config_json` wholesale, but the client can only rebuild `patch.config` from
- *  the STRIPPED view, so it can never include these — they must be carried over
- *  from the existing config, exactly as `subresource_path` / `granted_scopes`
- *  are preserved. Without this, editing a messenger connection's `channel_id`
- *  silently drops its triggers AND breaks inbound-webhook signature
- *  verification. */
+/** Config keys a `patch.config` MUST NOT SILENTLY DROP.
+ *
+ *  A generic `update` replaces `config_json` wholesale, and every client
+ *  rebuilds `patch.config` from its FORM SCHEMA — so any key the schema has no
+ *  field for is absent from every patch that connection will ever receive. The
+ *  key is not omitted because the owner cleared it; it is omitted because the
+ *  editor could not see it.
+ *
+ *  ⛔⛔ THE ORIGINAL LIST READ AS "KEYS STRIPPED FROM `ConnectionView`" AND
+ *  THAT DESCRIBED ONE CAUSE, NOT THE RULE. D-192's members are stripped from
+ *  the view, so they are un-re-sendable and must be carried; the Discord
+ *  `public_key` was already smuggled into `CONNECTION_INBOUND_SECRET_FIELDS`
+ *  *"deliberately"* despite being genuinely public, purely to reach this
+ *  splice — the comment there says so. That is the tell that the list's real
+ *  membership test is *"would a patch drop it"*, and the view is only one way
+ *  to be dropped. Naming it for a cause left the D-232 peer keys outside a list
+ *  they belong in.
+ *
+ *  ⚠ A caller that DOES pass one of these keeps its explicit value; this
+ *  carries over only what a patch omitted. */
 const CONNECTION_UPDATE_PRESERVED_CONFIG_FIELDS: ReadonlyArray<string> = [
   MESSAGE_MATCH_CONFIG_KEY,
   MESSENGER_INGRESS_MODE_CONFIG_KEY,
   ...CONNECTION_INBOUND_SECRET_FIELDS,
+  // ⛔⛔ D-232 § 26 / § 20.17 — THE PEER BINDING, AND LOSING IT IS SILENT AND
+  // CONSEQUENTIAL. `peerConnectionForContract` resolves an inbound peer's
+  // `contract_id` to the ONE mcp connection carrying this value and fires the
+  // answer down it; with the value gone the resolver returns undefined, which
+  // means LOCAL — the server answers ITSELF, files the run under the peer's
+  // ref, and reports `succeeded`. `assertPeerContractBinding` refuses an EMPTY
+  // one at enroll in those exact words, and until now the same state was one
+  // ordinary edit away, because the mcp form schema (`connection-schemas/mcp.ts`:
+  // name / display_name / endpoint / auth) has no field for it. So an owner who
+  // renamed a peer connection — or ROTATED ITS TOKEN, which sends `config`
+  // alongside `auth` on the same save — deleted their peer binding and was told
+  // nothing.
+  MCP_PEER_CONTRACT_CONFIG_KEY,
+  // ⛔ D-234 § 234.1 — the RECEIVER'S CEILING, for the same reason and with a
+  // worse failure direction: this is the owner's standing answer to *"will I
+  // answer this peer at all"*, and dropping it does not fail closed — it
+  // reverts to the default, quietly re-admitting a peer the owner had set to
+  // `ask` or `refuse`. A security posture must not be erasable by an edit to a
+  // field beside it.
+  MCP_PEER_ADMISSION_CONFIG_KEY,
 ];
 
 const ensureOptionalString = (
@@ -1548,6 +1580,10 @@ const assertPeerContractBinding = (
   kind: ConnectionKind,
   name: string,
   config: Record<string, unknown>,
+  /** Which door is refusing. ⚠ Both doors set this field, so a hardcoded
+   *  `connection.enroll` would tell an owner editing a connection to go and
+   *  look at an enrollment they are not performing. */
+  where: string,
 ): void => {
   if (kind !== 'mcp') return;
   const raw = config.peer_contract_id;
@@ -1555,7 +1591,7 @@ const assertPeerContractBinding = (
   if (typeof raw !== 'string' || raw.trim() === '') {
     throw new RpcError(
       'bad_request',
-      'connection.enroll: config.peer_contract_id must be a non-empty string when present — '
+      `${where}: config.peer_contract_id must be a non-empty string when present — `
       + 'it is the contract this peer presents when it calls you, and an empty one silently '
       + "routes their answers back to this server instead of to them.",
     );
@@ -1573,7 +1609,7 @@ const assertPeerContractBinding = (
   if (clash !== undefined) {
     throw new RpcError(
       'bad_request',
-      `connection.enroll: peer_contract_id '${bound}' is already bound to connection `
+      `${where}: peer_contract_id '${bound}' is already bound to connection `
       + `'${clash.name}'. Two connections claiming one contract makes the callback path `
       + 'ambiguous, and the resolver refuses rather than guess — which routes that peer\'s '
       + 'answers LOCAL, so this server would answer itself and report success.',
@@ -1662,7 +1698,7 @@ export const handleConnectionEnroll = async (
     () => now,
   );
   const effectiveConfig = resolvedPrincipal.config;
-  assertPeerContractBinding(deps, kind, name, effectiveConfig);
+  assertPeerContractBinding(deps, kind, name, effectiveConfig, 'connection.enroll');
   const effectiveAuth = resolvedPrincipal.auth;
   // Preserve enrolled_at across re-enrollments — first sight wins on
   // identity, every patch refreshes updated_at. This matches the
@@ -1861,6 +1897,15 @@ export const handleConnectionUpdate = async (
     config_json = JSON.stringify(normalized);
   }
   const finalConfig = parseStoredConfig(config_json);
+  // ⛔⛔ D-232 § 26 — THE SAME REFUSAL AS ENROLL, AT THE OTHER DOOR. The peer
+  // binding was checked WHERE A HUMAN CAN FIX IT and that turned out to be one
+  // of the two places a human sets it: `assertPeerContractBinding` was called
+  // from `handleConnectionEnroll` only, so an empty or already-claimed
+  // `peer_contract_id` was refused on the way in and accepted on every edit
+  // afterwards — landing the row in exactly the state the enroll refusal exists
+  // to prevent, described in its own message. Checked against the MERGED config
+  // so the preserved-key carry-over above is what it reads, not the patch.
+  assertPeerContractBinding(deps, kind, name, finalConfig, 'collection.connection.update');
   const messengerDeclaration = existing.subtype === undefined
     ? null
     : getMessengerVendorDeclaration(existing.subtype);

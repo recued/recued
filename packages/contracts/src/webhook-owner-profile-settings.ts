@@ -256,6 +256,22 @@ const SETTINGS_LIST: readonly WebhookOwnerProfileSettings[] = [
     test_delivery_boundary: 'The Recued test uses the canonical public endpoint and may run recipes bound to this test ingress. During a two-secret rotation it deliberately signs with the older active credential, so it cannot verify the replacement or unlock retirement of the older version. It does not prove the GitHub dashboard is configured or that GitHub can reach the endpoint.',
     connection_rebind_instructions: 'Core verifies the replacement personal access token against the same repository or organization before changing authority. If target continuity cannot be proved, intake stays closed and no foreign hook is mutated.',
   }),
+  genericSettings('cal.webhook.v1', 'Cal.com booking and meeting webhooks', {
+    connection_placeholder: 'calcom',
+    create_instructions: {
+      manual: {
+        default: 'Enter a strong signing secret to create the Recued webhook address. Then add that address in Cal.com, use the same secret, and select exactly the event types requested by the installed recipe before confirming setup here.',
+      },
+    },
+    manual_confirmation_instructions: {
+      default: 'In Cal.com Settings > Developer > Webhooks, paste the Recued address above, enter the same signing secret, and select only {{events}}. Confirm below after saving.',
+    },
+    external_test_guidance: {
+      default: 'Trigger one of the selected Cal.com events with a test booking. For transcript events, complete a Cal Video meeting with transcription enabled.',
+    },
+    test_delivery_boundary: 'The Recued test confirms that this address accepts a correctly signed Cal.com-style event of the selected type. It cannot confirm that Cal.com saved the webhook; trigger the selected event with a test booking to prove the external connection.',
+    credential_rotation_instructions: 'Add the replacement secret in Recued, update the same Cal.com webhook to that secret, obtain one accepted delivery, and only then retire the older local credential.',
+  }),
   genericSettings('generic.static-header-token.v1', 'Static header token'),
   genericSettings('generic.raw-body-hmac-sha256.v1', 'Raw-body HMAC SHA-256'),
   genericSettings(

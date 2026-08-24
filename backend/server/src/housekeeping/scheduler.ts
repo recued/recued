@@ -254,7 +254,10 @@ export const createHousekeepingScheduler = (
   let timerToken: unknown = null;
   let cycleTail: Promise<void> = Promise.resolve();
   let queuedCycles = 0;
-  let lastCycleAt: number | null = null;
+  // R13 T1-Q1 — seeded from the persisted clock so a restart honours
+  // cycle_interval_minutes instead of reading as "never cycled" and
+  // firing on the first idle probe.
+  let lastCycleAt: number | null = opts.state.getCycleClock();
 
   const runTaskStep = async (
     task: HousekeepingTaskInstance,
@@ -285,6 +288,7 @@ export const createHousekeepingScheduler = (
         status,
         duration_ms,
         ...(result.status === 'yield' ? { yield_reason: result.reason } : {}),
+        ...(result.governor ? { governor: result.governor } : {}),
       };
     } catch (e) {
       const finish = opts.ctx.now();
@@ -396,12 +400,23 @@ export const createHousekeepingScheduler = (
       });
       if (!upstreamComplete) continue;
 
+      // D-250 § D — open this task's token window. Sound because this loop is
+      // strictly sequential and awaited; see `task-token-meter.ts` for why the
+      // same shape was REJECTED for recipe steps (parallel prefetch).
+      const meter = opts.ctx.taskTokenMeter;
+      meter?.begin(task.meta.id);
       const result = await runTaskStep(task, remaining);
-      per_task.push(result);
+      const tokens = meter?.take(task.meta.id);
+      // ⛔ Absent when the task made no provider call — most tasks — never zero.
+      per_task.push(tokens !== undefined ? { ...result, tokens } : result);
     }
 
     const cycle_finish = opts.ctx.now();
     lastCycleAt = cycle_finish;
+    // R13 T1-Q1 — persist the cycle clock. Best-effort: a failed clock
+    // write must not fail the cycle it describes; the cost of a lost
+    // write is one early cycle after the next restart, not corruption.
+    try { opts.state.setCycleClock(cycle_finish); } catch { /* best-effort */ }
 
     const cycle: HousekeepingCycleResult = {
       preset: config.preset,

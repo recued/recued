@@ -73,10 +73,12 @@ import type {
   RecipeDefinition,
   SourceRegistration,
   WorkEntity,
+  WorkEntityEdge,
   WorkEntityKind,
   WorkEntitySourceFreshness,
 } from '@recued/contracts';
 import {
+  isWorkEntitySourceDeclarableKind,
   WORK_ENTITY_LIST_HYDRATION_MAX_ROWS_PER_CYCLE,
   parseQualifiedWorkEntityId,
   qualifyWorkEntityId,
@@ -115,6 +117,7 @@ import {
   workEntityReadVerbOpFencedHint,
 } from './read-grant-checker.js';
 import type { OpAdmissionGate } from './op-admission-gate.js';
+import type { WorkEntityEdgeStore } from './storage/work-entity-edge-store.js';
 import {
   projectWorkEntitySourceRow,
   type ProjectedWorkEntityUpsert,
@@ -199,8 +202,115 @@ export interface WorkEntityReadToolsDeps {
   getOpAdmissionGate?: () =>
     | Pick<OpAdmissionGate, 'isFrozenByPause' | 'isOpGranted'>
     | undefined;
+  /** D-192 P5 edges, surfaced on demand by `work.read`'s `include_related`.
+   *
+   *  ⚠ **NOT a second grant axis, and must never become one.** Edges are rows of
+   *  the SAME `work-entity` collection as their owner (`work_entity_edge` is
+   *  keyed `(source_id, source_record_id, local_field, target_scoped_key)` on the
+   *  owning Source row), so a caller who passed the two fences above is already
+   *  entitled to everything this returns. That is the whole reason the flag is a
+   *  PARAMETER rather than a verb: contrast annotations, which look adjacent but
+   *  are stamped `'memory'` in `kernel-op-registry.ts` and are therefore a
+   *  cross-topic read verb — `core.memory.annotation.list`, reachable through
+   *  `data.timeline()` or the `annotation-list` ingredient, never through here.
+   *  ⛔ If a future edge target starts carrying data from another collection,
+   *  this stops being a flag; re-read `read-grant-checker.ts`'s verb-op rule
+   *  before widening it.
+   *
+   *  Late-bound like every store getter here; undefined DISCLOSES rather than
+   *  returning `[]` (see `relatedFor`). */
+  getEdgeStore?: () => Pick<WorkEntityEdgeStore, 'listByOwner'> | undefined;
   now?: () => number;
 }
+
+/** One related row as `work.read` presents it. A projection, not the stored
+ *  edge: `source_id` / `source_record_id` / `target_scoped_key` / timestamps are
+ *  sync-machinery identity the model has no use for and would try to pass back. */
+export interface WorkEntityRelatedItem {
+  /** The declared relationship's `local_field` — what this link MEANS. */
+  field: string;
+  target_kind: WorkEntityEdge['target_kind'];
+  /** Resolved local identity — the `id` a follow-up read takes. Absent while
+   *  the edge is still unresolved. */
+  target_id?: string;
+  /** ⚠ False = the reference is real but its target has not synced yet (D-192's
+   *  admissible UNRESOLVED edge, which self-heals on the next re-resolution
+   *  pass). Unresolved edges are RETURNED, not filtered: dropping them would
+   *  under-report the record's relationships and read as "it has none", and the
+   *  model would tell the user exactly that. */
+  resolved: boolean;
+  /** The vendor-side reference, present when the edge came from a `remote_id`
+   *  pairing. Kept because it is often the only human-meaningful handle on an
+   *  unresolved edge. */
+  target_remote_entity?: string;
+  target_remote_id?: string;
+}
+
+/** Why `include_related` could not be answered. Never conflated with "no
+ *  relationships": an empty `related` is a FACT about the record, and these are
+ *  facts about the read. */
+export interface WorkEntityRelatedUnavailable {
+  reason: string;
+}
+
+const projectRelated = (edge: WorkEntityEdge): WorkEntityRelatedItem => ({
+  field: edge.local_field,
+  target_kind: edge.target_kind,
+  ...(edge.target_local_id !== undefined ? { target_id: edge.target_local_id } : {}),
+  resolved: edge.target_local_id !== undefined,
+  ...(edge.target_remote_entity !== undefined
+    ? { target_remote_entity: edge.target_remote_entity }
+    : {}),
+  ...(edge.target_remote_id !== undefined ? { target_remote_id: edge.target_remote_id } : {}),
+});
+
+/** Resolve the `related` half of a `work.read`, or say why it is absent.
+ *
+ *  Three ways it legitimately cannot be produced, each disclosed rather than
+ *  flattened to `[]` — the module's standing rule that a degraded answer names
+ *  its degradation (see `escalation_error`):
+ *    1. the edge store is not wired (dbless / unit harness);
+ *    2. the kind has no relationship model at all — `work_entity_edge.owner_kind`
+ *       is a `WorkEntitySourceDeclarableKind` (task / note / project), so
+ *       `commitment` and `booking` can never own one;
+ *    3. the row has no local id to own edges by (a `read_through` row). */
+const relatedFor = (
+  deps: WorkEntityReadToolsDeps,
+  kind: WorkEntityKind,
+  localId: string | undefined,
+):
+  | { related: WorkEntityRelatedItem[] }
+  | { related_unavailable: WorkEntityRelatedUnavailable } => {
+  if (!isWorkEntitySourceDeclarableKind(kind)) {
+    return {
+      related_unavailable: {
+        reason:
+          `'${kind}' has no relationship model — only task / note / project own related links. `
+          + 'This is not "no relationships found"; do not report it as one.',
+      },
+    };
+  }
+  if (localId === undefined || localId.length === 0) {
+    return {
+      related_unavailable: {
+        reason:
+          'this record has no local row to hold relationships (a read_through Source is fetched '
+          + 'live and never materialized), so related links cannot be read for it.',
+      },
+    };
+  }
+  const store = deps.getEdgeStore?.();
+  if (store === undefined) {
+    return {
+      related_unavailable: { reason: 'the relationship store is not wired on this server' },
+    };
+  }
+  try {
+    return { related: store.listByOwner(kind, localId).map(projectRelated) };
+  } catch (e) {
+    return { related_unavailable: { reason: errMessage(e) } };
+  }
+};
 
 /** Synthetic recipe identity for the scoped gateway ctx — targeted
  *  reads the READ TOOLS trigger audit under `work-entity-source-read`
@@ -1391,6 +1501,12 @@ export const runWorkEntityReadTool = async (
     }
     fidelity = args.fidelity as WorkEntityReadFidelity;
   }
+  // Opt-IN, and deliberately so: the relationship fan-out is free of extra
+  // grants but not free of tokens, and most reads do not want it.
+  if (args.include_related !== undefined && typeof args.include_related !== 'boolean') {
+    return invalidArgs('include_related must be a boolean');
+  }
+  const includeRelated = args.include_related === true;
 
   const resolver = deps.getResolver();
   if (!resolver) return executionError('work-entity resolver unavailable');
@@ -1466,6 +1582,11 @@ export const runWorkEntityReadTool = async (
             source_freshness: freshness,
             plan,
             live_read_at: now,
+            // A read_through row is never materialized, so it owns no edges.
+            // Say that, rather than letting the key be absent — an absent
+            // `related` after the caller ASKED for it is indistinguishable from
+            // a record that genuinely has none.
+            ...(includeRelated ? relatedFor(deps, kind, undefined) : {}),
           },
         };
       }
@@ -1544,6 +1665,11 @@ export const runWorkEntityReadTool = async (
     found: true as const,
     source_freshness: freshness,
     plan,
+    // On `base` so BOTH exits carry it — the local-plan return and every
+    // remote-plan return (including each `degrade`, which spreads `base`).
+    // Edges are local rows: a vendor escalation failing has no bearing on
+    // whether the relationships could be read, so they must not vanish with it.
+    ...(includeRelated ? relatedFor(deps, kind, row.id) : {}),
   };
   if (plan.action === 'local') {
     return { ok: true, result: base };

@@ -681,6 +681,16 @@ interface RecallScanContext {
  *  (`partitionPriorToolCalls`). Cheap (no index build) — gates the lazy index
  *  build so a non-recall turn never pays the whole-warehouse scan. The egress no
  *  longer sniffs tool names: recall-ness is decided once, at compose time. */
+/** True iff the packet carries tool RESULTS — the `prior_tool_calls` the composer
+ *  threaded back after a dispatch round. Cheap (no index build), and it gates the
+ *  lazy whole-warehouse build exactly as `hasRecallContext` does: a FIRST round
+ *  has no tool results, so it still pays nothing. */
+const hasPriorToolCalls = (packet: unknown): boolean => {
+  if (packet === null || typeof packet !== 'object') return false;
+  const entries = (packet as Record<string, unknown>).prior_tool_calls;
+  return Array.isArray(entries) && entries.length > 0;
+};
+
 const hasRecallContext = (packet: unknown): boolean => {
   if (packet === null || typeof packet !== 'object') return false;
   const entries = (packet as Record<string, unknown>).recall_context;
@@ -793,7 +803,17 @@ const resolveRecallScanContext = (
   disclosedTexts: readonly string[] = disclosedTextsFromPacket(packet),
 ): RecallScanContext | undefined => {
   if (typeof plan.recall?.getIndex !== 'function') return undefined;
-  if (!hasRecallContext(packet)) return undefined;
+  // ⛔⛔ NOT `hasRecallContext` ALONE — that scoped the WHOLE-WAREHOUSE resolver to
+  // `memory.*` recall, so aliasing engaged only when the turn NAMED a contact or
+  // READ one via `contact.search`. Warehouse membership alone did not alias, and a
+  // `mail.search` result carrying a known contact's name / org / street / email /
+  // phone / domain reached the model RAW whenever nothing in that turn surfaced
+  // them. Measured: bench 183 aliased the same registered contact in 67 packets
+  // and sent it raw in 63 — of the SAME run, the raw ones preceding its first
+  // `contact.search`.
+  // ⚠ A FIRST ROUND STILL PAYS NOTHING: no tool results, no recall context, no
+  //   index build, byte-identity fast path intact.
+  if (!hasRecallContext(packet) && !hasPriorToolCalls(packet)) return undefined;
   const resolver = plan.recall.getIndex();
   if (resolver === undefined) return undefined;
   return { resolver, disclosedTexts };
@@ -1440,6 +1460,18 @@ const aliasChatAiInput = async (
   const applyDataScans = (target: unknown): boolean => {
     let changed = false;
     if (recallCtx !== undefined && aliasRecallContextField(target, plan, recallCtx)) {
+      changed = true;
+    }
+    // The same whole-warehouse resolver over TOOL RESULTS. `aliasRecallFieldInPlace`
+    // was always generic over (container, key); only `recall_context` was ever
+    // passed to it. Six field families ride one call: name / organization /
+    // street via the automaton, and email / phone / domain text-driven.
+    // ⚠ It SEEDS the ledger, so the uniform ledger scan below then covers sibling
+    // fields — intended compounding, not double-aliasing: the helper is
+    // byte-identity guarded and a no-op when it changes nothing.
+    if (recallCtx !== undefined
+      && aliasRecallFieldInPlace(
+        target as Record<string, unknown>, 'prior_tool_calls', plan, recallCtx)) {
       changed = true;
     }
     if (plan.ledger.byKindRealValue.size > 0 && uniformContentScanDataFields(target, plan)) {

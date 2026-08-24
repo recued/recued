@@ -258,7 +258,50 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
 
   // ── notification — the alert-dispatch surface; backed by the anti-shadow
   //    `core-notification-send` slug (bare `notification-send` is the alias).
-  op('core.notification.send', 'notification', 'core-notification-send', 'write'),
+  /** ⛔⛔ `read`, NOT `write` — AND IT IS NOT AN OUTBOUND SEND. Both halves are
+   *  one decision (owner ruling 2026-08-20); either alone leaves the defect.
+   *
+   *  🔑 THE ARGUMENT IS THAT THIS OP HAS NO RECIPIENT. Every other member of
+   *  `OUTBOUND_SEND_INGREDIENT_SLUGS` takes a per-call destination the recipe
+   *  authors — `mail-send`'s `to`, `slack-post`'s channel, `peer-ask`'s target
+   *  server — and the lift exists so the owner can review THAT destination
+   *  before it leaves. This op's input is `{channels, text, title, link_url}`:
+   *  no address, no target. `channels` can only NARROW to the channels the
+   *  owner already enrolled and switched on (an unenrolled channel has no
+   *  dispatcher and lands in `failed[]`), so the destination is the owner's own
+   *  deliberate endpoint setup and the only reader is the owner. The lift would
+   *  render a recipient review with nothing to review.
+   *
+   *  This is the recipe-surface half of a ruling the rpc surface already had:
+   *  D-177 N.12 kept `notification.send` a wire method on exactly this
+   *  reasoning — *"carries NO recipient … cannot be aimed at an arbitrary
+   *  target the way `collection.mail.send`'s per-call `to[]` can, so it is not
+   *  a trust-bypass"* (`notification-handler.ts`). The two surfaces disagreed;
+   *  now they do not.
+   *
+   *  ⛔ AND GATING IT WAS WORSE THAN NOT GATING IT. The approval prompt is
+   *  ITSELF a notification, delivered on the SAME channels to the SAME person:
+   *  the owner got *"recipe A wants to send you a notification, allow?"* and
+   *  then *"recipe A: xxx"* — two interruptions where the gate was supposed to
+   *  save one, and the first carries no information the second lacks. A gate
+   *  whose prompt costs exactly what it is protecting trains the owner to
+   *  approve without reading, which is a security LOSS, not a gain. Same shape
+   *  as the D-239 note above: never make the owner authorize an act whose only
+   *  subject is themselves.
+   *
+   *  ⚠ CONSEQUENCE, STATED NOT DISCOVERED: `read` is never-class, so a
+   *  DELEGATED door that has been granted this op notifies without a per-call
+   *  ask too (`d-209-webhook-outbound-send-ceiling.test.ts` pins it). That is
+   *  the intended reading of "the authorization is the setup": Layer-1 access
+   *  still requires the owner to have granted `core.notification.send` on that
+   *  door, `permission: notification_send` still gates the install, and there
+   *  is nothing per-call to review even when they have. Precedent for the tier:
+   *  `core.ai.*` is `read` while shipping the owner's data to an external LLM
+   *  provider — strictly more exposure than a message to the owner's own Slack.
+   *  ⇒ If a door must not be able to ring the owner's phone, revoke the OP on
+   *  that door; do not re-tier the op, which would put the double-notification
+   *  back on every recipe. */
+  op('core.notification.send', 'notification', 'core-notification-send', 'read'),
   // A bounded, coalescing hint with a flat pointer/settings envelope to a
   // contract-bound MCP client. The transport adds no query result; the client
   // must call `query_tool` through the ordinary live token/contract gates, and

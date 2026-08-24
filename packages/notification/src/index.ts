@@ -28,6 +28,7 @@
 
 import { CHANNEL_ROLES } from '@recued/contracts';
 import { ASK_BODY_MAX, ASK_NOTE_MAX } from './types.js';
+import { HANDLED_ASK_RETENTION_MS as ASK_LOAD_WINDOW_MS } from './ask-store.js';
 import type { AskStore, NewPendingAsk } from './ask-store.js';
 import {
   createAskSerializer,
@@ -316,6 +317,25 @@ export interface NotificationBlock {
   /** Cheap count of outstanding (`open`) asks — backs the `ui`
    *  "N asks awaiting you" badge (N.9 SHOULD). */
   countOutstandingAsks(): Promise<number>;
+
+  /** Ask-load readout over the trailing handled-ask retention window —
+   *  backs the `system.status` `ask_load` field. `raised` counts asks
+   *  CREATED in the window (arrival rate λ's numerator); the median is
+   *  over answer latencies (`answered_at − created_at`) of answers that
+   *  LANDED in the window, whatever their status is now; `load` is the
+   *  dimensionless λ×W occupancy `(raised / window_ms) × median`.
+   *  Answered-only, so W is right-censored while asks sit open — the
+   *  caller renders `pending_asks` beside it. Cancelled asks count
+   *  toward `raised` (they arrived) and never toward the median (no
+   *  answer). Window = `HANDLED_ASK_RETENTION_MS`, deliberately: the
+   *  prune makes any longer window silently incomplete. */
+  askLoadStats(): Promise<{
+    window_ms: number;
+    raised: number;
+    answered_sample: number;
+    median_answer_ms: number | null;
+    load: number | null;
+  }>;
 
   /** D-169 P2 — the currently-open asks, oldest first. Backs the bridge
    *  side panel section #4 (N.5 #4) `notification.pending_asks` rpc: the
@@ -963,6 +983,33 @@ export const createNotificationBlock = (
 
     countOutstandingAsks() {
       return store.countOpen();
+    },
+
+    async askLoadStats() {
+      const window_ms = ASK_LOAD_WINDOW_MS;
+      const cutoff = now() - window_ms;
+      // The store's read shape is by-status; the window spans all three.
+      const rows = (
+        await Promise.all(
+          (['open', 'answered', 'handled'] as const).map((s) => store.listByStatus(s)),
+        )
+      ).flat();
+      const raised = rows.reduce((n, a) => (a.created_at >= cutoff ? n + 1 : n), 0);
+      const durations = rows
+        .filter((a) => a.answer !== undefined && a.answer.answered_at >= cutoff)
+        .map((a) => a.answer!.answered_at - a.created_at)
+        .sort((x, y) => x - y);
+      const answered_sample = durations.length;
+      const mid = answered_sample >> 1;
+      const median_answer_ms =
+        answered_sample === 0
+          ? null
+          : answered_sample % 2 === 1
+            ? durations[mid]!
+            : Math.round((durations[mid - 1]! + durations[mid]!) / 2);
+      const load =
+        median_answer_ms === null ? null : (raised / window_ms) * median_answer_ms;
+      return { window_ms, raised, answered_sample, median_answer_ms, load };
     },
 
     listOpenAsks() {

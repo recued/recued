@@ -28,6 +28,7 @@ import {
 import {
   createRawBodyJsonApiSingleEventWebhookCredentialShapeValidator,
 } from './webhook-raw-body-json-api-single-event-profile.js';
+import { validateCalWebhookCredentialShape } from './webhook-cal-profile.js';
 import {
   createStaticHeaderJsonSingleEventWebhookCredentialShapeValidator,
 } from './webhook-static-header-json-single-event-profile.js';
@@ -171,6 +172,7 @@ const BUILTIN_POLICIES = [
   entry('slack.slash-command.v1', validateSlackSlashCommandCredentialShape),
   entry('telegram.bot-webhook.v1', validateTelegramDeliveryCredentialShape),
   entry('github.webhook.v1', validateGitHubDeliveryCredentialShape),
+  entry('cal.webhook.v1', validateCalWebhookCredentialShape),
   entry(
     'lemonsqueezy.webhook.v1',
     validateLemonSqueezyDeliveryCredentialShape,

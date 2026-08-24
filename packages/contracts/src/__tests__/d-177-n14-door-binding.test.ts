@@ -364,13 +364,35 @@ describe('N.14.6 door binding — the mcp door', () => {
       pre_lift_approval: 'ask',
     })).toBeUndefined();
     // The cells that ARE seeded — the exact list, so a new one is a deliberate edit.
+    // ⚠ This ratchet has fired ONCE for real, and it worked: seeding the two
+    // owner-automation cells below broke it, which is exactly the review this
+    // list exists to force. Order matters (`toEqual` over the mapped array) —
+    // it mirrors the seed table's own declaration order.
     expect(SESSION_GRANT_DEFAULT_SEEDS.map(({ channel, actor }) => `${channel}:${actor}`))
       .toEqual([
         'chat:user_self',
         'messenger:user_self',
         'mcp:contracted_user',
         'reception:anonymous',
+        // The owner's OWN unattended automation. Distinct from the four above
+        // in that no human is present at the fire — which is precisely WHY
+        // they hold (`resolveTrustCeiling` floors a contract-free `system`
+        // dispatch to the `read` ceiling), and why the "event-fire channels
+        // never raise an ask" premise that kept them out was false. Neither is
+        // a door: `isDoorMatchContext` keys on `anonymous` / delegated-mcp,
+        // and `system` is neither, so their grants mint UNBOUND like the
+        // owner's — pinned directly below.
+        'schedule:system',
+        'reactive:system',
       ]);
+    // The clause that makes the two additions safe to leave unbound: neither
+    // classifies as a door, so the asymmetric `bound_contract_id` fence is not
+    // load-bearing for them and an unbound owner-automation grant is correct.
+    // If a future change makes either one door-classified, its grants must
+    // gain a binding in the same commit.
+    for (const channel of ['schedule', 'reactive'] as const) {
+      expect(isDoorMatchContext({ channel, actor: 'system' }), channel).toBe(false);
+    }
   });
 
   it('the trust axis and the grant axis classify the same dispatch identically', () => {

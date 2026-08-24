@@ -7,8 +7,6 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  ANNOTATION_POLICIES,
-  DEFAULT_ANNOTATION_POLICY,
   MAX_ANNOTATION_VALUE_BYTES,
   ANNOTATION_INLINE_CUTOFF_BYTES,
   isStalenessStamped,
@@ -26,19 +24,6 @@ import {
   type CanonicalCollectionName,
 } from '../canonical-record.js';
 
-describe('annotation policy enum', () => {
-  it('lists the two policy values in stable order', () => {
-    expect(ANNOTATION_POLICIES).toEqual(['keep_stale', 'evict_on_stale']);
-  });
-
-  it('defaults to keep_stale (conservative — never auto-deletes)', () => {
-    expect(DEFAULT_ANNOTATION_POLICY).toBe('keep_stale');
-  });
-
-  it('default is one of the listed policies', () => {
-    expect(ANNOTATION_POLICIES).toContain(DEFAULT_ANNOTATION_POLICY);
-  });
-});
 
 describe('value size limits', () => {
   it('caps annotation values at 10 MiB', () => {
@@ -55,23 +40,19 @@ describe('value size limits', () => {
 });
 
 describe('isStalenessStamped', () => {
-  it('returns true when both stamps are non-empty strings', () => {
-    expect(isStalenessStamped({ source_record_hash: 'a', recipe_hash: 'b' })).toBe(true);
+  it('returns true when the source stamp is a non-empty string', () => {
+    expect(isStalenessStamped({ source_record_hash: 'a' })).toBe(true);
   });
 
   it('returns false when source_record_hash is empty', () => {
-    expect(isStalenessStamped({ source_record_hash: '', recipe_hash: 'b' })).toBe(false);
-  });
-
-  it('returns false when recipe_hash is empty', () => {
-    expect(isStalenessStamped({ source_record_hash: 'a', recipe_hash: '' })).toBe(false);
+    // D-120 — `recipe_hash` was RETIRED, so the source stamp is the only axis.
+    expect(isStalenessStamped({ source_record_hash: '' })).toBe(false);
   });
 });
 
 describe('isAnnotationStale', () => {
   const baseStamps = {
     source_record_hash: 'src-1',
-    recipe_hash: 'rec-1',
     model_used: 'gpt-4',
   };
 
@@ -85,11 +66,6 @@ describe('isAnnotationStale', () => {
     ).toBe(true);
   });
 
-  it('returns true when recipe_hash drifts', () => {
-    expect(
-      isAnnotationStale(baseStamps, { ...baseStamps, recipe_hash: 'rec-2' }),
-    ).toBe(true);
-  });
 
   it('returns true when model_used drifts (annotation has stamp)', () => {
     expect(
@@ -154,7 +130,6 @@ describe('canonical collection widening (annotation + link)', () => {
       value: 'Quarterly review',
       authored_by_recipe_id: 'r1',
       source_record_hash: 'src-1',
-      recipe_hash: 'rec-1',
       authored_at: 1_700_000_000_000,
     };
     expect(ann._collection).toBe('annotation');

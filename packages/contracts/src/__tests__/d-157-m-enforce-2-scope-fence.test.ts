@@ -183,6 +183,50 @@ describe('M-ENFORCE-2 deriveDispatchScope', () => {
     ).toBe('data.mail');
   });
 
+  it('special-cases the annotation-* slugs to the ANNOTATED RECORD\'s collection', () => {
+    // An annotation row is keyed `(target_collection, target_id, key)` and has
+    // no identity of its own, so the parent record's grant is the only coherent
+    // gate — the same reasoning as `timeline-read` above. The generic rule's
+    // fixed `data.annotation` is grantable by NO door (`annotation` is not a
+    // READABLE_COLLECTION, so no grant row produces `data.annotation.*`, and it
+    // is not a keep-pattern), which is why every annotation dispatch through a
+    // fenced door was denied before this case existed.
+    const at = (slug: string, input: Record<string, unknown>) =>
+      deriveDispatchScope({ kind: 'storage', slug }, input);
+    // `annotation-create` carries the COMBINED target, per its manifest.
+    expect(at('annotation-create', { target: 'data.contact:jane@acme.com' })).toBe('data.contact');
+    // The leading `data.` is optional.
+    expect(at('annotation-create', { target: 'contact:jane@acme.com' })).toBe('data.contact');
+    // Same `email` -> `mail` alias the generic rule and timeline-read apply.
+    expect(at('annotation-create', { target: 'data.email:msg-1' })).toBe('data.mail');
+    // The other three carry the SPLIT collection.
+    expect(at('annotation-list', { target_collection: 'contact' })).toBe('data.contact');
+    expect(at('annotation-delete', { target_collection: 'task' })).toBe('data.task');
+    expect(at('annotation-search', { target_collection: 'mail' })).toBe('data.mail');
+  });
+
+  it('annotation-* refuses to derive a scope from a caller-named keep-pattern family', () => {
+    // ⛔ THE TARGET IS CALLER-SUPPLIED. `data.memory` / `data.shared` /
+    // `data.enrichment` are admitted UNCONDITIONALLY by SCOPE_FENCE_KEEP_PATTERNS,
+    // so deriving a scope from an unchecked target would let a caller bypass the
+    // fence by lying about what it annotates. Only a governed READABLE_COLLECTION
+    // yields a scope; everything else falls back to the ungrantable
+    // `data.annotation` and is denied.
+    const at = (input: Record<string, unknown>) =>
+      deriveDispatchScope({ kind: 'storage', slug: 'annotation-create' }, input);
+    expect(at({ target: 'data.memory:anything' })).toBe('data.annotation');
+    expect(at({ target: 'data.shared:x' })).toBe('data.annotation');
+    expect(at({ target: 'data.enrichment:x' })).toBe('data.annotation');
+    // A dotted platform ref, an unknown collection, and an absent target all
+    // keep the prior behaviour — fail closed, never widen.
+    expect(at({ target: 'connection.api.hubspot.deal:1' })).toBe('data.annotation');
+    expect(at({ target: 'data.bogus:x' })).toBe('data.annotation');
+    expect(at({})).toBe('data.annotation');
+    expect(
+      deriveDispatchScope({ kind: 'storage', slug: 'annotation-list' }, {}),
+    ).toBe('data.annotation');
+  });
+
   it('timeline-read falls back to data.timeline for a dotted/platform-ref or unparseable entity', () => {
     // A dotted platform-ref prefix (its own gate decides) and any entity the
     // gate can't parse into a raw collection keep the prior `data.timeline`

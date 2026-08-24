@@ -89,7 +89,7 @@ import {
   extractPhoneRuns,
   shouldSeedEntityValue,
 } from '@recued/middleware-prompt-cache';
-import { phoneMatchDigits } from '@recued/transforms';
+import { addressMatchForms, phoneMatchDigits } from '@recued/transforms';
 
 import {
   crmRecallSeedScopes,
@@ -317,6 +317,7 @@ export const createContactKnownValueIndexBuilder =
             ...fields.orgs,
             ...fields.phones,
             ...fields.addresses,
+            ...fields.postal_parts,
             ...fields.domains,
             CRM_NAME_PLACEHOLDER_SOURCE_KEY,
           ]);
@@ -349,6 +350,66 @@ export const createContactKnownValueIndexBuilder =
               if (value === undefined) continue;
               if (isAllDigits(value)) continue; // a street line is never bare digits
               streets.push(value);
+            }
+            // ⛔⛔ THE POSTCODE, REACHED THE ONLY WAY IT SAFELY CAN — AS A LAYOUT.
+            // A bare postcode is never seeded: `94043` is indistinguishable from an
+            // invoice number and aliasing it would corrupt every digit-run in prose.
+            // `addressMatchForms` instead emits the MULTI-TOKEN layouts the address
+            // is really written in (`Mountain View, CA 94043`, `London SW1A 2AA`) and
+            // by construction never emits a lone token. Those forms are distinctive,
+            // so the automaton matches them exactly as it does a street line.
+            // ⚠ LOCALE-AGNOSTIC: `if (city) add(city, postal)` covers UK/EU layouts
+            // as readily as the US `city, state postal` one — measured on bench 193
+            // (London SW1A 2AA) and 194 (Mountain View, CA 94043), which previously
+            // let BOTH postcodes through raw.
+            // ⚠ Region grain survives: the structured path's alias carries a geo
+            // suffix, and city/state remain visible on their own leaves, so the model
+            // still knows WHERE without being handed the household.
+            {
+              const postal = row['mailing_address.zip'];
+              const city = row['mailing_address.city'];
+              const state = row['mailing_address.state'];
+              const country = row['mailing_address.country'];
+              if (postal !== undefined && postal.trim() !== '') {
+                const postalForms = addressMatchForms({
+                  ...(city !== undefined ? { city } : {}),
+                  ...(state !== undefined ? { state } : {}),
+                  postal,
+                });
+                // ⛔⛔ A WHOLE ADDRESS MUST ALIAS AS ONE RUN, NOT AS TWO ADJACENT
+                // ALIASES. Seeding only the postal forms left a full address
+                // reading `pii.Address1, pii.Address2` — the street and the
+                // city/postcode as if they were two different places. `scanContent`
+                // sorts entries LONGEST-FIRST, so seeding the street-prefixed form
+                // makes it win the full run and demotes the postal-only forms to
+                // what they should be: RESIDUE handlers, for a postcode that appears
+                // without its street.
+                // 🔑 THE COUNTRY SUFFIX IS WHY THE LONG FORM ALSO CARRIES THE
+                // COUNTRY. `aliasAddress` builds `pii.AddressN.city.state.iso` only
+                // when `parseAddressComponents` can read a country from the LAST
+                // comma segment; without it the alias degrades to a bare
+                // `pii.AddressN` and the region grain the exclusion exists to
+                // preserve is lost. So the model trades a visible "United Kingdom"
+                // for `pii.Address2.london.gb` — it keeps city AND country while
+                // losing the household, which is the whole point.
+                const streetLines = fields.addresses
+                  .map((k) => row[k])
+                  .filter((v): v is string => v !== undefined && v.trim() !== ''
+                    && !isAllDigits(v));
+                const composed: string[] = [];
+                for (const form of postalForms) {
+                  for (const line of streetLines) {
+                    composed.push(`${line}, ${form}`);
+                    if (country !== undefined && country.trim() !== '') {
+                      composed.push(`${line}, ${form}, ${country}`);
+                    }
+                  }
+                  if (country !== undefined && country.trim() !== '') {
+                    composed.push(`${form}, ${country}`);
+                  }
+                }
+                streets.push(...postalForms, ...composed);
+              }
             }
             for (const key of fields.domains) {
               const value = row[key];

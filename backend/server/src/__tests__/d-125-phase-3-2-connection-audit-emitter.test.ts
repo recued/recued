@@ -67,6 +67,7 @@ const mkAuditLog = (): MockSink => {
   const log: AuditLogStore = {
     append: async (_entry: AuditEntry, _opts?: AppendOptions) => {},
     listWindow: async () => [],
+    listByCommitStatus: async () => [],
     listPendingExchangeRefs: async () => [],
     listInboundContractIds: async () => [],
     listRecent: async () => [],

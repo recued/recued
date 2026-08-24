@@ -21,7 +21,7 @@
  *  compliance (GDPR Article 15 subject access, SOC2 evidence, etc.).
  */
 
-import { isOrderedWindowQueryable } from './types.js';
+import { isFieldQueryable, isOrderedWindowQueryable } from './types.js';
 import type { Collection } from './types.js';
 import type {
   Actor,
@@ -36,6 +36,7 @@ import type {
   RunMode,
   RunYield,
   TimelineAxis,
+  TokenUsageReport,
 } from '@recued/contracts';
 // D-161 P3 — actor-lane filter for `listRecent` (the aggregate "Recent
 // activity" feed). The predicate lives in contracts so the one D-153 actor
@@ -210,6 +211,57 @@ export interface AuditEntry {
    *  per run. ⚠ Present-and-all-zero is a real answer; ABSENT means the row
    *  predates D-237. See {@link RunYield}. */
   run_yield?: RunYield;
+  /** D-250 § D — what the run SPENT, as opposed to what it produced.
+   *
+   *  ⛔ WHY THIS EXISTS. {@link RunYield} made "did this run do anything"
+   *  answerable; nothing on the anchor made "what did it cost" answerable. The
+   *  only durable token record was the `chat_message_sent` ACTIVITY row — so
+   *  every leverage question ("runs per AI op", "tokens per op") could be asked
+   *  of CHAT and not of the engine, which is where automation actually runs.
+   *  The two halves of one metric sat on opposite sides of a gap.
+   *
+   *  ⛔ AND THE COUNTER THAT ALREADY EXISTED IS NOT THIS. `llm_config`'s
+   *  `usage.<YYYY-MM-DD>` is a hot-path GATE input — `isOverBudget` reads it
+   *  before every call — so it is one running total, UTC-keyed, with no run,
+   *  channel or recipe attribution. A gate counter and a statistics record are
+   *  different jobs; built on the counter, every metric inherits its blind
+   *  spots (it does not see chat at all).
+   *
+   *  🔑 IT COSTS NO NEW WRITES, which is the design constraint and not a bonus
+   *  — the same argument {@link RunYield} makes. The report is folded from the
+   *  per-call usage the LLM adapter already produces and stamped onto the
+   *  anchor row already written once per run.
+   *
+   *  🔑 BOTH WINDOW SHAPES FALL OUT. The row carries `started_at`, so a
+   *  calendar day and a rolling 24 h are the same indexed range query — no
+   *  hourly cadence and no incremental statistics store.
+   *
+   *  ⚠ OMITTED WHEN THE RUN MADE NO PROVIDER CALL — deliberately the OPPOSITE
+   *  of `run_yield`'s emit-on-zero rule, and the difference is which zero
+   *  carries signal. A zero yield is the defect that field hunts. A zero token
+   *  count is the GOOD case, and it is already derivable by subtraction (runs
+   *  total − runs carrying this field), so stamping it on the overwhelming
+   *  majority of rows would buy nothing and shorten the history the metrics
+   *  read — the log evicts oldest-first.
+   *
+   *  ⛔ THEREFORE ABSENT FOLDS TWO CASES: "made no AI call" and "row predates
+   *  this field". There is no free disambiguator, so the obligation is on the
+   *  READER — window every rate query to rows at or after the boundary, and
+   *  never read absent as zero across it.
+   *
+   *  ⚠ COUNTS ONLY — no prompt, no completion, no step result. It does not
+   *  breach this file's privacy contract, and it is the same basis on which the
+   *  `chat_message_sent` activity already persists this shape per turn.
+   *
+   *  ⚠ `model_id` / `attribution` ARE NOT RELIABLY PRESENT and MUST NOT be
+   *  grouped on. `aggregateTokenUsageReports` drops both when it sums two
+   *  reports ("no single id applies") but its single-report path returns the
+   *  report spread — so a ONE-CALL run keeps them and a TWO-CALL run does not.
+   *  A "spend by model" report over these rows would silently see only
+   *  single-call runs and read as complete. Left as the aggregator has it,
+   *  because normalising here would diverge from the chat row that uses the
+   *  same function — one decision, and not this field's to make. */
+  total_usage?: TokenUsageReport;
   /** D-232 § 20.19 — the WIRE NAME of the recipe grant that covered this run's
    *  steps, for a run the host dispatched on a granted recipe's behalf (today:
    *  an exchange fire's `run-ingredient` carrier). `<publisher>/<recipe_id>`.
@@ -925,7 +977,14 @@ export type ActivityAction =
   // ⚠ NOT reserve-class. Volume is machine-rate, and the row is a usage record
   // rather than a decision — the copy that reads it must say the window, because
   // `data.audit` evicts oldest-first and "0 in 30 days" is not "never".
-  | 'recipe_coverage_admission';
+  | 'recipe_coverage_admission'
+  // R13 T4-6.1 — surfaced at boot when the PREVIOUS process refused audit
+  // writes after `closeAndDrain()` closed admission. Target is `'system'`;
+  // `detail` is JSON `{ dropped, dropped_at }`. The refusal is by design
+  // (the store must not resurrect mid-shutdown); this row is the count that
+  // used to be silently discarded. Reserve-class: at most one row per boot,
+  // and it is forensic evidence that the audit trail has a known gap.
+  | 'audit_writes_dropped';
 
 /** Activity log entry for non-execution events (install, vault, approval, etc.). */
 export interface ActivityEntry {
@@ -954,6 +1013,14 @@ export interface ActivityEntry {
   recipe_id?: string;
   step_id?: string;
   operation_id?: string;
+  /** Which notification channel carried the winning answer, for
+   *  `approval_allow` / `approval_deny` rows (`PendingAsk.answered_via`,
+   *  copied at answer-audit time). Until 2026-08-20 this reached the ledger
+   *  only as prose inside `detail` — a structured field so multi-channel
+   *  (and channel-per-person) attribution is queryable, not parseable.
+   *  Same KV posture as the FN-2 join keys above: optional, absent on
+   *  older rows, populate only what is genuinely known. */
+  answered_via?: string;
   /** Reserve-class flag (Phase B). Reserve rows persist past retention
    *  so the activity log always keeps a ledger of pressure-transition,
    *  kill-switch-toggle, and storage-rejection events — even when quota
@@ -993,6 +1060,10 @@ export const RESERVE_ACTIONS: ReadonlySet<string> = new Set<string>([
   'pressure_state_change',
   'pressure_eviction_run',
   'crash_halt_toggle',
+  // R13 T4-6.1 — "the audit trail has a known gap" must itself survive
+  // eviction, or the gap becomes unknowable twice. Volume is bounded at
+  // one row per boot, and only after a shutdown that actually dropped writes.
+  'audit_writes_dropped',
   // D-188 — the record of "the owner paused/resumed the server" is a
   // control action worth surviving eviction (forensic + audit invariant).
   'server_pause_toggle',
@@ -1256,6 +1327,33 @@ export interface AuditLogStore {
     limit: number,
     opts?: { origin_actors?: readonly Actor[] },
   ): Promise<AuditEntry[]>;
+  /** Entries in one lifecycle state, newest first — the "which runs are HELD
+   *  right now" query.
+   *
+   *  ⛔⛔ WHY THIS EXISTS: WITHOUT IT A HELD APPROVAL SILENTLY LEAVES THE
+   *  OWNER'S QUEUE. `queryReceptionInboxHeldOps` enumerated holds as an
+   *  app-side filter over `listRecent(1000)` — a window shared by EVERY run of
+   *  every kind, including read-only renders (which write a `succeeded` anchor
+   *  gated by nothing). `listRecent` is newest-first, so the OLDEST hold is the
+   *  first thing evicted: at roughly 120 anchors an hour the window clears in
+   *  eight. **The run did not expire, get denied, or error — it stopped being
+   *  ENUMERATED, and the query still succeeded.** Nothing reported the
+   *  omission. Driven in `reception-inbox-scan-window-crowding.test.ts`.
+   *
+   *  🔑 Scoping the window to the STATUS is the fix, not enlarging it: a bigger
+   *  shared window postpones the same eviction and makes the arithmetic harder
+   *  to reason about. Here only other rows in the SAME state compete, and "1000
+   *  simultaneous pending approvals" is a situation the owner can see.
+   *
+   *  A backing that can filter server-side does so (`isFieldQueryable` over the
+   *  top-level `commit_status` column, indexed by `ensureFieldIndexes`), so the
+   *  read is bounded by MATCHES rather than table size; everything else keeps
+   *  the full-scan path. Both paths are exercised by the suite — a fast path
+   *  covered only in production is a fast path nobody has tested. */
+  listByCommitStatus(
+    status: AuditEntry['commit_status'],
+    limit: number,
+  ): Promise<AuditEntry[]>;
   /** List all entries for a specific recipe_id, newest first. */
   listByRecipe(recipe_id: string, limit?: number): Promise<AuditEntry[]>;
   /** D-153 P1.B — list entries that share a `channel_session_id` —
@@ -1412,15 +1510,50 @@ export interface AuditLogStore {
  *  `backing` stores execution entries keyed by run_id.
  *  `activityBacking` stores activity entries keyed by activity_id.
  *  If `activityBacking` is omitted, activities go to an in-memory store. */
-/** Default maximum audit entries before auto-trim kicks in. Callers
- *  can override via the `maxEntries` option. At 5-minute scheduled
- *  execution, 10000 entries ≈ 35 days of history. */
-export const DEFAULT_MAX_AUDIT_ENTRIES = 10_000;
+/** ⛔⛔⛔ THERE IS NO DEFAULT ENTRY CAP, AND THE ONE THAT USED TO BE HERE WAS
+ *  DELETING THE OWNER'S PENDING APPROVALS.
+ *
+ *  `DEFAULT_MAX_AUDIT_ENTRIES = 10_000` applied to every store built without an
+ *  explicit `maxEntries` — which is every production one
+ *  (`compose-storage-context.ts` passes only `onBytesChanged`). Its stated
+ *  justification was *"at 5-minute scheduled execution, 10000 entries ≈ 35 days
+ *  of history"*, and that premise died when every run of every kind began
+ *  writing an anchor, read-only renders included. At the ~120 anchors/hour a
+ *  single polling tab produces it is **3.5 days**, not 35.
+ *
+ *  🔑 IT ALSO MADE THE REAL POLICY UNREACHABLE. `audit.quota.bytes` defaults to
+ *  **5 GB**, is owner-configurable, prunes oldest-first at 70% usage, respects a
+ *  RESERVE FLOOR and bounds rows-per-run (`audit-retention.ts`). Audit rows
+ *  measure ~698 B, so 10 000 rows is ~7 MB — the count cap bound roughly 700×
+ *  earlier, and the size pruner could never fire. Two retention mechanisms, and
+ *  the crude one silently pre-empted the designed one.
+ *
+ *  ⛔ AND IT DELETED HELD RUNS. The trim skips `reserve: true` rows, but an
+ *  `awaiting_approval` anchor is not written reserve — so a pending approval
+ *  older than the newest 10 000 entries was removed outright, its checkpoint
+ *  left orphaned for `checkpoint-retention` to collect 24 h later. The owner's
+ *  decision disappeared, inside the 30-day window `preflight.stale_after_days`
+ *  promises them.
+ *
+ *  ⇒ `maxEntries` stays as an EXPLICIT opt-in (the mechanism is fine and is
+ *  still tested), but nothing applies it implicitly. Size is governed by the
+ *  byte quota, which is the surface the owner can see and set.
+ *
+ *  ⚠ A caller that genuinely wants a count bound must now ask for one. That is
+ *  the point: an implicit cap nobody chose, on the log the audit story rests
+ *  on, is not a safe default. */
 
 /** Phase B options for the audit store. `onBytesChanged` feeds signed
  *  deltas into the `audit` surface gate so retention + pressure
  *  stay accurate. */
 export interface CreateAuditLogStoreOptions {
+  /** OPT-IN count cap. Absent ⇒ no count trim at all; size is governed by
+   *  `audit.quota.bytes` through the Phase B retention pruner, which is
+   *  configurable, prunes oldest-first at a usage threshold, respects a reserve
+   *  floor and bounds rows per run. See the block above
+   *  {@link CreateAuditLogStoreOptions} for why the implicit default was
+   *  removed — in short: it bound ~700× earlier than the quota and deleted the
+   *  owner's pending approvals. */
   maxEntries?: number;
   onBytesChanged?: (delta: number) => void;
 }
@@ -1452,10 +1585,16 @@ export const createAuditLogStore = (
       tsPath: 'event_at', tsFallbackPath: 'started_at', idPath: 'run_id',
     });
   }
+  /** The status index backing {@link AuditLogStore.listByCommitStatus} — owned
+   *  here for the same reason as the ordering index above: constructing the
+   *  store is what turns it on, so a caller cannot get the query without it and
+   *  ship the full scan inert. Idempotent (`IF NOT EXISTS`). */
+  const queryableEntries = isFieldQueryable(backing) ? backing : undefined;
+  queryableEntries?.ensureFieldIndexes(['commit_status']);
 
   // Fallback in-memory activity store if no IDB collection provided
   const activities = activityBacking ?? createInMemoryActivityStore();
-  const maxEntries = options.maxEntries ?? DEFAULT_MAX_AUDIT_ENTRIES;
+  const maxEntries = options.maxEntries;
   const onBytesChanged = options.onBytesChanged;
   const reportDelta = (delta: number): void => {
     if (!onBytesChanged || delta === 0) return;
@@ -1479,11 +1618,16 @@ export const createAuditLogStore = (
   const sortForAxis = (axis: TimelineAxis | undefined) =>
     axis === 'event' ? sortByEventAxisDesc : sortByStartedAtDesc;
 
-  /** Auto-trim: if the log exceeds maxEntries, remove the oldest non-
-   *  reserve excess. Reserve rows never count toward the trim budget —
+  /** Auto-trim: if the log exceeds an EXPLICIT `maxEntries`, remove the oldest
+   *  non-reserve excess. Reserve rows never count toward the trim budget —
    *  the Phase B retention pruner is the only thing that evaluates them
-   *  (and even there, reserve rows are skipped). */
+   *  (and even there, reserve rows are skipped).
+   *
+   *  ⛔ NO-OP UNLESS THE CALLER ASKED. See {@link CreateAuditLogStoreOptions.
+   *  maxEntries} — the implicit 10 000 default was deleting pending approvals
+   *  and pre-empting the byte quota. Absent ⇒ size is the byte quota's job. */
   const autoTrim = async (): Promise<void> => {
+    if (maxEntries === undefined) return;
     const all = await backing.list();
     if (all.length <= maxEntries) return;
     const trimmable = all.filter((e) => e.reserve !== true).sort(sortByStartedAtDesc);
@@ -1558,6 +1702,18 @@ export const createAuditLogStore = (
         limit,
         ...(before ? { before } : {}),
       });
+    },
+
+    async listByCommitStatus(status, limit) {
+      if (limit <= 0) return [];
+      // ⚠ The indexed path returns MATCHES, unordered and unbounded — the sort
+      // and the slice below are still ours. `commit_status` is a top-level
+      // string column, which is exactly what `equals` addresses.
+      const matched = queryableEntries !== undefined
+        ? await queryableEntries.queryByField({ equals: { commit_status: status } })
+        : (await backing.list()).filter((e) => e.commit_status === status);
+      matched.sort(sortByStartedAtDesc);
+      return matched.slice(0, limit);
     },
 
     async listRecent(limit, opts) {
@@ -1938,6 +2094,8 @@ export interface AuditEntryInput {
   exchange_expected_contract_id?: string;
   /** D-237 P2 — see {@link AuditEntry.run_yield}. */
   run_yield?: RunYield;
+  /** D-250 § D — see {@link AuditEntry.total_usage}. */
+  total_usage?: TokenUsageReport;
   /** D-232 § 20.19 — see {@link AuditEntry.granted_by_recipe}. */
   granted_by_recipe?: string;
   /** Run-anchor lifecycle state — a `RunAnchorStatus` (D-157 P1 widened
@@ -2101,6 +2259,13 @@ export const buildAuditEntry = (input: AuditEntryInput): AuditEntry => {
     // exact run this field exists to make visible — becomes indistinguishable
     // from a pre-D-237 row again.
     ...(input.run_yield !== undefined ? { run_yield: input.run_yield } : {}),
+    // D-250 § D — presence-checked for the same reason as the yield above it,
+    // and listed here BECAUSE of the copier warning below rather than in spite
+    // of it: this builder has silently swallowed four fields it did not name.
+    // ⚠ Unlike the yield, absence here is MEANINGFUL (no provider call), so the
+    // presence check is what keeps "spent nothing" from being written as a row
+    // of zeros — see the field's own note.
+    ...(input.total_usage !== undefined ? { total_usage: input.total_usage } : {}),
     // ⚠ `buildAuditEntry` is an ENUMERATING COPIER — it returns a literal, so a
     // field added to the interface and not to this list is dropped with NO type
     // error. `exchange_ref` was lost exactly here earlier this slice.

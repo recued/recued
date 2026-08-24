@@ -68,7 +68,7 @@ describe('handleCollectionDeleteRecord — cascade integration', () => {
     await store.annotate({
       target_collection: 'mail', target_id: 'm1', key: 'summary',
       value: 'goodbye', authored_by_recipe_id: 'r1',
-      source_record_hash: 's', recipe_hash: 'r',
+      source_record_hash: 's',
     });
     await store.link({
       from_collection: 'mail', from_id: 'm1',
@@ -103,7 +103,7 @@ describe('handleCollectionDeleteRecord — cascade integration', () => {
     await store.annotate({
       target_collection: 'mail', target_id: 'm1', key: 'summary',
       value: 'survives', authored_by_recipe_id: 'r1',
-      source_record_hash: 's', recipe_hash: 'r',
+      source_record_hash: 's',
     });
 
     const deps: CollectionHandlerDeps = { registry: fakeRegistry(true) };

@@ -78,6 +78,10 @@ beforeEach(() => {
   currentRollup = null;
   store = {
     getUsageRollup: vi.fn(() => currentRollup),
+    // D-250 § D — the store's measurement half. This double stands in at a
+    // MONEY boundary, so it throws rather than silently succeeding: a test that
+    // starts exercising the token path has to say so instead of passing blind.
+    recordTokenUsage: vi.fn(() => { throw new Error('recordTokenUsage not stubbed'); }) as never,
     recordUsage: vi.fn((input) => {
       const next = {
         contract_id: input.contract_id,

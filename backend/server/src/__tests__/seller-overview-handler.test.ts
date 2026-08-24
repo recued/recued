@@ -478,6 +478,10 @@ describe('makeSellerOverviewHandlers', () => {
       'server.seller.updateSettings',
       'server.seller.acknowledgeLlmGatewayPaid',
       'server.seller.upsertManualTier',
+      // D-250 § D — the only path that can set a usage policy on a
+      // Stripe-minted tier; `upsertManualTier` stamps `manual` and the store
+      // refuses to move a stored tier between lifecycle sources.
+      'server.seller.setTierUsagePolicy',
       'server.seller.createPassTier',
       'server.seller.issueManualCustomer',
       'server.seller.extendManualCustomer',

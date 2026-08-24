@@ -16,6 +16,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import {
   D165_CONTRACT_SCHEMA,
+  GENERATED_PACK_PUBLISHER,
   MCP_RESERVED_RPC_PREFIXES,
   type BulkPackManifest,
   type CompositionIngredient,
@@ -809,5 +810,39 @@ describe('D-165 P3 ingredient.install — pack-owned grant provisioning', () => 
     expect(rows).toHaveLength(1);
     expect(rows[0]?.segments).toEqual(['acme']);
     expect(rows[0]?.value).toEqual({ catalog_slug: 'cat-a', installed_pack_id: 'pack-a' });
+  });
+
+  it('✅✅ but an AUTHORED pack DOES take the slot from the MACHINE-MINTED mirror', async () => {
+    // ⛔⛔ THE STATE THIS FIXES MADE EVERY PEER EXCHANGE UNDISPATCHABLE. D-225
+    // auto-mint installs a GENERATED pack the moment an mcp connection is
+    // enrolled, and it claims the connection's single catalog slot. Every
+    // authored composition bound to that connection afterwards then hit the
+    // no-clobber guard above, stayed non-dispatchable, and answered
+    // `catalog_mismatch` on every op — for a pack the owner had explicitly
+    // installed and pointed at that connection. A live two-server drive found it
+    // in the server log: *"connection 'peer-bob' is already bound to catalog
+    // 'mcp-8697…' by pack 'mcp-8697…'; not rebinding for pack 'peer-exchange-out'"*.
+    //
+    // 🔑 The guard protects ANOTHER PACK's declaration. A generated pack is not
+    // one — it is this connection's own mirror, re-minted from the peer's
+    // `tools/list` on the idle probe and re-derivable at any time. Provenance
+    // decides, not install order.
+    const gen = await env.install({
+      ...appPack(wideComposition('mcp-deadbeef'), 'mcp-deadbeef'),
+      // The exact reserved handle a generated pack is stamped with.
+      publisher: GENERATED_PACK_PUBLISHER,
+    } as unknown as Parameters<typeof env.install>[0]);
+    expect(gen.ok).toBe(true);
+    const authored = await env.install(appPack(wideComposition('cat-authored'), 'pack-authored'));
+    expect(authored.ok).toBe(true);
+
+    // ⚠ Assert the WINNER by name, not merely that one row exists — "there is a
+    // binding" was true before the fix too, and it was the wrong one.
+    const rows = env.contractStore.scan('connection_catalog_binding', []);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.value).toEqual({
+      catalog_slug: 'cat-authored',
+      installed_pack_id: 'pack-authored',
+    });
   });
 });

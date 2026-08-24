@@ -74,6 +74,7 @@ const newFakeAuditLog = (): FakeAuditLog => {
   const store: AuditLogStore = {
     append: async () => {},
     listWindow: async () => [],
+    listByCommitStatus: async () => [],
     listPendingExchangeRefs: async () => [],
     listInboundContractIds: async () => [],
     listRecent: async () => [],

@@ -79,6 +79,11 @@ type Outcome =
       success: boolean;
       trigger_skipped?: boolean;
       next_run_at?: number;
+      /** A DURABLE preflight pause. The engine reports one as
+       *  `success: false` with an EMPTY `errors` array, which is exactly why a
+       *  classifier deciding on `!success` alone mistook it for a failure. */
+      awaiting_approval?: boolean;
+      awaiting_peer?: boolean;
     };
 
 /** Deterministic executor that records calls and returns a
@@ -100,7 +105,14 @@ const mkExecutor = (outcomes: Array<Outcome>) => {
       success: envelope.success,
       output: { sidebar: [] },
       steps: [],
-      errors: envelope.success ? [] : [{ code: 'test_err', message: 'fail' } as unknown as never],
+      // ⛔ A HELD RUN CARRIES NO ERRORS. That emptiness is the whole trap: the
+      // classifier's `errors[0]?.message ?? 'execution failed'` fallback turned
+      // a pause into a failure with a reason that never mentioned approval.
+      errors: envelope.success || envelope.awaiting_approval || envelope.awaiting_peer
+        ? []
+        : [{ code: 'test_err', message: 'fail' } as unknown as never],
+      ...(envelope.awaiting_approval ? { awaiting_approval: true as const } : {}),
+      ...(envelope.awaiting_peer ? { awaiting_peer: true as const } : {}),
       duration_ms: 1,
       validation_issues: [],
       ...(envelope.trigger_skipped ? { trigger_skipped: true } : {}),
@@ -399,6 +411,82 @@ describe('ServerAutoRunHandle.tick', () => {
   });
 
   it('trips the circuit after N consecutive failures and persists auto_disabled', async () => {
+    const { execute } = mkExecutor(
+      Array.from({ length: CIRCUIT_BREAKER_THRESHOLD }, () => false),
+    );
+    const handle = createServerAutoRunScheduler({
+      recipeStore: mkRecipeStore([makeReactiveRecipe('r', 100)]),
+      execute,
+      circuitStore: circuit,
+      now: () => 1_000,
+      setTimer: () => 1,
+      clearTimer: () => {},
+    });
+    await handle.refreshRoster();
+    for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD; i++) {
+      handle.roster.get('r')!.next_run_at = 1_000;
+      await handle.tick();
+    }
+    expect(circuit.get('r')?.auto_disabled).toBe(true);
+  });
+
+  /** ⛔⛔ THE BUG THIS PINS: a recipe that pauses for approval switched ITSELF
+   *  OFF. The engine reports a durable preflight pause as `success: false` with
+   *  an EMPTY `errors` array, so classifying on `!success` alone recorded a
+   *  failure whose reason degraded to the generic "execution failed" — and
+   *  `CIRCUIT_BREAKER_THRESHOLD` consecutive holds set `auto_disabled`. Any
+   *  auto-run recipe whose first write is approval-gated therefore turned
+   *  itself off while its asks sat unanswered: at a 15-minute interval, inside
+   *  an hour and a half, with nothing on the record mentioning approval. */
+  it('⛔ a run held for approval never trips the circuit, however often it repeats', async () => {
+    const { execute } = mkExecutor(
+      Array.from({ length: CIRCUIT_BREAKER_THRESHOLD * 2 },
+        () => ({ success: false, awaiting_approval: true })),
+    );
+    const handle = createServerAutoRunScheduler({
+      recipeStore: mkRecipeStore([makeReactiveRecipe('r', 100)]),
+      execute,
+      circuitStore: circuit,
+      now: () => 1_000,
+      setTimer: () => 1,
+      clearTimer: () => {},
+    });
+    await handle.refreshRoster();
+    for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD * 2; i++) {
+      handle.roster.get('r')!.next_run_at = 1_000;
+      await handle.tick();
+    }
+    expect(circuit.get('r')?.auto_disabled).toBeFalsy();
+    expect(circuit.get('r')?.consecutive_failures ?? 0).toBe(0);
+    // ⛔ AND NO FAILURE REASON IS INVENTED. The old path wrote "execution
+    // failed" here, which is what an owner saw instead of "waiting for you".
+    expect(circuit.get('r')?.last_failure_reason).toBeUndefined();
+  });
+
+  it('⛔ a peer hold counts the same way — the run is waiting, not broken', async () => {
+    const { execute } = mkExecutor(
+      Array.from({ length: CIRCUIT_BREAKER_THRESHOLD }, () => ({ success: false, awaiting_peer: true })),
+    );
+    const handle = createServerAutoRunScheduler({
+      recipeStore: mkRecipeStore([makeReactiveRecipe('r', 100)]),
+      execute,
+      circuitStore: circuit,
+      now: () => 1_000,
+      setTimer: () => 1,
+      clearTimer: () => {},
+    });
+    await handle.refreshRoster();
+    for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD; i++) {
+      handle.roster.get('r')!.next_run_at = 1_000;
+      await handle.tick();
+    }
+    expect(circuit.get('r')?.auto_disabled).toBeFalsy();
+  });
+
+  it('⛔ a NON-durable pause is still a failure — nothing will come back to finish it', async () => {
+    // The handler sets `awaiting_approval` on the response ONLY when the
+    // checkpoint was written. A downgraded pause carries no marker, so it
+    // arrives here as a plain unsuccessful run and must still count.
     const { execute } = mkExecutor(
       Array.from({ length: CIRCUIT_BREAKER_THRESHOLD }, () => false),
     );

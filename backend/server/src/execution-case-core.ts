@@ -904,6 +904,11 @@ export type ExecutionCaseRefusalReason =
    *  misaligned, so the depth could not be MEASURED. Distinct from a genuinely
    *  shallow flow; see the comment at the check. */
   | 'round_depth_unmeasurable'
+  /** Every step was a Tier-1 core tool, so the non-core depth is a MEASURED
+   *  zero — distinct from `round_depth_unmeasurable`, which is "could not
+   *  judge". Split because reporting them as one sent readers after broken
+   *  positional arrays that were perfectly intact. */
+  | 'no_non_core_rounds'
   | 'no_polarity'
   | 'below_call_floor'
   | 'outcome_contradicts';
@@ -998,12 +1003,74 @@ export const executionCaseRefusalReason = (
   const seqRecipes = new Map(
     (observation.flow_pattern.recipe_steps ?? []).map((step) => [step.ordinal, step.recipe_id]),
   );
-  const seen = new Set<string>();
+  // ⛔⛔ A REPEAT IS ONLY A RETRY IF IT CAME LATER. `round_ordinals` exists to
+  // make exactly this distinction and this check never read it — its own
+  // contract doc says "equal adjacent values mean 'issued together,
+  // independently'; increasing values mean 'the second waited for the first'.
+  // That distinction is what a procedure is worth learning FOR."
+  //
+  // MEASURED on bench 149: one round emitted `contact.search("Orin Hale")` and
+  // `contact.search("Treatglen Bench")` — two DIFFERENT people looked up in
+  // parallel, which is a fan-out and not a retry of anything. All 9 of that
+  // task's observations were refused `repeated_tool`, so no execution case ever
+  // materialized and the D-214 experiment measured an empty population.
+  //
+  // ⚠ THIS WIDENS WHAT IS ADMITTED, the same direction (and the same standard)
+  // as the `FLOW_REPEAT_EXEMPT_TOOLS` argument above: the flows in question are
+  // genuine procedures being thrown away. What it does NOT do is admit a real
+  // retry — an identity reappearing in a LATER round still refuses, which is
+  // the shape slice 8 exists to catch.
+  //
+  // ⛔ FAIL-CLOSED WHEN THE ROUNDS ARE UNKNOWN. `round_ordinals` is "EMPTY when
+  // unknown, never synthesised … treat an empty array as 'no information', not
+  // 'all one round'". A misaligned or absent array therefore falls back to the
+  // original any-repeat rule rather than silently admitting everything — which
+  // is what reading it as one round would do.
+  const flowRounds = observation.flow_pattern.round_ordinals ?? [];
+  const roundsKnown = flowRounds.length === seq.length;
+  // ⛔⛔ A REPEATED CORE READ COUNTS ONCE — IT DOES NOT DISQUALIFY (owner ruling,
+  // 2026-08-21). The shape it protects is the ordinary one:
+  //
+  //     contact.search  →  contact.read × 3  →  act on each
+  //
+  // list, get the details of each, then do the work. That is a straightforward
+  // procedure and the three reads are what MAKE it one — refusing the whole flow
+  // because a core read appeared twice threw away the case it was describing.
+  //
+  // ⚠ NARROWER THAN THE TIER-1 EXEMPTION THIS FUNCTION ALREADY REJECTED, and
+  // deliberately so. `FLOW_REPEAT_EXEMPT_TOOLS` warns that "exempting all Tier-1
+  // tools would re-admit `[mail.search, send, mail.search, send]`, which is the
+  // shape slice 8 exists to refuse" — and it still does: `mail.search` is core
+  // and now counts once, but `send` is a RECIPE, so its repeat still refuses the
+  // flow. Only the core half is forgiven; the procedure half is untouched.
+  //
+  // ⚠ CORE MEANS THE SAME THING IT MEANS TO `nonCoreRoundDepth` — Tier-1 AND not
+  // dispatched via a recipe. A recipe reached through the `recipe.run` umbrella
+  // is Tier-1 by tool name and is NOT core work, which is exactly the collapse
+  // `flowStepIdentity` exists to undo; reading tier alone here would re-open it.
+  //
+  // ⛔ FAIL-CLOSED WHEN THE TIERS ARE UNKNOWN, like the rounds above: an absent
+  // or misaligned `tool_tiers` cannot tell core from procedure, so the repeat
+  // refuses as it did before rather than being forgiven on a guess.
+  const flowTiers = observation.flow_pattern.tool_tiers ?? [];
+  const tiersKnown = flowTiers.length === seq.length;
+  const isCoreStep = (ordinal: number): boolean =>
+    tiersKnown && flowTiers[ordinal] === 1 && !seqRecipes.has(ordinal);
+  const seenAtRound = new Map<string, number>();
   for (const [ordinal, tool] of seq.entries()) {
     if (FLOW_REPEAT_EXEMPT_TOOLS.has(tool)) continue;
     const identity = flowStepIdentity(tool, ordinal, seqRecipes);
-    if (seen.has(identity)) return 'repeated_tool';
-    seen.add(identity);
+    const priorRound = seenAtRound.get(identity);
+    if (priorRound !== undefined) {
+      if (!roundsKnown) return 'repeated_tool';
+      const round = flowRounds[ordinal]!;
+      // Same round ⇒ a fan-out, never a retry. A later round ⇒ a retry, UNLESS
+      // the step is core work, which counts once. Either way the identity keeps
+      // its FIRST round: "counts once" means the first occurrence stands.
+      if (round > priorRound && !isCoreStep(ordinal)) return 'repeated_tool';
+      continue;
+    }
+    seenAtRound.set(identity, roundsKnown ? flowRounds[ordinal]! : 0);
   }
   // ⛔ ZERO IS NOT "SHALLOW" — it is `nonCoreRoundDepth`'s FAIL-CLOSED value,
   // returned when `round_ordinals` / `tool_tiers` are empty or misaligned (a
@@ -1012,7 +1079,26 @@ export const executionCaseRefusalReason = (
   // and reporting them as one reason sent an investigation looking for a
   // shallow chain that did not exist. Split, so the counter names which.
   const depth = nonCoreRoundDepth(observation.flow_pattern);
-  if (depth === 0) return 'round_depth_unmeasurable';
+  if (depth === 0) {
+    // ⛔⛔ ZERO HAS TWO CAUSES AND THIS SPLIT ONLY NAMED ONE — reproducing,
+    // inside the split, the exact confusion the comment above says it exists to
+    // remove. `nonCoreRoundDepth` returns 0 BOTH when the positional arrays are
+    // empty/misaligned (genuinely unmeasurable) AND when every step is a Tier-1
+    // core tool (perfectly measurable, and the answer is zero). Bench 165 runs
+    // `[contact.search, mail.search]` — two core tools, fully measured — and was
+    // reported as `round_depth_unmeasurable`, sending the reader after broken
+    // data that was never broken.
+    //
+    // ⚠ REPORTING ONLY. Both still refuse, and neither becomes admissible here;
+    // what changes is which of the two a counter names, which is the whole
+    // reason the reason-code exists.
+    const measurable = observation.flow_pattern.tool_sequence.length > 0
+      && (observation.flow_pattern.round_ordinals ?? []).length
+        === observation.flow_pattern.tool_sequence.length
+      && (observation.flow_pattern.tool_tiers ?? []).length
+        === observation.flow_pattern.tool_sequence.length;
+    return measurable ? 'no_non_core_rounds' : 'round_depth_unmeasurable';
+  }
   if (depth < EXECUTION_CASE_MIN_DISTINCT_ROUNDS) return 'below_round_depth';
   return executionCaseOfferableVerdicts(observation).length > 0
     ? null

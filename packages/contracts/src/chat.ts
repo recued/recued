@@ -1907,7 +1907,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   'work.read': {
     name: 'work.read',
     description:
-      "Read ONE work item (task / project / note / commitment / booking) by `kind` + `id`. A `booking` is the whole reservation — `lifecycle_state` (confirmed / completed / cancelled / no_show), price, customer, and its time in `slot_start_at` / `slot_end_at`. Answer 'when is it' from those two fields; do NOT look in the calendar, which holds personal events and never bookings. An absent slot pair means no time is agreed yet, not a failed lookup. For a retained row, default `fidelity: 'rich_meta'` serves the local record; use `remote_detail` for complete vendor detail or `current_remote` for latest state. A retained-row vendor failure degrades honestly to that local row with `escalation_error`. For a Source-qualified `read_through` id, every fidelity reads the declared provider directly, returns `live: true` plus `source_freshness: read_through`, and writes no canonical `data_<kind>` row; because no local fallback exists, a provider/config/policy failure is an explicit read error. Do not retry the same failed call unchanged. `long_text.fidelity: 'preview'` is always a bounded excerpt, never the complete body.",
+      "Read ONE work item (task / project / note / commitment / booking) by `kind` + `id`. A `booking` is the whole reservation — `lifecycle_state` (confirmed / completed / cancelled / no_show), price, customer, and its time in `slot_start_at` / `slot_end_at`. Answer 'when is it' from those two fields; do NOT look in the calendar, which holds personal events and never bookings. An absent slot pair means no time is agreed yet, not a failed lookup. For a retained row, default `fidelity: 'rich_meta'` serves the local record; use `remote_detail` for complete vendor detail or `current_remote` for latest state. A retained-row vendor failure degrades honestly to that local row with `escalation_error`. For a Source-qualified `read_through` id, every fidelity reads the declared provider directly, returns `live: true` plus `source_freshness: read_through`, and writes no canonical `data_<kind>` row; because no local fallback exists, a provider/config/policy failure is an explicit read error. Do not retry the same failed call unchanged. `long_text.fidelity: 'preview'` is always a bounded excerpt, never the complete body. Set `include_related: true` to also get the item's declared links (parent project, contacts, CRM records, sibling items) in one call.",
     arg_schema: {
       type: 'object',
       properties: {
@@ -1925,6 +1925,11 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
           enum: ['rich_meta', 'remote_detail', 'current_remote'],
           description:
             "'rich_meta' (default) = retained local row, or a live direct read for `read_through`; 'remote_detail' = complete record where served; 'current_remote' = vendor-current now.",
+        },
+        include_related: {
+          type: 'boolean',
+          description:
+            "Also return this item's declared links (`related`) — its parent project, linked contacts, CRM records, and sibling work items. Ask for it when the user's question is about what an item CONNECTS to; leave it off otherwise. An entry with `resolved: false` is a real link whose target has not synced yet: say the link exists and name its `target_remote_id`, never that there is no link. If `related_unavailable` comes back instead of `related`, its `reason` says why this record cannot have links read — that is NOT the same as having none, and must not be reported as none.",
         },
       },
       required: ['kind', 'id'],

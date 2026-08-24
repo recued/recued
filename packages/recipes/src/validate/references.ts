@@ -155,10 +155,11 @@ export const validateReferences = (
       continue;
     }
 
-    // D-120 Phase 4 — `data.memory.*` + `data.audit.*` collapse to the
-    // same read-only memory surface. Track touches so we can enforce
-    // the `read_memory` permission once at the end (one error per
-    // recipe, regardless of how many memory refs appear).
+    // D-231 — `data.memory.*` and `data.audit.*` are TWO read-only
+    // surfaces over two stores (see the block below), each gated on its
+    // own permission. Track touches per-namespace so `read_memory` /
+    // `read_audit` are each enforced once at the end (one error per
+    // recipe, regardless of how many refs appear).
     if (ns === 'data') {
       const sub = path.split('.')[0];
       // D-221 — Records is reachable only through installed Tier-P operations.

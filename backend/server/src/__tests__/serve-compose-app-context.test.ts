@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -246,5 +246,79 @@ describe('composeAppContext', () => {
     expect(source).not.toMatch(/composeCalendarBoot|composeMailBoot|composeServiceBoot/);
     expect(source).not.toMatch(/createCollectionRegistry|composeExecutorConfig|composeExecuteDeps/);
     expect(source).not.toMatch(/createLifecycle|LockHeldError|process\.on/);
+  });
+});
+
+describe('composeStorageContext — R13 T4-6.1 dropped-audit-writes surfacing', () => {
+  it('consumes the sidecar marker at boot and surfaces one reserve-class activity row', async () => {
+    const dir = makeTmp();
+    const dbPath = join(dir, 'server.db');
+    const markerPath = `${dbPath}.dropped-audit-writes.json`;
+    // A previous process refused 4 audit writes after drain and left the marker.
+    writeFileSync(markerPath, JSON.stringify({ dropped: 4, at: 1_700_000_000_000 }));
+
+    const storageContext = await composeStorageContext({
+      dbPath,
+      bootTrace: createBootTrace({
+        entrypoint: 'serve-entry',
+        profile: 'serve',
+        command: 'serve',
+        env: {},
+      }),
+      runtimeConfig: createRuntimeConfigStore({}),
+      vaultQuotas: {
+        perPublisherBytes: 1_234_000,
+        totalBytes: 5_678_000,
+      },
+    });
+
+    try {
+      // Consumed exactly once — gone from disk, so it cannot resurface on
+      // every subsequent boot.
+      expect(existsSync(markerPath)).toBe(false);
+      // The fire-and-forget surface write settles within a tick.
+      await new Promise((r) => setTimeout(r, 25));
+      const auditLog = storageContext.auditLog;
+      expect(auditLog).toBeDefined();
+      const activities = await auditLog!.listActivities(100);
+      const row = activities.find((a) => a.action === 'audit_writes_dropped');
+      expect(row).toBeDefined();
+      expect(row?.target).toBe('system');
+      expect(JSON.parse(row?.detail ?? '{}')).toEqual({
+        dropped: 4,
+        dropped_at: 1_700_000_000_000,
+      });
+    } finally {
+      storageContext.db.close();
+    }
+  });
+
+  it('boots clean with no marker — no row, no file created', async () => {
+    const dir = makeTmp();
+    const dbPath = join(dir, 'server.db');
+    const storageContext = await composeStorageContext({
+      dbPath,
+      bootTrace: createBootTrace({
+        entrypoint: 'serve-entry',
+        profile: 'serve',
+        command: 'serve',
+        env: {},
+      }),
+      runtimeConfig: createRuntimeConfigStore({}),
+      vaultQuotas: {
+        perPublisherBytes: 1_234_000,
+        totalBytes: 5_678_000,
+      },
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 10));
+      const auditLog = storageContext.auditLog;
+      expect(auditLog).toBeDefined();
+      const activities = await auditLog!.listActivities(100);
+      expect(activities.some((a) => a.action === 'audit_writes_dropped')).toBe(false);
+      expect(existsSync(`${dbPath}.dropped-audit-writes.json`)).toBe(false);
+    } finally {
+      storageContext.db.close();
+    }
   });
 });

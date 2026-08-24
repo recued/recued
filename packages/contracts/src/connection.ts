@@ -106,13 +106,26 @@ export type NotificationSubtype = (typeof NOTIFICATION_SUBTYPES)[number];
  *  payload and guess the key. Declared here so it is part of the connection's
  *  shape rather than folklore.
  *
- *  ⚠ THE VALUE IS THE CONTRACT **THEY** PRESENT, NOT THE ONE YOU HOLD. For an
- *  unbound inbound token that is the token id itself (`buildMcpExecutionSource`:
- *  `contract_id = boundContractId ?? mcp_token_id`), i.e. the id of the token
- *  YOU MINTED FOR THEM. Getting this backwards resolves nothing, and resolving
- *  nothing routes their answers LOCAL — the server answers itself and reports
- *  success. `assertPeerContractBinding` refuses the locally-checkable mistakes at
- *  enroll; the direction is not one of them, which is why it is stated here. */
+ *  ⚠ THE VALUE IS THE CONTRACT **THEY** PRESENT, NOT THE ONE YOU HOLD. It is
+ *  whatever `buildMcpExecutionSource` resolves for a call authenticated by the
+ *  token YOU MINTED FOR THEM: `contract_id = boundContractId ?? mcp_token_id`.
+ *
+ *  ⛔⛔ SO READ IT OFF THE ISSUANCE RESULT — `record.contract_id ?? record.token_id`
+ *  — AND NOT OFF `token_id` ALONE. That shortcut was correct while tokens were
+ *  unbound by default, and stopped being correct on 2026-08-16 when issuance
+ *  became ALWAYS-CONTRACTED (internal design notes, *"a carrier
+ *  is minted and bound"*): a newly issued token now carries a bound contract, so
+ *  the id the peer presents is the CARRIER's, and the token id names nothing the
+ *  resolver will ever see. ⚠ Existing unbound tokens still present their token
+ *  id, which is why the fallback is not dead code — and why the two cases must
+ *  be read off the record rather than assumed.
+ *
+ *  Getting this wrong resolves nothing, and resolving nothing routes their
+ *  answers LOCAL — the server answers itself and reports success.
+ *  `assertPeerContractBinding` refuses the locally-checkable mistakes at BOTH
+ *  doors (enroll and update); which id you copied is not one of them, because
+ *  every candidate is a non-empty unique well-formed string. Only the peer
+ *  settles it, by calling — `diagnosePeerBinding` is what reports the verdict. */
 export const MCP_PEER_CONTRACT_CONFIG_KEY = 'peer_contract_id';
 
 /** D-234 § 234.1 — the RECEIVER'S CEILING: will I answer this peer at all?

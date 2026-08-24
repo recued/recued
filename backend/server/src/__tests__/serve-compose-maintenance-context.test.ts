@@ -294,6 +294,61 @@ describe('createAutonomousExecutionControl (D-188)', () => {
     } as unknown as Refs);
     await expect(control.rearm()).resolves.toBeUndefined();
   });
+
+  it('⛔ rearm() attempts EVERY stage when an earlier one throws — a rebuildAll failure must not leave enabled triggers unsubscribed', async () => {
+    // The failure path this pins: stop() disposed every trigger subscription;
+    // a throw in rebuildAll() used to skip dispatcher.rebuild(), leaving a
+    // live process whose store said "enabled" while nothing delivered —
+    // silently, until the next boot. Every stage now runs; the failure still
+    // surfaces as one AggregateError afterwards.
+    const rebuild = vi.fn();
+    const recompute = vi.fn();
+    const control = createAutonomousExecutionControl({
+      backgroundServices: { stopAll: vi.fn(async () => undefined) },
+      getSchedulersBundle: () => ({
+        rebuildAll: () => {
+          throw new Error('cron store exploded');
+        },
+      }),
+      getEventTriggerDispatcher: () => ({ rebuild }),
+      getWatchManager: () => ({ recompute }),
+    } as unknown as Refs);
+
+    await expect(control.rearm()).rejects.toSatisfy((e: unknown) => {
+      if (!(e instanceof AggregateError)) return false;
+      const messages = e.errors.map((err) => String(err));
+      return (
+        e.errors.length === 1
+        && messages[0]!.includes('schedulers.rebuildAll')
+        && messages[0]!.includes('cron store exploded')
+      );
+    });
+    // The load-bearing assertions: the later stages ran anyway.
+    expect(rebuild).toHaveBeenCalledTimes(1);
+    expect(recompute).toHaveBeenCalledTimes(1);
+  });
+
+  it('rearm() aggregates multiple stage failures and still runs the rest', async () => {
+    const rebuild = vi.fn();
+    const control = createAutonomousExecutionControl({
+      backgroundServices: { stopAll: vi.fn(async () => undefined) },
+      getSchedulersBundle: () => ({
+        rebuildAll: () => {
+          throw new Error('scheduler boom');
+        },
+      }),
+      getEventTriggerDispatcher: () => ({ rebuild }),
+      getWatchManager: () => ({
+        recompute: () => {
+          throw new Error('watch boom');
+        },
+      }),
+    } as unknown as Refs);
+    await expect(control.rearm()).rejects.toSatisfy(
+      (e: unknown) => e instanceof AggregateError && e.errors.length === 2,
+    );
+    expect(rebuild).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('compose-maintenance-context source boundary', () => {

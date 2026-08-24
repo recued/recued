@@ -14,10 +14,16 @@
  *  this immediately before / inside their own record-delete path so
  *  the warehouse never carries dangling references.
  *
- *  Eviction-on-stale is a recipe-level policy (`annotation_policy:
- *  "evict_on_stale"`) — the engine's prefetch resolver consults the
- *  recipe metadata and may call `delete()` for stale rows. The
- *  default is `keep_stale`; this store never auto-deletes. */
+ *  ⛔ THIS COMMENT USED TO ASSERT A CALL SITE THAT DID NOT EXIST — that
+ *  "the engine's prefetch resolver consults the recipe metadata" for
+ *  `annotation_policy`. It never did: `grep annotation_policy
+ *  packages/engine/src` was 0 from the day it was written. The policy is
+ *  RETIRED; see the `annotation.ts` module doc for why it was also the wrong
+ *  shape rather than merely unbuilt.
+ *
+ *  This store never auto-deletes on a read. The two real removal paths are
+ *  `cascadeDelete` (the parent record went) and an explicit
+ *  `deleteAnnotations` filter. */
 
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
@@ -81,7 +87,6 @@ export interface AnnotateInput {
   value: unknown;
   authored_by_recipe_id: string;
   source_record_hash: string;
-  recipe_hash: string;
   model_used?: string;
   /** D-120 Phase 7.5 — bistemporal stamp. Backfill recipes summarising
    *  historical mail / calendar pass through the source record's date
@@ -158,16 +163,17 @@ export interface AnnotationStore {
    *
    *  Deletes every row matching `filter` whose stamps don't match
    *  `current`. A row is stale when any of:
-   *    - `recipe_hash` differs (the recipe was edited)
    *    - `source_record_hash` differs (the source record changed)
    *    - `model_used` differs (the AI model rotated, when both row
    *      and current carry a stamp)
-   *  Used by recipes that opt into `annotation_policy:
-   *  "evict_on_stale"` to auto-cleanup before reading. Returns the
-   *  number of rows deleted. */
+   *  ⚠ NO CALLER TODAY, deliberately. This is the primitive a HOUSEKEEPING
+   *  task would use — idle-driven, deterministic, server-side, which is where
+   *  "the source moved under a derived fact" belongs. It is NOT reachable from
+   *  a recipe, an owner surface, or chat, and re-exposing it on a read path is
+   *  the shape that was just retired. Returns the number of rows deleted. */
   evictStaleAnnotations(
     filter: AnnotationFilter,
-    current: { recipe_hash: string; source_record_hash?: string; model_used?: string },
+    current: { source_record_hash: string; model_used?: string },
   ): Promise<number>;
 
   /** Bulk read with filter. Used by `annotation-list`. */
@@ -246,7 +252,6 @@ export const ensureAnnotationSchema = (db: Database.Database): void => {
       size_bytes            INTEGER NOT NULL,
       authored_by_recipe_id TEXT NOT NULL,
       source_record_hash    TEXT NOT NULL,
-      recipe_hash           TEXT NOT NULL,
       model_used            TEXT,
       authored_at           INTEGER NOT NULL,
       -- D-120 Phase 7.5 — bistemporal stamp; null when no underlying
@@ -376,6 +381,26 @@ export const ensureAnnotationSchema = (db: Database.Database): void => {
     if (!annCols.has('extras')) {
       db.exec(`ALTER TABLE ${ANNOTATION_TABLE} ADD COLUMN extras TEXT`);
     }
+    // D-120 — RETIRE `recipe_hash`. Dropped rather than left in place because
+    // every value it ever held was WRONG BY CONSTRUCTION: `hashRecipe` covers
+    // the writing step's own args, so a recipe embedding its hash changes the
+    // hash, and no author could produce a correct one. Keeping the column would
+    // preserve nothing but a fabrication, and the run's audit row already
+    // carries the real recipe hash.
+    //
+    // The four SERVER-side writers (gateway saga / in-doubt reconciliation,
+    // link-discovery, deterministic-risk-patterns) used it as a constant writer
+    // TAG, never a hash — and each already carries a distinct synthetic
+    // `authored_by_recipe_id`, so none of them loses identity here.
+    //
+    // ⚠ Mid-run recipe change is NOT what this column was protecting: a
+    // checkpoint freezes `recipe_snapshot` across pause/resume and a
+    // `version_bump` issues a new process, so the snapshot boundary already
+    // answers "the recipe changed". Comparing hashes per row at read time was a
+    // weaker parallel mechanism at the wrong layer.
+    if (annCols.has('recipe_hash')) {
+      db.exec(`ALTER TABLE ${ANNOTATION_TABLE} DROP COLUMN recipe_hash`);
+    }
   }
   createFtsTable(db, ANNOTATION_FTS_TABLE);
 };
@@ -424,7 +449,6 @@ interface AnnotationRow {
   size_bytes: number;
   authored_by_recipe_id: string;
   source_record_hash: string;
-  recipe_hash: string;
   model_used: string | null;
   authored_at: number;
   /** D-120 Phase 7.5 — bistemporal stamp; NULL = no underlying event date. */
@@ -523,10 +547,10 @@ export const createAnnotationStore = (
     `INSERT INTO ${ANNOTATION_TABLE} (
        id, target_collection, target_id, key,
        value_inline, blob_hash, size_bytes,
-       authored_by_recipe_id, source_record_hash, recipe_hash, model_used,
+       authored_by_recipe_id, source_record_hash, model_used,
        authored_at, event_at, origin_actor, origin_contract_id,
        origin_surface
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
   const insertLink = db.prepare(
@@ -582,7 +606,6 @@ export const createAnnotationStore = (
       value,
       authored_by_recipe_id: row.authored_by_recipe_id,
       source_record_hash: row.source_record_hash,
-      recipe_hash: row.recipe_hash,
       authored_at: row.authored_at,
     };
     if (row.model_used !== null) ann.model_used = row.model_used;
@@ -653,7 +676,6 @@ export const createAnnotationStore = (
       bytes,
       input.authored_by_recipe_id,
       input.source_record_hash,
-      input.recipe_hash,
       input.model_used ?? null,
       ts,
       input.event_at ?? null,
@@ -677,7 +699,6 @@ export const createAnnotationStore = (
       value: input.value,
       authored_by_recipe_id: input.authored_by_recipe_id,
       source_record_hash: input.source_record_hash,
-      recipe_hash: input.recipe_hash,
       authored_at: ts,
     };
     if (input.model_used !== undefined) out.model_used = input.model_used;
@@ -1265,11 +1286,11 @@ export const createAnnotationStore = (
   // ── staleness-driven eviction ─────────────────────────────────
   const evictStaleAnnotations = async (
     filter: AnnotationFilter,
-    current: { recipe_hash: string; source_record_hash?: string; model_used?: string },
+    current: { source_record_hash: string; model_used?: string },
   ): Promise<number> => {
-    if (!current || typeof current.recipe_hash !== 'string') {
+    if (!current || typeof current.source_record_hash !== 'string') {
       throw new AnnotationKeyInvalidError(
-        'evictStaleAnnotations: current.recipe_hash is required',
+        'evictStaleAnnotations: current.source_record_hash is required',
       );
     }
     const rows = await listAnnotations({ ...filter, limit: 1000 });
@@ -1300,9 +1321,7 @@ export const createAnnotationStore = (
     db.transaction(() => {
       for (const row of rows) {
         const stale =
-          row.recipe_hash !== current.recipe_hash
-          || (current.source_record_hash !== undefined
-            && row.source_record_hash !== current.source_record_hash)
+          row.source_record_hash !== current.source_record_hash
           || (row.model_used !== undefined
             && current.model_used !== undefined
             && row.model_used !== current.model_used);

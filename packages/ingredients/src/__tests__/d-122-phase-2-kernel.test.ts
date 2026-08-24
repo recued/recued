@@ -61,7 +61,6 @@ const mkAnnotation = (overrides: Partial<Annotation> = {}): Annotation => ({
   value: 'Acme',
   authored_by_recipe_id: 'r1',
   source_record_hash: 's',
-  recipe_hash: 'r',
   authored_at: 1,
   ...overrides,
 });

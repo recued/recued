@@ -939,6 +939,12 @@ export const composeListeners = async (
               (n) => n,
               () => null,
             ),
+          // λ×W ask-load readout — same block, same best-effort posture.
+          getAskLoadStats: () =>
+            execution.notificationBlock!.askLoadStats().then(
+              (s) => s,
+              () => null,
+            ),
         }
       : {}),
     // Durable paired-device count — includes offline pairs per spec
@@ -2534,6 +2540,10 @@ export const composeListeners = async (
                     quota: app.llmQuota,
                     tabProbe: app.emptyTabProbe,
                     webChatSupported: false,
+                    // D-250 § D — owner-triggered one-off, but it is still the owner's
+                    // provider spend, so it counts toward their daily budget like every
+                    // other call. Previously reported nothing at all.
+                    onTokenUsage: (u) => { app.llmManager?.addUsage(u.total_tokens); },
                     timeout_ms: CONNECTION_SETUP_GUIDE_TIMEOUT_MS,
                   },
                 );

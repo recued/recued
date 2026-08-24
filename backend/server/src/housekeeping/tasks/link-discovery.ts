@@ -154,15 +154,14 @@ export const linkDiscoveryTask: HousekeepingTaskInstance = {
       INSERT INTO annotation (
         id, target_collection, target_id, key,
         value_inline, blob_hash, size_bytes,
-        authored_by_recipe_id, source_record_hash, recipe_hash, model_used,
+        authored_by_recipe_id, source_record_hash, model_used,
         authored_at, event_at
-      ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?, NULL)
+      ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?, NULL)
       ON CONFLICT(id) DO UPDATE SET
         value_inline = excluded.value_inline,
         size_bytes   = excluded.size_bytes,
         authored_at  = excluded.authored_at,
-        source_record_hash = excluded.source_record_hash,
-        recipe_hash  = excluded.recipe_hash
+        source_record_hash = excluded.source_record_hash
     `);
 
     const tx = ctx.db.transaction((aggregate: readonly AggregateRow[]) => {
@@ -196,7 +195,6 @@ export const linkDiscoveryTask: HousekeepingTaskInstance = {
           size_bytes,
           LINK_DISCOVERY_AUTHORED_BY,
           source_record_hash,
-          LINK_DISCOVERY_AUTHORED_BY,
           ctx.now(),
         );
       }

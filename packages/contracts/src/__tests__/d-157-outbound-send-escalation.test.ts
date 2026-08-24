@@ -82,11 +82,13 @@ const admit = (slug: string, source: ExecutionSource, risk_tier: RiskTier = 'wri
 
 // D-177 P2b adds `connection-mcp-write`: a WRITE-classified tool on an enrolled MCP
 // connection is an external side-effect like the four communication sends.
+// ⛔ `notification-send` LEFT this set 2026-08-20 (owner ruling) — it authors no
+// recipient, so there is nothing for the lift to show. See
+// `d-177-notification-send-is-not-a-send.test.ts`, which owns its negative pins.
 const SENDS = [
   'mail-send',
   'mail-post',
   'slack-post',
-  'notification-send',
   'connection-mcp-write',
   // D-210 §7 — the booking-visitor courtesy send. Recipient sealed + resolved
   // server-side, but delivery is still an irreversible external send.
@@ -96,13 +98,15 @@ const SENDS = [
 ] as const;
 
 describe('D-157 outbound-send promise via D-187 op-risk lift (admitByOpRisk)', () => {
-  it('the closed send set is exactly the seven external-side-effect slugs', () => {
+  it('the closed send set is exactly the six RECIPIENT-AUTHORING slugs', () => {
+    // ⚠ The membership rule is "does the RECIPE author a destination?", NOT
+    // "does a packet leave the machine" — `notification-send` does the latter
+    // and not the former, which is why it is absent below.
     expect([...OUTBOUND_SEND_INGREDIENT_SLUGS].sort()).toEqual(
       [
         'connection-mcp-write',
         'mail-post',
         'mail-send',
-        'notification-send',
         'notify-booking-visitor',
         // D-234 § 234.4o — a question on another server owner's SCREEN is an
         // irreversible outbound act too, and the owner was asked zero times for
@@ -124,7 +128,6 @@ describe('D-157 outbound-send promise via D-187 op-risk lift (admitByOpRisk)', (
     expect(isOutboundSendSlug('core-mail-post')).toBe(true);
     expect(isOutboundSendSlug('core-slack-post')).toBe(true);
     expect(isOutboundSendSlug('core-notify-booking-visitor')).toBe(true);
-    expect(isOutboundSendSlug('core-notification-send')).toBe(true);
     // A core- alias of a non-send slug is still not a send.
     expect(isOutboundSendSlug('core-ai-classify')).toBe(false);
   });

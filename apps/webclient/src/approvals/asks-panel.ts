@@ -300,7 +300,27 @@ export const mountAsksPanel = (
         const res = await opts.runList();
         if (disposed || gen !== loadGeneration) return; // stale / torn down
         const returnedIds = new Set(res.asks.map((ask) => ask.ask_id));
-        const asks = res.asks.filter((ask) => !acknowledgedAskIds.has(ask.ask_id));
+        // ⛔ OLDEST FIRST — the thing that has been waiting longest is the thing
+        // to answer first, and it was rendering at the BOTTOM.
+        //
+        // ⚠ SORTED HERE AND NOT AT THE RPC, DELIBERATELY. `handlePendingAsks`
+        // returns newest-first for a stated reason: the BRIDGE seeds its bus
+        // buffer from the same call and live `notification.ask` frames PREPEND
+        // on top (`bus-buffer.ts`), so a newest-first seed is what keeps the
+        // bridge's feed in one consistent order. Flipping the wire would fix
+        // this list and desync that one. Wire order is a buffer concern; queue
+        // order is a display decision, so it belongs on this side.
+        //
+        // This panel takes the whole list from the rpc on every change (a live
+        // frame triggers `doRefresh`, it never splices), so sorting the fetched
+        // array orders this panel's own render and the attention popover.
+        // ⚠ NOT the `#approvals` route: it reads this list via `onChange` and
+        // then RE-SORTS it into a unified gate+ask+plan set (`mergedRows`),
+        // which is the authoritative order for that surface. Both sorts are
+        // needed — changing only one moves only half the UI.
+        const asks = res.asks
+          .filter((ask) => !acknowledgedAskIds.has(ask.ask_id))
+          .sort((a, b) => a.created_at - b.created_at);
         for (const id of [...acknowledgedAskIds]) {
           if (!returnedIds.has(id)) acknowledgedAskIds.delete(id);
         }

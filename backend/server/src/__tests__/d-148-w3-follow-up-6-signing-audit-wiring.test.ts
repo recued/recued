@@ -340,7 +340,10 @@ describe('D-148 follow-up #6 — serve signing source pin', () => {
     const storagePath = new URL('../serve/compose-storage-context.ts', import.meta.url).pathname;
     const source = readFileSync(storagePath, 'utf8');
     expect(source).toMatch(/createSigningAuditLog\(\s*baseAuditLog\s*,/);
-    expect(source).toMatch(/createDrainableAuditLog\(signingAuditLog\)/);
+    // R13 T4-6.1 widened the call with a dropped-write marker option; the pin
+    // holds the part that matters — the drainable wrapper takes the SIGNING
+    // log (drain outermost, signing inside).
+    expect(source).toMatch(/createDrainableAuditLog\(\s*signingAuditLog\s*[,)]/);
     // The final drain-owned reference is named `auditLog` so every existing
     // emit site gets both signing and terminal-flush ownership unchanged.
     expect(source).toMatch(

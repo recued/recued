@@ -402,6 +402,12 @@ const projectAuditSummary = (entry: AuditEntry): RunAuditSummary => {
   // the `degraded` line below. An all-zero yield is the run this field exists to
   // expose; dropping it here would put back the exact ambiguity P2 removes.
   if (entry.run_yield !== undefined) out.run_yield = entry.run_yield;
+  // D-250 § D — the SECOND hand-written copier this field has to cross; the
+  // D-237 test header names this exact seam as the one a pure derivation test
+  // would pass straight through. `!== undefined` for the same reason as the
+  // yield above, though the reading differs: here absence means the run made no
+  // provider call, which is a real answer and must not become a zero.
+  if (entry.total_usage !== undefined) out.total_usage = entry.total_usage;
   if (entry.degraded !== undefined && entry.degraded.length > 0) {
     out.degraded = [...entry.degraded];
   }

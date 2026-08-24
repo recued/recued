@@ -9,26 +9,26 @@
  * declaration stripped. Templates inline the strings directly so
  * they can theme via `currentColor` and avoid extra HTTP requests
  * for sub-kilobyte glyphs.
+ *
+ * ⚠ `action` and `logo` are a DELIBERATE PLACEHOLDER identity pending the
+ * real mark. Record that here and nowhere else: every byte of these strings
+ * is inlined into shipped page markup and into the Chrome Web Store package
+ * (`apps/bridge/public/icons/logo.svg` carries the same artwork), so an
+ * `<desc>` reading "temporary mark" publishes the placeholder status to
+ * users, screen readers and store reviewers. `icon-render.test.ts` fails any
+ * icon whose markup leaks internal status wording; `build-store-submission.mjs`
+ * repeats the check at the packaging boundary. Swapping the artwork is a
+ * normal edit — neither gate pins the drawing, only the leak and the colour.
  */
 
 export const ICONS = Object.freeze({
   "action": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Recued">
   <title>Recued toolbar action</title>
-  <desc>Recued toolbar icon — paprika rounded square with R and tray.</desc>
-  <rect x="1" y="1" width="30" height="30" rx="6" ry="6" fill="#C1440E"/>
-  <!-- Simplified R -->
-  <path
-    fill="#fff"
-    fill-rule="evenodd"
-    d="M9 7h7a4 4 0 0 1 0 8h-2l7 7h-4l-4-6v6h-4z
-       M13 9.5h3a1.5 1.5 0 0 1 0 3h-3z"
-  />
-  <!-- Tray -->
-  <rect x="6" y="24" width="20" height="2" rx="1" fill="#fff"/>
-  <!-- Left handle -->
-  <line x1="5" y1="24" x2="3" y2="20" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
-  <!-- Right handle -->
-  <line x1="27" y1="24" x2="29" y2="20" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+  <desc>Recued toolbar mark — three descending lines inside a rounded teal tile.</desc>
+  <rect x="4" y="4" width="24" height="24" rx="6" fill="#0e7490"/>
+  <rect x="10" y="10" width="12" height="2" rx="1" fill="#fff"/>
+  <rect x="10" y="16" width="10" height="2" rx="1" fill="#fff"/>
+  <rect x="10" y="22" width="7" height="2" rx="1" fill="#fff"/>
 </svg>`,
   "check": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Success">
   <title>Success</title>
@@ -44,23 +44,11 @@ export const ICONS = Object.freeze({
 </svg>`,
   "logo": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Recued">
   <title>Recued</title>
-  <desc>Recued logo — paprika rounded square with R letterform and serving tray handles.</desc>
-  <rect x="4" y="4" width="120" height="120" rx="22" ry="22" fill="#C1440E"/>
-  <!-- R letterform -->
-  <path
-    fill="#fff"
-    fill-rule="evenodd"
-    d="M38 28h24a14 14 0 0 1 0 28h-6l24 26h-14l-14-22v22h-14z
-       M52 38h8a5 5 0 0 1 0 10h-8z"
-  />
-  <!-- Tray base -->
-  <rect x="24" y="88" width="80" height="5" rx="2.5" fill="#fff"/>
-  <!-- Left handle -->
-  <line x1="20" y1="88" x2="14" y2="74" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
-  <line x1="14" y1="74" x2="8" y2="74" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
-  <!-- Right handle -->
-  <line x1="108" y1="88" x2="114" y2="74" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
-  <line x1="114" y1="74" x2="120" y2="74" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
+  <desc>Recued mark — three descending lines inside a rounded teal tile.</desc>
+  <rect x="16" y="16" width="96" height="96" rx="24" fill="#0e7490"/>
+  <rect x="40" y="40" width="48" height="8" rx="4" fill="#fff"/>
+  <rect x="40" y="64" width="40" height="8" rx="4" fill="#fff"/>
+  <rect x="40" y="88" width="28" height="8" rx="4" fill="#fff"/>
 </svg>`,
   "marketplace": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Marketplace">
   <title>Marketplace</title>

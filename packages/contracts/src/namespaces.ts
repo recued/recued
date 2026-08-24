@@ -23,13 +23,15 @@
  *  the store empty and `{{trigger.*}}` refs resolve to undefined.
  *
  *  D-120 (Phase 4) added `data.memory.*` as a first-class read-only
- *  warehouse surface for the audit log. Recipes that reference
- *  `data.memory.*` must declare `requires: ['read_memory']` in their
- *  metadata (staged-trust permission gated at install). `data.audit.*`
- *  resolves to the same store for one release cycle as a deprecation
- *  alias; the validator emits a soft warning on `data.audit.*` use.
- *  Both names are read-only — only the runtime appends to memory
- *  via the existing audit emitter.
+ *  warehouse surface. Recipes that reference `data.memory.*` must
+ *  declare `requires: ['read_memory']` in their metadata (staged-trust
+ *  permission gated at install). D-231 split the surfaces for good:
+ *  `data.memory.*` is the owner's curated knowledge (`user_memory`,
+ *  written via `memory.*` rpc + the chat `memory.write` tool) and
+ *  `data.audit.*` is the run-provenance trail (`audit_entries` /
+ *  `audit_activities`, gated on `read_audit`). Neither aliases the
+ *  other; the validator gates each namespace on its own permission.
+ *  Both are read-only at the recipe layer.
  *
  *  D-125 (Phase 1.1) added `connection` — synced outbound endpoint
  *  records (mcp / api / notification). Read-only at the recipe layer;

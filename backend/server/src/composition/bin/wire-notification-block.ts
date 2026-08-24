@@ -288,6 +288,9 @@ export const buildAnswerActivity = (record: AnswerAuditRecord): ActivityEntry =>
   action: answerAuditAction(record.option),
   target: record.ask_id,
   ...answerActivitySubject(record.handler_payload),
+  // Structured beside the prose: the channel that carried the winning answer
+  // was previously recoverable only by parsing `detail`.
+  answered_via: record.answered_via,
   detail:
     `${record.title ?? record.handler_kind}`
     + ` — answered '${record.option_label}' (${record.option})`

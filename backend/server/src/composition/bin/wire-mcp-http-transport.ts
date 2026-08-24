@@ -71,6 +71,10 @@ export interface ComposeMcpHttpTransportDeps {
   readonly executeDeps: ExecuteHandlerDeps;
   readonly vaultStore: VaultStore | undefined;
   readonly housekeepingStateStore: HousekeepingStateStore | undefined;
+  /** D-236 join — scope→source-freshness thunk for `registryDescribe`'s
+   *  coverage-band cap. Built at the caller from the CollectionRegistry
+   *  (same pattern as the timeline's file raw-record loader). */
+  readonly sourceFreshnessByScope?: McpDeps['sourceFreshnessByScope'];
   readonly internalRegistry: InternalToolRegistry | undefined;
   readonly clientTokens: Pick<ClientTokenStore, 'verify' | 'touch'> | undefined;
   /** D-171 external-door token store. Absent ⇒ door bearers are
@@ -179,6 +183,9 @@ export const composeMcpHttpTransport = (
       : {}),
     ...(deps.internalRegistry
       ? { internalRegistry: deps.internalRegistry }
+      : {}),
+    ...(deps.sourceFreshnessByScope
+      ? { sourceFreshnessByScope: deps.sourceFreshnessByScope }
       : {}),
     ...(deps.engagementsResolveDeps
       ? { engagementsResolveDeps: deps.engagementsResolveDeps }

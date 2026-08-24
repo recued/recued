@@ -2414,3 +2414,105 @@ describe('D-220 — recued_saveRecipe is gated by the form-field contract', () =
     expect(result.saved).toHaveLength(1);
   });
 });
+
+/** D-232 § 21 — the exchange envelope at the MCP argument boundary.
+ *
+ *  ⛔⛔ THE RULE EXISTED AND THIS DOOR HAD NEVER HEARD OF IT. `EXCHANGE_ENVELOPE_KEYS`
+ *  is the closed set of engine-derived keys a cross-server answer always carries;
+ *  the config boundary (`undeclaredConfigArguments`) exempts them, with a doc that
+ *  says the protocol *"cannot grow a single field"* without it. A Tier-2 recipe
+ *  tool's schema is `additionalProperties: false`, and this validator runs FIRST on
+ *  the MCP wire — so every cross-server exchange was refused
+ *  `arguments.outcome is not a declared argument` before the boundary that would
+ *  have admitted it ever ran. The exemption was real and unreachable.
+ *
+ *  ⚠ Found by a live two-server drive, and only AFTER an unrelated fix stopped
+ *  masking it: while the connection's catalog binding was wrong, the dispatch was
+ *  refused locally and never reached this door at all. */
+describe('D-232 § 21 — the exchange envelope rides through the MCP argument gate', () => {
+  const closedTool = (name: string): ToolEntry => ({
+    name,
+    tier: 2,
+    description: 'A receiver with a closed, variable-derived schema.',
+    // Exactly what `deriveTier2ArgSchema` produces for a recipe declaring `id`.
+    arg_schema: {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      additionalProperties: false,
+    },
+    topic_tags: [],
+    classification: 'read',
+    concurrency_safe: false,
+  });
+
+  const call = async (args: Record<string, unknown>) => {
+    const dispatched: unknown[] = [];
+    const registry = registryStub([closedTool('recued-core/receiver')], async (_n, a) => {
+      dispatched.push(a);
+      return { ok: true, result: { received: true } };
+    });
+    const deps = {
+      inboundTokenAuthorize: () => true,
+      recipeStore: createRecipeStore('/nonexistent'),
+      executorConfig: { manifests: createManifestRegistry('/nonexistent') },
+      baseVault: {},
+      internalRegistry: registry,
+    } as unknown as Parameters<typeof _testing.handleToolCall>[1];
+    const res = await _testing.handleToolCall(
+      { name: 'recued-core/receiver', arguments: args },
+      deps,
+    );
+    return { res, dispatched };
+  };
+
+  const said = (res: unknown): string => JSON.stringify(res ?? null);
+
+  it('✅✅ admits the whole envelope beside the declared variables', async () => {
+    // Every member, in one call — a per-key test would pass on a fix that
+    // enumerated four of the five.
+    const { res } = await call({
+      id: 'proj-1',
+      exchange_ref: 'ref-1',
+      outcome: 'failed',
+      kind: 'policy',
+      reason: 'the participant guard refused',
+      errors: [{ message: 'refused' }],
+    });
+    expect(said(res)).not.toContain('is not a declared argument');
+  });
+
+  it('⛔ and still refuses an argument that is NOT in the envelope', async () => {
+    // The D-196 R4 fence is what the closed schema is for; this only admits five
+    // engine-owned names, so anything else must still be refused by name.
+    const { res } = await call({ id: 'proj-1', vault_token: 'smuggled' });
+    expect(said(res)).toContain('arguments.vault_token is not a declared argument');
+  });
+
+  it('⛔ TOP LEVEL ONLY — an envelope name nested inside another object is refused', async () => {
+    // The envelope is the CALL's own frame. Admitting these names inside an
+    // arbitrary nested object would let a caller past a schema that has nothing
+    // to do with the exchange.
+    const nested = registryStub([{
+      ...closedTool('recued-core/nested'),
+      arg_schema: {
+        type: 'object',
+        properties: {
+          body: { type: 'object', properties: {}, additionalProperties: false },
+        },
+        additionalProperties: false,
+      },
+    }]);
+    const deps = {
+      inboundTokenAuthorize: () => true,
+      recipeStore: createRecipeStore('/nonexistent'),
+      executorConfig: { manifests: createManifestRegistry('/nonexistent') },
+      baseVault: {},
+      internalRegistry: nested,
+    } as unknown as Parameters<typeof _testing.handleToolCall>[1];
+    const res = await _testing.handleToolCall(
+      { name: 'recued-core/nested', arguments: { body: { outcome: 'failed' } } },
+      deps,
+    );
+    expect(said(res)).toContain('arguments.body.outcome is not a declared argument');
+  });
+});

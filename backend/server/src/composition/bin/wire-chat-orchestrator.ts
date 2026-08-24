@@ -137,6 +137,7 @@ import { createContractDefinitionStore } from '../../storage/contract-definition
 import { createContractStore } from '../../storage/contract-store.js';
 import { backfillInboundTokenContracts } from '../../storage/inbound-token-contract-backfill.js';
 import type { WorkEntityResolver } from '../../work-entity-resolver.js';
+import type { WorkEntityEdgeStore } from '../../storage/work-entity-edge-store.js';
 import type { WorkEntityTargetedReadDeps } from '../../work-entity-write-executor.js';
 import { createGatedReadGrantResolver } from '../../read-grant-checker.js';
 import {
@@ -234,6 +235,19 @@ export interface ComposeChatOrchestratorDeps {
    *  the current config at read time (a slot's speed/locality can change via
    *  field-level writes). Distinct from the boot-snapshot `llmConfig`. */
   getLlmConfig: () => LLMConfig | undefined;
+  /** D-250 § D — the owner's daily token counter (`LLMConfigManager.addUsage`).
+   *
+   *  ⛔ CHAT NEVER REACHED IT, AND THAT MADE THE BUDGET A HALF-MEASURE. The
+   *  daily budget is enforced by `isOverBudget`, which reads the counter that
+   *  only the RECIPE executor fed — so `schedule_cutoff`, `warning` and
+   *  `hard_limit` all governed automation while chat, typically the largest
+   *  consumer, spent freely past every threshold. The turn's own usage was
+   *  captured here all along and used only to build the transparency event.
+   *
+   *  ⚠ SEPARATE FROM the `chat_message_sent` audit row, which is the RECORD.
+   *  This is the GATE. Both are fed from the same provider result and neither
+   *  substitutes for the other. */
+  addOwnerTokenUsage?: (tokens: number) => void;
   llmQuota: QuotaTracker;
   llmAdapterRegistry: LLMAdapterRegistry;
   emptyTabProbe: () => Promise<Set<WebChatTab>>;
@@ -277,6 +291,8 @@ export interface ComposeChatOrchestratorDeps {
    *  local-only degradation. */
   getWorkEntityResolver?: () => WorkEntityResolver | undefined;
   getWorkEntityTargetedReadDeps?: () => WorkEntityTargetedReadDeps | undefined;
+  /** D-192 P5 edges — backs `work.read`'s `include_related`. */
+  getWorkEntityEdgeStore?: () => Pick<WorkEntityEdgeStore, 'listByOwner'> | undefined;
 }
 
 /** Everything `bin.ts` retains on the module-scope `let`-bindings. */
@@ -344,6 +360,7 @@ export const composeChatOrchestrator = (
     getContractStore,
     getWorkEntityResolver,
     getWorkEntityTargetedReadDeps,
+    getWorkEntityEdgeStore,
   } = deps;
 
   // D-160 P2 + D-164 P4 — first-party middleware registry.
@@ -733,6 +750,7 @@ export const composeChatOrchestrator = (
     // pass-through of the app-context late-bound refs).
     ...(getWorkEntityResolver ? { getWorkEntityResolver } : {}),
     ...(getWorkEntityTargetedReadDeps ? { getWorkEntityTargetedReadDeps } : {}),
+    ...(getWorkEntityEdgeStore ? { getWorkEntityEdgeStore } : {}),
     // D-188 + the D-192 admission seam — a caller-triggered vendor
     // escalation never traverses the op-admission gate on the invoke
     // spine, so BOTH escalation families (the work-entity read tools
@@ -1066,6 +1084,9 @@ export const composeChatOrchestrator = (
     let captured: TokenUsage | undefined;
     const captureUsage = (u: TokenUsage) => {
       captured = u;
+      // D-250 § D — the same provider result also advances the owner's daily
+      // counter, so the budget finally sees chat. See `addOwnerTokenUsage`.
+      deps.addOwnerTokenUsage?.(u.total_tokens);
     };
     const body = await executeLLM(manifest, input, {
       config: cfg,
@@ -1362,18 +1383,65 @@ export const composeChatOrchestrator = (
         ...(opKinds === undefined ? {} : { resolveOpKinds: opKinds }),
       });
       if (!cost.ok) {
+        // ⛔⛔ SAY WHICH PACK, BECAUSE THE REFUSAL NAMES A STEP THE OWNER DID
+        // NOT WRITE. `cost_unknown_dispatch_kind` on a pack op means one thing
+        // only — that pack is not installed HERE, YET — and the bare reason
+        // sends the owner to read a step id inside someone else's recipe. A
+        // live two-server drive spent its whole run on this: it reported
+        // `cost_unknown_dispatch_kind (step 'participant_lookup')` for a
+        // recipe that grants perfectly well once `federated-projects` is in.
+        // ⚠ The refusal itself STANDS. An op we cannot classify is one we
+        // cannot prove is not AI, and the grant is standing while the
+        // resolution is a snapshot — so this widens the MESSAGE, never the gate.
+        const target = cost.refusal.reason === 'cost_unknown_dispatch_kind'
+          ? cost.refusal.target
+          : undefined;
+        const packHint = target !== undefined && !target.startsWith('core.')
+          ? ` — '${target}' belongs to a pack that is not installed on this server,`
+            + ' so its cost cannot be read. Install the pack, then grant.'
+          : '';
         throw new Error(
           `recipe '${toolName}' cannot be granted to a token: ${cost.refusal.reason}`
-          + ` (step '${cost.refusal.step_id ?? '<recipe>'}')`,
+          + ` (step '${cost.refusal.step_id ?? '<recipe>'}')${packHint}`,
         );
       }
-      if (cost.profile.uses_ai) {
-        throw new Error(
-          `recipe '${toolName}' runs AI (${cost.profile.ai_steps.join(', ')}), which would`
-          + ' spend the owner\'s inference budget on every call — kernel `core.ai.*` ops are'
-          + ' already ungrantable to a door for the same reason',
-        );
-      }
+      // ⛔⛔⛔ THE AI REFUSAL IS GONE, AND ITS DELETION IS THE RULING (owner,
+      // 2026-08-22). It used to throw on any granted recipe carrying an `ai-*`
+      // step. The owner's objection: **the grant IS the consent.** A token's
+      // grants map names ONE RECIPE AT A TIME, by hand, for one peer — so
+      // refusing it afterwards asks the same owner about the same recipe twice,
+      // which is `RECORDS_ACTIONS`' rule quoted in this feature's own scope doc:
+      // *"ONE USER INTENT SHOULD NOT COST TWO APPROVALS."*
+      //
+      // 🔑🔑 AND THE PRECEDENT I CITED FOR THE GATE SAYS THE OPPOSITE ON
+      // INSPECTION. `receptionDoorExecutionPolicy` sets `allow_ai:
+      // profile.uses_ai` — **DERIVED from the recipe, never ticked by anyone**.
+      // A reception door's "consent screen" is the capability DIFF: the owner is
+      // TOLD the door now runs AI, and binding it is the one decision. So the
+      // matching behaviour for a token was never a second gate; it was disclosure
+      // plus the grant. Read *"the owner must opt into it at bind"* as "the bind
+      // is where they accept it", not as a toggle.
+      //
+      // ⛔ WHAT STILL FENCES THIS, so nobody re-adds the gate for lack of one:
+      //   1. `core.ai.*` remains UNGRANTABLE DIRECTLY — every `ai`-domain kernel
+      //      op is in `KERNEL_OP_GRANT_EXCLUSIONS`, so a peer cannot be handed
+      //      raw inference. A NAMED RECIPE is the only route, which is exactly
+      //      what makes "the owner granted this" true by construction;
+      //   2. VOLUME is the contract's job, not this gate's — `expiry_at` /
+      //      `max_uses` on the carrier, metered on the MCP path. That is the
+      //      bound for a peer calling a granted recipe in a loop;
+      //   3. every other cost refusal STANDS (step limit, `foreach` fan-out,
+      //      unresolvable dispatch kind).
+      //
+      // ⚠ MEASURED, AND WORTH KEEPING EVEN THOUGH THE GATE WENT: nothing
+      // downstream asks. `resolveTrustCeiling(peer mcp token) = 'read'`, and
+      // `admitByOpRisk` returns ADMIT for a `read` op at a `read` ceiling (`write`
+      // and `destructive` return `ask`); `core.ai.classify` is registered `read`
+      // because it writes nothing. So a peer-dispatched AI step prompts NOBODY at
+      // run time. That is not an argument for refusing the grant — it is the
+      // reason the GRANT is where the owner decides, and the reason a future
+      // change of mind belongs on `core.ai.*`'s RISK TIER, which is a ruling for
+      // every caller rather than a clause here.
       if (recordsStore === undefined) return;
       assertRecordsNonOwnerRecipeExposure(
         recipe,
@@ -1415,6 +1483,19 @@ export const composeChatOrchestrator = (
       if (!store) {
         throw new Error('contract store is not ready — cannot issue a contracted token');
       }
+      const doorPolicy = standingClosureOperationIds === undefined
+        ? undefined
+        : {
+            // The cost bound, same numbers the reception door carries.
+            max_steps: RECEPTION_RECIPE_MAX_STEPS,
+            // ⚠ `false`, and it means "this contract records no AI opt-in" —
+            // NOT "AI is refused". The token path has no runtime cost check to
+            // read it, and the AI refusal was deleted above because the GRANT is
+            // the consent. Deriving a truthful value here would be a field
+            // nothing reads, which is how a claim outlives its backing.
+            allow_ai: false,
+            standing_closure: true,
+          };
       return createContractDefinitionStore(store).mint({
         minted_by: 'operator',
         display_name: `MCP door — ${label}`,
@@ -1428,16 +1509,7 @@ export const composeChatOrchestrator = (
             : { operation_ids: [...standingClosureOperationIds] }),
         },
         door_types: ['mcp'],
-        ...(standingClosureOperationIds === undefined
-          ? {}
-          : {
-              door_execution_policy: {
-                // The cost bound, same numbers the reception door carries.
-                max_steps: RECEPTION_RECIPE_MAX_STEPS,
-                allow_ai: false,
-                standing_closure: true,
-              },
-            }),
+        ...(doorPolicy === undefined ? {} : { door_execution_policy: doorPolicy }),
         ...(limits?.max_uses === undefined ? {} : { max_uses: limits.max_uses }),
         ...(limits?.expiry_at === undefined ? {} : { expiry_at: limits.expiry_at }),
       }).contract_id;
@@ -1603,6 +1675,9 @@ export const composeChatOrchestrator = (
             quota: llmQuota,
             tabProbe: emptyTabProbe,
             webChatSupported: false,
+            // D-250 § D — recipe drafting is a real provider call and was the
+            // last chat-side path reporting nothing.
+            onTokenUsage: (u) => { deps.addOwnerTokenUsage?.(u.total_tokens); },
           }).then((body) => {
             const content = (body as { content?: unknown })?.content;
             return typeof content === 'string' ? content : JSON.stringify(body);

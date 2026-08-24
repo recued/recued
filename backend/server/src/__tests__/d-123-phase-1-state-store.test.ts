@@ -31,6 +31,18 @@ describe('createHousekeepingStateStore', () => {
     expect(store.get('audit-compaction')).toBeNull();
   });
 
+  it('R13 T1-Q1 — cycle clock: null until set, overwrites, survives store recreation', () => {
+    const store = createHousekeepingStateStore(db);
+    expect(store.getCycleClock()).toBeNull();
+    store.setCycleClock(NOW);
+    expect(store.getCycleClock()).toBe(NOW);
+    store.setCycleClock(NOW + 5_000);
+    expect(store.getCycleClock()).toBe(NOW + 5_000);
+    // A fresh store over the same database (= a restarted process) reads it.
+    const restarted = createHousekeepingStateStore(db);
+    expect(restarted.getCycleClock()).toBe(NOW + 5_000);
+  });
+
   it('round-trips a complete state row', () => {
     const store = createHousekeepingStateStore(db);
     store.set({

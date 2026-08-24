@@ -510,7 +510,7 @@ const MANIFESTS = [
   {
     "slug": "annotation-create",
     "name": "Create or replace an annotation",
-    "description": "Recipe-friendly write into the annotations sidecar. Accepts `target` as a combined `<collection>:<id>` string (e.g., `data.contact:jane@acme.com`) — the kernel adapter splits on the colon. `key` follows canonical-shapes.md (snake_case, dotted hierarchy ok), `value` is any JSON; optional `confidence` (0–1) is folded into the stored value as `{ value, confidence }` so consumers reading per-record refs see both. Idempotent on (target, key): re-runs replace the prior row's value rather than appending — engine deletes the previous annotation row before insert. Engine stamps source / recipe / model hashes for staleness; `recipe_hash` + `source_record_hash` are required wire-side. Routes via the paired server's `annotation.write` rpc.",
+    "description": "Recipe-friendly write into the annotations sidecar. Accepts `target` as a combined `<collection>:<id>` string (e.g., `contact:jane@acme.com`) — the kernel adapter splits on the FIRST colon. \u26d4 `<collection>` is the CANONICAL bare collection name (`contact` / `mail` / `calendar`), NOT a `data.`-prefixed path: it is stored verbatim as `target_collection` and the per-record read path (`{{data.<collection>.<id>.annotations.<key>}}`) queries the bare name, so a `data.contact:` target writes a row no ref can ever read. `key` follows canonical-shapes.md (snake_case, dotted hierarchy ok), `value` is any JSON; optional `confidence` (0–1) is folded into the stored value as `{ value, confidence }` so consumers reading per-record refs see both. Idempotent on (target, key): re-runs replace the prior row's value rather than appending — engine deletes the previous annotation row before insert. `source_record_hash` is required wire-side and names the source record's content, so a changed source reads as stale. (`recipe_hash` was RETIRED \u2014 D-120: no author could produce a correct one, since the recipe hash covers the step's own args.) Routes via the paired server's `annotation.write` rpc.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -530,7 +530,6 @@ const MANIFESTS = [
       "confidence": null,
       "authored_by_recipe_id": null,
       "source_record_hash": null,
-      "recipe_hash": null,
       "model_used": null
     },
     "output": {
@@ -1646,7 +1645,7 @@ const MANIFESTS = [
     "kind": "storage",
     "version": 1,
     "category": "action",
-    "risk_tier": "write",
+    "risk_tier": "read",
     "permission": "notification_send",
     "tags": [
       "kernel",
@@ -2309,7 +2308,7 @@ const MANIFESTS = [
   {
     "slug": "data-annotate",
     "name": "Annotate a record",
-    "description": "Write a derived value (summary, classification, score, …) back to a source record in any data.* collection. Accepts either a canonical record reference (`ref: \"{{item}}\"` inside a foreach) or explicit `target_collection` + `target_id`. Engine stamps source / recipe / model hashes so the annotation reads as `⚠ stale` when its dependencies move; recipes opt into auto-eviction with `annotation_policy: \"evict_on_stale\"` on metadata. Routes via the paired server's `annotation.write` rpc.",
+    "description": "Write a derived value (summary, classification, score, …) back to a source record in any data.* collection. Accepts either a canonical record reference (`ref: \"{{item}}\"` inside a foreach) or explicit `target_collection` + `target_id`. `source_record_hash` makes the annotation read as `⚠ stale` when its source moves. Nothing auto-deletes: a stale row is RENDERED stale and kept. Removal happens when the parent record is deleted (cascade) or through an explicit `annotation-delete` filter. Routes via the paired server's `annotation.write` rpc.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -2329,7 +2328,6 @@ const MANIFESTS = [
       "value": null,
       "authored_by_recipe_id": null,
       "source_record_hash": null,
-      "recipe_hash": null,
       "model_used": null
     },
     "output": {
@@ -3636,7 +3634,7 @@ const MANIFESTS = [
     "kind": "storage",
     "version": 1,
     "category": "action",
-    "risk_tier": "write",
+    "risk_tier": "read",
     "permission": "notification_send",
     "tags": [
       "kernel",

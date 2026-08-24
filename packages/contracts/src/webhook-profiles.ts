@@ -130,6 +130,7 @@ export const WEBHOOK_PROFILE_IDS = [
   'slack.slash-command.v1',
   'telegram.bot-webhook.v1',
   'github.webhook.v1',
+  'cal.webhook.v1',
   'generic.static-header-token.v1',
   'generic.raw-body-hmac-sha256.v1',
   'generic.timestamped-raw-body-hmac-sha256.v1',
@@ -590,6 +591,47 @@ const WEBHOOK_PROFILE_DESCRIPTOR_LIST = [
     max_events_per_delivery: 1,
     deduplication: STABLE_PROVIDER_ID_DEDUPLICATION,
     managed_registration_requires_connection: true,
+    handshakes: [],
+  },
+  {
+    profile_id: 'cal.webhook.v1',
+    vendor: 'cal.com',
+    mechanism_kind: 'raw_body_hmac',
+    transport_assurance: 'authenticated',
+    // Cal signs the delivery bytes, but project mutations are authorized only
+    // by fresh booking and attendee reads over the paired account.
+    minimum_source_truth_policy: 'provider_readback_required',
+    decoder_kind: 'json',
+    decoded_schema_id: 'cal.webhook.v1',
+    event_types: {
+      kind: 'closed',
+      // This profile is deliberately narrower than Cal.com's whole webhook
+      // catalog. Add another event only with its payload normalizer and stable
+      // identity; accepting it here is an executable claim, not documentation.
+      values: [
+        'RECORDING_TRANSCRIPTION_GENERATED',
+        'BOOKING_CANCELLED',
+        'BOOKING_RESCHEDULED',
+        'BOOKING_NO_SHOW_UPDATED',
+        'BOOKING_PAID',
+      ],
+    },
+    fields: [{
+      key: 'signing_secret',
+      label: 'Cal.com webhook signing secret',
+      kind: 'secret',
+      required: true,
+      source: 'owner',
+      help_url: 'https://cal.com/docs/developing/guides/automation/webhooks',
+    }],
+    registration_modes: ['manual'],
+    supported_environments: GENERIC_ENVIRONMENTS,
+    allowed_methods: ['POST'],
+    allowed_content_types: JSON_CONTENT_TYPES,
+    max_body_bytes: 1_048_576,
+    max_events_per_delivery: 1,
+    deduplication: STABLE_PROVIDER_ID_DEDUPLICATION,
+    managed_registration_requires_connection: false,
     handshakes: [],
   },
   {

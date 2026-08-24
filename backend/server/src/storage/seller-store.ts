@@ -48,6 +48,7 @@ import {
   type SellerTier,
   type SellerUsageKind,
   type SellerUsagePeriodGranularity,
+  type TokenUsageReport,
 } from '@recued/contracts';
 
 export const SELLER_SETTINGS_TABLE = 'seller_settings';
@@ -403,6 +404,38 @@ export const ensureSellerSchema = (db: Database.Database): void => {
       ON ${SELLER_CUSTOMER_USAGE_ROLLUPS_TABLE} (contract_id, period_start);
   `);
 
+  // D-250 § D — MEASURED provider tokens beside the METERED units, on the row
+  // that already exists for this `(contract_id, usage_kind, period)`.
+  //
+  // ⛔ WHY COLUMNS AND NOT A NEW `usage_kind`. `usage_kind` carries a SQL CHECK
+  // baked into the CREATE TABLE, and `CREATE TABLE IF NOT EXISTS` leaves an
+  // existing database on its OLD constraint — so adding a value to
+  // `SELLER_USAGE_KINDS` would pass on a fresh install and fail every INSERT on
+  // every server already running. This is self-hosted: there is no deploy order
+  // anyone controls.
+  //
+  // ⛔ AND THEY ARE A MEASUREMENT, NOT A METER. `units` is admitted BEFORE a call
+  // (reserve → commit); tokens are knowable only AFTER it returns, so they can
+  // never gate that call. Recording them as a metered kind would imply a plan
+  // could limit them, which this substrate cannot honestly enforce.
+  //
+  // ⚠ NULLABLE, NO DEFAULT 0 — "never measured" must stay distinguishable from
+  // "measured zero", the same rule `AuditEntry.total_usage` follows. Every row
+  // written before this shipped reads NULL, and a reader must not sum it as 0.
+  const usageColumns = (
+    db.prepare(`PRAGMA table_info(${SELLER_CUSTOMER_USAGE_ROLLUPS_TABLE})`).all() as
+      { name: string }[]
+  ).map((column) => column.name);
+  for (const column of [
+    'tokens_input', 'tokens_output', 'tokens_total', 'provider_calls',
+  ]) {
+    if (!usageColumns.includes(column)) {
+      db.exec(
+        `ALTER TABLE ${SELLER_CUSTOMER_USAGE_ROLLUPS_TABLE} ADD COLUMN ${column} INTEGER`,
+      );
+    }
+  }
+
   // D-196 §4.9 / I-7 — plain nullable column adds on a `seller_settings` table
   // that predates the paid-gateway acknowledgment. PRAGMA-guarded => idempotent.
   // No CHECK is involved, so the ADD COLUMN precedent below is sufficient here.
@@ -564,6 +597,16 @@ export interface SellerUsageRecordInput {
   readonly now: number;
 }
 
+/** D-250 § D — one measured provider result against a customer's contract. */
+export interface SellerTokenUsageRecordInput {
+  readonly contract_id: string;
+  readonly usage_kind: SellerUsageKind;
+  readonly period_granularity: SellerUsagePeriodGranularity;
+  readonly period_start: number;
+  readonly usage: TokenUsageReport;
+  readonly now: number;
+}
+
 export interface SellerCustomerListQuery {
   readonly lifecycle_source?: SellerLifecycleSource;
   readonly tier_id?: string;
@@ -655,7 +698,25 @@ export interface SellerStore {
   /** Complete only the matching reservation. This narrow CAS avoids replacing
    *  customer lifecycle fields with a stale snapshot after network I/O. */
   markClaimEmailDeliverySent(input: SellerClaimEmailDeliverySentInput): boolean;
+  /** D-250 § D — set ONLY a tier's usage policy, whatever its lifecycle source.
+   *
+   *  ⛔ WHY A NARROW METHOD AND NOT `upsertTier`. `upsertTier` is keyed on
+   *  `(door_id, lifecycle_source, entitlement_key)` and THROWS a conflict when a
+   *  stored tier's source differs from the request's — which is correct, and is
+   *  exactly why a Stripe-minted tier could not have a limit set on it through
+   *  any existing path: `upsertSellerManualTier` hard-codes
+   *  `lifecycle_source: 'manual'`, so it conflicts on every synced tier. A
+   *  narrow setter reaches those tiers without giving the seller a way to edit
+   *  the identity fields the sync owns. */
+  setTierUsagePolicy(input: {
+    readonly tier_id: string;
+    readonly usage_policy_json: Readonly<Record<string, unknown>>;
+    readonly now: number;
+  }): SellerTier;
   recordUsage(input: SellerUsageRecordInput): SellerCustomerUsageRollup;
+  /** D-250 § D — accumulate MEASURED tokens onto the same rollup row.
+   *  ⛔ NEVER moves `units`: a measurement must not change a billing count. */
+  recordTokenUsage(input: SellerTokenUsageRecordInput): SellerCustomerUsageRollup;
   getUsageRollup(input: {
     contract_id: string;
     usage_kind: SellerUsageKind;
@@ -739,6 +800,12 @@ interface UsageRow {
   period_granularity: string;
   period_start: number;
   units: number;
+  // D-250 § D — NULL on every row written before the columns existed, and on
+  // any period whose work was never measured. Never coerce to 0 on read.
+  tokens_input: number | null;
+  tokens_output: number | null;
+  tokens_total: number | null;
+  provider_calls: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -1013,6 +1080,14 @@ const usageFromRow = (row: UsageRow): SellerCustomerUsageRollup => ({
   period_granularity: row.period_granularity as SellerUsagePeriodGranularity,
   period_start: row.period_start,
   units: row.units,
+  // ⛔ D-250 § D — ANOTHER ENUMERATING COPIER. A column added to the table and
+  // not named here is dropped on every read with no type error, exactly as
+  // `buildAuditEntry` has repeatedly dropped audit fields. `!= null` keeps NULL
+  // (never measured) distinct from 0 (measured, cost nothing).
+  ...(row.tokens_input != null ? { tokens_input: row.tokens_input } : {}),
+  ...(row.tokens_output != null ? { tokens_output: row.tokens_output } : {}),
+  ...(row.tokens_total != null ? { tokens_total: row.tokens_total } : {}),
+  ...(row.provider_calls != null ? { provider_calls: row.provider_calls } : {}),
   created_at: row.created_at,
   updated_at: row.updated_at,
 });
@@ -1221,6 +1296,41 @@ export const createSellerStore = (db: Database.Database): SellerStore => {
     ON CONFLICT (contract_id, usage_kind, period_granularity, period_start)
       DO UPDATE SET
         units = units + excluded.units,
+        updated_at = excluded.updated_at
+  `);
+
+  /** D-250 § D — accumulate MEASURED provider tokens onto the rollup row.
+   *
+   *  ⚠ `units: 0` on the INSERT arm is deliberate and not a placeholder: this
+   *  write records no new metered unit, only what the already-metered work
+   *  actually cost. The conflict arm adds 0 to `units`, leaving the meter
+   *  untouched — a token write must never move a billing count. */
+  /** D-250 § D — ⛔ TOUCHES ONE COLUMN. Identity (`door_id`,
+   *  `lifecycle_source`, `entitlement_key`, `external_entitlement_id`,
+   *  `template_contract_id`) is owned by whatever minted the tier and must not
+   *  be reachable from a policy edit. */
+  const setTierUsagePolicyStmt = db.prepare(`
+    UPDATE ${SELLER_TIERS_TABLE}
+       SET usage_policy_json = @usage_policy_json,
+           updated_at = @updated_at
+     WHERE tier_id = @tier_id
+  `);
+
+  const recordTokenUsageStmt = db.prepare(`
+    INSERT INTO ${SELLER_CUSTOMER_USAGE_ROLLUPS_TABLE}
+      (contract_id, usage_kind, period_granularity, period_start,
+       units, tokens_input, tokens_output, tokens_total, provider_calls,
+       created_at, updated_at)
+    VALUES
+      (@contract_id, @usage_kind, @period_granularity, @period_start,
+       0, @tokens_input, @tokens_output, @tokens_total, @provider_calls,
+       @created_at, @updated_at)
+    ON CONFLICT (contract_id, usage_kind, period_granularity, period_start)
+      DO UPDATE SET
+        tokens_input   = COALESCE(tokens_input, 0)   + excluded.tokens_input,
+        tokens_output  = COALESCE(tokens_output, 0)  + excluded.tokens_output,
+        tokens_total   = COALESCE(tokens_total, 0)   + excluded.tokens_total,
+        provider_calls = COALESCE(provider_calls, 0) + excluded.provider_calls,
         updated_at = excluded.updated_at
   `);
 
@@ -1845,6 +1955,20 @@ export const createSellerStore = (db: Database.Database): SellerStore => {
       });
       return result.changes === 1;
     },
+    setTierUsagePolicy(input) {
+      const tier_id = cleanString(input.tier_id, 'tier_id');
+      const existing = readTier(tier_id);
+      if (!existing) {
+        throw new SellerStoreValidationError(`unknown tier_id: ${tier_id}`);
+      }
+      setTierUsagePolicyStmt.run({
+        tier_id,
+        usage_policy_json: jsonObject(input.usage_policy_json),
+        updated_at: input.now,
+      });
+      return tierFromRow(readTier(tier_id)!);
+    },
+
     recordUsage(input) {
       assertUsage(input.usage_kind, input.period_granularity);
       const units = requirePositiveUsageUnits(input.units);
@@ -1858,6 +1982,39 @@ export const createSellerStore = (db: Database.Database): SellerStore => {
         period_granularity: input.period_granularity,
         period_start: input.period_start,
         units,
+        created_at: input.now,
+        updated_at: input.now,
+      });
+      const row = getUsageStmt.get(
+        contract_id,
+        input.usage_kind,
+        input.period_granularity,
+        input.period_start,
+      ) as UsageRow | undefined;
+      return usageFromRow(row!);
+    },
+
+    recordTokenUsage(input) {
+      assertUsage(input.usage_kind, input.period_granularity);
+      if (!Number.isInteger(input.period_start) || input.period_start < 0) {
+        throw new SellerStoreValidationError('period_start must be a non-negative integer');
+      }
+      const contract_id = cleanString(input.contract_id, 'contract_id');
+      // ⚠ Non-finite counts are DROPPED, never coerced — a NaN summed into a
+      // billing-adjacent column is a confident wrong number, and this is the
+      // one surface where that is expensive. Same policy `deriveRunYield`
+      // applies to a malformed tally.
+      const whole = (v: number | undefined): number =>
+        typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.round(v) : 0;
+      recordTokenUsageStmt.run({
+        contract_id,
+        usage_kind: input.usage_kind,
+        period_granularity: input.period_granularity,
+        period_start: input.period_start,
+        tokens_input: whole(input.usage.input_tokens),
+        tokens_output: whole(input.usage.output_tokens),
+        tokens_total: whole(input.usage.total_tokens),
+        provider_calls: whole(input.usage.provider_calls ?? 1),
         created_at: input.now,
         updated_at: input.now,
       });

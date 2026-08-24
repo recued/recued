@@ -10,6 +10,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { connectionBaseUrlFromConfig } from './connection-base-url.js';
+import { createRecordsReadStepClassifier } from './audit-exempt-records-read.js';
 import { PEER_RECEIVE_ASK_TOOL } from './peer-receive-ask-recipe.js';
 import { RUN_INGREDIENT_RECIPE } from './run-ingredient-recipe.js';
 import {
@@ -131,12 +132,14 @@ import {
 import {
   // D-237 P2 — folds the engine's own step logs into the run anchor's yield.
   deriveRunYield,
+  runIsAuditExemptRender,
   ephemeralDishId,
   isSolicitedReply,
   parsePeerExchangeAck,
   peerAdmissionIdentity,
   resolveExchangeAdmission,
   MCP_PEER_ADMISSION_CONFIG_KEY,
+  GENERATED_PACK_PUBLISHER,
 } from '@recued/contracts';
 import { resolveOwnerSurfaceUrl } from './ask-landing-answer-link.js';
 import { raisePeerAdmissionAsk } from './peer-admission-ask.js';
@@ -1296,13 +1299,22 @@ const resolveExchangeFireTarget = (
       + 'Declare `output.exchange.deliver_to` (or carry the peer\'s through config).',
     );
   }
-  const matches: ExchangeFireTarget[] = [];
+  const matches: (ExchangeFireTarget & { readonly generated: boolean })[] = [];
   for (const slug of manifests.slugs()) {
-    const executes = manifests.get(slug)?.surfaces?.api?.executes;
+    const manifest = manifests.get(slug);
+    const executes = manifest?.surfaces?.api?.executes;
     if (executes === undefined) continue;
     for (const [operation_key, binding] of Object.entries(executes)) {
       if (binding.kind === 'mcp' && binding.tool === deliver_to) {
-        matches.push({ slug, operation_key });
+        matches.push({
+          slug,
+          operation_key,
+          // ⚠ EXACT equality on the reserved handle, never a `recued*` prefix —
+          // the same caution `isKernelManifest` / `publisherMayDeclare` carry,
+          // and for the same reason: a prefix match here would let any publisher
+          // named `recued-…` claim to be machine-derived.
+          generated: manifest?.author === GENERATED_PACK_PUBLISHER,
+        });
       }
     }
   }
@@ -1312,14 +1324,41 @@ const resolveExchangeFireTarget = (
       + 'nothing was sent. Install the pack that declares it.',
     );
   }
-  if (matches.length > 1) {
+  // ⛔⛔ AN AUTHORED BINDING OUTRANKS A MACHINE-DERIVED ONE, AND WITHOUT THIS
+  // RULE TWO SHIPPED FEATURES CANNOT BOTH BE INSTALLED. D-225 auto-mint gives
+  // every enrolled mcp connection a GENERATED pack mirroring the peer's
+  // `tools/list`; a peer relationship also installs the pack that DECLARES the
+  // delivery ops (`peer-exchange-out`). Both then bind the same tool name to the
+  // same connection, both would dispatch identically — and this guard refused
+  // the pair, so every exchange between two Recued servers died at the fire with
+  // "refusing rather than choosing one". Neither feature is wrong; the collision
+  // is structural and arrives the moment a peer is enrolled.
+  //
+  // 🔑 THIS IS NOT THE THING THE GUARD WAS PROTECTING AGAINST. Its fear is
+  // stated exactly: *"picking either would make WHICH op runs depend on install
+  // order"*. Provenance is not install order — it is a stable property of the
+  // manifest, identical on every server, and it does not change when the owner
+  // reinstalls. A generated pack is what the machine mirrored from a peer's own
+  // advertisement; an authored one is what a human declared. Preferring the
+  // declaration is the same rule the connection layer already applies elsewhere:
+  // preserve what the owner typed, drop what the machine cached.
+  //
+  // ⚠ AND IT NARROWS NOTHING ELSE. Two AUTHORED bindings still refuse (that is
+  // the collision the guard was written for), two GENERATED ones still refuse
+  // (two peer connections advertising one tool name — install order really would
+  // decide), and the `kind === 'mcp'` narrowing above is untouched. Admission is
+  // still the catalog gate's job under the caller's contract; this only decides
+  // which op is being asked about.
+  const authored = matches.filter((m) => !m.generated);
+  const candidates = authored.length > 0 ? authored : matches;
+  if (candidates.length > 1) {
     throw new Error(
-      `Exchange deliver_to '${deliver_to}' is bound by ${String(matches.length)} installed `
-      + `operations (${matches.map((m) => `${m.slug}.${m.operation_key}`).join(', ')}); `
+      `Exchange deliver_to '${deliver_to}' is bound by ${String(candidates.length)} installed `
+      + `operations (${candidates.map((m) => `${m.slug}.${m.operation_key}`).join(', ')}); `
       + 'refusing rather than choosing one.',
     );
   }
-  return matches[0]!;
+  return { slug: candidates[0]!.slug, operation_key: candidates[0]!.operation_key };
 };
 
 /** D-232 § 20.6 — what actually goes on the wire.
@@ -6069,8 +6108,44 @@ export const handleExecute = async (
       ...(runTermination ? { termination: runTermination } : {}),
       errors: pauseFailureError ? [pauseFailureError] : result.errors,
     });
+    // ⛔⛔ ONE EXPRESSION, TWO CONSUMERS. The status the row records and the status
+    // the exemption reasons about must be the same value — two copies is how a run
+    // gets exempted as `succeeded` while its row says `failed`.
+    const anchorCommitStatus = runTermination === 'killed'
+      ? 'killed'
+      : result.awaiting_approval
+        ? (checkpointId !== undefined ? 'awaiting_approval' : 'failed')
+        : result.awaiting_peer
+          ? (checkpointId !== undefined ? 'awaiting_peer' : 'failed')
+          : result.success ? 'succeeded' : 'failed';
+    // The owner reading their own data on their own client, having provably
+    // dispatched nothing, earns no anchor. Fails toward auditing on every axis —
+    // see `audit-exemption.ts`, whose `false` branches ARE the safety.
+    // ⚠ Deliberately NOT applied to the policy-deny anchor further down: a refusal
+    // is precisely the control-plane event the trail exists for.
+    const auditExemptRender = runIsAuditExemptRender({
+      source: executionSource,
+      trigger_source: request.trigger_source,
+      commit_status: anchorCommitStatus,
+      errors: pauseFailureError ? [pauseFailureError] : result.errors,
+      steps: result.steps,
+      // A dispatching step is exempt ONLY when it is a Records op the authoring
+      // validator already proved is a read — see `audit-exempt-records-read.ts`
+      // for why "Records" and "manifest tier" both carry weight.
+      stepIsProvablyReadOnly: createRecordsReadStepClassifier({
+        recipe,
+        getManifest: (slug) => deps.executorConfig?.manifests?.get(slug) ?? undefined,
+      }),
+    });
+    // D-250 § D — claim this run's accumulated provider usage.
+    // ⛔ TAKEN UNCONDITIONALLY, OUTSIDE THE ANCHOR GUARD. `take` is what frees
+    // the sink's entry, so doing it inside the `if` would leak one entry for
+    // every run that writes no anchor (`trigger_skipped`, audit-exempt render)
+    // until the cap evicted it. The value is simply unused on those paths —
+    // which is correct: a run with no anchor has nowhere to record a cost.
+    const runTotalUsage = deps.executorConfig?.runTokenUsage?.take(run_id);
     let auditAnchorWritten = false;
-    if (deps.auditLog && !result.trigger_skipped) {
+    if (deps.auditLog && !result.trigger_skipped && !auditExemptRender) {
       try {
         let entry = buildAuditEntry({
           recipe_id: result.recipe_id,
@@ -6100,13 +6175,7 @@ export const handleExecute = async (
           // worse than D-157's ghost, because slice 2 taught the retention scan
           // that a held anchor is not garbage — it would sit there forever,
           // unresumable and never reclaimed.
-          commit_status: runTermination === 'killed'
-            ? 'killed'
-            : result.awaiting_approval
-              ? (checkpointId !== undefined ? 'awaiting_approval' : 'failed')
-              : result.awaiting_peer
-                ? (checkpointId !== undefined ? 'awaiting_peer' : 'failed')
-                : result.success ? 'succeeded' : 'failed',
+          commit_status: anchorCommitStatus,
           duration_ms: result.duration_ms,
           errors: pauseFailureError ? [pauseFailureError] : result.errors,
           // D-237 P2 — what the run PRODUCED, folded onto the anchor row that is
@@ -6118,6 +6187,14 @@ export const handleExecute = async (
           // that did nothing is precisely the run this field exists to make
           // visible, and a falsy-guard here would restore the ambiguity.
           run_yield: deriveRunYield(result.steps),
+          // D-250 § D — what the run SPENT, folded from the per-call reports the
+          // AI adapter produced during THIS run and claimed here, on the anchor
+          // already being written. `take` removes the entry, so the sink holds
+          // only runs still in flight.
+          // ⛔ ABSENT WHEN THE RUN MADE NO PROVIDER CALL, deliberately — the
+          // opposite of `run_yield` directly above, whose zero IS its signal.
+          // See `AuditEntry.total_usage`; do not "tidy" these two into one rule.
+          ...(runTotalUsage !== undefined ? { total_usage: runTotalUsage } : {}),
           // D-157 server-wiring (codex BLOCKER 3 fold) — capture the
           // EFFECTIVE config the engine resolved `{{config.*}}` refs
           // against, not just the recipe's variable defaults. The

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { resolveDeep } from '@recued/contracts';
 import type { IngredientExecutor, ExecutionContext } from '../types.js';
-import { runStep } from '../step-runner.js';
+import { runStep, MAX_CONTEXT_BYTES } from '../step-runner.js';
 
 const mkCtx = (override: Partial<ExecutionContext> = {}): ExecutionContext => ({
   recipe: { id: 'r', prefetch_steps: [], steps: [], output: { sidebar: [] } } as unknown as ExecutionContext['recipe'],
@@ -270,7 +270,8 @@ describe('step-level foreach', () => {
 
   it('trackContextSize accounting: foreach result contributes to the context-size cap', async () => {
     const ctx = mkCtx();
-    const payload = 'a'.repeat(3 * 1024 * 1024);
+    // Sized from the constant — see the note in step-runner.test.ts.
+    const payload = 'a'.repeat(Math.ceil(MAX_CONTEXT_BYTES * 0.3));
     (ctx.stores.step as Record<string, unknown>).arr = [{ id: 'only' }];
     ctx.ingredientExecutor = async () => ({ payload });
 

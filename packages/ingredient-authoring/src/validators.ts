@@ -1647,7 +1647,47 @@ const validateIngredients = (
 /** Every field `PackOperationRow` declares. Derived by hand from the interface rather than
  *  from the type system, which cannot enumerate its own keys at runtime — so a field added to
  *  the type without being added here is refused, which is the safe direction: a new key fails
- *  loudly at authoring rather than shipping unnoticed. */
+ *  loudly at authoring rather than shipping unnoticed.
+ *
+ *  ⛔⛔⛔ `authority_args` IS ABSENT DELIBERATELY — CLOSED 2026-08-21, DO NOT ADD IT.
+ *
+ *  You are most likely here because a pack op cannot reach `grant_mode: 'open'`
+ *  (the runtime gate is `if (op.authority_args === undefined) return undefined`),
+ *  so one owner approval cannot generalise across a varying entity id and every
+ *  unattended fire re-asks. Adding the key here is the obvious fix and it is the
+ *  wrong one.
+ *
+ *  🔑 THE FIELD IS AN ATTESTATION OF COMPLETENESS, NOT A SETTING. Its presence
+ *  asserts that "the derivable baseline ∪ this list covers EVERY destination /
+ *  entity selector this operation dispatches on" — a claim that NOTHING ELSE
+ *  EXISTS. Everything else on this list is a claim about what an op IS, and the
+ *  substrate bounds those: `approval` clamps up to the risk floor, `risk` is
+ *  re-rulable by the owner, `hash_exclude_args` is validated against the
+ *  authority set. **The substrate cannot bound a claim about what an op LACKS.**
+ *  `validateAuthorityArgs` checks shape only — non-empty dot-paths, no
+ *  templates, no wildcards, no duplicates — because completeness is not
+ *  checkable, and a missing entry has no floor to catch it.
+ *
+ *  ⛔ THE FAILURE IS SILENT WIDENING. A selector the author forgot is not pinned
+ *  in the open projection, so it varies freely under a standing approval:
+ *  "approve updating job 42" quietly admits job 43. `DESTINATION_LEAF_NAMES`
+ *  backstops well-known names (`to` / `recipient` / `phone` / …) but
+ *  deliberately NOT generic `*_id`, so entity ids — the exact case this would be
+ *  reached for — are the class it cannot help with.
+ *
+ *  ⇒ The friction that sends people here is already relieved, with the opposite
+ *  risk profile: the D-211 owner ruling
+ *  (`collection.operation.upsertOwnerOverride`) re-rules the operation's RISK.
+ *  It is the OWNER's decision rather than a third party's assertion, per-op,
+ *  visible in one place, reversible, and it refuses a downgrade without
+ *  `confirm_risk_downgrade` while naming the consequence. An attestation nobody
+ *  can check is not a substitute for a decision someone made.
+ *
+ *  ⚠ If this is ever revisited, the precondition is a way to VERIFY the claim —
+ *  not a review process, a check. Until then the honest position is that pack
+ *  authors cannot make this assertion because nothing can catch them being
+ *  wrong. Same reason the field says "never recipe-authored, never
+ *  Gateway-inferred": neither is in a position to know. */
 const PACK_OPERATION_ROW_KEYS = new Set([
   'op', 'ingredient', 'risk', 'approval', 'approval_reason', 'args', 'bind', 'description',
   'required_scopes', 'operation_bound_webhook', 'idempotency', 'accepts_media', 'produces_media',

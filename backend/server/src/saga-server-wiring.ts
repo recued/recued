@@ -105,7 +105,6 @@ export const createSagaAnnotationWriter = (
       },
       authored_by_recipe_id: GATEWAY_SAGA_AUTHOR_ID,
       source_record_hash: annotation.run_id,
-      recipe_hash: 'gateway-saga-reconciliation',
       event_at: annotation.event_at,
     });
   },

@@ -1,5 +1,5 @@
 import type { RuntimeConfigStore } from '@recued/config';
-import { zoneByLabel, type LifecycleStatus } from '@recued/contracts';
+import { zoneByLabel, type ConnectionHealth, type LifecycleStatus } from '@recued/contracts';
 import type { NotificationBlock } from '@recued/notification';
 
 import type { BackgroundServiceRegistry } from '../composition/bin/wire-background-services.js';
@@ -185,7 +185,10 @@ export interface StartPostListenerRuntimeOptions {
   /** D-157 N.8 — threaded to the stale-checkpoint retention sweep
    *  (`startPostHousekeepingTail` → `startRetentionPruners`). */
   readonly notificationBlock:
-    | Pick<NotificationBlock, 'getAsk' | 'cancelAsk' | 'recoverPendingAsks' | 'pruneHandledAsks'>
+    | Pick<
+        NotificationBlock,
+        'getAsk' | 'cancelAsk' | 'recoverPendingAsks' | 'pruneHandledAsks' | 'notify'
+      >
     | undefined;
   /** D-178 slice 4b — on-boot update reconcile; the tail runs it after
    *  markBooted. Undefined on a delegated channel / dbless boot. */
@@ -818,9 +821,60 @@ export const startPostListenerRuntime = async (
             ? { peer_ack: r.exchange_peer_ack }
             : {}),
         })),
-      // The carrier's own args carry the callback the exchange named.
-      callbackForRef: () => undefined,
-      healthForRef: () => undefined,
+      // ⛔⛔ BOTH OF THESE WERE `() => undefined`, AND EACH DISARMED A RULE THE
+      // CODE AROUND THEM DESCRIBES AS LOAD-BEARING. Neither was a placeholder
+      // for something unavailable: the callback op has been stamped on the
+      // audit row since D-234 § 234.2 (`exchange_callback_op`), and connection
+      // health has been real since § 22. They were stubs shaped like deps.
+      //
+      // 🔑 `planExchangeRetry`'s rule 2 — *"NEVER ONCE ANSWERED. An answer that
+      // arrived after a failed carrier means an earlier attempt DID land;
+      // re-sending would ask a peer to act twice on one request"* — is derived
+      // ENTIRELY from this string: `deriveExchangeStatus` skips its `answered`
+      // branch when the callback id is undefined. So the one rule that exists
+      // to stop a peer acting twice on one request was, in production, not
+      // being asked.
+      callbackForRef: async (ref) => {
+        const rows = await auditLog.listByExchangeRef(ref, 200);
+        // ⚠ The DECLARING run's stamp, not the carrier's: the carrier is kernel
+        // plumbing and names no conversation. Newest wins — a re-sent exchange
+        // keeps the callback its latest attempt declared.
+        return rows
+          .filter((r) => r.exchange_callback_op !== undefined && r.exchange_callback_op !== '')
+          .sort((a, b) => (b.finished_at ?? b.started_at ?? 0) - (a.finished_at ?? a.started_at ?? 0))
+          [0]?.exchange_callback_op;
+      },
+      // ⚠ HEALTH IS THE REASON THIS SWEEP IS NOT A BARE TIMER, per
+      // `wire-exchange-retry.ts`'s own header — *"a timer alone would re-send
+      // into a connection already known to be down, which is the hammering the
+      // backoff exists to prevent"*. Unstubbed, that sentence was describing a
+      // design rather than the running server.
+      //
+      // The connection name is on the carrier's own inputs (`run-ingredient`
+      // takes it as `input.connection`, the same field the fire wrote), so this
+      // asks about the peer the failed attempt was actually addressed to rather
+      // than about a connection guessed from the ref.
+      healthForRef: async (ref) => {
+        const store = options.executeDeps?.connectionStore;
+        if (store === undefined) return undefined;
+        const carrier = await carrierOf(ref);
+        const input = (carrier?.config_snapshot as { input?: unknown } | undefined)?.input;
+        const name = (input as { connection?: unknown } | undefined)?.connection;
+        if (typeof name !== 'string' || name === '') return undefined;
+        try {
+          const row = store.get('mcp', name);
+          if (row === null) return undefined;
+          const health: unknown = JSON.parse(row.health_json ?? 'null');
+          return health === null || typeof health !== 'object'
+            ? undefined
+            : (health as ConnectionHealth);
+        } catch {
+          // A malformed health blob is not a reason to stop retrying — it is a
+          // reason not to ANSWER the health question. Undefined means "no
+          // opinion", which the sweep already handles.
+          return undefined;
+        }
+      },
       classify: ((errors: readonly unknown[]) =>
         classifyRunFailure(errors)) as never,
       resend: async (ref, args) => {

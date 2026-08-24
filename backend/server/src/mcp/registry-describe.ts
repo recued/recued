@@ -48,6 +48,7 @@ import {
   isGrantedReadAdmissible,
   resolveCoverageQualityThreshold,
   cadenceToMs,
+  type CollectionSourceFreshness,
   type CoverageQuality,
   type EnrichmentTopic,
   type EnrichmentDefinition,
@@ -87,6 +88,20 @@ export interface RegistryDescribeDeps {
    *  Without `db`, the handler skips the subtraction (over-reports
    *  by at most the count of pinned rows; never under-reports).  */
   db?: Database.Database;
+  /** D-236 join — the source-freshness verdicts of every registered collection
+   *  instance behind an enrichment scope, built by the composer from the live
+   *  CollectionRegistry (same Fork-B pattern as the timeline's raw-record
+   *  loader). A band computed from warehouse rows alone over-trusts a dead
+   *  pipe: a REACTIVE topic keeps its rows — and its `high` — forever after
+   *  its feeding source dies, because nothing row-side ever moves (reactive
+   *  producers have no cadence and no housekeeping state). When any instance
+   *  behind a topic's `valid_scopes` is stale, the band is capped one step
+   *  down and the reasoning names the instance. Absent (unit tests, partial
+   *  harnesses) ⇒ no source-side cap; the row-derived bands stand. */
+  sourceFreshnessByScope?: (
+    scope: string,
+    now: number,
+  ) => ReadonlyArray<{ instance: string; freshness: CollectionSourceFreshness }>;
   /** D-187 AMENDMENT — the calling door's bound contract's per-dispatch read-grant
    *  checker, resolved ONCE at the dispatch boundary. The agent catalog lists exactly
    *  the topics the contract is read-granted (`isTopicReadGranted` folds the former
@@ -485,6 +500,43 @@ const deriveCoverageQuality = (
   };
 };
 
+interface ScopedSourceFreshness {
+  scope: string;
+  instance: string;
+  freshness: CollectionSourceFreshness;
+}
+
+/** D-236 join — cap the row-derived band when a feeding source is stale.
+ *
+ *  CAP, never floor: `high → medium`, `medium → low`; `low` and `novel` are
+ *  left alone (already at or below anything the join could impose), and a
+ *  healthy source never upgrades a weak band. The reasoning keeps the
+ *  row-derived clause AND names each stale instance, so an agent reading the
+ *  verdict sees both what the rows say and why they cannot currently be
+ *  trusted to be complete. This is what stops a reactive topic reading `high`
+ *  off rows whose feeding source died weeks ago. */
+const capBandForStaleSources = (
+  base: CoverageQualityResult,
+  staleSources: ReadonlyArray<ScopedSourceFreshness>,
+): CoverageQualityResult => {
+  if (staleSources.length === 0) return base;
+  if (base.coverage_quality !== 'high' && base.coverage_quality !== 'medium') return base;
+  const capped: CoverageQuality = base.coverage_quality === 'high' ? 'medium' : 'low';
+  const clauses = staleSources.map((s) => {
+    const age =
+      s.freshness.age_ms !== null
+        ? `last success ${formatRelativeAge(s.freshness.age_ms)}`
+        : 'never synced';
+    return `'${s.scope}/${s.instance}' ${age}${s.freshness.degraded ? ', degraded' : ''}`;
+  });
+  return {
+    coverage_quality: capped,
+    coverage_quality_reasoning:
+      `${base.coverage_quality_reasoning} ⚠ capped ${base.coverage_quality}→${capped}: `
+      + `stale source ${clauses.join('; ')} — existing rows may be frozen, not current.`,
+  };
+};
+
 /** Build one per-topic entry. */
 const buildEntry = (
   deps: RegistryDescribeDeps,
@@ -510,12 +562,18 @@ const buildEntry = (
   };
   // P7.F §A.14.4 — derive band + reasoning from the same coverage
   // record we surface; `now` is parameterized at the call site so the
-  // boundary is testable.
-  const { coverage_quality, coverage_quality_reasoning } = deriveCoverageQuality(
-    topic,
-    def,
-    coverage,
-    now,
+  // boundary is testable. Then the D-236 join caps the band when any
+  // source instance behind the topic's scopes is stale (see
+  // `capBandForStaleSources` — the row-only band over-trusts a dead pipe).
+  const staleSources: ScopedSourceFreshness[] = (def.valid_scopes ?? []).flatMap(
+    (scope) =>
+      (deps.sourceFreshnessByScope?.(String(scope), now) ?? [])
+        .filter((row) => row.freshness.stale)
+        .map((row) => ({ scope: String(scope), ...row })),
+  );
+  const { coverage_quality, coverage_quality_reasoning } = capBandForStaleSources(
+    deriveCoverageQuality(topic, def, coverage, now),
+    staleSources,
   );
 
   const checker = deps.readGrantChecker ?? AUTHOR_DEFAULT_READ_GRANT_CHECKER;
@@ -672,6 +730,7 @@ export const _testing = {
   countAgentReadableRowsForTopic,
   isUnproducedEmptyTopic,
   deriveCoverageQuality,
+  capBandForStaleSources,
   formatRelativeAge,
   formatPct,
   FAILURE_RATE_LOW_THRESHOLD,

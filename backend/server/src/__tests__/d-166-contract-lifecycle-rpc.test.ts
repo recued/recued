@@ -7,6 +7,7 @@ import {
   RpcError,
   isReservedLocalRpc,
   opGrantEntry,
+  PUBLIC_CONTRACT_ID,
   type ContractDefinitionView,
   type ContractListRequest,
   type ContractListResponse,
@@ -549,6 +550,19 @@ describe('D-187 step 7 follow-on — collection.contract.setDoorTypes rpc', () =
     const { handlers } = makeHarness();
     await expectRpcCode(
       setDoorTypes(handlers, { contract_id: 'user_self', door_types: ['mcp'] }),
+      'bad_request',
+    );
+  });
+
+  // D-248 Amendment 3 — the PUBLIC sentinel's twin fence. `contract-definition.ts`
+  // claims "the fence is kept symmetric with the owner's so the two can never
+  // drift", and until this landed the claim was false: `isReservedOwnerContractId`
+  // had five call sites and `isReservedPublicContractId` had ZERO. Pinned beside its
+  // twin precisely so the pair cannot drift apart again unnoticed.
+  it('rejects the reserved public-anonymous floor with bad_request', async () => {
+    const { handlers } = makeHarness();
+    await expectRpcCode(
+      setDoorTypes(handlers, { contract_id: PUBLIC_CONTRACT_ID, door_types: ['mcp'] }),
       'bad_request',
     );
   });

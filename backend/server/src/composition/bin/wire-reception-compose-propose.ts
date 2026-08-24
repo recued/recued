@@ -22,6 +22,14 @@ export interface ComposeReceptionComposeProposeDeps {
   readonly llmQuota: LlmSubstrate['llmQuota'] | undefined;
   readonly llmAdapterRegistry: LlmSubstrate['llmAdapterRegistry'] | undefined;
   readonly emptyTabProbe: LlmSubstrate['emptyTabProbe'] | undefined;
+  /** D-250 § D — the owner's daily token counter.
+   *
+   *  ⛔ THIS SURFACE REACHED NOTHING AT ALL. It was the last provider call that
+   *  fed neither a counter nor a record: the hook captured usage into a local,
+   *  read `model_id` off it, returned `total_tokens` to the caller, and dropped
+   *  the rest. Endpoint authoring is discretionary owner spend, so the counter
+   *  is where it belongs. */
+  readonly addOwnerTokenUsage?: (tokens: number) => void;
   readonly capacitySpecDeps?: CapacitySpecPrimitiveDeps;
   readonly persist?: ExecuteRecuedRequestContext['persist'];
   readonly now?: () => number;
@@ -108,6 +116,10 @@ export const composeReceptionComposePropose = (
           matchContext,
           onTokenUsage: (u) => {
             usage = u;
+            // D-250 § D — the same result also advances the owner's daily
+            // counter. Previously this assignment was the ONLY thing that
+            // happened to it.
+            deps.addOwnerTokenUsage?.(u.total_tokens);
           },
           onMatchResolved: (evt) => {
             match = evt;

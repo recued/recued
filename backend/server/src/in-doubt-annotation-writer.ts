@@ -86,14 +86,6 @@ export const createInDoubtAnnotationWriter = (
     //   - `source_record_hash`: the `commit_id` itself — uniquely
     //     identifies the source commit being reconciled, doubles as
     //     the cache key for staleness-eviction reads on the commit.
-    //   - `recipe_hash`: a stable constant; there is no recipe to
-    //     hash. Distinct from any real recipe hash so a downstream
-    //     evict-on-stale comparison treats reconciliation rows as
-    //     immutable.
-    //
-    // The value payload echoes the link keys (I-9: explicit link so
-    // `data.timeline()` surfaces the row) + the answer + the
-    // bistemporal `event_at` matches the commit's `dispatched_at`.
     await store.annotate({
       target_collection: IN_DOUBT_TARGET_COLLECTION,
       target_id: annotation.commit_id,
@@ -106,7 +98,6 @@ export const createInDoubtAnnotationWriter = (
       },
       authored_by_recipe_id: GATEWAY_IN_DOUBT_AUTHOR_ID,
       source_record_hash: annotation.commit_id,
-      recipe_hash: 'gateway-in-doubt-reconciliation',
       event_at: annotation.event_at,
     });
   },

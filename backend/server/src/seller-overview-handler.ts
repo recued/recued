@@ -42,6 +42,9 @@ import {
   type SellerStripeSynchronizeRequest,
   type SellerStripeSynchronizeResponse,
   type ServerRpcRegistry,
+  SELLER_USAGE_KINDS,
+  type SellerTierUsagePolicyRequest,
+  type SellerTierUsagePolicyResponse,
 } from '@recued/contracts';
 
 import type { LLMConfigManager } from './llm-config.js';
@@ -65,6 +68,7 @@ import {
   PEER_HANDLE_CONFLICT_PREFIX,
   type ChatInboundTokenStore,
 } from './storage/chat-inbound-token-store.js';
+import { resolveSellerCustomerUsagePolicy } from './seller/customer-usage-policy.js';
 import { createContractDefinitionStore } from './storage/contract-definition-store.js';
 import { createContractGrantEntryStore } from './storage/contract-grant-entry-store.js';
 import type { ContractStore } from './storage/contract-store.js';
@@ -87,6 +91,7 @@ export type SellerOverviewMethods =
   | 'server.seller.updateSettings'
   | 'server.seller.acknowledgeLlmGatewayPaid'
   | 'server.seller.upsertManualTier'
+  | 'server.seller.setTierUsagePolicy'
   | 'server.seller.createPassTier'
   | 'server.seller.issueManualCustomer'
   | 'server.seller.extendManualCustomer'
@@ -866,6 +871,61 @@ export const acknowledgeSellerLlmGatewayPaid = (
   }
 };
 
+/** D-250 § D — set a tier's usage policy, whatever minted it.
+ *
+ *  ⛔⛔ VALIDATED BEFORE IT IS WRITTEN, AND THAT IS THE POINT OF THE HANDLER.
+ *  `resolveSellerCustomerUsagePolicy` fails CLOSED on a malformed policy —
+ *  `policy_invalid` denies every call — so an unparseable policy written here
+ *  would lock out a PAYING customer, silently, until someone noticed. Absence
+ *  is unlimited and malformed is denied, which means a typo is the expensive
+ *  direction; the write refuses rather than shipping that.
+ *
+ *  ⚠ It validates EVERY usage kind, not the ones the request happens to name: a
+ *  policy object carrying a broken `tool_call` alongside a good `chat_turn`
+ *  would otherwise pass and take the door down for tool calls only. */
+export const setSellerTierUsagePolicy = (
+  deps: SellerOverviewHandlerDeps,
+  request: SellerTierUsagePolicyRequest,
+): SellerTierUsagePolicyResponse => {
+  const method: SellerOverviewMethods = 'server.seller.setTierUsagePolicy';
+  if (!isRecord(request)) {
+    throw badSellerRequest(method, 'args must be an object');
+  }
+  const tier_id = requiredStringField(request, 'tier_id');
+  const usage_policy_json = optionalRecordField(request, 'usage_policy_json');
+  if (usage_policy_json === undefined) {
+    throw badSellerRequest(method, 'usage_policy_json must be an object');
+  }
+
+  const existing = deps.sellerStore.getTier(tier_id);
+  if (!existing) {
+    throw badSellerRequest(method, `unknown tier_id: ${tier_id}`);
+  }
+  for (const usage_kind of SELLER_USAGE_KINDS) {
+    const parsed = resolveSellerCustomerUsagePolicy(
+      { ...existing, usage_policy_json },
+      usage_kind,
+    );
+    if (!parsed.ok) {
+      throw badSellerRequest(method, parsed.message);
+    }
+  }
+
+  try {
+    const tier = deps.sellerStore.setTierUsagePolicy({
+      tier_id,
+      usage_policy_json,
+      now: deps.now?.() ?? Date.now(),
+    });
+    return { tier, overview: buildSellerOverview(deps) };
+  } catch (error) {
+    if (error instanceof SellerStoreValidationError) {
+      throw new RpcError('bad_request', `${method}: ${error.message}`, 400, method);
+    }
+    throw error;
+  }
+};
+
 export const upsertSellerManualTier = (
   deps: SellerOverviewHandlerDeps,
   request: SellerManualTierUpsertRequest,
@@ -1462,6 +1522,7 @@ export const makeSellerOverviewHandlers = (
       'server.seller.updateSettings',
       'server.seller.acknowledgeLlmGatewayPaid',
       'server.seller.upsertManualTier',
+      'server.seller.setTierUsagePolicy',
       'server.seller.createPassTier',
       'server.seller.issueManualCustomer',
       'server.seller.extendManualCustomer',
@@ -1483,6 +1544,8 @@ export const makeSellerOverviewHandlers = (
         acknowledgeSellerLlmGatewayPaid(deps, request),
       'server.seller.upsertManualTier': async (request) =>
         upsertSellerManualTier(deps, request),
+      'server.seller.setTierUsagePolicy': async (request) =>
+        setSellerTierUsagePolicy(deps, request),
       'server.seller.createPassTier': async (request) =>
         createSellerPassTier(deps, request),
       'server.seller.issueManualCustomer': async (request) =>

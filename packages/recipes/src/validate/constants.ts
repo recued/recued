@@ -128,3 +128,64 @@ export const AI_FUNCTION_REQUIRED_INPUTS: Record<string, string[]> = {
   'ai-rewrite':   ['llm.data', 'llm.style'],
   'ai-prompt':    ['llm.prompt'],
 };
+
+/** Required INPUTS each kernel ingredient's adapter enforces at dispatch, so a
+ *  missing one is caught at AUTHORING time instead of as a runtime `BAD_INPUT`.
+ *
+ *  ⛔ THIS EXISTS BECAUSE THE RUNTIME GUARD IS THE ONLY THING THAT CHECKED, and
+ *  it fires far too late. `enrichment-upsert` guards `authored_by_recipe_id`,
+ *  and SEVEN of the twelve shipped `enrichment-upsert` steps omitted it — every
+ *  one dead on dispatch, in 3-7 packs each, with nothing at authoring time
+ *  saying so. The validator only ever checked AI-function contracts
+ *  (`AI_FUNCTION_REQUIRED_INPUTS` above); every other ingredient's input
+ *  contract was unchecked.
+ *
+ *  ⚠ ENGINE-STAMPED FIELDS ARE DELIBERATELY ABSENT. `authored_by_recipe_id` and
+ *  `recipe_hash` are supplied by the engine from `StepMeta` (see
+ *  `stampedRecipeId` in `packages/ingredients/src/kernel.ts`), so requiring them
+ *  from an author would flag every correct recipe. A field belongs here only
+ *  when the AUTHOR is the one who must provide it.
+ *
+ *  ⚠ Derived from the adapter's own `'<slug>: <field> is required'` guards and
+ *  pinned to them by test, so a new guard cannot land without landing here. */
+export const KERNEL_REQUIRED_INPUTS: Record<string, readonly string[]> = {
+  'annotation-create': ['key', 'source_record_hash'],
+  'booking-create': ['title'],
+  'booking-delete': ['id'],
+  'booking-update': ['id'],
+  'commitment-cancel': ['id'],
+  'commitment-fulfill': ['id'],
+  'commitment-update': ['id'],
+  'contact-upsert': ['email'],
+  'data-file-read': ['record_id'],
+  'enrichment-list': ['topic'],
+  'enrichment-upsert': ['id', 'topic'],
+  'exchange-status': ['exchange_ref'],
+  'file-render-markdown-template': ['template_file_ref'],
+  'file-set-scan-status': ['record_id'],
+  'form-response-get': ['submission_id'],
+  'form-response-set-state': ['submission_id'],
+  'link-create': ['kind'],
+  'mail-body-read': ['record_id', 'slug'],
+  'mail-get': ['record_id', 'slug'],
+  'mail-send': ['body', 'sender_mail_instance', 'subject'],
+  'mail-thread-reader': ['slug', 'thread_id'],
+  'note-create': ['body'],
+  'note-delete': ['id'],
+  'note-update': ['id'],
+  'notification-recipe-callback': ['destination_contract_id', 'query_tool', 'topic'],
+  'notification-send': ['text'],
+  'notify-booking-visitor': ['body', 'booking_id', 'sender_mail_instance', 'subject'],
+  'project-archive': ['id'],
+  'project-create': ['title'],
+  'project-update': ['id'],
+  'schedule-recipe': ['recipe_id'],
+  'shared-compare-and-set': ['key'],
+  'shared-read': ['key'],
+  'task-create': ['title'],
+  'task-delete': ['id'],
+  'task-mark-done': ['id'],
+  'task-update': ['id'],
+  'webhook-event-get': ['event_ref'],
+  'work-entity-get': ['id'],
+};

@@ -87,6 +87,10 @@ const harness = (
     sellerStore: {
       getUsageRollup: ({ usage_kind }) => rollups.get(usage_kind) ?? null,
       recordUsage,
+      // D-250 § D — the store's measurement half. Throws rather than silently
+      // succeeding: this is a MONEY boundary, and a test that starts exercising
+      // the token path must say so instead of passing blind.
+      recordTokenUsage: vi.fn(() => { throw new Error('recordTokenUsage not stubbed'); }) as never,
     },
   });
   const pendingCoordinator = createCustomerSurfaceUsagePendingCoordinator();

@@ -165,7 +165,6 @@ const seedDerived = async (collection: string, id: string): Promise<void> => {
     value: `about ${id}`,
     authored_by_recipe_id: 'test',
     source_record_hash: 'h',
-    recipe_hash: 'r',
   });
   await annotationStore.link({
     from_collection: collection,

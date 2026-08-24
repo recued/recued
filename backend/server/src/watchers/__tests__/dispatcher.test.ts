@@ -11,6 +11,7 @@ import { createWatcherDispatcher } from '../index.js';
 const mkAuditLog = (): AuditLogStore => ({
   append: async () => {},
   listWindow: async () => [],
+  listByCommitStatus: async () => [],
   listPendingExchangeRefs: async () => [],
   listInboundContractIds: async () => [],
   listRecent: async () => [],

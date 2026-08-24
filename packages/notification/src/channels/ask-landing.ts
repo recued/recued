@@ -529,9 +529,14 @@ const answeredOptionLabel = (ask: PendingAsk): string | null => {
  *  and, when an answer is recorded, echoes the chosen option. */
 const renderAnsweredBody = (ask: PendingAsk): string => {
   const label = answeredOptionLabel(ask);
+  // Name the answering channel when recorded — with multi-channel fan-out
+  // (and channels held by different people), "already answered" without the
+  // WHERE reads as a mystery to everyone who didn't answer.
+  const via =
+    ask.answered_via !== undefined ? ` via ${htmlEscape(ask.answered_via)}` : '';
   const recorded =
     label !== null
-      ? `\n<p class="recorded">Response recorded: ${htmlEscape(label)}</p>`
+      ? `\n<p class="recorded">Response recorded: ${htmlEscape(label)}${via}</p>`
       : '';
   return `<p class="notice">This decision has already been answered — there is nothing for you to do here.</p>${recorded}`;
 };

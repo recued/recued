@@ -30,6 +30,7 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { GENERATED_PACK_PUBLISHER } from '@recued/contracts';
 import type {
   ContractSnapshot,
   ExecutionSource,
@@ -64,11 +65,17 @@ const GATED_TOOL = `recued-core/${GATED_SINK}`;
 
 /** `answer` is what an exchange fires through: an `mcp` binding naming the sink.
  *  `answer_self` names the FIRER, so a fire can be made to close a loop. */
-const catalogManifest = (slug: string): IngredientManifest => ({
+const catalogManifest = (
+  slug: string,
+  /** D-225 auto-mint — the publisher is what tells an AUTHORED binding from a
+   *  MACHINE-DERIVED one, so the fixture has to be able to be either. Exact
+   *  handle, never a prefix, matching the resolver. */
+  author = 'recued-core',
+): IngredientManifest => ({
   slug,
   name: 'D-232 fire fixture catalog',
   description: 'Exchange fire targets for the D-232 host drive.',
-  author: 'recued-core',
+  author,
   version: 1,
   kind: 'connection',
   category: 'action',
@@ -186,6 +193,12 @@ const buildEnv = (
   recipes: readonly RecipeDefinition[],
   opts: {
     rival?: boolean;
+    /** Register the rival as a GENERATED pack (`recued-local`) rather than an
+     *  authored one — the D-225 auto-mint shape. */
+    rivalGenerated?: boolean;
+    /** Both catalogs generated — the case where provenance can no longer break
+     *  the tie and the original refusal must stand. */
+    bothGenerated?: boolean;
     durable?: boolean;
     /** § 20.17 — mcp connection records carrying the contract each one reaches. */
     peerConnections?: readonly { name: string; contract: string }[];
@@ -194,8 +207,14 @@ const buildEnv = (
   const recipeStore: RecipeStore = createRecipeStore('/nonexistent-d232-fire-drive');
   for (const r of recipes) recipeStore.register(r);
   const manifests = createManifestRegistry('/nonexistent-d232-fire-drive');
-  manifests.register(catalogManifest(CATALOG));
-  if (opts.rival) manifests.register(catalogManifest(RIVAL));
+  manifests.register(
+    catalogManifest(CATALOG, opts.bothGenerated === true ? GENERATED_PACK_PUBLISHER : undefined),
+  );
+  if (opts.rival) {
+    manifests.register(
+      catalogManifest(RIVAL, opts.rivalGenerated === true ? GENERATED_PACK_PUBLISHER : undefined),
+    );
+  }
   const audit: AuditEntry[] = [];
   return {
     audit,
@@ -423,6 +442,44 @@ describe('D-232 § 19 — output.exchange fires a real, gated dispatch', () => {
     expect(errorText(res)).toContain('refusing rather than choosing one');
     expect(errorText(res)).toContain(CATALOG);
     expect(errorText(res)).toContain(RIVAL);
+    expect(rowsFor(env, SINK), 'one of the two answered anyway').toHaveLength(0);
+  });
+
+  it('✅✅ AN AUTHORED BINDING OUTRANKS A GENERATED ONE — the pair is not a collision', async () => {
+    // ⛔⛔ THE COLLISION THIS RESOLVES ARRIVES THE MOMENT A PEER IS ENROLLED, and
+    // it made two shipped features mutually exclusive. D-225 auto-mint gives
+    // every mcp connection a GENERATED pack mirroring the peer's `tools/list`;
+    // a peer relationship also installs the pack that DECLARES the delivery ops.
+    // Both bind the same tool, both dispatch identically — and the ambiguity
+    // guard above refused the pair, so every exchange between two Recued servers
+    // died at the fire. A live two-server drive is what found it.
+    //
+    // 🔑 PROVENANCE IS NOT INSTALL ORDER. The guard's fear is that "which op
+    // answers" would depend on the order packs went in; the manifest's publisher
+    // is a stable property, identical on every server, unchanged by reinstall.
+    env = buildEnv(
+      [firingRecipe({ ref: '{{step.ref}}', deliver_to: SINK_TOOL }), sinkRecipe()],
+      { rival: true, rivalGenerated: true },
+    );
+    const res = await run(env);
+    expect(res.success, errorText(res)).toBe(true);
+    // ⚠ Assert WHICH one answered, not merely that something did. "It dispatched"
+    // passes just as well on a resolver that picked the generated pack, and the
+    // whole claim here is about which of the two was chosen.
+    expect(rowsFor(env, SINK), 'the authored binding did not answer').toHaveLength(1);
+  });
+
+  it('⛔ but TWO GENERATED bindings still refuse — provenance breaks a tie, it does not pick a winner', async () => {
+    // The narrowing has to stop where the guard's original reasoning starts
+    // again: with no authored candidate, two machine-derived ones are exactly
+    // the case where install order would decide, and the refusal must stand.
+    env = buildEnv(
+      [firingRecipe({ ref: '{{step.ref}}', deliver_to: SINK_TOOL }), sinkRecipe()],
+      { rival: true, rivalGenerated: true, bothGenerated: true },
+    );
+    const res = await run(env);
+    expect(res.success).toBe(false);
+    expect(errorText(res)).toContain('refusing rather than choosing one');
     expect(rowsFor(env, SINK), 'one of the two answered anyway').toHaveLength(0);
   });
 

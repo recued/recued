@@ -7,6 +7,79 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.8.24 — 2026-08-24
+
+Meetings are the theme. A meeting can now be prepared from what your projects
+already know, and what you type afterwards becomes work rather than a note you
+will not reread. Alongside that, two things that had been quietly wrong for a
+while: approvals arrived with no sense of which were urgent, and nothing
+anywhere told you what an AI call had cost.
+
+### Added
+
+- **A meeting can be prepared from your own project context, and its outcome
+  becomes work.** Recued reads what your projects know before the meeting, and
+  turns what you write afterwards into the tasks and records that follow from
+  it. Cal.com bookings drive it end to end, including meetings Recued's
+  calendar never saw — an ad-hoc conversation gets the same preparation as a
+  booked one.
+- **Every provider call reports what it spent.** A run's audit entry now
+  carries the usage it accumulated, housekeeping reports spend per task, and
+  the LLM gateway accounts for what it consumed on a caller's behalf. A synced
+  plan can state a limit at all, and one without a limit says so instead of
+  showing a blank.
+- **The approval queue behaves like a queue.** Oldest first, how long each has
+  been waiting, and when one expires. A notification names the recipe behind
+  it, so an ask is identifiable before you open it. An automation you trust can
+  be told yes once and keep that answer.
+- **`recued pair` works.** The pairing code is shared between processes now, so
+  the code the CLI prints is the code the server will accept — previously each
+  process minted its own and the printed one was refused.
+- **The Browser Bridge has a Chrome Web Store submission bundle**, with
+  `/bridge` and its terms published on the site.
+
+### Changed
+
+- **A recipe that only notifies you no longer asks permission first.** Being
+  told something is not an action on your behalf, and treating it as one taught
+  people to approve without reading.
+- **Tool search returns every match.** The 5- and 20-result caps are gone; a
+  model asking what it can do now sees the whole answer rather than a
+  truncation it cannot detect.
+- **The install now states the server's timezone** and how to change it —
+  schedules are interpreted in it, so it should not be something you infer.
+- **The step-context ceiling rises from 10 MB to 50 MB**, sized from the
+  constant its tests read rather than a number repeated in both places.
+- **`user_entitlements` is retired.** It only ever reported `free` — including
+  to a paying account — so every reader was better served by the source it
+  should have consulted.
+
+### Fixed
+
+- **An address sent to an AI leaked its postcode.** Aliasing replaced parts of
+  an address individually, so the pieces that survived were enough to locate
+  it. A whole address is now aliased as one unit that carries only its region.
+  Known contacts are aliased in tool results too, not only when the turn
+  surfaced them directly, and Cal.com attendee details are protected before
+  they reach a model.
+- **Peer-to-peer was dead on the main branch** — ten defects, none of which any
+  test was red for. A colleague can now join a shared project before their own
+  server is ready, and reading your own day no longer routes through a peer's
+  door to fetch what is already local.
+- **A run held for approval reported itself as failed.** It is waiting, and now
+  says so.
+- **One unpreparable booking starved every booking behind it**, so a single bad
+  record stopped the queue rather than being skipped.
+- **A meeting transcript never reached the model** it was gathered for.
+- **The grounding gate accepted its own refusal as evidence** and rejected two
+  values a model could legitimately hold, including a phone number written the
+  way a person writes one.
+- **Windows installs were uncounted** because the installer sent no User-Agent,
+  and the "Total installs" figure counted marketplace content rather than
+  servers.
+- **Autostart could promise a start it would then withhold.** It now refuses an
+  unconfigured realm outright and the installer tells you to pair first.
+
 ## 26.8.19 — 2026-08-19
 
 Housekeeping, mostly, and the honest kind: several things this distribution was

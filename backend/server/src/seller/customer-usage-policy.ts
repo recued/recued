@@ -63,7 +63,11 @@ export interface SellerCustomerUsageRecordResult {
 
 export type SellerCustomerUsageStore = Pick<
   SellerStore,
-  'getUsageRollup' | 'recordUsage'
+  // D-250 § D — `recordTokenUsage` joins the two metering methods because the
+  // measurement lands on the SAME rollup row, in the same period, at the same
+  // commit. A separate store handle would have made it possible to record a
+  // cost against a row whose units went somewhere else.
+  'getUsageRollup' | 'recordUsage' | 'recordTokenUsage'
 >;
 
 /** Opaque handle for one admitted token-bucket debit that has not crossed its

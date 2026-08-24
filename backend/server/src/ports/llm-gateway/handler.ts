@@ -73,6 +73,10 @@ import {
   type SellerCustomerUsageRateReservation,
   type SellerCustomerUsageStore,
 } from '../../seller/customer-usage-policy.js';
+import type {
+  SellerUsagePeriodGranularity,
+  TokenUsageReport,
+} from '@recued/contracts';
 import { extractBearerToken } from '../common/bearer.js';
 import { writeJson } from '../common/respond.js';
 
@@ -181,6 +185,19 @@ export interface LlmGatewayCompletionResult {
   readonly content: string;
   readonly finish_reason?: 'stop' | 'length' | 'content_filter';
   readonly usage?: LlmGatewayUsage;
+  /** D-250 § D — the MEASURED provider report, kept beside the OpenAI-shaped
+   *  `usage` that goes on the wire.
+   *
+   *  ⛔ THE WIRE SHAPE IS NOT ENOUGH TO RECORD FROM. It carries three totals and
+   *  no `provider_calls`, so a tool-loop turn that called the model four times
+   *  is indistinguishable from one that called it once — and "tokens per call"
+   *  computed off it would be wrong by the loop depth. This field is never
+   *  serialised to the customer; it exists so the seller's rollup records what
+   *  the turn actually cost.
+   *
+   *  ⚠ Absent when the turn produced no usage report (a cached refusal, a
+   *  provider that echoed nothing). Absent is not zero. */
+  readonly usage_report?: TokenUsageReport;
   readonly post_effect_outcome?: LlmGatewayPostEffectOutcome;
 }
 
@@ -882,6 +899,11 @@ export const createLlmGatewayDirectCompletionProvider = (
     return {
       content: result.text,
       usage: usageFromTokenUsage(result.usage),
+      // D-250 § D — one adapter call on this path, so the report is that call's.
+      // `deps.quota.recordUsage` above already counted these tokens against the
+      // OWNER's provider quota; this records the same tokens against the
+      // CUSTOMER's contract, which is a different question and a different bill.
+      usage_report: tokenUsageToReport(result.usage),
       ...(result.finish_reason !== undefined
         ? { finish_reason: result.finish_reason }
         : {}),
@@ -1070,6 +1092,8 @@ export const createLlmGatewaySharedChatCompletionProvider = (
               completion_tokens: turn.usage.output_tokens,
               total_tokens: turn.usage.total_tokens,
             },
+            // D-250 § D — the same numbers plus `provider_calls`, for the rollup.
+            usage_report: turn.usage,
           }
         : {}),
       ...(lastFinishReason !== undefined
@@ -1639,6 +1663,14 @@ interface GatewayUsageReservation {
   readonly admitted_at: number;
   readonly input: SellerCustomerUsageInput & { readonly units: number; readonly now: number };
   readonly rate_reservation: SellerCustomerUsageRateReservation | null;
+  /** D-250 § D — the period this reservation was admitted against, carried so
+   *  `commit` can record MEASURED tokens onto the same rollup row the units
+   *  land on. ⛔ Carried rather than recomputed at commit time: a turn that
+   *  straddles midnight UTC would otherwise bill its units to one day and its
+   *  tokens to the next, and the two would never reconcile. Absent when the
+   *  tier declares no policy for this kind (nothing was period-resolved). */
+  readonly period_granularity?: SellerUsagePeriodGranularity;
+  readonly period_start?: number;
 }
 
 /** Request-local callers share this handler-scoped reservation set. It closes
@@ -1730,17 +1762,38 @@ const createGatewayUsageReservations = (input: {
         admitted_at: admittedAt,
         input: usageInput,
         rate_reservation: rateReservation,
+        period_granularity: parsed.policy.period_granularity,
+        period_start: periodStart,
       };
       pendingByKey.set(key, pending + usageInput.units);
       live.add(reservation);
       return { admission, reservation };
     },
-    commit(reservation: GatewayUsageReservation): void {
+    commit(reservation: GatewayUsageReservation, usage?: TokenUsageReport): void {
       try {
         input.sellerUsageGate.record({
           ...reservation.input,
           now: reservation.admitted_at,
         });
+        // D-250 § D — record what the metered work actually COST, on the same
+        // row and the same period as the units.
+        // ⛔ INSIDE THE SAME `try`, AFTER the meter, and never in front of it: a
+        // failure to record a measurement must not cost the seller a billing
+        // count. The caller already wraps this whole call and only warns.
+        if (
+          usage !== undefined
+          && reservation.period_granularity !== undefined
+          && reservation.period_start !== undefined
+        ) {
+          input.sellerStore.recordTokenUsage({
+            contract_id: reservation.input.customer.contract_id,
+            usage_kind: reservation.input.usage_kind,
+            period_granularity: reservation.period_granularity,
+            period_start: reservation.period_start,
+            usage,
+            now: reservation.admitted_at,
+          });
+        }
       } finally {
         if (reservation.rate_reservation) {
           input.sellerUsageGate.commitRate(reservation.rate_reservation, input.now());
@@ -2293,7 +2346,10 @@ export const createLlmGatewayPortHandler = (
 
     if (chatTurnReservation && gatewayUsageReservations) {
       try {
-        gatewayUsageReservations.commit(chatTurnReservation);
+        // D-250 § D — the turn's measured cost rides the same commit as its
+        // metered unit. `usage_report` (not the wire-shaped `usage`) because
+        // only it carries `provider_calls`.
+        gatewayUsageReservations.commit(chatTurnReservation, completion.usage_report);
       } catch (e) {
         console.warn(
           `[llm_gateway] seller customer chat_turn rollup failed: ${

@@ -87,6 +87,10 @@ beforeEach(() => {
           && row.period_granularity === input.period_granularity
           && row.period_start === input.period_start,
       ) ?? null),
+    // D-250 § D — the store's measurement half. This double stands in at a
+    // MONEY boundary, so it throws rather than silently succeeding: a test that
+    // starts exercising the token path has to say so instead of passing blind.
+    recordTokenUsage: vi.fn(() => { throw new Error('recordTokenUsage not stubbed'); }) as never,
     recordUsage: vi.fn(() => {
       throw new Error('recordUsage should not be called by customer.status');
     }),

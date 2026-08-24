@@ -25,6 +25,15 @@
  *      'array'         591 in   359 recipes
  *      'object'         46 in    37 recipes
  *      'json'           10 in     9 recipes
+ *      'long_text'       1 in     1 recipes
+ *
+ *  ⚠ `'long_text'` (2026-08-22) is the newest member of that set and the only
+ *  one whose renderer branch already exists: `variable-widgets.ts` maps it to a
+ *  `textarea` widget, because every other string-ish type is a one-line input
+ *  and a browser strips the newlines out of a multi-line paste on its way into
+ *  one. It stays UNDECLARED here for the same reason as the other five — the
+ *  ruling below is that a partial union is worse than the cast, and one member
+ *  with a renderer does not change that arithmetic.
  *
  *  🔑 THAT IS A RULING, NOT A BACKLOG. `validate/structural.ts` admits an
  *  unknown TYPE — renderers fall back to `text`, a D-222 § 7 ruling —

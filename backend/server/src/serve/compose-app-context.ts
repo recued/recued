@@ -838,6 +838,11 @@ export const composeAppContext = (
           return llmConfig;
         }
       },
+      // D-250 § D — chat's provider result advances the owner's daily token
+      // counter, so `isOverBudget` finally sees the largest consumer. Optional
+      // chaining: a db-less or locked manager simply does not count, exactly as
+      // the recipe executor's own wiring behaves.
+      addOwnerTokenUsage: (tokens) => { llmSubstrate.llmManager?.addUsage(tokens); },
       llmQuota,
       llmAdapterRegistry,
       emptyTabProbe,
@@ -869,6 +874,8 @@ export const composeAppContext = (
             config,
             adapters: llmSubstrate.llmEmbeddingsAdapterRegistry,
             quota: llmSubstrate.llmQuota,
+            // D-250 § D — memory embedding is owner provider spend; count it.
+            onTokenUsage: (u) => { llmSubstrate.llmManager?.addUsage(u.total_tokens); },
           }));
       },
       // D-190 (generic reconciler MS3) — deal.search reads the CRM record mirror.
@@ -884,6 +891,10 @@ export const composeAppContext = (
       // gateway fetch deps), hence late-bound.
       getWorkEntityResolver: () => workEntityChatResolverRef,
       getWorkEntityTargetedReadDeps: () => workEntityTargetedReadDepsRef.current ?? undefined,
+      // D-192 P5 edges — `work.read`'s `include_related`. Late-bound for the
+      // same reason as the resolver: the store is constructed further down,
+      // once `db` has the edge schema.
+      getWorkEntityEdgeStore: () => workEntityEdgeStoreRef,
     });
   }
 

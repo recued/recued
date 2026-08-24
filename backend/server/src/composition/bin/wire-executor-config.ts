@@ -49,6 +49,7 @@ import type {
 import type { LLMConfigManager } from '../../llm-config.js';
 import type { KeyManager } from '../../key-manager.js';
 import type { ServerExecutorConfig } from '../../server-executor.js';
+import { createRunTokenUsageSink, type RunTokenUsageSink } from '../../run-token-usage.js';
 import type { ConnectionStoreSqlite } from '../../storage/connection-store.js';
 import type { SharedStore } from '../../storage/shared-store.js';
 import type { BlobStore } from '../../storage/blob-store.js';
@@ -202,6 +203,19 @@ export interface ComposeExecutorConfigDeps {
    *  at call time (chat + embeddings apply without a restart). */
   resolveLlmConfig: (() => LLMConfig | undefined) | undefined;
   llmManager: LLMConfigManager | undefined;
+  /** D-250 § D — run-scoped provider-usage accumulator behind
+   *  `AuditEntry.total_usage`. OPTIONAL, for tests that need to inspect what
+   *  the adapter recorded; production leaves it unset and takes the default
+   *  built below.
+   *
+   *  ⛔ THE DEFAULT IS BUILT ONCE PER CONFIG ON PURPOSE. The AI adapter records
+   *  into the sink hanging off this config and the execute handler claims from
+   *  `deps.executorConfig.runTokenUsage` — the same object — so one config
+   *  cannot hold a writer and a reader that disagree. Passing the sink in from
+   *  two call sites instead would make that a convention two callers have to
+   *  keep, and getting it wrong yields a field permanently absent with nothing
+   *  failing anywhere. */
+  runTokenUsage?: RunTokenUsageSink | undefined;
   connectionStore: ConnectionStoreSqlite | undefined;
   /** D-234 § 234.4 — LATE BINDING for the inbound peer door. The notification
    *  block lands on `executeDeps.preflightNotifier`, which is composed AFTER
@@ -578,6 +592,14 @@ export const composeExecutorConfig = async (
     onTokenUsage: deps.llmManager
       ? (tokens) => deps.llmManager!.addUsage(tokens)
       : undefined,
+    // D-250 § D — the run-scoped half of the same provider result.
+    // ⛔ NOT GATED ON `llmManager`, unlike the two hooks above it. Those feed
+    // the daily budget counter, which lives on the manager and is meaningless
+    // without it; this feeds an AUDIT field, which is wanted on every server
+    // that runs recipes — including one with no budget configured, which is the
+    // default. Gating it on the manager would have shipped the field silently
+    // empty on exactly the installs least likely to notice.
+    runTokenUsage: deps.runTokenUsage ?? createRunTokenUsageSink(),
     cacheStore: deps.cacheStore,
     instanceId: deps.serverInstanceId,
     cacheMaxBytes: 1024 * 1024 * 1024, // 1 GB default

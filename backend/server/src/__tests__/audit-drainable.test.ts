@@ -84,4 +84,36 @@ describe('createDrainableAuditLog', () => {
     await expect(write).rejects.toBe(failure);
     await expect(drainable.closeAndDrain()).resolves.toBeUndefined();
   });
+
+  it('R13 T4-6.1 — counts refused writes after drain and notifies the marker callback', async () => {
+    const logActivity = vi.fn(() => Promise.resolve());
+    const append = vi.fn(() => Promise.resolve());
+    const onDroppedWrite = vi.fn((_total: number) => undefined);
+    const drainable = createDrainableAuditLog(
+      { logActivity, append } as unknown as AuditLogStore,
+      { onDroppedWrite },
+    );
+    expect(drainable.droppedWrites()).toBe(0);
+    await drainable.closeAndDrain();
+
+    await expect(drainable.auditLog.logActivity(activity())).resolves.toBeUndefined();
+    await expect(drainable.auditLog.append(execution())).resolves.toBeUndefined();
+
+    expect(drainable.droppedWrites()).toBe(2);
+    expect(onDroppedWrite).toHaveBeenNthCalledWith(1, 1);
+    expect(onDroppedWrite).toHaveBeenNthCalledWith(2, 2);
+    // The refused writes never reached the underlying store.
+    expect(logActivity).not.toHaveBeenCalled();
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  it('R13 T4-6.1 — a throwing marker callback is contained (shutdown path)', async () => {
+    const drainable = createDrainableAuditLog(
+      { logActivity: vi.fn(() => Promise.resolve()) } as unknown as AuditLogStore,
+      { onDroppedWrite: () => { throw new Error('marker disk gone'); } },
+    );
+    await drainable.closeAndDrain();
+    await expect(drainable.auditLog.logActivity(activity())).resolves.toBeUndefined();
+    expect(drainable.droppedWrites()).toBe(1);
+  });
 });

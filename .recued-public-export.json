@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "aeebccf053b67f23b3f77e816f0d90cc591b3912",
-    "tree": "9fb226ca7e412b7d9788f6d387bcd20cd18d976b",
-    "committed_at": "2026-08-19T17:43:41-07:00"
+    "commit": "e9bdcd5293d83e571e781de1cc4a927a7b4824df",
+    "tree": "6877af9acd63cd9615fa9d4cef36c84e8f1821c4",
+    "committed_at": "2026-08-24T04:47:47-07:00"
   },
-  "export_manifest_sha256": "e0c97f1960d541ae416227fe1e353ba9c7f53e597d2a0dae2601952d2f1e0efc",
-  "version": "26.8.19",
+  "export_manifest_sha256": "2db601c087748bf2be6f7da725a0c2ae9d6caf3982e9643d3571432732862fd9",
+  "version": "26.8.24",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -46,6 +46,7 @@
       "apps/webclient/src/__tests__/d-200-slice6g4-intake-recipe-pair-section.test.ts",
       "apps/webclient/src/__tests__/pack-app-model.test.ts",
       "apps/webclient/src/__tests__/recipes-required-file-slugs.test.ts",
+      "backend/server/src/__tests__/audit-exempt-records-read.test.ts",
       "backend/server/src/__tests__/bundled-foundation-embed.test.ts",
       "backend/server/src/__tests__/calendar-e2e.test.ts",
       "backend/server/src/__tests__/d-145-pa10-pack-list-rpc.test.ts",
@@ -140,6 +141,9 @@
       "backend/server/src/__tests__/federated-project-two-node-live-drive.test.ts",
       "backend/server/src/__tests__/fleet-money-audit-drive.test.ts",
       "backend/server/src/__tests__/fleet-money-business-workflow.test.ts",
+      "backend/server/src/__tests__/fleet-money-job-list-assignee.test.ts",
+      "backend/server/src/__tests__/fleet-money-owner-override-drive.test.ts",
+      "backend/server/src/__tests__/fleet-money-reactive-channel-drive.test.ts",
       "backend/server/src/__tests__/foundation-pack-op-step-pre-install.test.ts",
       "backend/server/src/__tests__/helpers/records-pack-harness.ts",
       "backend/server/src/__tests__/horizon-plan-classifier.test.ts",
@@ -167,6 +171,7 @@
       "backend/server/src/__tests__/records-pack-write-approval.test.ts",
       "backend/server/src/__tests__/release-manifest-per-channel-path.test.ts",
       "backend/server/src/__tests__/rental-book-business-workflow.test.ts",
+      "backend/server/src/__tests__/revived-enrichment-producer-writes.test.ts",
       "backend/server/src/__tests__/saga-write-seal.test.ts",
       "backend/server/src/__tests__/split-pack-op-provenance.test.ts",
       "backend/server/src/__tests__/statement-import-business-workflow.test.ts",
@@ -404,6 +409,8 @@
       "packages/recipes/src/__tests__/bitbucket-pull-request-comment-closure-loop.test.ts",
       "packages/recipes/src/__tests__/booking-desk-audit.test.ts",
       "packages/recipes/src/__tests__/brevo-list-reach-pack-audit.test.ts",
+      "packages/recipes/src/__tests__/calcom-meeting-operations.test.ts",
+      "packages/recipes/src/__tests__/calcom-meeting-outcomes-run.test.ts",
       "packages/recipes/src/__tests__/calendly-booked-vs-held-pack-audit.test.ts",
       "packages/recipes/src/__tests__/canva-comment-reply-closure-loop.test.ts",
       "packages/recipes/src/__tests__/carbon-intensity-pack-audit.test.ts",
@@ -449,6 +456,7 @@
       "packages/recipes/src/__tests__/guard-required-reaches-the-schema.test.ts",
       "packages/recipes/src/__tests__/helpscout-conversation-reply-closure-loop.test.ts",
       "packages/recipes/src/__tests__/hex-pack-audit.test.ts",
+      "packages/recipes/src/__tests__/hubspot-analytics-recipes-run.test.ts",
       "packages/recipes/src/__tests__/inbound-artifact-verification-audit.test.ts",
       "packages/recipes/src/__tests__/intercom-conversation-reply-closure-loop.test.ts",
       "packages/recipes/src/__tests__/intercom-fin-content-freshness-pack-audit.test.ts",
@@ -467,6 +475,8 @@
       "packages/recipes/src/__tests__/mail-commitment-proposal-loop.test.ts",
       "packages/recipes/src/__tests__/mail-task-proposal-loop.test.ts",
       "packages/recipes/src/__tests__/mailgun-sending-domains-pack-audit.test.ts",
+      "packages/recipes/src/__tests__/meeting-outcomes-variants.test.ts",
+      "packages/recipes/src/__tests__/meeting-prep-project-context.test.ts",
       "packages/recipes/src/__tests__/microsoft-todo-task-closure-loop.test.ts",
       "packages/recipes/src/__tests__/monday-item-update-closure-loop.test.ts",
       "packages/recipes/src/__tests__/musicbrainz-pack-audit.test.ts",
@@ -527,7 +537,7 @@
       "packages/recipes/src/__tests__/zendesk-ticket-count-truth-pack-audit.test.ts",
       "packages/recipes/src/__tests__/zendesk-ticket-reply-closure-loop.test.ts"
     ],
-    "sha256": "e228892a9cd9dc04f7867befe159f70be20f6d961357a8d19c645d3ffdb1abc7",
+    "sha256": "ad440429b0ea57ae2cb47c11e4436871c266c844a0b581e5a16040f0b50a778c",
     "roots": [
       "apps/auth-worker",
       "backend/api",
@@ -538,7 +548,7 @@
     ]
   },
   "internal_reference_scrub": {
-    "files_changed": 1031,
+    "files_changed": 1033,
     "rules": [
       {
         "id": "internal-spec-reference",
@@ -546,7 +556,7 @@
       },
       {
         "id": "internal-design-document",
-        "comments_rewritten": 86
+        "comments_rewritten": 88
       },
       {
         "id": "internal-handover-note",
@@ -634,7 +644,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 5392,
-    "sha256": "bb8f3336430bea29ac24c863fada17b27419a3e3d5b9e2e8770ef95bdbae843b"
+    "file_count": 5421,
+    "sha256": "32e782e0fed4efeb6d51e0485a478ef8b5b0e8fdc32d1e89d7f1fc106efc0073"
   }
 }

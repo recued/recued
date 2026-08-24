@@ -185,13 +185,8 @@ export const handleAnnotationWrite = async (
   const value = hasOwn(args, 'value') ? args.value : null;
 
   const sourceHash = own(args, 'source_record_hash');
-  const recipeHash = own(args, 'recipe_hash');
-  if (typeof sourceHash !== 'string' || typeof recipeHash !== 'string') {
-    throw new RpcError(
-      'bad_request',
-      'source_record_hash and recipe_hash are required',
-      400,
-    );
+  if (typeof sourceHash !== 'string') {
+    throw new RpcError('bad_request', 'source_record_hash is required', 400);
   }
   const recipeId = own(args, 'authored_by_recipe_id');
   if (typeof recipeId !== 'string') {
@@ -207,7 +202,6 @@ export const handleAnnotationWrite = async (
       value,
       authored_by_recipe_id: recipeId,
       source_record_hash: sourceHash,
-      recipe_hash: recipeHash,
       ...(typeof own(args, 'model_used') === 'string' ? { model_used: own(args, 'model_used') as string } : {}),
       ...originFields(deps),
     });
@@ -413,13 +407,8 @@ export const handleAnnotationCreate = async (
     throw new RpcError('bad_request', 'annotation.create: key is required', 400);
   }
   const sourceHash = own(args, 'source_record_hash');
-  const recipeHash = own(args, 'recipe_hash');
-  if (typeof sourceHash !== 'string' || typeof recipeHash !== 'string') {
-    throw new RpcError(
-      'bad_request',
-      'annotation.create: source_record_hash and recipe_hash are required',
-      400,
-    );
+  if (typeof sourceHash !== 'string') {
+    throw new RpcError('bad_request', 'annotation.create: source_record_hash is required', 400);
   }
   const recipeId = own(args, 'authored_by_recipe_id');
   if (typeof recipeId !== 'string') {
@@ -453,7 +442,6 @@ export const handleAnnotationCreate = async (
       value,
       authored_by_recipe_id: recipeId,
       source_record_hash: sourceHash,
-      recipe_hash: recipeHash,
       ...(typeof modelUsed === 'string' ? { model_used: modelUsed } : {}),
       ...(typeof eventAt === 'number' ? { event_at: eventAt } : {}),
       ...originFields(deps),

@@ -9,6 +9,7 @@ import {
   createClockGatedTimestampedHmacWebhookProfileAdapter,
   createPrimitiveWebhookProfileAdapters,
 } from './webhook-primitive-profiles.js';
+import { createCalWebhookProfileAdapter } from './webhook-cal-profile.js';
 import {
   createClockGatedTimestampedFormWebhookProfileAdapter,
 } from './webhook-timestamped-form-profile.js';
@@ -45,6 +46,7 @@ export const createBuiltinWebhookDeliveryProfileAdapters = (
   const alwaysMounted: WebhookIngressProfileAdapter[] = [
     ...createPrimitiveWebhookProfileAdapters().filter((adapter) =>
       ALWAYS_MOUNTED_PRIMITIVE_PROFILES.has(adapter.profile_id)),
+    createCalWebhookProfileAdapter(),
     createStaticHeaderJsonSingleEventWebhookProfileAdapter(
       'telegram.bot-webhook.v1',
     ),

@@ -80,7 +80,6 @@ beforeEach(async () => {
     value: 'warm',
     authored_by_recipe_id: 'r-1',
     source_record_hash: 'src-hash',
-    recipe_hash: 'rec-hash',
   });
   await annotationStore.annotate({
     target_collection: 'contact',
@@ -89,7 +88,6 @@ beforeEach(async () => {
     value: 'gold',
     authored_by_recipe_id: 'r-1',
     source_record_hash: 'src-hash',
-    recipe_hash: 'rec-hash',
   });
   // Paired-client channel deps — NO `gateMcpPrivate` (sees private rows).
   timelineDeps = { db, auditLog, annotationStore };

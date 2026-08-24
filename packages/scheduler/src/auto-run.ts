@@ -61,8 +61,26 @@ export interface AutoRunEntry {
 /** Outcome classifier the executor reports back to `markFinished`.
  *   - `success` resets the failure counter.
  *   - `skipped` (trigger gate returned false) leaves it unchanged.
- *   - `failed` increments it toward the circuit breaker. */
-export type AutoRunOutcome = 'success' | 'skipped' | 'failed';
+ *   - `held` (the run paused on a DURABLE approval / peer checkpoint)
+ *     leaves it unchanged.
+ *   - `failed` increments it toward the circuit breaker.
+ *
+ *  ⛔⛔ `held` IS A THIRD STATE AND COLLAPSING IT INTO `failed` DISABLES THE
+ *  RECIPE. A preflight pause returns `success: false` with an EMPTY `errors`
+ *  array (`execute.ts`), so a caller that classifies on `!success` records a
+ *  failure whose reason degrades to the generic "execution failed", and
+ *  `CIRCUIT_BREAKER_THRESHOLD` consecutive holds set `auto_disabled`. For an
+ *  hourly-or-faster recipe whose first write is approval-gated, that is the
+ *  automation switching itself off within the hour while its approval asks sit
+ *  unanswered — the owner sees a recipe that "failed" five times for no stated
+ *  reason. A hold is the system working: the ask IS the surface, and the next
+ *  tick should keep firing.
+ *
+ *  ⚠ Only a DURABLE pause qualifies. When no checkpoint could be written the
+ *  run is not resumable, and the handler already reports that as a terminal
+ *  failure rather than a hold — which is the right classification, because
+ *  nothing will ever come back to finish it. */
+export type AutoRunOutcome = 'success' | 'skipped' | 'held' | 'failed';
 
 /** Result of one `tick(now)` call. `fired` names the recipes the
  *  caller should dispatch; the other two fields classify drops so
@@ -291,8 +309,17 @@ export function createAutoRunScheduler(
         if (entry.consecutive_failures >= CIRCUIT_BREAKER_THRESHOLD) {
           entry.auto_disabled = true;
         }
+      } else {
+        // `skipped` and `held` leave the counter unchanged — neither is
+        // evidence the recipe is broken.
+        // ⛔ THE ANNOTATION IS A RATCHET, NOT DECORATION. A new member of
+        // `AutoRunOutcome` lands here by default, and "counts as harmless" is
+        // exactly the wrong thing to inherit silently — a real failure that
+        // stopped counting is invisible until the circuit never trips. Naming
+        // the permitted values makes the compiler demand a decision.
+        const counterUnchanged: 'skipped' | 'held' = outcome;
+        void counterUnchanged;
       }
-      // outcome === 'skipped' leaves the counter unchanged.
 
       if (entry.dynamic && nextRunHint !== undefined) {
         entry.next_run_at = nextRunHint;

@@ -289,6 +289,82 @@ export const RECEPTION_SESSION_GRANT_DEFAULTS: SessionGrantDefaults = {
   grantable_risk_tiers: ['write'],
 };
 
+/** The `(schedule, system)` seed: the owner's own CRON automation.
+ *
+ *  🔑 THE PREMISE THIS CELL WAS OMITTED ON IS FALSE, AND IT IS NOW DRIVEN.
+ *  {@link SESSION_GRANT_DEFAULT_SEEDS} used to read "the EVENT-FIRE channels
+ *  never raise an ask, so a seed there would be a provable no-op". They do
+ *  raise one: `resolveTrustCeiling` floors a contract-free `system` dispatch
+ *  to the LOW `read` ceiling, so EVERY write a scheduled recipe attempts
+ *  resolves to `ask` and holds. Driven end-to-end through `handleExecute` +
+ *  a real notification block — the hold mints a real `PendingAsk` that the
+ *  approvals panel lists (`d-177-unattended-seed-drive.test.ts`). The same
+ *  correction N.14.1 already made for reception, on the cell it named as the
+ *  follow-on ("owner-automation learning — same stable-session structure on
+ *  `schedule:<source_recipe>`", D-177 N.14 decisions-log entry).
+ *
+ *  Every tick of one scheduled recipe shares a STABLE `channel_session_id`
+ *  (`schedule:<source_recipe>` — `deriveChannelSessionId`, whose own comment
+ *  reads "every tick of one scheduled recipe"), so an `allow_session` answer
+ *  here reads "allow for THIS schedule": the grant absorbs subsequent ticks
+ *  until TTL/uses run out, then the next tick holds and re-offers. That
+ *  re-affirm rhythm IS the approve-then-automate arc at the session tier.
+ *
+ *  ⛔ CADENCE-SCALED, NOT SITTING-SCALED — and this is why the chat hour
+ *  cannot be copied here. A DAILY cron fires once per 24 h, so any TTL at or
+ *  under a day absorbs exactly ZERO second ticks: the grant would expire
+ *  before the fire it exists to cover, and the owner would press "allow for
+ *  this schedule" and be asked again tomorrow regardless. The bound that
+ *  carries the safety is `max_uses` (the count of unattended writes one press
+ *  buys); the TTL only bounds staleness.
+ *
+ *  ⛔ AT the standing-delegation ceiling, never above it: 30 d / 100 uses are
+ *  {@link DELEGATION_RULE_TTL_MS} / {@link DELEGATION_RULE_MAX_USES} — the
+ *  bounds this repo already ratified for standing `write`-only authority. An
+ *  unattended session grant is materially that posture (the "session" is the
+ *  recipe's whole cadence, not a sitting), so it may SIT AT that ceiling and
+ *  must never exceed it. Literal values rather than references, per this
+ *  file's established per-cell copy idiom — the ceiling is held by a ratchet
+ *  (`d-177-unattended-seed`) instead, so tuning stays a one-line change and
+ *  drift ABOVE the standing ceiling fails a test rather than shipping.
+ *
+ *  `write` ONLY, the tightest tier set alongside reception's:
+ *   - `read` never reaches an offer here anyway — it is never-class and
+ *     admits at the `read` ceiling, so no read ever holds on this cell.
+ *     Listing it would be the provable no-op the omission wrongly claimed of
+ *     the whole cell.
+ *   - `admin` is DELIBERATELY EXCLUDED. Administering the server on a timer
+ *     with nobody watching is a categorically wider posture than running the
+ *     owner's own scheduled work, and it is not what this cell is for.
+ *     `destructive` is never session-grantable at all (D7). */
+export const SCHEDULE_SESSION_GRANT_DEFAULTS: SessionGrantDefaults = {
+  ttl_ms: 2_592_000_000,
+  max_uses: 100,
+  grantable_risk_tiers: ['write'],
+};
+
+/** The `(reactive, system)` seed: the owner's own EVENT-DRIVEN automation —
+ *  `auto_run` ticks and `event_triggers` fires. Same argument as
+ *  {@link SCHEDULE_SESSION_GRANT_DEFAULTS} on the same stable-session
+ *  structure (`reactive:<source_recipe>` — "every reactive fire of one
+ *  recipe"), and the values MIRROR it: a deliberate copy, NOT a reference, so
+ *  per-channel tuning stays a one-line change (the same idiom the chat /
+ *  messenger / mcp trio already uses).
+ *
+ *  ⚠ The two cells differ in one way worth knowing before tuning them apart:
+ *  a cron tick is paced by its cron expression, while a reactive fire is
+ *  paced by the WORLD — a busy inbox can burn the whole use budget in an hour
+ *  where a daily cron takes 100 days. That asymmetry is fail-SAFE (the budget
+ *  runs out and the next fire holds and re-offers, which is the designed
+ *  rhythm, not a failure), so it does not justify a tighter seed on its own;
+ *  it is the reason to tune THIS constant rather than both if it ever needs
+ *  tightening. */
+export const REACTIVE_SESSION_GRANT_DEFAULTS: SessionGrantDefaults = {
+  ttl_ms: 2_592_000_000,
+  max_uses: 100,
+  grantable_risk_tiers: ['write'],
+};
+
 /** N.14.6 — is this dispatch a DOOR (an outside identity reaching in through an
  *  externally-established entry point) rather than the owner?
  *
@@ -337,17 +413,43 @@ export const isDoorMatchContext = (ctx: {
   ctx.actor === 'anonymous'
   || (ctx.channel === 'mcp' && isDelegatedMcpToken(ctx.mcp_token_id));
 
-/** D-177 P5 (N.6) — the seeded cells in one table: the three attended
- *  ask-channels (`chat` / `messenger` / `mcp` — the channels whose holds a
- *  human answers) plus — N.14 — the `(reception, anonymous)` door cell (a
- *  reception hold is answered by the owner in the D-173 inbox, so it is an
- *  attended ask surface too; the EVENT-FIRE channels never raise an ask, so
- *  a seed there would be a provable no-op). Single source of truth for BOTH consumers:
- *  `BASELINE_POLICY_MATRIX_CELLS` references these very objects on its cells
- *  and `resolveSessionGrantOffer`'s no-row fallback resolves through
- *  {@link seededSessionGrantDefaults} — the policy-matrix module-load
- *  assertion (`assertSessionGrantSeedLockstep`) pins the two views to the
- *  same object per cell, so seed and fallback can never drift. */
+/** D-177 P5 (N.6) — the seeded cells in one table. Three families:
+ *
+ *   1. The attended ask-channels (`chat` / `messenger` / `mcp`) — the
+ *      channels whose holds a human answers in the moment.
+ *   2. N.14 — the `(reception, anonymous)` DOOR cell: a reception hold is
+ *      answered by the owner in the D-173 inbox, so it is an attended ask
+ *      surface too, and every fire on a door shares one stable session id.
+ *   3. The owner's own UNATTENDED automation — `(schedule, system)` and
+ *      `(reactive, system)`. See {@link SCHEDULE_SESSION_GRANT_DEFAULTS}.
+ *
+ *  ⛔⛔ FAMILY 3 WAS OMITTED ON A FALSE PREMISE, AND THE FALSE PREMISE WAS
+ *  WRITTEN HERE. This docblock used to read "the EVENT-FIRE channels never
+ *  raise an ask, so a seed there would be a provable no-op" — and it is the
+ *  SECOND time that sentence has been quoted as evidence and found wrong:
+ *  N.14.1 already corrected a survey that had cited it to conclude reception
+ *  could not be seeded. Event-fire channels raise asks constantly. A
+ *  contract-free `system` dispatch is floored to the LOW `read` ceiling
+ *  (`resolveTrustCeiling`), so every write a scheduled or reactive recipe
+ *  attempts resolves to `ask` and holds — driven end-to-end in
+ *  `d-177-unattended-seed-drive.test.ts`, which watches the hold mint a real
+ *  `PendingAsk` and reads it back out of the approvals-panel projection.
+ *
+ *  🔑 THE SHAPE OF THE MISTAKE, because it is worth more than the fix: the
+ *  claim conflated "no HUMAN is present at the fire" with "no ask is raised".
+ *  They are opposites here — precisely BECAUSE nobody is present, the
+ *  dispatch takes the low ceiling and holds. The cell that most needed the
+ *  approve-once instrument was the one cell the substrate's own relief was
+ *  declared unreachable for, and the declaration sat one function call away
+ *  from the code that disproves it. ⇒ A cell omitted from a fence's seed
+ *  table needs its reason RE-DRIVEN, not re-read: this comment was quoted
+ *  twice and was wrong both times.
+ *
+ *  Single source of truth: `resolveSessionGrantOffer`'s fallback resolves
+ *  through {@link seededSessionGrantDefaults}. (The `BASELINE_POLICY_MATRIX_
+ *  CELLS` / `assertSessionGrantSeedLockstep` lockstep this comment used to
+ *  describe went with the policy-matrix substrate in D-187 slice 6 — there is
+ *  no second view left to drift from.) */
 export const SESSION_GRANT_DEFAULT_SEEDS: ReadonlyArray<{
   readonly channel: Channel;
   readonly actor: Actor;
@@ -368,6 +470,16 @@ export const SESSION_GRANT_DEFAULT_SEEDS: ReadonlyArray<{
     channel: 'reception',
     actor: 'anonymous',
     defaults: RECEPTION_SESSION_GRANT_DEFAULTS,
+  },
+  {
+    channel: 'schedule',
+    actor: 'system',
+    defaults: SCHEDULE_SESSION_GRANT_DEFAULTS,
+  },
+  {
+    channel: 'reactive',
+    actor: 'system',
+    defaults: REACTIVE_SESSION_GRANT_DEFAULTS,
   },
 ];
 

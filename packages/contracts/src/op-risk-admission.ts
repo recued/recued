@@ -76,7 +76,30 @@ export const OUTBOUND_SEND_INGREDIENT_SLUGS: ReadonlySet<string> = new Set([
   'mail-send', //         recued/mail-send — direct warehouse send (kind storage)
   'mail-post', //         recued-core/mail-post — email via connection.notification
   'slack-post', //        recued-core/slack-post — Slack via connection.notification
-  'notification-send', // recued-core/notification-send — channel-delivery fan-out
+  // ⛔⛔ `notification-send` IS DELIBERATELY ABSENT (owner ruling 2026-08-20),
+  // and it is the one removal this set has ever made. THE MEMBERSHIP TEST IS
+  // "does the RECIPE author a destination?" — not "does a packet leave the
+  // machine". Every slug listed here takes a per-call target the owner needs to
+  // see before it goes: `to`, a channel, another server's owner. The
+  // notification op's input is `{channels, text, title, link_url}` — it carries
+  // NO recipient, and `channels` can only narrow to endpoints the owner
+  // enrolled and switched on. So the review this lift renders would show the
+  // owner a destination they configured themselves, about a message addressed
+  // to them.
+  //
+  // The gate also cost more than it protected: the approval prompt IS a
+  // notification on the SAME channels, so gating turned one interruption into
+  // two and taught the owner to approve unread. D-177 N.12 had already ruled
+  // this way for the rpc twin (`notification-handler.ts` — *"carries NO
+  // recipient … not a trust-bypass"*); the recipe surface just disagreed with
+  // it until now.
+  //
+  // ⚠ Removing it from this set is only HALF the fix and must not be done
+  // alone: the lift is `user_self`-scoped, so de-listing frees the attended
+  // owner while a cron still holds on the `read` ceiling. The tier moved to
+  // `read` in the same commit (`kernel-op-registry.ts` carries the full
+  // reasoning + the delegated-door consequence). Driven matrix in
+  // `d-177-notification-send-is-not-a-send.test.ts`.
   // D-210 §7 — recued/notify-booking-visitor: a booking-visitor courtesy send. The
   // recipient (the visitor's sealed email) is resolved server-side, never authored by
   // the recipe — but it IS an irreversible external delivery, so it lifts identically to

@@ -56,7 +56,13 @@ const NOW = Date.UTC(2030, 0, 15, 12, 0, 0);
 const DOOR_CONTRACT_ID = 'webhook-door-1';
 
 /** A real member of the closed outbound-send set — the lift's whole purpose. */
-const SEND_SLUG = 'notification-send';
+// ⛔ RE-POINTED 2026-08-20. This was `notification-send` until that op left the
+// outbound set (it authors no recipient — owner ruling). The premise test right
+// below is what caught it: its own comment warned that if this slug ever left
+// the set, "every assertion below would still pass while measuring nothing".
+// `mail-send` is the canonical recipient-authoring send, so the suite measures
+// exactly what it always did.
+const SEND_SLUG = 'mail-send';
 
 /** The shape `webhook-recipe-consumer.ts` dispatches: `anonymous`, carrying the
  *  claimed trigger row's stamped door contract. */

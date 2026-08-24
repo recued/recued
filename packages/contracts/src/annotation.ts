@@ -11,11 +11,23 @@
  *
  *  Recipes write through the kernel ingredients `data-annotate` /
  *  `data-link`; the per-record refs are populated by the engine's
- *  prefetch resolver. Eviction is engine-internal staleness — the
- *  engine renders a `⚠ stale` badge when any of `(source_record_hash,
- *  recipe_hash, model_used)` no longer matches; never auto-deletes.
- *  Recipes opt into automatic deletion via `annotation_policy:
- *  "evict_on_stale"` on the recipe metadata. */
+ *  prefetch resolver. Staleness is engine-internal: the engine renders
+ *  a `⚠ stale` badge when `(source_record_hash, model_used)` no longer
+ *  matches, and NEVER auto-deletes.
+ *
+ *  ⛔ `annotation_policy: "evict_on_stale"` was RETIRED. It was declared on
+ *  `RecipeMetadata`, documented in five places as a working opt-in, and read
+ *  by NOTHING — `grep annotation_policy packages/engine/src` = 0, the
+ *  validator never knew the field, and no corpus recipe ever set it.
+ *
+ *  It was also the wrong shape, not merely unbuilt. Deleting a parent record
+ *  already drops its annotations transactionally
+ *  (`AnnotationStore.cascadeDelete`, wired at three call sites), and a manual
+ *  `annotation.delete` works regardless. What remained — the parent still
+ *  exists but the input it was derived from moved — is IDLE MAINTENANCE, so it
+ *  belongs to housekeeping, not to a per-recipe opt-in evaluated on a READ
+ *  path. The neighbouring substrate already agrees: enrichments carry a
+ *  `staleness_class` flipped by a cascade engine, never a read-time evict. */
 
 import type { CanonicalRecord } from './canonical-record.js';
 import type { Actor } from './commits.js';
@@ -60,11 +72,9 @@ export interface Annotation extends CanonicalRecord {
   /** Hash of the recipe definition at write time. Edits to the
    *  recipe (prompt, model_hint, transform pipeline) flip this and
    *  invalidate downstream annotations the same way a source-record
-   *  edit does. */
-  recipe_hash: string;
   /** Optional — model identifier used for AI-generated values. Only
    *  set when the annotation was produced by an `ai-*` ingredient.
-   *  Model rotation flips staleness without touching `recipe_hash`. */
+   *  Model rotation flips staleness on its own. */
   model_used?: string;
   /** Unix-ms write time. Authored ordering is the conflict-resolver
    *  for duplicate `(target_collection, target_id, key)` rows. */
@@ -214,23 +224,6 @@ export interface LinkFilter {
   limit?: number;
 }
 
-/** `annotation_policy` values for `RecipeMetadata.annotation_policy`.
- *  `'keep_stale'` (default) — engine renders `⚠ stale` badge on the
- *  per-record ref but never auto-deletes; user owns garbage
- *  collection. `'evict_on_stale'` — engine drops the row at next read
- *  through the per-record ref + flags it on the next bulk
- *  `annotation-list` call. Recipes opt in explicitly because eviction
- *  is destructive. */
-export const ANNOTATION_POLICIES = ['keep_stale', 'evict_on_stale'] as const;
-
-/** String-literal union derived from `ANNOTATION_POLICIES`. */
-export type AnnotationPolicy = (typeof ANNOTATION_POLICIES)[number];
-
-/** Default policy applied when `RecipeMetadata.annotation_policy` is
- *  absent. Conservative — keeps every row; user can always switch a
- *  recipe to `'evict_on_stale'` if they prefer auto-cleanup. */
-export const DEFAULT_ANNOTATION_POLICY: AnnotationPolicy = 'keep_stale';
-
 /** Hard ceiling on a single annotation `value`'s serialized size, in
  *  bytes. Larger values are rejected with `value_too_large` — same as
  *  the shared store's MAX_VALUE_BYTES. */
@@ -246,12 +239,11 @@ export const ANNOTATION_INLINE_CUTOFF_BYTES = 64 * 1024;
  *  legacy write (none currently exist; helper kept for callers that
  *  want to distinguish stamped vs unstamped). */
 export const isStalenessStamped = (
-  ann: Pick<Annotation, 'source_record_hash' | 'recipe_hash'>,
+  ann: Pick<Annotation, 'source_record_hash'>,
 ): boolean =>
   typeof ann.source_record_hash === 'string' &&
   ann.source_record_hash.length > 0 &&
-  typeof ann.recipe_hash === 'string' &&
-  ann.recipe_hash.length > 0;
+  ann.source_record_hash.length > 0;
 
 /** Compute whether a stamped annotation is stale against the current
  *  source record + recipe. Returns `true` iff any of the three stamp
@@ -259,11 +251,10 @@ export const isStalenessStamped = (
  *  annotation has no `model_used` stamp (transform-only path), the
  *  caller's `currentModel` is ignored. */
 export const isAnnotationStale = (
-  ann: Pick<Annotation, 'source_record_hash' | 'recipe_hash' | 'model_used'>,
-  current: { source_record_hash: string; recipe_hash: string; model_used?: string },
+  ann: Pick<Annotation, 'source_record_hash' | 'model_used'>,
+  current: { source_record_hash: string; model_used?: string },
 ): boolean => {
   if (ann.source_record_hash !== current.source_record_hash) return true;
-  if (ann.recipe_hash !== current.recipe_hash) return true;
   if (ann.model_used !== undefined && ann.model_used !== current.model_used) return true;
   return false;
 };

@@ -1057,7 +1057,17 @@ const runGuard = (step: RecipeStep, ctx: ExecutionContext): null => {
   return null;
 };
 
-const MAX_CONTEXT_BYTES = 10 * 1024 * 1024; // 10MB
+// Raised 10MB -> 50MB (2026-08-24, owner decision) for large-job headroom.
+// ⚠ CONTEXT FOR WHOEVER TOUCHES THIS NEXT: the run that motivated the change
+// was hitting the cap for the WRONG reason — it pulled a 563KB CSV inline and
+// retained the text plus the parsed rows plus six derived copies, which is
+// exactly the route `core.storage.csv.filter` / `file-persist` / `file-put-ref`
+// exist to replace ("the source bytes never enter recipe step state").
+// A recipe that keeps bytes out of step state does not need this headroom.
+// So treat a run approaching even the OLD 10MB as a shape smell first, and only
+// then as a limit — raising the ceiling does not make the retained-copies
+// pattern correct, it just defers where it fails.
+export const MAX_CONTEXT_BYTES = 50 * 1024 * 1024; // 50MB
 
 /** Per-recipe cumulative byte count of `ctx.stores.step` results.
  *  Prior implementation re-serialized the whole step store after every

@@ -190,6 +190,7 @@ const statusWith = (keyfile_sealing: KeyfileSealing): ServerSystemStatus => ({
   pending_asks: null,
   schedule_queue_depth: null,
   recent_error_count: null,
+  ask_load: null,
   keyfile_sealing,
   snapshot_at: 1_800_000_000_000,
 });

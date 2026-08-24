@@ -77,12 +77,38 @@ export const createAutonomousExecutionControl = (refs: {
   },
   async rearm() {
     // Mirror of `stop()` — rebuild each subsystem the stopAll tore down.
-    refs.getSchedulersBundle()?.rebuildAll();
+    //
+    // ⛔ EVERY stage is attempted even when an earlier one throws. This is the
+    // one seam where a single throw used to leave enabled trigger rows with
+    // ZERO live subscriptions until the next boot: `stop()` disposed them, a
+    // `rebuildAll()` throw skipped `dispatcher.rebuild()`, and the result was
+    // a live process whose store said "enabled" while nothing delivered —
+    // silent, because a dead subscription and a quiet week persist
+    // identically (round-13 D1 residue; the only reachable dead-subscription
+    // seam found). The failure still surfaces — as one AggregateError AFTER
+    // every subsystem that can come back has.
+    const failures: Error[] = [];
+    const attempt = (label: string, run: () => void): void => {
+      try {
+        run();
+      } catch (e) {
+        failures.push(
+          new Error(
+            `rearm ${label} failed: ${e instanceof Error ? e.message : String(e)}`,
+            { cause: e },
+          ),
+        );
+      }
+    };
+    attempt('schedulers.rebuildAll', () => refs.getSchedulersBundle()?.rebuildAll());
     // Re-subscribe the enabled trigger set the stop disposed.
-    refs.getEventTriggerDispatcher()?.rebuild();
+    attempt('triggers.rebuild', () => refs.getEventTriggerDispatcher()?.rebuild());
     // Re-arm the watch loops the stop drained (recompute clears the stopped
     // latch + re-arms every demanded loop from persisted state).
-    refs.getWatchManager()?.recompute();
+    attempt('watches.recompute', () => refs.getWatchManager()?.recompute());
+    if (failures.length > 0) {
+      throw new AggregateError(failures, 'rearm completed partially');
+    }
   },
 });
 

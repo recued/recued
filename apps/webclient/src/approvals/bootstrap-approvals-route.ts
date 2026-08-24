@@ -678,9 +678,22 @@ export const bootstrapApprovalsRoute = (
         }),
       ),
     ];
-    // Newest-first; stable id tiebreak so equal-timestamp rows don't churn.
+    // ⛔ OLDEST-FIRST. This is a WORK QUEUE, not a feed: the decision that has
+    // been waiting longest is the one to make next, and it was rendering at the
+    // BOTTOM of the list — the further behind you fell, the harder the oldest
+    // item was to find. Applies to all three row kinds on purpose; a gate, an
+    // ask and a chat plan are all just "something waiting on you", and ordering
+    // them by kind-specific rules would make the queue unreadable.
+    //
+    // ⚠ THIS SORT IS THE AUTHORITATIVE ONE FOR `#approvals`. `asks-panel` also
+    // sorts its own `state.asks` (for its non-headless render + the attention
+    // popover), but this route takes that list and re-sorts it into the unified
+    // set — so changing the panel alone would have moved nothing here. Both are
+    // correct for their own surface; neither is redundant.
+    //
+    // Stable id tiebreak so equal-timestamp rows don't churn.
     return rows.sort((a, b) =>
-      a.sortAt !== b.sortAt ? b.sortAt - a.sortAt : a.id.localeCompare(b.id),
+      a.sortAt !== b.sortAt ? a.sortAt - b.sortAt : a.id.localeCompare(b.id),
     );
   };
 

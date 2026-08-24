@@ -353,7 +353,6 @@ describe('handleTimelineRequest — annotation / link / enrichment attribution (
       key: 'note',
       value: 'agent wrote this',
       authored_by_recipe_id: 'p4-recipe',
-      recipe_hash: 'h-1',
       source_record_hash: 'src:contact:c1',
       origin_actor: 'contracted_user',
       origin_contract_id: 'ct-ann',
@@ -421,7 +420,6 @@ describe('handleTimelineRequest — annotation / link / enrichment attribution (
       key: 'note',
       value: 'system summary',
       authored_by_recipe_id: 'p4-recipe',
-      recipe_hash: 'h-1',
       source_record_hash: 'src:contact:c1',
       origin_actor: 'system',
     });
@@ -449,7 +447,6 @@ describe('handleTimelineRequest — I-10 holistic (mixed lanes on one entity)', 
       key: 'note',
       value: 'visitor said',
       authored_by_recipe_id: 'p4-recipe',
-      recipe_hash: 'h-1',
       source_record_hash: 'src:contact:c1',
       origin_actor: 'anonymous',
     });

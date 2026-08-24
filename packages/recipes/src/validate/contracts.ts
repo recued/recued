@@ -15,7 +15,8 @@
  */
 
 import { isBatchCapableAISlug, isEntityFieldPrivacy, stripCorePrefix } from '@recued/contracts';
-import { AI_FUNCTION_REQUIRED_INPUTS } from './constants.js';
+import { getKernelOp } from '@recued/contracts';
+import { AI_FUNCTION_REQUIRED_INPUTS, KERNEL_REQUIRED_INPUTS } from './constants.js';
 import { REF_PATTERN, validateConditionField, type AddFn } from './helpers.js';
 
 const ACTION_VARIANTS = new Set(['primary', 'secondary', 'danger']);
@@ -64,6 +65,13 @@ export const validateContracts = (r: Record<string, unknown>, add: AddFn): void 
     if (typeof s.ingredient === 'string' && AI_FUNCTION_REQUIRED_INPUTS[stripCorePrefix(s.ingredient)]) {
       validateAiFunctionInputs(s, path, add);
     }
+
+    // Kernel ingredient input contracts — the general case the AI-function rule
+    // above only ever covered for AI slugs. Resolves an op step to its backing
+    // slug first (`args` ARE the backing ingredient's `input`, identity map), so
+    // `op: 'core.data.enrichment.upsert'` is checked exactly like
+    // `ingredient: 'enrichment-upsert'`.
+    validateKernelRequiredInputs(s, path, add);
 
     // § 234.4p.16c — the `connection` direct-adapter hatch is a HOST
     // primitive (run-less, kind-pinned, tool-pinned — three D-234
@@ -559,6 +567,51 @@ const validatePiiFields = (
         add('warn', 'ai_pii_fields_unmatched_path', entryPath,
           `llm.pii_fields path "${tagPath}" matches no field in the inline llm.data object — verify the path (a path absent at run time simply aliases nothing)`);
       }
+    }
+  }
+};
+
+/** Flag a kernel step that omits an input its adapter requires at dispatch.
+ *
+ *  Static and deliberately conservative — it only fires when the step names a
+ *  literal kernel slug (or an op that lowers to one) AND the required key is
+ *  absent from the step's own `input` / `args`. A templated slug, an absent
+ *  args object on a step that supplies nothing, or any key present with ANY
+ *  value (a `{{ref}}` included — its emptiness is a runtime question) all pass.
+ *  Under-flagging is the correct direction: the adapter guard is still the
+ *  enforcement, this is only the early warning.
+ *
+ *  ⛔ 'warn', NOT 'error', AND THAT IS LOAD-BEARING. `parseRecipe` returns
+ *  `ok: false` for any ERROR-severity issue, so erroring here would newly
+ *  INVALIDATE recipes that parse today — including deliberately skeletal test
+ *  fixtures (`{ id: 'reply', op: 'core.mail.send' }` in the D-207 door-binding
+ *  suite, which is asserting bind behaviour, not mail validity) and any
+ *  installed recipe whose never-reached step omits a field. Measured: the rule
+ *  finds ZERO violations across all 2,272 shipped recipes, so erroring buys
+ *  nothing today while breaking binds. It surfaces the mistake at authoring
+ *  time, which is the whole ask; the dispatch guard still refuses the call. */
+const validateKernelRequiredInputs = (
+  s: Record<string, unknown>,
+  path: string,
+  add: AddFn,
+): void => {
+  const slug = typeof s.ingredient === 'string'
+    ? stripCorePrefix(s.ingredient)
+    : typeof s.op === 'string'
+      ? getKernelOp(s.op)?.backing_slug
+      : undefined;
+  if (slug === undefined) return;
+  const required = KERNEL_REQUIRED_INPUTS[slug];
+  if (!required) return;
+  const bag = (s.args ?? s.input);
+  const supplied = bag && typeof bag === 'object' && !Array.isArray(bag)
+    ? (bag as Record<string, unknown>)
+    : {};
+  const field = s.args !== undefined ? 'args' : 'input';
+  for (const key of required) {
+    if (!(key in supplied)) {
+      add('warn', 'kernel_input_missing_key', `${path}.${field}['${key}']`,
+        `${slug} requires ${field}.${key}`);
     }
   }
 };

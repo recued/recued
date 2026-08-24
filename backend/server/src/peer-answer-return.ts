@@ -266,6 +266,7 @@ export const sendPeerAnswerHome = async (
   // distinction that took a probe to recover. Same rule the `[peer-ask]` lines
   // earned: report the ACTOR and the outcome, not just a state.
   console.warn(`[peer-answer] sending home via '${connection}' ref=${payload.exchange_ref}`);
+  let said = '';
   try {
     const r = await deps.call(connection, {
       exchange_ref: payload.exchange_ref,
@@ -277,18 +278,65 @@ export const sendPeerAnswerHome = async (
       // hop before the person who asked for it.
       ...(answer.note !== undefined ? { note: answer.note } : {}),
     });
-    console.warn(`[peer-answer] sent ${JSON.stringify(r ?? null).slice(0, 300)}`);
+    said = JSON.stringify(r ?? null);
+    console.warn(`[peer-answer] sent ${said.slice(0, 300)}`);
   } catch (e) {
     console.warn(`[peer-answer] SEND FAILED: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
     throw e;
   }
+  // ⛔⛔ A REFUSAL IS A RESULT, NOT AN ERROR ENVELOPE — and until this block the
+  // owner's decision could be refused at the far door and filed here as
+  // delivered. `receiveAnswer` answers `{accepted:false, refusal}` for four
+  // distinct reasons and returns it as ORDINARY CONTENT, deliberately (*"a peer
+  // whose answer was refused must be able to tell WHY machine-readably; an
+  // error envelope makes 'not yours' and 'the server fell over' the same
+  // fact"*). Nothing here read it, so a `try` that did not throw was treated as
+  // arrival — the same defect the § 234.4n withdrawal notice already found and
+  // fixed one file over, on this same wire, in this same arc.
+  //
+  // 🔑 ASSERT THE POSITIVE. Enumerating the refusals is how you miss the next
+  // one: anything that is not an explicit acceptance is a non-delivery here.
+  //
+  // ⛔ AND THE TWO OUTCOMES BELOW ARE NOT ONE. Throwing leaves the ask
+  // `answered` so the boot sweep re-dispatches — right for something that may
+  // succeed later, wrong for a refusal that never will. `not_solicited` (the
+  // asker's deadline already closed the conversation) and `wrong_peer` /
+  // `unreadable` cannot be fixed by sending again; re-dispatching them forever
+  // would replace a lost decision with an unbounded loop. So they are recorded
+  // as what they are and the ask completes — the trail is where the owner's
+  // decision survives, since the run it was for is already gone.
+  const accepted = said.includes('"accepted":true');
+  const alreadyHome = said.includes('"already_answered"');
+  const permanent = alreadyHome
+    || said.includes('"not_solicited"')
+    || said.includes('"wrong_peer"')
+    || said.includes('"unreadable"');
+  if (!accepted && !permanent) {
+    // Neither an acceptance nor a refusal we recognise — an unknown shape, a
+    // tool error, a door that has changed. Treat it as undelivered so the boot
+    // sweep tries again; the alternative is counting an unread answer as sent.
+    throw new Error(
+      `[peer-answer] the peer did not accept the answer for ref '${payload.exchange_ref}' — ${said.slice(0, 200)}`,
+    );
+  }
   deps.logActivity?.({
-    action: 'peer_ask_answered',
+    // ⚠ `already_answered` IS delivery: our answer is home, whether this
+    // attempt or an earlier one put it there. Only the genuine refusals get the
+    // other action name, so a reader counting `peer_ask_answered` is counting
+    // decisions that landed.
+    action: accepted || alreadyHome ? 'peer_ask_answered' : 'peer_ask_answer_refused',
     target: `${payload.peer_contract_id}/${payload.label}`,
     detail: JSON.stringify({
       exchange_ref: payload.exchange_ref,
       option: answer.option,
       returned_at: now(),
+      ...(accepted || alreadyHome ? {} : { refusal: said.slice(0, 300) }),
     }),
   });
+  if (!accepted && !alreadyHome) {
+    console.warn(
+      `[peer-answer] THE OWNER'S DECISION WAS REFUSED and cannot be re-sent — ref=`
+      + `${payload.exchange_ref} ${said.slice(0, 200)}`,
+    );
+  }
 };

@@ -211,7 +211,6 @@ const seedAnnotation = async (
     key,
     value,
     authored_by_recipe_id: 'phase-5-recipe',
-    recipe_hash: 'h-1',
     source_record_hash: `src:${collection}:${id}`,
   });
 };

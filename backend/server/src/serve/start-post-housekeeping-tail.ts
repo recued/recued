@@ -77,7 +77,7 @@ export interface StartPostHousekeepingTailOptions {
    *  stale-checkpoint sweep (threaded from the execution context;
    *  undefined on db-less boots, where the sweep is skipped anyway). */
   readonly notificationBlock:
-    | Pick<NotificationBlock, 'getAsk' | 'cancelAsk' | 'pruneHandledAsks'>
+    | Pick<NotificationBlock, 'getAsk' | 'cancelAsk' | 'pruneHandledAsks' | 'notify'>
     | undefined;
   /** D-178 slice 4b — on-boot update reconcile (commit / auto-revert +
    *  ledger→audit replay). Invoked AFTER `installShutdown` runs markBooted,

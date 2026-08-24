@@ -484,12 +484,12 @@ describe('handleTimelineReadFromRecipe', () => {
     await store.annotate({
       target_collection: 'data.contact', target_id: 'jane@acme.com',
       key: 'company', value: 'Acme',
-      authored_by_recipe_id: 'r1', source_record_hash: 's1', recipe_hash: 'r1',
+      authored_by_recipe_id: 'r1', source_record_hash: 's1',
     });
     await store.annotate({
       target_collection: 'data.contact', target_id: 'jane@acme.com',
       key: 'role', value: 'CTO',
-      authored_by_recipe_id: 'r1', source_record_hash: 's1', recipe_hash: 'r1',
+      authored_by_recipe_id: 'r1', source_record_hash: 's1',
     });
     const res = await handleTimelineReadFromRecipe(
       {

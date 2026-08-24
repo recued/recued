@@ -9,6 +9,7 @@
  *  Design + load-bearing decisions: D-123. */
 
 import type { EnrichmentTag } from './enrichment-registry.js';
+import type { TokenUsageReport } from './token-usage-report.js';
 
 // ────────────────────────────────────────────────────────────────
 // Constants
@@ -146,12 +147,26 @@ export type HousekeepingYieldReason =
   | 'vendor_budget_suspended'
   | 'vendor_pull_in_flight';
 
+/** R13 T1-Q2 — cascade-governor telemetry a task carries out of one
+ *  step. A governor-declined topic previously returned the same value
+ *  as a genuinely calm one, so a persistently-declined topic looked
+ *  persistently calm and the governor's dropped count was discarded.
+ *  Optional: only tasks that consult `cascadeTopicAdmission` set it,
+ *  and only when at least one topic was declined this step. */
+export interface HousekeepingGovernorTelemetry {
+  /** Topics whose recompute enqueue was declined by the cascade
+   *  governor this step (severity left in place; re-asked next cycle). */
+  declined_topics: number;
+  /** Sum of the governor's `dropped` counts across those declines. */
+  dropped_rows: number;
+}
+
 /** Per-step result returned by `HousekeepingTaskInstance.step`. The
  *  scheduler persists `cursor` after every call so a yield mid-step
  *  resumes cleanly on the next idle window. */
 export type HousekeepingStepResult =
-  | { status: 'yield'; reason: HousekeepingYieldReason; cursor: HousekeepingCursor }
-  | { status: 'complete'; cursor: HousekeepingCursor };
+  | { status: 'yield'; reason: HousekeepingYieldReason; cursor: HousekeepingCursor; governor?: HousekeepingGovernorTelemetry }
+  | { status: 'complete'; cursor: HousekeepingCursor; governor?: HousekeepingGovernorTelemetry };
 
 // ────────────────────────────────────────────────────────────────
 // Task metadata
@@ -268,6 +283,22 @@ export interface HousekeepingPerTaskResult {
   status: 'complete' | 'yield' | 'error';
   duration_ms: number;
   yield_reason?: HousekeepingYieldReason;
+  /** R13 T1-Q2 — present iff the task reported governor declines this
+   *  step; rides into the `housekeeping_cycle` audit row so a
+   *  persistently-declined topic is distinguishable from a calm one. */
+  governor?: HousekeepingGovernorTelemetry;
+  /** D-250 § D — provider tokens this task actually spent, riding into the
+   *  `housekeeping_cycle` audit row the same way `governor` does.
+   *
+   *  ⛔ THE ROW'S ONLY MEASUREMENT. `housekeeping_config`'s daily token budget
+   *  is an ESTIMATE (`estimate_per_record_tokens()` x pending rows) used to
+   *  decide whether to start a cycle; this is what the providers charged. With
+   *  both on the same surface the estimate becomes checkable instead of merely
+   *  load-bearing.
+   *
+   *  ⚠ ABSENT ON EVERY TASK THAT MADE NO PROVIDER CALL, which is most of them —
+   *  never zero, the same rule `AuditEntry.total_usage` follows. */
+  tokens?: TokenUsageReport;
 }
 
 /** Result of one full scheduler cycle. Emitted on the realtime bus

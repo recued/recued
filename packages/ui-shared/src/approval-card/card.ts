@@ -59,6 +59,18 @@ export interface AskCardModel {
    *  COLLAPSED: the question is the decision, the body is the evidence, and a
    *  card that opens four pages by default stops being a card. */
   body?: string;
+  /** Unix-ms the ask was raised — `PendingAsk.created_at`, already carried on
+   *  `ServerPendingAsk` and forwarded by the `notification.pending_asks`
+   *  projection. Rendered as a compact age so a decision that has been waiting
+   *  is visibly waiting.
+   *
+   *  ⛔ THE FIELD WAS ALWAYS ON THE WIRE AND NOTHING READ IT. Every surface
+   *  showed a flat list in which an ask raised four days ago is indistinguishable
+   *  from one raised four seconds ago, and the only thing that ever resolved an
+   *  ignored one was the `preflight.stale_after_days` guard silently reaping it.
+   *  Absent ⇒ no age element (a caller that does not carry the field renders
+   *  exactly as before). */
+  created_at?: number;
 }
 
 export interface AskCardHandlers {
@@ -80,6 +92,10 @@ export interface AskCardOptions {
   busy?: boolean;
   busyOptionId?: string;
   errorMessage?: string | null;
+  /** Clock for the waiting-age label ({@link AskCardModel.created_at}).
+   *  Injectable so a test can assert a rendered age deterministically —
+   *  asserting against `Date.now()` is how an age test flakes at a boundary. */
+  now?: number;
 }
 
 /** Stable hook on the card root — the value is the `ask_id` so a host can
@@ -103,6 +119,34 @@ export const ASK_CARD_SUMMARY_ATTR = 'data-recued-ask-summary';
 export const ASK_CARD_DETAILS_ATTR = 'data-recued-ask-details';
 /** Deliberate second-step prompt for an externally mutating answer. */
 export const ASK_CARD_CONFIRM_ATTR = 'data-recued-ask-confirm';
+/** The waiting-age element on an ask card. */
+export const ASK_CARD_AGE_ATTR = 'data-recued-ask-age';
+
+/** Compact waiting age for an approval card — `just now` / `12m` / `3h` /
+ *  `4d` / `3w`.
+ *
+ *  ⚠ NOT `formatRelative` (`@recued/renderer`), deliberately: that one is
+ *  DAY-granular and collapses the entire first day to `today`, which is
+ *  precisely the range an approvals queue needs resolution in — an ask raised
+ *  twenty minutes ago and one raised twenty hours ago are a different decision
+ *  and would read identically. It also takes an ISO string where an ask carries
+ *  unix-ms. Different input, different granularity requirement.
+ *
+ *  Clamps a future `created_at` to `just now` rather than rendering a negative
+ *  age: a clock skew between server and client is not worth showing the owner
+ *  `-3m`, and the ask is real regardless. */
+export const formatAskAge = (created_at: number, now: number): string => {
+  if (!Number.isFinite(created_at)) return '';
+  const ms = now - created_at;
+  if (ms < 60_000) return 'just now';
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d`;
+  return `${Math.floor(days / 7)}w`;
+};
 
 /** Treat a blank / whitespace-only title as absent (matches the bridge
  *  side panel's `nonBlankTitle`) so a present-but-empty title doesn't
@@ -258,6 +302,18 @@ export const renderAskCard = (
     heading.className = 'rx-ask-card-title';
     heading.textContent = title;
     card.appendChild(heading);
+  }
+
+  if (model.created_at !== undefined) {
+    const age = doc.createElement('div');
+    age.className = 'rx-ask-card-age';
+    age.setAttribute(ASK_CARD_AGE_ATTR, String(model.created_at));
+    const label = formatAskAge(model.created_at, options.now ?? Date.now());
+    age.textContent = label === 'just now' ? 'Raised just now' : `Waiting ${label}`;
+    // The machine-readable instant rides `title`, so a card that says "4d" can
+    // still answer "since when" on hover without a second element.
+    age.title = new Date(model.created_at).toLocaleString();
+    card.appendChild(age);
   }
 
   if (projected === null) {
@@ -1195,6 +1251,20 @@ export const ASK_CARD_STYLES = `
   margin-bottom: 6px;
   color: var(--fg);
   overflow-wrap: anywhere;
+}
+.rx-ask-card-age {
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  margin-bottom: 6px;
+  /* Secondary by default - the age is context for the decision, not the
+     decision. It earns emphasis only once genuinely old, which a host can do
+     by styling on the data-recued-ask-age value; the card hard-codes no
+     staleness threshold, because "old" is preflight.stale_after_days-relative
+     and that is owner-configurable.
+     NOTE: no backticks in here - this block is inside a template literal. */
+  color: var(--muted, var(--fg));
+  opacity: 0.75;
 }
 .rx-ask-card-text {
   min-width: 0;

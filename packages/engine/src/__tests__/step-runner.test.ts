@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { runStep, trackContextSize } from '../step-runner.js';
+import { runStep, trackContextSize, MAX_CONTEXT_BYTES } from '../step-runner.js';
 import type { ExecutionContext, IngredientExecutor } from '../types.js';
 import type {
   LaneGovernor,
@@ -243,7 +243,7 @@ describe('runStep — step.input as a pure ref', () => {
   });
 });
 
-// ── trackContextSize — incremental 10MB cap ────────────────────
+// ── trackContextSize — incremental context cap ─────────────────
 //
 // Locks in the invariants of the size guard:
 //   1. Per-call delta is additive → two half-cap writes exceed the cap.
@@ -251,11 +251,18 @@ describe('runStep — step.input as a pure ref', () => {
 //   3. Null/undefined results are no-ops — so nulling a step on error
 //      doesn't under-charge future steps.
 
-describe('trackContextSize — 10MB cap', () => {
+describe('trackContextSize — context cap', () => {
   // ~6MB JSON-estimated size per string: (3M chars + 2 quotes) × 2 bytes
-  const halfCapString = 'a'.repeat(3 * 1024 * 1024);
+  // ⚠ SIZED FROM THE CONSTANT. Hardcoding 3MB against a 10MB cap meant that
+  // when the cap moved to 50MB these tests went GREEN while asserting nothing —
+  // two passes no longer crossed it. A cap test whose payload does not track the
+  // cap stops being a test the moment the cap changes.
+  // A JSON-estimated string costs ~2x its length, so 0.3 x cap per call lands
+  // one call at ~0.6 cap (under) and two at ~1.2 cap (over) — the same ratio the
+  // original 3MB-vs-10MB pair had.
+  const halfCapString = 'a'.repeat(Math.ceil(MAX_CONTEXT_BYTES * 0.3));
 
-  it('accumulates across calls and throws when cumulative size exceeds 10MB', () => {
+  it('accumulates across calls and throws when cumulative size exceeds the cap', () => {
     const ctx = makeCtx(async () => null);
     expect(() => trackContextSize(ctx, halfCapString)).not.toThrow();       // ~6MB  → under cap
     expect(() => trackContextSize(ctx, halfCapString)).toThrow(/step context is/); // ~12MB → over

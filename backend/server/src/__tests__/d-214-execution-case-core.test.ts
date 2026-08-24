@@ -998,6 +998,164 @@ describe('slice 8 keys on the OPERATION, not the transport that carried it', () 
     ]))).toBe('repeated_tool');
   });
 
+  /** ⛔⛔ A REPEAT IS ONLY A RETRY IF IT CAME LATER, and this check never read
+   *  the field that says so. `round_ordinals`' own contract doc: "equal
+   *  adjacent values mean 'issued together, independently'; increasing values
+   *  mean 'the second waited for the first'. That distinction is what a
+   *  procedure is worth learning FOR."
+   *
+   *  MEASURED on bench 149 — one round emitted `contact.search("Orin Hale")`
+   *  and `contact.search("Treatglen Bench")`, two different people looked up in
+   *  parallel. All 9 of that task's observations refused `repeated_tool`, so no
+   *  case materialized and the D-214 experiment measured an empty population.
+   *
+   *  ⚠ `viaBatch` gives every step an EMPTY `dependency_ordinals`, which is what
+   *  makes them share a round — `viaFlow` above chains each step to the last and
+   *  so produces the sequenced shape, which is why none of the tests above
+   *  noticed. */
+  // ⚠ `round_index` AND `tier` ARE PASSED EXPLICITLY, and that is the whole
+  // point of a separate helper. `deriveExecutionFlowPattern` populates
+  // `round_ordinals` / `tool_tiers` ALL-OR-NOTHING from those two step fields —
+  // `dependency_ordinals` has nothing to do with it. `viaFlow` above passes
+  // neither, so every existing repeat test runs with EMPTY arrays and takes the
+  // fail-closed branch; that is why none of them noticed this, and why none of
+  // them changed when it was fixed.
+  const viaRounds = (
+    steps: Array<{ tool: string; round: number; tier?: number; recipe?: string }>,
+  ) => observation('9', {
+    flow_pattern: deriveExecutionFlowPattern(
+      steps.map((st) => ({
+        tool_name: st.tool,
+        risk_tier: 'write' as const,
+        dependency_ordinals: [],
+        round_index: st.round,
+        tier: st.tier ?? 1,
+        ...(st.recipe ? { recipe_id: st.recipe } : {}),
+      })),
+    ),
+    substantive_call_count: steps.length,
+  });
+
+  it('does NOT call a same-round FAN-OUT a repeat', () => {
+    expect(executionCaseRefusalReason(viaRounds([
+      { tool: 'contact.search', round: 0, tier: 2 },
+      { tool: 'contact.search', round: 0, tier: 2 },
+    ]))).not.toBe('repeated_tool');
+  });
+
+  it('refuses the SAME tool one round later, batched shape or not', () => {
+    expect(executionCaseRefusalReason(viaRounds([
+      { tool: 'contact.search', round: 0, tier: 2 },
+      { tool: 'contact.search', round: 1, tier: 2 },
+    ]))).toBe('repeated_tool');
+  });
+
+  it('still refuses the same tool in a LATER round — the actual retry shape', () => {
+    // ⚠ THE HALF THAT MUST NOT MOVE. Widening on round equality would be a hole
+    // if it also admitted a sequenced repeat; `viaFlow` chains its steps, so
+    // this is the increasing-ordinal case and it stays refused.
+    expect(executionCaseRefusalReason(viaFlow([
+      { tool: 'recued-core/add-unit' }, { tool: 'recued-core/add-unit' },
+    ]))).toBe('repeated_tool');
+  });
+
+  /** ⛔⛔ A REPEATED CORE READ COUNTS ONCE (owner ruling, 2026-08-21). The shape:
+   *  `contact.search → contact.read × 3 → act on each` — list, get each one's
+   *  details, do the work. The three reads are what MAKE it a procedure, and
+   *  refusing the flow because a core read recurred threw away the case it was
+   *  describing. */
+  it('does NOT refuse a sequenced CORE repeat — it counts once', () => {
+    expect(executionCaseRefusalReason(viaRounds([
+      { tool: 'contact.search', round: 0, tier: 1 },
+      { tool: 'contact.read', round: 1, tier: 1 },
+      { tool: 'contact.read', round: 2, tier: 1 },
+      { tool: 'contact.read', round: 3, tier: 1 },
+      { tool: 'recued-core/file-note', round: 4, tier: 2 },
+    ]))).not.toBe('repeated_tool');
+  });
+
+  /** ⛔ THE SHAPE SLICE 8 EXISTS TO REFUSE, and the reason this ruling is
+   *  narrower than the Tier-1 exemption `FLOW_REPEAT_EXEMPT_TOOLS` rejected:
+   *  *"exempting all Tier-1 tools would re-admit `[mail.search, send,
+   *  mail.search, send]`"*. It does not. `mail.search` is core and now counts
+   *  once — but `send` is a RECIPE, so its repeat still refuses the flow. */
+  it('STILL refuses [mail.search, send, mail.search, send] — the procedure repeat', () => {
+    expect(executionCaseRefusalReason(viaRounds([
+      { tool: 'mail.search', round: 0, tier: 1 },
+      { tool: 'recued-core/send', round: 1, tier: 2 },
+      { tool: 'mail.search', round: 2, tier: 1 },
+      { tool: 'recued-core/send', round: 3, tier: 2 },
+    ]))).toBe('repeated_tool');
+  });
+
+  it('STILL refuses a repeated recipe reached through the dispatcher', () => {
+    // ⚠ `recipe.run` is Tier-1 BY TOOL NAME, so reading tier alone would forgive
+    // this — the exact collapse `flowStepIdentity` exists to undo. `isCoreStep`
+    // excludes any ordinal that ran a recipe.
+    expect(executionCaseRefusalReason(viaRounds([
+      { tool: 'recipe.run', round: 0, tier: 1, recipe: 'recued-core/add-unit' },
+      { tool: 'recipe.run', round: 1, tier: 1, recipe: 'recued-core/add-unit' },
+    ]))).toBe('repeated_tool');
+  });
+
+  it('FAILS CLOSED on a core repeat when the TIERS are unknown', () => {
+    // ⛔ Without usable `tool_tiers` the check cannot tell core work from a
+    // procedure, so the repeat refuses as it did before rather than being
+    // forgiven on a guess — the same posture as the rounds fallback.
+    const base = viaRounds([
+      { tool: 'contact.read', round: 0, tier: 1 },
+      { tool: 'contact.read', round: 1, tier: 1 },
+    ]);
+    const stripped = {
+      ...base,
+      flow_pattern: { ...base.flow_pattern, tool_tiers: [] },
+    };
+    expect(executionCaseRefusalReason(stripped)).toBe('repeated_tool');
+  });
+
+  it('FAILS CLOSED when the rounds are unknown — an absent array is not one round', () => {
+    // ⛔ `round_ordinals` is "EMPTY when unknown, never synthesised … treat an
+    // empty array as 'no information', not 'all one round'". Reading it as one
+    // round would admit every repeat on a pre-V20 row, so an unusable array
+    // falls back to the original any-repeat rule.
+    const base = viaRounds([
+      { tool: 'contact.search', round: 0, tier: 2 },
+      { tool: 'contact.search', round: 0, tier: 2 },
+    ]);
+    const stripped = {
+      ...base,
+      flow_pattern: { ...base.flow_pattern, round_ordinals: [] },
+    };
+    expect(executionCaseRefusalReason(stripped)).toBe('repeated_tool');
+  });
+
+  /** ⛔⛔ ZERO HAS TWO CAUSES AND THE SPLIT ONLY NAMED ONE — reproducing, inside
+   *  the split, the confusion it exists to remove. `nonCoreRoundDepth` returns 0
+   *  both when the positional arrays are unusable AND when every step is a
+   *  Tier-1 core tool, which is a MEASURED zero. Bench 165 runs
+   *  `[contact.search, mail.search]` and was reported `round_depth_unmeasurable`,
+   *  sending the reader after broken data that was never broken. */
+  it('names a measured all-core flow `no_non_core_rounds`, not `unmeasurable`', () => {
+    expect(executionCaseRefusalReason(viaRounds([
+      { tool: 'contact.search', round: 0, tier: 1 },
+      { tool: 'mail.search', round: 1, tier: 1 },
+    ]))).toBe('no_non_core_rounds');
+  });
+
+  it('still says `round_depth_unmeasurable` when the arrays really are unusable', () => {
+    // ⚠ The non-vacuity half: without this, renaming every zero would pass the
+    // test above while destroying the distinction it exists to draw.
+    const base = viaRounds([
+      { tool: 'contact.search', round: 0, tier: 1 },
+      { tool: 'mail.search', round: 1, tier: 1 },
+    ]);
+    const broken = {
+      ...base,
+      flow_pattern: { ...base.flow_pattern, tool_tiers: [] },
+    };
+    expect(executionCaseRefusalReason(broken)).toBe('round_depth_unmeasurable');
+  });
+
   it('catches a repeat that MIXES routes — slug once, dispatcher once', () => {
     // What the bare-id normalisation is for: a slug step records
     // `recued-core/add-unit` while the dispatched one may be qualified

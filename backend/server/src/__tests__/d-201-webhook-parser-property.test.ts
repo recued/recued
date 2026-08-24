@@ -281,6 +281,9 @@ const assertSafeForm = (fields: Readonly<Record<string, string>>): void => {
 const CREDENTIALS: Readonly<Partial<
   Record<WebhookProfileId, Readonly<Record<string, string>>>
 >> = Object.freeze({
+  'cal.webhook.v1': Object.freeze({
+    signing_secret: 'generated-cal-webhook-signing-secret',
+  }),
   'generic.static-header-token.v1': Object.freeze({
     header_name: 'x-d201-generated-token',
     header_token: 'generated-static-token',

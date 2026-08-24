@@ -98,6 +98,13 @@ const alwaysTopLevelKeys = [
   'manifests',
   'onTokenUsage',
   'resolveLlmConfig',
+  // D-250 § D — ALWAYS top-level, and deliberately not conditional like the
+  // two hooks above it. Those feed the daily budget counter, which lives on
+  // `llmManager` and is meaningless without it; this feeds an AUDIT field
+  // wanted on every server that runs recipes — including one with no budget
+  // configured, which is the default. `composeExecutorConfig` builds it per
+  // config when the caller supplies none, so it is never absent.
+  'runTokenUsage',
   'vault',
 ] as const;
 

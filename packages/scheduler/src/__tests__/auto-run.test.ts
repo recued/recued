@@ -403,6 +403,51 @@ describe('scheduler.markFinished', () => {
     ...over,
   });
 
+  /** ⛔⛔ A HOLD IS NOT A FAILURE, AND CLASSIFYING IT AS ONE DISABLED THE RECIPE.
+   *  A run that pauses on a preflight approval returns `success: false` with an
+   *  EMPTY `errors` array, so a caller deciding on `!success` alone recorded a
+   *  failure whose reason degraded to the generic "execution failed" — and
+   *  `CIRCUIT_BREAKER_THRESHOLD` consecutive holds set `auto_disabled`. Any
+   *  auto-run recipe whose first write is approval-gated therefore switched
+   *  itself off while its asks sat unanswered: at a 15-minute interval, inside
+   *  an hour and a half, with nothing on the record mentioning approval. */
+  it('⛔ a held run never trips the circuit, however many times it repeats', () => {
+    const s = createAutoRunScheduler();
+    s.setRoster([make()]);
+    for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD * 2; i += 1) {
+      s.markStarting('r', 'pid-r', i * 1_000);
+      s.markFinished('r', 'held', undefined, i * 1_000 + 10);
+    }
+    const entry = s.roster.get('r')!;
+    expect(entry.consecutive_failures).toBe(0);
+    expect(entry.auto_disabled).toBe(false);
+    // And it keeps firing — the ask is the surface the owner acts on, so the
+    // next tick must still come round.
+    expect(entry.next_run_at).toBeGreaterThan(0);
+  });
+
+  it('⛔ a hold does not RESET a real failure streak either — it is neutral', () => {
+    const s = createAutoRunScheduler();
+    s.setRoster([make()]);
+    s.markStarting('r', 'pid-r', 0);
+    s.markFinished('r', 'failed', undefined, 10);
+    s.markStarting('r', 'pid-r', 1_000);
+    s.markFinished('r', 'held', undefined, 1_010);
+    // Neither cleared nor advanced: a pause says nothing about whether the
+    // recipe is broken, so it must not launder a genuine failure away.
+    expect(s.roster.get('r')!.consecutive_failures).toBe(1);
+  });
+
+  it('⛔ and a genuine failure streak still trips, so the neutrality is narrow', () => {
+    const s = createAutoRunScheduler();
+    s.setRoster([make()]);
+    for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD; i += 1) {
+      s.markStarting('r', 'pid-r', i * 1_000);
+      s.markFinished('r', 'failed', undefined, i * 1_000 + 10);
+    }
+    expect(s.roster.get('r')!.auto_disabled).toBe(true);
+  });
+
   it('clears starting + records last_finished_at', () => {
     const s = createAutoRunScheduler();
     s.setRoster([make()]);

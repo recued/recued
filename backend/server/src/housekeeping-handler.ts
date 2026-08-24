@@ -69,6 +69,10 @@ import {
 } from '@recued/contracts';
 
 export interface HousekeepingRpcDeps {
+  /** D-236 join — scope→source-freshness thunk so the Settings registry
+   *  panel shows the same source-capped coverage bands the MCP door shows.
+   *  Absent ⇒ row-derived bands stand. */
+  sourceFreshnessByScope?: import('./mcp/registry-describe.js').RegistryDescribeDeps['sourceFreshnessByScope'];
   config: HousekeepingConfigStore;
   state: HousekeepingStateStore;
   /** Snapshot of the registry — re-read each rpc so installs /
@@ -852,6 +856,9 @@ export const handleHousekeepingRegistryDescribe = async (
       ...(deps.enrichmentStore ? { enrichmentStore: deps.enrichmentStore } : {}),
       ...(deps.state ? { housekeepingStateStore: deps.state } : {}),
       ...(deps.db ? { db: deps.db } : {}),
+      ...(deps.sourceFreshnessByScope
+        ? { sourceFreshnessByScope: deps.sourceFreshnessByScope }
+        : {}),
       ...(ownerReadGrantChecker ? { readGrantChecker: ownerReadGrantChecker } : {}),
       // The owner panel shows EVERY topic (granted + not) so the owner can toggle the
       // grant; production MCP-channel callers leave this absent.

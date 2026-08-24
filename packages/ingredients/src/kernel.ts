@@ -34,6 +34,7 @@
 
 import { IngredientError, type ResolvedCall } from './types.js';
 import type { Adapter } from './dispatch.js';
+import type { StepMeta } from '@recued/contracts';
 import {
   canonicalizeEmail,
   extractCanonicalRef,
@@ -317,6 +318,27 @@ export type KernelWatcherSlug =
  *  ⚠ The other six take explicit args and mutate nothing, so they stay
  *  forwardable. This is not "watchers are dangerous"; it is "state keyed by an
  *  identity the caller supplies is only as trustworthy as the caller". */
+/** D-120 provenance stamping — the engine is the authority for WHO wrote an
+ *  annotation / link / enrichment and under WHICH recipe shape, so the kernel
+ *  write adapters take those two from `StepMeta` and fall back to the caller's
+ *  value only when there is no engine above them (direct rpc, Settings, MCP
+ *  agent, tests — `StepMeta.recipe_id` is optional for exactly that reason).
+ *
+ *  ⛔ THE ENGINE VALUE WINS when present. `authored_by_recipe_id` is an
+ *  IDENTITY, and a caller asserting its own identity is the pattern D-177
+ *  exists to prevent — the same reason `origin_actor` / `origin_contract_id` /
+ *  `execution_source` are already stamped here and never read from recipe JSON.
+ *  Verified non-breaking against the shipped corpus: all 43 authored values
+ *  were already exactly the recipe's own `recipe_id`, so the override changes
+ *  no existing behaviour — it only closes the forgery seam and stops the field
+ *  being a required input authors can forget (7 of 12 `enrichment-upsert`
+ *  steps had). */
+const stampedRecipeId = <T>(
+  call: { stepMeta?: StepMeta },
+  authored: T,
+): string | T => call.stepMeta?.recipe_id ?? authored;
+
+
 export const RECIPE_KEYED_WATCHER_SLUGS: ReadonlySet<KernelWatcherSlug> = new Set([
   'webhook-watcher',
   'time-relative-watcher',
@@ -1047,9 +1069,9 @@ export interface KernelDispatchers {
    *  (`{ ref: { _id, _collection, ... } }`) — typical when piped from
    *  a `foreach` over a `data.*` collection — or an explicit
    *  `{ target_collection, target_id }` pair. Engine pre-computes the
-   *  source / recipe / model hashes and supplies them on the dispatch
+   *  source / model hashes and supplies them on the dispatch
    *  envelope so the kernel handler doesn't reach back into the
-   *  recipe metadata. */
+   *  recipe metadata. (`recipe_hash` was RETIRED — D-120.) */
   annotate?: (input: {
     target_collection: string;
     target_id: string;
@@ -1057,7 +1079,6 @@ export interface KernelDispatchers {
     value: unknown;
     authored_by_recipe_id: string;
     source_record_hash: string;
-    recipe_hash: string;
     model_used?: string;
   }) => Promise<{ annotation: Annotation }>;
 
@@ -1214,7 +1235,6 @@ export interface KernelDispatchers {
     value: unknown;
     authored_by_recipe_id: string;
     source_record_hash: string;
-    recipe_hash: string;
     model_used?: string;
     event_at?: number;
     /** D-161 P2 — origin provenance facet, forwarded from
@@ -1374,6 +1394,10 @@ export interface KernelDispatchers {
     text: string;
     title?: string;
     link_url?: string;
+    /** Which recipe asked — stamped by the adapter from `stepMeta.recipe_id`,
+     *  never from the step's own args (see the adapter's `notification-send`
+     *  branch). The server renders it as a trailing attribution line. */
+    source_recipe_id?: string;
   }) => Promise<{
     delivered_to: Array<NotificationDeliveryChannel>;
     failed: Array<NotificationDeliveryChannel>;
@@ -2890,7 +2914,6 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           value: unknown;
           authored_by_recipe_id: string;
           source_record_hash: string;
-          recipe_hash: string;
           model_used?: string;
         };
         const target = resolveTargetRef(input);
@@ -2899,9 +2922,8 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           target_id: target.id,
           key: input.key,
           value: input.value,
-          authored_by_recipe_id: input.authored_by_recipe_id,
+          authored_by_recipe_id: stampedRecipeId(call, input.authored_by_recipe_id),
           source_record_hash: input.source_record_hash,
-          recipe_hash: input.recipe_hash,
         };
         if (input.model_used !== undefined) dispatchInput.model_used = input.model_used;
         return dispatchers.annotate(dispatchInput);
@@ -2962,7 +2984,7 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           to_collection: toRef.collection,
           to_id: toRef.id,
           role: input.role,
-          authored_by_recipe_id: input.authored_by_recipe_id,
+          authored_by_recipe_id: stampedRecipeId(call, input.authored_by_recipe_id),
         });
       }
       case 'link-list': {
@@ -3218,7 +3240,11 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
             { slug },
           );
         }
-        if (typeof input.authored_by_recipe_id !== 'string') {
+        // Guards the EFFECTIVE value: engine-stamped when a recipe is above us,
+        // caller-supplied for a direct-rpc caller. Checking `input` here after
+        // stamping below would reject exactly the runs the stamp exists to serve.
+        const linkAuthor = stampedRecipeId(call, input.authored_by_recipe_id);
+        if (typeof linkAuthor !== 'string') {
           throw new IngredientError(
             'BAD_INPUT',
             `link-create: authored_by_recipe_id is required`,
@@ -3231,7 +3257,7 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           to_collection: to.collection,
           to_id: to.id,
           role: input.kind,
-          authored_by_recipe_id: input.authored_by_recipe_id,
+          authored_by_recipe_id: linkAuthor,
         };
         if (typeof input.confidence === 'number' && Number.isFinite(input.confidence)) {
           dispatchInput.confidence = input.confidence;
@@ -3273,7 +3299,6 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           confidence?: unknown;
           authored_by_recipe_id?: unknown;
           source_record_hash?: unknown;
-          recipe_hash?: unknown;
           model_used?: unknown;
           event_at?: unknown;
         };
@@ -3285,18 +3310,24 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
             { slug },
           );
         }
-        if (typeof input.authored_by_recipe_id !== 'string') {
+        // Guards the EFFECTIVE value: engine-stamped when a recipe is above us,
+        // caller-supplied for a direct-rpc caller. Checking `input` here after
+        // stamping below would reject exactly the runs the stamp exists to serve.
+        const annotationAuthor = stampedRecipeId(call, input.authored_by_recipe_id);
+        if (typeof annotationAuthor !== 'string') {
           throw new IngredientError(
             'BAD_INPUT',
             `annotation-create: authored_by_recipe_id is required`,
             { slug },
           );
         }
-        if (typeof input.source_record_hash !== 'string'
-          || typeof input.recipe_hash !== 'string') {
+        // `source_record_hash` is the author's: only the recipe knows which
+        // record's content the annotation was derived from. `recipe_hash` was
+        // RETIRED (D-120) — see the annotation-store migration for why.
+        if (typeof input.source_record_hash !== 'string') {
           throw new IngredientError(
             'BAD_INPUT',
-            `annotation-create: source_record_hash + recipe_hash are required`,
+            `annotation-create: source_record_hash is required`,
             { slug },
           );
         }
@@ -3313,9 +3344,8 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           target_id: target.id,
           key: input.key,
           value,
-          authored_by_recipe_id: input.authored_by_recipe_id,
+          authored_by_recipe_id: annotationAuthor,
           source_record_hash: input.source_record_hash,
-          recipe_hash: input.recipe_hash,
         };
         if (typeof input.model_used === 'string') {
           dispatchInput.model_used = input.model_used;
@@ -3365,8 +3395,9 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         if (typeof input.id !== 'string' || input.id.length === 0) {
           throw new IngredientError('BAD_INPUT', 'enrichment-upsert: id is required', { slug });
         }
-        if (typeof input.authored_by_recipe_id !== 'string'
-          || input.authored_by_recipe_id.length === 0) {
+        // Guards the EFFECTIVE value — see the note on the `link-create` guard.
+        const enrichmentAuthor = stampedRecipeId(call, input.authored_by_recipe_id);
+        if (typeof enrichmentAuthor !== 'string' || enrichmentAuthor.length === 0) {
           throw new IngredientError(
             'BAD_INPUT',
             'enrichment-upsert: authored_by_recipe_id is required',
@@ -3377,7 +3408,7 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           topic: input.topic,
           id: input.id,
           value: input.value,
-          authored_by_recipe_id: input.authored_by_recipe_id,
+          authored_by_recipe_id: enrichmentAuthor,
         };
         if (typeof input.scope === 'string' && isEnrichmentScope(input.scope)) {
           dispatchInput.scope = input.scope;
@@ -3676,6 +3707,25 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         };
         if (typeof input.title === 'string') dispatchInput.title = input.title;
         if (typeof input.link_url === 'string') dispatchInput.link_url = input.link_url;
+        // ⛔ FROM `stepMeta`, NOT FROM `input`. The engine stamps
+        // `stepMeta.recipe_id`; a recipe cannot write it. Reading an
+        // attribution out of the step's own args would let any recipe claim to
+        // be any other — and a forgeable "sent by" line is worse than none,
+        // because it invites exactly the trust it cannot earn. Same reason the
+        // adapter OVERWRITES `args.recipe_id` for `RECIPE_KEYED_WATCHER_SLUGS`.
+        //
+        // ⚠ This is the only thing naming the sender now. Before
+        // `core.notification.send` was retiered to `read` (2026-08-20) every
+        // recipe notification was preceded by an approval ask that said
+        // "Recipe X wants to run core-notification-send"; the gate was the
+        // wrong place to carry that fact — it charged the owner a decision to
+        // learn a name — but the name was worth keeping.
+        if (
+          typeof call.stepMeta?.recipe_id === 'string'
+          && call.stepMeta.recipe_id.length > 0
+        ) {
+          dispatchInput.source_recipe_id = call.stepMeta.recipe_id;
+        }
         return dispatchers.notificationSend(dispatchInput);
       }
 

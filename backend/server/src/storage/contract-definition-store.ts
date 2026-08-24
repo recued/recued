@@ -51,6 +51,7 @@ import {
   SESSION_GRANT_RISK_TIERS,
   isContractActive,
   isReservedOwnerContractId,
+  isReservedPublicContractId,
   isStandingContractDefinition,
   isWellFormedOpenProjection,
   scopedContainmentAdmits,
@@ -706,6 +707,15 @@ export const createContractDefinitionStore = (
           `contract_definition mint: newId produced the reserved owner contract id '${contract_id}' — a door / standing contract can never be the owner sentinel`,
         );
       }
+      // D-248 Amendment 3 — the PUBLIC sentinel's twin. A `contract_definition` row for
+      // the floor is the one thing that would make it gateable and grantable, which is
+      // exactly the drift `isReservedPublicContractId`'s docstring says the fence exists
+      // to prevent.
+      if (isReservedPublicContractId(contract_id)) {
+        throw new Error(
+          `contract_definition mint: newId produced the reserved public-anonymous id '${contract_id}' — the floor is derived at the gate and can never have a definition row`,
+        );
+      }
       // Construct with ONLY the supplied optional fields so the persisted shape
       // matches the read-back shape (no `undefined` keys). `max_uses` seeds
       // `uses_remaining` to the same value — the counter starts full.
@@ -1274,6 +1284,12 @@ export const createContractDefinitionStore = (
       if (isReservedOwnerContractId(contract_id)) {
         throw new Error(
           `mintQualityDelegation: newId produced the reserved owner contract id '${contract_id}'`,
+        );
+      }
+      // D-248 Amendment 3 — the PUBLIC sentinel's twin (matches `mint`).
+      if (isReservedPublicContractId(contract_id)) {
+        throw new Error(
+          `mintQualityDelegation: newId produced the reserved public-anonymous id '${contract_id}'`,
         );
       }
       // Construction discipline: only supplied optional fields land on the row

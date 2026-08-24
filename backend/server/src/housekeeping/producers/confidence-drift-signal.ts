@@ -240,7 +240,15 @@ export const processOneTopic = (
   ctx: HousekeepingContext,
   source_topic: EnrichmentTopic,
   now: number,
-): { processed: boolean; fired: 'moderate' | 'significant' | null } => {
+): {
+  processed: boolean;
+  fired: 'moderate' | 'significant' | null;
+  /** R13 T1-Q2 — set iff the cascade governor declined this topic's
+   *  recompute enqueue, so the caller can tell a declined cycle from a
+   *  calm one and carry the governor's dropped count instead of
+   *  discarding it. */
+  governor_declined?: { dropped: number };
+} => {
   const earliest = queryEarliestAuthoredAt(ctx, source_topic);
   const windows = computeWindowsForTopic(earliest, now);
   if (!windows) return { processed: false, fired: null };
@@ -350,7 +358,7 @@ export const processOneTopic = (
   if (fires === 'significant' && autoRecomputes && ctx.cascadeTopicAdmission) {
     const admission = ctx.cascadeTopicAdmission(source_topic);
     if (!admission.admitted) {
-      return { processed: true, fired: null };
+      return { processed: true, fired: null, governor_declined: { dropped: admission.dropped } };
     }
   }
   ctx.db.transaction(() => {
@@ -405,11 +413,21 @@ export const confidenceDriftSignalTask: HousekeepingTaskInstance = {
   ): Promise<HousekeepingStepResult> {
     const now = ctx.now();
     const topics = confidenceEmittingEnrichmentTopics();
+    let declined_topics = 0;
+    let dropped_rows = 0;
     for (const topic of topics) {
-      processOneTopic(ctx, topic, now);
+      const outcome = processOneTopic(ctx, topic, now);
+      if (outcome.governor_declined) {
+        declined_topics += 1;
+        dropped_rows += outcome.governor_declined.dropped;
+      }
     }
     // Single-pass per cycle — drift is a daily signal; the harness
     // re-fires the task on each idle cycle.
-    return { status: 'complete', cursor: { kind: 'complete' } };
+    return {
+      status: 'complete',
+      cursor: { kind: 'complete' },
+      ...(declined_topics > 0 ? { governor: { declined_topics, dropped_rows } } : {}),
+    };
   },
 };

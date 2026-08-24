@@ -15,7 +15,7 @@ export function cmdHelp(): void {
     --mcp                               Start an MCP stdio server
 
   Pairing:
-    pair                                Show a pairing code for the extension
+    pair                                Show a pairing code + the app.recued.com/pair link
 
   Recovery:
     recover-keyfile                     Re-create an unopenable server keyfile

@@ -58,6 +58,7 @@ import {
   type DecomposedArtifacts,
   type PackDecomposition,
 } from '@recued/ingredient-authoring';
+import { GENERATED_PACK_PUBLISHER } from '@recued/contracts';
 import { validateIngredient } from '@recued/ingredients/validate';
 import {
   validateRecipe,
@@ -1620,13 +1621,54 @@ const writeConnectionBinding = (
   // other pack's binding wins; this composition's catalog stays non-dispatchable on
   // that connection (fail-closed) until the conflict is resolved.
   const existing = bindingStore.list().find((b) => b.connection_name === connection);
-  if (existing && existing.installed_pack_id !== packSlug) {
+  // ⛔⛔ UNLESS THE INCUMBENT IS THE MACHINE'S OWN MIRROR, WHICH IT ALWAYS IS FOR
+  // AN MCP CONNECTION — AND THAT MADE THE SLOT UNREACHABLE TO EVERY AUTHORED
+  // PACK. D-225 auto-mint installs a GENERATED pack the moment an mcp connection
+  // is enrolled, and that pack takes the connection's single catalog slot. Every
+  // authored composition bound to the same connection afterwards therefore hit
+  // the guard above, logged this warning, and stayed permanently
+  // non-dispatchable — `catalog_mismatch` on every op, for a pack the owner
+  // deliberately installed and pointed at that connection.
+  //
+  // 🔑 THE GUARD'S REASON DOES NOT REACH THIS CASE, AND THAT IS THE WHOLE
+  // ARGUMENT. It protects ANOTHER PACK's binding: clobbering one would hijack a
+  // connection someone else's install owns and corrupt that pack's uninstall. A
+  // generated pack is not another owner's declaration — it is this connection's
+  // own machine-derived mirror, minted from the peer's `tools/list`, re-minted
+  // on the idle probe, and re-derivable at any time. Yielding the slot to what
+  // the owner explicitly installed is not a hijack; it is the same rule the
+  // exchange's `deliver_to` resolver applies one layer up, and the same one the
+  // connection layer applies to owner-typed config: preserve what the owner
+  // typed, drop what the machine cached.
+  //
+  // ⚠ THE COST, STATED RATHER THAN GLOSSED: the generated pack's ops become
+  // non-dispatchable on this connection while the authored pack holds the slot.
+  // For a peer relationship that is the intended outcome — the generated ops
+  // duplicate the authored ones — but an owner who enrolled a third-party MCP
+  // server for its tools AND installed an authored pack against the same
+  // connection loses the generated half until they uninstall the authored pack.
+  // One catalog per connection is the model; this only decides which one, and it
+  // decides it by provenance rather than by which happened to be installed first.
+  const incumbentIsGenerated = existing !== undefined
+    && existing.catalog_slug === existing.installed_pack_id
+    && deps.registry.get(existing.catalog_slug)?.author === GENERATED_PACK_PUBLISHER;
+  if (existing && existing.installed_pack_id !== packSlug && !incumbentIsGenerated) {
     console.warn(
       `[d-170.gap2] connection '${connection}' is already bound to catalog `
         + `'${existing.catalog_slug}' by pack '${existing.installed_pack_id}'; not rebinding `
         + `for pack '${packSlug}' (one catalog per connection)`,
     );
     return;
+  }
+  if (incumbentIsGenerated && existing !== undefined) {
+    // ⚠ SAY IT, because a silent takeover of a slot is exactly the kind of thing
+    // an owner later has to reconstruct from behaviour. The generated pack stays
+    // INSTALLED — only its claim on this connection yields.
+    console.warn(
+      `[d-170.gap2] connection '${connection}' was bound to the GENERATED catalog `
+        + `'${existing.catalog_slug}'; yielding it to authored pack '${packSlug}' `
+        + '(an owner-installed declaration outranks the machine-minted mirror)',
+    );
   }
   bindingStore.bind(connection, catalogSlug, packSlug);
 };

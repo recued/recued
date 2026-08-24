@@ -401,6 +401,11 @@ export interface CrmRecallSeedFields {
    *  recall path. KNOWN-ONLY on purpose: unlike an email, a URL is usually NOT PII, so seeding
    *  every URL would alias `docs.python.org` and blind the model to public links. */
   readonly domains: readonly string[];
+  /** Keys holding the postcode's NEIGHBOURS (city / state / postal). Projected so
+   *  `addressMatchForms` can build the multi-token layouts a postcode is really
+   *  written in — NEVER seeded individually, because a bare postcode is
+   *  indistinguishable from an invoice number. */
+  readonly postal_parts: readonly string[];
 }
 
 /** D-167 (recall path, Tier 2) — which CRM-mirror `meta` keys seed the recall
@@ -469,8 +474,29 @@ export const CRM_RECALL_SEED_FIELDS: Readonly<Record<CrmAlias, CrmRecallSeedFiel
       names: Object.freeze(['name', 'first_name', 'last_name']),
       orgs: Object.freeze(['company']),
       phones: Object.freeze(['phone']),
-      // Street lines only. `mailing_address.zip` is NEVER seeded — see `addresses` above.
+      // Street lines only — these are seeded into the automaton AS-IS.
       addresses: Object.freeze(['mailing_address.address1', 'mailing_address.address2']),
+      // ⛔⛔ POSTAL PARTS ARE PROJECTED BUT NEVER SEEDED INDIVIDUALLY. A bare
+      // `94043` is indistinguishable from an invoice number, and aliasing it
+      // would corrupt every digit-run in prose — that reasoning is unchanged and
+      // still governs. What these enable is the COMPOSITE: `addressMatchForms`
+      // turns them into the multi-token layouts the address is really written in
+      // (`Mountain View, CA 94043`, `London SW1A 2AA`), which is the only shape a
+      // postcode can be matched in safely. The generator NEVER emits a lone
+      // token, and the alias keeps a geo suffix so region grain survives.
+      // ⚠ Locale-agnostic by construction: `if (city) add(city, postal)` covers
+      // UK/EU layouts as readily as the US `city, state postal` one.
+      postal_parts: Object.freeze([
+        'mailing_address.city', 'mailing_address.state', 'mailing_address.zip',
+        // ⛔ COUNTRY IS LOAD-BEARING AND WAS MISSING. `aliasAddress` builds the
+        // geo suffix (`pii.AddressN.city.state.iso`) ONLY when
+        // `parseAddressComponents` reads a known country from the LAST comma
+        // segment. Without it projected here the country-bearing layout is never
+        // generated, the shorter form wins the scan, and the alias degrades to a
+        // bare `pii.AddressN` — the address is protected but the region grain the
+        // city/country exclusion exists to preserve is silently lost.
+        'mailing_address.country',
+      ]),
       domains: Object.freeze([]),
     }),
     account: Object.freeze({
@@ -481,6 +507,7 @@ export const CRM_RECALL_SEED_FIELDS: Readonly<Record<CrmAlias, CrmRecallSeedFiel
       // The CRM account's web domain — the anchor that lets a memory body's link to that
       // company's site alias (`https://acme.com/portal` → `https://d1.invalid/portal`).
       domains: Object.freeze(['domain']),
+      postal_parts: Object.freeze([]),
     }),
     deal: Object.freeze({
       names: Object.freeze([]),
@@ -488,6 +515,7 @@ export const CRM_RECALL_SEED_FIELDS: Readonly<Record<CrmAlias, CrmRecallSeedFiel
       phones: Object.freeze([]),
       addresses: Object.freeze([]),
       domains: Object.freeze([]),
+      postal_parts: Object.freeze([]),
     }),
   } satisfies Record<CrmAlias, CrmRecallSeedFields>);
 

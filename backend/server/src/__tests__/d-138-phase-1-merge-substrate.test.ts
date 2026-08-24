@@ -598,7 +598,6 @@ describe('D-138 P1 — contact.merge.confirm rpc', () => {
       value: 'a-note',
       authored_by_recipe_id: 'recipe-x',
       source_record_hash: 'hash-x',
-      recipe_hash: 'rh-x',
     });
     await handleContactMergeConfirm(newDeps(), {
       candidate_ids: ['cand-1'],

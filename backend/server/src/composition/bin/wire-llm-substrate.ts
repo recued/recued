@@ -44,6 +44,7 @@
 
 import type Database from 'better-sqlite3';
 import {
+  type TokenUsage,
   createDefaultRegistry as createLLMAdapterRegistry,
   endpointFingerprint,
   hydrateEndpointCapabilities,
@@ -64,6 +65,11 @@ import {
 } from '@recued/llm';
 import type { WebChatTab } from '@recued/contracts';
 import { createLLMConfigManager, type LLMConfigManager } from '../../llm-config.js';
+import { tokenUsageToReport } from '../../chat-token-usage.js';
+import {
+  createHousekeepingTaskTokenMeter,
+  type HousekeepingTaskTokenMeter,
+} from '../../housekeeping/task-token-meter.js';
 import type { KeyManager } from '../../key-manager.js';
 import type {
   HousekeepingEmbedExecute,
@@ -239,6 +245,10 @@ export interface ComposeHousekeepingLlmCallablesDeps {
 }
 
 export interface HousekeepingLlmCallables {
+  /** D-250 § D — per-task provider spend for the cycle audit row. Rides the
+   *  callables bundle because it is spread onto the housekeeping ctx, which is
+   *  the one place the scheduler and these callables both reach. */
+  taskTokenMeter: HousekeepingTaskTokenMeter;
   llm: HousekeepingLlmExecute;
   llmWithMeta: HousekeepingLlmExecuteWithMeta;
   resolveLLMModelId: HousekeepingResolveModelId;
@@ -275,6 +285,8 @@ export const composeHousekeepingLlmCallables = (
     llmAdapterRegistry,
     llmEmbeddingsAdapterRegistry,
     emptyTabProbe,
+    // D-250 § D — the owner's daily token counter; see `reportOwnerUsage`.
+    llmManager,
   } = deps.substrate;
   const llmTranscriptionAdapterRegistry = createDefaultTranscriptionRegistry();
 
@@ -285,6 +297,32 @@ export const composeHousekeepingLlmCallables = (
   // per-task error counter handles that the same way it handles any
   // other producer error. The pre-confirm probe in `getEnrichmentInfo`
   // is the primary UX gate; this throw is the race-window safety net.
+  /** D-250 § D — housekeeping AI spend reaches the owner's daily counter.
+   *
+   *  ⛔ IT REACHED NOTHING BEFORE. All four callables below omitted
+   *  `onTokenUsage`, so every token an enrichment producer, a model-id probe or
+   *  a transcription burned was discarded — and
+   *  `housekeeping_state.tokens_consumed_today_*`, which looks like the
+   *  backstop, is `estimate_per_record_tokens()` x pending rows: a BUDGET
+   *  ESTIMATE the planner uses to decide whether to start a cycle, never a
+   *  measurement. So the one execution mode designed to run unattended was also
+   *  the one whose real cost nothing recorded.
+   *
+   *  ⚠ THE COUNTER, NOT AN AUDIT ROW, AND THAT IS THE HONEST HALF-STEP. This
+   *  makes housekeeping spend visible in the owner's daily total and countable
+   *  against their budget — where an owner's own provider spend belongs. It
+   *  does NOT give housekeeping per-task attribution; the `housekeeping_cycle`
+   *  audit row already carries `per_task` and is the right home for that, and
+   *  it is not wired here. */
+  const taskTokenMeter = createHousekeepingTaskTokenMeter();
+  const reportOwnerUsage = (usage: TokenUsage): void => {
+    llmManager?.addUsage(usage.total_tokens);
+    // D-250 § D — the same provider result, attributed to the task in flight so
+    // the `housekeeping_cycle` audit row can carry it. The counter above is the
+    // owner's BUDGET; this is the RECORD. Different jobs, both fed here.
+    taskTokenMeter.record(tokenUsageToReport(usage));
+  };
+
   const llm: HousekeepingLlmExecute = async (manifest, input) => {
     if (!llmConfig) {
       throw new LLMError(
@@ -298,7 +336,9 @@ export const composeHousekeepingLlmCallables = (
       adapters: llmAdapterRegistry,
       quota: llmQuota,
       tabProbe: emptyTabProbe,
-      webChatSupported: false,    });
+      webChatSupported: false,
+      onTokenUsage: reportOwnerUsage,
+    });
   };
 
   // D-136 §A.3 / audit §20.2 — sibling that captures the resolved
@@ -320,7 +360,9 @@ export const composeHousekeepingLlmCallables = (
       adapters: llmAdapterRegistry,
       quota: llmQuota,
       tabProbe: emptyTabProbe,
-      webChatSupported: false,      onMatchResolved: (evt) => {
+      webChatSupported: false,
+      onTokenUsage: reportOwnerUsage,
+      onMatchResolved: (evt) => {
         const winner = evt.winner;
         if (winner.source.kind === 'slot') {
           model_id = `${winner.slot.provider}:${winner.slot.model}`;
@@ -371,6 +413,11 @@ export const composeHousekeepingLlmCallables = (
       config,
       adapters: llmEmbeddingsAdapterRegistry,
       quota: llmQuota,
+      // D-250 § D — embeddings are billed tokens like any completion, and this
+      // is the highest-VOLUME housekeeping path (one call per record indexed).
+      // ⚠ Found by the reporting ratchet, not by reading: a by-file grep for
+      // `executeLLM` missed every `executeEmbedding` site.
+      onTokenUsage: reportOwnerUsage,
     });
   };
 
@@ -397,6 +444,7 @@ export const composeHousekeepingLlmCallables = (
   };
 
   return {
+    taskTokenMeter,
     llm,
     llmWithMeta,
     resolveLLMModelId: resolveLLMModelIdCallable,

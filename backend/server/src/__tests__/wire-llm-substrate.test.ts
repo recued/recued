@@ -342,14 +342,19 @@ describe('composeLlmSubstrate resolveLlmConfig (D-174 R28 Slice C per-use live r
 });
 
 describe('composeHousekeepingLlmCallables happy path', () => {
-  it('returns exactly the five housekeeping callable fields', () => {
+  it('returns exactly the housekeeping callable fields', () => {
     const bundle = composeHousekeepingLlmCallables({ substrate: makeSubstrate() });
 
+    // D-250 § D — `taskTokenMeter` joined the bundle deliberately: it is not a
+    // callable, but the bundle is spread onto the housekeeping ctx, which is
+    // the one place the scheduler and these callables both reach. The ratchet
+    // did its job — this list is updated as a decision, not to go green.
     expect(Object.keys(bundle).sort()).toEqual([
       'embed',
       'llm',
       'llmWithMeta',
       'resolveLLMModelId',
+      'taskTokenMeter',
       'transcribe',
     ].sort());
   });
@@ -367,6 +372,10 @@ describe('composeHousekeepingLlmCallables happy path', () => {
       quota: substrate.llmQuota,
       tabProbe: substrate.emptyTabProbe,
       webChatSupported: false,
+      // D-250 § D — every housekeeping provider call now reports its tokens to
+      // the owner's daily counter; these deps assertions are exhaustive, so the
+      // sink is named here rather than silently widening them to `objectContaining`.
+      onTokenUsage: expect.any(Function),
     });
   });
 
@@ -387,6 +396,10 @@ describe('composeHousekeepingLlmCallables happy path', () => {
       config: substrate.llmConfig,
       adapters: substrate.llmEmbeddingsAdapterRegistry,
       quota: substrate.llmQuota,
+      // D-250 § D — every housekeeping provider call now reports its tokens to
+      // the owner's daily counter; these deps assertions are exhaustive, so the
+      // sink is named here rather than silently widening them to `objectContaining`.
+      onTokenUsage: expect.any(Function),
     });
   });
 
@@ -413,6 +426,10 @@ describe('composeHousekeepingLlmCallables happy path', () => {
       config: liveConfig,
       adapters: substrate.llmEmbeddingsAdapterRegistry,
       quota: substrate.llmQuota,
+      // D-250 § D — every housekeeping provider call now reports its tokens to
+      // the owner's daily counter; these deps assertions are exhaustive, so the
+      // sink is named here rather than silently widening them to `objectContaining`.
+      onTokenUsage: expect.any(Function),
     });
   });
 

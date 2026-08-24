@@ -173,6 +173,11 @@ export type EnrichmentPiiTagSource = (
 ) => readonly PiiFieldTag[];
 
 export interface HousekeepingContext {
+  /** D-250 § D — per-task provider-spend meter. Spread onto the ctx with the
+   *  rest of the LLM callables bundle, because that is the one place the
+   *  scheduler and the callables both reach. Optional: a db-less or AI-less
+   *  boot has no callables, and a cycle simply records no tokens. */
+  taskTokenMeter?: import('./task-token-meter.js').HousekeepingTaskTokenMeter;
   db: Database.Database;
   bus: WarehouseEventBus;
   enrichmentStore: EnrichmentStore;

@@ -47,6 +47,9 @@ export interface SystemStatusDeps {
   /** Pending ask count via the notification block's
    *  `countOutstandingAsks`. Absent → `null`. */
   countPendingAsks?: () => Promise<number | null>;
+  /** Ask-load readout (λ×W) via the notification block's
+   *  `askLoadStats`. Absent → `null`. */
+  getAskLoadStats?: () => Promise<ServerSystemStatus['ask_load']>;
   /** D-169 P1 Codex fold (Angle 6 MINOR) — durable paired-device count
    *  (includes offline pairs). Required by spec § N.5 #1: the snapshot
    *  must report the durable count separately from the live-connected
@@ -113,6 +116,7 @@ export const handleSystemStatus = async (
     ? await deps.countExecutionsInWindow(DAY_MS)
     : null;
   const pending_asks = deps.countPendingAsks ? await deps.countPendingAsks() : null;
+  const ask_load = deps.getAskLoadStats ? await deps.getAskLoadStats() : null;
   const schedule_queue_depth = deps.getScheduleQueueDepth
     ? await deps.getScheduleQueueDepth()
     : null;
@@ -132,6 +136,7 @@ export const handleSystemStatus = async (
       executions_last_hour,
       executions_last_24h,
       pending_asks,
+      ask_load,
       schedule_queue_depth,
       recent_error_count,
       keyfile_sealing: deps.getKeyfileSealing ? deps.getKeyfileSealing() : null,

@@ -305,3 +305,89 @@ describe('wrapRegistryWithToolsSearch — dispatch search', () => {
     expect(slugs).not.toContain('recued-core/draft-followup-email');
   });
 });
+
+describe('wrapRegistryWithToolsSearch — no imposed result cap (2026-08-20)', () => {
+  // A cap made the equal-score name tie-break an EXCLUSION channel (round-13
+  // audit, T4 § 6.4): with limit slots, `aaa-…` pushes an equal-scoring rival
+  // out of the result set. These pin: absent limit ⇒ every match returned; a
+  // model-passed limit still bounds.
+  const wideCatalog: ReadonlyArray<ToolEntry> = [
+    mkEntry('contact.search', 1),
+    ...Array.from({ length: 23 }, (_, i) =>
+      mkEntry(`recued-core/email-tool-${String(i).padStart(2, '0')}`, 2, {
+        topic_tags: ['email'],
+        description: 'Email capability',
+      }),
+    ),
+  ];
+
+  it('returns EVERY match when no limit is passed (23 > the old 5/20 caps)', async () => {
+    const reg = wrapRegistryWithToolsSearch(mkInner(wideCatalog), {
+      enabled: true,
+      getScope: () => null,
+    });
+    const res = await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'email' }, CTX);
+    const result = (res as { result: Record<string, unknown> }).result;
+    expect(result.match_count).toBe(23);
+  });
+
+  it('a model-passed limit still bounds the result', async () => {
+    const reg = wrapRegistryWithToolsSearch(mkInner(wideCatalog), {
+      enabled: true,
+      getScope: () => null,
+    });
+    const res = await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'email', limit: 2 }, CTX);
+    const result = (res as { result: Record<string, unknown> }).result;
+    expect(result.match_count).toBe(2);
+  });
+});
+
+describe('wrapRegistryWithToolsSearch — D-247 D8 owner Tier-2 projection', () => {
+  // Search is an exposure surface in its own right: a hidden recipe the owner
+  // granted must be findable here too, or the grant works in the catalog and
+  // silently does not in search. The param was accepted-and-unread until
+  // 2026-08-20; these are the join tests that were missing.
+  const hiddenGranted = mkEntry('recued-core/hidden-email-digest', 2, {
+    topic_tags: ['email'],
+    description: 'Email digest (hidden from the exposed catalog, owner-granted)',
+  });
+
+  it('the owner projection REPLACES the exposed Tier-2 corpus — a hidden granted recipe is findable', async () => {
+    const reg = wrapRegistryWithToolsSearch(mkInner(CATALOG), {
+      enabled: true,
+      getScope: () => null,
+      tier2OwnerCatalog: () => [hiddenGranted],
+    });
+    const res = await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'email' }, CTX);
+    const result = (res as { result: Record<string, unknown> }).result;
+    const slugs = (result.matches as Array<{ recipe_slug: string }>).map((m) => m.recipe_slug);
+    expect(slugs).toContain('recued-core/hidden-email-digest');
+    // REPLACES, not unions: the registry's own exposed entry is not re-added
+    // beside the grant-decided projection (mirror of the orchestrator's
+    // buildCatalog branch).
+    expect(slugs).not.toContain('recued-core/draft-followup-email');
+  });
+
+  it('the reachability filter is NOT applied over the owner projection (it is already grant-decided)', async () => {
+    const reg = wrapRegistryWithToolsSearch(mkInner(CATALOG), {
+      enabled: true,
+      getScope: () => null,
+      tier2GrantFilter: () => () => false, // would reject everything
+      tier2OwnerCatalog: () => [hiddenGranted],
+    });
+    const res = await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'email' }, CTX);
+    const result = (res as { result: Record<string, unknown> }).result;
+    expect(result.match_count).toBe(1);
+  });
+
+  it('without an owner projection the D-247 D9 grant filter still gates the corpus', async () => {
+    const reg = wrapRegistryWithToolsSearch(mkInner(CATALOG), {
+      enabled: true,
+      getScope: () => null,
+      tier2GrantFilter: () => () => false,
+    });
+    const res = await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'email' }, CTX);
+    const result = (res as { result: Record<string, unknown> }).result;
+    expect(result.match_count).toBe(0);
+  });
+});

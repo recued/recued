@@ -18,20 +18,42 @@ export interface DrainableAuditLog {
   /** Permanently close append admission and wait for admitted writes. Safe and
    * idempotent under concurrent shutdown callers. */
   closeAndDrain(): Promise<void>;
+  /** R13 T4-6.1 — number of writes refused since `closeAndDrain()` closed
+   * admission. Zero while accepting. The refusal itself is by design; the
+   * DEFECT was that nothing counted it, so a recorded write and a dropped one
+   * were indistinguishable to every caller. */
+  droppedWrites(): number;
+}
+
+export interface DrainableAuditLogOptions {
+  /** R13 T4-6.1 — invoked synchronously with the RUNNING TOTAL each time a
+   * write is refused after drain. Callers persist it OUT-OF-BAND — the audit
+   * store is the thing that can no longer record — so the next boot can
+   * surface the count (see `dropped-writes-marker.ts`). Must not throw; a
+   * throwing callback is swallowed (this runs on the shutdown path). */
+  onDroppedWrite?: (total: number) => void;
 }
 
 export const createDrainableAuditLog = (
   underlying: AuditLogStore,
+  options: DrainableAuditLogOptions = {},
 ): DrainableAuditLog => {
   const pending = new Set<Promise<unknown>>();
   let accepting = true;
+  let dropped = 0;
   let drainPromise: Promise<void> | undefined;
 
   const track = <T>(start: () => Promise<T>): Promise<T> => {
     // A terminal drain has already stopped every producer. Treat a genuinely
     // late telemetry append as a contained no-op rather than letting a detached
-    // caller manufacture an unhandled rejection during process shutdown.
-    if (!accepting) return Promise.resolve(undefined as T);
+    // caller manufacture an unhandled rejection during process shutdown — but
+    // COUNT it (R13 T4-6.1): silent success with no counter made a dropped
+    // write indistinguishable from a recorded one.
+    if (!accepting) {
+      dropped += 1;
+      try { options.onDroppedWrite?.(dropped); } catch { /* shutdown path — never throw */ }
+      return Promise.resolve(undefined as T);
+    }
 
     let task: Promise<T>;
     try {
@@ -52,6 +74,7 @@ export const createDrainableAuditLog = (
     append: (entry: AuditEntry, options?: AppendOptions) =>
       track(() => underlying.append(entry, options)),
     listRecent: (limit, options) => underlying.listRecent(limit, options),
+    listByCommitStatus: (status, limit) => underlying.listByCommitStatus(status, limit),
     listWindow: (query) => underlying.listWindow(query),
     listByRecipe: (recipeId, limit) => underlying.listByRecipe(recipeId, limit),
     listByChannelSession: (id, limit, axis) =>
@@ -98,5 +121,5 @@ export const createDrainableAuditLog = (
     return drainPromise;
   };
 
-  return { auditLog, closeAndDrain };
+  return { auditLog, closeAndDrain, droppedWrites: () => dropped };
 };

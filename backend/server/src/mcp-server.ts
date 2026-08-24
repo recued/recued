@@ -45,7 +45,7 @@ import {
   rawOpToolEntries,
   type RawOpToolDescriptor,
 } from './raw-op-tool-catalog.js';
-import { executionSourceContractId } from '@recued/contracts';
+import { executionSourceContractId, isExchangeEnvelopeKey } from '@recued/contracts';
 import { RUN_INGREDIENT_RECIPE } from './run-ingredient-recipe.js';
 import { PEER_RECEIVE_ANSWER_TOOL, PEER_RECEIVE_ASK_TOOL } from './peer-receive-ask-recipe.js';
 import { checkFormContract, type FormDefinitionReader } from './form-contract-gate.js';
@@ -1741,6 +1741,12 @@ export interface McpDeps extends ExecuteHandlerDeps {
    *  housekeeping engine; absent → those two fields surface as null
    *  / 0 without breaking the rest of the response. */
   housekeepingStateStore?: HousekeepingStateStore;
+  /** D-236 join — source-freshness verdicts per enrichment scope, built by the
+   *  composer from the live CollectionRegistry (Fork-B loader pattern). Feeds
+   *  `registryDescribe`'s coverage-band cap so a reactive topic cannot read
+   *  `high` off rows whose feeding source died. Absent ⇒ row-derived bands
+   *  stand (partial harnesses, boots without a registry in scope). */
+  sourceFreshnessByScope?: import('./mcp/registry-describe.js').RegistryDescribeDeps['sourceFreshnessByScope'];
   /** D-136 §A.13.1 P7.D — per-server cap on
    *  `mcp.vector.similarity_search.limit` from
    *  `housekeeping_config.vector_search_max_results`. Optional;
@@ -2233,6 +2239,29 @@ const validateMcpSchemaValue = (
         const childSchema = properties[key];
         if (childSchema === undefined) {
           if (record.additionalProperties === false) {
+            // ⛔⛔ D-232 § 21 — THE EXCHANGE ENVELOPE RIDES HERE TOO, AND THIS
+            // WAS THE DOOR THE EXEMPTION NEVER REACHED. `EXCHANGE_ENVELOPE_KEYS`
+            // exists because *"WITHOUT THIS THE PROTOCOL CANNOT GROW A SINGLE
+            // FIELD"* — every key a receiver does not declare is refused, and
+            // refused at the FAR side, where the asker sees only that the answer
+            // never arrived. `undeclaredConfigArguments` was taught to exempt
+            // them; THIS validator sits in front of it on the MCP wire and was
+            // not, so a cross-server exchange died `arguments.outcome is not a
+            // declared argument` before the boundary that would have admitted it
+            // ever ran. One rule, two doors, enforced at one — found by a live
+            // two-server drive, after an unrelated fix stopped masking it.
+            //
+            // ⚠ TOP LEVEL ONLY (`path === 'arguments'`). The envelope is the
+            // CALL's own frame; admitting these names inside an arbitrary nested
+            // object would let a caller past a schema that has nothing to do with
+            // the exchange.
+            //
+            // ⚠ AND IT WIDENS NO AUTHORITY. Every member is engine-DERIVED from
+            // the run, never authored, and an undeclared key stays UNREADABLE —
+            // `{{config.<name>}}` resolves against declared variables only. A
+            // receiver that wants to read one declares it, and then it is
+            // validated like any other argument by the branch below.
+            if (path === 'arguments' && isExchangeEnvelopeKey(key)) continue;
             return `${path}.${key} is not a declared argument`;
           }
           continue;
@@ -3482,6 +3511,10 @@ const handleToolCall = async (
           ? { housekeepingStateStore: deps.housekeepingStateStore }
           : {}),
         ...(deps.db ? { db: deps.db } : {}),
+        // D-236 join — cap coverage bands when a feeding source is stale.
+        ...(deps.sourceFreshnessByScope
+          ? { sourceFreshnessByScope: deps.sourceFreshnessByScope }
+          : {}),
         // D-187 AMENDMENT — the bound door contract's per-dispatch read-grant checker.
         // The agent catalog lists exactly the topics the bound contract is read-granted
         // (the checker folds the former `mcp_exposed` visibility AND the per-topic scope

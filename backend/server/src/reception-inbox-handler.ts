@@ -956,7 +956,25 @@ export const queryReceptionInboxHeldOps = async (
   deps: ReceptionInboxDeps,
 ): Promise<ReceptionInboxHeldOp[]> => {
   const scanLimit = deps.scanLimit ?? DEFAULT_SCAN_LIMIT;
-  const recent = await deps.auditLog.listRecent(scanLimit);
+  // ⛔⛔ STATUS-SCOPED, NOT A SHARED WINDOW. This read was
+  // `listRecent(scanLimit)` — the newest N anchors of EVERY kind — with the
+  // `awaiting_approval` test applied afterwards in JS. So every run competed
+  // for the same window, including read-only renders (which write a
+  // `succeeded` anchor gated by nothing, `execute-handler.ts`), and
+  // `listRecent` is newest-first, so the OLDEST hold was the first evicted.
+  // At ~120 anchors an hour the window cleared in eight.
+  //
+  // 🔑 THE FAILURE HAD NO SYMPTOM. The held run did not expire, get denied or
+  // error — it stopped being ENUMERATED, and this function still returned
+  // successfully with a shorter list. That is why the fix is a scoped query
+  // rather than a bigger number: enlarging a shared window postpones the same
+  // silent eviction, and the owner has no way to notice either way. Now only
+  // other rows in the SAME state compete, and "1000 pending approvals" is a
+  // situation they can actually see.
+  //
+  // ⚠ `scanLimit` still bounds the read — it is a page size, not a filter.
+  // Driven in `reception-inbox-scan-window-crowding.test.ts`.
+  const recent = await deps.auditLog.listByCommitStatus('awaiting_approval', scanLimit);
   const held: ReceptionInboxHeldOp[] = [];
   for (const anchor of recent) {
     // (1) only paused runs.

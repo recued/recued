@@ -193,6 +193,7 @@ export const createSigningAuditLog = (
   return {
     append: (entry, opts) => underlying.append(entry, opts),
     listRecent: (limit, opts) => underlying.listRecent(limit, opts),
+    listByCommitStatus: (status, limit) => underlying.listByCommitStatus(status, limit),
     listWindow: (query) => underlying.listWindow(query),
     listByRecipe: (recipe_id, limit) => underlying.listByRecipe(recipe_id, limit),
     listByChannelSession: (id, limit, axis) =>

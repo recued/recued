@@ -43,7 +43,6 @@ const ensureAnnotationTable = () => {
       size_bytes            INTEGER NOT NULL,
       authored_by_recipe_id TEXT NOT NULL,
       source_record_hash    TEXT NOT NULL,
-      recipe_hash           TEXT NOT NULL,
       model_used            TEXT,
       authored_at           INTEGER NOT NULL,
       event_at              INTEGER
@@ -261,9 +260,9 @@ describe('deterministicRiskPatternsTask.step — window boundary + cleanup', () 
     db.prepare(`
       INSERT INTO annotation (
         id, target_collection, target_id, key, value_inline, blob_hash, size_bytes,
-        authored_by_recipe_id, source_record_hash, recipe_hash, model_used,
+        authored_by_recipe_id, source_record_hash, model_used,
         authored_at, event_at
-      ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?, NULL)
+      ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?, NULL)
     `).run(
       'user-flag-1',
       'recipe',
@@ -272,7 +271,6 @@ describe('deterministicRiskPatternsTask.step — window boundary + cleanup', () 
       JSON.stringify({ note: 'I keep an eye on this one' }),
       40,
       'user-recipe-id',
-      'user-hash',
       'user-hash',
       now,
     );

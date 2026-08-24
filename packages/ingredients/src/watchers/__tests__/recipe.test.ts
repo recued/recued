@@ -33,6 +33,7 @@ const mkAuditLog = (entriesByRecipe: Record<string, AuditEntry[]>): AuditLogStor
   return {
     append: notUsed,
     listWindow: notUsed,
+    listByCommitStatus: notUsed,
     listPendingExchangeRefs: notUsed,
     listInboundContractIds: notUsed,
     listRecent: notUsed,

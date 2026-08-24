@@ -250,7 +250,14 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.memory.timeline.read|memory|timeline-read|read',
       'core.memory.write|memory|(native)|write',
       'core.notification.recipe-callback|notification|core-notification-recipe-callback|write',
-      'core.notification.send|notification|core-notification-send|write',
+      // ⛔ `read`, not `write` — owner ruling 2026-08-20. This op authors no
+      // recipient (its input is `{channels, text, title, link_url}`), the only
+      // reader is the owner, and gating it made the approval prompt a SECOND
+      // notification on the same channels. It also left
+      // `OUTBOUND_SEND_INGREDIENT_SLUGS` in the same commit — both halves are
+      // needed and they fix disjoint cells. See
+      // `d-177-notification-send-is-not-a-send.test.ts`.
+      'core.notification.send|notification|core-notification-send|read',
       // D-234 § 234.4 — the ASKING half. `write` because it spends another
       // person's attention and suspends the run until they answer.
       // ⛔ § 234.4j DELETED `core.peer.expose` / `.revoke` / `.exposures` FROM

@@ -1,7 +1,6 @@
 import type { RecipeStep, PrefetchStep, PrefetchOpStep } from './steps.js';
 import type { ValueHint } from './value-hint.js';
 import type { AutoRunSpec } from './reactive.js';
-import type { AnnotationPolicy } from './annotation.js';
 import type { ExecutionScope } from './execution-scope.js';
 import type { RunMode } from './memory.js';
 import type { RecipeWebhookRequirement, RecipeWebhookTrigger } from './webhook-profiles.js';
@@ -751,12 +750,6 @@ export interface RecipeMetadata {
    *  from the budget (users take their own time). Required for context /
    *  auto-run recipes (must respond fast); optional for manual + scheduled. */
   budget_ms?: number;
-  /** D-119 Phase 13 — annotation eviction policy.
-   *  `'keep_stale'` (default) renders a `⚠ stale` badge on the
-   *  per-record ref but never deletes; `'evict_on_stale'` drops the
-   *  row at next read through the per-record ref. Recipes opt in
-   *  explicitly because eviction is destructive. */
-  annotation_policy?: AnnotationPolicy;
   /** D-119 Phase 15 — author-declared execution scope.
    *  Optional. When present, must be a subset of the scope derived
    *  from the recipe's ingredient manifests at install time. Wider-

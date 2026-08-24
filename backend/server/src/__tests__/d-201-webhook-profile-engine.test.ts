@@ -199,6 +199,7 @@ describe('D-201 Slices 8K + 8O-8Q + 8U + 9S-9AD typed webhook profile engines', 
       'slack.request.v0'
     ]);
     expect(Object.keys(WEBHOOK_RAW_BODY_HMAC_DELIVERY_PROFILE_PRESETS)).toEqual([
+      'cal.webhook.v1',
       'generic.raw-body-hmac-sha256.v1',
       'github.webhook.v1',
       'lemonsqueezy.webhook.v1',

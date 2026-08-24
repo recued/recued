@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  ACTORS,
+  ORIGIN_SURFACES,
   computeOpenProjection,
   isOpenProjectionRefusal,
   isUserCleanStoredRow,
@@ -136,59 +138,107 @@ const expectProjection = (
   return result;
 };
 
-describe('isUserCleanStoredRow predicate table', () => {
+/** ⛔⛔ THIS TABLE USED TO ASSERT STATES THE SYSTEM CANNOT PRODUCE. Four of its
+ *  six rows pinned `origin_surface: 'client_rpc'` while varying the actor —
+ *  `engine + client_rpc`, `system + client_rpc`, `anonymous + client_rpc`,
+ *  `contracted_user + client_rpc`. None of those rows can exist:
+ *
+ *    · `client_rpc` is injected as a HARDCODED PAIR with `user_self`, at both
+ *      sites (`annotation-handler.ts` `makeAnnotationHandlers`, `contact-handler.ts`
+ *      `contact.upsert`) — "a direct paired-client rpc arrives on the `user`
+ *      channel BY CONSTRUCTION, so the write-actor is `'user_self'`".
+ *    · `'engine'` is not even an Actor. `ACTORS` is
+ *      `user_self | contracted_user | system | anonymous`; `engine` is a SURFACE.
+ *
+ *  ⇒ It read as a matrix and was a single-axis sweep pinned to an impossible
+ *  partner, and the row that actually matters — `contracted_user + engine`, the
+ *  agent-lane write D-177 rev 8 says `origin_actor` is stamped FOR — was absent.
+ *
+ *  🔑 AND THE STRUCTURAL FACT THE OLD TABLE HID: given `client_rpc ⟹ user_self`,
+ *  NO PRODUCIBLE ROW CAN ISOLATE THE ACTOR ARM. Clean requires actor `user_self`
+ *  AND surface `client_rpc`; every producible non-clean row already fails on the
+ *  SURFACE. The actor check is therefore defense-in-depth against an
+ *  inconsistently-written row (legacy, migration, or a bug at an injection site)
+ *  — never the deciding factor in normal operation. That is worth knowing and
+ *  worth keeping; it is not worth dressing up as coverage. The incoherent row is
+ *  kept below as exactly one case, LABELLED as the defense-in-depth probe it is.
+ *
+ *  ⚠ THE PRODUCIBLE SET, each row named by what writes it. `client_rpc` pairs
+ *  only with `user_self`; `engine` carries whatever actor the execution source
+ *  has (`wire-executor-config.ts` lifts `input.origin_actor` and hardcodes the
+ *  surface); `system` is the column default when no actor is injected. */
+describe('isUserCleanStoredRow — the PRODUCIBLE (actor, surface) pairs', () => {
   it.each([
     [
-      'user_self + client_rpc + no contract_id',
+      'user_self + client_rpc — the human typing into their own paired client',
       storedRow({ origin_actor: 'user_self', origin_surface: 'client_rpc' }),
       true,
     ],
     [
-      'origin_actor = engine',
-      storedRow({ origin_actor: 'engine', origin_surface: 'client_rpc' }),
-      false,
-    ],
-    [
-      'origin_actor = system',
-      storedRow({ origin_actor: 'system', origin_surface: 'client_rpc' }),
-      false,
-    ],
-    [
-      'origin_actor = anonymous',
-      storedRow({ origin_actor: 'anonymous', origin_surface: 'client_rpc' }),
-      false,
-    ],
-    [
-      'origin_actor = contracted_user',
-      storedRow({ origin_actor: 'contracted_user', origin_surface: 'client_rpc' }),
-      false,
-    ],
-    [
-      'origin_surface = engine',
+      'user_self + engine — a chat / messenger / manual recipe run',
       storedRow({ origin_actor: 'user_self', origin_surface: 'engine' }),
       false,
     ],
     [
-      'origin_surface = system',
-      storedRow({ origin_actor: 'user_self', origin_surface: 'system' }),
+      'contracted_user + engine — THE AGENT LANE (mcp), the row rule 1 exists for',
+      storedRow({ origin_actor: 'contracted_user', origin_surface: 'engine' }),
       false,
     ],
     [
-      'origin_surface missing/undefined',
-      storedRow({ origin_actor: 'user_self' }),
+      'anonymous + engine — a reception-door recipe run',
+      storedRow({ origin_actor: 'anonymous', origin_surface: 'engine' }),
       false,
     ],
     [
-      'contract_id present (origin_contract_id non-null)',
-      storedRow({
-        origin_actor: 'user_self',
-        origin_surface: 'client_rpc',
-        origin_contract_id: 'contract-1',
-      }),
+      'system + system — the column default, no actor injected',
+      storedRow({ origin_actor: 'system', origin_surface: 'system' }),
       false,
     ],
   ])('%s -> %s', (_label, row, expected) => {
     expect(isUserCleanStoredRow(row)).toBe(expected);
+  });
+
+  it('DEFENSE IN DEPTH: a row whose facets disagree is refused on the ACTOR', () => {
+    // ⚠ NOT PRODUCIBLE, and labelled so. `client_rpc` never ships with a
+    // non-`user_self` actor, so this can only arise from an inconsistent write —
+    // which is exactly why the actor arm is kept. Asserting it as if it were an
+    // ordinary case is what made the old table look like a matrix.
+    expect(isUserCleanStoredRow(
+      storedRow({ origin_actor: 'contracted_user', origin_surface: 'client_rpc' }),
+    )).toBe(false);
+  });
+
+  it('DEFENSE IN DEPTH: a contract_id on an otherwise-clean row refuses it', () => {
+    // ⛔ THIS ARM WAS ENTIRELY UNCOVERED — deleting `origin_contract_id ===
+    // undefined` from the predicate left all 28 tests green. Found the same way
+    // as the actor gap: by mutating each arm and asking which one reds.
+    //
+    // ⚠ ALSO NOT ISOLABLE BY A PRODUCIBLE ROW. `client_rpc` is injected with no
+    // contract_id, and any contracted write carries the `engine` surface, which
+    // already fails. So — like the actor arm — this guards an inconsistently
+    // written row rather than an ordinary one, and is labelled as such instead of
+    // being dressed up as a normal case.
+    expect(isUserCleanStoredRow(storedRow({
+      origin_actor: 'user_self',
+      origin_surface: 'client_rpc',
+      origin_contract_id: 'contract-1',
+    }))).toBe(false);
+  });
+
+  it('the clean row is the ONLY clean row — every other producible pair is tainted', () => {
+    // ⛔ THE WHOLE-SET ASSERTION, so a future actor or surface cannot be added to
+    // either closed list and quietly default to CLEAN. `ACTORS` × `ORIGIN_SURFACES`
+    // is 12 combinations; exactly one is clean, and this fails if that changes —
+    // including for a pair nobody thought to add a row for.
+    const clean: string[] = [];
+    for (const actor of ACTORS) {
+      for (const surface of ORIGIN_SURFACES) {
+        if (isUserCleanStoredRow(storedRow({ origin_actor: actor, origin_surface: surface }))) {
+          clean.push(`${actor}+${surface}`);
+        }
+      }
+    }
+    expect(clean).toEqual(['user_self+client_rpc']);
   });
 });
 
@@ -271,7 +321,6 @@ describe('createStoredRowOriginResolver over REAL contact + annotation stores', 
       value: 'email',
       authored_by_recipe_id: 'recipe-1',
       source_record_hash: 'source-1',
-      recipe_hash: 'recipe-hash-1',
       origin_actor: 'user_self',
       origin_surface: 'client_rpc',
     });
@@ -283,7 +332,6 @@ describe('createStoredRowOriginResolver over REAL contact + annotation stores', 
       value: 'sms',
       authored_by_recipe_id: 'recipe-2',
       source_record_hash: 'source-2',
-      recipe_hash: 'recipe-hash-2',
       origin_actor: 'contracted_user',
       origin_contract_id: 'contract-2',
       origin_surface: 'engine',
@@ -343,7 +391,6 @@ describe('createStoredRowOriginResolver over REAL contact + annotation stores', 
       value: 'email',
       authored_by_recipe_id: 'recipe-1',
       source_record_hash: 'source-1',
-      recipe_hash: 'recipe-hash-1',
       origin_actor: 'user_self',
       origin_surface: 'client_rpc',
     });
@@ -354,7 +401,6 @@ describe('createStoredRowOriginResolver over REAL contact + annotation stores', 
       value: 'sms',
       authored_by_recipe_id: 'recipe-2',
       source_record_hash: 'source-2',
-      recipe_hash: 'recipe-hash-2',
       origin_actor: 'contracted_user',
       origin_contract_id: 'contract-2',
       origin_surface: 'engine',
@@ -378,7 +424,6 @@ describe('createStoredRowOriginResolver over REAL contact + annotation stores', 
       value: 'email',
       authored_by_recipe_id: 'recipe-1',
       source_record_hash: 'source-1',
-      recipe_hash: 'recipe-hash-1',
       origin_actor: 'user_self',
       origin_surface: 'client_rpc',
     });
@@ -389,7 +434,6 @@ describe('createStoredRowOriginResolver over REAL contact + annotation stores', 
       value: 'sms',
       authored_by_recipe_id: 'recipe-2',
       source_record_hash: 'source-2',
-      recipe_hash: 'recipe-hash-2',
       origin_actor: 'user_self',
       origin_surface: 'client_rpc',
     });

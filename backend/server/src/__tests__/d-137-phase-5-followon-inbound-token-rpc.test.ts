@@ -36,6 +36,8 @@ import {
   CHAT_RPC_METHODS,
   MCP_INBOUND_TOKEN_VALIDATION_ISSUE_CODES,
   MCP_RESERVED_RPC_PREFIXES,
+  OWNER_CONTRACT_ID,
+  PUBLIC_CONTRACT_ID,
   RpcError,
   isReservedLocalRpc,
   type RecuedServerSignature,
@@ -748,6 +750,10 @@ describe('D-137 P5 follow-on — validator ratchet (15 closed-list codes)', () =
     // so the wire can be REFUSED an op list: the closure is derived from the
     // granted recipes, and a caller naming its own is a validation error rather
     // than a quietly-honoured standing authority.
+    // ⚠ D-249 briefly added a 16th (`allow_ai_invalid`) and REMOVED it in the
+    // same session: the owner ruled that granting a recipe BY NAME is already
+    // the consent to what that recipe does, so there was nothing for the wire to
+    // carry. The count is a ratchet, not a target — it went back down.
     expect(MCP_INBOUND_TOKEN_VALIDATION_ISSUE_CODES.length).toBe(15);
   });
 });
@@ -913,6 +919,39 @@ describe('D-171 slice 3 — chat.inbound_token.update_contract', () => {
       code: 'not_found',
       status: 404,
     });
+  });
+
+  // D-248 Amendment 3 — the two RESERVED SENTINELS can never be bound to a door
+  // token. The owner fence shipped with D-187 amendment 3b and was never covered
+  // here; the public fence had no call site at all until now
+  // (`isReservedOwnerContractId` had five, `isReservedPublicContractId` had ZERO,
+  // while its own docstring claimed the pair "can never drift"). Both pinned
+  // together so the next drift is a red rather than a discovery.
+  it('refuses to bind either reserved sentinel AT ISSUE', async () => {
+    // ⛔ THE SECOND BIND PATH. `issue` takes a caller-supplied `contract_id` and its
+    // validator checks SHAPE ONLY, so fencing `update_contract` alone left this open
+    // one rpc over — including for the OWNER sentinel, whose D-187 fence never
+    // covered it. Both pinned here so neither path can regress alone.
+    for (const reserved of [OWNER_CONTRACT_ID, PUBLIC_CONTRACT_ID]) {
+      await expect(
+        handleInboundTokenIssue(rig.deps, {
+          ...validIssuanceArgs(),
+          contract_id: reserved,
+        }),
+      ).rejects.toMatchObject({ code: 'bad_request' });
+    }
+  });
+
+  it('refuses to bind either reserved sentinel to a door token', async () => {
+    const issued = await handleInboundTokenIssue(rig.deps, validIssuanceArgs());
+    for (const reserved of [OWNER_CONTRACT_ID, PUBLIC_CONTRACT_ID]) {
+      await expect(
+        updateContract(rig.deps, {
+          token_id: issued.record.token_id,
+          contract_id: reserved,
+        }),
+      ).rejects.toMatchObject({ code: 'bad_request' });
+    }
   });
 
   it('binds contract_id and emits update_contract broadcast plus bound audit detail', async () => {

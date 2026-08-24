@@ -367,12 +367,53 @@ export interface SellerCustomer {
   readonly updated_at: number;
 }
 
+/** D-250 § D — set a tier's usage policy, whatever minted the tier.
+ *
+ *  ⛔ THE ONLY WAY TO LIMIT A SYNCED TIER. `SellerManualTierUpsertRequest` pins
+ *  `lifecycle_source: 'manual'`, and the store's tier upsert refuses when a
+ *  stored tier's source differs — so before this, a Stripe-minted tier could
+ *  not have a limit set on it through any path, and an absent policy means
+ *  UNLIMITED. This request touches the policy and nothing else; identity stays
+ *  owned by whatever minted the tier. */
+export interface SellerTierUsagePolicyRequest {
+  readonly tier_id: string;
+  /** Per-kind policy, the same shape `usage_policy_json` already holds:
+   *  `{ chat_turn: { period_granularity, period_limit, rate_limit_per_minute } }`.
+   *  ⚠ An omitted kind is UNLIMITED — that is the shipped default and this
+   *  request does not change it. Pass `{}` to clear all limits deliberately. */
+  readonly usage_policy_json: Readonly<Record<string, unknown>>;
+}
+
+export interface SellerTierUsagePolicyResponse {
+  readonly tier: SellerTier;
+  /** Fresh overview, the same convention every seller mutation follows so the
+   *  owner surface re-renders from one response instead of a second round-trip. */
+  readonly overview: SellerOverview;
+}
+
 export interface SellerCustomerUsageRollup {
   readonly contract_id: string;
   readonly usage_kind: SellerUsageKind;
   readonly period_granularity: SellerUsagePeriodGranularity;
   readonly period_start: number;
+  /** METERED work — reserved before the call, and what a plan's `period_limit`
+   *  and `rate_limit_per_minute` are enforced against. */
   readonly units: number;
+  /** D-250 § D — MEASURED provider cost of the metered work above.
+   *
+   *  ⛔ NOT A METER, AND A PLAN CANNOT LIMIT IT. Tokens are knowable only after
+   *  a call returns, so they can never gate that call; `units` is the only
+   *  enforceable dimension. These exist so the seller — who pays the inference
+   *  bill — can see what a plan priced in turns actually COSTS, which was
+   *  previously captured at the gateway and discarded.
+   *
+   *  ⚠ ABSENT means never measured (a row predating the columns, or a period
+   *  whose work reported no usage). It never means zero, and a reader must not
+   *  sum it as zero. */
+  readonly tokens_input?: number;
+  readonly tokens_output?: number;
+  readonly tokens_total?: number;
+  readonly provider_calls?: number;
   readonly created_at: number;
   readonly updated_at: number;
 }

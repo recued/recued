@@ -68,6 +68,16 @@ export const ensureHousekeepingSchema = (db: Database.Database): void => {
     CREATE INDEX IF NOT EXISTS idx_housekeeping_state_status
       ON housekeeping_state (last_status, last_run_at);
 
+    -- R13 T1-Q1 — durable whole-cycle clock. The scheduler's in-memory
+    -- lastCycleAt was process-local, so every restart read as "never
+    -- cycled" and fired a cycle on the first idle probe regardless of
+    -- cycle_interval_minutes. Singleton row, written once per completed
+    -- cycle, read once at scheduler construction.
+    CREATE TABLE IF NOT EXISTS housekeeping_cycle_clock (
+      id             TEXT PRIMARY KEY,
+      last_cycle_at  INTEGER NOT NULL
+    );
+
     -- D-132 — per-topic trust state + pool policy. Single-row upsert
     -- keyed on topic; absent row means "registry default." Includes
     -- the manual_run_count + promotion-suggestion bookkeeping the

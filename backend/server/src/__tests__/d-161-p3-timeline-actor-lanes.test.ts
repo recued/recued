@@ -190,7 +190,6 @@ describe('handleTimelineRequest — origin_actor lane filter', () => {
       key: 'note',
       value: 'agent wrote this',
       authored_by_recipe_id: 'p3-recipe',
-      recipe_hash: 'h-1',
       source_record_hash: 'src:contact:c1',
       origin_actor: 'contracted_user',
     });

@@ -134,6 +134,9 @@ export interface ComposeReceptionSubstrateDeps {
   readonly executeRecuedRequestPersist: import('@recued/middleware/orchestrator/index.js').ExecuteRecuedRequestContext['persist'] | undefined;
   readonly llmConfig: LlmSubstrate['llmConfig'];
   readonly llmQuota: LlmSubstrate['llmQuota'] | undefined;
+  /** D-250 § D — owner daily token counter, threaded to Compose's propose call
+   *  (the last provider call that reached neither a counter nor a record). */
+  readonly addOwnerTokenUsage?: (tokens: number) => void;
   readonly llmAdapterRegistry: LlmSubstrate['llmAdapterRegistry'] | undefined;
   readonly emptyTabProbe: LlmSubstrate['emptyTabProbe'] | undefined;
   readonly hostnameRegistryStore?: Pick<HostnameRegistryStore, 'list'> | undefined;
@@ -410,6 +413,9 @@ export const composeReceptionSubstrate = async (
     llmQuota: deps.llmQuota,
     llmAdapterRegistry: deps.llmAdapterRegistry,
     emptyTabProbe: deps.emptyTabProbe,
+    ...(deps.addOwnerTokenUsage !== undefined
+      ? { addOwnerTokenUsage: deps.addOwnerTokenUsage }
+      : {}),
     now: () => Date.now(),
     ...(deps.executeRecuedRequestPersist
       ? { persist: deps.executeRecuedRequestPersist }

@@ -1,10 +1,12 @@
 /** D-132 Phase 3 — reactive producer trust gate.
  *
  *  Mirror of `scheduler.ts`'s `isEligibleForIdleCycle` for the reactive
- *  dispatch path. The cascade engine's reactive producer dispatch
- *  consults this gate before firing reactive AI enrichment producers;
- *  the function is pure so the trigger-binder hook (when it lands as
- *  the live reactive dispatcher) calls it identically.
+ *  dispatch path. ⚠ NOT YET WIRED (verified R13 T2-Q1): no production
+ *  caller consults this gate today — it is the gate the live reactive
+ *  dispatcher WILL consult before firing reactive AI enrichment
+ *  producers once one lands; the function is pure so the trigger-binder
+ *  hook can call it identically when it does. Do not count this file as
+ *  an enforcement point until a caller exists.
  *
  *  Today's three reactive producers (`contact_timeline_rollup`,
  *  `calendar_event_rollup`, `meeting_reschedule_pattern`) are

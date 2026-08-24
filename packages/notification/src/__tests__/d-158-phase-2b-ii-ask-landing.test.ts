@@ -170,6 +170,12 @@ describe('D-158 P2b-ii ask landing renderer', () => {
     expect(answered).toContain('Response recorded: Reject');
     expect(answeredFallback).toContain('Response recorded: legacy-choice');
     expect(handled).toContain('Response recorded: Need more info');
+    // 2026-08-20 — the answering channel is named beside the option: with
+    // multi-channel fan-out (and channels held by different people),
+    // "already answered" without the WHERE is a mystery to every other reader.
+    expect(answered).toContain('Response recorded: Reject via email');
+    expect(answeredFallback).toContain('via slack');
+    expect(handled).toContain('via ui');
   });
 
   it('D-158 P2b-ii renders the verification phrase only when it is set', () => {

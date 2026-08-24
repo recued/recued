@@ -45,6 +45,21 @@ export type WidgetType =
    *  of the value (a carousel), so it is not a set. */
   | 'file_ref_array'
   | 'text'
+  /** A multi-LINE string. Every other string-ish widget is a one-line
+   *  `<input>`, and a browser strips the newlines out of a multi-line paste on
+   *  its way into one — so the value still arrives, as a single run-on
+   *  paragraph with every list and heading flattened, and nothing reports that
+   *  the structure was lost. Recipes ask for it with `type: 'long_text'`.
+   *
+   *  ⛔ NOT a widening of `'text'`. The 26 shipped `type: 'text'` variables are
+   *  short values (a search window like `pw`, an address), and turning those
+   *  into text areas would be a UI change to two dozen recipes nobody asked
+   *  for. New name, new widget, existing rows untouched.
+   *
+   *  ⚠ `readWidgetValue` needs NO branch for this: it falls through to `.value`,
+   *  and `HTMLTextAreaElement.value` is the same property. `validateWidgetValue`
+   *  likewise treats it as the string it is. */
+  | 'textarea'
   | 'number'
   | 'boolean'
   | 'select'
@@ -515,6 +530,23 @@ export const renderVariableWidget = (
     `;
   }
 
+  if (w.type === 'textarea') {
+    return `
+    <div class="var-row">
+      <label for="${e(id)}">${e(w.label)}${
+      w.optional ? ' <span class="var-optional">optional</span>' : ''
+    }</label>
+      ${help}
+      <textarea
+        id="${e(id)}"
+        rows="10"
+        data-var-key="${e(w.key)}"
+        data-var-type="textarea"
+      >${e(w.value === null || w.value === undefined ? '' : String(w.value))}</textarea>
+    </div>
+  `;
+  }
+
   // text | number | file_ref | file_ref_array fallback (paste durable refs
   // when the host has no inventory-search caller).
   const inputType = w.type === 'number'
@@ -620,9 +652,15 @@ export const validateWidgetValue = (
   // required-but-empty one was silently valid before this — the same gap the
   // `file_ref_array` clause below closes, in the widget slice 5 shipped
   // alongside it.
+  // ⛔ `textarea` BELONGS IN THIS LIST, AND ITS ABSENCE FAILS OPEN. A widget type
+  // that is not named here falls past every branch and returns null — "no
+  // complaint" — so a REQUIRED long-text variable left empty would submit
+  // silently. The list is what advertises; adding a member to `WidgetType`
+  // without adding it here is exactly how a closed vocabulary matches its own
+  // union and still lies.
   if (
-    w.type === 'text' || w.type === 'secret' || w.type === 'file_ref'
-    || w.type === 'datetime'
+    w.type === 'text' || w.type === 'textarea' || w.type === 'secret'
+    || w.type === 'file_ref' || w.type === 'datetime'
   ) {
     if (typeof value !== 'string' || value.trim() === '') return 'Required';
     return null;
@@ -680,6 +718,16 @@ export const isInvocationVariable = (v: VariableDefault): boolean =>
   v === null || isValidValueHint(v);
 
 const mapHintType = (hint: ValueHint): WidgetType => {
+  // ⛔⛔ COMPARED AS A STRING, DELIBERATELY, AND NOT BY ADDING A UNION MEMBER.
+  // `long_text` is one of the authored types that runs ahead of `ValueHintType`
+  // — the same set as `string`, `connection`, `array`, `object`, `json`, and the
+  // contract's own header comment RULES on it: an unknown type is admitted and
+  // falls back to text (D-222 § 7), and adding one member to close a typecheck
+  // lane leaves the other five open while asserting support the union does not
+  // have. `chat-catalog.ts` branches on `'array'` the same way. The measured
+  // table in `value-hint.ts` names this type, and a test machine-checks that the
+  // table and the corpus agree in both directions.
+  if ((hint.type as string) === 'long_text') return 'textarea';
   switch (hint.type) {
     case 'secret':
       return 'secret';
@@ -700,6 +748,10 @@ const mapHintType = (hint: ValueHint): WidgetType => {
     case 'url':
     case 'text':
     default:
+      // ⚠ FAIL-SAFE ON AN UNKNOWN TYPE, WHICH IS WHAT A VERSION SKEW LOOKS LIKE.
+      // A self-hosted server can be newer than the webclient paired to it, so a
+      // recipe declaring a type this build has never heard of lands here — and a
+      // one-line input is a degraded control, not a broken one.
       return 'text';
   }
 };

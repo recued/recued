@@ -14,6 +14,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  formatAskAge,
   renderApprovalCard,
   renderAskCard,
   renderChatPlanCard,
@@ -24,6 +25,7 @@ import {
   APPROVAL_CARD_LINK_ATTR,
   APPROVAL_CARD_STATUS_ATTR,
   type ApprovalCardModel,
+  ASK_CARD_AGE_ATTR,
   ASK_CARD_ATTR,
   ASK_CARD_BODY_ATTR,
   ASK_CARD_STYLES,
@@ -88,6 +90,11 @@ interface FakeEl {
   rows: number;
   placeholder: string;
   id: string;
+  /** The hover tooltip. Modelled because the waiting-age element sets it to the
+   *  exact instant behind its coarse label ("4d"), and a fake WEAKER than the
+   *  real thing manufactures false reds exactly as a stronger one hides true
+   *  ones — the same reason `value` was added above. */
+  title: string;
   attrs: Map<string, string>;
   children: FakeEl[];
   listeners: Map<string, Array<() => void>>;
@@ -123,6 +130,7 @@ const makeFakeDocument = (): FakeDoc => {
         required: false,
         rows: 0,
         placeholder: '',
+        title: '',
         id: '',
         type: '',
         disabled: false,
@@ -967,5 +975,88 @@ describe('D-234 § 234.4f — the readable body', () => {
   it('⛔⛔ an empty body is ABSENT, not an empty disclosure', () => {
     const card = render(model({ body: '' }), () => {});
     expect(bodyOf(card)).toBeUndefined();
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+// The waiting age — how long this decision has been sitting
+// ════════════════════════════════════════════════════════════════
+
+/** `PendingAsk.created_at` has always been stored AND always on the wire
+ *  (`notification.pending_asks` forwards it) — and nothing rendered it. So an
+ *  ask raised four days ago was indistinguishable from one raised four seconds
+ *  ago on every surface, and the only thing that ever resolved an ignored one
+ *  was `preflight.stale_after_days` silently reaping it. */
+describe('ask card — waiting age', () => {
+  const NOW = 1_700_000_000_000;
+  const MIN = 60_000;
+  const HOUR = 60 * MIN;
+  const DAY = 24 * HOUR;
+
+  const ageModel = (created_at?: number): AskCardModel => ({
+    ask_id: 'ask-age',
+    title: 'Approve core-mail-send (write)',
+    text: 'Recipe nightly-digest wants to run core-mail-send.',
+    options: [{ id: 'approve', label: 'Approve' }, { id: 'deny', label: 'Deny' }],
+    ...(created_at !== undefined ? { created_at } : {}),
+  });
+
+  const ageEl = (created_at?: number, now = NOW): FakeEl | undefined => {
+    const doc = makeFakeDocument();
+    const card = renderAskCard(
+      doc as unknown as Document,
+      ageModel(created_at),
+      { onAnswer: () => undefined },
+      { now },
+    ) as unknown as FakeEl;
+    return collectByAttr(card, ASK_CARD_AGE_ATTR)[0];
+  };
+
+  it.each([
+    [0, 'just now'], [30_000, 'just now'],
+    [MIN, '1m'], [45 * MIN, '45m'],
+    [HOUR, '1h'], [23 * HOUR, '23h'],
+    [DAY, '1d'], [6 * DAY, '6d'],
+    [7 * DAY, '1w'], [30 * DAY, '4w'],
+  ] as const)('formatAskAge: %i ms → %s', (ms, expected) => {
+    expect(formatAskAge(NOW - ms, NOW)).toBe(expected);
+  });
+
+  it('⚠ resolves INSIDE the first day, which `formatRelative` cannot', () => {
+    // The reason this formatter exists instead of reusing `@recued/renderer`'s
+    // `formatRelative`: that one is DAY-granular and answers "today" for
+    // everything under 24h — collapsing the exact range an approvals queue
+    // operates in. Twenty minutes and twenty hours are a different decision.
+    expect(formatAskAge(NOW - 20 * MIN, NOW))
+      .not.toBe(formatAskAge(NOW - 20 * HOUR, NOW));
+  });
+
+  it('clamps a future timestamp rather than rendering a negative age', () => {
+    // Server/client clock skew is not worth showing the owner "-3m".
+    expect(formatAskAge(NOW + 5 * MIN, NOW)).toBe('just now');
+  });
+
+  it('renders the waiting age on the card', () => {
+    expect(ageEl(NOW - 4 * DAY)?.textContent).toBe('Waiting 4d');
+  });
+
+  it('reads as "raised", not "waiting", when it just arrived', () => {
+    // "Waiting just now" is a sentence about nothing.
+    expect(ageEl(NOW - 5_000)?.textContent).toBe('Raised just now');
+  });
+
+  it('carries the exact instant + raw ms, so "4d" can still answer "since when"', () => {
+    const el = ageEl(NOW - 4 * DAY)!;
+    expect(el.title).toBe(new Date(NOW - 4 * DAY).toLocaleString());
+    // Raw ms on the attribute so a host can style on staleness without
+    // re-parsing the human label.
+    expect(el.getAttribute(ASK_CARD_AGE_ATTR)).toBe(String(NOW - 4 * DAY));
+  });
+
+  it('⛔ renders NO age element when created_at is absent', () => {
+    // Additive by construction. `renderAskCard` is shared by the webclient AND
+    // the bridge side panel, so a REQUIRED field would have been a breaking
+    // change to a surface this work never touched.
+    expect(ageEl(undefined)).toBeUndefined();
   });
 });

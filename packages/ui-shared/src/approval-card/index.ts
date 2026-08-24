@@ -5,6 +5,7 @@
  *  `@recued/ui-shared/approval-card` subpath export (see package.json). */
 
 export {
+  formatAskAge,
   renderApprovalCard,
   renderAskCard,
   renderChatPlanCard,
@@ -15,6 +16,7 @@ export {
   APPROVAL_CARD_LINK_ATTR,
   APPROVAL_CARD_STATUS_ATTR,
   APPROVAL_CARD_STYLES,
+  ASK_CARD_AGE_ATTR,
   ASK_CARD_ATTR,
   ASK_CARD_CONFIRM_ATTR,
   ASK_CARD_DETAILS_ATTR,

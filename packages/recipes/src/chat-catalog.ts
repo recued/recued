@@ -347,6 +347,26 @@ const variableToArgProp = (
     // model to emit a string for what the recipe binds as an object, the
     // same wrong-shape trap the array mapping closes. Advertise `object`.
     schema.type = 'object';
+  } else if (hintType === 'json') {
+    // ⛔⛔ NO `type` AT ALL — AND THAT IS THE POINT. `json` means "any JSON
+    // value": an object, an array, or a scalar, decided per call. The `else`
+    // branch below would have shipped it as `type: 'string'`, which is the same
+    // wrong-shape trap the `array` and `object` mappings above were added to
+    // close — this is the third member of that family, and it was missed because
+    // nothing drove a `json` variable over a real wire.
+    //
+    // 🔑 IT BROKE THE ONE CASE THAT CANNOT BE A STRING. `peer-project-update-reply`
+    // declares `errors: { type: 'json' }` — the D-232 § 21 envelope field the
+    // engine ALWAYS sends as an ARRAY — so alice's door refused every peer's
+    // refusal with `arguments.errors must be a string`, and the write leg went
+    // silent in the direction § 19.4 calls the worst outcome: the answer arrived
+    // and was turned away at the last gate. A live two-server drive found it,
+    // after two other fixes stopped masking it.
+    //
+    // ⚠ An absent `type` is JSON Schema's "any", and `validateMcpSchemaValue`
+    // already reads it that way (`case undefined: return null`). Constraining it
+    // to the union of shapes seen so far would re-create the same trap one
+    // authored payload later.
   } else {
     schema.type = 'string';
     if (hintType === 'enum' && Array.isArray(hint.options) && hint.options.length > 0) {
@@ -356,6 +376,32 @@ const variableToArgProp = (
   const desc = hint.help?.trim() || hint.label?.trim();
   if (desc) schema.description = desc;
   if (hint.default !== undefined) embedDefault(schema, hint.default);
+  // ⛔⛔ A `connection` VARIABLE IS NEVER REQUIRED OF A CALLER, BECAUSE NO CALLER
+  // CAN KNOW IT. It names a row in THIS server's connection store, bound at
+  // INSTALL (the pack's `chosen_connection` / the dish overlay) — so demanding
+  // it on the wire asks a stranger for a local fact.
+  //
+  // 🔑 THE COST WAS SEVEN SHIPPED RECEIVERS DEAD ON ARRIVAL, and the symptom
+  // named the wrong side. `peer-request-appointment` declares
+  // `peer_connection: { type: 'connection' }`, so this projection marked it
+  // required, and every peer's appointment request was refused
+  // `arguments.peer_connection is required` at the far door — an asker being
+  // told they omitted something they could not have supplied. D-232 § 20.17
+  // exists precisely because the answer's route is a property of the
+  // RELATIONSHIP: absent, the engine resolves the connection from the caller's
+  // contract, and `require_connection: true` fails loudly if that finds nothing.
+  // The variable is the install's OVERRIDE of that, not an input.
+  //
+  // ⚠ STILL ADVERTISED, NOT DROPPED — unlike `secret` / `oauth`, which return
+  // null above. An owner's own local call may legitimately name a connection,
+  // and hiding the key would make that unstatable; what changes is only that its
+  // absence is no longer a refusal.
+  //
+  // ⚠ A GUARD STILL OUTRANKS THIS. `guardRequiredVariables` unions in anything a
+  // recipe refuses to run without, so a receiver that genuinely cannot proceed
+  // without a named connection keeps saying so — from the guard, which is the
+  // authority, rather than from the shape of the declaration.
+  if (hintType === 'connection') return { schema, required: false };
   // A hint with a `default` is filled by preflight, so it is not required even
   // when `.optional` is unset (preflight treats a present default as supplied).
   return { schema, required: hint.optional !== true && hint.default === undefined };
@@ -469,6 +515,15 @@ export const deriveTier2ArgSchema = (
   // carriers (vault/context/credential fields) or arbitrary config keys beside
   // the declared variables. Runtime gateway validation consumes this same
   // projection immediately before dispatch.
+  //
+  // ⚠ D-232 § 21 — THE EXCHANGE ENVELOPE IS EXEMPT AT THE DOOR, NOT DECLARED
+  // HERE. `EXCHANGE_ENVELOPE_KEYS` rides on every cross-server answer, and the
+  // MCP argument validator admits it against that same closed list — the way
+  // `undeclaredConfigArguments` already does at the config boundary. Spelling
+  // the five keys into `properties` instead was tried and reverted: it would add
+  // them to EVERY recipe tool's advertised schema on every catalog read, paying
+  // a per-entry token cost across the whole chat surface for a protocol
+  // allowance that concerns one path. One closed list, two readers.
   const schema: Record<string, unknown> = {
     type: 'object',
     properties,

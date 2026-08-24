@@ -47,6 +47,7 @@ import {
   isChatModelHint,
   isChatModelSourceId,
   isReservedOwnerContractId,
+  isReservedPublicContractId,
   validateChatToolCatalogScopeInput,
   validateConnectionMcpAnnotationInput,
   validateInboundTokenChatModeUpdate,
@@ -192,7 +193,9 @@ export interface ChatRpcDeps {
   catalogProvider?: () => ReadonlyArray<ToolEntry>;
   /** D-221 §3.3.3 — preflight one newly allowed external MCP tool before
    * token issuance/grant replacement commits. Production resolves Tier 2
-   * recipe tools against the live Records operation inventory. */
+   * recipe tools against the live Records operation inventory.
+   *
+   */
   preflightExternalToolGrant?: (toolName: string) => void;
   /** Door standing closure, MCP arm — derive the operation closure a token's
    *  granted tools would run, so the owner's tick becomes a bounded list of op
@@ -1996,6 +1999,33 @@ export const handleInboundTokenIssue = async (
   // REFUSE rather than fall back to an unbound token if the minter is unwired.
   // Falling back is what the synthetic `contract_id` did for two years.
   let boundContractId = validation.value.contract_id;
+  // D-248 Amendment 3 (T14 follow-on) — NEITHER RESERVED SENTINEL MAY BE BOUND AT
+  // ISSUE EITHER, and this is the SECOND bind path, not the first.
+  //
+  // ⛔⛔ THE D-187 FENCE ONLY EVER COVERED `update_contract`. `issue` takes a
+  // caller-supplied `contract_id` too — the validator checks SHAPE ONLY ("a non-empty
+  // string up to 256 characters") — so the owner sentinel was bindable here all along,
+  // and fencing only the rebind path would have left the same door open one rpc over.
+  // Found by sweeping every writer rather than by reading the one the comment named.
+  //
+  // ⚠ Only the CALLER-supplied value needs checking: a minted carrier comes from
+  // `newId()`, which the store's own factory fences.
+  if (boundContractId !== undefined) {
+    if (isReservedOwnerContractId(boundContractId)) {
+      throw new RpcError(
+        'bad_request',
+        `chat.inbound_token.issue: contract_id '${boundContractId}' is the reserved owner contract and cannot be bound to a door token`,
+        400,
+      );
+    }
+    if (isReservedPublicContractId(boundContractId)) {
+      throw new RpcError(
+        'bad_request',
+        `chat.inbound_token.issue: contract_id '${boundContractId}' is the reserved public-anonymous floor, derived at the gate for an anonymous dispatch — it is not a contract and cannot be bound to a door token`,
+        400,
+      );
+    }
+  }
   if (boundContractId === undefined) {
     if (!deps.mintTokenContract) {
       throw new RpcError(
@@ -2372,6 +2402,22 @@ export const handleInboundTokenUpdateContract = async (
       throw new RpcError(
         'bad_request',
         `chat.inbound_token.update_contract: contract_id '${rawContractId}' is the reserved owner contract and cannot be bound to a door token`,
+        400,
+      );
+    }
+    // D-248 Amendment 3 — the PUBLIC sentinel's twin fence, which `contract-definition.ts`
+    // claimed ("the fence is kept symmetric with the owner's so the two can never drift")
+    // but which had ZERO call sites while the owner's had five. Binding it is not a
+    // privilege escalation today — the sentinel has no `contract_definition` row, so the
+    // bind falls through `gateGrantGoverningContractId` to the token's own snapshot
+    // `allowed_tools` + per-tool checklist exactly as any unknown id would. It is refused
+    // because the failure it produces is a SILENT, CONFUSING fallback rather than an
+    // answer, and because the sentinel must never become bindable later, when the grant
+    // table behind it stops being empty.
+    if (isReservedPublicContractId(rawContractId)) {
+      throw new RpcError(
+        'bad_request',
+        `chat.inbound_token.update_contract: contract_id '${rawContractId}' is the reserved public-anonymous floor, derived at the gate for an anonymous dispatch — it is not a contract and cannot be bound to a door token`,
         400,
       );
     }

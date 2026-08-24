@@ -1123,6 +1123,8 @@ export type {
   SellerSettingsUpdateRequest,
   SellerSettingsUpdateResponse,
   SellerManualTierUpsertRequest,
+  SellerTierUsagePolicyRequest,
+  SellerTierUsagePolicyResponse,
   SellerManualTierUpsertResponse,
   SellerCreatePassTierRequest,
   SellerCreatePassTierResponse,
@@ -1258,7 +1260,9 @@ export {
   CHAT_SESSION_GRANT_DEFAULTS,
   MCP_SESSION_GRANT_DEFAULTS,
   MESSENGER_SESSION_GRANT_DEFAULTS,
+  REACTIVE_SESSION_GRANT_DEFAULTS,
   RECEPTION_SESSION_GRANT_DEFAULTS,
+  SCHEDULE_SESSION_GRANT_DEFAULTS,
   SESSION_GRANT_DEFAULT_SEEDS,
   resolveSessionGrantOffer,
   seededSessionGrantDefaults,
@@ -1648,7 +1652,6 @@ export type {
   AnnotationSearchMatch,
   Link,
   LinkFilter,
-  AnnotationPolicy,
 } from './annotation.js';
 
 // D-120 — Memory + provenance substrate constants + provenance link
@@ -2062,8 +2065,6 @@ export {
   readDisplayField,
 } from './collection-display.js';
 export {
-  ANNOTATION_POLICIES,
-  DEFAULT_ANNOTATION_POLICY,
   MAX_ANNOTATION_VALUE_BYTES,
   ANNOTATION_INLINE_CUTOFF_BYTES,
   isStalenessStamped,
@@ -4999,6 +5000,12 @@ export type {
 // for the owner-facing notice, the reactive predicate and the case compiler, so
 // three surfaces cannot drift into three different ideas of "produced nothing".
 export { deriveRunYield, runYieldIsTotalRefusal } from './execution-rpc.js';
+export {
+  runIsAuditExemptRender,
+  NON_DISPATCHING_STEP_TYPES,
+  AUDIT_EXEMPT_CHANNEL,
+  type AuditExemptionInput,
+} from './audit-exemption.js';
 
 export {
   SOURCE_TOP_TIER_KINDS,

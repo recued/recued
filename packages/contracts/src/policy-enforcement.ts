@@ -22,6 +22,7 @@
  *
  *  Spec: D-153; D-157 § N.3 / A.2; D-187. */
 
+import { isReadableCollection } from './read-collection-grant.js';
 import type { IngredientKind, RiskTier } from './ingredient.js';
 import type {
   AuthorizationProvenance,
@@ -248,6 +249,49 @@ export const matchScopePattern = (pattern: string, path: string): boolean => {
 // deriveDispatchScope — map a tool dispatch to its data.*/connection.* path
 // ────────────────────────────────────────────────────────────────
 
+/** The four `annotation-*` kernel slugs whose scope is the ANNOTATED RECORD'S
+ *  collection rather than the generic `data.annotation`. A SET so a fifth
+ *  annotation op cannot be added without landing here — the same reason
+ *  `FORM_RESPONSE_SCOPED_SLUGS` is one. */
+const ANNOTATION_SIDECAR_SLUGS: ReadonlySet<string> = new Set([
+  'annotation-create',
+  'annotation-delete',
+  'annotation-list',
+  'annotation-search',
+]);
+
+/** Resolve the annotated record's collection from an `annotation-*` dispatch's
+ *  resolved input, or `undefined` when it cannot be named with confidence.
+ *
+ *  Accepts the combined `target` (`data.contact:jane@acme.com` — the
+ *  `annotation-create` manifest shape; the leading `data.` is optional) and the
+ *  split `target_collection` (`-delete` / `-list` / `-search`). Applies the same
+ *  `email` -> `mail` alias the generic rule and `timeline-read` apply.
+ *
+ *  Returns `undefined` unless the result is a governed readable collection, so
+ *  a caller cannot name a keep-pattern family (`memory` / `shared` /
+ *  `enrichment`) and inherit its unconditional admission. */
+const annotationTargetCollection = (
+  input: Record<string, unknown> | undefined,
+): string | undefined => {
+  const named = (raw: string): string | undefined => {
+    const colon = raw.indexOf(':');
+    const head = (colon > 0 ? raw.slice(0, colon) : raw).trim();
+    const bare = head.startsWith('data.') ? head.slice('data.'.length) : head;
+    if (bare.length === 0 || bare.includes('.')) return undefined;
+    const aliased = bare === 'email' ? 'mail' : bare;
+    return isReadableCollection(aliased) ? aliased : undefined;
+  };
+  const combined = input?.['target'];
+  if (typeof combined === 'string') {
+    const fromCombined = named(combined);
+    if (fromCombined !== undefined) return fromCombined;
+  }
+  const split = input?.['target_collection'];
+  if (typeof split === 'string') return named(split);
+  return undefined;
+};
+
 /** Derive the canonical `data.*` / `connection.*` scope path a tool
  *  dispatch targets, so the per-call admission probe can gate it via
  *  `evaluateScopeRestrictions`. Returns `null` when the dispatch touches
@@ -293,6 +337,81 @@ export const matchScopePattern = (pattern: string, path: string): boolean => {
  *
  *  Pure — no store reads, no clock. The result feeds
  *  `evaluateScopeRestrictions(scope_restrictions, scopePath)`. */
+/** D-249 — kernel slugs whose GOVERNED COLLECTION arrives in the args rather than
+ *  in the slug. `work-entity-*` names it `kind`; `data-annotate` names it
+ *  `target_collection`. Both are checked against `isReadableCollection` at the
+ *  use site — the value is caller-supplied. */
+const COLLECTION_ARG_SLUGS: ReadonlySet<string> = new Set([
+  'work-entity-get',
+  'work-entity-list',
+  'data-annotate',
+]);
+
+/** D-249 — kernel slugs that write NO governed collection, so the scope axis does
+ *  not apply to them (`null`, the same answer every non-storage kind gets).
+ *
+ *  ⛔⛔ THEY ARE `kind: 'storage'` FOR ROUTING, NOT FOR STORAGE. On a kernel
+ *  ingredient that kind is what sends the dispatch to the kernel adapter; the
+ *  scope fence read it as "touches a collection" and manufactured
+ *  `data.<leading-segment>` — `data.peer`, `data.seller`, `data.schedule` — names
+ *  that appear in no namespace table and can appear in no grant row.
+ *
+ *  ⚠ MEMBERSHIP IS A CLAIM, so each family carries its reason:
+ *
+ *   - `peer-ask` — suspends the run and puts a question to a PERSON on another
+ *     server. Reads and writes nothing locally. (D-234 § 234.4.)
+ *   - `notification-send` — fans text to channels. No record.
+ *   - `schedule-recipe` — writes a schedule row; schedules are not a warehouse
+ *     collection the owner browses under `data.*`.
+ *   - `exchange-status` — folds RUN rows under an exchange ref. Run history is
+ *     `data.audit`, which is not a `READABLE_COLLECTION` and is gated by
+ *     `core.audit.read` instead (D-232 § 20.9 put it on that existing door
+ *     deliberately, rather than minting a second name for one authority).
+ *   - `csv-*` — operate on a passed record/blob handle, not on a collection.
+ *   - the `seller-*` / `customer-access-*` families — offers, orders, tiers and
+ *     customer access rows. A seller's ledger is its own store; the owner does
+ *     not read it through `data.<collection>` and no grant row names it.
+ *
+ *  ⛔ NOT HERE, DELIBERATELY: the LINK family (`link-create` / `-delete` /
+ *  `-list`, `data-link`). A link spans TWO records in TWO collections, and this
+ *  fence carries ONE path — so admitting it on either end would let one
+ *  collection's grant reach every other, which is precisely the hazard the
+ *  annotation sidecar note above describes. It stays denied at a fenced door
+ *  until the fence can express a pair; that is a design change, not a list entry. */
+const NO_GOVERNED_COLLECTION_SLUGS: ReadonlySet<string> = new Set([
+  'peer-ask',
+  'notification-send',
+  'core-notification-send',
+  'core-notification-recipe-callback',
+  'schedule-recipe',
+  'exchange-status',
+  'csv-columns',
+  'csv-filter',
+  'csv-stats',
+  'seller-offer-attach-fulfillment',
+  'seller-offer-ensure',
+  'seller-offer-get',
+  'seller-offer-list',
+  'seller-order-attach-artifact',
+  'seller-order-attach-payment',
+  'seller-order-confirm-payment',
+  'seller-order-confirm-refund',
+  'seller-order-confirm-renewal-payment',
+  'seller-order-get',
+  'seller-order-link-customer',
+  'seller-order-link-work-entity',
+  'seller-order-list',
+  'seller-order-open',
+  'seller-order-quote',
+  'seller-order-transition',
+  'seller-tier-get',
+  'seller-tier-list',
+  'customer-access-close',
+  'customer-access-extend',
+  'customer-access-issue',
+  'customer-access-swap-tier',
+]);
+
 export const deriveDispatchScope = (
   tool: { readonly kind: IngredientKind; readonly slug: string },
   input: Record<string, unknown> | undefined,
@@ -355,6 +474,90 @@ export const deriveDispatchScope = (
       }
       return 'data.timeline';
     }
+    // D-177 sidecar gate — an annotation's scope is the ANNOTATED RECORD'S
+    // collection, not the fixed `data.annotation` the generic leading-segment
+    // rule yields. Same reasoning as `timeline-read` above, and the same two
+    // failure directions: the generic scope both OVER-restricts a
+    // collection-scoped door (proven live 2026-08-21 — an MCP door granted a
+    // recipe whose only write is `core.memory.annotation.create` was denied
+    // `scope_not_in_restrictions: path 'data.annotation'`, and NO door can ever
+    // be granted it: `annotation` is not a `READABLE_COLLECTION`, so no grant
+    // row produces `data.annotation.*`, and it is not a keep-pattern) and would,
+    // if it WERE admitted generically, let one grant annotate every record in
+    // every collection ungated.
+    //
+    // An annotation row has no identity of its own — it is keyed
+    // `(target_collection, target_id, key)` — so the parent record's grant is
+    // the only coherent gate. `annotation-create` carries the combined
+    // `target` (`data.contact:jane@acme.com`, per its manifest); `-delete`,
+    // `-list` and `-search` carry `target_collection`.
+    //
+    // ⛔ THE COLLECTION IS CALLER-SUPPLIED, so it is checked against
+    // `isReadableCollection` — the FENCE'S OWN closed vocabulary — before a
+    // scope is derived from it. Without that check `target: 'data.memory:x'`
+    // would derive `data.memory`, which the keep-patterns admit
+    // unconditionally, and the gate would be bypassable by lying about the
+    // target. Anything else (unknown collection, dotted platform ref, absent
+    // target) falls back to `data.annotation` — today's behaviour, and denied
+    // by every fence, so this case only ever ADMITS a dispatch whose target
+    // names a collection the door already holds.
+    if (ANNOTATION_SIDECAR_SLUGS.has(tool.slug)) {
+      const collection = annotationTargetCollection(input);
+      if (collection !== undefined) return `data.${collection}`;
+      return 'data.annotation';
+    }
+    // ⛔⛔⛔ D-249 — A KERNEL OP THAT NAMES A COLLECTION IN ITS ARGS IS FENCED BY
+    // THAT COLLECTION, NOT BY ITS SLUG. `work-entity-*` carries the collection as
+    // `kind` (task / project / note / commitment / booking) and `data-annotate`
+    // carries it as `target_collection` — the same shape the annotation sidecar
+    // above already handles for its four siblings, which is why it was written.
+    //
+    // 🔑 WITHOUT THIS THEY DERIVED `data.work` / `data.data`, which matches no
+    // grant row — so a door granted `data.task` was DENIED a task read, and the
+    // only way to admit it was to grant EVERY collection (which empties the
+    // fence). The generic rule was fencing them on a name nobody can grant.
+    //
+    // ⛔ CALLER-SUPPLIED, so it is checked against `isReadableCollection` — the
+    // fence's OWN closed vocabulary — exactly as `annotationTargetCollection`
+    // does, and for the same reason: without the check, `kind: 'memory'` would
+    // derive a keep-pattern family and admit unconditionally. An unknown /
+    // absent value falls through to the generic rule below, which denies.
+    if (COLLECTION_ARG_SLUGS.has(tool.slug)) {
+      const named = input?.['kind'] ?? input?.['target_collection'];
+      if (typeof named === 'string') {
+        const aliased = named === 'email' ? 'mail' : named;
+        if (isReadableCollection(aliased)) return `data.${aliased}`;
+      }
+    }
+    // ⛔⛔⛔ D-249 — AND AN OP THAT TOUCHES NO GOVERNED COLLECTION MUST NOT CLAIM
+    // ONE. The generic rule below reads the slug's leading segment, which is a
+    // proxy for "the collection this writes" and is simply FALSE for a kernel op
+    // that writes none: `peer-ask` put a question to a person and derived
+    // `data.peer`; `schedule-recipe` derived `data.schedule`; the seller ops
+    // derived `data.seller`. None of those names a warehouse collection, so none
+    // can appear in any grant row.
+    //
+    // ⛔⛔ AND THE RESULT WAS AN INVERTED FENCE, not a closed one. An unmatched
+    // scope DENIES at a fenced door — but `scopeRestrictionsFromReadableCollections`
+    // returns `[]` when every collection is granted, and an empty list ADMITS.
+    // So granting a peer a NARROW set of collections denied these ops, and
+    // granting them EVERYTHING admitted them: narrowing the grant was what broke
+    // an op that touches no collection. A fence that is strictest at the most
+    // permissive door is not protecting anything.
+    //
+    // ⇒ `null` is the honest answer, and it is the one this function already
+    // gives every non-storage kind: "scope axis N/A — the caller admits on it".
+    // Authorization does not move: these ops still need an explicit
+    // `contract_grant` row naming them AND still face `admitByOpRisk`, where a
+    // `write` op at a delegated door's `read` ceiling resolves to `ask`.
+    //
+    // ⚠ AN EXPLICIT CLOSED SET, NEVER A HEURISTIC ("is the segment a known
+    // collection?"). A heuristic would silently absorb the next kernel slug whose
+    // leading segment happens not to match — including one that genuinely writes
+    // a collection under a name nobody remembered to add. Adding a member here is
+    // a deliberate statement that the op writes no governed collection; the
+    // ratchet in `d-249-kernel-scope-classification.test.ts` pins the whole set.
+    if (NO_GOVERNED_COLLECTION_SLUGS.has(tool.slug)) return null;
     const dash = tool.slug.indexOf('-');
     const segment = dash === -1 ? tool.slug : tool.slug.slice(0, dash);
     const collection = segment === 'email' ? 'mail' : segment;

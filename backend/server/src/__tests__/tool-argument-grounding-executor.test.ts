@@ -140,6 +140,42 @@ describe('the tool loop refuses an argument the model could not have read', () =
     } as never);
     expect(prompts.length).toBeGreaterThan(1);
     expect(prompts[1]).toContain('building_id');
+    // ⚠ `__first__` is a PLACEHOLDER, so the remedy that reaches the packet is
+    // the dependency one, not the fetch-first one. The test's purpose is
+    // unchanged — the refusal AND an actionable remedy must reach the model —
+    // but a placeholder is the model declaring a gap, and telling it "do not
+    // guess an identifier" answers a mistake it did not make. The other branch
+    // is covered by the sibling case below, driven through the same loop.
+    expect(prompts[1]).toMatch(/placeholder/i);
+    expect(prompts[1]).toMatch(/wait for its result/i);
+    expect(prompts[1]).not.toMatch(/do not guess an identifier/i);
+  });
+
+  it('puts the FETCH-FIRST remedy into the packet when the value was a guess', async () => {
+    const prompts: string[] = [];
+    const dispatchTool = vi.fn(async (): Promise<ChatDispatchResult> => ({
+      ok: true, result: {},
+    }));
+    let call = 0;
+    const executeAiCall = vi.fn(async (
+      _manifest: unknown,
+      raw: Record<string, unknown>,
+    ) => {
+      prompts.push(String(raw['llm.prompt'] ?? ''));
+      return {
+        body: call++ === 0
+          // Identifier-shaped and absent from the packet ⇒ `ungrounded`, not a
+          // placeholder: the model supplied a value rather than flagging a gap.
+          ? outputWith({ building_id: 'bld_9f2c41aa' })
+          : ({ response: 'ok', events: [], tool_calls: [] } as AIOutput),
+      };
+    });
+    await runChatTurn(input as never, {
+      registry, dispatchTool, executeAiCall, emit: () => {}, now: () => 0,
+    } as never);
+    expect(prompts.length).toBeGreaterThan(1);
+    expect(prompts[1]).toContain('bld_9f2c41aa');
     expect(prompts[1]).toMatch(/run the step that returns it first/i);
+    expect(prompts[1]).not.toMatch(/same set of tool calls/i);
   });
 });

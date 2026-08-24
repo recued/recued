@@ -26,6 +26,7 @@
 import {
   planExchangeRetry,
   effectiveConnectionHealth,
+  CONNECTION_HEALTH_FRESH_MS,
   type ConnectionHealth,
   type ExchangeRetryRow,
 } from '@recued/contracts';
@@ -43,10 +44,20 @@ export interface ExchangeRetryDeps {
   /** Refs with an undeliverable latest attempt, newest first. */
   readonly pendingRefs: () => Promise<ReadonlyArray<string>>;
   readonly rowsForRef: (ref: string) => Promise<ReadonlyArray<ExchangeRetryRow>>;
-  /** The callback op the exchange named, for the answered check. */
-  readonly callbackForRef: (ref: string) => string | undefined;
+  /** The callback op the exchange named, for the answered check.
+   *
+   *  ⛔⛔ ASYNC BECAUSE THE HONEST ANSWER IS A READ, AND THE SYNC SIGNATURE IS
+   *  WHY PRODUCTION PASSED `() => undefined` FOR MONTHS. Both of these were
+   *  stubbed at the wiring — the planner's rule 2 ("never once answered") and
+   *  the health gate this file's own header calls the reason it is not a bare
+   *  timer were therefore unreachable on a real server, while the unit tests
+   *  passed a real callback and stayed green. A dep whose only production
+   *  implementation is `undefined` is not a seam, it is a switch left off. */
+  readonly callbackForRef: (ref: string) => Promise<string | undefined> | string | undefined;
   /** Connection health for the peer an attempt was addressed to. */
-  readonly healthForRef: (ref: string) => ConnectionHealth | undefined;
+  readonly healthForRef: (
+    ref: string,
+  ) => Promise<ConnectionHealth | undefined> | ConnectionHealth | undefined;
   readonly classify: (errors: readonly unknown[]) => { kind: never; reason: string };
   /** Re-send. Returns nothing; the resulting run files itself under the ref. */
   readonly resend: (ref: string, args: Record<string, unknown>) => Promise<void>;
@@ -75,14 +86,37 @@ export const composeExchangeRetry = (deps: ExchangeRetryDeps): void => {
         // a connection known to be unreachable is the hammering the backoff
         // exists to prevent; waiting for recovery is both kinder to the peer and
         // far more likely to succeed.
-        const health = deps.healthForRef(ref);
-        if (health !== undefined && effectiveConnectionHealth(health, now()) === 'unreachable') {
+        // ⛔⛔ FRESHLY unreachable, not merely unreachable — AND THE DIFFERENCE
+        // IS A LIVELOCK. `effectiveConnectionHealth` decays only `ok`, on a
+        // rule that is right for every other reader: *"a FAILURE stands until
+        // something succeeds — an unreachable peer does not become 'maybe fine'
+        // by being ignored for a while."* Composed with a gate that refuses to
+        // send WHILE unreachable, that becomes: the failure clears only when
+        // something succeeds, and the only thing that would try is the sweep
+        // this gate just stopped. A peer that went down once would then never
+        // be retried again, however long it had been back.
+        //
+        // 🔑 Two correct rules, one deadlock — and it is invisible until the
+        // health dep is actually wired, which is what made the stub look
+        // harmless. So the gate asks the question it actually needs answered:
+        // *is this peer down RIGHT NOW*. A reading inside the freshness window
+        // answers it (wait — hammering a peer you just watched fail is what the
+        // backoff exists to prevent). A reading older than that does not answer
+        // it at all, and one knock is how you find out; the backoff and the
+        // four-attempt ceiling still bound what that costs.
+        const health = await deps.healthForRef(ref);
+        if (
+          health !== undefined
+          && effectiveConnectionHealth(health, now()) === 'unreachable'
+          && typeof health.last_probed_at === 'number'
+          && now() - health.last_probed_at <= CONNECTION_HEALTH_FRESH_MS
+        ) {
           continue;
         }
         const plan = planExchangeRetry(
           ref,
           await deps.rowsForRef(ref),
-          deps.callbackForRef(ref),
+          await deps.callbackForRef(ref),
           deps.classify as never,
           now(),
         );

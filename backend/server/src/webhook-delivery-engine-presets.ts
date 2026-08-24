@@ -482,6 +482,17 @@ if (githubFixedLengthAsciiCredentialPreset === null) {
 }
 
 const RAW_BODY_HMAC_PRESET_LIST = [
+  preset('cal.webhook.v1', {
+    kind: 'raw_body_hmac_sha256.v1',
+    secret_field: 'signing_secret',
+    secret_shape: 'nonempty_utf8_65536',
+    signature_header: {
+      kind: 'fixed',
+      name: 'x-cal-signature-256',
+    },
+    signature_format: 'lowerhex.v1',
+    matching_credential: 'newest',
+  }),
   preset('generic.raw-body-hmac-sha256.v1', {
     kind: 'raw_body_hmac_sha256.v1',
     secret_field: 'signing_secret',

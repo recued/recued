@@ -32,6 +32,9 @@ describe('D-210 — buildAnswerActivity', () => {
     // The channel is the fact nothing downstream can recover — `dispatchAnswer`
     // strips it before the handler runs (I-10).
     expect(entry.detail).toContain('via slack');
+    // And STRUCTURED beside the prose (2026-08-20): channel-per-person
+    // attribution must be queryable, not parseable out of `detail`.
+    expect(entry.answered_via).toBe('slack');
     expect(entry.detail).toContain('Approve scheduling.materialize');
     // Both the label the user read and the raw id they submitted.
     expect(entry.detail).toContain("'Approve'");
@@ -143,7 +146,10 @@ describe('FN-2 — the decision is joinable to what it decided about', () => {
     expect(before.step_id).toBeUndefined();
     expect(before.operation_id).toBeUndefined();
     expect(Object.keys(before).sort()).toEqual(
-      ['action', 'activity_id', 'detail', 'target', 'timestamp'].sort(),
+      // `answered_via` joined the base shape 2026-08-20 (structured channel
+      // attribution); it comes from the record itself, not the payload, so it
+      // is present even when the FN-2 join keys are absent.
+      ['action', 'activity_id', 'answered_via', 'detail', 'target', 'timestamp'].sort(),
     );
   });
 });

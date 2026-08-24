@@ -57,6 +57,13 @@ describe('D-169 P1 system.status handler', () => {
         countExecutionsInWindow: async (windowMs) =>
           windowMs === 60 * 60 * 1000 ? 4 : 17,
         countPendingAsks: async () => 2,
+        getAskLoadStats: async () => ({
+          window_ms: 604_800_000,
+          raised: 12,
+          answered_sample: 9,
+          median_answer_ms: 2_520_000,
+          load: 0.05,
+        }),
         getScheduleQueueDepth: async () => 5,
         countRecentErrors: async () => 1,
       }),
@@ -74,6 +81,13 @@ describe('D-169 P1 system.status handler', () => {
         executions_last_hour: 4,
         executions_last_24h: 17,
         pending_asks: 2,
+        ask_load: {
+          window_ms: 604_800_000,
+          raised: 12,
+          answered_sample: 9,
+          median_answer_ms: 2_520_000,
+          load: 0.05,
+        },
         schedule_queue_depth: 5,
         recent_error_count: 1,
         // D-212 §7.10 — not wired in this deps fixture ⇒ `null`, which is
@@ -129,6 +143,7 @@ describe('D-169 P1 system.status handler', () => {
         executions_last_hour: null,
         executions_last_24h: null,
         pending_asks: null,
+        ask_load: null,
         schedule_queue_depth: null,
         recent_error_count: null,
       },

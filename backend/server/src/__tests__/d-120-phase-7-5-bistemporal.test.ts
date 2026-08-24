@@ -50,7 +50,6 @@ const makeBistemporalDb = (): Database.Database => {
       size_bytes INTEGER NOT NULL,
       authored_by_recipe_id TEXT NOT NULL,
       source_record_hash TEXT NOT NULL,
-      recipe_hash TEXT NOT NULL,
       model_used TEXT,
       authored_at INTEGER NOT NULL
     );
@@ -202,7 +201,6 @@ describe('AnnotationStore — event_at round-trip', () => {
       value: 'historical email summary',
       authored_by_recipe_id: 'r-1',
       source_record_hash: 'src-h-1',
-      recipe_hash: 'rec-h-1',
       event_at: 1_000_000_000,
     });
     expect(ann.event_at).toBe(1_000_000_000);
@@ -248,7 +246,6 @@ describe('AnnotationStore — event_at round-trip', () => {
       value: 'urgent',
       authored_by_recipe_id: 'r-1',
       source_record_hash: 'src-h-2',
-      recipe_hash: 'rec-h-2',
     });
     expect(ann.event_at).toBeUndefined();
 

@@ -194,6 +194,10 @@ const makeSellerStore = (
           created_at: 1_000,
           updated_at: 1_000,
         }),
+  // D-250 § D — the store's measurement half. This double stands in at a
+  // MONEY boundary, so it throws rather than silently succeeding: a test that
+  // starts exercising the token path has to say so instead of passing blind.
+  recordTokenUsage: vi.fn(() => { throw new Error('recordTokenUsage not stubbed'); }) as never,
   recordUsage: vi.fn((input: {
     contract_id: string;
     usage_kind: 'tool_call' | 'chat_turn';

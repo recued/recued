@@ -374,6 +374,8 @@ import type {
   SellerManualTierBulkAdjustResponse,
   SellerManualTierUpsertRequest,
   SellerManualTierUpsertResponse,
+  SellerTierUsagePolicyRequest,
+  SellerTierUsagePolicyResponse,
   SellerCreatePassTierRequest,
   SellerCreatePassTierResponse,
   SellerOfferStateTransitionRequest,
@@ -634,6 +636,26 @@ export interface ServerSystemStatus {
   executions_last_hour: number | null;
   executions_last_24h: number | null;
   pending_asks: number | null;
+  /** Ask-load readout — arrivals and answer latency over the trailing
+   *  `window_ms` (the handled-ask retention bound, so the sample is complete
+   *  by construction: `handled` rows older than the window are pruned and
+   *  `open` / `answered` rows are never pruned). `median_answer_ms` covers
+   *  answers that LANDED in the window and is answered-only — right-censored
+   *  while asks sit open, which `pending_asks` beside it carries. `load` is
+   *  the dimensionless λ×W occupancy of the approval channel:
+   *  `(raised / window_ms) × median_answer_ms` — ~0 means asks are rare
+   *  relative to how fast the owner answers; approaching 1 means answering
+   *  cannot keep up with arrivals. `answered_sample` is the count behind the
+   *  median — render it, a 7-day median can rest on very few answers.
+   *  `null` when the block isn't composed; `median_answer_ms` / `load`
+   *  `null` when nothing was answered in the window. */
+  ask_load: {
+    window_ms: number;
+    raised: number;
+    answered_sample: number;
+    median_answer_ms: number | null;
+    load: number | null;
+  } | null;
   schedule_queue_depth: number | null;
   recent_error_count: number | null;
   /** D-212 §7.10 — how the server keyfile is protected at rest.
@@ -1463,6 +1485,19 @@ export type ServerRpcRegistry = {
   'server.seller.upsertManualTier': RpcMethodSpec<
     SellerManualTierUpsertRequest,
     SellerManualTierUpsertResponse
+  >;
+  /** D-250 § D — set a tier's usage policy, whatever minted the tier.
+   *
+   *  ⛔ THE ONLY PATH THAT REACHES A SYNCED TIER. `upsertManualTier` stamps
+   *  `manual`, and the store's tier upsert refuses when a stored tier's source
+   *  differs — so a Stripe-minted tier had no way to be limited at all, and an
+   *  absent policy is UNLIMITED. Deliberately narrow: it touches the policy and
+   *  nothing else, so identity stays owned by the sync. Validated server-side
+   *  against every usage kind before it is written, because a malformed policy
+   *  fails CLOSED and would lock out a paying customer. */
+  'server.seller.setTierUsagePolicy': RpcMethodSpec<
+    SellerTierUsagePolicyRequest,
+    SellerTierUsagePolicyResponse
   >;
   /** D-196 1d Phase 2 — owner one-click pass-tier seed. Mints a zero-grant
    *  `customer_template` shell for the door and binds a fresh `manual` tier to
@@ -6807,6 +6842,7 @@ export const SERVER_RPC_METHODS = [
   'server.seller.updateSettings',
   'server.seller.acknowledgeLlmGatewayPaid',
   'server.seller.upsertManualTier',
+  'server.seller.setTierUsagePolicy',
   'server.seller.createPassTier',
   'server.seller.issueManualCustomer',
   'server.seller.extendManualCustomer',

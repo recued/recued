@@ -41,6 +41,7 @@
  */
 
 import {
+  groundingCorpusFromPacket,
   ungroundedArgumentsInCall,
   ungroundedArgumentsDetail,
 } from './tool-argument-grounding.js';
@@ -447,21 +448,31 @@ NEVER emit JSON outside the AIOutput shape.`;
  *  written into the value slot, which is what a model does when it knows a value
  *  is dependent and has nowhere to say so.
  *
- *  ⚠ WORD IT AS THE GATE WORDS IT. The sources named here (this conversation,
- *  the prefetch block, a completed step's result) are the gate's own three, and
- *  the remedy mirrors `ungroundedArgumentsDetail`. If the gate's rule changes,
- *  this sentence changes with it — a prompt that promises a different rule than
- *  the one enforced is worse than silence. ⚠ The gate has a bench TWIN
+ *  ⚠ WORD IT AS THE GATE WORDS IT. The remedy mirrors
+ *  `ungroundedArgumentsDetail`. If the gate's rule changes, this sentence
+ *  changes with it — a prompt that promises a different rule than the one
+ *  enforced is worse than silence.
+ *
+ *  ⛔⛔ THE PROVENANCE CLAUSE WAS CUT 2026-08-23, MEASURED — do not restore it
+ *  without re-measuring. It named the gate's three sources ("this conversation,
+ *  the prefetch block, a completed step's result") and cost 32 of 89 words on
+ *  EVERY turn of EVERY surface, the one place a clause is never amortised by a
+ *  mode. A four-arm ablation on the optimal-turn-shape metric: no clause 59.5%,
+ *  provenance-only 79.7%, BOTH 79.6%, ORDERING-ONLY 93.3%. The two clauses are
+ *  SUBSTITUTES, not complements — either alone recovers most of the effect and
+ *  together they add nothing over ordering alone. Ordering beat the full
+ *  sentence (p = 0.031) and generalised across three dependency graphs: a
+ *  fan-out (wins), an independent pair (ties, 40/40 both), and a strictly serial
+ *  chain (ties). No graph where it loses.
+ *  ⚠ "If you do not have ONE yet" became "an identifier you need" because the
+ *  pronoun's antecedent lived in the clause that was removed. Stated confound. ⚠ The gate has a bench TWIN
  *  (internal benchmarks) that must agree with it; this
  *  change states the rule without altering it, so the twin is untouched. */
 export const FEATURE_TEXT_TOOLS =
   'You have access to a focused set of tools the engine narrowed for this turn.'
-  + ' Every identifier you pass as an argument — an id, a reference, an email'
-  + ' address — must appear in something you have already been given: this'
-  + ' conversation, the prefetch block, or a completed step\'s result. If you do'
-  + ' not have one yet, call the tool that returns it first and wait for that'
-  + ' result before the call that needs it. A guessed identifier or a placeholder'
-  + ' is refused and the step does not run.';
+  + ' If you do not have an identifier you need yet, call the tool that returns'
+  + ' it first and wait for that result before the call that needs it. A guessed'
+  + ' identifier or a placeholder is refused and the step does not run.';
 
 /** FEATURE TEXT — the D-177 approvals posture. Ships on every turn.
  *
@@ -1414,7 +1425,12 @@ export const runChatTurn = async (
     // is one the model can no longer see and must not be credited with.
     // ⚠ The system prompt is joined in: it carries the tool catalog, so an
     // argument echoing a catalog default or an enum stays grounded.
-    lastPacketBody = `${systemPrompt}\n${promptParts.body}`;
+    // ⛔ THE MODEL'S OWN ECHOED ARGS ARE STRIPPED — see
+    // `groundingCorpusFromPacket`. Without it the loop's own refusal feedback
+    // put the refused value into the next packet, and an unchanged retry
+    // grounded on it (measured on bench 98's captures: refused on packet 5,
+    // admitted on packet 6, nothing changed but the echo).
+    lastPacketBody = `${systemPrompt}\n${groundingCorpusFromPacket(promptParts.body)}`;
     const aiInput: Record<string, unknown> = {
       // Lever-2 slice 3 — index mode appends the `tools.search` two-stage
       // guidance; full mode / absent is byte-identical to the baseline prompt.

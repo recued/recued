@@ -272,6 +272,95 @@ describe('createHousekeepingScheduler', () => {
     expect(state.get('b')?.last_status).toBe('complete');
   });
 
+  it('R13 T1-Q1 — the cycle clock is durable: runOnce persists it and a restarted scheduler seeds from it', async () => {
+    const { config, state } = setupBalanced();
+    expect(state.getCycleClock()).toBeNull();
+    const sched = createHousekeepingScheduler({
+      ctx: stubCtx(() => NOW),
+      config,
+      state,
+      busy: stubBusy(),
+      registry: () => [completingTask('a')],
+    });
+    await sched.runOnce();
+    expect(state.getCycleClock()).toBe(NOW);
+
+    // "Restart": a FRESH scheduler over the same store. Pre-fix its in-memory
+    // clock was null, so the first idle probe fired a cycle regardless of
+    // cycle_interval_minutes.
+    const interval_ms = config.read().cycle_interval_minutes * 60_000;
+    expect(interval_ms).toBeGreaterThan(0);
+    const step = vi.fn(async (): Promise<HousekeepingStepResult> => (
+      { status: 'complete', cursor: { kind: 'complete' } }
+    ));
+    const spyTask: HousekeepingTaskInstance = {
+      meta: { id: 'spy', description: 'spy', interruptible: true, kind: 'core' },
+      step,
+    };
+    const probes: Array<() => void> = [];
+    const midInterval = NOW + Math.floor(interval_ms / 2);
+    const sched2 = createHousekeepingScheduler({
+      ctx: stubCtx(() => midInterval),
+      config,
+      state,
+      busy: stubBusy(),
+      registry: () => [spyTask],
+      setTimer: (fn: () => void) => { probes.push(fn); return null; },
+      clearTimer: () => undefined,
+    });
+    sched2.start();
+    probes[0]!();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(step).not.toHaveBeenCalled();
+    await sched2.stop();
+
+    // Past the interval, the same seeded clock lets the probe fire.
+    const probes3: Array<() => void> = [];
+    const sched3 = createHousekeepingScheduler({
+      ctx: stubCtx(() => NOW + interval_ms + 1),
+      config,
+      state,
+      busy: stubBusy(),
+      registry: () => [spyTask],
+      setTimer: (fn: () => void) => { probes3.push(fn); return null; },
+      clearTimer: () => undefined,
+    });
+    sched3.start();
+    probes3[0]!();
+    for (let i = 0; i < 40 && step.mock.calls.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(step).toHaveBeenCalled();
+    await sched3.stop();
+  });
+
+  it("R13 T1-Q2 — a task's governor telemetry rides into the per-task result", async () => {
+    const { config, state } = setupBalanced();
+    const declining: HousekeepingTaskInstance = {
+      meta: { id: 'drift', description: 'drift', interruptible: true, kind: 'core' },
+      async step(): Promise<HousekeepingStepResult> {
+        return {
+          status: 'complete',
+          cursor: { kind: 'complete' },
+          governor: { declined_topics: 2, dropped_rows: 7 },
+        };
+      },
+    };
+    const sched = createHousekeepingScheduler({
+      ctx: stubCtx(() => NOW),
+      config,
+      state,
+      busy: stubBusy(),
+      registry: () => [declining, completingTask('calm')],
+    });
+    const result = await sched.runOnce();
+    const drift = result.per_task.find((p) => p.task_id === 'drift');
+    const calm = result.per_task.find((p) => p.task_id === 'calm');
+    expect(drift?.governor).toEqual({ declined_topics: 2, dropped_rows: 7 });
+    // Absent ≠ zero: a task that reported nothing carries no field.
+    expect(calm?.governor).toBeUndefined();
+  });
+
   it("runOnce honours task_id filter (Settings 'Run now')", async () => {
     const { config, state } = setupBalanced();
     const calls: string[] = [];

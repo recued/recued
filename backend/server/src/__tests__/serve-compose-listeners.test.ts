@@ -1291,6 +1291,20 @@ describe('composeListeners', () => {
             profile_id: 'generic.raw-body-hmac-sha256.v1',
             registration_modes: ['manual'],
           },
+          // ⚠ ORDER IS THE ASSERTION HERE — `toMatchObject` matches an array
+          // POSITIONALLY, so this list mirrors the mount order in
+          // `createBuiltinWebhookDeliveryProfileAdapters`: the always-mounted
+          // primitives, then cal, then telegram / github / lemonsqueezy.
+          //
+          // ⛔ THIS ENTRY WAS MISSING FOR THREE WEEKS AND THE SUITE WAS RED
+          // THE WHOLE TIME. `cal.webhook.v1` landed with the Cal.com meeting
+          // pack (`0cb353072`) and this inventory was never updated, so the
+          // file failed on every run — training everyone to skim past it,
+          // which is the expensive part, not the missing line.
+          {
+            profile_id: 'cal.webhook.v1',
+            registration_modes: ['manual'],
+          },
           {
             profile_id: 'telegram.bot-webhook.v1',
             registration_modes: ['manual'],

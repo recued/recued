@@ -67,7 +67,6 @@ describe('createAnnotationStore', () => {
         value: 'Quarterly review pinged 2x',
         authored_by_recipe_id: 'r1',
         source_record_hash: 'src-1',
-        recipe_hash: 'rec-1',
         model_used: 'gpt-4',
       });
       expect(ann._collection).toBe('annotation');
@@ -86,13 +85,13 @@ describe('createAnnotationStore', () => {
       await store.annotate({
         target_collection: 'mail', target_id: 'msg-1', key: 'summary',
         value: 'first', authored_by_recipe_id: 'r1',
-        source_record_hash: 'src-1', recipe_hash: 'rec-1',
+        source_record_hash: 'src-1',
       });
       advanceClock(1000);
       await store.annotate({
         target_collection: 'mail', target_id: 'msg-1', key: 'summary',
         value: 'second', authored_by_recipe_id: 'r1',
-        source_record_hash: 'src-2', recipe_hash: 'rec-1',
+        source_record_hash: 'src-2',
       });
 
       const rows = await store.annotationsForRecord('mail', 'msg-1');
@@ -105,12 +104,12 @@ describe('createAnnotationStore', () => {
       await store.annotate({
         target_collection: 'mail', target_id: 'msg-1', key: 'summary',
         value: 'a', authored_by_recipe_id: 'r1',
-        source_record_hash: 'src', recipe_hash: 'rec',
+        source_record_hash: 'src',
       });
       await store.annotate({
         target_collection: 'mail', target_id: 'msg-1', key: 'risk_score',
         value: 0.7, authored_by_recipe_id: 'r1',
-        source_record_hash: 'src', recipe_hash: 'rec',
+        source_record_hash: 'src',
       });
       const rows = await store.annotationsForRecord('mail', 'msg-1');
       expect(rows).toHaveLength(2);
@@ -125,7 +124,7 @@ describe('createAnnotationStore', () => {
       await store.annotate({
         target_collection: 'mail', target_id: 'msg-1', key: 'transcript',
         value: big, authored_by_recipe_id: 'r1',
-        source_record_hash: 'src', recipe_hash: 'rec',
+        source_record_hash: 'src',
       });
       const rows = await store.annotationsForRecord('mail', 'msg-1');
       expect(rows[0].value).toBe(big);
@@ -139,7 +138,7 @@ describe('createAnnotationStore', () => {
         store.annotate({
           target_collection: '', target_id: 'x', key: 'summary',
           value: 'v', authored_by_recipe_id: 'r1',
-          source_record_hash: 's', recipe_hash: 'r',
+          source_record_hash: 's',
         }),
       ).rejects.toBeInstanceOf(AnnotationKeyInvalidError);
     });
@@ -150,7 +149,7 @@ describe('createAnnotationStore', () => {
         store.annotate({
           target_collection: 'mail', target_id: 'x', key: 'has space',
           value: 'v', authored_by_recipe_id: 'r1',
-          source_record_hash: 's', recipe_hash: 'r',
+          source_record_hash: 's',
         }),
       ).rejects.toBeInstanceOf(AnnotationKeyInvalidError);
     });
@@ -162,25 +161,25 @@ describe('createAnnotationStore', () => {
         target_collection: 'mail', target_id: 'm1', key: 'summary',
         value: 'Acme Q3 review',
         authored_by_recipe_id: 'r1',
-        source_record_hash: 'a', recipe_hash: 'b',
+        source_record_hash: 'a',
       });
       await store.annotate({
         target_collection: 'mail', target_id: 'm2', key: 'summary',
         value: 'Brand expansion',
         authored_by_recipe_id: 'r1',
-        source_record_hash: 'a', recipe_hash: 'b',
+        source_record_hash: 'a',
       });
       await store.annotate({
         target_collection: 'mail', target_id: 'm1', key: 'risk_score',
         value: 0.9,
         authored_by_recipe_id: 'r2',
-        source_record_hash: 'a', recipe_hash: 'b',
+        source_record_hash: 'a',
       });
       await store.annotate({
         target_collection: 'calendar', target_id: 'evt-1', key: 'summary',
         value: 'Standup',
         authored_by_recipe_id: 'r1',
-        source_record_hash: 'a', recipe_hash: 'b',
+        source_record_hash: 'a',
       });
     };
 
@@ -254,12 +253,12 @@ describe('createAnnotationStore', () => {
       await store.annotate({
         target_collection: 'mail', target_id: 'doomed', key: 'transcript',
         value: big, authored_by_recipe_id: 'r1',
-        source_record_hash: 'a', recipe_hash: 'b',
+        source_record_hash: 'a',
       });
       await store.annotate({
         target_collection: 'mail', target_id: 'survivor', key: 'transcript',
         value: big, authored_by_recipe_id: 'r2',
-        source_record_hash: 'c', recipe_hash: 'd',
+        source_record_hash: 'c',
       });
 
       await expect(store.deleteAnnotations({ target_id: 'doomed' })).resolves.toBe(1);
@@ -278,12 +277,12 @@ describe('createAnnotationStore', () => {
       const doomed = await store.annotate({
         target_collection: 'mail', target_id: 'doomed', key: 'transcript',
         value: big, authored_by_recipe_id: 'r1',
-        source_record_hash: 'a', recipe_hash: 'b',
+        source_record_hash: 'a',
       });
       await store.annotate({
         target_collection: 'mail', target_id: 'survivor', key: 'transcript',
         value: big, authored_by_recipe_id: 'r2',
-        source_record_hash: 'c', recipe_hash: 'd',
+        source_record_hash: 'c',
       });
 
       await expect(store.deleteAnnotation(doomed._id)).resolves.toBe(true);
@@ -299,7 +298,7 @@ describe('createAnnotationStore', () => {
       await store.annotate({
         target_collection: 'mail', target_id: 'protected', key: 'summary',
         value: 'Acme deletion must roll back', authored_by_recipe_id: 'r1',
-        source_record_hash: 'a', recipe_hash: 'b',
+        source_record_hash: 'a',
       });
       db.exec(`
         CREATE TRIGGER annotation_delete_test_abort
@@ -328,7 +327,7 @@ describe('createAnnotationStore', () => {
           target_collection: 'mail', target_id: 'x', key: 'summary',
           value: oversized,
           authored_by_recipe_id: 'r1',
-          source_record_hash: 'a', recipe_hash: 'b',
+          source_record_hash: 'a',
         }),
       ).rejects.toBeInstanceOf(AnnotationValueTooLargeError);
     });
@@ -403,17 +402,19 @@ describe('createAnnotationStore', () => {
   });
 
   describe('staleness-driven eviction (Phase 13.7)', () => {
-    it('evicts rows whose recipe_hash drifted', async () => {
+    it('evicts rows whose source_record_hash drifted', async () => {
       const { store } = mkStore();
       await store.annotate({
         target_collection: 'mail', target_id: 'm1', key: 'summary',
         value: 'old',
         authored_by_recipe_id: 'r1',
-        source_record_hash: 's-1', recipe_hash: 'rec-1',
+        source_record_hash: 's-1',
       });
+      // D-120 — `recipe_hash` was RETIRED, so the SOURCE record's content is
+      // the staleness axis: the annotation describes a record that has moved.
       const evicted = await store.evictStaleAnnotations(
         { authored_by_recipe_id: 'r1' },
-        { recipe_hash: 'rec-2' },
+        { source_record_hash: 's-2' },
       );
       expect(evicted).toBe(1);
       const rows = await store.listAnnotations({ authored_by_recipe_id: 'r1' });
@@ -426,11 +427,11 @@ describe('createAnnotationStore', () => {
         target_collection: 'mail', target_id: 'm1', key: 'summary',
         value: 'fresh',
         authored_by_recipe_id: 'r1',
-        source_record_hash: 's-1', recipe_hash: 'rec-1',
+        source_record_hash: 's-1',
       });
       const evicted = await store.evictStaleAnnotations(
         { authored_by_recipe_id: 'r1' },
-        { recipe_hash: 'rec-1', source_record_hash: 's-1' },
+        { source_record_hash: 's-1' },
       );
       expect(evicted).toBe(0);
     });
@@ -442,7 +443,7 @@ describe('createAnnotationStore', () => {
         target_collection: 'mail', target_id: 'm1', key: 'summary',
         value: 'a',
         authored_by_recipe_id: 'r1',
-        source_record_hash: 's', recipe_hash: 'r',
+        source_record_hash: 's',
         model_used: 'gpt-4',
       });
       // Row 2: transform-only (no model_used)
@@ -450,12 +451,13 @@ describe('createAnnotationStore', () => {
         target_collection: 'mail', target_id: 'm2', key: 'summary',
         value: 'b',
         authored_by_recipe_id: 'r1',
-        source_record_hash: 's', recipe_hash: 'r',
+        source_record_hash: 's',
       });
-      // Current model has rotated to claude
+      // Current model has rotated to claude; the source is UNCHANGED, so model
+      // rotation is the only axis that can evict here.
       const evicted = await store.evictStaleAnnotations(
         { authored_by_recipe_id: 'r1' },
-        { recipe_hash: 'r', model_used: 'claude-3' },
+        { source_record_hash: 's', model_used: 'claude-3' },
       );
       // Only row 1 evicts — row 2's transform-only stamp is unaffected
       // by model rotation.
@@ -465,10 +467,13 @@ describe('createAnnotationStore', () => {
       expect(left[0].target_id).toBe('m2');
     });
 
-    it('rejects missing current.recipe_hash', async () => {
+    it('rejects missing current.source_record_hash', async () => {
+      // Calling with nothing must FAIL rather than silently evict nothing —
+      // a no-op eviction reads as "everything is fresh", which is the wrong
+      // answer to give a caller that asked.
       const { store } = mkStore();
       await expect(
-        store.evictStaleAnnotations({}, {} as { recipe_hash: string }),
+        store.evictStaleAnnotations({}, {} as { source_record_hash: string }),
       ).rejects.toBeInstanceOf(AnnotationKeyInvalidError);
     });
 
@@ -482,14 +487,14 @@ describe('createAnnotationStore', () => {
         target_collection: 'mail', target_id: 'm-fts', key: 'summary',
         value: 'Zzyzx quarterly briefing',
         authored_by_recipe_id: 'r-fts',
-        source_record_hash: 's-1', recipe_hash: 'rec-1',
+        source_record_hash: 's-1',
       });
       await expect(store.searchAnnotations({ query: 'Zzyzx' }))
         .resolves.toHaveLength(1);
 
       const evicted = await store.evictStaleAnnotations(
         { authored_by_recipe_id: 'r-fts' },
-        { recipe_hash: 'rec-2' },
+        { source_record_hash: 's-2' },
       );
       expect(evicted).toBe(1);
 
@@ -518,11 +523,11 @@ describe('createAnnotationStore', () => {
         target_collection: 'mail', target_id: 'm1', key: 'summary',
         value: 'seen-when-source-was-X',
         authored_by_recipe_id: 'r1',
-        source_record_hash: 'src-X', recipe_hash: 'rec-1',
+        source_record_hash: 'src-X',
       });
       const evicted = await store.evictStaleAnnotations(
         { target_collection: 'mail', target_id: 'm1' },
-        { recipe_hash: 'rec-1', source_record_hash: 'src-Y' },
+        { source_record_hash: 'src-Y' },
       );
       expect(evicted).toBe(1);
     });
@@ -536,7 +541,7 @@ describe('createAnnotationStore', () => {
         target_collection: 'mail', target_id: 'm1', key: 'summary',
         value: 'about to be deleted',
         authored_by_recipe_id: 'r1',
-        source_record_hash: 'a', recipe_hash: 'b',
+        source_record_hash: 'a',
       });
       // Outbound link
       await store.link({
@@ -576,7 +581,7 @@ describe('createAnnotationStore', () => {
         target_collection: 'mail', target_id: 'm1', key: 'summary',
         value: 'still here',
         authored_by_recipe_id: 'r1',
-        source_record_hash: 'a', recipe_hash: 'b',
+        source_record_hash: 'a',
       });
       const result = store.cascadeDelete('mail', 'does-not-exist');
       expect(result.annotations_deleted).toBe(0);
@@ -592,12 +597,12 @@ describe('createAnnotationStore', () => {
       await store.annotate({
         target_collection: 'mail', target_id: 'doomed', key: 'transcript',
         value: big, authored_by_recipe_id: 'r1',
-        source_record_hash: 'a', recipe_hash: 'b',
+        source_record_hash: 'a',
       });
       await store.annotate({
         target_collection: 'mail', target_id: 'survivor', key: 'transcript',
         value: big, authored_by_recipe_id: 'r2',
-        source_record_hash: 'c', recipe_hash: 'd',
+        source_record_hash: 'c',
       });
 
       expect(store.cascadeDelete('mail', 'doomed').annotations_deleted).toBe(1);
@@ -624,7 +629,6 @@ describe('createAnnotationStore', () => {
         value,
         authored_by_recipe_id: 'r1',
         source_record_hash: `src-${target_id}-${key}`,
-        recipe_hash: 'rec-1',
       });
 
     it('collision preserves deduplicated CAS bytes referenced by another record', async () => {

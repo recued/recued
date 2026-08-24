@@ -288,6 +288,10 @@ const makeSellerStore = (
             updated_at: 1_000,
           }
     )),
+    // D-250 § D — the store's measurement half. This double stands in at a
+    // MONEY boundary, so it throws rather than silently succeeding: a test that
+    // starts exercising the token path has to say so instead of passing blind.
+    recordTokenUsage: vi.fn(() => { throw new Error('recordTokenUsage not stubbed'); }) as never,
     recordUsage: vi.fn((input: {
       contract_id: string;
       usage_kind: 'tool_call' | 'chat_turn';
@@ -1946,9 +1950,13 @@ describe('createLlmGatewaySharedChatCompletionProvider', () => {
       resolve_contract_snapshot: resolveContractSnapshot,
     });
 
+    // D-250 § D — `usage_report` rides beside the OpenAI-shaped `usage`: same
+    // numbers, plus `provider_calls`, and it is what the seller's rollup
+    // records. It is never serialised to the customer.
     expect(result).toEqual({
       id: 'chatcmpl_turn-shared',
       content: 'shared answer',
+      usage_report: { input_tokens: 7, output_tokens: 3, total_tokens: 10 },
       usage: {
         prompt_tokens: 7,
         completion_tokens: 3,

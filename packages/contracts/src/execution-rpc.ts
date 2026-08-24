@@ -21,6 +21,7 @@ import type { PreflightApprovedTarget } from './checkpoint.js';
 import type { RecipeError } from './errors.js';
 import type { RunMode } from './memory.js';
 import type { ProvenanceAttribution } from './provenance-attribution.js';
+import type { TokenUsageReport } from './token-usage-report.js';
 
 /** Run-level policy outcome. `blocked` is forward-compatible for the
  *  Tier-2 per-call commit-log read; Tier-1 never emits it because the
@@ -245,6 +246,11 @@ export interface RunAuditSummary {
   /** D-237 P2 — what the run produced. Absent on rows written before D-237;
    *  present-and-all-zero is a real answer, not a missing one. */
   run_yield?: RunYield;
+  /** D-250 § D — what the run SPENT. ⚠ Unlike `run_yield` directly above, ABSENT
+   *  IS THE COMMON CASE and it means "no provider call" (or a row predating the
+   *  field) — never zero. See `AuditEntry.total_usage` for why the two fields
+   *  take opposite emit rules. */
+  total_usage?: TokenUsageReport;
 }
 
 export interface RunApprovalCheckpoint {

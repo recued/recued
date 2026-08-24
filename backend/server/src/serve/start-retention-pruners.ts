@@ -52,7 +52,7 @@ export interface StartRetentionPrunersOptions {
   readonly auditLog: AuditLogStore | undefined;
   readonly executionCaseLifecycle: ExecutionCaseLifecycle | undefined;
   readonly notificationBlock:
-    | Pick<NotificationBlock, 'getAsk' | 'cancelAsk' | 'pruneHandledAsks'>
+    | Pick<NotificationBlock, 'getAsk' | 'cancelAsk' | 'pruneHandledAsks' | 'notify'>
     | undefined;
   /** D-240 slice 4 — the reception credential store (stamp + the purge that
    *  D-210 shipped without a caller) and the record-completion reader the stamp

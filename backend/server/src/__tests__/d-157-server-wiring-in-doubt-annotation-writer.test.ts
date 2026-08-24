@@ -63,7 +63,6 @@ describe('InDoubtAnnotationWriter.writeReconciliation', () => {
       },
       authored_by_recipe_id: GATEWAY_IN_DOUBT_AUTHOR_ID,
       source_record_hash: 'commit-1',
-      recipe_hash: 'gateway-in-doubt-reconciliation',
       event_at: Date.parse('2026-05-22T18:00:00.000Z'),
     });
   });

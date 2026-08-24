@@ -13,6 +13,7 @@ import {
 } from '../ports/llm-gateway/handler.js';
 import {
   MCP_INGREDIENT_TOOL_PREFIX,
+  collectionSourceFreshnessOf,
   isCliIngredient,
   type McpInboundTokenRecord,
 } from '@recued/contracts';
@@ -286,6 +287,8 @@ export const composeIngressRpcContext = async (
     executeRecuedRequestPersist: storage.executeRecuedRequestPersist,
     llmConfig: app.llmConfig,
     llmQuota: app.llmQuota,
+    // D-250 § D — Compose's propose call is real owner provider spend; count it.
+    addOwnerTokenUsage: (tokens) => { app.llmManager?.addUsage(tokens); },
     llmAdapterRegistry: app.llmAdapterRegistry,
     emptyTabProbe: app.emptyTabProbe,
     hostnameRegistryStore: storage.hostnameRegistryStore,
@@ -382,6 +385,20 @@ export const composeIngressRpcContext = async (
               app.fileSourceSyncStateRef,
             ),
           ),
+          // D-236 join — scope→source-freshness for `registryDescribe`'s
+          // coverage-band cap: every registered instance whose platform equals
+          // the enrichment scope, with its live D-236 verdict. Same call form
+          // as the collection dispatchers (`collectionSourceFreshnessOf`
+          // tolerates a throwing adapter). Scopes with no registered platform
+          // (derived scopes, vendor platform-reference) yield [] ⇒ no cap.
+          sourceFreshnessByScope: (scope: string, now: number) =>
+            collection.collectionRegistry
+              .list()
+              .filter((c) => c.platform === scope)
+              .map((c) => ({
+                instance: c.slug,
+                freshness: collectionSourceFreshnessOf(c.health, now),
+              })),
         }
       : {}),
   });

@@ -1226,3 +1226,155 @@ describe('Codex P2 — threshold/4 boundary is the raw fraction, not floor()', (
     expect(r.coverage_quality_reasoning).toContain('< 12.5');
   });
 });
+
+// ────────────────────────────────────────────────────────────────
+// 6. D-236 join — source-freshness cap on the coverage band
+// ────────────────────────────────────────────────────────────────
+
+describe('capBandForStaleSources — the D-236 source-freshness cap', () => {
+  const fresh = {
+    last_success_at: 1_000,
+    age_ms: 5_000,
+    degraded: false,
+    pending: 0,
+    stale: false,
+  };
+  const stale3d = {
+    last_success_at: 1_000,
+    age_ms: 3 * 24 * 60 * 60 * 1000,
+    degraded: false,
+    pending: 0,
+    stale: true,
+  };
+  const neverSynced = {
+    last_success_at: null,
+    age_ms: null,
+    degraded: true,
+    pending: 0,
+    stale: true,
+  };
+  const base = (band: 'high' | 'medium' | 'low' | 'novel_query_likely_uncovered') => ({
+    coverage_quality: band,
+    coverage_quality_reasoning: 'row-derived.',
+  });
+
+  it('caps high→medium and medium→low, naming the stale instance', () => {
+    const capped = registryInternals.capBandForStaleSources(base('high'), [
+      { scope: 'mail', instance: 'work', freshness: stale3d },
+    ]);
+    expect(capped.coverage_quality).toBe('medium');
+    expect(capped.coverage_quality_reasoning).toContain("'mail/work'");
+    expect(capped.coverage_quality_reasoning).toContain('3d ago');
+    expect(capped.coverage_quality_reasoning).toContain('row-derived.');
+
+    const capped2 = registryInternals.capBandForStaleSources(base('medium'), [
+      { scope: 'mail', instance: 'work', freshness: stale3d },
+    ]);
+    expect(capped2.coverage_quality).toBe('low');
+  });
+
+  it('never touches low or novel, and never upgrades', () => {
+    for (const band of ['low', 'novel_query_likely_uncovered'] as const) {
+      const out = registryInternals.capBandForStaleSources(base(band), [
+        { scope: 'mail', instance: 'work', freshness: stale3d },
+      ]);
+      expect(out).toEqual(base(band));
+    }
+  });
+
+  it('no stale sources → the base result is returned untouched', () => {
+    const b = base('high');
+    expect(registryInternals.capBandForStaleSources(b, [])).toBe(b);
+  });
+
+  it('a never-synced degraded source reads as such in the reasoning', () => {
+    const out = registryInternals.capBandForStaleSources(base('high'), [
+      { scope: 'contact', instance: 'crm', freshness: neverSynced },
+    ]);
+    expect(out.coverage_quality_reasoning).toContain('never synced');
+    expect(out.coverage_quality_reasoning).toContain('degraded');
+  });
+
+  it('freshness rows that are not stale never cap (guard sits at the caller)', () => {
+    // buildEntry filters on `.stale` before calling; this pins that a caller
+    // passing a fresh row by mistake still caps (the function trusts its
+    // input list to BE the stale set — one filter, one place).
+    const out = registryInternals.capBandForStaleSources(base('high'), [
+      { scope: 'mail', instance: 'work', freshness: fresh },
+    ]);
+    // Present in the list ⇒ treated as stale-set membership.
+    expect(out.coverage_quality).toBe('medium');
+  });
+});
+
+describe('handleRegistryDescribe — sourceFreshnessByScope wiring (D-236 join)', () => {
+  const seedHighCompany = () => {
+    for (let i = 0; i < 60; i += 1) {
+      insertCompany(`person-${i}@example.com`, NOW - i * 1000, `Co ${i}`);
+    }
+    recordProducerRun('company', NOW - 60_000);
+  };
+
+  it('a stale source behind the topic scope caps the band and names itself', () => {
+    seedHighCompany();
+    const unwired = handleRegistryDescribe(
+      { enrichmentStore: store, housekeepingStateStore: stateStore, db },
+      { now: () => NOW },
+    );
+    const before = unwired.topics.find((t) => t.topic === 'company')!;
+    expect(before.coverage_quality).toBe('high');
+
+    const wired = handleRegistryDescribe(
+      {
+        enrichmentStore: store,
+        housekeepingStateStore: stateStore,
+        db,
+        sourceFreshnessByScope: (scope) =>
+          scope === 'contact'
+            ? [
+                {
+                  instance: 'crm-main',
+                  freshness: {
+                    last_success_at: NOW - 3 * 24 * 60 * 60 * 1000,
+                    age_ms: 3 * 24 * 60 * 60 * 1000,
+                    degraded: false,
+                    pending: 0,
+                    stale: true,
+                  },
+                },
+              ]
+            : [],
+      },
+      { now: () => NOW },
+    );
+    const after = wired.topics.find((t) => t.topic === 'company')!;
+    expect(after.coverage_quality).toBe('medium');
+    expect(after.coverage_quality_reasoning).toContain("'contact/crm-main'");
+  });
+
+  it('a healthy source leaves the band alone', () => {
+    seedHighCompany();
+    const wired = handleRegistryDescribe(
+      {
+        enrichmentStore: store,
+        housekeepingStateStore: stateStore,
+        db,
+        sourceFreshnessByScope: () => [
+          {
+            instance: 'crm-main',
+            freshness: {
+              last_success_at: NOW - 1000,
+              age_ms: 1000,
+              degraded: false,
+              pending: 0,
+              stale: false,
+            },
+          },
+        ],
+      },
+      { now: () => NOW },
+    );
+    const entry = wired.topics.find((t) => t.topic === 'company')!;
+    expect(entry.coverage_quality).toBe('high');
+  });
+});

@@ -1,8 +1,8 @@
 # Recued Server
 
-Headless recipe engine that runs outside the browser. Executes recipes on a schedule, exposes them as MCP tools for AI agents (Claude Desktop, Cursor), and pairs with the Recued extension for cross-device sync and AI delegation.
+Headless recipe engine that runs outside the browser. Executes recipes on a schedule, exposes them as MCP tools for AI agents (Claude Desktop, Cursor), and pairs with the Recued webclient and Browser Bridge for display, DOM actuation and AI delegation.
 
-The server reuses the same packages the extension uses (`@recued/engine`, `@recued/ingredients`, `@recued/llm`, `@recued/contracts`) so recipe behavior is identical. HTTP and MCP ingredients run natively. LLM ingredients run when BYOK API keys are configured. DOM and chat ingredients delegate to a connected extension via WebSocket.
+The server reuses the same packages the clients use (`@recued/engine`, `@recued/ingredients`, `@recued/llm`, `@recued/contracts`) so recipe behavior is identical. HTTP and MCP ingredients run natively. LLM ingredients run when BYOK API keys are configured. DOM and chat ingredients delegate to a connected Browser Bridge via WebSocket.
 
 ## Install
 
@@ -11,15 +11,15 @@ Pick the install path that matches your setup. All four deliver the same `recued
 | Distribution | Best for | Command |
 |---|---|---|
 | **npm** | Developers + VPS operators already running Node | `npm install -g @recued/server` |
-| **Docker** | Container-first hosts, Docker Compose stacks, Fly.io | `docker run -v recued-data:/var/lib/recued recued/server:26.8.19` |
+| **Docker** | Container-first hosts, Docker Compose stacks, Fly.io | `docker run -v recued-data:/var/lib/recued recued/server:26.8.24` |
 | **Homebrew** | macOS desktop + headless Mac | `brew install recued/tap/recued-server` |
-| **One-click VPS** | Non-technical users on DigitalOcean / Hetzner / Linode | paste [`distribution/vps/cloud-init.yml`](../../distribution/vps/cloud-init.yml) into user-data |
+| **cloud-init** | Advanced unattended provisioning on DigitalOcean / Hetzner / Linode | paste [`distribution/vps/cloud-init.yml`](../../distribution/vps/cloud-init.yml) into user-data |
 
-After install, pair with the Recued extension:
+After install, pair the webclient:
 
 ```sh
-recued pair            # prints a 6-digit pairing code
-# In the extension: Settings → Cross-device sync → paste code + URL
+recued pair            # prints a pairing code + an app.recued.com/pair link
+# Open that link to complete pairing.
 ```
 
 See [`distribution/homebrew/README.md`](../../distribution/homebrew/README.md) for Homebrew service management and [`distribution/vps/README.md`](../../distribution/vps/README.md) for provider-specific cloud-init details. The Docker variant's compose file is at [`docker-compose.yml`](./docker-compose.yml) — `docker compose up -d` with a mounted `config.toml` works out of the box.
@@ -80,7 +80,7 @@ recued archive import /mnt/usb/recued.archive --key-file=/path/to/recovery.txt -
 recued archive inspect /mnt/usb/recued.archive
 ```
 
-The archive is encrypted with your FileVault recovery key (same 24-word phrase the extension holds). Per D-097, this is the ONLY cross-device migration path — Recued Cloud doesn't carry user data. Keep the archive somewhere safe (USB drive, NAS, cloud storage of your choice); the recovery key decrypts it.
+The archive is encrypted with your FileVault recovery key (the same 24-word recovery key). Per D-097, this is the ONLY cross-device migration path — Recued Cloud doesn't carry user data. Keep the archive somewhere safe (USB drive, NAS, cloud storage of your choice); the recovery key decrypts it.
 
 CLI restore flow remains verify-first: stop the server, decrypt + extract the archive into `data_path`, restart. `archive import --dry-run` verifies the archive is intact + the current server can read it before you commit to the restore. The Phase G `server.archive.*` RPC handler is the UI/runtime surface for host-wired restores; the package CLI still does not swap `data_path` in place.
 
@@ -107,14 +107,14 @@ npm start
 
 The server starts on port 7717 with a SQLite database at `./recued-server.db`. A pairing code is printed on first start.
 
-### Pair with the extension
+### Pair the webclient
 
-1. Open the Recued extension, go to **Settings > Cross-device sync**
-2. Select **Recued Server** as the backend
-3. Enter the server URL (`http://localhost:7717`) and the pairing code from the terminal
-4. Click **Test & connect**
+1. Run `recued pair` — it prints a pairing code and an `app.recued.com/pair` deeplink
+   carrying that code
+2. Open the deeplink (or go to https://app.recued.com/pair and enter the code plus
+   the server URL, e.g. `http://localhost:7717`)
 
-The extension exchanges the pairing code for a long-lived realm token and stores it. All subsequent requests use the token. The pairing code expires after 15 minutes and is single-use.
+The webclient exchanges the pairing code for a long-lived realm token and stores it. All subsequent requests use the token. The pairing code expires after 15 minutes and is single-use.
 
 ### Run in the background
 
@@ -299,7 +299,7 @@ long-lived.
 
 ### LLM slots
 
-The server uses two LLM slots matching the extension's model:
+The server uses two LLM slots matching the clients' model:
 
 | Slot | Model hint | Purpose |
 |:---|:---|:---|
@@ -359,7 +359,7 @@ The server imports directly from the monorepo workspace:
 backend/server/src/
   bin.ts              CLI entrypoint + subcommand dispatch
   server.ts           HTTP server + route table
-  ws-server.ts        WebSocket server (extension pairing)
+  ws-server.ts        WebSocket server (client pairing)
   mcp-server.ts       MCP stdio server (JSON-RPC 2.0)
   server-executor.ts  Ingredient executor (HTTP, MCP, LLM adapters)
   execute-handler.ts  POST /execute handler
@@ -369,7 +369,7 @@ backend/server/src/
   scheduler.ts        Cron tick loop
   cron.ts             Cron expression parser
   daemon.ts           Background process management (start/stop/status)
-  pairing.ts          Extension pairing flow (code -> token)
+  pairing.ts          Client pairing flow (code -> token)
   server-vault.ts     Encrypted vault store (AES-256-GCM, device-local DEK)
   llm-config.ts       LLM slot + budget config (SQLite-persisted)
   manifest-loader.ts  Ingredient manifest registry
@@ -390,7 +390,7 @@ backend/server/src/
 | HTTP | Full | `fetch` is global in Node 18+ |
 | MCP | Full | JSON-RPC over HTTP |
 | LLM | Full | Requires BYOK API keys in slot_1/slot_2 |
-| Chat | Delegated | Broadcasts to connected extension via WebSocket |
+| Chat | Delegated | Broadcasts to connected Bridge via WebSocket |
 | DOM | Unsupported | No browser -- throws `INGREDIENT_ADAPTER_ALL_FAILED` |
 
 ## MCP integration
@@ -451,7 +451,7 @@ The MCP server uses JSON-RPC 2.0 over stdin/stdout (one JSON object per line). P
 
 ## WebSocket protocol
 
-The server upgrades HTTP connections on `/ws` to WebSocket for real-time communication between the server and connected extensions.
+The server upgrades HTTP connections on `/ws` to WebSocket for real-time communication between the server and connected clients.
 
 ### Connection
 
@@ -465,7 +465,7 @@ Auth via `Authorization: Bearer <token>` header or `?token=` query parameter.
 
 | Type | Fields | Purpose |
 |:---|:---|:---|
-| `register` | `instance_id`, `display_name?`, `platform?` | Register this extension instance |
+| `register` | `instance_id`, `display_name?`, `platform?` | Register this client instance |
 | `ping` | -- | Keepalive |
 | `command_ack` | `command_id` | Acknowledge a received command |
 | `ai_response` | `request_id`, `result` or `error` | Return an AI delegation result |
@@ -479,17 +479,17 @@ Auth via `Authorization: Bearer <token>` header or `?token=` query parameter.
 | `registered` | `instance_id` | Confirm registration |
 | `pong` | -- | Keepalive response |
 | `command` | `command` | Push a command (e.g., run a scheduled recipe) |
-| `ai_request` | `request_id`, `slug`, `input` | Delegate an AI call to the extension |
-| `chat_broadcast` | `request_id`, `slug` | Broadcast a chat ingredient -- extensions claim to execute |
+| `ai_request` | `request_id`, `slug`, `input` | Delegate an AI call to the Bridge |
+| `chat_broadcast` | `request_id`, `slug` | Broadcast a chat ingredient -- Bridges claim to execute |
 | `chat_confirmed` | `request_id`, `slug`, `input` | Confirm claim with full input (winner only) |
-| `chat_revoked` | `request_id` | Revoke -- another extension won the claim |
+| `chat_revoked` | `request_id` | Revoke -- another Bridge won the claim |
 
 ### Chat delegation flow
 
 When a recipe uses a chat ingredient (e.g., `web-chat-gemini`), the server cannot execute it directly. Instead:
 
-1. Server broadcasts `chat_broadcast` to all connected extensions
-2. Extensions that can handle it respond with `chat_claim`
+1. Server broadcasts `chat_broadcast` to all connected Bridges
+2. Bridges that can handle it respond with `chat_claim`
 3. First claim wins: server sends `chat_confirmed` to the winner, `chat_revoked` to others
 4. Winner executes the chat ingredient and returns `chat_result`
 5. Server continues recipe execution with the result
@@ -632,7 +632,7 @@ Tests use `vitest` and spin up server instances on random ports (`port: 0`). The
 ### Dependencies
 
 - `better-sqlite3` -- SQLite driver (embedded, no external DB)
-- `ws` -- WebSocket server (used for extension pairing)
+- `ws` -- WebSocket server (used for client pairing)
 - Workspace packages: `@recued/contracts`, `@recued/engine`, `@recued/ingredients`, `@recued/instances`, `@recued/llm`, `@recued/recipes`, `@recued/storage`
 
 ## Security
@@ -640,4 +640,4 @@ Tests use `vitest` and spin up server instances on random ports (`port: 0`). The
 - **Realm token** is the sole auth credential. Treat it like a password (32+ chars, do not commit).
 - **Vault store** encrypts credentials with AES-256-GCM using a device-local DEK. The server stores ciphertext only -- even with full database access, vault secrets are unreadable.
 - **Pairing code** is single-use, 8 alphanumeric characters, expires after 15 minutes. Issued on server start and displayed in the terminal.
-- **CRM data** never touches this backend. The extension calls CRM APIs directly using client-stored tokens.
+- **CRM data** is called by THIS SERVER, directly, using locally-stored personal access tokens. It never routes through Recued Cloud. (This line used to say the opposite — that the client called CRM APIs — which was true before the server became the sole orchestrator.)

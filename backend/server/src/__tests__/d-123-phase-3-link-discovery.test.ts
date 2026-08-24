@@ -56,7 +56,6 @@ const ensureAnnotationTable = () => {
       size_bytes            INTEGER NOT NULL,
       authored_by_recipe_id TEXT NOT NULL,
       source_record_hash    TEXT NOT NULL,
-      recipe_hash           TEXT NOT NULL,
       model_used            TEXT,
       authored_at           INTEGER NOT NULL,
       event_at              INTEGER

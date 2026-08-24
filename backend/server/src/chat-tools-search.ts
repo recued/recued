@@ -50,8 +50,12 @@ import { TOOLS_SEARCH_TOOL_NAME } from './chat-tools-search-name.js';
 // (imported by `chat-orchestrator.ts`'s per-turn presentation drop, cycle-free).
 export { TOOLS_SEARCH_TOOL_NAME };
 
-const TOOLS_SEARCH_DEFAULT_LIMIT = 5;
-const TOOLS_SEARCH_MAX_LIMIT = 20;
+/** No imposed result cap (owner decision, 2026-08-20). A cap turned the
+ *  equal-score name tie-break in `searchToolCatalog` into an EXCLUSION
+ *  channel: with `limit` slots, a publisher who names a recipe `aaa-…` can
+ *  push an equal-scoring rival out of the result set entirely (round-13
+ *  audit, T4 § 6.4). Uncapped, ties still order the list but nothing is
+ *  hidden. The model may still bound the count itself via `limit`. */
 
 /** The synthetic Tier-1 catalog entry. Hand-built (not a closed-list
  *  `Tier1ToolName`) because this tool is chat-index-mode-only. */
@@ -59,7 +63,7 @@ export const TOOLS_SEARCH_TOOL_ENTRY: ToolEntry = {
   name: TOOLS_SEARCH_TOOL_NAME,
   tier: 1,
   description:
-    "Find installed recipe tools by capability. Recipe tools that \"available_tools\" does not fully show — listed with only a one-line summary and no argument schema (index mode), or not listed at all (lean-core mode) — are recovered here: pass a short `query` describing the capability (\"draft a follow-up email\", \"summarize a PDF\", \"find overdue invoices\") and it returns up to `limit` matching tools, each with the `args_schema` you then call directly by `recipe_slug`. The always-listed core tools (contact / mail / calendar / memory / enrichment / deal / account / work search + read, recipe.run) are ALREADY fully defined — never search for those. If a search returns no match, do NOT retry with reworded queries: satisfy the request with the core tools or your own knowledge, or tell the user no matching recipe is installed.",
+    "Find installed recipe tools by capability. Recipe tools that \"available_tools\" does not fully show — listed with only a one-line summary and no argument schema (index mode), or not listed at all (lean-core mode) — are recovered here: pass a short `query` describing the capability (\"draft a follow-up email\", \"summarize a PDF\", \"find overdue invoices\") and it returns every matching tool, each with the `args_schema` you then call directly by `recipe_slug` (pass `limit` only if you want fewer). The always-listed core tools (contact / mail / calendar / memory / enrichment / deal / account / work search + read, recipe.run) are ALREADY fully defined — never search for those. If a search returns no match, do NOT retry with reworded queries: satisfy the request with the core tools or your own knowledge, or tell the user no matching recipe is installed.",
   arg_schema: {
     type: 'object',
     properties: {
@@ -70,7 +74,7 @@ export const TOOLS_SEARCH_TOOL_ENTRY: ToolEntry = {
       },
       limit: {
         type: 'number',
-        description: 'Max tools to return (default 5).',
+        description: 'Optional: bound the number of tools returned. Default: all matches.',
       },
     },
     required: ['query'],
@@ -91,11 +95,10 @@ const TOOLS_SEARCH_MATCHES_GUIDANCE =
 const TOOLS_SEARCH_NO_MATCH_GUIDANCE =
   'No installed recipe tool matches this request. Do NOT retry tools.search with reworded queries. Handle it with the core tools already listed, answer the user from your own knowledge, or tell the user that no matching recipe is installed.';
 
-const clampToolsSearchLimit = (raw: unknown): number => {
-  if (typeof raw !== 'number' || !Number.isFinite(raw)) return TOOLS_SEARCH_DEFAULT_LIMIT;
+const resolveToolsSearchLimit = (raw: unknown): number => {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return Number.POSITIVE_INFINITY;
   const n = Math.floor(raw);
-  if (n <= 0) return TOOLS_SEARCH_DEFAULT_LIMIT;
-  return Math.min(n, TOOLS_SEARCH_MAX_LIMIT);
+  return n <= 0 ? Number.POSITIVE_INFINITY : n;
 };
 
 const asObject = (raw: unknown): Record<string, unknown> | null => {
@@ -152,12 +155,21 @@ const dispatchToolsSearch = (
         detail: 'query is required — a short description of the capability you need',
       };
     }
-    const limit = clampToolsSearchLimit(args.limit);
-    const tier2 = inner.listByTier(2);
+    const limit = resolveToolsSearchLimit(args.limit);
+    // D-247 D8 — for an OWNER-governed turn the Tier-2 corpus is REPLACED by
+    // the grant-decided projection (which sees hidden recipes, so a grant can
+    // widen past `chat_exposed`), mirroring the main-catalog `buildCatalog` in
+    // chat-orchestrator.ts. That projection is already grant-decided, so the
+    // reachability filter applies only to the registry's own exposed entries.
+    // ⚠ The param was accepted and threaded but UNREAD before 2026-08-20 —
+    // exactly the failure its own contract names: the grant worked in the
+    // catalog and silently did not in search.
+    const ownerTier2 = tier2OwnerCatalog?.(ctx?.execution_source) ?? null;
+    const tier2 = ownerTier2 ?? inner.listByTier(2);
     const gated = computeKindGatedTier2Names(tier2, resolveEnabledKinds(getScope()));
     // ⚠ `ctx?.` — a handler invoked by a bare harness may pass none, and a
     // throw here would turn a missing fixture into a failed search.
-    const reachable = tier2GrantFilter?.(ctx?.execution_source);
+    const reachable = ownerTier2 !== null ? undefined : tier2GrantFilter?.(ctx?.execution_source);
     const visible = tier2.filter(
       (entry) => !gated.has(entry.name) && (reachable === undefined || reachable(entry.name)),
     );

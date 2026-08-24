@@ -30,7 +30,6 @@ interface AnnotationInput {
   value: unknown;
   authored_by_recipe_id: string;
   source_record_hash: string;
-  recipe_hash: string;
   event_at: number;
 }
 
@@ -137,7 +136,6 @@ describe('createSagaAnnotationWriter', () => {
       },
       authored_by_recipe_id: GATEWAY_SAGA_AUTHOR_ID,
       source_record_hash: 'run-1',
-      recipe_hash: 'gateway-saga-reconciliation',
       event_at: EVENT_AT,
     });
   });

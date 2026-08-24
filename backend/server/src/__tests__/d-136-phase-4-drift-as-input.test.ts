@@ -40,6 +40,7 @@ import {
   DRIFT_RECENT_WINDOW_MS,
   MIN_SAMPLE_COUNT_BASELINE,
   MIN_SAMPLE_COUNT_RECENT,
+  confidenceDriftSignalTask,
   processOneConfidenceDriftTopic,
   sourceTopicAutoRecomputesOnDrift,
 } from '../housekeeping/index.js';
@@ -358,7 +359,9 @@ describe('round-12 T1 § 8.1 — drift enqueue consults the cascade queue govern
     );
     // Consulted with the topic, before any write.
     expect(admission).toHaveBeenCalledWith('purpose');
-    expect(declined).toEqual({ processed: true, fired: null });
+    // R13 T1-Q2 — the decline is DISTINGUISHABLE from a calm cycle: it
+    // carries the governor's dropped count instead of discarding it.
+    expect(declined).toEqual({ processed: true, fired: null, governor_declined: { dropped: 5 } });
     // Neither the enqueue NOR the severity advance happened — the atomicity
     // invariant the transaction exists for, preserved on the skip path.
     expect(countPending()).toBe(0);
@@ -394,6 +397,26 @@ describe('round-12 T1 § 8.1 — drift enqueue consults the cascade queue govern
     const admission = vi.fn(() => ({ admitted: true, candidates: 0, dropped: 0 }));
     processOneConfidenceDriftTopic({ ...ctx(), cascadeTopicAdmission: admission }, 'purpose', now);
     expect(admission).not.toHaveBeenCalled();
+  });
+
+  it('R13 T1-Q2 — the task step AGGREGATES declines into governor telemetry; a calm step carries none', async () => {
+    seedSignificantShift();
+    const declinedStep = await confidenceDriftSignalTask.step(
+      { ...ctx(), cascadeTopicAdmission: () => ({ admitted: false, candidates: 5, dropped: 5 }) },
+      { kind: 'complete' },
+      1_000,
+    );
+    // Only 'purpose' has a seeded significant transition, so exactly one
+    // topic reached (and was declined by) the governor this step.
+    expect(declinedStep.governor).toEqual({ declined_topics: 1, dropped_rows: 5 });
+    // Under headroom the same transition admits — and the result carries NO
+    // governor field at all (absent ≠ zero; a calm cycle stays clean).
+    const admittedStep = await confidenceDriftSignalTask.step(
+      { ...ctx(), cascadeTopicAdmission: () => ({ admitted: true, candidates: 5, dropped: 0 }) },
+      { kind: 'complete' },
+      1_000,
+    );
+    expect(admittedStep.governor).toBeUndefined();
   });
 });
 

@@ -463,7 +463,6 @@ const loadAnnotations = async (
           value: ann.value,
           target_collection: ann.target_collection,
           target_id: ann.target_id,
-          recipe_hash: ann.recipe_hash,
           ...(ann.model_used !== undefined ? { model_used: ann.model_used } : {}),
         },
         recipe_slug: ann.authored_by_recipe_id,

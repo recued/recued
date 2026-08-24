@@ -126,13 +126,20 @@ export interface ComposeRetentionPrunersDeps {
     | ReceptionLookupExpirySweepDeps['readCompletion']
     | undefined;
   /** D-157 N.8 — the notification block's ask-state reads (the
-   *  never-drop-a-decision check + the race-safe prompt close).
-   *  Narrowed to exactly the two methods the sweep consumes. Absent ⇒
-   *  the block was never constructed this process, so no inbound
-   *  answer path exists and the sweep expires without prompt
-   *  bookkeeping. */
+   *  never-drop-a-decision check + the race-safe prompt close), plus
+   *  `notify` for the expiry notice. Narrowed to exactly the methods the
+   *  sweep consumes. Absent ⇒ the block was never constructed this process,
+   *  so no inbound answer path exists and the sweep expires without prompt
+   *  bookkeeping (and without the notice — nothing to deliver on).
+   *
+   *  ⚠ `notify` was added to this Pick deliberately, not by widening to the
+   *  whole block: the sweep may TELL the owner an approval expired, and must
+   *  never be able to `ask` them anything. The narrowing is the fence — a
+   *  background sweep that could raise an ask could raise one nobody is
+   *  present to answer, which is the exact loop this notice exists to report
+   *  the end of. */
   readonly notificationBlock?:
-    | Pick<NotificationBlock, 'getAsk' | 'cancelAsk' | 'pruneHandledAsks'>
+    | Pick<NotificationBlock, 'getAsk' | 'cancelAsk' | 'pruneHandledAsks' | 'notify'>
     | undefined;
   /** Time source for `pruneExpired` / `pruneOlderThan`. Defaults to
    *  `Date.now`. Test seam. */
@@ -391,7 +398,45 @@ export const composeRetentionPruners = (
       intervalMs: HOUR_MS,
       tick: async () => {
         try {
-          await retention.runSafe();
+          const result = await retention.runSafe();
+          // ⛔ TELL THE OWNER THEIR APPROVAL EXPIRED. Until this line, the
+          // staleness guard was the one place the substrate did work the owner
+          // could not see: it cancels the ask (the close-broadcast WITHDRAWS the
+          // prompt from every channel), retires the run `'failed'` with
+          // `RECIPE_APPROVAL_TIMEOUT`, and deletes the checkpoint. So the card
+          // simply VANISHED from the approvals list and the run silently did not
+          // happen — recorded in the audit trail, surfaced nowhere. An expiry is
+          // the one outcome the owner cannot infer from the absence, because the
+          // absence is exactly what an answered ask looks like too.
+          //
+          // ⚠ ONE notification per PASS, never per row. A sweep that finds
+          // fourteen expired holds must not fire fourteen times — that is the
+          // shape that makes people mute a channel. The count carries it.
+          //
+          // ⚠ `notify`, not `ask` — there is nothing to decide. The guard has
+          // already fired and it is not reversible; the remedy is to re-run the
+          // recipe, which the text says.
+          //
+          // Idempotent by construction: a pass expires only rows that crossed
+          // the window since the last one and DELETES their checkpoints, so no
+          // row can be counted by two passes. Best-effort — a delivery failure
+          // must never fail the sweep that already succeeded.
+          if (block !== undefined && result !== null && result.expired > 0) {
+            const n = result.expired;
+            try {
+              await block.notify({
+                title: `${n} approval${n === 1 ? '' : 's'} expired`,
+                text:
+                  `${n} pending approval${n === 1 ? '' : 's'} passed the staleness `
+                  + `window and ${n === 1 ? 'was' : 'were'} withdrawn, so `
+                  + `${n === 1 ? 'its run' : 'their runs'} did not complete. `
+                  + 'Re-run the recipe to try again, or raise the window in '
+                  + 'Settings → Recipes (Pending-approval staleness window).',
+              });
+            } catch {
+              // Best-effort delivery; the expiry itself is already durable.
+            }
+          }
         } catch {
           // Best-effort retention must not reject the timer lifecycle.
         }

@@ -82,6 +82,8 @@ const createStoreWithReadOnlyWarmEntry = (entry: CacheEntry) => {
 // All-pure recipe — the big win
 // ────────────────────────────────────────────────────────────────
 
+import { MAX_CONTEXT_BYTES } from '../step-runner.js';
+
 describe('executeRecipe — L2 cache on all-pure recipe', () => {
   it('second run executes zero sequential steps (every one hits)', async () => {
     // Recipe: take a config input, map it, sort it. Both are pure.
@@ -727,22 +729,26 @@ describe('executeRecipe — L2 TTL policy', () => {
 });
 
 // ────────────────────────────────────────────────────────────────
-// 10MB context cap — cache-hit path must also charge the counter.
+// Context cap — cache-hit path must also charge the counter.
 // Without tracking on replay, an all-hits recipe would silently
 // accumulate past the cap (since runStep is never entered).
 // ────────────────────────────────────────────────────────────────
 
-describe('executeRecipe — L2 cache replay charges the 10MB context cap', () => {
+describe('executeRecipe — L2 cache replay charges the context cap', () => {
   it('cumulative cache-hit replays trigger CONTEXT_SIZE_EXCEEDED', async () => {
-    // Each step output estimates to ~4MB. Three steps → ~12MB cumulative,
-    // which exceeds the 10MB cap at step c. Pass 1 fails at step c (miss).
-    // Steps a + b caching succeeded. Pass 2 replays a + b from cache
-    // (~8MB cumulative after hits), then misses c and executes it,
-    // pushing cumulative past 10MB → cap fires AGAIN. If the hit path
-    // didn't track size, pass 2's counter would stay at 0 through the
-    // hits and c's ~4MB would fit under the cap — pass 2 would wrongly
-    // succeed. This test fails without the hit-path trackContextSize call.
-    const payload = 'a'.repeat(2 * 1024 * 1024); // ~4MB JSON-estimated
+    // ⚠ SIZED FROM THE CONSTANT, NOT A COPIED NUMBER. This test previously
+    // hardcoded 3 x ~4MB against a 10MB cap; when the cap moved to 50MB it
+    // would have gone GREEN while exercising nothing, because the payload no
+    // longer crossed it. A cap test whose payload does not track the cap stops
+    // being a test the moment the cap changes.
+    //
+    // Each step output estimates to ~2x the string length in JSON. Three steps
+    // must exceed the cap: pass 1 fails at step c (miss) after a + b cached.
+    // Pass 2 replays a + b from cache, then misses c and executes it, pushing
+    // cumulative past the cap AGAIN. If the hit path didn't track size, pass 2's
+    // counter would stay at 0 through the hits and c would fit — pass 2 would
+    // wrongly succeed. This fails without the hit-path trackContextSize call.
+    const payload = 'a'.repeat(Math.ceil(MAX_CONTEXT_BYTES / 3 / 2) + 1024);
     const recipe = mkRecipe({
       variables: { p: payload },
       steps: [

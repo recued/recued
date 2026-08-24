@@ -28,6 +28,7 @@ import {
   rosterAllAutoRun,
   type AutoRunEntry,
   type AutoRunInstallInput,
+  type AutoRunOutcome,
   type AutoRunScheduler,
   type TickReport,
 } from '@recued/scheduler';
@@ -413,7 +414,7 @@ export const createServerAutoRunScheduler = (
   ): Promise<void> => {
     scheduler.markStarting(recipe_id, process_id, firedAt);
     inflightCount++;
-    let outcome: 'success' | 'skipped' | 'failed' = 'failed';
+    let outcome: AutoRunOutcome = 'failed';
     let nextRunHint: number | undefined;
     let failureReason: string | undefined;
     const visibleFailure = (failure: unknown): string => {
@@ -468,8 +469,31 @@ export const createServerAutoRunScheduler = (
         // trigger_skipped takes precedence (silent-skip), then
         // success/failure. Skipped keeps the failure counter unchanged;
         // a failed run increments toward the circuit breaker.
+        // ⛔⛔ A DURABLE PAUSE IS A THIRD STATE, AND CLASSIFYING IT AS `failed`
+        // DISABLED THE RECIPE. The engine returns `success: false` with an
+        // EMPTY `errors` array when a run pauses on a preflight gate, so
+        // deciding on `!success` alone recorded a failure whose reason degraded
+        // to the generic "execution failed" — and `CIRCUIT_BREAKER_THRESHOLD`
+        // consecutive holds set `auto_disabled`. Any auto-run recipe whose
+        // first write is approval-gated therefore switched itself off while its
+        // asks sat unanswered: at a 15-minute interval, inside an hour and a
+        // half, with nothing on the record mentioning approval.
+        //
+        // A hold is the system working. The ask IS the surface the owner acts
+        // on, the checkpoint is durable, and the next tick should keep firing.
+        //
+        // ⚠ `awaiting_approval` / `awaiting_peer` are set on the response ONLY
+        // when the pause is durable — a downgraded pause with no checkpoint
+        // stays a terminal failure, which is right, because nothing will ever
+        // come back to finish it. Reading the marker rather than
+        // `result.awaiting_*` on the engine result is what keeps that
+        // distinction.
+        const heldForAnswer = result.awaiting_approval === true
+          || result.awaiting_peer === true;
         if (result.trigger_skipped) {
           outcome = 'skipped';
+        } else if (heldForAnswer) {
+          outcome = 'held';
         } else if (result.success) {
           outcome = 'success';
         } else {

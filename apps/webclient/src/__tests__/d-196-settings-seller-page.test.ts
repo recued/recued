@@ -85,6 +85,9 @@ import {
   SELLER_TIER_BULK_ADJUST_STATUS_ATTR,
   SELLER_TIER_BULK_ADJUST_SUBMIT_ATTR,
   SELLER_TIER_ROW_ATTR,
+  SELLER_TIER_USAGE_FORM_ATTR,
+  SELLER_TIER_USAGE_FIELD_ATTR,
+  SELLER_TIER_USAGE_SUBMIT_ATTR,
   SELLER_USAGE_ROW_ATTR,
   type SellerAcknowledgeLlmGatewayPaidCaller,
   type SellerSettingsUpdateCaller,
@@ -2795,5 +2798,114 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     expect(findByAttr(host, SELLER_ERROR_ATTR)).not.toBeNull();
     expect(textOf(host)).toContain('seller overview unavailable');
     mount.dispose();
+  });
+});
+
+describe('D-250 § D — tier usage limits', () => {
+  const stripeTier = () => ({
+    tier_id: 'tier-stripe',
+    door_id: 'door-mcp',
+    lifecycle_source: 'stripe' as const,
+    entitlement_key: 'pro',
+    display_name: 'Pro',
+    template_contract_id: 'contract-template-2',
+    external_entitlement_id: 'feat_pro',
+    // What `stripe-entitlement-sync` actually mints: no policy at all.
+    usage_policy_json: {},
+    pass_duration_seconds: null,
+    customer_status_enabled_default: false,
+    active: true,
+    created_at: 1_700_000_000_000,
+    updated_at: 1_700_000_100_000,
+  });
+
+  it('⛔ NAMES THE UNLIMITED STATE — a `{}` policy renders "no limit", never "None"', async () => {
+    // `shortJson({})` rendered "None", which reads far more naturally as "no
+    // access" than "no ceiling" — so the riskiest state on the page was
+    // described by a word suggesting its opposite.
+    const host = makeFakeElement('div');
+    const mount = mountSellerPage({
+      host: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      initialSubpage: 'tiers',
+      runGetOverview: async () => overview({ tiers: [stripeTier()] }),
+    });
+    await mount.whenLoaded();
+    const text = textOf(host);
+    expect(text).toContain('Chat turns: no limit');
+    expect(text).toContain('Tool calls: no limit');
+  });
+
+  it('⛔⛔ OFFERS THE FORM ON A STRIPE TIER — the one no other form can edit', async () => {
+    const host = makeFakeElement('div');
+    const mount = mountSellerPage({
+      host: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      initialSubpage: 'tiers',
+      initialItemId: 'tier-stripe',
+      runGetOverview: async () => overview({ tiers: [stripeTier()] }),
+      runSetTierUsagePolicy: async () => ({
+        tier: stripeTier(),
+        overview: overview({ tiers: [stripeTier()] }),
+      }),
+    });
+    await mount.whenLoaded();
+    expect(findByAttr(host, SELLER_TIER_USAGE_FORM_ATTR, 'tier-stripe')).not.toBeNull();
+  });
+
+  it('posts only the kinds the owner filled in — blank stays UNLIMITED', async () => {
+    // ⚠ The assertion that matters: an untouched kind is OMITTED, because
+    // omission is what unlimited IS on the server. Writing a null-limit entry
+    // would mean the same thing while implying someone configured it.
+    const host = makeFakeElement('div');
+    // ⛔ THE PARAMETER IS DECLARED ON PURPOSE. An argless `vi.fn(async () => …)`
+    // infers a 0-TUPLE for `mock.calls`, so `calls[0]![0]` is TS2493 — green
+    // under vitest and red under `typecheck:tests`, which is in `npm run ci`.
+    const runSetTierUsagePolicy = vi.fn(async (_request: {
+      tier_id: string;
+      usage_policy_json: Record<string, unknown>;
+    }) => ({
+      tier: stripeTier(),
+      overview: overview({ tiers: [stripeTier()] }),
+    }));
+    const mount = mountSellerPage({
+      host: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      initialSubpage: 'tiers',
+      initialItemId: 'tier-stripe',
+      runGetOverview: async () => overview({ tiers: [stripeTier()] }),
+      runSetTierUsagePolicy,
+    });
+    await mount.whenLoaded();
+    const limit = findByAttr(host, SELLER_TIER_USAGE_FIELD_ATTR, 'tool_call.period_limit');
+    expect(limit).not.toBeNull();
+    limit!.value = '500';
+    findByAttr(host, SELLER_TIER_USAGE_SUBMIT_ATTR, 'tier-stripe')!.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(runSetTierUsagePolicy).toHaveBeenCalledTimes(1);
+    const payload = runSetTierUsagePolicy.mock.calls[0]![0];
+    expect(payload.tier_id).toBe('tier-stripe');
+    expect(payload.usage_policy_json).toEqual({
+      tool_call: { period_granularity: 'month', period_limit: 500 },
+    });
+    // chat_turn was left blank ⇒ omitted ⇒ still unlimited.
+    expect(payload.usage_policy_json.chat_turn).toBeUndefined();
+  });
+
+  it('an older paired server without the rpc renders limits READ-ONLY, not broken', async () => {
+    // The caller is optional; a server that predates `setTierUsagePolicy`
+    // should still show the limits rather than offering a control that 404s.
+    const host = makeFakeElement('div');
+    const mount = mountSellerPage({
+      host: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      initialSubpage: 'tiers',
+      initialItemId: 'tier-stripe',
+      runGetOverview: async () => overview({ tiers: [stripeTier()] }),
+    });
+    await mount.whenLoaded();
+    expect(findByAttr(host, SELLER_TIER_USAGE_FORM_ATTR)).toBeNull();
+    expect(textOf(host)).toContain('no limit');
   });
 });

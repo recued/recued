@@ -68,6 +68,28 @@ describe('ICONS registry', () => {
     }
   });
 
+  it('keeps both Recued marks on the canonical teal identity', () => {
+    for (const name of ['action', 'logo'] as const) {
+      expect(ICONS[name]).toContain('#0e7490');
+      expect(ICONS[name]).not.toMatch(/paprika|tray|open R path|#c1440e/i);
+    }
+  });
+
+  // The Recued mark is a deliberate placeholder, but every byte of these
+  // strings is inlined into shipped markup and into the Chrome Web Store
+  // package — so the placeholder's INTERNAL STATUS must never travel with it.
+  // Assert the absence of status wording rather than the presence of a
+  // particular description: pinning the prose (an earlier version of this test
+  // asserted `toContain('three descending queue lines')`) makes the placeholder
+  // sticky and fails the moment someone lands the real artwork, which is the
+  // one change this file should never obstruct.
+  it('never ships internal status wording in any icon', () => {
+    const LEAKS = /\b(temporary|temp|placeholder|draft|stub|provisional|TODO|FIXME|WIP|internal only|do not ship)\b/i;
+    for (const [name, svg] of Object.entries(ICONS)) {
+      expect(svg, `${name} leaks internal status wording`).not.toMatch(LEAKS);
+    }
+  });
+
   it('ICONS is frozen', () => {
     expect(Object.isFrozen(ICONS)).toBe(true);
   });

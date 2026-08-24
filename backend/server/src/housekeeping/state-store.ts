@@ -64,6 +64,15 @@ export interface HousekeepingStateStore {
   /** Drop a task's row entirely. Called on task deregistration so
    *  stale state doesn't accumulate. */
   clear(task_id: string): void;
+  /** R13 T1-Q1 — read the persisted whole-cycle clock (the moment the
+   *  last idle cycle finished). `null` iff no cycle has ever completed
+   *  on this server. The scheduler seeds its in-memory clock from this
+   *  at construction so a restart honours `cycle_interval_minutes`
+   *  instead of firing on the first idle probe. */
+  getCycleClock(): number | null;
+  /** R13 T1-Q1 — persist the whole-cycle clock. Called once per
+   *  completed cycle. Singleton row — overwrites the prior value. */
+  setCycleClock(ts: number): void;
 }
 
 interface Row {
@@ -145,6 +154,15 @@ export const createHousekeepingStateStore = (db: Database.Database): Housekeepin
       AND last_status = 'complete'
   `);
 
+  const getCycleClockStmt = db.prepare(
+    `SELECT last_cycle_at FROM housekeeping_cycle_clock WHERE id = 'singleton'`,
+  );
+  const setCycleClockStmt = db.prepare(`
+    INSERT INTO housekeeping_cycle_clock (id, last_cycle_at)
+    VALUES ('singleton', ?)
+    ON CONFLICT(id) DO UPDATE SET last_cycle_at = excluded.last_cycle_at
+  `);
+
   return {
     get(task_id) {
       const row = getStmt.get(task_id) as Row | undefined;
@@ -187,6 +205,13 @@ export const createHousekeepingStateStore = (db: Database.Database): Housekeepin
     },
     clear(task_id) {
       deleteStmt.run(task_id);
+    },
+    getCycleClock() {
+      const row = getCycleClockStmt.get() as { last_cycle_at: number } | undefined;
+      return row?.last_cycle_at ?? null;
+    },
+    setCycleClock(ts) {
+      setCycleClockStmt.run(ts);
     },
   };
 };

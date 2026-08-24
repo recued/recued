@@ -28,8 +28,10 @@ import { createBridgeDomAdapter } from './bridges/dom-adapter.js';
 import {
   executeLLM, createDefaultRegistry, createQuotaTracker,
   executeEmbedding, createDefaultEmbeddingsRegistry, isEmbeddingsManifest, LLMError,
-  type ContentPart, type LLMConfig, type QuotaTracker,
+  type ContentPart, type LLMConfig, type QuotaTracker, type TokenUsage,
 } from '@recued/llm';
+import { tokenUsageToReport } from './chat-token-usage.js';
+import type { RunTokenUsageSink } from './run-token-usage.js';
 import { isBatchCapableAISlug, isTempFileRef } from '@recued/contracts';
 import type { ChunkedUploadAuditInfo, ConnectionKind, ExecutionSource, GatewayCallAudit, TempFileRef, WebChatTab } from '@recued/contracts';
 import type { CacheStore } from '@recued/cache';
@@ -89,6 +91,16 @@ export interface ServerExecutorConfig {
   checkTokenBudget?: (expectedTokens: number) => boolean;
   /** Token usage reporter. Called after each LLM call. */
   onTokenUsage?: (tokens: number) => void;
+  /** D-250 § D — run-scoped usage accumulator behind `AuditEntry.total_usage`.
+   *
+   *  ⛔ SEPARATE FROM `onTokenUsage`, AND THE SPLIT IS THE POINT. That hook
+   *  feeds `llm_config`'s daily counter, which exists to answer a hot-path GATE
+   *  question (`isOverBudget`) and therefore collapses every call to one
+   *  scalar. This one retains the full report per run so the anchor can carry
+   *  it. Two jobs, two shapes — fusing them would force the gate to pay for
+   *  attribution it never reads, or the anchor to accept a total it cannot
+   *  attribute. Both are called for the same provider result. */
+  runTokenUsage?: RunTokenUsageSink;
   /** Optional cache store. When set, createBoundExecutor wraps with
    *  withIngredientCache so HTTP/AI/warehouse reads memoize under the
    *  canonical cacheKey format. Omit for tests or ephemeral servers. */
@@ -539,10 +551,24 @@ const createLLMAdapter = (
   reportUsage?: (tokens: number) => void,
   fileRead?: FileReadFn,
   resolveLlmConfig?: () => LLMConfig | undefined,
+  runTokenUsage?: RunTokenUsageSink,
 ): Adapter => {
   const adapters = createDefaultRegistry();
   const embeddingsAdapters = createDefaultEmbeddingsRegistry();
   return async (resolved) => {
+    // D-250 § D — ONE sink for both consumers of a provider result, so a future
+    // call path cannot wire the budget counter and forget the anchor (or the
+    // reverse). The two branches are independent: either may be unwired.
+    // ⚠ `run_id` comes off `stepMeta`, which `prefetch.ts` / `step-runner.ts`
+    // populate from `ctx.run_id`. A dispatcher that supplies no run id records
+    // nothing — the sink drops it rather than bucketing it under a shared key.
+    const emitUsage = (usage: TokenUsage): void => {
+      reportUsage?.(usage.total_tokens);
+      const run_id = resolved.stepMeta?.run_id;
+      if (runTokenUsage !== undefined && run_id !== undefined) {
+        runTokenUsage.record(run_id, tokenUsageToReport(usage));
+      }
+    };
     // Budget enforcement
     if (checkBudget) {
       const hint = (resolved.input['llm.model_hint'] as string) ?? 'quality';
@@ -578,9 +604,7 @@ const createLLMAdapter = (
         config,
         adapters: embeddingsAdapters,
         quota,
-        onTokenUsage: reportUsage
-          ? (usage) => reportUsage(usage.total_tokens)
-          : undefined,
+        onTokenUsage: emitUsage,
       });
     }
     // D-172 P5 / N.8 — when an ai-* `llm.data` is a `data.file` (CAS) ref and
@@ -601,9 +625,7 @@ const createLLMAdapter = (
       quota,
       tabProbe,
       webChatSupported,
-      onTokenUsage: reportUsage
-        ? (usage) => reportUsage(usage.total_tokens)
-        : undefined,
+      onTokenUsage: emitUsage,
     });
   };
 };
@@ -653,6 +675,7 @@ export const createServerExecutor = (
       config.onTokenUsage,
       config.fileRead,
       config.resolveLlmConfig,
+      config.runTokenUsage,
     ),
     chat: config.wsServer ? createChatDelegationAdapter(config.wsServer) : undefined,
     // D-169 P0 follow-on — DOM-ingredient runner consumer. Materialises
@@ -779,6 +802,7 @@ export const createBoundExecutor = (
       config.onTokenUsage,
       config.fileRead,
       config.resolveLlmConfig,
+      config.runTokenUsage,
     ),
     chat: config.wsServer ? createChatDelegationAdapter(config.wsServer) : undefined,
     // D-169 P0 follow-on — DOM-ingredient runner consumer. Materialises

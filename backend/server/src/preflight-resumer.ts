@@ -539,6 +539,32 @@ export const createPreflightResumer = (
           && anchor.granted_by_recipe.length > 0
           ? { granted_by_recipe: anchor.granted_by_recipe }
           : {}),
+        // ⛔⛔ D-232 § 20.9 — CARRY THE EXCHANGE REF ACROSS THE PAUSE, FOR THE
+        // SAME REASON AS THE LINE ABOVE AND WITH THE SAME FAILURE SHAPE: the
+        // loss happens AFTER the owner approved.
+        //
+        // A fire's carrier learns its ref ONLY from `internal.exchange_ref` —
+        // `requestExchangeRef`'s other source is `config.exchange_ref`, and a
+        // carrier's config is `{ ingredient_slug, input }` with the ref nested
+        // inside `input.args`, so case 2 never matches for it. The fire passes
+        // the ref on the FIRST dispatch; a `write`-risk send is floored to `ask`
+        // and pauses there; and the resume re-entered without it. The resumed
+        // run reuses the same `run_id`, so the row is rewritten — with no ref.
+        //
+        // 🔑 THE CONSEQUENCE IS THE ONE THIS WHOLE FEATURE EXISTS TO PREVENT:
+        // the crossing becomes unfindable. § 23 derives delivery status from the
+        // runs filed under a ref, so an approved-and-delivered answer reads
+        // `awaiting` forever, and § 24's sweep — which counts carrier attempts
+        // from that same trail — cannot see that anything was ever sent. An
+        // owner who approved the send is told nothing happened.
+        //
+        // ⚠ Anchor-sourced, like `granted_by_recipe`: the host wrote this row,
+        // so the value never originates from caller input, and re-filing under
+        // the SAME ref is what makes the resume an attempt rather than a new
+        // exchange.
+        ...(typeof anchor.exchange_ref === 'string' && anchor.exchange_ref.length > 0
+          ? { exchange_ref: anchor.exchange_ref }
+          : {}),
         resume_from: {
           gated_step_id: checkpoint.gated_step_id!,
           step_state: checkpoint.step_state,

@@ -170,7 +170,6 @@ const seedAnnotation = async (
     value,
     authored_by_recipe_id: recipe_id,
     source_record_hash: 'src-hash',
-    recipe_hash: 'rec-hash',
   });
   return ann._id;
 };

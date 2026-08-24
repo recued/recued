@@ -951,7 +951,7 @@ describe('D-174 — bootstrapApprovalsRoute: deep queue', () => {
     route.dispose();
   });
 
-  it('R20 — merges gate + ask cards into ONE list, newest-first (no sections)', async () => {
+  it('R20 — merges gate + ask cards into ONE list, OLDEST-first (no sections)', async () => {
     const { root, route } = mountFor({
       runApprovalList: vi.fn(async () => ({
         approvals: [
@@ -978,9 +978,16 @@ describe('D-174 — bootstrapApprovalsRoute: deep queue', () => {
       el.children.forEach(walk);
     };
     walk(listEl);
-    // Newest-first by created_at, interleaved across kinds — gates + asks in
+    // ⛔ OLDEST-first by created_at, interleaved across kinds — gates + asks in
     // ONE list, not two sections.
-    expect(order).toEqual(['ap-new', 'a-new', 'a-old', 'ap-old']);
+    //
+    // This assertion was `['ap-new', 'a-new', 'a-old', 'ap-old']` until
+    // 2026-08-20. `#approvals` is a WORK QUEUE, and newest-first put the
+    // longest-waiting decision at the BOTTOM: the further behind you fell, the
+    // harder the thing you most needed to answer was to reach. The interleaving
+    // across kinds is the part that has not changed and is still the point —
+    // a gate, an ask and a plan are all just "something waiting on you".
+    expect(order).toEqual(['ap-old', 'a-old', 'a-new', 'ap-new']);
 
     const summary = firstByAttr(root, APPROVALS_ROUTE_HEADING_ATTR);
     expect(summary?.textContent).toBe('Approvals');
@@ -1500,7 +1507,7 @@ describe('R20 — chat plan-approvals in #approvals', () => {
     route.dispose();
   });
 
-  it('interleaves plans with gates + asks newest-first in ONE list', async () => {
+  it('interleaves plans with gates + asks OLDEST-first in ONE list', async () => {
     const chatPlans = makeFakeChatPlans([plan('pl-mid', { proposed_at: 250 })]);
     const { root, route } = mountFor({
       runApprovalList: vi.fn(async () => ({
@@ -1527,7 +1534,10 @@ describe('R20 — chat plan-approvals in #approvals', () => {
     };
     walk(listEl);
     // 400 (gate) · 250 (plan) · 100 (ask) — interleaved across all three kinds.
-    expect(order).toEqual(['ap-new', 'pl-mid', 'a-old']);
+    // ⛔ OLDEST-first (was `['ap-new', 'pl-mid', 'a-old']` until 2026-08-20).
+    // The plan still interleaves BETWEEN the gate and the ask by timestamp,
+    // which is what this test is actually for — only the direction moved.
+    expect(order).toEqual(['a-old', 'pl-mid', 'ap-new']);
 
     route.dispose();
   });

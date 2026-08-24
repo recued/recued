@@ -26,6 +26,10 @@ import {
   type SellerManualTierBulkAdjustRequest,
   type SellerManualTierBulkAdjustResponse,
   type SellerManualTierUpsertRequest,
+  type SellerTierUsagePolicyRequest,
+  type SellerTierUsagePolicyResponse,
+  SELLER_USAGE_KINDS,
+  type SellerUsageKind,
   type SellerManualTierUpsertResponse,
   type SellerCreatePassTierRequest,
   type SellerCreatePassTierResponse,
@@ -75,6 +79,10 @@ export type SellerMailListCaller = () => Promise<{
 export type SellerSettingsUpdateCaller = (
   request: SellerSettingsUpdateRequest,
 ) => Promise<SellerSettingsUpdateResponse>;
+export type SellerTierUsagePolicyCaller = (
+  request: SellerTierUsagePolicyRequest,
+) => Promise<SellerTierUsagePolicyResponse>;
+
 export type SellerManualTierUpsertCaller = (
   request: SellerManualTierUpsertRequest,
 ) => Promise<SellerManualTierUpsertResponse>;
@@ -249,6 +257,9 @@ export interface MountSellerPageOptions {
   runListMailInstances?: SellerMailListCaller;
   runUpdateSellerSettings?: SellerSettingsUpdateCaller;
   runUpsertManualTier?: SellerManualTierUpsertCaller;
+  /** D-250 § D — set usage limits on ANY tier. Optional so an older paired
+   *  server simply renders the limits read-only instead of erroring. */
+  runSetTierUsagePolicy?: SellerTierUsagePolicyCaller;
   runCreatePassTier?: SellerCreatePassTierCaller;
   runIssueManualCustomer?: SellerManualCustomerIssueCaller;
   runExtendManualCustomer?: SellerManualCustomerExtendCaller;
@@ -346,6 +357,14 @@ export const SELLER_LLM_GATEWAY_ACK_SUBMIT_ATTR =
 export const SELLER_LLM_GATEWAY_ACK_STATUS_ATTR =
   'data-recued-seller-llm-gateway-ack-status';
 export const SELLER_ERROR_ATTR = 'data-recued-seller-error';
+/** D-250 § D — the per-tier usage-limit form. Distinct from the manual-tier
+ *  form because it reaches EVERY tier, including Stripe-minted ones that
+ *  `upsertManualTier` refuses. */
+export const SELLER_TIER_USAGE_FORM_ATTR = 'data-recued-seller-tier-usage-form';
+export const SELLER_TIER_USAGE_FIELD_ATTR = 'data-recued-seller-tier-usage-field';
+export const SELLER_TIER_USAGE_SUBMIT_ATTR = 'data-recued-seller-tier-usage-submit';
+export const SELLER_TIER_USAGE_STATUS_ATTR = 'data-recued-seller-tier-usage-status';
+
 export const SELLER_TIER_FORM_ATTR = 'data-recued-seller-tier-form';
 export const SELLER_TIER_FORM_FIELD_ATTR = 'data-recued-seller-tier-form-field';
 export const SELLER_TIER_FORM_SUBMIT_ATTR = 'data-recued-seller-tier-form-submit';
@@ -481,6 +500,39 @@ const titleCase = (value: string): string =>
     .split('_')
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ');
+
+/** D-250 § D — render a tier's usage policy as limits, naming the unlimited
+ *  case out loud.
+ *
+ *  ⛔ `shortJson({})` RENDERED "None", AND THAT IS THE BUG THIS REPLACES. A
+ *  Stripe-minted tier ships `usage_policy_json: {}`, an absent policy means
+ *  UNLIMITED, and "None" reads far more naturally as "no access allowed" than
+ *  as "no ceiling" — so the single riskiest state on the page was described by
+ *  a word that suggests its opposite. */
+const formatUsagePolicy = (policy: Readonly<Record<string, unknown>>): string => {
+  const parts: string[] = [];
+  for (const kind of SELLER_USAGE_KINDS) {
+    const raw = policy[kind];
+    const label = kind === 'chat_turn' ? 'Chat turns' : 'Tool calls';
+    if (raw === undefined || raw === null || typeof raw !== 'object') {
+      parts.push(`${label}: no limit`);
+      continue;
+    }
+    const obj = raw as Record<string, unknown>;
+    const limit = obj.period_limit;
+    const per = obj.period_granularity === 'day' ? 'day' : 'month';
+    const rate = obj.rate_limit_per_minute;
+    const limitText = typeof limit === 'number'
+      ? `${limit}/${per}`
+      : 'no limit';
+    parts.push(
+      typeof rate === 'number'
+        ? `${label}: ${limitText}, ${rate}/min`
+        : `${label}: ${limitText}`,
+    );
+  }
+  return parts.join(' · ');
+};
 
 const shortJson = (value: unknown): string => {
   if (value === null || value === undefined) return 'Not set';
@@ -2113,11 +2165,170 @@ const renderTiers = (
         value: (tier) => formatDuration(tier.pass_duration_seconds),
       },
       {
-        label: 'Usage policy',
-        value: (tier) => shortJson(tier.usage_policy_json),
+        // D-250 § D — limits, not raw JSON, and "no limit" said out loud.
+        label: 'Usage limits',
+        value: (tier) => formatUsagePolicy(tier.usage_policy_json),
       },
     ],
   });
+};
+
+
+/** D-250 § D — set usage limits on ONE tier, whatever minted it.
+ *
+ *  ⛔ WHY IT IS NOT THE MANUAL-TIER FORM. That form posts `upsertManualTier`,
+ *  which stamps `lifecycle_source: 'manual'`, and the store refuses when a
+ *  stored tier's source differs — so it conflicts on every Stripe-synced tier.
+ *  Those are exactly the tiers minted with an empty policy, i.e. unlimited, so
+ *  the tiers that most needed a limit were the ones no form could reach.
+ *
+ *  ⛔ STRUCTURED FIELDS, NOT THE RAW JSON TEXTAREA the manual form uses. An
+ *  absent kind is UNLIMITED, so a free-text policy makes the unsafe state the
+ *  easiest thing to type — and the placeholder says "No limit" rather than
+ *  leaving an empty box to interpret.
+ *
+ *  ⚠ Blank means no limit, deliberately and visibly: there is no way to express
+ *  "unlimited" other than clearing the field, and the label says so. */
+const renderTierUsagePolicyForm = (
+  doc: Document,
+  parent: HTMLElement,
+  tier: SellerTier,
+  runSetTierUsagePolicy: SellerTierUsagePolicyCaller,
+  formMessage: SellerFormMessage | null,
+  applyResult: (
+    response: SellerTierUsagePolicyResponse,
+    message: SellerFormMessage,
+  ) => void,
+): void => {
+  const section = append(
+    doc,
+    parent,
+    'details',
+    'seller-section seller-action-disclosure',
+  );
+  section.setAttribute(SELLER_TIER_USAGE_FORM_ATTR, tier.tier_id);
+  appendText(doc, section, 'summary', 'Usage limits');
+  appendText(
+    doc,
+    section,
+    'p',
+    'Leave a field blank for no limit. Limits are checked before each call and '
+      + 'a customer is refused once the period allowance is used up; token cost '
+      + 'is recorded either way, so an unlimited tier still reports what it spent.',
+    'seller-form-intro',
+  );
+
+  const inputs = new Map<string, HTMLInputElement>();
+  const fieldFor = (
+    host: HTMLElement,
+    kind: SellerUsageKind,
+    name: 'period_limit' | 'rate_limit_per_minute',
+    label: string,
+    value: unknown,
+  ): void => {
+    const wrap = append(doc, host, 'label', 'seller-form-field');
+    appendText(doc, wrap, 'span', label);
+    const input = doc.createElement('input');
+    input.type = 'number';
+    input.min = '0';
+    input.placeholder = 'No limit';
+    input.value = typeof value === 'number' ? String(value) : '';
+    input.setAttribute(SELLER_TIER_USAGE_FIELD_ATTR, `${kind}.${name}`);
+    wrap.appendChild(input);
+    inputs.set(`${kind}.${name}`, input);
+  };
+
+  const granularities = new Map<SellerUsageKind, HTMLSelectElement>();
+  for (const kind of SELLER_USAGE_KINDS) {
+    const raw = tier.usage_policy_json[kind];
+    const obj = raw !== null && typeof raw === 'object'
+      ? raw as Record<string, unknown>
+      : {};
+    const group = append(doc, section, 'div', 'seller-tier-form-grid');
+    appendText(
+      doc,
+      group,
+      'h4',
+      kind === 'chat_turn' ? 'Chat turns' : 'Tool calls',
+        );
+    fieldFor(group, kind, 'period_limit', 'Allowance per period', obj.period_limit);
+    const periodWrap = append(doc, group, 'label', 'seller-form-field');
+    appendText(doc, periodWrap, 'span', 'Period');
+    const period = doc.createElement('select');
+    for (const option of ['month', 'day']) {
+      const el = doc.createElement('option');
+      el.value = option;
+      el.textContent = option === 'month' ? 'Per month' : 'Per day';
+      if (obj.period_granularity === option) el.selected = true;
+      period.appendChild(el);
+    }
+    period.setAttribute(SELLER_TIER_USAGE_FIELD_ATTR, `${kind}.period_granularity`);
+    periodWrap.appendChild(period);
+    granularities.set(kind, period);
+    fieldFor(group, kind, 'rate_limit_per_minute', 'Rate limit per minute', obj.rate_limit_per_minute);
+  }
+
+  const footer = append(doc, section, 'div', 'seller-form-footer');
+  const status = append(doc, footer, 'div', 'seller-form-status');
+  status.setAttribute(SELLER_TIER_USAGE_STATUS_ATTR, '');
+  if (formMessage !== null) {
+    status.textContent = formMessage.text;
+    status.setAttribute('data-kind', formMessage.kind);
+    if (formMessage.kind === 'error') status.setAttribute('role', 'alert');
+  }
+
+  let pending = false;
+  const submit = appendButton(
+    doc,
+    footer,
+    'Save limits',
+    () => {
+      if (pending) return;
+      pending = true;
+      submit.disabled = true;
+      status.removeAttribute('role');
+      status.removeAttribute('data-kind');
+      status.textContent = 'Saving limits.';
+      const build = (): SellerTierUsagePolicyRequest => {
+        const policy: Record<string, unknown> = {};
+        for (const kind of SELLER_USAGE_KINDS) {
+          const limit = inputs.get(`${kind}.period_limit`)?.value.trim() ?? '';
+          const rate = inputs.get(`${kind}.rate_limit_per_minute`)?.value.trim() ?? '';
+          // ⚠ BOTH BLANK ⇒ THE KIND IS OMITTED ENTIRELY, which is what
+          // "unlimited" IS on the server. Writing `{period_limit: null}` would
+          // mean the same thing but leave a shape implying someone configured
+          // it; omission keeps "never set" and "cleared" identical, because to
+          // the gate they are.
+          if (limit === '' && rate === '') continue;
+          const entry: Record<string, unknown> = {
+            period_granularity: granularities.get(kind)?.value === 'day'
+              ? 'day'
+              : 'month',
+          };
+          if (limit !== '') entry.period_limit = Number(limit);
+          if (rate !== '') entry.rate_limit_per_minute = Number(rate);
+          policy[kind] = entry;
+        }
+        return { tier_id: tier.tier_id, usage_policy_json: policy };
+      };
+      void Promise.resolve()
+        .then(build)
+        .then((payload) => runSetTierUsagePolicy(payload))
+        .then((response) => {
+          applyResult(response, { kind: 'success', text: 'Usage limits saved.' });
+        })
+        .catch((err) => {
+          status.setAttribute('role', 'alert');
+          status.setAttribute('data-kind', 'error');
+          status.textContent = humanizeRpcError(err);
+        })
+        .finally(() => {
+          pending = false;
+          submit.disabled = false;
+        });
+    },
+    [[SELLER_TIER_USAGE_SUBMIT_ATTR, tier.tier_id]],
+  );
 };
 
 const renderManualTierBulkAdjustForm = (
@@ -3585,6 +3796,10 @@ export const mountSellerPage = (
   let offerStateFormMessage: SellerFormMessage | null = null;
   let settingsFormMessage: SellerFormMessage | null = null;
   let tierFormMessage: SellerFormMessage | null = null;
+  // D-250 § D — its own message slot: a usage-limit save and a tier save are
+  // separate forms on the same page, and sharing one status line would make a
+  // limits error read as if the tier edit above it had failed.
+  let tierUsageFormMessage: SellerFormMessage | null = null;
   let passTierFormMessage: SellerFormMessage | null = null;
   let passTierCreatedTemplateId: string | null = null;
   let tierBulkAdjustFormMessage: SellerFormMessage | null = null;
@@ -3854,6 +4069,17 @@ export const mountSellerPage = (
           error = null;
           render();
         };
+        const applyTierUsageResult = (
+          response: SellerTierUsagePolicyResponse,
+          message: SellerFormMessage,
+        ): void => {
+          if (disposed) return;
+          tierUsageFormMessage = message;
+          overview = response.overview;
+          phase = 'ready';
+          error = null;
+          render();
+        };
         const applyBulkResult = (
           response: SellerManualTierBulkAdjustResponse,
           message: SellerFormMessage,
@@ -3875,6 +4101,20 @@ export const mountSellerPage = (
           }
           const detail = appendCollectionHost('tiers', selectedItemId);
           renderTiers(doc, detail, [tier]);
+          // D-250 § D — ⛔ NOT GATED ON `lifecycle_source`, unlike every form
+          // below it. A Stripe-synced tier is minted with an empty policy, i.e.
+          // UNLIMITED, and the manual-tier form cannot touch it — so gating this
+          // one the same way would leave exactly the unlimited tiers unreachable.
+          if (opts.runSetTierUsagePolicy !== undefined) {
+            renderTierUsagePolicyForm(
+              doc,
+              detail,
+              tier,
+              opts.runSetTierUsagePolicy,
+              tierUsageFormMessage,
+              applyTierUsageResult,
+            );
+          }
           if (
             tier.lifecycle_source === 'manual'
             && opts.runUpsertManualTier !== undefined

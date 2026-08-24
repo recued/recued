@@ -110,6 +110,34 @@ export const exposedToolNamesForPeerContract = (
       if (key.startsWith('recued_')) out.add(key);
       const staticTool = mcpToolForKernelOp(key);
       if (staticTool !== undefined) out.add(staticTool);
+      // ⛔⛔ THE THIRD KIND OF KEY, AND THE HEADER ABOVE CALLS AXIS 2 COMPLETE
+      // WITHOUT IT. A token grants three shapes, not two: `recued_*` static
+      // verbs, kernel op ids — and TIER-2 RECIPES, named `<publisher>/<recipe>`,
+      // which are neither. A peer calls one by exactly that string
+      // (`tools/call` → `recued-core/peer-apply-project-update`), so the grant
+      // key IS the wire name and no join is needed; it was simply never added.
+      //
+      // 🔑 THE HEADER'S OWN SENTENCE IS THE PROOF: *"Read only axis 1 and every
+      // native verb we expose reflects back unfiltered."* Exactly that, for
+      // recipes — and recipes are what a Recued↔Recued relationship is MADE of,
+      // so the miss lands hardest on the case the loopback diff exists for.
+      //
+      // ⛔ AND IT DOES NOT STOP AT A DUPLICATE OP. The reflected recipe mints
+      // into our own generated pack, so the tool name is now bound by TWO
+      // installed catalogs — the generated one and the pack that actually
+      // declares it — and `resolveExchangeFireTarget` refuses an ambiguous
+      // `deliver_to` rather than letting install order decide who answers. The
+      // receiver's answer then never leaves, which reads as "peer exchange does
+      // not work" and is really two correct rules composing: mint the peer's
+      // tools, and never guess between two bindings.
+      //
+      // ⚠ Shape-tested the way every other reader of a Tier-2 tool name tests
+      // it — a slash that is neither first nor last — rather than by looking the
+      // recipe up. This module observes what was granted; a registry read here
+      // would make a stale/uninstalled recipe silently stop being subtracted,
+      // which is the direction that re-opens the defect.
+      const slash = key.indexOf('/');
+      if (slash > 0 && slash !== key.length - 1) out.add(key);
     }
   }
 

@@ -232,6 +232,10 @@ describe('composeIngressRpcContext', () => {
       executeRecuedRequestPersist: storage.executeRecuedRequestPersist,
       llmConfig: app.llmConfig,
       llmQuota: app.llmQuota,
+      // D-250 § D — Compose's propose call was the last provider call reaching
+      // NEITHER a counter nor a record; it now advances the owner's daily
+      // counter. This assertion is exhaustive, so the sink is named here.
+      addOwnerTokenUsage: expect.any(Function),
       llmAdapterRegistry: app.llmAdapterRegistry,
       emptyTabProbe: app.emptyTabProbe,
       hostnameRegistryStore: storage.hostnameRegistryStore,

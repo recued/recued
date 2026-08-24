@@ -200,6 +200,7 @@ import {
   type SellerManualCustomerSwapTierCaller,
   type SellerManualTierBulkAdjustCaller,
   type SellerManualTierUpsertCaller,
+  type SellerTierUsagePolicyCaller,
   type SellerCreatePassTierCaller,
   type SellerOfferStateTransitionCaller,
   type SellerOverviewCaller,
@@ -631,6 +632,8 @@ export interface BootstrapSettingsRouteOptions {
   /** D-196 S2 — owner-authored manual tier create/update. Optional so older
    *  paired servers can still mount the Seller section read-only. */
   sellerManualTierUpsertCaller?: SellerManualTierUpsertCaller;
+  /** D-250 § D — set usage limits on any tier, including Stripe-synced ones. */
+  sellerTierUsagePolicyCaller?: SellerTierUsagePolicyCaller;
   sellerCreatePassTierCaller?: SellerCreatePassTierCaller;
   /** D-196 S2 — owner-authored manual customer issue. Optional so older
    *  paired servers can still mount the Seller section without customer writes. */
@@ -1697,6 +1700,9 @@ export const bootstrapSettingsRoute = (
         : {}),
       ...(opts.sellerSettingsUpdateCaller !== undefined
         ? { runUpdateSellerSettings: opts.sellerSettingsUpdateCaller }
+        : {}),
+      ...(opts.sellerTierUsagePolicyCaller !== undefined
+        ? { runSetTierUsagePolicy: opts.sellerTierUsagePolicyCaller }
         : {}),
       ...(opts.sellerManualTierUpsertCaller !== undefined
         ? { runUpsertManualTier: opts.sellerManualTierUpsertCaller }

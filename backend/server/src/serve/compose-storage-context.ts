@@ -35,6 +35,11 @@ import {
 } from '../audit-retention.js';
 import { createSigningAuditLog } from '../audit/signing.js';
 import { createDrainableAuditLog } from '../audit/drainable.js';
+import {
+  consumeDroppedWritesMarker,
+  droppedWritesMarkerPath,
+  writeDroppedWritesMarker,
+} from '../audit/dropped-writes-marker.js';
 import { createApprovalStore, type ApprovalStore } from '../approval-handler.js';
 import { composeRecuedPlanStore } from '../composition/bin/wire-recued-plan-store.js';
 import type { FileStack } from '../collections/file/compose.js';
@@ -87,6 +92,7 @@ import {
 } from '../memory-schema.js';
 import { backfillRecipeInsights } from '../memory-backfill.js';
 import { createPairingManager, type PairingManager } from '../pairing.js';
+import { createPairingStateStore } from '../pairing-state-store.js';
 import type { PairedInstancesStore } from '../paired-instances-store.js';
 import type { RecoveryKeyCheckStore } from '../recovery-key-store.js';
 import { createRecipeStore, type RecipeStore } from '../recipe-store.js';
@@ -382,7 +388,12 @@ export const composeStorageContext = async (
 
   db.exec(`CREATE TABLE IF NOT EXISTS server_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
   const realmRow = db.prepare(`SELECT value FROM server_config WHERE key = 'realm_token'`).get() as { value: string } | undefined;
-  const pairing = createPairingManager({ realmToken: realmRow?.value });
+  // Shared with `recued pair` through `server_config`, so a refresh from the
+  // CLI reaches THIS manager — the one /auth/pair actually verifies against.
+  const pairing = createPairingManager({
+    realmToken: realmRow?.value,
+    store: createPairingStateStore(db),
+  });
   if (!realmRow) {
     db.prepare(`INSERT OR REPLACE INTO server_config (key, value) VALUES ('realm_token', ?)`).run(pairing.getRealmToken());
   }
@@ -429,8 +440,38 @@ export const composeStorageContext = async (
       return signingIdentityRef.identity.serverIdentityKey();
     },
   });
-  const drainableAuditLog = createDrainableAuditLog(signingAuditLog);
+  // R13 T4-6.1 — writes refused after drain are counted and persisted
+  // out-of-band (the audit store is the thing that can no longer record
+  // them); the next boot consumes the marker and surfaces it as one
+  // reserve-class `audit_writes_dropped` activity row below.
+  const auditDropMarkerPath = droppedWritesMarkerPath(dbPath);
+  const drainableAuditLog = createDrainableAuditLog(
+    signingAuditLog,
+    auditDropMarkerPath
+      ? {
+          onDroppedWrite: (total) =>
+            writeDroppedWritesMarker(auditDropMarkerPath, {
+              dropped: total,
+              at: Date.now(),
+            }),
+        }
+      : {},
+  );
   const auditLog: AuditLogStore = drainableAuditLog.auditLog;
+  if (auditDropMarkerPath) {
+    const marker = consumeDroppedWritesMarker(auditDropMarkerPath);
+    if (marker && marker.dropped > 0) {
+      void auditLog
+        .logActivity({
+          activity_id: `audit.dropped-writes-${Date.now()}`,
+          timestamp: Date.now(),
+          action: 'audit_writes_dropped',
+          target: 'system',
+          detail: JSON.stringify({ dropped: marker.dropped, dropped_at: marker.at }),
+        })
+        .catch(() => { /* surfacing is best-effort; the marker is already consumed */ });
+    }
+  }
   // D-221 — close the late binding opened at the records-store construction
   // above. Bound to the DRAINABLE log so an import row emitted late in a
   // shutdown still drains with everything else.

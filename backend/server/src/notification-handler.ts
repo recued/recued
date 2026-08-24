@@ -66,7 +66,47 @@ export interface NotificationSendArgs {
   text: string;
   title?: string;
   link_url?: string;
+  /** Which recipe asked for this — rendered as a trailing attribution line.
+   *
+   *  ⛔ ENGINE-OWNED, NEVER AUTHORED. The kernel adapter sets this from
+   *  `call.stepMeta.recipe_id`, which the engine stamps; it is deliberately
+   *  NOT read from the step's own `args`, because an attribution a recipe can
+   *  write is an attribution a recipe can forge — and a forgeable "from" line
+   *  is worse than none, since it invites trust it cannot earn. Same posture
+   *  as `RECIPE_KEYED_WATCHER_SLUGS`, where the adapter overwrites
+   *  `args.recipe_id` for exactly this reason.
+   *
+   *  ⚠ WHY THIS EXISTS AT ALL: until `core.notification.send` was retiered to
+   *  `read` (2026-08-20), every recipe notification was preceded by an approval
+   *  ask, and THAT ask named the sending recipe ("Recipe X wants to run
+   *  core-notification-send"). Removing the gate removed the only thing that
+   *  said who was talking. The gate was the wrong place to carry it — it cost
+   *  the owner a decision to learn a name — but the name itself was worth
+   *  keeping.
+   *
+   *  Absent ⇒ no attribution line, byte-identical to the pre-attribution
+   *  delivery (the rpc surface passes none). */
+  source_recipe_id?: string;
 }
+
+/** Cap on a rendered recipe id, so a pathological slug cannot dominate a
+ *  push notification's preview line. Ids are kebab slugs well under this. */
+const SOURCE_RECIPE_ID_MAX = 64;
+
+/** Append the attribution line to a delivered body.
+ *
+ *  ⚠ Rendered into `text` rather than added as a structured field on purpose:
+ *  `NotificationPayload` reaches four independently-written channel dispatchers
+ *  (slack / telegram / email / in-app), and a new optional field would be
+ *  silently DROPPED by each one until it was taught to render it — the
+ *  enumerating-copier failure this repo has hit before. Folding it into the
+ *  body means every channel carries it the day it ships. */
+const withAttribution = (text: string, source_recipe_id?: string): string => {
+  if (typeof source_recipe_id !== 'string') return text;
+  const id = source_recipe_id.trim();
+  if (id.length === 0) return text;
+  return `${text}\n\n— sent by recipe ${id.slice(0, SOURCE_RECIPE_ID_MAX)}`;
+};
 
 const isChannel = (s: unknown): s is NotificationChannel =>
   typeof s === 'string' && (ALL_NOTIFICATION_CHANNELS as readonly string[]).includes(s);
@@ -104,7 +144,7 @@ export const handleNotificationSend = async (
       try {
         const out = await dispatcher({
           channel,
-          text: args.text,
+          text: withAttribution(args.text, args.source_recipe_id),
           ...(args.title !== undefined ? { title: args.title } : {}),
           ...(args.link_url !== undefined ? { link_url: args.link_url } : {}),
         });
