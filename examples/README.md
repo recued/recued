@@ -198,17 +198,37 @@ back truncated mid-payload at 63,998 characters, from which a lane built a slate
 out of head-and-tail fragments and reported success. Bytes that go to disk
 cannot be silently truncated on the way into a context window.
 
-⚠ **We have not measured that lane, and this document measures everything else.**
-The skill published here routes through `services_invoke` because that is the
-channel our benchmark counts; a lane that fetched over HTTP instead would be
-cheaper, but its cost would no longer be a measurement of the thing the harness
-was built to compare. The author saw the opening and closed it deliberately
-("Never transcribe the CSV to disk yourself"). That constraint is the fixture's,
-not the technique's — so treat the paragraph above as an argument from mechanism,
-not a result. What is measured is the ceiling it removes: a lane that received
-the CSV through a tool result answered from 4.3% of it. What is not measured is
-where a fully script-driven skill lands against the recipe's ~13k tokens.
-Settling that needs a fourth arm, run the same way as the other three.
+So we built that lane and ran it. Same harness, same model, every payload
+curled to disk and parsed by a bundled script:
+
+| lane | tokens | outcome |
+|:---|---:|:---|
+| the recipe | 13,385 | correct: top 15 exact, in order |
+| skill, fetching to disk | **62,110** | 10 of the top 15, wrong order |
+| skill, receiving tool results | 116,834 · 133,836 | no valid answer |
+
+<sub>Two things to hold against that row. The fetch-to-disk skill is the one
+arm here we wrote ourselves, to test this specific idea — the other three were
+authored blind, with no sight of the recipe or the answer key, and that makes
+them better evidence about what a skill author would actually produce. And like
+those three it answered in prose rather than the required JSON, so its 10-of-15
+is scored on the product ids it named.</sub>
+
+**The direction was right and the size was wrong.** Fetching to disk roughly
+halves a skill's bill — real, and worth doing — but it lands at four and a half
+times the recipe, not near it. Taking the data out of the context window does
+not take the agent out of the loop: what is left is the scaffolding, the skill
+text, and every turn re-sending the conversation so far. The 563,182-character
+export is gone from the bill; the agent is not.
+
+And it got the answer wrong, which is the more interesting half. It fetched
+fifty keywords and never thought of `dash-cam` — the one that five of the true
+top-fifteen belong to. Its arithmetic was perfect, because a script did it. Its
+*judgement* had a hole, and a keyword you never think of is a hole nothing
+downstream can see: the run reported no errors and named fifteen plausible
+products. That is the same failure the recipe had before we fixed its prompt.
+Neither shape is immune. The difference is where the judgement lives — one
+prompt you can diff and re-measure, or a transcript you re-read.
 
 What it does not take is the second thing. Look at what that skill has become: a
 program with a natural-language wrapper. The loop is in a script, the parsing is
