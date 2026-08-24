@@ -7,7 +7,7 @@ lives — the records, the routines, the decisions. People and AI both take part
 in it as actors with declared authority, so neither one operates the other, and
 every action crosses a boundary you set in advance.
 
-This repository contains the self-hosted **server** and the **webclient**, plus
+This repository contains the complete self-hosted **server** and the **webclient**, plus
 the workspace packages they are built from.
 
 ## What Recued is not
@@ -25,13 +25,58 @@ the workspace packages they are built from.
 - Open to any AI agent over MCP — Codex, Claude, OpenClaw and the other Claw
   variants, or your own.
 - Mirrors mail, contacts, and CRM records locally, so reads are fast.
+- Best effort, safe & reversible PII alias for all your warehouse data contains [name, email, organization, phone, address], with geo and org relationship preservation for llm to reason over.
 - Encrypts your data at rest; the 24-word recovery key is the only way back in.
 - No third party in the middle, taking a cut of your revenue or piping your
   data.
 - Works with any AI provider, hosted or local.
 - Free to run, with no feature gates.
 
-## What you can run on it, for your life and business
+## `SKILL.md` and recipes
+
+A skill tells a model how to approach something, and the model decides each step
+as it runs. A recipe is the steps — JSON, fixed before the run, executed by the
+server, calling a model only where judgment is actually needed.
+
+They are not rivals. Recued exposes recipes over MCP, so the skill that decides
+*this morning is worth looking at* can hand the work to one. The question is
+only which half of a job belongs in which.
+
+### A worked example
+
+Every Monday morning: pull the past week's rising search terms from Google
+Trends and work out whether there is anything worth selling against them.
+
+The hard step is the first one, and it is not a lookup. Trending searches name
+people, teams and events — `bmw championship payout`, `chapecoense vs são
+paulo`, `hurricanes weather`. None of those is a product. Deciding that a golf
+tournament means gloves and rangefinders, that a storm means battery lanterns,
+and that plenty of terms warrant nothing at all is judgement, and it is the one
+part of this job a model has to do. What follows it is arithmetic: ask the
+catalogue what each keyword sells, look up what those clicks cost to bid on,
+subtract, rank.
+
+As a recipe that is thirty-six steps, two of which call a model — once to turn
+trending terms into product keywords, once to write the buying brief. Everything
+in between is deterministic, and deterministic work does not need a context
+window: the 619KB export, the 110 catalogue fetches and the 1,249 product rows
+they return never enter one. Both model calls are fixed-width by construction,
+so the input side holds near 3,000 tokens whether the model picks 32 keywords or
+58. Point it at a 6MB export and a 10,000-product catalogue and that figure does
+not move.
+
+The same job as a skill is not a strawman — the careful version pushes the loop
+into a bundled script and keeps the catalogue out of the reasoning. But then it
+is a program with a natural-language wrapper, which needs its own credentials,
+retries, rate limits, and a way to run on Tuesday when nobody opens a session. A
+recipe is that program, on a server that already has those.
+
+The full write-up is in **[`docs/examples/`](./docs/examples/README.md)** — the
+recipe itself, the blind-authored skill it is measured against, what is real
+here and what is mocked, and what happened when one sentence of that prompt was
+wrong.
+
+## What you can run on Recued, for your life and business
 
 - Take bookings, appointments, large file drops, and custom intake forms through
   a public reception page.

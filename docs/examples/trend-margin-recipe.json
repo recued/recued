@@ -1,0 +1,333 @@
+{
+  "recipe_id": "trend-margin-scan",
+  "chat_exposed": false,
+  "version": 1,
+  "ttl": 300,
+  "metadata": {
+    "name": "Weekly trend margin scan",
+    "description": "Pull the week's rising search terms, let a model decide which name a sellable product, then compute contribution per product deterministically and rank.",
+    "author": "recued",
+    "supported_platforms": []
+  },
+  "variables": {},
+  "requires": [],
+  "steps": [
+    {
+      "id": "export",
+      "ingredient": "connection-mcp-read",
+      "input": {
+        "connection_kind": "mcp",
+        "connection": "trend-margin-http",
+        "tool": "services_invoke",
+        "args": {
+          "service_route": "trend-margin",
+          "method": "GET",
+          "path": "/trends/us-7d"
+        }
+      }
+    },
+    {
+      "id": "exp_json",
+      "transform": "json_parse",
+      "input": "{{step.export.result.content.0.text}}"
+    },
+    {
+      "id": "rows",
+      "transform": "csv_parse",
+      "input": "{{step.exp_json.csv}}",
+      "has_header": true
+    },
+    {
+      "id": "row_count",
+      "transform": "count",
+      "input": "{{step.rows}}"
+    },
+    {
+      "id": "slate",
+      "transform": "slice",
+      "array": "{{step.rows}}",
+      "start": 0,
+      "end": 50
+    },
+    {
+      "id": "slate_terms",
+      "transform": "map",
+      "array": "{{step.slate}}",
+      "expression": "{{item.Trends}}"
+    },
+    {
+      "id": "vocab",
+      "ingredient": "connection-mcp-read",
+      "input": {
+        "connection_kind": "mcp",
+        "connection": "trend-margin-http",
+        "tool": "services_invoke",
+        "args": {
+          "service_route": "trend-margin",
+          "method": "GET",
+          "path": "/catalog/index"
+        }
+      }
+    },
+    {
+      "id": "vocab_json",
+      "transform": "json_parse",
+      "input": "{{step.vocab.result.content.0.text}}"
+    },
+    {
+      "id": "vocab_rows",
+      "transform": "map",
+      "array": "{{step.vocab_json.keywords}}",
+      "expression": "{{item.product_keyword_slug}}"
+    },
+    {
+      "id": "ai_pick",
+      "op": "core.ai.prompt",
+      "args": {
+        "llm.system_prompt": "You are a product sourcing analyst. You are given trending search terms and a closed list of product keyword slugs a catalogue carries. For EACH term, decide which slugs could plausibly be sold against it.\n\nJudge every term on its own merits, independently. A term is unsellable when nothing physical follows from it \u2014 a political story, an election, a crime report, a stock move, an accident. Return an empty array for those, and do not stretch to fill it.\n\nEverything else usually implies several products, not one. A sports fixture implies team merchandise; a weather event implies supplies; a film or a game implies media and tie-ins; a recall implies replacements for the recalled thing; a person trending in the news implies media and merchandise about that person. For those, return every slug from the list that genuinely fits.\n\nNever invent a slug: use only slugs from the supplied list, spelled exactly. Output ONLY a valid JSON object mapping each term to an array of slugs, e.g. {\"some term\": [\"slug-a\",\"slug-b\"], \"another term\": []}.",
+        "llm.prompt": "Trending terms:\n{{step.slate_terms}}\n\nAvailable product keyword slugs:\n{{step.vocab_rows}}",
+        "llm.output_format": "json",
+        "llm.model_hint": "fast"
+      }
+    },
+    {
+      "id": "pick_pairs",
+      "transform": "to_list",
+      "input": "{{step.ai_pick}}"
+    },
+    {
+      "id": "slug_lists",
+      "transform": "pluck",
+      "array": "{{step.pick_pairs}}",
+      "field": "value"
+    },
+    {
+      "id": "slug_flat",
+      "transform": "flatten",
+      "array": "{{step.slug_lists}}"
+    },
+    {
+      "id": "fanout",
+      "transform": "filter",
+      "array": "{{step.vocab_json.keywords}}",
+      "field": "product_keyword_slug",
+      "operator": "in",
+      "value": "{{step.slug_flat}}"
+    },
+    {
+      "id": "fanout_count",
+      "transform": "count",
+      "input": "{{step.fanout}}"
+    },
+    {
+      "id": "catalog",
+      "ingredient": "connection-mcp-read",
+      "foreach": "{{step.fanout}}",
+      "input": {
+        "connection_kind": "mcp",
+        "connection": "trend-margin-http",
+        "tool": "services_invoke",
+        "args": {
+          "service_route": "trend-margin",
+          "method": "GET",
+          "path": "/catalog/{{item.product_keyword_slug}}"
+        }
+      }
+    },
+    {
+      "id": "adcosts",
+      "ingredient": "connection-mcp-read",
+      "foreach": "{{step.fanout}}",
+      "input": {
+        "connection_kind": "mcp",
+        "connection": "trend-margin-http",
+        "tool": "services_invoke",
+        "args": {
+          "service_route": "trend-margin",
+          "method": "GET",
+          "path": "/ad-costs/{{item.product_keyword_slug}}"
+        }
+      }
+    },
+    {
+      "id": "cat_json",
+      "transform": "json_parse",
+      "foreach": "{{step.catalog}}",
+      "input": "{{item.result.result.content.0.text}}"
+    },
+    {
+      "id": "ad_json",
+      "transform": "json_parse",
+      "foreach": "{{step.adcosts}}",
+      "input": "{{item.result.result.content.0.text}}"
+    },
+    {
+      "id": "ad_rows",
+      "transform": "map",
+      "array": "{{step.ad_json}}",
+      "expression": {
+        "product_keyword": "{{item.result.product_keyword}}",
+        "acq": "({{item.result.google_ads.cpc_low_usd}} + {{item.result.google_ads.cpc_high_usd}}) / 2 / {{item.result.conversion_rate_est}}"
+      }
+    },
+    {
+      "id": "product_lists",
+      "transform": "pluck",
+      "array": "{{step.cat_json}}",
+      "field": "result"
+    },
+    {
+      "id": "nested",
+      "transform": "pluck",
+      "array": "{{step.product_lists}}",
+      "field": "products"
+    },
+    {
+      "id": "all_products",
+      "transform": "flatten",
+      "array": "{{step.nested}}"
+    },
+    {
+      "id": "in_stock",
+      "transform": "filter",
+      "array": "{{step.all_products}}",
+      "field": "in_stock",
+      "operator": "equal",
+      "value": true
+    },
+    {
+      "id": "joined",
+      "transform": "enrich_by",
+      "array": "{{step.in_stock}}",
+      "with": "{{step.ad_rows}}",
+      "key": "product_keyword",
+      "with_key": "product_keyword",
+      "fields": {
+        "acq": "acq"
+      }
+    },
+    {
+      "id": "scored",
+      "transform": "map",
+      "array": "{{step.joined}}",
+      "expression": {
+        "product_id": "{{item.product_id}}",
+        "product_keyword": "{{item.product_keyword}}",
+        "monthly_units": "{{item.monthly_units}}",
+        "per_sale_margin_usd": "{{item.price_usd}} - {{item.landed_cost_usd}} - ({{item.price_usd}} * {{item.platform_fee_pct}})",
+        "acquisition_cost_usd": "{{item.acq}}",
+        "contribution_usd": "{{item.price_usd}} - {{item.landed_cost_usd}} - ({{item.price_usd}} * {{item.platform_fee_pct}}) - {{item.acq}}"
+      }
+    },
+    {
+      "id": "c_max",
+      "transform": "max_by",
+      "array": "{{step.scored}}",
+      "field": "contribution_usd"
+    },
+    {
+      "id": "c_min",
+      "transform": "min_by",
+      "array": "{{step.scored}}",
+      "field": "contribution_usd"
+    },
+    {
+      "id": "u_max",
+      "transform": "max_by",
+      "array": "{{step.scored}}",
+      "field": "monthly_units"
+    },
+    {
+      "id": "with_score",
+      "transform": "map",
+      "array": "{{step.scored}}",
+      "expression": {
+        "product_id": "{{item.product_id}}",
+        "product_keyword": "{{item.product_keyword}}",
+        "monthly_units": "{{item.monthly_units}}",
+        "per_sale_margin_usd": "{{item.per_sale_margin_usd}}",
+        "acquisition_cost_usd": "{{item.acquisition_cost_usd}}",
+        "contribution_usd": "{{item.contribution_usd}}",
+        "score": "0.75 * (({{item.contribution_usd}} - {{step.c_min.contribution_usd}}) / ({{step.c_max.contribution_usd}} - {{step.c_min.contribution_usd}})) + 0.25 * ({{item.monthly_units}} / {{step.u_max.monthly_units}})"
+      }
+    },
+    {
+      "id": "by_id",
+      "transform": "sort",
+      "array": "{{step.with_score}}",
+      "field": "product_id",
+      "direction": "asc"
+    },
+    {
+      "id": "ranked",
+      "transform": "sort",
+      "array": "{{step.by_id}}",
+      "field": "score",
+      "direction": "desc"
+    },
+    {
+      "id": "top",
+      "transform": "slice",
+      "array": "{{step.ranked}}",
+      "start": 0,
+      "end": 15
+    },
+    {
+      "id": "pool_size",
+      "transform": "count",
+      "input": "{{step.scored}}"
+    },
+    {
+      "id": "keyword_selection",
+      "transform": "map",
+      "array": "{{step.fanout}}",
+      "expression": {
+        "product_keyword_slug": "{{item.product_keyword_slug}}",
+        "selected": true
+      }
+    },
+    {
+      "id": "ai_brief",
+      "op": "core.ai.summarize",
+      "args": {
+        "llm.data": "Ranked candidates: {{step.top}}",
+        "llm.focus": "Short buying brief: which clear their acquisition cost, which look good on margin but do not, and durability.",
+        "llm.model_hint": "fast"
+      }
+    }
+  ],
+  "output": {
+    "render": [
+      {
+        "type": "json",
+        "source": "step.top",
+        "label": "Top 15"
+      },
+      {
+        "type": "json",
+        "source": "step.ai_brief",
+        "label": "Brief"
+      },
+      {
+        "type": "json",
+        "source": "step.pool_size",
+        "label": "Pool"
+      },
+      {
+        "type": "json",
+        "source": "step.keyword_selection",
+        "label": "Keyword selection"
+      },
+      {
+        "type": "json",
+        "source": "step.row_count",
+        "label": "CSV rows"
+      },
+      {
+        "type": "json",
+        "source": "step.fanout_count",
+        "label": "Keywords the model chose"
+      }
+    ]
+  }
+}
