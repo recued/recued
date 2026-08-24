@@ -203,32 +203,43 @@ curled to disk and parsed by a bundled script:
 
 | lane | tokens | outcome |
 |:---|---:|:---|
-| the recipe | 13,385 | correct: top 15 exact, in order |
-| skill, fetching to disk | **62,110** | 10 of the top 15, wrong order |
+| the recipe | 13,385 | top 15 exact, in order |
+| skill, fetching to disk | **61,045** | top 15 exact, in order |
 | skill, receiving tool results | 116,834 · 133,836 | no valid answer |
 
-<sub>Two things to hold against that row. The fetch-to-disk skill is the one
-arm here we wrote ourselves, to test this specific idea — the other three were
-authored blind, with no sight of the recipe or the answer key, and that makes
-them better evidence about what a skill author would actually produce. And like
-those three it answered in prose rather than the required JSON, so its 10-of-15
-is scored on the product ids it named.</sub>
+<sub>The fetch-to-disk skill is the one arm here we wrote ourselves, to test
+this idea; the other three were authored blind, with no sight of the recipe or
+the answer key, which makes them better evidence about what a skill author
+actually produces. Like those three it answered in prose rather than the
+required JSON, so its ranking was scored by comparing the product ids it named
+against the answer key.</sub>
 
 **The direction was right and the size was wrong.** Fetching to disk roughly
-halves a skill's bill — real, and worth doing — but it lands at four and a half
-times the recipe, not near it. Taking the data out of the context window does
-not take the agent out of the loop: what is left is the scaffolding, the skill
-text, and every turn re-sending the conversation so far. The 563,182-character
-export is gone from the bill; the agent is not.
+halves a transcribing skill — real, and worth doing — but it lands at four and a
+half times the recipe, not near it. Taking the data out of the context window
+does not take the agent out of the loop: what is left is the scaffolding, the
+skill text, and every turn re-sending the conversation so far. The
+563,182-character export is gone from the bill; the agent is not.
 
-And it got the answer wrong, which is the more interesting half. It fetched
-fifty keywords and never thought of `dash-cam` — the one that five of the true
-top-fifteen belong to. Its arithmetic was perfect, because a script did it. Its
-*judgement* had a hole, and a keyword you never think of is a hole nothing
-downstream can see: the run reported no errors and named fifteen plausible
-products. That is the same failure the recipe had before we fixed its prompt.
-Neither shape is immune. The difference is where the judgement lives — one
-prompt you can diff and re-measure, or a transcript you re-read.
+**What it is not is less correct.** Given the same judgement it reaches the same
+fifteen rows in the same order. We should say that plainly, because our first
+run of this arm did not — it returned ten of the fifteen, and it would have been
+convenient to leave that as the finding. It was our prompt's fault. That draft
+listed five kinds of sellable term as illustrations; the model read them as the
+whole set and rejected `flock cameras` as *"tech news, nothing sellable"* — a
+category we never wrote — which cost it `dash-cam`, and five of the true top
+fifteen belong to `dash-cam`. Telling it to read down the vocabulary before
+rejecting anything, and that the examples were examples, recovered all five at
+no extra cost.
+
+Two things are worth taking from that. A keyword the model never thinks of is a
+hole nothing downstream can see — the bad run reported no errors and named
+fifteen plausible products, and only the answer key caught it. And the same
+defect, almost word for word, had already been found and fixed in the recipe's
+prompt: an enumerated list reads as a closed one. Neither shape is immune,
+because both are asking a model to exercise judgement. What differs is where
+that judgement lives — one prompt you can diff and re-measure, or a transcript
+you re-read.
 
 What it does not take is the second thing. Look at what that skill has become: a
 program with a natural-language wrapper. The loop is in a script, the parsing is
