@@ -7,6 +7,77 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.8.27 — 2026-08-27
+
+If you installed Recued from a released binary, it could not be paired to — at
+all, since the binary channel opened on 31 July. It booted, printed a pairing
+code, served its health endpoint and the webclient, and then silently dropped
+every WebSocket connection. It also could not update itself out of that state,
+and it never installed the webclient in the first place. Three separate causes,
+all of them living only in the packaged binary and none visible to a test suite
+that runs from source. This release fixes all three, and adds the build gates
+that would have caught each one.
+
+Running from source was never affected.
+
+### Fixed
+
+- **Released binaries had no WebSocket server.** The socket library was loaded
+  in a way the bundler could not see, so it was never packaged; at runtime the
+  server fell back to a stub that closed every connection without a reply. A
+  closed connection with no reply is indistinguishable from an unreachable
+  machine, which is why it presented as "can't reach your server" about a
+  server that was running fine.
+- **Updates could never download.** The updater's size limit was smaller than
+  every binary published — three of four platforms refused their own release
+  before a byte was transferred. Both the in-app update and the CLI were
+  affected.
+- **The installer never fetched the webclient.** `/webclient` returned 404 on
+  every fresh install, on every platform, while a server that self-updated
+  acquired one — so it appeared only after an update, never after an install.
+- **A socket your browser refuses now says so.** Opening an insecure `ws://`
+  connection from a secure page fails identically to an unreachable host, so
+  every surface blamed the server. Recued now recognises the browser's own
+  refusal and tells you what to do about it.
+- **Pairing.** A restarted server offered `Pairing code: null` with no way to
+  mint another; the banner claimed 15 minutes for a code that lives a week;
+  `recued pair` could not list the loopback address you are most likely to use;
+  and a connection failure mid-pair left the screen spinning instead of
+  reporting.
+- **A fresh server no longer probes DNS for a provider it does not have**, and
+  several hostname and certificate paths stopped referring to a zone that had
+  moved.
+- **Search in your own languages.** Message indexing corrupted non-English
+  input and was inert for five scripts; unspaced scripts (Chinese, Japanese,
+  Korean and others) now get a real index. `file.search` was listed as
+  available and returned nothing on every turn, then matched only a bare
+  filename as a single literal phrase; it now matches name and path and reaches
+  declared remote sources.
+
+### Added
+
+- **`recued update apply` and `recued update rollback`**, for a stopped server.
+  The in-app updater runs over the WebSocket, so a fault in that layer takes
+  the updater with it — as one did. The CLI refuses while a server is running
+  and points at the surface that can restart itself, and it verifies signatures
+  exactly as the server does, keeping the previous binary for rollback.
+- **Start at login, on by default** on macOS, Linux and Windows — opt out with
+  `RECUED_AUTOSTART=0`. Without it the server stops when its terminal closes
+  and an update cannot restart it for you. It gives you a supervised server,
+  not necessarily an unattended one: a passphrase-sealed keyfile still waits
+  for `recued unlock`. Headless Linux needs root for a boot unit.
+- **Install documentation in this repository.** The README and INSTALL.md now
+  cover installing a release and every option, instead of sending you to build
+  from a clone.
+
+### Changed
+
+- **Re-running the installer over a running server now tells you it is still on
+  the old binary.** Replacing a file does not change a process already running,
+  and nothing here restarts it — so it prints the command your server is
+  actually running rather than a generic one that could point it at a different
+  database.
+
 ## 26.8.26 — 2026-08-26
 
 Mostly about what the AI can find. A chat turn now starts with an index of what
