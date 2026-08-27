@@ -1,12 +1,66 @@
 # Installing Recued
 
-## Requirements
+Two ways in. Most people want the first.
+
+## Install a released binary
+
+One command. It fetches the signed binary for your platform, verifies it
+against the release key, puts `recued` on your PATH, and sets it to start when
+you log in.
+
+```sh
+# Linux and macOS
+curl -fsSL https://recued.com/install.sh | sh
+```
+
+```powershell
+# Windows — in PowerShell
+irm https://recued.com/install.ps1 | iex
+```
+
+Linux and Windows on x64 or arm64. macOS on Apple Silicon; Intel Macs are not
+published yet.
+
+### Options
+
+Set these before the command — `RECUED_AUTOSTART=0 curl -fsSL … | sh`. In
+PowerShell, run `$env:RECUED_AUTOSTART=0` on its own line first.
+
+| Variable | Effect |
+|---|---|
+| `RECUED_AUTOSTART=0` | Do not start at login. On by default. |
+| `RECUED_PREFIX` | Where the payload goes. Default `/usr/local/lib/recued`. |
+| `RECUED_BINDIR` | Where the `recued` command goes. Default `/usr/local/bin`. Set both to install without `sudo`. |
+| `RECUED_CHANNEL=edge` | Follow the edge channel instead of stable. |
+| `RECUED_FORCE=1` | Reinstall even when already on the released version. |
+
+**Start at login gives you a supervised server, not necessarily an unattended
+one.** If you seal your keyfile with a passphrase it starts locked and waits for
+`recued unlock`; sealed to the machine instead, it starts ready. Either way the
+unit stays idle until the realm is paired, so it never brings up an
+unconfigured server listening on your network.
+
+It is also what lets an update restart the server for you. A server you started
+by hand cannot be restarted on your behalf — the database path can come from
+`DB_PATH` or from the working directory, so anything guessing at it could bring
+the server up on the wrong database.
+
+Upgrading a running server: re-running the install script replaces the file but
+does **not** change the process already running — it keeps the old code until it
+restarts, and the script tells you so. A running server can also update itself
+from the webclient: Settings → Updates.
+
+## Build from source
+
+Only if you want to run from a clone — the released binary needs none of this.
+
+### Requirements
 
 - Node.js 20 or newer.
 - npm with lockfile v3 support.
 - Platform build tools supported by `better-sqlite3` when a prebuilt binary is unavailable.
 
-## Build from a clone
+### Build from a clone
 
 ```sh
 git clone https://github.com/recued/recued.git
@@ -19,7 +73,7 @@ npm run build:webclient
 
 `npm ci` installs exactly the dependency versions recorded in the public lockfile. The build commands type-check the public workspace graph, bundle the server, and create the production webclient under `apps/webclient/build/`.
 
-## Start the server and local webclient
+### Start the server and local webclient
 
 ```sh
 RECUED_WEBCLIENT_DIR="$PWD/apps/webclient/build" npm start
