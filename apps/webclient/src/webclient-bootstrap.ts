@@ -278,6 +278,7 @@ import {
   bootstrapReceptionRoute,
   type BootstrapReceptionRouteOptions,
 } from './settings/reception-bootstrap.js';
+import { parseReceptionAddress } from './settings/reception-navigation.js';
 import { createArchiveDownload } from './settings/archive-download.js';
 import { createArchiveUpload } from './settings/archive-upload.js';
 import { createArchiveRebindStash } from './settings/archive-rebind-stash.js';
@@ -315,8 +316,8 @@ import {
 } from './approvals/pending-chat-plans-store.js';
 import {
   bootstrapContractsRoute,
-  isContractsListTab,
 } from './contracts/bootstrap-contracts-route.js';
+import { parseContractsAddress } from './contracts/contracts-navigation.js';
 import {
   type GrantReadCaller,
   type GrantReadByEntryCaller,
@@ -341,10 +342,12 @@ import {
   serializeConnectionsCredentialRotationRetry,
   serializeConnectionsPostSafeStopRecovery,
 } from './connections/bootstrap-connections-route.js';
+import { parseConnectionsAddress } from './connections/connections-navigation.js';
 import {
   bootstrapPacksRoute,
   resolvePackInput,
 } from './packs/bootstrap-packs-route.js';
+import { parsePacksAddress } from './packs/pack-app-navigation.js';
 import type {
   OwnerOperationDeleteCaller,
   OwnerOperationInventoryCaller,
@@ -436,6 +439,8 @@ import {
   type RunsSessionGrantListCaller,
   type RunsSessionGrantRevokeCaller,
 } from './logs/bootstrap-logs-route.js';
+// D-250 § D7 — the owner's own metrics surface.
+import { bootstrapStatsRoute } from './stats/bootstrap-stats-route.js';
 import {
   bootstrapAutomationRoute,
   isAutomationSectionToken,
@@ -470,6 +475,15 @@ import {
   serializeChatConnectedSource,
 } from './chat/connected-source-handoff.js';
 import {
+  chatHierarchicalAddress,
+  chatHomeAddress,
+} from './chat/chat-navigation.js';
+import {
+  GLOBAL_RUN_PALETTE_TRIGGER_ATTR,
+  mountGlobalRunPalette,
+  type GlobalRunPaletteHandle,
+} from './shell/global-run-palette.js';
+import {
   openCreateOverlay,
   type CreateOverlayHandle,
 } from './compose/create-overlay.js';
@@ -482,7 +496,18 @@ import {
   mountRecipeEditorRoute,
 } from './kitchen/recipe-editor/mount-recipe-editor-route.js';
 import { mountKitchenChrome } from './kitchen/kitchen-route-chrome.js';
+import {
+  kitchenHierarchicalAddress,
+  kitchenPackAddress,
+  kitchenRecipeAddress,
+  parseKitchenAddress,
+} from './kitchen/kitchen-navigation.js';
 import { injectWebclientPolishStyles } from './shell/webclient-polish-styles.js';
+import {
+  createHierarchicalHistory,
+  hierarchicalAddressFromHash,
+  hierarchicalLevel,
+} from './shell/hierarchical-navigation.js';
 import {
   WEBCLIENT_ROUTE_IDS,
   WEBCLIENT_DEFAULT_ROUTE,
@@ -517,6 +542,10 @@ import type {
   PacksResolveCaller,
   PacksUninstallCaller,
 } from './settings/packs-panel.js';
+import {
+  parseSellerAddress,
+  sellerHierarchicalAddress,
+} from './settings/seller-navigation.js';
 import type {
   SupervisionListCaller,
   SupervisionReachabilityCaller,
@@ -824,6 +853,8 @@ export const WEBCLIENT_SHELL_ATTENTION_HOST_ATTR =
   'data-recued-webclient-attention-host';
 export const WEBCLIENT_SHELL_CONNECTION_HOST_ATTR =
   'data-recued-webclient-connection-host';
+export const WEBCLIENT_SHELL_RUN_HOST_ATTR =
+  'data-recued-webclient-run-host';
 // §D.L2 — the navigation drawer hooks (rev R7). Replaces the flat
 // `…-rail` chrome: `…-drawer` is the off-canvas panel, `…-toggle` the
 // top-bar ☰ that opens it, `…-backdrop` the click-to-close scrim, and
@@ -935,7 +966,13 @@ const WEBCLIENT_DRAWER_SECTIONS: ReadonlyArray<WebclientDrawerSection> = [
     ],
   },
   {
-    items: [{ id: 'log', label: 'Logs', route: 'logs', highlight: true }],
+    // D-250 § D7 — Stats sits BESIDE Logs in the review section: not under Server
+    // (which is operational configuration — exposure, certs, keys, maintenance) and not
+    // replacing Chat as the landing.
+    items: [
+      { id: 'log', label: 'Logs', route: 'logs', highlight: true },
+      { id: 'stats', label: 'Stats', route: 'stats', highlight: true },
+    ],
   },
   {
     pinnedBottom: true,
@@ -1060,6 +1097,56 @@ const WEBCLIENT_SHELL_STYLES = `
      to provide the flexible spacer; keep Account pinned to the viewport edge
      now that the non-visual announcer has no width. */
   margin-left: auto;
+}
+[${WEBCLIENT_SHELL_RUN_HOST_ATTR}] {
+  display: inline-flex;
+  align-items: center;
+}
+[${GLOBAL_RUN_PALETTE_TRIGGER_ATTR}] {
+  min-width: 0;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  box-sizing: border-box;
+  padding: 0 13px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 24%, transparent);
+  transition: filter 90ms ease, box-shadow 90ms ease, transform 90ms ease;
+}
+[${GLOBAL_RUN_PALETTE_TRIGGER_ATTR}]:hover {
+  filter: brightness(0.96);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+[${GLOBAL_RUN_PALETTE_TRIGGER_ATTR}]:active {
+  transform: translateY(1px);
+}
+[${GLOBAL_RUN_PALETTE_TRIGGER_ATTR}]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--accent-weak);
+}
+[${GLOBAL_RUN_PALETTE_TRIGGER_ATTR}] .webclient-global-run-glyph {
+  font-size: 10px;
+}
+[${GLOBAL_RUN_PALETTE_TRIGGER_ATTR}] .webclient-global-run-key {
+  padding: 2px 5px;
+  border: 1px solid color-mix(in srgb, var(--on-accent) 42%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--on-accent) 13%, transparent);
+  color: inherit;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 650;
 }
 /* Screen-reader connection-status host. It has no visual footprint; sustained
    outages use the route-independent banner and Account owns all detail/actions. */
@@ -1306,6 +1393,14 @@ const WEBCLIENT_SHELL_STYLES = `
   [${WEBCLIENT_SHELL_TOPBAR_ATTR}] .webclient-shell-brand {
     font-size: 15px;
   }
+  [${GLOBAL_RUN_PALETTE_TRIGGER_ATTR}] {
+    width: 44px;
+    padding: 0;
+  }
+  [${GLOBAL_RUN_PALETTE_TRIGGER_ATTR}] .webclient-global-run-label,
+  [${GLOBAL_RUN_PALETTE_TRIGGER_ATTR}] .webclient-global-run-key {
+    display: none;
+  }
   /* Server health and pause/restart controls now live inside the scroll-bounded
      Account dialog, so they remain available at phone widths. */
   [${WEBCLIENT_SHELL_DRAWER_ATTR}] {
@@ -1324,6 +1419,8 @@ interface WebclientShell {
   readonly root: HTMLElement;
   readonly contentRoot: HTMLElement;
   readonly attentionHost: HTMLElement;
+  /** Persistent slot for the one shell-owned recipe launcher. */
+  readonly runPaletteHost: HTMLElement;
   /** Non-visual host for connection-status announcements. */
   readonly connectionHost: HTMLElement;
   /** Topbar's rightmost slot — the account menu (trigger + badge + theme +
@@ -1333,6 +1430,8 @@ interface WebclientShell {
     route: WebclientRouteId,
     segments?: readonly string[],
   ) => void;
+  /** Close transient navigation before a global modal captures focus. */
+  readonly closeDrawer: () => void;
   readonly dispose: () => void;
 }
 
@@ -1414,6 +1513,11 @@ const createWebclientShell = (opts: {
   const attentionHost = doc.createElement('div');
   attentionHost.setAttribute(WEBCLIENT_SHELL_ATTENTION_HOST_ATTR, '');
   topbar.appendChild(attentionHost);
+  // The persistent Run launcher mounts after Attention and before Account.
+  // Its controller is created later, once the shared recipe callers exist.
+  const runPaletteHost = doc.createElement('div');
+  runPaletteHost.setAttribute(WEBCLIENT_SHELL_RUN_HOST_ATTR, '');
+  topbar.appendChild(runPaletteHost);
   // §D.L1 — the account slot, the topbar's rightmost. The bootstrap mounts
   // the account MENU here (trigger + badge + theme + settings + servers).
   // Empty until then, so a shell composed without the menu renders nothing
@@ -1697,9 +1801,11 @@ const createWebclientShell = (opts: {
     root: shellRoot,
     contentRoot,
     attentionHost,
+    runPaletteHost,
     connectionHost,
     accountHost,
     setActiveRoute,
+    closeDrawer: () => setDrawerOpen(false, { returnFocus: drawerOpen }),
     dispose: () => {
       docEvents.removeEventListener?.('keydown', onDocKeydown);
       try {
@@ -2892,6 +2998,10 @@ export const bootstrapWebclient = async (
   // second click can't stack a duplicate while one is open.
   let createSeatHandler: (() => void) | undefined;
   let drawerCreateOverlay: CreateOverlayHandle | null = null;
+  // The recipe launcher is constructed after its shared callers below, but
+  // its host belongs to this persistent shell. Closures declared before that
+  // point read this nullable owner rather than reaching into the Chat route.
+  let globalRunPalette: GlobalRunPaletteHandle | null = null;
   const appShell = createWebclientShell({
     root: options.root,
     document: doc,
@@ -4183,6 +4293,7 @@ export const bootstrapWebclient = async (
       automation: { label: 'Updating automation', returnLabel: 'Return to Automation' },
       data: { label: 'Saving a Data change', returnLabel: 'Return to Data' },
       logs: { label: 'Finishing a run action', returnLabel: 'Return to Runs' },
+      stats: { label: 'Finishing a stats action', returnLabel: 'Return to Stats' },
       chat: { label: 'Finishing a Chat action', returnLabel: 'Return to Chat' },
       mail: { label: 'Finishing a mail action', returnLabel: 'Return to Mail' },
     };
@@ -4388,8 +4499,11 @@ export const bootstrapWebclient = async (
         mountedRouteHandle.hasRouteInFlightWork
         ?? mountedRouteHandle.hasInFlightWork
       )?.() === true;
+      const globalRunHasInFlightWork =
+        globalRunPalette?.hasInFlightWork() === true;
       const hasInFlightWork = switchWorkTracker.hasInFlightWork()
-        || routeHasInFlightWork;
+        || routeHasInFlightWork
+        || globalRunHasInFlightWork;
       // Native route state covers multi-step UI work that does not travel
       // through a wrapped caller (Chat streaming, local cleanup). Give it a
       // useful source-route identity when there is no more specific lease.
@@ -4401,6 +4515,12 @@ export const bootstrapWebclient = async (
         ...(routeHasInFlightWork && !trackedCurrentRoute ? [{
             id: `route:${activeRoute}:${activeHash}`,
             ...currentRouteWorkDetails(),
+          }] : []),
+        ...(globalRunHasInFlightWork && trackedWork.length === 0 ? [{
+            id: 'global:run-palette',
+            label: 'Finishing a Recipe action',
+            returnHref: activeHash,
+            returnLabel: 'Return to recipe action',
           }] : []),
       ];
       if (hasInFlightWork) {
@@ -6743,6 +6863,50 @@ export const bootstrapWebclient = async (
     rpcConn.call('dishes.history', args);
   const automationAutoRunUpdateCaller: AutomationAutoRunUpdateCaller = (args) =>
     rpcConn.call('auto_run.update', args);
+  // One shell-owned Run palette — every route reaches this same inventory,
+  // mutation wiring, portal, focus owner, and keyboard shortcut. Chat keeps a
+  // contextual opener below, but no longer constructs a second palette.
+  const globalRunScheduleCreate: RunModal.RunModalSchedulesCreateCaller =
+    (args) => rpcConn.call('schedules.create', args);
+  const trackGlobalRunWrite = <Args extends unknown[], Result>(
+    label: string,
+    write: (...args: Args) => Promise<Result>,
+  ): ((...args: Args) => Promise<Result>) => (...args) =>
+    switchWorkTracker.track(write, {
+      ...currentRouteWorkDetails(),
+      label,
+    })(...args);
+  globalRunPalette = mountGlobalRunPalette({
+    document: doc,
+    triggerHost: appShell.runPaletteHost,
+    portal: (doc as { body?: HTMLElement }).body ?? appShell.root,
+    prepareOpen: appShell.closeDrawer,
+    palette: {
+      recipeList: recipesListCaller,
+      execute: trackGlobalRunWrite('Running a recipe', recipeExecuteCaller),
+      schedulesList: automationSchedulesListCaller,
+      schedulesCreate: trackGlobalRunWrite(
+        'Scheduling a recipe',
+        globalRunScheduleCreate,
+      ),
+      schedulesUpdate: trackGlobalRunWrite(
+        'Updating a recipe schedule',
+        automationSchedulesUpdateCaller,
+      ),
+      schedulesDelete: trackGlobalRunWrite(
+        'Deleting a recipe schedule',
+        automationSchedulesDeleteCaller,
+      ),
+      autoRunList: automationAutoRunListCaller,
+      autoRunUpdate: trackGlobalRunWrite(
+        'Updating recipe auto-run',
+        automationAutoRunUpdateCaller,
+      ),
+      automationHref: (recipeId) =>
+        serializeShellRoute('automation', recipeId),
+      packsHref: serializeShellRoute('packs'),
+    },
+  });
   const automationWatchListCaller: AutomationWatchListCaller = () =>
     rpcConn.call('watch.list', undefined);
   const automationWatchUpdateCaller: AutomationWatchUpdateCaller = (args) =>
@@ -8547,17 +8711,18 @@ export const bootstrapWebclient = async (
     };
     if (route === 'contracts') {
       activeSettingsRoute = null;
-      const contractsSubview = deepLinkSegment('contracts');
-      const contractsListTabCandidate = contractsSubview === 'view'
-        ? deepLinkSegment('contracts', 1)
-        : undefined;
-      const contractsListTab = isContractsListTab(contractsListTabCandidate)
-        ? contractsListTabCandidate
-        : undefined;
+      const initialContractsAddress = hashSource === null
+        ? null
+        : parseContractsAddress(parseShellRoute(hashSource.getHash()));
       return withTrackedServerSwitchWork(bootstrapContractsRoute({
         root: appShell.contentRoot,
         serverUrl: pair.serverUrl,
         ...(options.document !== undefined ? { document: options.document } : {}),
+        navigate: navigateHash,
+        ...(initialContractsAddress !== null
+          ? { initialAddress: initialContractsAddress }
+          : {}),
+        onHashSync: (hash) => { activeHash = hash; },
         ...(permissionsListOverridesCaller !== undefined
           && permissionsDeleteOverrideCaller !== undefined
           && permissionsUpsertOverrideCaller !== undefined
@@ -8702,13 +8867,6 @@ export const bootstrapWebclient = async (
         runsListCaller,
         ...(options.now !== undefined ? { now: options.now } : {}),
         subscribe: subscriber.on,
-        ...(contractsListTab !== undefined ? { initialListTab: contractsListTab } : {}),
-        ...(hashSource !== null && contractsSubview !== 'view'
-          ? {
-              initialContractId: contractsSubview,
-              initialContractTab: deepLinkSegment('contracts', 1),
-            }
-          : {}),
       }));
     }
     if (route === 'connections') {
@@ -8723,6 +8881,9 @@ export const bootstrapWebclient = async (
       const connectionsSegments = connectionsAddress?.surface === 'connections'
         ? connectionsAddress.segments
         : [];
+      const initialConnectionsAddress = connectionsAddress === null
+        ? null
+        : parseConnectionsAddress(connectionsAddress);
       const initialCredentialRotationServerUpdateRetry =
         parseConnectionsCredentialRotationRetry(connectionsSegments);
       const postSafeStopRecoveryResolution =
@@ -8803,22 +8964,10 @@ export const bootstrapWebclient = async (
         root: appShell.contentRoot,
         ...(options.document !== undefined ? { document: options.document } : {}),
         navigate: navigateHash,
-        // Deep link — segment 0 = the lane tab (mail/calendar/file/others),
-        // segment 1 = a foundational account to open in detail, OR the
-        // `enroll` verb with segment 2 = a vendor to pre-open the Others
-        // enroll form for (`#connections/others/enroll/<vendor>` — the packs
-        // "Set up" CTA), OR the one-shot credential-retry return consumed
-        // above.
-        ...(connectionsSegments[0] !== undefined
-          ? { initialTab: connectionsSegments[0] }
+        ...(initialConnectionsAddress !== null
+          ? { initialAddress: initialConnectionsAddress }
           : {}),
-        ...(connectionsSegments[1] !== undefined
-          ? { initialDetailSlug: connectionsSegments[1] }
-          : {}),
-        ...(connectionsSegments[1] === 'enroll'
-          && connectionsSegments[2] !== undefined
-          ? { initialEnrollVendor: connectionsSegments[2] }
-          : {}),
+        onHashSync: (hash) => { activeHash = hash; },
         ...(initialCredentialRotationServerUpdateRetry !== null
           ? {
               initialCredentialRotationServerUpdateRetry,
@@ -9147,6 +9296,9 @@ export const bootstrapWebclient = async (
     }
     if (route === 'packs') {
       activeSettingsRoute = null;
+      const initialPacksAddress = hashSource === null
+        ? null
+        : parsePacksAddress(parseShellRoute(hashSource.getHash()));
       /** The one run modal the Packs route may have open. Held here (not in the
        *  panel) so the one-modal-at-a-time rule is a property of the route
        *  rather than of whichever surface happened to open it. */
@@ -9315,14 +9467,16 @@ export const bootstrapWebclient = async (
           : {}),
         // list→detail — seed the DETAIL selection from `#packs/<slug>` (mirrors
         // the recipes route). Undefined segment ⇒ the LIST view.
-        ...(hashSource !== null
-          ? { initialPackSlug: deepLinkSegment('packs') }
+        ...(initialPacksAddress?.kind === 'pack'
+          ? {
+              initialPackSlug: initialPacksAddress.packSlug,
+              ...(initialPacksAddress.viewId !== null
+                ? { initialPackViewId: initialPacksAddress.viewId }
+                : {}),
+            }
           : {}),
-        // Keep the router's cached `activeHash` in lockstep with an in-page
-        // pack selection (which uses `replaceState`, firing no hashchange).
-        // Without this, a later hashchange to the slug that was mounted BEFORE
-        // the in-page selection would normalize-equal the stale `activeHash`
-        // and be dropped as a no-op, stranding the panel on the wrong pack.
+        // Keep the router cache aligned with in-page pack/view history writes;
+        // pushState and replaceState do not emit hashchange.
         onHashSync: (hash) => {
           activeHash = hash;
         },
@@ -9348,6 +9502,7 @@ export const bootstrapWebclient = async (
       const mountInstalled = (host: HTMLElement) =>
         bootstrapRecipesRoute({
           root: host,
+          scrollRoot: appShell.contentRoot,
           ...(options.document !== undefined ? { document: options.document } : {}),
           recipesListCaller,
           recipeExecuteCaller: switchWorkTracker.track(recipeExecuteCaller),
@@ -9410,8 +9565,8 @@ export const bootstrapWebclient = async (
           ...(hashSource !== null && initialRecipeId !== undefined
             ? { initialRecipeId }
             : {}),
-          // Recipe list/detail navigation uses replaceState, so it must update
-          // the router cache explicitly just like Packs and Automation do.
+          // Recipe list/detail history writes must update the router cache
+          // explicitly, just like Packs and Automation do.
           onHashSync: (hash) => {
             activeHash = hash;
           },
@@ -9591,9 +9746,8 @@ export const bootstrapWebclient = async (
                     dataEntityVerificationAddress.verificationRelationship,
                 }
               : {}),
-        // Data changes tabs and opens/closes details with replaceState, so no
-        // hashchange reaches the shell. Keep the router cache aligned or a
-        // later navigation back to the pre-detail hash is dropped as a no-op.
+        // Data changes tabs and opens/closes details without a hashchange. Keep
+        // the router cache aligned with the visible hierarchical address.
         onHashSync: (hash) => {
           activeHash = hash;
         },
@@ -9655,9 +9809,8 @@ export const bootstrapWebclient = async (
         ),
         triggersCreateCaller: switchWorkTracker.track(createAutomationTrigger),
         fileRefSearchCaller,
-        // R21 — keep the router's cached activeHash in lockstep with the
-        // route's in-page replaceState syncs (tab/detail changes fire no
-        // hashchange; same seam as the packs route).
+        // R21 — keep the router's cached activeHash in lockstep with in-page
+        // tab/detail history writes (which fire no hashchange).
         onHashSync: (hash) => {
           activeHash = hash;
         },
@@ -9681,6 +9834,16 @@ export const bootstrapWebclient = async (
         subscribe: subscriber.on,
       }));
     }
+    if (route === 'stats') {
+      activeSettingsRoute = null;
+      return withTrackedServerSwitchWork(bootstrapStatsRoute({
+        container: appShell.contentRoot,
+        read: () => rpcConn.call('metric.read', undefined),
+        // § C4 — leaving a board is always one click.
+        unpublish: (args) => rpcConn.call('metric.unpublish', args),
+      }));
+    }
+
     if (route === 'logs') {
       activeSettingsRoute = null;
       // R17 — `#logs/active` mounts the full operator console; `#logs/<run_id>`
@@ -9723,8 +9886,8 @@ export const bootstrapWebclient = async (
               : logsSegment !== undefined
                 ? { initialRunId: logsSegment }
               : {}),
-        // Run selection uses replaceState so the History table can keep its
-        // scroll/load state. Tell the shell which run the mount now owns.
+        // Run selection keeps the History table mounted. Tell the shell which
+        // hierarchical address the live mount now owns.
         onHashSync: (hash) => {
           activeHash = hash;
         },
@@ -9737,6 +9900,15 @@ export const bootstrapWebclient = async (
       const parsedChatRoute = hashSource === null
         ? null
         : parseShellRoute(hashSource.getHash());
+      const chatHistory = createHierarchicalHistory({
+        initial: parsedChatRoute?.surface === 'chat'
+          ? chatHierarchicalAddress(
+              hashSource?.getHash() ?? serializeShellRoute('chat'),
+            )
+          : chatHomeAddress(),
+        history: () => doc.defaultView?.history,
+        onCommit: (address) => { activeHash = address.hash; },
+      });
       const chatAnswerAddress = parsedChatRoute === null
         ? null
         : parseChatAnswerAddress(parsedChatRoute);
@@ -9760,8 +9932,6 @@ export const bootstrapWebclient = async (
           : chatConnectedSource.lane === 'calendar'
             ? connectionsCalendarLane
             : connectionsFileLane;
-      const createChatSchedule: RunModal.RunModalSchedulesCreateCaller =
-        (args) => rpcConn.call('schedules.create', args);
       const rawChatConn = rpcConn.call as unknown as (
         method: string,
         payload?: unknown,
@@ -9833,23 +10003,11 @@ export const bootstrapWebclient = async (
         // compose route's local-write callers.
         contactUpsertCaller: dataContactUpsertCaller,
         workEntityUpsertCaller: dataWorkEntityUpsertCaller,
-        // Shell-frame Step 4c — the [▶ Run a recipe] palette: the same
-        // recipe.list / execute / schedules.* / auto_run.* callers the
-        // Recipes + Automation routes already use.
-        recipeListCaller: recipesListCaller,
-        recipeExecuteCaller: switchWorkTracker.track(recipeExecuteCaller),
-        schedulesListCaller: automationSchedulesListCaller,
-        schedulesCreateCaller: switchWorkTracker.track(createChatSchedule),
-        schedulesUpdateCaller: switchWorkTracker.track(
-          automationSchedulesUpdateCaller,
-        ),
-        schedulesDeleteCaller: switchWorkTracker.track(
-          automationSchedulesDeleteCaller,
-        ),
-        autoRunListCaller: automationAutoRunListCaller,
-        autoRunUpdateCaller: switchWorkTracker.track(
-          automationAutoRunUpdateCaller,
-        ),
+        // Contextual entry into the one shell-owned Run palette. Chat owns
+        // neither its callers nor its portal/lifecycle.
+        openRunPalette: () => {
+          globalRunPalette?.open();
+        },
         // The default landing owns the first-run activation surface. Embedded
         // chat mounts opt in explicitly so their established empty state stays
         // stable.
@@ -9860,22 +10018,9 @@ export const bootstrapWebclient = async (
         initialLanding:
           chatDeepLink === undefined ? 'history' : 'new',
         onAddressChange: (hash, mode) => {
-          const history = doc.defaultView?.history;
-          const writer = mode === 'push'
-            ? history?.pushState
-            : history?.replaceState;
-          if (writer === undefined) return;
-          try {
-            writer.call(history, null, '', hash);
-            // History API writes do not emit hashchange. Keep the router's
-            // deep-link comparison baseline aligned so Back/Forward evaluates
-            // against the address the Chat mount actually owns.
-            activeHash = hash;
-          } catch {
-            // Constrained embedders may reject History writes. The in-memory
-            // Chat transition still succeeds; only reload/back continuity
-            // degrades.
-          }
+          chatHistory.navigate(chatHierarchicalAddress(hash), {
+            intent: mode,
+          });
         },
         ...(chatDeepLink === 'start'
           ? { initialStarterPrompt: true }
@@ -9901,17 +10046,9 @@ export const bootstrapWebclient = async (
           ? {
               initialConnectedSource: chatConnectedSource,
               onConnectedSourceRetired: () => {
-                const nextHash = serializeShellRoute('chat');
-                const history = doc.defaultView?.history;
-                if (history?.replaceState === undefined) return;
-                try {
-                  history.replaceState(null, '', nextHash);
-                  activeHash = nextHash;
-                } catch {
-                  // A constrained embedder may reject History writes. The
-                  // in-memory handoff still retires; the current draft must
-                  // not be sacrificed to a remount fallback.
-                }
+                chatHistory.navigate(chatHomeAddress(), {
+                  intent: 'replace',
+                });
               },
               ...(chatConnectedSourceLane !== undefined
                 ? {
@@ -9932,14 +10069,57 @@ export const bootstrapWebclient = async (
         ...chatRoute,
         navigateDeepLink: (hash: string): boolean => {
           const address = parseChatPlanAddress(parseShellRoute(hash));
-          return address === null
-            ? false
-            : chatRoute.openPlanLanding(address);
+          if (address === null || !chatRoute.openPlanLanding(address)) {
+            return false;
+          }
+          chatHistory.adopt(chatHierarchicalAddress(hash));
+          return true;
         },
       });
     }
     if (route === 'settings') {
-      const sellerRouteMode = deepLinkSegment('settings', 2);
+      const settingsAddress = hashSource === null
+        ? null
+        : parseShellRoute(hashSource.getHash());
+      const initialSellerAddress = settingsAddress === null
+        ? null
+        : parseSellerAddress(settingsAddress);
+      const settingsHierarchicalAddress = (hash: string) => {
+        const parsed = parseShellRoute(hash);
+        return hierarchicalAddressFromHash(
+          'settings',
+          hash,
+          ...parsed.segments.map((segment, index) => hierarchicalLevel(
+            `settings-segment:${index}:${segment}`,
+            segment,
+          )),
+        );
+      };
+      const settingsHistory = createHierarchicalHistory({
+        initial: settingsHierarchicalAddress(
+          hashSource?.getHash() ?? serializeShellRoute('settings'),
+        ),
+        history: () => doc.defaultView?.history,
+        onCommit: (address) => {
+          activeHash = address.hash;
+          appShell.setActiveRoute(
+            'settings',
+            parseShellRoute(address.hash).segments,
+          );
+        },
+      });
+      if (initialSellerAddress !== null) {
+        const canonicalSellerAddress = sellerHierarchicalAddress(
+          initialSellerAddress,
+        );
+        if (settingsHistory.current().hash === canonicalSellerAddress.hash) {
+          settingsHistory.adopt(canonicalSellerAddress);
+        } else {
+          settingsHistory.navigate(canonicalSellerAddress, {
+            intent: 'replace',
+          });
+        }
+      }
       const chatSetupSessionId =
         deepLinkSegment('settings', 2) === 'session'
           ? deepLinkSegment('settings', 3)
@@ -10026,13 +10206,9 @@ export const bootstrapWebclient = async (
               ...(deepLinkSegment('settings', 1) === 'setup'
                 ? { initialAiModelsView: 'chat-setup' as const }
                 : {}),
-              initialSellerSubpage: deepLinkSegment('settings', 1),
-              initialSellerItemId: sellerRouteMode === 'detail'
-                ? deepLinkSegment('settings', 3)
-                : undefined,
-              initialSellerPage: sellerRouteMode === 'page'
-                ? deepLinkSegment('settings', 3)
-                : undefined,
+              ...(initialSellerAddress !== null
+                ? { initialSellerAddress }
+                : {}),
               // The rail reports the section it switched to so the address
               // names what is on screen and Back has somewhere to land. Every
               // section is already mounted, so the write is a History call —
@@ -10050,23 +10226,9 @@ export const bootstrapWebclient = async (
                   navigateHash(hash);
                   return;
                 }
-                const history = doc.defaultView?.history;
-                const writer = mode === 'push'
-                  ? history?.pushState
-                  : history?.replaceState;
-                if (writer === undefined) return;
-                try {
-                  writer.call(history, null, '', hash);
-                  activeHash = hash;
-                  appShell.setActiveRoute(
-                    'settings',
-                    parseShellRoute(hash).segments,
-                  );
-                } catch {
-                  // A constrained embedder may reject History writes. The
-                  // section switch still stands; only address continuity
-                  // degrades.
-                }
+                settingsHistory.navigate(settingsHierarchicalAddress(hash), {
+                  intent: mode,
+                });
               },
             }
           : {}),
@@ -10714,7 +10876,9 @@ export const bootstrapWebclient = async (
           const to = parseShellRoute(hash);
           if (to.surface !== 'settings') return false;
           if (from.segments.length > 1 || to.segments.length > 1) return false;
-          return settings.navigateToSection(to.segments[0] ?? null);
+          if (!settings.navigateToSection(to.segments[0] ?? null)) return false;
+          settingsHistory.adopt(settingsHierarchicalAddress(hash));
+          return true;
         },
       };
     }
@@ -10794,6 +10958,30 @@ export const bootstrapWebclient = async (
       // `kitchen` is a deep-link route, so switching between them re-mounts.
       const kitchenRoute =
         hashSource !== null ? parseShellRoute(hashSource.getHash()) : null;
+      const parsedKitchenAddress = parseKitchenAddress(
+        kitchenRoute ?? { surface: 'kitchen', segments: [] },
+      )!;
+      const canonicalKitchenAddress = kitchenHierarchicalAddress(
+        parsedKitchenAddress,
+      );
+      const mountedKitchenAddress = {
+        ...canonicalKitchenAddress,
+        hash: kitchenRoute === null
+          ? serializeShellRoute('kitchen')
+          : serializeShellRoute('kitchen', ...kitchenRoute.segments),
+      };
+      const kitchenHistory = createHierarchicalHistory({
+        initial: mountedKitchenAddress,
+        history: () => doc.defaultView?.history,
+        onCommit: (address) => { activeHash = address.hash; },
+      });
+      // Parsers intentionally accept the meaningful prefix so an old/stale
+      // tail can still open its nearest valid editor. Replace that tolerated
+      // input with the exact canonical address immediately, keeping the URL
+      // and mounted surface in lockstep without adding a Back entry.
+      if (mountedKitchenAddress.hash !== canonicalKitchenAddress.hash) {
+        kitchenHistory.navigate(canonicalKitchenAddress, { intent: 'replace' });
+      }
       const kitchenRecipeId =
         kitchenRoute !== null ? kitchenEditRecipeId(kitchenRoute) : null;
       const kitchenRecipeSeed =
@@ -10828,13 +11016,9 @@ export const bootstrapWebclient = async (
         ...(options.document !== undefined ? { document: options.document } : {}),
       });
       const syncSavedRecipeRoute = (result: { recipe_id: string }): void => {
-        const nextHash = serializeShellRoute('kitchen', 'recipe', result.recipe_id);
-        const history = doc.defaultView?.history;
-        if (history?.replaceState !== undefined) {
-          history.replaceState(null, '', nextHash);
-        }
-        activeHash = nextHash;
-        kitchenChrome.setRecipeHref(nextHash);
+        const nextAddress = kitchenRecipeAddress(result.recipe_id);
+        kitchenHistory.navigate(nextAddress, { intent: 'replace' });
+        kitchenChrome.setRecipeHref(nextAddress.hash);
       };
       let editor: ReturnType<typeof mountRecipeEditorRoute> | null = null;
       if (kitchenRecipeSeed?.kind === 'execution_case') {
@@ -10961,23 +11145,17 @@ export const bootstrapWebclient = async (
       // Pack editor. A draft id in seg 1 (`#kitchen/pack/<draft_id>`) self-loads
       // that draft; in-page draft selection syncs the URL through onDraftChange
       // so a selected draft is a durable, shareable deep link. Bare `#kitchen`
-      // (or any non-`pack` sub-route) canonicalizes to `#kitchen/pack` via
-      // replaceState (silent — no hashchange, no remount). The URL write lives
-      // HERE, not in the route (mirrors the packs route's replaceState +
-      // onHashSync); the builder stays route-agnostic.
+      // (or any non-`pack` sub-route) canonicalizes to `#kitchen/pack` without a
+      // remount. The shared history writer lives HERE; the builder stays
+      // route-agnostic.
       const packDraftId =
         kitchenRoute !== null ? kitchenPackDraftId(kitchenRoute) : null;
-      const syncPackHash = (draftId: string | undefined): void => {
-        const nextHash = serializeShellRoute('kitchen', 'pack', draftId);
-        const history = doc?.defaultView?.history;
-        if (history?.replaceState !== undefined) {
-          history.replaceState(null, '', nextHash);
-        }
-        activeHash = nextHash;
+      const syncPackHash = (
+        draftId: string | undefined,
+        intent: 'auto' | 'replace' = 'auto',
+      ): void => {
+        kitchenHistory.navigate(kitchenPackAddress(draftId), { intent });
       };
-      if (kitchenRoute !== null && kitchenRoute.segments[0] !== 'pack') {
-        syncPackHash(packDraftId ?? undefined);
-      }
       const kitchenMutationMethods = new Set<string>([
         'ingredient.draft.save',
         'ingredient.compose.decompose',
@@ -11015,6 +11193,9 @@ export const bootstrapWebclient = async (
       'reception.inbox.reject',
       'execute',
     ]);
+    const initialReceptionAddress = hashSource === null
+      ? null
+      : parseReceptionAddress(parseShellRoute(hashSource.getHash()));
     return withTrackedServerSwitchWork(bootstrapReceptionRoute({
       root: appShell.contentRoot,
       shell: receptionShell,
@@ -11022,21 +11203,11 @@ export const bootstrapWebclient = async (
         receptionMutationMethods,
       ),
       exposureProfile: options.exposureProfile,
-      // R19 — `#reception/<section>` (inbox · abuse · endpoints); a section
-      // switch changes the hash + re-mounts this route with the new
-      // section (reception is a deep-link surface). Absent ⇒ inbox default.
-      ...(deepLinkSegment('reception') !== undefined
-        ? { initialSection: deepLinkSegment('reception') }
+      navigate: navigateHash,
+      ...(initialReceptionAddress !== null
+        ? { initialAddress: initialReceptionAddress }
         : {}),
-      // R19 / D-200 — deeper segments route full-page endpoint tools:
-      // `#reception/endpoints/new|edit/<kind>` or
-      // `#reception/endpoints/pair/<endpoint-id>`.
-      ...(deepLinkSegment('reception', 1) !== undefined
-        ? { initialSubview: deepLinkSegment('reception', 1) }
-        : {}),
-      ...(deepLinkSegment('reception', 2) !== undefined
-        ? { initialKind: deepLinkSegment('reception', 2) }
-        : {}),
+      onHashSync: (hash) => { activeHash = hash; },
       ...(options.now !== undefined ? { now: options.now } : {}),
       ...(options.document !== undefined ? { document: options.document } : {}),
       // Reception always receives the shared bus: its Inbox and D-200 pair
@@ -12566,9 +12737,10 @@ export const bootstrapWebclient = async (
           finishPendingRecoveryReturnAction(hash);
           return;
         }
-        // Leave guards — route-owned in-flight work may opt in with contextual
-        // copy, and unsaved work (Kitchen editors, Settings drafts, or Chat)
-        // always gets a chance to keep the user. Declining restores the URL by
+        // Leave guards — the shell-owned Run palette and route-owned in-flight
+        // work may opt in with contextual copy, and unsaved work (Kitchen
+        // editors, Settings drafts, or Chat) always gets a chance to keep the
+        // user. Declining restores the URL by
         // SETTING the hash (a new entry) — replaceState would DESTROY the
         // history entry a Back/Forward decline traversed to, decaying the back
         // stack entry by entry. The resulting hashchange re-dispatch no-ops
@@ -12587,6 +12759,17 @@ export const bootstrapWebclient = async (
         };
         const inFlightPrompt =
           mountedRouteHandle.inFlightWorkPrompt?.()?.trim() ?? '';
+        if (globalRunPalette?.hasInFlightWork() === true) {
+          const proceed = typeof view?.confirm === 'function'
+            ? view.confirm(
+                'A recipe action is still in progress. Leave this page anyway?',
+              )
+            : true;
+          if (!proceed) {
+            declineRouteLeave();
+            return;
+          }
+        }
         if (
           inFlightPrompt.length > 0
           && mountedRouteHandle.hasInFlightWork?.() === true
@@ -12616,6 +12799,10 @@ export const bootstrapWebclient = async (
         }
         interruptRecoveryIntentExpiryReviewForNavigation(hash);
         markRecoveryReturnDeparted();
+        // A command palette is transient chrome, not navigation history. It
+        // has a shell lifetime so it can guard/settle independently of Chat,
+        // then closes after an accepted content transition.
+        globalRunPalette?.close();
         mountedRouteHandle.dispose();
         activeRoute = next;
         activeHash = hash;
@@ -12638,6 +12825,7 @@ export const bootstrapWebclient = async (
         approvalAttentionPopover?.hasInFlightWork() === true
         || drawerCreateOverlay?.hasUnsavedChanges() === true
         || drawerCreateOverlay?.hasInFlightWork() === true
+        || globalRunPalette?.hasInFlightWork() === true
         || mountedRouteHandle.hasUnsavedChanges?.() === true
         || (
           guardedInFlightPrompt.length > 0
@@ -12792,6 +12980,12 @@ export const bootstrapWebclient = async (
       if (drawerCreateOverlay !== null) {
         drawerCreateOverlay.close();
         drawerCreateOverlay = null;
+      }
+      // The global Run palette owns a body portal, a document shortcut, and a
+      // trigger inside the shell. Retire all three before removing the shell.
+      if (globalRunPalette !== null) {
+        globalRunPalette.dispose();
+        globalRunPalette = null;
       }
       // The convergence overlay portals beside the shell and marks the shell
       // inert, so retire it before removing either subtree.

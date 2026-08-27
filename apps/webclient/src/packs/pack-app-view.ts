@@ -10,9 +10,11 @@
  *      │ Add a building · Add a customer · Record a payment · …       │
  *      └─────────────────────────────────────────────────────────────┘
  *
- *  VIEWS are the pack's read-only rendering recipes and OPERATIONS are the
- *  rest; `pack-app-model.ts` derives the split and owns the reasoning about why
- *  a view is safe to run unprompted. This module is the surface over it.
+ *  VIEWS are the pack's manual read-only rendering recipes, OPERATIONS are
+ *  manual tasks, and AUTOMATIONS are trigger-driven recipes linked to their
+ *  lifecycle controls. `pack-app-model.ts` derives the split and owns the
+ *  reasoning about why a view is safe to run unprompted. This module is the
+ *  surface over it.
  *
  *  ── Two things it deliberately does ───────────────────────────────
  *
@@ -105,9 +107,12 @@ import {
   initialOutputFilterState,
   outputTableEditConfig,
   outputTableEditInvocation,
+  outputFilterInvocation,
   outputFilterKey,
+  outputFilterSearchConfig,
   readWidgetValue,
   RefPicker,
+  renderReferenceLink,
   removeRow as gridRemoveRow,
   setCell as gridSetCell,
   setOutputFilterDraftValue,
@@ -124,16 +129,25 @@ import {
 } from '../recipes/result-table-edit-host.js';
 
 import type { PackAppRecipe, PackAppSurface } from './pack-app-model.js';
+import { projectPackAppNavigation } from './pack-app-navigation.js';
+import { serializeShellRoute } from '../shell/route.js';
 import {
   PACK_INSTALL_OFFER_STYLES,
   missingPacksFromError,
   renderPackInstallOffer,
 } from '../shell/pack-install-offer.js';
+import {
+  focusListTarget,
+  readListScroll,
+  restoreListScroll,
+  type ListScrollPosition,
+} from '../shell/list-preview-continuity.js';
 
 export const PACK_APP_ATTR = 'data-recued-pack-app';
 export const PACK_APP_VIEW_TAB_ATTR = 'data-recued-pack-app-view';
 export const PACK_APP_VIEW_PANEL_ATTR = 'data-recued-pack-app-view-panel';
 export const PACK_APP_OPERATION_ATTR = 'data-recued-pack-app-operation';
+export const PACK_APP_AUTOMATION_ATTR = 'data-recued-pack-app-automation';
 export const PACK_APP_RESULT_ATTR = 'data-recued-pack-app-result';
 export const PACK_APP_STATUS_ATTR = 'data-recued-pack-app-status';
 export const PACK_APP_MISSING_ATTR = 'data-recued-pack-app-missing';
@@ -163,14 +177,18 @@ export type PackAppRecordRefSearchCaller = (
 export interface MountPackAppViewOptions {
   host: HTMLElement;
   document?: Document;
+  /** Route-owned scroll container. Action results return to the exact browse
+   *  position instead of only repainting the prior result. */
+  scrollRoot?: HTMLElement;
   pack: PackListEntry;
   surface: PackAppSurface;
   /** Runs a view. Absent ⇒ views render as a "not available" note rather than
    *  as tabs that do nothing when pressed. */
   execute?: PackAppExecuteCaller;
-  /** Opens the shared Run | Schedule modal for an operation. Absent ⇒ the
-   *  operations bar is omitted (a button with no modal behind it is worse than
-   *  no button). The host owns the modal so one modal-at-a-time stays true
+  /** Opens the shared Run | Schedule modal for a manual operation. Absent ⇒
+   *  manual action rows are omitted (a button with no modal behind it is worse
+   *  than no button). Automation lifecycle links remain available. The host
+   *  owns the modal so one modal-at-a-time stays true
    *  across the whole route.
    *
    *  `prefill` carries a row action's `config` / `context` — that is how "the
@@ -260,13 +278,15 @@ export const mountPackAppView = (
   }
 
   const { surface } = opts;
+  const navigation = projectPackAppNavigation(
+    opts.pack.slug,
+    surface,
+    opts.initialViewId,
+  );
   const root = doc.createElement('div');
   root.setAttribute(PACK_APP_ATTR, opts.pack.slug);
 
-  let activeViewId: string | null =
-    surface.views.find((v) => v.recipe_id === opts.initialViewId)?.recipe_id
-    ?? surface.views[0]?.recipe_id
-    ?? null;
+  let activeViewId: string | null = navigation.activeViewId;
   let pendingViewTabFocus: string | null = null;
   /** Monotonic run token. A view switch during an in-flight run must not let
    *  the slower answer paint over the newer one — the classic stale-response
@@ -309,6 +329,121 @@ export const mountPackAppView = (
   let filterStates: ReadonlyMap<string, RecipesResultFilterState> = new Map();
   let gridStates: ReadonlyMap<string, OutputTableEditState> = new Map();
   let gridRefPickers: RefPicker.RefPickerHandle[] = [];
+  const scrollRoot = opts.scrollRoot ?? opts.host;
+  type ReturnFocus =
+    | { readonly kind: 'result-action'; readonly id: string }
+    | { readonly kind: 'result-action-group'; readonly id: string }
+    | { readonly kind: 'operation'; readonly id: string };
+  interface ReturnUiFrame {
+    readonly previous: RecipesResultPanelSnapshot;
+    readonly filters: ReadonlyMap<string, RecipesResultFilterState>;
+    readonly focus: ReturnFocus | null;
+    readonly scroll: ListScrollPosition;
+  }
+  /** Keyed by the detail panel that covers a prior list. Each frame owns only
+   * the immediate return, so nested row actions restore one level at a time. */
+  const returnUiFrames = new WeakMap<RecipesResultPanelSnapshot, ReturnUiFrame>();
+  let pendingReturnFocus: ReturnFocus | null = null;
+  let pendingReturnScroll: ListScrollPosition | null = null;
+
+  const carryReturnFrame = (
+    from: RecipesResultPanelSnapshot,
+    to: RecipesResultPanelSnapshot,
+  ): void => {
+    const frame = returnUiFrames.get(from);
+    if (frame !== undefined && to.previous === frame.previous) {
+      returnUiFrames.set(to, frame);
+    }
+  };
+
+  interface ViewRefreshResume {
+    readonly config: Record<string, unknown>;
+    readonly invocation: RecipeInvocation;
+    readonly filters: ReadonlyMap<string, RecipesResultFilterState>;
+  }
+
+  /** A mutating row action must refresh its parent list, but an unfiltered
+   * refresh would silently throw away the browse context. A rendered list has
+   * one authoritative filter invocation; replay its last executed values on
+   * page one, then re-apply any still-unsubmitted draft to the fresh controls. */
+  const refreshResumeFor = (
+    panel: RecipesResultPanelSnapshot,
+    filters: ReadonlyMap<string, RecipesResultFilterState>,
+  ): ViewRefreshResume | null => {
+    const candidates = resultOutputSections(panel.result).flatMap((section) => {
+      if (section.type !== 'filter') return [];
+      const descriptor = resolvedFilterDescriptor(section);
+      if (descriptor === null) return [];
+      const key = outputFilterKey(panel.result.recipe_id, descriptor);
+      const state = filters.get(key);
+      return state === undefined ? [] : [{ descriptor, state }];
+    });
+    // More than one independent filter has no single honest invocation to
+    // replay. Keep the refresh unfiltered in that uncommon ambiguous shape.
+    if (candidates.length !== 1) return null;
+    const [{ descriptor, state }] = candidates;
+    return {
+      config: outputFilterSearchConfig(descriptor, {
+        executed_values: state.executed_values,
+        draft_values: state.executed_values,
+        dirty: false,
+      }),
+      invocation: outputFilterInvocation(descriptor),
+      filters,
+    };
+  };
+
+  const restoreCompatibleFilterDrafts = (
+    saved: ReadonlyMap<string, RecipesResultFilterState>,
+  ): void => {
+    const next = new Map(filterStates);
+    for (const [key, fresh] of next) {
+      const previous = saved.get(key);
+      if (previous === undefined) continue;
+      next.set(key, {
+        ...fresh,
+        draft_values: { ...previous.draft_values },
+        dirty: previous.dirty,
+      });
+    }
+    filterStates = next;
+  };
+
+  const returnFocusFrom = (opener: HTMLElement | null | undefined): ReturnFocus | null => {
+    if (opener === null || opener === undefined) return null;
+    const action = opener.getAttribute(RECIPES_ROUTE_ACTION_ATTR);
+    if (action === 'run-result-action') {
+      const id = opener.getAttribute(RECIPES_ROUTE_RESULT_ACTION_ATTR);
+      return id === null ? null : { kind: 'result-action', id };
+    }
+    if (action === 'run-selected-result-action') {
+      const id = opener.getAttribute(RECIPES_ROUTE_RESULT_ACTION_SELECT_ATTR);
+      return id === null ? null : { kind: 'result-action-group', id };
+    }
+    const operation = opener.getAttribute(PACK_APP_OPERATION_ATTR);
+    return operation === null ? null : { kind: 'operation', id: operation };
+  };
+
+  const findReturnFocus = (focus: ReturnFocus | null): HTMLElement | null => {
+    if (focus === null) return null;
+    if (focus.kind === 'operation') {
+      return Array.from(root.querySelectorAll?.(`[${PACK_APP_OPERATION_ATTR}]`) ?? [])
+        .find((candidate) =>
+          candidate.getAttribute(PACK_APP_OPERATION_ATTR) === focus.id,
+        ) as HTMLElement | undefined ?? null;
+    }
+    const expectedAction = focus.kind === 'result-action'
+      ? 'run-result-action'
+      : 'run-selected-result-action';
+    const keyAttribute = focus.kind === 'result-action'
+      ? RECIPES_ROUTE_RESULT_ACTION_ATTR
+      : RECIPES_ROUTE_RESULT_ACTION_SELECT_ATTR;
+    return Array.from(root.querySelectorAll?.(`[${RECIPES_ROUTE_ACTION_ATTR}]`) ?? [])
+      .find((candidate) =>
+        candidate.getAttribute(RECIPES_ROUTE_ACTION_ATTR) === expectedAction
+        && candidate.getAttribute(keyAttribute) === focus.id,
+      ) as HTMLElement | undefined ?? null;
+  };
 
   const hasInFlightWork = (): boolean =>
     busy
@@ -392,7 +527,10 @@ export const mountPackAppView = (
   const errMessage = (err: unknown): string =>
     err instanceof Error ? err.message : String(err);
 
-  const runActiveView = (owner: 'refresh' | null = null): void => {
+  const runActiveView = (
+    owner: 'refresh' | null = null,
+    resume: ViewRefreshResume | null = null,
+  ): void => {
     const recipeId = activeViewId;
     const execute = opts.execute;
     if (recipeId === null || execute === undefined) return;
@@ -405,7 +543,8 @@ export const mountPackAppView = (
     paint();
     void execute({
       recipe_id: recipeId,
-      config: {},
+      config: resume?.config ?? {},
+      ...(resume === null ? {} : { invocation: resume.invocation }),
     })
       .then((res) => {
         if (disposed || token !== runToken) return;
@@ -418,6 +557,7 @@ export const mountPackAppView = (
         };
         viewNeedsRefresh = false;
         resetResultScopedState(res);
+        if (resume !== null) restoreCompatibleFilterDrafts(resume.filters);
       })
       .catch((err: unknown) => {
         if (disposed || token !== runToken) return;
@@ -457,7 +597,7 @@ export const mountPackAppView = (
       .then((res) => {
         if (disposed || token !== runToken || resultPanel !== panelAtDispatch) return;
         const previous = withoutRenderedRecipe(panelAtDispatch.previous, res.recipe_id);
-        resultPanel = {
+        const nextPanel: RecipesResultPanelSnapshot = {
           route_recipe_id: panelAtDispatch.route_recipe_id,
           source_recipe_id: panelAtDispatch.render_recipe_id,
           render_recipe_id: res.recipe_id,
@@ -465,6 +605,8 @@ export const mountPackAppView = (
           result: res,
           ...(previous !== undefined ? { previous } : {}),
         };
+        resultPanel = nextPanel;
+        carryReturnFrame(panelAtDispatch, nextPanel);
         resetResultScopedState(res);
       })
       .catch((err: unknown) => {
@@ -567,7 +709,7 @@ export const mountPackAppView = (
         invocation: outputTableEditInvocation(active.descriptor),
       });
       if (disposed || token !== runToken || resultPanel !== panelAtDispatch) return;
-      resultPanel = {
+      const nextPanel: RecipesResultPanelSnapshot = {
         route_recipe_id: panelAtDispatch.route_recipe_id,
         source_recipe_id: panelAtDispatch.render_recipe_id,
         render_recipe_id: nextResult.recipe_id,
@@ -577,6 +719,8 @@ export const mountPackAppView = (
           ? { previous: panelAtDispatch.previous }
           : {}),
       };
+      resultPanel = nextPanel;
+      carryReturnFrame(panelAtDispatch, nextPanel);
       resetResultScopedState(nextResult);
       paint();
     } catch (err) {
@@ -656,7 +800,7 @@ export const mountPackAppView = (
   };
 
   const selectView = (recipeId: string, focusActivatedTab = false): void => {
-    if (!surface.views.some((v) => v.recipe_id === recipeId)) return;
+    if (!navigation.nodes.some((node) => node.id === recipeId)) return;
     const alreadyShowingView = recipeId === activeViewId
       && resultPanel !== null
       && resultPanel.render_recipe_id === recipeId
@@ -725,16 +869,16 @@ export const mountPackAppView = (
   };
 
   const renderViewTabs = (): string => {
-    if (surface.views.length === 0) return '';
-    const tabs = surface.views.map((view) => `
+    if (navigation.nodes.length === 0) return '';
+    const tabs = navigation.nodes.map((view) => `
       <button type="button" role="tab"
         class="pack-app-view-tab"
-        id="${escapeHtml(packAppViewTabDomId(view.recipe_id))}"
+        id="${escapeHtml(packAppViewTabDomId(view.id))}"
         aria-controls="${PACK_APP_VIEW_PANEL_ID}"
-        aria-selected="${view.recipe_id === activeViewId ? 'true' : 'false'}"
-        tabindex="${view.recipe_id === activeViewId ? '0' : '-1'}"
+        aria-selected="${view.id === activeViewId ? 'true' : 'false'}"
+        tabindex="${view.id === activeViewId ? '0' : '-1'}"
         title="${escapeHtml(view.description)}"
-        ${PACK_APP_VIEW_TAB_ATTR}="${escapeHtml(view.recipe_id)}">${escapeHtml(view.name)}</button>
+        ${PACK_APP_VIEW_TAB_ATTR}="${escapeHtml(view.id)}">${escapeHtml(view.label)}</button>
     `).join('');
     return `<nav class="pack-app-views" role="tablist"
       aria-label="${escapeHtml(opts.pack.name)} views">${tabs}</nav>`;
@@ -775,7 +919,6 @@ export const mountPackAppView = (
         opts.recordRefSearchCaller !== undefined,
         {
           heading: null,
-          show_provenance: false,
           show_run_metrics: false,
           return_label: 'back',
         },
@@ -789,7 +932,11 @@ export const mountPackAppView = (
       return `<p class="pack-app-note" ${PACK_APP_EMPTY_ATTR}="">`
         + (surface.lookups.length > 0
           ? 'Choose what you want to review below. Its result will stay here.'
-          : 'Choose an action below to get started. Its result will stay here.')
+          : surface.operations.length > 0
+            ? 'Choose an action below to get started. Its result will stay here.'
+            : surface.automations.length > 0
+              ? 'Manage this pack’s trigger-driven recipes below.'
+              : 'This pack has no available workspace actions.')
         + '</p>';
     }
     return '';
@@ -819,11 +966,37 @@ export const mountPackAppView = (
     </section>`;
   };
 
+  const renderAutomations = (): string => {
+    if (surface.automations.length === 0) return '';
+    const cards = surface.automations.map((automation) => `
+      <article class="pack-app-automation-card">
+        <span class="pack-app-operation-name">${escapeHtml(automation.name)}</span>
+        ${automation.description === '' ? '' : `<span class="pack-app-operation-description">${escapeHtml(automation.description)}</span>`}
+        ${renderReferenceLink({
+          label: 'Manage',
+          referenceId: automation.recipe_id,
+          href: serializeShellRoute('automation', automation.recipe_id),
+          className: 'pack-app-automation-manage',
+          ariaLabel: `Manage automation for ${automation.name} (${automation.recipe_id})`,
+          attributes: { [PACK_APP_AUTOMATION_ATTR]: automation.recipe_id },
+        })}
+      </article>
+    `).join('');
+    return `<section class="pack-app-operations">
+      <header class="pack-app-operations-header">
+        <h3 class="pack-app-operations-title">Automation</h3>
+        <p class="pack-app-operations-description">These recipes wait for their own triggers. Review, pause, or arm them in Automation.</p>
+      </header>
+      <div class="pack-app-operations-grid">${cards}</div>
+    </section>`;
+  };
+
   /** Lookups first, then writes. Two rows rather than one: pressing "Tenant
    *  statement" and pressing "End a tenancy" are not the same kind of act, and
    *  one undifferentiated bar of eleven buttons says they are. */
   const renderOperations = (): string => {
-    if (opts.openRunModal === undefined) return '';
+    const automations = renderAutomations();
+    if (opts.openRunModal === undefined) return automations;
     return renderRunnableRow(
       'Find and review',
       'Choose a record or period, then keep the returned detail in this workspace.',
@@ -834,7 +1007,7 @@ export const mountPackAppView = (
       'Complete a business task, review its receipt, and return to an updated view.',
       surface.operations,
       'action',
-    );
+    ) + automations;
   };
 
   /** A pack whose manifest ships recipes this server does not have is REPORTED.
@@ -926,12 +1099,28 @@ export const mountPackAppView = (
         pendingViewTabFocus = null;
       }
     }
+    if (pendingReturnScroll !== null && !busy) {
+      const target = findReturnFocus(pendingReturnFocus)
+        ?? (activeViewId === null
+          ? null
+          : Array.from(root.querySelectorAll?.(
+              `[${PACK_APP_VIEW_TAB_ATTR}]`,
+            ) ?? []).find((candidate) =>
+              candidate.getAttribute(PACK_APP_VIEW_TAB_ATTR) === activeViewId,
+            ) as HTMLElement | undefined)
+        ?? root;
+      focusListTarget(target);
+      restoreListScroll(scrollRoot, pendingReturnScroll);
+      pendingReturnFocus = null;
+      pendingReturnScroll = null;
+    }
   };
 
   const openPackRecipe = (
     entry: ServerRecipeListEntry,
     prefill?: { config?: Record<string, unknown>; context?: Record<string, unknown> },
     sourceRecipeId: string | null = entry.recipe_id,
+    returnOpener?: HTMLElement | null,
   ): void => {
     const open = opts.openRunModal;
     if (open === undefined) {
@@ -956,18 +1145,27 @@ export const mountPackAppView = (
     // write. That costs a refresh; treating an unknown target as a lookup could
     // leave stored state stale after a row action.
     const mayWrite = !explicitlyReadOnly;
+    const originPanel = resultPanel;
+    const returnFrame = originPanel === null
+      ? null
+      : {
+          previous: originPanel,
+          filters: new Map(filterStates),
+          focus: returnFocusFrom(returnOpener ?? doc.activeElement as HTMLElement | null),
+          scroll: readListScroll(scrollRoot),
+        } satisfies ReturnUiFrame;
     open(entry, (nextResult) => {
       if (disposed) return;
       runToken += 1;
       busy = false;
       busyOwner = null;
       error = null;
-    missingPacks = null;
+      missingPacks = null;
       const previous = withoutRenderedRecipe(
         resultPanel ?? undefined,
         nextResult.recipe_id,
       );
-      resultPanel = {
+      const nextPanel: RecipesResultPanelSnapshot = {
         route_recipe_id: activeViewId ?? entry.recipe_id,
         source_recipe_id: sourceRecipeId,
         render_recipe_id: nextResult.recipe_id,
@@ -975,6 +1173,10 @@ export const mountPackAppView = (
         result: nextResult,
         ...(previous !== undefined ? { previous } : {}),
       };
+      resultPanel = nextPanel;
+      if (returnFrame !== null && previous === returnFrame.previous) {
+        returnUiFrames.set(nextPanel, returnFrame);
+      }
       if (
         activeViewId !== null
         && mayWrite
@@ -990,7 +1192,8 @@ export const mountPackAppView = (
   };
 
   const restorePreviousResult = (): void => {
-    const previous = resultPanel?.previous;
+    const currentPanel = resultPanel;
+    const previous = currentPanel?.previous;
     if (previous === undefined) return;
     if ([...gridStates.values()].some((state) => state.busy)) return;
     if (!mayDiscardGridEdits()) return;
@@ -998,15 +1201,30 @@ export const mountPackAppView = (
       && previous.render_recipe_id === activeViewId
       && previous.previous === undefined
       && previous.origin !== 'result-action';
+    const returnFrame = currentPanel === null
+      ? undefined
+      : returnUiFrames.get(currentPanel);
+    if (returnFrame !== undefined && returnFrame.previous === previous) {
+      pendingReturnFocus = returnFrame.focus;
+      pendingReturnScroll = returnFrame.scroll;
+    }
     if (viewNeedsRefresh && returnsToBrowseView) {
       resultPanel = null;
       error = null;
-    missingPacks = null;
-      runActiveView();
+      missingPacks = null;
+      runActiveView(
+        null,
+        returnFrame === undefined
+          ? null
+          : refreshResumeFor(returnFrame.previous, returnFrame.filters),
+      );
       return;
     }
     resultPanel = previous;
     resetResultScopedState(previous.result);
+    if (returnFrame !== undefined && returnFrame.previous === previous) {
+      filterStates = new Map(returnFrame.filters);
+    }
     error = null;
     missingPacks = null;
     paint();
@@ -1018,7 +1236,10 @@ export const mountPackAppView = (
    *  carries an opaque id and the panel only put it there after checking the
    *  target is installed and runnable. A `confirm` string is honoured before
    *  anything opens, because a row action may be destructive. */
-  const runResultAction = (actionId: string | null): void => {
+  const runResultAction = (
+    actionId: string | null,
+    opener?: HTMLElement | null,
+  ): void => {
     if (actionId === null || registry === null) return;
     const action: RecipeOutputAction | undefined = registry.actions.get(actionId);
     if (action === undefined) return;
@@ -1035,7 +1256,7 @@ export const mountPackAppView = (
     openPackRecipe(entry, {
       config: action.config ?? {},
       context: action.context ?? {},
-    }, resultPanel?.render_recipe_id ?? null);
+    }, resultPanel?.render_recipe_id ?? null, opener);
   };
 
   const onClick = (ev: Event): void => {
@@ -1064,7 +1285,10 @@ export const mountPackAppView = (
       `[${RECIPES_ROUTE_ACTION_ATTR}="run-result-action"]`,
     ) as HTMLElement | null;
     if (resultAction !== null) {
-      runResultAction(resultAction.getAttribute(RECIPES_ROUTE_RESULT_ACTION_ATTR));
+      runResultAction(
+        resultAction.getAttribute(RECIPES_ROUTE_RESULT_ACTION_ATTR),
+        resultAction,
+      );
       return;
     }
     const grouped = target.closest(
@@ -1075,7 +1299,7 @@ export const mountPackAppView = (
       const select = groupId === null ? null : root.querySelector(
         `[${RECIPES_ROUTE_RESULT_ACTION_SELECT_ATTR}="${groupId}"]`,
       ) as HTMLSelectElement | null;
-      runResultAction(select?.value ?? null);
+      runResultAction(select?.value ?? null, grouped);
       return;
     }
     const fileBtn = target.closest(
@@ -1165,7 +1389,7 @@ export const mountPackAppView = (
         paint();
         return;
       }
-      openPackRecipe(entry);
+      openPackRecipe(entry, undefined, entry.recipe_id, op);
     }
   };
 
@@ -1176,16 +1400,16 @@ export const mountPackAppView = (
     const tab = target.closest(`[${PACK_APP_VIEW_TAB_ATTR}]`) as HTMLElement | null;
     const currentId = tab?.getAttribute(PACK_APP_VIEW_TAB_ATTR) ?? null;
     if (currentId === null) return;
-    const currentIndex = surface.views.findIndex(
-      (view) => view.recipe_id === currentId,
+    const currentIndex = navigation.nodes.findIndex(
+      (view) => view.id === currentId,
     );
     if (currentIndex < 0) return;
     let nextIndex: number | null = null;
     if (event.key === 'ArrowRight') {
-      nextIndex = (currentIndex + 1) % surface.views.length;
+      nextIndex = (currentIndex + 1) % navigation.nodes.length;
     } else if (event.key === 'ArrowLeft') {
-      nextIndex = (currentIndex - 1 + surface.views.length)
-        % surface.views.length;
+      nextIndex = (currentIndex - 1 + navigation.nodes.length)
+        % navigation.nodes.length;
     } else if (event.key === 'Home') {
       nextIndex = 0;
     } else if (event.key === 'End') {
@@ -1193,7 +1417,7 @@ export const mountPackAppView = (
     }
     if (nextIndex === null) return;
     event.preventDefault();
-    const nextId = surface.views[nextIndex]?.recipe_id;
+    const nextId = navigation.nodes[nextIndex]?.id;
     if (nextId !== undefined && nextId !== currentId) {
       selectView(nextId, true);
     }
@@ -1357,6 +1581,14 @@ ${PACK_INSTALL_OFFER_STYLES}
   appearance: none; display: grid; gap: 5px; align-content: start; min-height: 76px;
   padding: 12px; text-align: left; font: inherit; color: var(--fg); cursor: pointer;
   border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+}
+[${PACK_APP_ATTR}] .pack-app-automation-card {
+  display: grid; gap: 5px; align-content: start; min-height: 76px;
+  padding: 12px; color: var(--fg);
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+}
+[${PACK_APP_ATTR}] .pack-app-automation-manage {
+  width: fit-content; margin-top: 4px; font-size: 12px; font-weight: 650;
 }
 [${PACK_APP_ATTR}] .pack-app-operation:hover {
   border-color: var(--border-strong); background: var(--surface-subtle);

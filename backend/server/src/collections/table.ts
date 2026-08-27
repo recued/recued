@@ -67,6 +67,15 @@ export const MAX_LIST_LIMIT = 500;
 const DEFAULT_LIST_LIMIT = 50;
 
 export interface CollectionTable {
+  /** Records ADJACENT IN TIME to an anchor, in a chosen direction — the reply
+   *  direction (`next`) or the context direction (`prev`).
+   *
+   *  Exists because a conversational answer repeats none of the question's
+   *  vocabulary, so no query finds it; only walking outward from a message that
+   *  DID match can. Adjacency is by correspondents OR thread, so a provider
+   *  that threads badly degrades rather than returning nothing. */
+  neighbours(query: NeighbourQuery): CollectionRecord[];
+
   /** Insert or replace the record keyed by `record_id`. Returns the
    *  prior record when this was an update, `null` on first insert.
    *  Callers can inspect the prior record's `blob_hash` to decide
@@ -351,8 +360,16 @@ const validateRecord = (rec: CollectionRecord): void => {
  *  reserved-word stem (`OR*` / `AND* `/ `NOT*`) still raises an FTS5 syntax
  *  error, but `"OR"*` is accepted and keeps prefix behavior. Returns null
  *  when the query has no word tokens (all punctuation) — the caller then
- *  returns no matches rather than issuing an invalid empty MATCH. */
-const toFtsMatch = (raw: string): string | null => {
+ *  returns no matches rather than issuing an invalid empty MATCH.
+ *
+ *  ⛔ EXPORTED so every FTS-backed collection shares ONE definition of the
+ *  trailing-`*` convention. Three stores used to disagree about it silently:
+ *  this one produced a real prefix (`"tok"*`), `contact-store` quoted the whole
+ *  token (`"tok*"`, asterisk swallowed by the tokenizer) and `calendar-table`
+ *  stripped `*` as punctuation before matching. Same query string, three
+ *  behaviours, no error anywhere — and for a prefix probe that means a FALSE
+ *  ZERO, which is exactly what makes a caller skip a store that has the data. */
+export const toFtsMatch = (raw: string): string | null => {
   const tokens = raw.match(/[\p{L}\p{N}]+\*?/gu);
   if (!tokens || tokens.length === 0) return null;
   return tokens
@@ -372,6 +389,343 @@ const toFtsMatch = (raw: string): string | null => {
  *  from-count short-circuit, which defers non-ASCII addresses to the LLM)
  *  handle it above this layer. */
 const asciiLower = (s: string): string => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+
+
+/** D-INDEX — the EMPTY-RESULT relaxation rung, shared by every FTS-backed
+ *  collection. Given a plain-word query that matched nothing, return an
+ *  expression over PREFIX forms of only those tokens the index actually
+ *  contains, ANDed — or null when no token is present at all.
+ *
+ *  ⛔ WHY DROP-ABSENT AND NOT `OR`. The failing case is a model asking
+ *  "Thornfield payment terms" of a mailbox holding "Thornfields — invoicing
+ *  note". Exact-AND fails on the plural; prefix-AND STILL fails, because
+ *  `payment` and `terms` appear nowhere. The naive fix — OR the tokens — would
+ *  "succeed" by returning every mail containing `payment`, handing the model
+ *  confidently irrelevant rows to answer from. Measured in this exact scenario,
+ *  a run with nothing to go on invented `Net 30, 2% early payment discount`.
+ *  Dropping absent tokens NEVER widens past what the corpus holds: the query
+ *  degrades to `"Thornfield"*`, which is the one token that means anything here.
+ *
+ *  🔑 Cheap by construction: one capped existence probe per token, measured at
+ *  ~0.02ms regardless of corpus size or term frequency (`LIMIT 1` with no
+ *  `ORDER BY rank` never scores the full match set). It runs ONLY after a miss,
+ *  so the hit path is untouched. */
+/** Share of a search's limit reserved for the most RECENT matches.
+ *
+ *  ⛔⛔ WITHOUT THIS, A CORRECTION IS EVICTED BY THE THING IT CORRECTS. FTS5
+ *  `rank` is BM25: it rewards term frequency and penalises document length, so a
+ *  long old thread that repeats "Ridgeway renewal notice period" outranks a
+ *  one-line "Update: Ridgeway is now 90 days" sent yesterday. Reproduced on this
+ *  exact schema — 30 repetitive old rows and one recent correction, `ORDER BY
+ *  rank LIMIT 20` returned the 20 old ones and DROPPED the correction entirely.
+ *  The model then answers confidently from a superseded record, which reads as
+ *  fabrication and is not.
+ *
+ *  ⚠ Eviction is routine, not an edge case: on a 50k-message corpus a
+ *  correspondent's name matches 1,616 rows and `invoice` 317, against a default
+ *  limit of 20 — ~99% of matches are dropped, and which 20 survive currently
+ *  makes no reference to time at all.
+ *
+ *  Relevance still orders the result; recency just stops being truncatable. */
+const RECENCY_FLOOR_FRACTION = 0.25;
+
+/** How many full matches the partial pass will exclude. Bounded because the
+ *  point is to skip what the AND already returned, not to enumerate a corpus:
+ *  past this many stale full matches the slots degrade to "some of them", which
+ *  is the pre-fix behaviour and no worse. */
+const FULL_MATCH_EXCLUSION_CAP = 2_000;
+
+/** How many partial slots a page reserves. Tunable because the cost is paid on
+ *  EVERY search — including the majority where nothing needs correcting — while
+ *  the benefit only lands when a re-phrased correction exists. Coverage is
+ *  measured deterministically against the position matrix, so the leanest count
+ *  that holds coverage is a measurement, not a guess. */
+const partialSlotCount = (limit: number): number => {
+  const raw = Number(process.env.RECUED_PARTIAL_SLOT_COUNT);
+  if (Number.isFinite(raw) && raw >= 0) return Math.floor(raw);
+  // 15%, not 25%: measured, recency ordering reaches the correction 6/6 at
+  // EVERY noise level with a single slot, so extra slots buy coverage that is
+  // already there and cost ~700 tokens each on every search. Kept above 1
+  // because a lone slot is a coin flip when the correction and a distractor
+  // share a timestamp, which is ordinary.
+  return Math.max(1, Math.floor(limit * 0.15));
+};
+
+export const relaxToPresentPrefixTokens = (
+  db: Database.Database,
+  ftsName: string,
+  raw: string,
+): string | null => {
+  // Only relax a PLAIN-WORD query. A caller who wrote real FTS5 syntax
+  // (`OR` / `NEAR` / `"phrase"` / an explicit `fox*`) asked for something
+  // specific, and quietly broadening it would answer a different question.
+  // ⛔ AND / OR / NOT / NEAR ARE OPERATORS MADE ENTIRELY OF LETTERS, so a
+  // charset test alone lets `thornfield OR nothingmatches` through as "plain
+  // words" and quietly rewrites a deliberate expression. Caught by a test that
+  // expected the query left alone and got a relaxed match back.
+  if (!/^[\p{L}\p{N}\s]+$/u.test(raw.trim())) return null;
+  if (/(?:^|\s)(?:AND|OR|NOT|NEAR)(?:\s|$)/.test(raw)) return null;
+  const tokens = raw.match(/[\p{L}\p{N}]+/gu);
+  if (!tokens || tokens.length === 0) return null;
+  const probe = db.prepare(
+    `SELECT 1 FROM ${ftsName} WHERE ${ftsName} MATCH ? LIMIT 1`,
+  );
+  const present: string[] = [];
+  for (const t of new Set(tokens)) {
+    const expr = `"${t.replace(/"/g, '""')}"*`;
+    try {
+      if (probe.get(expr) !== undefined) present.push(expr);
+    } catch {
+      // A token that can't be expressed is simply not usable for relaxation.
+    }
+  }
+  if (present.length === 0) return null;
+  return present.join(' ');
+};
+
+/** The recency-floor merge, shared by every FTS-backed collection.
+ *
+ *  Returns the relevance-ordered page with the most-recent matches guaranteed
+ *  present. `dateColumn` differs per store on purpose: mail uses `received_at`
+ *  (when it arrived), calendar `modified_at` (when the event last CHANGED —
+ *  a rescheduled meeting is exactly the correction case, and its `received_at`
+ *  may be months old).
+ *
+ *  ⛔ RESERVE ONLY FOR RECENT ROWS THE RANK PASS MISSED. Reserving the whole
+ *  floor unconditionally under-fills the page: most recent rows are already in
+ *  the rank result, so those slots buy nothing and the caller silently gets
+ *  fewer rows than it asked for (measured: 16 returned for a limit of 20).
+ *
+ *  ⛔ RERUNS THE SAME EXPRESSION the rank pass used, so it can never widen the
+ *  match set — a floor that surfaced rows relevance never considered would be
+ *  inventing results, not preserving them. */
+export const applyRecencyFloor = <T extends { key: string }>(
+  db: Database.Database,
+  opts: {
+    ftsName: string; tableName: string; dateColumn: string;
+    expr: string; limit: number; matches: T[];
+  },
+): T[] => {
+  const { ftsName, tableName, dateColumn, expr, limit, matches } = opts;
+  // Only when the page is actually TRUNCATED: under the limit everything
+  // matching is already returned and this would be pure cost.
+  if (matches.length < limit) return matches;
+  const floorN = Math.max(1, Math.floor(limit * RECENCY_FLOOR_FRACTION));
+  try {
+    const recent = db.prepare(`
+      SELECT key, rank,
+             snippet(${ftsName}, 1, '<b>', '</b>', '…', 15) AS snippet
+      FROM ${ftsName}
+      WHERE ${ftsName} MATCH ?
+      ORDER BY (
+        SELECT ${dateColumn} FROM ${tableName}
+        WHERE ${tableName}.record_id = ${ftsName}.key
+      ) DESC
+      LIMIT ?
+    `).all(expr, floorN) as T[];
+    const present = new Set(matches.map((r) => r.key));
+    const missing = recent.filter((r) => !present.has(r.key));
+    if (missing.length === 0) return matches;
+    const budget = Math.max(0, limit - missing.length);
+    return [...matches.slice(0, budget), ...missing].slice(0, limit);
+  } catch {
+    // An improvement, not a dependency: on any failure relevance order stands.
+    return matches;
+  }
+};
+
+/** Rows matching only SOME of the query's terms — BM25 over an OR of them, with
+ *  the full-match set removed.
+ *
+ *  ⛔⛔ RANK WITH BM25, NOT TERM-PRESENCE WEIGHTS. Measured on 50k real
+ *  messages: weighting by which-terms-matched scored EVERY candidate
+ *  identically (2,999 rows tied), making the slots an arbitrary draw — one
+ *  returned an eBay baseball-card receipt for `invoice payment terms`. BM25 uses
+ *  term frequency and document length, so ranks differ and the same query
+ *  returns "Re: Payment of Invoices", "letter regarding payment of invoices",
+ *  "PG&E Payments". Precision ~1.5/4 -> ~3.5/4.
+ *
+ *  ⛔ SUBTRACT THE FULL-MATCH SET FIRST. Rows matching every term outscore
+ *  partial ones on any sane ranking, so without the subtraction these slots just
+ *  re-elect what the AND already returned. BOTH of my prototypes made exactly
+ *  that mistake before the corpus caught it.
+ *
+ *  ⚠ Coverage limit, measured: a correction sharing TWO terms with the query
+ *  surfaces at any competitive depth; one sharing a SINGLE rare term surfaces
+ *  only while fewer than ~4 newer rows share that term. An information limit,
+ *  not a ranking one. */
+const partialMatches = (
+  db: Database.Database,
+  ftsName: string,
+  tableName: string,
+  terms: readonly string[],
+  slots: number,
+  fullKeys: ReadonlySet<string>,
+): Array<{ key: string; rank: number; snippet: string }> => {
+  if (terms.length < 2 || slots <= 0) return [];
+  const orExpr = terms.map((t) => `"${t.replace(/"/g, '""')}"*`).join(' OR ');
+  // ⛔ ORDER BY RECENCY, NOT RELEVANCE. Measured: with ~20+ competing partial
+  // rows, BM25 ordering finds the correction in 2/6 cells at ANY slot count —
+  // it cannot tell a correction from the many similar partial matches a real
+  // corpus carries (one query on 50k messages had 2,999 of them). What DOES
+  // separate them is time: a correction is recent, and most partial noise is
+  // not. Relevance already had its pass — these slots are the recency lane.
+  // ⛔⛔ SPLIT THE LANE — NEITHER ORDERING DOMINATES, AND EACH SWEEP I RAN WAS
+  // BIASED TOWARD THE ONE IT TESTED.
+  //   · RECENCY finds a correction newer than the partial noise. Measured 6/6
+  //     at every noise level with ONE slot, where BM25 managed 2/6 at five.
+  //   · BM25 finds a correction that is OLDER than the noise but a better
+  //     lexical fit — the case recency loses outright (phrase 2/3, 5 stale,
+  //     20 newer rows all fresher than the truth).
+  // A fixture with a recent truth proves recency; one with an older truth proves
+  // relevance. Both are real, so the slots are split rather than chosen.
+  // ⛔⛔ THREAD-LINKED FIRST — THE ONLY SIGNAL HERE THAT ACTUALLY SEPARATES A
+  // CORRECTION FROM CHATTER. Ordering lanes cannot: a decoy that is newer wins
+  // recency, a decoy that is terser wins BM25, and the trap harness showed both
+  // happening while the real correction went unsurfaced. But a correction is
+  // usually a REPLY — it shares a thread with the record it corrects — and
+  // ambient traffic does not. Measured on the trap fixture: the correction was
+  // the top thread-linked candidate while both decoys, on other threads, were
+  // excluded outright.
+  const threadLane = (n: number): Array<{ key: string; rank: number; snippet: string }> => {
+    if (n <= 0 || fullKeys.size === 0) return [];
+    try {
+      const threads = new Set<string>();
+      for (const k of fullKeys) {
+        const row = db.prepare(
+          `SELECT hot_fields FROM ${tableName} WHERE record_id = ?`,
+        ).get(k) as { hot_fields?: string } | undefined;
+        if (!row?.hot_fields) continue;
+        const tid = (JSON.parse(row.hot_fields) as Record<string, unknown>).thread_id;
+        if (typeof tid === 'string' && tid.length > 0) threads.add(tid);
+      }
+      if (threads.size === 0) return [];
+      const placeholders = [...threads].map(() => '?').join(',');
+      return db.prepare(`
+        SELECT f.key AS key, 0 AS rank,
+               snippet(${ftsName}, 1, '<b>', '</b>', '…', 15) AS snippet
+        FROM ${ftsName} f
+        JOIN ${tableName} d ON d.record_id = f.key
+        WHERE ${ftsName} MATCH ?
+          AND json_extract(d.hot_fields, '$.thread_id') IN (${placeholders})
+        ORDER BY d.received_at DESC
+        LIMIT ?
+      `).all(orExpr, ...threads, n + fullKeys.size)
+        .filter((r) => !fullKeys.has((r as { key: string }).key))
+        .slice(0, n) as Array<{ key: string; rank: number; snippet: string }>;
+    } catch {
+      return [];
+    }
+  };
+
+  const half = Math.max(1, Math.ceil(slots / 2));
+  const dateOrder =
+    `(SELECT received_at FROM ${tableName} WHERE ${tableName}.record_id = ${ftsName}.key) DESC`;
+  const fetch = (order: string, n: number) => db.prepare(`
+      SELECT key, rank, snippet(${ftsName}, 1, '<b>', '</b>', '…', 15) AS snippet
+      FROM ${ftsName}
+      WHERE ${ftsName} MATCH ?
+      ORDER BY ${order}
+      LIMIT ?
+    `).all(orExpr, n + fullKeys.size) as Array<{ key: string; rank: number; snippet: string }>;
+  try {
+    // Priority: thread-linked, then newest, then best-matching.
+    const byThread = threadLane(Math.max(1, Math.floor(slots / 3)));
+    const claimed = new Set(byThread.map((r) => r.key));
+    const byDate = fetch(dateOrder, half)
+      .filter((r) => !fullKeys.has(r.key) && !claimed.has(r.key))
+      .slice(0, Math.max(0, half - byThread.length));
+    const taken = new Set([...claimed, ...byDate.map((r) => r.key)]);
+    const byRank = fetch('rank', slots)
+      .filter((r) => !fullKeys.has(r.key) && !taken.has(r.key))
+      .slice(0, Math.max(0, slots - byThread.length - byDate.length));
+    return [...byThread, ...byDate, ...byRank];
+  } catch {
+    return [];
+  }
+};
+
+
+/** Messages that sit in a MATCHED THREAD but match no query term themselves.
+ *
+ *  ⛔⛔ EVERY OTHER MECHANISM HERE IS DOWNSTREAM OF "THE ROW MATCHES SOME TERM",
+ *  AND THE ANSWER OFTEN MATCHES NONE. A thread is a conversation:
+ *      msg1  "Ridgeway renewal notice period: move from 30d to 90d?"   ← matches
+ *      msg2  "no lets be fair & change it to 60d so we can both be happy" ← the ANSWER
+ *  msg2 carries no query term at all, so it is not in the AND set, not in the
+ *  relaxed set, and not even an OR candidate — the partial lanes cannot reach
+ *  it, including the thread-linked one, which still filters the OR set.
+ *
+ *  Lexical retrieval structurally cannot find a conversational reply. Pulling
+ *  thread neighbours is not a ranking tweak; it is the only way such a row
+ *  becomes visible at all.
+ *
+ *  ⚠ Bounded per thread and per page: a long thread would otherwise flood the
+ *  result with everything anyone said. Newest-first, because a reply that
+ *  supersedes comes after the message it answers. */
+const threadNeighbours = (
+  db: Database.Database,
+  tableName: string,
+  seedKeys: ReadonlySet<string>,
+  perThread: number,
+  budget: number,
+): Array<{ key: string; rank: number; snippet: string }> => {
+  if (seedKeys.size === 0 || budget <= 0) return [];
+  try {
+    const threads = new Set<string>();
+    for (const k of seedKeys) {
+      const row = db.prepare(`SELECT hot_fields FROM ${tableName} WHERE record_id = ?`)
+        .get(k) as { hot_fields?: string } | undefined;
+      if (!row?.hot_fields) continue;
+      const tid = (JSON.parse(row.hot_fields) as Record<string, unknown>).thread_id;
+      if (typeof tid === 'string' && tid.length > 0) threads.add(tid);
+    }
+    if (threads.size === 0) return [];
+    const out: Array<{ key: string; rank: number; snippet: string }> = [];
+    for (const tid of threads) {
+      if (out.length >= budget) break;
+      const rows = db.prepare(`
+        SELECT record_id AS key, body_inline
+        FROM ${tableName}
+        WHERE json_extract(hot_fields, '$.thread_id') = ?
+        ORDER BY received_at DESC
+        LIMIT ?
+      `).all(tid, perThread + seedKeys.size) as Array<{ key: string; body_inline: string | null }>;
+      for (const r of rows) {
+        if (out.length >= budget) break;
+        if (seedKeys.has(r.key)) continue;
+        out.push({ key: r.key, rank: 0, snippet: (r.body_inline ?? '').slice(0, 160) });
+        if (out.filter((x) => x.key === r.key).length >= perThread) break;
+      }
+    }
+    return out.slice(0, budget);
+  } catch {
+    return [];
+  }
+};
+
+/** Messages ADJACENT IN TIME to an anchor record, in a chosen direction.
+ *
+ *  🔑 DIRECTION IS THE POINT. The answer to a question comes AFTER it; the
+ *  context for a claim comes BEFORE. A thread filter returns the exchange
+ *  undifferentiated and the caller pays for messages it does not need, then has
+ *  to work out the order itself.
+ *
+ *  ⛔ ADJACENCY IS BY CORRESPONDENTS, NOT `thread_id`. Threading is
+ *  provider-supplied and often absent or wrong; who the mail is between is
+ *  intrinsic to the record. `thread_id` is used as a NARROWING hint when the
+ *  anchor carries one, never as the requirement.
+ *
+ *  This exists because a conversational answer is unreachable by search — it
+ *  repeats none of the question's vocabulary — so no query, however relaxed,
+ *  finds it. Only walking outward from a message that DID match can. */
+export interface NeighbourQuery {
+  readonly anchor_id: string;
+  /** Messages after the anchor, oldest-first (the reply direction). */
+  readonly next?: number;
+  /** Messages before the anchor, newest-first (the context direction). */
+  readonly prev?: number;
+}
 
 export const createCollectionTable = (
   opts: CreateCollectionTableOptions,
@@ -648,10 +1002,14 @@ export const createCollectionTable = (
     const stmt = db.prepare(sql);
     type FtsRow = { key: string; rank: number; snippet: string };
     let matches: FtsRow[];
+    // Which expression actually produced `matches` — the recency pass must run
+    // the SAME one, or it would surface rows the relevance pass never saw.
+    let usedExpr: string | null = null;
     try {
       // Try the query as a raw FTS5 expression first — preserves OR / NOT /
       // NEAR / prefix (`fox*`) / phrase / grouping for callers that use them.
       matches = stmt.all(query.query, limit) as FtsRow[];
+      usedExpr = query.query;
     } catch {
       // Invalid FTS5 (an email / path query's `.` / `@` raises a syntax
       // error) — retry with the query reduced to safe quoted word-tokens
@@ -659,7 +1017,80 @@ export const createCollectionTable = (
       const safe = toFtsMatch(query.query);
       if (safe === null) return [];
       matches = stmt.all(safe, limit) as FtsRow[];
+      usedExpr = safe;
     }
+    if (matches.length === 0) {
+      // Nothing matched. Before reporting an empty store — which the caller
+      // cannot distinguish from "you have no mail about this" — retry over the
+      // tokens the index actually holds, in prefix form.
+      const relaxed = relaxToPresentPrefixTokens(db, ftsName, query.query);
+      if (relaxed !== null) {
+        try {
+          matches = stmt.all(relaxed, limit) as FtsRow[];
+          usedExpr = relaxed;
+        } catch {
+          matches = [];
+        }
+      }
+    }
+    // ── RECENCY FLOOR ──────────────────────────────────────────────────────
+    if (usedExpr !== null) {
+      matches = applyRecencyFloor(db, {
+        ftsName, tableName, dateColumn: 'received_at',
+        expr: usedExpr, limit, matches,
+      });
+    }
+    // ── PARTIAL SLOTS (opt-in) ─────────────────────────────────────────────
+    // The correction that RE-PHRASES is not evicted — it is never RETRIEVED,
+    // because the query ANDs terms it does not carry ("actually Ridgeway is 90
+    // days" has neither "renewal" nor "notice"). These slots surface it,
+    // LABELLED, so the reader can weigh it rather than being handed it as an
+    // equal. The label is the point: unlabelled it is indistinguishable from
+    // evidence the query actually asked for.
+    const partialKeys = new Set<string>();
+    // Kept apart from `partialKeys`: these matched NOTHING, and saying so is the
+    // point — the label has to be honest about why a weak row is on the page.
+    const threadKeys = new Set<string>();
+    if (process.env.RECUED_PARTIAL_SLOTS === '1') {
+      const terms = (query.query.match(/[\p{L}\p{N}]+/gu) ?? [])
+        .filter((t) => t.length >= 2);
+      // ⛔ EXCLUDE **ALL** FULL MATCHES, NOT THE PAGE OF THEM. `matches` is
+      // already capped at `limit`, so building the exclusion set from it leaves
+      // every full match BEYOND the cap eligible for a partial slot — and those
+      // are exactly the repetitive old rows BM25 loves. Measured on the
+      // position matrix: with 50 stale full matches and a limit of 20, the 30
+      // uncovered ones filled all five slots and the correction vanished, while
+      // the same case passed at rank-depth 20. A ceiling that silently changes
+      // what a filter EXCLUDES is the worst kind, because coverage looks fine
+      // until the corpus is big enough.
+      const allFull = new Set<string>();
+      try {
+        const andExpr = usedExpr ?? toFtsMatch(query.query);
+        if (andExpr !== null) {
+          for (const r of db.prepare(
+            `SELECT key FROM ${ftsName} WHERE ${ftsName} MATCH ? LIMIT ?`,
+          ).all(andExpr, FULL_MATCH_EXCLUSION_CAP) as Array<{ key: string }>) {
+            allFull.add(r.key);
+          }
+        }
+      } catch { /* fall back to the page below */ }
+      for (const m of matches) allFull.add(m.key);
+      const extra = partialMatches(
+        db, ftsName, tableName, terms,
+        partialSlotCount(limit),
+        allFull,
+      );
+      for (const r of extra) partialKeys.add(r.key);
+      matches = [...matches, ...extra];
+      // Thread neighbours LAST: they are the only rows here that matched
+      // nothing, so they are the weakest claim on the page — but for a
+      // conversational answer they are the only claim there is.
+      const seeds = new Set(matches.map((m) => m.key));
+      const neighbours = threadNeighbours(db, tableName, seeds, 2,
+        Math.max(1, Math.floor(limit * 0.1)));
+      for (const r of neighbours) { threadKeys.add(r.key); matches.push(r); }
+    }
+
     if (matches.length === 0) return [];
 
     // Hydrate hot_fields in a single query to avoid N round-trips.
@@ -681,7 +1112,49 @@ export const createCollectionTable = (
       hot_fields: hotById.get(m.key) ?? {},
       rank: m.rank,
       snippet: m.snippet,
+      ...(partialKeys.has(m.key) ? { partial_match: true } : {}),
+      ...(threadKeys.has(m.key) ? { thread_context: true } : {}),
     }));
+  };
+
+  const neighbours = (q: NeighbourQuery): CollectionRecord[] => {
+    const anchor = db.prepare(
+      `SELECT record_id, received_at, hot_fields FROM ${tableName} WHERE record_id = ?`,
+    ).get(q.anchor_id) as { received_at: number; hot_fields: string } | undefined;
+    if (!anchor) return [];
+    const hot = JSON.parse(anchor.hot_fields) as Record<string, unknown>;
+    const thread = typeof hot.thread_id === 'string' ? hot.thread_id : null;
+    // Same correspondents OR same thread — a message qualifies on either, so a
+    // provider that threads badly degrades to correspondent adjacency rather
+    // than returning nothing.
+    const from = typeof hot.from === 'string' ? hot.from : null;
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    if (thread !== null) {
+      clauses.push(`json_extract(hot_fields, '$.thread_id') = ?`);
+      params.push(thread);
+    }
+    if (from !== null) {
+      clauses.push(`json_extract(hot_fields, '$.from') = ?`);
+      params.push(from);
+    }
+    if (clauses.length === 0) return [];
+    const scope = `(${clauses.join(' OR ')})`;
+    const out: Row[] = [];
+    const take = (dir: 'next' | 'prev', n: number): void => {
+      if (n <= 0) return;
+      const cmp = dir === 'next' ? '>' : '<';
+      const order = dir === 'next' ? 'ASC' : 'DESC';
+      out.push(...db.prepare(`
+        SELECT * FROM ${tableName}
+        WHERE ${scope} AND received_at ${cmp} ? AND record_id != ?
+        ORDER BY received_at ${order}, record_id ${order}
+        LIMIT ?
+      `).all(...params, anchor.received_at, q.anchor_id, n) as Row[]);
+    };
+    take('next', q.next ?? 0);
+    take('prev', q.prev ?? 0);
+    return out.map(rowToRecord);
   };
 
   const countByAddress = (field: string, value: string): number => {
@@ -814,6 +1287,7 @@ export const createCollectionTable = (
     list,
     search,
     countByAddress,
+    neighbours,
     ensureAddressIndex,
     ensureHotFieldIndex,
     findByHotFieldIn,

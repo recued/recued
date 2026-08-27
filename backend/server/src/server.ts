@@ -339,6 +339,11 @@ export interface ServerConfig {
   /** D-123 Phase 5 — housekeeping rpc deps. Backs the Settings →
    *  Server → Housekeeping panel. */
   housekeepingDeps?: import('./housekeeping-handler.js').HousekeepingRpcDeps;
+  /** D-250 § D7 — `metric.read`. ⛔ SAME FORWARD-OR-DEAD-RPC SEAM as `archiveDeps`:
+   *  composed in `compose-listeners.ts`, but this file forwards each dep EXPLICITLY, so
+   *  omitting it here leaves the method answering `not_configured` on the live wire while
+   *  every handler and runtime unit test passes. Pinned by `archive-rpc-wiring.test.ts`. */
+  metricDeps?: import('./metrics-handler.js').MetricRpcDeps;
   // ── rpc-deps forward completion (D-167 P5 Slice 2b drive-by) ──────
   // The seven families below were composed in `composeRpcContext` and
   // passed by `composeListeners`, but never declared here nor forwarded
@@ -1431,6 +1436,9 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
     notificationDeps: config.notificationDeps,
     mailGetDeps: config.mailGetDeps,
     housekeepingDeps: config.housekeepingDeps,
+    // D-250 § D7 — see the note on the field above; this forward is the whole reason
+    // the rpc is reachable.
+    metricDeps: config.metricDeps,
     // ── rpc-deps forward completion (D-167 P5 Slice 2b) ────────────
     // Forward the families that `composeListeners` passes but this
     // file previously dropped (see the matching `ServerConfig` block).

@@ -18,6 +18,12 @@ import {
   PACKS_SURFACE_INSTALLED_ONLY_ATTR,
   type PacksSurfaceDetailHandle,
 } from '../packs/packs-surface.js';
+import {
+  LIST_PREVIEW_ATTR,
+  LIST_PREVIEW_CLOSE_ATTR,
+  LIST_PREVIEW_OPEN_ATTR,
+  type ListPreviewContent,
+} from '../shell/list-preview-continuity.js';
 
 // ── Minimal fake DOM (mirrors the packs-panel test harness + a `hidden` prop) ──
 interface FakeEl {
@@ -166,6 +172,7 @@ interface Harness {
   listDisposed: () => boolean;
   detail: ReturnType<typeof makeFakeDetail>;
   listOnSelect: (slug: string) => void;
+  listOnPreview: (content: ListPreviewContent, opener: FakeEl) => void;
   surface: ReturnType<typeof mountPacksSurface>;
   installedOnlyCalls: boolean[];
 }
@@ -176,16 +183,21 @@ const setup = (
     enableAdd?: boolean;
     installedOnly?: boolean;
     installedOnlySetter?: (on: boolean) => Promise<void>;
+    document?: ReturnType<typeof fakeDoc>;
     /** Capture the callback the surface registers for the list's OWN
      *  installed-first default, so a test can fire it like the real list does. */
     captureInstalledOnlyNotifier?: (fire: (on: boolean) => void) => void;
   } = {},
 ): Harness => {
-  const doc = fakeDoc();
+  const doc = opts.document ?? fakeDoc();
   const root = doc.createElement('div');
   const navCalls: Array<string | null> = [];
   let listDisposed = false;
   let listOnSelect: (slug: string) => void = () => undefined;
+  let listOnPreview: (
+    content: ListPreviewContent,
+    opener: HTMLElement,
+  ) => void = () => undefined;
   let listControl!: FakeEl;
   const installedOnlyCalls: boolean[] = [];
   let detail!: ReturnType<typeof makeFakeDetail>;
@@ -193,8 +205,9 @@ const setup = (
   const surface = mountPacksSurface({
     root: root as unknown as HTMLElement,
     document: doc as unknown as Document,
-    mountList: (host, onSelect) => {
+    mountList: (host, onSelect, onPreview) => {
       listOnSelect = onSelect;
+      listOnPreview = onPreview;
       listControl = doc.createElement('button');
       host.appendChild(listControl as unknown as Node);
       return {
@@ -231,6 +244,8 @@ const setup = (
     listDisposed: () => listDisposed,
     detail,
     listOnSelect: (slug) => listOnSelect(slug),
+    listOnPreview: (content, opener) =>
+      listOnPreview(content, opener as unknown as HTMLElement),
     surface,
     installedOnlyCalls,
   };
@@ -268,6 +283,60 @@ describe('mountPacksSurface — list↔detail composition', () => {
     expect(h.listDisposed()).toBe(false);
     expect(h.detail.disposed).toBe(false);
     expect(h.navCalls).toEqual(['pack-a', null]);
+  });
+
+  it('previews without leaving the list and Escape-equivalent Close restores focus + scroll', () => {
+    const h = setup();
+    h.listControl.setAttribute('data-recued-discover-card', '');
+    h.listControl.setAttribute('data-id', 'pack-a');
+    h.listControl.focus();
+    h.root.scrollTop = 480;
+
+    h.listOnPreview({
+      id: 'pack-a',
+      title: 'Pack A',
+      summary: 'A pack preview.',
+      primaryLabel: 'Open pack',
+    }, h.listControl);
+
+    const preview = findByAttr(h.root, LIST_PREVIEW_ATTR)!;
+    expect(preview.hidden).toBe(false);
+    expect(preview.getAttribute('data-id')).toBe('pack-a');
+    expect(h.surface.activeSlug()).toBeNull();
+    expect(listView(h.root).hidden).toBe(false);
+
+    h.root.scrollTop = 0;
+    findByAttr(h.root, LIST_PREVIEW_CLOSE_ATTR)!.click();
+    expect(preview.hidden).toBe(true);
+    expect(h.doc.activeElement).toBe(h.listControl);
+    expect(h.root.scrollTop).toBe(480);
+
+    h.listOnPreview({ id: 'pack-a', title: 'Pack A' }, h.listControl);
+    findByAttr(h.root, LIST_PREVIEW_OPEN_ATTR)!.click();
+    expect(h.surface.activeSlug()).toBe('pack-a');
+    expect(h.navCalls).toEqual(['pack-a']);
+  });
+
+  it('restores the semantic pack row and scroll after a route remount', async () => {
+    const document = fakeDoc();
+    const first = setup({ document });
+    first.listControl.setAttribute('data-recued-discover-card', '');
+    first.listControl.setAttribute('data-id', 'pack-a');
+    first.listControl.focus();
+    first.root.scrollTop = 730;
+    first.root.scrollLeft = 6;
+    first.listOnPreview({ id: 'pack-a', title: 'Pack A' }, first.listControl);
+    first.surface.dispose();
+
+    const second = setup({ document });
+    second.listControl.setAttribute('data-recued-discover-card', '');
+    second.listControl.setAttribute('data-id', 'pack-a');
+    await Promise.resolve();
+
+    expect(second.root.scrollTop).toBe(730);
+    expect(second.root.scrollLeft).toBe(6);
+    expect(document.activeElement).toBe(second.listControl);
+    second.surface.dispose();
   });
 
   it('focuses the detail host, then restores the exact list opener on Back', async () => {

@@ -27,6 +27,7 @@ import {
   type CollectionInstanceRow,
   type CollectionRecord,
 } from '@recued/contracts';
+import { renderReferenceIdentity } from '@recued/ui-shared';
 
 /** Click-dispatch contract with the route's `onClick` (keyed on
  *  `DATA_ROUTE_ACTION_ATTR`). The route adds one arm per action value. */
@@ -354,7 +355,11 @@ const renderDetail = (
       .filter(([, v]) => typeof v === 'string' && v.length > 0)
       .map(
         ([label, v]) =>
-          `<div class="col-explorer-detail-field"><dt>${e(label)}</dt><dd>${e(v)}</dd></div>`,
+          `<div class="col-explorer-detail-field"><dt>${e(label)}</dt><dd>${
+            label === 'Record id' || label === 'Source id'
+              ? renderReferenceIdentity({ value: v })
+              : e(v)
+          }</dd></div>`,
       )
       .join('');
     const bodyBlock =

@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /** D-178 S4 — macOS code signing for the server binary + its native addon.
  *
- *  Runs today with AD-HOC signing (no Apple account), and takes a Developer ID
- *  as one argument when the certificate arrives. Notarization (S5) is the only
- *  stage that cannot be exercised without an account, and it is the mechanical
- *  half; everything that could force a DESIGN change lives here.
+ *  Takes a Developer ID as one argument, and falls back to AD-HOC signing when
+ *  none is given (still useful for a local build). Notarization is the rest of
+ *  S4 -- the D-178 table puts codesign -> notarytool -> staple in S4 and gives
+ *  S5 to Windows Authenticode; earlier revisions of this header called
+ *  notarization "S5", which was wrong.
  *
  *  Usage:
  *    node scripts/sign-macos.mjs --dir dist/binary                 # ad-hoc
@@ -47,6 +48,43 @@
  *  ⛔ ORDER MATTERS: sign AFTER postject. Injection invalidates a signature; on
  *  macOS it strips it outright ("code object is not signed at all"), and on
  *  Windows postject warns that it is corrupt. Signing first is wasted work.
+ *
+ *  ── MEASURED ON macos-arm64, 2026-08-26, WITH THE REAL CERTIFICATE ───────
+ *  The Developer ID landed, so the questions above stopped being theoretical:
+ *
+ *    same-team signing, library validation ON  -> database opens. The
+ *                                                 `disable-library-validation`
+ *                                                 fallback is NOT needed.
+ *    notarytool submit (140 MB, 2 Mach-Os)     -> Accepted, `issues: null`,
+ *                                                 "Ready for distribution".
+ *                                                 Took 2h53m. Budget for hours,
+ *                                                 not the ~15min Apple cites.
+ *    ticket contents                           -> BOTH cdhashes: the exe and
+ *                                                 lib/better_sqlite3.node.
+ *    stapler staple <bare exe>                 -> FAILS, "Error 73".
+ *    stapler staple <zip>                      -> REFUSED outright: "Stapler is
+ *                                                 incapable of working with ZIP
+ *                                                 archive files."
+ *    spctl on a QUARANTINED, UNSTAPLED copy    -> accepted, `source=Notarized
+ *                                                 Developer ID`. Gatekeeper
+ *                                                 fetched the ticket ONLINE.
+ *    curl -o <artifact>                        -> sets NO com.apple.quarantine.
+ *
+ *  🔑 SO STAPLING IS BOTH IMPOSSIBLE AND UNNECESSARY HERE. A bare Unix
+ *  executable has nowhere to carry a ticket, and neither does a zip. It does
+ *  not matter: `install.sh` fetches with curl and the self-updater fetches
+ *  in-process, so nothing recued ships through is ever quarantined, and
+ *  Gatekeeper never runs. A browser download WOULD be quarantined and would
+ *  then need the network to validate — that, and only that, is the case a
+ *  .pkg would exist to serve.
+ *
+ *  🔑 NOTARIZATION DOES NOT MUTATE THE ARTIFACT. The ticket lives on Apple's
+ *  servers keyed by cdhash; only STAPLING writes to the file, and stapling is
+ *  impossible here. That is why notarization can run OUT OF BAND, after
+ *  minisign, without breaking D-178's "platform-sign -> notarize -> minisign
+ *  outermost" ordering: the invariant exists because each step mutates what the
+ *  next one signs, and this one does not. A 2h53m notary queue therefore must
+ *  never sit on a release's critical path.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -96,17 +134,31 @@ if (!existsSync(addon)) {
  *  `disable-library-validation` switches it off for EVERY library the process
  *  loads — a documented weakening reviewers look for.
  *
- *  ⚠ THEREFORE THE RELEASE PATH IS UNVERIFIED until a real certificate exists.
- *  What IS verified: sign-after-postject, that unsigned does not run at all,
- *  that hardened runtime kills V8 without entitlements, that `allow-jit` alone
- *  suffices, and that the addon must be signed. The remaining unknown is one
- *  binary question — does same-team signing satisfy library validation — with a
- *  measured fallback (`disable-library-validation`) if it somehow does not. */
+ *  ✅ ANSWERED 2026-08-26 with the real certificate: same-team signing DOES
+ *  satisfy library validation. A binary signed `Developer ID Application: RECUED
+ *  LDA (FSYNR8QFXD)` with the addon signed under the same identity opened a
+ *  database with library validation ON and no `disable-library-validation`.
+ *  The fallback is not needed and must not be reintroduced. */
+/** ⛔ THE ENTITLEMENTS DIFFER BY ARCHITECTURE TOO, AND x64 IS NOT OPTIONAL.
+ *  Measured 2026-08-26: an x64 SEA signed with `allow-jit` alone dies before
+ *  printing anything —
+ *      # Fatal error in , line 0
+ *      # Check failed: 12 == (*__error()).
+ *  errno 12 is ENOMEM: V8 could not map executable memory. `allow-jit` grants
+ *  MAP_JIT, which is the Apple-Silicon path; x86_64 needs the broader
+ *  `allow-unsigned-executable-memory`. Adding it made the same binary run.
+ *
+ *  ⚠ It is only added for x64. It is a wider grant than allow-jit — the whole
+ *  reason allow-jit is preferred on arm64 — so arm64 must not inherit it. */
+const isX64 = /-x64$/.test(exe);
 const entitlements = join(tmpdir(), `recued-ent-${process.pid}.plist`);
 writeFileSync(entitlements, `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>com.apple.security.cs.allow-jit</key><true/>${adhoc ? `
+  <key>com.apple.security.cs.allow-jit</key><true/>${isX64 ? `
+  <!-- x64 ONLY. V8 cannot map executable memory under x86_64 with allow-jit
+       alone; measured as ENOMEM at startup. -->
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>` : ''}${adhoc ? `
   <!-- AD-HOC ONLY. Removed for a real identity, where matching Team IDs are
        what satisfy library validation. Present here solely so a local build
        runs at all. -->
@@ -132,7 +184,8 @@ try {
   console.log(`[sign-macos] signed addon    ${addon.replace(dir + '/', '')}`);
 
   sign(join(dir, exe), ['--options', 'runtime', '--entitlements', entitlements]);
-  console.log(`[sign-macos] signed binary   ${exe}  (hardened runtime + allow-jit)`);
+  console.log(`[sign-macos] signed binary   ${exe}  (hardened runtime + allow-jit`
+    + `${isX64 ? ' + allow-unsigned-executable-memory' : ''})`);
 
   // ⛔ VERIFY, DO NOT ASSUME. `codesign --sign` succeeding says the write
   // happened, not that the result is loadable. This is the same distinction
@@ -148,11 +201,13 @@ try {
 
   if (adhoc) {
     console.log('[sign-macos] NOTE: ad-hoc. This runs locally and FAILS Gatekeeper once');
-    console.log('[sign-macos]       downloaded (quarantined). Not distributable — S5 notarization');
+    console.log('[sign-macos]       downloaded (quarantined). Not distributable — notarization');
     console.log('[sign-macos]       needs a Developer ID and an Apple account.');
   } else {
-    console.log('[sign-macos] NEXT (S5): zip the pair, `notarytool submit --wait`, `stapler staple` the ZIP.');
-    console.log('[sign-macos]       Stapling attaches to CONTAINERS, so ship the zip/dmg, not a bare binary.');
+    console.log('[sign-macos] NEXT: ditto -c -k --sequesterRsrc the pair, then');
+    console.log('[sign-macos]       `notarytool submit --wait --keychain-profile <profile>`.');
+    console.log('[sign-macos]       DO NOT staple — see the header: it is impossible here and');
+    console.log('[sign-macos]       unnecessary on every path recued actually ships through.');
   }
 } finally {
   rmSync(entitlements, { force: true });

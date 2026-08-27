@@ -24,6 +24,11 @@ import {
   type DiscoverQuery,
 } from './discover-model.js';
 import {
+  DISCOVER_PANEL_ACTION_ATTR,
+  DISCOVER_PANEL_CARD_ATTR,
+  DISCOVER_PANEL_PAGE_ATTR,
+  DISCOVER_PANEL_SEARCH_ATTR,
+  DISCOVER_PANEL_SORT_ATTR,
   DISCOVER_PANEL_STYLES,
   mountDiscoverPanel,
   type DiscoverBadge,
@@ -38,6 +43,18 @@ import {
 } from './catalog-client.js';
 import { makeUpdateVersionResolver } from './update-versions.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
+import {
+  readListContinuity,
+  updateListContinuity,
+  type ListPreviewContent,
+} from '../shell/list-preview-continuity.js';
+
+export const PACK_BROWSE_CONTINUITY_KEY = 'packs:browse';
+
+interface PackBrowseContinuityFilter {
+  readonly query: DiscoverQuery;
+  readonly installedOnly: boolean;
+}
 
 /** One roster pack the union corpus + install-state join read. Only the display
  *  + join fields are used; `manifest` (present on `PackListEntry`) feeds the
@@ -83,6 +100,8 @@ export interface MountPackDiscoveryOptions {
    *  detail, which owns install / uninstall / grants (a pack install carries
    *  permissions so it can't be one-click). Navigate mode: no inline install. */
   onSelect: (slug: string) => void;
+  /** Read-only card preview owned by the unified Packs surface. */
+  onPreview?: (content: ListPreviewContent, opener: HTMLElement) => void;
   listInstalled: PackInstalledListCaller;
   /** Server-side search (`/catalog/search?kind=pack`) — the browse path. When
    *  present the panel pages the catalogue from the server instead of
@@ -181,6 +200,7 @@ export const mountPackDiscovery = (
 ): {
   dispose: () => void;
   panel: DiscoverPanelMount;
+  whenLoaded: () => Promise<void>;
   /** Toggle the installed-only view. Re-runs the current query, so the search
    *  box / sort / page the user already set carry across the switch. Calling it
    *  also marks the state user-owned, so the installed-first default stops
@@ -195,6 +215,46 @@ export const mountPackDiscovery = (
     throw new Error('mountPackDiscovery: no document available — pass opts.document');
   }
   ensureDiscoverStyles(doc);
+
+  const remembered = readListContinuity<PackBrowseContinuityFilter>(
+    doc,
+    PACK_BROWSE_CONTINUITY_KEY,
+  );
+  const rememberedFilter = remembered?.filter;
+  const hasRememberedFilter = rememberedFilter !== undefined
+    && typeof rememberedFilter === 'object'
+    && rememberedFilter !== null
+    && typeof rememberedFilter.installedOnly === 'boolean'
+    && typeof rememberedFilter.query === 'object'
+    && rememberedFilter.query !== null;
+
+  const browseFocusPatch = (): {
+    readonly focusedId?: string;
+    readonly focusKind?: string;
+  } => {
+    const active = doc.activeElement as HTMLElement | null | undefined;
+    if (active?.hasAttribute?.(DISCOVER_PANEL_SEARCH_ATTR) === true) {
+      return { focusKind: 'search' };
+    }
+    if (active?.hasAttribute?.(DISCOVER_PANEL_SORT_ATTR) === true) {
+      return { focusKind: 'sort' };
+    }
+    const page = active?.getAttribute?.(DISCOVER_PANEL_PAGE_ATTR) ?? null;
+    if (page !== null) return { focusKind: 'pager', focusedId: page };
+    const facet = active?.getAttribute?.('data-facet') ?? null;
+    const value = active?.getAttribute?.('data-value') ?? null;
+    if (facet !== null && value !== null) {
+      return { focusKind: 'filter', focusedId: `${facet}\u0000${value}` };
+    }
+    const id = active?.getAttribute?.('data-id') ?? null;
+    if (id !== null && active?.hasAttribute?.(DISCOVER_PANEL_ACTION_ATTR) === true) {
+      return { focusKind: 'action', focusedId: id };
+    }
+    if (id !== null && active?.hasAttribute?.(DISCOVER_PANEL_CARD_ATTR) === true) {
+      return { focusKind: 'card', focusedId: id };
+    }
+    return {};
+  };
 
   const fetchCatalog = opts.fetchCatalog ?? ((origin?: string) => fetchPackCatalog(origin !== undefined ? { origin } : {}));
 
@@ -313,12 +373,14 @@ export const mountPackDiscovery = (
    *  this server has installed. So the toggle swaps the SOURCE instead — the
    *  roster `packs.list` already loads for the badges, searched by the same local
    *  engine the pinned strip uses, so search / sort / facets keep working over it. */
-  let installedOnly = false;
+  let installedOnly = hasRememberedFilter
+    ? rememberedFilter.installedOnly
+    : false;
   /** The user pressed the toggle themselves — stop auto-deciding for them. Without
    *  this, any later re-run of the query (a `pack_installed` broadcast, a search
    *  keystroke) would re-apply the default and yank them back out of the
    *  marketplace they deliberately opened. */
-  let installedOnlyUserSet = false;
+  let installedOnlyUserSet = hasRememberedFilter;
   let installedOnlyDefaulted = false;
   let installedOnlyListener: ((on: boolean) => void) | null = null;
   /** 🔑 Your own packs are the DEFAULT view, not a filter you re-apply on every
@@ -336,6 +398,12 @@ export const mountPackDiscovery = (
     if (installedRosterRows().length === 0) return;
     installedOnly = true;
     installedOnlyListener?.(true);
+    const query = panelRef?.getQuery();
+    if (query !== undefined) {
+      updateListContinuity(doc, PACK_BROWSE_CONTINUITY_KEY, {
+        filter: { query, installedOnly },
+      });
+    }
   };
   let rosterLoad: Promise<ReadonlyArray<RosterPack>> | null = null;
   const ensureRoster = (): Promise<ReadonlyArray<RosterPack>> => {
@@ -464,6 +532,44 @@ export const mountPackDiscovery = (
     catalogVersion: (r) => r.version,
     installedVersion: (slug) => currentLookup(slug),
     onSelect: opts.onSelect,
+    ...(opts.onPreview !== undefined
+      ? {
+          onPreview: (row: CatalogPackRow, opener: HTMLElement) => {
+            opts.onPreview?.({
+              id: row.slug,
+              eyebrow: 'Pack preview',
+              title: row.name,
+              summary: row.description,
+              facts: [
+                { label: 'Publisher', value: row.publisher_id },
+                { label: 'Version', value: `v${row.version}` },
+                {
+                  label: 'Kind',
+                  value: SERVICE_KIND_LABEL[row.service_kind ?? '']
+                    ?? row.service_kind
+                    ?? row.pack_kind,
+                },
+                {
+                  label: 'Contents',
+                  value: `${row.item_count} item${row.item_count === 1 ? '' : 's'}`,
+                },
+                {
+                  label: 'Installs',
+                  value: row.download_count.toLocaleString(),
+                },
+              ],
+              primaryLabel: 'Open pack',
+            }, opener);
+          },
+        }
+      : {}),
+    ...(hasRememberedFilter ? { initialQuery: rememberedFilter.query } : {}),
+    onQueryChange: (query) => {
+      updateListContinuity(doc, PACK_BROWSE_CONTINUITY_KEY, {
+        filter: { query, installedOnly },
+        ...browseFocusPatch(),
+      });
+    },
     title: (r) => r.name,
     description: (r) => r.description,
     badges: packBadges,
@@ -501,16 +607,54 @@ export const mountPackDiscovery = (
 
   return {
     panel,
+    whenLoaded: async () => {
+      await panel.whenLoaded();
+      const focusKind = remembered?.focusKind;
+      const focusedId = remembered?.focusedId;
+      let target: HTMLElement | null = null;
+      if (focusKind === 'search') {
+        target = opts.host.querySelector?.(
+          `[${DISCOVER_PANEL_SEARCH_ATTR}]`,
+        ) as HTMLElement | null;
+      } else if (focusKind === 'sort') {
+        target = opts.host.querySelector?.(
+          `[${DISCOVER_PANEL_SORT_ATTR}]`,
+        ) as HTMLElement | null;
+      } else if (focusKind === 'pager' && focusedId !== undefined) {
+        target = Array.from(opts.host.querySelectorAll?.(
+          `[${DISCOVER_PANEL_PAGE_ATTR}]`,
+        ) ?? []).find((candidate) =>
+          candidate.getAttribute(DISCOVER_PANEL_PAGE_ATTR) === focusedId,
+        ) as HTMLElement | undefined ?? null;
+      } else if (focusKind === 'filter' && focusedId !== undefined) {
+        const [facet, value] = focusedId.split('\u0000', 2);
+        target = Array.from(opts.host.querySelectorAll?.('[data-facet]') ?? [])
+          .find((candidate) =>
+            candidate.getAttribute('data-facet') === facet
+            && candidate.getAttribute('data-value') === value,
+          ) as HTMLElement | undefined ?? null;
+      }
+      const fallback = opts.host.querySelector?.(
+        `[${DISCOVER_PANEL_SEARCH_ATTR}]`,
+      ) as HTMLElement | null | undefined;
+      (target ?? fallback)?.focus?.({ preventScroll: true });
+    },
     /** Register for state the LIST decides on its own — today only the
      *  installed-first default, which is resolved after the roster lands and so
      *  cannot be known by the host at mount time. The host owns the toggle's
      *  appearance; this is how it learns the toggle started pressed. */
     onInstalledOnlyChange: (cb: (on: boolean) => void): void => {
       installedOnlyListener = cb;
+      if (hasRememberedFilter) cb(installedOnly);
     },
     setInstalledOnly: async (on: boolean): Promise<void> => {
       installedOnlyUserSet = true;
-      if (installedOnly === on) return;
+      if (installedOnly === on) {
+        updateListContinuity(doc, PACK_BROWSE_CONTINUITY_KEY, {
+          filter: { query: panel.getQuery(), installedOnly },
+        });
+        return;
+      }
       const previous = installedOnly;
       installedOnly = on;
       // The roster must be loaded before the first installed-only page, and
@@ -519,6 +663,9 @@ export const mountPackDiscovery = (
       try {
         await ensureRoster();
         await panel.refresh();
+        updateListContinuity(doc, PACK_BROWSE_CONTINUITY_KEY, {
+          filter: { query: panel.getQuery(), installedOnly },
+        });
       } catch (error) {
         installedOnly = previous;
         throw error;

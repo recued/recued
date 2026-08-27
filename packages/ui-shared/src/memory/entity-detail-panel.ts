@@ -36,6 +36,7 @@ import {
   type TimelineRollup,
 } from '@recued/contracts';
 import { e } from '../template.js';
+import { renderProvenanceAttribution } from '../reference-provenance.js';
 
 /** Per-topic enrichment summary the panel renders as one card. The
  *  shape mirrors what a host derives from `enrichment.list` rpc rows
@@ -472,6 +473,10 @@ const renderTimelineEntry = (
   const recipeBadge = entry.recipe_slug
     ? `<span class="memory-timeline-entry-recipe">${e(entry.recipe_slug)}</span>`
     : '';
+  const attribution = renderProvenanceAttribution(entry.attribution, {
+    className: 'memory-timeline-entry-attribution',
+    ariaLabel: 'Entry provenance',
+  });
   // Host-supplied payload summary (e.g. a mail subject) — keeps the row
   // scannable beyond source/kind/time. Escaped here; the callback returns
   // a plain string.
@@ -494,6 +499,7 @@ const renderTimelineEntry = (
       <span class="memory-timeline-entry-kind">${e(entry.kind)}</span>
       <span class="memory-timeline-entry-time">${e(formatRelativeTime(entry.ts, now))}</span>
       ${recipeBadge}
+      ${attribution}
       ${summaryLine}
       ${runLink}
     </li>
@@ -683,6 +689,8 @@ export const collapseToFreshestPerTopic = <T extends { topic: string; authored_a
 // The panel ships nowhere with its own injection; the consumer owns it.
 // ────────────────────────────────────────────────────────────────
 
+/** Component-local rules. A host rendering timeline attribution also injects
+ * `REFERENCE_PROVENANCE_STYLES`; the Data route owns that shared dependency. */
 export const ENTITY_DETAIL_PANEL_STYLES = `
 .memory-entity-detail-panel { min-width: 0; display: flex; flex-direction: column; gap: 18px; color: var(--fg); font-size: 13px; }
 .memory-entity-detail-header { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -728,6 +736,7 @@ export const ENTITY_DETAIL_PANEL_STYLES = `
 .memory-timeline-entry-kind { color: var(--fg); }
 .memory-timeline-entry-time { color: var(--fg-muted); font-variant-numeric: tabular-nums; }
 .memory-timeline-entry-recipe { color: var(--fg-muted); font-size: 11px; }
+.memory-timeline-entry-attribution { width: 100%; }
 .memory-timeline-entry-summary { color: var(--fg-muted); width: 100%; }
 .memory-timeline-entry-run-link { color: var(--accent); text-decoration: none; }
 .memory-timeline-entry-run-link:hover { text-decoration: underline; }

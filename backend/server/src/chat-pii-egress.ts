@@ -1146,6 +1146,12 @@ const uniformContentScanDataFields = (
     }
   }
   if (aliasLedgerFieldInPlace(record, 'correction_context', plan)) changed = true;
+  // The pre-seed INDEX rides the same boundary. It is built from the owner's own
+  // prompt terms, so every token in it is one the ledger may already alias from
+  // `user_message` — and an index naming the raw name beside an aliased message
+  // would BOTH leak the value and break the model's ability to join the two.
+  // Named here per this scan's enumeration rule, not left to a walker.
+  if (aliasLedgerFieldInPlace(record, 'index_context', plan)) changed = true;
   // D-214 cards are scope-checked typed projections, but their request-shape
   // facets can still echo the owner's own entity tokens. Keep them on the same
   // single egress boundary as every other dynamic context field.

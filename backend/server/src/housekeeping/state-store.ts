@@ -24,6 +24,9 @@ export interface HousekeepingStateUpdate {
   last_status: HousekeepingLastStatus;
   last_run_at?: number;
   last_run_duration_ms?: number;
+  /** D-250 § D — measured provider tokens for this step. Omitted when the step
+   *  made no provider call. */
+  last_run_tokens?: number;
   last_yield_reason?: HousekeepingYieldReason;
   consecutive_errors?: number;
   last_error?: string;
@@ -80,6 +83,8 @@ interface Row {
   cursor_json: string;
   last_run_at: number | null;
   last_run_duration_ms: number | null;
+  // D-250 § D — NULL when the step made no provider call; never coerce to 0.
+  last_run_tokens: number | null;
   last_yield_reason: string | null;
   last_status: string;
   consecutive_errors: number;
@@ -93,6 +98,9 @@ const rowToState = (row: Row): HousekeepingStateRow => ({
   ...(row.last_run_duration_ms != null
     ? { last_run_duration_ms: row.last_run_duration_ms }
     : {}),
+  // ⚠ `!= null`, not truthiness: a step that genuinely spent 0 tokens is a real
+  // answer and must survive, distinct from a step that made no call at all.
+  ...(row.last_run_tokens != null ? { last_run_tokens: row.last_run_tokens } : {}),
   ...(row.last_yield_reason != null
     ? { last_yield_reason: row.last_yield_reason as HousekeepingYieldReason }
     : {}),
@@ -110,13 +118,14 @@ export const createHousekeepingStateStore = (db: Database.Database): Housekeepin
 
   const setStmt = db.prepare(`
     INSERT INTO housekeeping_state (
-      task_id, cursor_json, last_run_at, last_run_duration_ms,
+      task_id, cursor_json, last_run_at, last_run_duration_ms, last_run_tokens,
       last_yield_reason, last_status, consecutive_errors, last_error
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(task_id) DO UPDATE SET
       cursor_json = excluded.cursor_json,
       last_run_at = excluded.last_run_at,
       last_run_duration_ms = excluded.last_run_duration_ms,
+      last_run_tokens = excluded.last_run_tokens,
       last_yield_reason = excluded.last_yield_reason,
       last_status = excluded.last_status,
       consecutive_errors = excluded.consecutive_errors,
@@ -177,6 +186,7 @@ export const createHousekeepingStateStore = (db: Database.Database): Housekeepin
         JSON.stringify(update.cursor),
         update.last_run_at ?? null,
         update.last_run_duration_ms ?? null,
+        update.last_run_tokens ?? null,
         update.last_yield_reason ?? null,
         update.last_status,
         update.consecutive_errors ?? 0,

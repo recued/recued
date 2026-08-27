@@ -7,6 +7,8 @@
 
 export * from './template.js';
 export * from './date-time.js';
+export * from './run-facts.js';
+export * from './reference-provenance.js';
 export * from './icon-render.js';
 export * as Icons from './icons.generated.js';
 export * from './action-dispatcher.js';
@@ -334,3 +336,14 @@ export {
   type AiAssistSidebarProps,
   type MailComposeAttachmentPickerProps,
 } from './mail-compose/index.js';
+
+// D-250 § D7 — the owner's own stats surface.
+export { renderStatsPanel } from './stats/stats-panel.js';
+export type { StatsPanelProps } from './stats/stats-panel.js';
+export {
+  renderPublishDialog,
+  renderStopPublishing,
+  buildPublishPayload,
+  toWireDecimal,
+} from './stats/publish-dialog.js';
+export type { PublishDialogProps } from './stats/publish-dialog.js';

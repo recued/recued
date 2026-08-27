@@ -12,8 +12,9 @@
  *  `record.config.sender_mail_instance` to resolve the underlying
  *  mail account, dispatches via the injected `mailRpc.send` callback
  *  (closes over `handleCollectionMailSend` at the boot site), and
- *  returns the mail-rpc's `message_id` / `sent_at` / `thread_id?` in
- *  the same `NotificationOk` envelope as slack / telegram / in-app.
+ *  returns the mail-rpc's `message_id` / `sent_at` plus optional `thread_id`
+ *  / `already_sent` in the same `NotificationOk` envelope as slack /
+ *  telegram / in-app.
  *  Sender ≠ to / capability gate / `mail_send` audit row all live in
  *  `MailCollection.send` itself (D-127 P1.6 + P1.7) — this layer is
  *  a thin façade that aligns the email subtype with the rest of the
@@ -177,10 +178,10 @@ export interface MailRpcSendInput {
 
 /** D-127 P3.1 — return shape from `MailCollection.send`. Structurally
  *  matches `SentMessageMeta` plus the rpc-layer canonical-record fields
- *  (`_id` / `_collection`). The email handler only reads
- *  `message_id` / `sent_at` / `thread_id`; the extra fields ride along
- *  harmlessly via structural typing so the boot site can wire the rpc
- *  result directly without a translation step. */
+ *  (`_id` / `_collection`). The email handler reads `message_id` / `sent_at`
+ *  / `thread_id` / `already_sent`; the extra fields ride along harmlessly via
+ *  structural typing so the boot site can wire the rpc result directly
+ *  without a translation step. */
 export interface MailRpcSendResult {
   source_id: string;
   message_id: string;
@@ -194,6 +195,16 @@ export interface MailRpcSendResult {
    *  indistinguishable to the recipe — the precise ambiguity the claim exists
    *  to remove. */
   already_sent?: boolean;
+}
+
+/** Email notification result exposed to recipes. `already_sent` is deliberately
+ *  true-or-absent: `true` means the reconciliation fence answered with the
+ *  original send; absence means this handler dispatched the message now. */
+interface EmailNotificationResult {
+  message_id: string;
+  sent_at: number;
+  thread_id?: string;
+  already_sent?: true;
 }
 
 /** D-127 P3.1 — minimal mail-rpc surface the email subhandler needs.
@@ -799,7 +810,7 @@ const sendEmail = async (
   params: Record<string, unknown>,
   mailRpc: MailRpcDep | undefined,
   ctx?: ConnectionHandlerCtx,
-): Promise<NotificationResponse<{ message_id: string; sent_at: number; thread_id?: string }>> => {
+): Promise<NotificationResponse<EmailNotificationResult>> => {
   if (!mailRpc) {
     throw new IngredientError(
       'NOTIFICATION_TRANSPORT_NOT_IMPLEMENTED',

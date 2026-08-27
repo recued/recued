@@ -378,6 +378,15 @@ const ROUTE_LANDING_POLICIES: Record<WebclientRouteId, RouteLandingPolicy> = {
       heading('data-recued-data-route-heading'),
     ],
   },
+  // D-250 § D7 — Stats is a READ-ONLY display surface: no rows to re-select, no
+  // filters, no detail pane. The heading is the only stable landing target, and that is
+  // the honest policy rather than borrowing Logs' row anchors for controls that do not
+  // exist (a landing target that never resolves silently drops focus to the document).
+  stats: {
+    choose_again: [heading('data-recued-stats-route-heading')],
+    continue: [heading('data-recued-stats-route-heading')],
+    review: [heading('data-recued-stats-route-heading')],
+  },
   logs: {
     choose_again: [
       control('data-recued-logs-filter'),
@@ -514,6 +523,8 @@ const ROUTE_LANDING_INVALIDATIONS: Record<
     invalidation('data-recued-data-source-error'),
     invalidation('data-recued-data-unavailable'),
   ],
+  // D-250 § D7 — one section, one error surface; nothing to scope against a sibling.
+  stats: [],
   logs: [
     // Runs renders History, Active, Active passes, and detail status beside
     // each other. Keep a still-valid landing inside its own section so an

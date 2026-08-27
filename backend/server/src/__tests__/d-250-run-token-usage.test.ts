@@ -58,7 +58,12 @@ import {
 
 import { createManifestRegistry } from '../manifest-loader.js';
 import { createRecipeStore } from '../recipe-store.js';
-import { handleExecute, type ExecuteHandlerDeps } from '../execute-handler.js';
+import {
+  _testing as executeTesting,
+  handleExecute,
+  type ExecuteHandlerDeps,
+} from '../execute-handler.js';
+import { stampExecuteResponseAuditRun } from '../types.js';
 import {
   createRunTokenUsageSink,
   RUN_TOKEN_USAGE_MAX_ENTRIES,
@@ -302,7 +307,7 @@ const anchor = (run_id: string, patch: Partial<AuditEntry> = {}): AuditEntry =>
     recipe_id: 'recipe-a',
     recipe_hash: 'hash-a',
     now: 1_000_010,
-    duration_ms: 10,
+    duration_ms: patch.duration_ms ?? 10,
     commit_status: 'succeeded',
     config_snapshot: {},
     errors: [],
@@ -310,6 +315,7 @@ const anchor = (run_id: string, patch: Partial<AuditEntry> = {}): AuditEntry =>
     trigger_source: 'manual',
     instance_id: 'srv-test',
     ...(patch.total_usage !== undefined ? { total_usage: patch.total_usage } : {}),
+    ...(patch.run_yield !== undefined ? { run_yield: patch.run_yield } : {}),
   });
 
 describe('D-250 § D — buildAuditEntry retains the usage', () => {
@@ -376,7 +382,94 @@ describe('D-250 § D — the usage reaches execution.get', () => {
 });
 
 // ────────────────────────────────────────────────────────────────
-// 4. THE SINK — its own rules, which the join above cannot exercise
+// 4. THE RUN RECEIPT — exact-row audit evidence reaches execute RPC
+// ────────────────────────────────────────────────────────────────
+
+describe('D-250 § D — execute RPC projects the persisted Run facts receipt', () => {
+  it('uses the stamped run id, not a latest-recipe guess', async () => {
+    const log = createAuditLogStore(
+      createInMemoryCollection<AuditEntry>(),
+      createInMemoryCollection(),
+    );
+    await log.append(anchor('target', {
+      duration_ms: 42_000,
+      run_yield: {
+        steps_run: 34,
+        steps_skipped: 4,
+        items_total: 1_249,
+        items_failed: 3,
+      },
+      total_usage: {
+        input_tokens: 12_000,
+        output_tokens: 1_385,
+        total_tokens: 13_385,
+        provider_calls: 2,
+      },
+    }));
+    await log.append(anchor('newer-distractor', {
+      run_yield: {
+        steps_run: 999,
+        steps_skipped: 0,
+        items_total: 999,
+        items_failed: 0,
+      },
+    }));
+    const response = stampExecuteResponseAuditRun({
+      recipe_id: 'recipe-a',
+      recipe_hash: 'hash-a',
+      success: true,
+      output: { render: [], sidebar: [] },
+      steps: [],
+      errors: [],
+      duration_ms: 1,
+    }, 'target');
+
+    await expect(executeTesting.withRecipeRunFacts(response, log)).resolves.toMatchObject({
+      run_facts: {
+        steps_run: 34,
+        items_total: 1_249,
+        provider_calls: 2,
+        total_tokens: 13_385,
+        duration_ms: 42_000,
+      },
+    });
+  });
+
+  it('does not invent provider cost evidence or fail execution on a read error', async () => {
+    const response = stampExecuteResponseAuditRun({
+      recipe_id: 'recipe-a',
+      recipe_hash: 'hash-a',
+      success: true,
+      output: { render: [], sidebar: [] },
+      steps: [],
+      errors: [],
+      duration_ms: 10,
+    }, 'no-ai');
+    const noAi = anchor('no-ai', {
+      run_yield: {
+        steps_run: 1,
+        steps_skipped: 0,
+        items_total: 0,
+        items_failed: 0,
+      },
+    });
+    await expect(executeTesting.withRecipeRunFacts(response, {
+      get: async () => noAi,
+    })).resolves.toMatchObject({
+      run_facts: { steps_run: 1, items_total: 0, duration_ms: 10 },
+    });
+    expect((await executeTesting.withRecipeRunFacts(response, {
+      get: async () => noAi,
+    })).run_facts).not.toHaveProperty('provider_calls');
+
+    await expect(executeTesting.withRecipeRunFacts(response, {
+      get: async () => { throw new Error('audit unavailable'); },
+    })).resolves.toBe(response);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// 5. THE SINK — its own rules, which the join above cannot exercise
 // ────────────────────────────────────────────────────────────────
 
 describe('D-250 § D — the run-scoped sink', () => {

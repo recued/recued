@@ -110,9 +110,10 @@ const quietTask = (id: string): HousekeepingTaskInstance => ({
 const run = async (
   meter: HousekeepingTaskTokenMeter | undefined,
   tasks: readonly HousekeepingTaskInstance[],
+  stateStore?: ReturnType<typeof createHousekeepingStateStore>,
 ) => {
   const config = createHousekeepingConfigStore(db);
-  const state = createHousekeepingStateStore(db);
+  const state = stateStore ?? createHousekeepingStateStore(db);
   config.write({ preset: 'balanced' }, NOW);
   let clock = NOW;
   const sched = createHousekeepingScheduler({
@@ -240,5 +241,42 @@ describe('D-250 § D — the task token meter', () => {
     meter.record(report(7));
     expect(meter.take('t')?.total_tokens).toBe(7);
     expect(meter.take('t')).toBeUndefined();
+  });
+});
+
+
+// ────────────────────────────────────────────────────────────────
+// 4. THE DASHBOARD PATH — state row, which is what the panel reads
+// ────────────────────────────────────────────────────────────────
+
+describe('D-250 § D — per-task spend reaches the status surface', () => {
+  it('⛔⛔ THE JOIN: a spending task lands `last_run_tokens` on its STATE row', async () => {
+    // The cycle audit row carries the full report; the PANEL reads
+    // `housekeeping.status.read`, which projects `housekeeping_state`. A number
+    // that reaches only the audit row reaches no dashboard.
+    const meter = createHousekeepingTaskTokenMeter();
+    const state = createHousekeepingStateStore(db);
+    await run(meter, [spendingTask('summarize', meter, [150])], state);
+    expect(state.get('summarize')?.last_run_tokens).toBe(150);
+  });
+
+  it('⛔ A TASK THAT SPENT NOTHING LEAVES IT ABSENT on the state row too', async () => {
+    const meter = createHousekeepingTaskTokenMeter();
+    const state = createHousekeepingStateStore(db);
+    await run(meter, [quietTask('prune')], state);
+    const row = state.get('prune');
+    expect(row).toBeDefined();
+    expect(row?.last_run_tokens).toBeUndefined();
+  });
+
+  it('⚠ the state row and the cycle row report the SAME number', async () => {
+    // They are two projections of one measurement — the scalar is derived from
+    // the report rather than measured separately, so they cannot drift.
+    const meter = createHousekeepingTaskTokenMeter();
+    const state = createHousekeepingStateStore(db);
+    const result = await run(meter, [spendingTask('enrich', meter, [100, 250])], state);
+    expect(result.per_task.find((t) => t.task_id === 'enrich')?.tokens?.total_tokens)
+      .toBe(350);
+    expect(state.get('enrich')?.last_run_tokens).toBe(350);
   });
 });

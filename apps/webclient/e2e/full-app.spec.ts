@@ -176,6 +176,13 @@ const CHAT_SOURCE_REFERENCE = 'data-recued-chat-source-reference';
 const CHAT_SOURCE_REFERENCE_ID = 'data-recued-chat-source-reference-id';
 const CHAT_SOURCE_REFERENCE_OPEN =
   'data-recued-chat-source-reference-open';
+const SHARED_REFERENCE = 'data-recued-reference';
+const SHARED_REFERENCE_ID = 'data-recued-reference-id';
+const SHARED_REFERENCE_DISCLOSURE = 'data-recued-reference-disclosure';
+const SHARED_REFERENCE_ITEM = 'data-recued-reference-item';
+const SHARED_PROVENANCE = 'data-recued-provenance';
+const SHARED_PROVENANCE_PRIMARY = 'data-recued-provenance-primary';
+const SHARED_PROVENANCE_DETAIL = 'data-recued-provenance-detail';
 const CHAT_RETURN_TARGET = 'data-recued-chat-route-return-target';
 const CHAT_FOLLOWUP_CONTEXT = 'data-recued-chat-followup-context';
 const CHAT_FOLLOWUP_CONTEXT_CLEAR =
@@ -370,8 +377,13 @@ const RUN_PALETTE_CLOSE = 'data-recued-run-palette-close';
 const RUN_PALETTE_ACTION = 'data-recued-run-palette-action';
 const RUN_PALETTE_RESULT = 'data-recued-run-palette-result';
 const RUN_PALETTE_RETRY = 'data-recued-run-palette-retry';
+const GLOBAL_RUN_PALETTE_TRIGGER =
+  'data-recued-global-run-palette-trigger';
 const PACKS_ADD_INPUT = 'data-recued-packs-surface-add-input';
 const PACKS_INSTALLED_ONLY = 'data-recued-packs-surface-installed-only';
+const LIST_PREVIEW = 'data-recued-list-preview';
+const LIST_PREVIEW_CLOSE = 'data-recued-list-preview-close';
+const LIST_PREVIEW_OPEN = 'data-recued-list-preview-open';
 const NOTIFY_TOAST = 'data-recued-notify-toast';
 const NOTIFY_TOAST_DISMISS = 'data-recued-notify-toast-dismiss';
 const PAIR_REAUTH_NOTICE = 'data-recued-pair-code-input-reauth-notice';
@@ -10416,8 +10428,8 @@ test('Data renders a prior in-page hash after opening contact detail', async ({ 
   await expect(heading).toHaveText('Mary Rivera');
   await expect(page).toHaveURL(/#data\/contact\/mary%40example\.test$/);
 
-  // Opening the detail used replaceState. Returning to the hash shown before
-  // that in-page write must not normalize-equal a stale shell cache and no-op.
+  // Opening the detail writes through History (which emits no hashchange).
+  // Returning to the prior hash must not equal a stale shell cache and no-op.
   await page.evaluate(() => window.__app.setHash('#data/contact'));
   await expect(page).toHaveURL(/#data\/contact$/);
   await expect(heading).toHaveCount(0);
@@ -11725,6 +11737,38 @@ test('Data owns Memory detail loading and returns Back to the exact row', async 
   ).toBe(2);
 });
 
+test('Data preserves outside-actor Memory provenance from list through detail', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?data=memory-rows&memory_provenance=1#data/memory`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const ownRow = page.locator('.memory-row[data-origin="user_self"]');
+  const agentRow = page.locator('.memory-row[data-origin="contracted_user"]');
+  await expect(agentRow).toContainText('Agent-authored operating note');
+  await expect(ownRow.locator(`[${SHARED_PROVENANCE_DETAIL}]`)).toHaveCount(0);
+
+  const provenance = agentRow.locator(`[${SHARED_PROVENANCE}]`);
+  await expect(provenance).toHaveAttribute('data-kind', 'agent');
+  await expect(provenance.locator(`[${SHARED_PROVENANCE_PRIMARY}]`))
+    .toHaveText('Agent');
+  await expect(provenance.locator(`[${SHARED_PROVENANCE_DETAIL}]`)).toHaveText(
+    'agent browser-agent, under contract browser-contract, asserted this',
+  );
+
+  await agentRow.getByRole('button', {
+    name: 'View memory Agent-authored operating note (memory-agent-1)',
+    exact: true,
+  }).click();
+  const detail = page.getByRole('region', { name: 'Memory detail' });
+  await expect(detail).toContainText('Use the verified provider record.');
+  await expect(detail.locator(`[${SHARED_PROVENANCE}]`))
+    .toHaveAttribute('data-kind', 'agent');
+  await expect(detail.locator(`[${SHARED_PROVENANCE_DETAIL}]`)).toHaveText(
+    'agent browser-agent, under contract browser-contract, asserted this',
+  );
+});
+
 test('Data keeps a failed Memory detail owned through a successful retry', async ({ page }) => {
   await page.goto(
     `${HARNESS_URL}?data=memory-rows&memory_get_response=fail-once-slow-retry`,
@@ -12470,6 +12514,8 @@ test('Data keeps a Records delete owned and reconciles its list once', async ({ 
   const reference = page.locator(
     '[data-action="records-open-reference"][data-records-id="job-0"]',
   );
+  await expect(reference).toHaveAttribute(SHARED_REFERENCE, 'action');
+  await expect(reference).toHaveAttribute(SHARED_REFERENCE_ID, 'job/job-0');
   const outbox = page.locator('.records-outbox');
   const outboxSummary = outbox.locator('summary');
   const outboxRefresh = page.locator('[data-action="records-refresh-outbox"]');
@@ -12990,6 +13036,26 @@ test('Data keeps the CRM timeline trigger focused through its load', async ({ pa
   await expect.poll(
     () => page.evaluate(() => window.__app.rpcCallCount('data.timeline')),
   ).toBe(2);
+});
+
+test('Data renders outside-actor provenance in the CRM timeline', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?data=timeline&reference_provenance=1#data/crm`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  await page.getByRole('textbox', { name: 'Entity' }).fill('crm-1');
+  await page.getByRole('button', { name: 'Open timeline' }).click();
+
+  const entry = page.locator('.memory-timeline-entry');
+  await expect(entry).toHaveAttribute('data-source', 'memory');
+  const provenance = entry.locator(`[${SHARED_PROVENANCE}]`);
+  await expect(provenance).toHaveAttribute('data-kind', 'agent');
+  await expect(provenance.locator(`[${SHARED_PROVENANCE_PRIMARY}]`)).toHaveText(
+    'agent browser-agent, under contract browser-contract, asserted this',
+  );
+  await expect(provenance.locator(`[${SHARED_PROVENANCE_DETAIL}]`))
+    .toHaveCount(0);
 });
 
 test('Data keeps file download visible, focused, and single-flight', async ({ page }) => {
@@ -14647,6 +14713,35 @@ test('Packs keeps the Installed only source toggle keyboard-owned', async ({ pag
   await expect(toggle).toBeFocused();
 });
 
+test('Packs previews a row in place and restores it before full detail', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?packs=installed#packs`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const card = page.locator(
+    '[data-recued-discover-card][data-id="installed-mail"]',
+  );
+  await expect(card).toBeVisible();
+  await card.click();
+
+  const preview = page.locator(`[${LIST_PREVIEW}]`);
+  await expect(preview).toBeVisible();
+  await expect(preview.getByRole('heading', { name: 'Installed Mail' }))
+    .toBeVisible();
+  await expect(page).toHaveURL(/#packs$/);
+  await expect(preview.locator(`[${LIST_PREVIEW_CLOSE}]`)).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(preview).toBeHidden();
+  await expect(card).toBeFocused();
+
+  await page.keyboard.press('Space');
+  await expect(preview).toBeVisible();
+  await preview.locator(`[${LIST_PREVIEW_OPEN}]`).click();
+  await expect(page).toHaveURL(/#packs\/installed-mail$/);
+  await expect(page.locator('[data-recued-packs-detail-back]'))
+    .toBeVisible();
+});
+
 test('Packs keeps a failed detail Retry focused and single-flight', async ({ page }) => {
   await page.goto(
     `${HARNESS_URL}?packs=installed&packs_response=detail-fail-once-slow-retry#packs/installed-mail`,
@@ -14976,6 +15071,37 @@ test('Pack app views form one keyboard stop and retain focus through load', asyn
   expect(narrowTabs.documentWidth).toBeLessThanOrEqual(narrowTabs.viewportWidth);
 });
 
+test('Pack Use manages trigger recipes without running them outside their precondition', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&packs_recipe_reactive=1`
+      + '#packs/installed-mail',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const app = page.locator('[data-recued-pack-app="installed-mail"]');
+  const manage = app.locator(
+    '[data-recued-pack-app-automation="installed-mail-digest"]',
+  );
+  await expect(app.locator('[data-recued-pack-app-view]')).toHaveCount(0);
+  await expect(app.locator(
+    '[data-recued-pack-app-operation="installed-mail-digest"]',
+  )).toHaveCount(0);
+  await expect(manage).toHaveText('Manage');
+  await expect(manage).toHaveAttribute(
+    SHARED_REFERENCE_ID,
+    'installed-mail-digest',
+  );
+  await expect(manage).toHaveAttribute(
+    'href',
+    '#automation/installed-mail-digest',
+  );
+  expect(await page.evaluate(() => window.__app.rpcCallCount('execute'))).toBe(0);
+
+  await manage.click();
+  await expect(page).toHaveURL(/#automation\/installed-mail-digest$/);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('execute'))).toBe(0);
+});
+
 test('copyable run results stay usable across Packs and Recipes', async ({ page }) => {
   await page.context().grantPermissions(
     ['clipboard-read', 'clipboard-write'],
@@ -14998,6 +15124,13 @@ test('copyable run results stay usable across Packs and Recipes', async ({ page 
   await runDialog.getByRole('button', { name: 'Close' }).click();
   await expect(runDialog).toHaveCount(0);
   const packCopy = packApp.locator('.copy-btn');
+  const packRecipeReferences = packApp.locator(
+    `[${SHARED_REFERENCE_ID}="installed-mail-digest"]`,
+  );
+  await expect(packRecipeReferences).toHaveCount(2);
+  await expect(packRecipeReferences.first()).toBeVisible();
+  await expect(packApp.locator(`[${SHARED_PROVENANCE}]`))
+    .toHaveAttribute('data-kind', 'source');
   await expect(packCopy).toBeVisible();
   await expect(packCopy).toHaveAccessibleName('Copy');
   expect((await packCopy.boundingBox())?.height).toBeGreaterThanOrEqual(36);
@@ -15626,7 +15759,9 @@ test('Pack Use keeps editable result Save focused through its repaint', async ({
     'data-audit-confirm-message',
     'This pack result has unsaved table changes. Leave this pack anyway?',
   );
-  await expect(page).toHaveURL(/#packs\/installed-mail$/);
+  await expect(page).toHaveURL(
+    /#packs\/installed-mail\/use\/installed-mail-digest$/,
+  );
   await expect(amount).toHaveValue('125.00');
   await expect(amount).toBeFocused();
 
@@ -15635,7 +15770,9 @@ test('Pack Use keeps editable result Save focused through its repaint', async ({
     'data-audit-confirm-message',
     'This pack result has unsaved table changes. Leave Packs anyway?',
   );
-  await expect(page).toHaveURL(/#packs\/installed-mail$/);
+  await expect(page).toHaveURL(
+    /#packs\/installed-mail\/use\/installed-mail-digest$/,
+  );
   await expect(amount).toHaveValue('125.00');
   await expect(amount).toBeFocused();
 
@@ -15724,7 +15861,9 @@ test('Pack Use keeps result paging owned across its repaint', async ({ page }) =
     'data-audit-confirm-message',
     'A pack action is still in progress. Leave this pack anyway?',
   );
-  await expect(page).toHaveURL(/#packs\/installed-mail$/);
+  await expect(page).toHaveURL(
+    /#packs\/installed-mail\/use\/installed-mail-digest$/,
+  );
   await expect(next).toBeFocused();
 
   await page.evaluate(() => window.__app.setHash('#data'));
@@ -15732,7 +15871,9 @@ test('Pack Use keeps result paging owned across its repaint', async ({ page }) =
     'data-audit-confirm-message',
     'A pack action is still in progress. Leave Packs anyway?',
   );
-  await expect(page).toHaveURL(/#packs\/installed-mail$/);
+  await expect(page).toHaveURL(
+    /#packs\/installed-mail\/use\/installed-mail-digest$/,
+  );
   await expect(next).toBeFocused();
 
   await expect(app.getByText('page-two-row', { exact: true })).toBeVisible();
@@ -16155,6 +16296,81 @@ test('Recipes hands focus into detail and back to the exact card', async ({ page
   await expect(open).toBeFocused();
 });
 
+test('Recipes uses Space for preview and Enter for durable detail', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=installed#recipes`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const card = page.locator(
+    '[data-recued-recipes-card="autorun-live-1"]',
+  );
+  const open = card.getByRole('button', {
+    name: 'Open Watch pipeline details',
+    exact: true,
+  });
+  await card.focus();
+  await page.keyboard.press('Space');
+
+  const preview = page.locator(`[${LIST_PREVIEW}]`);
+  await expect(preview).toBeVisible();
+  await expect(preview.getByRole('heading', { name: 'Watch pipeline' }))
+    .toBeVisible();
+  await expect(page).toHaveURL(/#recipes$/);
+  await page.keyboard.press('Escape');
+  await expect(preview).toBeHidden();
+  await expect(card).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/#recipes\/autorun-live-1$/);
+  await expect(page.locator(
+    '[data-recued-recipes-detail="autorun-live-1"]',
+  )).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(/#recipes$/);
+  await expect(open).toBeFocused();
+});
+
+test('Recipes restores filter, page, focus, and scroll through browser Back', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=paged#recipes`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const search = page.getByRole('searchbox', {
+    name: 'Search installed recipes',
+  });
+  const manual = page.getByRole('group', { name: 'Filter by type' })
+    .getByRole('button', { name: 'Manual', exact: true });
+  const pager = page.getByRole('navigation', {
+    name: 'Installed recipes pages',
+  });
+  await search.fill('Paged recipe');
+  await manual.click();
+  await pager.getByRole('button', { name: 'Next', exact: false }).click();
+  await expect(pager).toContainText('Page 2 of 3');
+
+  const content = page.locator(`[${SHELL_CONTENT}]`);
+  const open = page.getByRole('button', {
+    name: 'Open Paged recipe 25 details',
+    exact: true,
+  });
+  // Capture the position at activation time. Playwright, like a pointer user,
+  // first reveals an off-screen target; the continuity contract starts from
+  // the settled position where the action can actually be pressed.
+  await open.scrollIntoViewIfNeeded();
+  const savedScroll = await content.evaluate((element) => element.scrollTop);
+  expect(savedScroll).toBeGreaterThan(0);
+  await open.click();
+  await expect(page).toHaveURL(/#recipes\/paged-recipe-25$/);
+
+  await page.goBack();
+  await expect(page).toHaveURL(/#recipes$/);
+  await expect(search).toHaveValue('Paged recipe');
+  await expect(manual).toHaveAttribute('aria-pressed', 'true');
+  await expect(pager).toContainText('Page 2 of 3');
+  await expect(open).toBeFocused();
+  await expect.poll(
+    () => content.evaluate((element) => element.scrollTop),
+  ).toBe(savedScroll);
+});
+
 test('Recipes gives mobile navigation full-size targets', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?recipes=installed`);
@@ -16472,8 +16688,12 @@ test('Recipes gives list Open and Run separate focus ownership', async ({ page }
   const card = page.locator(
     '[data-recued-recipes-card="autorun-live-1"]',
   );
-  await expect(card).not.toHaveAttribute('role');
-  await expect(card).not.toHaveAttribute('tabindex');
+  await expect(card).toHaveAttribute('role', 'group');
+  await expect(card).toHaveAttribute('tabindex', '0');
+  await expect(card.getByRole('button', {
+    name: 'Preview Watch pipeline',
+    exact: true,
+  })).toHaveCount(1);
   await expect(card.getByRole('button', {
     name: 'Open Watch pipeline details',
     exact: true,
@@ -16649,6 +16869,26 @@ test('Recipes preserves direct default Run focus through execution', async ({ pa
   await expect(page).toHaveURL(/#data$/);
   await expect(detail).toHaveCount(0);
   await expect(html).toHaveAttribute('data-audit-confirm-count', '2');
+});
+
+test('Recipes keeps the audit-backed Run facts receipt in modal and result', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?recipes=installed&recipe_run_facts=1#recipes/autorun-live-1`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
+  await expect(detail).toBeVisible();
+  await detail.locator('[data-recued-recipes-action="open-run"]')
+    .filter({ hasText: /^Run$/ })
+    .click();
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await dialog.getByRole('button', { name: 'Run', exact: true }).click();
+
+  const receipt =
+    '34 steps · 1,249 items · 2 provider calls · 13,385 tokens · 42 seconds';
+  await expect(dialog.locator('[data-recued-run-modal-facts]')).toHaveText(receipt);
+  await expect(detail.locator('[data-recued-recipes-result-facts]')).toHaveText(receipt);
 });
 
 test('Recipes protects editable result work through its save', async ({ page }) => {
@@ -17222,7 +17462,37 @@ test('Recipes preserves related auto-run action ownership', async ({ page }) => 
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
 
-  await page.locator('[data-recued-recipes-card="autorun-live-1"]').click();
+  const reactiveCard = page.locator(
+    '[data-recued-recipes-card="autorun-live-1"]',
+  );
+  await expect(reactiveCard.locator('[data-recued-recipes-run-button]'))
+    .toHaveCount(0);
+  await expect(reactiveCard.getByRole('link', {
+    name: 'Manage automation for Watch pipeline',
+    exact: true,
+  })).toHaveAttribute('href', '#automation/autorun-live-1');
+  await reactiveCard.getByRole('button', {
+    name: 'Open Watch pipeline details',
+    exact: true,
+  }).click();
+  const detail = page.locator(
+    '[data-recued-recipes-detail="autorun-live-1"]',
+  );
+  const detailHeader = detail.locator('.recipes-detail-header');
+  await expect(detailHeader.locator(
+    '[data-recued-recipes-action="open-run"], '
+      + '[data-recued-recipes-action="run-defaults"], '
+      + '[data-recued-recipes-action="open-schedule"]',
+  )).toHaveCount(0);
+  await expect(detailHeader.locator(
+    '[data-recued-recipes-action="toggle-auto-run:off"]',
+  )).toHaveAccessibleName(
+    'Pause auto-run Watch pipeline (autorun-live-1)',
+  );
+  await expect(detailHeader.getByRole('link', {
+    name: 'Manage automation',
+    exact: true,
+  })).toHaveAttribute('href', '#automation/autorun-live-1');
   const row = page.locator('[data-recued-recipes-related-row="close-action"]');
   const pause = row.locator(
     '[data-recued-recipes-action="toggle-auto-run:off"]',
@@ -17292,17 +17562,17 @@ test('Recipes preserves related auto-run action ownership', async ({ page }) => 
   await expect(row).toBeVisible();
   await expect(pause).toBeFocused();
 
-  const resume = row.locator(
+  const arm = row.locator(
     '[data-recued-recipes-action="toggle-auto-run:on"]',
   );
-  await expect(resume).toHaveText('Resume auto-run');
-  await expect(resume).toHaveAccessibleName(
-    'Resume auto-run Close action (close-action)',
+  await expect(arm).toHaveText('Arm auto-run');
+  await expect(arm).toHaveAccessibleName(
+    'Arm auto-run Close action (close-action)',
   );
-  await expect(resume).toBeFocused();
+  await expect(arm).toBeFocused();
 
   await page.keyboard.press('Enter');
-  await expect(resume).toHaveText('Resuming auto-run…');
+  await expect(arm).toHaveText('Arming auto-run…');
   const logs = row.locator('[data-recued-recipes-runs-link]');
   await logs.focus();
   await expect(row.locator(
@@ -18405,6 +18675,30 @@ test('Logs contains long run identifiers in mobile history and detail', async ({
     .toBeLessThanOrEqual(detailGeometry.routeClientWidth);
 });
 
+test('Logs preserves outside-actor run provenance from history through detail', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?journey=verification&reference_provenance=1#logs`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const row = page.locator(`[${LOGS_ROW}="run-verify"]`);
+  const rowProvenance = row.locator(`[${SHARED_PROVENANCE}]`);
+  await expect(rowProvenance.locator(`[${SHARED_PROVENANCE_PRIMARY}]`))
+    .toHaveText('Connected agent');
+  await expect(rowProvenance.locator(`[${SHARED_PROVENANCE_DETAIL}]`)).toHaveText(
+    'agent browser-agent, under contract browser-contract, asserted this',
+  );
+
+  await row.locator(`[${LOGS_ACTION}="open-detail"]`).click();
+  const detail = page.locator('[data-recued-logs-detail="run-verify"]');
+  const detailProvenance = detail.locator(`[${SHARED_PROVENANCE}]`);
+  await expect(detailProvenance.locator(`[${SHARED_PROVENANCE_PRIMARY}]`))
+    .toHaveText('Connected agent');
+  await expect(detailProvenance.locator(`[${SHARED_PROVENANCE_DETAIL}]`)).toHaveText(
+    'agent browser-agent, under contract browser-contract, asserted this',
+  );
+});
+
 test('Logs contains long live-run and pass labels on a narrow phone', async ({ page }) => {
   const recipeId = `recipe-${'R'.repeat(240)}`;
   const stepId = `step-${'S'.repeat(240)}`;
@@ -18544,8 +18838,8 @@ test('Logs renders bare History after opening an in-page run detail', async ({ p
   await expect(heading).toHaveText('calendar/schedule-review');
   await expect(page).toHaveURL(/#logs\/run-verify$/);
 
-  // The detail was selected with replaceState. A later navigation to the hash
-  // shown before that write must render the unselected History view.
+  // The detail was selected through History (which emits no hashchange). A
+  // later navigation to the prior hash must render the unselected History view.
   await page.evaluate(() => window.__app.setHash('#logs'));
   await expect(page).toHaveURL(/#logs$/);
   await expect(heading).toHaveCount(0);
@@ -21398,6 +21692,36 @@ test('Settings Seller directory does not repeat its page heading', async ({ page
   })).toHaveCount(1);
 });
 
+test('Settings Seller previews a row before Enter opens its detail', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?settle_reads=1#settings/seller/customers`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const link = page.locator(
+    '[data-recued-seller-collection-item-link="customer-1"]',
+  );
+  await expect(link).toBeVisible();
+  await link.click();
+
+  const preview = page.locator(`[${LIST_PREVIEW}]`);
+  await expect(preview).toBeVisible();
+  await expect(preview.getByRole('heading', { name: 'customer-shared' }))
+    .toBeVisible();
+  await expect(page).toHaveURL(/#settings\/seller\/customers$/);
+  await page.keyboard.press('Escape');
+  await expect(preview).toBeHidden();
+  await expect(link).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(
+    /#settings\/seller\/customers\/detail\/customer-1$/,
+  );
+  await expect(page.locator(
+    '[data-recued-seller-collection-detail="customer-1"]',
+  )).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(/#settings\/seller\/customers$/);
+  await expect(link).toBeFocused();
+});
+
 test('Settings Seller keeps mobile navigation and disclosures full-size', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
 
@@ -21446,6 +21770,20 @@ test('Settings Seller keeps mobile navigation and disclosures full-size', async 
     expect(await seller.evaluate(
       (element) => element.scrollWidth <= element.clientWidth,
     )).toBe(true);
+
+    if (hash.includes('/customers/detail/')) {
+      const contractReference = seller.locator(
+        `[${SHARED_REFERENCE_ID}="door_paged_01"]`,
+      );
+      await expect(contractReference).toHaveAttribute(
+        SHARED_REFERENCE,
+        'identity',
+      );
+      await expect(contractReference).toHaveAttribute(
+        SHARED_REFERENCE_ID,
+        'door_paged_01',
+      );
+    }
   }
 });
 
@@ -21459,10 +21797,10 @@ test('Settings Seller Orders distinguishes repeated offer links', async ({ page 
     `[data-recued-seller-collection-item-link="${orderKey}"]`,
   );
   await expect(orderLink('ord:access:claim-mail-1')).toHaveAccessibleName(
-    'Open order ord:access:claim-mail-1 for offer-1',
+    'Preview order ord:access:claim-mail-1 for offer-1; press Enter to open',
   );
   await expect(orderLink('ord:access:claim-mail-2')).toHaveAccessibleName(
-    'Open order ord:access:claim-mail-2 for offer-1',
+    'Preview order ord:access:claim-mail-2 for offer-1; press Enter to open',
   );
 });
 
@@ -21478,12 +21816,12 @@ test('Settings Seller Usage distinguishes rollups for one contract', async ({ pa
   await expect(usageLink(
     'door_paged_01:tool_call:day:1700000000000',
   )).toHaveAccessibleName(
-    'Open Tool Call usage for door_paged_01 (day 1700000000000)',
+    'Preview Tool Call usage for door_paged_01 (day 1700000000000); press Enter to open',
   );
   await expect(usageLink(
     'door_paged_01:chat_turn:day:1700000000000',
   )).toHaveAccessibleName(
-    'Open Chat Turn usage for door_paged_01 (day 1700000000000)',
+    'Preview Chat Turn usage for door_paged_01 (day 1700000000000); press Enter to open',
   );
 });
 
@@ -21497,10 +21835,10 @@ test('Settings Seller Offers distinguishes duplicate display names', async ({ pa
     `[data-recued-seller-collection-item-link="${offerId}"]`,
   );
   await expect(offerLink('offer-1')).toHaveAccessibleName(
-    'Open offer offer-1 (Consultation)',
+    'Preview offer offer-1 (Consultation); press Enter to open',
   );
   await expect(offerLink('offer-2')).toHaveAccessibleName(
-    'Open offer offer-2 (Consultation)',
+    'Preview offer offer-2 (Consultation); press Enter to open',
   );
 });
 
@@ -21514,10 +21852,10 @@ test('Settings Seller Tiers distinguishes duplicate display names', async ({ pag
     `[data-recued-seller-collection-item-link="${tierId}"]`,
   );
   await expect(tierLink('tier-standard')).toHaveAccessibleName(
-    'Open tier tier-standard (Standard)',
+    'Preview tier tier-standard (Standard); press Enter to open',
   );
   await expect(tierLink('tier-standard-annual')).toHaveAccessibleName(
-    'Open tier tier-standard-annual (Standard)',
+    'Preview tier tier-standard-annual (Standard); press Enter to open',
   );
 });
 
@@ -21531,10 +21869,10 @@ test('Settings Seller Customers distinguishes shared provider ids', async ({ pag
     `[data-recued-seller-collection-item-link="${customerId}"]`,
   );
   await expect(customerLink('customer-1')).toHaveAccessibleName(
-    'Open customer customer-1 (customer-shared)',
+    'Preview customer customer-1 (customer-shared); press Enter to open',
   );
   await expect(customerLink('customer-2')).toHaveAccessibleName(
-    'Open customer customer-2 (customer-shared)',
+    'Preview customer customer-2 (customer-shared); press Enter to open',
   );
 });
 
@@ -25186,6 +25524,87 @@ test('an uncertain run lands on its exact record with readable dark-theme next s
   await expect(runOutcome).toBeFocused();
 });
 
+test('the shell owns one Run palette across routes and Ctrl+K opens it globally', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 653 });
+  await page.goto(`${HARNESS_URL}?run_palette=autorun#data`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const trigger = page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`);
+  await expect(trigger).toBeVisible();
+  await expect(trigger).toHaveAttribute('aria-haspopup', 'dialog');
+  await expect(trigger).toHaveAttribute(
+    'aria-keyshortcuts',
+    'Control+K Meta+K',
+  );
+  expect((await trigger.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+  const topbarGeometry = await page.locator(`[${SHELL_TOPBAR}]`).evaluate(
+    (topbar) => {
+      const rect = topbar.getBoundingClientRect();
+      return {
+        left: rect.left,
+        right: rect.right,
+        scrollWidth: topbar.scrollWidth,
+        clientWidth: topbar.clientWidth,
+        viewport: window.innerWidth,
+      };
+    },
+  );
+  expect(topbarGeometry.left).toBeGreaterThanOrEqual(-0.5);
+  expect(topbarGeometry.right).toBeLessThanOrEqual(topbarGeometry.viewport + 0.5);
+  expect(topbarGeometry.scrollWidth).toBeLessThanOrEqual(
+    topbarGeometry.clientWidth,
+  );
+
+  const overlay = page.locator(`[${RUN_PALETTE}]`);
+  await trigger.click();
+  await expect(overlay).toHaveCount(1);
+  await page.keyboard.press('Control+K');
+  await expect(overlay).toHaveCount(1);
+  expect(await overlay.evaluate((node) => node.contains(document.activeElement)))
+    .toBe(true);
+  await page.keyboard.press('Escape');
+  await expect(overlay).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+
+  const content = page.locator('[data-recued-webclient-content]');
+  await content.focus();
+  const composing = await content.evaluate((node) => {
+    const event = new KeyboardEvent('keydown', {
+      key: 'k',
+      ctrlKey: true,
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    const dispatched = node.dispatchEvent(event);
+    return { dispatched, defaultPrevented: event.defaultPrevented };
+  });
+  expect(composing).toEqual({ dispatched: true, defaultPrevented: false });
+  await expect(overlay).toHaveCount(0);
+
+  await page.keyboard.press('Control+K');
+  await expect(overlay).toHaveCount(1);
+  await page.evaluate(() => window.__app.setHash('#settings'));
+  await expect(page).toHaveURL(/#settings$/);
+  await expect(overlay).toHaveCount(0);
+  await expect(trigger).toBeVisible();
+
+  await page.locator(`[${DRAWER_TOGGLE}]`).click();
+  await page.locator(`[${DRAWER_ACTION}="create"]`).click();
+  const createOverlay = page.locator(`[${CREATE_OVERLAY}]`);
+  await expect(createOverlay).toBeVisible();
+  await page.keyboard.press('Control+K');
+  await expect(overlay).toHaveCount(0);
+  await expect(createOverlay).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(createOverlay).toHaveCount(0);
+
+  await page.keyboard.press('Control+K');
+  await expect(overlay).toHaveCount(1);
+  await page.keyboard.press('Escape');
+  await expect(overlay).toHaveCount(0);
+});
+
 test('the first-run recipe handoff traps focus and recovers an empty inventory', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const automate = page.locator(
@@ -25419,6 +25838,10 @@ test('the Run palette guards an in-flight auto-run toggle and route leave', asyn
   await close.dispatchEvent('click');
   await overlay.dispatchEvent('click');
   await expect(overlay).toBeVisible();
+  expect(await page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    return window.dispatchEvent(event);
+  })).toBe(false);
 
   await page.evaluate(() => {
     document.documentElement.setAttribute('data-audit-confirm-count', '0');
@@ -25434,7 +25857,7 @@ test('the Run palette guards an in-flight auto-run toggle and route leave', asyn
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'A recipe action is still in progress. Leave Chat anyway?',
+    'A recipe action is still in progress. Leave this page anyway?',
   );
   await expect.poll(
     () => page.evaluate(() => window.location.hash),
@@ -25449,6 +25872,10 @@ test('the Run palette guards an in-flight auto-run toggle and route leave', asyn
   await expect(page.locator(`[${RUN_PALETTE_ACTION}]`, { hasText: 'Arm' }))
     .toBeFocused();
   await expect(close).not.toHaveAttribute('aria-disabled');
+  expect(await page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    return window.dispatchEvent(event);
+  })).toBe(true);
 
   await page.evaluate(() => window.__app.setHash('#data'));
   await expect(page).toHaveURL(/#data$/);
@@ -25489,7 +25916,7 @@ test('the Run palette retains a pending toggle through its Automation handoff', 
   await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'A recipe action is still in progress. Leave Chat anyway?',
+    'A recipe action is still in progress. Leave this page anyway?',
   );
   await expect.poll(() => page.evaluate(() => window.location.hash)).toBe('');
   await expect(overlay).toBeVisible();
@@ -26491,11 +26918,15 @@ test('a Connections account removal dialog owns and restores focus', async ({ pa
     'data-audit-confirm-message',
     'A connection action is still in progress. Leave Connections anyway?',
   );
-  await expect(page).toHaveURL(/#connections$/);
+  // Declining the route leave keeps the pending command on its exact account
+  // detail. Completion then closes into the canonical Mail collection, which
+  // remains the durable browser-Back parent for a later detail open.
+  await expect(page).toHaveURL(/#connections\/mail\/work$/);
   await expect(removing).toBeFocused();
 
   const connect = route.getByRole('button', { name: 'Connect mailbox' });
   await expect(connect).toBeVisible();
+  await expect(page).toHaveURL(/#connections\/mail$/);
   await expect(connect).toBeFocused();
   await page.evaluate(() => window.__app.setHash('#chat'));
   await expect(page).toHaveURL(/#chat$/);
@@ -26891,6 +27322,7 @@ test('a connected-source answer stays source-aware through its first follow-up',
     'The receipt does not show which records, if any, informed the answer.',
   );
   const references = answer.locator(`[${CHAT_SOURCE_REFERENCES}]`);
+  await expect(references).toHaveAttribute(SHARED_REFERENCE_DISCLOSURE, '');
   const referencesToggle = references.locator(
     `[${CHAT_SOURCE_REFERENCES_TOGGLE}]`,
   );
@@ -26907,15 +27339,29 @@ test('a connected-source answer stays source-aware through its first follow-up',
     'They are not yet linked to individual sentences.',
   );
   await expect(references.locator(`[${CHAT_SOURCE_REFERENCE}]`)).toHaveCount(2);
+  await expect(references.locator(`[${SHARED_REFERENCE_ITEM}]`)).toHaveCount(2);
   await expect(references.locator(`[${CHAT_SOURCE_REFERENCE_ID}]`))
     .toHaveText([
       'mail-1',
       'mail:message:01J4X9Z8V7W6T5S4R3Q2P1N0M9L8K7J6',
     ]);
+  await expect(references.locator(`[${CHAT_SOURCE_REFERENCE_ID}]`).nth(0))
+    .toHaveAttribute(SHARED_REFERENCE, 'identity');
+  await expect(references.locator(`[${CHAT_SOURCE_REFERENCE_ID}]`).nth(0))
+    .toHaveAttribute(SHARED_REFERENCE_ID, 'mail-1');
+  await expect(references.locator(`[${CHAT_SOURCE_REFERENCE_ID}]`).nth(1))
+    .toHaveAttribute(SHARED_REFERENCE, 'identity');
+  await expect(references.locator(`[${CHAT_SOURCE_REFERENCE_ID}]`).nth(1))
+    .toHaveAttribute(
+      SHARED_REFERENCE_ID,
+      'mail:message:01J4X9Z8V7W6T5S4R3Q2P1N0M9L8K7J6',
+    );
   await expect(references).toContainText('Quarterly planning');
   await expect(references).toContainText('Launch readiness');
   const recordLinks = references.locator(`[${CHAT_SOURCE_REFERENCE_OPEN}]`);
   await expect(recordLinks).toHaveCount(2);
+  await expect(recordLinks.nth(0)).toHaveAttribute(SHARED_REFERENCE, 'link');
+  await expect(recordLinks.nth(1)).toHaveAttribute(SHARED_REFERENCE, 'link');
   await expect(recordLinks.nth(0)).toHaveAttribute(
     'href',
     '#data/mail/record/work/mail-1/return/chat/chat_source_1/msg_source_answer',

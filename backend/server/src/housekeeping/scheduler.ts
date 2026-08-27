@@ -26,6 +26,7 @@ import {
   type HousekeepingCycleResult,
   type HousekeepingPerTaskResult,
   type HousekeepingPreset,
+  type TokenUsageReport,
 } from '@recued/contracts';
 
 import type { HousekeepingConfigStore } from './config-store.js';
@@ -268,11 +269,26 @@ export const createHousekeepingScheduler = (
     const persisted = opts.state.get(id);
     const cursor = persisted?.cursor ?? initialCursor();
 
+    // D-250 § D — open this task's token window HERE rather than around the call
+    // in the cycle loop, so every exit path (complete / yield / pool-unsatisfiable
+    // / error) can record what it spent alongside its duration. ⛔ A task that
+    // THREW still burned the tokens; billing them to nobody would understate the
+    // cost of exactly the tasks worth investigating.
+    const meter = opts.ctx.taskTokenMeter;
+    meter?.begin(id);
+    // ⛔ TAKE ONCE AND CARRY THE REPORT — never reconstruct one. The state row
+    // wants a scalar and the audit row wants the full breakdown; deriving the
+    // scalar from the report keeps them the same measurement, where rebuilding a
+    // report around the scalar would stamp `input_tokens: 0` on the audit row and
+    // call it data.
+    const takeTokens = (): TokenUsageReport | undefined => meter?.take(id);
+
     try {
       const result = await task.step(opts.ctx, cursor, budget_ms);
       const finish = opts.ctx.now();
       const duration_ms = finish - start;
       const status = result.status;
+      const tokens = takeTokens();
 
       opts.state.set({
         task_id: id,
@@ -280,6 +296,7 @@ export const createHousekeepingScheduler = (
         last_status: status === 'complete' ? 'complete' : 'pending',
         last_run_at: finish,
         last_run_duration_ms: duration_ms,
+        ...(tokens !== undefined ? { last_run_tokens: tokens.total_tokens } : {}),
         ...(result.status === 'yield' ? { last_yield_reason: result.reason } : {}),
         consecutive_errors: 0,
       });
@@ -287,6 +304,7 @@ export const createHousekeepingScheduler = (
         task_id: id,
         status,
         duration_ms,
+        ...(tokens !== undefined ? { tokens } : {}),
         ...(result.status === 'yield' ? { yield_reason: result.reason } : {}),
         ...(result.governor ? { governor: result.governor } : {}),
       };
@@ -400,15 +418,11 @@ export const createHousekeepingScheduler = (
       });
       if (!upstreamComplete) continue;
 
-      // D-250 § D — open this task's token window. Sound because this loop is
-      // strictly sequential and awaited; see `task-token-meter.ts` for why the
-      // same shape was REJECTED for recipe steps (parallel prefetch).
-      const meter = opts.ctx.taskTokenMeter;
-      meter?.begin(task.meta.id);
+      // D-250 § D — the token window now opens INSIDE `runTaskStep`, so every
+      // exit path (including the error and pool-unsatisfiable ones) records what
+      // it spent. The result already carries `tokens` when there was any.
       const result = await runTaskStep(task, remaining);
-      const tokens = meter?.take(task.meta.id);
-      // ⛔ Absent when the task made no provider call — most tasks — never zero.
-      per_task.push(tokens !== undefined ? { ...result, tokens } : result);
+      per_task.push(result);
     }
 
     const cycle_finish = opts.ctx.now();

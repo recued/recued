@@ -12,6 +12,8 @@ import {
 } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 
+import { CHAT_MESSAGE_RECALL_ELIGIBILITY } from './storage/chat-store.js';
+
 import type { OwnerRecallCorpusScope } from './chat-recall-scope.js';
 import type {
   ChatRecallSourceCursor,
@@ -61,6 +63,12 @@ export interface InteractionRecallCandidate {
   readonly score: number;
 }
 
+export interface RecallNeighbourQuery {
+  readonly anchor_id: string;
+  readonly next?: number;
+  readonly prev?: number;
+}
+
 export interface RecallSearchBackendResult {
   readonly matches: readonly InteractionRecallCandidate[];
   /** True only when every row in the requested scan range was readable and the
@@ -92,6 +100,10 @@ export interface RecallSearchBackend {
     item_id: string,
     scope: OwnerRecallCorpusScope,
   ): Promise<RecallExactFetchResult>;
+  /** Messages adjacent to an anchor within its own session — the reply
+   *  direction (`next`) or the context direction (`prev`). Optional so a
+   *  backend without it degrades to search-only rather than failing. */
+  neighbours?(query: RecallNeighbourQuery): Promise<InteractionRecallCandidate[]>;
 }
 
 export const truncateRecallUtf8 = (
@@ -289,7 +301,8 @@ const candidateFromSource = (
 });
 
 export const createRecallSearchBackend = (
-  store: Pick<ChatStore, 'scanRecallMessagesPage' | 'getRecallMessage'>,
+  store: Pick<ChatStore,
+    'scanRecallMessagesPage' | 'getRecallMessage' | 'getRecallNeighbours'>,
   options: {
     readonly now?: () => number;
     readonly continuation_secret?: Uint8Array;
@@ -314,6 +327,36 @@ export const createRecallSearchBackend = (
   );
 
   return {
+    /** Messages adjacent to an anchor within its own session.
+     *
+     *  🔑 THE ANSWER IN A CONVERSATION REPEATS NONE OF THE QUESTION'S WORDS.
+     *  "are you sure you want to move from 30d to 90d?" is findable; the reply
+     *  "no lets be fair & change it to 60d" is not — it shares no vocabulary
+     *  with any query that would locate the question. Ranking cannot fix that
+     *  and neither can relaxation; only stepping to the next message can.
+     *
+     *  Session-scoped because chat has no thread — the session IS the
+     *  conversation — and direction-aware because the reply is AFTER and the
+     *  context BEFORE, so the caller takes one side rather than a whole
+     *  session. */
+    async neighbours(input): Promise<InteractionRecallCandidate[]> {
+      if (!store.getRecallNeighbours) return [];
+      const rows = await store.getRecallNeighbours({
+        row_eligibility: CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT,
+        item_id: input.anchor_id,
+        ...(input.next !== undefined ? { next: input.next } : {}),
+        ...(input.prev !== undefined ? { prev: input.prev } : {}),
+      });
+      // ⛔ SKIP UNREADABLE ROWS. A recall row can come back `readable: false`
+      // (no decryptable content), and projecting one would put an empty message
+      // in front of the model as if it were the reply it went looking for.
+      // score 0: these matched nothing, and saying so keeps them from
+      // outranking rows that actually did.
+      return rows
+        .filter((r): r is Extract<typeof r, { readable: true }> => r.readable)
+        .map((r) => candidateFromSource(r, 0));
+    },
+
     async search(input): Promise<RecallSearchBackendResult> {
       if (!store.scanRecallMessagesPage) {
         return {
@@ -350,6 +393,9 @@ export const createRecallSearchBackend = (
       let unreadable = false;
       let frontierCutoff = false;
       let moreMatches = false;
+        // Reserve a quarter of the page for the most RECENT matches.
+        const recencyFloor = Math.max(1, Math.floor(maxCandidates * 0.25));
+        const recent: InteractionRecallCandidate[] = [];
       let reachedEnd = false;
 
       scan: while (!reachedEnd) {
@@ -401,12 +447,34 @@ export const createRecallSearchBackend = (
           }
           const score = lexicalScore(source.content, input.query);
           if (score === null) continue;
-          matches.push(candidateFromSource(source, score));
+          const candidate = candidateFromSource(source, score);
+          matches.push(candidate);
           matches.sort(compareCandidates);
           if (matches.length > maxCandidates) {
             matches.pop();
             moreMatches = true;
           }
+          // ── RECENCY FLOOR ──────────────────────────────────────────────────
+          // ⛔ SCORE IS NEGATIVELY CORRELATED WITH CURRENCY HERE. `lexicalScore`
+          // gives +1000 for a whole-phrase hit and +10 per term occurrence, and
+          // timestamp is only a TIEBREAK — so an old message carrying the exact
+          // phrasing people later quote back outranks yesterday's correction,
+          // and past `maxCandidates` it EVICTS it. Older statements have had
+          // longer to accumulate the wording a query is phrased in.
+          //
+          // A second bounded list keeps the newest candidates regardless of
+          // score. It is bounded for the same reason the main list is — this
+          // loop walks the whole corpus and must not accumulate it.
+          //
+          // ⛔ This does NOT rule that the newest is true. A newer message can
+          // be a question, a guess, or wrong. The floor only guarantees the
+          // newest is VISIBLE beside what it contradicts; which one stands is
+          // the reader's judgement, and a substrate deciding that would be
+          // consolidation with a timestamp.
+          recent.push(candidate);
+          recent.sort((a, b) => b.timestamp - a.timestamp
+            || b.item_id.localeCompare(a.item_id));
+          if (recent.length > recencyFloor) recent.pop();
         }
 
         if (page.next_cursor === undefined) {
@@ -416,8 +484,17 @@ export const createRecallSearchBackend = (
         }
       }
 
+      // Merge: reserve only for recent candidates the score pass MISSED, so the
+      // page still comes back full (reserving unconditionally under-fills it).
+      const present = new Set(matches.map((m) => m.item_id));
+      const missing = recent.filter((r) => !present.has(r.item_id));
+      const merged = missing.length === 0
+        ? matches
+        : [...matches.slice(0, Math.max(0, maxCandidates - missing.length)), ...missing]
+            .slice(0, maxCandidates);
+
       return {
-        matches,
+        matches: merged,
         complete: reachedEnd && !unreadable,
         ...(frontierCutoff && cursor
           ? { continuation: encodeContinuation(cursor, continuationKey) }

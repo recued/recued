@@ -101,9 +101,19 @@ import {
   RECEPTION_ROUTE_HOST_ATTR,
   RECEPTION_ROUTE_TABS_ATTR,
   RECEPTION_SECTION_NAV_STYLES,
-  resolveReceptionSection,
   type ReceptionSection,
 } from './reception-sections.js';
+import {
+  parseReceptionAddress,
+  receptionAddressSelection,
+  receptionEndpointAuthoringAddress,
+  receptionEndpointDetailAddress,
+  receptionEndpointPairAddress,
+  receptionEndpointSetupAddress,
+  receptionHierarchicalAddress,
+  receptionSectionAddress,
+  type ReceptionAddress,
+} from './reception-navigation.js';
 import {
   mountReceptionAbuseSection,
 } from './reception-abuse-section.js';
@@ -113,7 +123,7 @@ import {
 import {
   mountReceptionInboxPanel,
 } from '../reception/inbox-panel.js';
-import { serializeShellRoute } from '../shell/route.js';
+import { createHierarchicalHistory } from '../shell/hierarchical-navigation.js';
 
 // ════════════════════════════════════════════════════════════════
 // Style payload
@@ -164,6 +174,11 @@ export interface BootstrapReceptionRouteOptions
    *  ships with no jsdom in vitest). Throws if neither the option nor the
    *  global is available. */
   document?: Document;
+  /** Preferred complete route selection. Positional options remain for narrow
+   * mounts; production passes this parsed hierarchical address. */
+  initialAddress?: ReceptionAddress;
+  /** Shell-cache alignment after in-page endpoint preview writes. */
+  onHashSync?: (hash: string) => void;
   /** Deep-link segment 0 — the active section (`#reception/<section>`).
    *  Defaults to `inbox` (an absent / unknown value degrades to the
    *  default per `resolveReceptionSection`). */
@@ -181,10 +196,10 @@ export interface BootstrapReceptionRouteOptions
    *  `initialSubview` is `new` / `edit`, or the intake endpoint id when it
    *  is `pair`. */
   initialKind?: string;
-  /** Hash navigator — sets the URL hash to drive a deep-link re-mount.
+  /** Hash navigator for routed authoring, setup, pairing, and narrow mounts.
    *  Defaults to `globalThis.location.hash =`. Injected in tests to
-   *  assert navigation without touching real `location`. Used for the
-   *  spine → authoring-page entry + the authoring-page → list back nav. */
+   *  assert navigation without touching real `location`. Production endpoint
+   *  preview navigation uses the shared in-page history controller. */
   navigate?: (hash: string) => void;
 }
 
@@ -234,7 +249,28 @@ export const bootstrapReceptionRoute = (
     doc.head.appendChild(style);
   }
 
-  const section = resolveReceptionSection(opts.initialSection);
+  const mountedAddress = opts.initialAddress ?? parseReceptionAddress({
+    surface: 'reception',
+    segments: [opts.initialSection, opts.initialSubview, opts.initialKind]
+      .filter((segment): segment is string => segment !== undefined),
+  })!;
+  const initialSelection = receptionAddressSelection(mountedAddress);
+  const section = initialSelection.section;
+  const initialSubview = initialSelection.subview ?? undefined;
+  const initialKind = initialSelection.value ?? undefined;
+  const receptionHistory = createHierarchicalHistory({
+    initial: receptionHierarchicalAddress(mountedAddress),
+    history: () => doc.defaultView?.history,
+    onCommit: (address) => opts.onHashSync?.(address.hash),
+  });
+  /** Only the endpoint spine owns the list/detail DOM needed for an in-place
+   * preview transition. Authoring, setup, and pairing are separate full-page
+   * mounts, so their completion must still navigate and let the shell remount
+   * the spine at the new detail address. */
+  const endpointPreviewIsMounted =
+    mountedAddress.kind === 'endpoint-detail'
+    || (mountedAddress.kind === 'section'
+      && mountedAddress.section === 'endpoints');
 
   // ── Route chrome: host + header + tab bar + content ──
   const routeRoot = doc.createElement('div');
@@ -263,7 +299,7 @@ export const bootstrapReceptionRoute = (
     link.className =
       'reception-route-tab'
       + (tab.id === section ? ' reception-route-tab--active' : '');
-    link.setAttribute('href', serializeShellRoute('reception', tab.id));
+    link.setAttribute('href', receptionSectionAddress(tab.id).hash);
     link.textContent = tab.label;
     if (tab.id === section) link.setAttribute('aria-current', 'page');
     tabBar.appendChild(link);
@@ -291,11 +327,12 @@ export const bootstrapReceptionRoute = (
   // for the routed section to pick up — a `…/new/<kind>` hash can't carry
   // a full config.
   const onEnterAuthoring = (target: EnterAuthoringTarget): void => {
+    if (target.kind === 'status_link') return;
     if (target.seedConfig !== undefined && target.seedConfig !== null) {
       stashReceptionAuthoringSeed(target.kind, target.seedConfig);
     }
     navigate(
-      serializeShellRoute('reception', 'endpoints', target.mode, target.kind),
+      receptionEndpointAuthoringAddress(target.mode, target.kind).hash,
     );
   };
 
@@ -303,29 +340,51 @@ export const bootstrapReceptionRoute = (
   // routed full-page wizard instead of the transparent modal. No seed to
   // stash (the wizard is a first-run flow with no inbound config).
   const onEnterWizard = (): void => {
-    navigate(serializeShellRoute('reception', 'endpoints', 'setup'));
+    navigate(receptionEndpointSetupAddress().hash);
   };
 
   // D-200 Slice 6g.4 — the fixed owner pair selector is a routed page. The
   // row supplies only the local endpoint id; the section reads the current
   // pair + complete durable recipe list and sends source locators to core.
   const onEnterPairing = (endpointId: string): void => {
-    navigate(
-      serializeShellRoute('reception', 'endpoints', 'pair', endpointId),
-    );
+    navigate(receptionEndpointPairAddress(endpointId).hash);
   };
 
-  // R19 Slice 4 — the spine's per-row "Detail" + the detail view's "Back to
-  // Reception" navigate to / from the endpoint-detail deep link instead of
-  // the in-place `shell.openDetail` / `closeDetail`, so the detail view is a
-  // durable, shareable URL (the abuse "Investigate" target; survives refresh
-  // + back/forward). On landing, the spine's `initialDetailId` reconciles the
-  // open from the URL.
+  // R19 Slice 4 — endpoint previews have durable, shareable addresses. The
+  // production shell keeps the list mounted and pairs push/replace history
+  // writes with the shell's openDetail/closeDetail state; narrow mounts without
+  // the cache-alignment seam retain the original hash-remount fallback.
   const onEnterDetail = (endpointId: string): void => {
-    navigate(serializeShellRoute('reception', 'endpoints', endpointId));
+    const address = receptionEndpointDetailAddress(endpointId);
+    if (opts.onHashSync === undefined || !endpointPreviewIsMounted) {
+      navigate(address.hash);
+      return;
+    }
+    receptionHistory.navigate(address);
+    void opts.shell.openDetail(endpointId)
+      .then(() => {
+        // A stale/revoked id resolves successfully with no detail. Retire only
+        // that obsolete child address; transport failures keep it available
+        // for refresh/retry, and a newer open/close wins via the current check.
+        if (
+          opts.shell.getState().detail === null
+          && receptionHistory.current().hash === address.hash
+        ) {
+          receptionHistory.navigate(receptionSectionAddress('endpoints'), {
+            intent: 'replace',
+          });
+        }
+      })
+      .catch(() => {});
   };
   const onExitDetail = (): void => {
-    navigate(serializeShellRoute('reception', 'endpoints'));
+    const address = receptionSectionAddress('endpoints');
+    if (opts.onHashSync === undefined || !endpointPreviewIsMounted) {
+      navigate(address.hash);
+      return;
+    }
+    receptionHistory.navigate(address, { intent: 'replace' });
+    opts.shell.closeDetail();
   };
 
   // ── Mount the active section into the content host ──
@@ -340,14 +399,14 @@ export const bootstrapReceptionRoute = (
   // and any other segment-1 (a future endpoint-detail id, Slice 4) falls
   // through to the spine list below.
   const authoringMode =
-    opts.initialSubview === 'new' || opts.initialSubview === 'edit'
-      ? opts.initialSubview
+    initialSubview === 'new' || initialSubview === 'edit'
+      ? initialSubview
       : null;
   const authoringKind =
-    opts.initialKind !== undefined &&
-    isReceptionEndpointKind(opts.initialKind) &&
-    opts.initialKind !== 'status_link'
-      ? opts.initialKind
+    initialKind !== undefined &&
+    isReceptionEndpointKind(initialKind) &&
+    initialKind !== 'status_link'
+      ? initialKind
       : null;
   // `edit` only has semantics for the `reception_page` singleton — link
   // kinds are create-only (immutable; no per-endpoint edit route yet), so
@@ -357,17 +416,17 @@ export const bootstrapReceptionRoute = (
   // `authoringKind` for the mount call below.
   if (
     section === 'endpoints'
-    && opts.initialSubview === 'pair'
-    && opts.initialKind !== undefined
-    && opts.initialKind.length > 0
+    && initialSubview === 'pair'
+    && initialKind !== undefined
+    && initialKind.length > 0
   ) {
     mount = mountReceptionIntakeRecipePairSection({
       host: content,
       conn: opts.conn,
-      endpointId: opts.initialKind,
+      endpointId: initialKind,
       ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
     });
-  } else if (section === 'endpoints' && opts.initialSubview === 'setup') {
+  } else if (section === 'endpoints' && initialSubview === 'setup') {
     // Routed full-page Launch Wizard (R19 Slice 3) — the § A.20.1 first-run
     // flow out of the transparent modal. Mounts straight into `content`; no
     // page / modal / prompts triad. The wizard EMBEDS the same per-kind
@@ -376,7 +435,7 @@ export const bootstrapReceptionRoute = (
       host: content,
       shell: opts.shell,
       exposureProfile: opts.exposureProfile,
-      onBack: () => navigate(serializeShellRoute('reception', 'endpoints')),
+      onBack: () => navigate(receptionSectionAddress('endpoints').hash),
       // R19 Slice 4 follow-up — a single-endpoint finish lands on its detail
       // so the one-shot Share Cards surface immediately (reuses onEnterDetail).
       onNavigateToDetail: onEnterDetail,
@@ -404,7 +463,7 @@ export const bootstrapReceptionRoute = (
       conn: opts.conn,
       mode: authoringMode,
       kind: authoringKind,
-      onBack: () => navigate(serializeShellRoute('reception', 'endpoints')),
+      onBack: () => navigate(receptionSectionAddress('endpoints').hash),
       // R19 Slice 4 follow-up — a successful link create lands on the new
       // endpoint's detail so the one-shot Share Cards surface immediately.
       onNavigateToDetail: onEnterDetail,
@@ -425,12 +484,12 @@ export const bootstrapReceptionRoute = (
     // endpoint-detail id: the spine opens that endpoint's detail on mount
     // (`#reception/endpoints/<id>`). Any of those verbs ⇒ the plain list.
     const initialDetailId =
-      opts.initialSubview !== undefined &&
-      opts.initialSubview !== 'new' &&
-      opts.initialSubview !== 'edit' &&
-      opts.initialSubview !== 'setup' &&
-      opts.initialSubview !== 'pair'
-        ? opts.initialSubview
+      initialSubview !== undefined &&
+      initialSubview !== 'new' &&
+      initialSubview !== 'edit' &&
+      initialSubview !== 'setup' &&
+      initialSubview !== 'pair'
+        ? initialSubview
         : undefined;
     const pageHost = doc.createElement('div');
     pageHost.setAttribute('data-reception-shell-page-main', '');
@@ -454,9 +513,8 @@ export const bootstrapReceptionRoute = (
       // D-200 Slice 6g.4 — the intake-row checkout action navigates to the
       // fixed source selector above instead of attempting pair work here.
       onEnterPairing,
-      // R19 Slice 4 — the per-row "Detail" + the detail's "Back to Reception"
-      // navigate to / from the endpoint-detail deep link; `initialDetailId`
-      // opens it on a deep-link landing.
+      // R19 Slice 4 — per-row preview and Back share the hierarchical address;
+      // `initialDetailId` opens it on a deep-link landing.
       onEnterDetail,
       onExitDetail,
       ...(initialDetailId !== undefined ? { initialDetailId } : {}),

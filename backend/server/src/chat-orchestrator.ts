@@ -850,6 +850,18 @@ export interface ChatOrchestratorDeps {
    *  late-bound deps. Threaded into `createChatStreamMiddlewares`; absent
    *  (or resolving undefined per turn) → the hook is a faithful no-op. */
   getScopedGrantParseDeps?: () => ScopedGrantParseDeps | undefined;
+  /** Pre-seed INDEX builder. Given the owner's message, returns one line naming
+   *  — per distinctive term — WHICH STORES hold it (`pelham: mail.search,
+   *  memory.search`). Store names ONLY: no titles, no counts, no content. The
+   *  bench measured that naming the stores IS the whole effect (bare stores tie
+   *  titles at 9/10 on the two-referent case vs 1/10 with no index), and that
+   *  describing content is actively harmful — a summary variant produced a
+   *  confident `12% discount` present in NO packet and contradicting the store.
+   *  Optional: absent → no line, which is the pre-index behaviour exactly. */
+  buildIndexContext?: (
+    userMessage: string,
+    ctx: ChatDispatchContext,
+  ) => Promise<string | undefined>;
   /** D-214 §4.2 — late-bound durable root-request/span anchor deps. */
   getSpanAnchorDeps?: () => SpanAnchorDeps | undefined;
   /** D-214 §10.1/§10.4 — optional experiment-gated request augmentation. */
@@ -2902,6 +2914,22 @@ export const createChatOrchestrator = (
       // prefetch gather can alias its entity payload against the turn's SHARED
       // session ledger — the same ledger the wire seam later uses for tool
       // results + content text, so one contact renders to one alias everywhere.
+      // Built from the RAW message; the PII egress aliases `index_context` at the
+      // single boundary (it is enumerated in `uniformContentScanDataFields`), so
+      // a term the ledger knows renders as the SAME alias here and in
+      // `user_message` — the model can still join them, and no raw name ships.
+      const indexContext = deps.buildIndexContext
+        ? await deps.buildIndexContext(
+            content.user_message,
+            buildInternalDispatchCtx(
+              params.session_id,
+              params.turn_id,
+              params.execution_source,
+              params.contract_snapshot,
+              params.dispatch_depth,
+            ),
+          ).catch(() => undefined)
+        : undefined;
       const piiPlan = readPiiEgressPlan(ctx.state);
       // D-167 — collect the prompt-cache before-turn hook's STRUCTURED `entity`
       // parts (raw records + a `render`) but DON'T alias them here. They thread
@@ -3032,6 +3060,7 @@ export const createChatOrchestrator = (
           available_tools: availableTools,
           content,
           correction_context: correctionContext,
+          ...(indexContext ? { index_context: indexContext } : {}),
           ...(executionCaseContext
             ? { execution_case_context: executionCaseContext }
             : {}),

@@ -5160,7 +5160,7 @@ describe('R18 — Data deep-linking (#data/<tab>/<entity_id>)', () => {
     rig.route.dispose();
   });
 
-  it('syncs the URL via replaceState on tab switch + timeline open (no remount)', async () => {
+  it('syncs tab/detail URLs through the replace-only History fallback', async () => {
     const replaceState = vi.fn();
     const onHashSync = vi.fn();
     const rig = mountRoute({ replaceState, onHashSync });
@@ -5350,7 +5350,7 @@ describe('R18 — codex fold (stale-response guards + URL honesty)', () => {
     rig.route.dispose();
   });
 
-  it('opens the edit dialog for a work-entity deep link and keeps the id in the URL', async () => {
+  it('opens a work-entity deep link without redundantly rewriting its existing URL', async () => {
     const replaceState = vi.fn();
     const rig = mountRoute({ initialTab: 'task', initialEntityId: 'task-1' });
     (rig.doc as unknown as { defaultView: unknown }).defaultView = {
@@ -5364,9 +5364,9 @@ describe('R18 — codex fold (stale-response guards + URL honesty)', () => {
     const dialog = rig.route.workEntityState().dialog;
     expect(dialog?.mode).toBe('edit');
     expect(dialog?.entity_id).toBe('task-1');
-    // The id stays in the URL so a refresh / shared link re-opens it (symmetric
-    // with the contact + mirror timeline deep links).
-    expect(replaceState).toHaveBeenLastCalledWith(null, '', '#data/task/task-1');
+    // The browser already owns #data/task/task-1. Hydration adopts that place
+    // rather than replacing it with the identical hash.
+    expect(replaceState).not.toHaveBeenCalled();
 
     rig.route.dispose();
   });
@@ -5378,7 +5378,7 @@ describe('R18 — codex fold (stale-response guards + URL honesty)', () => {
       history: { replaceState },
     };
     await rig.route.whenLoaded();
-    expect(replaceState).toHaveBeenLastCalledWith(null, '', '#data/task/task-1');
+    expect(replaceState).not.toHaveBeenCalled();
 
     // Closing the dialog re-normalizes the URL to the bare tab (no false
     // selection) — the render()-tail hash sync handles every close path.
@@ -5424,11 +5424,7 @@ describe('R18 — codex fold (stale-response guards + URL honesty)', () => {
       .toBe('Unfinished task edit');
     expect(rig.root.children[0]?.innerHTML ?? '')
       .toContain('data-recued-data-work-entity-discard-guard');
-    expect(replaceState).toHaveBeenLastCalledWith(
-      null,
-      '',
-      '#data/task/task-1',
-    );
+    expect(replaceState).not.toHaveBeenCalled();
 
     emitClick(rig.root.children[0]!, 'keep-work-entity-dialog');
     expect(rig.root.children[0]?.innerHTML ?? '')

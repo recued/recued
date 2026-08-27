@@ -2834,6 +2834,55 @@ export const composeListeners = async (
     ...(rpc.housekeepingRpcDeps
       ? { housekeepingDeps: rpc.housekeepingRpcDeps }
       : {}),
+    // D-250 § D7 — `metric.read`. The stores live on the same server db that
+    // housekeeping writes them into, but the DEP is separate: this slice READS and
+    // housekeeping WRITES, so a hidden coupling would make "no metrics" read as a
+    // housekeeping fault. Absent db (harness / db-less boot) => the slice is simply not
+    // registered, which is the same degrade every store-backed slice takes.
+    ...(rpc.housekeepingRpcDeps?.db
+      ? {
+          metricDeps: {
+            db: rpc.housekeepingRpcDeps.db,
+            // D-250 § B3.3 — everything the daily batch needs and this module cannot
+            // derive. ⛔ RETURNS undefined WHEN THE SERVER CANNOT PUBLISH (no booted
+            // signing identity), and `metric.submit` then reports `sent: false`. Not
+            // publishing is the DEFAULT state, so it must not read as a fault.
+            submitter: () => {
+              const identity = storage.signingIdentity?.identity;
+              if (identity === undefined) return undefined;
+              const db = rpc.housekeepingRpcDeps!.db!;
+              return {
+                // ⛔ A SIGN FUNCTION, NOT THE KEYPAIR — the key never leaves the
+                // identity module.
+                sign: (payload: string) => identity.signWithServerIdentity(payload),
+                // ⚠ RESOLVED PER SEND, not captured here. A handle can be reserved,
+                // changed or transferred while the server runs; a captured one would
+                // keep signing for a name the cloud no longer maps to this publisher,
+                // and every submission would 403 as a handle mismatch.
+                resolveTarget: async () => {
+                  const state = await createSqliteHandleStateStore({ db }).load();
+                  if (!state || state.current_handle.length === 0) return null;
+                  return { publisher_id: state.publisher_id, handle: state.current_handle };
+                },
+                endpoint: `${
+                  ((): string => {
+                    try {
+                      const v = runtimeConfig?.get('cloud.base_url');
+                      return typeof v === 'string' && v.length > 0 ? v : 'https://api.recued.com';
+                    } catch { return 'https://api.recued.com'; }
+                  })()
+                }/v1/boards/submit`,
+                post: async (url: string, body: string) =>
+                  fetch(url, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body,
+                  }),
+              };
+            },
+          },
+        }
+      : {}),
     ...(rpc.notificationsDeps
       ? { notificationsDeps: rpc.notificationsDeps }
       : {}),

@@ -47,6 +47,15 @@ export const HOUSEKEEPING_CONFIG_PRIMARY_KEY = 'singleton';
  *  agree on a single literal. */
 export const LLM_RESULT_CACHE_GC_TASK_ID = 'llm-result-cache-gc' as const;
 
+/** D-250 § D8.1 slice 4 — recompute the owner metrics and fold them into the two
+ *  metric stores.
+ *
+ *  ⛔ COMPUTE ONLY. § D4 splits the two acts: computing is genuinely maintenance and
+ *  needs no authorization, so it rides housekeeping's `admin` ceiling legitimately.
+ *  PUBLISHING is a new outward act and carries its OWN bounded, revocable grant —
+ *  it must never ride this task's exemption. */
+export const OWNER_METRICS_COMPUTE_TASK_ID = 'owner-metrics-compute' as const;
+
 /** Bounds for `cycle_budget_ms` accepted by
  *  `housekeeping.config.write` — min 1s (anything below isn't
  *  useful work), max 10 min (beyond this the cycle should split
@@ -266,6 +275,19 @@ export interface HousekeepingStateRow {
   cursor: HousekeepingCursor;
   last_run_at?: number;
   last_run_duration_ms?: number;
+  /** D-250 § D — provider tokens the last step actually spent.
+   *
+   *  🔑 A SCALAR, DELIBERATELY, matching `last_run_duration_ms` beside it. The full
+   *  {@link TokenUsageReport} — cache reads, provider calls, the breakdown — rides the
+   *  `housekeeping_cycle` audit row; this is the latest-snapshot field the status surface
+   *  renders, and a JSON blob on a state table would be storing analytics where a dashboard
+   *  number belongs.
+   *
+   *  ⚠ ABSENT when the last step made no provider call, which is most tasks — never zero.
+   *  ⚠ Sits beside `tokens_consumed_today_*`, which are the planner's ESTIMATE
+   *  (`estimate_per_record_tokens()` x pending rows). Having both on one row is the point:
+   *  the estimate becomes checkable against what the providers actually charged. */
+  last_run_tokens?: number;
   last_yield_reason?: HousekeepingYieldReason;
   last_status: HousekeepingLastStatus;
   consecutive_errors: number;

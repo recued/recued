@@ -195,6 +195,8 @@ import {
   makeIngredientDraftHandlers,
   type IngredientDraftRpcDeps,
 } from './ingredient-authoring/draft-preview-rpc.js';
+// D-250 § D7 — the owner's own metrics, read-only.
+import { makeMetricHandlers, type MetricRpcDeps } from './metrics-handler.js';
 // D-136 §A.13.5 P7.G — MCP visibility user-override rpc slice.
 import {
   makeMCPVisibilityHandlers,
@@ -1114,6 +1116,10 @@ export interface AttachWebSocketOptions {
    *  `housekeeping.task.run_now`. Absent → those methods return
    *  `not_configured` (e.g. db-less harnesses or pre-P7 boots). */
   housekeepingDeps?: HousekeepingRpcDeps;
+  /** D-250 § D7 — `metric.read`. Its OWN dep rather than reaching into
+   *  `housekeepingDeps.db`: housekeeping WRITES the stores and this READS them, and a
+   *  hidden coupling would make "metrics are missing" look like a housekeeping fault. */
+  metricDeps?: MetricRpcDeps;
   /** D-163 Slice C — Settings → Notifications rpc. Wires
    *  `notifications.{describe,set_channel,set_verification_phrase}`
    *  against the `@recued/notification` block's settings surface.
@@ -1503,6 +1509,7 @@ const buildWsBinding = (
     engagementHealthDeps,
     enrichmentDeps, notificationDeps, mailGetDeps,
     housekeepingDeps,
+    metricDeps,
     notificationsDeps,
     systemStatusDeps,
     historyDeps,
@@ -1831,6 +1838,12 @@ const buildWsBinding = (
     // arrow points at it so `task.run_now` fires through the same
     // code path the scheduler tick does.
     makeHousekeepingHandlers(housekeepingDeps),
+    // D-250 § D7 — `metric.read`. Read-only and local-only; § D4 keeps PUBLISHING a
+    // separate act with its own grant, so it must never be folded in here just because
+    // this is where the numbers already are. Gated on `db` for the same reason every
+    // store-backed slice is: a db-less boot (harness, fresh install) simply has no
+    // metrics rather than failing to start.
+    makeMetricHandlers(metricDeps),
     // D-163 Slice C — Settings → Notifications rpc surface. Wires
     // `notifications.{describe,set_channel,set_verification_phrase}`
     // against the `@recued/notification` block's settings surface.

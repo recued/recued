@@ -7,6 +7,64 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.8.26 — 2026-08-26
+
+Mostly about what the AI can find. A chat turn now starts with an index of what
+your own stores actually contain, so the model asks for things that exist
+instead of guessing at names — and when an answer is truncated, the record that
+CORRECTS a fact is no longer the one that falls off the end. Alongside that,
+the first numbers Recued keeps about itself, and they are yours before they are
+anyone's.
+
+### Added
+
+- **A pre-seed index of your own data, on by default.** Each turn opens with a
+  generated index over the read stores the model can reach, ranked by which
+  terms actually discriminate between your records rather than by a generic
+  word list. It declares its own partiality — an index that quietly omits
+  things teaches the model to trust it exactly where it should not. Disable
+  with `RECUED_CHAT_INDEX=0`.
+- **Relative navigation.** Mail and recall take `near_id` with next/prev, so
+  "the message just before that one" is a lookup rather than a re-search.
+- **Thread neighbours, to reach the answer that matches nothing.** The reply
+  that corrects a fact rarely repeats its wording — "actually Ridgeway is 90
+  days" contains neither "renewal" nor "notice". Search now reaches along the
+  thread to find it, and labels partial matches instead of hiding them.
+- **Your own numbers.** A `#stats` surface and a `metric.read` rpc over the
+  pair connection show what your server has been doing. Publishing any of it is
+  a separate, bounded, revocable grant, and the publish dialog shows the
+  complete payload before a byte of it leaves.
+- **A global Run palette** in the webclient, plus consistent hierarchical
+  navigation and continuity when previewing lists.
+- **macOS builds enter the release chain.** Both triples are built, signed with
+  a Developer ID and boot-tested before staging.
+
+### Changed
+
+- **A correction must survive truncation.** Results carry a recency floor, so
+  trimming a long result set can no longer drop the newest record — the one
+  most likely to be the correction — and the model is told when truncation
+  happened rather than being handed a short list that looks complete.
+- **Empty results relax over terms the index actually holds** instead of
+  returning nothing and letting the model conclude the data is absent.
+- **A turn that answers without looking earns one guided retry**, and the
+  absence detector now recognises "I don't have a stored preference" as the
+  claim it is.
+
+### Fixed
+
+- **A peer could forge an answer verdict.** The check was a substring match
+  over text a peer supplied, so peer-controlled content could satisfy it.
+- **`near_id` was rejected by the argument allow-list**, so relative navigation
+  dispatched nothing at all — the feature was present and unreachable.
+- **The admin dashboard's stats query could not succeed against any database.**
+- **Thread follow-up was undiscoverable**, and the list path returned no bodies.
+- **The installer picked the wrong macOS build from a translated shell.** On
+  Apple Silicon `uname -m` reports the shell, not the machine, so running the
+  installer under Rosetta fetched the x64 binary — which works, slower, on a
+  translation layer Apple is winding down. It now detects that and installs the
+  arm64 build, saying so.
+
 ## 26.8.24 — 2026-08-24
 
 Meetings are the theme. A meeting can now be prepared from what your projects

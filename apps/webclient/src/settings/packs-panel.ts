@@ -748,6 +748,9 @@ export interface MountPacksPanelOptions {
   host: HTMLElement;
   /** DOM document seam. Defaults to `globalThis.document`. */
   document?: Document;
+  /** Shell-owned scroller forwarded to generated pack views so action-result
+   *  return can restore the originating list position. */
+  scrollRoot?: HTMLElement;
   /** `packs.list` caller seam (DD#1). */
   runList: PacksListCaller;
   /** `packs.install` caller seam (DD#1). Optional — when omitted the
@@ -804,6 +807,16 @@ export interface MountPacksPanelOptions {
   runFileRead?: (args: { record_id: string }) => Promise<ResultFileReadResult>;
   /** Pack-owned Records inventory for editable ref cells in a Use-tab view. */
   runRecordRefSearch?: PackAppRecordRefSearchCaller;
+  /** Runtime-derived view requested by
+   * `#packs/<slug>/use/<recipe-id>`. Applied only to `initialSlug`. */
+  initialAppViewId?: string;
+  /** Reports generated-view navigation to the route-owned hierarchical History
+   * adapter. `replace` canonicalizes a stale deep link without adding history. */
+  onAppViewNavigate?: (
+    packSlug: string,
+    viewId: string | null,
+    intent: 'auto' | 'replace',
+  ) => void;
   /** Supervision feature (Slice 4) — `supervision.list` discovery caller. When
    *  present (with `runSupervisionSet`), the panel renders the pack-detail
    *  supervised-daemon controls. Omitted ⇒ no controls (read-only host). */
@@ -855,9 +868,8 @@ export interface MountPacksPanelOptions {
    *  render guards existence, mirroring recipes/data). */
   initialSlug?: string;
   /** R22 list→detail — fired whenever the selected pack changes (a row opened,
-   *  or Back to the list ⇒ `null`). The route uses it to `replaceState`-sync the
-   *  `#packs/<slug>` hash WITHOUT a remount (in-page selection stays flash-free;
-   *  only a link/refresh to a different slug remounts via {@link initialSlug}). */
+   *  or Back to the list ⇒ `null`). The route aligns the shared hierarchical
+   *  address without remounting this live panel. */
   onSelectSlug?: (slug: string | null) => void;
   /** Add-a-pack (2026-07-01) — resolve seam for the "Add a pack" section. Present
    *  WITH {@link runInstallBySlug} ⇒ the section renders. Omitting either hides it
@@ -1304,6 +1316,10 @@ export const mountPacksPanel = (
   /** Slug the mounted app view belongs to, so a pack switch tears it down
    *  instead of leaving one pack's views over another pack's page. */
   let appViewSlug: string | null = null;
+  /** A route-hydrated generated view belongs to the first mount of its exact
+   * pack only. A later roster rebuild must preserve live app state, not replay
+   * the original deep-link selection. */
+  let initialAppViewPending = opts.initialAppViewId !== undefined;
 
   /** Memoised app surface.
    *
@@ -2115,7 +2131,7 @@ export const mountPacksPanel = (
   // openDialog's single-mode-at-a-time collapse). Blocked mid-rpc so the
   // single-rpc-at-a-time invariant (DD#10) — whose submit handlers assume the
   // targeted row/dialog stays mounted — holds. Notifies the host so it can
-  // replaceState-sync the `#packs/<slug>` hash without a remount.
+  // align the `#packs/<slug>` address without a remount.
   const selectPack = (slug: string | null): void => {
     if (installing || deleting) return;
     if (slug === selectedSlug) return;
@@ -2158,6 +2174,7 @@ export const mountPacksPanel = (
     pendingAddEntry = null;
     pendingAddManifestHash = null;
     detailResolveError = null;
+    initialAppViewPending = false;
     selectedSlug = slug;
     activeDetailTab = 'detail';
     detailTabPinned = false;
@@ -3460,6 +3477,14 @@ export const mountPacksPanel = (
         }
         detailTabPinned = true;
         render();
+        // The generated view is a real child address. Manage collapses that
+        // child; returning to Use restores the already-mounted active view.
+        // Both are sideways/closing moves, so they replace the current entry.
+        opts.onAppViewNavigate?.(
+          pack.slug,
+          next === 'use' ? appView?.activeViewId() ?? null : null,
+          'replace',
+        );
       };
       const topStrip = doc.createElement('nav');
       topStrip.setAttribute(PACKS_DETAIL_TABS_ATTR, '');
@@ -3538,9 +3563,15 @@ export const mountPacksPanel = (
       }
       if (appView === null && appSurface !== null) {
         appViewSlug = pack.slug;
+        const requestedInitialView = initialAppViewPending
+          && pack.slug === opts.initialSlug
+          ? opts.initialAppViewId
+          : undefined;
+        if (requestedInitialView !== undefined) initialAppViewPending = false;
         appView = mountPackAppView({
           host: tabPanel,
           document: doc,
+          ...(opts.scrollRoot !== undefined ? { scrollRoot: opts.scrollRoot } : {}),
           pack,
           surface: appSurface,
           ...(opts.runRecipeExecute !== undefined
@@ -3557,7 +3588,33 @@ export const mountPacksPanel = (
           ...(opts.runRecordRefSearch !== undefined
             ? { recordRefSearchCaller: opts.runRecordRefSearch }
             : {}),
+          ...(requestedInitialView !== undefined
+            ? { initialViewId: requestedInitialView }
+            : {}),
+          ...(opts.onAppViewNavigate !== undefined
+            ? {
+                onSelectView: (viewId: string) => {
+                  opts.onAppViewNavigate?.(pack.slug, viewId, 'auto');
+                },
+              }
+            : {}),
         });
+        if (requestedInitialView === undefined) {
+          // A Business Pack opens directly on its first projected view. Keep
+          // the URL truthful without adding a second Back step after the pack
+          // detail was opened from the list.
+          opts.onAppViewNavigate?.(
+            pack.slug,
+            appView.activeViewId(),
+            'replace',
+          );
+        } else if (appView.activeViewId() !== requestedInitialView) {
+          opts.onAppViewNavigate?.(
+            pack.slug,
+            appView.activeViewId(),
+            'replace',
+          );
+        }
       } else if (appView !== null) {
         // Same pack, panel repainted around it — re-adopt the existing node.
         appView.adopt(tabPanel);
@@ -3666,6 +3723,20 @@ export const mountPacksPanel = (
       const collisionNotice = renderCollisionNotice(collision);
       if (collisionNotice) about.appendChild(collisionNotice);
       tabPanel.appendChild(about);
+    }
+
+    // A generated-view deep link can outlive the dynamically classified
+    // surface (recipe removed, pack changed, or no read-only view remains).
+    // Once classification has answered, collapse that stale child to the
+    // pack detail rather than showing Manage under a URL that promises Use.
+    if (
+      initialAppViewPending
+      && pack.slug === opts.initialSlug
+      && appSurface !== null
+      && !showUse
+    ) {
+      initialAppViewPending = false;
+      opts.onAppViewNavigate?.(pack.slug, null, 'replace');
     }
     wrapper.appendChild(tabPanel);
   };

@@ -542,6 +542,17 @@ const demoRecipeExecuteResult = (
     }],
     errors: [],
     duration_ms: 7,
+    ...(recipeRunFactsDemo
+      ? {
+          run_facts: {
+            steps_run: 34,
+            items_total: 1_249,
+            provider_calls: 2,
+            total_tokens: 13_385,
+            duration_ms: 42_000,
+          },
+        }
+      : {}),
   };
 };
 
@@ -1375,6 +1386,14 @@ const buildFakeTransport = (
   const memoryDemoSystemSummary = longMemoryTextDemo
     ? `remembered-${'execution'.repeat(26)}`
     : 'Recipe execution remembered';
+  const memoryDemoAgentId = 'memory-agent-1';
+  const memoryDemoAgentAttribution = {
+    kind: 'agent' as const,
+    origin_actor: 'contracted_user' as const,
+    agent_id: 'browser-agent',
+    contract_id: 'browser-contract',
+    label: 'agent browser-agent, under contract browser-contract, asserted this',
+  };
   const memoryDemoRunId = longMemoryTextDemo
     ? `run-${'identifier'.repeat(30)}`
     : 'run-memory-1';
@@ -1737,11 +1756,24 @@ const buildFakeTransport = (
     started_at: FIXED_NOW - 4_000,
     finished_at: FIXED_NOW - 2_000,
     duration_ms: 2_000,
-    origin: {
-      actor: 'user_self',
-      label: 'user_self',
-      channel: 'user',
-    },
+    origin: referenceProvenanceDemo
+      ? {
+          actor: 'contracted_user' as const,
+          label: 'contracted_user',
+          channel: 'mcp' as const,
+          attribution: {
+            kind: 'agent' as const,
+            origin_actor: 'contracted_user' as const,
+            agent_id: 'browser-agent',
+            contract_id: 'browser-contract',
+            label: 'agent browser-agent, under contract browser-contract, asserted this',
+          },
+        }
+      : {
+          actor: 'user_self' as const,
+          label: 'user_self',
+          channel: 'user' as const,
+        },
     status: 'in_doubt',
     policy_result: 'released-after-approval',
     links: [{
@@ -3070,6 +3102,19 @@ const buildFakeTransport = (
                       ...(memorySystemRowRedacted ? { redacted: true } : {}),
                     }]
                   : []),
+                ...(memoryProvenanceDemo && includesActor('contracted_user')
+                  ? [{
+                      memory_id: memoryDemoAgentId,
+                      origin_actor: 'contracted_user' as const,
+                      kind: 'instruction',
+                      summary: 'Agent-authored operating note',
+                      body_preview: 'Use the verified provider record.',
+                      size_bytes: 33,
+                      has_body: true,
+                      ts: FIXED_NOW - 90_000,
+                      attribution: memoryDemoAgentAttribution,
+                    }]
+                  : []),
               ],
             };
           }
@@ -3103,6 +3148,17 @@ const buildFakeTransport = (
                     run_id: memoryDemoRunId,
                     ...(memorySystemRowRedacted ? { redacted: true } : {}),
                   }
+                : memoryProvenanceDemo && memoryId === memoryDemoAgentId
+                  ? {
+                      memory_id: memoryDemoAgentId,
+                      origin_actor: 'contracted_user' as const,
+                      kind: 'instruction',
+                      summary: 'Agent-authored operating note',
+                      body: 'Use the verified provider record.',
+                      size_bytes: 33,
+                      ts: FIXED_NOW - 90_000,
+                      attribution: memoryDemoAgentAttribution,
+                    }
                 : null;
           }
         }
@@ -3410,7 +3466,9 @@ const buildFakeTransport = (
               steps: [],
               output: { sidebar: [] },
               requires: [],
-              auto_run: { interval_ms: 60_000 },
+              ...(runPaletteDemo || recipesRelatedAutoRunDemo
+                ? { auto_run: { interval_ms: 60_000 } }
+                : {}),
             },
             source: 'pair-sync',
             installed_at: FIXED_NOW,
@@ -4227,6 +4285,10 @@ const buildFakeTransport = (
                     sidebar: [],
                   }
                 : { render: [], sidebar: [] },
+              ...(packsReactiveRecipeDemo
+                && recipeId === packDemoRecipeSlug
+                ? { auto_run: { interval_ms: 60_000 } }
+                : {}),
             },
           });
           result = {
@@ -4440,23 +4502,42 @@ const buildFakeTransport = (
         }
         if (recipesRelatedAutoRunDemo && rpc.method === 'auto_run.list') {
           result = {
-            entries: [{
-              recipe_id: 'close-action',
-              publisher_id: 'recued-core',
-              recipe_name: 'Close action',
-              interval_ms: 60_000,
-              dynamic: false,
-              enabled: recipesRelatedAutoRunEnabled,
-              auto_disabled: false,
-              consecutive_failures: 0,
-              last_failure_at: null,
-              last_failure_reason: null,
-              next_run_at: null,
-              last_started_at: null,
-              last_finished_at: null,
-              config_overlay: {},
-              variables: {},
-            }],
+            entries: [
+              {
+                recipe_id: runPaletteRecipeId,
+                publisher_id: 'recued-core',
+                recipe_name: runPaletteRecipeName,
+                interval_ms: 60_000,
+                dynamic: false,
+                enabled: true,
+                auto_disabled: false,
+                consecutive_failures: 0,
+                last_failure_at: null,
+                last_failure_reason: null,
+                next_run_at: null,
+                last_started_at: null,
+                last_finished_at: null,
+                config_overlay: {},
+                variables: {},
+              },
+              {
+                recipe_id: 'close-action',
+                publisher_id: 'recued-core',
+                recipe_name: 'Close action',
+                interval_ms: 60_000,
+                dynamic: false,
+                enabled: recipesRelatedAutoRunEnabled,
+                auto_disabled: false,
+                consecutive_failures: 0,
+                last_failure_at: null,
+                last_failure_reason: null,
+                next_run_at: null,
+                last_started_at: null,
+                last_finished_at: null,
+                config_overlay: {},
+                variables: {},
+              },
+            ],
           };
         }
         if (runPaletteDemo && rpc.method === 'auto_run.update') {
@@ -4695,7 +4776,24 @@ const buildFakeTransport = (
           result = { contributions: [] };
         }
         if (contactsDemo && rpc.method === 'data.timeline') {
-          result = { entries: [] };
+          result = {
+            entries: referenceProvenanceDemo
+              ? [{
+                  ts: FIXED_NOW - 90_000,
+                  source: 'memory',
+                  kind: 'assertion',
+                  payload: { summary: 'Verified provider record' },
+                  origin_actor: 'contracted_user',
+                  attribution: {
+                    kind: 'agent',
+                    origin_actor: 'contracted_user',
+                    agent_id: 'browser-agent',
+                    contract_id: 'browser-contract',
+                    label: 'agent browser-agent, under contract browser-contract, asserted this',
+                  },
+                }]
+              : [],
+          };
         }
         if (rpc.method === 'chat.sessions.list' && connectedSourceAnswerDemo) {
           result = {
@@ -7187,8 +7285,11 @@ const recipeLinkButtonsResultDemo =
   searchParams.get('recipe_result') === 'link-buttons';
 const recipeFileArtifactResultDemo =
   searchParams.get('recipe_result') === 'file-artifact';
+const recipeRunFactsDemo = searchParams.get('recipe_run_facts') === '1';
 const packsMultiViewDemo =
   searchParams.get('packs_app_views') === 'multi';
+const packsReactiveRecipeDemo =
+  searchParams.get('packs_recipe_reactive') === '1';
 const packsInstallConnectionDemo =
   searchParams.get('packs_install_connection');
 const requestedAutoRunUpdateDelayMs = Number.parseInt(
@@ -7284,6 +7385,9 @@ const contactMergeDemo = searchParams.get('data') === 'contact-merge';
 const delayContactMergeDecision =
   searchParams.get('contact_merge_response') === 'slow';
 const memoryRowsDemo = searchParams.get('data') === 'memory-rows';
+const memoryProvenanceDemo = searchParams.get('memory_provenance') === '1';
+const referenceProvenanceDemo =
+  searchParams.get('reference_provenance') === '1';
 const memoryDeleteResponse = searchParams.get('memory_delete_response');
 const delayMemoryDelete = memoryDeleteResponse === 'slow'
   || memoryDeleteResponse === 'fail-once-slow-retry';

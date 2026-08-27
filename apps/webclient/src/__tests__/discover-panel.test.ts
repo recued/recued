@@ -279,6 +279,38 @@ describe('mountDiscoverPanel', () => {
       .toHaveBeenCalledWith('installed-pack');
   });
 
+  it('uses pointer/Space for preview while Enter and the action open detail', async () => {
+    const onSelect = vi.fn();
+    const onPreview = vi.fn();
+    const { host, panel } = mount({ onSelect, onPreview });
+    await panel.whenLoaded();
+    const card = cardEls(host).find(
+      (element) => element.getAttribute('data-id') === 'mail-pack',
+    )!;
+    const preventDefault = vi.fn();
+
+    for (const listener of card.listeners.get('click') ?? []) listener({});
+    expect(onPreview).toHaveBeenLastCalledWith(
+      expect.objectContaining({ slug: 'mail-pack' }),
+      card,
+    );
+    expect(onSelect).not.toHaveBeenCalled();
+
+    for (const listener of card.listeners.get('keydown') ?? []) {
+      listener({ key: ' ', preventDefault });
+    }
+    expect(onPreview).toHaveBeenCalledTimes(2);
+    expect(preventDefault).toHaveBeenCalled();
+
+    for (const listener of card.listeners.get('keydown') ?? []) {
+      listener({ key: 'Enter', preventDefault });
+    }
+    expect(onSelect).toHaveBeenCalledWith('mail-pack');
+
+    panel.clickPreview('mail-pack');
+    expect(onPreview).toHaveBeenCalledTimes(3);
+  });
+
   it('⚠ outside navigate mode the installed state stays a resting badge', async () => {
     /** There is no detail to open in the install flow, so it must NOT become a
      *  button that does nothing — the opposite failure. */
@@ -381,6 +413,33 @@ describe('mountDiscoverPanel', () => {
     expect(panel.getRenderedIdentities()).toEqual(['mail-pack', 'wf-pack']);
     panel.setPage(99);
     expect(panel.getPage()).toBe(2);
+  });
+
+  it('hydrates and reports the complete query for route continuity', async () => {
+    const onQueryChange = vi.fn();
+    const { panel } = mount({
+      initialQuery: {
+        search: 'workflow',
+        filters: { kind: ['workflow'] },
+        sort: 'name',
+        page: 1,
+        perPage: 24,
+      },
+      onQueryChange,
+    });
+    await panel.whenLoaded();
+    expect(panel.getRenderedIdentities()).toEqual(['wf-pack']);
+    expect(panel.getQuery()).toEqual({
+      search: 'workflow',
+      filters: { kind: ['workflow'] },
+      sort: 'name',
+      page: 1,
+      perPage: 24,
+    });
+    panel.setSearch('mail');
+    expect(onQueryChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ search: 'mail', page: 1 }),
+    );
   });
 
   it('keeps pager focus through repaint and moves off a disabled boundary', async () => {

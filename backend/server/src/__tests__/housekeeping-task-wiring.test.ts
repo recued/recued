@@ -82,6 +82,43 @@ describe('housekeeping task wiring', () => {
       .toEqual([]);
   });
 
+  it('⛔⛔ every pre-built `HousekeepingTaskInstance` IS IN `STANDALONE_TASKS`', () => {
+    // ⛔ THE HALF THIS FILE DESCRIBED AND DID NOT CHECK, added 2026-08-25 after a live
+    // mutation found it: removing a freshly-registered task from `STANDALONE_TASKS`
+    // left this suite GREEN. The header above says the two shapes "are checked
+    // differently" and names `STANDALONE_TASKS` as where a pre-built instance is wired
+    // — but only the FACTORY case was ever implemented, so a whole category was
+    // documented-as-guarded and unguarded. Exactly the failure the file exists to
+    // prevent, wearing the file's own name.
+    const sources = productionSources();
+    const registration = sources.find((f) => f.path.endsWith('housekeeping/registration.ts'));
+    expect(registration, 'registration.ts not found — did housekeeping/ move?').toBeDefined();
+    // The list body, so a task merely IMPORTED there does not count as registered.
+    const listBody = registration!.text.slice(
+      registration!.text.indexOf('export const STANDALONE_TASKS'),
+      registration!.text.indexOf('export const PER_RECORD_PRODUCERS'),
+    );
+    expect(listBody.length, 'STANDALONE_TASKS body not located').toBeGreaterThan(100);
+
+    const instances = new Map<string, string>();
+    for (const { path, text } of sources) {
+      if (!path.startsWith(HOUSEKEEPING)) continue;
+      for (const m of text.matchAll(/export const (\w+Task)\s*:\s*HousekeepingTaskInstance\b/g)) {
+        instances.set(m[1]!, path);
+      }
+    }
+    // Floor: a regex that silently matched nothing must not read as clean — the same
+    // discipline the factory case above already applies to itself.
+    expect(instances.size, 'no pre-built task instances found')
+      .toBeGreaterThanOrEqual(5);
+
+    const unregistered = [...instances.keys()].filter(
+      (name) => !new RegExp(`\\b${name}\\b`).test(listBody),
+    );
+    expect(unregistered, 'these tasks exist but are not in STANDALONE_TASKS')
+      .toEqual([]);
+  });
+
   it('⛔ KNOWN NEGATIVE: a factory whose only caller is a test counts as unwired', () => {
     // Proves the check discriminates rather than passing because `includes` is
     // permissive. `walk` skips `__tests__`, so a name that appears ONLY there is

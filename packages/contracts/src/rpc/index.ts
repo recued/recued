@@ -23,6 +23,7 @@ export type {
   ServerAuthState,
   ServerAuthMigrationStatus,
   ServerSchedule,
+  RecipeRunFacts,
   ServerExecuteResponse,
   ServerMigrationResult,
   ServerRecipeListEntry,

@@ -116,6 +116,39 @@ describe('pack-discovery config', () => {
     expect(panel.getRenderedIdentities()).toEqual(['tagged-pack']);
     dispose();
   });
+  it('restores the pack query after the browse route remounts', async () => {
+    const document = fakeDoc();
+    const rows = [
+      pr({ slug: 'workflow-pack', name: 'Workflow pack', service_kind: 'workflow' }),
+      pr({ slug: 'crm-pack', name: 'CRM pack', service_kind: 'entity_platform' }),
+    ];
+    const first = mountPackDiscovery({
+      host: makeEl('div') as unknown as HTMLElement,
+      document,
+      onSelect: vi.fn(),
+      listInstalled: vi.fn(async () => ({ packs: [] })),
+      fetchCatalog: async () => ({ status: 'ok', rows }),
+    });
+    await first.panel.whenLoaded();
+    first.panel.toggleFilter('service_kind', 'workflow');
+    expect(first.panel.getRenderedIdentities()).toEqual(['workflow-pack']);
+    first.dispose();
+
+    const second = mountPackDiscovery({
+      host: makeEl('div') as unknown as HTMLElement,
+      document,
+      onSelect: vi.fn(),
+      listInstalled: vi.fn(async () => ({ packs: [] })),
+      fetchCatalog: async () => ({ status: 'ok', rows }),
+    });
+    await second.panel.whenLoaded();
+
+    expect(second.panel.getQuery().filters).toEqual({
+      service_kind: ['workflow'],
+    });
+    expect(second.panel.getRenderedIdentities()).toEqual(['workflow-pack']);
+    second.dispose();
+  });
   it('badges: certified (accent) + humanized service_kind (muted)', () => {
     const b = packBadges(pr({ publisher_certified: true, service_kind: 'cli' }));
     expect(b[0]).toMatchObject({ label: '✓ Certified', tone: 'accent' });

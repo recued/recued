@@ -1311,6 +1311,18 @@ export interface ChatStore {
     },
   ): Promise<ChatRecallSourcePage>;
   /** D-213 A2 — exact source lookup under the same positive row scope. */
+  /** Messages adjacent to an anchor within its own session — the reply
+   *  direction (`next`) or the context direction (`prev`). Same eligibility
+   *  predicate as `getRecallMessage`, so it cannot widen recall's scope. */
+  getRecallNeighbours?(
+    input: {
+      readonly row_eligibility:
+        typeof CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT;
+      readonly item_id: string;
+      readonly next?: number;
+      readonly prev?: number;
+    },
+  ): Promise<ChatRecallSourceRow[]>;
   getRecallMessage?(
     input: {
       readonly row_eligibility:
@@ -1522,6 +1534,35 @@ export const createChatStore = (
      WHERE recall_eligibility = @row_eligibility
        AND role IN ('user', 'assistant')
        AND message_id = @item_id
+  `);
+  /** D-213 — messages adjacent to an anchor WITHIN ITS OWN SESSION.
+   *
+   *  🔑 A conversation's answer usually repeats none of the question's words
+   *  ("no lets be fair, change it to 60d"), so lexical recall cannot reach it —
+   *  only stepping to the next message can. Session-scoped rather than
+   *  corpus-scoped: chat has no thread_id, and the session IS the conversation.
+   *
+   *  Same `recall_eligibility` and role predicate as `getRecallMessageStmt`, so
+   *  this can never widen what recall is allowed to see. */
+  const recallNeighboursNextStmt = db.prepare(`
+    SELECT message_id, session_id, role, ts, content_encrypted
+      FROM chat_messages
+     WHERE recall_eligibility = @row_eligibility
+       AND role IN ('user', 'assistant')
+       AND session_id = @session_id
+       AND ts > @ts
+     ORDER BY ts ASC, message_id ASC
+     LIMIT @limit
+  `);
+  const recallNeighboursPrevStmt = db.prepare(`
+    SELECT message_id, session_id, role, ts, content_encrypted
+      FROM chat_messages
+     WHERE recall_eligibility = @row_eligibility
+       AND role IN ('user', 'assistant')
+       AND session_id = @session_id
+       AND ts < @ts
+     ORDER BY ts DESC, message_id DESC
+     LIMIT @limit
   `);
   const getMessageStmt = db.prepare<{
     session_id: string;
@@ -2317,6 +2358,35 @@ export const createChatStore = (
     return row ? decodeRecallSourceRow(row) : null;
   };
 
+  const getRecallNeighbours = async (
+    input: {
+      readonly row_eligibility:
+        typeof CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT;
+      readonly item_id: string;
+      readonly next?: number;
+      readonly prev?: number;
+    },
+  ): Promise<ChatRecallSourceRow[]> => {
+    const anchor = getRecallMessageStmt.get({
+      row_eligibility: input.row_eligibility, item_id: input.item_id,
+    }) as RecallMessageRow | undefined;
+    if (!anchor) return [];
+    const out: RecallMessageRow[] = [];
+    const take = (stmt: typeof recallNeighboursNextStmt, limit: number): void => {
+      if (limit <= 0) return;
+      out.push(...stmt.all({
+        row_eligibility: input.row_eligibility,
+        session_id: anchor.session_id,
+        ts: anchor.ts,
+        limit,
+      }) as RecallMessageRow[]);
+    };
+    take(recallNeighboursNextStmt, Math.min(10, Math.floor(input.next ?? 0)));
+    take(recallNeighboursPrevStmt, Math.min(10, Math.floor(input.prev ?? 0)));
+    // `decodeRecallSourceRow` is async (it decrypts), so this must await.
+    return Promise.all(out.map(decodeRecallSourceRow));
+  };
+
   const setDataDiagnosisResolution = async (
     session_id: string,
     message_id: string,
@@ -2417,6 +2487,7 @@ export const createChatStore = (
     harvestPiiSources,
     scanRecallMessagesPage,
     getRecallMessage,
+    getRecallNeighbours,
     setDataDiagnosisResolution,
     appendEgress,
     getEgress,

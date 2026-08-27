@@ -33,6 +33,7 @@ import {
   runTargetGate,
   wireRunModal,
   RUN_MODAL_CONFIG_ATTR,
+  RUN_MODAL_FACTS_ATTR,
   RUN_MODAL_OVERLAY_ATTR,
   RUN_MODAL_PRESET_ATTR,
   type RunModalCaps,
@@ -386,6 +387,22 @@ describe('run-modal render', () => {
     expect(ran).toContain('Run completed');
     expect(ran).toContain('7 ms');
     expect(ran).toContain('1 step');
+    const receipt = renderRunModal(stateWith({
+      result: executeResponse(true, {
+        run_facts: {
+          steps_run: 34,
+          items_total: 1_249,
+          provider_calls: 2,
+          total_tokens: 13_385,
+          duration_ms: 42_000,
+        },
+      }),
+    }), recipe, CAPS_FULL);
+    expect(receipt).toContain(RUN_MODAL_FACTS_ATTR);
+    expect(receipt).toContain(
+      '34 steps · 1,249 items · 2 provider calls · 13,385 tokens · 42 seconds',
+    );
+    expect(receipt).not.toContain('7 ms');
     const failed = renderRunModal(
       stateWith({ result: executeResponse(false) }),
       recipe,

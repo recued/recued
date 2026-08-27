@@ -51,10 +51,41 @@ import {
   type SellerOrderBucket,
   type SellerTier,
 } from '@recued/contracts';
-import { formatClientDateTime } from '@recued/ui-shared';
+import {
+  REFERENCE_PROVENANCE_STYLES,
+  createReferenceElement,
+  formatClientDateTime,
+} from '@recued/ui-shared';
 
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 import { serializeShellRoute } from '../shell/route.js';
+import {
+  LIST_PREVIEW_STYLES,
+  focusListTarget,
+  mountListPreview,
+  readListContinuity,
+  readListScroll,
+  restoreListScroll,
+  updateListContinuity,
+} from '../shell/list-preview-continuity.js';
+import {
+  SELLER_SUBPAGES,
+  isSellerCollectionSubpage,
+  isSellerSubpage,
+  sellerAddressSelection,
+  sellerDetailAddress,
+  sellerDirectoryAddress,
+  sellerListAddress,
+  type SellerAddress,
+  type SellerCollectionSubpage,
+  type SellerSubpage,
+} from './seller-navigation.js';
+
+export {
+  SELLER_SUBPAGES,
+  isSellerSubpage,
+} from './seller-navigation.js';
+export type { SellerSubpage } from './seller-navigation.js';
 
 export type SellerOverviewCaller = () => Promise<SellerOverview>;
 /** D-196 1d — the shared `execute` rpc caller, narrowed to what this page needs.
@@ -119,39 +150,6 @@ export type SellerListOrdersCaller = (
 
 export type SellerPagePhase = 'loading' | 'ready' | 'error';
 
-/** Addressable, user-facing Seller jobs. Seller used to render every control in
- * one long page; this closed list keeps the information architecture stable and
- * makes `#settings/seller/<subpage>` links safe to share. */
-export const SELLER_SUBPAGES = [
-  'overview',
-  'offers',
-  'orders',
-  'tiers',
-  'customers',
-  'usage',
-  'setup',
-] as const;
-export type SellerSubpage = (typeof SELLER_SUBPAGES)[number];
-
-const SELLER_COLLECTION_SUBPAGES = [
-  'offers',
-  'orders',
-  'tiers',
-  'customers',
-  'usage',
-] as const satisfies readonly SellerSubpage[];
-type SellerCollectionSubpage = (typeof SELLER_COLLECTION_SUBPAGES)[number];
-
-export const isSellerSubpage = (value: unknown): value is SellerSubpage =>
-  typeof value === 'string'
-  && (SELLER_SUBPAGES as readonly string[]).includes(value);
-
-const isSellerCollectionSubpage = (
-  value: SellerSubpage | null,
-): value is SellerCollectionSubpage =>
-  value !== null
-  && (SELLER_COLLECTION_SUBPAGES as readonly SellerSubpage[]).includes(value);
-
 const SELLER_SUBPAGE_META: Readonly<Record<
   SellerSubpage,
   { readonly label: string; readonly description: string }
@@ -189,19 +187,6 @@ const SELLER_SUBPAGE_META: Readonly<Record<
 const SELLER_DEFAULT_PAGE_SIZE = 25;
 const SELLER_MAX_PAGE_SIZE = 100;
 
-const sellerDirectoryRoute = (): string =>
-  serializeShellRoute('settings', 'seller');
-
-const sellerListRoute = (subpage: SellerSubpage, page = 1): string =>
-  page > 1
-    ? serializeShellRoute('settings', 'seller', subpage, 'page', String(page))
-    : serializeShellRoute('settings', 'seller', subpage);
-
-const sellerDetailRoute = (
-  subpage: SellerCollectionSubpage,
-  itemId: string,
-): string => serializeShellRoute('settings', 'seller', subpage, 'detail', itemId);
-
 const usageRollupId = (rollup: SellerCustomerUsageRollup): string =>
   `${rollup.contract_id}:${rollup.usage_kind}:${rollup.period_granularity}:${rollup.period_start}`;
 
@@ -238,6 +223,14 @@ type SellerManualCustomerLifecycleResponse =
 export interface MountSellerPageOptions {
   host: HTMLElement;
   document?: Document;
+  /** Shell-owned scrolling element used for collection return continuity. */
+  scrollRoot?: HTMLElement;
+  /** Navigate to a Seller address after preview. Production delegates this to
+   *  the shell router; an embedded mount falls back to `location.hash`. */
+  onNavigate?: (hash: string, mode: 'push' | 'replace') => void;
+  /** Canonical parsed Seller address. Production passes this single typed
+   * selection; the legacy initial* fields remain as narrow mount/test seams. */
+  initialAddress?: SellerAddress;
   /** Initial `#settings/seller/<subpage>` selection. Unknown values fail safely
    * to the Seller directory so a stale bookmark never produces an empty view. */
   initialSubpage?: string | null;
@@ -641,12 +634,13 @@ const appendContractLink = (
   parent: HTMLElement,
   contractId: string,
 ): void => {
-  const link = doc.createElement('a');
-  link.className = 'seller-contract-link';
-  link.href = serializeShellRoute('contracts', contractId);
-  link.setAttribute('href', serializeShellRoute('contracts', contractId));
-  link.setAttribute(SELLER_CONTRACT_LINK_ATTR, contractId);
-  link.textContent = contractId;
+  const link = createReferenceElement(doc, {
+    label: contractId,
+    referenceId: contractId,
+    href: serializeShellRoute('contracts', contractId),
+    className: 'seller-contract-link',
+    attributes: { [SELLER_CONTRACT_LINK_ATTR]: contractId },
+  });
   parent.appendChild(link);
 };
 
@@ -655,9 +649,11 @@ const appendContractId = (
   parent: HTMLElement,
   contractId: string,
 ): void => {
-  const value = doc.createElement('code');
-  value.className = 'seller-contract-id';
-  value.textContent = contractId;
+  const value = createReferenceElement(doc, {
+    label: contractId,
+    referenceId: contractId,
+    className: 'seller-contract-id',
+  });
   parent.appendChild(value);
 };
 
@@ -1087,7 +1083,7 @@ const renderSummary = (
     appendText(doc, item, 'dt', label);
     const dd = append(doc, item, 'dd');
     const link = doc.createElement('a');
-    const href = serializeShellRoute('settings', 'seller', destination);
+    const href = sellerListAddress(destination).hash;
     link.href = href;
     link.setAttribute('href', href);
     link.setAttribute(SELLER_SUMMARY_LINK_ATTR, destination);
@@ -1257,7 +1253,7 @@ const renderOrders = (
       render: (order, td) => {
         const nameHost = state.linkRows === true ? doc.createElement('a') : td;
         if (state.linkRows === true) {
-          const href = sellerDetailRoute('orders', order.order_key);
+          const href = sellerDetailAddress('orders', order.order_key).hash;
           nameHost.setAttribute('href', href);
           nameHost.setAttribute(
             SELLER_COLLECTION_ITEM_LINK_ATTR,
@@ -1265,7 +1261,7 @@ const renderOrders = (
           );
           nameHost.setAttribute(
             'aria-label',
-            `Open order ${order.order_key} for ${order.offer_id}`,
+            `Preview order ${order.order_key} for ${order.offer_id}; press Enter to open`,
           );
           td.appendChild(nameHost);
         }
@@ -1522,12 +1518,12 @@ const renderSellerOffers = (
       render: (offer, td) => {
         const nameHost = linkRows ? doc.createElement('a') : td;
         if (linkRows) {
-          const href = sellerDetailRoute('offers', offer.offer_id);
+          const href = sellerDetailAddress('offers', offer.offer_id).hash;
           nameHost.setAttribute('href', href);
           nameHost.setAttribute(SELLER_COLLECTION_ITEM_LINK_ATTR, offer.offer_id);
           nameHost.setAttribute(
             'aria-label',
-            `Open offer ${offer.offer_id} (${offer.display_name})`,
+            `Preview offer ${offer.offer_id} (${offer.display_name}); press Enter to open`,
           );
           td.appendChild(nameHost);
         }
@@ -1553,15 +1549,15 @@ const renderSellerOffers = (
           td.textContent = 'Creator not recorded';
           return;
         }
-        const link = doc.createElement('a');
         const href = serializeShellRoute('recipes', offer.created_by_recipe_id);
-        link.href = href;
-        link.setAttribute('href', href);
-        link.setAttribute(
-          SELLER_OFFER_DEFINITION_LINK_ATTR,
-          offer.created_by_recipe_id,
-        );
-        link.textContent = 'Open recorded creator recipe';
+        const link = createReferenceElement(doc, {
+          label: 'Open recorded creator recipe',
+          referenceId: offer.created_by_recipe_id,
+          href,
+          attributes: {
+            [SELLER_OFFER_DEFINITION_LINK_ATTR]: offer.created_by_recipe_id,
+          },
+        });
         td.appendChild(link);
       },
     },
@@ -1572,15 +1568,15 @@ const renderSellerOffers = (
           td.textContent = 'Not linked';
           return;
         }
-        const link = doc.createElement('a');
         const href = serializeShellRoute('recipes', offer.fulfillment_recipe_id);
-        link.href = href;
-        link.setAttribute('href', href);
-        link.setAttribute(
-          SELLER_OFFER_FULFILLMENT_LINK_ATTR,
-          offer.fulfillment_recipe_id,
-        );
-        link.textContent = 'Open fulfillment recipe';
+        const link = createReferenceElement(doc, {
+          label: 'Open fulfillment recipe',
+          referenceId: offer.fulfillment_recipe_id,
+          href,
+          attributes: {
+            [SELLER_OFFER_FULFILLMENT_LINK_ATTR]: offer.fulfillment_recipe_id,
+          },
+        });
         td.appendChild(link);
       },
     },
@@ -1668,7 +1664,7 @@ const renderAccessOffersIntro = (
     ['customers', 'Manage customers'],
   ] as const) {
     const link = doc.createElement('a');
-    const href = serializeShellRoute('settings', 'seller', id);
+    const href = sellerListAddress(id).hash;
     link.href = href;
     link.setAttribute('href', href);
     link.textContent = label;
@@ -2133,12 +2129,12 @@ const renderTiers = (
         render: (tier, td) => {
           const nameHost = linkRows ? doc.createElement('a') : td;
           if (linkRows) {
-            const href = sellerDetailRoute('tiers', tier.tier_id);
+            const href = sellerDetailAddress('tiers', tier.tier_id).hash;
             nameHost.setAttribute('href', href);
             nameHost.setAttribute(SELLER_COLLECTION_ITEM_LINK_ATTR, tier.tier_id);
             nameHost.setAttribute(
               'aria-label',
-              `Open tier ${tier.tier_id} (${tier.display_name})`,
+              `Preview tier ${tier.tier_id} (${tier.display_name}); press Enter to open`,
             );
             td.appendChild(nameHost);
           }
@@ -3490,7 +3486,7 @@ const renderCustomers = (
         render: (customer, td) => {
           const nameHost = linkRows ? doc.createElement('a') : td;
           if (linkRows) {
-            const href = sellerDetailRoute('customers', customer.customer_id);
+            const href = sellerDetailAddress('customers', customer.customer_id).hash;
             nameHost.setAttribute('href', href);
             nameHost.setAttribute(
               SELLER_COLLECTION_ITEM_LINK_ATTR,
@@ -3498,7 +3494,7 @@ const renderCustomers = (
             );
             nameHost.setAttribute(
               'aria-label',
-              `Open customer ${customer.customer_id} (${customer.source_customer_id})`,
+              `Preview customer ${customer.customer_id} (${customer.source_customer_id}); press Enter to open`,
             );
             td.appendChild(nameHost);
           }
@@ -3617,12 +3613,12 @@ const renderUsage = (
           }
           const itemId = usageRollupId(rollup);
           const link = doc.createElement('a');
-          link.setAttribute('href', sellerDetailRoute('usage', itemId));
+          link.setAttribute('href', sellerDetailAddress('usage', itemId).hash);
           link.setAttribute(SELLER_COLLECTION_ITEM_LINK_ATTR, itemId);
           link.setAttribute(
             'aria-label',
-            `Open ${titleCase(rollup.usage_kind)} usage for ${rollup.contract_id} `
-              + `(${rollup.period_granularity} ${rollup.period_start})`,
+            `Preview ${titleCase(rollup.usage_kind)} usage for ${rollup.contract_id} `
+              + `(${rollup.period_granularity} ${rollup.period_start}); press Enter to open`,
           );
           link.textContent = rollup.contract_id;
           td.appendChild(link);
@@ -3687,7 +3683,7 @@ const renderSellerDirectory = (
   for (const subpage of SELLER_SUBPAGES) {
     const item = append(doc, list, 'li');
     const link = doc.createElement('a');
-    link.setAttribute('href', sellerListRoute(subpage));
+    link.setAttribute('href', sellerListAddress(subpage).hash);
     link.setAttribute(SELLER_DIRECTORY_ROW_ATTR, subpage);
     const copy = append(doc, link, 'span', 'seller-directory-copy');
     appendText(doc, copy, 'strong', SELLER_SUBPAGE_META[subpage].label);
@@ -3745,7 +3741,7 @@ const renderSellerPager = (
     link.setAttribute(attr, '');
     link.textContent = label;
     if (enabled) {
-      link.setAttribute('href', sellerListRoute(opts.subpage, targetPage));
+      link.setAttribute('href', sellerListAddress(opts.subpage, targetPage).hash);
     } else {
       link.setAttribute('aria-disabled', 'true');
     }
@@ -3767,21 +3763,39 @@ export const mountSellerPage = (
 
   let disposed = false;
   let generation = 0;
-  const subpage: SellerSubpage | null = isSellerSubpage(opts.initialSubpage)
-    ? opts.initialSubpage
-    : null;
+  const addressedSelection = sellerAddressSelection(opts.initialAddress);
+  const subpage: SellerSubpage | null = opts.initialAddress !== undefined
+    ? addressedSelection.subpage
+    : isSellerSubpage(opts.initialSubpage)
+      ? opts.initialSubpage
+      : null;
+  const initialItemId = opts.initialAddress !== undefined
+    ? addressedSelection.itemId
+    : opts.initialItemId;
   const selectedItemId = isSellerCollectionSubpage(subpage)
-    && typeof opts.initialItemId === 'string'
-    && opts.initialItemId.trim().length > 0
-    ? opts.initialItemId.trim()
+    && typeof initialItemId === 'string'
+    && initialItemId.trim().length > 0
+    ? initialItemId.trim()
     : null;
+  const continuityKey = isSellerCollectionSubpage(subpage)
+    ? `seller:${subpage}`
+    : null;
+  const rememberedList = continuityKey === null
+    ? null
+    : readListContinuity(doc, continuityKey);
+  const scrollRoot = opts.scrollRoot ?? opts.host;
   const pageSize = Math.min(
     positiveWholeNumber(opts.pageSize, SELLER_DEFAULT_PAGE_SIZE),
     SELLER_MAX_PAGE_SIZE,
   );
   let page = selectedItemId === null
-    ? positiveWholeNumber(opts.initialPage, 1)
-    : 1;
+    ? opts.initialAddress !== undefined
+      ? addressedSelection.page
+      : opts.initialPage === undefined || opts.initialPage === null
+        ? positiveWholeNumber(rememberedList?.page, 1)
+        : positiveWholeNumber(opts.initialPage, 1)
+    : rememberedList?.page ?? 1;
+  let pendingListRestore = selectedItemId === null && rememberedList !== null;
   let phase: SellerPagePhase = 'loading';
   let overview: SellerOverview | null = null;
   let error: string | null = null;
@@ -3817,6 +3831,40 @@ export const mountSellerPage = (
   dynamicHost.className = 'seller-page-content';
   wrapper.appendChild(dynamicHost);
   opts.host.appendChild(wrapper);
+
+  const navigate = (hash: string, mode: 'push' | 'replace'): void => {
+    if (opts.onNavigate !== undefined) {
+      opts.onNavigate(hash, mode);
+      return;
+    }
+    try {
+      if (doc.defaultView?.location !== undefined) {
+        doc.defaultView.location.hash = hash;
+      }
+    } catch {
+      // Sandboxed/narrowed mounts may expose no navigation authority.
+    }
+  };
+
+  const rememberCollection = (itemId?: string): void => {
+    if (continuityKey === null) return;
+    updateListContinuity(doc, continuityKey, {
+      page,
+      ...(itemId === undefined ? {} : { focusedId: itemId }),
+      scroll: readListScroll(scrollRoot),
+    });
+  };
+
+  const preview = mountListPreview({
+    host: wrapper,
+    document: doc,
+    scrollRoot,
+    onOpen: (itemId) => {
+      if (!isSellerCollectionSubpage(subpage)) return;
+      rememberCollection(itemId);
+      navigate(sellerDetailAddress(subpage, itemId).hash, 'push');
+    },
+  });
 
   const renderUnavailable = (title: string, detail: string): void => {
     const section = append(doc, dynamicHost, 'section', 'seller-section');
@@ -3884,8 +3932,8 @@ export const mountSellerPage = (
       back.setAttribute(
         'href',
         selectedItemId === null
-          ? sellerDirectoryRoute()
-          : sellerListRoute(subpage),
+          ? sellerDirectoryAddress().hash
+          : sellerListAddress(subpage, page).hash,
       );
       back.textContent = selectedItemId === null
         ? '← Back to Seller'
@@ -4367,7 +4415,93 @@ export const mountSellerPage = (
         }
         break;
     }
+    if (
+      pendingListRestore
+      && phase === 'ready'
+      && selectedItemId === null
+      && isSellerCollectionSubpage(subpage)
+    ) {
+      pendingListRestore = false;
+      const rememberedId = rememberedList?.focusedId;
+      const links = Array.from(dynamicHost.querySelectorAll?.(
+        `[${SELLER_COLLECTION_ITEM_LINK_ATTR}]`,
+      ) ?? []) as HTMLElement[];
+      const target = rememberedId === undefined
+        ? null
+        : links.find((link) =>
+            link.getAttribute(SELLER_COLLECTION_ITEM_LINK_ATTR) === rememberedId,
+          ) ?? null;
+      restoreListScroll(scrollRoot, rememberedList?.scroll);
+      focusListTarget(
+        target
+          ?? (dynamicHost.querySelector?.(`[${SELLER_BACK_ATTR}]`) as HTMLElement | null)
+          ?? (dynamicHost.querySelector?.('button, a[href]') as HTMLElement | null),
+      );
+    }
   };
+
+  const previewCollectionItem = (link: HTMLElement): void => {
+    if (!isSellerCollectionSubpage(subpage)) return;
+    const itemId = link.getAttribute(SELLER_COLLECTION_ITEM_LINK_ATTR);
+    if (itemId === null) return;
+    rememberCollection(itemId);
+    const label = SELLER_SUBPAGE_META[subpage].label;
+    const title = link.textContent?.trim() || itemId;
+    preview.open({
+      id: itemId,
+      eyebrow: `${label} preview`,
+      title,
+      summary: `Review this ${label.toLocaleLowerCase()} item before opening its full controls and provenance.`,
+      facts: [
+        { label: 'Collection', value: label },
+        { label: 'Record', value: itemId },
+        { label: 'List page', value: String(page) },
+      ],
+      primaryLabel: 'Open full record',
+    }, link);
+  };
+
+  const collectionLinkFrom = (target: EventTarget | null): HTMLElement | null => {
+    const element = target as HTMLElement | null;
+    if (element === null || typeof element.closest !== 'function') return null;
+    return element.closest(
+      `[${SELLER_COLLECTION_ITEM_LINK_ATTR}]`,
+    ) as HTMLElement | null;
+  };
+
+  const onCollectionClick = (event: Event): void => {
+    const mouse = event as MouseEvent;
+    if (
+      (typeof mouse.button === 'number' && mouse.button !== 0)
+      || mouse.metaKey
+      || mouse.ctrlKey
+      || mouse.shiftKey
+      || mouse.altKey
+    ) return;
+    const link = collectionLinkFrom(event.target);
+    if (link === null) return;
+    event.preventDefault();
+    previewCollectionItem(link);
+  };
+
+  const onCollectionKeyDown = (event: Event): void => {
+    const link = collectionLinkFrom(event.target);
+    if (link === null || link !== event.target) return;
+    const itemId = link.getAttribute(SELLER_COLLECTION_ITEM_LINK_ATTR);
+    if (itemId === null || !isSellerCollectionSubpage(subpage)) return;
+    const key = (event as KeyboardEvent).key;
+    if (key === ' ') {
+      (event as KeyboardEvent).preventDefault();
+      previewCollectionItem(link);
+    } else if (key === 'Enter') {
+      (event as KeyboardEvent).preventDefault();
+      rememberCollection(itemId);
+      navigate(sellerDetailAddress(subpage, itemId).hash, 'push');
+    }
+  };
+
+  wrapper.addEventListener('click', onCollectionClick);
+  wrapper.addEventListener('keydown', onCollectionKeyDown);
 
   const refresh = async (): Promise<void> => {
     const ownGeneration = ++generation;
@@ -4466,12 +4600,17 @@ export const mountSellerPage = (
       if (disposed) return;
       disposed = true;
       generation += 1;
+      wrapper.removeEventListener('click', onCollectionClick);
+      wrapper.removeEventListener('keydown', onCollectionKeyDown);
+      preview.dispose();
       wrapper.remove();
     },
   };
 };
 
 export const SELLER_PAGE_STYLES = `
+${REFERENCE_PROVENANCE_STYLES}
+${LIST_PREVIEW_STYLES}
 [${SELLER_PAGE_ATTR}] {
   display: grid;
   min-width: 0;

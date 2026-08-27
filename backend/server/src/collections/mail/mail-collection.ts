@@ -402,6 +402,16 @@ type ResolvedAttachment = OutgoingAttachment & { blob_hash: string };
  *  underlying provider's fields so the picker / sender-resolution
  *  paths can read them without reaching through the provider. */
 export interface MailCollection extends Collection {
+  /** Records adjacent in time to an anchor — the reply direction (`next`) or
+   *  the context direction (`prev`).
+   *
+   *  ⛔ DECLARED HERE, NOT ONLY ON `CollectionTable`. The chat handler iterates
+   *  `registry.list()`, which yields these wrappers; a method that exists only
+   *  on the table is invisible to it and the call silently returns nothing.
+   *  Measured: the model asked for `near_id` correctly and got an empty result,
+   *  then reported the PROPOSAL as the settled outcome. */
+  neighbours(query: { anchor_id: string; next?: number; prev?: number }): CollectionRecord[];
+
   readonly platform: 'mail';
   readonly sendCapable: boolean;
   /** D-239 — mirrors `MailProvider.mutationCapable` so the dispatcher's
@@ -1466,6 +1476,12 @@ export const createMailCollection = (
     get: (record_id) => table.get(record_id),
     list: (query: CollectionListQuery) => table.list(query),
     search: (query: CollectionSearchQuery): CollectionSearchMatch[] => table.search(query),
+    // ⛔ MUST BE FORWARDED HERE, NOT JUST ON THE TABLE. The chat handler iterates
+    // `registry.list()`, which yields these Collection wrappers — a method that
+    // exists only on CollectionTable is invisible to it, and the call silently
+    // returns nothing. Measured: the model correctly asked for `near_id` and got
+    // an empty result, then reported the PROPOSAL as the outcome.
+    neighbours: (query: Parameters<typeof table.neighbours>[0]) => table.neighbours(query),
     countFrom: (email: string): number => table.countByAddress('from', email),
     health,
     runRetention,

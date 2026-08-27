@@ -40,6 +40,13 @@ import {
   indexRecord as ftsIndexRecord,
   deleteRecord as ftsDeleteRecord,
 } from '@recued/fts';
+// One definition of the trailing-`*` prefix convention, shared with the generic
+// collection table — see the note on `toFtsMatch`.
+import {
+  applyRecencyFloor,
+  relaxToPresentPrefixTokens,
+  toFtsMatch,
+} from '../table.js';
 import type {
   CalendarRecordHotFields,
   CalendarRecordStat,
@@ -720,8 +727,13 @@ export const createCalendarTable = (
     // (letters/digits, whitespace-separated) before MATCH so a person's
     // NAME or their canonical EMAIL both match the indexed attendee /
     // summary text without throwing. Empty after stripping → no match.
-    const ftsQuery = query.query.replace(/[^\p{L}\p{N}\s]+/gu, ' ').trim();
-    if (ftsQuery === '') return [];
+    // ⛔ WAS a bare punctuation-strip, which also deleted a trailing `*` and so
+    // silently turned a PREFIX query into an exact-token one — a false zero for
+    // any caller probing whether this store holds a term. Now shares the one
+    // definition in `collections/table.ts`, which quotes each token (protecting
+    // FTS5 reserved words) and preserves `*` as a real prefix operator.
+    const ftsQuery = toFtsMatch(query.query);
+    if (ftsQuery === null) return [];
     // The FTS column (index 1) contains summary + description + location +
     // attendee / organizer text (see ftsTextFor). snippet() uses the
     // default 15-token window.
@@ -733,11 +745,40 @@ export const createCalendarTable = (
       ORDER BY rank
       LIMIT ?
     `;
-    const matches = db.prepare(sql).all(ftsQuery, limit) as Array<{
+    const stmt = db.prepare(sql);
+    let matches = stmt.all(ftsQuery, limit) as Array<{
       key: string;
       rank: number;
       snippet: string;
     }>;
+    // Which expression produced `matches` — the recency floor must rerun the
+    // SAME one or it would surface rows relevance never considered.
+    let usedExpr: string | null = ftsQuery;
+    if (matches.length === 0) {
+      // Same empty-result rung as the generic collection table: retry over the
+      // tokens the index actually holds, in prefix form. An empty calendar and
+      // "your query used a form the calendar does not store" are different
+      // facts, and only one of them is worth reporting to the owner.
+      const relaxed = relaxToPresentPrefixTokens(db, ftsName, query.query);
+      if (relaxed !== null) {
+        try {
+          matches = stmt.all(relaxed, limit) as typeof matches;
+          usedExpr = relaxed;
+        } catch {
+          matches = [];
+          usedExpr = null;
+        }
+      }
+    }
+    // Same floor as the generic table, keyed on `modified_at`: a rescheduled or
+    // corrected event is the calendar's version of a superseding mail, and its
+    // `received_at` can be months older than the change that matters.
+    if (usedExpr !== null) {
+      matches = applyRecencyFloor(db, {
+        ftsName, tableName, dateColumn: 'modified_at',
+        expr: usedExpr, limit, matches,
+      });
+    }
     if (matches.length === 0) return [];
     const placeholders = matches.map(() => '?').join(',');
     const rows = db

@@ -37,6 +37,10 @@ import {
   type ReleaseCheckStatus,
 } from '@recued/contracts';
 import { e } from '../template.js';
+import {
+  REFERENCE_PROVENANCE_STYLES,
+  renderProvenance,
+} from '../reference-provenance.js';
 import { button } from '../primitives/button.js';
 import { textInput, select as selectField, fieldHint } from '../primitives/field.js';
 import { inlineError, inlineHint, inlineOk } from '../primitives/message.js';
@@ -1687,7 +1691,11 @@ const renderField = (
   const suggestedBy = hintedFields[field.key];
   const attribution = suggestedBy
     ? `<p class="rx-field-hint field-hint connections-field-suggested"`
-      + ` data-suggested-by="${e(suggestedBy)}">Suggested by ${e(suggestedBy)} — check it before you continue.</p>`
+      + ` data-suggested-by="${e(suggestedBy)}">${renderProvenance({
+        primary: `Suggested by ${suggestedBy}`,
+        detail: 'Check it before you continue.',
+        kind: 'source',
+      })}</p>`
     : '';
   return `
     <div class="connections-field-row" data-field-key="${e(field.key)}"${oauthInvalid ? ' data-oauth-invalid="true"' : ''}${credentialRejected ? ' data-credential-rejected="true"' : ''}${dynamicUnavailable && field.emptyGuidance
@@ -3427,6 +3435,7 @@ export const renderConnectionsPage = (props: ConnectionsPageProps): string => {
  *  options-page + sidebar both already include the primitive
  *  stylesheet so we only add page-specific rules here. */
 export const CONNECTIONS_PAGE_STYLES = `
+${REFERENCE_PROVENANCE_STYLES}
 .connections-page {
   box-sizing: border-box;
   min-width: 0;

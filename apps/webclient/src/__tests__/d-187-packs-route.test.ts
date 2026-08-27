@@ -27,6 +27,7 @@ import type {
   BulkPackInstallResultLike,
   BulkPackManifest,
   PackListEntry,
+  ServerRecipeListEntry,
 } from '@recued/contracts';
 
 import {
@@ -38,6 +39,8 @@ import {
   bootstrapPacksRoute,
   resolvePackInput,
 } from '../packs/bootstrap-packs-route.js';
+import type { PackAppExecuteCaller } from '../packs/pack-app-view.js';
+import { PACKS_DETAIL_TAB_ATTR } from '../settings/packs-panel.js';
 import {
   SETTINGS_ROUTE_SECTION_ATTR,
   bootstrapSettingsRoute,
@@ -558,6 +561,206 @@ describe('Packs R22 — route list→detail wiring', () => {
     await route.packsPanel()!.whenLoaded();
     await tick();
     expect(route.packsPanel()!.getSelectedSlug()).toBe('pack-b');
+    route.dispose();
+  });
+
+  const viewRecipe = (id: string): ServerRecipeListEntry => ({
+    recipe_id: id,
+    publisher_id: 'recued-core',
+    version: 1,
+    recipe_hash: `hash-${id}`,
+    recipe: {
+      recipe_id: id,
+      version: 1,
+      ttl: 0,
+      metadata: {
+        name: id === 'view-a' ? 'View A' : 'View B',
+        description: `Read ${id}`,
+        author: 'recued-core',
+        supported_platforms: [],
+      },
+      variables: {},
+      steps: [],
+      requires: [],
+      output: {
+        render: [{ type: 'table', source: 'step.rows' }],
+      },
+    },
+    source: 'bundled',
+    installed_at: 0,
+  } as unknown as ServerRecipeListEntry);
+
+  const appPack = (): PackListEntry => baseEntry({
+    installed: true,
+    manifest: baseManifest({
+      slug: 'app-pack',
+      name: 'App Pack',
+      recipes: [
+        { slug: 'view-a', version: 1 },
+        { slug: 'view-b', version: 1 },
+      ],
+    }),
+  });
+
+  it('hydrates a dynamically-derived Business Pack view from its route', async () => {
+    const calls: string[] = [];
+    const doc = makeFakeDocument() as FakeDoc & {
+      defaultView?: {
+        history: {
+          replaceState: (s: unknown, t: string, url: string) => void;
+          pushState: (s: unknown, t: string, url: string) => void;
+        };
+      };
+    };
+    doc.defaultView = {
+      history: {
+        replaceState: (_s, _t, url) => { calls.push(`replace ${url}`); },
+        pushState: (_s, _t, url) => { calls.push(`push ${url}`); },
+      },
+    };
+    const root = doc.createElement('div');
+    const execute = vi.fn<PackAppExecuteCaller>(async ({ recipe_id }) => ({
+      recipe_id,
+      recipe_hash: `run-${recipe_id}`,
+      success: true,
+      duration_ms: 1,
+      steps: [],
+      errors: [],
+      output: {
+        render: [{ type: 'table', data: { rows: [] } }],
+        sidebar: [],
+      },
+    }));
+    const route = bootstrapPacksRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      packsListCaller: vi.fn(async () => ({ packs: [appPack()] })),
+      recipesListCaller: vi.fn(async () => ({
+        recipes: [viewRecipe('view-a'), viewRecipe('view-b')],
+      })),
+      recipeExecuteCaller: execute,
+      initialPackSlug: 'app-pack',
+      initialPackViewId: 'view-b',
+    });
+    await route.packsPanel()!.whenLoaded();
+    await tick(20);
+
+    expect(route.packsPanel()!.getActiveViewId()).toBe('view-b');
+    expect(execute).toHaveBeenCalledWith({ recipe_id: 'view-b', config: {} });
+    expect(calls, 'hydration must not duplicate the existing deep link').toEqual([]);
+    route.dispose();
+  });
+
+  it('absorbs an auto-opened Business Pack view into list → preview → action history', async () => {
+    const calls: string[] = [];
+    const doc = makeFakeDocument() as FakeDoc & {
+      defaultView?: {
+        history: {
+          replaceState: (s: unknown, t: string, url: string) => void;
+          pushState: (s: unknown, t: string, url: string) => void;
+        };
+      };
+    };
+    doc.defaultView = {
+      history: {
+        replaceState: (_s, _t, url) => { calls.push(`replace ${url}`); },
+        pushState: (_s, _t, url) => { calls.push(`push ${url}`); },
+      },
+    };
+    const root = doc.createElement('div');
+    const route = bootstrapPacksRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      packsListCaller: vi.fn(async () => ({ packs: [appPack()] })),
+      recipesListCaller: vi.fn(async () => ({
+        recipes: [viewRecipe('view-a'), viewRecipe('view-b')],
+      })),
+      recipeExecuteCaller: vi.fn(async ({ recipe_id }) => ({
+        recipe_id,
+        recipe_hash: `run-${recipe_id}`,
+        success: true,
+        steps: [],
+        errors: [],
+        output: { render: [] },
+      } as never)),
+    });
+    await route.packsPanel()!.whenLoaded();
+
+    route.packsPanel()!.clickSelectPack('app-pack');
+    await tick(20);
+    expect(route.packsPanel()!.getActiveViewId()).toBe('view-a');
+    expect(calls).toEqual([
+      'push #packs/app-pack',
+      'replace #packs/app-pack/use/view-a',
+    ]);
+
+    findByAttrValue(root, PACKS_DETAIL_TAB_ATTR, 'detail')!.click();
+    expect(calls.at(-1)).toBe('replace #packs/app-pack');
+    findByAttrValue(root, PACKS_DETAIL_TAB_ATTR, 'use')!.click();
+    expect(calls.at(-1)).toBe('replace #packs/app-pack/use/view-a');
+    route.dispose();
+  });
+
+  it('replace-canonicalizes a stale generated view to the first valid view', async () => {
+    const replaceState = vi.fn();
+    const onHashSync = vi.fn();
+    const doc = makeFakeDocument() as FakeDoc & {
+      defaultView?: { history: { replaceState: typeof replaceState } };
+    };
+    doc.defaultView = { history: { replaceState } };
+    const root = doc.createElement('div');
+    const route = bootstrapPacksRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      packsListCaller: vi.fn(async () => ({ packs: [appPack()] })),
+      recipesListCaller: vi.fn(async () => ({
+        recipes: [viewRecipe('view-a'), viewRecipe('view-b')],
+      })),
+      recipeExecuteCaller: vi.fn(async ({ recipe_id }) => ({
+        recipe_id,
+        recipe_hash: `run-${recipe_id}`,
+        success: true,
+        steps: [],
+        errors: [],
+        output: { render: [] },
+      } as never)),
+      initialPackSlug: 'app-pack',
+      initialPackViewId: 'retired-view',
+      onHashSync,
+    });
+    await route.packsPanel()!.whenLoaded();
+    await tick(20);
+
+    expect(route.packsPanel()!.getActiveViewId()).toBe('view-a');
+    expect(replaceState).toHaveBeenCalledWith(
+      null,
+      '',
+      '#packs/app-pack/use/view-a',
+    );
+    expect(onHashSync).toHaveBeenCalledWith('#packs/app-pack/use/view-a');
+    route.dispose();
+  });
+
+  it('collapses a generated-view deep link when the pack has no app surface', async () => {
+    const replaceState = vi.fn();
+    const doc = makeFakeDocument() as FakeDoc & {
+      defaultView?: { history: { replaceState: typeof replaceState } };
+    };
+    doc.defaultView = { history: { replaceState } };
+    const root = doc.createElement('div');
+    const route = bootstrapPacksRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      packsListCaller: vi.fn(async () => ({ packs: [appPack()] })),
+      recipesListCaller: vi.fn(async () => ({ recipes: [] })),
+      initialPackSlug: 'app-pack',
+      initialPackViewId: 'retired-view',
+    });
+    await route.packsPanel()!.whenLoaded();
+    await tick(20);
+
+    expect(route.packsPanel()!.getActiveViewId()).toBeNull();
+    expect(replaceState).toHaveBeenCalledWith(null, '', '#packs/app-pack');
     route.dispose();
   });
 

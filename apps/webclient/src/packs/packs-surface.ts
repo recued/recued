@@ -24,6 +24,16 @@ import {
   DISCOVER_PANEL_ACTION_ATTR,
   DISCOVER_PANEL_CARD_ATTR,
 } from '../discover/discover-panel.js';
+import {
+  LIST_PREVIEW_STYLES,
+  mountListPreview,
+  readListContinuity,
+  readListScroll,
+  restoreListScroll,
+  updateListContinuity,
+  type ListPreviewContent,
+} from '../shell/list-preview-continuity.js';
+import { PACK_BROWSE_CONTINUITY_KEY } from '../discover/pack-discovery.js';
 
 export const PACKS_SURFACE_HOST_ATTR = 'data-recued-packs-surface';
 export const PACKS_SURFACE_LIST_ATTR = 'data-recued-packs-surface-list';
@@ -60,8 +70,11 @@ export interface MountPacksSurfaceOptions {
   mountList: (
     host: HTMLElement,
     onSelect: (slug: string) => void,
+    onPreview: (content: ListPreviewContent, opener: HTMLElement) => void,
   ) => {
     dispose: () => void;
+    /** Optional readiness seam used to restore list state after a route remount. */
+    whenLoaded?: () => Promise<void>;
     /** Switch the list between the marketplace corpus and the installed roster.
      *  Optional so a host that mounts a plain list (tests, a private mirror)
      *  still satisfies the contract — the toggle simply does not render. */
@@ -119,6 +132,7 @@ export const mountPacksSurface = (
   if (doc === undefined) {
     throw new Error('mountPacksSurface: no document available — pass opts.document');
   }
+  const continuityDocument: Document = doc;
   ensureStyles(doc);
 
   const root = doc.createElement('div');
@@ -214,10 +228,19 @@ export const mountPacksSurface = (
   opts.root.appendChild(root);
 
   let active: string | null = opts.initialSlug ?? null;
+  const rememberedList = readListContinuity(doc, PACK_BROWSE_CONTINUITY_KEY);
   let listReturnTarget: HTMLElement | null = null;
-  let listReturnIdentity: { id: string; action: boolean } | null = null;
+  let listReturnIdentity: { id: string; action: boolean } | null =
+    rememberedList?.focusedId === undefined
+      || (rememberedList.focusKind !== 'card'
+        && rememberedList.focusKind !== 'action')
+      ? null
+      : {
+          id: rememberedList.focusedId,
+          action: rememberedList.focusKind === 'action',
+        };
   const scrollRoot = opts.scrollRoot ?? opts.root;
-  let listScrollPosition = { top: 0, left: 0 };
+  let listScrollPosition = rememberedList?.scroll ?? { top: 0, left: 0 };
   let focusGeneration = 0;
 
   const containsNode = (
@@ -302,29 +325,37 @@ export const mountPacksSurface = (
     }
   };
 
-  const readScrollPosition = (): { top: number; left: number } => {
-    try {
-      return {
-        top: Number.isFinite(scrollRoot.scrollTop) ? scrollRoot.scrollTop : 0,
-        left: Number.isFinite(scrollRoot.scrollLeft) ? scrollRoot.scrollLeft : 0,
-      };
-    } catch {
-      return { top: 0, left: 0 };
-    }
-  };
+  const readScrollPosition = () => readListScroll(scrollRoot);
+  const restoreScrollPosition = (position: { top: number; left: number }): void =>
+    restoreListScroll(scrollRoot, position);
 
-  const restoreScrollPosition = (position: { top: number; left: number }): void => {
-    try {
-      scrollRoot.scrollTop = position.top;
-      scrollRoot.scrollLeft = position.left;
-    } catch {
-      // Reduced/fake DOMs keep scroll restoration best-effort.
-    }
-  };
+  const preview = mountListPreview({
+    host: root,
+    document: doc,
+    scrollRoot,
+    onOpen: (slug) => goToDetail(slug),
+  });
 
   // Mount both children ONCE — neither is torn down on the toggle, so the list's
   // browse state + the detail's resolved manifest both survive.
-  const listMount = opts.mountList(listHost, (slug) => goToDetail(slug));
+  const listMount = opts.mountList(
+    listHost,
+    (slug) => goToDetail(slug),
+    (content, opener) => {
+      listReturnTarget = opener;
+      listReturnIdentity = {
+        id: content.id,
+        action: opener.hasAttribute?.(DISCOVER_PANEL_ACTION_ATTR) === true,
+      };
+      listScrollPosition = readScrollPosition();
+      updateListContinuity(continuityDocument, PACK_BROWSE_CONTINUITY_KEY, {
+        focusedId: content.id,
+        focusKind: listReturnIdentity.action ? 'action' : 'card',
+        scroll: listScrollPosition,
+      });
+      preview.open(content, opener);
+    },
+  );
   const setInstalledOnly = listMount.setInstalledOnly;
   if (setInstalledOnly === undefined) {
     installedToggle.remove();
@@ -340,6 +371,10 @@ export const mountPacksSurface = (
     });
     installedToggle.addEventListener('click', () => {
       if (installedOnlyBusy) return;
+      updateListContinuity(continuityDocument, PACK_BROWSE_CONTINUITY_KEY, {
+        focusKind: 'installed-toggle',
+        scroll: readScrollPosition(),
+      });
       const previous = installedOnly;
       installedOnly = !previous;
       // `aria-pressed` is the ONLY state carrier — the stylesheet keys off
@@ -397,8 +432,16 @@ export const mountPacksSurface = (
           ?? listView,
       );
       restoreScrollPosition(listScrollPosition);
+      updateListContinuity(continuityDocument, PACK_BROWSE_CONTINUITY_KEY, {
+        ...(listReturnIdentity === null
+          ? {}
+          : {
+              focusedId: listReturnIdentity.id,
+              focusKind: listReturnIdentity.action ? 'action' : 'card',
+            }),
+        scroll: listScrollPosition,
+      });
       listReturnTarget = null;
-      listReturnIdentity = null;
     } else {
       restoreScrollPosition({ top: 0, left: 0 });
       // The panel calls this selection hook immediately before it rebuilds the
@@ -413,22 +456,36 @@ export const mountPacksSurface = (
 
   function goToDetail(slug: string): void {
     setAddError(null);
+    // A background explicit action can enter detail while the non-modal sheet
+    // is open. Retire that sheet first so two navigation layers never stack.
+    preview.close();
     if (active === null) {
       const focused = (
         doc as unknown as { activeElement?: HTMLElement | null }
       ).activeElement ?? null;
-      listReturnTarget = containsNode(listView, focused) ? focused : null;
-      const focusedId = listReturnTarget?.getAttribute?.('data-id') ?? null;
-      const isAction = listReturnTarget?.hasAttribute?.(
-        DISCOVER_PANEL_ACTION_ATTR,
-      ) === true;
-      const isCard = listReturnTarget?.hasAttribute?.(
-        DISCOVER_PANEL_CARD_ATTR,
-      ) === true;
-      listReturnIdentity = focusedId === slug && (isAction || isCard)
-        ? { id: slug, action: isAction }
-        : null;
+      const focusedInList = containsNode(listView, focused) ? focused : null;
+      if (focusedInList !== null) {
+        listReturnTarget = focusedInList;
+        const focusedId = listReturnTarget.getAttribute?.('data-id') ?? null;
+        const isAction = listReturnTarget.hasAttribute?.(
+          DISCOVER_PANEL_ACTION_ATTR,
+        ) === true;
+        const isCard = listReturnTarget.hasAttribute?.(
+          DISCOVER_PANEL_CARD_ATTR,
+        ) === true;
+        listReturnIdentity = focusedId === slug && (isAction || isCard)
+          ? { id: slug, action: isAction }
+          : null;
+      } else if (listReturnIdentity?.id !== slug) {
+        listReturnTarget = null;
+        listReturnIdentity = null;
+      }
       listScrollPosition = readScrollPosition();
+      updateListContinuity(continuityDocument, PACK_BROWSE_CONTINUITY_KEY, {
+        focusedId: slug,
+        focusKind: listReturnIdentity?.action === true ? 'action' : 'card',
+        scroll: listScrollPosition,
+      });
     }
     // Drive the panel; its onSelectSlug → handleSelection does the toggle + hash.
     detailMount.clickSelectPack(slug);
@@ -443,7 +500,25 @@ export const mountPacksSurface = (
   // with `initialSlug`, so it already shows it); no `onNavigate` (hash matches).
   let disposed = false;
   paint();
-  if (active !== null) {
+  if (active === null && rememberedList !== null) {
+    const generation = ++focusGeneration;
+    const restoreInitialList = (): void => {
+      if (disposed || active !== null || focusGeneration !== generation) return;
+      restoreScrollPosition(listScrollPosition);
+      const rememberedTarget = rememberedList.focusKind === 'installed-toggle'
+        ? installedToggle
+        : rememberedList.focusKind === 'card'
+          || rememberedList.focusKind === 'action'
+          ? restoredSelectionTarget()
+          : null;
+      // Query controls are restored by the discovery mount itself. Do not
+      // overwrite that handoff with an arbitrary first control here.
+      focusElement(rememberedTarget);
+    };
+    const listLoaded = listMount.whenLoaded?.();
+    if (listLoaded === undefined) void Promise.resolve().then(restoreInitialList);
+    else void listLoaded.then(restoreInitialList, () => {});
+  } else if (active !== null) {
     restoreScrollPosition({ top: 0, left: 0 });
     const initialSlug = active;
     const generation = ++focusGeneration;
@@ -485,6 +560,7 @@ export const mountPacksSurface = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      preview.dispose();
       detailMount.dispose();
       listMount.dispose();
       try {
@@ -501,7 +577,7 @@ const ensureStyles = (doc: Document): void => {
   if (doc.head?.querySelector?.(`style[${STYLES_MARKER}]`) != null) return;
   const style = doc.createElement('style');
   style.setAttribute(STYLES_MARKER, '');
-  style.textContent = PACKS_SURFACE_STYLES;
+  style.textContent = `${PACKS_SURFACE_STYLES}\n${LIST_PREVIEW_STYLES}`;
   doc.head?.appendChild?.(style);
 };
 

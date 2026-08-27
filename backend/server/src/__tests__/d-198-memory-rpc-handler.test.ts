@@ -40,6 +40,8 @@ const mkRow = (o: {
   run_id: string;
   started_at: number;
   actor?: string;
+  source?: AuditEntry['execution_source'];
+  contract_snapshot?: AuditEntry['contract_snapshot'];
   kind?: string;
   output?: string;
   event_at?: number;
@@ -47,7 +49,14 @@ const mkRow = (o: {
   ({
     run_id: o.run_id,
     started_at: o.started_at,
-    ...(o.actor ? { execution_source: { actor: o.actor } } : {}),
+    ...(o.source !== undefined
+      ? { execution_source: o.source }
+      : o.actor
+        ? { execution_source: { actor: o.actor } }
+        : {}),
+    ...(o.contract_snapshot === undefined
+      ? {}
+      : { contract_snapshot: o.contract_snapshot }),
     ...(o.kind ? { commit_kind: o.kind } : {}),
     ...(o.output ? { output_string: o.output } : {}),
     ...(o.event_at !== undefined ? { event_at: o.event_at } : {}),
@@ -144,6 +153,35 @@ describe('memory.list — projection', () => {
     expect(res.entries[1]).toMatchObject({ memory_id: 'b', origin_actor: 'system', kind: 'run', ts: 100 });
     expect(res.entries[1].summary).toBeUndefined();
     expect(res.entries[1].event_at).toBeUndefined();
+  });
+
+  it('derives full audit attribution from the existing source and contract snapshot', async () => {
+    const source = {
+      channel: 'mcp',
+      actor: 'contracted_user',
+      agent_id: 'agent-1',
+      tool_call_id: 'tool-1',
+      mcp_token_id: 'token-1',
+      contract_id: 'contract-1',
+    } as const;
+    const contract_snapshot = {
+      contract_id: 'contract-1',
+      contract_version: 'v3',
+      grants: [],
+      captured_at: 1,
+    } as unknown as NonNullable<AuditEntry['contract_snapshot']>;
+    const deps = depsFor([
+      mkRow({ run_id: 'agent-run', started_at: 1, source, contract_snapshot }),
+    ]);
+    const [entry] = (await handleMemoryList(deps, {})).entries;
+    expect(entry?.attribution).toEqual({
+      kind: 'agent',
+      origin_actor: 'contracted_user',
+      agent_id: 'agent-1',
+      contract_id: 'contract-1',
+      contract_version: 'v3',
+      label: 'agent agent-1, under contract contract-1, asserted this',
+    });
   });
 });
 
@@ -438,6 +476,36 @@ describe('memory.list — audit + user_memory union', () => {
     const u = await handleMemoryCreate(deps, { kind: 'note', body: 'mine' });
     const res = await handleMemoryList(deps, { origin_actors: ['user_self'] });
     expect(res.entries.map((e) => e.memory_id)).toEqual([u.memory_id]);
+  });
+
+  it('derives authored-memory attribution from existing origin + contract facets', async () => {
+    const deps = depsWithUser();
+    const row = await deps.userMemoryStore.writeAuthored({
+      origin_actor: 'contracted_user',
+      kind: 'fact',
+      summary: 'delegated fact',
+      session: { channel_session_id: 'chat-1', contract_id: 'contract-chat' },
+    });
+    const listEntry = (await handleMemoryList(deps, {})).entries.find(
+      (entry) => entry.memory_id === row.memory_id,
+    );
+    expect(listEntry?.attribution).toEqual({
+      kind: 'agent',
+      origin_actor: 'contracted_user',
+      contract_id: 'contract-chat',
+      label: 'an agent, under contract contract-chat, asserted this',
+    });
+    const detail = await handleMemoryGet(deps, { memory_id: row.memory_id });
+    expect(detail.attribution).toEqual(listEntry?.attribution);
+
+    await handleMemoryDelete(deps, { memory_id: row.memory_id });
+    const redacted = (await handleMemoryList(deps, {})).entries.find(
+      (entry) => entry.memory_id === row.memory_id,
+    );
+    expect(redacted?.redacted).toBe(true);
+    expect(redacted?.attribution).toEqual(listEntry?.attribution);
+    expect((await handleMemoryGet(deps, { memory_id: row.memory_id })).attribution)
+      .toEqual(listEntry?.attribution);
   });
 });
 

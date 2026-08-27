@@ -57,9 +57,23 @@ import {
   runYieldIsTotalRefusal,
 } from '@recued/contracts';
 
-import { formatClientDateTime, RefPicker } from '@recued/ui-shared';
+import {
+  REFERENCE_PROVENANCE_STYLES,
+  formatClientDateTime,
+  renderProvenance,
+  renderReferenceIdentity,
+  renderReferenceLink,
+  RefPicker,
+} from '@recued/ui-shared';
 
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
+import {
+  createHierarchicalHistory,
+  hierarchicalAddress,
+  hierarchicalAddressFromHash,
+  hierarchicalLevel,
+  type HierarchicalHistoryIntent,
+} from '../shell/hierarchical-navigation.js';
 import {
   serializeDataEntityVerificationAddress,
   serializeChatPlanAddress,
@@ -230,7 +244,7 @@ export interface BootstrapLogsRouteOptions {
   recipeNamesCaller?: RunsRecipeNamesCaller;
   initialRunId?: string;
   /** Keep the shell router's cached hash aligned with successful in-page
-   *  History.replaceState writes, which do not emit hashchange. */
+   *  history writes, which do not emit hashchange. */
   onHashSync?: (hash: string) => void;
   /** Originating reviewed Chat action for an exact-run drill-down. Bound to
    * `initialRunId`; selecting another run intentionally drops this context. */
@@ -1608,11 +1622,21 @@ const originLabel = (origin: RunOrigin): string => {
   return ACTOR_LABELS[origin.actor];
 };
 
-const originDetail = (origin: RunOrigin): string => {
-  const parts = [originLabel(origin)];
-  if (origin.attribution !== undefined) parts.push(origin.attribution.label);
-  return parts.join(' / ');
-};
+const renderOrigin = (origin: RunOrigin): string => renderProvenance({
+  primary: originLabel(origin),
+  ...(origin.attribution === undefined
+    ? {}
+    : { detail: origin.attribution.label }),
+  kind: origin.attribution?.kind
+    ?? (origin.actor === 'user_self'
+      ? 'user'
+      : origin.actor === 'contracted_user'
+        ? 'agent'
+        : origin.actor === 'anonymous'
+          ? 'visitor'
+          : 'system'),
+  ariaLabel: 'Run origin',
+});
 
 const rowRisk = (row: RunFeedRow): 'blocked' | 'normal' =>
   row.policy_result === 'denied' || row.policy_result === 'blocked'
@@ -1928,7 +1952,12 @@ const renderProvenanceLink = (
   const kind = link.kind.toLowerCase();
   const href = kind.includes('connection') ? '#connections' : '#data';
   const label = kind.includes('connection') ? 'Connection' : 'Data entity';
-  return `<a ${LOGS_ROUTE_LINK_ATTR}="${e(`entity:${idx}`)}" href="${href}">${label}: ${e(link.kind)} ${e(link.entity_id)}</a>`;
+  return renderReferenceLink({
+    label: `${label}: ${link.kind} ${link.entity_id}`,
+    referenceId: link.entity_id,
+    href,
+    attributes: { [LOGS_ROUTE_LINK_ATTR]: `entity:${idx}` },
+  });
 };
 
 const renderRunLinks = (
@@ -1969,7 +1998,12 @@ const renderRunLinks = (
     ? serializeShellRoute('approvals', row.ask_id)
     : '#approvals';
   const approvalLink = hasRunLink(row) && !awaitingWithNoAsk
-    ? `<a ${LOGS_ROUTE_LINK_ATTR}="approval" href="${e(approvalHref)}">Approval</a>`
+    ? renderReferenceLink({
+        label: 'Approval',
+        href: approvalHref,
+        ...(row.ask_id === undefined ? {} : { referenceId: row.ask_id }),
+        attributes: { [LOGS_ROUTE_LINK_ATTR]: 'approval' },
+      })
     : '';
   // Execution provenance now has a human, outcome-adjacent verification
   // surface. Keep legacy/non-execution links — and malformed execution links
@@ -1981,9 +2015,19 @@ const renderRunLinks = (
     .join('');
   return `
     <div class="logs-row-links">
-      <a ${LOGS_ROUTE_LINK_ATTR}="recipe" href="${e(recipeHref(row.recipe_id))}">Recipe: ${e(row.recipe_id)}</a>
+      ${renderReferenceLink({
+        label: `Recipe: ${row.recipe_id}`,
+        referenceId: row.recipe_id,
+        href: recipeHref(row.recipe_id),
+        attributes: { [LOGS_ROUTE_LINK_ATTR]: 'recipe' },
+      })}
       ${approvalLink}
-      <a ${LOGS_ROUTE_LINK_ATTR}="audit" href="${e(runHref(row.run_id, returnToChat))}">Audit detail</a>
+      ${renderReferenceLink({
+        label: 'Audit detail',
+        referenceId: row.run_id,
+        href: runHref(row.run_id, returnToChat),
+        attributes: { [LOGS_ROUTE_LINK_ATTR]: 'audit' },
+      })}
       ${provenance}
     </div>
   `;
@@ -2074,7 +2118,7 @@ const renderHistoryRow = (
         <span class="logs-cell-title">${e(subject)}</span>
         <span class="logs-cell-sub">${e(row.recipe_id)}</span>
       </td>
-      <td data-label="Origin">${e(originLabel(row.origin))}</td>
+      <td data-label="Origin">${renderOrigin(row.origin)}</td>
       <td data-label="Started">${e(formatDateTime(row.started_at))}</td>
       <td data-label="Duration">${e(formatDuration(row.duration_ms))}</td>
       <td data-label="Status" class="logs-cell-status">${renderHistoryStatusCell(row)}</td>
@@ -2596,14 +2640,24 @@ const renderAffectedItems = (
           <span class="logs-affected-relationship">${e(item.relationshipLabel)}</span>
           <strong>${e(item.title)}</strong>
         </div>
-        <span class="logs-affected-reference">Reference ${e(item.recordId)}</span>
+        ${renderReferenceIdentity({
+          label: 'Reference',
+          value: item.recordId,
+          className: 'logs-affected-reference',
+        })}
         ${item.resolution === 'resolve-source'
           ? '<span class="logs-affected-fallback">Data will check connected sources before opening this record.</span>'
           : item.resolution === 'fallback'
             ? '<span class="logs-affected-fallback">An exact record view is not available for this collection yet.</span>'
             : ''}
       </div>
-      <a class="logs-affected-action" ${LOGS_ROUTE_LINK_ATTR}="${e(`affected:${idx}`)}" href="${e(item.href)}">${e(item.actionLabel)}</a>
+      ${renderReferenceLink({
+        label: item.actionLabel,
+        referenceId: item.recordId,
+        href: item.href,
+        className: 'logs-affected-action',
+        attributes: { [LOGS_ROUTE_LINK_ATTR]: `affected:${idx}` },
+      })}
     </li>
   `).join('');
   return `
@@ -2661,7 +2715,7 @@ const renderDetail = (
       <div class="logs-detail-meta">
         <span>run ${e(audit.run_id)}</span>
         <span>hash ${e(audit.recipe_hash)}</span>
-        <span>${e(originDetail(audit.origin))}</span>
+        ${renderOrigin(audit.origin)}
         <span>${e(formatDateTime(audit.started_at))}</span>
         <span>${e(formatDuration(audit.duration_ms))}</span>
         ${renderStatus(audit.status)}
@@ -2739,7 +2793,11 @@ export const bootstrapLogsRoute = (
   if (doc.head.querySelector(`style[${LOGS_ROUTE_STYLES_MARKER}]`) === null) {
     const style = doc.createElement('style');
     style.setAttribute(LOGS_ROUTE_STYLES_MARKER, '');
-    style.textContent = [LOGS_ROUTE_STYLES, RefPicker.REF_PICKER_STYLES].join(
+    style.textContent = [
+      LOGS_ROUTE_STYLES,
+      REFERENCE_PROVENANCE_STYLES,
+      RefPicker.REF_PICKER_STYLES,
+    ].join(
       '\n',
     );
     doc.head.appendChild(style);
@@ -2776,6 +2834,36 @@ export const bootstrapLogsRoute = (
       : null;
   let chatReturn =
     chatReturnRunId === null ? undefined : opts.chatReturn;
+  const logsListAddress = () => {
+    if (view === 'active') {
+      return hierarchicalAddress(
+        'logs',
+        hierarchicalLevel('view:active', 'active'),
+      );
+    }
+    const recipeId = opts.initialRecipeId?.trim();
+    return recipeId === undefined || recipeId.length === 0
+      ? hierarchicalAddress('logs')
+      : hierarchicalAddress(
+          'logs',
+          hierarchicalLevel(`recipe:${recipeId}`, 'recipe', recipeId),
+        );
+  };
+  const logsRunAddress = (
+    runId: string,
+    returnToChat?: ChatPlanAddress,
+  ) => hierarchicalAddressFromHash(
+    'logs',
+    runHref(runId, returnToChat),
+    hierarchicalLevel(`run:${runId}`, runId),
+  );
+  const logsHistory = createHierarchicalHistory({
+    initial: selectedRunId === null
+      ? logsListAddress()
+      : logsRunAddress(selectedRunId, chatReturn),
+    history: () => doc.defaultView?.history,
+    onCommit: (address) => opts.onHashSync?.(address.hash),
+  });
   let loadingFeed = false;
   let loadingMore = false;
   // Distinguish an explicit filter submission from initial/broadcast loads so
@@ -3278,25 +3366,15 @@ export const bootstrapLogsRoute = (
     }
   };
 
-  // R17 — keep the URL addressable on in-page master-detail selection (R16).
-  // The History row opens its run via `openRun` (smooth, no shell remount); this
-  // reflects the open run as `#logs/<run_id>` with `replaceState` so a refresh /
-  // shared link re-opens it, WITHOUT a hashchange (no remount → the table never
-  // refetch-flashes, and the slice-2 `#logs/active` view-switch — a real
-  // hashchange — is unaffected). Guarded for the console view (it owns no run
-  // selection) and for the test fake DOM (no `defaultView`); replaceState can
-  // throw in sandboxed embeddings, so it is best-effort.
-  const syncSelectedHash = (run_id: string): void => {
+  // Keep the URL addressable on in-page master-detail selection. Entering a
+  // run pushes a native Back target; sibling run changes replace it. The
+  // shared controller remains exception-safe and never remounts the shell.
+  const syncSelectedHash = (
+    run_id: string,
+    intent: HierarchicalHistoryIntent = 'auto',
+  ): void => {
     if (disposed || view !== 'logs') return;
-    const history = doc.defaultView?.history;
-    if (history?.replaceState === undefined) return;
-    const hash = runHref(run_id, chatReturn);
-    try {
-      history.replaceState(null, '', hash);
-      opts.onHashSync?.(hash);
-    } catch {
-      // Non-fatal — addressability degrades to in-page-only.
-    }
+    logsHistory.navigate(logsRunAddress(run_id, chatReturn), { intent });
   };
 
   const openRun = async (
@@ -3308,13 +3386,14 @@ export const bootstrapLogsRoute = (
       disposed
       || (loadingDetail && selectedRunId === run_id)
     ) return;
+    const openingFromList = selectedRunId === null;
     pendingDetailFocusRunId = focusDetail ? run_id : null;
     if (run_id !== initialFocusRunId) pendingInitialRunFocus = false;
     if (chatReturn !== undefined && run_id !== chatReturnRunId) {
       chatReturn = undefined;
     }
     selectedRunId = run_id;
-    syncSelectedHash(run_id);
+    syncSelectedHash(run_id, openingFromList ? 'push' : 'auto');
     if (opts.getCaller === undefined) {
       errors = { ...errors, detail: 'execution.get caller is not wired in this host.' };
       render();

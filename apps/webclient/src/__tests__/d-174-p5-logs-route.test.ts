@@ -297,13 +297,25 @@ const mountRoute = (overrides: {
     unused: string,
     url?: string | URL | null,
   ) => void;
+  pushState?: (
+    data: unknown,
+    unused: string,
+    url?: string | URL | null,
+  ) => void;
   onHashSync?: Parameters<typeof bootstrapLogsRoute>[0]['onHashSync'];
   subscribe?: LogsRouteSubscribe;
 } = {}) => {
   const doc = makeFakeDocument();
-  if (overrides.replaceState !== undefined) {
+  if (overrides.replaceState !== undefined || overrides.pushState !== undefined) {
     (doc as unknown as { defaultView: unknown }).defaultView = {
-      history: { replaceState: overrides.replaceState },
+      history: {
+        ...(overrides.replaceState !== undefined
+          ? { replaceState: overrides.replaceState }
+          : {}),
+        ...(overrides.pushState !== undefined
+          ? { pushState: overrides.pushState }
+          : {}),
+      },
     };
   }
   const root = doc.createElement('div');
@@ -403,6 +415,10 @@ describe('D-174 P5 - Runs route', () => {
     expect(shell.innerHTML).toContain('data-ref-picker="logs-recipe-filter"');
     expect(shell.innerHTML).not.toContain('placeholder="recipe id"');
     expect(shell.innerHTML).toContain('Connected agent');
+    expect(shell.innerHTML).toContain('data-recued-provenance');
+    expect(shell.innerHTML).toContain(
+      'agent agent-1, under contract contract-1, asserted this',
+    );
     expect(shell.innerHTML).toContain('approval requested');
     expect(shell.innerHTML).toContain(formatClientDateTime(NOW - 1_000));
     expect(shell.innerHTML).not.toContain(new Date(NOW - 1_000).toISOString());
@@ -435,9 +451,14 @@ describe('D-174 P5 - Runs route', () => {
     );
     expect(detailHtml).toContain('Audit detail');
     expect(detailHtml).toContain('href="#recipes/mail%2Fsend-digest"');
+    expect(detailHtml).toContain(
+      'data-recued-reference-id="mail/send-digest"',
+    );
     // R17 — the Approval link is run-SCOPED to the pending ask (fixture
     // ask_id 'ask-1'), not the bare #approvals queue.
     expect(detailHtml).toContain('href="#approvals/ask-1"');
+    expect(detailHtml).toContain('data-recued-reference-id="ask-1"');
+    expect(detailHtml).toContain('data-recued-reference-id="run-1"');
     expect(detailHtml).not.toContain('href="#approvals"');
     expect(detailHtml).toContain('href="#data"');
     expect(detailHtml).toContain('href="#connections"');
@@ -1099,12 +1120,7 @@ describe('D-174 P5 - Runs route', () => {
     });
     await rig.route.whenLoaded();
 
-    expect(replaceState).toHaveBeenLastCalledWith(
-      null,
-      '',
-      '#logs/run-1/return/chat/session/chat%2Fone/plan/plan%20one/'
-      + 'answer/answer%20%231',
-    );
+    expect(replaceState).not.toHaveBeenCalled();
     const html = rig.root.children[0]?.innerHTML ?? '';
     expect(html).toContain(LOGS_ROUTE_CHAT_RETURN_ATTR);
     expect(html).toContain('You came here from an action in Chat.');
@@ -1144,7 +1160,7 @@ describe('D-174 P5 - Runs route', () => {
     // The exact destination must not wait for the unrelated History query.
     expect(listCaller).toHaveBeenCalledOnce();
     expect(getCaller).toHaveBeenCalledWith({ run_id: 'run-1' });
-    expect(replaceState).toHaveBeenCalledOnce();
+    expect(replaceState).not.toHaveBeenCalled();
 
     const hashWritesBeforeDispose = replaceState.mock.calls.length;
     rig.route.dispose();
@@ -1240,7 +1256,7 @@ describe('D-174 P5 - Runs route', () => {
     rig.route.dispose();
   });
 
-  it('syncs the URL to #logs/<run_id> via replaceState when a run opens (addressable, no remount)', async () => {
+  it('syncs the URL through the replace-only History fallback when a run opens', async () => {
     const replaceState = vi.fn();
     const onHashSync = vi.fn();
     const rig = mountRoute({ replaceState, onHashSync });
@@ -1250,6 +1266,28 @@ describe('D-174 P5 - Runs route', () => {
     expect(replaceState).toHaveBeenCalledWith(null, '', '#logs/run-1');
     expect(onHashSync).toHaveBeenCalledWith('#logs/run-1');
 
+    rig.route.dispose();
+  });
+
+  it('pushes list-to-run navigation so native Back returns to History', async () => {
+    const calls: string[] = [];
+    const rig = mountRoute({
+      replaceState: (_data, _unused, url) => {
+        calls.push(`replace ${String(url)}`);
+      },
+      pushState: (_data, _unused, url) => {
+        calls.push(`push ${String(url)}`);
+      },
+    });
+    await rig.route.whenLoaded();
+
+    await rig.route.openRun('run-1');
+    await rig.route.openRun('run-2');
+
+    expect(calls).toEqual([
+      'push #logs/run-1',
+      'replace #logs/run-2',
+    ]);
     rig.route.dispose();
   });
 

@@ -19,6 +19,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type {
   EndpointSummary,
+  IntakeFormConfig,
   IntakeFormTemplate,
   PacketDeclaration,
   ReceptionEndpointKind,
@@ -34,6 +35,7 @@ import {
   RECEPTION_BOOTSTRAP_STYLES,
   RECEPTION_BOOTSTRAP_STYLES_MARKER,
 } from '../settings/reception-bootstrap.js';
+import { stashReceptionAuthoringSeed } from '../settings/reception-authoring-section.js';
 import type {
   LaunchWizardRunResult,
   ReceptionPageShell,
@@ -572,6 +574,61 @@ describe('R19 Slice 2 — bootstrapReceptionRoute: routed authoring', () => {
     expect(navigate).toHaveBeenCalledWith('#reception/endpoints/new/scheduling_link');
     route.dispose();
   });
+
+  it('a routed authoring completion remounts the endpoint spine even when in-page preview history is available', async () => {
+    const fakeDoc = makeFakeDocument();
+    const root = makeFakeElement('div');
+    const { shell, fns } = makeFakeShell();
+    const fc = makeFakeConn();
+    const navigate = vi.fn();
+    const onHashSync = vi.fn();
+    const validIntake: IntakeFormConfig = {
+      display_name: 'Project intake',
+      form_definition: {
+        form_definition_id: 'fd_intake',
+        fields: [{
+          name: 'your_name',
+          type: 'text',
+          label: 'Your name',
+          required: true,
+        }],
+      },
+      submission_processing_rule: {
+        target_kind: 'task',
+        fields_to_include_in_target: ['your_name'],
+        fields_to_attach_as_metadata: [],
+      },
+      anti_spam: {
+        honeypot_fields: [],
+        rate_limit_per_ip: 5,
+        require_proof_of_work: false,
+        require_captcha: false,
+      },
+      required_visitor_fields: { email: 'required' },
+    };
+    stashReceptionAuthoringSeed('intake_form', validIntake);
+    const route = bootstrapReceptionRoute({
+      ...baseOpts(root, fakeDoc, shell, fc.conn),
+      initialAddress: {
+        kind: 'endpoint-authoring',
+        mode: 'new',
+        endpointKind: 'intake_form',
+      },
+      navigate,
+      onHashSync,
+    });
+    const formHost = root.childList[0]!.childList[2]!
+      .childList[0]!.childList[1]!;
+
+    fireAction(formHost, { action: 'reception-form-submit' });
+    await flush();
+    await flush();
+
+    expect(navigate).toHaveBeenCalledWith('#reception/endpoints/ep-fresh');
+    expect(onHashSync).not.toHaveBeenCalled();
+    expect(fns.openDetail).not.toHaveBeenCalled();
+    route.dispose();
+  });
 });
 
 // ══════════════════════════════════════════════════════════════════
@@ -719,6 +776,78 @@ describe('R19 Slice 4 — bootstrapReceptionRoute: routed endpoint detail', () =
     fireAction(pageMain, { action: 'reception-close-detail' });
     expect(navigate).toHaveBeenCalledWith('#reception/endpoints');
     expect(fns.closeDetail.mock.calls.length).toBe(closeCallsBeforeClick);
+    route.dispose();
+  });
+
+  it('keeps endpoint preview navigation in-page under the shared history contract', () => {
+    const fakeDoc = makeFakeDocument();
+    const calls: string[] = [];
+    (fakeDoc as unknown as { defaultView: unknown }).defaultView = {
+      history: {
+        pushState: (_data: unknown, _title: string, url: string) => {
+          calls.push(`push ${url}`);
+        },
+        replaceState: (_data: unknown, _title: string, url: string) => {
+          calls.push(`replace ${url}`);
+        },
+      },
+    };
+    const root = makeFakeElement('div');
+    const { shell, fns } = makeFakeShell();
+    const fc = makeFakeConn();
+    const onHashSync = vi.fn();
+    const route = bootstrapReceptionRoute({
+      ...baseOpts(root, fakeDoc, shell, fc.conn),
+      initialAddress: { kind: 'section', section: 'endpoints' },
+      onHashSync,
+    });
+    const pageMain = root.childList[0]!.childList[2]!.childList[0]!;
+
+    fireAction(pageMain, { action: 'reception-open-detail', endpointId: 'ep-7' });
+    fireAction(pageMain, { action: 'reception-close-detail' });
+
+    expect(fns.openDetail).toHaveBeenCalledWith('ep-7');
+    expect(calls).toEqual([
+      'push #reception/endpoints/ep-7',
+      'replace #reception/endpoints',
+    ]);
+    expect(onHashSync).toHaveBeenCalledTimes(2);
+    route.dispose();
+  });
+
+  it('retires a stale endpoint child after the shell resolves no detail', async () => {
+    const fakeDoc = makeFakeDocument();
+    const calls: string[] = [];
+    (fakeDoc as unknown as { defaultView: unknown }).defaultView = {
+      history: {
+        pushState: (_data: unknown, _title: string, url: string) => {
+          calls.push(`push ${url}`);
+        },
+        replaceState: (_data: unknown, _title: string, url: string) => {
+          calls.push(`replace ${url}`);
+        },
+      },
+    };
+    const root = makeFakeElement('div');
+    const { shell } = makeFakeShell();
+    const fc = makeFakeConn();
+    const route = bootstrapReceptionRoute({
+      ...baseOpts(root, fakeDoc, shell, fc.conn),
+      initialAddress: { kind: 'section', section: 'endpoints' },
+      onHashSync: vi.fn(),
+    });
+    const pageMain = root.childList[0]!.childList[2]!.childList[0]!;
+
+    fireAction(pageMain, {
+      action: 'reception-open-detail',
+      endpointId: 'retired-endpoint',
+    });
+    await flush();
+
+    expect(calls).toEqual([
+      'push #reception/endpoints/retired-endpoint',
+      'replace #reception/endpoints',
+    ]);
     route.dispose();
   });
 });

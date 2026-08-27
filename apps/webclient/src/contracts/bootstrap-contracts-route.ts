@@ -30,6 +30,22 @@ import {
 import { formatClientDateTime } from '@recued/ui-shared';
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
 import { serializeShellRoute } from '../shell/route.js';
+import { createHierarchicalHistory } from '../shell/hierarchical-navigation.js';
+import {
+  CONTRACTS_LIST_TABS,
+  contractDetailAddress,
+  contractsListAddress,
+  isContractsListTab,
+  unparentedContractDetailAddress,
+  type ContractsAddress,
+  type ContractsListTab,
+} from './contracts-navigation.js';
+
+export {
+  CONTRACTS_LIST_TABS,
+  isContractsListTab,
+  type ContractsListTab,
+} from './contracts-navigation.js';
 
 import type {
   ContractsListCaller,
@@ -884,9 +900,6 @@ export const CONTRACTS_ROUTE_STYLES = [
 // Options + handle
 // ════════════════════════════════════════════════════════════════
 
-export const CONTRACTS_LIST_TABS = ['built-in', 'customer', 'others'] as const;
-export type ContractsListTab = (typeof CONTRACTS_LIST_TABS)[number];
-
 const CONTRACTS_LIST_PANEL_ID = 'recued-contracts-list-panel';
 const listTabId = (tab: ContractsListTab): string =>
   `recued-contracts-list-tab-${tab}`;
@@ -899,23 +912,23 @@ const pendingListTabFocusByDocument = new WeakMap<
   ContractsListTab
 >();
 
-export const isContractsListTab = (value: unknown): value is ContractsListTab =>
-  typeof value === 'string'
-  && (CONTRACTS_LIST_TABS as readonly string[]).includes(value);
-
 export interface BootstrapContractsRouteOptions {
   root: HTMLElement;
   document?: Document;
   serverUrl: string;
+  /** Preferred complete route selection. Positional options remain for narrow
+   * mounts and compatibility tests; production passes this parsed address. */
+  initialAddress?: ContractsAddress;
+  /** Shell-cache alignment after successful in-page preview/tab writes. */
+  onHashSync?: (hash: string) => void;
   /** Deep-link segment — the selected contract id (`#contracts/<id>`). When
    *  set and it resolves to a known contract, the route opens that contract's
    *  DETAIL; otherwise it shows the LIST. */
   initialContractId?: string;
   /** Deep-link segment 1 — the selected DETAIL tab (`#contracts/<id>/<tab>`).
    *  Seeds the initial active tab when it is valid for the opened contract;
-   *  otherwise the first tab is used. Tab CLICKS after mount are local state
-   *  (no navigation), so this only seeds the landing tab — the new-contract
-   *  flow lands on `connect`. */
+   *  otherwise the first tab is used. Tab clicks update the durable address in
+   *  place; the new-contract flow lands on `connect`. */
   initialContractTab?: string;
   /** Addressable LIST tab (`#contracts/view/<tab>`). Bare `#contracts` defaults
    *  to Built-in. Ignored when `initialContractId` resolves to a detail. */
@@ -1104,7 +1117,7 @@ const isCustomerTemplateRow = (row: ContractRowVM): boolean =>
   row.grant_kind === 'customer_template';
 
 const listTabRoute = (tab: ContractsListTab): string =>
-  serializeShellRoute('contracts', 'view', tab);
+  contractsListAddress(tab).hash;
 
 /** D-209 Task 3 — a DERIVED anonymous door (reception intake-form bind /
  *  webhook enrollment), via the contracts-owned partition
@@ -1340,12 +1353,29 @@ export const bootstrapContractsRoute = (
     && opts.permissionsRevokeInboundTokenCaller !== undefined;
 
   // ── mutable state (settles after the one load) ──
+  const initialContractId = opts.initialAddress?.kind === 'detail'
+    ? opts.initialAddress.contractId
+    : opts.initialContractId;
+  const initialContractTab = opts.initialAddress?.kind === 'detail'
+    ? opts.initialAddress.tab ?? undefined
+    : opts.initialContractTab;
+  const initialListTab = opts.initialAddress?.kind === 'list'
+    ? opts.initialAddress.tab
+    : opts.initialListTab ?? 'built-in';
   let disposed = false;
-  let activeListTab: ContractsListTab = opts.initialListTab ?? 'built-in';
+  let activeListTab: ContractsListTab = initialListTab;
   let rows: ReadonlyArray<ContractRowVM> = [];
   let viewMode: ContractsViewMode = 'loading';
   let selectedContractId: string | null = null;
   let activeTab: string | null = null;
+  let inPageDetailParent: ContractsListTab | null = null;
+  const contractsHistory = createHierarchicalHistory({
+    initial: initialContractId === undefined
+      ? contractsListAddress(activeListTab)
+      : unparentedContractDetailAddress(initialContractId, initialContractTab),
+    history: () => doc.defaultView?.history,
+    onCommit: (address) => opts.onHashSync?.(address.hash),
+  });
   let loadErrorMessage: string | null = null;
   let currentListCursor: string | undefined;
   let previousListCursors: Array<string | undefined> = [];
@@ -1610,7 +1640,11 @@ export const bootstrapContractsRoute = (
         // the leave guard so that handoff does not confirm against itself.
         releaseOwnership();
         if (disposed) return;
-        navigate(serializeShellRoute('contracts', view.contract_id, 'connect'));
+        navigate(contractDetailAddress(
+          view.contract_id,
+          'others',
+          'connect',
+        ).hash);
       } catch (err) {
         if (disposed) return;
         submitting = false;
@@ -1735,8 +1769,32 @@ export const bootstrapContractsRoute = (
         anchor.setAttribute(CONTRACTS_ROUTE_ROW_ID_ATTR, row.contract_id);
         anchor.setAttribute(
           'href',
-          serializeShellRoute('contracts', row.contract_id),
+          contractDetailAddress(
+            row.contract_id,
+            listTabForRow(row),
+          ).hash,
         );
+        anchor.addEventListener('click', (event) => {
+          const click = event as MouseEvent | undefined;
+          if (
+            (click !== undefined && (
+              (typeof click.button === 'number' && click.button !== 0)
+              || click.metaKey
+              || click.ctrlKey
+              || click.altKey
+              || click.shiftKey
+            ))
+            || hasContractsInFlightWork()
+          ) return;
+          (event as (Event & { preventDefault?: () => void }) | undefined)
+            ?.preventDefault?.();
+          inPageDetailParent = activeListTab;
+          contractsHistory.navigate(contractDetailAddress(
+            row.contract_id,
+            activeListTab,
+          ));
+          renderDetail(row);
+        });
         if (anonymousDoorType(row) !== null) {
           anchor.setAttribute(CONTRACTS_ROUTE_ANONYMOUS_ATTR, '');
         }
@@ -2084,6 +2142,19 @@ export const bootstrapContractsRoute = (
         return;
       }
       pendingListFocusByDocument.set(doc, row.contract_id);
+      if (
+        inPageDetailParent === parentListTab
+        && !hasContractsInFlightWork()
+      ) {
+        (event as (Event & { preventDefault?: () => void }) | undefined)
+          ?.preventDefault?.();
+        activeListTab = parentListTab;
+        inPageDetailParent = null;
+        contractsHistory.navigate(contractsListAddress(parentListTab), {
+          intent: 'replace',
+        });
+        renderList();
+      }
     });
     detail.appendChild(back);
 
@@ -2374,11 +2445,16 @@ export const bootstrapContractsRoute = (
     // The deep-link tab segment (`#contracts/<id>/<tab>`) seeds the landing tab
     // when valid; otherwise the first tab. The new-contract flow lands on
     // `connect` (an ordinary contract's first tab).
-    const wantedTab = opts.initialContractTab;
-    activeTab =
-      wantedTab !== undefined && tabs.some((t) => t.id === wantedTab)
-        ? wantedTab
-        : (tabs[0]?.id ?? null);
+    const wantedTab = initialContractTab;
+    const wantedTabIsValid = wantedTab !== undefined
+      && tabs.some((t) => t.id === wantedTab);
+    activeTab = wantedTabIsValid ? wantedTab : (tabs[0]?.id ?? null);
+    if (wantedTab !== undefined && !wantedTabIsValid) {
+      contractsHistory.navigate(contractDetailAddress(
+        row.contract_id,
+        parentListTab,
+      ), { intent: 'replace' });
+    }
     const tabStrip = makeEl(doc, 'nav', 'contracts-tabs');
     tabStrip.setAttribute('role', 'tablist');
     tabStrip.setAttribute('aria-orientation', 'horizontal');
@@ -2475,8 +2551,15 @@ export const bootstrapContractsRoute = (
     };
 
     const tabButtons: Array<{ id: string; btn: HTMLButtonElement }> = [];
-    const selectTab = (id: string): void => {
+    const selectTab = (id: string, syncAddress = true): void => {
       activeTab = id;
+      if (syncAddress) {
+        contractsHistory.navigate(contractDetailAddress(
+          row.contract_id,
+          parentListTab,
+          id,
+        ), { intent: 'replace' });
+      }
       for (const entry of tabButtons) {
         const selected = entry.id === id;
         entry.btn.setAttribute(
@@ -2547,7 +2630,7 @@ export const bootstrapContractsRoute = (
     }
     detail.appendChild(tabStrip);
     detail.appendChild(tabBody);
-    if (activeTab !== null) selectTab(activeTab);
+    if (activeTab !== null) selectTab(activeTab, false);
 
     body.appendChild(detail);
     // Exact contract navigation is asynchronous: the activating list row is
@@ -2654,13 +2737,23 @@ export const bootstrapContractsRoute = (
 
   const initialLoad = (async (): Promise<void> => {
     try {
-      if (opts.initialContractId !== undefined) {
-        const target = await loadDetailTarget(opts.initialContractId);
+      if (initialContractId !== undefined) {
+        const target = await loadDetailTarget(initialContractId);
         if (disposed) return;
         if (target !== null) {
+          contractsHistory.adopt(contractDetailAddress(
+            target.contract_id,
+            listTabForRow(target),
+            initialContractTab,
+          ));
           renderDetail(target);
           return;
         }
+        const fallbackAddress = contractsListAddress(activeListTab);
+        const fallbackCommit = contractsHistory.navigate(fallbackAddress, {
+          intent: 'replace',
+        });
+        if (!fallbackCommit.committed) contractsHistory.adopt(fallbackAddress);
       }
       await requestListPage();
       if (disposed) return;

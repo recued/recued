@@ -265,6 +265,61 @@ describe('D-123 P5 — renderHousekeepingTaskStatusTable', () => {
     expect(coreOnly).not.toContain('thread_signals');
   });
 
+  it('⛔ D-250 § D — a measured cost RENDERS; an unmeasured one is an em dash', () => {
+    // ⚠ The distinction the column exists to preserve: most housekeeping tasks
+    // are deterministic and never call a provider. Rendering those as "0" would
+    // claim a measurement nobody took, and would make a task that ran AI for
+    // free indistinguishable from one with no AI in it at all.
+    const html = renderHousekeepingTaskStatusTable({
+      tasks: [
+        taskStatus('summarize', 'enrichment', {
+          state: {
+            task_id: 'summarize',
+            cursor: { kind: 'complete' },
+            last_status: 'complete',
+            consecutive_errors: 0,
+            last_run_tokens: 1_500,
+          },
+        }),
+        taskStatus('prune', 'enrichment', {
+          state: {
+            task_id: 'prune',
+            cursor: { kind: 'complete' },
+            last_status: 'complete',
+            consecutive_errors: 0,
+          },
+        }),
+      ],
+      kind: 'enrichment',
+      now: NOW,
+    });
+    expect(html).toContain('<th>Cost</th>');
+    expect(html).toContain('1.5k');
+    expect(html).toContain('—');
+  });
+
+  it('⚠ D-250 § D — a MEASURED zero renders exactly, never rounded away', () => {
+    // A provider call that cost nothing (a cached completion, a refusal) is a
+    // real answer. `formatTokens` must not turn a small real value into "0k".
+    const html = renderHousekeepingTaskStatusTable({
+      tasks: [
+        taskStatus('cheap', 'enrichment', {
+          state: {
+            task_id: 'cheap',
+            cursor: { kind: 'complete' },
+            last_status: 'complete',
+            consecutive_errors: 0,
+            last_run_tokens: 4,
+          },
+        }),
+      ],
+      kind: 'enrichment',
+      now: NOW,
+    });
+    expect(html).toContain('>4<');
+    expect(html).not.toContain('0k');
+  });
+
   it('renders an empty hint when no tasks of the kind are registered', () => {
     const html = renderHousekeepingTaskStatusTable({
       tasks: [],

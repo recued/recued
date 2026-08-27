@@ -20,6 +20,8 @@ import {
   isActor,
   MEMORY_LIST_DEFAULT_PAGE_SIZE,
   MEMORY_LIST_MAX_PAGE_SIZE,
+  provenanceAttributionFromSource,
+  renderProvenanceAttribution,
   type Actor,
   type HandlerSlice,
   type MemoryCreateRequest,
@@ -62,7 +64,7 @@ export interface MemoryRedactionRecord {
 
 export interface MemoryRpcDeps {
   auditLog: AuditLogStore;
-  /** D-198 Slice 2 — the owner-authored `user_memory` store. Absent → the
+  /** D-198 Slice 2 — the authored `user_memory` store. Absent → the
    *  write ops report `not_configured` and the feed is audit-only. */
   userMemoryStore?: UserMemoryStore;
   /** D-198 Slice 4 — the redaction-marker store (overlay). Absent → redacting a
@@ -201,15 +203,21 @@ const auditRowToEntry = (e: AuditEntry): MemoryListEntry => {
     ts: e.started_at,
     run_id: e.run_id,
   };
+  const attribution = provenanceAttributionFromSource(
+    e.execution_source,
+    e.contract_snapshot,
+  );
+  if (attribution !== undefined) entry.attribution = attribution;
   if (typeof e.output_string === 'string') entry.summary = e.output_string;
   if (typeof e.event_at === 'number') entry.event_at = e.event_at;
   return entry;
 };
 
-/** Project an owner-authored `user_memory` row onto the wire shape. Carries
+/** Project an authored `user_memory` row onto the wire shape. Carries
  *  the denormalized `body_preview` + `size_bytes` + `has_body` so the feed
  *  never resolves the inline/blob body (§5); the full body loads via
- *  `memory.get`. Always `user_self` ("You"). */
+ *  `memory.get`. Origin remains the immutable writer (`user_self` or an
+ *  outside actor such as `contracted_user`). */
 const userRowToEntry = (r: UserMemoryRow): MemoryListEntry => {
   const entry: MemoryListEntry = {
     memory_id: r.memory_id,
@@ -219,6 +227,11 @@ const userRowToEntry = (r: UserMemoryRow): MemoryListEntry => {
     size_bytes: r.size_bytes,
     has_body: r.size_bytes > 0,
   };
+  const attribution = renderProvenanceAttribution({
+    origin_actor: r.origin_actor,
+    contract_id: r.contract_id,
+  });
+  if (attribution !== undefined) entry.attribution = attribution;
   if (r.summary !== undefined) entry.summary = r.summary;
   if (r.body_preview !== undefined) entry.body_preview = r.body_preview;
   if (r.reason_code !== undefined) entry.reason_code = r.reason_code;
@@ -253,6 +266,7 @@ const redactEntry = (e: MemoryListEntry): MemoryListEntry => {
     ts: e.ts,
     redacted: true,
   };
+  if (e.attribution !== undefined) entry.attribution = e.attribution;
   if (e.event_at !== undefined) entry.event_at = e.event_at;
   if (e.run_id !== undefined) entry.run_id = e.run_id;
   return entry;
@@ -425,7 +439,7 @@ const isUserMemoryId = (memory_id: string): boolean =>
   memory_id.startsWith(USER_MEMORY_ID_PREFIX);
 
 /** `memory.get` — resolve ONE entry's full body for the detail view (the feed
- *  ships only `body_preview`, §5). Owner rows resolve inline/CAS from the
+ *  ships only `body_preview`, §5). Authored rows resolve inline/CAS from the
  *  `user_memory` store; audit rows resolve from the audit log and carry no
  *  body (only `summary`). */
 /** Strip content from a resolved entry for a redacted row (§5): summary / body /
@@ -438,6 +452,7 @@ const redactGetResponse = (res: MemoryGetResponse): MemoryGetResponse => {
     ts: res.ts,
     redacted: true,
   };
+  if (res.attribution !== undefined) out.attribution = res.attribution;
   if (res.event_at !== undefined) out.event_at = res.event_at;
   if (res.run_id !== undefined) out.run_id = res.run_id;
   if (res.reason_code !== undefined) out.reason_code = res.reason_code;
@@ -469,6 +484,11 @@ export const handleMemoryGet = async (
       ts: row.ts,
       size_bytes: row.size_bytes,
     };
+    const attribution = renderProvenanceAttribution({
+      origin_actor: row.origin_actor,
+      contract_id: row.contract_id,
+    });
+    if (attribution !== undefined) res.attribution = attribution;
     if (row.summary !== undefined) res.summary = row.summary;
     if (body !== undefined) res.body = body;
     if (row.reason_code !== undefined) res.reason_code = row.reason_code;
@@ -483,6 +503,11 @@ export const handleMemoryGet = async (
       ts: audit.started_at,
       run_id: audit.run_id,
     };
+    const attribution = provenanceAttributionFromSource(
+      audit.execution_source,
+      audit.contract_snapshot,
+    );
+    if (attribution !== undefined) res.attribution = attribution;
     if (typeof audit.output_string === 'string') res.summary = audit.output_string;
     if (typeof audit.event_at === 'number') res.event_at = audit.event_at;
     // Audit rows carry no user body — only the summary (§5).

@@ -22,6 +22,7 @@
     "./recovery-grid-field-handler": "./src/recovery-grid-field-handler.ts",
     "./recovery-words": "./src/recovery-words.ts",
     "./template": "./src/template.ts",
+    "./reference-provenance": "./src/reference-provenance.ts",
     "./runtime/adapters": "./src/runtime/adapters.ts",
     "./events/dispatcher": "./src/events/dispatcher.ts",
     "./connections": "./src/connections/index.ts",

@@ -578,6 +578,7 @@ export {
   HOUSEKEEPING_AGGRESSIVE_IDLE_THRESHOLD_MS,
   HOUSEKEEPING_CONFIG_PRIMARY_KEY,
   LLM_RESULT_CACHE_GC_TASK_ID,
+  OWNER_METRICS_COMPUTE_TASK_ID,
   HOUSEKEEPING_CYCLE_BUDGET_MIN_MS,
   HOUSEKEEPING_CYCLE_BUDGET_MAX_MS,
   HOUSEKEEPING_DISABLE_AFTER_FAILURES,
@@ -4770,6 +4771,7 @@ export type {
   ServerAuthState,
   ServerAuthMigrationStatus,
   ServerSchedule,
+  RecipeRunFacts,
   ServerExecuteResponse,
   ServerMigrationResult,
   ServerRecipeListEntry,
@@ -6310,3 +6312,47 @@ export {
 export type {
   FreePoolDataUse, FreePoolDataUseTerms,
 } from './free-pool-data-use.js';
+
+// ────────────────────────────────────────────────────────────────
+// D-250 § D — owner metrics
+// ────────────────────────────────────────────────────────────────
+export {
+  METRIC_REGISTRY,
+  ANCHOR_METRIC_IDS,
+  ACTIVITY_METRIC_IDS,
+  AUTOPILOT_TRIGGER_CLASS,
+  GATEWAY_OP_ACTION,
+  ASKABLE_RISK_TIERS,
+  NON_ASKABLE_RISK_TIERS,
+  BURST_CHANNELS,
+  BURST_IDLE_GAP_MS,
+  METRIC_ABSENT,
+  METRIC_UNBOUNDED,
+  metricValue,
+  metricRatio,
+  classifyAutopilotTrigger,
+  assertMetricRegistryConsistent,
+} from './metric-registry.js';
+export {
+  MILESTONE_REGISTRY,
+  AUDIT_DERIVABLE_MILESTONES,
+  assertMilestoneRegistryConsistent,
+} from './milestone-registry.js';
+export type { MilestoneDefinition, MilestoneSource } from './milestone-registry.js';
+export type {
+  MetricReadOutput,
+  MetricReadEntry,
+  MetricArtifactEntry,
+  MetricMilestoneEntry,
+  MetricPublicationEntry,
+} from './metric-rpc.js';
+export type {
+  MetricDefinition,
+  MetricShape,
+  MetricStore,
+  MetricDirection,
+  MetricReading,
+  AnchorMetricId,
+  ActivityMetricId,
+  AutopilotClass,
+} from './metric-registry.js';

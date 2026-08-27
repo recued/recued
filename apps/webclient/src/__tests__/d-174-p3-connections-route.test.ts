@@ -1406,6 +1406,59 @@ describe('Connections route (R13–R16 restructure)', () => {
     route.dispose();
   });
 
+  it('keeps account list/detail in-page while using native hierarchical history', async () => {
+    const doc = makeFakeDocument();
+    const calls: string[] = [];
+    (doc as unknown as { defaultView: unknown }).defaultView = {
+      history: {
+        pushState: (_data: unknown, _title: string, url: string) => {
+          calls.push(`push ${url}`);
+        },
+        replaceState: (_data: unknown, _title: string, url: string) => {
+          calls.push(`replace ${url}`);
+        },
+      },
+    };
+    const onHashSync = vi.fn();
+    const root = doc.createElement('div');
+    const route = bootstrapConnectionsRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      initialAddress: { kind: 'lane', tab: 'mail' },
+      onHashSync,
+      mail: {
+        list: vi.fn(async () => ({
+          instances: [{
+            slug: 'work-mail',
+            adapter_type: 'gmail',
+            auth_state: 'healthy' as const,
+            last_synced_at: 1_700_000_000_000,
+            send_capable: false,
+            account_email: 'owner@example.com',
+          }],
+        })),
+        enrollImap: vi.fn(async () => ({ slug: 'unused', send_capable: false })),
+        delete: vi.fn(async () => ({ ok: true as const })),
+      },
+    });
+    await route.accountsPanel()!.whenLoaded();
+    const content = collectByAttr(root, CONNECTIONS_ROUTE_CONTENT_ATTR)[0]!;
+
+    clickAction(content, { action: 'accounts-open-detail', slug: 'work-mail' });
+    clickAction(content, { action: 'accounts-back-to-list' });
+
+    expect(calls).toEqual([
+      'push #connections/mail/work-mail',
+      'replace #connections/mail',
+    ]);
+    expect(onHashSync).toHaveBeenNthCalledWith(
+      1,
+      '#connections/mail/work-mail',
+    );
+    expect(onHashSync).toHaveBeenNthCalledWith(2, '#connections/mail');
+    route.dispose();
+  });
+
   it('offers the bounded owner reconcile action only for the code-backed managed Stripe profile', async () => {
     const doc = makeFakeDocument();
     const root = doc.createElement('div');

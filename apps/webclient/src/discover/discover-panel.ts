@@ -189,6 +189,11 @@ export interface MountDiscoverPanelOptions<Row> {
     pinnedLabel?: string;
   };
   perPage?: number;
+  /** Restore a prior browse query after a shell route remount. The caller owns
+   *  where that state lives; the panel only normalises and copies it. */
+  initialQuery?: DiscoverQuery;
+  /** Fires after a user-owned search/filter/sort/page change. */
+  onQueryChange?: (query: DiscoverQuery) => void;
   /** Chip-value → human label (e.g. a `service_kind` slug → "CRM"). Identity
    *  when omitted. */
   facetLabel?: (facetKey: string, value: string) => string;
@@ -199,6 +204,9 @@ export interface MountDiscoverPanelOptions<Row> {
    *  grants). Omitted ⇒ the classic inline-install behavior (the recipes
    *  Discover surface, where a row installs in place). */
   onSelect?: (id: string) => void;
+  /** Optional read-only preview. With both callbacks wired, pointer/Space opens
+   *  preview while Enter and the card action continue to open full detail. */
+  onPreview?: (row: Row, opener: HTMLElement) => void;
 }
 
 export interface DiscoverPanelMount {
@@ -217,6 +225,8 @@ export interface DiscoverPanelMount {
   getTotalPages(): number;
   getUpdateCount(): number;
   getError(): string | null;
+  /** Defensive copy of the complete current query for route continuity. */
+  getQuery(): DiscoverQuery;
   // Test/host drivers ───────────────────────────────────────────────
   setSearch(value: string): void;
   toggleFilter(facetKey: string, value: string): void;
@@ -230,6 +240,8 @@ export interface DiscoverPanelMount {
   /** Navigate mode — simulate a card-body click (fires `onSelect`). No-op when
    *  `onSelect` isn't wired. */
   clickSelect(id: string): void;
+  /** Preview mode — simulate a card body/Space activation. */
+  clickPreview(id: string): void;
   /** Re-run the current query (server mode) / re-download the corpus. */
   refresh(): Promise<void>;
   /** Re-attempt the server after a failure — clears any degraded fallback. */
@@ -273,13 +285,33 @@ export const mountDiscoverPanel = <Row>(
    *  reads one predicate rather than re-deriving the condition. */
   const usingServer = (): boolean => opts.search !== undefined && !degraded;
 
-  const query: DiscoverQuery = {
+  const copyQuery = (source: DiscoverQuery): DiscoverQuery => ({
+    search: typeof source.search === 'string' ? source.search : '',
+    filters: Object.fromEntries(
+      Object.entries(source.filters ?? {}).map(([key, values]) => [
+        key,
+        Array.isArray(values)
+          ? values.filter((value): value is string => typeof value === 'string')
+          : [],
+      ]),
+    ),
+    sort: typeof source.sort === 'string' ? source.sort : '',
+    page: Number.isSafeInteger(source.page) && source.page > 0 ? source.page : 1,
+    perPage: opts.perPage
+      ?? (Number.isSafeInteger(source.perPage) && source.perPage > 0
+        ? source.perPage
+        : 24),
+  });
+  const query: DiscoverQuery = copyQuery(opts.initialQuery ?? {
     search: '',
     filters: {},
     sort: opts.sortOptions[0]?.key ?? '',
     page: 1,
     perPage: opts.perPage ?? 24,
-  };
+  });
+  if (!opts.sortOptions.some((option) => option.key === query.sort)) {
+    query.sort = opts.sortOptions[0]?.key ?? '';
+  }
 
   const clear = (el: HTMLElement): void => {
     while (el.firstChild) el.removeChild(el.firstChild);
@@ -297,6 +329,7 @@ export const mountDiscoverPanel = <Row>(
   search.type = 'search';
   search.placeholder = opts.copy.searchPlaceholder;
   search.setAttribute('aria-label', opts.copy.searchPlaceholder);
+  search.value = query.search;
   const sortSelect = doc.createElement('select') as HTMLSelectElement;
   sortSelect.setAttribute(DISCOVER_PANEL_SORT_ATTR, '');
   sortSelect.className = 'discover-sort';
@@ -307,6 +340,7 @@ export const mountDiscoverPanel = <Row>(
     opt.textContent = o.label;
     sortSelect.appendChild(opt);
   }
+  sortSelect.value = query.sort;
   controls.appendChild(search);
   controls.appendChild(sortSelect);
 
@@ -676,19 +710,32 @@ export const mountDiscoverPanel = <Row>(
     card.setAttribute('data-id', id);
     card.className = 'discover-card';
     renderedCards.set(id, card);
-    // Navigate mode — the whole card opens the detail. The "Installed ✓" badge
-    // has no own handler, so its click bubbles here; the action button
-    // stops-propagation + navigates itself (same destination).
+    // Navigate mode — pointer/Space may first open a non-destructive preview;
+    // Enter and the explicit card action always open full detail. The action
+    // stops propagation, so it cannot accidentally open both layers.
     if (opts.onSelect !== undefined) {
       card.className = 'discover-card discover-card--clickable';
       card.setAttribute('role', 'button');
       card.setAttribute('tabindex', '0');
-      card.addEventListener('click', () => opts.onSelect!(id));
+      if (opts.onPreview !== undefined) {
+        card.setAttribute(
+          'aria-label',
+          `${opts.title(row)}. Space to preview; Enter to open details.`,
+        );
+      }
+      card.addEventListener('click', () => {
+        if (opts.onPreview !== undefined) opts.onPreview(row, card);
+        else opts.onSelect!(id);
+      });
       card.addEventListener('keydown', (ev) => {
         const key = (ev as KeyboardEvent).key;
-        if (key === 'Enter' || key === ' ') {
+        if (key === 'Enter') {
           (ev as KeyboardEvent).preventDefault();
           opts.onSelect!(id);
+        } else if (key === ' ') {
+          (ev as KeyboardEvent).preventDefault();
+          if (opts.onPreview !== undefined) opts.onPreview(row, card);
+          else opts.onSelect!(id);
         }
       });
     } else if (installStateOf(row) === 'installed') {
@@ -969,6 +1016,7 @@ export const mountDiscoverPanel = <Row>(
    *  than flashing) and, in server mode, go fetch the answer. `delayMs` is the
    *  keystroke debounce; deliberate single acts pass 0. */
   const applyQueryChange = (delayMs: number): void => {
+    opts.onQueryChange?.(copyQuery(query));
     if (usingServer()) scheduleRefetch(delayMs);
     render();
   };
@@ -1163,6 +1211,7 @@ export const mountDiscoverPanel = <Row>(
     getTotalPages: () => view?.totalPages ?? 1,
     getUpdateCount: () => updateCount(),
     getError: () => error,
+    getQuery: () => copyQuery(query),
     setSearch: (value) => {
       search.value = value;
       applySearch(value);
@@ -1188,6 +1237,11 @@ export const mountDiscoverPanel = <Row>(
       return true;
     },
     clickSelect: (id) => opts.onSelect?.(id),
+    clickPreview: (id) => {
+      const row = findRow(id);
+      const opener = renderedCards.get(id);
+      if (row !== undefined && opener !== undefined) opts.onPreview?.(row, opener);
+    },
     refresh: () => {
       // Background — a return-visit re-check keeps the current cards visible.
       // Server mode re-runs the CURRENT query rather than downloading a corpus;

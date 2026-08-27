@@ -54,6 +54,7 @@ import {
 } from '@recued/renderer';
 import {
   e,
+  formatRecipeRunFacts,
   canSubmitTableEdit,
   formatClientDateTime,
   initialTableEditState,
@@ -76,7 +77,10 @@ import {
   RECORD_REF_CELL_ATTR,
   RECORD_REF_CELL_ENTITY_ATTR,
   RECORD_REF_CELL_FILTER_ATTR,
+  REFERENCE_PROVENANCE_STYLES,
   RefPicker,
+  renderProvenance,
+  renderReferenceIdentity,
 } from '@recued/ui-shared';
 
 
@@ -104,6 +108,7 @@ export const RECIPE_RESULT_HOST_ATTR = 'data-recued-result-host';
  *  ⚠ CSS is invisible to the render tests — changing anything here needs a
  *  browser check on BOTH surfaces, not a green suite. */
 export const RECIPE_RESULT_PANEL_STYLES = `
+${REFERENCE_PROVENANCE_STYLES}
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-button {
   display: inline-flex;
   align-items: center;
@@ -154,6 +159,16 @@ export const RECIPE_RESULT_PANEL_STYLES = `
   margin: 0;
   font-size: 12px;
   color: var(--fg-muted);
+}
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-result-receipt {
+  display: grid;
+  gap: 4px;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-result-facts {
+  margin: 0;
+  font-size: 12px;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
 }
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-result-provenance {
   display: flex;
@@ -720,6 +735,8 @@ export const RECIPES_ROUTE_RESULT_RETURN_ATTR =
   'data-recued-recipes-result-return';
 export const RECIPES_ROUTE_RESULT_PROVENANCE_ATTR =
   'data-recued-recipes-result-provenance';
+export const RECIPES_ROUTE_RESULT_FACTS_ATTR =
+  'data-recued-recipes-result-facts';
 /** D-222 owner filter form + its page controls. Attribute value is the stable
  *  `<recipe_id>:<authored_hash>:<section_index>` result-state key. */
 export const RECIPES_ROUTE_RESULT_FILTER_ATTR =
@@ -774,8 +791,8 @@ export interface RecipesResultFilterState extends OutputFilterState {
 
 /** Optional presentation controls for hosts that reuse the full result
  *  lifecycle outside Recipe detail. Defaults preserve the technical Recipes
- *  surface; Pack Use hides recipe provenance/runtime metrics and supplies its
- *  own workspace heading. */
+ *  surface; Pack Use keeps the shared provenance receipt, hides legacy inline
+ *  metrics, keeps audit-backed run facts, and supplies its own heading. */
 export interface RecipeResultPanelPresentation {
   /** `undefined` = "Result" (Recipes default), `null` = no panel heading. */
   readonly heading?: string | null;
@@ -2193,7 +2210,10 @@ const renderResultRecipeIdentity = (
   installed: ReadonlyArray<ServerRecipeListEntry>,
   recipeId: string,
 ): string =>
-  `${e(installedRecipeName(installed, recipeId))} (<code>${e(recipeId)}</code>)`;
+  renderReferenceIdentity({
+    label: installedRecipeName(installed, recipeId),
+    value: recipeId,
+  });
 
 export const renderRecipeResultPanel = (
   panel: RecipesResultPanelSnapshot | null,
@@ -2285,7 +2305,10 @@ export const renderRecipeResultPanel = (
     : `<p class="recipes-result-provenance"
         ${RECIPES_ROUTE_RESULT_PROVENANCE_ATTR}="${e(panel.origin)}">
         <span><strong>Rendered recipe:</strong> ${renderResultRecipeIdentity(installed, panel.render_recipe_id)}</span>
-        <span><strong>Origin:</strong> ${e(resultOriginLabel(panel.origin))}</span>
+        <span><strong>Origin:</strong> ${renderProvenance({
+          primary: resultOriginLabel(panel.origin),
+          kind: 'source',
+        })}</span>
         <span><strong>Source recipe:</strong> ${panel.source_recipe_id === null
           ? 'None (related-list navigation)'
           : renderResultRecipeIdentity(installed, panel.source_recipe_id)}</span>
@@ -2293,7 +2316,12 @@ export const renderRecipeResultPanel = (
   const heading = presentation.heading === null
     ? ''
     : `<h2 class="recipes-detail-section-title">${e(presentation.heading ?? 'Result')}</h2>`;
-  const runMetrics = result === null || presentation.show_run_metrics === false
+  const runFacts = result === null
+    ? null
+    : formatRecipeRunFacts(result.run_facts);
+  const runMetrics = result === null
+    || presentation.show_run_metrics === false
+    || runFacts !== null
     ? ''
     : ` · ${e(String(result.duration_ms))} ms · ${e(plural(result.steps.length, 'step'))}`;
   return `
@@ -2301,7 +2329,12 @@ export const renderRecipeResultPanel = (
       ${RECIPES_ROUTE_RESULT_PANEL_ATTR}="${panel === null ? '' : e(panel.render_recipe_id)}">
       ${heading}
       ${result !== null
-        ? `<p class="recipes-result-status" role="status" aria-live="polite" aria-atomic="true">${e(status)}${renderName !== '' ? ` · ${e(renderName)}` : ''}${runMetrics}</p>`
+        ? `<div class="recipes-result-receipt" role="status" aria-live="polite" aria-atomic="true">
+            <p class="recipes-result-status">${e(status)}${renderName !== '' ? ` · ${e(renderName)}` : ''}${runMetrics}</p>
+            ${runFacts === null
+              ? ''
+              : `<p class="recipes-result-facts" ${RECIPES_ROUTE_RESULT_FACTS_ATTR}>${e(runFacts)}</p>`}
+          </div>`
         : ''}
       ${refusedNote}
       ${provenance}

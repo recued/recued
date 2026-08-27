@@ -22,6 +22,7 @@
  */
 
 import type { Actor } from '../commits.js';
+import type { ProvenanceAttribution } from '../provenance-attribution.js';
 
 /** Hard cap on entries returned by a single `memory.list` page. Mirrors
  *  `AUDIT_EXPORT_MAX_PAGE_SIZE`; the server clamps `limit` down to this. */
@@ -53,14 +54,19 @@ export interface MemoryListRequest {
   cursor?: string;
 }
 
-/** A single memory row as surfaced by `memory.list`. Covers BOTH
- *  engine/AI-authored audit rows and `user_self`-authored entries — the
+/** A single memory row as surfaced by `memory.list`. Covers BOTH audit rows
+ *  and authored `user_memory` rows (`user_self` or `contracted_user`) — the
  *  `origin_actor` discriminates, and every origin is displayed (D-198 §3).
  *  `body` carries user-authored payload; it is absent (or `redacted`) for
  *  rows the owner may view but not read into. */
 export interface MemoryListEntry {
   memory_id: string;
   origin_actor: Actor;
+  /** Derived at read time for outside-authored rows. Never stored: audit rows
+   * derive it from execution_source + contract_snapshot; authored-memory rows
+   * derive it from their existing origin_actor + contract_id facets. Absent for
+   * first-person user_self/system rows. */
+  attribution?: ProvenanceAttribution;
   /** Entry kind — the audit row's kind, or the user-memory kind. */
   kind: string;
   /** Short audit-clean summary (≤ `AUDIT_OUTPUT_STRING_MAX`). */
@@ -112,6 +118,8 @@ export interface MemoryGetRequest {
 export interface MemoryGetResponse {
   memory_id: string;
   origin_actor: Actor;
+  /** Same zero-new-storage outside-actor attribution as memory.list. */
+  attribution?: ProvenanceAttribution;
   kind: string;
   summary?: string;
   /** The full resolved body (inline or from CAS). */

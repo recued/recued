@@ -724,6 +724,37 @@ describe('Automation route — hash and tab state', () => {
     }
   });
 
+  it('pushes section-to-detail navigation while section changes replace', async () => {
+    type HistoryLike = {
+      replaceState: (data: unknown, title: string, url: string) => void;
+      pushState: (data: unknown, title: string, url: string) => void;
+    };
+    const globalWithHistory = globalThis as unknown as { history?: HistoryLike };
+    const previousHistory = globalWithHistory.history;
+    const calls: string[] = [];
+    globalWithHistory.history = {
+      replaceState: (_data, _title, url) => { calls.push(`replace ${url}`); },
+      pushState: (_data, _title, url) => { calls.push(`push ${url}`); },
+    };
+
+    try {
+      const rig = mountRoute();
+      await rig.route.whenLoaded();
+
+      clickSubnav(rig.host, 'triggers');
+      clickAction(rig.host, 'detail:event_trigger', 't-1');
+
+      expect(calls).toEqual([
+        'replace #automation/triggers',
+        'push #automation/triggers/t-1',
+      ]);
+      rig.route.dispose();
+    } finally {
+      if (previousHistory === undefined) delete globalWithHistory.history;
+      else globalWithHistory.history = previousHistory;
+    }
+  });
+
   it('legacy recipe deep-link auto-pick lands on schedules for a schedule-only recipe', async () => {
     const rig = mountRoute({
       initialRecipeFilter: 'schedule-only',

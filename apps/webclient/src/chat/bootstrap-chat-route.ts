@@ -5,14 +5,17 @@
  *  It intentionally stays a thin DOM host instead of rewriting the chat engine.
  */
 
-import type { Upload } from '@recued/ui-shared';
+import {
+  REFERENCE_PROVENANCE_STYLES,
+  buildReferenceDisclosure,
+  type Upload,
+} from '@recued/ui-shared';
 import { createComposerAttachments } from './composer-attachments.js';
 import {
   transparencyStreamSettingsFromPrefs,
   DEFAULT_TRANSPARENCY_STREAM_SETTINGS,
   isChatDataDiagnosisRelationship,
   isChatModelSourceId,
-  type AutoRunStatusEntry,
   type ChatDataDiagnosisContext,
   type ChatDataDiagnosisRequest,
   type ChatDataDiagnosisResolution,
@@ -26,11 +29,9 @@ import {
   type ChatSessionSummary,
   type InstancePrefs,
   type ServerEvent,
-  type ServerRecipeListEntry,
   type TransparencyStreamSettings,
 } from '@recued/contracts';
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
-import { RunModal } from '@recued/ui-shared';
 
 import {
   applyPlanResolution,
@@ -81,7 +82,6 @@ import {
   CREATE_OVERLAY_CLOSE_ATTR,
   type CreateOverlayHandle,
 } from '../compose/create-overlay.js';
-import { wireRunPalette, type RunPaletteHandle } from './run-palette.js';
 import {
   connectedSourceConnectionHref,
   connectedSourceProviderLabel,
@@ -1141,161 +1141,6 @@ const CHAT_ROUTE_CHROME_STYLES = `
   font-size: 12px;
   line-height: 1.45;
 }
-[${CHAT_ROUTE_SOURCE_REFERENCES_ATTR}] {
-  display: grid;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-}
-[${CHAT_ROUTE_SOURCE_REFERENCES_TOGGLE_ATTR}] {
-  width: 100%;
-  min-height: 44px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 8px 10px;
-  border: 0;
-  background: transparent;
-  color: var(--fg);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-[${CHAT_ROUTE_SOURCE_REFERENCES_TOGGLE_ATTR}]:hover,
-[${CHAT_ROUTE_SOURCE_REFERENCES_TOGGLE_ATTR}]:focus-visible {
-  background: var(--surface-subtle);
-}
-[${CHAT_ROUTE_SOURCE_REFERENCES_TOGGLE_ATTR}] .chat-source-reference-toggle-copy {
-  display: grid;
-  gap: 1px;
-  min-width: 0;
-}
-[${CHAT_ROUTE_SOURCE_REFERENCES_TOGGLE_ATTR}] .chat-source-reference-toggle-title {
-  font-size: 12px;
-  font-weight: 700;
-}
-[${CHAT_ROUTE_SOURCE_REFERENCES_TOGGLE_ATTR}] .chat-source-reference-toggle-detail {
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.35;
-}
-[${CHAT_ROUTE_SOURCE_REFERENCES_TOGGLE_ATTR}] .chat-source-reference-toggle-action {
-  flex: 0 0 auto;
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 680;
-}
-[${CHAT_ROUTE_SOURCE_REFERENCES_ATTR}] .chat-source-reference-body {
-  display: grid;
-  gap: 9px;
-  padding: 10px;
-  border-top: 1px solid var(--border-subtle);
-}
-[${CHAT_ROUTE_SOURCE_REFERENCES_ATTR}] .chat-source-reference-note {
-  margin: 0;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.45;
-}
-[${CHAT_ROUTE_SOURCE_REFERENCES_ATTR}] .chat-source-reference-list {
-  max-height: 260px;
-  overflow: auto;
-  display: grid;
-  gap: 7px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-[${CHAT_ROUTE_SOURCE_REFERENCE_ATTR}] {
-  display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
-  gap: 8px;
-  align-items: start;
-  padding: 8px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 7px;
-  background: var(--surface-subtle);
-}
-[${CHAT_ROUTE_SOURCE_REFERENCE_ATTR}] .chat-source-reference-number {
-  width: 24px;
-  height: 24px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 720;
-}
-[${CHAT_ROUTE_SOURCE_REFERENCE_ATTR}] .chat-source-reference-copy {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-[${CHAT_ROUTE_SOURCE_REFERENCE_ATTR}] .chat-source-reference-label {
-  color: var(--fg);
-  font-size: 12px;
-  font-weight: 680;
-  overflow-wrap: anywhere;
-}
-[${CHAT_ROUTE_SOURCE_REFERENCE_ATTR}] .chat-source-reference-meta {
-  display: flex;
-  align-items: baseline;
-  gap: 5px;
-  flex-wrap: wrap;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.4;
-}
-[${CHAT_ROUTE_SOURCE_REFERENCE_ID_ATTR}] {
-  padding: 1px 4px;
-  border-radius: 4px;
-  background: var(--surface);
-  color: var(--fg);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 10px;
-  overflow-wrap: anywhere;
-  user-select: all;
-}
-[${CHAT_ROUTE_SOURCE_REFERENCE_OPEN_ATTR}] {
-  justify-self: start;
-  min-height: 44px;
-  display: inline-flex;
-  align-items: center;
-  margin-top: 3px;
-  padding: 4px 7px;
-  border-radius: 6px;
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 680;
-  text-decoration: none;
-}
-[${CHAT_ROUTE_SOURCE_REFERENCE_OPEN_ATTR}]:hover,
-[${CHAT_ROUTE_SOURCE_REFERENCE_OPEN_ATTR}]:focus-visible {
-  background: var(--accent-weak);
-}
-[${CHAT_ROUTE_SOURCE_REFERENCES_ATTR}] .chat-source-reference-browse {
-  justify-self: start;
-  min-height: 44px;
-  display: inline-flex;
-  align-items: center;
-  padding: 5px 9px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 680;
-  text-decoration: none;
-}
-[${CHAT_ROUTE_SOURCE_REFERENCES_ATTR}] .chat-source-reference-browse:hover,
-[${CHAT_ROUTE_SOURCE_REFERENCES_ATTR}] .chat-source-reference-browse:focus-visible {
-  border-color: var(--accent);
-  background: var(--accent-weak);
-}
 [${CHAT_ROUTE_SOURCE_ANSWER_ATTR}] .chat-source-answer-actions {
   display: flex;
   align-items: center;
@@ -2213,6 +2058,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
 
 export const CHAT_ROUTE_STYLES = [
   PRIMITIVE_STYLES,
+  REFERENCE_PROVENANCE_STYLES,
   CHAT_ROUTE_CHROME_STYLES,
 ].join('\n');
 
@@ -2239,24 +2085,10 @@ export interface BootstrapChatRouteOptions {
    *  button renders only when at least one is wired. */
   contactUpsertCaller?: ComposeContactUpsertCaller;
   workEntityUpsertCaller?: ComposeWorkEntityUpsertCaller;
-  /** Shell-frame Step 4c — the [▶ Run a recipe] palette. The button renders
-   *  only when `recipeListCaller` is wired; each per-action caller degrades
-   *  individually (a missing `recipeExecuteCaller` → the Run modal shows
-   *  "not available"; a missing `autoRunUpdateCaller` → the arm toggle is
-   *  disabled). */
-  recipeListCaller?: () => Promise<{
-    recipes: ReadonlyArray<ServerRecipeListEntry>;
-  }>;
-  recipeExecuteCaller?: RunModal.RunModalExecuteCaller;
-  schedulesListCaller?: RunModal.RunModalSchedulesListCaller;
-  schedulesCreateCaller?: RunModal.RunModalSchedulesCreateCaller;
-  schedulesUpdateCaller?: RunModal.RunModalSchedulesUpdateCaller;
-  schedulesDeleteCaller?: RunModal.RunModalSchedulesDeleteCaller;
-  autoRunListCaller?: () => Promise<{ entries: AutoRunStatusEntry[] }>;
-  autoRunUpdateCaller?: (args: {
-    recipe_id: string;
-    enabled: boolean;
-  }) => Promise<unknown>;
+  /** Shell-frame Step 4c — opens the one shell-owned Run palette. Chat keeps
+   *  its contextual composer/activation entry, but no longer owns recipe
+   *  inventory, action callers, portal lifetime, or leave guards. */
+  openRunPalette?: () => void;
   /** Default-app first-run affordance. Kept explicit so narrower embedded/test
    *  chat mounts retain their existing empty state unless they opt in. */
   enableFirstRunActivation?: boolean;
@@ -3728,17 +3560,16 @@ export const bootstrapChatRoute = (
 
   const preserveChatAnswerHistory = (messageId: string): void => {
     const sessionId = state.thread.session?.id;
+    if (sessionId === undefined) return;
+    const hash = serializeChatAnswerAddress({ sessionId, messageId });
+    if (opts.onAddressChange !== undefined) {
+      opts.onAddressChange(hash, 'replace');
+      return;
+    }
     const history = doc.defaultView?.history;
-    if (
-      sessionId === undefined
-      || history?.replaceState === undefined
-    ) return;
+    if (history?.replaceState === undefined) return;
     try {
-      history.replaceState(
-        null,
-        '',
-        serializeChatAnswerAddress({ sessionId, messageId }),
-      );
+      history.replaceState(null, '', hash);
     } catch {
       // The Data link still works in constrained embedders; only browser-back
       // continuity degrades. Data also renders an explicit return link.
@@ -5305,65 +5136,17 @@ export const bootstrapChatRoute = (
     });
   };
 
-  // ── Shell-frame Step 4c — the [▶ Run a recipe] palette (§D.L1) ──
-  let runPalette: RunPaletteHandle | null = null;
-
-  const closeRunPalette = (): void => {
-    if (runPalette === null) return;
-    const open = runPalette;
-    runPalette = null;
-    open.destroy();
-  };
-
-  const openRunPalette = (): void => {
-    if (runPalette !== null) return;
-    const recipeList = opts.recipeListCaller;
-    if (recipeList === undefined) return;
-    runPalette = wireRunPalette({
-      document: doc,
-      recipeList,
-      automationHref: (recipeId) => serializeShellRoute('automation', recipeId),
-      packsHref: serializeShellRoute('packs'),
-      ...(opts.recipeExecuteCaller !== undefined
-        ? { execute: opts.recipeExecuteCaller }
-        : {}),
-      ...(opts.schedulesListCaller !== undefined
-        ? { schedulesList: opts.schedulesListCaller }
-        : {}),
-      ...(opts.schedulesCreateCaller !== undefined
-        ? { schedulesCreate: opts.schedulesCreateCaller }
-        : {}),
-      ...(opts.schedulesUpdateCaller !== undefined
-        ? { schedulesUpdate: opts.schedulesUpdateCaller }
-        : {}),
-      ...(opts.schedulesDeleteCaller !== undefined
-        ? { schedulesDelete: opts.schedulesDeleteCaller }
-        : {}),
-      ...(opts.autoRunListCaller !== undefined
-        ? { autoRunList: opts.autoRunListCaller }
-        : {}),
-      ...(opts.autoRunUpdateCaller !== undefined
-        ? { autoRunUpdate: opts.autoRunUpdateCaller }
-        : {}),
-      onClose: () => {
-        runPalette = null;
-      },
-    });
-    const portal = (doc as { body?: HTMLElement }).body ?? routeRoot;
-    portal.appendChild(runPalette.element);
-  };
-
   /** §D.L1 — the composer action list: [▶ Run a recipe] · [✎ Create]. Each
    *  appears only when its callers are wired. */
   const composerActions = (): ComposerAction[] => {
     const actions: ComposerAction[] = [];
-    if (opts.recipeListCaller !== undefined) {
+    if (opts.openRunPalette !== undefined) {
       actions.push({
         id: 'run',
         label: '▶ Run a recipe',
         accessibleLabel: 'Run a recipe',
         title: 'Run, schedule, or arm a recipe',
-        run: openRunPalette,
+        run: opts.openRunPalette,
       });
     }
     if (
@@ -5658,160 +5441,15 @@ export const bootstrapChatRoute = (
   ): HTMLElement => {
     const expanded =
       expandedConnectedSourceReferenceTurns.has(referenceKey);
-    const container = doc.createElement('section');
-    container.setAttribute(CHAT_ROUTE_SOURCE_REFERENCES_ATTR, '');
-    container.setAttribute(
-      'aria-label',
-      `${references.length} recorded ${
-        references.length === 1 ? 'reference' : 'references'
-      } for this answer`,
-    );
-
-    const toggle = doc.createElement('button');
-    toggle.type = 'button';
-    toggle.setAttribute(CHAT_ROUTE_SOURCE_REFERENCES_TOGGLE_ATTR, '');
-    toggle.setAttribute(
-      CHAT_ROUTE_SOURCE_REFERENCES_TURN_ATTR,
-      referenceKey,
-    );
-    toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-    toggle.setAttribute(
-      'aria-label',
-      `${expanded ? 'Hide' : 'Review'} ${references.length} recorded ${
-        references.length === 1 ? 'reference' : 'references'
-      }`,
-    );
-
-    const toggleCopy = doc.createElement('span');
-    toggleCopy.className = 'chat-source-reference-toggle-copy';
-    const toggleTitle = doc.createElement('span');
-    toggleTitle.className = 'chat-source-reference-toggle-title';
-    toggleTitle.textContent =
-      `${references.length} recorded ${
-        references.length === 1 ? 'reference' : 'references'
-      }`;
-    toggleCopy.appendChild(toggleTitle);
-    const toggleDetail = doc.createElement('span');
-    toggleDetail.className = 'chat-source-reference-toggle-detail';
     const referencesWithRecordIds = references.filter(
       ({ recordId }) => recordId !== null,
     ).length;
-    toggleDetail.textContent =
+    const detail =
       referencesWithRecordIds === references.length
         ? 'Source and exact record IDs'
         : referencesWithRecordIds === 0
           ? 'Recorded sources; record IDs unavailable'
           : 'Sources and available record IDs';
-    toggleCopy.appendChild(toggleDetail);
-    toggle.appendChild(toggleCopy);
-
-    const toggleAction = doc.createElement('span');
-    toggleAction.className = 'chat-source-reference-toggle-action';
-    toggleAction.textContent = expanded ? 'Hide ↑' : 'Review ↓';
-    toggle.appendChild(toggleAction);
-    toggle.addEventListener('click', () => {
-      if (expandedConnectedSourceReferenceTurns.has(referenceKey)) {
-        expandedConnectedSourceReferenceTurns.delete(referenceKey);
-      } else {
-        expandedConnectedSourceReferenceTurns.add(referenceKey);
-      }
-      render();
-      focusConnectedSourceReferencesToggle(referenceKey);
-    });
-    container.appendChild(toggle);
-
-    if (!expanded) return container;
-
-    const body = doc.createElement('div');
-    body.className = 'chat-source-reference-body';
-    const note = doc.createElement('p');
-    note.className = 'chat-source-reference-note';
-    note.textContent =
-      'These references were recorded with the answer. '
-      + 'They are not yet linked to individual sentences.';
-    body.appendChild(note);
-
-    const list = doc.createElement('ol');
-    list.className = 'chat-source-reference-list';
-    for (const [index, reference] of references.entries()) {
-      const item = doc.createElement('li');
-      item.setAttribute(
-        CHAT_ROUTE_SOURCE_REFERENCE_ATTR,
-        String(index + 1),
-      );
-
-      const number = doc.createElement('span');
-      number.className = 'chat-source-reference-number';
-      number.setAttribute('aria-hidden', 'true');
-      number.textContent = String(index + 1);
-      item.appendChild(number);
-
-      const copy = doc.createElement('div');
-      copy.className = 'chat-source-reference-copy';
-      const label = doc.createElement('strong');
-      label.className = 'chat-source-reference-label';
-      label.textContent = reference.label;
-      copy.appendChild(label);
-
-      const meta = doc.createElement('div');
-      meta.className = 'chat-source-reference-meta';
-      const source = doc.createElement('span');
-      source.textContent = reference.sourceLabel;
-      meta.appendChild(source);
-      const separator = doc.createElement('span');
-      separator.setAttribute('aria-hidden', 'true');
-      separator.textContent = '·';
-      meta.appendChild(separator);
-      if (reference.recordId === null) {
-        const missing = doc.createElement('span');
-        missing.textContent = 'Record ID not recorded';
-        meta.appendChild(missing);
-      } else {
-        const idLabel = doc.createElement('span');
-        idLabel.textContent = 'Record ID';
-        meta.appendChild(idLabel);
-        const recordId = doc.createElement('code');
-        recordId.setAttribute(CHAT_ROUTE_SOURCE_REFERENCE_ID_ATTR, '');
-        recordId.textContent = reference.recordId;
-        meta.appendChild(recordId);
-      }
-      copy.appendChild(meta);
-
-      if (
-        reference.dataTab !== null
-        && reference.collectionSlug !== null
-        && reference.recordId !== null
-        && state.thread.session !== null
-      ) {
-        const open = doc.createElement('a');
-        open.setAttribute(CHAT_ROUTE_SOURCE_REFERENCE_OPEN_ATTR, '');
-        open.setAttribute(
-          'href',
-          serializeSourceRecordAddress({
-            tab: reference.dataTab,
-            collectionSlug: reference.collectionSlug,
-            recordId: reference.recordId,
-            returnToChat: {
-              sessionId: state.thread.session.id,
-              messageId: options.messageId,
-            },
-          }),
-        );
-        open.setAttribute(
-          'aria-label',
-          `Open ${reference.label} in Data`,
-        );
-        open.textContent = 'Open record';
-        open.addEventListener('click', () => {
-          preserveChatAnswerHistory(options.messageId);
-        });
-        copy.appendChild(open);
-      }
-      item.appendChild(copy);
-      list.appendChild(item);
-    }
-    body.appendChild(list);
-
     const referenceTabs = new Set(
       references.flatMap(({ dataTab }) => dataTab === null ? [] : [dataTab]),
     );
@@ -5819,19 +5457,75 @@ export const bootstrapChatRoute = (
       ?? (referenceTabs.size === 1
         ? Array.from(referenceTabs)[0]
         : undefined);
-    if (dataTab !== undefined) {
-      const browse = doc.createElement('a');
-      browse.className = 'chat-source-reference-browse';
-      browse.setAttribute('href', serializeShellRoute('data', dataTab));
-      browse.textContent =
-        `Browse ${dataTab === 'files' ? 'files' : dataTab} in Data`;
-      browse.addEventListener('click', () => {
+    const countLabel = `${references.length} recorded ${
+      references.length === 1 ? 'reference' : 'references'
+    }`;
+    return buildReferenceDisclosure({
+      document: doc,
+      expanded,
+      title: countLabel,
+      detail,
+      toggleAriaLabel: `${expanded ? 'Hide' : 'Review'} ${countLabel}`,
+      containerAriaLabel: `${countLabel} for this answer`,
+      note: 'These references were recorded with the answer. '
+        + 'They are not yet linked to individual sentences.',
+      items: references.map((reference) => ({
+        label: reference.label,
+        sourceLabel: reference.sourceLabel,
+        referenceId: reference.recordId,
+        referenceIdLabel: 'Record ID',
+        missingReferenceLabel: 'Record ID not recorded',
+        ...(reference.dataTab !== null
+          && reference.collectionSlug !== null
+          && reference.recordId !== null
+          && state.thread.session !== null
+          ? {
+              href: serializeSourceRecordAddress({
+                tab: reference.dataTab,
+                collectionSlug: reference.collectionSlug,
+                recordId: reference.recordId,
+                returnToChat: {
+                  sessionId: state.thread.session.id,
+                  messageId: options.messageId,
+                },
+              }),
+              openLabel: 'Open record',
+              openAriaLabel: `Open ${reference.label} in Data`,
+            }
+          : {}),
+      })),
+      ...(dataTab === undefined
+        ? {}
+        : {
+            browse: {
+              href: serializeShellRoute('data', dataTab),
+              label: `Browse ${dataTab === 'files' ? 'files' : dataTab} in Data`,
+            },
+          }),
+      hooks: {
+        container: CHAT_ROUTE_SOURCE_REFERENCES_ATTR,
+        toggle: CHAT_ROUTE_SOURCE_REFERENCES_TOGGLE_ATTR,
+        toggleKey: {
+          attribute: CHAT_ROUTE_SOURCE_REFERENCES_TURN_ATTR,
+          value: referenceKey,
+        },
+        item: CHAT_ROUTE_SOURCE_REFERENCE_ATTR,
+        id: CHAT_ROUTE_SOURCE_REFERENCE_ID_ATTR,
+        open: CHAT_ROUTE_SOURCE_REFERENCE_OPEN_ATTR,
+      },
+      onToggle: () => {
+        if (expandedConnectedSourceReferenceTurns.has(referenceKey)) {
+          expandedConnectedSourceReferenceTurns.delete(referenceKey);
+        } else {
+          expandedConnectedSourceReferenceTurns.add(referenceKey);
+        }
+        render();
+        focusConnectedSourceReferencesToggle(referenceKey);
+      },
+      onOpen: () => {
         preserveChatAnswerHistory(options.messageId);
-      });
-      body.appendChild(browse);
-    }
-    container.appendChild(body);
-    return container;
+      },
+    });
   };
 
   const buildConnectedSourceAnswer = (
@@ -6126,13 +5820,13 @@ export const bootstrapChatRoute = (
       ),
     }));
 
-    const automateAction = opts.recipeListCaller === undefined
+    const automateAction = opts.openRunPalette === undefined
       ? activationLink(
           'automate',
           'Browse recipes',
           serializeShellRoute('recipes'),
         )
-      : activationButton('automate', 'Choose a recipe', openRunPalette);
+      : activationButton('automate', 'Choose a recipe', opts.openRunPalette);
     grid.appendChild(buildActivationCard({
       intent: 'automate',
       status: 'Save repeat work',
@@ -9532,18 +9226,15 @@ export const bootstrapChatRoute = (
       || modelSourceWriteSessions.size > 0
       || sessionAction?.kind === 'export-busy'
       || sessionAction?.kind === 'delete-busy'
-      || createOverlay?.hasInFlightWork() === true
-      || runPalette?.hasInFlightWork() === true,
+      || createOverlay?.hasInFlightWork() === true,
     inFlightWorkPrompt: () =>
       createOverlay?.hasInFlightWork() === true
         ? 'A Create save is still in progress. Leave Chat anyway?'
         : modelSourceWriteSessions.size > 0
           ? 'A Chat model change is still in progress. Leave Chat anyway?'
-          : runPalette?.hasInFlightWork() === true
-            ? 'A recipe action is still in progress. Leave Chat anyway?'
-            : historyActionInFlight()
-              ? 'A chat history action is still in progress. Leave Chat anyway?'
-              : null,
+          : historyActionInFlight()
+            ? 'A chat history action is still in progress. Leave Chat anyway?'
+            : null,
     startNewChat: () => requestStartNewChat(),
     createSession: (title) => createSession(title),
     sendMessage: (message) => sendMessage(message),
@@ -9560,9 +9251,9 @@ export const bootstrapChatRoute = (
       );
       cancelConnectedSourcePoll();
       connectedSourceStatusGeneration += 1;
-      // The Create overlay + Run palette are portaled to body — detach them.
+      // The Create overlay is portaled to body — detach it. The Run palette is
+      // shell-owned and outlives this route.
       closeCreateOverlay();
-      closeRunPalette();
       for (const unsub of unsubscribers) {
         try {
           unsub();

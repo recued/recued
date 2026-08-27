@@ -154,6 +154,14 @@ export const ensureHousekeepingSchema = (db: Database.Database): void => {
     db.exec(`ALTER TABLE housekeeping_state ADD COLUMN last_errors_json TEXT`);
   }
 
+  // D-250 § D — MEASURED provider tokens from the last step, beside the
+  // planner's ESTIMATE (`tokens_consumed_today_*`). Additive + PRAGMA-guarded,
+  // the standing idiom here. NULL means the step made no provider call, which
+  // is most tasks — readers must not coerce it to 0.
+  if (!hasColumn(db, 'housekeeping_state', 'last_run_tokens')) {
+    db.exec(`ALTER TABLE housekeeping_state ADD COLUMN last_run_tokens INTEGER`);
+  }
+
   // D-136 P2 — additive migration for the daily-token-budget +
   // cascade-budget knobs (housekeeping_config) and the per-task token
   // counters + budget-window-start (housekeeping_state). The columns

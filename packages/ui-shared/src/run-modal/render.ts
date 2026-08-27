@@ -16,6 +16,7 @@ import {
 } from '@recued/contracts';
 
 import { e } from '../template.js';
+import { formatRecipeRunFacts } from '../run-facts.js';
 import {
   isInvocationVariable,
   renderVariableWidget,
@@ -35,6 +36,7 @@ export const RUN_MODAL_TARGET_WARNING_ATTR = 'data-recued-run-modal-target-warni
 export const RUN_MODAL_CONTEXT_ATTR = 'data-recued-run-modal-context';
 export const RUN_MODAL_IDENTITY_ATTR = 'data-recued-run-modal-identity';
 export const RUN_MODAL_RESULT_ATTR = 'data-recued-run-modal-result';
+export const RUN_MODAL_FACTS_ATTR = 'data-recued-run-modal-facts';
 export const RUN_MODAL_PRESET_ATTR = 'data-recued-run-modal-preset';
 /** D-215 slice 5 — the Repeat toggle. Off ⇒ the datetime control replaces
  *  the CRON preset picker and Add creates a ONE-SHOT. */
@@ -226,10 +228,18 @@ const renderRunTab = (
         <pre ${RUN_MODAL_CONTEXT_ATTR}>${e(contextJson)}</pre>
       </details>`;
 
+  const runFacts = state.result === null
+    ? null
+    : formatRecipeRunFacts(state.result.run_facts);
   const result = state.run_error !== null
     ? `<div ${RUN_MODAL_RESULT_ATTR} role="alert">${e(state.run_error)}</div>`
     : state.result !== null
-      ? `<div ${RUN_MODAL_RESULT_ATTR} role="status" aria-live="polite" aria-atomic="true">${e(runResultStatusLabel(state.result))} · ${e(String(state.result.duration_ms))} ms · ${e(plural(state.result.steps.length, 'step'))}</div>`
+      ? `<div ${RUN_MODAL_RESULT_ATTR} role="status" aria-live="polite" aria-atomic="true">
+          <span>${e(runResultStatusLabel(state.result))}</span>
+          ${runFacts === null
+            ? `<span> · ${e(String(state.result.duration_ms))} ms · ${e(plural(state.result.steps.length, 'step'))}</span>`
+            : `<span class="run-modal-facts" ${RUN_MODAL_FACTS_ATTR}>${e(runFacts)}</span>`}
+        </div>`
       : '';
 
   const notWired = caps.canExecute

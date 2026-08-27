@@ -94,6 +94,8 @@ describe('renderMemoryLens', () => {
     expect(html).toContain('>You<');
     expect(html).toContain('a note');
     expect(html).toContain('href="#logs/r1"');
+    expect(html).toContain('data-recued-reference="link"');
+    expect(html).toContain('data-recued-reference-id="r1"');
     // transparency: the system-authored row is shown too
     expect(html).toContain('>System<');
   });
@@ -108,6 +110,32 @@ describe('renderMemoryLens', () => {
     expect(html).toContain('remembered fact');
     expect(html).toContain('2 KB');
     expect(html).toContain('>Agent<');
+  });
+
+  it('shows canonical attribution beside an outside-authored memory in list and detail', () => {
+    const outside = entry({
+      memory_id: 'run-agent',
+      origin_actor: 'contracted_user',
+      kind: 'fact',
+      ts: 999_000,
+      summary: 'A delegated assertion',
+      attribution: {
+        kind: 'agent',
+        origin_actor: 'contracted_user',
+        contract_id: 'contract-1',
+        label: 'an agent, under contract contract-1, asserted this',
+      },
+    });
+    const list = renderMemoryLens({ ...baseProps, entries: [outside] });
+    expect(list).toContain('data-recued-provenance');
+    expect(list).toContain('an agent, under contract contract-1, asserted this');
+
+    const detail = renderMemoryLens({
+      ...baseProps,
+      entries: [],
+      detail: { memory_id: outside.memory_id, loading: false, entry: outside },
+    });
+    expect(detail).toContain('an agent, under contract contract-1, asserted this');
   });
 
   it('escapes untrusted preview text (XSS guard)', () => {
@@ -747,4 +775,3 @@ describe('memory feed pagination', () => {
     expect(html).not.toContain(MEMORY_MORE_ACTION);
   });
 });
-

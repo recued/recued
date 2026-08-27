@@ -51,6 +51,38 @@ export const PEER_ANSWER_REFUSALS = [
 ] as const;
 export type PeerAnswerRefusal = (typeof PEER_ANSWER_REFUSALS)[number];
 
+/** Structurally classify a far door's reply to `sendPeerAnswerHome`.
+ *
+ *  ⛔ TERMINAL IS DERIVED FROM {@link PEER_ANSWER_REFUSALS}, not a second list. A
+ *  hand-written copy is how a new refusal ends up retried forever (or, worse, a
+ *  removed one silently keeps matching) — and both halves would still look right
+ *  in review. One source, read through `isPeerAnswerRefusal`.
+ *
+ *  ⚠ AN UNRECOGNISED REPLY IS NOT TERMINAL. An unknown shape, a tool error or a
+ *  door that has changed may succeed later, and the alternative — counting an
+ *  unread answer as sent — loses a decision the owner actually made. This
+ *  preserves the behaviour the substring version intended; only the reading
+ *  changed. */
+export const isPeerAnswerRefusal = (v: unknown): v is PeerAnswerRefusal =>
+  typeof v === 'string' && (PEER_ANSWER_REFUSALS as readonly string[]).includes(v);
+
+export type PeerAnswerVerdict =
+  | { readonly kind: 'accepted' }
+  | { readonly kind: 'refused'; readonly refusal: PeerAnswerRefusal }
+  | { readonly kind: 'unrecognised' };
+
+export const readPeerAnswerVerdict = (reply: unknown): PeerAnswerVerdict => {
+  if (typeof reply !== 'object' || reply === null) return { kind: 'unrecognised' };
+  const r = reply as { accepted?: unknown; refusal?: unknown };
+  // ⛔ `accepted === true` EXACTLY. A truthy check would read a `reason` string
+  // or a `1` as acceptance, which is the same class of leniency this fix removes.
+  if (r.accepted === true) return { kind: 'accepted' };
+  if (r.accepted === false && isPeerAnswerRefusal(r.refusal)) {
+    return { kind: 'refused', refusal: r.refusal };
+  }
+  return { kind: 'unrecognised' };
+};
+
 export type PeerAnswerInboundResult =
   | { readonly accepted: true; readonly resumed: boolean }
   | { readonly accepted: false; readonly refusal: PeerAnswerRefusal; readonly reason: string };
@@ -267,6 +299,7 @@ export const sendPeerAnswerHome = async (
   // earned: report the ACTOR and the outcome, not just a state.
   console.warn(`[peer-answer] sending home via '${connection}' ref=${payload.exchange_ref}`);
   let said = '';
+  let reply: unknown;
   try {
     const r = await deps.call(connection, {
       exchange_ref: payload.exchange_ref,
@@ -279,6 +312,7 @@ export const sendPeerAnswerHome = async (
       ...(answer.note !== undefined ? { note: answer.note } : {}),
     });
     said = JSON.stringify(r ?? null);
+    reply = r;
     console.warn(`[peer-answer] sent ${said.slice(0, 300)}`);
   } catch (e) {
     console.warn(`[peer-answer] SEND FAILED: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
@@ -305,12 +339,28 @@ export const sendPeerAnswerHome = async (
   // would replace a lost decision with an unbounded loop. So they are recorded
   // as what they are and the ask completes — the trail is where the owner's
   // decision survives, since the run it was for is already gone.
-  const accepted = said.includes('"accepted":true');
-  const alreadyHome = said.includes('"already_answered"');
-  const permanent = alreadyHome
-    || said.includes('"not_solicited"')
-    || said.includes('"wrong_peer"')
-    || said.includes('"unreadable"');
+  // ⛔⛔ READ THE FIELDS, NEVER THE SERIALISED BLOB. This block used to
+  // substring-match `said` — our own `JSON.stringify` of the PEER'S response
+  // object — for `"accepted":true` and each refusal code. That search is
+  // depth-blind and field-blind, and `reason` is PEER-SUPPLIED TEXT (this file
+  // caps it for exactly that reason, § EXCHANGE_PEER_REASON_MAX). So a peer whose
+  // reason merely QUOTED a code — an error wrapper echoing it is the likely
+  // trigger, not an attack — was classified PERMANENT, and the owner's answered
+  // decision was dropped instead of retried. It fails in the losing direction.
+  // 🔑 A substring match over a blob you do not control cannot tell a FIELD from
+  // a MENTION.
+  //
+  // ⚠ A2A-ALIGNED CLASSIFICATION (v1.0, § P1.0). A2A splits task states into
+  // TERMINAL (`COMPLETED` / `FAILED` / `CANCELED` / `REJECTED` — retrying changes
+  // nothing) and INTERRUPTED (`INPUT_REQUIRED` / `AUTH_REQUIRED` — still live).
+  // Every declared refusal here is terminal in exactly that sense; an
+  // unrecognised response is not, so it stays retryable. Same distinction, same
+  // direction — which is what makes a later consolidation with A2A's push path a
+  // projection rather than a rewrite.
+  const verdict = readPeerAnswerVerdict(reply);
+  const accepted = verdict.kind === 'accepted';
+  const alreadyHome = verdict.kind === 'refused' && verdict.refusal === 'already_answered';
+  const permanent = verdict.kind === 'refused';
   if (!accepted && !permanent) {
     // Neither an acceptance nor a refusal we recognise — an unknown shape, a
     // tool error, a door that has changed. Treat it as undelivered so the boot

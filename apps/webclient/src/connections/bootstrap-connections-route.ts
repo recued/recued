@@ -41,6 +41,16 @@ import {
   type OAuthClientConfigResult,
 } from './accounts-lane-panel.js';
 import type { FoundationalOAuthContinuity } from './foundational-oauth-continuity.js';
+import {
+  connectionsAccountAddress,
+  connectionsAddressSelection,
+  connectionsEnrollAddress,
+  connectionsLaneAddress,
+  isConnectionsTabId,
+  isFoundationalConnectionsLane,
+  type ConnectionsAddress,
+  type ConnectionsTabId,
+} from './connections-navigation.js';
 import type { ProviderSetupContinuityStore } from './provider-setup-continuity.js';
 import type { CredentialRotationContinuityStore } from './credential-rotation-continuity.js';
 import type { CredentialRotationTabConvergence } from './credential-rotation-tab-convergence.js';
@@ -82,6 +92,7 @@ import {
   type CredentialRotationServerUpdateTarget,
 } from '../settings/connections-enroll-panel.js';
 import { serializeShellRoute } from '../shell/route.js';
+import { createHierarchicalHistory } from '../shell/hierarchical-navigation.js';
 import { serializeChatConnectedSource } from '../chat/connected-source-handoff.js';
 import {
   mountWebhooksPanel,
@@ -261,20 +272,16 @@ const CONNECTIONS_TABS = [
   { id: 'webhooks', label: 'Webhooks' },
 ] as const;
 
-type ConnectionsTabId = (typeof CONNECTIONS_TABS)[number]['id'];
-
 // Same-surface tab navigation remounts this route. Carry only the activated
 // tab across that short boundary, scoped to the owning document and consumed
 // by the next Connections mount so direct links never steal focus.
 const pendingTabFocusByDocument = new WeakMap<Document, ConnectionsTabId>();
 
 const isFoundationalLane = (tab: ConnectionsTabId): tab is AccountLaneId =>
-  tab === 'mail' || tab === 'calendar' || tab === 'file';
+  isFoundationalConnectionsLane(tab);
 
 const resolveTab = (raw: string | undefined): ConnectionsTabId =>
-  CONNECTIONS_TABS.some((t) => t.id === raw)
-    ? (raw as ConnectionsTabId)
-    : 'mail';
+  isConnectionsTabId(raw) ? raw : 'mail';
 
 const CONNECTIONS_ROUTE_CHROME_STYLES = `
 [${CONNECTIONS_ROUTE_HOST_ATTR}] {
@@ -391,6 +398,12 @@ export const CONNECTIONS_ROUTE_STYLES = [
 export interface BootstrapConnectionsRouteOptions {
   root: HTMLElement;
   document?: Document;
+  /** Preferred complete route selection. Legacy positional fields below stay
+   * available for narrow/test mounts; production passes this typed address. */
+  initialAddress?: ConnectionsAddress;
+  /** Keeps the shell's same-route comparison baseline aligned after a
+   * successful in-page account list/detail History write. */
+  onHashSync?: (hash: string) => void;
   /** Hash navigation seam used by post-connect next actions. The webclient
    *  bootstrap supplies its hash-source-aware navigator; direct mounts fall
    *  back to the document's location. */
@@ -399,9 +412,7 @@ export interface BootstrapConnectionsRouteOptions {
    *  Defaults to `mail`. */
   initialTab?: string;
   /** Deep-link segment 1 — a foundational account to open in detail
-   *  (`#connections/<lane>/<slug>`). Opens the detail on mount; the lane
-   *  tab is the addressable unit (account-detail nav is local state for
-   *  now — R16 full-depth routing is a later track). */
+   *  (`#connections/<lane>/<slug>`). */
   initialDetailSlug?: string;
   /** Packs "Set up" deep link — `#connections/others/enroll/<vendor>`
    *  (segment 1 = the `enroll` verb, segment 2 = the vendor). Forwarded to
@@ -604,7 +615,33 @@ export const bootstrapConnectionsRoute = (
     doc.head.appendChild(style);
   }
 
-  const activeTab = resolveTab(opts.initialTab);
+  const typedSelection = opts.initialAddress === undefined
+    ? null
+    : connectionsAddressSelection(opts.initialAddress);
+  const activeTab = typedSelection?.tab ?? resolveTab(opts.initialTab);
+  const initialDetailSlug = typedSelection === null
+    ? opts.initialDetailSlug
+    : typedSelection.detailSlug ?? undefined;
+  const initialEnrollVendor = typedSelection === null
+    ? opts.initialEnrollVendor
+    : typedSelection.enrollVendor ?? undefined;
+  const mountedConnectionsAddress = opts.initialAddress?.kind === 'account'
+    ? connectionsAccountAddress(
+        opts.initialAddress.lane,
+        opts.initialAddress.slug,
+      )
+    : opts.initialAddress?.kind === 'enroll'
+      ? connectionsEnrollAddress(opts.initialAddress.vendor)
+      : connectionsLaneAddress(activeTab);
+  const connectionsHistory = createHierarchicalHistory({
+    initial: opts.initialAddress !== undefined
+      ? mountedConnectionsAddress
+      : isFoundationalLane(activeTab) && initialDetailSlug !== undefined
+        ? connectionsAccountAddress(activeTab, initialDetailSlug)
+        : connectionsLaneAddress(activeTab),
+    history: () => doc.defaultView?.history,
+    onCommit: (address) => opts.onHashSync?.(address.hash),
+  });
 
   const routeRoot = doc.createElement('div');
   routeRoot.setAttribute(CONNECTIONS_ROUTE_HOST_ATTR, '');
@@ -635,7 +672,7 @@ export const bootstrapConnectionsRoute = (
     link.className =
       'connections-route-tab'
       + (tab.id === activeTab ? ' connections-route-tab--active' : '');
-    link.setAttribute('href', serializeShellRoute('connections', tab.id));
+    link.setAttribute('href', connectionsLaneAddress(tab.id).hash);
     link.textContent = tab.label;
     link.addEventListener('click', (event) => {
       const click = event as MouseEvent;
@@ -679,11 +716,18 @@ export const bootstrapConnectionsRoute = (
       host: content,
       document: doc,
       initialLane: activeTab,
-      oauthReturnHref: serializeShellRoute('connections', activeTab),
+      oauthReturnHref: connectionsLaneAddress(activeTab).hash,
+      onNavigate: (lane, detailSlug) => {
+        connectionsHistory.navigate(
+          detailSlug === null
+            ? connectionsLaneAddress(lane)
+            : connectionsAccountAddress(lane, detailSlug),
+        );
+      },
       onGoToChat: (source) => navigate(serializeChatConnectedSource(source)),
-      onOpenLane: (lane) => navigate(serializeShellRoute('connections', lane)),
-      ...(opts.initialDetailSlug !== undefined
-        ? { initialDetailSlug: opts.initialDetailSlug }
+      onOpenLane: (lane) => navigate(connectionsLaneAddress(lane).hash),
+      ...(initialDetailSlug !== undefined
+        ? { initialDetailSlug }
         : {}),
       ...(opts.mail !== undefined ? { mail: opts.mail } : {}),
       ...(opts.calendar !== undefined ? { calendar: opts.calendar } : {}),
@@ -878,8 +922,8 @@ export const bootstrapConnectionsRoute = (
         ...(opts.connectionsPacksListCaller !== undefined
           ? { runPacksList: opts.connectionsPacksListCaller }
           : {}),
-        ...(opts.initialEnrollVendor !== undefined
-          ? { initialVendor: opts.initialEnrollVendor }
+        ...(initialEnrollVendor !== undefined
+          ? { initialVendor: initialEnrollVendor }
           : {}),
         ...(opts.initialCredentialRotationServerUpdateRetry !== undefined
           ? {

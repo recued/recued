@@ -37,6 +37,11 @@ export const WEBCLIENT_ROUTE_IDS = [
   'automation',
   'data',
   'logs',
+  // D-250 § D7 / § Open 10 — the owner's OWN metrics. Beside Logs in the review
+  // section, NOT under Server (operational configuration) and not replacing Chat as the
+  // landing. ⚠ Deliberately no per-tag route: § C6 dropped the overlay, so the full
+  // ranked list lives at recued.com/explore and this surface shows only your own numbers.
+  'stats',
   'chat',
   // D-145 PA7 / D-172 P2 — the mail compose host. NOT a mail client: a mailbox
   // roster plus the compose window. D-174 D12 puts email's long-term home in
@@ -722,8 +727,8 @@ export const WEBCLIENT_DEEP_LINK_ROUTES: ReadonlySet<WebclientRouteId> =
     'automation',
     'contracts',
     'connections',
-    // R18 — `#data/<tab>/<entity_id>` re-mounts on a tab / entity change so the
-    // warehouse explorer's selection is a durable, shareable deep link.
+    // R18 — external `#data/<tab>/<entity_id>` changes remount so the warehouse
+    // explorer can hydrate a durable selection; in-page changes stay mounted.
     'data',
     // Set up Chat can detour from a durable thread through Settings and return
     // to `#chat/session/<id>`. Treat Chat as addressable so the shell's bare
@@ -732,19 +737,19 @@ export const WEBCLIENT_DEEP_LINK_ROUTES: ReadonlySet<WebclientRouteId> =
     // R19 — `#reception/<section>` (inbox · abuse · endpoints) re-mounts
     // on a section switch so the new `initialSection` takes; the deeper
     // endpoints segments (`#reception/endpoints/new|edit/<kind>`,
-    // `#reception/endpoints/setup`, `#reception/endpoints/<id>`) ride the
-    // same re-mount so authoring / wizard / detail are durable deep links.
+    // `#reception/endpoints/setup`, `#reception/endpoints/<id>`) remain durable
+    // deep links. Production endpoint previews update in place; external
+    // Back/Forward changes still rehydrate through this boundary.
     'reception',
-    // R22 — `#packs/<slug>` re-mounts on a slug change so the packs
-    // surface's list→detail selection is a durable, shareable deep link
-    // (mirrors recipes/data). In-page selection uses replaceState so it
-    // never remounts; only a link/refresh to a different slug does.
+    // R22 — external `#packs/<slug>[/use/<view>]` changes remount so pack and
+    // runtime-view selections hydrate from a durable address. In-page changes
+    // use the shared history controller and keep the live surface mounted.
     'packs',
     // Kitchen (Edit→Kitchen) — `#kitchen/recipe/<id>` (recipe editor) and
     // `#kitchen/pack[/<draft>]` (pack editor) are sibling authoring surfaces
     // under one route, so a hash change BETWEEN them (or to a different
     // recipe / draft) must tear down + re-mount to swap editors / reload the
-    // selection. In-page draft selection uses replaceState (no hashchange),
+    // selection. In-page draft selection uses the shared history controller,
     // so it never remounts — matching the packs precedent.
     'kitchen',
   ]);

@@ -9,16 +9,18 @@
  *  fires a write.
  *
  *  ── The rule ──────────────────────────────────────────────────────
- *  A recipe is a VIEW iff ALL THREE hold:
- *    1. it renders a reading surface — a `table` or `record_fields` block, i.e.
+ *  A recipe is a VIEW iff ALL FOUR hold:
+ *    1. it is manual — trigger-driven recipes are lifecycle-managed because
+ *       an arbitrary press cannot manufacture their source precondition;
+ *    2. it renders a reading surface — a `table` or `record_fields` block, i.e.
  *       there is something to look at;
- *    2. it is PROVABLY read-only, on two independent axes (below); and
- *    3. it needs no input to be meaningful.
+ *    3. it is PROVABLY read-only, on two independent axes (below); and
+ *    4. it needs no input to be meaningful.
  *  A read-only renderer that DOES need input is a LOOKUP, and a recipe that
  *  writes is an OPERATION. Both are reached by pressing them, which opens the
  *  run modal — the form is how you supply the id or the values.
  *
- *  ⚠ (3) follows the ENGINE'S variable rule, not the presence of a guard:
+ *  ⚠ (4) follows the ENGINE'S variable rule, not the presence of a guard:
  *  `null`, or a non-optional ValueHint with no `default`, requires caller
  *  input. A guard may instead enforce a result cap or a stored-data invariant;
  *  treating every guard as an input form hid complete zero-config views such
@@ -70,6 +72,7 @@ import {
   recipeRecordsUsage,
   type RecordsUsagePack,
 } from '../recipes/recipe-records-usage.js';
+import { classifyRecipeAction } from '../recipes/recipe-action-kind.js';
 
 /** Output blocks that mean "there is something here to read". A `summary` is
  *  deliberately NOT one: every operation in the corpus ends with a `to_summary`
@@ -99,6 +102,10 @@ export interface PackAppSurface {
   lookups: PackAppRecipe[];
   /** Recipes that write. Run explicitly, through the modal. */
   operations: PackAppRecipe[];
+  /** Trigger-driven recipes. Their source preconditions do not exist at an
+   * arbitrary button press, so Pack Use links to lifecycle management instead
+   * of auto-running them as views or exposing a manual Run control. */
+  automations: PackAppRecipe[];
   /** Recipe slugs the manifest ships that are NOT installed on this server.
    *  REPORTED, never silently dropped: a half-installed pack rendering as a
    *  smaller app is exactly the failure that looks like a working one. */
@@ -226,6 +233,7 @@ export const packAppSurface = (
   const views: PackAppRecipe[] = [];
   const lookups: PackAppRecipe[] = [];
   const operations: PackAppRecipe[] = [];
+  const automations: PackAppRecipe[] = [];
   const missing: string[] = [];
 
   // An uninstalled pack forwards no manifest, so it ships no visible recipes to
@@ -248,6 +256,10 @@ export const packAppSurface = (
         : '',
       entry,
     };
+    if (classifyRecipeAction(entry.recipe) !== 'manual') {
+      automations.push(item);
+      continue;
+    }
     const readOnlyRenderer = rendersReadingSurface(entry.recipe)
       && isProvablyReadOnly(entry.recipe, roster);
     const bucket = !readOnlyRenderer
@@ -256,7 +268,7 @@ export const packAppSurface = (
     bucket.push(item);
   }
 
-  return { views, lookups, operations, missing };
+  return { views, lookups, operations, automations, missing };
 };
 
 /** Whether `#packs/<slug>` should open on the app surface at all.
@@ -269,4 +281,5 @@ export const packAppSurface = (
 export const hasAppSurface = (surface: PackAppSurface): boolean =>
   surface.views.length > 0
   || surface.lookups.length > 0
-  || surface.operations.length > 0;
+  || surface.operations.length > 0
+  || surface.automations.length > 0;

@@ -123,6 +123,10 @@ import {
   SERVER_SWITCHER_RETURN_TO_WORK_ATTR,
 } from '../shell/server-switcher.js';
 import { THEME_TOGGLE_ATTR } from '../shell/theme-controller.js';
+import {
+  GLOBAL_RUN_PALETTE_SHORTCUT,
+  GLOBAL_RUN_PALETTE_TRIGGER_ATTR,
+} from '../shell/global-run-palette.js';
 import { WebclientReauthRequiredError } from '../realtime/ws-client.js';
 import {
   ACCOUNT_MENU_ADD_SERVER_ATTR,
@@ -1168,6 +1172,27 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     await handle.dispose();
   });
 
+  it('⛔⛔ mounts Stats when the hash is #stats — the DISCRIMINATOR, not just the drawer', async () => {
+    // The drawer entry and the mount branch are two separate wirings, and only one of
+    // them was covered: removing `if (route === 'stats')` from the discriminator reddened
+    // NOTHING, because every Stats test called `bootstrapStatsRoute` directly. Fourth
+    // instance of that shape in this feature — a module with tests and no path to it.
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#stats');
+    const handle = await bootstrapWebclient(fixture.opts);
+    // ⛔⛔ `activeRoute()` ALONE IS VACUOUS — it reports the PARSED hash, so it says
+    // 'stats' even with the mount branch deleted. Proved by mutation. The only honest
+    // signal is something ONLY the mount produces: the route paints its heading into
+    // the shell's content root.
+    expect(handle.activeRoute()).toBe('stats');
+    // ⚠ The route paints on a promise (`void refresh()`), so let the microtask land —
+    // and read the SUBTREE, since the fake element's innerHTML does not serialize
+    // children the way a real DOM node does.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(subtreeInnerHtml(fixture.root)).toContain('data-recued-stats-route-heading');
+    await handle.dispose();
+  });
+
   it('keeps D-200 pair invalidations live when the separate Approvals route is disabled', async () => {
     const fixture = buildOpts();
     fixture.hashSource.setHash('#reception/endpoints/pair/intake-1');
@@ -1499,6 +1524,34 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     await handle.dispose();
   });
 
+  it('mounts one persistent, keyboard-discoverable Run launcher across routes', async () => {
+    const fixture = buildOpts();
+    const handle = await bootstrapWebclient(fixture.opts);
+    const triggers = findChildrenByAttr(
+      fixture.root,
+      GLOBAL_RUN_PALETTE_TRIGGER_ATTR,
+    );
+    expect(triggers).toHaveLength(1);
+    const trigger = triggers[0]!;
+    expect(trigger.tagName).toBe('BUTTON');
+    expect(trigger.getAttribute('aria-label')).toBe('Run a recipe');
+    expect(trigger.getAttribute('aria-haspopup')).toBe('dialog');
+    expect(trigger.getAttribute('aria-keyshortcuts'))
+      .toBe(GLOBAL_RUN_PALETTE_SHORTCUT);
+    expect(trigger.getAttribute('title')).toMatch(/^Run a recipe \(.+\)$/);
+
+    fixture.hashSource.setHash('#data');
+    expect(findChildByAttr(fixture.root, GLOBAL_RUN_PALETTE_TRIGGER_ATTR))
+      .toBe(trigger);
+    fixture.hashSource.setHash('#settings');
+    expect(findChildrenByAttr(fixture.root, GLOBAL_RUN_PALETTE_TRIGGER_ATTR))
+      .toEqual([trigger]);
+
+    await handle.dispose();
+    expect(findChildByAttr(fixture.root, GLOBAL_RUN_PALETTE_TRIGGER_ATTR))
+      .toBeNull();
+  });
+
   it('mounts one persistent §D.L2 drawer in the locked order and tracks the active route on content swaps', async () => {
     const fixture = buildOpts();
     const handle = await bootstrapWebclient(fixture.opts);
@@ -1529,6 +1582,10 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
       'contracts',
       'reception',
       'log',
+      // D-250 § D7 — Stats joins the REVIEW section beside Logs. Deliberately not under
+      // Server (operational configuration: exposure, certs, keys, maintenance) and not
+      // ahead of Chat, which stays the landing.
+      'stats',
       'settings',
       'account',
     ]);
@@ -1547,6 +1604,9 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
       '#contracts',
       '#reception',
       '#logs',
+      // D-250 § D7 — the Stats route's href. ⚠ Bare `#stats` with no segment: § C6
+      // dropped the per-tag overlay, so there is nothing below this route to address.
+      '#stats',
       '#settings',
       '#settings/account',
     ]);
@@ -1907,6 +1967,32 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     await sellerPage?.whenLoaded();
   });
 
+  it('replace-canonicalizes a stale Seller tail to the rendered collection', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#settings/seller/orders/page/nope/ignored');
+    const replaceState = vi.fn();
+    (fixture.fakeDoc as { defaultView?: unknown }).defaultView = {
+      history: { replaceState, pushState: vi.fn() },
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+
+    const handle = await bootstrapWebclient(fixture.opts);
+    const sellerPage = handle.settingsRoute()?.sellerPage();
+
+    expect(sellerPage?.getState().subpage).toBe('orders');
+    expect(sellerPage?.getState().page).toBe(1);
+    expect(replaceState).toHaveBeenCalledWith(
+      null,
+      '',
+      '#settings/seller/orders',
+    );
+    await flush();
+    answerSellerListOrders(fixture.transportControls);
+    await handle.dispose();
+    await sellerPage?.whenLoaded();
+  });
+
   it('re-mounts Settings when navigating between Seller sub-pages', async () => {
     const fixture = buildOpts();
     fixture.hashSource.setHash('#settings/seller/offers');
@@ -2031,6 +2117,29 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     };
   };
 
+  it.each([
+    ['#kitchen/pack/draft-1/ignored', '#kitchen/pack/draft-1'],
+    ['#kitchen/recipe/recipe-1/ignored', '#kitchen/recipe/recipe-1'],
+  ])('replace-canonicalizes a tolerated Kitchen tail: %s', async (
+    sourceHash,
+    canonicalHash,
+  ) => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash(sourceHash);
+    const replaceState = vi.fn();
+    (fixture.fakeDoc as { defaultView?: unknown }).defaultView = {
+      history: { replaceState, pushState: vi.fn() },
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+
+    const handle = await bootstrapWebclient(fixture.opts);
+
+    expect(handle.activeRoute()).toBe('kitchen');
+    expect(replaceState).toHaveBeenCalledWith(null, '', canonicalHash);
+    await handle.dispose();
+  });
+
   it('the Settings rail pushes #settings/<section> without re-mounting', async () => {
     const fixture = buildOpts();
     fixture.hashSource.setHash('#settings');
@@ -2148,6 +2257,17 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     expect(
       findChildByAttr(routeContentRoot(fixture.root), 'data-recued-settings-route'),
     ).toBe(settingsRoot);
+
+    // The shared controller must adopt the browser-owned Back address. If it
+    // still believed Seller was current, this second click would be suppressed
+    // as a same-address no-op and the visible rail would desync from the URL.
+    findChildByAttrValue(
+      settingsRoot,
+      SETTINGS_ROUTE_NAV_ITEM_ATTR,
+      'seller',
+    )!.fireClick({});
+    expect(history.pushState).toHaveBeenCalledTimes(2);
+    expect(history.stack).toEqual(['#settings', '#settings/seller']);
 
     await handle.dispose();
     await sellerBefore?.whenLoaded();

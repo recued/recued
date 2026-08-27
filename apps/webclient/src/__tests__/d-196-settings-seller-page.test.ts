@@ -105,6 +105,11 @@ import {
   type SellerStripeSynchronizeCaller,
   mountSellerPage,
 } from '../settings/seller-page.js';
+import {
+  LIST_PREVIEW_ATTR,
+  LIST_PREVIEW_OPEN_ATTR,
+  updateListContinuity,
+} from '../shell/list-preview-continuity.js';
 
 interface FakeElement {
   tagName: string;
@@ -116,6 +121,7 @@ interface FakeElement {
   checked: boolean;
   rows: number;
   href: string;
+  hidden: boolean;
   children: FakeElement[];
   parent: FakeElement | null;
   attrs: Map<string, string>;
@@ -124,6 +130,7 @@ interface FakeElement {
   removeAttribute(k: string): void;
   getAttribute(k: string): string | null;
   hasAttribute(k: string): boolean;
+  closest(selector: string): FakeElement | null;
   appendChild(el: FakeElement): FakeElement;
   removeChild(el: FakeElement): FakeElement;
   readonly firstChild: FakeElement | null;
@@ -144,6 +151,7 @@ const makeFakeElement = (tagName: string): FakeElement => {
     checked: false,
     rows: 0,
     href: '',
+    hidden: false,
     children: [],
     parent: null,
     attrs: new Map(),
@@ -159,6 +167,16 @@ const makeFakeElement = (tagName: string): FakeElement => {
     },
     hasAttribute(k) {
       return el.attrs.has(k);
+    },
+    closest(selector) {
+      const match = selector.match(/^\[([\w-]+)\]$/);
+      if (match === null) return null;
+      let candidate: FakeElement | null = el;
+      while (candidate !== null) {
+        if (candidate.hasAttribute(match[1]!)) return candidate;
+        candidate = candidate.parent;
+      }
+      return null;
     },
     appendChild(child) {
       el.children.push(child);
@@ -478,7 +496,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
       '#settings/seller/tiers/detail/tier-1',
     );
     expect(tierLink?.getAttribute('aria-label')).toBe(
-      'Open tier tier-1 (Consulting Basic)',
+      'Preview tier tier-1 (Consulting Basic); press Enter to open',
     );
     expect(
       findByAttr(tierHost, SELLER_CONTRACT_LINK_ATTR, 'contract-template-1')
@@ -517,7 +535,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
       '#settings/seller/customers/detail/customer-1',
     );
     expect(customerLink?.getAttribute('aria-label')).toBe(
-      'Open customer customer-1 (manual-cus-1)',
+      'Preview customer customer-1 (manual-cus-1); press Enter to open',
     );
     customerMount.dispose();
 
@@ -535,9 +553,46 @@ describe('D-196 S2 - Settings -> Seller page', () => {
       usageHost,
       SELLER_COLLECTION_ITEM_LINK_ATTR,
     )?.getAttribute('aria-label')).toBe(
-      'Open Chat Turn usage for contract-customer-1 (month 1700000000000)',
+      'Preview Chat Turn usage for contract-customer-1 (month 1700000000000); press Enter to open',
     );
     usageMount.dispose();
+  });
+
+  it('previews a Seller row before its full detail navigation', async () => {
+    const host = makeFakeElement('div');
+    const onNavigate = vi.fn();
+    const mount = mountSellerPage({
+      host: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      initialSubpage: 'customers',
+      onNavigate,
+      runGetOverview: async () => overview(),
+    });
+    await mount.whenLoaded();
+
+    const link = findByAttr(
+      host,
+      SELLER_COLLECTION_ITEM_LINK_ATTR,
+      'customer-1',
+    )!;
+    const wrapper = host.children[0]!;
+    const preventDefault = vi.fn();
+    for (const listener of wrapper.listeners.get('click') ?? []) {
+      listener({ target: link, button: 0, preventDefault });
+    }
+
+    const preview = findByAttr(host, LIST_PREVIEW_ATTR)!;
+    expect(preventDefault).toHaveBeenCalled();
+    expect(preview.hidden).toBe(false);
+    expect(preview.getAttribute('data-id')).toBe('customer-1');
+    expect(onNavigate).not.toHaveBeenCalled();
+
+    findByAttr(preview, LIST_PREVIEW_OPEN_ATTR)!.click();
+    expect(onNavigate).toHaveBeenCalledWith(
+      '#settings/seller/customers/detail/customer-1',
+      'push',
+    );
+    mount.dispose();
   });
 
   it('pages a collection list and opens one customer in a focused detail view', async () => {
@@ -616,6 +671,88 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     detailMount.dispose();
   });
 
+  it('restores a Seller collection page and scroll only after its rows load', async () => {
+    const base = overview();
+    const customers = [
+      base.customers[0]!,
+      {
+        ...base.customers[0]!,
+        customer_id: 'customer-2',
+        source_customer_id: 'manual-cus-2',
+        contract_id: 'contract-customer-2',
+      },
+      {
+        ...base.customers[0]!,
+        customer_id: 'customer-3',
+        source_customer_id: 'manual-cus-3',
+        contract_id: 'contract-customer-3',
+      },
+    ];
+    const pagedOverview = overview({
+      customers,
+      counts: {
+        ...base.counts,
+        customers: 3,
+        active_customers: 3,
+      },
+    });
+    const doc = makeFakeDocument();
+    updateListContinuity(
+      doc as unknown as Document,
+      'seller:customers',
+      {
+        page: 2,
+        focusedId: 'customer-3',
+        scroll: { top: 515, left: 3 },
+      },
+    );
+    let resolveOverview!: (value: SellerOverview) => void;
+    const overviewLoad = new Promise<SellerOverview>((resolve) => {
+      resolveOverview = resolve;
+    });
+    const scrollRoot = makeFakeElement('main') as FakeElement & {
+      scrollTop: number;
+      scrollLeft: number;
+    };
+    scrollRoot.scrollTop = 0;
+    scrollRoot.scrollLeft = 0;
+    const host = makeFakeElement('div');
+    const listMount = mountSellerPage({
+      host: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      scrollRoot: scrollRoot as unknown as HTMLElement,
+      initialSubpage: 'customers',
+      pageSize: 2,
+      runGetOverview: () => overviewLoad,
+    });
+
+    await flushAsync();
+    expect(scrollRoot.scrollTop).toBe(0);
+    resolveOverview(pagedOverview);
+    await listMount.whenLoaded();
+
+    expect(listMount.getState().page).toBe(2);
+    expect(findByAttr(host, SELLER_CUSTOMER_ROW_ATTR, 'customer-3')).not.toBeNull();
+    expect(scrollRoot.scrollTop).toBe(515);
+    expect(scrollRoot.scrollLeft).toBe(3);
+    listMount.dispose();
+
+    const detailHost = makeFakeElement('div');
+    const detailMount = mountSellerPage({
+      host: detailHost as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      initialSubpage: 'customers',
+      initialItemId: 'customer-3',
+      pageSize: 2,
+      runGetOverview: async () => pagedOverview,
+    });
+    await detailMount.whenLoaded();
+
+    expect(findByAttr(detailHost, SELLER_BACK_ATTR)?.getAttribute('href'))
+      .toBe('#settings/seller/customers/page/2');
+    detailMount.dispose();
+  });
+
   it('falls back to the Seller directory for an unknown sub-page', async () => {
     const host = makeFakeElement('div');
     const mount = mountSellerPage({
@@ -674,7 +811,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
       '#settings/seller/orders/detail/ord%3Apage%3A3',
     );
     expect(orderLink?.getAttribute('aria-label')).toBe(
-      'Open order ord:page:3 for paid-doc',
+      'Preview order ord:page:3 for paid-doc; press Enter to open',
     );
     expect(findByAttr(listHost, SELLER_PAGE_PREVIOUS_ATTR)?.getAttribute('href'))
       .toBe('#settings/seller/orders');
@@ -1076,7 +1213,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
       SELLER_COLLECTION_ITEM_LINK_ATTR,
       'paid-document.outcome',
     )?.getAttribute('aria-label')).toBe(
-      'Open offer paid-document.outcome (Paid document)',
+      'Preview offer paid-document.outcome (Paid document); press Enter to open',
     );
     const definitionLink = findByAttr(
       offerRow!,
@@ -1086,6 +1223,10 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     expect(definitionLink?.getAttribute('href')).toBe(
       '#recipes/start-paid-document-fulfillment',
     );
+    expect(definitionLink?.getAttribute('data-recued-reference')).toBe('link');
+    expect(definitionLink?.getAttribute('data-recued-reference-id')).toBe(
+      'start-paid-document-fulfillment',
+    );
     expect(textOf(definitionLink!)).toContain('Open recorded creator recipe');
     const fulfillmentLink = findByAttr(
       offerRow!,
@@ -1094,6 +1235,10 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     );
     expect(fulfillmentLink?.getAttribute('href')).toBe(
       '#recipes/generate-paid-document',
+    );
+    expect(fulfillmentLink?.getAttribute('data-recued-reference')).toBe('link');
+    expect(fulfillmentLink?.getAttribute('data-recued-reference-id')).toBe(
+      'generate-paid-document',
     );
     expect(textOf(fulfillmentLink!)).toContain('Open fulfillment recipe');
     expect(findByAttr(host, SELLER_OFFER_STATE_ACTION_ATTR)).toBeNull();

@@ -175,6 +175,8 @@ describe('D-221 #data Records explorer', () => {
     expect(html).toContain('Global Records quota');
     expect(html).toContain('Migration reserve');
     expect(html).toContain('data-action="records-open-reference"');
+    expect(html).toContain('data-recued-reference="action"');
+    expect(html).toContain('data-recued-reference-id="job/job-0"');
     expect(html).toContain('aria-label="Open record job-1"');
     expect(html).not.toContain('<tr tabindex=');
     expect(html).toContain('1 pending');

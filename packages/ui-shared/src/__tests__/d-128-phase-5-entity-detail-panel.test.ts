@@ -375,6 +375,42 @@ describe('D-128 P5 — timeline section', () => {
     });
     expect(html).toContain('No timeline events yet.');
   });
+
+  it('renders outside-actor attribution and keeps first-person entries quiet', () => {
+    const attributed: TimelineEntry = {
+      ts: NOW - 60_000,
+      source: 'memory',
+      kind: 'assertion',
+      payload: {},
+      origin_actor: 'contracted_user',
+      attribution: {
+        kind: 'agent',
+        origin_actor: 'contracted_user',
+        agent_id: 'agent-1',
+        contract_id: 'contract-1',
+        label: 'agent agent-1, under contract contract-1, asserted this',
+      },
+    };
+    const firstPerson: TimelineEntry = {
+      ts: NOW,
+      source: 'memory',
+      kind: 'note',
+      payload: {},
+      origin_actor: 'user_self',
+    };
+    const html = renderEntityDetailPanel({
+      scope: 'contact',
+      target_id: 'c1',
+      vendorEntity: null,
+      metaSnapshot: null,
+      enrichments: [],
+      timelineEntries: [attributed, firstPerson],
+      now: NOW,
+    });
+    expect(html).toContain('data-recued-provenance');
+    expect(html).toContain('agent agent-1, under contract contract-1, asserted this');
+    expect(html.match(/data-recued-provenance(?=[\s>])/g)).toHaveLength(1);
+  });
 });
 
 // ────────────────────────────────────────────────────────────────

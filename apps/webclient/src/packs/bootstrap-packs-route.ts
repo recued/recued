@@ -40,7 +40,14 @@
 
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
 
-import { serializeShellRoute } from '../shell/route.js';
+import {
+  createHierarchicalHistory,
+} from '../shell/hierarchical-navigation.js';
+import {
+  packAppViewAddress,
+  packDetailAddress,
+  packsListAddress,
+} from './pack-app-navigation.js';
 
 // Unified `#packs` surface (retires the [Installed | Discover] tab split): the
 // browse list (discover panel over the catalog ∪ roster union) → the detail
@@ -302,15 +309,15 @@ export interface BootstrapPacksRouteOptions {
     prefill?: { config?: Record<string, unknown>; context?: Record<string, unknown> },
   ) => void;
   /** R22 list→detail — the `#packs/<slug>` deep-link segment. Opens that pack's
-   *  DETAIL view on mount; the panel resyncs the hash as the selection changes
-   *  (via `replaceState`, so in-page navigation never remounts). */
+   *  DETAIL view on mount; the panel keeps the hierarchical address aligned as
+   *  the pack and its runtime-generated read view change. */
   initialPackSlug?: string;
-  /** R22 list→detail — called with the new `#packs/<slug>` (or bare `#packs`)
-   *  hash AFTER a successful in-page `replaceState`. The shell router uses it to
-   *  keep its cached `activeHash` in lockstep with the in-page selection, so a
-   *  later hashchange to the PREVIOUSLY-shown slug isn't dropped as a same-hash
-   *  no-op. (Closes the R16 replaceState-doesn't-fire-hashchange desync; recipes/
-   *  data share the gap — a uniform shell fix is a separate follow-up.) */
+  /** Runtime-generated read view selected by
+   * `#packs/<slug>/use/<recipe-id>`. Ignored without `initialPackSlug`. */
+  initialPackViewId?: string;
+  /** Called after a successful in-page history write. The shell uses it to keep
+   *  its cached address aligned because pushState/replaceState emit no
+   *  hashchange. */
   onHashSync?: (hash: string) => void;
   subscribe?: BroadcastSubscriber['on'];
 }
@@ -483,42 +490,33 @@ export const bootstrapPacksRoute = (
     const packsListCaller = opts.packsListCaller;
     const packsHost = doc.createElement('div');
     packsSection.appendChild(packsHost);
-    // R22 list→detail — mirror the recipes/data hash-sync: on an in-page
-    // selection change the surface calls back here + we `replaceState` the
-    // `#packs/<slug>` (or bare `#packs`) hash so the URL is addressable WITHOUT
-    // a remount (a link/refresh to a different slug still remounts via
-    // `initialPackSlug`). Non-fatal on failure — addressability degrades to
-    // in-page-only.
-    /** ⛔⛔ OPENING A DETAIL IS A PLACE, SO IT PUSHES. `replaceState` for the whole
-     *  list→detail transition OVERWROTE the `#packs` entry, so the native Back button
-     *  skipped the list entirely and landed a level above it — the route the owner
-     *  came from, not the one they could see.
-     *  🔑 `pushState` emits no `hashchange` either, so the reason `replaceState` was
-     *  chosen here — in-page navigation must never remount — is fully preserved. The
-     *  only difference is that Back now has somewhere to go.
-     *  ⚠ Only ENTERING a detail pushes. Closing one back to the bare list replaces, or
-     *  a list→detail→list round trip would leave two entries and Back would bounce the
-     *  owner into the detail they just closed. */
-    let syncedPackSlug: string | null = null;
+    const initialPackAddress = opts.initialPackSlug === undefined
+      ? packsListAddress()
+      : opts.initialPackViewId === undefined
+        ? packDetailAddress(opts.initialPackSlug)
+        : packAppViewAddress(opts.initialPackSlug, opts.initialPackViewId);
+    /** The shared writer is seeded from the mounted deep link, so hydrating a
+     * pack never adds a duplicate entry. Opening from the list pushes; changing
+     * or closing the selection replaces and never remounts this live surface. */
+    const packHistory = createHierarchicalHistory({
+      initial: initialPackAddress,
+      history: doc.defaultView?.history,
+      onCommit: (address) => opts.onHashSync?.(address.hash),
+    });
     const syncPacksHash = (slug: string | null): void => {
-      const history = doc.defaultView?.history;
-      if (history?.replaceState === undefined) return;
-      const nextHash = serializeShellRoute('packs', slug ?? undefined);
-      const entering = slug !== null && syncedPackSlug === null;
-      try {
-        if (entering && typeof history.pushState === 'function') {
-          history.pushState(null, '', nextHash);
-        } else {
-          history.replaceState(null, '', nextHash);
-        }
-      } catch {
-        // URL unchanged → do NOT desync the router's activeHash from it.
-        return;
-      }
-      syncedPackSlug = slug;
-      // The URL changed in-page without a hashchange event; tell the router so
-      // its cached activeHash tracks the live selection.
-      opts.onHashSync?.(nextHash);
+      packHistory.navigate(slug === null ? packsListAddress() : packDetailAddress(slug));
+    };
+    const syncPackView = (
+      packSlug: string,
+      viewId: string | null,
+      intent: 'auto' | 'replace',
+    ): void => {
+      packHistory.navigate(
+        viewId === null
+          ? packDetailAddress(packSlug)
+          : packAppViewAddress(packSlug, viewId),
+        { intent },
+      );
     };
     // Unified surface: the browse list (discover, union corpus) → the detail
     // (packs panel, detail-only). A row opens the detail; the detail's install /
@@ -530,11 +528,12 @@ export const bootstrapPacksRoute = (
       // The shell main owns route scrolling; list/detail are nested below it.
       // Name it explicitly so a deep browse position can survive the detail.
       scrollRoot: opts.root,
-      mountList: (host, onSelect) =>
+      mountList: (host, onSelect, onPreview) =>
         mountPackDiscovery({
           host,
           document: doc,
           onSelect,
+          onPreview,
           listInstalled: packsListCaller,
           ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
         }),
@@ -542,11 +541,16 @@ export const bootstrapPacksRoute = (
         packs = mountPacksPanel({
           host,
           document: doc,
+          scrollRoot: opts.root,
           runList: packsListCaller,
           onSelectSlug,
           ...(opts.initialPackSlug !== undefined
             ? { initialSlug: opts.initialPackSlug }
             : {}),
+          ...(opts.initialPackViewId !== undefined
+            ? { initialAppViewId: opts.initialPackViewId }
+            : {}),
+          onAppViewNavigate: syncPackView,
           ...(runInstallWithGrant !== undefined
             ? { runInstall: runInstallWithGrant }
             : {}),

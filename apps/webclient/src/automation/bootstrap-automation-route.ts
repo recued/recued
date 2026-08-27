@@ -52,6 +52,12 @@ import {
 } from '@recued/ui-shared';
 
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
+import {
+  createHierarchicalHistory,
+  hierarchicalAddress,
+  hierarchicalLevel,
+  type HierarchicalHistoryIntent,
+} from '../shell/hierarchical-navigation.js';
 import { serializeShellRoute } from '../shell/route.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 
@@ -288,12 +294,8 @@ export interface BootstrapAutomationRouteOptions {
   /** R21 — `#automation/<section>/<id>` deep-link: one rule's detail
    *  within `initialSection`. */
   initialDetailId?: string;
-  /** Called with the new `#automation/...` hash AFTER a successful in-page
-   *  `replaceState`. The shell router uses it to keep its cached
-   *  `activeHash` in lockstep, so a later hashchange BACK to a previously
-   *  shown hash isn't dropped as a same-hash no-op (the packs R22 fix —
-   *  codex R21 MEDIUM; recipes/data share the gap, uniform shell fix is a
-   *  separate follow-up). */
+  /** Called after a successful in-page history write so the shell's cached
+   *  address remains aligned with the visible section/detail. */
   onHashSync?: (hash: string) => void;
   /** LEGACY `#automation/<recipe-id>` deep-link (the Recipes R24 detail
    *  links here) — narrow the view to one recipe's rules. The bootstrap
@@ -1054,6 +1056,22 @@ export const bootstrapAutomationRoute = (
     && opts.initialDetailId.length > 0
       ? opts.initialDetailId
       : null;
+  const automationAddress = (
+    section: AutomationSectionToken,
+    detail: string | null,
+  ) => hierarchicalAddress(
+    'automation',
+    hierarchicalLevel(`section:${section}`, section),
+    ...(detail === null
+      ? []
+      : [hierarchicalLevel(`detail:${section}:${detail}`, detail)]),
+  );
+  const automationHistory = createHierarchicalHistory({
+    initial: automationAddress(activeSection, detailId),
+    history: () => doc.defaultView?.history
+      ?? (globalThis as { history?: History }).history,
+    onCommit: (address) => opts.onHashSync?.(address.hash),
+  });
   // One-shot: only the LEGACY recipe deep-link auto-picks (an explicit
   // section deep-link or a user tab click must never be overridden).
   let sectionAutoPickPending =
@@ -2065,9 +2083,8 @@ export const bootstrapAutomationRoute = (
       : '';
 
   // ── R21 sub-nav — one tab per section, count-badged once loaded.
-  // Tab clicks flip `activeSection` + replaceState-sync the hash (the
-  // R17/R18 idiom: addressable without a remount flash; replaceState
-  // fires no hashchange, so the shell's remount listener stays quiet).
+  // Tab clicks flip `activeSection` and align its hierarchical address without
+  // a remount. Sideways tab changes replace the current entry.
   const sectionCount = (token: AutomationSectionToken): number => {
     switch (token) {
       case 'auto-run':
@@ -2093,22 +2110,10 @@ export const bootstrapAutomationRoute = (
     }
   };
 
-  const syncHash = (): void => {
-    try {
-      const hash = serializeShellRoute('automation', activeSection, detailId);
-      const history = (globalThis as {
-        history?: { replaceState?: (d: unknown, t: string, url: string) => void };
-      }).history;
-      if (history?.replaceState !== undefined) {
-        history.replaceState(null, '', hash);
-        // Keep the shell router's cached activeHash in lockstep (codex
-        // R21 MEDIUM — without this, an external hashchange back to the
-        // pre-sync hash normalize-equals the stale cache and is dropped).
-        opts.onHashSync?.(hash);
-      }
-    } catch {
-      // Non-browser hosts (tests) have no history — state alone suffices.
-    }
+  const syncHash = (intent: HierarchicalHistoryIntent = 'auto'): void => {
+    automationHistory.navigate(automationAddress(activeSection, detailId), {
+      intent,
+    });
   };
 
   const subNav = (): string => `
@@ -3212,7 +3217,7 @@ export const bootstrapAutomationRoute = (
     deleteConfirmation = null;
     pendingModalReturnFocus = null;
     sectionAutoPickPending = false;
-    syncHash();
+    syncHash('replace');
     render();
     return true;
   };
@@ -3319,7 +3324,7 @@ export const bootstrapAutomationRoute = (
           } satisfies AutomationActionFocus;
       detailId = null;
       pendingDishHistoryRetryFocus = null;
-      syncHash();
+      syncHash('replace');
       render();
       const replacement = returnFocus === null
         ? null
@@ -3405,7 +3410,7 @@ export const bootstrapAutomationRoute = (
         pendingDishHistoryRetryFocus = null;
         loadDishHistory(ruleId);
       }
-      syncHash();
+      syncHash('push');
       render();
       focusRenderedDetailHeading();
       return;

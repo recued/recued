@@ -17,6 +17,7 @@
  *  Spec: D-198 §4/§5 + D-198 §B Slice 1b/2. */
 
 import type { Actor, MemoryGetResponse, MemoryImportResult, MemoryListEntry } from '@recued/contracts';
+import { renderProvenance, renderReferenceLink } from '@recued/ui-shared';
 
 /** Origin-filter selector — the "tenancy view" over one store (D-198 §2):
  *  `all` = no filter; the rest map 1:1 to a D-161 `Actor`. */
@@ -175,6 +176,30 @@ const ORIGIN_LABEL: Record<Actor, string> = {
   anonymous: 'External',
 };
 
+const originPresentationKind = (
+  actor: Actor,
+): 'user' | 'agent' | 'visitor' | 'system' => {
+  if (actor === 'user_self') return 'user';
+  if (actor === 'contracted_user') return 'agent';
+  if (actor === 'anonymous') return 'visitor';
+  return 'system';
+};
+
+/** One origin renderer for both the feed and detail. The primary actor stays
+ * scannable; an outside-authored row carries the server-derived attribution
+ * beside it rather than being presented as the owner's own memory. */
+const renderMemoryOrigin = (
+  entry: Pick<MemoryListEntry, 'origin_actor' | 'attribution'>,
+): string => renderProvenance({
+  primary: ORIGIN_LABEL[entry.origin_actor] ?? String(entry.origin_actor),
+  ...(entry.attribution === undefined
+    ? {}
+    : { detail: entry.attribution.label }),
+  kind: originPresentationKind(entry.origin_actor),
+  primaryClassName: `memory-origin-chip memory-origin-${entry.origin_actor}`,
+  attributes: { 'data-origin-actor': entry.origin_actor },
+});
+
 export interface MemoryLensProps {
   entries: readonly MemoryListEntry[];
   originFilter: MemoryOriginFilter;
@@ -313,10 +338,15 @@ const renderRowFoot = (
   const destructiveProgress = isOwn ? 'Deleting…' : 'Forgetting…';
   const runLink =
     entry.run_id !== undefined && entry.run_id.length > 0
-      ? `<a class="memory-row-run-link" href="${e(runHref(entry.run_id))}"
-          ${actionAttr}="${MEMORY_OPEN_RUN_ACTION}" aria-label="${actionName('Open run for memory')}"${locked
-            ? ' aria-disabled="true"'
-            : ''}>Open run</a>`
+      ? renderReferenceLink({
+          label: 'Open run',
+          referenceId: entry.run_id,
+          href: runHref(entry.run_id),
+          className: 'memory-row-run-link',
+          ariaLabel: actionName('Open run for memory'),
+          disabled: locked,
+          attributes: { [actionAttr]: MEMORY_OPEN_RUN_ACTION },
+        })
       : '';
   if (isRedacted) {
     return runLink.length > 0 ? `<div class="memory-row-foot">${runLink}</div>` : '';
@@ -387,7 +417,6 @@ const renderRow = (
   canWrite: boolean,
   locked: boolean,
 ): string => {
-  const origin = ORIGIN_LABEL[entry.origin_actor] ?? String(entry.origin_actor);
   const summary = entry.summary ?? '';
   const bodyPreview = entry.body_preview ?? '';
   // The summary (the author's short label) leads; the body preview rides below
@@ -406,7 +435,7 @@ const renderRow = (
         secondary ? `<p class="memory-row-preview">${e(secondary)}</p>` : ''}`;
   return `<li class="memory-row${isRedacted ? ' is-redacted' : ''}" data-origin="${e(entry.origin_actor)}">
     <div class="memory-row-head">
-      <span class="memory-origin-chip memory-origin-${e(entry.origin_actor)}">${e(origin)}</span>
+      ${renderMemoryOrigin(entry)}
       <span class="memory-row-kind">${e(entry.kind)}</span>
       ${size ? `<span class="memory-row-size">${e(size)}</span>` : ''}
       <span class="memory-row-time">${e(when)}</span>
@@ -573,7 +602,6 @@ const renderDetail = (
     body = `<p class="memory-lens-loading">Loading memory…</p>`;
   } else {
     const entry = detail.entry;
-    const origin = ORIGIN_LABEL[entry.origin_actor] ?? String(entry.origin_actor);
     const when = formatRelativeTime(entry.event_at ?? entry.ts, now);
     const isOwn = entry.origin_actor === 'user_self';
     const isRedacted = entry.redacted === true;
@@ -625,7 +653,7 @@ const renderDetail = (
             ? `<pre class="memory-detail-body">${e(entry.body)}</pre>`
             : '<p class="memory-lens-empty">This entry has no body.</p>'}`;
     body = `<div class="memory-detail-head">
-        <span class="memory-origin-chip memory-origin-${e(entry.origin_actor)}">${e(origin)}</span>
+        ${renderMemoryOrigin(entry)}
         <span class="memory-row-kind">${e(entry.kind)}</span>
         <span class="memory-row-time">${e(when)}</span>
       </div>

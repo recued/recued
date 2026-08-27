@@ -133,6 +133,7 @@ import {
   ENTITY_DETAIL_PANEL_STYLES,
   FORM_RENDERER_STYLES,
   MERGE_REVIEW_DIALOG_STYLES,
+  REFERENCE_PROVENANCE_STYLES,
   RefPicker,
   RunModal,
   Upload,
@@ -153,6 +154,7 @@ import {
   renderWorkEntityDialog,
   renderTimelineSection,
   renderMergeReviewDialog,
+  renderProvenance,
   renderWorkEntityPage,
   type EnrichmentSummary,
   type EntityDetailPanelProps,
@@ -163,6 +165,11 @@ import {
 } from '@recued/ui-shared';
 
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
+import {
+  createHierarchicalHistory,
+  hierarchicalAddressFromHash,
+  hierarchicalLevel,
+} from '../shell/hierarchical-navigation.js';
 import {
   serializeDataEntityVerificationAddress,
   serializeChatAnswerAddress,
@@ -867,7 +874,7 @@ export interface BootstrapDataRouteOptions {
   fileReadCaller?: DataFileReadCaller;
   subscribe?: BroadcastSubscriber['on'];
   /** Keep the shell router's cached hash aligned with successful in-page
-   *  History.replaceState writes, which do not emit hashchange. */
+   *  history writes, which do not emit hashchange. */
   onHashSync?: (hash: string) => void;
   /** R18 — deep-link hydration (`#data/<tab>/<entity_id>`, R16). `initialTab`
    *  is validated against the known tabs (invalid → the default Contacts tab);
@@ -2863,6 +2870,27 @@ const describeProvenance = (p: ContactProvenanceLike): string => {
   }
 };
 
+const contactProvenanceKind = (
+  source: string,
+): 'user' | 'source' | 'derived' | 'neutral' => {
+  if (source === 'manual' || source === 'user_confirmed') return 'user';
+  if (
+    source === 'derived'
+    || source === 'ai_inferred'
+    || source === 'domain_inferred'
+  ) return 'derived';
+  if (source === 'vendor_meta' || source === 'contact_book') return 'source';
+  return 'neutral';
+};
+
+const renderContactProvenance = (p: ContactProvenanceLike): string =>
+  renderProvenance({
+    primary: describeProvenance(p),
+    kind: contactProvenanceKind(p.source),
+    className: 'data-contact-origin',
+    attributes: { 'data-provenance-source': p.source },
+  });
+
 const formatMailingAddress = (addr: MailingAddress): string =>
   [addr.address1, addr.address2, addr.city, addr.state, addr.zip, addr.country]
     .map((part) => (part ?? '').trim())
@@ -2960,7 +2988,7 @@ const renderContactFieldOtherSources = (
       return `
         <li class="data-contact-alt-source" data-alt-source="${e(row.source)}">
           <span class="data-contact-alt-value">${e(text)}</span>
-          <span class="data-contact-origin">${e(describeProvenance(row))}</span>
+          ${renderContactProvenance(row)}
         </li>
       `;
     })
@@ -3004,7 +3032,7 @@ const renderContactProvenanceBlock = (
         // A field with no contribution behind it is NOT the same as one with an
         // empty contribution — say nothing rather than guess.
         const origin = p !== undefined
-          ? `<span class="data-contact-origin" data-provenance-source="${e(p.source)}">${e(describeProvenance(p))}</span>`
+          ? renderContactProvenance(p)
           : '';
         const others = renderContactFieldOtherSources(byKind.get(field.key) ?? []);
         return `
@@ -4754,6 +4782,7 @@ export const bootstrapDataRoute = (
       // bundle its CSS so the `.memory-*` classes paint (mirrors the
       // WORK_ENTITY_PAGE_STYLES pattern — consumer owns injection).
       ENTITY_DETAIL_PANEL_STYLES,
+      REFERENCE_PROVENANCE_STYLES,
       // D-205 #2b — `#data/contact/scan` renders the ui-shared merge-review
       // dialog; bundle its CSS so the `.merge-review-*` classes paint.
       MERGE_REVIEW_DIALOG_STYLES,
@@ -8593,12 +8622,10 @@ export const bootstrapDataRoute = (
       && contactSearch === scheduledSearch);
   };
 
-  // R18 — reflect the current (tab, open-entity) as `#data/<tab>/<id>` in the
-  // URL via `replaceState` (R16 addressability) — no hashchange, so the shell
-  // does NOT remount (master-detail stays smooth) but a refresh / shared link
-  // re-opens the same view. Reads state so the URL always matches what's
-  // rendered. Guarded for the test fake DOM (no `defaultView`); replaceState can
-  // throw in sandboxed embeddings, so it is best-effort.
+  // R18 — reflect the current (tab, open-entity) as `#data/<tab>/<id>` through
+  // the shared hierarchy. A list→detail visit pushes; sideways/closing changes
+  // replace, and neither remounts the shell. Reads state so the URL always
+  // matches what's rendered; history failures remain best-effort.
   const currentDeepLinkEntity = (): string | undefined => {
     // D-205 #2b — the scan page is the reserved `scan` literal; otherwise the
     // open contact's email. Only one of the two can be open at a time.
@@ -8630,23 +8657,41 @@ export const bootstrapDataRoute = (
     }
     return undefined;
   };
-  /** ⛔ SEEDED FROM THE DEEP-LINK INPUT, so mounting on a detail is not mistaken for a
-   *  navigation. `opts.initialEntityId` is the router's parse of the entity segment in
-   *  `#data/<tab>/<entity>` — if it is set, the browser is ALREADY on a detail entry, and
-   *  treating the first sync as "entering" would stack a duplicate over it so the owner's
-   *  first Back press appears to do nothing.
-   *
-   *  ⚠ TWO EARLIER ATTEMPTS WERE WRONG, both caught by mutation rather than by review:
-   *    · a "first sync is never a navigation" FLAG — the list path does not sync on
-   *      mount at all, so the flag swallowed the first REAL detail open;
-   *    · seeding from `currentDeepLinkEntity()` — it reads state the initial deep link
-   *      has not populated yet at construction (the contact detail loads async), so it
-   *      returned undefined and the mount pushed anyway.
-   *  The INPUT is available synchronously and means exactly what this needs to know. */
-  let syncedDataEntity: string | undefined = opts.initialEntityId;
+  const dataAddress = (
+    hash: string,
+    deepLinkEntity: string | undefined,
+  ) => hierarchicalAddressFromHash(
+    'data',
+    hash,
+    ...(activeLens === 'memory'
+      ? [hierarchicalLevel('data-lens:memory', 'memory')]
+      : [
+          hierarchicalLevel(`data-tab:${activeTab}`, activeTab),
+          ...(deepLinkEntity === undefined
+            ? []
+            : [hierarchicalLevel(
+                `data-detail:${deepLinkEntity}`,
+                deepLinkEntity,
+              )]),
+        ]),
+  );
+  /** Seed from the parsed deep-link input, not asynchronously hydrated state.
+   * The shared controller therefore cannot mistake first paint for a new detail
+   * visit, while later source-record canonicalization remains a replace. */
+  const initialDataEntity = activeLens === 'data'
+    ? opts.initialEntityId
+    : undefined;
+  const dataHistory = createHierarchicalHistory({
+    initial: dataAddress(
+      activeLens === 'memory'
+        ? serializeShellRoute('data', 'memory')
+        : serializeShellRoute('data', activeTab, initialDataEntity),
+      initialDataEntity,
+    ),
+    history: () => doc.defaultView?.history,
+    onCommit: (address) => opts.onHashSync?.(address.hash),
+  });
   const syncDataHash = (): void => {
-    const history = doc.defaultView?.history;
-    if (history?.replaceState === undefined) return;
     // D-198 Slice 1b — the Memory lens addresses as `#data/memory` (no entity
     // segment); the Data lens keeps `#data/<tab>/<entity>`.
     const exactSourceRecordTab: SourceRecordDataTab | null =
@@ -8708,32 +8753,7 @@ export const bootstrapDataRoute = (
                   : {}),
               })
             : serializeShellRoute('data', activeTab, deepLinkEntity);
-    /** ⛔⛔ OPENING A DETAIL IS A PLACE, SO IT PUSHES. `replaceState` for the whole
-     *  list→detail transition OVERWROTE the `#data/<tab>` entry, so the native Back
-     *  button skipped the list and landed a level above it. Same defect as `#packs` and
-     *  `#recipes` — the three shared one hash-sync shape, so they shared the bug.
-     *  🔑 `pushState` emits no `hashchange` either, so the reason `replaceState` was
-     *  chosen — in-page navigation must never remount, master-detail stays smooth — is
-     *  fully preserved.
-     *  ⚠ The trigger is the ENTITY SEGMENT APPEARING, not the tab changing. Entering a
-     *  detail pushes; closing it back to the bare tab replaces; and detail→detail within
-     *  a tab replaces too, or Back would have to walk every record the owner opened.
-     *  A tab switch carries no entity, so it replaces — it is a sibling list, not a
-     *  level down. */
-    const enteringDetail = deepLinkEntity !== undefined && syncedDataEntity === undefined;
-    try {
-      if (enteringDetail && typeof history.pushState === 'function') {
-        history.pushState(null, '', hash);
-      } else {
-        history.replaceState(null, '', hash);
-      }
-    } catch {
-      // Non-fatal — addressability degrades to in-page-only. URL unchanged → do NOT
-      // desync the router's activeHash from it.
-      return;
-    }
-    syncedDataEntity = deepLinkEntity;
-    opts.onHashSync?.(hash);
+    dataHistory.navigate(dataAddress(hash, deepLinkEntity));
   };
 
   const cancelContactEditOpen = (): void => {

@@ -175,6 +175,15 @@ import {
   type ChatInboundTokenStore,
 } from '../../storage/chat-inbound-token-store.js';
 import {
+  buildChatIndexContext,
+  CHAT_INDEX_TOO_COMMON_CAP,
+} from '../../chat-index-context.js';
+import {
+  RECALL_SEARCH_TOOL_NAME,
+  registerRecallTurnSource,
+} from '../../chat-recall-search-tool.js';
+import type { ChatDispatchContext } from '../../chat-tool-handlers.js';
+import {
   broadcastEmitterFromBus,
   createChatOrchestrator,
   parseChatCatalogProjectionEnv,
@@ -816,6 +825,16 @@ export const composeChatOrchestrator = (
     ).filter((entry) => reachable(entry.name));
   };
 
+  // ⛔ ONE RULE, ONE DEFINITION. The registry gates Tier-1 dispatch with this,
+  // and the pre-seed index probes the SAME handlers — so the index must consult
+  // the SAME predicate, not a second copy of it. A duplicated gate is the shape
+  // where one door tightens and the other quietly keeps admitting.
+  const admitTier1 = (name: string, ctx: ChatDispatchContext): boolean => {
+    const gate = getExecuteDeps()?.opAdmissionGate;
+    if (gate === undefined || ctx.execution_source === undefined) return true;
+    return gate.isOpGranted(ctx.execution_source, primitiveGrantEntry(name));
+  };
+
   const internalRegistry = createInternalToolRegistry({
     tier1Handlers: chatToolRegistryInputs.tier1Handlers,
     // ⛔⛔ D-228 slice 5 — the contract gates Tier-1 primitives on the INTERNAL
@@ -834,11 +853,7 @@ export const composeChatOrchestrator = (
     // pre-wire / dbless boots have no gate, and there the callback admits
     // rather than dark-booting a chat turn that has no contract substrate to
     // consult in the first place.
-    admitTier1: (name, ctx) => {
-      const gate = getExecuteDeps()?.opAdmissionGate;
-      if (gate === undefined || ctx.execution_source === undefined) return true;
-      return gate.isOpGranted(ctx.execution_source, primitiveGrantEntry(name));
-    },
+    admitTier1,
     // ⛔ D-247 D9 — the DISPATCH re-check. Visibility is filtered beside the
     // registry (three surfaces, each holding the turn's source); this is what
     // stops a name the model already holds from an earlier turn surviving a
@@ -1161,6 +1176,107 @@ export const composeChatOrchestrator = (
 
   const orchestrator = createChatOrchestrator({
     chatStore,
+    // Pre-seed INDEX. Probes the ordinary Tier-1 read handlers for the owner's
+    // own distinctive terms and reports only WHICH STORES answered — never a
+    // row, a title or a count. Two gates apply and neither is re-implemented
+    // here: `admitTier1` (shared with the registry, above) and each handler's
+    // own collection read-fence. ⛔ The fence answers `ok:TRUE` with an EMPTY
+    // `matches` (the Tier-1 anti-loop invariant), so what keeps a revoked store
+    // out of the line is the empty array, NOT the `ok` flag — see `hasHit`.
+    // ── PRE-SEED INDEX: ON by default, `RECUED_CHAT_INDEX=0` disables ────────
+    // 🔑 WHAT THIS BUYS, IN ONE SENTENCE: the probability that the model stops
+    // at the store it PREFERS before reaching the one that holds the answer.
+    // Everything below follows from that, including the zeroes.
+    //
+    // Measured (internal benchmarks, arms interleaved inside each batch):
+    //   · answer in a NEGLECTED store, decoy in the preferred one:
+    //     8/8 vs 1/8 (p=0.0014) — and correctness tracks store-choice exactly:
+    //     the single control run that searched mail is the one that answered.
+    //     The other seven searched memory, got a REAL hit on the term, and
+    //     stopped: "I don't have a record of the notice period" is a truthful
+    //     report of an incomplete search.
+    //   · 4-sub-question request: 80/92 needles vs 56/92 (p=0.000089); the
+    //     mechanism is visible in the calls — 3.5 stores searched vs 2.4
+    //   · answer in recall: 24/26 vs 17/26 (p=0.039)
+    //   · answer in MEMORY: 100% vs 100% — ZERO gain, because `memory.search`
+    //     ran 10/10 without the index and 11/11 with it. Nothing to fix where
+    //     the model already looks. `memory` likewise scored 23/23 in BOTH arms
+    //     of the multi-task shape.
+    //
+    // ⇒ the honest range is +0 to +87 points, NOT a uniform lift. A fixture that
+    // puts the answer in memory measures nothing; that is a property of the
+    // fixture, not of the index.
+    //
+    // ⛔⛔ THE HARM MODE IS STRUCTURAL AND RETURNS SILENTLY. An INCOMPLETE index
+    // is worse than none: when it could not name `recall.search`, the model
+    // called that store 0/10 where the no-index control reached it 16/23 — the
+    // line SUPPRESSED a tool the model otherwise used, because naming a subset
+    // makes the unnamed read as absent. It is complete today only because every
+    // probeable store is probed. If a store is ever added to the catalog and not
+    // to `CHAT_INDEX_STORES`, or one becomes unprobeable, that failure comes
+    // back with nothing failing — see the `work.search` exclusion note there.
+    //
+    // The off-switch exists so that is one env var, not a redeploy.
+    ...(process.env.RECUED_CHAT_INDEX !== '0' ? {
+    buildIndexContext: (userMessage: string, ctx: ChatDispatchContext) =>
+      buildChatIndexContext(userMessage, ctx, async (store, term, probeCtx) => {
+        if (!admitTier1(store, probeCtx)) {
+          return { ok: false as const, reason: 'channel_denied' as const };
+        }
+        // ⛔ recall.search is NOT in `tier1Handlers` — it is grafted on by
+        // `wrapRegistryWithRecallSearch`, so it dispatches through the registry.
+        //
+        // 🔑 THE FRESH `turn_state` MAP IS THE WHOLE POINT. Recall's two-call
+        // budget lives INSIDE that Map (`getTurnState` creates the counter in
+        // whatever scratch it receives), and the model's own dispatches use the
+        // turn's `streamState`. Handing the probe its own Map gives it its own
+        // `search_calls: 0`, so probing costs the model NOTHING — and a fresh
+        // Map per probe means N terms do not exhaust one shared allowance.
+        // ⚠ A null/absent turn_state does NOT work: the handler returns
+        // `guidedEmpty()` without searching, so the probe would report "no hit"
+        // for every term — a dead probe that reads exactly like an empty store.
+        // ⛔ recall.search is NOT in `tier1Handlers` — it is grafted on by
+        // `wrapRegistryWithRecallSearch`, so it dispatches through the registry.
+        //
+        // TWO things must BOTH be right, and each fails silently on its own:
+        //
+        // 1. A FRESH `turn_state` Map. Recall's two-call budget lives INSIDE
+        //    that Map (`getTurnState` creates the counter in whatever scratch it
+        //    receives) and the model's own dispatches use the turn's
+        //    `streamState`. Its own Map = its own `search_calls: 0`, so probing
+        //    costs the model NOTHING, and a fresh Map PER probe stops N terms
+        //    exhausting one allowance.
+        // 2. The TURN SOURCE registered into that Map. The handler resolves its
+        //    corpus scope from `state.turn_source` and the code says
+        //    "`state.turn_source`, NEVER `ctx.execution_source`" — an authority
+        //    boundary it refuses to take from the dispatch ctx. An unregistered
+        //    Map resolves the scope to null and returns `guidedEmpty()` WITHOUT
+        //    SEARCHING. ⚠ Measured: with (1) alone every term came back
+        //    `matches: []` + "No matching recall item was found" — indisting-
+        //    uishable from an empty store, so the index silently dropped the one
+        //    store that held the answer. This is the same source the orchestrator
+        //    registers for the real turn, not a widened one.
+        if (store === RECALL_SEARCH_TOOL_NAME) {
+          const scratch = new Map<string, unknown>();
+          if (probeCtx.execution_source !== undefined) {
+            registerRecallTurnSource(scratch, probeCtx.execution_source);
+          }
+          return baseChatRegistry.dispatch(
+            RECALL_SEARCH_TOOL_NAME,
+            { query: term, sources: ['interaction'] },
+            { ...probeCtx, turn_state: scratch },
+          );
+        }
+        const handler = chatToolRegistryInputs.tier1Handlers[store];
+        if (handler === undefined) return { ok: false, reason: 'not_implemented' };
+        // cap + 1 so `hasHit` can tell "some matches" from "too many to mean
+        // anything here" — the per-owner replacement for a static word list.
+        return handler(
+          { query: term, limit: CHAT_INDEX_TOO_COMMON_CAP + 1 },
+          probeCtx,
+        );
+      }),
+    } : {}),
     // D-172 P2 — names the files the chat tail carries, resolved LIVE from the
     // file collection so a since-deleted file drops out of the marker instead
     // of being offered to the model as an id that resolves to nothing.

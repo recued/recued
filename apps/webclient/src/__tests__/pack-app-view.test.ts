@@ -8,6 +8,7 @@ import type {
 } from '@recued/contracts';
 
 import {
+  PACK_APP_AUTOMATION_ATTR,
   PACK_APP_CONTEXT_ATTR,
   PACK_APP_OPERATION_ATTR,
   PACK_APP_REFRESH_ATTR,
@@ -26,6 +27,7 @@ import {
   RECIPE_RESULT_PANEL_STYLES,
   RECIPES_ROUTE_RESULT_GRID_ATTR,
   RECIPES_ROUTE_RESULT_GRID_CELL_ATTR,
+  RECIPES_ROUTE_RESULT_FACTS_ATTR,
 } from '../recipes/recipe-result-panel.js';
 
 interface FakeElement {
@@ -136,6 +138,7 @@ const surface: PackAppSurface = {
   views: [{ recipe_id: 'sheet', name: 'Sheet', description: 'Edit a sheet.', entry }],
   lookups: [],
   operations: [],
+  automations: [],
   missing: [],
 };
 
@@ -283,7 +286,11 @@ const mount = (
   execute: PackAppExecuteCaller,
   options: Partial<Pick<
     MountPackAppViewOptions,
-    'surface' | 'installedRecipes' | 'openRunModal'
+    | 'surface'
+    | 'installedRecipes'
+    | 'openRunModal'
+    | 'initialViewId'
+    | 'onSelectView'
   >> = {},
 ) => {
   const host = fakeElement();
@@ -304,6 +311,12 @@ const mount = (
     installedRecipes: options.installedRecipes ?? [entry],
     ...(options.openRunModal !== undefined
       ? { openRunModal: options.openRunModal }
+      : {}),
+    ...(options.initialViewId !== undefined
+      ? { initialViewId: options.initialViewId }
+      : {}),
+    ...(options.onSelectView !== undefined
+      ? { onSelectView: options.onSelectView }
       : {}),
   });
   return { host, root: host.children[0]!, view, clipboardWrite };
@@ -408,6 +421,29 @@ const typeGridCell = (
   return { submit, status };
 };
 
+const typeResultFilter = (
+  root: FakeElement,
+  filterKey: string,
+  variableKey: string,
+  value: string,
+): void => {
+  const form = {
+    getAttribute: (name: string) =>
+      name === 'data-recued-recipes-result-filter' ? filterKey : null,
+  };
+  const target = {
+    value,
+    type: 'text',
+    dataset: { varKey: variableKey, varType: 'text' },
+    getAttribute: () => null,
+    closest: (selector: string) =>
+      selector === '[data-recued-recipes-result-filter]' ? form : null,
+  };
+  for (const listener of root.listeners.get('input') ?? []) {
+    listener({ target } as unknown as Event);
+  }
+};
+
 describe('pack app shared copyable results', () => {
   it('ships its layout and full-sized Copy action with the shared panel', () => {
     expect(RECIPE_RESULT_PANEL_STYLES).toContain(
@@ -426,6 +462,8 @@ describe('pack app shared copyable results', () => {
     await settle();
 
     expect(rig.root.innerHTML).toContain('class="copy-btn"');
+    expect(rig.root.innerHTML).toContain('data-recued-reference-id="sheet"');
+    expect(rig.root.innerHTML).toContain('data-recued-provenance');
     const { attrs, control } = emitCopyAction(rig.root);
     await settle();
 
@@ -646,6 +684,45 @@ describe('pack app view tabs', () => {
     );
     rig.view.dispose();
   });
+
+  it('hydrates a runtime-derived view without reporting a user navigation', async () => {
+    const execute = vi.fn<PackAppExecuteCaller>(async ({ recipe_id }) => ({
+      ...tableResult(),
+      recipe_id,
+      recipe_hash: `hash-${recipe_id}`,
+    }));
+    const onSelectView = vi.fn();
+    const rig = mount(execute, {
+      surface: {
+        ...surface,
+        views: [
+          surface.views[0]!,
+          {
+            recipe_id: lookupEntry.recipe_id,
+            name: 'Find entry',
+            description: 'Review one entry.',
+            entry: lookupEntry,
+          },
+        ],
+      },
+      installedRecipes: [entry, lookupEntry],
+      initialViewId: 'find-entry',
+      onSelectView,
+    });
+    await settle();
+
+    expect(rig.view.activeViewId()).toBe('find-entry');
+    expect(execute).toHaveBeenNthCalledWith(1, {
+      recipe_id: 'find-entry',
+      config: {},
+    });
+    expect(onSelectView).not.toHaveBeenCalled();
+
+    emitPackControl(rig.root, PACK_APP_VIEW_TAB_ATTR, 'sheet');
+    await settle();
+    expect(onSelectView).toHaveBeenCalledWith('sheet');
+    rig.view.dispose();
+  });
 });
 
 describe('pack app shared editable tables', () => {
@@ -791,6 +868,45 @@ const taskResult = (recipeId: string, message: string): ServerExecuteResponse =>
 } as unknown as ServerExecuteResponse);
 
 describe('pack app business lifecycle', () => {
+  it('keeps the audit-backed Run facts receipt inside Pack Use', () => {
+    let onRan: ((result: ServerExecuteResponse) => void) | undefined;
+    const rig = mount(vi.fn<PackAppExecuteCaller>(), {
+      surface: {
+        views: [],
+        lookups: [],
+        operations: [{
+          recipe_id: taskEntry.recipe_id,
+          name: 'Post entry',
+          description: 'Record both sides and keep the receipt.',
+          entry: taskEntry,
+        }],
+        automations: [],
+        missing: [],
+      },
+      installedRecipes: [taskEntry],
+      openRunModal: (_entry, callback) => { onRan = callback; },
+    });
+
+    emitPackControl(rig.root, PACK_APP_OPERATION_ATTR, taskEntry.recipe_id);
+    onRan?.({
+      ...taskResult(taskEntry.recipe_id, 'Entry posted'),
+      run_facts: {
+        steps_run: 34,
+        items_total: 1_249,
+        provider_calls: 2,
+        total_tokens: 13_385,
+        duration_ms: 42_000,
+      },
+    });
+
+    expect(rig.root.innerHTML).toContain(RECIPES_ROUTE_RESULT_FACTS_ATTR);
+    expect(rig.root.innerHTML).toContain(
+      '34 steps · 1,249 items · 2 provider calls · 13,385 tokens · 42 seconds',
+    );
+    expect(rig.root.innerHTML).not.toContain(' · 12 ms · 0 steps');
+    rig.view.dispose();
+  });
+
   it('keeps a write result in Pack detail, then refreshes the browse view on return', async () => {
     const execute = vi.fn<PackAppExecuteCaller>()
       .mockResolvedValueOnce(tableResult())
@@ -870,6 +986,75 @@ describe('pack app business lifecycle', () => {
     rig.view.dispose();
   });
 
+  it('refreshes a dynamic list with its executed filter and restores its draft after a row action returns', async () => {
+    const filteredActionResult = {
+      recipe_id: 'sheet',
+      recipe_hash: 'execution-hash',
+      success: true,
+      steps: [],
+      errors: [],
+      output: {
+        render: [
+          {
+            type: 'filter',
+            data: {},
+            filter: {
+              section_index: 0,
+              recipe_hash: entry.recipe_hash,
+              fields: ['status'],
+              hidden: [],
+              submit: 'Search',
+              definitions: {
+                status: { label: 'Status', type: 'string', default: 'open' },
+              },
+              values: { status: 'open' },
+            },
+          },
+          {
+            type: 'button',
+            data: {
+              kind: 'recipe.run',
+              label: 'Open row',
+              recipe_id: lookupEntry.recipe_id,
+              context: { entity_id: 'row-1' },
+            },
+          },
+        ],
+      },
+    } as unknown as ServerExecuteResponse;
+    const execute = vi.fn<PackAppExecuteCaller>(async () => filteredActionResult);
+    let onRan: ((result: ServerExecuteResponse) => void) | undefined;
+    const rig = mount(execute, {
+      installedRecipes: [entry, lookupEntry],
+      openRunModal: (_entry, callback) => { onRan = callback; },
+    });
+    await settle();
+
+    const filterKey = `sheet:${entry.recipe_hash}:0`;
+    typeResultFilter(rig.root, filterKey, 'status', 'closed');
+    emitAction(rig.root, 'run-result-action', {
+      'data-recued-recipes-result-action': 'result-action-0',
+    });
+    onRan?.(taskResult(lookupEntry.recipe_id, 'Row detail'));
+    expect(rig.root.innerHTML).toContain('Row detail');
+
+    emitAction(rig.root, 'restore-result-panel', {});
+    await settle();
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute.mock.calls[1]?.[0]).toMatchObject({
+      recipe_id: entry.recipe_id,
+      config: { status: 'open' },
+      invocation: {
+        kind: 'output.filter',
+        recipe_hash: entry.recipe_hash,
+        section_index: 0,
+      },
+    });
+    expect(rig.root.innerHTML).toContain('value="closed"');
+    expect(rig.root.innerHTML).not.toContain('value="open"');
+    rig.view.dispose();
+  });
+
   it('filters the displayed lookup recipe instead of accidentally re-running the browse tab', async () => {
     const lookupResult = {
       ...taskResult(lookupEntry.recipe_id, 'Entry found'),
@@ -936,6 +1121,7 @@ describe('pack app business lifecycle', () => {
         description: 'Record both sides and keep the receipt.',
         entry: taskEntry,
       }],
+      automations: [],
       missing: [],
     };
     const rig = mount(execute, {
@@ -951,6 +1137,56 @@ describe('pack app business lifecycle', () => {
     expect(rig.root.innerHTML).toContain(`${PACK_APP_CONTEXT_ATTR}="task"`);
     expect(rig.root.innerHTML).toContain('Run completed · Post entry');
     expect(rig.root.innerHTML).toContain('Entry posted');
+    rig.view.dispose();
+  });
+});
+
+describe('pack app reactive defaults', () => {
+  it('offers lifecycle management without exposing or executing a manual run', () => {
+    const reactiveEntry = {
+      ...taskEntry,
+      recipe_id: 'sync-provider-events',
+      recipe: {
+        ...taskEntry.recipe,
+        recipe_id: 'sync-provider-events',
+        auto_run: { interval_ms: 60_000 },
+        metadata: {
+          ...taskEntry.recipe.metadata,
+          name: 'Sync provider events',
+          description: 'Process events after the provider trigger arrives.',
+        },
+      },
+    } as unknown as ServerRecipeListEntry;
+    const execute = vi.fn<PackAppExecuteCaller>();
+    const rig = mount(execute, {
+      surface: {
+        views: [],
+        lookups: [],
+        operations: [],
+        automations: [{
+          recipe_id: reactiveEntry.recipe_id,
+          name: 'Sync provider events',
+          description: 'Process events after the provider trigger arrives.',
+          entry: reactiveEntry,
+        }],
+        missing: [],
+      },
+      installedRecipes: [reactiveEntry],
+    });
+
+    expect(rig.root.innerHTML).toContain('Manage this pack’s trigger-driven recipes below.');
+    expect(rig.root.innerHTML).toContain('These recipes wait for their own triggers.');
+    expect(rig.root.innerHTML).toContain(
+      `${PACK_APP_AUTOMATION_ATTR}="sync-provider-events"`,
+    );
+    expect(rig.root.innerHTML).toContain('href="#automation/sync-provider-events"');
+    expect(rig.root.innerHTML).toContain(
+      'data-recued-reference-id="sync-provider-events"',
+    );
+    expect(rig.root.innerHTML).not.toContain(
+      `${PACK_APP_OPERATION_ATTR}="sync-provider-events"`,
+    );
+    expect(execute).not.toHaveBeenCalled();
     rig.view.dispose();
   });
 });

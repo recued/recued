@@ -208,6 +208,7 @@ import {
   type SellerSettingsUpdateCaller,
   type SellerStripeSynchronizeCaller,
 } from './seller-page.js';
+import type { SellerAddress } from './seller-navigation.js';
 import {
   mountUpdatesPage,
   UPDATES_PAGE_STYLES,
@@ -387,6 +388,8 @@ export interface BootstrapSettingsRouteOptions {
   chatSetupReturnHref?: string;
   /** Optional `#settings/seller/<subpage>` selection. Seller validates the
    * closed list and falls back to the Seller directory for a stale segment. */
+  initialSellerAddress?: SellerAddress;
+  /** Legacy narrowed mount seam. Production supplies `initialSellerAddress`. */
   initialSellerSubpage?: string | null;
   /** Optional collection record selected by
    * `#settings/seller/<subpage>/detail/<item-id>`. */
@@ -1671,6 +1674,13 @@ export const bootstrapSettingsRoute = (
     sellerPage = mountSellerPage({
       host: sellerHost,
       document: doc,
+      scrollRoot: opts.root,
+      ...(opts.onAddressChange !== undefined
+        ? { onNavigate: opts.onAddressChange }
+        : {}),
+      ...(opts.initialSellerAddress !== undefined
+        ? { initialAddress: opts.initialSellerAddress }
+        : {}),
       ...(opts.initialSellerSubpage !== undefined
         ? { initialSubpage: opts.initialSellerSubpage }
         : {}),

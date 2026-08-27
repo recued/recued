@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type {
+  AutoRunStatusEntry,
   ConnectionView,
   DependencyResolution,
+  Dish,
   RecipeDefinition,
   RecipeRunnabilityEntry,
   ResolvedFilterDescriptor,
@@ -39,6 +41,7 @@ import {
   RECIPES_ROUTE_RESULT_ACTION_ATTR,
   RECIPES_ROUTE_RESULT_FILE_ATTR,
   RECIPES_ROUTE_RESULT_FILE_STATUS_ATTR,
+  RECIPES_ROUTE_RESULT_FACTS_ATTR,
   RECIPES_ROUTE_RESULT_PROVENANCE_ATTR,
   RECIPES_ROUTE_RESULT_RETURN_ATTR,
   RECIPES_ROUTE_RESULT_SECTION_ATTR,
@@ -352,6 +355,28 @@ const executeResponse = (
   ...overrides,
 });
 
+const autoRunStatus = (
+  recipe_id: string,
+  overrides: Partial<AutoRunStatusEntry> = {},
+): AutoRunStatusEntry => ({
+  recipe_id,
+  publisher_id: 'recued-core',
+  recipe_name: recipe_id,
+  interval_ms: 60_000,
+  dynamic: false,
+  enabled: true,
+  auto_disabled: false,
+  consecutive_failures: 0,
+  last_failure_at: null,
+  last_failure_reason: null,
+  next_run_at: 1_800_000_000_000,
+  last_started_at: null,
+  last_finished_at: null,
+  config_overlay: {},
+  variables: {},
+  ...overrides,
+});
+
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -373,6 +398,7 @@ const mountRoute = (overrides: {
   schedulesCreateCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['schedulesCreateCaller'];
   autoRunListCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['autoRunListCaller'];
   autoRunUpdateCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['autoRunUpdateCaller'];
+  dishesListCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['dishesListCaller'];
   recipeConfigGetCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['recipeConfigGetCaller'];
   recipeConfigSetCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['recipeConfigSetCaller'];
   recipeCatalogCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['recipeCatalogCaller'];
@@ -386,8 +412,11 @@ const mountRoute = (overrides: {
   fileBrowser?: boolean;
   recordRefSearchCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['recordRefSearchCaller'];
   history?: FakeHistory;
+  document?: FakeDoc;
+  root?: FakeEl;
+  scrollRoot?: FakeEl;
 } = {}) => {
-  const doc = makeFakeDocument(
+  const doc = overrides.document ?? makeFakeDocument(
     {
       ...(overrides.history !== undefined ? { history: overrides.history } : {}),
       ...(overrides.confirm !== undefined ? { confirm: overrides.confirm } : {}),
@@ -397,7 +426,7 @@ const mountRoute = (overrides: {
       ...(overrides.fileBrowser === true ? { fileBrowser: true } : {}),
     },
   );
-  const root = doc.createElement('div');
+  const root = overrides.root ?? doc.createElement('div');
   const recipesListCaller =
     overrides.recipesListCaller
     ?? vi.fn<RecipesListCaller>(async () => ({
@@ -431,6 +460,9 @@ const mountRoute = (overrides: {
   const route = bootstrapRecipesRoute({
     root: root as unknown as HTMLElement,
     document: doc as unknown as Document,
+    ...(overrides.scrollRoot !== undefined
+      ? { scrollRoot: overrides.scrollRoot as unknown as HTMLElement }
+      : {}),
     recipesListCaller,
     toolCatalogCaller,
     recipeExecuteCaller,
@@ -454,6 +486,9 @@ const mountRoute = (overrides: {
       : {}),
     ...(overrides.autoRunUpdateCaller !== undefined
       ? { autoRunUpdateCaller: overrides.autoRunUpdateCaller }
+      : {}),
+    ...(overrides.dishesListCaller !== undefined
+      ? { dishesListCaller: overrides.dishesListCaller }
       : {}),
     ...(overrides.recipeConfigGetCaller !== undefined
       ? { recipeConfigGetCaller: overrides.recipeConfigGetCaller }
@@ -689,7 +724,7 @@ describe('R24 — Recipes route: list view', () => {
     rig.route.dispose();
   });
 
-  it('separates each card opener from its contextual Run action', async () => {
+  it('separates preview, full detail, and contextual Run on each card', async () => {
     const rig = mountRoute();
     await rig.route.whenLoaded();
 
@@ -698,12 +733,37 @@ describe('R24 — Recipes route: list view', () => {
       new RegExp(`<div ${RECIPES_ROUTE_RECIPE_CARD_ATTR}="daily-brief"[^>]*>`),
     )?.[0] ?? '';
     expect(card).not.toContain('role="button"');
-    expect(card).not.toContain('tabindex=');
+    expect(card).toContain('role="group" tabindex="0"');
+    expect(card).toContain('Space to preview; Enter to open details.');
+    expect(html).toContain('data-recued-recipes-action="preview-recipe"');
+    expect(html).toContain('aria-label="Preview Daily brief"');
     expect(html).toContain(
       `${RECIPES_ROUTE_RECIPE_OPEN_ATTR}="daily-brief"`,
     );
     expect(html).toContain('aria-label="Open Daily brief details"');
     expect(html).toContain('aria-label="Run Daily brief"');
+
+    rig.route.dispose();
+  });
+
+  it('routes a reactive card to Automation instead of offering a manual Run', async () => {
+    const rig = mountRoute({
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [recipeEntry('watch-mail', {
+          recipe: recipeDefinition('watch-mail', {
+            auto_run: { interval_ms: 60_000 },
+            trigger_steps: [{ id: 'watch', ingredient: 'mail-watcher' }],
+          } as unknown as Partial<RecipeDefinition>),
+        })],
+      })),
+    });
+    await rig.route.whenLoaded();
+
+    const html = shellHtml(rig.root);
+    expect(html).not.toContain('data-recued-recipes-action="open-run"');
+    expect(html).not.toContain(`${RECIPES_ROUTE_RUN_BUTTON_ATTR}="watch-mail"`);
+    expect(html).toContain('href="#automation/watch-mail"');
+    expect(html).toContain('aria-label="Manage automation for Daily brief"');
 
     rig.route.dispose();
   });
@@ -754,6 +814,7 @@ describe('R24 — Recipes route: list view', () => {
 
     const html = shellHtml(rig.root);
     expect(html).toContain(`${RECIPES_ROUTE_FROM_PACK_ATTR}="recued-core.hubspot"`);
+    expect(html).toContain('data-recued-provenance');
     expect(html).toContain('from Hubspot');
     expect(html).toContain('href="#packs"');
 
@@ -1094,6 +1155,74 @@ describe('R24 — Recipes route: list view', () => {
     rig.route.dispose();
   });
 
+  it('restores list filters, page, and scroll after the route remounts', async () => {
+    const doc = makeFakeDocument();
+    const list = vi.fn<RecipesListCaller>(async () => ({
+      recipes: [
+        ...Array.from({ length: 30 }, (_, idx) => {
+          const recipeId = `pack-recipe-${String(idx).padStart(2, '0')}`;
+          return recipeEntry(recipeId, {
+            recipe: recipeDefinition(recipeId, {
+              metadata: {
+                name: `Pack recipe ${idx}`,
+                description: 'Search Records by status.',
+                author: 'recued-core',
+                supported_platforms: [],
+                recipe_bundle: 'recued-core/job-status-board',
+              },
+            }),
+          });
+        }),
+        recipeEntry('loose-recipe'),
+      ],
+    }));
+    const firstScroll = makeFakeEl('main') as FakeEl & {
+      scrollTop: number;
+      scrollLeft: number;
+    };
+    firstScroll.scrollTop = 0;
+    firstScroll.scrollLeft = 0;
+    const first = mountRoute({
+      document: doc,
+      root: doc.createElement('div'),
+      scrollRoot: firstScroll,
+      recipesListCaller: list,
+    });
+    await first.route.whenLoaded();
+
+    clickRecipeAction(first.root, 'filter-set', '', {
+      'data-filter-kind': 'pack',
+      'data-filter-value': 'recued-core.job-status-board',
+    });
+    clickRecipeAction(first.root, 'recipe-page', '', { 'data-page': '2' });
+    firstScroll.scrollTop = 620;
+    firstScroll.scrollLeft = 7;
+    first.route.openRecipe('pack-recipe-24');
+    first.route.dispose();
+
+    const secondScroll = makeFakeEl('main') as FakeEl & {
+      scrollTop: number;
+      scrollLeft: number;
+    };
+    secondScroll.scrollTop = 0;
+    secondScroll.scrollLeft = 0;
+    const second = mountRoute({
+      document: doc,
+      root: doc.createElement('div'),
+      scrollRoot: secondScroll,
+      recipesListCaller: list,
+    });
+    await second.route.whenLoaded();
+
+    const html = shellHtml(second.root);
+    expect(html).toContain('Page 2 of 2');
+    expect(html).toContain('pack-recipe-24');
+    expect(html).not.toContain('loose-recipe');
+    expect(secondScroll.scrollTop).toBe(620);
+    expect(secondScroll.scrollLeft).toBe(7);
+    second.route.dispose();
+  });
+
   it('disposes the route and broadcast subscriptions cleanly', async () => {
     const unsubscribers = [vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn()];
     const subscribeKinds: string[] = [];
@@ -1214,6 +1343,201 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     expect(html).toContain('href="#logs/recipe/daily-brief"');
     expect(html).toContain(RECIPES_ROUTE_AUTOMATION_LINK_ATTR);
     expect(html).toContain('href="#automation/daily-brief"');
+    expect(html).toContain('data-recued-recipes-action="open-run"');
+    expect(html).toContain('data-recued-recipes-action="open-schedule"');
+
+    rig.route.dispose();
+  });
+
+  it('renders a standing dish owner through the shared provenance component', async () => {
+    const dish: Dish = {
+      dish_id: 'dish-1',
+      recipe_id: 'daily-brief',
+      publisher_id: 'recued-core',
+      name: 'Weekday digest',
+      is_default: false,
+      config_overlay: {},
+      enabled: true,
+      created_at: 1,
+      managed_by_schedule_id: 'schedule-1',
+    };
+    const rig = mountRoute({
+      initialRecipeId: 'daily-brief',
+      dishesListCaller: vi.fn(async () => ({ dishes: [dish] })),
+    });
+    await rig.route.whenLoaded();
+
+    const html = shellHtml(rig.root);
+    expect(html).toContain('data-dish-origin="schedule"');
+    expect(html).toContain('data-recued-provenance');
+    expect(html).toContain('Schedule schedule-1');
+
+    rig.route.dispose();
+  });
+
+  it('gives an auto-run detail lifecycle controls instead of Run or Schedule', async () => {
+    const update = deferred<{ entry: AutoRunStatusEntry }>();
+    const autoRunUpdateCaller = vi.fn(() => update.promise);
+    const rig = mountRoute({
+      initialRecipeId: 'watch-mail',
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [recipeEntry('watch-mail', {
+          recipe: recipeDefinition('watch-mail', {
+            auto_run: { interval_ms: 60_000 },
+            trigger_steps: [{ id: 'watch', ingredient: 'mail-watcher' }],
+          } as unknown as Partial<RecipeDefinition>),
+        })],
+      })),
+      // Even a legacy/explicit hybrid schedule is managed in Automation; its
+      // presence must not put Schedule back on a reactive recipe detail.
+      schedulesListCaller: vi.fn(async () => ({
+        schedules: [{
+          schedule_id: 'legacy-reactive-schedule',
+          recipe_id: 'watch-mail',
+          publisher_id: 'recued-core',
+          cron_expression: '0 9 * * *',
+          enabled: true,
+          created_at: 1,
+          last_run_at: null,
+          next_run_at: null,
+          last_status: null,
+          last_error: null,
+        }],
+      })),
+      schedulesCreateCaller: vi.fn(async () => {
+        throw new Error('reactive detail must not create a schedule');
+      }),
+      autoRunListCaller: vi.fn(async () => ({
+        entries: [autoRunStatus('watch-mail')],
+      })),
+      autoRunUpdateCaller,
+    });
+    await rig.route.whenLoaded();
+
+    let html = shellHtml(rig.root);
+    expect(html).not.toContain('data-recued-recipes-action="open-run"');
+    expect(html).not.toContain('data-recued-recipes-action="run-defaults"');
+    expect(html).not.toContain('data-recued-recipes-action="open-schedule"');
+    expect(html).toContain('data-recued-recipes-action="toggle-auto-run:off"');
+    expect(html).toContain('>Pause auto-run</button>');
+    expect(html).toContain('>Manage automation</a>');
+
+    clickRecipeAction(rig.root, 'toggle-auto-run:off', 'watch-mail');
+    expect(autoRunUpdateCaller).toHaveBeenCalledWith({
+      recipe_id: 'watch-mail',
+      enabled: false,
+    });
+    html = shellHtml(rig.root);
+    expect(html).toContain('Pausing auto-run…');
+    expect(html).toContain('aria-disabled="true" aria-busy="true"');
+
+    update.resolve({ entry: autoRunStatus('watch-mail', { enabled: false }) });
+    await vi.waitFor(() => expect(shellHtml(rig.root)).toContain('Arm auto-run'));
+    expect(shellHtml(rig.root)).toContain(
+      'data-recued-recipes-action="toggle-auto-run:on"',
+    );
+
+    rig.route.dispose();
+  });
+
+  it('offers Arm when an auto-run definition has no status entry yet', async () => {
+    const autoRunUpdateCaller = vi.fn(async () => ({
+      entry: autoRunStatus('watch-mail'),
+    }));
+    const rig = mountRoute({
+      initialRecipeId: 'watch-mail',
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [recipeEntry('watch-mail', {
+          recipe: recipeDefinition('watch-mail', {
+            auto_run: { interval_ms: 60_000 },
+          }),
+        })],
+      })),
+      autoRunListCaller: vi.fn(async () => ({ entries: [] })),
+      autoRunUpdateCaller,
+    });
+    await rig.route.whenLoaded();
+
+    let html = shellHtml(rig.root);
+    expect(html).toContain('data-recued-recipes-action="toggle-auto-run:on"');
+    expect(html).toContain('>Arm auto-run</button>');
+
+    clickRecipeAction(rig.root, 'toggle-auto-run:on', 'watch-mail');
+    expect(autoRunUpdateCaller).toHaveBeenCalledWith({
+      recipe_id: 'watch-mail',
+      enabled: true,
+    });
+    html = shellHtml(rig.root);
+    expect(html).toContain('Arming auto-run…');
+    await vi.waitFor(() => expect(shellHtml(rig.root)).toContain('Pause auto-run'));
+
+    rig.route.dispose();
+  });
+
+  it('offers Re-arm when an auto-run circuit is tripped', async () => {
+    const rig = mountRoute({
+      initialRecipeId: 'watch-mail',
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [recipeEntry('watch-mail', {
+          recipe: recipeDefinition('watch-mail', {
+            auto_run: { interval_ms: 60_000 },
+          }),
+        })],
+      })),
+      autoRunListCaller: vi.fn(async () => ({
+        entries: [autoRunStatus('watch-mail', { auto_disabled: true })],
+      })),
+      autoRunUpdateCaller: vi.fn(async () => ({
+        entry: autoRunStatus('watch-mail'),
+      })),
+    });
+    await rig.route.whenLoaded();
+
+    const html = shellHtml(rig.root);
+    expect(html).toContain('data-recued-recipes-action="toggle-auto-run:on"');
+    expect(html).toContain('>Re-arm auto-run</button>');
+
+    rig.route.dispose();
+  });
+
+  it('gives an event-triggered detail Manage instead of Run or Schedule', async () => {
+    const rig = mountRoute({
+      initialRecipeId: 'on-new-mail',
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [recipeEntry('on-new-mail', {
+          recipe: recipeDefinition('on-new-mail', {
+            event_triggers: [{ event: 'data.mail.**.created' }],
+          }),
+        })],
+      })),
+      schedulesListCaller: vi.fn(async () => ({
+        schedules: [{
+          schedule_id: 'legacy-event-schedule',
+          recipe_id: 'on-new-mail',
+          publisher_id: 'recued-core',
+          cron_expression: '0 9 * * *',
+          enabled: true,
+          created_at: 1,
+          last_run_at: null,
+          next_run_at: null,
+          last_status: null,
+          last_error: null,
+        }],
+      })),
+      schedulesCreateCaller: vi.fn(async () => {
+        throw new Error('triggered detail must not create a schedule');
+      }),
+    });
+    await rig.route.whenLoaded();
+
+    const html = shellHtml(rig.root);
+    expect(html).not.toContain('data-recued-recipes-action="open-run"');
+    expect(html).not.toContain('data-recued-recipes-action="open-schedule"');
+    expect(html).not.toContain('data-recued-recipes-action="toggle-auto-run:');
+    expect(html).toContain(
+      'class="recipes-button recipes-button--primary"\n            href="#automation/on-new-mail"',
+    );
+    expect(html).toContain('>Manage automation</a>');
 
     rig.route.dispose();
   });
@@ -1412,7 +1736,20 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
           }),
         ],
       })),
-      schedulesListCaller: vi.fn(async () => ({ schedules: [] })),
+      schedulesListCaller: vi.fn(async () => ({
+        schedules: [{
+          schedule_id: 'legacy-close-action-schedule',
+          recipe_id: 'close-action',
+          publisher_id: 'recued-core',
+          cron_expression: '0 9 * * *',
+          enabled: true,
+          created_at: 1,
+          last_run_at: null,
+          next_run_at: null,
+          last_status: null,
+          last_error: null,
+        }],
+      })),
       schedulesCreateCaller: vi.fn(async (args) => ({
         schedule: {
           schedule_id: 'schedule-1',
@@ -2106,10 +2443,42 @@ describe('R24 — Recipes route: run + schedule modal', () => {
     expect(shellHtml(rig.root)).toContain(
       `${RECIPES_ROUTE_RESULT_PROVENANCE_ATTR}="recipe-detail"`,
     );
+    expect(shellHtml(rig.root)).toContain(
+      'data-recued-reference-id="daily-brief"',
+    );
+    expect(shellHtml(rig.root)).toContain('data-recued-provenance');
     rig.route.closeRunModal();
     expect(runModalHtml(rig.root)).toBe('');
     expect(shellHtml(rig.root)).toContain('Acme');
 
+    rig.route.dispose();
+  });
+
+  it('renders audit-backed Run facts in the modal and persistent result', async () => {
+    const receipt =
+      '34 steps · 1,249 items · 2 provider calls · 13,385 tokens · 42 seconds';
+    const rig = mountRoute({
+      initialRecipeId: 'daily-brief',
+      recipeExecuteCaller: vi.fn<RecipeExecuteCaller>(async () => executeResponse({
+        run_facts: {
+          steps_run: 34,
+          items_total: 1_249,
+          provider_calls: 2,
+          total_tokens: 13_385,
+          duration_ms: 42_000,
+        },
+      })),
+    });
+    await rig.route.whenLoaded();
+
+    rig.route.openRunModal('daily-brief');
+    await rig.route.confirmRun();
+
+    expect(runModalHtml(rig.root)).toContain(RunModal.RUN_MODAL_FACTS_ATTR);
+    expect(runModalHtml(rig.root)).toContain(receipt);
+    expect(shellHtml(rig.root)).toContain(RECIPES_ROUTE_RESULT_FACTS_ATTR);
+    expect(shellHtml(rig.root)).toContain(receipt);
+    expect(shellHtml(rig.root)).not.toContain(' · 7 ms · 1 step');
     rig.route.dispose();
   });
 

@@ -318,6 +318,118 @@ export const isEmptyChatAiOutput = (output: AIOutput): boolean =>
   output.events.length === 0 &&
   output.tool_calls.length === 0;
 
+/** ⛔ CANDIDATE (bench arm) — a turn that ASSERTED AN ABSENCE without looking.
+ *
+ *  🔑 THE DEFECT IS A FABRICATED NEGATIVE, and nothing else in the engine looks
+ *  for one. Every grounding guard protects against an invented POSITIVE:
+ *  `ungroundedArgumentsInCall` refuses a call whose identifier appears nowhere in
+ *  the packet. An absence claim carries no identifier, no argument and no tool
+ *  call — it is calm, well-formed prose that reports `completed` — so it passes
+ *  every gate we own. Measured live: a turn answered "I can't find any record of
+ *  a Braidwood discount approval. There are no memories, emails, or notes
+ *  mentioning it in the system" after dispatching NOTHING, with `memory.search`
+ *  fully defined in a 16-tool core catalog it could see. It reported the result
+ *  of a search it never ran, and even enumerated the stores it had not checked.
+ *
+ *  ⛔⛔ THE FIRST VERSION OF THIS TRIGGER MATCHED THE *OFFER* FORM ("Would you
+ *  like me to search your memory?") AND WAS NET HARMFUL — measured over 1093
+ *  historical reports it fired on 23 of 420 legitimate no-tool turns against 20
+ *  of 156 defect turns: WORSE THAN A COIN FLIP. Its false positives were a
+ *  coherent class it could never separate — the model correctly explaining it
+ *  needs a required parameter ("I can search the enrichment data, but the system
+ *  requires a specific topic"), which reads exactly like an offer and is nothing
+ *  of the kind. The absence form scored 14/156 against 0 of 420 on the same
+ *  corpus. ⇒ Coverage was never the axis that mattered; PRECISION was.
+ *
+ *  ⚠ WIDENED 2026-08-24 (+preference/fact/setting/detail/decision, singular and
+ *  plural): +2 caught, +0 false fires, precision still 100%. The trigger was a
+ *  LIVE MISS — task 204 answered "I don't have a stored PREFERENCE about when to
+ *  schedule a rollout" with zero dispatch, a textbook fabricated negative the
+ *  shipped noun list did not match. ⛔ The first measurement of that widening
+ *  reported +0/+0 and was WRONG: the scan's defect bucket was "zero dispatch AND
+ *  a required_tool_call miss", and 204 asserts NO tool (a pool question is served
+ *  by `recall.search` OR `memory.search`, so asserting one would fail a correct
+ *  route) — so the motivating case was in NEITHER bucket and the corpus did not
+ *  contain its own example. On a zero-dispatch turn a `final_text_includes` miss
+ *  says the same thing, and counting both is what made the gain visible.
+ *
+ *  ⚠ THE PATTERN IS LIFTED VERBATIM from the scanner that measured it
+ *  (internal benchmarks, `WIDE`). Editing it
+ *  here without re-running that scan silently invalidates the 0/420 result —
+ *  the number belongs to THIS pattern, not to the idea of it.
+ *
+ *  ⛔ GATED ON ZERO `tool_calls`, never on the text alone. "I couldn't find any
+ *  matching mail" AFTER a real search is a correct, verified absence and must
+ *  never be retried; the missing dispatch is the load-bearing half. */
+const ABSENCE_CLAIM_RE =
+  /\b(?:i (?:do ?n[’']?o?t|don[’']t) have|i can[’']?t find|i (?:have|found) no|there (?:is|are|were) no|no record of|nothing (?:in|on|about))\b[^.?!]{0,70}?\b(?:record|records|memory|memories|note|notes|email|emails|entry|entries|information|context|data|mention|preference|preferences|fact|facts|setting|settings|detail|details|decision|decisions)\b/i;
+
+export const assertedAbsenceWithoutLooking = (output: AIOutput): boolean =>
+  output.tool_calls.length === 0 && ABSENCE_CLAIM_RE.test(output.response);
+
+/** ⛔ CANDIDATE (bench arm) — a concrete value INVENTED in the reply prose.
+ *
+ *  🔑 THE SAME ASYMMETRY AS THE ABSENCE CLAIM, OPPOSITE SIGN.
+ *  `ungroundedArgumentsInCall` refuses a call whose identifier appears nowhere in
+ *  the packet — it inspects ARGUMENTS ONLY. A model that calls nothing and simply
+ *  WRITES the value into its reply is inspected by nothing at all. Measured over
+ *  1093 reports: "Pat Lee's email is pat.lee@acme.com", then `pat.lee@example.com`,
+ *  then `pat.lee@lumina.io` on later runs of the same task — a different invention
+ *  each time, none of them in the packet, none of them ever passed as an argument.
+ *  Also a fully fabricated calendar table, and "I've noted Harbourgate Mews at 14
+ *  Harbour Road for your rental book" — a confident report of a write that never
+ *  happened, which this codebase already calls the worst class of failure it has.
+ *
+ *  ⛔⛔ GROUNDED-AND-UNDISPATCHED IS NOT A DEFECT AND MUST NOT BE FLAGGED. A value
+ *  already in the packet is prefetch-satisfied: the model read it from context and
+ *  answered without a round-trip, which is correct and is an optimisation the
+ *  engine deliberately allows (the bench names it
+ *  `answered_from_packet_without_dispatch`). Measured on the same corpus, 7 of the
+ *  12 zero-dispatch turns carrying an email were GROUNDED and 5 were not —
+ *  without this split all 12 would read as fabrication and the gate would fire on
+ *  the engine's own prefetch path.
+ *
+ *  ⚠ `packetCorpus` MUST be `lastPacketBody`, which is ALREADY passed through
+ *  `groundingCorpusFromPacket` at its assignment — do not re-apply it, and do not
+ *  substitute the raw body. The corpus deliberately strips `args`/`detail` from
+ *  prior entries so a value the model INVENTED earlier cannot ground itself. One
+ *  rule, one implementation, two callers.
+ *
+ *  ⚠ EMAIL SHAPE ONLY, deliberately. It is the one value class measured (5 true
+ *  positives, 0 false positives over 420 legitimate no-tool turns). Widening to
+ *  dates, ids or names needs its own precision run — the offer detector in this
+ *  same arc looked obviously right and scored worse than a coin flip. */
+const REPLY_VALUE_RE = /\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b/gi;
+
+export const inventedValueInReply = (
+  output: AIOutput,
+  packetCorpus: string,
+): boolean => {
+  if (output.tool_calls.length > 0) return false;
+  const found = output.response.match(REPLY_VALUE_RE);
+  if (found === null) return false;
+  const corpus = packetCorpus.toLowerCase();
+  return found.some((v) => !corpus.includes(v.toLowerCase()));
+};
+
+/** Model-facing feedback for the ONE invented-value retry. */
+export const buildInventedValueFeedback = (): string =>
+  'Your previous reply stated a specific value that appears nowhere in what you'
+  + ' were given, and you called no tools — so you did not read it anywhere, you'
+  + ' produced it. Call the tool that returns that value and answer from its'
+  + ' result. Never state an identifier you have not read.';
+
+/** Model-facing feedback for the ONE unverified-absence retry. Mirrors
+ *  `buildEmptyAiOutputFeedback`: name the mistake concretely rather than
+ *  generically. Carries no values, so it cannot echo tool-result content into a
+ *  field the PII egress does not scan. */
+export const buildUnverifiedAbsenceFeedback = (): string =>
+  'Your previous reply said no such record exists, and you called no tools —'
+  + ' so you have not looked. The tools in "available_tools" are already'
+  + ' available and need no permission; reading the user\'s own data is what'
+  + ' they asked for. Call the tool that would know, in "tool_calls".'
+  + ' Only report an absence you have actually verified.';
+
 /** Model-facing feedback for the ONE empty-output retry per site. Names the
  *  stray keys the model emitted so it can SEE its mistake — concrete feedback
  *  outperforms a generic "invalid output" (cf. the guided-empty and
@@ -744,6 +856,15 @@ interface ChatMainTurnPromptPacket {
    *  context). Omitted from the wire shape when empty.
    *  See internal design notes. */
   readonly prefetch_context?: readonly string[];
+  /** D-XXX pre-seed index — one line naming, per distinctive term in the user's
+   *  message, WHICH STORES hold it. Names only: `pelham: mail.search,
+   *  memory.search`. ⛔ NEVER a title, a summary, a count or any content — 214
+   *  injected a summary and the model invented a `12% discount ... two-year
+   *  commitment` absent from every packet and contradicting the truth, turning
+   *  an honest "I don't have a record" into confident fiction. Measured: bare
+   *  stores match titles (9/10 vs 9/10) and beat no-index (1/10) on the
+   *  two-referent case, and 9/10 vs 4/10 on multi-store spread. */
+  readonly index_context?: string;
   /** Day-granular current-date stamp (`formatChatCurrentDate`) so the
    *  model can anchor date-relative asks ("tomorrow", "this week") —
    *  without it the model has NO clock: observed live (bench task 43,
@@ -904,6 +1025,7 @@ export const composeChatMainTurnPromptParts = (
       && packet.execution_precedent.cards.length > 0
       ? { execution_precedent: packet.execution_precedent }
       : {}),
+    ...(packet.index_context ? { index_context: packet.index_context } : {}),
     ...(recall.length > 0 ? { recall_context: recall } : {}),
     ...(prior.length > 0 ? { prior_tool_calls: prior } : {}),
     ...(packet.output_feedback ? { output_feedback: packet.output_feedback } : {}),
@@ -1072,6 +1194,7 @@ export interface RunChatTurnInputs {
   /** The post-capability-filter AI-facing tool projection the
    *  orchestrator gathered (Tier 2/3 gates already applied). */
   readonly available_tools: ReadonlyArray<ChatMainTurnTool>;
+  readonly index_context?: string;
   /** The assembled content prompt parts (`chat_tail` + current
    *  `user_message`) after the before-turn gather. The model packet keeps
    *  the legacy JSON field names, but their source is the prompt content
@@ -1254,6 +1377,7 @@ export const runChatTurn = async (
         available_tools: inputs.available_tools,
         content: contentForPrompt(),
         current_date: currentDate,
+        ...(inputs.index_context ? { index_context: inputs.index_context } : {}),
         ...(inputs.correction_context.length > 0
           ? { correction_context: inputs.correction_context }
           : {}),
@@ -1657,6 +1781,43 @@ export const runChatTurn = async (
         // its empty `events` make every gather a no-op.
         emptyOutputUnrecovered = true;
       }
+    }
+
+    // ⛔ CANDIDATE (bench arm) — unverified-absence recovery. OWN budget, bounded
+    // at one, placed AFTER the empty-output recovery so the two can never both
+    // fire on one output: an empty output has already earned its retry above,
+    // and an absence claim is by definition non-empty (it has response text).
+    // ⚠ CHAINED, NOT INDEPENDENT: a turn earns at most ONE recovery from this
+    // family, so worst case stays one extra call rather than two. Invention is
+    // probed FIRST because it is the more harmful half — an absence claim wastes
+    // the user's time, an invented identifier is acted on.
+    if (
+      !emptyOutputUnrecovered
+      && !isEmptyChatAiOutput(currentAiOutput)
+      && inventedValueInReply(currentAiOutput, lastPacketBody)
+    ) {
+      recoveryCalls += 1;
+      const inventedRetry = await tryMainTurn(
+        undefined,
+        buildInventedValueFeedback(),
+      );
+      totalUsage = aggregateTokenUsageReports(totalUsage, inventedRetry.usage);
+      if (inventedRetry.kind === 'ok') currentAiOutput = inventedRetry.output;
+    } else if (
+      !emptyOutputUnrecovered
+      && !isEmptyChatAiOutput(currentAiOutput)
+      && assertedAbsenceWithoutLooking(currentAiOutput)
+    ) {
+      recoveryCalls += 1;
+      const absenceRetry = await tryMainTurn(
+        undefined,
+        buildUnverifiedAbsenceFeedback(),
+      );
+      totalUsage = aggregateTokenUsageReports(totalUsage, absenceRetry.usage);
+      // ⚠ A FAILED RETRY KEEPS THE ORIGINAL OUTPUT. The absence claim is still a
+      // reply the user can read; replacing it with a fail-loud message would turn
+      // a recoverable annoyance into a lost turn.
+      if (absenceRetry.kind === 'ok') currentAiOutput = absenceRetry.output;
     }
 
     assistantContent = emptyOutputUnrecovered

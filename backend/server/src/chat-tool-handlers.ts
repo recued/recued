@@ -11,7 +11,9 @@
  *    - `contact.search`    → `ContactStore.list / get`
  *    - `mail.search`       → `CollectionRegistry` fan-out (mail platform)
  *    - `calendar.search`   → `CollectionRegistry` fan-out (calendar platform)
- *    - `memory.search`     → `AuditLogStore.listByRecipe / listRecent`
+ *    - `memory.search`     → `UserMemoryStore.search` — the memory POOL
+ *      ONLY. It does NOT read the audit log; `getAuditLog` is wired but
+ *      never called from this file (see `createMemorySearchHandler`).
  *    - `enrichment.search` → `EnrichmentStore.list`
  *    - `recipe.run`        → `handleExecute` (same path manual / scheduled
  *      runs take; trigger_source: 'chat')
@@ -186,12 +188,63 @@ export interface ChatToolHandlerDeps {
       attachments?: ReadonlyArray<{ file_id: string }>;
     }>>;
   } | undefined;
+  /** ⛔ WIRED BUT UNCALLED — DELIBERATE. DO NOT TIDY THIS AWAY.
+   *
+   *  No handler in this file reads it (verified 2026-08-24: no call site and no
+   *  destructured form, tree-wide). It went unused in `1e8552e3b` (D-198), which
+   *  deleted `memory.search`'s audit half and left the seam behind.
+   *
+   *  ⛔⛔ CORRECTED 2026-08-24 — AN EARLIER VERSION OF THIS NOTE CALLED THE MISSING
+   *  AUDIT CHAT TOOL A "GAP" AND ARGUED THIS DEP SHOULD BE KEPT TO BUILD ONE.
+   *  That is backwards. Owner ruling, same day: **audit is OUT of chat because it
+   *  is NOISE on that surface** — its removal from `memory.search` in `1e8552e3b`
+   *  was the design working, not decay. And `data.timeline()` is NOT missing: it
+   *  is alive on TWO surfaces (`mcp/timeline.ts` and `timeline-rpc-handler.ts`,
+   *  D-174 #22) and spans strictly more than recall does — mail, calendar,
+   *  enrichment, memory, annotation and link, entity-scoped — where
+   *  `recall.search` is interaction + memory, query-scoped. The consumers that
+   *  want a chronological feed HAVE one; chat is deliberately not among them.
+   *
+   *  ⇒ SO THE "A SPEND TOOL WILL NEED THIS HOOK" ARGUMENT IS RETIRED. D-250
+   *  (`d94d8e444`) did add `AuditEntry.total_usage`, and nothing reads it back
+   *  (chat reports only the CURRENT turn's usage on `ChatTurnAck`), but that is
+   *  not a reason to keep a CHAT-tool dep: reading run spend belongs on the
+   *  surfaces that already own run history, not here. Whoever next audits this
+   *  file should decide keep-or-remove on the cost below, NOT on a future chat
+   *  tool — there is no such tool planned.
+   *
+   *  ⚠ Bench task 75 was narrowed for this reason: it asked chat "what actions
+   *  has Recued taken", the model correctly declined, and the task scored that
+   *  honesty as a routing miss. The prompt was asking the chat surface for
+   *  something that is deliberately not its job.
+   *
+   *  ⚠ "Uncalled" is not "safe to delete", and the two were conflated once
+   *  already. It is supplied by the composition root
+   *  (`wire-chat-orchestrator.ts`) and stubbed in 19 test files, so removing and
+   *  later restoring it costs strictly more than leaving it. */
   getAuditLog: () => AuditLogStore | undefined;
   /** D-198 Slice 4 — the owner-authored + AI/customer-written `user_memory`
-   *  store. `memory.write` writes here (stamped `contracted_user`) and the
-   *  widened `memory.search` unions it with the audit log. Absent (db-less
-   *  harness / pre-wire) → `memory.write` reports `execution_error` and
-   *  `memory.search` falls back to the audit-only read. */
+   *  store. `memory.write` writes here (stamped `contracted_user`) and
+   *  `memory.search` reads it. Absent (db-less harness / pre-wire) →
+   *  `memory.write` reports `execution_error` and `memory.search` returns an
+   *  EMPTY result marked `unavailable`.
+   *
+   *  ⛔⛔ CORRECTED 2026-08-24 — THIS COMMENT DESCRIBED A REMOVED FEATURE, and it
+   *  cost a reader real time. It said the "widened `memory.search` unions it with
+   *  the audit log" and "falls back to the audit-only read". Neither is true:
+   *  `createMemorySearchHandler` reads ONLY this store and returns
+   *  `emptyMemoryResult(..., 'unavailable')` without it, and the handler's own
+   *  comment is the current one — "The pool is now the ONLY half". The audit
+   *  union was removed and the comment was not.
+   *
+   *  🔑 WHY A STALE COMMENT HERE IS EXPENSIVE, not cosmetic. This tool's
+   *  DESCRIPTION is model-facing and says outright "It does NOT hold run
+   *  history (what a recipe did)" — which is CORRECT. A reader who trusts this
+   *  comment over the handler concludes the description is the thing that is
+   *  wrong, and the obvious "fix" is to advertise run history to the model. That
+   *  would make `memory.search` claim a capability it does not implement, so the
+   *  model would route run-history questions here and get an empty pool back.
+   *  ⇒ The description and the handler agree. This comment was the outlier. */
   getUserMemoryStore?: () => UserMemoryStore | undefined;
   /** D-198 Slice 4 — the redaction-marker store, so `memory.search` HONORS the
    *  "forget this" overlay: a redacted (forgotten) row is omitted from recall
@@ -352,6 +405,11 @@ export interface ChatToolHandlerDeps {
  *  Each list / search defaults to `DEFAULT_LIMIT` when args omit one;
  *  user-supplied values clamp to `MAX_LIMIT`. */
 const DEFAULT_LIMIT = 20;
+
+/** Body preview length on the LIST path (filters / date-range reads, which have
+ *  no FTS snippet to stand in for content). Long enough to carry a short reply
+ *  in full; short enough that listing a thread does not dump every message. */
+const LIST_PREVIEW_CHARS = 400;
 const MAX_LIMIT = 100;
 
 const clampLimit = (raw: unknown): number => {
@@ -1037,6 +1095,25 @@ const collectionReadFenced = (collection: ReadableCollection) => ({
   },
 });
 
+/** D-INDEX — did a fan-out FILL its quota, i.e. is the caller seeing a SLICE?
+ *
+ *  ⛔⛔ SILENCE ABOUT TRUNCATION IS WORSE THAN THE TRUNCATION. A model handed 20
+ *  of 1,616 matches with no marker reports a complete-looking answer from a
+ *  slice it has no reason to doubt — and it cannot know to narrow the query,
+ *  because nothing told it there was anything to narrow. "Nothing here" and "I
+ *  could not see everything" look identical to the consumer.
+ *
+ *  ⚠ `recall.search` has carried this vocabulary from the start (`partial`,
+ *  `more_matches`, `exhausted`); the collection surfaces sliced silently. This
+ *  brings them into line rather than inventing a new idea.
+ *
+ *  Approximate BY DESIGN: a store that returned exactly its quota probably has
+ *  more, and one that returned fewer certainly does not. Counting the true total
+ *  would mean a second unbounded query per store per turn — the cost the limit
+ *  exists to avoid. False "there may be more" is cheap; false "that is all" is
+ *  the failure being fixed. */
+const filledQuota = (returned: number, quota: number): boolean => returned >= quota;
+
 const createMailSearchHandler =
   (deps: ChatToolHandlerDeps): Tier1Handler =>
   async (raw, ctx) => {
@@ -1057,6 +1134,13 @@ const createMailSearchHandler =
       args.filters && typeof args.filters === 'object' && !Array.isArray(args.filters)
         ? (args.filters as Record<string, unknown>)
         : undefined;
+    // `near_id` + `next`/`prev`: step outward from a matched message.
+    const nearId = typeof args.near_id === 'string' && args.near_id.length
+      ? args.near_id : undefined;
+    const nextN = typeof args.next === 'number' && args.next > 0
+      ? Math.min(10, Math.floor(args.next)) : 0;
+    const prevN = typeof args.prev === 'number' && args.prev > 0
+      ? Math.min(10, Math.floor(args.prev)) : 0;
     const collections = registry.list().filter((c) => c.platform === 'mail');
     if (collections.length === 0) {
       // D-237 P1 — no mailbox is enrolled. `collections: []` is the fact, and
@@ -1074,6 +1158,47 @@ const createMailSearchHandler =
         Math.ceil(limit / collections.length),
       );
       const aggregated: Array<Record<string, unknown>> = [];
+      // Set when any store returned a full quota — see `filledQuota`.
+      let moreAvailable = false;
+      if (nearId !== undefined && (nextN > 0 || prevN > 0)) {
+        // ── RELATIVE NAVIGATION ────────────────────────────────────────────
+        // Walk outward from a message that DID match. A conversational answer
+        // repeats none of the question's vocabulary, so no query reaches it —
+        // only stepping to the next message can. DIRECTION is what makes it
+        // cheap: the reply is AFTER, the context BEFORE, so the caller asks for
+        // one side instead of paying for a whole thread.
+        for (const c of collections) {
+          const near = (c as unknown as {
+            neighbours?: (q: { anchor_id: string; next?: number; prev?: number }) => Array<{
+              record_id: string; hot_fields: Record<string, unknown>;
+              body_inline?: string; received_at: number;
+            }>;
+          }).neighbours;
+          if (typeof near !== 'function') continue;
+          for (const r of near.call(c, { anchor_id: nearId, next: nextN, prev: prevN })) {
+            aggregated.push({
+              collection_slug: c.slug,
+              record_id: r.record_id,
+              hot_fields: r.hot_fields,
+              received_at: r.received_at,
+              ...(typeof r.body_inline === 'string' && r.body_inline.length > 0
+                ? { preview: r.body_inline.slice(0, LIST_PREVIEW_CHARS) }
+                : {}),
+            });
+          }
+        }
+        return {
+          ok: true,
+          result: {
+            matches: aggregated.slice(0, limit),
+            more_matches: false,
+            collections: collections.map((c) => c.slug),
+            source_freshness: collectionSourceFreshnessFanOut(
+              collections, (deps.now ?? Date.now)(),
+            ),
+          },
+        };
+      }
       for (const c of collections) {
         if (query) {
           const matches = c.search({
@@ -1082,6 +1207,7 @@ const createMailSearchHandler =
             query,
             limit: perCollectionLimit,
           });
+          if (filledQuota(matches.length, perCollectionLimit)) moreAvailable = true;
           for (const m of matches) {
             aggregated.push({
               collection_slug: c.slug,
@@ -1089,6 +1215,11 @@ const createMailSearchHandler =
               hot_fields: m.hot_fields,
               rank: m.rank,
               snippet: m.snippet,
+              // ⛔ The label MUST survive this projection. Dropped here, the row
+              // reaches the model indistinguishable from a full match and the
+              // whole disclose-don't-decide argument for surfacing it collapses.
+              ...(m.partial_match ? { partial_match: true } : {}),
+              ...(m.thread_context ? { thread_context: true } : {}),
             });
           }
         } else {
@@ -1100,12 +1231,29 @@ const createMailSearchHandler =
             ...(until !== undefined ? { until } : {}),
             limit: perCollectionLimit,
           });
+          if (filledQuota(rows.length, perCollectionLimit)) moreAvailable = true;
           for (const r of rows) {
             aggregated.push({
               collection_slug: c.slug,
               record_id: r.record_id,
               hot_fields: r.hot_fields,
               received_at: r.received_at,
+              // ⛔⛔ THE LIST PATH RETURNED NO BODY, WHICH MADE THREAD-FOLLOWING
+              // USELESS. Measured: told how to follow a conversation, the model
+              // did it correctly — `query: null, filters: { thread_id }` — and
+              // got back subjects and metadata with no text, then reported "the
+              // messages are truncated and I can't see the settled figure". One
+              // run fell back to the PROPOSAL (90 days) as if it were the
+              // outcome. The search path has always carried a `snippet`; this
+              // path carried nothing, so the answer was unreadable by
+              // construction.
+              //
+              // Bounded, not full-fidelity: enough to read a short reply like
+              // "no lets be fair and change it to 60 days", which is exactly the
+              // shape a conversational answer takes.
+              ...(typeof r.body_inline === 'string' && r.body_inline.length > 0
+                ? { preview: r.body_inline.slice(0, LIST_PREVIEW_CHARS) }
+                : {}),
             });
           }
         }
@@ -1116,6 +1264,8 @@ const createMailSearchHandler =
       // for FTS path stays the natural FTS5 BM25 order; hot-field path
       // keeps registration order across collections).
       const truncated = aggregated.slice(0, limit);
+      // Fan-out overshoot is itself evidence of more.
+      if (aggregated.length > limit) moreAvailable = true;
       // D-237 P1 — the verdict rides out with the records it qualifies, exactly
       // as D-236 made it ride `collection.list`. An empty `matches` here is an
       // ABSENCE, and an absence is only a fact once you know the source was
@@ -1124,6 +1274,7 @@ const createMailSearchHandler =
         ok: true,
         result: {
           matches: truncated,
+          more_matches: moreAvailable,
           collections: collections.map((c) => c.slug),
           source_freshness: collectionSourceFreshnessFanOut(
             collections,
@@ -1193,13 +1344,16 @@ const createCalendarSearchHandler =
         Math.ceil(limit / collections.length),
       );
       const aggregated: Array<Record<string, unknown>> = [];
+      // Set when any store returned a full quota — see `filledQuota`.
+      let moreAvailable = false;
       for (const c of collections) {
         if (query) {
-          const matches = c.table.search({
+          const calMatches = c.table.search({
             query,
             limit: perCollectionLimit,
           });
-          for (const m of matches) {
+          if (filledQuota(calMatches.length, perCollectionLimit)) moreAvailable = true;
+          for (const m of calMatches) {
             aggregated.push({
               collection_slug: c.slug,
               record_id: m.record_id,
@@ -1233,6 +1387,8 @@ const createCalendarSearchHandler =
         }
       }
       const truncated = aggregated.slice(0, limit);
+      // Fan-out overshoot is itself evidence of more.
+      if (aggregated.length > limit) moreAvailable = true;
       // D-237 P1 — calendar reads its own `CalendarCollectionTable` rather than
       // the `collection.list` path, exactly as `calendar-dispatcher.ts` does, so
       // the verdict is DERIVED here from the same `health()` rather than
@@ -1241,6 +1397,7 @@ const createCalendarSearchHandler =
         ok: true,
         result: {
           matches: truncated,
+          more_matches: moreAvailable,
           collections: collections.map((c) => c.slug),
           source_freshness: collectionSourceFreshnessFanOut(
             collections,
@@ -1681,6 +1838,10 @@ const createFileSearchHandler =
       ok: true,
       result: {
         files: rows,
+        // Same disclosure as mail/calendar: a full page is evidence the caller
+        // is seeing a SLICE. Silence here would let the model report a
+        // complete-looking answer from a partial one.
+        more_matches: filledQuota(rows.length, limit),
         scope,
         source_freshness: fileSourceFreshness(),
         ...(truncated ? { truncated: true } : {}),

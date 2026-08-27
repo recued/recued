@@ -1681,7 +1681,31 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
         },
         since: { type: 'number', description: 'Lower bound (epoch ms) on message date.' },
         until: { type: 'number', description: 'Upper bound (epoch ms) on message date.' },
-        filters: { type: 'object', description: 'Optional exact hot-field filters, applied when query is empty.' },
+        filters: {
+          type: 'object',
+          description:
+            'Exact hot-field filters, applied when `query` is empty. Available fields: '
+            + '`thread_id`, `folder`, `from`, `subject`, `is_read`, `has_attachments`, '
+            + '`message_id`. To follow a conversation use `near_id` instead — it does not '
+            + 'depend on the provider having threaded the mail. Do NOT pass a `record_id` '
+            + 'here as a `thread_id`; they are different identifiers and it matches nothing.',
+        },
+        near_id: {
+          type: 'string',
+          description:
+            'FOLLOW A CONVERSATION — the primary way. Pass the `record_id` of a result with '
+            + '`next: N` (later messages, oldest-first — the REPLY direction) or `prev: N` '
+            + '(earlier, newest-first — the CONTEXT direction).\n\nUse it whenever a result '
+            + 'reads as a QUESTION or a proposal — "move from 30d to 90d?" — because the '
+            + 'answer is a reply that repeats none of your search words, so NO query can '
+            + 'reach it and re-searching will keep returning the question. Ask for '
+            + '`next: 2`. Adjacency follows the correspondents and the thread when one '
+            + 'exists, so it works even where the provider threads badly or not at all. '
+            + 'Reporting a proposal as the outcome without checking the reply is the '
+            + 'failure this prevents.',
+        },
+        next: { type: 'number', description: 'With `near_id`: how many LATER messages (max 10).' },
+        prev: { type: 'number', description: 'With `near_id`: how many EARLIER messages (max 10).' },
         limit: { type: 'number', description: 'Max messages to return.' },
       },
     },

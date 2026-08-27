@@ -11,9 +11,9 @@
  *
  *  Pack install/uninstall lives at the dedicated `#packs` route now (the
  *  recipes route only keeps the by-pack FILTER, driven by each recipe's
- *  `depends_on`). Per-recipe scheduling rides the shared Run | Schedule
- *  modal; bundled recipe siblings get a quick auto-run enable / disable
- *  control while full trigger / auto-run management lives at `#automation`.
+ *  `depends_on`). Manual recipes run / schedule through the shared modal;
+ *  reactive recipes expose their actual lifecycle control instead (auto-run
+ *  pause / arm, or trigger management at `#automation`).
  *  Grant editing stays in `#contracts`. Recipes get NO contract-access editing
  *  here (R23): pack-ops are shared across recipes, so an op toggle shown
  *  in a recipe's context would falsely read as recipe-local.
@@ -78,6 +78,7 @@ import {
   outputFilterSearchConfig,
   readWidgetValue,
   renderRecipeCard,
+  renderProvenance,
   renderVariableWidget,
   missingPackRefsFromRunnability,
   runnabilityDisclosureLines,
@@ -94,7 +95,16 @@ import {
 
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import { bindRecordRefSearchToRecipe } from '../record-ref-search.js';
-import { classifyRecipeAction } from '../chat/run-palette.js';
+import {
+  autoRunStateOf,
+  autoRunToggle as paletteAutoRunToggle,
+  classifyRecipeAction,
+} from './recipe-action-kind.js';
+import {
+  createHierarchicalHistory,
+  hierarchicalAddress,
+  hierarchicalLevel,
+} from '../shell/hierarchical-navigation.js';
 import { serializeShellRoute } from '../shell/route.js';
 import {
   recipeRequiredConnections,
@@ -174,6 +184,7 @@ export {
   RECIPES_ROUTE_RESULT_FILE_STATUS_ATTR,
   RECIPES_ROUTE_RESULT_RETURN_ATTR,
   RECIPES_ROUTE_RESULT_PROVENANCE_ATTR,
+  RECIPES_ROUTE_RESULT_FACTS_ATTR,
   RECIPES_ROUTE_RESULT_FILTER_ATTR,
   RECIPES_ROUTE_RESULT_FILTER_PAGE_ATTR,
   RECIPES_ROUTE_RESULT_FILTER_ERROR_ATTR,
@@ -194,6 +205,15 @@ import {
   missingPacksFromError,
   renderPackInstallOffer,
 } from '../shell/pack-install-offer.js';
+import {
+  LIST_PREVIEW_STYLES,
+  mountListPreview,
+  readListContinuity,
+  readListScroll,
+  restoreListScroll,
+  updateListContinuity,
+  type ListPreviewMount,
+} from '../shell/list-preview-continuity.js';
 
 export const RECIPES_ROUTE_STYLES_MARKER =
   'data-recued-recipes-route-styles';
@@ -220,6 +240,7 @@ export const RECIPES_ROUTE_RECIPE_TRIGGER_ATTR = 'data-recued-recipe-trigger';
 export const RECIPES_ROUTE_RECIPE_PACKS_ATTR = 'data-recued-recipe-packs';
 export const RECIPES_ROUTE_RECIPE_SEARCH_ATTR = 'data-recued-recipe-search';
 const RECIPES_PAGE_SIZE = 24;
+const RECIPES_LIST_CONTINUITY_KEY = 'recipes:installed';
 /** The per-card "Run" button (the trigger). The Run MODAL it opens is the
  *  shared `@recued/ui-shared` RunModal (its own `RUN_MODAL_*` hooks). */
 export const RECIPES_ROUTE_RUN_BUTTON_ATTR = 'data-recued-recipes-run-button';
@@ -436,6 +457,9 @@ export type RecipesPackRecipeRefsCaller = (
 export interface BootstrapRecipesRouteOptions {
   root: HTMLElement;
   document?: Document;
+  /** Shell-owned scrolling element used for list continuity across detail and
+   * browser route remounts. Defaults to `root` for embedded/test mounts. */
+  scrollRoot?: HTMLElement;
   recipesListCaller?: RecipesListCaller;
   recipeExecuteCaller?: RecipeExecuteCaller;
   /** D-200 — paired-client authenticated preview/download for exact file
@@ -479,8 +503,8 @@ export interface BootstrapRecipesRouteOptions {
    *  private-mirror hosts that already own the catalog transport. */
   packRecipeRefsCaller?: RecipesPackRecipeRefsCaller;
   initialRecipeId?: string;
-  /** Keep the shell router's cached hash aligned with in-page detail changes
-   *  made through History.replaceState (which emits no hashchange). */
+  /** Keep the shell router's cached hash aligned with in-page detail history
+   *  writes, which emit no hashchange. */
   onHashSync?: (hash: string) => void;
   subscribe?: BroadcastSubscriber['on'];
 }
@@ -797,6 +821,11 @@ const RECIPES_ROUTE_STYLES = `
   border-color: var(--accent);
 }
 [${RECIPES_ROUTE_RECIPE_CARD_ATTR}]:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-weak);
+}
+[${RECIPES_ROUTE_RECIPE_CARD_ATTR}]:focus-visible {
+  outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-weak);
 }
@@ -1520,6 +1549,13 @@ const packageSource = (entry: ServerRecipeListEntry): string => {
   }
 };
 
+const renderPackageSource = (entry: ServerRecipeListEntry): string =>
+  renderProvenance({
+    primary: packageSource(entry),
+    kind: 'source',
+    ariaLabel: 'Recipe package source',
+  });
+
 const renderSourceErrors = (errors: RecipesLoadErrors): string => {
   const rows = Object.entries(errors);
   if (rows.length === 0) return '';
@@ -1585,7 +1621,14 @@ const renderFromPack = (refs: ReadonlyArray<RecipePackRef>): string => {
           : [`needs ${needed.map((ref) => packSlugLabel(ref.pack)).join(', ')}`]),
       ].join(' · ');
   const packAttr = refs.map((ref) => ref.pack_ref).join(' ');
-  return `<a class="recipes-inline-link" href="#packs" ${RECIPES_ROUTE_FROM_PACK_ATTR}="${e(packAttr)}">${e(label)}</a>`;
+  return renderProvenance({
+    primary: label,
+    kind: 'source',
+    href: '#packs',
+    linkClassName: 'recipes-inline-link',
+    primaryAttributes: { [RECIPES_ROUTE_FROM_PACK_ATTR]: packAttr },
+    ariaLabel: 'Recipe pack provenance',
+  });
 };
 
 interface RecipeListFilter {
@@ -1651,8 +1694,8 @@ const renderRecipeFilters = (
 };
 
 /** The slim management card (R24): name + trigger badge + "from pack X" +
- *  runnability / PII pills + [Run]. The whole card opens the detail;
- *  description + grant provenance live there. */
+ *  runnability / PII pills + actions. Card body/Space opens a read-only preview;
+ *  Enter or the explicit Open action enters durable detail. */
 const renderRecipeListCard = (
   entry: ServerRecipeListEntry,
   catalog: ReadonlyArray<ToolEntry>,
@@ -1660,6 +1703,7 @@ const renderRecipeListCard = (
   pii: ReadonlyMap<string, RecipePiiPostureSummary> | null,
 ): string => {
   const name = recipeDisplayName(entry);
+  const actionKind = classifyRecipeAction(entry.recipe);
   const searchText = recipeListSearchText(entry);
   const packs = recipePackRefs(entry.recipe);
   const targetRunnability = runnability?.get(entry.recipe_id);
@@ -1668,11 +1712,13 @@ const renderRecipeListCard = (
     : missingPackRefsFromRunnability(targetRunnability);
   return `
     <div ${RECIPES_ROUTE_RECIPE_CARD_ATTR}="${e(entry.recipe_id)}"
-      ${RECIPES_ROUTE_ACTION_ATTR}="open-recipe"
+      ${RECIPES_ROUTE_ACTION_ATTR}="preview-recipe"
       ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"
       ${RECIPES_ROUTE_RECIPE_TRIGGER_ATTR}="${e(deriveTriggerKind(entry))}"
       ${RECIPES_ROUTE_RECIPE_PACKS_ATTR}="${e(packs.map((ref) => ref.pack_ref).join(' '))}"
-      ${RECIPES_ROUTE_RECIPE_SEARCH_ATTR}="${e(searchText)}">
+      ${RECIPES_ROUTE_RECIPE_SEARCH_ATTR}="${e(searchText)}"
+      role="group" tabindex="0"
+      aria-label="${e(name)}. Space to preview; Enter to open details.">
       ${renderRecipeCard(projectRecipeCardState(entry, catalog))}
       <div class="recipes-card-meta">
         ${renderFromPack(packs)}
@@ -1681,19 +1727,30 @@ const renderRecipeListCard = (
       ${renderPiiLine(pii?.get(entry.recipe_id))}
       <div class="recipes-actions">
         <button type="button" class="recipes-button"
+          ${RECIPES_ROUTE_ACTION_ATTR}="preview-recipe"
+          ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"
+          aria-label="Preview ${e(name)}">
+          Preview
+        </button>
+        <button type="button" class="recipes-button"
           ${RECIPES_ROUTE_RECIPE_OPEN_ATTR}="${e(entry.recipe_id)}"
           ${RECIPES_ROUTE_ACTION_ATTR}="open-recipe"
           ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"
           aria-label="Open ${e(name)} details">
           Open
         </button>
-        <button type="button" class="recipes-button recipes-button--primary"
+        ${actionKind === 'manual'
+          ? `<button type="button" class="recipes-button recipes-button--primary"
           ${RECIPES_ROUTE_RUN_BUTTON_ATTR}="${e(entry.recipe_id)}"
           ${RECIPES_ROUTE_ACTION_ATTR}="open-run"
           ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"
           aria-label="Run ${e(name)}"${missingPackRunAttrs(missingPacks)}>
           Run
-        </button>
+        </button>`
+          : `<a class="recipes-button recipes-button--primary"
+          href="${serializeShellRoute('automation', entry.recipe_id)}"
+          aria-label="Manage automation for ${e(name)}"
+          ${RECIPES_ROUTE_AUTOMATION_LINK_ATTR}>Manage</a>`}
       </div>
     </div>
   `;
@@ -1793,7 +1850,13 @@ const renderDishesSection = (
     const last = data.dishLastRuns[d.dish_id];
     return `<li ${RECIPES_ROUTE_DISH_ROW_ATTR}="${e(d.dish_id)}" data-enabled="${d.enabled ? 'true' : 'false'}">
       <span class="recipes-dish-name">${e(d.name !== '' ? d.name : 'Default')}</span>
-      <span class="recipes-dish-origin" data-dish-origin="${e(origin.badge)}">${e(origin.label)}</span>
+      ${renderProvenance({
+        primary: origin.label,
+        kind: 'source',
+        primaryClassName: 'recipes-dish-origin',
+        primaryAttributes: { 'data-dish-origin': origin.badge },
+        ariaLabel: 'Dish origin',
+      })}
       <span class="recipes-dish-last">${e(
         last === undefined ? 'never run' : `last run ${last.commit_status}`,
       )}</span>
@@ -1835,6 +1898,35 @@ const recipeAutomationSummaryText = (
     parts.push(`auto-run${state}`);
   }
   return parts.map((p) => e(p)).join(' · ');
+};
+
+/** Render one recipe-level auto-run lifecycle action. Both the selected detail
+ *  and related-recipe rows use this helper so armed / paused / tripped copy,
+ *  pending ownership, and the next `enabled` value cannot drift apart. */
+const renderAutoRunToggle = (
+  entry: ServerRecipeListEntry,
+  autoRun: AutoRunStatusEntry | undefined,
+  canUpdate: boolean,
+  busy: boolean,
+  primary = false,
+): string => {
+  if (!canUpdate) return '';
+  const lifecycle = paletteAutoRunToggle(autoRunStateOf(autoRun));
+  const actionLabel = `${lifecycle.label} auto-run`;
+  const label = busy
+    ? lifecycle.label === 'Arm'
+      ? 'Arming auto-run…'
+      : lifecycle.label === 'Re-arm'
+        ? 'Re-arming auto-run…'
+        : 'Pausing auto-run…'
+    : actionLabel;
+  const name = recipeDisplayName(entry);
+  return `<button type="button" class="recipes-button${primary ? ' recipes-button--primary' : ''}"
+    ${RECIPES_ROUTE_ACTION_ATTR}="toggle-auto-run:${lifecycle.nextEnabled ? 'on' : 'off'}"
+    aria-label="${e(`${label} ${name} (${entry.recipe_id})`)}"
+    ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${busy
+      ? ' aria-disabled="true" aria-busy="true"'
+      : ''}>${e(label)}</button>`;
 };
 
 const relatedRecipesFor = (
@@ -1940,42 +2032,26 @@ const renderRelatedRecipeRow = (
     && actionKind === 'manual'
     && targetRunnability?.status !== 'blocked';
   const hasSchedules = recipeSchedules(automation, entry.recipe_id).length > 0;
-  const canSchedule = hasSchedules || (canCreateSchedules && actionKind === 'manual');
+  const canSchedule = actionKind === 'manual' && (hasSchedules || canCreateSchedules);
   const hasAutomationSurface =
     canSchedule
     || automationText !== ''
     || entry.recipe.auto_run !== undefined
     || (entry.recipe.event_triggers?.length ?? 0) > 0
     || (entry.recipe.trigger_steps?.length ?? 0) > 0;
-  const autoRunToggle = autoRun !== undefined && canAutoRunUpdate
-    ? (() => {
-        const busy = autoRunBusy.has(entry.recipe_id);
-        const nextEnabled = !autoRun.enabled || autoRun.auto_disabled;
-        const actionLabel = !autoRun.enabled
-          ? 'Resume auto-run'
-          : autoRun.auto_disabled
-            ? 'Re-arm auto-run'
-            : 'Pause auto-run';
-        const label = busy
-          ? actionLabel === 'Resume auto-run'
-            ? 'Resuming auto-run…'
-            : actionLabel === 'Re-arm auto-run'
-              ? 'Re-arming auto-run…'
-              : 'Pausing auto-run…'
-          : actionLabel;
-        return `<button type="button" class="recipes-button"
-          ${RECIPES_ROUTE_ACTION_ATTR}="toggle-auto-run:${nextEnabled ? 'on' : 'off'}"
-          aria-label="${actionName(label)}"
-          ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${busy
-            ? ' aria-disabled="true" aria-busy="true"'
-            : ''}>${e(label)}</button>`;
-      })()
+  const autoRunToggle = actionKind === 'autorun' && automation.autoRun !== null
+    ? renderAutoRunToggle(
+        entry,
+        autoRun,
+        canAutoRunUpdate,
+        autoRunBusy.has(entry.recipe_id),
+      )
     : '';
   return `
     <li ${RECIPES_ROUTE_RELATED_ROW_ATTR}="${e(entry.recipe_id)}">
       <div>
         <span class="recipes-related-title">${e(name)}</span>
-        <span class="recipes-related-meta">${e(deriveTriggerKind(entry))} · ${e(packageSource(entry))}${automationText !== '' ? ` · ${automationText}` : ''}</span>
+        <span class="recipes-related-meta">${e(deriveTriggerKind(entry))} · ${renderPackageSource(entry)}${automationText !== '' ? ` · ${automationText}` : ''}</span>
       </div>
       <div class="recipes-related-actions">
         <a class="recipes-button"
@@ -2140,6 +2216,24 @@ const renderRecipeDetail = (
   const description = entry.recipe.metadata?.description ?? '';
   const repo = entry.recipe.metadata?.repo;
   const automationText = recipeAutomationSummaryText(automation, entry.recipe_id);
+  const actionKind = classifyRecipeAction(entry.recipe);
+  const isManual = actionKind === 'manual';
+  const autoRun = recipeAutoRun(automation, entry.recipe_id);
+  const autoRunToggle = actionKind === 'autorun' && automation.autoRun !== null
+    ? renderAutoRunToggle(
+        entry,
+        autoRun,
+        canAutoRunUpdate,
+        autoRunBusy.has(entry.recipe_id),
+        true,
+      )
+    : '';
+  const autoRunError = autoRunErrors.get(entry.recipe_id);
+  const emptyAutomationCopy = isManual
+    ? 'No schedules or triggers yet — add one from Schedule or in Automation.'
+    : actionKind === 'autorun'
+      ? 'This recipe activates automatically — open Automation to review and manage its state.'
+      : 'This recipe activates from triggers — open Automation to review and manage them.';
   const variableDefs = Object.values(entry.recipe.variables ?? {});
   const defaultPrimitiveOnly = variableDefs.length > 0
     && variableDefs.every((definition) => !isInvocationVariable(definition));
@@ -2160,9 +2254,9 @@ const renderRecipeDetail = (
           <span class="recipes-detail-name">${e(name)}</span>
           <span class="recipe-card-badge recipe-card-badge--${e(triggerKind)}">${e(triggerKind)}</span>
         </h1>
-        <p class="recipes-detail-meta">v${entry.version} · ${e(entry.publisher_id)}${fromPack !== '' ? ` · ${fromPack}` : ''} · ${e(packageSource(entry))}</p>
+        <p class="recipes-detail-meta">v${entry.version} · ${e(entry.publisher_id)}${fromPack !== '' ? ` · ${fromPack}` : ''} · ${renderPackageSource(entry)}</p>
         <div class="recipes-actions">
-          <button type="button" class="recipes-button recipes-button--primary"
+          ${isManual ? `<button type="button" class="recipes-button recipes-button--primary"
             ${RECIPES_ROUTE_RUN_BUTTON_ATTR}="${e(entry.recipe_id)}"
             ${RECIPES_ROUTE_ACTION_ATTR}="${canRunDefaultsDirectly ? 'run-defaults' : 'open-run'}"
             ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${defaultRunBusy
@@ -2173,7 +2267,11 @@ const renderRecipeDetail = (
             ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${missingPackRunAttrs(missingPacks)}>Run with overrides</button>` : ''}
           <button type="button" class="recipes-button"
             ${RECIPES_ROUTE_ACTION_ATTR}="open-schedule"
-            ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Schedule</button>
+            ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Schedule</button>` : ''}
+          ${autoRunToggle}
+          ${isManual ? '' : `<a class="recipes-button${autoRunToggle === '' ? ' recipes-button--primary' : ''}"
+            href="${serializeShellRoute('automation', entry.recipe_id)}"
+            ${RECIPES_ROUTE_AUTOMATION_LINK_ATTR}>Manage automation</a>`}
           ${canConfig && Object.keys(entry.recipe.variables ?? {}).length > 0
             ? `<button type="button" class="recipes-button"
             ${RECIPES_ROUTE_ACTION_ATTR}="open-recipe-config"
@@ -2185,14 +2283,17 @@ const renderRecipeDetail = (
             href="${serializeShellRoute('kitchen', 'recipe', entry.recipe_id)}"
             ${RECIPES_ROUTE_EDIT_LINK_ATTR}>Edit in Kitchen</a>
         </div>
-        ${defaultRunMissingPacks !== null
+        ${isManual && defaultRunMissingPacks !== null
           ? renderPackInstallOffer(defaultRunMissingPacks)
-          : defaultRunError !== null
+          : isManual && defaultRunError !== null
             ? `<p role="alert" class="recipes-result-file-error">${e(defaultRunError)}</p>`
             : ''}
         ${configError === undefined
           ? ''
           : `<p role="alert" class="recipes-config-error" ${RECIPES_ROUTE_CONFIG_ERROR_ATTR}="${e(entry.recipe_id)}">${e(configError)}</p>`}
+        ${autoRunError === undefined
+          ? ''
+          : `<p role="alert" class="recipes-config-error" ${RECIPES_ROUTE_AUTO_RUN_ERROR_ATTR}="${e(entry.recipe_id)}">${e(autoRunError)}</p>`}
       </header>
       ${renderDishesSection(automation, entry.recipe_id)}
       <section class="recipes-detail-section">
@@ -2213,7 +2314,7 @@ const renderRecipeDetail = (
         <h2 class="recipes-detail-section-title">Runs &amp; automation</h2>
         <a class="recipes-inline-link" href="${serializeShellRoute('logs', 'recipe', entry.recipe_id)}" ${RECIPES_ROUTE_RUNS_LINK_ATTR}>View runs in Logs →</a>
         <a class="recipes-inline-link" href="${serializeShellRoute('automation', entry.recipe_id)}" ${RECIPES_ROUTE_AUTOMATION_LINK_ATTR}>Manage automation →</a>
-        ${automationText !== '' ? `<p class="recipes-detail-note"><strong>Automation:</strong> ${automationText}</p>` : '<p class="recipes-detail-note">No schedules or triggers yet — add one from Run · Schedule or in Automation.</p>'}
+        ${automationText !== '' ? `<p class="recipes-detail-note"><strong>Automation:</strong> ${automationText}</p>` : `<p class="recipes-detail-note">${e(emptyAutomationCopy)}</p>`}
       </section>
       ${renderRecipeResultPanel(
         resultPanel,
@@ -2266,13 +2367,18 @@ export const bootstrapRecipesRoute = (
     // The panel's own rules travel WITH it now — scoped to
     // `RECIPE_RESULT_HOST_ATTR`, not to this route's host, so the same sheet
     // serves `#packs/<slug>`.
-    style.textContent = `${RECIPES_ROUTE_STYLES}\n${RECIPE_RESULT_PANEL_STYLES}\n${PACK_INSTALL_OFFER_STYLES}`;
+    style.textContent = `${RECIPES_ROUTE_STYLES}\n${RECIPE_RESULT_PANEL_STYLES}\n${PACK_INSTALL_OFFER_STYLES}\n${LIST_PREVIEW_STYLES}`;
     doc.head.appendChild(style);
   }
 
   const routeRoot = doc.createElement('div');
   routeRoot.setAttribute(RECIPES_ROUTE_HOST_ATTR, '');
   opts.root.appendChild(routeRoot);
+  const scrollRoot = opts.scrollRoot ?? opts.root;
+  const rememberedList = readListContinuity<RecipeListFilter>(
+    doc,
+    RECIPES_LIST_CONTINUITY_KEY,
+  );
 
   let disposed = false;
   let loading = true;
@@ -2312,14 +2418,35 @@ export const bootstrapRecipesRoute = (
   // still owns focus is restored, so async enrichment cannot steal focus back
   // after the owner has moved to another control.
   let pendingDetailFocusRecipeId: string | null = null;
-  let pendingListCardFocusRecipeId: string | null = null;
-  // Installed-recipes filter (client-side, persists across re-renders).
-  let recipeFilter: RecipeListFilter = {
-    query: '',
-    trigger: null,
-    pack: null,
-  };
-  let recipePage = 1;
+  let pendingListCardFocusRecipeId: string | null =
+    opts.initialRecipeId === undefined
+      && (rememberedList?.focusKind === undefined
+        || rememberedList.focusKind === 'recipe')
+      ? rememberedList?.focusedId ?? null
+      : null;
+  let pendingListControlFocus = opts.initialRecipeId === undefined
+    && rememberedList?.focusKind !== undefined
+    && rememberedList.focusKind !== 'recipe'
+      ? {
+          kind: rememberedList.focusKind,
+          id: rememberedList.focusedId ?? null,
+        }
+      : null;
+  let pendingListScrollRestore = opts.initialRecipeId === undefined
+    ? rememberedList?.scroll
+    : undefined;
+  // Installed-recipes filter (client-side, survives route remounts in this
+  // document without creating persistent storage).
+  let recipeFilter: RecipeListFilter = rememberedList?.filter === undefined
+    ? { query: '', trigger: null, pack: null }
+    : {
+        query: rememberedList.filter.query,
+        trigger: rememberedList.filter.trigger,
+        pack: rememberedList.filter.pack,
+      };
+  let recipePage = rememberedList?.page === undefined
+    ? 1
+    : Math.max(1, Math.floor(rememberedList.page));
   let connections: ConnectionView[] | null = null;
   // Installed-pack roster, reduced to what the Records / declared-op joins
   // need. `null` = the read failed or no caller was supplied — the disclosure
@@ -2371,6 +2498,7 @@ export const bootstrapRecipesRoute = (
   let resultFileErrors = new Map<string, string>();
   let resultFileVerified = new Set<string>();
   let resultFileGeneration = 0;
+  let listPreview: ListPreviewMount | null = null;
   const resultObjectUrls = new Map<
     string,
     ReturnType<typeof globalThis.setTimeout>
@@ -2394,41 +2522,68 @@ export const bootstrapRecipesRoute = (
     || recipeConfigHandle?.hasInFlightWork() === true
     || childRunModal?.hasInFlightWork() === true;
 
-  /** ⛔⛔ OPENING A DETAIL IS A PLACE, SO IT PUSHES. `replaceState` for the whole
-   *  list→detail transition OVERWROTE the `#recipes` entry, so the native Back button
-   *  skipped the list entirely and landed a level above it — the route the owner came
-   *  from, not the one they could see. Same defect as `#packs` (fixed there first);
-   *  these two and `#data` shared one hash-sync shape, so they shared the bug.
-   *  🔑 `pushState` emits no `hashchange` either, so the reason `replaceState` was
-   *  chosen here — in-page navigation must never remount — is fully preserved. The only
-   *  difference is that Back now has somewhere to go.
-   *  ⚠ Only ENTERING a detail pushes. Closing one back to the bare list replaces, and
-   *  so does detail→detail; otherwise a round trip would leave two entries and Back
-   *  would bounce the owner into the recipe they just closed. */
-  /** ⛔ SEEDED FROM THE MOUNTED SELECTION, so a deep link is not mistaken for a
-   *  navigation. Mounting on `#recipes/<id>` means the browser is ALREADY on that entry;
-   *  treating the first sync as "entering" would stack a duplicate over it and the
-   *  owner's first Back press would appear to do nothing. (`#packs` needs no equivalent
-   *  — its surface deliberately skips `onNavigate` on initial paint.) */
-  let syncedRecipeId: string | null = selectedRecipeId;
-  const syncRecipeHash = (): void => {
-    const history = doc.defaultView?.history;
-    if (history?.replaceState === undefined) return;
-    const hash = serializeShellRoute('recipes', selectedRecipeId ?? undefined);
-    const entering = selectedRecipeId !== null && syncedRecipeId === null;
-    try {
-      if (entering && typeof history.pushState === 'function') {
-        history.pushState(null, '', hash);
-      } else {
-        history.replaceState(null, '', hash);
-      }
-    } catch {
-      // Non-fatal — addressability degrades to in-page-only. URL unchanged → do NOT
-      // desync the router's activeHash from it.
-      return;
+  const recipeAddress = (recipeId: string | null) => recipeId === null
+    ? hierarchicalAddress('recipes')
+    : hierarchicalAddress(
+        'recipes',
+        hierarchicalLevel(`recipe:${recipeId}`, recipeId),
+      );
+  /** Seeded from the mounted selection: hydrating `#recipes/<id>` must not
+   * duplicate the deep-link entry. The shared controller then pushes only when
+   * entering a detail and replaces sideways/closing transitions. */
+  const recipeHistory = createHierarchicalHistory({
+    initial: recipeAddress(selectedRecipeId),
+    history: doc.defaultView?.history,
+    onCommit: (address) => opts.onHashSync?.(address.hash),
+  });
+
+  const focusedListState = (): {
+    readonly kind: string;
+    readonly id: string | null;
+  } | null => {
+    const active = doc.activeElement as HTMLElement | null | undefined;
+    if (active?.hasAttribute?.(RECIPES_ROUTE_SEARCH_ATTR) === true) {
+      return { kind: 'search', id: null };
     }
-    syncedRecipeId = selectedRecipeId;
-    opts.onHashSync?.(hash);
+    if (active?.hasAttribute?.(RECIPES_ROUTE_FILTER_CHIP_ATTR) === true) {
+      const kind = active.getAttribute('data-filter-kind');
+      const value = active.getAttribute('data-filter-value');
+      return kind === null || value === null
+        ? null
+        : { kind: 'filter', id: `${kind}\u0000${value}` };
+    }
+    const pager = active?.getAttribute?.(RECIPES_ROUTE_PAGER_CONTROL_ATTR) ?? null;
+    if (pager === 'previous' || pager === 'next') {
+      return { kind: 'pager', id: pager };
+    }
+    if (active?.getAttribute?.(RECIPES_ROUTE_ACTION_ATTR) === 'refresh') {
+      return { kind: 'refresh', id: null };
+    }
+    const card = active?.closest?.(
+      `[${RECIPES_ROUTE_RECIPE_CARD_ATTR}]`,
+    ) as HTMLElement | null | undefined;
+    const id = card?.getAttribute?.(RECIPES_ROUTE_RECIPE_CARD_ATTR) ?? null;
+    return id === null ? null : { kind: 'recipe', id };
+  };
+
+  const rememberRecipeList = (focusedId?: string | null): void => {
+    const focused = focusedId === undefined
+      ? focusedListState()
+      : { kind: 'recipe', id: focusedId };
+    updateListContinuity(doc, RECIPES_LIST_CONTINUITY_KEY, {
+      filter: { ...recipeFilter },
+      page: recipePage,
+      ...(focused === null
+        ? {}
+        : {
+            focusKind: focused.kind,
+            ...(focused.id === null ? {} : { focusedId: focused.id }),
+          }),
+      scroll: readListScroll(scrollRoot),
+    });
+  };
+  const syncRecipeHash = (): void => {
+    recipeHistory.navigate(recipeAddress(selectedRecipeId));
   };
 
   const carrierCacheKey = (pack: CatalogPackRow): string =>
@@ -2500,6 +2655,12 @@ export const bootstrapRecipesRoute = (
     const focusedRelatedRecipeId = focusedRelatedRow?.getAttribute?.(
       RECIPES_ROUTE_RELATED_ROW_ATTR,
     ) ?? null;
+    const focusedDetailAutoRunRecipeId = focusedRelatedRecipeId === null
+      && relatedActionFocusKey(activeElement?.getAttribute?.(
+        RECIPES_ROUTE_ACTION_ATTR,
+      ) ?? null) === 'toggle-auto-run'
+        ? activeElement?.getAttribute?.(RECIPES_ROUTE_RECIPE_ID_ATTR) ?? null
+        : null;
     let focusedRelatedControl: {
       recipeId: string;
       kind: 'action' | 'automation' | 'logs';
@@ -2659,6 +2820,19 @@ export const bootstrapRecipesRoute = (
         focusedConfig.focus?.({ preventScroll: true });
         return;
       }
+      if (focusedDetailAutoRunRecipeId !== null) {
+        const replacement = Array.from(routeRoot.querySelectorAll(
+          `[${RECIPES_ROUTE_ACTION_ATTR}]`,
+        )).find((candidate) =>
+          candidate.getAttribute(RECIPES_ROUTE_RECIPE_ID_ATTR)
+            === focusedDetailAutoRunRecipeId
+          && relatedActionFocusKey(candidate.getAttribute(RECIPES_ROUTE_ACTION_ATTR))
+            === 'toggle-auto-run') as HTMLElement | undefined;
+        if (replacement !== undefined) {
+          replacement.focus?.({ preventScroll: true });
+          return;
+        }
+      }
       if (focusedBundleSlug !== null) {
         const replacement = routeRoot.querySelector?.(
           `[${RECIPES_ROUTE_BUNDLE_RETRY_ATTR}="${focusedBundleSlug}"]`,
@@ -2736,7 +2910,14 @@ export const bootstrapRecipesRoute = (
       1,
       Math.ceil(filteredRecipeCount / RECIPES_PAGE_SIZE),
     );
-    recipePage = Math.max(1, Math.min(recipePage, totalRecipePages));
+    // A route remount paints once before `recipe.list` resolves. At that
+    // point an empty loading snapshot has one synthetic page; clamping the
+    // remembered page against it would erase continuity before real rows
+    // arrive. The renderer already bounds the visual page, so commit the
+    // clamp only once the current list has settled.
+    if (!loading) {
+      recipePage = Math.max(1, Math.min(recipePage, totalRecipePages));
+    }
     routeRoot.innerHTML = `
       <header class="recipes-header">
         <h1 class="recipes-title" ${RECIPES_ROUTE_HEADING_ATTR} tabindex="-1">Recipes</h1>
@@ -2754,7 +2935,7 @@ export const bootstrapRecipesRoute = (
       ${renderSourceErrors(errors)}
       <section ${RECIPES_ROUTE_SECTION_ATTR}="recipes">
         <h2 class="recipes-section-title">Installed recipes</h2>
-        <p class="recipes-section-copy">Run a local recipe, or open one to inspect what it does and the grant boundary it depends on.</p>
+        <p class="recipes-section-copy">Run a manual recipe, or open any recipe to inspect what it does and manage how it activates.</p>
         ${renderRecipeSection(
           recipes,
           catalog,
@@ -2769,7 +2950,6 @@ export const bootstrapRecipesRoute = (
       ?? focusedListCardRecipeId;
     if (listFocusRecipeId !== null) {
       const isNavigation = pendingListCardFocusRecipeId === listFocusRecipeId;
-      if (isNavigation) pendingListCardFocusRecipeId = null;
       const card = routeRoot.querySelector?.(
         `[${RECIPES_ROUTE_RECIPE_OPEN_ATTR}="${listFocusRecipeId}"]`,
       ) as HTMLElement | null | undefined;
@@ -2777,8 +2957,16 @@ export const bootstrapRecipesRoute = (
         card?.getAttribute?.(RECIPES_ROUTE_RECIPE_OPEN_ATTR)
           === listFocusRecipeId
       ) {
-        card.focus?.({ preventScroll: !isNavigation });
-      } else if (isNavigation) {
+        if (isNavigation) pendingListCardFocusRecipeId = null;
+        // When continuity owns an exact scroll offset, the focus handoff must
+        // not ask the browser to reveal the row again after restoration. That
+        // deferred reveal otherwise wins over the explicit offset on native
+        // Back and leaves the row merely visible rather than in its old place.
+        card.focus?.({
+          preventScroll: pendingListScrollRestore !== undefined || !isNavigation,
+        });
+      } else if (isNavigation && !loading) {
+        pendingListCardFocusRecipeId = null;
         const heading = routeRoot.querySelector?.(
           `[${RECIPES_ROUTE_HEADING_ATTR}]`,
         ) as HTMLElement | null | undefined;
@@ -2846,6 +3034,47 @@ export const bootstrapRecipesRoute = (
         `[${RECIPES_ROUTE_ACTION_ATTR}="refresh"]`,
       ) as HTMLElement | null | undefined;
       refresh?.focus?.({ preventScroll: true });
+    }
+    if (!loading && pendingListControlFocus !== null) {
+      const pending = pendingListControlFocus;
+      let target: HTMLElement | null = null;
+      if (pending.kind === 'search') {
+        target = routeRoot.querySelector?.(
+          `[${RECIPES_ROUTE_SEARCH_ATTR}]`,
+        ) as HTMLElement | null;
+      } else if (pending.kind === 'filter' && pending.id !== null) {
+        const [kind, value] = pending.id.split('\u0000', 2);
+        target = Array.from(routeRoot.querySelectorAll?.(
+          `[${RECIPES_ROUTE_FILTER_CHIP_ATTR}]`,
+        ) ?? []).find((candidate) =>
+          candidate.getAttribute('data-filter-kind') === kind
+          && candidate.getAttribute('data-filter-value') === value,
+        ) as HTMLElement | undefined ?? null;
+      } else if (
+        pending.kind === 'pager'
+        && (pending.id === 'previous' || pending.id === 'next')
+      ) {
+        const pager = routeRoot.querySelector?.(
+          `[${RECIPES_ROUTE_PAGER_CONTROL_ATTR}="${pending.id}"]`,
+        ) as HTMLElement | null | undefined;
+        target = pager?.hasAttribute?.('disabled') === true ? null : pager ?? null;
+      } else if (pending.kind === 'refresh') {
+        target = routeRoot.querySelector?.(
+          `[${RECIPES_ROUTE_ACTION_ATTR}="refresh"]`,
+        ) as HTMLElement | null;
+      }
+      pendingListControlFocus = null;
+      const fallback = routeRoot.querySelector?.(
+        `[${RECIPES_ROUTE_SEARCH_ATTR}]`,
+      ) as HTMLElement | null | undefined
+        ?? routeRoot.querySelector?.(
+          `[${RECIPES_ROUTE_HEADING_ATTR}]`,
+        ) as HTMLElement | null | undefined;
+      (target ?? fallback)?.focus?.({ preventScroll: true });
+    }
+    if (!loading && pendingListScrollRestore !== undefined) {
+      restoreListScroll(scrollRoot, pendingListScrollRestore);
+      pendingListScrollRestore = undefined;
     }
   };
 
@@ -3222,10 +3451,60 @@ export const bootstrapRecipesRoute = (
     render();
   };
 
+  const previewRecipe = (
+    recipeId: string,
+    opener: HTMLElement | null,
+  ): void => {
+    const entry = recipes.find((candidate) => candidate.recipe_id === recipeId);
+    if (entry === undefined || listPreview === null) return;
+    rememberRecipeList(recipeId);
+    const actionKind = classifyRecipeAction(entry.recipe);
+    const packRefs = recipePackRefs(entry.recipe);
+    const runState = runnability?.get(recipeId);
+    const piiState = pii?.get(recipeId);
+    listPreview.open({
+      id: recipeId,
+      eyebrow: 'Recipe preview',
+      title: recipeDisplayName(entry),
+      summary: entry.recipe.metadata?.description ?? '',
+      facts: [
+        {
+          label: 'Activation',
+          value: actionKind === 'manual'
+            ? 'Manual'
+            : `Reactive · ${deriveTriggerKind(entry)}`,
+        },
+        {
+          label: 'Source',
+          value: packRefs.length === 0
+            ? 'Standalone recipe'
+            : packRefs.map((ref) => ref.pack_ref).join(', '),
+        },
+        {
+          label: 'Readiness',
+          value: runState === undefined
+            ? 'Not checked'
+            : runnabilityPillCopy(runState),
+        },
+        {
+          label: 'AI data',
+          value: piiState?.headline
+            || (piiState === undefined ? 'Not checked' : 'No additional disclosure'),
+        },
+      ],
+      primaryLabel: 'Open recipe',
+    }, opener);
+  };
+
   const openRecipe = (recipe_id: string): void => {
     if (!recipes.some((r) => r.recipe_id === recipe_id)) return;
+    // The sheet is non-modal, so an explicit Open behind it remains reachable.
+    // Entering durable detail retires the preview instead of stacking layers.
+    listPreview?.close();
+    if (selectedRecipeId === null) rememberRecipeList(recipe_id);
     pendingDetailFocusRecipeId = recipe_id;
     pendingListCardFocusRecipeId = null;
+    pendingListControlFocus = null;
     if (selectedRecipeId !== recipe_id) {
       detailVisitGeneration += 1;
       configBusyRecipeId = null;
@@ -3278,7 +3557,13 @@ export const bootstrapRecipesRoute = (
         )
       ) return;
     }
-    pendingListCardFocusRecipeId = selectedRecipeId;
+    const remembered = readListContinuity<RecipeListFilter>(
+      doc,
+      RECIPES_LIST_CONTINUITY_KEY,
+    );
+    pendingListCardFocusRecipeId = selectedRecipeId ?? remembered?.focusedId ?? null;
+    pendingListControlFocus = null;
+    pendingListScrollRestore = remembered?.scroll;
     pendingDetailFocusRecipeId = null;
     detailVisitGeneration += 1;
     configBusyRecipeId = null;
@@ -3296,6 +3581,13 @@ export const bootstrapRecipesRoute = (
     syncRecipeHash();
     render();
   };
+
+  listPreview = mountListPreview({
+    host: opts.root,
+    document: doc,
+    scrollRoot,
+    onOpen: (recipeId) => openRecipe(recipeId),
+  });
 
   /** D-222 §2.3 — the five defaulted-primitive-only recipes have no first-
    *  class question to ask. Their primary Run executes with server-resolved
@@ -3366,6 +3658,7 @@ export const bootstrapRecipesRoute = (
     if (childRunModal !== null) return;
     const routeRecipeIdAtOpen = selectedRecipeId;
     const activeBeforeOpen = doc.activeElement as HTMLElement | null | undefined;
+    listPreview?.close();
     const detailRunReturnRecipeId = routeRecipeIdAtOpen === recipe_id
       && activeBeforeOpen?.getAttribute?.(RECIPES_ROUTE_RUN_BUTTON_ATTR) === recipe_id
         ? recipe_id
@@ -3917,7 +4210,7 @@ export const bootstrapRecipesRoute = (
     // A click that lands on a real anchor INSIDE the clickable card (the
     // "from pack" link, the repo support link) should navigate, not open
     // the detail — let the anchor be and don't swallow its default.
-    if (action === 'open-recipe') {
+    if (action === 'open-recipe' || action === 'preview-recipe') {
       const rawTarget = ev.target as HTMLElement | null;
       const anchor = rawTarget?.closest?.('a[href]') ?? null;
       if (anchor !== null && anchor !== target && target.contains(anchor)) {
@@ -3948,6 +4241,7 @@ export const bootstrapRecipesRoute = (
         recipeFilter = { ...recipeFilter, trigger: recipeFilter.trigger === next ? null : next };
       }
       recipePage = 1;
+      rememberRecipeList();
       render();
       return;
     }
@@ -3955,6 +4249,7 @@ export const bootstrapRecipesRoute = (
       const nextPage = Number(target.getAttribute('data-page'));
       if (Number.isInteger(nextPage) && nextPage > 0) {
         recipePage = nextPage;
+        rememberRecipeList();
         render();
         const section = routeRoot.querySelector?.(
           `[${RECIPES_ROUTE_SECTION_ATTR}="recipes"]`,
@@ -3966,6 +4261,11 @@ export const bootstrapRecipesRoute = (
     if (action === 'open-recipe') {
       const recipeId = target.getAttribute(RECIPES_ROUTE_RECIPE_ID_ATTR);
       if (recipeId !== null) openRecipe(recipeId);
+      return;
+    }
+    if (action === 'preview-recipe') {
+      const recipeId = target.getAttribute(RECIPES_ROUTE_RECIPE_ID_ATTR);
+      if (recipeId !== null) previewRecipe(recipeId, target);
       return;
     }
     if (action === 'open-recipe-list') {
@@ -4115,13 +4415,36 @@ export const bootstrapRecipesRoute = (
     ) {
       recipeFilter = { ...recipeFilter, query: target0.value ?? '' };
       recipePage = 1;
+      rememberRecipeList();
       render();
     }
     // Run-modal inputs are owned by the shared RunModal's own delegation.
   };
 
+  const onKeyDown = (ev: Event): void => {
+    const target = ev.target as HTMLElement | null;
+    if (target === null || typeof target.closest !== 'function') return;
+    const card = target.closest(
+      `[${RECIPES_ROUTE_RECIPE_CARD_ATTR}]`,
+    ) as HTMLElement | null;
+    // Buttons/links keep their native keyboard contract. This branch is only
+    // the focusable card body: Space previews, Enter enters durable detail.
+    if (card === null || card !== target) return;
+    const recipeId = card.getAttribute(RECIPES_ROUTE_RECIPE_CARD_ATTR);
+    if (recipeId === null) return;
+    const key = (ev as KeyboardEvent).key;
+    if (key === ' ') {
+      (ev as KeyboardEvent).preventDefault();
+      previewRecipe(recipeId, card);
+    } else if (key === 'Enter') {
+      (ev as KeyboardEvent).preventDefault();
+      openRecipe(recipeId);
+    }
+  };
+
   routeRoot.addEventListener('click', onClick);
   routeRoot.addEventListener('input', onInput);
+  routeRoot.addEventListener('keydown', onKeyDown);
 
   const unsubscribers: Array<() => void> = [];
   if (opts.subscribe !== undefined) {
@@ -4227,6 +4550,8 @@ export const bootstrapRecipesRoute = (
       // Tear down an open shared Run modal — it portals to body (outside
       // `routeRoot`), so removing the route root below won't reach it.
       closeRunModal();
+      listPreview?.dispose();
+      listPreview = null;
       recipeConfigHandle?.destroy();
       recipeConfigHandle = null;
       for (const picker of resultGridRefPickers.splice(0)) picker.destroy();
@@ -4240,6 +4565,7 @@ export const bootstrapRecipesRoute = (
       resultObjectUrls.clear();
       routeRoot.removeEventListener('click', onClick);
       routeRoot.removeEventListener('input', onInput);
+      routeRoot.removeEventListener('keydown', onKeyDown);
       for (const unsubscribe of unsubscribers.splice(0)) {
         try {
           unsubscribe();

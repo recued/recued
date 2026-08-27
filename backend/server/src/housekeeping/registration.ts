@@ -35,6 +35,7 @@ import { deterministicRiskPatternsTask } from './tasks/deterministic-risk-patter
 import { memoryEmbedBacklogTask } from './tasks/memory-embed-backlog.js';
 import { lifecycleQueueDrainTask } from './tasks/lifecycle-queue-drain.js';
 import { llmResultCacheGcTask } from './tasks/llm-result-cache-gc.js';
+import { ownerMetricsComputeTask } from './tasks/owner-metrics-compute.js';
 
 import { confidenceDriftSignalTask } from './producers/confidence-drift-signal.js';
 import { topicClusterTask } from './producers/topic_cluster.js';
@@ -101,6 +102,11 @@ export const STANDALONE_TASKS: ReadonlyArray<HousekeepingTaskInstance> = [
   // would otherwise accumulate. No-op when the cache store isn't
   // wired (dbless harnesses, fresh boots before PA9.6 substrate).
   llmResultCacheGcTask,
+  // ── D-250 § D8.1 slice 4 — owner metrics ─────────────────
+  // Recomputes the snapshot + advances the artifact records each cycle.
+  // Deterministic and zero-token; COMPUTE ONLY — publishing to a board is a
+  // separate act with its own grant (§ D4) and never rides this exemption.
+  ownerMetricsComputeTask,
   // ── D-136 P5b lifecycle queue drain ──────────────────────
   lifecycleQueueDrainTask,
   // ── D-133 confidence drift detection ────────────────────

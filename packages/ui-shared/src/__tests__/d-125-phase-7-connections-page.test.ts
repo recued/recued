@@ -2151,6 +2151,21 @@ describe('R13/R14 — kind picker + generic free-edit OAuth', () => {
     );
     expect(html).not.toContain('data-action="connections-authorize-vendor"');
   });
+
+  it('renders setup-guide suggestions as provenance rather than assurance', () => {
+    const html = renderConnectionsPage(
+      withDialog({
+        stage: 'form',
+        kind: 'api',
+        values: { name: 'acme', 'auth.type': 'bearer' },
+        hintedFields: { name: 'acme-pack' },
+      }),
+    );
+    expect(html).toContain('data-suggested-by="acme-pack"');
+    expect(html).toContain('data-recued-provenance');
+    expect(html).toContain('Suggested by acme-pack');
+    expect(html).toContain('Check it before you continue.');
+  });
 });
 
 describe('D-129 P1.3 — vendor-flavored form', () => {

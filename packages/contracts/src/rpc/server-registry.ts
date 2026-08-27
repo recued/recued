@@ -804,6 +804,20 @@ export interface ServerPairedDevice {
  *  methods so the typed `Conn` overload can omit the second argument. */
 /** Execute response shape. Mirrors `ExecuteResponse` in the server —
  *  redeclared here so contracts doesn't depend on server internals. */
+export interface RecipeRunFacts {
+  /** Executed (non-skipped) recipe steps from the persisted run anchor. */
+  steps_run: number;
+  /** Attempted foreach items, summed across the persisted run anchor. */
+  items_total: number;
+  /** Provider calls represented by `total_tokens`. Absent when usage evidence
+   *  was not persisted for the run. */
+  provider_calls?: number;
+  /** Provider-reported input + output tokens. Absent with `provider_calls`. */
+  total_tokens?: number;
+  /** Wall-clock duration recorded on the same persisted run anchor. */
+  duration_ms: number;
+}
+
 export interface ServerExecuteResponse {
   recipe_id: string;
   recipe_hash: string;
@@ -822,6 +836,9 @@ export interface ServerExecuteResponse {
   }[];
   errors: unknown[];
   duration_ms: number;
+  /** A compact receipt projected from this response's exact persisted audit
+   *  anchor. No receipt row or statistics store is created for this surface. */
+  run_facts?: RecipeRunFacts;
   /** D-157 — run paused at the approval gate. Distinct from a terminal failure. */
   awaiting_approval?: boolean;
   /** D-181 — owner-initiated run termination, distinct from recipe failure. */
@@ -4052,6 +4069,39 @@ export type ServerRpcRegistry = {
     void,
     { tasks: ReadonlyArray<import('../housekeeping.js').HousekeepingTaskStatus> }
   >;
+  // D-250 § D7 — the owner's OWN metrics. Read-only, no grant: it is the owner's
+  // dashboard reading their own server. ⚠ Returns BOTH stores because they answer
+  // different questions — the snapshot is recomputed and replaced, the artifacts advance
+  // (§ Open 9a / amendment 17) — and a caller that conflated them would let a quiet week
+  // erase a record.
+  'metric.read': RpcMethodSpec<void, import('../metric-rpc.js').MetricReadOutput>;
+  // D-250 § D4 — the publish grant. ⛔ SEPARATE METHODS FROM `metric.read` BY DESIGN:
+  // § D4 splits computing (maintenance, no authorization) from PUBLISHING (a new outward
+  // act carrying its own bounded, revocable grant). Folding a publish into the read
+  // would let it ride the read's authorization, which is the exact thing that split
+  // exists to prevent.
+  'metric.publish': RpcMethodSpec<
+    { tag: string; metric_id: string; season_id: string },
+    { ok: true; publication: import('../metric-rpc.js').MetricPublicationEntry }
+  >;
+  // ⛔ REVOKE, NOT DELETE. Returns the row in its `withdrawing` state — § C4: the
+  // withdrawal must persist as state the submit path checks, or tomorrow's batch
+  // re-creates the row and the owner silently reappears on a board they left.
+  'metric.unpublish': RpcMethodSpec<
+    { tag: string },
+    { ok: true; publication: import('../metric-rpc.js').MetricPublicationEntry | null }
+  >;
+  // D-250 § B3.3 — send the daily batch NOW. ⛔ AN EXPLICIT ACT, NOT A HOUSEKEEPING TASK:
+  // § D4 gives housekeeping the `admin` ceiling for "the server's own maintenance", and
+  // publishing an owner's activity to a public board is not that. § B3.4 then makes a
+  // SCHEDULED submission hold unless the owner mints a delegation rule — so this method
+  // is the manual path, and the automation rides that existing mechanism rather than a
+  // new exemption.
+  'metric.submit': RpcMethodSpec<
+    void,
+    { ok: true; sent: boolean; results: ReadonlyArray<{ kind: string; board_id: string;
+        rank?: number; participants?: number; reason?: string }> }
+  >;
   'housekeeping.task.run_now': RpcMethodSpec<
     { task_id: string },
     { ok: true; cycle_result: import('../housekeeping.js').HousekeepingCycleResult }
@@ -7118,6 +7168,11 @@ export const SERVER_RPC_METHODS = [
   'housekeeping.config.read',
   'housekeeping.config.write',
   'housekeeping.status.read',
+  // D-250 § D7 — the owner's own metrics, read-only.
+  'metric.read',
+  'metric.publish',
+  'metric.unpublish',
+  'metric.submit',
   'housekeeping.task.run_now',
   // D-132 P4 — per-topic trust state + pool policy + promotion control.
   'housekeeping.trust.read',

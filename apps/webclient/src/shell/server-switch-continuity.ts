@@ -165,6 +165,7 @@ const SURFACE_LABELS: Readonly<Record<
   automation: 'Automation',
   data: 'Data',
   logs: 'Runs',
+  stats: 'Stats',
   chat: 'Chat',
   mail: 'Mail',
 };

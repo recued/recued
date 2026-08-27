@@ -125,7 +125,9 @@ import {
   recipeOutputSections,
   WIRE_AUTHORITY_ARG_PATHS,
   type HandlerSlice,
+  type RecipeRunFacts,
   type RiskTier,
+  type ServerExecuteResponse,
   type ServerRpcRegistry,
   type UndeclaredConfigArgumentDetails,
 } from '@recued/contracts';
@@ -162,11 +164,15 @@ import {
 import {
   buildAuditEntry,
   newRunId,
+  type AuditEntry,
   type AuditLogStore,
   type CheckpointStore,
   type CommitStore,
 } from '@recued/storage';
-import { stampExecuteResponseAuditRun } from './types.js';
+import {
+  executeResponseAuditRunId,
+  stampExecuteResponseAuditRun,
+} from './types.js';
 import type { McpActionStore } from './mcp-action-store.js';
 import type {
   ExecuteRequest,
@@ -6993,6 +6999,56 @@ const buildRpcExecuteRequest = (
   execution_source: buildRpcUserExecutionSource(client),
 });
 
+/** Project the small owner-facing receipt from the row that actually landed in
+ *  the audit log. `total_usage` is intentionally optional on AuditEntry: an
+ *  absent report can mean no AI call or telemetry eviction, so never invent a
+ *  zero-cost claim. */
+const recipeRunFactsFromAuditEntry = (
+  entry: AuditEntry,
+): RecipeRunFacts | undefined => {
+  if (entry.run_yield === undefined) return undefined;
+  return {
+    steps_run: entry.run_yield.steps_run,
+    items_total: entry.run_yield.items_total,
+    ...(entry.total_usage !== undefined
+      ? {
+          provider_calls: entry.total_usage.provider_calls ?? 1,
+          total_tokens: entry.total_usage.total_tokens,
+        }
+      : {}),
+    duration_ms: entry.duration_ms,
+  };
+};
+
+const withRecipeRunFacts = async (
+  response: ExecuteResponse,
+  auditLog: Pick<AuditLogStore, 'get'> | undefined,
+): Promise<ServerExecuteResponse> => {
+  const runId = executeResponseAuditRunId(response);
+  if (runId === undefined || auditLog === undefined) return response;
+  try {
+    const entry = await auditLog.get(runId);
+    if (entry === null) return response;
+    const runFacts = recipeRunFactsFromAuditEntry(entry);
+    return runFacts === undefined ? response : { ...response, run_facts: runFacts };
+  } catch {
+    return response;
+  }
+};
+
+/** The websocket-only execute wrapper may enrich the public response because
+ *  it can resolve the server-private, non-enumerable audit pointer. Agent and
+ *  internal execution results stay unchanged. A receipt read is observability:
+ *  it must never turn a completed recipe into a failed RPC. */
+const handleRpcExecute = async (
+  deps: ExecuteHandlerDeps,
+  args: Record<string, unknown>,
+  client: WsClient,
+): Promise<ServerExecuteResponse> => {
+  const response = await handleExecute(deps, buildRpcExecuteRequest(args, client));
+  return withRecipeRunFacts(response, deps.auditLog);
+};
+
 export const makeExecuteHandlers = (
   deps: ExecuteHandlerDeps | undefined,
 ): HandlerSlice<ServerRpcRegistry, ExecuteMethods, WsClient> | undefined => {
@@ -7001,7 +7057,7 @@ export const makeExecuteHandlers = (
     methods: ['execute'],
     handlers: {
       'execute': async (args, client) =>
-        handleExecute(deps, buildRpcExecuteRequest(args, client)),
+        handleRpcExecute(deps, args, client),
     },
   };
 };
@@ -7014,6 +7070,8 @@ export const makeExecuteHandlers = (
 export const _testing = {
   buildRpcUserExecutionSource,
   buildRpcExecuteRequest,
+  recipeRunFactsFromAuditEntry,
+  withRecipeRunFacts,
   customerControlsD162Batch,
   customerControlledD162ExtraUnits,
   /** D-145 engine-wiring (D-153 P1) — the process-lived correlation

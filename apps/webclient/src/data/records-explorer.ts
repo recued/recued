@@ -7,7 +7,7 @@ import type {
   RecordsOwnerRecordDiagnostics,
   RecordsRetentionPolicy,
 } from '@recued/contracts';
-import { e } from '@recued/ui-shared';
+import { e, renderReferenceLink } from '@recued/ui-shared';
 
 export const RECORDS_SELECT_NAMESPACE_ACTION = 'records-select-namespace';
 export const RECORDS_SELECT_KIND_ACTION = 'records-select-kind';
@@ -192,9 +192,17 @@ const referenceTarget = (value: unknown): { entity: string; id: string } | null 
 const renderReference = (value: unknown, locked = false): string => {
   const target = referenceTarget(value);
   if (target === null) return e(displayValue(value));
-  return `<button type="button" class="records-ref-link" data-action="${RECORDS_OPEN_REFERENCE_ACTION}"
-    ${locked ? 'aria-disabled="true"' : ''}
-    ${RECORDS_KIND_ATTR}="${e(target.entity)}" ${RECORDS_ID_ATTR}="${e(target.id)}">${e(displayValue(value))}</button>`;
+  return renderReferenceLink({
+    label: displayValue(value),
+    referenceId: typeof value === 'string' ? value : undefined,
+    action: { attribute: 'data-action', value: RECORDS_OPEN_REFERENCE_ACTION },
+    disabled: locked,
+    className: 'records-ref-link',
+    attributes: {
+      [RECORDS_KIND_ATTR]: target.entity,
+      [RECORDS_ID_ATTR]: target.id,
+    },
+  });
 };
 
 const renderCell = (
@@ -246,9 +254,7 @@ const renderDetail = (state: RecordsExplorerState): string => {
     }).join('')}</dl>
     <div class="records-detail-meta">Pack version ${record._record.version} · revision ${record._record.revision} · created ${new Date(record._record.created_at).toISOString()} · updated ${new Date(record._record.updated_at).toISOString()}</div>
     ${state.diagnostics?.incoming.length ? `<section class="records-relationship-impact"><h4>Records that reference this row</h4><ul>${state.diagnostics.incoming.map((impact) =>
-      `<li><button type="button" class="records-ref-link" data-action="${RECORDS_OPEN_REFERENCE_ACTION}"
-        ${recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}
-        ${RECORDS_KIND_ATTR}="${e(impact.source_entity)}" ${RECORDS_ID_ATTR}="${e(impact.source_id)}">${e(`${impact.source_entity}/${encodeURIComponent(impact.source_id)}`)}</button>
+      `<li>${renderReference(`${impact.source_entity}/${encodeURIComponent(impact.source_id)}`, recordsControlsLocked(state))}
         through <code>${e(impact.source_field)}</code></li>`).join('')}</ul></section>` : ''}
     <details><summary>Advanced raw-slot diagnostics</summary><pre>${e(JSON.stringify({
       schema: entity,

@@ -553,6 +553,49 @@ describe('D-174 contracts route — list → detail shell', () => {
       .toContain('4 of 10 uses left');
   });
 
+  it('navigates list -> preview -> detail tab in-page with one native Back target', async () => {
+    const doc = makeFakeDocument();
+    const calls: string[] = [];
+    (doc as unknown as { defaultView: unknown }).defaultView = {
+      history: {
+        pushState: (_data: unknown, _title: string, url: string) => {
+          calls.push(`push ${url}`);
+        },
+        replaceState: (_data: unknown, _title: string, url: string) => {
+          calls.push(`replace ${url}`);
+        },
+      },
+    };
+    const root = doc.createElement('div');
+    const route = bootstrapContractsRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      serverUrl: 'wss://alice.example/ws',
+      initialAddress: { kind: 'list', tab: 'others' },
+      contractsListCaller: vi.fn(async () => ({
+        contracts: [agentContract()],
+        total: 1,
+        next_cursor: null,
+      })),
+    });
+    await route.whenLoaded();
+
+    collectByAttr(root, CONTRACTS_ROUTE_ROW_ATTR)[0]!.click();
+    expect(route.getSelectedContractId()).toBe('door_alpha');
+    collectByAttr(root, CONTRACTS_ROUTE_TAB_ATTR)
+      .find((tab) => tab.getAttribute('data-tab') === 'ops')!
+      .click();
+    collectByAttr(root, CONTRACTS_ROUTE_BACK_ATTR)[0]!.click();
+
+    expect(route.getViewMode()).toBe('list');
+    expect(calls).toEqual([
+      'push #contracts/door_alpha',
+      'replace #contracts/door_alpha/ops',
+      'replace #contracts/view/others',
+    ]);
+    route.dispose();
+  });
+
   it('requests bounded Others pages and walks next/previous cursors', async () => {
     const firstPage = Array.from({ length: 25 }, (_, index) =>
       agentContract({
@@ -5319,9 +5362,10 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     route.dispose();
   });
 
-  it('returns a docked child overlay to the visible composer trigger', async () => {
+  it('hands the shell Run opener a stable docked-composer focus target', async () => {
     const doc = makeFakeDocument();
     const root = doc.createElement('div');
+    const openRunPalette = vi.fn();
     const route = bootstrapChatRoute({
       root: root as unknown as HTMLElement,
       document: doc as unknown as Document,
@@ -5330,7 +5374,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
         messages: [chatMessage()],
       }),
       initialSessionId: 'chat_1',
-      recipeListCaller: vi.fn(async () => ({ recipes: [] })),
+      openRunPalette,
     });
     await tick(8);
 
@@ -5349,12 +5393,8 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(run.getAttribute('aria-label')).toBe('Run a recipe');
     run.focus();
     run.click();
-    await tick();
-
+    expect(openRunPalette).toHaveBeenCalledOnce();
     expect(composerActions.open).toBe(false);
-    for (const listener of [...(doc.listeners.get('keydown') ?? [])]) {
-      listener({ key: 'Escape', target: doc.activeElement });
-    }
     expect(doc.activeElement).toBe(trigger);
     route.dispose();
   });

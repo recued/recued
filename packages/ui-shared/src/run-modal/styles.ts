@@ -11,6 +11,7 @@
 import {
   RUN_MODAL_CONFIG_ATTR,
   RUN_MODAL_CONTEXT_ATTR,
+  RUN_MODAL_FACTS_ATTR,
   RUN_MODAL_OVERLAY_ATTR,
   RUN_MODAL_RESULT_ATTR,
 } from './render.js';
@@ -250,6 +251,12 @@ export const RUN_MODAL_STYLES = `
   padding: 9px;
   font-size: 12px;
   color: var(--muted);
+}
+[${RUN_MODAL_OVERLAY_ATTR}] [${RUN_MODAL_FACTS_ATTR}] {
+  display: block;
+  margin-top: 4px;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
 }
 /* Variable-widget rules — the widgets emit generic class names; re-scope
    them to the modal panel so the modal is self-contained. */

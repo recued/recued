@@ -27,56 +27,26 @@ import type {
   AutoRunStatusEntry,
   ServerRecipeListEntry,
 } from '@recued/contracts';
+import {
+  autoRunStateOf,
+  autoRunToggle,
+  classifyRecipeAction,
+  type AutoRunState,
+  type RecipeReactiveShape,
+} from '../recipes/recipe-action-kind.js';
+
+export {
+  autoRunStateOf,
+  autoRunToggle,
+  classifyRecipeAction,
+};
+export type {
+  AutoRunState,
+  RecipeActionKind as RecipePaletteActionKind,
+  RecipeReactiveShape,
+} from '../recipes/recipe-action-kind.js';
 
 // ── pure model ────────────────────────────────────────────────────
-
-/** The action a recipe offers in the palette. */
-export type RecipePaletteActionKind = 'manual' | 'autorun' | 'managed-reactive';
-
-/** The auto-run arm state, derived from the `auto_run.list` entry. */
-export type AutoRunState = 'armed' | 'paused' | 'tripped' | 'off';
-
-interface RecipeReactiveShape {
-  auto_run?: unknown;
-  event_triggers?: unknown;
-  trigger_steps?: unknown;
-}
-
-/** Classify a recipe by its definition (same axes as the recipes route's
- *  `deriveTriggerKind`): an `auto_run` recipe is toggled here; a recipe
- *  reactive only via event-triggers is managed in the Automation surface;
- *  everything else is a manual run. */
-export const classifyRecipeAction = (
-  def: RecipeReactiveShape,
-): RecipePaletteActionKind => {
-  if (def.auto_run !== undefined) return 'autorun';
-  const eventTriggers = Array.isArray(def.event_triggers)
-    ? def.event_triggers.length
-    : 0;
-  const triggerSteps = Array.isArray(def.trigger_steps)
-    ? def.trigger_steps.length
-    : 0;
-  return eventTriggers > 0 || triggerSteps > 0 ? 'managed-reactive' : 'manual';
-};
-
-/** Map an `auto_run.list` entry (or its absence) to the arm state. */
-export const autoRunStateOf = (
-  entry: AutoRunStatusEntry | undefined,
-): AutoRunState => {
-  if (entry === undefined) return 'off';
-  if (entry.auto_disabled) return 'tripped';
-  if (!entry.enabled) return 'paused';
-  return 'armed';
-};
-
-/** The toggle button for an arm state: its label + the `enabled` it sets. */
-export const autoRunToggle = (
-  state: AutoRunState,
-): { label: string; nextEnabled: boolean } => {
-  if (state === 'armed') return { label: 'Pause', nextEnabled: false };
-  if (state === 'tripped') return { label: 'Re-arm', nextEnabled: true };
-  return { label: 'Arm', nextEnabled: true }; // off | paused
-};
 
 const autoRunStateLabel = (state: AutoRunState): string => {
   if (state === 'armed') return 'Armed';
@@ -135,6 +105,9 @@ export interface RunPaletteHandle {
   /** True while the palette or its nested Run modal owns a recipe write whose
    *  outcome is not yet known. */
   hasInFlightWork(): boolean;
+  /** Reclaim focus when the global shortcut is pressed while this same
+   *  palette is already open. A nested Run modal keeps ownership. */
+  focus(): void;
   destroy(): void;
 }
 
@@ -746,6 +719,9 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
         autoRunMutationPending
         || childRunModal?.hasInFlightWork() === true
       ),
+    focus: () => {
+      if (!closed && childRunModal === null) focusTrap?.focusInitial();
+    },
     destroy: closeSelf,
   };
 };

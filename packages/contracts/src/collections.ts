@@ -128,6 +128,30 @@ export interface CollectionSearchMatch {
   hot_fields: Record<string, unknown>;
   rank: number;
   snippet: string;
+  /** True when the row matched only SOME of the query's terms — surfaced
+   *  deliberately, because the record that CORRECTS a fact rarely restates the
+   *  wording of the fact it corrects ("actually Ridgeway is 90 days" carries
+   *  neither "renewal" nor "notice"), and an implicit AND makes it invisible
+   *  while stale full matches are returned as the complete answer.
+   *
+   *  ⛔ THE LABEL IS THE POINT, NOT AN ANNOTATION. Unlabelled, a partial row is
+   *  indistinguishable from retrieved evidence and the reader has no reason to
+   *  discount it. Labelled, it arrives as a maybe. That distinction is the same
+   *  disclose-don't-decide rule as `more_matches`: the substrate widens what is
+   *  VISIBLE and declines to rule on what is true. */
+  partial_match?: boolean;
+  /** True when the row matched NO query term and is present only because it
+   *  sits in a thread another row matched.
+   *
+   *  ⛔ DISTINCT FROM `partial_match` ON PURPOSE. A partial match still shares
+   *  vocabulary with the question; this shares none — it is here because the
+   *  CONVERSATION is relevant, not the text. Labelling it `partial_match` would
+   *  overstate its claim, and the whole argument for surfacing weak rows rests
+   *  on the label being accurate about WHY they are there:
+   *      msg1  "…move from 30d to 90d?"                  ← matched
+   *      msg2  "no lets be fair & change it to 60d"      ← thread_context
+   *  msg2 is the answer and carries no query term at all. */
+  thread_context?: boolean;
 }
 
 /** Adapter state. Values are intentionally narrow so the Phase G

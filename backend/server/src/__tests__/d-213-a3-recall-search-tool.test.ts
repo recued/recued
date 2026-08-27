@@ -283,11 +283,20 @@ describe('D-213 A3 — recall.search broker', () => {
     const schema = RECALL_SEARCH_TOOL_ENTRY.arg_schema as {
       properties: Record<string, unknown>;
     };
+    // ⛔ The exact arg surface is pinned on purpose — this tool's args are a
+    // contract the model is prompted against, so a silent addition changes what
+    // it will try to call. `near_id` / `next` / `prev` are the deliberate
+    // addition: a conversation's ANSWER repeats none of the question's words
+    // ("no lets be fair & change it to 60d"), so no query reaches it and only
+    // stepping to the next message in the session can.
     expect(Object.keys(schema.properties).sort()).toEqual([
       'continuation',
       'item_id',
       'kinds',
       'memory_id',
+      'near_id',
+      'next',
+      'prev',
       'query',
       'sources',
     ]);
