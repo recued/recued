@@ -44,6 +44,13 @@ Running from source was never affected.
   `recued pair` could not list the loopback address you are most likely to use;
   and a connection failure mid-pair left the screen spinning instead of
   reporting.
+- **Mail search results now show the part that answers the question.** The
+  indexed text led with the from/to/cc addresses, and a search snippet is a
+  fixed-size window of words around the match — one address alone is four
+  words, so the window frequently closed just before the sentence you were
+  looking for. Subject and body come first now. What matches and how results
+  rank are unchanged; only what you are shown moved. Your mail index rebuilds
+  itself once on the first start after updating.
 - **A fresh server no longer probes DNS for a provider it does not have**, and
   several hostname and certificate paths stopped referring to a zone that had
   moved.
