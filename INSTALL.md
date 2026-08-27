@@ -34,6 +34,21 @@ PowerShell, run `$env:RECUED_AUTOSTART=0` on its own line first.
 | `RECUED_CHANNEL=edge` | Follow the edge channel instead of stable. |
 | `RECUED_FORCE=1` | Reinstall even when already on the released version. |
 
+### Start at login, per platform
+
+| Platform | What it installs | Root needed |
+|---|---|---|
+| macOS | a per-user LaunchAgent, starts at login | no |
+| Linux desktop | a systemd **user** unit, starts at login | no |
+| Linux headless | a systemd **system** unit, starts at boot | **yes — run with `sudo`** |
+| Windows | a Startup-folder shortcut, starts at login | no |
+
+Headless Linux is the one that needs root, and not for the usual reason: with
+no desktop keyring, the only way to seal the keyfile to the machine is
+`systemd-creds`, which reads a host key only root can read. Without root there
+is no rung to seal against, so the installer arms nothing and says so rather
+than writing a unit that would fail on every boot.
+
 **Start at login gives you a supervised server, not necessarily an unattended
 one.** If you seal your keyfile with a passphrase it starts locked and waits for
 `recued unlock`; sealed to the machine instead, it starts ready. Either way the

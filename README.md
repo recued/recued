@@ -32,6 +32,34 @@ the workspace packages they are built from.
 - Works with any AI provider, hosted or local.
 - Free to run, with no feature gates.
 
+## Install
+
+One command. It fetches the signed binary for your platform, verifies it
+against the release key, puts `recued` on your PATH, and sets it to start when
+you log in.
+
+```sh
+# Linux and macOS
+curl -fsSL https://recued.com/install.sh | sh
+```
+
+```powershell
+# Windows — in PowerShell
+irm https://recued.com/install.ps1 | iex
+```
+
+Start it with `recued serve`; it prints a pairing code. Open the webclient it
+names and pair a browser to it.
+
+To skip start-at-login, prefix the command with `RECUED_AUTOSTART=0`. The
+install location, release channel and the rest are in
+[INSTALL.md](./INSTALL.md#options).
+
+On a **headless Linux** box, starting at boot needs root — run the installer
+with `sudo` — because the only sealing rung available without a desktop
+keyring reads a root-only host key. A Linux desktop session installs a user
+unit and needs no root.
+
 ## `SKILL.md` and recipes
 
 A skill tells a model how to approach something, and the model decides each step
@@ -132,29 +160,6 @@ In this repository:
 - [INSTALL.md](./INSTALL.md) — installing a release, its options, and building from a clone
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — how the codebase is organised
 - [CONTRIBUTING.md](./CONTRIBUTING.md) — build, test, and pull requests
-
-## Install
-
-One command. It fetches the signed binary for your platform, verifies it
-against the release key, puts `recued` on your PATH, and sets it to start when
-you log in.
-
-```sh
-# Linux and macOS
-curl -fsSL https://recued.com/install.sh | sh
-```
-
-```powershell
-# Windows — in PowerShell
-irm https://recued.com/install.ps1 | iex
-```
-
-Start it with `recued serve`; it prints a pairing code. Open the webclient it
-names and pair a browser to it.
-
-To skip start-at-login, prefix the command with `RECUED_AUTOSTART=0`. The
-install location, release channel and the rest are in
-[INSTALL.md](./INSTALL.md#options).
 
 ## Run from source
 
