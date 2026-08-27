@@ -445,6 +445,74 @@ describe('restore-onboarding — resume after finalize failure', () => {
 });
 
 // ════════════════════════════════════════════════════════════════
+// Transport failures — a THROW, not an `ok: false`
+// ════════════════════════════════════════════════════════════════
+//
+// ⛔ THE GAP: the submit `try` had only a `finally`. `pairCode` / `finalize`
+// returning `{ok:false}` was handled, but a THROWN transport error — exactly
+// what a dropped connection produces — escaped with `phase` still 'pairing'.
+// The splash sat on "Pairing with your server…" forever while the error
+// surfaced somewhere else entirely, so the owner held a spinner AND an error
+// and could not tell a completed pair from a failed one.
+describe('restore-onboarding — transport failure mid-pair', () => {
+  it('a throw from pairCode lands in collect and says the code may still be good', async () => {
+    const f = buildFakeOps();
+    let down = true;
+    f.ops.pairCode = async (inputs) => {
+      f.pairCodeCalls.push(inputs);
+      if (down) throw new Error('network down');
+      return f.pairResult;
+    };
+    const onboarding = createRestoreOnboarding({ ops: f.ops, onRestored: () => {} });
+    await onboarding.submit(INPUTS());
+
+    // The regression itself: NOT left spinning on 'pairing'.
+    expect(onboarding.getState()).toMatchObject({
+      phase: 'collect',
+      errorStage: 'pairing',
+      error: RESTORE_ONBOARDING_COPY.pair_interrupted_before_issue,
+    });
+
+    // Nothing was issued, so the same code is still worth a retry.
+    down = false;
+    await onboarding.submit(INPUTS());
+    expect(f.pairCodeCalls).toHaveLength(2);
+    expect(onboarding.getState().phase).toBe('preview');
+  });
+
+  it('a throw from finalize says RETRY HERE — and the retry really does resume', async () => {
+    // The copy tells the owner not to reload rather than to fetch a fresh code.
+    // That advice is only honest if a retry on this page actually works, so the
+    // test asserts the advice and the mechanism together: one without the other
+    // is how the message would drift into a lie.
+    const f = buildFakeOps();
+    let down = true;
+    f.ops.finalize = async (args) => {
+      f.finalizeCalls.push({ serverUrl: args.serverUrl, token: args.token });
+      if (down) throw new Error('socket closed');
+      return f.finalizeResult;
+    };
+    const onboarding = createRestoreOnboarding({ ops: f.ops, onRestored: () => {} });
+    await onboarding.submit(INPUTS());
+
+    expect(onboarding.getState()).toMatchObject({
+      phase: 'collect',
+      errorStage: 'pairing',
+      error: RESTORE_ONBOARDING_COPY.pair_interrupted_after_issue,
+    });
+    expect(f.pairCodeCalls).toHaveLength(1);
+
+    down = false;
+    await onboarding.submit(INPUTS());
+    // The single-use code is NOT re-POSTed — the retry resumed at finalize,
+    // which is exactly what the copy promises.
+    expect(f.pairCodeCalls).toHaveLength(1);
+    expect(f.finalizeCalls).toHaveLength(2);
+    expect(onboarding.getState().phase).toBe('preview');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
 // Terminal states
 // ════════════════════════════════════════════════════════════════
 

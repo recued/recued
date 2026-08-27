@@ -598,10 +598,10 @@ export const composeStorageContext = async (
     pauseClient: {
       pause: (args) => {
         ddnsPauseClientRef ??= createDdnsUpdateClient({
-          // Schema default `https://api.recued.cloud` (the prod sync-worker, the
+            // Schema default `https://api.recued.com` (the prod sync-worker, the
           // same default the DDNS update client documents) when `cloud.base_url`
           // is unset/empty — a fresh self-hoster binds out-of-the-box.
-          cloud_base_url: readCloudBaseUrl(runtimeConfig) ?? 'https://api.recued.cloud',
+            cloud_base_url: readCloudBaseUrl(runtimeConfig) ?? 'https://api.recued.com',
           signPayload: (canonical) =>
             requireSigningIdentityForBinding().identity.signWithServerIdentity(canonical),
         });

@@ -32,6 +32,7 @@ import { generateRecoveryKey } from '@recued/crypto';
 
 import {
   mountPairCodeInputHost,
+  PAIR_CODE_INPUT_INSECURE_ADDRESS_ID,
   submitPairCodeInput,
   PAIR_CODE_INPUT_ERROR_COPY,
   PAIR_CODE_INPUT_STYLES,
@@ -709,6 +710,65 @@ describe('submitPairCodeInput — server errors', () => {
       expect(result.detail).toMatch(/ECONNREFUSED/);
     }
   });
+
+  // ⛔ SAME EXCEPTION, DIFFERENT CAUSE. A mixed-content refusal reaches this
+  // catch looking exactly like a dead host, and "check the URL and that the
+  // server is running" is then the wrong advice — the URL can be perfect and
+  // the server fine. The address combination is the only evidence available.
+  it('names the browser when an https page posts to an http server address', () => {
+    const priorLocation = Object.getOwnPropertyDescriptor(globalThis, 'location');
+    Object.defineProperty(globalThis, 'location', {
+      value: { protocol: 'https:' },
+      configurable: true,
+      writable: true,
+    });
+    return (async () => {
+      try {
+        const fetchFake = (async () => {
+          throw new TypeError('Failed to fetch');
+        }) as unknown as typeof fetch;
+        const result = await submitPairCodeInput({
+          serverUrl: 'http://192.168.1.42:7717',
+          recoveryKey: realRecoveryKey,
+          fetch: fetchFake,
+        });
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.error).toBe('pair_code_input_blocked_by_browser');
+          // The raw cause is kept for support; only the COPY changes.
+          expect(result.detail).toMatch(/Failed to fetch/);
+        }
+      } finally {
+        if (priorLocation) Object.defineProperty(globalThis, 'location', priorLocation);
+        else delete (globalThis as { location?: unknown }).location;
+      }
+    })();
+  });
+
+  it('still blames the server when the page itself is insecure', async () => {
+    // Served from the server over plain http — same origin, nothing blocked.
+    const priorLocation = Object.getOwnPropertyDescriptor(globalThis, 'location');
+    Object.defineProperty(globalThis, 'location', {
+      value: { protocol: 'http:' },
+      configurable: true,
+      writable: true,
+    });
+    try {
+      const fetchFake = (async () => {
+        throw new Error('connect ECONNREFUSED');
+      }) as unknown as typeof fetch;
+      const result = await submitPairCodeInput({
+        serverUrl: 'http://192.168.1.42:7717',
+        recoveryKey: realRecoveryKey,
+        fetch: fetchFake,
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toBe('pair_code_input_transport_failed');
+    } finally {
+      if (priorLocation) Object.defineProperty(globalThis, 'location', priorLocation);
+      else delete (globalThis as { location?: unknown }).location;
+    }
+  });
 });
 
 // ════════════════════════════════════════════════════════════════
@@ -776,6 +836,96 @@ describe('mountPairCodeInputHost — initial render', () => {
         onPaired: () => undefined,
       }),
     ).toThrow(/splash element not found/);
+  });
+});
+
+describe('mountPairCodeInputHost — insecure server address warning', () => {
+  const withPageProtocol = (protocol: string, run: () => void): void => {
+    const prior = Object.getOwnPropertyDescriptor(globalThis, 'location');
+    Object.defineProperty(globalThis, 'location', {
+      value: { protocol },
+      configurable: true,
+      writable: true,
+    });
+    try {
+      run();
+    } finally {
+      if (prior) Object.defineProperty(globalThis, 'location', prior);
+      else delete (globalThis as { location?: unknown }).location;
+    }
+  };
+
+  /** The hint element always renders; `hidden` is what carries the verdict. */
+  const hintIsVisible = (html: string): boolean => {
+    const idx = html.indexOf(`id="${PAIR_CODE_INPUT_INSECURE_ADDRESS_ID}"`);
+    if (idx < 0) return false;
+    const tail = html.slice(idx, html.indexOf('>', idx) + 1);
+    return !tail.includes('hidden');
+  };
+
+  it('warns about a LAN http address when the page is https', () => {
+    withPageProtocol('https:', () => {
+      const fake = makeFakeSplash();
+      mountPairCodeInputHost({
+        splashElement: fake.splash,
+        seed: { serverUrl: 'http://192.168.1.10:3001' },
+        onPaired: () => undefined,
+      });
+      expect(hintIsVisible(fake.getHtml())).toBe(true);
+      expect(fake.getHtml()).toContain('will refuse the connection');
+    });
+  });
+
+  it('stays quiet for loopback — Chrome allows that dial', () => {
+    withPageProtocol('https:', () => {
+      const fake = makeFakeSplash();
+      mountPairCodeInputHost({
+        splashElement: fake.splash,
+        seed: { serverUrl: 'http://127.0.0.1:7717' },
+        onPaired: () => undefined,
+      });
+      expect(hintIsVisible(fake.getHtml())).toBe(false);
+    });
+  });
+
+  it('stays quiet for an https server address', () => {
+    withPageProtocol('https:', () => {
+      const fake = makeFakeSplash();
+      mountPairCodeInputHost({
+        splashElement: fake.splash,
+        seed: { serverUrl: 'https://alice.example.com' },
+        onPaired: () => undefined,
+      });
+      expect(hintIsVisible(fake.getHtml())).toBe(false);
+    });
+  });
+
+  it('stays quiet when the page itself is insecure — the local webclient', () => {
+    withPageProtocol('http:', () => {
+      const fake = makeFakeSplash();
+      mountPairCodeInputHost({
+        splashElement: fake.splash,
+        seed: { serverUrl: 'http://192.168.1.10:3001' },
+        onPaired: () => undefined,
+      });
+      expect(hintIsVisible(fake.getHtml())).toBe(false);
+    });
+  });
+
+  it('renders the hint element even when hidden, so the in-place sync can find it', () => {
+    // The field updates state WITHOUT re-rendering to preserve the caret, so
+    // `syncInsecureAddressHint` toggles this node directly. If it were absent
+    // until the verdict flipped, there would be nothing to toggle and the
+    // warning would never appear while typing.
+    withPageProtocol('https:', () => {
+      const fake = makeFakeSplash();
+      mountPairCodeInputHost({
+        splashElement: fake.splash,
+        onPaired: () => undefined,
+      });
+      expect(fake.getHtml()).toContain(`id="${PAIR_CODE_INPUT_INSECURE_ADDRESS_ID}"`);
+      expect(hintIsVisible(fake.getHtml())).toBe(false);
+    });
   });
 });
 

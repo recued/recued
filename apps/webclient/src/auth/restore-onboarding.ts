@@ -246,6 +246,22 @@ export interface RestoreOnboarding {
 export const RESTORE_ONBOARDING_COPY = {
   channel_failed:
     'Paired with your server, but Recued couldn’t open the restore connection. Check that the server is running and try again.',
+  /** ⛔ THE TWO SIDES OF `/auth/pair` NEED DIFFERENT ADVICE, because the code is
+   *  SINGLE-USE. `/auth/pair` consumes it and returns a bearer; `finalize` then
+   *  persists locally. Reporting only “can’t reach your server” for a failure
+   *  anywhere in there leaves an operator unable to tell a completed pair from a
+   *  failed one.
+   *
+   *  🔑 AFTER ISSUE, RETRYING ON THIS PAGE STILL WORKS — and saying otherwise
+   *  would send the owner for a fresh code they do not need. The orchestrator
+   *  deliberately KEEPS `issued` on failure so a retry resumes at `finalize`
+   *  without re-POSTing `/auth/pair`. That bearer lives in memory only, so the
+   *  advice turns on RELOADING, not on retrying: reload and the code really is
+   *  spent with nothing to show for it. */
+  pair_interrupted_before_issue:
+    'Lost contact with your server while pairing. Check that it is still running, then try again — if the code is refused, run `recued pair` on the server for a fresh one.',
+  pair_interrupted_after_issue:
+    'Your server accepted the pairing, but this browser lost contact before saving it. Try again on this page — do not reload, or you will need a fresh code from `recued pair`.',
   upload_failed: 'Upload failed:',
   wrong_key:
     "That recovery key doesn’t match this backup. Check your written copy and try again.",
@@ -611,6 +627,26 @@ export const createRestoreOnboarding = (
       }
       if (disposed) return;
       toPreview(dry.manifest, dry.realm, dry.schema_compat ?? null);
+    } catch {
+      // ⛔ THIS TRY HAD ONLY A `finally`. A throw from `pairCode` / `finalize`
+      // — i.e. exactly a transport failure — escaped while `phase` was still
+      // 'pairing', so the splash showed “Pairing with your server…” forever while
+      // the transport error surfaced elsewhere. The operator was left holding a
+      // spinner AND an error, with no way to tell a completed pair from a
+      // failed one.
+      //
+      // 🔑 Which side of `/auth/pair` we died on decides the advice, because the
+      // code is SINGLE-USE: before issue, retrying the same code can still work.
+      // After issue the server has spent it — but `issued` is deliberately kept
+      // here, so a retry ON THIS PAGE resumes at `finalize` and needs no new
+      // code. It is a RELOAD that makes the spent code fatal, and that is what
+      // the copy warns about.
+      toCollect(
+        'pairing',
+        issued === null
+          ? RESTORE_ONBOARDING_COPY.pair_interrupted_before_issue
+          : RESTORE_ONBOARDING_COPY.pair_interrupted_after_issue,
+      );
     } finally {
       running = false;
     }

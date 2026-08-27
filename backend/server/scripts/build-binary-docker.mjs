@@ -41,7 +41,9 @@
 
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { copyFileSync, createReadStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { connect } from 'node:net';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -213,6 +215,89 @@ const smokeTest = (triple, outDir) =>
     child.on('close', (code) => res({ code, out: out.trim() }));
   });
 
+/** ⛔⛔ THE WEBSOCKET PROBE — WITHOUT IT, "IT RUNS" MEANS "IT PRINTED A VERSION".
+ *
+ *  `smokeTest` above runs `--version`, and its own comment admits that proves
+ *  the runtime starts, NOT that the server works. That gap shipped: `ws-server`
+ *  reached the socket library through a `createRequire()` shadow the bundler
+ *  cannot see, so the SEA had no `ws` at runtime, a stub handle took over, and
+ *  its upgrade callback destroyed every socket without writing a byte. The
+ *  binary booted, printed a healthy banner and a pairing code, served
+ *  `/health` 200 — and could not be paired to by anything. Four weeks of
+ *  releases. Found 2026-08-27 by driving a signed macOS binary by hand.
+ *
+ *  🔑 THE ARTIFACT IS THE ONLY PLACE THE BUG EXISTS. Every unit suite runs from
+ *  source, where `node_modules/ws` is present and the require succeeds. So the
+ *  check has to boot the actual binary and speak to its socket.
+ *
+ *  Needs the sidecar at `lib/better_sqlite3.node` beside the executable — the
+ *  same layout the installer creates — because the server opens its database
+ *  before it listens. That is why this cannot reuse the read-only mount above. */
+const wsUpgradeSmoke = async (triple, outDir, port) => {
+  const stage = mkdtempSync(join(tmpdir(), `recued-wssmoke-${triple}-`));
+  const name = `recued-wssmoke-${triple}-${process.pid}`;
+  const cleanup = () => {
+    try { execFileSync('docker', ['rm', '-f', name], { stdio: 'ignore' }); } catch { /* already gone */ }
+    rmSync(stage, { recursive: true, force: true });
+  };
+  try {
+    mkdirSync(join(stage, 'lib'), { recursive: true });
+    copyFileSync(join(outDir, `recued-${triple}`), join(stage, 'recued'));
+    copyFileSync(join(outDir, `better_sqlite3-${triple}.node`), join(stage, 'lib/better_sqlite3.node'));
+    execFileSync('docker', [
+      'run', '-d', '--rm', '--name', name, '--platform', TARGETS[triple],
+      '-v', `${stage}:/opt/recued`, '-p', `127.0.0.1:${port}:${port}`, '-w', '/tmp',
+      'debian:stable-slim',
+      '/opt/recued/recued', 'serve', '--port', String(port),
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    // Wait for the banner rather than a fixed sleep: an emulated cross-arch
+    // container is several times slower than a native one.
+    const deadline = Date.now() + 120_000;
+    let booted = false;
+    while (Date.now() < deadline) {
+      let logs = '';
+      try { logs = execFileSync('docker', ['logs', name], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
+      catch { /* container not up yet */ }
+      if (logs.includes('Recued Server')) { booted = true; break; }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    if (!booted) return { ok: false, why: 'server never printed its banner within 120s' };
+
+    const reply = await new Promise((resolve) => {
+      const sock = connect(port, '127.0.0.1', () => {
+        sock.write('GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\n'
+          + 'Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n'
+          + 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n');
+      });
+      let buf = '';
+      const settle = () => { try { sock.destroy(); } catch { /* closed */ } resolve(buf); };
+      const timer = setTimeout(settle, 15_000);
+      sock.on('data', (d) => { buf += d.toString(); clearTimeout(timer); settle(); });
+      sock.on('close', () => { clearTimeout(timer); resolve(buf); });
+      sock.on('error', () => { clearTimeout(timer); resolve(buf); });
+    });
+
+    const statusLine = reply.split('\r\n')[0] ?? '';
+    // Two fatal shapes. EMPTY is the original defect (stub destroys the socket
+    // in silence); 503 is that same dead layer after it was taught to answer.
+    // A live handler refuses an unauthenticated upgrade with 401.
+    if (!reply.startsWith('HTTP/') || statusLine.includes('503')) {
+      return {
+        ok: false,
+        why: reply.length === 0
+          ? 'no reply at all — the socket was destroyed with no response'
+          : `answered by the stub handle: ${JSON.stringify(statusLine)}`,
+      };
+    }
+    return { ok: true, statusLine };
+  } catch (e) {
+    return { ok: false, why: e instanceof Error ? e.message : String(e) };
+  } finally {
+    cleanup();
+  }
+};
+
 const sha256 = (p) =>
   new Promise((res, rej) => {
     const h = createHash('sha256');
@@ -286,6 +371,24 @@ for (const r of results) {
       continue;
     }
     console.log(`[build-binary-docker]   smoke: starts on a clean image, reports v${reported}`);
+
+    // ⛔ AND THE ONE THAT MATTERS: does its WebSocket layer actually answer?
+    // `--version` above proves the runtime starts; it cannot see a server that
+    // boots healthy and silently drops every upgrade. See `wsUpgradeSmoke`.
+    const wsPort = Number(flag('smoke-port', '7899'));
+    const wsSmoke = await wsUpgradeSmoke(r.triple, OUT, wsPort);
+    if (!wsSmoke.ok) {
+      failed += 1;
+      console.error(
+        `[build-binary-docker]   ⛔ WEBSOCKET SMOKE FAILED — ${wsSmoke.why}\n`
+        + `      The socket layer is dead in this binary. A server built from it boots,\n`
+        + `      prints a pairing code, serves /health — and cannot be paired to at all.\n`
+        + `      Usual cause: a package reached through a createRequire() shadow, which\n`
+        + `      the bundler cannot see, so the SEA has no such module at runtime.`,
+      );
+      continue;
+    }
+    console.log(`[build-binary-docker]   ws upgrade answered: ${wsSmoke.statusLine}`);
   } else {
     failed += 1;
     console.error(`[build-binary-docker]   ⛔ smoke FAILED (exit ${smoke.code}) — the binary does not start:`);

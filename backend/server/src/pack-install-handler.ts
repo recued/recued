@@ -85,7 +85,12 @@ import {
 import type { LocalManifestStore } from './ingredient-authoring/local-manifest-store.js';
 import { installBulkPackOnServer } from './install-bulk-pack-handler.js';
 import type { ManifestRegistry } from './manifest-loader.js';
-import { buildPackOpResolution, getInstalledPack, recordPackInventory } from './pack-inventory.js';
+import {
+  buildPackOpResolution,
+  findInstalledPackByAuthoredSlug,
+  getInstalledPack,
+  recordPackInventory,
+} from './pack-inventory.js';
 import { reviewOwnerOperationsForPackUpdate } from './owner-operation-update-review.js';
 import { validateRecipeInline } from './recipe-save-handler.js';
 import type { RecipeStore } from './recipe-store.js';
@@ -420,6 +425,57 @@ const dependencyPreflightFailure = (
   failure: { code, message },
 });
 
+/** Is a declared pack dependency ALREADY satisfied by what the owner has
+ *  installed? Presence when the entry names no `min_version`; presence at a
+ *  KNOWN version at or above it otherwise.
+ *
+ *  ⛔⛔ THIS EXISTS BECAUSE A DEPENDENCY ENTRY IS AN INSTALL, NOT AN ASSERTION.
+ *  The recursion below hands each dependency to `handlePacksInstallInternal`
+ *  forwarding `granted_permissions` and `webhook_bindings` and NOTHING else — so
+ *  an absent `install_scope` (documented fail-closed: "grant ONLY the authored
+ *  read / `approval: ask` defaults") and an absent `chosen_connection` (falls back
+ *  to the authored `auth.connection` literal) REPLACED whatever the owner chose
+ *  at that pack's own install. Installing an add-on therefore downgraded a pack
+ *  the owner already had: driven, `federated-projects` installed with
+ *  `{access:'all', scope:'owner'}` came back read-only and its very next
+ *  `federation.bootstrap` answered `operation_not_granted` — an error naming an
+ *  operation, not the add-on that caused it, and not the grant it replaced.
+ *
+ *  🔑 A SATISFIED REQUIREMENT IS NOT RE-INSTALLED. That one rule fixes the
+ *  clobber and a second surprise with it: a bundled dependency whose disk copy
+ *  had moved ahead was being upgraded as a SIDE EFFECT of installing something
+ *  else, which is an unrequested content change to a pack the owner chose
+ *  deliberately. `min_version` is what the entry actually asks for; meeting it is
+ *  the whole obligation.
+ *
+ *  ⚠ FAIL-SAFE WHEN IT CANNOT TELL. No `contractStore` (the db-less harness) ⇒
+ *  `false` ⇒ install exactly as before. A row whose version is unparseable is
+ *  likewise not credited against a `min_version` — `getInstalledPack` is
+ *  deliberately lenient about that so a corrupt row stays removable, and lenient
+ *  is the wrong posture for a satisfaction check.
+ *
+ *  ⚠ RESIDUAL, STATED: a dependency installed BELOW `min_version` is still
+ *  reinstalled — that is a genuine upgrade — and the owner's scope choice is
+ *  still replaced on that path. Narrower than what this fixes, and arguably a
+ *  different decision (an upgrade changes the op set the scope was chosen for),
+ *  but it is not fixed here. */
+const dependencyAlreadySatisfied = (
+  store: ContractStore | undefined,
+  dependency: { slug: string; min_version?: number },
+): boolean => {
+  if (store === undefined) return false;
+  // ⛔ BY AUTHORED SLUG, NOT BY ROW KEY. A Records pack's inventory row is keyed
+  // by its generated `records-<hash>` catalog id, so `getInstalledPack` answers
+  // `null` for a pack that IS installed — and that is precisely the pack class
+  // where a clobbered `install_scope` turns into "installed, looks fine, refuses
+  // its own writes". Driven: the row for `federated-projects` reads
+  // `records-84016f4885cb4d94b248193d6b702c5e`.
+  const installed = findInstalledPackByAuthoredSlug(store, dependency.slug);
+  if (installed === null) return false;
+  if (dependency.min_version === undefined) return true;
+  return installed.version >= dependency.min_version;
+};
+
 const collectTransitivePackRequirements = (
   manifest: BulkPackManifest,
   packDir: string,
@@ -427,6 +483,7 @@ const collectTransitivePackRequirements = (
   visiting: Set<string>,
   visited: Set<string>,
   manifestsBySlug: Map<string, BulkPackManifest>,
+  contractStore: ContractStore | undefined,
 ): BulkPackInstallResultLike | null => {
   if (visited.has(manifest.slug)) return null;
   if (visiting.has(manifest.slug)) {
@@ -454,6 +511,17 @@ const collectTransitivePackRequirements = (
           `is version ${dependencyManifest.version}, below required ${dependency.min_version}`,
       );
     }
+    // ⛔⛔ THE SKIP HAS TO BE HERE TOO, OR THE FIX BECOMES A NEW FALSE BLOCKER.
+    // This walk unions every transitive `requires` and refuses `permission_denied`
+    // when one is ungranted, and it fills `manifestsBySlug`, which then demands
+    // "exactly one owner-selected ingress for every webhook binding" per pack. So
+    // skipping the INSTALL while still walking here would ask the owner to grant
+    // permissions and re-choose webhook ingresses for a pack this install is not
+    // going to touch — and refuse the whole install if they declined.
+    // 🔑 ONE RULE AT TWO ENDS, SHARING ONE PREDICATE. The two walks disagreeing is
+    // exactly the shape where a precheck refuses something the runtime would have
+    // allowed (or the reverse), and each end reads as correct on its own.
+    if (dependencyAlreadySatisfied(contractStore, dependency)) continue;
     for (const permission of dependencyManifest.requires) required.add(permission);
     const failure = collectTransitivePackRequirements(
       dependencyManifest,
@@ -462,6 +530,7 @@ const collectTransitivePackRequirements = (
       visiting,
       visited,
       manifestsBySlug,
+      contractStore,
     );
     if (failure !== null) return failure;
   }
@@ -484,6 +553,7 @@ const preflightTransitivePermissions = (
     new Set(),
     new Set(),
     manifestsBySlug,
+    deps.contractStore,
   );
   if (failure !== null) return failure;
 
@@ -1567,6 +1637,22 @@ const handlePacksInstallInternal = async (
         },
         recipeKeys: new Set([...dependencyRecipeKeys, ...ownRecipeKeys]),
       };
+    }
+
+    // ⛔⛔⛔ A SATISFIED REQUIREMENT IS NOT RE-INSTALLED — the clobber fix. See
+    // `dependencyAlreadySatisfied`: the recursion below forwards
+    // `granted_permissions` and `webhook_bindings` and nothing else, so
+    // reinstalling a pack the owner already has REPLACES the `install_scope` and
+    // `chosen_connection` they picked at its own install with authored defaults.
+    //
+    // ⚠ THE RECIPE KEYS STILL HAVE TO BE CONTRIBUTED. `omitRecipeKeys` is how the
+    // parent avoids re-writing a recipe a dependency owns; dropping the skipped
+    // pack's keys would let the parent claim ownership of rows that already
+    // belong to it, which is the same silent-relabel this dedup exists to stop.
+    // The keys are a property of the MANIFEST, not of having just installed it.
+    if (dependencyAlreadySatisfied(deps.contractStore, dependency)) {
+      for (const key of declaredRecipeKeys(dependencyManifest)) dependencyRecipeKeys.add(key);
+      continue;
     }
 
     const dependencyOutcome = await handlePacksInstallInternal(

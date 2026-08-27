@@ -5825,6 +5825,7 @@ export type ServerRpcRegistry = {
   'chat.session.get': RpcMethodSpec<{ session_id: string }, unknown>;
   'chat.session.create': RpcMethodSpec<{ title?: string }, { session_id: string }>;
   'chat.session.delete': RpcMethodSpec<{ session_id: string }, { ok: true }>;
+  'chat.session.mark_seen': RpcMethodSpec<{ session_id: string }, { ok: true }>;
   'chat.session.export': RpcMethodSpec<{ session_id: string }, unknown>;
   'chat.egress.get': RpcMethodSpec<{ session_id: string; message_id: string }, unknown>;
   'chat.send': RpcMethodSpec<
@@ -7435,6 +7436,7 @@ export const SERVER_RPC_METHODS = [
   // known-method set carries every chat method.
   'chat.sessions.list',
   'chat.session.get',
+  'chat.session.mark_seen',
   'chat.session.create',
   'chat.session.delete',
   'chat.session.export',

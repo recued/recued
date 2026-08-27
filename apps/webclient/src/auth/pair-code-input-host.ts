@@ -91,6 +91,11 @@ import {
   withPairFinalizeLock,
 } from './pair-code-success.js';
 import type { ArchiveUploadFile } from '../settings/archive-backup-panel.js';
+import {
+  isCertainlyBlockedServerAddress,
+  isInsecureSocketFromSecurePage,
+  readPageProtocol,
+} from '../net/insecure-origin.js';
 
 // ════════════════════════════════════════════════════════════════
 // Stable DOM ids — tests + Settings → Privacy inspector read these.
@@ -100,6 +105,11 @@ const SPLASH_ID = 'webclient-boot-splash-message';
 const BOOT_PENDING_SELECTOR = '[data-recued-boot-pending]';
 export const PAIR_CODE_INPUT_FORM_ID = 'webclient-pair-code-input-form';
 export const PAIR_CODE_INPUT_SERVER_URL_ID = 'webclient-pair-code-input-server-url';
+/** Live warning under the Server URL field for an address this browser will
+ *  certainly refuse. Toggled in place by `syncInsecureAddressHint` — typing in
+ *  that field does NOT re-render (caret preservation), so a template-only hint
+ *  would show the previous keystroke's verdict. */
+export const PAIR_CODE_INPUT_INSECURE_ADDRESS_ID = 'pair-code-input-insecure-address';
 export const PAIR_CODE_INPUT_CODE_ID = 'webclient-pair-code-input-code';
 export const PAIR_CODE_INPUT_SUBMIT_ID = 'webclient-pair-code-input-submit';
 export const PAIR_CODE_INPUT_STATUS_ID = 'webclient-pair-code-input-status';
@@ -271,6 +281,12 @@ export type PairCodeInputClientErrorCode =
   | 'pair_code_input_no_input'
   | 'pair_code_input_invalid_recovery_key'
   | 'pair_code_input_transport_failed'
+  /** The browser refused the request before it left: an `http://` server
+   *  address entered on an `https://` page. Distinct from
+   *  `pair_code_input_transport_failed` because "check the URL and that the
+   *  server is running" is the WRONG advice — the URL may be exactly right and
+   *  the server running fine. */
+  | 'pair_code_input_blocked_by_browser'
   | 'pair_code_input_server_unknown_error'
   | 'pair_code_input_server_refused'
   | 'pair_code_input_already_paired'
@@ -304,6 +320,11 @@ export const PAIR_CODE_INPUT_ERROR_COPY: Readonly<Record<PairCodeInputErrorCode,
     'All 24 words are present, but they do not form a valid recovery key. Check for a misspelled, missing, or duplicated word.',
   pair_code_input_transport_failed:
     "Couldn't reach your recued-server. Check the URL and that the server is running, then try again.",
+  pair_code_input_blocked_by_browser:
+    'This browser blocked the request: this page is secure (https) but that '
+    + 'server address is not. Open the webclient from the server itself — its '
+    + 'own address ending in /webclient/ — or give the server a domain and '
+    + 'certificate and use its https address.',
   // Reserved for a reply that isn't shaped like a recued-server's at all
   // (non-JSON, or a 200 with no realm token) — there, "check the URL" is
   // genuinely the right advice. A server that answered with a proper
@@ -501,6 +522,18 @@ export const submitPairCodeInput = async (
       body: JSON.stringify(body),
     });
   } catch (err) {
+    // A blocked request and an unreachable server are the same exception here —
+    // the browser reports a mixed-content refusal exactly like a dead host — so
+    // the address combination is the only evidence available. Checked ONLY on
+    // failure: Chrome permits a loopback dial from an https page, and a working
+    // setup must never be warned at.
+    if (isInsecureSocketFromSecurePage(serverUrl, readPageProtocol())) {
+      return {
+        ok: false,
+        error: 'pair_code_input_blocked_by_browser',
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    }
     return {
       ok: false,
       error: 'pair_code_input_transport_failed',
@@ -1823,6 +1856,7 @@ export const mountPairCodeInputHost = (
       )?.setAttribute('open', '');
     }
     applyPendingFocus();
+    syncInsecureAddressHint();
   };
 
   const setState = (patch: Partial<PairCodeInputState>): void => {
@@ -2127,6 +2161,7 @@ export const mountPairCodeInputHost = (
         state = { ...state, ...patch };
         if (malformedKeyError === null) clearStatusInPlace();
         syncSubmitDisabled();
+        syncInsecureAddressHint();
         return;
       }
       if (kind === 'pairing-code') {
@@ -2753,6 +2788,22 @@ export const mountPairCodeInputHost = (
       else btn.removeAttribute?.('title');
     }
     syncSubmitRequirement(reason);
+  };
+
+  /** Toggle the insecure-address warning without re-rendering. Mirrors
+   *  `syncSubmitDisabled`: the server-url field updates state in place to keep
+   *  the caret, so anything derived from it has to be synced the same way or it
+   *  reports the value from one keystroke ago. */
+  const syncInsecureAddressHint = (): void => {
+    const hint = splashEl.querySelector?.(
+      `#${PAIR_CODE_INPUT_INSECURE_ADDRESS_ID}`,
+    ) as HTMLElement | null;
+    if (!hint) return;
+    if (isCertainlyBlockedServerAddress(state.serverUrl, readPageProtocol())) {
+      hint.removeAttribute?.('hidden');
+    } else {
+      hint.setAttribute?.('hidden', '');
+    }
   };
 
   const syncRecoveryCounter = (): void => {
@@ -4255,6 +4306,9 @@ const renderForm = (
               : ` aria-describedby="${PAIR_CODE_INPUT_SECURE_RESUME_NOTICE_ID}"`}`
             : ''}
           ${editingDisabled || (state.replacementServerStage !== null && !replacementServerDetails) ? 'disabled' : ''} />
+        <p class="field-hint pair-code-input-insecure-address" id="${PAIR_CODE_INPUT_INSECURE_ADDRESS_ID}"${
+          isCertainlyBlockedServerAddress(state.serverUrl, readPageProtocol()) ? '' : ' hidden'
+        }>This page is secure (https) and that server address is not, so this browser will refuse the connection. Open the webclient from the server itself — its own address ending in /webclient/ — or give the server a domain and certificate.</p>
         ${state.sameOriginResume
           ? `<button type="button" class="pair-code-input-change-server" data-action="${PAIR_CODE_INPUT_CHANGE_SERVER_ACTION}" aria-describedby="${PAIR_CODE_INPUT_CHANGE_SERVER_NOTE_ID}" ${editingDisabled ? 'disabled' : ''}>Use a different server address</button>
             <span id="${PAIR_CODE_INPUT_CHANGE_SERVER_NOTE_ID}" class="pair-code-input-change-server-note">Changing servers also clears any pairing code.</span>`

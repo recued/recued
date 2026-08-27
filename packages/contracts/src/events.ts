@@ -35,6 +35,7 @@ import type {
   ChatModelSourceId,
   ChatPlanProposal,
   ChatRunHeld,
+  ChatSessionChangedField,
 } from './chat.js';
 import type { SessionLifecycleState } from './session-routing.js';
 import type { RecipeRunnabilityEntry } from './recipe-runnability.js';
@@ -682,10 +683,16 @@ export type ServerEvent =
        *  switch, model-pref switch, title update, archive toggle).
        *  `field` is the closed `ChatSessionChangedField` list; `value`
        *  is the new value (renderer reads the field tag to interpret
-       *  the shape). */
+       *  the shape).
+       *
+       *  ⛔ REFERENCED, NOT RE-TYPED. This said it was the closed
+       *  `ChatSessionChangedField` list and then hand-copied the members, so
+       *  the vocabulary lived in two places over one rule — and adding a
+       *  member to the real one left this copy quietly disagreeing. The
+       *  compiler caught it here; a value-level list would not have. */
       kind: 'chat.session_changed';
       session_id: string;
-      field: 'picker' | 'model_pref' | 'title' | 'archived';
+      field: ChatSessionChangedField;
       value: unknown;
       cursor: number;
     }

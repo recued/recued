@@ -32,6 +32,7 @@ import {
   isChatDataDiagnosisResolutionStatus,
   type ChatDataDiagnosisContext,
   type ChatDataDiagnosisResolution,
+  type ChatHistoryCursor,
   type ChatMessage,
   type ChatEgressPacket,
   type ChatMessageAttachment,
@@ -215,6 +216,7 @@ export const ensureChatSchema = (db: Database.Database): void => {
       metadata_blob              TEXT,
       contributor                TEXT,
       recall_eligibility         TEXT NOT NULL DEFAULT 'ineligible',
+      turn_id                    TEXT,
       FOREIGN KEY (session_id) REFERENCES chat_sessions (session_id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_chat_messages_session_ts
@@ -268,6 +270,30 @@ export const ensureChatSchema = (db: Database.Database): void => {
     db.exec(
       "ALTER TABLE chat_messages ADD COLUMN source_lifecycle TEXT NOT NULL DEFAULT 'failed'",
     );
+  }
+  // Guarded additive column for chat databases written before messages knew
+  // their turn. ⛔ NULLABLE WITH NO BACKFILL, deliberately: nothing in an
+  // existing row can reconstruct which turn wrote it, and inventing a value
+  // would make an unknowable indistinguishable from a fact. Pre-column rows
+  // stay NULL and read as `turn_id` absent, which the contract defines as
+  // UNKNOWN rather than "no turn".
+  if (!messageCols.has('turn_id')) {
+    db.exec('ALTER TABLE chat_messages ADD COLUMN turn_id TEXT');
+  }
+  // How many messages this session held when the owner last looked at it.
+  //
+  // ⛔ MESSAGE COUNT, NOT A TIMESTAMP. `last_active_at` is the obvious key and
+  // the wrong one: SIX statements bump it, including the picker and model-pref
+  // writes, so switching a session's model would mark it unread for something
+  // that is not a message. A count moves only when a message lands.
+  //
+  // ⛔ NULLABLE WITH NO BACKFILL, and null means SEEN. Sessions that existed
+  // before this column would otherwise all light up as unread on the first
+  // boot after an upgrade — a wall of false marks is worse than no marks. New
+  // sessions are stamped 0 at creation instead, so everything created from
+  // here on is markable from birth without inventing a past for anything else.
+  if (!sessionCols.has('last_seen_message_count')) {
+    db.exec('ALTER TABLE chat_sessions ADD COLUMN last_seen_message_count INTEGER');
   }
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_chat_messages_recall_eligibility
@@ -684,6 +710,7 @@ interface MessageRow {
   attachments_blob: string | null;
   metadata_blob: string | null;
   contributor: string | null;
+  turn_id: string | null;
 }
 
 /** D-213 A2 — the only columns the recall read path may materialize. Keeping
@@ -1063,6 +1090,9 @@ const messageFromRow = async (
     )
       ? (row.contributor as ChatSessionContributor)
       : contributorForChatRole(role),
+    ...(typeof row.turn_id === 'string' && row.turn_id.length > 0
+      ? { turn_id: row.turn_id }
+      : {}),
     ts: row.ts,
   };
 };
@@ -1108,6 +1138,9 @@ export interface AppendMessageInput {
   /** Server-normalized, evidence-only diagnosis grounding. Stored in the
    * existing message metadata column so both turn rows survive hydration. */
   data_diagnosis?: ChatDataDiagnosisContext;
+  /** The turn writing this row. Optional so a caller outside a turn (or an
+   *  older one not yet passing it) writes NULL rather than a fabricated id. */
+  turn_id?: string;
 }
 
 export interface ChatPiiSourceRow {
@@ -1243,6 +1276,19 @@ export interface ChatStore {
   bumpSessionLastActiveAt(session_id: string, now?: number): boolean;
   deleteSession(session_id: string): boolean;
   appendMessage(input: AppendMessageInput): Promise<ChatMessage>;
+  /** Record that the owner has now seen this session's messages. Idempotent;
+   *  a no-op for a session id that does not exist. */
+  markSessionSeen(session_id: string): void;
+  /** One bounded page of a conversation, newest-last. See `listMessagePage`. */
+  listMessagePage(
+    session_id: string,
+    limit: number,
+    before?: ChatHistoryCursor,
+  ): Promise<{
+    messages: ChatMessage[];
+    has_more: boolean;
+    oldest?: ChatHistoryCursor;
+  }>;
   listMessages(session_id: string): Promise<ChatMessage[]>;
   /** The most recent `limit` conversational messages, oldest-first.
    *
@@ -1370,17 +1416,27 @@ export const createChatStore = (
       session_id, created_at, last_active_at, title,
       picker_state_target, model_routing_layer, model_routing_model_hint,
       model_routing_source_id, model_routing_provider, model_routing_model_id,
-      model_routing_overridden, archived
+      model_routing_overridden, archived, last_seen_message_count
     ) VALUES (
       @session_id, @created_at, @last_active_at, @title,
       @picker_state_target, @model_routing_layer, @model_routing_model_hint,
       @model_routing_source_id, @model_routing_provider, @model_routing_model_id,
-      @model_routing_overridden, 0
+      -- 0, not NULL: a session born after this column exists is markable from
+      -- its first message. NULL is reserved for the sessions that predate it.
+      @model_routing_overridden, 0, 0
     )
   `);
   const getSessionStmt = db.prepare<{ session_id: string }>(
     `SELECT * FROM chat_sessions WHERE session_id = @session_id`,
   );
+  const markSessionSeenStmt = db.prepare<{ session_id: string }>(`
+    UPDATE chat_sessions
+       SET last_seen_message_count = (
+             SELECT COUNT(*) FROM chat_messages m
+              WHERE m.session_id = chat_sessions.session_id
+           )
+     WHERE session_id = @session_id
+  `);
   const listSessionsStmt = db.prepare(`
     SELECT s.*, (
       SELECT COUNT(*) FROM chat_messages m WHERE m.session_id = s.session_id
@@ -1451,13 +1507,13 @@ export const createChatStore = (
       picker_at_send_blob, model_used_provider, model_used_model_id,
       content_encrypted, tool_calls_blob, candidates_encrypted,
       source_lifecycle, provenance_blob, attachments_blob,
-      metadata_blob, contributor, recall_eligibility
+      metadata_blob, contributor, recall_eligibility, turn_id
     ) VALUES (
       @message_id, @session_id, @role, @ts, @target_server,
       @picker_at_send_blob, @model_used_provider, @model_used_model_id,
       @content_encrypted, @tool_calls_blob, @candidates_encrypted,
       @source_lifecycle, @provenance_blob, @attachments_blob,
-      @metadata_blob, @contributor, @recall_eligibility
+      @metadata_blob, @contributor, @recall_eligibility, @turn_id
     )
   `);
   const bumpContentRevisionStmt = db.prepare(`
@@ -1514,6 +1570,35 @@ export const createChatStore = (
   `);
   const listMessagesStmt = db.prepare<{ session_id: string }>(
     `SELECT * FROM chat_messages WHERE session_id = @session_id ORDER BY ts ASC, message_id ASC`,
+  );
+  /** The newest page. DESC + LIMIT so SQLite walks the tail of the
+   *  `(session_id, ts)` index instead of materializing the whole conversation
+   *  and throwing away the front of it. Reversed to display order by the
+   *  caller, which is cheap on a bounded array. */
+  const listMessagesTailStmt = db.prepare<{
+    session_id: string;
+    limit: number;
+  }>(
+    `SELECT * FROM chat_messages
+      WHERE session_id = @session_id
+      ORDER BY ts DESC, message_id DESC
+      LIMIT @limit`,
+  );
+  /** An older page. ⛔ The predicate is the LEXICOGRAPHIC pair, not `ts <`:
+   *  timestamps are not unique here (the wordless-drop reply is written in the
+   *  same millisecond as the message it answers), so a ts-only cursor drops
+   *  every row that shares the boundary ts, and `ts <=` repeats them forever. */
+  const listMessagesBeforeStmt = db.prepare<{
+    session_id: string;
+    ts: number;
+    message_id: string;
+    limit: number;
+  }>(
+    `SELECT * FROM chat_messages
+      WHERE session_id = @session_id
+        AND (ts < @ts OR (ts = @ts AND message_id < @message_id))
+      ORDER BY ts DESC, message_id DESC
+      LIMIT @limit`,
   );
   const scanRecallMessagesStmt = db.prepare(`
     SELECT message_id, session_id, role, ts, content_encrypted
@@ -1735,6 +1820,17 @@ export const createChatStore = (
         created_at: session.created_at,
         last_active_at: session.last_active_at,
         message_count: row.message_count,
+        // ⚠ ABSENT for a session that predates the column — which the client
+        // must read as SEEN, not as "zero messages seen", or every old chat
+        // lights up at once.
+        ...(typeof (row as { last_seen_message_count?: unknown })
+          .last_seen_message_count === 'number'
+          ? {
+              last_seen_message_count: (
+                row as unknown as { last_seen_message_count: number }
+              ).last_seen_message_count,
+            }
+          : {}),
         archived: session.archived,
         picker_state: session.picker_state,
         model_routing: {
@@ -1935,6 +2031,7 @@ export const createChatStore = (
         : null,
       contributor,
       recall_eligibility,
+      turn_id: input.turn_id ?? null,
     };
     db.transaction(() => {
       insertMessageStmt.run(row);
@@ -1963,13 +2060,62 @@ export const createChatStore = (
         ? { data_diagnosis: input.data_diagnosis }
         : {}),
       contributor,
+      ...(input.turn_id ? { turn_id: input.turn_id } : {}),
       ts,
     };
+  };
+
+  const markSessionSeen = (session_id: string): void => {
+    markSessionSeenStmt.run({ session_id });
   };
 
   const listMessages = async (session_id: string): Promise<ChatMessage[]> => {
     const rows = listMessagesStmt.all({ session_id }) as MessageRow[];
     return Promise.all(rows.map((row) => messageFromRow(row, getKey)));
+  };
+
+  /** One page of a conversation, newest-last, plus whether older rows exist.
+   *
+   *  ⛔ ASKS FOR ONE MORE ROW THAN IT RETURNS. `has_more` cannot be derived
+   *  from `rows.length === limit` — a conversation of exactly `limit` messages
+   *  would report more and hand back a cursor that pages to nothing, which the
+   *  client renders as a "load earlier" control that does nothing when
+   *  pressed. The extra row is the only way to tell "full page" from "full
+   *  page and there is more", and it is discarded rather than returned. */
+  const listMessagePage = async (
+    session_id: string,
+    limit: number,
+    before?: ChatHistoryCursor,
+  ): Promise<{
+    messages: ChatMessage[];
+    has_more: boolean;
+    oldest?: ChatHistoryCursor;
+  }> => {
+    const probe = limit + 1;
+    const rows = (before === undefined
+      ? listMessagesTailStmt.all({ session_id, limit: probe })
+      : listMessagesBeforeStmt.all({
+          session_id,
+          ts: before.ts,
+          message_id: before.message_id,
+          limit: probe,
+        })) as MessageRow[];
+    const has_more = rows.length > limit;
+    const page = has_more ? rows.slice(0, limit) : rows;
+    // Rows arrive newest-first because that is the only way to take the TAIL
+    // cheaply; the caller wants display order.
+    const ordered = page.slice().reverse();
+    const messages = await Promise.all(
+      ordered.map((row) => messageFromRow(row, getKey)),
+    );
+    const oldestRow = ordered[0];
+    return {
+      messages,
+      has_more,
+      ...(oldestRow === undefined
+        ? {}
+        : { oldest: { ts: oldestRow.ts, message_id: oldestRow.message_id } }),
+    };
   };
 
   const listRecentConversationalStmt = db.prepare<{ session_id: string; limit: number }>(
@@ -2481,6 +2627,8 @@ export const createChatStore = (
     deleteSession,
     appendMessage,
     listMessages,
+    listMessagePage,
+    markSessionSeen,
     listRecentConversational,
     finalizeMessageSource,
     failMessageSource,

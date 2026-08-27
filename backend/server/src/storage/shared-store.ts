@@ -20,7 +20,7 @@
 
 import type Database from 'better-sqlite3';
 import { prefixUpperBound } from './prefix-range.js';
-import { createFtsTable, indexRecord, deleteRecord as ftsDeleteRecord, deleteByPrefix as ftsDeleteByPrefix, search as ftsSearch } from '@recued/fts';
+import { FTS_REINDEX_PAGE, createFtsTable, indexRecord, deleteRecord as ftsDeleteRecord, deleteByPrefix as ftsDeleteByPrefix, search as ftsSearch } from '@recued/fts';
 import type { BlobStore } from './blob-store.js';
 
 /** Hard ceiling on a single value's serialized size, in bytes. Values
@@ -152,7 +152,34 @@ export const ensureSharedSchema = (db: Database.Database): void => {
        ADD COLUMN cas_revision INTEGER CHECK (cas_revision IS NULL OR cas_revision >= 0)`,
     );
   }
-  createFtsTable(db, FTS_TABLE);
+  // One-time rebuild when the stored FTS text's format changes — see
+  // `FTS_CONTENT_FORMAT`. Format 2 space-separates unspaced scripts so a
+  // 2-character CJK / Thai term matches as an adjacent phrase.
+  //
+  // ⛔ THIS STORE NEEDED IT TO AVOID A REGRESSION, not just to gain the fix.
+  // Writes now go in segmented; leaving old rows verbatim would strand them
+  // where even the run-INITIAL matches they used to serve stop working, because
+  // the query side is segmented too. Indexing only inline values mirrors the
+  // write path exactly — a CAS-spilled value is not in the index there either.
+  createFtsTable(db, FTS_TABLE, {
+    reindex: () => {
+      // ⛔ PAGED, NOT `.iterate()` — better-sqlite3 refuses a write while a read
+      // statement is iterating, and this loop writes per row. See the note in
+      // `collections/table.ts`; the failure is silent and empties the index.
+      const page = db.prepare(
+        `SELECT key, value_inline FROM ${TABLE} `
+        + `WHERE value_inline IS NOT NULL AND key > ? ORDER BY key LIMIT ?`,
+      );
+      let after = '';
+      for (;;) {
+        const rows = page.all(after, FTS_REINDEX_PAGE) as
+          Array<{ key: string; value_inline: string }>;
+        if (rows.length === 0) break;
+        for (const row of rows) indexRecord(db, FTS_TABLE, row.key, row.value_inline);
+        after = rows[rows.length - 1].key;
+      }
+    },
+  });
   // A compare-and-set row cannot be deleted and recreated at revision 0 through
   // the ordinary shared mutation surface. The store methods preflight this for
   // typed errors; the trigger is the final statement-atomic guard for prefix

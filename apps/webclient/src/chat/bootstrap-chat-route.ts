@@ -13,10 +13,14 @@ import {
 import { createComposerAttachments } from './composer-attachments.js';
 import {
   transparencyStreamSettingsFromPrefs,
+  CHAT_HISTORY_WINDOW,
+  classForTransparencyEventKind,
   DEFAULT_TRANSPARENCY_STREAM_SETTINGS,
   isChatDataDiagnosisRelationship,
   isChatModelSourceId,
+  isTransparencyEventKind,
   type ChatDataDiagnosisContext,
+  type ChatHistoryCursor,
   type ChatDataDiagnosisRequest,
   type ChatDataDiagnosisResolution,
   type ChatDataDiagnosisResolutionStatus,
@@ -29,6 +33,7 @@ import {
   type ChatSessionSummary,
   type InstancePrefs,
   type ServerEvent,
+  type TransparencyEventKind,
   type TransparencyStreamSettings,
 } from '@recued/contracts';
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
@@ -39,6 +44,7 @@ import {
   buildChatModelSourceOptions,
   matchChatModelSource,
   hydrateThreadFromSnapshot,
+  prependOlderMessages,
   initialChatThreadState,
   isChatThreadEvent,
   projectInFlightActivity,
@@ -110,6 +116,16 @@ export const CHAT_ROUTE_HOST_ATTR = 'data-recued-chat-route';
 export const CHAT_ROUTE_HEADING_ATTR = 'data-recued-chat-route-heading';
 export const CHAT_ROUTE_SESSION_LIST_ATTR = 'data-recued-chat-route-session-list';
 export const CHAT_ROUTE_SESSION_ROW_ATTR = 'data-recued-chat-route-session-row';
+/** Per-row status: `opening` | `working` | `answered`. A chat that is running
+ *  a turn without you, or that answered while you were elsewhere. */
+/** The thread's scrolling region — the element whose position has to survive a
+ *  render, since every broadcast rebuilds the route wholesale. */
+export const CHAT_ROUTE_MESSAGES_ATTR = 'data-recued-chat-route-messages';
+/** The control that pulls an older page in. Present only while the server says
+ *  older messages exist. */
+export const CHAT_ROUTE_LOAD_OLDER_ATTR = 'data-recued-chat-route-load-older';
+export const CHAT_ROUTE_SESSION_STATUS_ATTR =
+  'data-recued-chat-route-session-status';
 export const CHAT_ROUTE_HISTORY_SEARCH_ATTR =
   'data-recued-chat-route-history-search';
 export const CHAT_ROUTE_HISTORY_GROUP_ATTR =
@@ -302,6 +318,10 @@ export const CHAT_ROUTE_FOLLOWUP_CONTEXT_CLEAR_ATTR =
 const CHAT_ROUTE_FOLLOWUP_CONTEXT_DESCRIPTION_ID =
   'recued-chat-followup-context-description';
 /** Text rendered in an otherwise-empty in-flight assistant message. */
+/** The message body itself. A class alone is a styling hook; the streamed-token
+ *  painter needs an addressable one it can find and write into. */
+export const CHAT_ROUTE_ANSWER_CONTENT_ATTR =
+  'data-recued-chat-route-answer-content';
 export const CHAT_ROUTE_ANSWER_WAITING_ATTR =
   'data-recued-chat-answer-waiting';
 // Shell-frame Step 4 — the two composer buttons (§D.L1). Below the composer
@@ -328,10 +348,23 @@ export const CHAT_ROUTE_CREATE_CLOSE_ATTR = CREATE_OVERLAY_CLOSE_ATTR;
 // screen. The chat route is back to a thin DOM host.
 
 export interface ChatRouteConn {
-  (method: 'chat.sessions.list'): Promise<{ sessions: ChatSessionSummary[] }>;
+  (method: 'chat.sessions.list'): Promise<{
+    sessions: ChatSessionSummary[];
+    /** Every session running a turn, from any surface. ⛔ PRESENT-BUT-EMPTY
+     *  and ABSENT are different answers: `[]` is "nothing is running", the
+     *  field missing is "this server cannot tell you" — which is what one
+     *  older than the busy registry says by saying nothing. */
+    busy_session_ids?: readonly string[];
+  }>;
   (
     method: 'chat.session.get',
-    payload: { session_id: string },
+    payload: {
+      session_id: string;
+      /** Opt IN to a window. Omitting it asks for the whole conversation,
+       *  which is what a server older than this slice does regardless. */
+      limit?: number;
+      before?: ChatHistoryCursor;
+    },
   ): Promise<ChatThreadSnapshot>;
   (method: 'chat.session.create'): Promise<{ session_id: string }>;
   (
@@ -340,6 +373,10 @@ export interface ChatRouteConn {
   ): Promise<{ session_id: string }>;
   (
     method: 'chat.session.delete',
+    payload: { session_id: string },
+  ): Promise<{ ok: true }>;
+  (
+    method: 'chat.session.mark_seen',
     payload: { session_id: string },
   ): Promise<{ ok: true }>;
   (
@@ -420,8 +457,33 @@ export interface ChatRouteConn {
   ): Promise<{ plan: ChatPlanProposal }>;
 }
 
-const CHAT_ROUTE_CHROME_STYLES = `
+/** This route's OWN chrome. Exported for the style-scale ratchet, which must
+ *  assert on exactly this and not on the combined `CHAT_ROUTE_STYLES` — that
+ *  folds in the primitives and provenance sheets, whose radii belong to their
+ *  own packages and would make the assertion lie in both directions. */
+export const CHAT_ROUTE_CHROME_STYLES = `
 [${CHAT_ROUTE_HOST_ATTR}] {
+  /* ── One radius scale, three roles ─────────────────────────────────────
+     This surface had NINE ad-hoc radii (3/4/6/7/8/9/10/12/999) across 46
+     declarations, which is most of why it read as unfinished: two adjacent
+     cards would round differently for no reason anyone could state. Three
+     roles is all it has — the panel a thing sits in, the control you press,
+     the chip that reads as a token — and they alias the shell's knobs where
+     those exist, so the route inherits a future shell change by one line
+     rather than 46.
+
+     ⛔ Route-local BY INTENT, not by preference. A radius scale belongs in
+     the shell layer with the other defaults, but that file is another
+     workstream's active surface, and its handover asks explicitly that it
+     not be swept into someone else's commit. Aliasing is
+     how this stays correct without reaching into it.
+
+     ⚠ 3px and 4px are deliberately NOT in the scale: they are focus-ring and
+     hairline radii, not surfaces, and folding them in would round a 1px rule
+     like a card. */
+  --chat-radius-panel: var(--wc-radius, 9px);
+  --chat-radius-control: 7px;
+  --chat-radius-pill: var(--wc-radius-pill, 999px);
   /* Inherit the shell's light/dark tokens instead of hard-pinning light
      values, which left inner --bg/--surface-sunk elements dark-on-dark
      in dark mode (visual-UX review). */
@@ -449,15 +511,40 @@ const CHAT_ROUTE_CHROME_STYLES = `
 [${CHAT_ROUTE_SESSION_LIST_ATTR}],
 [${CHAT_ROUTE_THREAD_ATTR}] {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--chat-radius-panel);
   background: var(--surface);
 }
+/* ⛔ The trailing term is the CONNECTION BANNER, which is fixed to the bottom of
+   the viewport and spans its full width. Measured with it up: the panes ended
+   at 846 and the banner began at 840, so the last 6px of both sat underneath
+   it — and that edge is exactly where the composer is pinned, so on a narrow
+   window (an 86px wrapped banner) it clips the Send row. The banner publishes
+   its own measured height; 0px whenever it is not showing, so nothing changes
+   in the ordinary case.
+
+   ⛔ height, NOT max-height — found by driving the real app, invisible to
+   every unit test here. A cap alone lets both panes size to their CONTENT, so
+   a chat with two messages painted two short cards adrift in 354px of empty
+   page on a 900px viewport. A chat app wants a STABLE FRAME: the panes hold
+   the same shape whatever is in them, and what grows scrolls inside. Same
+   expression on both so the two always end level. */
 [${CHAT_ROUTE_SESSION_LIST_ATTR}] {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-height: min(720px, calc(100vh - 132px));
+  height: min(720px, calc(100vh - 132px - var(--wc-connection-banner-h, 0px)));
   padding: 12px;
+}
+/* ⛔ THE THREAD HAD NO HEIGHT AND NO SCROLLER, so it grew the PAGE instead of
+   scrolling inside itself — and the composer, being the last child, walked
+   further down the document with every message. The rail beside it has been
+   bounded like this all along; the thread simply never was. Same bound, so the
+   two panes end level. */
+[${CHAT_ROUTE_THREAD_ATTR}] {
+  display: flex;
+  flex-direction: column;
+  height: min(720px, calc(100vh - 132px - var(--wc-connection-banner-h, 0px)));
+  overflow: hidden;
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-history-head,
 [${CHAT_ROUTE_HOST_ATTR}] .chat-history-heading-row {
@@ -478,13 +565,12 @@ const CHAT_ROUTE_CHROME_STYLES = `
 [${CHAT_ROUTE_HOST_ATTR}] .chat-history-title {
   font-size: 14px;
 }
-[${CHAT_ROUTE_HOST_ATTR}] .chat-history-new,
 [${CHAT_ROUTE_HOST_ATTR}] .chat-history-landing-action,
 [${CHAT_ROUTE_HOST_ATTR}] .chat-history-guard-action,
 [${CHAT_ROUTE_HOST_ATTR}] .chat-session-action {
-  min-height: 36px;
+  min-height: var(--wc-control-h, 38px);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--chat-radius-control);
   padding: 6px 10px;
   background: var(--surface);
   color: var(--fg);
@@ -493,7 +579,37 @@ const CHAT_ROUTE_CHROME_STYLES = `
   font-weight: 650;
   cursor: pointer;
 }
-[${CHAT_ROUTE_HOST_ATTR}] .chat-history-new,
+/* Sized for the rail it lives in. It was a full-height accent button sitting
+   next to a 14px heading in a 190px column — louder than the list it sits above
+   and competing with the session rows for the eye. Compact and quiet: it is a
+   permanent affordance, not a call to action. It keeps its full accessible
+   name; only the visible label shortens. */
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-new {
+  flex: 0 0 auto;
+  /* ⛔ THE HEIGHT IS THE SHELL'S KNOB, NOT A LITERAL. A first cut set 24px to
+     answer "make it smaller", which is a hit-target regression wearing a
+     styling fix: the shell asserts a minimum tap size and 24px is under every
+     one of them. Weight is what made this button loud, not height — so the
+     fill, the accent border and the label carry the change and the box keeps
+     its size. 158 hand-written literals across 46 files are what the knob
+     exists to end. */
+  min-height: var(--wc-control-h, 38px);
+  border: 1px solid var(--border);
+  border-radius: var(--chat-radius-control);
+  padding: 2px 10px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.5;
+  cursor: pointer;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-new:hover,
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-new:focus-visible {
+  color: var(--fg);
+  border-color: var(--accent);
+}
 [${CHAT_ROUTE_HOST_ATTR}] .chat-history-landing-action--primary {
   border-color: var(--accent);
   background: var(--accent);
@@ -501,9 +617,9 @@ const CHAT_ROUTE_CHROME_STYLES = `
 }
 [${CHAT_ROUTE_HISTORY_SEARCH_ATTR}] {
   width: 100%;
-  min-height: 40px;
+  min-height: var(--wc-control-h, 38px);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--chat-radius-control);
   padding: 7px 10px;
   background: var(--surface);
   color: var(--fg);
@@ -544,7 +660,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   border: 1px solid var(--border-subtle);
-  border-radius: 8px;
+  border-radius: var(--chat-radius-panel);
   background: var(--surface-subtle);
 }
 [${CHAT_ROUTE_SESSION_ROW_ATTR}] {
@@ -567,12 +683,23 @@ const CHAT_ROUTE_CHROME_STYLES = `
   cursor: wait;
   opacity: .72;
 }
-[${CHAT_ROUTE_HOST_ATTR}] .chat-session-opening {
+/* A row is only ever aria-disabled while a history action (export / delete)
+   holds the list. Without this the button looked completely ordinary and
+   refused the click in silence — the reason the state is worth painting. */
+[${CHAT_ROUTE_SESSION_ROW_ATTR}][aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: .55;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-session-status {
   display: block;
-  margin-top: 3px;
+  margin-top: 2px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
+  line-height: 1.45;
   font-weight: 650;
+}
+[${CHAT_ROUTE_SESSION_STATUS_ATTR}="answered"] {
+  color: var(--accent);
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-session-title {
   display: block;
@@ -582,10 +709,25 @@ const CHAT_ROUTE_CHROME_STYLES = `
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-[${CHAT_ROUTE_HOST_ATTR}] .chat-session-meta,
 [${CHAT_ROUTE_HOST_ATTR}] .chat-route-muted {
   font-size: 12px;
   color: var(--muted);
+}
+/* ── The rail's type scale ────────────────────────────────────────────────
+   A row carries up to THREE lines in a 190px column — title, "3 messages ·
+   2h ago", and now a status — and they were set at 13/12/12, near enough
+   that nothing led and the row read as a wall. Split off from
+   .chat-route-muted (which is body copy elsewhere and should stay 12px) so
+   only the rail tightens: the title keeps its weight and the two supporting
+   lines step down and back, which is what makes a scannable list rather than
+   a denser one. */
+[${CHAT_ROUTE_HOST_ATTR}] .chat-session-meta {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-session-title {
+  line-height: 1.35;
 }
 [${CHAT_ROUTE_SESSION_ACTIONS_ATTR}] {
   position: relative;
@@ -622,7 +764,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   gap: 4px;
   padding: 5px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--chat-radius-panel);
   background: var(--surface);
   box-shadow: 0 10px 28px rgba(24, 33, 36, .18);
 }
@@ -653,7 +795,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
 }
 [${CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR}] {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--chat-radius-panel);
   background: var(--accent-weak);
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-history-guard-actions,
@@ -750,6 +892,37 @@ const CHAT_ROUTE_CHROME_STYLES = `
   align-content: start;
   gap: 10px;
   padding: 12px;
+  /* The one scrolling region. "min-height: 0" is load-bearing — a flex item
+     defaults to "min-height: auto" and refuses to shrink below its content,
+     which would push the composer back out of view and undo the bound above. */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-thread-header,
+[${CHAT_ROUTE_HOST_ATTR}] .chat-composer {
+  flex: 0 0 auto;
+}
+/* Quiet by design — it is a boundary marker as much as a control, and a chat
+   that fits in one window never shows it at all. */
+[${CHAT_ROUTE_HOST_ATTR}] .chat-load-older {
+  justify-self: center;
+  min-height: var(--wc-control-h, 38px);
+  padding: 4px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--chat-radius-pill);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-load-older:hover:not([disabled]),
+[${CHAT_ROUTE_HOST_ATTR}] .chat-load-older:focus-visible {
+  color: var(--fg);
+  border-color: var(--accent);
 }
 [${CHAT_ROUTE_MESSAGE_ATTR}] {
   display: grid;
@@ -759,7 +932,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
 [${CHAT_ROUTE_MESSAGE_ATTR}][${CHAT_ROUTE_RETURN_TARGET_ATTR}] {
   margin: -6px;
   padding: 6px;
-  border-radius: 8px;
+  border-radius: var(--chat-radius-panel);
   background: var(--accent-weak);
   outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
   outline-offset: 2px;
@@ -769,7 +942,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   margin: 0 0 10px;
   padding: 9px 11px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--chat-radius-panel);
   background: var(--surface-subtle);
   color: var(--muted);
   font-size: 12px;
@@ -825,7 +998,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   min-width: 0;
   padding: 9px 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--chat-radius-panel);
   background: var(--accent-weak);
 }
 [${CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR}] .chat-followup-context-copy,
@@ -871,10 +1044,10 @@ const CHAT_ROUTE_CHROME_STYLES = `
 [${CHAT_ROUTE_DATA_DIAGNOSIS_CONTEXT_CLEAR_ATTR}],
 [${CHAT_ROUTE_PLAN_CONTEXT_CLEAR_ATTR}] {
   flex: 0 0 auto;
-  min-height: 36px;
+  min-height: var(--wc-control-h, 38px);
   padding: 5px 9px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--chat-radius-control);
   background: var(--surface);
   color: var(--fg);
   font: inherit;
@@ -897,10 +1070,32 @@ const CHAT_ROUTE_CHROME_STYLES = `
   gap: 8px;
   min-height: 26px;
 }
+/* ⛔ WAS A TWO-COLUMN GRID TAKING THREE CHILDREN. The row holds attach,
+   textarea and Send, and "minmax(0, 1fr) auto" auto-placed them: the `+`
+   button landed in the 1fr column and stretched to ~420px, the textarea got
+   the "auto" column and collapsed to its ~203px intrinsic width, and Send
+   wrapped onto a second row. The count is also VARIABLE — attach only exists
+   when uploads are wired — so any fixed template misplaces one of the two
+   shapes. Flex has no such coupling: exactly one child grows, whoever else is
+   present. "flex-end" keeps the buttons on the textarea's last line when it is
+   dragged taller. */
 [${CHAT_ROUTE_HOST_ATTR}] .chat-composer-input-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
+  align-items: flex-end;
   gap: 8px;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-composer-input-row > [${CHAT_ROUTE_INPUT_ATTR}] {
+  flex: 1 1 auto;
+  /* ⛔ NO min-width HERE. A flex child defaults to min-width: auto and would
+     let a long unbroken draft push the buttons off the row — but the shell's
+     containment floor already sets min-width: 0 on every content descendant,
+     and restating it per route is the sweep that was measured circling rather
+     than converging. If this row ever
+     overflows, that is a finding about the FLOOR, to be fixed there once. */
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-composer-input-row > [${CHAT_ROUTE_ATTACH_ATTR}],
+[${CHAT_ROUTE_HOST_ATTR}] .chat-composer-input-row > [${CHAT_ROUTE_SEND_ATTR}] {
+  flex: 0 0 auto;
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-composer-model {
   display: flex;
@@ -909,14 +1104,11 @@ const CHAT_ROUTE_CHROME_STYLES = `
   font-size: 12px;
   color: var(--muted);
 }
+/* ⚠ SIZE, BORDER AND RADIUS DELIBERATELY ABSENT — the shell's unified
+   input/select rule owns them for every control in the app, and this one now
+   joins that list via .rx-select. What stays here is the only chat-specific
+   bit: the picker is a press target, so it says so. */
 [${CHAT_ROUTE_MODEL_PICKER_ATTR}] {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface);
-  color: var(--fg);
-  padding: 3px 6px;
-  font: inherit;
-  font-size: 12px;
   cursor: pointer;
 }
 [${CHAT_ROUTE_MODEL_CONFIGURE_ATTR}] {
@@ -962,7 +1154,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   overflow: hidden;
   padding: 18px 19px 17px 22px;
   border: 1px solid var(--border-strong);
-  border-radius: 12px;
+  border-radius: var(--chat-radius-panel);
   background:
     linear-gradient(135deg, var(--accent-weak), transparent 60%),
     var(--surface);
@@ -998,7 +1190,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
 [${CHAT_ROUTE_SOURCE_HANDOFF_ATTR}] .chat-source-badge {
   padding: 3px 8px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--chat-radius-pill);
   background: var(--surface);
   color: var(--muted);
   font-size: 11px;
@@ -1037,14 +1229,14 @@ const CHAT_ROUTE_CHROME_STYLES = `
   flex-wrap: wrap;
 }
 [${CHAT_ROUTE_SOURCE_ACTION_ATTR}] {
-  min-height: 40px;
+  min-height: var(--wc-control-h, 38px);
   box-sizing: border-box;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 7px 11px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--chat-radius-control);
   background: var(--surface);
   color: var(--fg);
   font: inherit;
@@ -1060,7 +1252,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   color: var(--on-accent);
 }
 [${CHAT_ROUTE_SOURCE_ACTION_ATTR}="dismiss"] {
-  min-height: 36px;
+  min-height: var(--wc-control-h, 38px);
   border-color: transparent;
   background: transparent;
   color: var(--accent);
@@ -1083,7 +1275,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   overflow: hidden;
   padding: 13px 14px 13px 17px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--chat-radius-panel);
   background:
     linear-gradient(135deg, var(--accent-weak), transparent 68%),
     var(--surface-subtle);
@@ -1116,7 +1308,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
 [${CHAT_ROUTE_SOURCE_ANSWER_RECEIPT_ATTR}] {
   padding: 3px 8px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--chat-radius-pill);
   background: var(--surface);
   color: var(--muted);
   font-size: 11px;
@@ -1154,14 +1346,14 @@ const CHAT_ROUTE_CHROME_STYLES = `
   line-height: 1.4;
 }
 [${CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR}] {
-  min-height: 36px;
+  min-height: var(--wc-control-h, 38px);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
   padding: 6px 9px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--chat-radius-control);
   background: var(--surface);
   color: var(--fg);
   font: inherit;
@@ -1218,14 +1410,14 @@ const CHAT_ROUTE_CHROME_STYLES = `
   gap: 7px;
   padding: 14px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--chat-radius-panel);
   background: var(--surface-subtle);
   text-align: left;
 }
 [${CHAT_ROUTE_ACTIVATION_CARD_ATTR}] .chat-activation-status {
   width: fit-content;
   padding: 3px 7px;
-  border-radius: 999px;
+  border-radius: var(--chat-radius-pill);
   background: var(--surface);
   color: var(--muted);
   font-size: 12px;
@@ -1257,7 +1449,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   box-sizing: border-box;
   padding: 8px 11px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--chat-radius-control);
   background: var(--surface);
   color: var(--fg);
   font: inherit;
@@ -1284,10 +1476,14 @@ const CHAT_ROUTE_CHROME_STYLES = `
   filter: brightness(.96);
 }
 [${CHAT_ROUTE_INPUT_ATTR}] {
+  /* ⚠ NOT the control knob, on purpose. This is a multi-line text area, and
+     its floor is "one comfortable line of prose plus room to grow", not "how
+     tall is a button". Reconciling it would make the composer shorter than
+     the Send button beside it. */
   min-height: 42px;
   resize: vertical;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--chat-radius-control);
   padding: 8px;
   font: inherit;
 }
@@ -1304,7 +1500,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   max-width: 100%;
   padding: 3px 6px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--chat-radius-pill);
   font-size: 12px;
 }
 .chat-composer-attachment-name {
@@ -1330,17 +1526,16 @@ const CHAT_ROUTE_CHROME_STYLES = `
 [${CHAT_ROUTE_ATTACH_INPUT_ATTR}] { display: none; }
 [${CHAT_ROUTE_ATTACH_ATTR}] {
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--chat-radius-control);
   background: var(--surface);
   cursor: pointer;
   padding: 7px 11px;
   font-size: 15px;
   line-height: 1;
 }
-[${CHAT_ROUTE_SEND_ATTR}],
-[${CHAT_ROUTE_NEW_SESSION_ATTR}] {
+[${CHAT_ROUTE_SEND_ATTR}] {
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--chat-radius-control);
   background: var(--surface);
   padding: 7px 12px;
   cursor: pointer;
@@ -1409,7 +1604,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   max-width: 76ch;
   border: 1px solid var(--border-subtle);
   border-left: 3px solid var(--fail);
-  border-radius: 6px;
+  border-radius: var(--chat-radius-control);
   background: var(--surface-subtle);
   padding: 8px 10px;
   color: var(--fail);
@@ -1429,7 +1624,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   max-width: 76ch;
   border: 1px solid var(--border-subtle);
   border-left: 3px solid var(--accent);
-  border-radius: 9px;
+  border-radius: var(--chat-radius-panel);
   background: var(--surface-subtle);
   padding: 12px;
   font-size: 12px;
@@ -1498,7 +1693,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   max-width: 100%;
   padding: 2px 7px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--chat-radius-pill);
   background: var(--surface);
   color: var(--muted);
   font-size: 11px;
@@ -1515,7 +1710,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   gap: 4px;
   border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border-subtle));
   border-left: 3px solid var(--accent);
-  border-radius: 7px;
+  border-radius: var(--chat-radius-control);
   background: color-mix(in srgb, var(--accent) 6%, var(--surface));
   padding: 9px 10px;
 }
@@ -1548,7 +1743,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   align-items: center;
   width: max-content;
   max-width: 100%;
-  min-height: 36px;
+  min-height: var(--wc-control-h, 38px);
   color: var(--accent);
   font-size: 11px;
   font-weight: 700;
@@ -1571,10 +1766,10 @@ const CHAT_ROUTE_CHROME_STYLES = `
 [${CHAT_ROUTE_DATA_VERIFICATION_DIAGNOSE_ATTR}] {
   width: max-content;
   max-width: 100%;
-  min-height: 40px;
+  min-height: var(--wc-control-h, 38px);
   padding: 7px 10px;
   border: 1px solid var(--accent);
-  border-radius: 7px;
+  border-radius: var(--chat-radius-control);
   background: var(--accent);
   color: var(--on-accent, #fff);
   font: inherit;
@@ -1595,7 +1790,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   margin: 2px 0 8px;
   border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border-subtle));
   border-left: 3px solid var(--accent);
-  border-radius: 8px;
+  border-radius: var(--chat-radius-panel);
   background: color-mix(in srgb, var(--accent) 5%, var(--surface));
   padding: 10px 11px;
 }
@@ -1633,7 +1828,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   margin-top: 2px;
   padding: 8px;
   border: 1px solid var(--border-subtle);
-  border-radius: 7px;
+  border-radius: var(--chat-radius-control);
   background: var(--surface);
 }
 [${CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ATTR}] .chat-data-diagnosis-closure-label {
@@ -1651,10 +1846,10 @@ const CHAT_ROUTE_CHROME_STYLES = `
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 38px;
+  min-height: var(--wc-control-h, 38px);
   padding: 6px 9px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--chat-radius-control);
   background: var(--surface);
   color: var(--fg);
   font: inherit;
@@ -1689,7 +1884,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   gap: 3px;
   border: 1px solid var(--border-subtle);
   border-left: 3px solid var(--accent);
-  border-radius: 7px;
+  border-radius: var(--chat-radius-control);
   background: var(--surface);
   padding: 9px 10px;
 }
@@ -1728,7 +1923,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   align-items: center;
   width: max-content;
   max-width: 100%;
-  min-height: 36px;
+  min-height: var(--wc-control-h, 38px);
   margin-top: 2px;
   color: var(--accent);
   font-size: 11px;
@@ -1748,7 +1943,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   gap: 5px;
   border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border-subtle));
   border-left: 3px solid var(--accent);
-  border-radius: 7px;
+  border-radius: var(--chat-radius-control);
   background: color-mix(in srgb, var(--accent) 6%, var(--surface));
   padding: 9px 10px;
 }
@@ -1794,7 +1989,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   overflow: auto;
   margin: 0;
   border: 1px solid var(--border-subtle);
-  border-radius: 7px;
+  border-radius: var(--chat-radius-control);
   background: var(--surface);
 }
 [${CHAT_ROUTE_PLAN_CARD_ATTR}] .chat-plan-card-detail {
@@ -1825,7 +2020,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   font-size: 11px;
 }
 [${CHAT_ROUTE_PLAN_CARD_ATTR}] .chat-plan-card-technical summary {
-  min-height: 36px;
+  min-height: var(--wc-control-h, 38px);
   display: inline-flex;
   align-items: center;
   width: max-content;
@@ -1870,9 +2065,9 @@ const CHAT_ROUTE_CHROME_STYLES = `
 [${CHAT_ROUTE_PLAN_CONTINUE_ATTR}],
 [${CHAT_ROUTE_PLAN_RETRY_ATTR}],
 [${CHAT_ROUTE_PLAN_RELATED_ATTR}] {
-  min-height: 36px;
+  min-height: var(--wc-control-h, 38px);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--chat-radius-control);
   background: var(--surface);
   padding: 6px 12px;
   font-size: 12px;
@@ -1940,10 +2135,10 @@ const CHAT_ROUTE_CHROME_STYLES = `
 [${CHAT_ROUTE_COMPOSER_ACTION_ATTR}] {
   box-sizing: border-box;
   appearance: none;
-  min-height: 36px;
+  min-height: var(--wc-control-h, 38px);
   padding: 5px 12px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--chat-radius-pill);
   background: var(--surface);
   color: var(--fg);
   font: inherit;
@@ -1969,7 +2164,7 @@ const CHAT_ROUTE_CHROME_STYLES = `
   width: 36px;
   height: 36px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--chat-radius-control);
   background: var(--surface);
   color: var(--fg);
   font-size: 16px;
@@ -1986,13 +2181,13 @@ const CHAT_ROUTE_CHROME_STYLES = `
   min-width: 168px;
   padding: 6px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--chat-radius-panel);
   background: var(--surface);
   box-shadow: 0 12px 28px rgba(24, 33, 36, .18);
   z-index: 30;
 }
 [${CHAT_ROUTE_COMPOSER_MORE_ATTR}] .chat-composer-actions--menu [${CHAT_ROUTE_COMPOSER_ACTION_ATTR}] {
-  border-radius: 6px;
+  border-radius: var(--chat-radius-control);
   justify-content: flex-start;
   text-align: left;
   width: 100%;
@@ -2851,6 +3046,67 @@ export const compareChatPlanRetryProposal = (
 export const CHAT_ROUTE_STARTER_PROMPT =
   'Help me decide what to focus on today.';
 
+/** Where the transcript should sit after a re-render.
+ *
+ *  Every broadcast rebuilds the whole route, so the scroller is a NEW element
+ *  each time and starts at zero. Two behaviours have to survive that, and they
+ *  are not the same behaviour:
+ *
+ *  · reading back through history — hold the exact offset, or the page yanks
+ *    to the top on every streamed token;
+ *  · watching an answer arrive — follow the bottom as it grows, or the text
+ *    being written scrolls out from under the reader.
+ *
+ *  🔑 The discriminator is whether the reader was AT the bottom before, within
+ *  a tolerance — a scroller is rarely at an exact integer bottom (sub-pixel
+ *  layout, zoom), so an equality test would read "following" as "browsing" and
+ *  strand the reader mid-answer.
+ *
+ *  ⛔ Never scroll a reader who has moved away. Being anywhere but the bottom
+ *  is a deliberate act, and stealing it back is the more annoying of the two
+ *  failures — it cannot be undone by waiting. */
+export const STICK_TO_BOTTOM_TOLERANCE_PX = 24;
+
+/** Where the transcript sits after OLDER messages are put in front of it.
+ *
+ *  ⛔ A DIFFERENT RULE FROM `nextThreadScrollTop`, and collapsing the two would
+ *  break both. That one asks "was the reader at the bottom" — here the reader
+ *  is at the TOP by definition, since that is where the control lives, and
+ *  being at the top is exactly the state that means "show me more" rather than
+ *  "follow the newest". Content is inserted ABOVE the viewport, so holding
+ *  `scrollTop` would hold a POSITION while the thing at that position moved
+ *  down by the height of everything prepended: the reader would be looking at
+ *  older text than they were a moment ago, with no idea why. Shifting by the
+ *  growth keeps the same MESSAGE under the eye. */
+export const scrollTopAfterPrepend = (
+  scrollTopBefore: number,
+  scrollHeightBefore: number,
+  scrollHeightAfter: number,
+): number => Math.max(0, scrollTopBefore + (scrollHeightAfter - scrollHeightBefore));
+
+export interface ThreadScrollPosition {
+  readonly scrollTop: number;
+  readonly scrollHeight: number;
+  readonly clientHeight: number;
+}
+
+export const nextThreadScrollTop = (
+  before: ThreadScrollPosition,
+  nextScrollHeight: number,
+  nextClientHeight: number,
+): number => {
+  const wasAtBottom =
+    before.scrollHeight - before.scrollTop - before.clientHeight
+      <= STICK_TO_BOTTOM_TOLERANCE_PX;
+  const maxScrollTop = Math.max(0, nextScrollHeight - nextClientHeight);
+  return wasAtBottom
+    ? maxScrollTop
+    // Clamp: content can SHRINK between renders (a plan card resolving, an
+    // activity drawer closing), and restoring an offset past the new end
+    // silently lands at the bottom while claiming to have preserved it.
+    : Math.min(before.scrollTop, maxScrollTop);
+};
+
 export const bootstrapChatRoute = (
   opts: BootstrapChatRouteOptions,
 ): ChatRoute => {
@@ -2911,6 +3167,60 @@ export const bootstrapChatRoute = (
       : null;
   let historyQuery = '';
   let openingSessionId: string | null = null;
+  // Which navigation the person most recently ASKED for. A session open is one
+  // awaited `chat.session.get`, and clicks land faster than that resolves — so
+  // the question is what a second click means while the first is loading. It
+  // used to mean nothing at all: the second was dropped and you arrived in the
+  // chat you clicked FIRST. Last click wins instead; this counter is how a
+  // superseded open recognises that it is no longer the intent and stands
+  // down. `openSession` was already re-entrant — a newer
+  // `beginThreadSnapshotLoad` invalidates the older generation, whose
+  // `finishThreadSnapshotLoad` then returns null and aborts it — so only the
+  // history-row wrapper's focus + address work needed a generation of its own.
+  let navigationRequest = 0;
+  // Turns THIS TAB dispatched that have not settled yet, keyed by the session
+  // they belong to. A turn is the SERVER's work, not the visible thread's, so
+  // leaving a chat no longer abandons it — but the client still has to know
+  // which sessions are busy, for three reasons that all used to be one flag:
+  //
+  //   · returning to a session whose turn is still running must RE-LOCK the
+  //     composer. Two turns in one session read the same history tail at start
+  //     and append into it blind, so same-session concurrency stays forbidden
+  //     — the send lock just stopped being the thing that also blocks
+  //     navigation;
+  //   · the history row says "Working…" so a background chat is visibly busy;
+  //   · `hasInFlightWork` stays truthful once the visible thread is no longer
+  //     the only place a turn can live.
+  //
+  // Populated at the `chat.send` ack, cleared when the turn settles (its
+  // completion or failure paint — the subscriber sees EVERY session's events,
+  // not just the open one) and on reconnect, where hydration is the only
+  // truth about what settled while the socket was down.
+  const turnsInFlightBySession = new Map<string, string>();
+  /** Has this chat moved since the owner last looked at it?
+   *
+   *  ⛔ WAS A TAB-LIFETIME `Set`, AND DIED ON RELOAD — you could be told an
+   *  answer had arrived, refresh, and be told nothing. Browser storage is not
+   *  the fix either: this route persists nothing there by house rule
+   *  (D-148 § A.4.1), so the mark is the SERVER'S, which is strictly better —
+   *  it survives a closed tab and it is the same answer on every one of the
+   *  owner's clients.
+   *
+   *  ⛔ ABSENT `last_seen_message_count` MEANS SEEN. A session predating the
+   *  column carries nothing, and reading that as "zero seen" would light up
+   *  every old chat at once on the first boot after an upgrade. */
+  const sessionHasUnread = (session: ChatSessionSummary): boolean =>
+    typeof session.last_seen_message_count === 'number'
+    && session.message_count > session.last_seen_message_count;
+  // Tracked turns whose liveness this tab can no longer vouch for, because a
+  // reconnect happened under them. Verified against durable history at the
+  // next hydration; see `reconcileTrackedTurn`.
+  const turnsAwaitingVerification = new Set<string>();
+  /** Stands in for a turn the SERVER reports as running but this tab never
+   *  dispatched — from another surface or another client, so no `turn_id`
+   *  ever reached here. It compares equal to nothing, which is right: only
+   *  the server's own idle transition can clear it. */
+  const SERVER_REPORTED_TURN = '\u0000server';
   // History row actions are disclosure menus, but native <details> elements
   // do not coordinate with one another and do not dismiss on Escape. Keep a
   // single owner so a long history cannot accumulate overlapping menus and so
@@ -3441,13 +3751,147 @@ export const bootstrapChatRoute = (
     input?.focus?.({ preventScroll });
   };
 
-  /** A pending turn stays owned by its current thread. The composer remains
-   * editable for the next thought, so rejected conversation changes return to
-   * that textarea instead of moving or disabling it. */
-  const retainPendingSend = (): boolean => {
-    if (!state.sending) return false;
-    focusComposer(true, 'end');
-    return true;
+  /** Replace the local view of what is running with the server's, which is
+   *  complete and covers every surface.
+   *
+   *  🔑 A session that DROPS out of the set has settled — that is the signal
+   *  no amount of reading the message history could give, because a turn that
+   *  FAILED writes no answer to find. It is also what retires the reconnect
+   *  guesswork: `loadSessions` already runs on reconnect, so the set arrives
+   *  with it and every stale entry is corrected at once.
+   *
+   *  ⛔ Only ever called with a set the server actually sent. An absent
+   *  `busy_session_ids` must NOT reach here as `[]` — that would read "this
+   *  server cannot tell you" as "nothing is running" and silently unlock
+   *  every session. */
+  const adoptServerBusySet = (busy: readonly string[]): void => {
+    const authoritative = new Set(busy);
+    for (const sessionId of [...turnsInFlightBySession.keys()]) {
+      if (!authoritative.has(sessionId)) {
+        turnsInFlightBySession.delete(sessionId);
+        turnsAwaitingVerification.delete(sessionId);
+      }
+    }
+    for (const sessionId of authoritative) {
+      turnsAwaitingVerification.delete(sessionId);
+      if (!turnsInFlightBySession.has(sessionId)) {
+        // Busy on the server, unknown to this tab — another surface, or another
+        // client, started it. There is no turn id to record from here, and the
+        // map only ever needs one to compare against a settling event, so the
+        // session id stands in until one arrives.
+        turnsInFlightBySession.set(sessionId, SERVER_REPORTED_TURN);
+      }
+    }
+  };
+
+  /** What a freshly hydrated history says about one tracked turn.
+   *
+   *  🔑 `settled` — an assistant row bears it. PROOF it finished, and proof
+   *  that survives a socket this tab was not holding, which is the whole
+   *  reason `turn_id` is on `ChatMessage`.
+   *
+   *  🔑 `running` — some row bears it but no answer does. The server writes
+   *  the USER row at turn start, before the model runs, so the question being
+   *  present with nothing answering it is real evidence the turn is still out.
+   *
+   *  ⛔ `unknown` — NOTHING bears it, which is three different situations
+   *  wearing one face: a server older than the column (a paired webclient
+   *  talks to the OWNER'S server, updated on their schedule), a turn that
+   *  FAILED and so never wrote an answer, or a history this tab cannot see
+   *  all of. None of them can be told apart from here, so `unknown` must
+   *  never be read as `running`. */
+  type TrackedTurnVerdict = 'settled' | 'running' | 'unknown';
+
+  const judgeTrackedTurn = (
+    turnId: string,
+    thread: ChatThreadState,
+  ): TrackedTurnVerdict =>
+    thread.completed_turn_ids.includes(turnId)
+      ? 'settled'
+      : thread.messages.some((message) => message.turn_id === turnId)
+        ? 'running'
+        : 'unknown';
+
+  /** Reconcile the live map for one session against durable history, and say
+   *  whether the composer lock should be released with it.
+   *
+   *  ⛔ `unknown` only wins when this tab's own knowledge is SUSPECT — i.e.
+   *  the entry survived a reconnect and has not been checked since. On a live
+   *  connection the map is authoritative (we are subscribed; a completion
+   *  would have reached us), and an unreadable history is no reason to throw
+   *  that away: a brand-new session legitimately has no rows at all. */
+  const reconcileTrackedTurn = (
+    sessionId: string,
+    thread: ChatThreadState,
+  ): boolean => {
+    const tracked = turnsInFlightBySession.get(sessionId);
+    const unverified = turnsAwaitingVerification.delete(sessionId);
+    if (tracked === undefined) return false;
+    const verdict = judgeTrackedTurn(tracked, thread);
+    if (verdict === 'settled' || (unverified && verdict === 'unknown')) {
+      turnsInFlightBySession.delete(sessionId);
+      return true;
+    }
+    return false;
+  };
+
+  /** Tell the server the owner has looked at this chat.
+   *
+   *  ⚠ Best-effort and deliberately unawaited by its callers: an unread mark
+   *  that failed to clear is a cosmetic wrong, and blocking a turn's settle on
+   *  it — or surfacing an error banner for it — would trade that for a real
+   *  one. The next open re-stamps it anyway. */
+  const markSessionSeen = async (sessionId: string): Promise<void> => {
+    try {
+      await opts.conn('chat.session.mark_seen', { session_id: sessionId });
+    } catch {
+      /* cosmetic; the next `chat.session.get` stamps it */
+    }
+    if (disposed) return;
+    // ⛔ NO LIST REFETCH, AND NO EXTRA RENDER. Two shipped assertions caught
+    // why: several surfaces paint a one-shot `role="status"` / `aria-live`
+    // announcement — a settled verification, a Data review landing — and
+    // RETIRE it on the next render. An extra render behind them is not a
+    // wasted frame, it is an announcement a screen reader never gets to read.
+    // It bit at settle time and again at session open, which is the general
+    // shape: announce-once state makes any additional render a regression.
+    //
+    // 🔑 So the local copy is corrected in place instead. The client knows it
+    // just marked this session seen, and equal counts read as "not unread" —
+    // stale-but-equal is exactly as correct as fresh-and-equal here, and the
+    // next genuine refresh replaces both halves together.
+    state = {
+      ...state,
+      sessions: state.sessions.map((session) =>
+        session.id === sessionId
+          ? { ...session, last_seen_message_count: session.message_count }
+          : session,
+      ),
+    };
+  };
+
+  /** A tracked turn reached a terminal state — completed, or failure-painted.
+   *
+   *  ⛔ Driven from the RAW broadcast event, never from the reducer: the
+   *  reducer is session-gated, so a background turn's completion is dropped
+   *  before it could ever settle anything. The subscriber sees every
+   *  session's events, which is the only place this can be observed. */
+  const settleTrackedTurn = (sessionId: unknown, turnId: unknown): void => {
+    if (typeof sessionId !== 'string' || typeof turnId !== 'string') return;
+    if (turnsInFlightBySession.get(sessionId) !== turnId) return;
+    turnsInFlightBySession.delete(sessionId);
+    if (sessionId === state.thread.session?.id) {
+      // Settled in the chat on screen. ⛔ TELL THE SERVER, or walking away
+      // from a chat you watched answer marks it unread — the message count it
+      // was stamped with at open is now two behind.
+      void markSessionSeen(sessionId);
+      return;
+    }
+    // Settled behind the owner's back. The refresh is what carries the mark
+    // now: message counts are a list projection of exactly this event, and
+    // nothing else refreshes them — the server emits `chat.session_changed`
+    // for `picker` / `model_pref` only.
+    void loadSessions(true);
   };
 
   const composerHasFocus = (): boolean => {
@@ -3763,6 +4207,7 @@ export const bootstrapChatRoute = (
     renderActivity(row, activity, message.id);
     const content = doc.createElement('div');
     content.className = 'chat-message-content';
+    content.setAttribute(CHAT_ROUTE_ANSWER_CONTENT_ATTR, '');
     const isWaiting =
       message.role === 'assistant'
       && message.content.trim().length === 0
@@ -5031,6 +5476,13 @@ export const bootstrapChatRoute = (
     }
     const selected = pickerSelectedSource();
     const select = doc.createElement('select');
+    // 🔑 OPT INTO THE SHELL'S UNIFIED SELECT, don't re-style one here. The
+    // shell already gives every input and select in the app one treatment
+    // (size, radius, border, control height); this picker had its own ad-hoc
+    // 3px/12px instead and read on screen as a tiny cramped native control
+    // wedged between things sized by the knob. Joining the list means it
+    // tracks a future shell change instead of drifting from it.
+    select.className = 'rx-select';
     select.setAttribute(CHAT_ROUTE_MODEL_PICKER_ATTR, '');
     select.setAttribute('aria-label', 'Model');
     if (
@@ -5194,7 +5646,12 @@ export const bootstrapChatRoute = (
       details.setAttribute('aria-label', 'Chat composer actions');
       const summary = doc.createElement('summary');
       summary.setAttribute('aria-label', 'More Chat composer actions');
-      summary.textContent = '+';
+      // ⛔ WAS ALSO '+', THE SAME GLYPH THE ATTACH BUTTON USES, and both are
+      // on screen at once — two controls saying the same thing and meaning
+      // different ones. Only visible by looking at it. This is the overflow
+      // menu, and the session-row actions beside it already spell that idiom
+      // '•••'; '+' now means attach and nothing else.
+      summary.textContent = '•••';
       details.appendChild(summary);
       const menu = doc.createElement('div');
       menu.className = 'chat-composer-actions chat-composer-actions--menu';
@@ -6545,8 +7002,14 @@ export const bootstrapChatRoute = (
     newButton.type = 'button';
     newButton.setAttribute(CHAT_ROUTE_NEW_SESSION_ATTR, '');
     newButton.className = 'chat-history-new';
-    newButton.textContent = 'New chat';
-    if (openingSessionId !== null || state.sending || historyActionInFlight()) {
+    // Visible label shortens for the rail; the ACCESSIBLE name does not, so
+    // "New chat" remains what a screen reader and every by-name query hear.
+    newButton.setAttribute('aria-label', 'New chat');
+    newButton.textContent = '+ New';
+    // New chat supersedes an open in flight rather than waiting behind it, so
+    // the only thing that makes it unavailable is a history action holding the
+    // list.
+    if (historyActionInFlight()) {
       newButton.setAttribute('aria-disabled', 'true');
     }
     newButton.addEventListener('click', () => {
@@ -6701,15 +7164,11 @@ export const bootstrapChatRoute = (
             if (session.id === state.activeSessionId) {
               row.setAttribute('aria-current', 'page');
             }
-            if (
-              openingSessionId !== null
-              || state.sending
-              || historyActionInFlight()
-            ) {
+            if (historyActionInFlight()) {
               row.setAttribute('aria-disabled', 'true');
-              if (openingThisSession) {
-                row.setAttribute('aria-busy', 'true');
-              }
+            }
+            if (openingThisSession) {
+              row.setAttribute('aria-busy', 'true');
             }
             const title = doc.createElement('span');
             title.className = 'chat-session-title';
@@ -6721,18 +7180,30 @@ export const bootstrapChatRoute = (
             meta.textContent =
               `${messages} · ${formatSessionRecency(session.last_active_at, (opts.now ?? Date.now)())}`;
             row.appendChild(meta);
-            if (openingThisSession) {
-              const opening = doc.createElement('span');
-              opening.className = 'chat-session-opening';
-              opening.textContent = 'Opening…';
-              row.appendChild(opening);
+            // One status line, in priority order: what this click is doing
+            // now, then what the chat is doing without you. A session cannot
+            // be both working and answered — `settleTrackedTurn` moves it
+            // from one to the other.
+            const rowStatus = openingThisSession
+              ? { attr: 'opening', copy: 'Opening…' }
+              : turnsInFlightBySession.has(session.id)
+                ? { attr: 'working', copy: 'Working…' }
+                : sessionHasUnread(session)
+                  && session.id !== state.activeSessionId
+                  ? { attr: 'answered', copy: 'New reply' }
+                  : null;
+            if (rowStatus !== null) {
+              const status = doc.createElement('span');
+              status.className = 'chat-session-status';
+              status.setAttribute(CHAT_ROUTE_SESSION_STATUS_ATTR, rowStatus.attr);
+              status.textContent = rowStatus.copy;
+              row.appendChild(status);
             }
             row.addEventListener('click', () => {
               if (historyActionInFlight()) {
                 focusHistoryActionOwner();
                 return;
               }
-              if (openingSessionId !== null) return;
               requestOpenSession(session.id);
             });
             item.appendChild(row);
@@ -6801,12 +7272,10 @@ export const bootstrapChatRoute = (
             deleteButton.className = 'chat-session-action';
             deleteButton.setAttribute(CHAT_ROUTE_SESSION_DELETE_ATTR, session.id);
             deleteButton.textContent = 'Delete chat';
-            if (
-              historyActionLocked
-              || (state.sending && session.id === state.activeSessionId)
-            ) {
+            const deletingBusySession = turnsInFlightBySession.has(session.id);
+            if (historyActionLocked || deletingBusySession) {
               deleteButton.disabled = true;
-              if (state.sending && session.id === state.activeSessionId) {
+              if (deletingBusySession) {
                 deleteButton.setAttribute(
                   'title',
                   'Wait for the current response before deleting this chat.',
@@ -6979,7 +7448,6 @@ export const bootstrapChatRoute = (
           ? 'Opening chat…'
           : 'Continue chat';
         if (continuingThisSession) {
-          continueButton.setAttribute('aria-disabled', 'true');
           continueButton.setAttribute('aria-busy', 'true');
         } else if (historyActionInFlight()) {
           continueButton.setAttribute('aria-disabled', 'true');
@@ -6992,7 +7460,7 @@ export const bootstrapChatRoute = (
         startButton.type = 'button';
         startButton.className = 'chat-history-landing-action';
         startButton.textContent = 'Start a new chat';
-        if (openingSessionId !== null || historyActionInFlight()) {
+        if (historyActionInFlight()) {
           startButton.setAttribute('aria-disabled', 'true');
         }
         startButton.addEventListener('click', () => {
@@ -7042,6 +7510,26 @@ export const bootstrapChatRoute = (
 
       const messages = doc.createElement('div');
       messages.className = 'chat-thread-messages';
+      messages.setAttribute(CHAT_ROUTE_MESSAGES_ATTR, '');
+      // ⛔ Rendered only when the SERVER said there is more. A server that does
+      // not window omits the field, which means it already sent everything —
+      // so this control never appears against one, rather than appearing and
+      // paging to nothing.
+      if (state.thread.has_more_before) {
+        const older = doc.createElement('button');
+        older.type = 'button';
+        older.className = 'chat-load-older';
+        older.setAttribute(CHAT_ROUTE_LOAD_OLDER_ATTR, '');
+        older.textContent = loadingOlder
+          ? 'Loading earlier messages…'
+          : 'Load earlier messages';
+        if (loadingOlder) {
+          older.disabled = true;
+          older.setAttribute('aria-busy', 'true');
+        }
+        older.addEventListener('click', () => { void loadOlderMessages(); });
+        messages.appendChild(older);
+      }
       const failuresByMessageId = new Map<string, TurnFailureNotice>();
       const failuresByTurnId = new Map<string, TurnFailureNotice>();
       for (const failure of state.thread.turn_failures) {
@@ -7266,6 +7754,174 @@ export const bootstrapChatRoute = (
     routeRoot.appendChild(shell);
   };
 
+  /** Pull the page before the loaded window and put it in front.
+   *
+   *  Single-flight: the control is disabled while this runs, but a keyboard
+   *  repeat or a double click can still land twice before the render, and two
+   *  pages from the SAME cursor would insert the same messages twice.
+   *  `prependOlderMessages` would dedupe them, but the second request is still
+   *  a whole conversation page of AEAD decrypt for nothing. */
+  let loadingOlder = false;
+  const loadOlderMessages = async (): Promise<void> => {
+    const sessionId = state.thread.session?.id ?? null;
+    const cursor = state.thread.oldest_cursor;
+    if (loadingOlder || sessionId === null || cursor === null) return;
+    if (!state.thread.has_more_before) return;
+    loadingOlder = true;
+    render();
+    const scroller = () => routeRoot.querySelector?.(
+      `[${CHAT_ROUTE_MESSAGES_ATTR}]`,
+    ) as HTMLElement | null | undefined;
+    const before = scroller();
+    const beforeMetrics =
+      before === null || before === undefined
+      || typeof before.scrollHeight !== 'number'
+        ? null
+        : { top: before.scrollTop, height: before.scrollHeight };
+    try {
+      const page = await opts.conn('chat.session.get', {
+        session_id: sessionId,
+        limit: CHAT_HISTORY_WINDOW,
+        before: cursor,
+      });
+      if (disposed) return;
+      // ⛔ The thread can have MOVED while this was awaited — same window every
+      // awaited read in this file has to check. Prepending another
+      // conversation's history onto the open one would be silent and wrong.
+      if (state.thread.session?.id !== sessionId) return;
+      state = {
+        ...state,
+        thread: prependOlderMessages(state.thread, page.messages, {
+          has_more: page.has_more === true,
+          oldest_cursor: page.oldest_cursor ?? null,
+        }),
+        error: null,
+      };
+      loadingOlder = false;
+      render();
+      const after = scroller();
+      if (
+        beforeMetrics !== null
+        && after !== null && after !== undefined
+        && typeof after.scrollHeight === 'number'
+      ) {
+        after.scrollTop = scrollTopAfterPrepend(
+          beforeMetrics.top,
+          beforeMetrics.height,
+          after.scrollHeight,
+        );
+      }
+      return;
+    } catch (err) {
+      if (disposed) return;
+      state = { ...state, error: classifyRpcError(err) };
+    } finally {
+      loadingOlder = false;
+      if (!disposed) render();
+    }
+  };
+
+  /** Repaint ONLY the in-flight bubble, leaving the rest of the route alone.
+   *
+   *  Returns false when it cannot, and the caller falls back to a full render —
+   *  so this is an OPTIMISATION with no authority: anything it declines is
+   *  still painted the ordinary way.
+   *
+   *  Two strategies, because they are not equally cheap. A token adds
+   *  characters to one text node, and patching that node is the difference
+   *  between one assignment and rebuilding an article hundreds of times a
+   *  turn. Anything else — a tool row appearing, a tool finishing, a
+   *  transparency note — changes the bubble's STRUCTURE, so it is rebuilt from
+   *  the same `renderMessage` the full render uses. Reusing that builder is
+   *  the point: a second, hand-written paint path would be free to disagree
+   *  with the first, and the disagreement would only ever show up mid-turn.
+   *
+   *  ⛔ Declines the FIRST token on purpose. Until content arrives the bubble
+   *  shows the waiting placeholder under `role="status"`, and swapping that for
+   *  real text is a live-region change the full render owns. One full render
+   *  per turn instead of per event is the whole win.
+   *
+   *  ⛔ Declines when the DOM is not what it expects — a hero layout, a
+   *  document double without `querySelector`. Declining is free; guessing is
+   *  not. */
+  const repaintInFlightTurn = (thread: ChatThreadState): boolean => {
+    const inflight = thread.inflight;
+    if (inflight === null) return false;
+    const queryable = routeRoot as unknown as {
+      querySelectorAll?: (selectors: string) => ArrayLike<HTMLElement>;
+    };
+    const rows = queryable.querySelectorAll?.(`[${CHAT_ROUTE_MESSAGE_ATTR}]`);
+    if (rows === undefined) return false;
+    const row = Array.from(rows).find(
+      (candidate) =>
+        candidate.getAttribute(CHAT_ROUTE_MESSAGE_ATTR) === inflight.turn_id,
+    );
+    if (row === undefined) return false;
+    const content = row.querySelector?.(
+      `[${CHAT_ROUTE_ANSWER_CONTENT_ATTR}]`,
+    ) as HTMLElement | null | undefined;
+    if (content === null || content === undefined) return false;
+    // The placeholder is still up — a structural swap the full render owns.
+    if (content.getAttribute(CHAT_ROUTE_ANSWER_WAITING_ATTR) !== null) {
+      return false;
+    }
+
+    const scroller = routeRoot.querySelector?.(
+      `[${CHAT_ROUTE_MESSAGES_ATTR}]`,
+    ) as HTMLElement | null | undefined;
+    const before =
+      scroller === null
+      || scroller === undefined
+      || typeof scroller.scrollHeight !== 'number'
+        ? null
+        : {
+            scrollTop: scroller.scrollTop,
+            scrollHeight: scroller.scrollHeight,
+            clientHeight: scroller.clientHeight,
+          };
+
+    const activity = projectInFlightActivity(inflight, state.transparency);
+    if (activity.length === 0) {
+      // Text only — the cheap path.
+      content.textContent = inflight.assistant_content;
+    } else {
+      // Structure moved. Build with the SAME renderMessage the full render
+      // uses, into a detached host, then move the result into the live row so
+      // the row itself — and anything anchored to it — survives.
+      const scratch = doc.createElement('div');
+      renderMessage(
+        scratch,
+        {
+          id: inflight.turn_id,
+          role: 'assistant',
+          content: inflight.assistant_content,
+        },
+        activity,
+      );
+      const rebuilt = scratch.firstChild as HTMLElement | null;
+      if (rebuilt === null) return false;
+      // ⚠ SNAPSHOT the child list. `appendChild` REPARENTS, so iterating the
+      // live collection while moving out of it skips every other node — the
+      // classic half-empty result that looks like a rendering bug.
+      const children = Array.from(
+        (rebuilt as unknown as { children: ArrayLike<HTMLElement> }).children,
+      );
+      clearChildren(row);
+      for (const child of children) row.appendChild(child);
+    }
+
+    if (before !== null && scroller !== null && scroller !== undefined) {
+      // Same rule as a render: follow the answer for a reader at the bottom,
+      // hold position for one who has scrolled away.
+      scroller.scrollTop = nextThreadScrollTop(
+        before,
+        scroller.scrollHeight,
+        scroller.clientHeight,
+      );
+    }
+    return true;
+  };
+
   const renderPreservingHandoffFocus = (): void => {
     const active = doc.activeElement as HTMLElement | null | undefined;
     const input = routeRoot.querySelector?.(
@@ -7340,6 +7996,19 @@ export const bootstrapChatRoute = (
     const landingPlanFocused =
       highlightedPlanId !== null
       && activePlanCard?.getAttribute('data-plan-id') === highlightedPlanId;
+    const scroller = routeRoot.querySelector?.(
+      `[${CHAT_ROUTE_MESSAGES_ATTR}]`,
+    ) as HTMLElement | null | undefined;
+    const scrollBefore =
+      scroller === null
+      || scroller === undefined
+      || typeof scroller.scrollHeight !== 'number'
+        ? null
+        : {
+            scrollTop: scroller.scrollTop,
+            scrollHeight: scroller.scrollHeight,
+            clientHeight: scroller.clientHeight,
+          };
     const selectionStart = inputFocused ? input.selectionStart : null;
     const selectionEnd = inputFocused ? input.selectionEnd : null;
     const historySelectionStart = historySearchFocused
@@ -7352,6 +8021,22 @@ export const bootstrapChatRoute = (
       ? historySearch.selectionDirection
       : null;
     render();
+    if (scrollBefore !== null) {
+      const nextScroller = routeRoot.querySelector?.(
+        `[${CHAT_ROUTE_MESSAGES_ATTR}]`,
+      ) as HTMLElement | null | undefined;
+      if (
+        nextScroller !== null
+        && nextScroller !== undefined
+        && typeof nextScroller.scrollHeight === 'number'
+      ) {
+        nextScroller.scrollTop = nextThreadScrollTop(
+          scrollBefore,
+          nextScroller.scrollHeight,
+          nextScroller.clientHeight,
+        );
+      }
+    }
     if (inputFocused) {
       focusComposer(true);
       const nextInput = routeRoot.querySelector?.(
@@ -7586,8 +8271,18 @@ export const bootstrapChatRoute = (
       render();
     }
     try {
-      const { sessions } = await opts.conn('chat.sessions.list');
+      const { sessions, busy_session_ids: serverBusy } =
+        await opts.conn('chat.sessions.list');
       if (disposed) return;
+      if (serverBusy !== undefined) {
+        // 🔑 THE SERVER'S ANSWER IS COMPLETE, so adopt it wholesale rather
+        // than merging. This tab's map was only ever a record of ITS OWN
+        // sends; the server sees every surface, so a turn started from
+        // Telegram shows as busy here, and one that ended while this tab was
+        // disconnected stops showing as busy — neither of which local
+        // tracking could ever know.
+        adoptServerBusySet(serverBusy);
+      }
       const hasExistingChat = sessions.some(
         (session) => session.message_count > 0,
       );
@@ -7711,7 +8406,6 @@ export const bootstrapChatRoute = (
       focusHistoryActionOwner();
       return;
     }
-    if (retainPendingSend()) return;
     if (
       dataVerificationLanding !== null
       && (
@@ -7727,12 +8421,19 @@ export const bootstrapChatRoute = (
     planTargetChecking = false;
     planTargetUnverified = false;
     reconcileLandingTarget();
+    // What the composer held when the switch was ASKED for. Anything else in
+    // there when hydration lands was typed DURING the load, and is the
+    // person's unsent words — see the clear below.
+    const draftAtSwitch = composerDraft;
     const snapshotGeneration = beginThreadSnapshotLoad(
       sessionId,
       'navigation',
     );
     try {
-      const snapshot = await opts.conn('chat.session.get', { session_id: sessionId });
+      const snapshot = await opts.conn('chat.session.get', {
+        session_id: sessionId,
+        limit: CHAT_HISTORY_WINDOW,
+      });
       const bufferedEvents = finishThreadSnapshotLoad(
         sessionId,
         snapshotGeneration,
@@ -7750,8 +8451,21 @@ export const bootstrapChatRoute = (
       pendingConnectedSourceAnswer = null;
       pendingConnectedSourceProvisionalTurnId = null;
       completedMessageIdsByTurn.clear();
-      composerDraft = '';
-      composerDraftProtected = false;
+      // ⛔ CLEAR ONLY WHAT WE CAME IN WITH. This used to be unconditional, and
+      // the composer stays live through the whole load: click a chat, type
+      // while it opens, and hydration silently swallowed what you typed. The
+      // draft guard cannot catch it either — that runs once, at click time,
+      // before those words existed.
+      //
+      // Same discipline as the `chat.send` ack ("clear the draft, but ONLY if
+      // it is still the text we sent"), and the same direction of failure as
+      // everything else here: carrying a stray sentence into the next chat is
+      // visible and one keystroke to undo; eating it is neither. It keeps its
+      // protected flag, so the NEXT switch guards it properly.
+      if (composerDraft === draftAtSwitch) {
+        composerDraft = '';
+        composerDraftProtected = false;
+      }
       let thread = hydrateThreadFromSnapshot(initialChatThreadState(), snapshot);
       for (const event of bufferedEvents) {
         thread = reduceChatThreadEvent(thread, event);
@@ -7768,16 +8482,21 @@ export const bootstrapChatRoute = (
           `message:${returnMessage.id}`,
         );
       }
-      state = {
+      // The composer lock follows the SESSION, not the tab. Leaving a chat
+      // releases it (that session's events are session-gated and could never
+      // settle a lock held over here); returning to a chat whose turn is
+      // still running re-takes it, which is what keeps two turns out of one
+      // session now that navigation no longer waits for the first.
+      reconcileTrackedTurn(sessionId, thread);
+      const resumedTurnId = turnsInFlightBySession.get(sessionId) ?? null;
+      state = settlePendingSend({
         ...state,
         activeSessionId: sessionId,
         thread,
         error: null,
-        // A pending turn belongs to the session being left — its events
-        // are session-gated and would never settle this lock.
-        sending: false,
-        pending_turn_id: null,
-      };
+        sending: resumedTurnId !== null,
+        pending_turn_id: resumedTurnId,
+      });
       landingTargetReady = true;
       planTargetChecking = false;
       planTargetUnverified = false;
@@ -7931,7 +8650,6 @@ export const bootstrapChatRoute = (
       focusHistoryActionOwner();
       return;
     }
-    if (openingSessionId !== null || retainPendingSend()) return;
     if (
       !discardProtectedDraft
       && composerDraftProtected
@@ -7951,12 +8669,20 @@ export const bootstrapChatRoute = (
       focusOpenThread();
       return;
     }
+    // ⛔ SINGLE-FLIGHT PER TARGET SURVIVES SUPERSESSION. A newer click wins
+    // only when it names a DIFFERENT chat; clicking the one already opening
+    // is not a new intent, and restarting it would spend a second
+    // `chat.session.get` to arrive exactly where it was already going. The
+    // row says `aria-busy` for precisely this.
+    if (openingSessionId === sessionId) return;
+    const request = (navigationRequest += 1);
     openingSessionId = sessionId;
     pendingDraftGuard = null;
     state = { ...state, error: null };
     renderPreservingHandoffFocus();
     try {
       await openSession(sessionId);
+      if (navigationRequest !== request) return;
       if (
         !disposed
         && state.activeSessionId === sessionId
@@ -7968,15 +8694,21 @@ export const bootstrapChatRoute = (
         );
       }
     } finally {
-      if (openingSessionId === sessionId) openingSessionId = null;
-      if (!disposed) {
-        render();
-        if (state.activeSessionId === sessionId) {
-          focusOpenThread();
-        } else if (focusOrigin === 'continue') {
-          focusHistoryContinue(sessionId);
-        } else {
-          focusHistorySessionRow(sessionId);
+      // ⛔ `!== request` means a newer click owns the screen now. Ownership
+      // has to be checked here rather than by comparing `openingSessionId`,
+      // because the two loads can resolve in EITHER order — a superseded open
+      // that finishes last would otherwise drag focus back to its own row.
+      if (navigationRequest === request) {
+        openingSessionId = null;
+        if (!disposed) {
+          render();
+          if (state.activeSessionId === sessionId) {
+            focusOpenThread();
+          } else if (focusOrigin === 'continue') {
+            focusHistoryContinue(sessionId);
+          } else {
+            focusHistorySessionRow(sessionId);
+          }
         }
       }
     }
@@ -8073,6 +8805,10 @@ export const bootstrapChatRoute = (
     try {
       const snapshot = await opts.conn('chat.session.get', {
         session_id: sessionId,
+        // Recovery pays the same read as an open, and used to pay it in FULL
+        // on every reconnect — the cost that made a flaky link re-decrypt an
+        // entire conversation each time it came back.
+        limit: CHAT_HISTORY_WINDOW,
       });
       const bufferedEvents = finishThreadSnapshotLoad(
         sessionId,
@@ -8181,6 +8917,10 @@ export const bootstrapChatRoute = (
         // proposal exists, ordinary Chat history is the only truthful record.
         planVerificationAttempts.delete(planId);
       }
+      // ⛔ The map and `sending`/`pending_turn_id` are two halves of ONE lock,
+      // and the reconnect path is where they came apart: clearing the map on
+      // its own left the composer shut with nothing able to reopen it.
+      const releasedByHistory = reconcileTrackedTurn(sessionId, thread);
       const abandonedActionTurn =
         state.pending_turn_id !== null
         && thread.plan_cards.some(
@@ -8192,7 +8932,7 @@ export const bootstrapChatRoute = (
         ...state,
         thread,
         error: null,
-        ...(abandonedActionTurn || recoveredDiagnosisSettled
+        ...(abandonedActionTurn || recoveredDiagnosisSettled || releasedByHistory
           ? { sending: false, pending_turn_id: null }
           : {}),
       });
@@ -8256,7 +8996,6 @@ export const bootstrapChatRoute = (
       focusHistoryActionOwner();
       return;
     }
-    if (retainPendingSend()) return;
     if (
       !discardProtectedDraft
       && composerDraftProtected
@@ -8277,6 +9016,13 @@ export const bootstrapChatRoute = (
       focusComposer(true, 'start');
       return;
     }
+    // ⛔ A new chat is a NAVIGATION, and one may already be in the air. Take
+    // the generation and drop the snapshot load, or the in-flight
+    // `chat.session.get` lands afterwards and replaces this blank draft with
+    // the chat the person had already navigated away from.
+    navigationRequest += 1;
+    openingSessionId = null;
+    threadSnapshotLoad = null;
     historyLandingActive = false;
     pendingDraftGuard = null;
     sessionAction = null;
@@ -8321,7 +9067,6 @@ export const bootstrapChatRoute = (
   };
 
   const requestStartNewChat = (): void => {
-    if (openingSessionId !== null) return;
     startNewChat(false, 'push');
   };
 
@@ -8374,6 +9119,7 @@ export const bootstrapChatRoute = (
         (candidate) => candidate.id !== session.id,
       );
       state = { ...state, sessions: remaining, error: null };
+      turnsInFlightBySession.delete(session.id);
       sessionAction = null;
       historyAnnouncement = `Deleted ${sessionTitle(session)}.`;
       if (state.activeSessionId === session.id) {
@@ -8528,6 +9274,10 @@ export const bootstrapChatRoute = (
       if (disposed) return null;
       const snapshot = await opts.conn('chat.session.get', {
         session_id,
+        // Windowed like every other conversation read, though this one is
+        // empty by construction. One rule beats an exception a reader has to
+        // re-derive from "well, it was just created".
+        limit: CHAT_HISTORY_WINDOW,
       });
       if (disposed) return null;
       let thread = hydrateThreadFromSnapshot(initialChatThreadState(), snapshot);
@@ -8599,7 +9349,6 @@ export const bootstrapChatRoute = (
   };
 
   const createSession = async (title?: string): Promise<void> => {
-    if (retainPendingSend()) return;
     try {
       const { session_id } = title !== undefined
         ? await opts.conn('chat.session.create', { title })
@@ -8765,6 +9514,28 @@ export const bootstrapChatRoute = (
       // without re-uploading.
       composerAttachments?.clear();
       if (disposed) return;
+      // ⛔ THE THREAD CAN HAVE MOVED WHILE `chat.send` WAS AWAITED. Every
+      // switch path refuses mid-send (`retainPendingSend`), but that check
+      // runs at ENTRY: a switch already awaiting its `chat.session.get` when
+      // the send starts resolves AFTER this ack, and `openSession` then drops
+      // the lock on purpose ("a pending turn belongs to the session being
+      // left"). Everything below reasons about the thread that was on screen
+      // when the send began, so re-check identity ONCE here rather than in
+      // each block. Without this, `beginInFlightTurn` painted THIS turn's
+      // "Preparing your answer…" bubble onto whichever session is now open,
+      // where its session-gated `chat.message_complete` can never land — a
+      // bubble that never resolves and a `pending_turn_id` nothing can settle.
+      // Dropping the client-side scaffold loses nothing: the turn is durable
+      // server-side and rehydrates when its own session is reopened. The
+      // render is for the cleared attachment chips above.
+      // The turn is the server's now, and it outlives whatever this tab is
+      // looking at — record it against ITS session before the identity fork
+      // below, so a turn left behind by a switch is still tracked as running.
+      turnsInFlightBySession.set(session.id, turn_id);
+      if (state.thread.session?.id !== session.id) {
+        renderPreservingHandoffFocus();
+        return;
+      }
       if (pendingConnectedSourceAnswer !== null) {
         const pendingAnswer = pendingConnectedSourceAnswer;
         if (
@@ -8924,8 +9695,49 @@ export const bootstrapChatRoute = (
             message_id?: unknown;
           };
           if (
+            evt.kind === 'chat.session_changed'
+            && (event as { field?: unknown }).field === 'busy'
+            && typeof evt.session_id === 'string'
+          ) {
+            // The server telling us directly, which beats every inference this
+            // file used to make. ⛔ No `loadSessions` refetch: a turn starting
+            // and ending is the most frequent transition there is, and pulling
+            // the whole list twice per turn would be a poll wearing an event's
+            // clothes.
+            const busy = (event as { value?: unknown }).value === true;
+            if (busy) {
+              if (!turnsInFlightBySession.has(evt.session_id)) {
+                turnsInFlightBySession.set(
+                  evt.session_id,
+                  SERVER_REPORTED_TURN,
+                );
+              }
+            } else {
+              turnsInFlightBySession.delete(evt.session_id);
+              if (evt.session_id === state.thread.session?.id) {
+                // ⛔ RELEASE UNCONDITIONALLY, not via `settlePendingSend`. That
+                // settles on a COMPLETION, and a turn that failed never
+                // produces one — the idle transition is the only word this tab
+                // will ever get that the turn is over. Waiting for a
+                // completion that is not coming is how the composer used to
+                // stick shut.
+                nextState = {
+                  ...nextState,
+                  sending: false,
+                  pending_turn_id: null,
+                };
+              } else {
+                // Its count moved; the list refresh is what surfaces that.
+                void loadSessions(true);
+              }
+            }
+            turnsAwaitingVerification.delete(evt.session_id);
+            changed = true;
+          }
+          if (
             state.phase === 'ready'
             && evt.kind === 'chat.session_changed'
+            && (event as { field?: unknown }).field !== 'busy'
           ) {
             // Titles, archive state, and their updated recency are list
             // projections. Re-read them quietly so returning-user history
@@ -8934,6 +9746,9 @@ export const bootstrapChatRoute = (
           }
           if (evt.kind === 'chat.message_complete') {
             hasCompletedChat = true;
+            if (typeof evt.session_id === 'string') {
+              settleTrackedTurn(evt.session_id, evt.turn_id);
+            }
             if (
               typeof evt.turn_id === 'string'
               && pendingDataDiagnosisTurn?.turnId === evt.turn_id
@@ -8978,6 +9793,19 @@ export const bootstrapChatRoute = (
           }
           if (
             evt.kind === 'chat.transparency'
+            && evt.event !== null
+            && typeof evt.event === 'object'
+            && isTransparencyEventKind((evt.event as { kind?: unknown }).kind)
+            && classForTransparencyEventKind(
+              (evt.event as { kind: TransparencyEventKind }).kind,
+            ) === 'failure'
+          ) {
+            // A failed turn is settled work: release the lock its session is
+            // holding even when that session is not the one on screen.
+            settleTrackedTurn(evt.session_id, evt.turn_id);
+          }
+          if (
+            evt.kind === 'chat.transparency'
             && evt.session_id === state.thread.session?.id
             && typeof evt.turn_id === 'string'
             && evt.event !== null
@@ -9005,6 +9833,61 @@ export const bootstrapChatRoute = (
           const currentThread = nextState.thread;
           const next = reduceChatThreadEvent(currentThread, event);
           const threadChanged = next !== currentThread;
+          // ⛔ A RENDER IS A TEARDOWN OF THE WHOLE ROUTE, and a streaming
+          // answer fires one per token. Every rebuild drops the reader's text
+          // selection, re-creates every node in a long transcript, and only
+          // stays still at all because the scroll position is carried across
+          // by hand. A token adds characters to ONE text node.
+          //
+          // Reference equality is the test, and it is exact rather than
+          // heuristic: the reducer is pure and returns the SAME array for
+          // every field it did not touch, so untouched fields compare
+          // identical and any real change fails the check and falls through to
+          // the full render. `changed` being already set means something other
+          // than the thread moved, which the fast path has no business
+          // painting.
+          //
+          // ⛔ EVERY EVENT A RUNNING TURN EMITS lands here, not just tokens: a
+          // tool starting, a tool finishing, a transparency note. Each one
+          // used to tear down and rebuild the ENTIRE route — measured at
+          // 45.5ms against a full 100-message window, and, worse, it WIPES THE
+          // READER'S TEXT SELECTION (driven live: a highlighted answer becomes
+          // "" across one render). A tool-using turn does that once per tool,
+          // so highlighting an answer while the turn is still working is
+          // impossible. Repainting only the in-flight bubble leaves the rest
+          // of the transcript — and any selection in it — untouched by
+          // construction, which is a stronger guarantee than saving and
+          // restoring a selection across a rebuild could give.
+          //
+          // The kinds are listed rather than inferred: these are exactly the
+          // ones whose reducer touches the in-flight scaffold and nothing
+          // else. `chat.message_complete` is deliberately absent — it retires
+          // the scaffold for a durable row, which is a structural change the
+          // full render owns.
+          const inflightShapeOnly =
+            (event.kind === 'chat.token_streamed'
+              || event.kind === 'chat.tool_call_started'
+              || event.kind === 'chat.tool_call_completed'
+              || event.kind === 'chat.transparency')
+            && threadChanged
+            && currentThread.inflight !== null
+            && next.inflight !== null
+            && currentThread.inflight.turn_id === next.inflight.turn_id
+            && currentThread.messages === next.messages
+            // ⚠ A transparency event of FAILURE class paints a turn_failure,
+            // and a plan-linked tool completion patches a card's receipt —
+            // both live OUTSIDE the bubble, and both fail this check, so those
+            // fall through to the full render exactly as before.
+            && currentThread.plan_cards === next.plan_cards
+            && currentThread.turn_failures === next.turn_failures;
+          // ⛔ WAS `!changed` READ TOO EARLY. `changed` is still being decided
+          // below — the connected-source block can set it AFTER this line — so
+          // sampling it here answered a question that had not been asked yet.
+          // What the fast path needs to know is whether anything OUTSIDE the
+          // in-flight scaffold moved, and that is only knowable once every
+          // block has run.
+          const changedBeforeThread = changed;
+          let changedOutsideThread = false;
           if (threadChanged) {
             if (event.kind === 'chat.data_diagnosis_resolved') {
               liveDataDiagnosisResolutions.add(
@@ -9051,6 +9934,9 @@ export const bootstrapChatRoute = (
             }
             retireConnectedSourceHandoff(false);
             changed = true;
+            // Composer draft, handoff chrome and the source-answer card all
+            // moved — none of which lives in the in-flight bubble.
+            changedOutsideThread = true;
           }
           if (!changed) return;
           const requestedPlanAppeared =
@@ -9065,6 +9951,14 @@ export const bootstrapChatRoute = (
             planTargetUnverified = false;
           }
           state = nextState;
+          if (
+            inflightShapeOnly
+            && !changedBeforeThread
+            && !changedOutsideThread
+            && repaintInFlightTurn(nextState.thread)
+          ) {
+            return;
+          }
           renderPreservingHandoffFocus();
           if (
             requestedPlanAppeared
@@ -9081,6 +9975,29 @@ export const bootstrapChatRoute = (
   if (opts.reconnect !== undefined) {
     unsubscribers.push(
       opts.reconnect(() => {
+        // Events missed while the socket was down are gone, so every tracked
+        // turn is now a claim this tab cannot back. The VISIBLE one it can:
+        // `recoverOpenSession` re-reads that session within a round trip and
+        // `reconcileTrackedTurn` settles it against the durable history — so
+        // it is kept, and a chat that really is still working stays locked
+        // across a blip instead of quietly reopening the double-send window.
+        //
+        // ⛔ BACKGROUND sessions are still dropped, and the reason is narrow:
+        // checking one costs its own `chat.session.get`, and even then a turn
+        // that FAILED during the outage leaves no assistant row to find, so
+        // the answer would come back "unknown" and have to fail open anyway.
+        // Dropping them costs a stale row label and a re-lock; holding them
+        // would risk a composer nothing can release. Fail toward the
+        // recoverable side — the lock guards against an accidental second
+        // turn, and bricking a chat is not something its owner can undo.
+        const visibleSessionId = state.thread.session?.id ?? null;
+        for (const sessionId of [...turnsInFlightBySession.keys()]) {
+          if (sessionId === visibleSessionId) {
+            turnsAwaitingVerification.add(sessionId);
+          } else {
+            turnsInFlightBySession.delete(sessionId);
+          }
+        }
         void recoverOpenSession();
         void loadSessions(true);
       }),
@@ -9221,6 +10138,8 @@ export const bootstrapChatRoute = (
         ? 'Discard this unfinished Create item?'
         : null,
     hasInFlightWork: () => state.sending
+      // A turn left running in another chat is still this tab's work.
+      || turnsInFlightBySession.size > 0
       || pendingPlanActions.size > 0
       || pendingDataDiagnosisResolutions.size > 0
       || modelSourceWriteSessions.size > 0

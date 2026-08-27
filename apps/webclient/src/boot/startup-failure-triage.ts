@@ -41,11 +41,29 @@ const STARTUP_FAILURE_DIAGNOSTIC_PANEL_ID =
   'webclient-startup-failure-diagnostic-panel';
 const STARTUP_FAILURE_TRIAGE_STYLES_MARKER =
   'data-recued-startup-failure-triage-styles';
+import {
+  isInsecureSocketFromSecurePage,
+  readPageProtocol,
+} from '../net/insecure-origin.js';
+
+/** Re-exported so the boot surface and its tests keep one import site; the
+ *  definitions live in `net/insecure-origin.ts` because the shell's rpc error
+ *  copy asks the same question and two copies of it would drift. */
+export { isInsecureSocketFromSecurePage, readPageProtocol };
+
 const SPLASH_MESSAGE_ID = 'webclient-boot-splash-message';
 const BOOT_PENDING_SELECTOR = '[data-recued-boot-pending]';
 
 export type StartupFailureKind =
   | 'offline'
+  /** The socket was refused by THIS BROWSER, not by the server: an insecure
+   *  `ws://` connection attempted from a page served over `https:`. Refines
+   *  `server_unreachable`, which is what the raw failure looks like — the
+   *  browser reports a blocked handshake exactly like an unplugged cable
+   *  (close 1006, no status, no headers), so "can't reach your server" was
+   *  the one thing the client could say about a server that was running,
+   *  answering, and one origin away. */
+  | 'insecure_socket_blocked'
   | 'server_unreachable'
   | 'storage'
   | 'unknown';
@@ -94,6 +112,7 @@ export interface BuildStartupDiagnosticSummaryOptions {
 const diagnosticFailureLabel = (kind: StartupFailureKind): string => {
   switch (kind) {
     case 'offline': return 'Browser appears offline';
+    case 'insecure_socket_blocked': return 'Insecure socket blocked by the browser';
     case 'server_unreachable': return 'Server unreachable';
     case 'storage': return 'Browser storage read failed';
     case 'unknown': return 'Unexpected startup failure';
@@ -190,11 +209,20 @@ const messageIncludesAny = (
   needles: ReadonlyArray<string>,
 ): boolean => needles.some((needle) => message.includes(needle));
 
+/** Context the classifier needs to tell a browser-blocked socket apart from a
+ *  server that is genuinely not answering. Optional throughout: absent context
+ *  simply leaves the verdict at `server_unreachable`, which is what it was. */
+export interface StartupFailureContext {
+  readonly serverUrl?: string | null;
+  readonly pageProtocol?: string | null;
+}
+
 /** Conservative startup classifier. A browser-offline signal is treated as a
  * useful hint only after explicit storage failures have been ruled out. */
 export const classifyStartupFailure = (
   failure: unknown,
   online: boolean | null = null,
+  context: StartupFailureContext = {},
 ): StartupFailureKind => {
   const shape = errorShape(failure);
   if (
@@ -223,7 +251,13 @@ export const classifyStartupFailure = (
       'networkerror',
     ])
   ) {
-    return 'server_unreachable';
+    // Refine ONLY here. A storage failure or a browser that reports itself
+    // offline is diagnosed on its own evidence; this narrows the one verdict
+    // that was wrong — "the server did not answer" — when the browser is the
+    // thing that refused to ask.
+    return isInsecureSocketFromSecurePage(context.serverUrl, context.pageProtocol)
+      ? 'insecure_socket_blocked'
+      : 'server_unreachable';
   }
   return 'unknown';
 };
@@ -260,6 +294,23 @@ const failureCopy = (kind: StartupFailureKind): StartupFailureCopy => {
         primary: 'Try again when online',
         retryError:
           'This browser still appears offline. Reconnect it, then try again.',
+      };
+    case 'insecure_socket_blocked':
+      return {
+        title: 'This browser blocked the connection',
+        summary:
+          'Your server answered, but this page is served over https and the server’s '
+          + 'address is not — so the browser refused to open the socket before Recued '
+          + 'could ask.',
+        steps: [
+          'Open the webclient from the server itself — its own address, ending in '
+            + '/webclient/ — which is the same origin and needs no certificate.',
+          'Or give the server a domain and certificate, then pair to its https address.',
+        ],
+        primary: 'Try the connection again',
+        retryError:
+          'The browser still refused the connection. Open the webclient from the '
+          + 'server’s own address instead.',
       };
     case 'server_unreachable':
       return {
@@ -558,6 +609,13 @@ export const mountStartupFailureTriage = (
     : readBrowserOnlineStatus(doc);
   // Reads after awaited browser work must not inherit TypeScript's pre-await
   // narrowing: the retry control can legitimately advance the shared phase.
+  /** Context for `classifyStartupFailure`, read fresh each time: the card can
+   *  outlive several retries and the page protocol is cheap to re-read. */
+  const failureContext = (): StartupFailureContext => ({
+    serverUrl: options.diagnosticServerUrl ?? null,
+    pageProtocol: readPageProtocol(options.document),
+  });
+
   const currentPhase = (): TriagePhase => phase;
   const refreshDiagnostic = (): void => {
     const networkSignal = online();
@@ -568,7 +626,7 @@ export const mountStartupFailureTriage = (
       capturedAt = new Date(Number.NaN);
     }
     diagnosticSummary = buildStartupDiagnosticSummary({
-      kind: classifyStartupFailure(failure, networkSignal),
+      kind: classifyStartupFailure(failure, networkSignal, failureContext()),
       attemptCount: failedAttemptCount,
       attemptCountIsLowerBound: options.reloadAttempted === true,
       online: networkSignal,
@@ -621,7 +679,7 @@ export const mountStartupFailureTriage = (
 
   const render = (): void => {
     if (disposed) return;
-    const kind = classifyStartupFailure(failure, online());
+    const kind = classifyStartupFailure(failure, online(), failureContext());
     const copy = failureCopy(kind);
     const busy = phase === 'busy' || phase === 'handoff';
     const repeated = failedAttemptCount >= 2;
@@ -829,7 +887,7 @@ export const mountStartupFailureTriage = (
     focusPrimaryAfterRender = true;
     diagnosticFocusAfterRender = null;
     if (diagnosticOpen) refreshDiagnostic();
-    const kind = classifyStartupFailure(failure, online());
+    const kind = classifyStartupFailure(failure, online(), failureContext());
     options.onFailure?.(failure, kind);
     render();
   };

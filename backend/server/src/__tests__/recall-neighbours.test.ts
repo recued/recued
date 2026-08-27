@@ -158,4 +158,119 @@ describe('recall neighbours (end to end)', () => {
       expect(JSON.stringify(res.matches)).toContain('60d');
     } finally { cdb.close(); }
   });
+  it('FENCES stepping behind the same anchor a search is fenced by', async () => {
+    // Drives the authority question rather than reading it. `search` resolves
+    // `interactionScope` and returns guided-empty when it is null; the
+
+    const cdb = new Database(':memory:');
+    try {
+      const definitions = createContractDefinitionStore(
+        createContractStore(cdb, { now: () => 5_000 }), { now: () => 5_000 },
+      );
+      const raw: InternalToolRegistry = {
+        list: () => [], listByTier: () => [], getByName: () => null,
+        dispatch: async () => ({ ok: false, reason: 'unknown_tool' }),
+        subscribeRefresh: () => () => {},
+      } as never;
+      const registry = wrapRegistryWithRecallSearch(raw, {
+        backend: createRecallSearchBackend(store),
+        getContractDefinitionStore: () => definitions,
+        now: () => 5_000,
+      });
+      const turn_state = new Map<string, unknown>();
+      // ⛔ DELIBERATELY NOT registering a turn source.
+      const out = await registry.dispatch(
+        RECALL_SEARCH_TOOL_NAME,
+        { near_id: 'm1', next: 2 },
+        {
+          channel: 'internal_function_call', session_id: 'S1', turn_id: 'T1',
+          execution_source: OWNER, turn_state,
+        } as never,
+      );
+      const res = (out as { result: { matches: unknown[] } }).result;
+      expect(
+        res.matches.length,
+        'a turn with NO registered source must not reach rows by stepping',
+      ).toBe(0);
+    } finally { cdb.close(); }
+  });
+  it('a budget-exhausted turn cannot keep stepping', async () => {
+    // ⛔ Navigation used to return above the `search_calls` counter, so it was
+    // UNBUDGETED — unlimited steps per turn, which is the exact shape a model
+    // that invents anchors falls into.
+    const cdb = new Database(':memory:');
+    try {
+      const definitions = createContractDefinitionStore(
+        createContractStore(cdb, { now: () => 5_000 }), { now: () => 5_000 },
+      );
+      const raw: InternalToolRegistry = {
+        list: () => [], listByTier: () => [], getByName: () => null,
+        dispatch: async () => ({ ok: false, reason: 'unknown_tool' }),
+        subscribeRefresh: () => () => {},
+      } as never;
+      const registry = wrapRegistryWithRecallSearch(raw, {
+        backend: createRecallSearchBackend(store),
+        getContractDefinitionStore: () => definitions,
+        now: () => 5_000,
+      });
+      const turn_state = new Map<string, unknown>();
+      registerRecallTurnSource(turn_state, OWNER);
+      const ctx = {
+        channel: 'internal_function_call', session_id: 'S1', turn_id: 'T1',
+        execution_source: OWNER, turn_state,
+      } as never;
+      const counts: number[] = [];
+      for (let i = 0; i < 4; i += 1) {
+        const out = await registry.dispatch(
+          RECALL_SEARCH_TOOL_NAME, { near_id: 'm1', next: 2 }, ctx,
+        );
+        counts.push((out as { result: { matches: unknown[] } }).result.matches.length);
+      }
+      expect(counts[0], 'the first step must work').toBeGreaterThan(0);
+      expect(
+        counts[counts.length - 1],
+        'stepping must run out of budget like a search does',
+      ).toBe(0);
+    } finally { cdb.close(); }
+  });
+
+  it('says an unknown anchor is UNKNOWN rather than answering empty', async () => {
+    // ⛔⛔ The two answers were one observation: "no neighbour that way" and "no
+    // such message" both rendered as an empty page, which reads as "the
+    // conversation ends here" and invites no correction. A live model on the
+    // sibling mail path invented six anchors off the corpus's id scheme and got
+    // a clean empty for every one.
+    const cdb = new Database(':memory:');
+    try {
+      const definitions = createContractDefinitionStore(
+        createContractStore(cdb, { now: () => 5_000 }), { now: () => 5_000 },
+      );
+      const raw: InternalToolRegistry = {
+        list: () => [], listByTier: () => [], getByName: () => null,
+        dispatch: async () => ({ ok: false, reason: 'unknown_tool' }),
+        subscribeRefresh: () => () => {},
+      } as never;
+      const registry = wrapRegistryWithRecallSearch(raw, {
+        backend: createRecallSearchBackend(store),
+        getContractDefinitionStore: () => definitions,
+        now: () => 5_000,
+      });
+      const turn_state = new Map<string, unknown>();
+      registerRecallTurnSource(turn_state, OWNER);
+      const out = await registry.dispatch(
+        RECALL_SEARCH_TOOL_NAME,
+        { near_id: 'mail:pobm0001pob', next: 2 },
+        {
+          channel: 'internal_function_call', session_id: 'S1', turn_id: 'T1',
+          execution_source: OWNER, turn_state,
+        } as never,
+      );
+      const res = (out as { result: { matches: unknown[]; hint?: string } }).result;
+      expect(res.matches.length).toBe(0);
+      expect(
+        res.hint ?? '',
+        'an invented anchor must be NAMED as unknown, not answered with silence',
+      ).toContain('does not match any message');
+    } finally { cdb.close(); }
+  });
 });

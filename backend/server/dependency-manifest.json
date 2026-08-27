@@ -1,0 +1,76 @@
+{
+  "$comment": [
+    "WHAT EACH ARTIFACT MUST CONTAIN, AND HOW EACH PACKAGE IS REACHED.",
+    "",
+    "Written after a shipped outage: `ws-server.ts` reached the socket library",
+    "through a `createRequire()` shadow, which esbuild cannot see. The package",
+    "was never inlined, every released binary threw `Cannot find module 'ws'`,",
+    "and the catch handed over to a stub whose upgrade callback destroyed each",
+    "socket without writing a byte. Servers booted, printed a pairing code,",
+    "served /health and /webclient with 200s, and could not be paired to by",
+    "anything. Four weeks of binaries. No test could see it: every suite runs",
+    "from source, where node_modules is present and the require succeeds.",
+    "",
+    "The two bundles have OPPOSITE requirements, which is the trap:",
+    "  esm (dist/bin.js)  \u2014 a deferred require survives bundling as a runtime",
+    "                       lookup, so the package must EXIST ON DISK: external.",
+    "  sea (dist/bin.cjs) \u2014 there is no node_modules at all, so everything must",
+    "                       be INLINED. Only a native .node can't be, and it",
+    "                       ships as a sidecar file beside the binary.",
+    "",
+    "`scripts/build.mjs` verifies the emitted artifact against this file on",
+    "every build; `dependency-manifest.test.ts` verifies that this file, the",
+    "esbuild EXTERNAL list and package.json still agree."
+  ],
+  "schema_version": 1,
+  "packages": {
+    "ws": {
+      "reached_by": "static-import",
+      "esm": "external",
+      "sea": "inlined",
+      "why": "The WebSocket server. Was a createRequire-shadowed require until 2026-08-27; that is the outage above. Static import is what makes the SEA carry it."
+    },
+    "imapflow": {
+      "reached_by": "deferred-require",
+      "esm": "external",
+      "sea": "inlined",
+      "why": "IMAP sync. Ambient `require` in imap-provider.ts, which esbuild CAN see and inline under CJS."
+    },
+    "nodemailer": {
+      "reached_by": "deferred-require",
+      "esm": "external",
+      "sea": "inlined",
+      "why": "SMTP send. Must stay external in ESM: bundled there, esbuild rewrites its internal requires into a shim that throws. Bundled mailparser also deep-requires nodemailer/lib/addressparser at runtime."
+    },
+    "mailparser": {
+      "reached_by": "static-import",
+      "esm": "inlined",
+      "sea": "inlined",
+      "why": "Static-import-only, so safe to bundle in both. Bundling it also removes its whole closure (iconv-lite, libmime, libqp, html-to-text) from the sidecar."
+    },
+    "@iarna/toml": {
+      "reached_by": "static-import",
+      "esm": "inlined",
+      "sea": "inlined",
+      "why": "Config parse/write. Static-import-only."
+    },
+    "better-sqlite3-multiple-ciphers": {
+      "reached_by": "deferred-require",
+      "esm": "external",
+      "sea": "sidecar",
+      "sidecar_file": "lib/better_sqlite3.node",
+      "why": "The only irreducible one. `dlopen` needs a real file path, which no bundler can provide, so the addon ships beside the binary and open-database.ts loads it through createRequire(process.execPath). Its JS wrapper is inlined like everything else."
+    }
+  },
+  "optional_unresolved": {
+    "bufferutil": "ws optional native frame masking \u2014 ws catches the missing module and uses its pure-JS path, identical behaviour, slightly slower.",
+    "utf-8-validate": "ws optional native UTF-8 validation \u2014 same guarded fallback."
+  },
+  "$optional_unresolved_rule": [
+    "THE BAR IS 'STILL CORRECT WITHOUT IT', NOT 'DOES NOT CRASH'.",
+    "`ws` itself would have looked like a candidate for this list, and adding it",
+    "would have re-shipped the outage: its call site also 'handled' the missing",
+    "module \u2014 by falling back to a stub that silently killed every WebSocket.",
+    "Before adding an entry, ask what the fallback DOES, not whether one exists."
+  ]
+}

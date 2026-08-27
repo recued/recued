@@ -3199,6 +3199,7 @@ export const createChatOrchestrator = (
       picker_at_send: pickerAtSend,
       model_used: modelUsed,
       execution_source: executionSource,
+      turn_id,
       ts: userTs,
       ...(input.data_diagnosis
         ? { data_diagnosis: input.data_diagnosis }
@@ -3275,6 +3276,7 @@ export const createChatOrchestrator = (
         picker_at_send: pickerAtSend,
         model_used: modelUsed,
         execution_source: executionSource,
+        turn_id,
         // ⛔ NOT `now()`. This short-circuit spends no provider call, so the ack
         // lands in the SAME millisecond as the user row it answers — and the
         // read is `ORDER BY ts ASC, message_id ASC` over a randomUUID id, so a
@@ -3599,6 +3601,7 @@ export const createChatOrchestrator = (
       picker_at_send: pickerAtSend,
       model_used: modelUsed,
       execution_source: executionSource,
+      turn_id,
       ts: now(),
       ...(assistantToolCalls ? { tool_calls: assistantToolCalls } : {}),
       retained_alias_candidates: getRetainedCandidates(),
@@ -3814,6 +3817,7 @@ export const createChatOrchestrator = (
       picker_at_send: pickerAtSend,
       model_used: modelUsed,
       execution_source: inbound.source,
+      turn_id,
       ts: inbound.ts,
       ...(userAttachments && userAttachments.length > 0
         ? { attachments: userAttachments }

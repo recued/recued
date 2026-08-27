@@ -195,18 +195,54 @@ export const createFileMetaStore = (db: Database.Database): FileMetaStore => {
   const getStmt = db.prepare(
     `SELECT scope, target_id, meta FROM ${FILE_META_TABLE} WHERE scope = ? AND target_id = ?`,
   );
-  const searchAllStmt = db.prepare(
-    // Order by the EVENT key (vendor mtime, falling back to the ingestion
-    // stamp) — NOT `updated_at` — so the pre-`LIMIT` cut keeps the newest-by-
-    // event rows, matching the Fork B resolver's `event_at` merge sort. Capping
-    // by `updated_at` here would let the resolver's later sort drop a newer-by-
-    // event match that a stale-updated row displaced.
-    `SELECT scope, target_id, meta FROM ${FILE_META_TABLE}
-       WHERE json_extract(meta, '$.filename') LIKE ? ESCAPE '\\'
-          OR json_extract(meta, '$.path') LIKE ? ESCAPE '\\'
-       ORDER BY COALESCE(json_extract(meta, '$.mtime'), json_extract(meta, '$.snapshot_at')) DESC
-       LIMIT ?`,
-  );
+  /** The name+path haystack one row matches against — the SQL twin of
+   *  `matchesFileNeedle`'s `${filename}\n${path}`. Kept as one expression so
+   *  the two sides cannot drift into matching different text. */
+  const HAYSTACK =
+    `(COALESCE(json_extract(meta, '$.filename'), '') || char(10) `
+    + `|| COALESCE(json_extract(meta, '$.path'), ''))`;
+
+  /** The same haystack with `- _ / .` folded to spaces — the SQL twin of
+   *  `scoreFileNeedle`'s `haySeparated`. Without it the phrase tier is
+   *  unreachable, because files carry separators and people type spaces. */
+  const HAYSTACK_SEPARATED =
+    `REPLACE(REPLACE(REPLACE(REPLACE(${HAYSTACK}, '-', ' '), '_', ' '), '/', ' '), '.', ' ')`;
+
+  /** ⛔⛔ EVERY TERM MUST MATCH, NOT THE WHOLE NEEDLE AS ONE SUBSTRING. This
+   *  clause is built per call because the term count is not fixed, which is why
+   *  it cannot be a single prepared statement.
+   *
+   *  The substring form broke exactly the filing pattern remote sources are for:
+   *  a folder per client, `Sandhurst/invoice-10823.pdf`, searched as
+   *  "Sandhurst invoice" — which is NOT a substring of that path, because a `/`
+   *  sits between the words. Measured on a folder-per-client tree, it missed 4
+   *  of 5 realistic queries while the single-keyword case looked fine.
+   *
+   *  ⚠ Order by the EVENT key (vendor mtime, falling back to the ingestion
+   *  stamp) — NOT `updated_at` — so the pre-`LIMIT` cut keeps the newest-by-
+   *  event rows, matching the Fork B resolver's `event_at` merge sort. Capping
+   *  by `updated_at` here would let the resolver's later sort drop a
+   *  newer-by-event match that a stale-updated row displaced. */
+  const searchAllFor = (termCount: number): Database.Statement => {
+    const clause = Array.from(
+      { length: termCount },
+      () => `${HAYSTACK} LIKE ? ESCAPE '\\'`,
+    ).join(' AND ');
+    // 🔑 RANKED, matching `scoreFileNeedle`'s tiers: a VERBATIM hit sorts above
+    // an every-term hit, and only then does recency decide. The phrase param is
+    // bound FIRST so the ORDER BY reads the same needle the WHERE filtered on.
+    return db.prepare(
+      `SELECT scope, target_id, meta,
+              CASE WHEN ${HAYSTACK} LIKE ? ESCAPE '\\'
+                     OR ${HAYSTACK_SEPARATED} LIKE ? ESCAPE '\\'
+                   THEN 2 ELSE 1 END AS tier
+         FROM ${FILE_META_TABLE}
+         WHERE ${clause}
+         ORDER BY tier DESC,
+                  COALESCE(json_extract(meta, '$.mtime'), json_extract(meta, '$.snapshot_at')) DESC
+         LIMIT ?`,
+    );
+  };
 
   const upsert: FileMetaStore['upsert'] = ({ scope, target_id, meta, now }) => {
     upsertStmt.run(scope, target_id, serializeFileMeta(meta), now, now);
@@ -230,8 +266,11 @@ export const createFileMetaStore = (db: Database.Database): FileMetaStore => {
       Math.max(1, Number.isFinite(limit) ? Math.trunc(limit) : FILE_META_DEFAULT_LIMIT),
       FILE_META_MAX_LIMIT,
     );
-    const like = `%${escapeLikeWildcards(trimmed)}%`;
-    const rows = searchAllStmt.all(like, like, capped) as Array<{
+    const terms = trimmed.split(/\s+/).filter((t) => t.length > 0);
+    if (terms.length === 0) return [];
+    const likes = terms.map((t) => `%${escapeLikeWildcards(t)}%`);
+    const phraseLike = `%${escapeLikeWildcards(trimmed)}%`;
+    const rows = searchAllFor(terms.length).all(phraseLike, phraseLike, ...likes, capped) as Array<{
       scope: string;
       target_id: string;
       meta: string;

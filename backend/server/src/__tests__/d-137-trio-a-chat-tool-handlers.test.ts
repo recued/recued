@@ -282,6 +282,71 @@ describe('D-137 Trio #A — mail.search / calendar.search handlers', () => {
     expect((drive as { search: ReturnType<typeof vi.fn> }).search).not.toHaveBeenCalled();
   });
 
+  it('names an UNKNOWN near_id instead of answering with an empty page', async () => {
+    // ⛔⛔ Measured, not theorised: a live model composed six `near_id` values
+    // it had never read — `mail:pobm0001pob` and siblings, pattern-matched off
+    // the corpus's own id scheme — and every one returned `ok: true` with an
+    // empty `matches`. That is refusing by SUCCEEDING: an empty page reads as
+    // "the thread ends here", which is the one answer that invites no
+    // correction, so the model kept inventing.
+    const gmail = {
+      platform: 'mail', slug: 'gmail',
+      search: vi.fn().mockReturnValue([]),
+      list: vi.fn().mockReturnValue([]),
+      get: vi.fn().mockReturnValue(null),          // no such record
+      neighbours: vi.fn().mockReturnValue([]),
+    } as never;
+    const handlers = buildChatTier1Handlers(
+      buildDepsStub({
+        getCollectionRegistry: () => ({ list: () => [gmail] }) as never,
+      }),
+    );
+    const result = await handlers['mail.search']!(
+      { near_id: 'mail:pobm0001pob', next: 2 }, ctxInternal(),
+    );
+    expect(result.ok, 'a Tier-1 read reports absence in the BODY, never by failing').toBe(true);
+    if (result.ok) {
+      const r = result.result as {
+        matches: unknown[]; anchor_not_found?: string; note?: string;
+      };
+      expect(r.matches).toHaveLength(0);
+      expect(r.anchor_not_found).toBe('mail:pobm0001pob');
+      expect(r.note ?? '').toContain('cannot be constructed or guessed');
+    }
+    expect(
+      (gmail as { neighbours: ReturnType<typeof vi.fn> }).neighbours,
+      'an anchor that does not exist must not even be walked',
+    ).not.toHaveBeenCalled();
+  });
+
+  it('still steps normally when the anchor DOES exist', async () => {
+    // The other half of the matrix — without this, the test above passes just
+    // as well against a handler that refused every `near_id` outright.
+    const gmail = {
+      platform: 'mail', slug: 'gmail',
+      search: vi.fn().mockReturnValue([]),
+      list: vi.fn().mockReturnValue([]),
+      get: vi.fn().mockReturnValue({ record_id: 'm1' }),
+      neighbours: vi.fn().mockReturnValue([
+        { record_id: 'm2', hot_fields: { subject: 'the reply' }, received_at: 2 },
+      ]),
+    } as never;
+    const handlers = buildChatTier1Handlers(
+      buildDepsStub({
+        getCollectionRegistry: () => ({ list: () => [gmail] }) as never,
+      }),
+    );
+    const result = await handlers['mail.search']!(
+      { near_id: 'm1', next: 2 }, ctxInternal(),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const r = result.result as { matches: unknown[]; anchor_not_found?: string };
+      expect(r.matches).toHaveLength(1);
+      expect(r.anchor_not_found, 'a real anchor must not be flagged').toBeUndefined();
+    }
+  });
+
   it('uses list() instead of search() when query is empty', async () => {
     const gmail = mockCollection(
       'mail',

@@ -685,11 +685,11 @@ export const RUNTIME_SCHEMA = [
     label: 'Recued cloud API base URL',
     type: 'string',
     // Per the two-TLD domain policy: Pro-only cloud-Worker endpoints
-    // (DDNS / ACME / sync) live on `api.recued.cloud`; the public TLD
+    // (DDNS / ACME / sync) live on `api.recued.com`; the public TLD
     // `recued.com` serves marketing + marketplace + the webclient PWA +
     // free-tier endpoints (reachability probe, pair-blob relay,
     // marketplace API). Production override is unnecessary; staging /
-    // dev override points at `api.test.recued.cloud` (test fixtures) or
+    // dev override points at `api.recued2.com` (the second environment) or
     // a mirror deployment's own API host.
     //
     // ⛔ There is NO env override. `RECUED_RUNTIME_*` was removed 2026-07-28
@@ -701,9 +701,21 @@ export const RUNTIME_SCHEMA = [
     // Pro-provisioning tick skips SILENTLY (`entitlement_unavailable` is not
     // logged) — no reserve, no DDNS, no error. Cost a live-drive session
     // 2026-08-05.
-    default: 'https://api.recued.cloud',
+    //
+    // ⛔⛔ AND THE DEFAULT ITSELF WAS THE WRONG WORKER UNTIL 2026-08-26. It read
+    // `https://api.recued.cloud`, which has NEVER existed — NXDOMAIN, no record
+    // ever published. wrangler.sync.toml deploys the `recued-cloud` worker to
+    // `api.recued.com` (and `api.recued2.com` for the second environment), and
+    // the live-drive scripts plus compose-listeners.ts already hardcoded the
+    // right host, so the config default was the only copy still wrong.
+    //
+    // 🔑 The warning above described this exact failure — silent skip, no
+    // reserve, no DDNS, no error — and sat directly on top of the value that
+    // caused it. A comment explaining how a setting fails is not a substitute
+    // for the setting being right, and its presence made the line look reviewed.
+    default: 'https://api.recued.com',
     description:
-      'Base URL for the Recued cloud API. Production is https://api.recued.cloud — the Pro-only endpoint family (DDNS update, ACME issue-cert, account sync). Override for staging / dev / test environments. Trailing slashes are stripped by each adapter.',
+      'Base URL for the Recued cloud API. Production is https://api.recued.com — the Pro-only endpoint family (DDNS update, ACME issue-cert, account sync). Override for staging / dev / test environments. Trailing slashes are stripped by each adapter.',
   },
 
   // ─── D-118 — service collection defaults ──────────────────────

@@ -882,17 +882,30 @@ describe('D-137 P3 plan-approval reducer', () => {
 });
 
 describe('D-137 P3 plan-approval chat route', () => {
+  /** ⚠ ASSERTED THE LITERAL 36px UNTIL THE STYLE-SCALE PASS, WHICH IS NOT WHAT
+   *  ITS OWN NAME ASKS FOR. The desktop control floor is the shell's knob,
+   *  `--wc-control-h` — 38px, and 40px under 640px. A hard 36px sits BELOW the
+   *  floor it claimed to be pinning, and below the 44px mobile tap-target
+   *  assertions, which is how one file came to hold three different answers to
+   *  "how tall is a button" (internal design notes counts 158
+   *  such literals across 46 files against 3 uses of the knob).
+   *
+   *  🔑 The RULE is unchanged and still enforced — these three controls must
+   *  not fall below the floor. Only its expression moved from a copy of the
+   *  value to the value itself, so a future change to the knob carries them
+   *  instead of stranding them. */
   it('keeps secondary detail navigation at the desktop control floor', () => {
+    const floor = 'min-height: var\\(--wc-control-h, 38px\\);';
     expect(CHAT_ROUTE_STYLES).toMatch(
-      /\.chat-data-verification-run \{[\s\S]*?min-height: 36px;/,
+      new RegExp(`\\.chat-data-verification-run \\{[\\s\\S]*?${floor}`),
     );
     expect(CHAT_ROUTE_STYLES).toMatch(
       new RegExp(
-        `\\[${CHAT_ROUTE_PLAN_RUN_ATTR}\\] \\{[\\s\\S]*?min-height: 36px;`,
+        `\\[${CHAT_ROUTE_PLAN_RUN_ATTR}\\] \\{[\\s\\S]*?${floor}`,
       ),
     );
     expect(CHAT_ROUTE_STYLES).toMatch(
-      /chat-plan-card-technical summary \{[\s\S]*?min-height: 36px;/,
+      new RegExp(`chat-plan-card-technical summary \\{[\\s\\S]*?${floor}`),
     );
   });
 

@@ -20,7 +20,15 @@
  *  partial one fails. */
 
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,6 +41,7 @@ import {
 import {
   isVerifiedWebclientBundlePresent,
   loadWebclientBundleFromDisk,
+  resolveInstalledWebclientDir,
   resolveServedWebclientBundleDir,
   resolveSourceTreeWebclientDir,
   resolveWebclientBundleDir,
@@ -322,15 +331,20 @@ describe('R26.2 Delta 3 — resolveWebclientBundleDir', () => {
 // `webclient_bundle_unverified`) instead of being silently stepped over.
 //
 // `sourceTreeDir` is injected throughout: whether THIS checkout has been built
-// is not a property these tests may inherit.
+// is not a property these tests may inherit. `installedDir` is injected for the
+// identical reason — its real probe reads `process.execPath`, so under vitest it
+// asks whether the machine's NODE binary happens to have a `webclient` directory
+// beside it. That is almost always false, which is exactly what makes it a bad
+// thing to leave unpinned: the suite would pass everywhere until it didn't.
 describe('dev serve flow — resolveServedWebclientBundleDir', () => {
   const SRC = '/repo/apps/webclient/build';
   const srcBuilt = (): string | undefined => SRC;
   const srcUnbuilt = (): string | undefined => undefined;
+  const noInstalled = (): string | undefined => undefined;
 
   it('a deployed bundle WINS over a built source tree (no shadowing on a real install)', () => {
     seedValidBundle(); // `dir` now holds a manifest — i.e. an installed bundle
-    expect(resolveServedWebclientBundleDir(undefined, dir, srcBuilt)).toBe(dir);
+    expect(resolveServedWebclientBundleDir(undefined, dir, srcBuilt, noInstalled)).toBe(dir);
   });
 
   it('a deployed bundle wins via the CAS sibling too, not just the override', () => {
@@ -338,7 +352,7 @@ describe('dev serve flow — resolveServedWebclientBundleDir', () => {
     const sibling = join(dir, 'cas', 'webclient'); // `webclient` sibling OF THE BLOB ROOT
     mkdirSync(sibling, { recursive: true });
     writeFileSync(join(sibling, WEBCLIENT_BUNDLE_MANIFEST_FILENAME), '{"files":[]}', 'utf8');
-    expect(resolveServedWebclientBundleDir(blobs, undefined, srcBuilt)).toBe(sibling);
+    expect(resolveServedWebclientBundleDir(blobs, undefined, srcBuilt, noInstalled)).toBe(sibling);
   });
 
   it('a deployed dir with a BROKEN manifest still wins — the loader must see it', () => {
@@ -346,25 +360,25 @@ describe('dev serve flow — resolveServedWebclientBundleDir', () => {
     // stays dormant with a loud log. Stepping over it to the source tree would
     // silently serve something else on a tampered install.
     writeFileSync(join(dir, WEBCLIENT_BUNDLE_MANIFEST_FILENAME), '{ not json', 'utf8');
-    expect(resolveServedWebclientBundleDir(undefined, dir, srcBuilt)).toBe(dir);
+    expect(resolveServedWebclientBundleDir(undefined, dir, srcBuilt, noInstalled)).toBe(dir);
   });
 
   it('falls through to the source tree when the deployment dir holds nothing', () => {
     const empty = join(dir, 'no-bundle-here');
-    expect(resolveServedWebclientBundleDir(undefined, empty, srcBuilt)).toBe(SRC);
+    expect(resolveServedWebclientBundleDir(undefined, empty, srcBuilt, noInstalled)).toBe(SRC);
   });
 
   it('returns the deployment dir unchanged when neither has a bundle (dormant, as before)', () => {
     const empty = join(dir, 'no-bundle-here');
-    expect(resolveServedWebclientBundleDir(undefined, empty, srcUnbuilt)).toBe(empty);
+    expect(resolveServedWebclientBundleDir(undefined, empty, srcUnbuilt, noInstalled)).toBe(empty);
   });
 
   it('undefined on a dbless boot with an unbuilt checkout', () => {
-    expect(resolveServedWebclientBundleDir(undefined, undefined, srcUnbuilt)).toBeUndefined();
+    expect(resolveServedWebclientBundleDir(undefined, undefined, srcUnbuilt, noInstalled)).toBeUndefined();
   });
 
   it('a dbless boot in a BUILT checkout still serves — the dev-run case', () => {
-    expect(resolveServedWebclientBundleDir(undefined, undefined, srcBuilt)).toBe(SRC);
+    expect(resolveServedWebclientBundleDir(undefined, undefined, srcBuilt, noInstalled)).toBe(SRC);
   });
 });
 
@@ -382,5 +396,81 @@ describe('dev serve flow — resolveSourceTreeWebclientDir (the real probe)', ()
   it('is a source-tree path — never a data volume or a temp dir', () => {
     const resolved = resolveSourceTreeWebclientDir();
     if (resolved !== undefined) expect(resolved.endsWith(join('apps', 'webclient', 'build'))).toBe(true);
+  });
+});
+
+// ── Install-dir tier — resolveInstalledWebclientDir ────────────────────────
+//
+// ⛔ THE GAP THIS CLOSES. `install.sh` has to put the bundle SOMEWHERE, and the
+// deployment dir is not a candidate: it is derived from the CAS root, which
+// hangs off `dbPath`, which defaults to `./recued-server.db` — relative to the
+// working directory the owner happened to run `recued serve` from. So the
+// installer writes beside the binary instead, and this tier is what makes those
+// bytes reachable. Without it the installer's work is invisible and `/webclient`
+// 404s on every fresh install, which is precisely what it did.
+describe('install-dir tier — resolveInstalledWebclientDir', () => {
+  const exeDirWith = (name: string, seedBundle: boolean): string => {
+    const home = join(dir, name);
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, 'recued'), '#!/bin/sh\n', 'utf8');
+    if (seedBundle) {
+      mkdirSync(join(home, 'webclient'), { recursive: true });
+      writeFileSync(
+        join(home, 'webclient', WEBCLIENT_BUNDLE_MANIFEST_FILENAME),
+        '{"files":[]}',
+        'utf8',
+      );
+    }
+    return home;
+  };
+
+  it('finds the bundle beside the executable', () => {
+    const prefix = exeDirWith('prefix', true);
+    // realpath'd on both sides: macOS hands out temp dirs under `/var`, which is
+    // itself a symlink to `/private/var`, and the resolver resolves what it is
+    // given. Comparing raw paths here would fail on macOS and pass on Linux.
+    expect(resolveInstalledWebclientDir(join(prefix, 'recued')))
+      .toBe(realpathSync(join(prefix, 'webclient')));
+  });
+
+  it('undefined when nothing is beside the executable — never a bogus dir', () => {
+    // The npm / node-on-PATH install: execPath is the NODE binary, and
+    // `<nodedir>/webclient` is not ours to claim.
+    const prefix = exeDirWith('bare', false);
+    expect(resolveInstalledWebclientDir(join(prefix, 'recued'))).toBeUndefined();
+  });
+
+  it('resolves through the $BINDIR symlink to the real payload dir', () => {
+    // `install.sh` puts the exe at $PREFIX/recued and points $BINDIR/recued at
+    // it. Looking beside the SYMLINK finds nothing; the bundle is beside the
+    // target. Node normally resolves argv[0] itself — this pins the behaviour
+    // rather than trusting that it always will.
+    const prefix = exeDirWith('linked-prefix', true);
+    const bindir = join(dir, 'linked-bin');
+    mkdirSync(bindir, { recursive: true });
+    symlinkSync(join(prefix, 'recued'), join(bindir, 'recued'));
+    expect(resolveInstalledWebclientDir(join(bindir, 'recued')))
+      .toBe(realpathSync(join(prefix, 'webclient')));
+  });
+
+  it('ranks BELOW the deployment dir, so a self-update always wins', () => {
+    // The updater extracts to the deployment dir and never here. If this tier
+    // outranked it, an install would pin the owner to the version they first
+    // installed and every later update would serve stale assets.
+    seedValidBundle();
+    const prefix = exeDirWith('losing-prefix', true);
+    expect(
+      resolveServedWebclientBundleDir(undefined, dir, () => undefined, () =>
+        join(prefix, 'webclient')),
+    ).toBe(dir);
+  });
+
+  it('is reached when the deployment dir and the source tree hold nothing', () => {
+    const prefix = exeDirWith('winning-prefix', true);
+    const empty = join(dir, 'no-bundle-here');
+    expect(
+      resolveServedWebclientBundleDir(undefined, empty, () => undefined, () =>
+        join(prefix, 'webclient')),
+    ).toBe(join(prefix, 'webclient'));
   });
 });

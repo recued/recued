@@ -7,7 +7,8 @@
 # correctly and then failed D178_SIDECAR_MISSING on the first real command.
 #
 # So this BOOTS each binary and asserts on the two things a broken addon cannot
-# fake: the SQLite file appears on disk, and the port accepts a connection.
+# fake: the SQLite file appears on disk, the port accepts a connection, and the
+# WebSocket endpoint answers a real upgrade.
 #
 # Each triple gets its own port and data directory, so a stale listener or a
 # leftover keyfile can never make a failure look like a pass.
@@ -79,8 +80,41 @@ foreach ($triple in ($Triples -split ',' | ForEach-Object { $_.Trim() } | Where-
     if ($dbSeen -and $portSeen) { break }
   }
 
+  # !! A TCP CONNECT IS NOT A WORKING SERVER. `port-listens` only proves the
+  # HTTP listener bound; a binary whose WebSocket layer is dead passes it every
+  # time. That shipped: `ws-server` reached the socket library through a
+  # createRequire() shadow the bundler cannot see, so the SEA had no `ws` at
+  # runtime, a stub handle took over, and its upgrade callback destroyed every
+  # socket without writing a byte. Servers booted, printed a pairing code,
+  # served /health 200 -- and could not be paired to by anything, for four
+  # weeks of releases. Speak a real upgrade instead.
+  $wsStatus = ''
+  try {
+    $wc = New-Object Net.Sockets.TcpClient
+    $wc.Connect('127.0.0.1', $port)
+    $ws = $wc.GetStream()
+    $ws.ReadTimeout = 15000
+    $req = "GET /ws HTTP/1.1`r`nHost: 127.0.0.1`r`nConnection: Upgrade`r`n" +
+           "Upgrade: websocket`r`nSec-WebSocket-Version: 13`r`n" +
+           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==`r`n`r`n"
+    $reqBytes = [Text.Encoding]::ASCII.GetBytes($req)
+    $ws.Write($reqBytes, 0, $reqBytes.Length)
+    $ws.Flush()
+    $buf = New-Object byte[] 256
+    $read = $ws.Read($buf, 0, $buf.Length)
+    if ($read -gt 0) {
+      $wsStatus = (([Text.Encoding]::ASCII.GetString($buf, 0, $read)) -split "`r`n")[0]
+    }
+    $wc.Close()
+  } catch { $wsStatus = '' }
+  # Two fatal shapes: EMPTY (socket destroyed in silence -- the original bug)
+  # and 503 (that same dead layer after it was taught to answer). A live handler
+  # refuses an unauthenticated upgrade with 401.
+  $wsOk = ($wsStatus -like 'HTTP/*') -and ($wsStatus -notmatch '503')
+
   Write-Output ('  db-created   = ' + $dbSeen)
   Write-Output ('  port-listens = ' + $portSeen)
+  Write-Output ('  ws-upgrade   = ' + $(if ($wsStatus -eq '') { '(no reply -- socket destroyed)' } else { $wsStatus }))
   Write-Output ('  exited-early = ' + $exited)
   if ($exited) { Write-Output ('  exit-code    = ' + $p.ExitCode) }
 
@@ -95,7 +129,7 @@ foreach ($triple in ($Triples -split ',' | ForEach-Object { $_.Trim() } | Where-
 
   if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
   Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
-  $results += ("$triple=" + $(if ($dbSeen -and $portSeen) { 'OK' } else { 'FAILED' }))
+  $results += ("$triple=" + $(if ($dbSeen -and $portSeen -and $wsOk) { 'OK' } else { 'FAILED' }))
   $port++
 }
 

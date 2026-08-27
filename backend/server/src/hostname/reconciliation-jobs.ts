@@ -454,7 +454,31 @@ export const runHostnameReconciliationJobs = async (
   appendRun(result, await runStuckSoftHoldsJob(deps));
   appendRun(result, await runDnsRecordsMismatchJob(deps));
   appendRun(result, await runCertRenewalMonitoringJob(deps));
-  appendRun(result, await runProviderCapabilityCheckJob(deps));
+
+  /** ⛔ A PROVIDER CHECK WITH NOTHING ENROLLED IS A FALSE ALARM, AND IT FIRES ON
+   *  EVERY FRESH SERVER. The other four jobs iterate the registry and are
+   *  naturally vacuous when it is empty; this one probes DNS unconditionally, so
+   *  a server with no account, no pairing and no DDNS still warned daily:
+   *
+   *    [hostname-reconciliation] provider_capability_failed:
+   *      dns_probe_failed:recued.cloud:queryA ENODATA recued.cloud
+   *
+   *  Reported from a fresh macOS install on 2026-08-26, but nothing about it is
+   *  platform- or install-specific — it has fired since the runner was mounted.
+   *
+   *  🔑 The cost is not the noise, it is what the noise trains. An alert that
+   *  cannot pass teaches an operator to ignore the one signal that would mean
+   *  the DDNS provider is genuinely down — the same reason min_supported is not
+   *  pinned forward in release.config.json.
+   *
+   *  ⚠ THIS GATE DOES NOT MAKE THE PROBE CORRECT, it only stops it running where
+   *  it is meaningless. The default probe target is the zone APEX, which has no
+   *  A record by design (verified over DoH: NOERROR, zero answers), so an
+   *  ENROLLED server would still see it fail. Fixing that needs the current DDNS
+   *  zone, which is a separate question — see the adapter's note. */
+  if (deps.hostnameRegistry.list().length > 0) {
+    appendRun(result, await runProviderCapabilityCheckJob(deps));
+  }
   return result;
 };
 

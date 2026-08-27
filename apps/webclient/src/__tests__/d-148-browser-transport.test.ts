@@ -29,6 +29,10 @@ import {
   type WebclientWsState,
 } from '../realtime/ws-client.js';
 import { decodeBearerSubprotocol, encodeBearerSubprotocol } from '@recued/contracts';
+import {
+  isSocketRefusalProven,
+  resetInsecureOriginProbeForTest,
+} from '../net/insecure-origin.js';
 
 interface FakeWsControls {
   readonly Ctor: BrowserWebSocketConstructor;
@@ -146,6 +150,51 @@ describe('D-148 § A.4 — production browser WS transport', () => {
       expect(buildDefaultConnectUrl({ server_url: 'wss://alice.example/ws?v=1' }))
         .toBe('wss://alice.example/ws?v=1');
     });
+  });
+
+  it('records the browser\'s refusal when the WebSocket ctor throws SecurityError', async () => {
+    // ⛔ THE ONE FAILURE THAT NEVER REACHES A CLOSE HANDLER. Chrome rejects
+    // mixed content out of the constructor itself — no socket, no close event,
+    // no 1006 — so every later diagnosis path is dead for this case. Reported
+    // from a live console as `browser-transport.ts:312` (the ctor line) with
+    // `ws-client.ts:281` beneath it: a synchronous throw, which is what tells
+    // it apart from an unreachable host.
+    resetInsecureOriginProbeForTest();
+    class RefusingWebSocket {
+      constructor() {
+        const err = new Error(
+          "Failed to construct 'WebSocket': An insecure WebSocket connection may "
+          + 'not be initiated from a page loaded over HTTPS.',
+        );
+        err.name = 'SecurityError';
+        throw err;
+      }
+    }
+    const refusing = RefusingWebSocket as unknown as BrowserWebSocketConstructor;
+
+    const transport = createBrowserWebclientTransport({ webSocket: refusing });
+    expect(isSocketRefusalProven()).toBe(false);
+    await expect(
+      transport.open({ server_url: 'ws://192.168.1.42:7717/ws', bearer: 't1' }),
+    ).rejects.toThrow(/insecure WebSocket/i);
+    expect(isSocketRefusalProven()).toBe(true);
+    resetInsecureOriginProbeForTest();
+  });
+
+  it('does NOT record a refusal when the ctor throws for an ordinary reason', async () => {
+    resetInsecureOriginProbeForTest();
+    class BrokenWebSocket {
+      constructor() {
+        throw new Error('connect ECONNREFUSED');
+      }
+    }
+    const broken = BrokenWebSocket as unknown as BrowserWebSocketConstructor;
+    const transport = createBrowserWebclientTransport({ webSocket: broken });
+    await expect(
+      transport.open({ server_url: 'ws://192.168.1.42:7717/ws', bearer: 't1' }),
+    ).rejects.toThrow(/ECONNREFUSED/);
+    // Blaming the browser for a dead host would be the same mistake in reverse.
+    expect(isSocketRefusalProven()).toBe(false);
   });
 
   it('open() resolves on `open` event + reaches state `connected`', async () => {

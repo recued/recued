@@ -37,6 +37,9 @@ import type Database from 'better-sqlite3';
 import {
   createFtsTable,
   dropFtsTable,
+  hasUnspacedScript,
+  toFtsMatch,
+  FTS_REINDEX_PAGE,
   indexRecord as ftsIndexRecord,
   deleteRecord as ftsDeleteRecord,
 } from '@recued/fts';
@@ -369,13 +372,18 @@ const validateRecord = (rec: CollectionRecord): void => {
  *  stripped `*` as punctuation before matching. Same query string, three
  *  behaviours, no error anywhere — and for a prefix probe that means a FALSE
  *  ZERO, which is exactly what makes a caller skip a store that has the data. */
-export const toFtsMatch = (raw: string): string | null => {
-  const tokens = raw.match(/[\p{L}\p{N}]+\*?/gu);
-  if (!tokens || tokens.length === 0) return null;
-  return tokens
-    .map((t) => (t.endsWith('*') ? `"${t.slice(0, -1)}"*` : `"${t}"`))
-    .join(' ');
-};
+/*  ⛔⛔ AND THEN IT WAS RE-IMPLEMENTED HERE ANYWAY, WHICH COST EXACTLY THE
+ *  FAILURE THE PARAGRAPH ABOVE DESCRIBES. `@recued/fts` exports a `toFtsMatch`
+ *  too; this file shadowed it with a byte-alike copy. They stayed equivalent
+ *  until the package's learned to segment unspaced scripts — at which point the
+ *  write side stored ` 续  约 `, the package's query side asked for `"续 约"`,
+ *  and THIS copy still asked for `"续约"`, so `mail.search` returned a clean
+ *  FALSE ZERO with both ends of the change correct. Measured, not reasoned:
+ *  storage and expression both inspected and both right, result still empty.
+ *
+ *  ⇒ the re-export IS the fix. A comment claiming one definition is not one
+ *  definition. */
+export { toFtsMatch };
 
 /** Lower-case ASCII `A–Z` only — matching SQLite's `LOWER()`, which does NOT
  *  fold non-ASCII letters. Used by `countByAddress` so its JS-side value folds
@@ -814,7 +822,43 @@ export const createCollectionTable = (
       db.exec(`ALTER TABLE ${tableName} ADD COLUMN origin_contract_id TEXT`);
     }
   }
-  createFtsTable(db, ftsName);
+  // ⛔ ONE-TIME FTS REBUILD WHEN THE STORED TEXT'S FORMAT CHANGES. The note on
+  // the upsert path below says a composer change "would require a one-time
+  // re-upsert sweep"; this is that sweep, driven by `FTS_CONTENT_FORMAT` rather
+  // than by remembering. Format 2 space-separates unspaced scripts so a
+  // 2-character CJK/Thai word matches as an adjacent phrase instead of only
+  // where it begins a run.
+  //
+  // ⚠ Streams with `.iterate()` — a mailbox is sized to 2 GB (D-230) and
+  // `.all()` would materialise it. Runs ONCE per index per server: the format is
+  // recorded only after this returns, so a throw retries on the next boot.
+  createFtsTable(db, ftsName, {
+    reindex: () => {
+      // ⛔⛔ PAGED, NOT `.iterate()`. better-sqlite3 REFUSES a write while a read
+      // statement is still iterating — "This database connection is busy
+      // executing a query" — and this loop writes to the FTS table for every row
+      // it reads. Measured: the throw escaped, and (with the drop that used to
+      // precede it) left the index EMPTY, taking `search(sandhurst)` from 3 to 0
+      // with no test red. `.all()` finishes its statement before the writes
+      // begin; the keyset page keeps memory bounded on a 2 GB mailbox.
+      const page = db.prepare(
+        `SELECT * FROM ${tableName} WHERE record_id > ? ORDER BY record_id LIMIT ?`,
+      );
+      let after = '';
+      for (;;) {
+        const rows = page.all(after, FTS_REINDEX_PAGE) as Row[];
+        if (rows.length === 0) break;
+        for (const row of rows) {
+          const record = rowToRecord(row);
+          const text = opts.ftsTextFor ? opts.ftsTextFor(record) : record.body_inline;
+          if (text !== undefined && text.length > 0) {
+            ftsIndexRecord(db, ftsName, record.record_id, text);
+          }
+        }
+        after = rows[rows.length - 1].record_id;
+      }
+    },
+  });
 
   const reportDelta = (delta: number): void => {
     if (!onBytesChanged || delta === 0) return;
@@ -986,14 +1030,32 @@ export const createCollectionTable = (
     return rows.map(rowToRecord);
   };
 
-  const search = (query: CollectionSearchQuery): CollectionSearchMatch[] => {
+  /** FTS5 `snippet()` counts TOKENS, and format 2 made a CJK token ONE CHARACTER —
+ *  so a fixed count silently became a fixed CHARACTER window for unspaced
+ *  scripts, roughly a seventh of the text a Latin row gets.
+ *
+ *  ⛔ MEASURED AGAINST A LIVE MODEL, AND INVISIBLE TO EVERY SUBSTRATE TEST. On
+ *  the CJK inverted-spread task the index did its job — the model reached mail
+ *  6/7 against 0/7 — and then answered "I found the email but cannot see the
+ *  details" in four of those, because the 15-token snippet stopped before the
+ *  figure it needed. Retrieval was correct; the CONTEXT handed on was not, and
+ *  nothing that asserts "did the row match" can see that.
+ *
+ *  ⚠ The widened count applies when the QUERY carries unspaced script, which is
+ *  where the failure was measured. A Latin query matching a CJK row still gets
+ *  the narrow window; the snippet centres on the Latin match there, so widening
+ *  would not reliably reach a CJK answer elsewhere in the row. */
+const snippetTokens = (rawQuery: string): number =>
+  hasUnspacedScript(rawQuery) ? 96 : 15;
+
+const search = (query: CollectionSearchQuery): CollectionSearchMatch[] => {
     const limit = Math.max(1, Math.min(query.limit ?? DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT));
     // `blob_text` is column index 1 (key is column 0, UNINDEXED).
     // snippet(table, colIdx, start, end, ellipsis, tokens). Using
     // the default 15-token window.
     const sql = `
       SELECT key, rank,
-             snippet(${ftsName}, 1, '<b>', '</b>', '…', 15) AS snippet
+             snippet(${ftsName}, 1, '<b>', '</b>', '…', ${snippetTokens(query.query)}) AS snippet
       FROM ${ftsName}
       WHERE ${ftsName} MATCH ?
       ORDER BY rank
@@ -1005,7 +1067,17 @@ export const createCollectionTable = (
     // Which expression actually produced `matches` — the recency pass must run
     // the SAME one, or it would surface rows the relevance pass never saw.
     let usedExpr: string | null = null;
+    // ⛔⛔ THE RAW ATTEMPT IS SKIPPED FOR UNSPACED SCRIPTS, AND THAT IS THE
+    // WHOLE JOIN. A bare CJK query like `续约` is VALID FTS5, so the raw attempt
+    // below does not throw — it simply matches nothing against a per-grapheme
+    // index and returns, never reaching `toFtsMatch`. Measured: storage read
+    // ` 续  约  通 …`, the match expression read `"续 约"`, and the search still
+    // came back empty because that expression was never the one that ran.
+    // ⇒ a write side and a query side that AGREE are not enough; the path
+    // between them has to actually use the query side.
+    const unspaced = hasUnspacedScript(query.query);
     try {
+      if (unspaced) throw new Error('unspaced: use the tokenized form');
       // Try the query as a raw FTS5 expression first — preserves OR / NOT /
       // NEAR / prefix (`fox*`) / phrase / grouping for callers that use them.
       matches = stmt.all(query.query, limit) as FtsRow[];

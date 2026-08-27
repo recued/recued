@@ -174,6 +174,23 @@ const codesMatch = (input: string, expected: string): boolean => {
   return timingSafeEqual(a, b);
 };
 
+/** Human label for a remaining pairing window.
+ *
+ *  ⛔ ONE FORMATTER, TWO CALLERS. `recued pair` computed this from
+ *  `timeRemaining()` while the boot banner hard-coded "expires in 15 min" — so
+ *  `serve --pair-code-ttl 7d` printed a fifteen-minute claim on a code that
+ *  lived a week, contradicting the CLI on the same machine. That is a direct
+ *  hit on the case the flag exists for: an asynchronous reviewer reads the
+ *  banner days later and concludes the code is dead. */
+export const formatPairTtlLabel = (remainingMs: number): string => {
+  const minutes = Math.max(1, Math.floor(remainingMs / 60_000));
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours} hour${hours === 1 ? '' : 's'}`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'}`;
+};
+
 export const createPairingManager = (config: PairingConfig = {}): PairingManager => {
   // Resolution ladder, most specific first: an explicit flag on THIS
   // invocation, then the TTL the live state was minted with (so a refresh from
@@ -196,8 +213,22 @@ export const createPairingManager = (config: PairingConfig = {}): PairingManager
   const persisted = (() => {
     try { return config.store?.read() ?? null; } catch { return null; }
   })();
-  let state: PairingState = persisted ?? generateState();
-  if (!persisted) persist(state);
+  /** ⛔ A DEAD PERSISTED STATE IS NOT A STATE TO ADOPT. This read
+   *  `persisted ?? generateState()`, so a row that existed was taken as-is even
+   *  when it was expired or already consumed — and `getCode()` returns null for
+   *  both. The result: start a server, leave it longer than the TTL, Ctrl+C,
+   *  start it again, and the boot banner offers `Pairing code: null` with no way
+   *  to pair short of knowing `recued pair` exists.
+   *
+   *  🔑 Minting on a dead row does not weaken the cross-process agreement this
+   *  persistence exists for. A LIVE code is still adopted, so a server and a
+   *  `recued pair` in another process still converge; a dead one is shared with
+   *  nobody by definition. */
+  const persistedIsUsable = persisted !== null
+    && !persisted.consumed
+    && now() <= persisted.expires_at;
+  let state: PairingState = persistedIsUsable ? persisted : generateState();
+  if (!persistedIsUsable) persist(state);
 
   function persist(next: PairingState): void {
     try { config.store?.write(next); } catch { /* best effort — never fail a boot on this */ }

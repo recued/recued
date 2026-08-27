@@ -120,6 +120,12 @@
 import { WS_VERSION_SUBPROTOCOL, encodeBearerSubprotocol } from '@recued/contracts';
 
 import {
+  isBrowserSocketRefusal,
+  noteBrowserRefusedSocket,
+  noteDialledServerUrl,
+} from '../net/insecure-origin.js';
+
+import {
   WebclientReauthRequiredError,
   type WebclientWsState,
   type WebclientWsTransport,
@@ -286,6 +292,13 @@ export const createBrowserWebclientTransport = (
       };
     },
     async open({ server_url, bearer }) {
+      // Record what we are about to dial so a failure can be diagnosed without
+      // threading this URL through every `catch` in the shell. See
+      // `net/insecure-origin.ts`: a `ws://` dial from an `https:` page is
+      // refused by the browser with close 1006 and no headers — identical to an
+      // unreachable server — and this is the only place that knows the address
+      // actually used.
+      noteDialledServerUrl(server_url);
       // Refuse a second concurrent open on the same transport — the
       // ws-client should have closed the previous socket first.
       if (socket) {
@@ -312,6 +325,14 @@ export const createBrowserWebclientTransport = (
         ws = new Ctor(url, [subprotocol, encodeBearerSubprotocol(bearer)]);
       } catch (err) {
         setState('disconnected');
+        // ⛔ A THROW OUT OF THE CONSTRUCTOR IS THE BROWSER REFUSING, NOT THE
+        // SERVER FAILING. Chrome rejects mixed content here with a
+        // `SecurityError` and never opens a socket; a dead host, a wrong port
+        // and a Local-Network-Access block all do the opposite — the ctor
+        // SUCCEEDS and the failure arrives later as close 1006. Recording it
+        // turns the shell's message from a guess about the address into
+        // something the browser told us outright.
+        if (isBrowserSocketRefusal(err)) noteBrowserRefusedSocket();
         throw err instanceof Error
           ? err
           : new Error(`webclient.browser-transport: WebSocket ctor threw — ${String(err)}`);

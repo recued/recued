@@ -33,6 +33,7 @@ import type { Actor } from '@recued/contracts';
 import { isFieldQueryable, isOrderedWindowQueryable, type Collection } from '@recued/storage';
 import {
   createFtsTable,
+  markFtsContentFormat,
   indexRecord,
   deleteRecord as ftsDeleteRecord,
   search as ftsSearch,
@@ -579,6 +580,15 @@ export const createUserMemoryStore = (
     for (const row of rows) {
       indexRow(row.memory_id, row.summary, await resolveBody(row));
     }
+    // ⛔ RECORD THE FORMAT, OR THIS RUNS FOREVER. `migrated` is now true for a
+    // content-format change as well as a tokenizer one, and this rebuild is
+    // async so it cannot use `createFtsTable`'s synchronous `reindex` hook.
+    // Without the mark, every boot would see a stale format and walk the whole
+    // pool — resolving every CAS body — to fix something already fixed.
+    // AFTER the loop, deliberately: marking early records a format the index
+    // does not yet hold, and the flag is the only thing that would ever correct
+    // it.
+    if (db) markFtsContentFormat(db, USER_MEMORY_FTS_TABLE);
   };
 
   /** Split a body across inline / CAS + compute the denormalized preview. A

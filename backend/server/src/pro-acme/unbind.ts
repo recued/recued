@@ -33,6 +33,7 @@
  *  cert source + unbinding requirement) + § A.7.4 (high-assurance audit
  *  invariants). */
 
+import { resolveProDdnsHost } from '@recued/contracts';
 import type { SqliteTlsDomainStore } from '../tls/domain-store.js';
 
 /** Cloud DDNS helper abstraction. Production wires the `POST /v1/ddns/...`
@@ -107,23 +108,33 @@ export type ProAcmeUnbindResult =
       domain: string;
     };
 
-const PRO_ACME_HANDLE_SUFFIX = '.recued.cloud';
-
 /** Derive the handle stem from the canonical Pro domain.
- *  `alice.recued.cloud` → `alice`. Returns null if the domain doesn't
- *  end in `.recued.cloud` — defends against a bad-data row whose
+ *  `alice.recued.net` → `alice`. Returns null if the domain is not a handle in
+ *  an ENABLED fleet zone — defends against a bad-data row whose
  *  `source: 'pro_acme'` was set but whose domain is malformed.
+ *
+ *  ⛔ THE ZONE COMES FROM `resolveProDdnsHost`, NEVER A LOCAL CONSTANT. This
+ *  hardcoded `'.recued.cloud'` until 2026-08-26, months after the fleet zone
+ *  moved: `network.ts` has `.recued.net` enabled and `.recued.cloud` commented
+ *  out. So every live Pro domain failed to derive, and the caller turned that
+ *  into `pro_acme_not_found` — an owner releasing their handle was told it did
+ *  not exist, and the DDNS record was never released.
+ *
+ *  🔑 It survived because the null branch is DOCUMENTED as data corruption. A
+ *  guard that explains its own failure as someone else's bad data reads as
+ *  defensive rather than broken, so the message discouraged the check it
+ *  needed. The zone list is a single source of truth precisely so a second copy
+ *  cannot drift out from under it.
  *
  *  Exported for tests; the rpc handler uses the substrate's tagged
  *  union and never sees this helper directly. */
 export const deriveProAcmeHandle = (canonicalDomain: string): string | null => {
-  if (!canonicalDomain.endsWith(PRO_ACME_HANDLE_SUFFIX)) return null;
-  const stem = canonicalDomain.slice(0, -PRO_ACME_HANDLE_SUFFIX.length);
-  if (stem.length === 0) return null;
-  // Defend against accidental sub-subdomains (`evil.alice.recued.cloud`).
-  // Pro handles are flat — one dot-separated stem then `.recued.cloud`.
-  if (stem.includes('.')) return null;
-  return stem;
+  const resolved = resolveProDdnsHost(canonicalDomain);
+  if (resolved === null) return null;
+  // Defend against accidental sub-subdomains (`evil.alice.recued.net`).
+  // Pro handles are flat — one label, then the zone suffix.
+  if (resolved.handle.length === 0 || resolved.handle.includes('.')) return null;
+  return resolved.handle;
 };
 
 /** Canonicalise a domain identifier the same way `SqliteTlsDomainStore`

@@ -121,6 +121,38 @@ const fakeTriageDom = (): FakeTriageDom => {
   };
 };
 
+describe('classifyStartupFailure — browser-blocked socket', () => {
+  // Refines `server_unreachable`, the one verdict that was wrong: the browser
+  // refusing an insecure dial looks identical to a server that never answered.
+  const wsFailure = new Error('webclient.browser-transport: WS closed before open (code=1006)');
+
+  it('narrows to insecure_socket_blocked when an https page dialled http', () => {
+    expect(classifyStartupFailure(wsFailure, true, {
+      serverUrl: 'http://127.0.0.1:7717',
+      pageProtocol: 'https:',
+    })).toBe('insecure_socket_blocked');
+  });
+
+  it('stays server_unreachable with no context — the prior behaviour', () => {
+    expect(classifyStartupFailure(wsFailure, true)).toBe('server_unreachable');
+  });
+
+  it('stays server_unreachable when the page is not secure', () => {
+    expect(classifyStartupFailure(wsFailure, true, {
+      serverUrl: 'http://127.0.0.1:7717',
+      pageProtocol: 'http:',
+    })).toBe('server_unreachable');
+  });
+
+  it('never overrides a storage or offline verdict', () => {
+    // Those are diagnosed on their own evidence; an origin mismatch must not
+    // reach past the one branch it explains.
+    const ctx = { serverUrl: 'http://127.0.0.1:7717', pageProtocol: 'https:' };
+    expect(classifyStartupFailure(new Error('IndexedDB read failed'), true, ctx)).toBe('storage');
+    expect(classifyStartupFailure(wsFailure, false, ctx)).toBe('offline');
+  });
+});
+
 describe('classifyStartupFailure', () => {
   it('keeps an explicit storage failure distinct even while offline', () => {
     expect(classifyStartupFailure(

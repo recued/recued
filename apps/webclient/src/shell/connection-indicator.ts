@@ -16,6 +16,11 @@ import type { WebclientConnectionStatus } from '../realtime/connection-status.js
 export const CONNECTION_INDICATOR_ATTR =
   'data-recued-connection-indicator';
 export const CONNECTION_BANNER_ATTR = 'data-recued-connection-banner';
+/** Custom property carrying the connection banner's measured height, published
+ *  on the shell root. The banner is `position: fixed; bottom: 0`, so anything
+ *  else anchored to the bottom of the viewport reads this to keep clear of it;
+ *  it is `0px` whenever the banner is not showing. */
+export const CONNECTION_BANNER_HEIGHT_VAR = '--wc-connection-banner-h';
 export const CONNECTION_BANNER_ACTION_ATTR =
   'data-recued-connection-banner-action';
 export const CONNECTION_STATUS_ANNOUNCER_ATTR =
@@ -272,7 +277,48 @@ export const mountConnectionIndicator = (
     receiptTimer = null;
   };
 
+  /** Publish the banner's real height so anything anchored to the bottom of the
+   *  viewport can get out from under it.
+   *
+   *  ⛔ MEASURED, NOT ASSUMED. The height is not a constant anyone can write
+   *  down: the row wraps, its action button carries a 44px tap-target floor,
+   *  and the bottom padding is `env(safe-area-inset-bottom)`. A hard-coded
+   *  offset would be wrong on a phone, wrong with a long message, and wrong
+   *  again the next time the copy changes.
+   *
+   *  ⚠ `offsetHeight` is 0 while the banner is `display: none` (state `ok`),
+   *  which is exactly the value wanted — no special case for "hidden".
+   *
+   *  ⚠ GUARDED HARD. The webclient's fake-document double has no `style` on a
+   *  created element and no `offsetHeight`; touching either unguarded throws
+   *  for every mount. */
+  const publishBannerHeight = (): void => {
+    const host = opts.bannerHost as unknown as {
+      style?: { setProperty?: (name: string, value: string) => void };
+    };
+    if (typeof host.style?.setProperty !== 'function') return;
+    const measured = (banner as unknown as { offsetHeight?: unknown })
+      .offsetHeight;
+    const px = typeof measured === 'number' && Number.isFinite(measured)
+      ? Math.max(0, Math.round(measured))
+      : 0;
+    host.style.setProperty(CONNECTION_BANNER_HEIGHT_VAR, `${px}px`);
+  };
+
+  /** ⛔ WRAPS rather than appends. `renderBannerState` returns EARLY on the
+   *  offline branch, so publishing at the bottom of it would cover three of
+   *  the four states and leave the one that matters most — the banner that is
+   *  actually up — reporting a stale height. Find the early exits first. */
   const renderBanner = (
+    state: 'ok' | 'offline' | 'restored' | 'attention',
+    action?: MountConnectionIndicatorOptions['firstConnectedReceiptAction'],
+    behavior?: { preserveActionFocus?: boolean },
+  ): void => {
+    renderBannerState(state, action, behavior);
+    publishBannerHeight();
+  };
+
+  const renderBannerState = (
     state: 'ok' | 'offline' | 'restored' | 'attention',
     action?: MountConnectionIndicatorOptions['firstConnectedReceiptAction'],
     behavior?: { preserveActionFocus?: boolean },
@@ -282,6 +328,9 @@ export const mountConnectionIndicator = (
       ? action
       : undefined;
     banner.setAttribute('data-state', state);
+    // ⚠ Published at the END of this function, not here — the text and the
+    // action's hidden-ness are still being decided below, and both change how
+    // tall the row lands.
     if (state === 'offline') {
       banner.setAttribute('role', 'alert');
       banner.setAttribute('aria-live', 'assertive');
@@ -437,6 +486,12 @@ export const mountConnectionIndicator = (
     renderBanner('ok', undefined, { preserveActionFocus: false });
   };
   pageEvents?.addEventListener?.('pagehide', onPageHide);
+  // ⚠ The banner WRAPS. Its height changes with the viewport even when its
+  // state does not, so a state-change hook alone would leave the published
+  // value stale exactly when it matters — a narrow window, where the row goes
+  // to two lines and the overlap it causes is worst.
+  const onViewportResize = (): void => { publishBannerHeight(); };
+  pageEvents?.addEventListener?.('resize', onViewportResize);
   let sustainedInterruptionSeen =
     currentStatus === 'stalled' || currentStatus === 'offline';
   const unsub = opts.onStatus((status) => {
@@ -516,6 +571,7 @@ export const mountConnectionIndicator = (
       cancelReceipt();
       unsub();
       pageEvents?.removeEventListener?.('pagehide', onPageHide);
+      pageEvents?.removeEventListener?.('resize', onViewportResize);
       try {
         opts.statusHost.removeChild(indicator);
       } catch {

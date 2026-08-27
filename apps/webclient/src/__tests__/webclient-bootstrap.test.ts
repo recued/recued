@@ -39,6 +39,9 @@ import type {
   WebclientServerProfile,
   WebclientTokenRecord,
 } from '@recued/contracts';
+// ⚠ VALUE import, deliberately separate from the type block above — the
+// first cut folded it in there and it arrived `undefined` at runtime.
+import { CHAT_HISTORY_WINDOW } from '@recued/contracts';
 import { RunModal } from '@recued/ui-shared';
 import { generateRecoveryKey } from '@recued/crypto';
 import type { WebclientLocalStore } from '../storage/local-store.js';
@@ -1393,7 +1396,11 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     const sessionGet = rpcCalls().find(
       (call) => call.method === 'chat.session.get',
     );
-    expect(sessionGet?.args).toEqual({ session_id: 'chat_1' });
+    // ⚠ Hydration is windowed now; the limit rides the request by design.
+    expect(sessionGet?.args).toEqual({
+      session_id: 'chat_1',
+      limit: CHAT_HISTORY_WINDOW,
+    });
     expect(typeof sessionGet?.request_id).toBe('string');
     fixture.transportControls.fireMessage({
       type: 'rpc_result',

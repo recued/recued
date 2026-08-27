@@ -1,8 +1,12 @@
 /** RPC-error classifier acceptance — humanized copy + connection routing. */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { RpcError } from '@recued/contracts';
 
+import {
+  noteDialledServerUrl,
+  resetInsecureOriginProbeForTest,
+} from '../net/insecure-origin.js';
 import {
   classifyRpcError,
   humanizeRpcError,
@@ -12,6 +16,70 @@ import {
 
 const rpc = (code: string, message: string): RpcError =>
   new RpcError(code, message, undefined, 'approval.list');
+
+/** ⛔ THE COPY THAT WAS WRONG. A socket the BROWSER refuses (an insecure dial
+ *  from a secure page) arrives here as the same `server_offline` a dead host
+ *  produces — close 1006, no status, no headers. The old answer, "Can't reach
+ *  your server right now", sent owners to check a server that was running and
+ *  answering. These pin the refinement AND its blast radius: only `offline`
+ *  moves, and only while the page/address combination actually explains it. */
+describe('classifyRpcError — a browser-blocked connection', () => {
+  const stubSecurePage = (): void => {
+    Object.defineProperty(globalThis, 'location', {
+      value: { protocol: 'https:' },
+      configurable: true,
+      writable: true,
+    });
+  };
+  const stubInsecurePage = (): void => {
+    Object.defineProperty(globalThis, 'location', {
+      value: { protocol: 'http:' },
+      configurable: true,
+      writable: true,
+    });
+  };
+
+  afterEach(() => {
+    resetInsecureOriginProbeForTest();
+  });
+
+  it('names the browser when an https page dialled a ws:// address', () => {
+    stubSecurePage();
+    noteDialledServerUrl('ws://127.0.0.1:7717/ws');
+    const c = classifyRpcError(rpc('server_offline', 'webclient rpc: server offline'));
+    expect(c.kind).toBe('offline');
+    expect(c.copy).toMatch(/browser blocked the connection/i);
+    // It must say what to DO, not just what happened.
+    expect(c.copy).toMatch(/webclient from the server|certificate/i);
+    expect(c.copy).not.toMatch(/Can't reach your server right now/);
+  });
+
+  it('keeps the plain offline copy when the page is not secure', () => {
+    // The local webclient: same origin, plain http, nothing blocked. If the
+    // server is down here it really IS down.
+    stubInsecurePage();
+    noteDialledServerUrl('ws://127.0.0.1:7717/ws');
+    expect(classifyRpcError(rpc('server_offline', 'x')).copy)
+      .toBe("Can't reach your server right now.");
+  });
+
+  it('keeps the plain offline copy when the dialled address is secure', () => {
+    stubSecurePage();
+    noteDialledServerUrl('wss://my.example.com/ws');
+    expect(classifyRpcError(rpc('transport', 'x')).copy)
+      .toBe("Can't reach your server right now.");
+  });
+
+  it('does NOT rewrite timeout, auth, or cancelled — each has its own evidence', () => {
+    stubSecurePage();
+    noteDialledServerUrl('ws://127.0.0.1:7717/ws');
+    expect(classifyRpcError(rpc('timeout', 'x')).copy)
+      .toBe("Your server isn't responding right now.");
+    expect(classifyRpcError(rpc('webclient_reauth_required', 'x')).copy)
+      .toBe('Your session needs to be re-paired.');
+    expect(classifyRpcError(rpc('aborted', 'x')).copy).toBe('Cancelled.');
+  });
+});
 
 describe('classifyRpcError', () => {
   it('maps server_offline to a calm offline copy with no internals', () => {

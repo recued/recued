@@ -1,5 +1,6 @@
 /** D-152 P5 - reconciliation jobs and DDNS soft-hold lifecycle. */
 
+import { enabledDdnsZones } from '@recued/contracts';
 import { readFileSync } from 'node:fs';
 
 import Database from 'better-sqlite3';
@@ -566,10 +567,69 @@ describe('D-152 P5 A.11 hostname reconciliation jobs', () => {
   });
 });
 
+describe('a fresh server probes nothing', () => {
+  it('skips the DNS provider check when no hostname is enrolled', async () => {
+    // ⛔ REGRESSION: a fresh server — no account, no pairing, no DDNS — warned
+    // daily with `provider_capability_failed: dns_probe_failed:…:queryA ENODATA`.
+    // The other four jobs iterate the registry and are naturally vacuous when it
+    // is empty; the provider check probed DNS unconditionally, so it reported a
+    // true fact (the name has no A record) as a provider failure on a machine
+    // with no provider to fail.
+    //
+    // 🔑 The cost is what an unpassable alert TRAINS: ignore this one, ignore the
+    // one that means the provider is genuinely down.
+    const hostnameRegistry = makeHostnameStore();
+    const subscriptionState = makeSubscriptionStore();
+    const providerChecks: number[] = [];
+
+    const result = await runHostnameReconciliationJobs({
+      hostnameRegistry,
+      subscriptionState,
+      dns: {
+        expectedRecord() { return null; },
+        getRecord() { return null; },
+        setRecord() {},
+      },
+      certs: { renew() { return { ok: true }; } },
+      provider: {
+        check() {
+          providerChecks.push(NOW);
+          return { ok: false, error: 'dns_probe_failed:example.invalid:queryA ENODATA' };
+        },
+      },
+      now: () => NOW,
+    });
+
+    expect(providerChecks).toEqual([]);
+    expect(result.actions).toEqual([]);
+    expect(result.alerts).toEqual([]);
+  });
+});
+
 describe('D-152 P5 A.10/A.11 daily hostname reconciliation runner', () => {
   it('registers a fixed daily cadence wrapper around the reconciliation jobs', async () => {
     const hostnameRegistry = makeHostnameStore();
     const subscriptionState = makeSubscriptionStore();
+      // ⚠ SEEDED DELIBERATELY. These two tests use "the provider was checked" as
+      // the observable proof that a tick ran the jobs, and the provider check is
+      // now gated on there being a hostname to reconcile — a fresh server with
+      // nothing enrolled probes nothing. With an empty registry a tick has no
+      // observable effect at all, which is the correct behaviour and would make
+      // these assertions vacuous rather than wrong.
+      hostnameRegistry.upsert({
+        server_identity_id: 'server-1',
+        hostname: 'cadence.recued.net',
+        cert_source: 'recued_acme',
+        // Inert to the other four jobs on purpose, so the provider check stays
+        // the ONLY observable effect and the exact-equality assertion below
+        // keeps its meaning: `enabled: false` makes the dns-mismatch job skip
+        // it, and an expiry outside the renewal window makes the cert job skip
+        // it. The row exists solely so there is something to reconcile.
+        cert_expires_at: NOW + 365 * DAY_MS,
+        ddns_managed: true,
+        enabled: false,
+      });
+
     const auditEvents: HostnameReconciliationAction[] = [];
     const providerChecks: number[] = [];
     const registrations: Array<{
@@ -640,6 +700,26 @@ describe('D-152 P5 A.10/A.11 daily hostname reconciliation runner', () => {
   it('reports and swallows async tick failures', async () => {
     const hostnameRegistry = makeHostnameStore();
     const subscriptionState = makeSubscriptionStore();
+      // ⚠ SEEDED DELIBERATELY. These two tests use "the provider was checked" as
+      // the observable proof that a tick ran the jobs, and the provider check is
+      // now gated on there being a hostname to reconcile — a fresh server with
+      // nothing enrolled probes nothing. With an empty registry a tick has no
+      // observable effect at all, which is the correct behaviour and would make
+      // these assertions vacuous rather than wrong.
+      hostnameRegistry.upsert({
+        server_identity_id: 'server-1',
+        hostname: 'cadence.recued.net',
+        cert_source: 'recued_acme',
+        // Inert to the other four jobs on purpose, so the provider check stays
+        // the ONLY observable effect and the exact-equality assertion below
+        // keeps its meaning: `enabled: false` makes the dns-mismatch job skip
+        // it, and an expiry outside the renewal window makes the cert job skip
+        // it. The row exists solely so there is something to reconcile.
+        cert_expires_at: NOW + 365 * DAY_MS,
+        ddns_managed: true,
+        enabled: false,
+      });
+
     const registrations: Array<{
       name: string;
       intervalMs: number;
@@ -741,15 +821,25 @@ describe('D-152 P5 concrete hostname reconciliation adapters', () => {
       .rejects.toThrow(/read-only/);
   });
 
-  it('checks provider capability through DNS resolution without requiring write credentials', async () => {
+  it('checks provider capability by asking whether the zone ANSWERS, not for an apex A', async () => {
+    // ⛔ THIS ASKED FOR AN APEX A RECORD, SO IT COULD NEVER PASS. A DDNS zone
+    // apex has no A record by design — handles live at `<handle>.<zone>` — so
+    // every server reported provider_capability_failed daily against a healthy
+    // zone, and the name it probed was the retired one besides.
+    //
+    // ⚠ NOT `ns1.<zone>` either, though it resolves: that A record is served by
+    // the delegation and cached, so it answers even when the authoritative
+    // servers are down — an alert that can never fail, which is the same defect
+    // wearing the opposite sign. SOA comes from authoritative data, and its
+    // serial advances as records change.
     const provider = createDnsProviderCapabilityAdapter({
-      probeHostname: 'recued.cloud',
-      resolver: { resolve4: async () => ['203.0.113.10'] },
+      zones: ['recued.net'],
+      resolver: { resolveSoa: async () => ({ serial: 2026081356 }) },
     });
     const failed = createDnsProviderCapabilityAdapter({
-      probeHostname: 'recued.cloud',
+      zones: ['recued.net'],
       resolver: {
-        async resolve4() {
+        async resolveSoa() {
           throw new Error('resolver down');
         },
       },
@@ -757,12 +847,30 @@ describe('D-152 P5 concrete hostname reconciliation adapters', () => {
 
     await expect(provider.check()).resolves.toEqual({
       ok: true,
-      detail: 'dns_probe_ok:recued.cloud',
+      detail: 'dns_probe_ok:recued.net:soa=2026081356',
     });
     await expect(failed.check()).resolves.toEqual({
       ok: false,
-      error: 'dns_probe_failed:recued.cloud:resolver down',
+      error: 'dns_probe_failed:recued.net:resolver down',
     });
+  });
+
+  it('probes the ENABLED zone by default, never a literal', async () => {
+    // 🔑 A local copy of the zone name stranded deriveProAcmeHandle on the
+    // retired suffix for months. This pins the probe to the same source of
+    // truth so it cannot drift the same way.
+    const seen: string[] = [];
+    const provider = createDnsProviderCapabilityAdapter({
+      resolver: {
+        async resolveSoa(zone: string) {
+          seen.push(zone);
+          return { serial: 1 };
+        },
+      },
+    });
+    await provider.check();
+    expect(seen).toEqual(enabledDdnsZones().map((z) => z.suffix.replace(/^\./, '')));
+    expect(seen).not.toContain('recued.cloud');
   });
 });
 

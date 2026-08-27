@@ -44,6 +44,7 @@ import {
   type ChatPlanProposal,
   type ChatPlanRecord,
   type ChatPlanStatus,
+  type ChatHistoryCursor,
   type ChatSession,
   type ChatSessionChangedField,
   type ChatToolCall,
@@ -181,6 +182,11 @@ export interface ChatThreadState {
    *  `plan_id`; a turn can hold several (two write tools gated in one
    *  turn). Recovered from durable server records on hydration. */
   plan_cards: ReadonlyArray<PlanApprovalCard>;
+  /** Older messages exist behind the loaded window. False on a server that
+   *  does not window, because it already sent everything. */
+  has_more_before: boolean;
+  /** Where the next older page resumes; null when there is none to ask for. */
+  oldest_cursor: ChatHistoryCursor | null;
   /** Route-side scaffold handling — turn ids whose
    *  `chat.message_complete` already landed. In production the
    *  `chat.send` ack resolves only AFTER the whole turn broadcast, so
@@ -204,12 +210,23 @@ export const initialChatThreadState = (): ChatThreadState => ({
   turn_failures: [],
   plan_cards: [],
   completed_turn_ids: [],
+  has_more_before: false,
+  oldest_cursor: null,
 });
 
 export type ChatThreadSnapshot =
   ChatSession & {
     messages: ChatMessage[];
     plans?: ReadonlyArray<ChatPlanRecord>;
+    /** ⛔ ABSENT MEANS COMPLETE, NOT UNKNOWN — the opposite of
+     *  `busy_session_ids`, and the difference is load-bearing. A server older
+     *  than the window omits this because it knows nothing about it, AND
+     *  because it handed over the entire conversation; a current server omits
+     *  it when the caller asked for everything. Both mean the same thing, so
+     *  reading absence as "complete" is correct here rather than a guess. */
+    has_more?: boolean;
+    /** Where an older page resumes. Only ever present beside `has_more`. */
+    oldest_cursor?: ChatHistoryCursor;
   };
 
 /** Apply a `chat.session.get` rpc snapshot to the thread state. */
@@ -218,6 +235,25 @@ export const hydrateThreadFromSnapshot = (
   snapshot: ChatThreadSnapshot,
 ): ChatThreadState => {
   const { messages, plans = [], ...session } = snapshot;
+  // 🔑 DURABLE COMPLETION, recovered from the history itself. This used to be
+  // `[]` and could only ever be refilled by live `chat.message_complete`
+  // events — so a turn that finished while the socket was down was, to this
+  // tab, a turn that never finished: `settlePendingSend` had nothing to match
+  // and the composer stayed on "Sending…" for good.
+  //
+  // ⛔ ASSISTANT ROWS ONLY. The user row is written at turn START, before the
+  // model runs, and bears the same `turn_id` — counting it would call every
+  // in-flight turn complete the moment it began.
+  const completedTurnIds: string[] = [];
+  const seenTurnIds = new Set<string>();
+  for (const message of messages) {
+    if (message.role !== 'assistant') continue;
+    const turnId = message.turn_id;
+    if (typeof turnId !== 'string' || turnId.length === 0) continue;
+    if (seenTurnIds.has(turnId)) continue;
+    seenTurnIds.add(turnId);
+    completedTurnIds.push(turnId);
+  }
   return {
     session,
     messages: messages.slice(),
@@ -243,7 +279,36 @@ export const hydrateThreadFromSnapshot = (
       recovered: true,
       payload_available: record.payload_available,
     })),
-    completed_turn_ids: [],
+    has_more_before: snapshot.has_more === true,
+    oldest_cursor: snapshot.oldest_cursor ?? null,
+    // Same cap and same end as the live path: newest kept, oldest dropped.
+    completed_turn_ids: completedTurnIds.slice(-COMPLETED_TURN_MEMORY),
+  };
+};
+
+/** Put an older page in FRONT of what is already loaded.
+ *
+ *  ⛔ Deduplicates on id rather than trusting the cursor. The page and the
+ *  thread are read at different moments, and a turn completing in between adds
+ *  rows — a paged read is not a snapshot of one instant. Dropping anything
+ *  already on screen is cheaper than reasoning about when that can happen.
+ *
+ *  ⚠ `completed_turn_ids` is deliberately NOT extended from an older page. It
+ *  exists to stop a just-acked turn scaffolding a bubble for work already
+ *  finished, which is a question about the RECENT tail; feeding it ancient
+ *  turn ids would push the recent ones out of a 50-entry FIFO. */
+export const prependOlderMessages = (
+  state: ChatThreadState,
+  older: readonly ChatMessage[],
+  next: { has_more: boolean; oldest_cursor: ChatHistoryCursor | null },
+): ChatThreadState => {
+  const known = new Set(state.messages.map((message) => message.id));
+  const fresh = older.filter((message) => !known.has(message.id));
+  return {
+    ...state,
+    messages: [...fresh, ...state.messages],
+    has_more_before: next.has_more,
+    oldest_cursor: next.oldest_cursor,
   };
 };
 

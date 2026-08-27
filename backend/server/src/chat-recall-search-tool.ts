@@ -425,6 +425,11 @@ export const RECALL_STALE_CONTINUATION_HINT =
   'That continuation is no longer valid and cannot be followed. Do not send it again — search again without it.';
 export const RECALL_TURN_BUDGET_HINT =
   'No further recall search calls are available in this cooperative turn. Do not call recall again in this turn; continue from what you already have.';
+export const RECALL_ANCHOR_NOT_FOUND_HINT =
+  'That `near_id` does not match any message in the recall corpus, so there is '
+  + 'nothing to step from. Pass an `item_id` returned by an earlier recall '
+  + 'result — anchors cannot be constructed or guessed.';
+
 export const RECALL_EXACT_BUDGET_HINT =
   'The one exact recall fetch for this cooperative turn was already used. Do not call recall again in this turn; continue from what you already have.';
 
@@ -786,35 +791,21 @@ const createRecallSearchHandler = (
     const rawObj = raw as Record<string, unknown>;
     const nearId = typeof rawObj.near_id === 'string' && rawObj.near_id.length > 0
       ? rawObj.near_id : undefined;
-    if (nearId !== undefined && typeof options.backend.neighbours === 'function') {
-      const n = typeof rawObj.next === 'number' && rawObj.next > 0
-        ? Math.min(10, Math.floor(rawObj.next)) : 0;
-      const p = typeof rawObj.prev === 'number' && rawObj.prev > 0
-        ? Math.min(10, Math.floor(rawObj.prev)) : 0;
-      if (n > 0 || p > 0) {
-        const near = await options.backend.neighbours({
-          anchor_id: nearId,
-          ...(n > 0 ? { next: n } : {}),
-          ...(p > 0 ? { prev: p } : {}),
-        });
-        // Same projection + byte budget as a normal recall hit, so a stepped
-        // message can never be larger than one that was searched for.
-        const projected = near
-          .map((c) => interactionMatch(
-            c, 1, ctx.session_id as string, RECALL_SEARCH_BYTES_PER_CALL,
-          ));
-        for (const m of projected) state.returned_item_ids.add(m.item_id);
-        return {
-          ok: true,
-          result: {
-            ok: true,
-            matches: projected,
-            exhausted: true,
-            partial: false,
-          } satisfies RecallSearchResult,
-        };
-      }
-    }
+    const nearNext = typeof rawObj.next === 'number' && rawObj.next > 0
+      ? Math.min(10, Math.floor(rawObj.next)) : 0;
+    const nearPrev = typeof rawObj.prev === 'number' && rawObj.prev > 0
+      ? Math.min(10, Math.floor(rawObj.prev)) : 0;
+    // ⛔⛔ PARSED HERE, EXECUTED BELOW THE SCOPE GATE — and it used to execute
+    // right here, which was an AUTHORITY BYPASS. `search` resolves
+    // `interactionScope` and returns guided-empty when it is null; this branch
+    // returned BEFORE that line, so a caller the resolver refuses — a messenger
+    // door, a contracted actor, a dead door, a turn that registered no source —
+    // could not search the owner's history but COULD step through it by id.
+    // Driven, not read: a dispatch with no registered turn source returned two
+    // owner rows. The row filter was never the gap (`neighbours` hard-codes the
+    // same `OWNER_AUTHENTICATED_CHAT` eligibility the scope carries); the
+    // missing half was the REFUSAL, and the fix is that stepping is now fenced
+    // by the same anchor a search is.
 
     const requestedSources = new Set<RecallSource>(
       args.sources ?? ['interaction', 'memory'],
@@ -842,6 +833,60 @@ const createRecallSearchHandler = (
     // must not be able to blind-call its memory lane after it was omitted from
     // their catalog.
     if (interactionScope === null) return guidedEmpty();
+
+    // ── RELATIVE NAVIGATION — now inside the fence ──────────────────────────
+    if (nearId !== undefined && typeof options.backend.neighbours === 'function'
+      && (nearNext > 0 || nearPrev > 0)) {
+      // ⛔ STEPPING IS A STORE READ AND MUST COST ONE. This branch used to
+      // return before the `search_calls` counter below, so navigation was
+      // UNBUDGETED — a caller could step without limit for the whole turn,
+      // which is exactly the shape a model that invents anchors falls into.
+      state.search_calls += 1;
+      if (state.search_calls > RECALL_SEARCH_CALLS_PER_TURN) {
+        return incompleteEmpty(RECALL_TURN_BUDGET_HINT);
+      }
+      const near = await options.backend.neighbours({
+        anchor_id: nearId,
+        ...(nearNext > 0 ? { next: nearNext } : {}),
+        ...(nearPrev > 0 ? { prev: nearPrev } : {}),
+      });
+      if (near.length === 0) {
+        // ⛔⛔ "NO NEIGHBOUR THAT WAY" AND "NO SUCH ANCHOR" ARE DIFFERENT
+        // ANSWERS AND WERE ONE OBSERVATION. Both produced an empty page, which
+        // reads as "the conversation ends here" — the one reply that invites no
+        // correction. Measured on the sibling mail path: a live model composed
+        // six `near_id` values it had never read, pattern-matched off the
+        // corpus's id scheme, and every one came back empty-and-fine.
+        //
+        // Fails OPEN on a throw: an unreadable anchor must not be reported as
+        // an invented one, since that accuses the caller of the store's fault.
+        let anchorExists = true;
+        try {
+          anchorExists =
+            (await options.backend.fetchExact(nearId, interactionScope)).status
+              !== 'not_found';
+        } catch {
+          anchorExists = true;
+        }
+        if (!anchorExists) return incompleteEmpty(RECALL_ANCHOR_NOT_FOUND_HINT);
+      }
+      // Same projection + byte budget as a normal recall hit, so a stepped
+      // message can never be larger than one that was searched for.
+      const projected = near
+        .map((c) => interactionMatch(
+          c, 1, ctx.session_id as string, RECALL_SEARCH_BYTES_PER_CALL,
+        ));
+      for (const m of projected) state.returned_item_ids.add(m.item_id);
+      return {
+        ok: true,
+        result: {
+          ok: true,
+          matches: projected,
+          exhausted: true,
+          partial: false,
+        } satisfies RecallSearchResult,
+      };
+    }
 
     // Exact ids take precedence over query/source/kind narrowing. The two-id
     // case above is deliberately contradictory and returns guided empty.

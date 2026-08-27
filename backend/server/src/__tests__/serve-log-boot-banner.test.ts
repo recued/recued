@@ -121,6 +121,37 @@ describe('renderBootBanner', () => {
     expect(widths(boxLines(output)).size).toBe(1);
   });
 
+  it('shows the REAL window, not a hard-coded 15 min', () => {
+    // ⛔ `serve --pair-code-ttl 7d` printed "expires in 15 min" while
+    // `recued pair` printed the true TTL on the same machine — a direct hit on
+    // the case the flag exists for, where an asynchronous reviewer reads the
+    // banner days later and concludes the code is dead.
+    const wide = renderBootBanner(
+      opts({ notEnrolled: true, pairingCode: 'ABCDEFGH', pairingTtlLabel: '7 days' }),
+    );
+    expect(wide).toContain('expires in 7 days');
+    expect(wide).not.toContain('15 min');
+
+    // Absent label keeps the historical default rather than rendering undefined.
+    const plain = renderBootBanner(opts({ notEnrolled: true, pairingCode: 'ABCDEFGH' }));
+    expect(plain).toContain('expires in 15 min');
+  });
+
+  it('never renders a literal null when a fresh server has no live code', () => {
+    // ⛔ THE REPORTED BUG (2026-08-26). `recued serve` on an unenrolled server
+    // printed `Pairing code: null` after a restart: pairing.ts adopted a
+    // persisted state even when it was expired or consumed, getCode() returns
+    // null for both, and THIS branch interpolated it unguarded.
+    //
+    // 🔑 The suite already covered `notEnrolled: false, pairingCode: null` — the
+    // enrolled path, which guards — and `notEnrolled: true` WITH a code. The one
+    // combination that breaks is the one nobody wrote, and it is the fresh-server
+    // case where pairing is the only thing the operator needs.
+    const output = renderBootBanner(opts({ notEnrolled: true, pairingCode: null }));
+    expect(output).not.toContain('null');
+    expect(output).toContain('recued pair');
+  });
+
   it('grows the box to fit a longer value without overflowing the right border', () => {
     const output = renderBootBanner(
       opts({ port: 7900, dbPath: '/tmp/recued-target/recued.db', recipeCount: 191, llmConfig: undefined, pairingCode: null }),

@@ -4243,6 +4243,8 @@ export {
   CHAT_BROADCAST_EVENT_KINDS,
   CHAT_BROADCAST_EVENT_KIND_SET,
   isChatBroadcastEventKind,
+  CHAT_HISTORY_WINDOW,
+  CHAT_HISTORY_WINDOW_MAX,
   CHAT_SESSION_CHANGED_FIELDS,
   CHAT_SESSION_CHANGED_FIELD_SET,
   isChatSessionChangedField,
@@ -4340,6 +4342,7 @@ export type {
   ChatSessionSummary,
   ChatRpcMethod,
   ChatBroadcastEventKind,
+  ChatHistoryCursor,
   ChatSessionChangedField,
   ChatTableName,
   // D-137 W2.2 — Mary's per-kind catalog scope

@@ -199,6 +199,7 @@ import {
   ensureSourceDependencyEntitySchema,
   type SourceDependencyEntityStore,
 } from '../storage/source-dependency-entity-store.js';
+import { createFileViewResolverFromRegistry } from '../file-view-resolver.js';
 import {
   createFileMetaStore,
   ensureFileMetaSchema,
@@ -822,6 +823,20 @@ export const composeAppContext = (
       db,
       keys,
       eventBus,
+      // D-192 Fork B — `file.search`'s owner-wide scope reads the UNIFIED file
+      // view, so an enrolled remote Source is reachable from chat. Built per
+      // call, not once: `fileMetaStoreRef` is assigned later in this composer,
+      // and capturing it now would freeze `undefined` and silently leave chat
+      // on the CAS-only path forever.
+      getFileViewResolver: () => {
+        const registry = chatLateBound.getCollectionRegistry();
+        if (!registry) return undefined;
+        return createFileViewResolverFromRegistry(
+          registry,
+          fileMetaStoreRef,
+          fileSourceSyncStateRef,
+        );
+      },
       auditLog,
       serverInstanceId,
       recipeStore,

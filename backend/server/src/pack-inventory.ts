@@ -522,6 +522,47 @@ export const listInstalledPacks = (store: ContractStore): InstalledPackRow[] => 
   return out;
 };
 
+/** Is a pack with this AUTHORED slug installed, and at what version? `null` when
+ *  it is not, or when its row carries no usable version.
+ *
+ *  ⛔⛔ `getInstalledPack(store, slug)` CANNOT ANSWER THIS, and the way it fails
+ *  is silent. It reads the row KEYED by `slug` — and a Records pack's row is
+ *  keyed by its generated content-addressed catalog id (`records-<hash>`), a name
+ *  no author writes. So asking it about `federated-projects` returns `null` for a
+ *  pack that is very much installed, and any caller branching on that answer
+ *  takes the not-installed path for exactly the pack class where being wrong
+ *  costs the most. Driven: the inventory held
+ *  `records-84016f4885cb4d94b248193d6b702c5e` and nothing else for that pack.
+ *
+ *  🔑 THE ROW CARRIES ITS OWN AUTHORED NAME. `authored_pack_slug` exists for this
+ *  (the Records coordinator is its only writer), and matching EITHER identity is
+ *  the same dual-ref rule `buildPackOpResolution` already applies when it binds
+ *  both `<publisher>.records-<hash>` and `<publisher>.<authored>`. One more
+ *  reader of one existing field, not a second source of truth.
+ *
+ *  ⚠ STRICT ON VERSION, unlike {@link getInstalledPack}. That one is lenient so a
+ *  corrupt row stays removable; a caller asking "is my requirement met" must not
+ *  credit a version it cannot read. */
+export const findInstalledPackByAuthoredSlug = (
+  store: ContractStore,
+  authored_slug: string,
+): InstalledPackRow | null => {
+  for (const row of store.scan(INSTALLED_PACK_SCOPE)) {
+    if (!isRecord(row.value)) continue;
+    const slug = row.value.pack_slug;
+    if (typeof slug !== 'string' || slug.length === 0) continue;
+    const authored = typeof row.value.authored_pack_slug === 'string'
+      ? row.value.authored_pack_slug.trim()
+      : '';
+    if (slug !== authored_slug && authored !== authored_slug) continue;
+    const version = parsePackVersion(row.value.version);
+    if (version === null) return null;
+    const publisher = readPublisher(row.value.publisher);
+    return { pack_slug: slug, version, ...(publisher !== undefined ? { publisher } : {}) };
+  }
+  return null;
+};
+
 /** Read ONE `installed_pack` row's identity for the uninstall path — the
  *  EXISTENCE proof (bundled OR marketplace) plus the publisher/version a
  *  bundled manifest would otherwise supply. Unlike {@link listInstalledPacks}

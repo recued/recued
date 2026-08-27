@@ -68,8 +68,65 @@ export type ChatIndexProbe = (
  *  measured: with the flag OFF the line still named `mail.search`, identically
  *  to ON. A knob that no longer decides anything is worse than no knob, because
  *  the next reader assumes it does. */
+/** Extra args a store needs before a PROBE can see anything. ⛔⛔ THIS EXISTS
+ *  BECAUSE `file.search` WAS SILENTLY UNPROBEABLE. It defaults to
+ *  `scope: 'session'` — files attached to THIS conversation — and the probe sent
+ *  only `{query, limit}`, so it answered `files: []` with
+ *  "no conversation files are readable here" for every term, on every turn,
+ *  forever. Measured directly against the real handler: the same probe with
+ *  `scope: 'all'` returns the matching file.
+ *
+ *  🔑 THAT IS THIS FEATURE'S OWN WORST FAILURE MODE, not a missing nicety. An
+ *  INCOMPLETE index is worse than none — naming a subset makes the unnamed read
+ *  as ABSENT, worth 16/23 -> 0/10 on the store the line could not name. `file`
+ *  was in `CHAT_INDEX_STORES`, so it looked covered, and answered nothing.
+ *
+ *  ⚠⚠ AND THE NARROW DEFAULT IS DELIBERATE, WHICH IS WHY THIS NEEDS AN ARGUMENT
+ *  RATHER THAN A SHRUG. `file.search`'s own schema tells the model: "`all` =
+ *  every file Mary holds, INCLUDING UPLOADS FROM STRANGERS. Say nothing to get
+ *  `session`; widen only on an explicit request from HER."
+ *
+ *  🔑 THE INDEX IS A POINTER; THE TOOL IS STILL THE GATE. Widening the probe
+ *  does not widen what the model can READ. The probe's only output is a STORE
+ *  NAME on the index line — never a filename, never content — and if the model
+ *  then calls `file.search` it gets `session` by default and must widen
+ *  explicitly, exactly as before. So the owner's rule about what may be
+ *  RETURNED is untouched; what changes is only whether the line can say "there
+ *  is something here".
+ *
+ *  ⚠ The trade is real and worth naming: an owner who considers even the
+ *  EXISTENCE signal too much should drop `file.search` from
+ *  `CHAT_INDEX_STORES` rather than leave it listed and unprobeable — a listed
+ *  store that always answers nothing is the harm mode above, not a safe
+ *  middle. */
+export const CHAT_INDEX_PROBE_ARGS: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
+  'file.search': { scope: 'all' },
+};
+
+/** How a store answers a CO-OCCURRENCE probe — the index's own "tier 2", the
+ *  question "does one store hold ALL of these words?".
+ *
+ *  ⛔ `'none'` IS NOT "CANNOT AND", IT IS "WOULD LIE ABOUT IT". `recall` and
+ *  `memory` match on an exact→relaxed→LOOSE ladder whose last rung is
+ *  `some(t => text.includes(t))` — ANY token — and `contact` is SQL
+ *  `LIKE '%term%'` on one field. Sending them a co-occurrence expression does
+ *  not make them honour it; it degrades to OR, and the index then claims a
+ *  store holds the whole question when it holds one word of it. Caught by a
+ *  live run: the unit harness implemented ideal AND for every store, so the
+ *  collapse passed there while emitting `agreed sandhurst renewal:
+ *  memory.search` against a row containing neither `agreed` nor `renewal`.
+ *
+ *  ⛔ AND THE MODE IS ABOUT SYNTAX AS MUCH AS SEMANTICS, which a boolean hid.
+ *  `'fts'` stores parse FTS5 (`"a"* "b"*`) and get implicit AND for free.
+ *  `'terms'` stores mean AND but read a query as plain text — sending them
+ *  FTS5 punctuation would have them hunt for literal quotes and asterisks and
+ *  match nothing, so the collapse would silently never fire and the flag would
+ *  look like a no-op. `file.search` is exactly that case: it requires every
+ *  term over name+path, and would choke on the quoting. */
+export type ChatIndexAndMode = 'none' | 'fts' | 'terms';
+
 export const CHAT_INDEX_STORES: ReadonlyArray<
-  readonly [store: string, hitField: string, andCapable: boolean]
+  readonly [store: string, hitField: string, andMode: ChatIndexAndMode]
 > = [
   // ⛔ `recall.search` MATCHES THE OWNER'S OWN CURRENT MESSAGE. The interaction
   //    lane indexes the live turn too, so an unfiltered probe returns a hit for
@@ -79,12 +136,22 @@ export const CHAT_INDEX_STORES: ReadonlyArray<
   //    the shape of signal, and it would name recall on every line forever.
   //    `hasHit` therefore drops matches whose `session_relation` is `current`:
   //    the current session is already in `chat_tail` and needs no index.
-  ['recall.search', 'matches', false],
-  ['memory.search', 'memories', false],
-  ['mail.search', 'matches', true],
-  ['contact.search', 'candidates', false],
-  ['calendar.search', 'matches', true],
-  ['file.search', 'files', true],
+  ['recall.search', 'matches', 'none'],
+  ['memory.search', 'memories', 'none'],
+  ['mail.search', 'matches', 'fts'],
+  ['contact.search', 'candidates', 'none'],
+  ['calendar.search', 'matches', 'fts'],
+  // ⛔ NOT FTS. `file.search` LISTS the collection and filters FILENAMES by JS
+  // substring (`r.filename.toLowerCase().includes(query)`) — it never touches
+  // the FTS table, so a quoted co-occurrence expression reaches it as literal
+  // text and matches nothing. Same error I already made with `contact.search`:
+  // the store owns an FTS table, but the TOOL does not use it. Read the path the
+  // TOOL takes, not the capabilities the store happens to have.
+  //
+  // ⚠ It also means the index can only ever locate a file by its NAME. A term
+  // that appears solely in file CONTENT is invisible here, and no probe of this
+  // tool will find it.
+  ['file.search', 'files', 'terms'],
 ];
 
 /** ⛔ BOUNDS ARE THE WHOLE COST STORY. Every turn pays
@@ -136,22 +203,141 @@ export const CHAT_INDEX_TOO_COMMON_CAP = 50;
 export const CHAT_INDEX_MAX_STORES_PER_TERM = 4;
 
 const MIN_TERM_LENGTH = 4;
+/** CJK has no inter-word spaces, so a 2-character run is a whole word.
+ *
+ *  ⚠ CJK IS SEGMENTED, BUT ONLY THREE OF THE SIX STORES CAN USE IT. The query
+ *  side is solved by `Intl.Segmenter` (below). The STORED side is not: FTS5's
+ *  `unicode61` makes an unspaced run ONE token, so `mail` / `calendar` /
+ *  `memory` match a CJK term only where it sits at the START of a run, while
+ *  `recall` / `file` / `contact` match by JS substring or SQL LIKE and work
+ *  fully. Measured, so it is not a guess.
+ *
+ *  ⛔ AND THE OBVIOUS FTS FIX IS A TRAP: the `trigram` tokenizer is the
+ *  textbook answer for CJK, and it has a THREE-CHARACTER FLOOR — measured,
+ *  `续约` and `通知` (2 chars) return 0 while `通知期` (3) returns 1. The most
+ *  common Chinese word length is two characters, so trigram misses precisely
+ *  the words a corpus is made of. What does work is space-separating Han at
+ *  FTS-write time so each character is a token and a 2-char word matches as an
+ *  adjacent phrase — verified, Latin in the same blob unaffected. That is a
+ *  migration over shipped derived rows and is deliberately NOT bundled here. */
+const CJK_MIN_TERM_LENGTH = 2;
+
+/** Scripts whose words are NOT delimited by spaces. ⛔ THE SET WAS WRONG WHEN
+ *  IT WAS SPELLED "CJK", IN BOTH DIRECTIONS, AND BOTH HALVES WERE MEASURED
+ *  AGAINST A REAL FTS5 INDEX RATHER THAN REASONED ABOUT:
+ *
+ *   · HANGUL WAS IN IT AND MUST NOT BE. Korean IS space-separated, so
+ *     `unicode61` tokenizes it correctly — a mid-run `갱신` matches exactly.
+ *     Suppressing the index for Korean owners bought nothing and cost them the
+ *     feature.
+ *   · THAI / LAO / KHMER WERE ABSENT AND MUST BE IN IT. They are unspaced too,
+ *     so they hit the identical failure — measured, a mid-run Thai `ระยะเวลา`
+ *     scores exact=0 against its own document.
+ *
+ *  ⚠ Myanmar reads as OK on the same probe (exact=1) and is deliberately left
+ *  out rather than added on the assumption that "unspaced" implies "broken" —
+ *  the shape of the script is not the test, the tokenizer's behaviour is. */
+const UNSPACED_SCRIPT =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}]/u;
+
+/** Scripts whose words are commonly two characters, so the Latin minimum length
+ *  would discard real terms. A superset of the above: Korean is space-separated
+ *  (hence not there) but `갱신` is still a 2-syllable word. */
+const SHORT_WORD_SCRIPT =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}]/u;
+
+/** Abjads, where the TRILITERAL ROOT is the normal shape of a content word, so
+ *  the Latin floor of 4 discards meaning rather than noise. The cut at 3 is
+ *  measured, not guessed — it is exactly where content and function words
+ *  separate in these scripts:
+ *
+ *    3 chars: `משך` (duration), `מהו` (what is), `مدة` (duration)  <- KEEP
+ *    2 chars: `في` (in), `ما` (what), `هي` (is)                    <- drop
+ *
+ *  Two of five Hebrew words and one of six Arabic words in the probe sentences
+ *  were being dropped at 4, `מדة` / `مدة` among them — the very noun the
+ *  question was about. */
+const ABJAD_SCRIPT = /[\p{Script=Arabic}\p{Script=Hebrew}]/u;
+const ABJAD_MIN_TERM_LENGTH = 3;
+
+let cjkSegmenter: Intl.Segmenter | null | undefined;
+
+/** Word-split a term that contains CJK. ⛔ Applied ONLY to terms that actually
+ *  carry CJK, never to the Latin path: `Intl.Segmenter` breaks Latin on its own
+ *  rules (apostrophes, hyphens) and re-tokenising there would silently
+ *  invalidate every Latin measurement the index was promoted on.
+ *
+ *  Falls back to the whole run if the runtime has no segmenter — the pre-fix
+ *  behaviour, i.e. inert rather than wrong. */
+const segmentCjk = (term: string): readonly string[] => {
+  if (!UNSPACED_SCRIPT.test(term)) return [term];
+  if (cjkSegmenter === undefined) {
+    try {
+      cjkSegmenter = new Intl.Segmenter(undefined, { granularity: 'word' });
+    } catch {
+      cjkSegmenter = null;
+    }
+  }
+  if (cjkSegmenter === null) return [term];
+  const parts: string[] = [];
+  for (const piece of cjkSegmenter.segment(term)) {
+    if (piece.isWordLike === true) parts.push(piece.segment);
+  }
+  return parts.length > 0 ? parts : [term];
+};
 
 /** Distinctive terms from the owner's message, in first-appearance order.
  *  Lowercased, de-duplicated, stripped of punctuation, and filtered against the
- *  corpus stoplist. Numbers are dropped: `2024` indexes nothing. */
+ *  corpus stoplist.
+ *
+ *  ⛔ A PURE-DIGIT TERM IS KEPT. It used to be dropped, justified as "`2024`
+ *  indexes nothing" — but that reasoned from the WEAKEST number to a rule over
+ *  all of them. Measured, the drop cost `invoice 88421` its `88421` and
+ *  `order 4471193` its `4471193`: in both the number is the single most
+ *  distinctive thing in the sentence, and the index kept only the generic noun
+ *  beside it. Commonness is already handled downstream by
+ *  `CHAT_INDEX_TOO_COMMON_CAP`, which is where a year like `2024` dies on its
+ *  own evidence rather than on its shape. */
 export const distinctiveTerms = (userMessage: string): readonly string[] => {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const raw of userMessage.toLowerCase().split(/[^a-z0-9'-]+/)) {
-    const term = raw.replace(/^[''-]+|[''-]+$/g, '');
-    if (term.length < MIN_TERM_LENGTH) continue;
-    if (!/[a-z]/.test(term)) continue;
-    if (CHAT_INDEX_GENERIC_WORDS.has(term)) continue;
-    if (seen.has(term)) continue;
-    seen.add(term);
-    out.push(term);
-    if (out.length >= CHAT_INDEX_MAX_TERMS) break;
+  // ⛔⛔ UNICODE-AWARE, AND IT WAS NOT. The split was `[^a-z0-9'-]+`, so every
+  // non-ASCII character acted as a SEPARATOR — which does not merely skip
+  // non-English text, it CORRUPTS it. Measured: `préavis` -> `avis` (a
+  // different word), `Kündigungsfrist` -> `ndigungsfrist`,
+  // `Sandhurst-Verlängerung` -> `sandhurst-verl` + `ngerung`, `renovación` ->
+  // `renovaci`. Those fragments can never match the stored record, and one like
+  // `avis` may match something UNRELATED — a false lead, not a silent miss.
+  // Chinese / Japanese / Russian / Arabic reduced to whatever Latin brand name
+  // happened to appear, so the index was inert for those owners entirely.
+  // ⛔⛔ `\p{M}` IS LOAD-BEARING AND WAS MISSING. A combining mark is neither a
+  // letter nor a number, so without it every Thai tone mark, Indic matra,
+  // Arabic harakat and Hebrew niqqud acted as a SEPARATOR — the identical bug
+  // the ASCII-only class had, one layer down. Measured before the fix:
+  //   अनुबंध की सूचना …  -> []      (Hindi, and Bengali, Tamil, Arabic, Hebrew)
+  //   ระยะเวลาแจ้งล่วงหน้า -> แจ + งล   (Thai, shattered at the tone marks)
+  // The Indic and Semitic cases returned NOTHING AT ALL: each fragment fell
+  // under the Latin minimum length, so the index was silently inert for those
+  // owners rather than merely degraded — and inert while shipped ON.
+  outer: for (const raw of userMessage.toLowerCase().split(/[^\p{L}\p{N}\p{M}'-]+/u)) {
+    const trimmed = raw.replace(/^[''-]+|[''-]+$/gu, '');
+    for (const term of segmentCjk(trimmed)) {
+      // ⚠ CJK writes words without spaces, so a script-blind minimum length
+      // discards real terms: a 2-character Han/Kana/Hangul run is a word. Latin
+      // keeps the higher floor, where short tokens are mostly function words.
+      const floor = SHORT_WORD_SCRIPT.test(term)
+        ? CJK_MIN_TERM_LENGTH
+        : ABJAD_SCRIPT.test(term) ? ABJAD_MIN_TERM_LENGTH : MIN_TERM_LENGTH;
+      if (term.length < floor) continue;
+      // Letters OR digits — see the note above on pure-digit terms. This drops
+      // only what carries neither, e.g. a token trimmed down to punctuation.
+      if (!/[\p{L}\p{N}]/u.test(term)) continue;
+      if (CHAT_INDEX_GENERIC_WORDS.has(term)) continue;
+      if (seen.has(term)) continue;
+      seen.add(term);
+      out.push(term);
+      if (out.length >= CHAT_INDEX_MAX_TERMS) break outer;
+    }
   }
   return out;
 };
@@ -194,8 +380,15 @@ const usableCount = (result: ChatDispatchResult, hitField: string): number => {
  *  Explicit quoted-prefix tokens (`"a"* "b"*`) are implicit AND, and the rung's
  *  guard declines to relax any query carrying FTS syntax. So this stays a STRICT
  *  all-terms-present test while still reaching `Thornfields` from `thornfield`. */
-const coOccurrenceQuery = (terms: readonly string[]): string =>
-  terms.map((t) => `"${t.replace(/"/g, '""')}"*`).join(' ');
+const coOccurrenceQuery = (
+  terms: readonly string[],
+  mode: ChatIndexAndMode,
+): string => (mode === 'fts'
+  // FTS5: quoted prefix tokens, implicitly ANDed by the engine.
+  ? terms.map((t) => `"${t.replace(/"/g, '""')}"*`).join(' ')
+  // Plain text: the store splits on whitespace and requires every term itself.
+  // ⛔ It must NOT receive the FTS form — it would search for literal quotes.
+  : terms.join(' '));
 
 /** Build the pre-seed index line, or `undefined` when nothing is worth saying.
  *
@@ -227,6 +420,28 @@ const omittedStores = (): ReadonlySet<string> => {
   return new Set(raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0));
 };
 
+/** ⛔ THE UNSPACED-SCRIPT REFUSAL WAS LIFTED — the stored side is fixed.
+ *
+ *  For one day this returned `undefined` for any message carrying Han, Kana,
+ *  Thai, Lao or Khmer. Not because CJK failed — it rendered, and well — but
+ *  because it rendered INCOMPLETE: FTS5's `unicode61` makes an unspaced run ONE
+ *  token, so `mail` / `calendar` / `memory` matched a term only where it BEGAN
+ *  a run, and naming a subset is this feature's own measured harm mode.
+ *
+ *  `FTS_CONTENT_FORMAT` 2 removes the cause rather than the symptom: unspaced
+ *  scripts are space-separated per GRAPHEME at FTS-write time, so a 2-character
+ *  word matches as an adjacent phrase, and every existing index rebuilds itself
+ *  once. Measured through the real collection table, same document:
+ *  `mail.search(通知)` went 0 -> 1 at position 2.
+ *
+ *  ⚠ WHAT THE LIFT BUYS BACK IS NOISE, AND THE CAP IS WHAT HOLDS IT. Per-
+ *  grapheme tokens make ANY substring of a run matchable, so Japanese auxiliary
+ *  tails (`しま` / `した` out of `しました`) now match real documents instead of
+ *  nothing. `CHAT_INDEX_TOO_COMMON_CAP` is the answer and it is a corpus-size
+ *  answer: in a real Japanese mailbox those fragments appear everywhere and die
+ *  on their own frequency; in a SMALL corpus they can sit under the cap and
+ *  reach the line. That is a line with a useless entry on it, not a line that
+ *  hides a store — the failure mode it replaced. */
 export const buildChatIndexContext = async (
   userMessage: string,
   ctx: ChatDispatchContext,
@@ -299,10 +514,10 @@ export const buildChatIndexContext = async (
   // A/B switch: `0` renders the FLAT form so the collapse is measured, not assumed.
   const collapseOn = process.env.RECUED_CHAT_INDEX_COLLAPSE !== '0';
   if (collapseOn && phraseTerms.length > 1) {
-    const q = coOccurrenceQuery(phraseTerms);
     const found = await Promise.all(
-      stores.filter(([, , andCapable]) => andCapable).map(async ([store, hitField]) => {
+      stores.filter(([, , mode]) => mode !== 'none').map(async ([store, hitField, mode]) => {
         try {
+          const q = coOccurrenceQuery(phraseTerms, mode);
           return usableCount(await probe(store, q, ctx), hitField) > 0 ? store : null;
         } catch {
           return null;

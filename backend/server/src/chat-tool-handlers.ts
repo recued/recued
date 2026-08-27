@@ -97,6 +97,7 @@ import type { EnrichmentStore } from './storage/enrichment-store.js';
 import type { CrmRecordMirrorStore } from './storage/crm-record-mirror-store.js';
 import type { CollectionRegistry } from './collections/registry.js';
 import { DATA_FILE_RECEIVED_SLUG } from './collections/file/file-read-handler.js';
+import { scoreFileNeedle, type FileViewResolver, type DataFileView } from './file-view-resolver.js';
 import type { Collection } from './collections/types.js';
 import type {
   CalendarCollection,
@@ -179,6 +180,18 @@ export interface ChatToolHandlerDeps {
   now?: () => number;
   getContactStore: () => ContactStore | undefined;
   getCollectionRegistry: () => CollectionRegistry | undefined;
+  /** The unified local+remote file view. ⛔ WITHOUT IT `file.search` SEES ONE
+   *  COLLECTION AND NO REMOTE SOURCE AT ALL — it read
+   *  `registry.get('file', 'received')` directly, alone among the search tools
+   *  (`mail` and `calendar` both fan out across their platform), and D-192
+   *  remote files live in `file_meta_ref`, which is not a collection, so no
+   *  amount of fan-out would have reached them either.
+   *
+   *  Late-bound and optional: a dbless / partial harness has no meta store, and
+   *  absent ⇒ the handler falls back to the single-collection read rather than
+   *  failing. That fallback is the PRE-EXISTING behaviour, so a missing wire
+   *  costs remote reach and never correctness. */
+  getFileViewResolver?: () => FileViewResolver | undefined;
   /** D-172 P2 — the session's own message rows, for `file.search`'s default
    *  (and safe) scope. Optional because a dbless / partial harness has no chat
    *  store; absent ⇒ session scope returns EMPTY with a stated reason rather
@@ -1167,6 +1180,47 @@ const createMailSearchHandler =
         // only stepping to the next message can. DIRECTION is what makes it
         // cheap: the reply is AFTER, the context BEFORE, so the caller asks for
         // one side instead of paying for a whole thread.
+        // ⛔⛔ AN UNRESOLVABLE ANCHOR MUST NOT ANSWER WITH AN EMPTY PAGE.
+        // `neighbours()` returns [] both for "the anchor exists and has no
+        // neighbour on that side" and for "no such record", so without this
+        // check the two are ONE observation and the caller cannot tell a real
+        // edge from an id it made up. Measured, that is not hypothetical: a
+        // live model composed six `near_id` values it had never read
+        // (`mail:pobm0001pob` …, pattern-matched off the corpus's id scheme)
+        // and every one came back `ok: true, matches: []` — refusing by
+        // SUCCEEDING, which reads as "the thread ends here" and is the one
+        // answer that invites no correction.
+        //
+        // Stays `ok: true`: a Tier-1 read reports absence in the BODY, never by
+        // failing, because `ok` is the anti-loop signal and an `ok: false` here
+        // re-opens the agent retry loop over a caller error that retrying
+        // cannot fix.
+        const anchorFound = collections.some((c) => {
+          try {
+            return c.get(nearId) !== null;
+          } catch {
+            return false;
+          }
+        });
+        if (!anchorFound) {
+          return {
+            ok: true,
+            result: {
+              matches: [],
+              more_matches: false,
+              collections: collections.map((c) => c.slug),
+              anchor_not_found: nearId,
+              note:
+                `No message with record_id ${JSON.stringify(nearId)} exists in `
+                + `the enrolled mailboxes, so there is nothing to step from. `
+                + `Pass a record_id returned by an earlier search — ids cannot `
+                + `be constructed or guessed.`,
+              source_freshness: collectionSourceFreshnessFanOut(
+                collections, (deps.now ?? Date.now)(),
+              ),
+            },
+          };
+        }
         for (const c of collections) {
           const near = (c as unknown as {
             neighbours?: (q: { anchor_id: string; next?: number; prev?: number }) => Array<{
@@ -1711,11 +1765,20 @@ const FILE_SEARCH_MAX_LIMIT = 100;
 interface ChatFileRow {
   file_id: string;
   filename: string;
+  /** The file's path within its tree — a LOCAL relative path, or the vendor
+   *  tree path mirrored into `FileMetaProjection.path` for a D-192 remote
+   *  source. Projected because it is now matchable: a hit the model cannot see
+   *  the reason for is one it will describe wrongly. Omitted when absent. */
+  path?: string;
   media_class: string;
   size_bytes: number;
   origin: string;
   scan_status: string;
   received_at: number;
+  /** Present only for a D-192 mirrored file — the model should be able to tell
+   *  a file the owner HOLDS from one a vendor holds on their behalf. */
+  posture?: 'remote';
+  provider?: string;
 }
 
 const projectChatFileRow = (record: {
@@ -1730,6 +1793,7 @@ const projectChatFileRow = (record: {
   return {
     file_id: record.record_id,
     filename: str(hot.filename, record.record_id),
+    ...(typeof hot.path === 'string' && hot.path.length > 0 ? { path: hot.path } : {}),
     media_class: str(hot.media_class, 'other'),
     size_bytes: typeof hot.size === 'number'
       ? hot.size
@@ -1742,6 +1806,25 @@ const projectChatFileRow = (record: {
     received_at: typeof record.received_at === 'number' ? record.received_at : 0,
   };
 };
+
+/** A unified view as the chat row. ⚠ `origin` / `scan_status` / `media_class`
+ *  have NO remote analogue, so a mirrored file reports `unknown` / `unscanned` /
+ *  `other` rather than borrowing a CAS row's defaults — a reader deciding
+ *  whether to send a file outward must not be told "checked" about a file
+ *  nobody checked. `provider` is carried so the model can say WHERE the file
+ *  lives, which is the difference between "you have it" and "Dropbox has it". */
+const projectFileView = (v: DataFileView): ChatFileRow => ({
+  file_id: v.record_id,
+  filename: v.filename,
+  ...(v.path !== undefined && v.path.length > 0 ? { path: v.path } : {}),
+  media_class: v.media_class ?? 'other',
+  size_bytes: v.size ?? 0,
+  origin: v.origin ?? 'unknown',
+  scan_status: v.scan_status ?? 'unscanned',
+  received_at: v.event_at ?? 0,
+  ...(v.posture === 'remote' ? { posture: 'remote' as const } : {}),
+  ...(v.provider !== undefined ? { provider: v.provider } : {}),
+});
 
 const createFileSearchHandler =
   (deps: ChatToolHandlerDeps): Tier1Handler =>
@@ -1792,6 +1875,9 @@ const createFileSearchHandler =
     );
 
     let rows: ChatFileRow[] = [];
+    // Set when the unified resolver answered: it has already matched AND ranked,
+    // so the local filter/sort below must not run over its output.
+    let resolved = false;
     if (scope === 'session') {
       const store = deps.getChatStore?.();
       if (!store || ctx.session_id === undefined) {
@@ -1819,14 +1905,76 @@ const createFileSearchHandler =
         }
       }
     } else {
-      const listed = collection.list?.(FILE_SEARCH_MAX_LIMIT) ?? [];
-      rows = (listed as Parameters<typeof projectChatFileRow>[0][]).map(projectChatFileRow);
+      // ── OWNER-WIDE SCOPE ────────────────────────────────────────────────
+      // ⛔ ROUTED THROUGH THE UNIFIED RESOLVER WHEN THERE IS A NEEDLE. Reading
+      // the collection directly is what made every DECLARED REMOTE SOURCE
+      // invisible to chat: `searchFileViews` merges the CAS space with
+      // `file_meta_ref` across every enrolled Source and applies the same
+      // tiered `scoreFileNeedle`, so local and remote answer one question.
+      //
+      // ⚠ A BLANK QUERY STAYS LOCAL, and that is a property of the substrate
+      // rather than a shortcut: `searchAll` is cross-scope but needle-driven
+      // (blank ⇒ `[]`, because the picker fires per keystroke), and the mirror
+      // has no cross-scope LIST. So "list everything" enumerates the CAS space
+      // only — stated in the tool description rather than left to be discovered.
+      const resolver = deps.getFileViewResolver?.();
+      if (resolver && query.length > 0) {
+        rows = resolver
+          .searchFileViews(query, Math.min(FILE_SEARCH_MAX_LIMIT, Math.max(limit, 1)))
+          .map(projectFileView);
+        resolved = true;
+      } else {
+        const listed = collection.list?.(FILE_SEARCH_MAX_LIMIT) ?? [];
+        rows = (listed as Parameters<typeof projectChatFileRow>[0][]).map(projectChatFileRow);
+      }
     }
 
-    if (query.length > 0) {
-      rows = rows.filter((r) => r.filename.toLowerCase().includes(query));
+    // ⚠ `resolved` ⇒ the resolver ALREADY applied `scoreFileNeedle` and ranked.
+    // Re-filtering here would be the same rule run twice, and re-sorting would
+    // discard its merge order across the two postures.
+    if (query.length > 0 && !resolved) {
+      // ⛔ FILENAME ALONE LOSES THE FOLDER, AND THE FOLDER IS OFTEN THE SUBJECT.
+      // A file at `Clients/Sandhurst/2026/terms.pdf` is ABOUT Sandhurst and says
+      // so nowhere in its leaf name, so a filename-only match answered nothing
+      // for the one term a person would actually search. `path` is already in
+      // `hot_fields` for local files, and is mirrored from
+      // `FileMetaProjection.path` — the vendor tree path — for a D-192 remote
+      // source, so this costs no new storage and no new read.
+      // ⛔⛔ AND THE WHOLE QUERY WAS MATCHED AS ONE LITERAL SUBSTRING, so any
+      // multi-word query missed almost everything. Measured — the index named
+      // `file.search` for `sandhurst`, `renewal` AND `notice` separately, the
+      // model then asked for "Sandhurst renewal notice" as a phrase, and got
+      // ZERO against a file named `renewal-notice-83-days.pdf` under
+      // `Clients/Sandhurst/2026/`. Every term was present; the phrase was not.
+      // The index is what made this visible: it asserted the store held the
+      // words, and the tool could not retrieve them.
+      //
+      // Now every TERM must appear somewhere in name+path — the same
+      // all-terms-must-match rule the FTS stores get from FTS5's implicit AND.
+      // A single-term query behaves exactly as before.
+      // ⛔ CALL THE RULE, DO NOT RE-IMPLEMENT IT — `scoreFileNeedle` is the one
+      // definition, and this file having its own copy is how the two drifted
+      // apart in the first place (filename-only here, path-only there).
+      //
+      // 🔑 SCORED, NOT FILTERED: a VERBATIM hit outranks an every-term hit, and
+      // the sort below puts it first. Flattening the two would hand back
+      // `Sandhurst/invoice-10823.pdf` and `renewal-notice.pdf` as equals for the
+      // query "renewal notice" and let recency alone decide — which is the same
+      // relevance-then-recency ordering the FTS stores get, thrown away.
+      const scored = new Map<string, 0 | 1 | 2>();
+      rows = rows.filter((r) => {
+        const score = scoreFileNeedle(r.filename, r.path ?? '', query);
+        if (score > 0) scored.set(r.file_id, score);
+        return score > 0;
+      });
+      rows.sort((a, b) => (scored.get(b.file_id) ?? 0) - (scored.get(a.file_id) ?? 0)
+        || b.received_at - a.received_at);
     }
-    rows.sort((a, b) => b.received_at - a.received_at);
+    // ⚠ ONLY when there is no query. A ranked list must not be re-sorted by
+    // recency alone — that is exactly the eviction the recency FLOOR exists to
+    // bound on the FTS stores, and doing it here would silently discard the
+    // phrase-vs-terms distinction the scorer just drew.
+    if (query.length === 0 && !resolved) rows.sort((a, b) => b.received_at - a.received_at);
     const truncated = rows.length > limit;
     rows = rows.slice(0, limit);
 

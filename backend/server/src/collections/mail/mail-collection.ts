@@ -254,11 +254,28 @@ export const mailFtsText = (record: CollectionRecord): string => {
       for (const x of v) if (typeof x === 'string' && x.length > 0) parts.push(x);
     }
   };
+  // ⛔⛔ SUBJECT AND BODY FIRST, ADDRESSES LAST — THE ORDER IS THE SNIPPET.
+  // `snippet()` returns a TOKEN window centred on the match, and this blob used
+  // to open with from/to/cc: `ops@sandhurst-bench.test` alone tokenises to four
+  // terms, so the address lines ate 8 of the 15 available tokens and the window
+  // closed BEFORE the sentence that answered the question.
+  //
+  // Measured against a live model: mail.search returned
+  //   `ops@…\nme@…\nRenewal notice period\nWe agreed the renewal…`
+  // — cut four tokens short of "is 83 days" — and the model reported, correctly
+  // for what it was handed, "the full message content isn't visible in the
+  // search results". Reordering surfaces the figure for every query that
+  // previously missed it.
+  //
+  // ⚠ MATCHING AND RANKING ARE UNAFFECTED. FTS5 term matching is
+  // position-independent and BM25 scores on frequency + document length, not
+  // offset. The addresses are still indexed and still searchable; they simply
+  // stop occupying the part of the window a reader needs.
+  push(hot.subject);
+  if (record.body_inline) parts.push(record.body_inline);
   push(hot.from);
   push(hot.to);
   push(hot.cc);
-  push(hot.subject);
-  if (record.body_inline) parts.push(record.body_inline);
   return parts.join('\n');
 };
 

@@ -1,3 +1,4 @@
+import { formatPairTtlLabel } from '../pairing.js';
 import type { RuntimeConfigStore } from '@recued/config';
 import type { NotificationBlock } from '@recued/notification';
 
@@ -218,6 +219,7 @@ export const startPostHousekeepingTail = (
     recipeCount: storage.recipeStore.size(),
     llmConfig: options.app.llmConfig,
     pairingCode: storage.pairing?.getCode(),
+    pairingTtlLabel: storage.pairing ? formatPairTtlLabel(storage.pairing.timeRemaining()) : undefined,
     notEnrolled: storage.recoveryKeyCheck
       ? !storage.recoveryKeyCheck.exists()
       : false,

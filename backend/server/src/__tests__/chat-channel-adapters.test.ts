@@ -46,6 +46,15 @@ const createFakeChatStore = (): ChatStore & {
 
   return {
     messages,
+    // ⚠ Present so this double still satisfies `ChatStore`, not because these
+    // adapters page or track seen state. A structural double goes stale the
+    // moment the interface grows, and `npm run build` cannot say so — it
+    // excludes tests, so only `typecheck:tests` catches it.
+    async listMessagePage(_session_id: string, limit: number) {
+      const page = messages.slice(-limit);
+      return { messages: page, has_more: messages.length > page.length };
+    },
+    markSessionSeen() {},
     createSession(input) {
       sessions.add(input.id);
       return {

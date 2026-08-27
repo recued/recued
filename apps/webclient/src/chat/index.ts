@@ -14,6 +14,7 @@
 export {
   initialChatThreadState,
   hydrateThreadFromSnapshot,
+  prependOlderMessages,
   beginInFlightTurn,
   reduceChatThreadEvent,
   isChatThreadEvent,

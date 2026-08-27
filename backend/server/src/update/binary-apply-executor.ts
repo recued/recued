@@ -74,7 +74,34 @@ export const writeStagedSig = (stagedPath: string, sig: string): void => {
  *  in a `finally`. */
 export type DownloadFn = (url: string, destPath: string) => Promise<void>;
 
-export const UPDATE_ARTIFACT_MAX_BYTES = 128 * 1024 * 1024;
+/** Ceiling on a downloaded update artifact.
+ *
+ *  ⛔⛔ WAS 128 MiB, AND EVERY BINARY WE SHIP WAS BIGGER THAN THAT. Measured
+ *  against the live stable feed on 2026-08-27:
+ *
+ *      macos-arm64    139,920,256   over
+ *      linux-arm64    141,626,496   over
+ *      linux-x64      145,558,720   over
+ *      windows-x64    109,505,536   under
+ *
+ *  Three of four platforms could therefore never self-update: the download
+ *  refused its own release as too large before a byte was written, surfacing as
+ *  `download-failed`. That is the SERVER's in-app apply too, not just the CLI —
+ *  same executor, same constant. Found by driving a real 26.8.24 binary at the
+ *  real feed; no test could see it, because every test injects `download`.
+ *
+ *  🔑 THIS IS A RESOURCE GUARD, NOT A TRUST BOUNDARY, which is what makes the
+ *  headroom cheap. Nothing is executed on the strength of having been
+ *  downloaded — `verifyArtifactFile` checks sha256 AND the detached minisign
+ *  signature against the pinned key before anything moves into place. The cap
+ *  only bounds how much disk a hostile or broken endpoint can make us spend, and
+ *  `UPDATE_MIN_FREE_HEADROOM_BYTES` is the real protection there.
+ *
+ *  512 MiB is ~3.5x the largest artifact today. The SEA grows with Node itself
+ *  plus the bundled recipes, so pick headroom in multiples, not megabytes —
+ *  and `release-build.mjs` now refuses to PUBLISH an artifact above this, so
+ *  the two can no longer drift apart silently. */
+export const UPDATE_ARTIFACT_MAX_BYTES = 512 * 1024 * 1024;
 export const UPDATE_DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 
 export interface UpdateDownloadOptions {

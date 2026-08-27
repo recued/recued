@@ -593,14 +593,22 @@ describe('D-137 P1 — chat.tool_call_completed status-discriminated shape (§ W
 });
 
 describe('D-137 P1 — CHAT_SESSION_CHANGED_FIELDS closed list (§ Wire A)', () => {
-  it('lists exactly four field discriminators', () => {
+  /** ⚠ `busy` joined the four in the session-busy slice, and it is unlike its
+   *  siblings: the others describe STORED session state, read back from a row.
+   *  `busy` is PROCESS state — never persisted, and false for every session
+   *  after a restart, because a restart ends turns rather than interrupting
+   *  them. It rides this kind rather than a new one because `chat.session_changed`
+   *  is already in `WEBCLIENT_DEFAULT_SUBSCRIPTIONS`, and a kind no client names
+   *  is dead on the wire. */
+  it('lists exactly five field discriminators', () => {
     expect(CHAT_SESSION_CHANGED_FIELDS).toEqual([
       'picker',
       'model_pref',
       'title',
       'archived',
+      'busy',
     ]);
-    expect(CHAT_SESSION_CHANGED_FIELD_SET.size).toBe(4);
+    expect(CHAT_SESSION_CHANGED_FIELD_SET.size).toBe(5);
   });
 
   it('isChatSessionChangedField accepts every field + rejects unknown', () => {

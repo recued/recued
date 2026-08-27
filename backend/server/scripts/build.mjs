@@ -18,15 +18,23 @@
  * of esbuild because esbuild doesn't emit .d.ts.
  */
 
+import { builtinModules } from 'node:module';
 import { build } from 'esbuild';
 import { chmodSync, mkdirSync, readdirSync, rmSync, cpSync, existsSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(__dirname, '..');
 const SRC = join(PKG_ROOT, 'src');
 const OUT = join(PKG_ROOT, 'dist');
+
+/** The declared inventory of every npm package our code reaches, and what each
+ *  artifact must do with it. See `backend/server/dependency-manifest.json` — it is the
+ *  single place that records the ESM/SEA split, and the reason it exists. */
+const DEP_MANIFEST = JSON.parse(
+  readFileSync(join(PKG_ROOT, 'dependency-manifest.json'), 'utf8'),
+);
 
 // Read the package version so we can bake it into the bundle. Distribution
 // versioning is CALENDAR-BASED semver `yy.m.d` (Pacific) — package.json is the
@@ -167,6 +175,114 @@ if (existsSync(OUT)) {
 }
 mkdirSync(OUT, { recursive: true });
 
+/** ⛔⛔ THE SEA HAS NO `node_modules`. ANY BARE `require()` LEFT IN THE CJS
+ *  BUNDLE IS A PACKAGE THAT WILL NOT EXIST AT RUNTIME.
+ *
+ *  `SEA_EXTERNAL` is builtins-only, so every npm package our code touches is
+ *  supposed to be INLINED. A `require('<name>')` that survives into the output
+ *  means esbuild could not see the dependency — the usual cause being a
+ *  `createRequire()` shadow, which is opaque to it. Inside the binary that call
+ *  throws `Cannot find module`, and whatever fallback the call site has takes
+ *  over.
+ *
+ *  🔑 THIS SHIPPED. `ws-server.ts` reached the socket library through exactly
+ *  such a shadow. Every released binary threw `Cannot find module 'ws'`, fell
+ *  into a stub whose upgrade callback destroyed the socket without writing a
+ *  byte, and served a server that booted, printed a pairing code, answered
+ *  `/health` and `/webclient/` with 200s — and could not be paired to by
+ *  anything. Found 2026-08-27 by driving a signed binary; no test could see it
+ *  because every suite runs from source, where the package is present.
+ *
+ *  ⚠ CHECKED ON THE EMITTED ARTIFACT, and that is the point. The externals
+ *  above were verified by RUNNING the bundle in a directory with no
+ *  node_modules — thorough, and still blind here, because `createRequire`
+ *  resolves against a real filesystem path and walks UP into the repo's own
+ *  node_modules. A SEA has no such path. Reading the output is the one probe
+ *  that does not depend on where it ran.
+ *
+ *  Unprefixed builtins (`stream`, `events`, …) are fine: bundled third-party
+ *  code uses the classic spelling and a SEA resolves builtins by definition. */
+/** Packages whose ABSENCE IS DESIGNED FOR — the requiring package catches the
+ *  failure and keeps working with no loss of function.
+ *
+ *  ⛔ THE BAR IS "STILL CORRECT WITHOUT IT", NOT "DOES NOT CRASH". `ws` reaches
+ *  these two through its own guarded `require`; without them it uses its pure-JS
+ *  masking and validation and behaves identically, just slower. That is the only
+ *  reason they may stay unresolved.
+ *
+ *  ⚠ `ws` ITSELF WOULD HAVE LOOKED LIKE A CANDIDATE, and adding it here would
+ *  have re-shipped the outage this guard exists to prevent: its call site also
+ *  "handled" the missing module — by falling back to a stub that destroyed every
+ *  WebSocket in silence. Before adding anything, ask what the fallback DOES, not
+ *  whether one exists. */
+const OPTIONAL_UNRESOLVED = new Set(Object.keys(DEP_MANIFEST.optional_unresolved ?? {}));
+
+/** ⛔ THE OTHER HALF: A PACKAGE CAN GO MISSING WITHOUT LEAVING A `require()`
+ *  BEHIND. `assertNoUnresolvedBareRequires` proves nothing is left DANGLING; it
+ *  cannot prove a package is actually THERE. Delete a call site, tree-shake a
+ *  branch, or mis-declare an external and the bundle simply shrinks — no bare
+ *  require, no error, and the feature is gone from the artifact while every
+ *  source-run test stays green. That is the same blind spot the `ws` outage
+ *  lived in, approached from the other side.
+ *
+ *  esbuild stamps each inlined module with its `node_modules/<pkg>/` path, so
+ *  the presence of that string is the artifact's own statement that it carries
+ *  the package.
+ *
+ *  ⚠ Depends on the bundle NOT being minified (it is not, and it is 19 MB, so
+ *  this is not close). If minification is ever turned on, these markers vanish
+ *  and this check must move to a different signal rather than be deleted. */
+const assertManifestPackagesPresent = (outfile, format) => {
+  const text = readFileSync(outfile, 'utf8');
+  const missing = [];
+  for (const [name, spec] of Object.entries(DEP_MANIFEST.packages ?? {})) {
+    const disposition = spec[format];
+    // `external` (esm) and `sidecar` (sea) are resolved OUTSIDE the bundle by
+    // design; only an inlined package must be findable inside it.
+    if (disposition !== 'inlined') continue;
+    if (!text.includes(`node_modules/${name}/`)) missing.push(name);
+  }
+  if (missing.length === 0) return;
+  console.error(
+    `[build] FATAL: ${basename(outfile)} does not contain: ${missing.join(', ')}\n`
+    + `  backend/server/dependency-manifest.json declares these "${format}": "inlined", so the\n`
+    + '  artifact must carry their code. A missing one means the call site stopped\n'
+    + '  reaching the package — the feature is absent from the build while every\n'
+    + '  test that runs from source still passes.',
+  );
+  process.exit(1);
+};
+
+const assertNoUnresolvedBareRequires = (outfile) => {
+  const text = readFileSync(outfile, 'utf8');
+  const builtins = new Set([...builtinModules, ...builtinModules.map((m) => `node:${m}`)]);
+  const offenders = new Map();
+  // ⚠ MATCH ANY IDENTIFIER ENDING IN `require`, NOT JUST `require(`. esbuild
+  // RENAMES a shadowed local to avoid colliding with the native CJS one, so the
+  // very call this guard exists to catch is emitted as `require2("ws")`. The
+  // first version of this regex looked for `require(` / `__require(` only, and
+  // a mutation test walked straight past it — green, and blind to its subject.
+  for (const m of text.matchAll(/\b[A-Za-z0-9_$]*require\d*\(\s*["']([^"']+)["']\s*\)/gi)) {
+    const spec = m[1];
+    // `createRequire('file:///…')` takes a PATH, not a package — skip those the
+    // same way relative specifiers are skipped.
+    if (spec.startsWith('.') || spec.startsWith('/') || spec.startsWith('file:')) continue;
+    if (builtins.has(spec) || OPTIONAL_UNRESOLVED.has(spec)) continue;
+    // A deep import into a package (`nodemailer/lib/x`) fails the same way.
+    offenders.set(spec, (offenders.get(spec) ?? 0) + 1);
+  }
+  if (offenders.size === 0) return;
+  const list = [...offenders.entries()].map(([k, n]) => `    ${k} (${n}×)`).join('\n');
+  console.error(
+    `[build] FATAL: ${basename(outfile)} still requires packages by name:\n${list}\n`
+    + '  The SEA binary has no node_modules, so each of these throws\n'
+    + '  `Cannot find module` at runtime and silently takes its fallback path.\n'
+    + '  Fix the call site to a STATIC import so esbuild bundles it — do not add\n'
+    + '  it to SEA_EXTERNAL, which makes it unloadable rather than merely absent.',
+  );
+  process.exit(1);
+};
+
 console.log('[build] bundling entry points via esbuild');
 const common = {
   bundle: true,
@@ -248,6 +364,7 @@ const binResult = await build({
   metafile: true,
 });
 assertNoStaleSrcJsShadow(binResult.metafile, 'bin.js');
+assertManifestPackagesPresent(join(OUT, 'bin.js'), 'esm');
 
 const indexResult = await build({
   ...common,
@@ -289,6 +406,8 @@ const seaResult = await build({
   metafile: true,
 });
 assertNoStaleSrcJsShadow(seaResult.metafile, 'bin.cjs');
+assertNoUnresolvedBareRequires(join(OUT, 'bin.cjs'));
+assertManifestPackagesPresent(join(OUT, 'bin.cjs'), 'sea');
 
 // D-178 — the thin `:managed` image launcher (I-9 frozen verify-and-exec loop).
 // Bundled standalone so the `:managed` image carries ONLY the launcher + node,

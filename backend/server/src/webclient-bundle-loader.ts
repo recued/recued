@@ -34,7 +34,7 @@
  *  drift) is thrown later, by the handler, not here. */
 
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { readFile, realpath } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 import {
@@ -142,6 +142,43 @@ export const resolveSourceTreeWebclientDir = (): string | undefined => {
   return hasBundleManifest(dir) ? dir : undefined;
 };
 
+/** The INSTALL-DIR bundle — `<dir of the running executable>/webclient`.
+ *
+ *  ⛔ WHY THIS TIER HAS TO EXIST. The deployment dir above is derived from the
+ *  CAS root, which hangs off `dbPath` — and `dbPath` defaults to
+ *  `./recued-server.db`, RELATIVE TO THE WORKING DIRECTORY (`serve-entry.ts`,
+ *  resolved before config and never overridden by it). So the deployment dir
+ *  moves with whatever directory `recued serve` happened to be run from, which
+ *  an installer cannot know, predict, or write to ahead of time. `install.sh`
+ *  therefore drops the release's bundle beside the binary it just installed:
+ *  the one location it owns, version-matched with that binary, and independent
+ *  of CWD, user, and config. Without this tier those bytes are unreachable and
+ *  `/webclient` 404s on every fresh install — which is exactly what it did.
+ *
+ *  Ranked BELOW the deployment dir so a self-update — which extracts to the
+ *  deployment dir and never here — always wins over the originally-installed
+ *  copy, and BELOW the source tree so a clone still serves what it just built.
+ *
+ *  Returns undefined unless a manifest is actually there, so an install that
+ *  runs the server under a node on PATH (execPath = the node binary) simply
+ *  skips this tier rather than probing a directory it has no claim on. The
+ *  realpath is for `$BINDIR/recued` → `$PREFIX/recued`: Node normally resolves
+ *  argv[0] itself, but a symlinked exe that slipped through would otherwise
+ *  look beside the SYMLINK and find nothing. */
+export const resolveInstalledWebclientDir = (
+  execPath: string = process.execPath,
+): string | undefined => {
+  let exe = execPath;
+  try {
+    exe = realpathSync(execPath);
+  } catch {
+    // Unreadable / already-removed exe path — fall back to the raw value; the
+    // manifest probe below is the real gate either way.
+  }
+  const dir = join(dirname(exe), 'webclient');
+  return hasBundleManifest(dir) ? dir : undefined;
+};
+
 /** The dir the SERVING path reads — `resolveWebclientBundleDir` plus a
  *  source-checkout fallback, so `tsx backend/server/src/bin.ts serve` in a
  *  clone serves the webclient it just built without an env var.
@@ -152,7 +189,10 @@ export const resolveSourceTreeWebclientDir = (): string | undefined => {
  *       and its present-but-untrusted / drifted outcomes still surface as the
  *       loader's typed error rather than being silently skipped;
  *    2. the source-tree build, when one exists;
- *    3. the deployment dir as-is (the common "nothing anywhere" → dormant path,
+ *    3. the install dir beside the running executable, where `install.sh`
+ *       drops the release's bundle (see `resolveInstalledWebclientDir` for why
+ *       an installer cannot target tier 1);
+ *    4. the deployment dir as-is (the common "nothing anywhere" → dormant path,
  *       keeping the absent-dir semantics identical to before).
  *
  *  Serving + the servability probe share this so they agree. The self-update
@@ -166,10 +206,11 @@ export const resolveServedWebclientBundleDir = (
   cacheBlobsRoot: string | undefined,
   dirOverride: string | undefined,
   sourceTreeDir: () => string | undefined = resolveSourceTreeWebclientDir,
+  installedDir: () => string | undefined = resolveInstalledWebclientDir,
 ): string | undefined => {
   const deployed = resolveWebclientBundleDir(cacheBlobsRoot, dirOverride);
   if (deployed && hasBundleManifest(deployed)) return deployed;
-  return sourceTreeDir() ?? deployed;
+  return sourceTreeDir() ?? installedDir() ?? deployed;
 };
 
 /** R26.2 Delta 3 — boot-time servability probe for the apex `serve_webclient`

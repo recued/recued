@@ -18,7 +18,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { makeBoundedOriginHttpFetcher } from '../bounded-origin-http-fetcher.js';
 
-export type UrlSource = 'configured' | 'LAN' | 'public IP';
+export type UrlSource = 'configured' | 'this machine' | 'LAN' | 'public IP';
 
 export interface ResolvedUrl {
   /** Absolute URL — `http://` for non-TLS LAN/loopback, `https://` for
@@ -193,6 +193,22 @@ export const enumerateServerUrls = async (
     out.push({ url: `${proto}://${config.configuredHostname}`, source: 'configured' });
   }
 
+  // ⛔ LOOPBACK IS LISTED FIRST, AND IT WAS MISSING ENTIRELY. `collectLanInterfaces`
+  // skips `entry.internal`, so `recued pair` could never name `127.0.0.1` — the
+  // one address an owner running this command ON the server machine is most
+  // likely to want. It is also the only address that needs no certificate AND
+  // counts as a secure context, which is what Web Crypto (and therefore the
+  // whole webclient boot) requires; a LAN origin over plain http is not one.
+  //
+  // ⚠ Served in every default configuration: a DETECTED LAN address binds
+  // `0.0.0.0` and the no-LAN fallback binds loopback itself
+  // (`network/resolve-lan-address.ts`). The single case where this row would not
+  // answer is an operator who pinned `lan_bind_address` to one non-loopback IP
+  // by hand. This list is explicitly a set of HINTS — it already prints a
+  // `public IP` row that is unreachable without a port-forward — so naming the
+  // address that works almost everywhere beats omitting it for the rare pin.
+  out.push({ url: `http://127.0.0.1:${config.port}`, source: 'this machine' });
+
   for (const ip of collectLanInterfaces(deps)) {
     // IPv6 needs square brackets in URLs.
     const host = ip.includes(':') ? `[${ip}]` : ip;
@@ -210,11 +226,13 @@ export const enumerateServerUrls = async (
 /** Format the enumeration as the spec's two-column block:
  *
  *      https://my-server.example.com         configured
+ *      http://127.0.0.1:8080                  this machine
  *      http://192.168.1.42:8080               LAN
  *      https://203.0.113.42:8080              public IP
  *
- *  Single space-padded alignment; right column never wider than the
- *  longest source label (which is `public IP` at 9 chars). */
+ *  Single space-padded alignment. The column position is driven by the
+ *  longest URL, not by the source label, so a wider label (`this
+ *  machine`) does not disturb it. */
 export const formatUrlList = (urls: ResolvedUrl[]): string => {
   if (urls.length === 0) return '  (no reachable URLs detected — check network config)';
   const maxUrl = urls.reduce((n, r) => Math.max(n, r.url.length), 0);

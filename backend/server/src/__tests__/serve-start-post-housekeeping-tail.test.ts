@@ -75,7 +75,11 @@ const makeOptions = (
       db: { tag: 'db' },
       manifests: { size: vi.fn(() => 34) },
       recipeStore: { size: vi.fn(() => 12) },
-      pairing: { getCode: vi.fn(() => 'PAIR-CODE') },
+      // ⚠ Mirrors the real PairingManager surface the banner reads. A stub
+      // narrower than its subject makes the caller look safe: this one had
+      // only getCode(), so adding the TTL read crashed here rather than in
+      // a type error.
+      pairing: { getCode: vi.fn(() => 'PAIR-CODE'), timeRemaining: vi.fn(() => 900_000) },
       recoveryKeyCheck: { exists: vi.fn(() => false) },
       auditRetention: { tag: 'audit-retention' },
       s2sPreviewStoreRef: { tag: 's2s-preview-store' },
@@ -157,6 +161,10 @@ describe('startPostHousekeepingTail', () => {
       recipeCount: 12,
       llmConfig: options.app.llmConfig,
       pairingCode: 'PAIR-CODE',
+      // Formatted by the CALLER: log-boot-banner imports nothing, and a local
+      // copy of this formatter is what let it hard-code '15 min' while
+      // `recued pair` printed the real window on the same machine.
+      pairingTtlLabel: '15 min',
       notEnrolled: true,
       // Read from the dispatch seam's own `isAutoPiiDisabled()` so the banner
       // cannot disagree with what execution actually does. `false` here because

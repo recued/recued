@@ -35,6 +35,7 @@ import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 
 import {
+  FTS_REINDEX_PAGE,
   createFtsTable,
   dropFtsTable,
   indexRecord as ftsIndexRecord,
@@ -471,7 +472,40 @@ export const createCalendarTable = (
     CREATE INDEX IF NOT EXISTS idx_${tableName}_calendar
       ON ${tableName} (calendar_id);
   `);
-  createFtsTable(db, ftsName);
+  // One-time rebuild when the stored FTS text's format changes — see
+  // `FTS_CONTENT_FORMAT`. Format 2 space-separates unspaced scripts so a
+  // 2-character CJK/Thai term in an event title matches as an adjacent phrase
+  // rather than only where it begins a run.
+  //
+  // ⚠ Mirrors the upsert path exactly, INCLUDING the CAS rule: a description
+  // that spilled to a blob is not in `body_inline`, and the index carries
+  // summary-only for that row. Re-deriving it any other way here would make the
+  // rebuilt index disagree with every subsequent upsert.
+  createFtsTable(db, ftsName, {
+    reindex: () => {
+      // ⛔ PAGED, NOT `.iterate()` — better-sqlite3 refuses a write while a read
+      // statement is iterating, and this loop writes per row. See the note in
+      // `collections/table.ts`; the failure is silent and empties the index.
+      const page = db.prepare(
+        `SELECT record_id, record_payload, body_inline FROM ${tableName} `
+        + `WHERE record_id > ? ORDER BY record_id LIMIT ?`,
+      );
+      let after = '';
+      for (;;) {
+        const rows = page.all(after, FTS_REINDEX_PAGE) as Array<{
+          record_id: string; record_payload: string; body_inline: string | null;
+        }>;
+        if (rows.length === 0) break;
+        for (const row of rows) {
+          const event = JSON.parse(row.record_payload) as CanonicalEvent;
+          const inline = row.body_inline !== null && row.body_inline !== ''
+            ? row.body_inline : null;
+          ftsIndexRecord(db, ftsName, row.record_id, ftsTextFor(event, inline));
+        }
+        after = rows[rows.length - 1].record_id;
+      }
+    },
+  });
 
   const reportDelta = (delta: number): void => {
     if (!onBytesChanged || delta === 0) return;

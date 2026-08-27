@@ -16,6 +16,11 @@ export interface LogBootBannerOptions {
   recipeCount: number;
   llmConfig: BootBannerLlmConfig | undefined;
   pairingCode: string | null | undefined;
+  /** Pre-formatted remaining window for `pairingCode` (e.g. '7 days').
+   *  ⛔ The caller formats it: this module imports NOTHING by design, and a
+   *  local copy of the formatter is what let the banner hard-code '15 min'
+   *  while `recued pair` computed the real one on the same machine. */
+  pairingTtlLabel?: string | null | undefined;
   notEnrolled: boolean;
   /** True when the owner's `privacy.auto_pii_protection` setting is OFF, so
    *  the dispatch seam does not alias PII (`isAutoPiiDisabled()`). Renders a
@@ -85,6 +90,7 @@ export const renderBootBanner = (options: LogBootBannerOptions): string => {
     recipeCount,
     llmConfig,
     pairingCode,
+    pairingTtlLabel,
     notEnrolled,
     autoPiiDisabled,
   } = options;
@@ -136,6 +142,8 @@ export const renderBootBanner = (options: LogBootBannerOptions): string => {
      ${localBase}/webclient/   (this server)`
     : `     ${HOSTED_WEBCLIENT_URL}   (hosted ${EM_DASH} any device)`;
 
+  const pairTtl = pairingTtlLabel ?? '15 min';
+
   const pairingBlock = notEnrolled
     ? `
   ${WARN}  Server is not encrypted yet ${EM_DASH} operations are blocked until you
@@ -146,7 +154,7 @@ ${webclientTargets}
 
   Then, in the webclient:
   1. Server URL:    ${localBase}
-     Pairing code:  ${pairingCode}   (expires in 15 min)
+     Pairing code:  ${pairingCode ? `${pairingCode}   (expires in ${pairTtl})` : `none live ${EM_DASH} run \`recued pair\` to mint one`}
   2. Choose "Generate a new one" to create your 24-word recovery key
      and write it down ${EM_DASH} or enter an existing key to re-pair.
 
@@ -156,7 +164,7 @@ ${webclientTargets}
   Add a browser ${EM_DASH} open the Recued webclient:
 ${webclientTargets}
   Then enter Server URL ${localBase} and the pairing code:
-  Pairing code: ${pairingCode}  (expires in 15 min)
+  Pairing code: ${pairingCode}  (expires in ${pairTtl})
 ` : '';
 
   // Posture warning — printed on EVERY boot while the hatch is engaged, not

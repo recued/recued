@@ -29,6 +29,27 @@ import type { Socket } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import type { PortUpgradeHandler } from '@recued/server-tls';
 import { createRequire } from 'node:module';
+
+/** ⛔⛔ STATIC, NOT `require('ws')`, AND THIS IS THE WHOLE BUG. The runtime
+ *  require below (`createRequire`) is invisible to the bundler, so the SEA
+ *  binary shipped WITHOUT the `ws` package: `require('ws')` threw
+ *  `Cannot find module 'ws'`, the catch returned the stub handle whose upgrade
+ *  callback destroys the socket, and EVERY WebSocket upgrade died with no
+ *  status line, no headers and no log entry. Measured on a signed 26.8.26-line
+ *  binary 2026-08-27: `/health` 200, `/webclient/` 200, an unknown-path upgrade
+ *  a clean 404, and `/ws` an empty reply — a server that looks completely
+ *  healthy and cannot be paired to.
+ *
+ *  🔑 NO TEST COULD SEE IT. Every suite runs from source, where `node_modules/ws`
+ *  is right there and the require succeeds. The defect exists only in the
+ *  artifact we ship, which is the one thing the suite never executes.
+ *
+ *  A static import is also what three other server modules already do
+ *  (`mcp-ws-connector`, `cli/rpc-client`, `messenger-ingress/local-runners`), so
+ *  `ws` was in the bundle the whole time — only this call site failed to reach
+ *  it. Static means a missing `ws` is now a BUILD failure instead of a silent
+ *  runtime downgrade, which is the correct place to find out. */
+import * as wsLib from 'ws';
 import {
   composeHandlers,
   createPendingMap,
@@ -1561,13 +1582,19 @@ const buildWsBinding = (
   // paired devices share one account) but we don't currently enforce —
   // mismatches are a register-time reject path (future work).
   let pairedUserId: string | undefined;
-  let ws: any;
-  try {
-    ws = require('ws');
-  } catch {
-    // `ws` package missing — surface a stub handle. The path-router /
-    // legacy server.on('upgrade') wiring rejects upgrades because the
-    // upgrade callback is a no-op (closes the socket immediately).
+  // Resolved at build time by the bundler (see the import note at the top of
+  // this file). The guard below is kept for a module that loads but is not the
+  // shape we expect; it can no longer be reached by a missing package.
+  const ws: any = wsLib;
+  if (!ws?.WebSocketServer) {
+    // ⚠ NOT SILENT ANY MORE. The old stub destroyed every upgrade without a
+    // word, so the failure presented as "the server ignores me" — the single
+    // hardest shape to diagnose, and it cost a full production release.
+    console.error(
+      '[ws] FATAL: the `ws` module loaded without a WebSocketServer export. '
+      + 'No WebSocket upgrade can succeed — pairing, chat and every paired '
+      + 'client are dead on this build.',
+    );
     return {
       handle: {
         clientCount: () => 0,
@@ -1587,7 +1614,14 @@ const buildWsBinding = (
         closeAllForWsLockout: () => 0,
         close: () => Promise.resolve(),
       },
-      upgrade: (_req, socket) => { try { socket.destroy(); } catch { /* socket already closed */ } },
+      // Answer, do not vanish. A destroyed socket with no bytes is
+      // indistinguishable from an unreachable host at every layer above —
+      // the browser reports close 1006, the client says "can't reach your
+      // server", and the owner debugs a network that was never the problem.
+      upgrade: (_req, socket) => {
+        try { socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n'); } catch { /* closed */ }
+        try { socket.destroy(); } catch { /* socket already closed */ }
+      },
     };
   }
 

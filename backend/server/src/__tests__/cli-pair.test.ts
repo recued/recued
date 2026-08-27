@@ -137,10 +137,20 @@ describe('enumerateServerUrls', () => {
         cachePath: join(mkdtempSync(join(tmpdir(), 'recued-')), 'state.json'),
       },
     );
-    expect(urls.map((r) => r.source)).toEqual(['configured', 'LAN', 'public IP']);
-    expect(urls[0].url).toBe('https://my.example.com');
-    expect(urls[1].url).toBe('http://192.168.1.42:8080');
-    expect(urls[2].url).toBe('https://203.0.113.42:8080');
+    expect(urls.map((r) => r.source)).toEqual([
+      'configured',
+      'this machine',
+      'LAN',
+      'public IP',
+    ]);
+    // Addressed by SOURCE, not by index: the order is asserted once above, and
+    // indexing again just re-encodes it so one inserted row breaks four lines.
+    const bySource = (want: string): string =>
+      urls.find((r) => r.source === want)?.url ?? `<no ${want} row>`;
+    expect(bySource('configured')).toBe('https://my.example.com');
+    expect(bySource('this machine')).toBe('http://127.0.0.1:8080');
+    expect(bySource('LAN')).toBe('http://192.168.1.42:8080');
+    expect(bySource('public IP')).toBe('https://203.0.113.42:8080');
   });
 
   it('skips configured row when hostname is empty', async () => {
@@ -152,7 +162,11 @@ describe('enumerateServerUrls', () => {
         cachePath: join(mkdtempSync(join(tmpdir(), 'recued-')), 'state.json'),
       },
     );
-    expect(urls).toEqual([]);
+    // Not empty any more: loopback is always reachable, so the enumerator always
+    // has at least one true row to offer. That is the point of the row — the old
+    // empty answer sent an owner to "check network config" for a server they
+    // could have reached at `127.0.0.1` the whole time.
+    expect(urls).toEqual([{ url: 'http://127.0.0.1:8080', source: 'this machine' }]);
   });
 
   it('uses http://configured when configuredTls is false', async () => {
@@ -178,7 +192,39 @@ describe('enumerateServerUrls', () => {
         cachePath: join(mkdtempSync(join(tmpdir(), 'recued-')), 'state.json'),
       },
     );
-    expect(urls[0].url).toBe('http://[2001:db8::1]:8080');
+    expect(urls.find((r) => r.source === 'LAN')?.url).toBe('http://[2001:db8::1]:8080');
+  });
+
+  it('always offers the loopback row, even with no interfaces and no public IP', async () => {
+    // The gap this closes: `collectLanInterfaces` skips `entry.internal`, so
+    // `recued pair` could never print `127.0.0.1` — the address an owner running
+    // it on the server machine is most likely to use, and the only one that is a
+    // secure context without a certificate.
+    const urls = await enumerateServerUrls(
+      { port: 7717 },
+      {
+        networkInterfaces: () => ({
+          lo0: [{ address: '127.0.0.1', family: 'IPv4', internal: true } as any],
+        }),
+        fetchPublicIp: async () => null,
+        cachePath: join(mkdtempSync(join(tmpdir(), 'recued-')), 'state.json'),
+      },
+    );
+    expect(urls).toEqual([{ url: 'http://127.0.0.1:7717', source: 'this machine' }]);
+  });
+
+  it('lists loopback BEFORE the LAN rows', async () => {
+    const urls = await enumerateServerUrls(
+      { port: 7717 },
+      {
+        networkInterfaces: () => ({
+          en0: [{ address: '192.168.1.42', family: 'IPv4', internal: false } as any],
+        }),
+        fetchPublicIp: async () => null,
+        cachePath: join(mkdtempSync(join(tmpdir(), 'recued-')), 'state.json'),
+      },
+    );
+    expect(urls.map((r) => r.source)).toEqual(['this machine', 'LAN']);
   });
 
   it('skips internal + link-local interfaces', () => {

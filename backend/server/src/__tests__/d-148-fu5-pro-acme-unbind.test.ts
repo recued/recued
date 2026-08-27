@@ -1,4 +1,4 @@
-/** D-148 follow-up #5 — Pro auto-managed `<handle>.recued.cloud` unbind tests.
+/** D-148 follow-up #5 — Pro auto-managed `<handle>.recued.net` unbind tests.
  *
  *  Two surfaces under test:
  *
@@ -215,29 +215,43 @@ describe('D-148 FU5 closed-list ratchets', () => {
 describe('D-148 FU5 helpers', () => {
   describe('canonicaliseProAcmeDomain', () => {
     it('lowercases + trims to match the W3.6 store row key', () => {
-      expect(canonicaliseProAcmeDomain('  Alice.Recued.Cloud  ')).toBe(
-        'alice.recued.cloud',
+      expect(canonicaliseProAcmeDomain('  Alice.Recued.Net  ')).toBe(
+        'alice.recued.net',
       );
     });
     it('preserves the canonical form unchanged', () => {
-      expect(canonicaliseProAcmeDomain('bob.recued.cloud')).toBe(
-        'bob.recued.cloud',
+      expect(canonicaliseProAcmeDomain('bob.recued.net')).toBe(
+        'bob.recued.net',
       );
     });
   });
 
   describe('deriveProAcmeHandle', () => {
-    it('strips the .recued.cloud suffix for a flat Pro handle', () => {
-      expect(deriveProAcmeHandle('alice.recued.cloud')).toBe('alice');
+    it('strips the .recued.net suffix for a flat Pro handle', () => {
+      expect(deriveProAcmeHandle('alice.recued.net')).toBe('alice');
     });
-    it('returns null for a domain without the .recued.cloud suffix', () => {
+    it('returns null for a domain without the .recued.net suffix', () => {
       expect(deriveProAcmeHandle('alice.example.com')).toBeNull();
     });
-    it('returns null for the empty-stem case (`.recued.cloud`)', () => {
-      expect(deriveProAcmeHandle('.recued.cloud')).toBeNull();
+    it('returns null for the empty-stem case (`.recued.net`)', () => {
+      expect(deriveProAcmeHandle('.recued.net')).toBeNull();
     });
     it('returns null for nested sub-subdomains (Pro handles are flat)', () => {
-      expect(deriveProAcmeHandle('evil.alice.recued.cloud')).toBeNull();
+      expect(deriveProAcmeHandle('evil.alice.recued.net')).toBeNull();
+    });
+    it('returns null for the RETIRED zone — enabled zones are the authority', () => {
+      // ⛔ This pins the migration itself. deriveProAcmeHandle hardcoded
+      // '.recued.cloud' until 2026-08-26, months after network.ts moved the fleet
+      // zone to .recued.net and commented .recued.cloud out. Every live Pro domain
+      // failed to derive, and the caller turned that into pro_acme_not_found — so
+      // releasing a handle told the owner it did not exist and left the DDNS record
+      // in place.
+      //
+      // 🔑 These tests passed throughout, because the fixtures named the same
+      // retired zone the implementation did: fixture and implementation agreed
+      // with each other and disagreed with production. Hence this asserts the
+      // DISABLED zone is REFUSED, not merely that the enabled one works.
+      expect(deriveProAcmeHandle('alice.recued.cloud')).toBeNull();
     });
   });
 });
@@ -249,45 +263,45 @@ describe('D-148 FU5 helpers', () => {
 describe('D-148 FU5 substrate — happy path + ordering', () => {
   it('happy path: DDNS release fires → audit row emitted → cert removed', async () => {
     const store = buildStore();
-    await uploadProAcmeRow(store, 'alice.recued.cloud');
+    await uploadProAcmeRow(store, 'alice.recued.net');
     const ddns = buildDdnsStub();
     const effects = buildAuditStub();
 
     const result = await proAcmeUnbind(
       { store, ddns, effects },
-      { domain: 'alice.recued.cloud', unbound_by_client_id: 'paired-1' },
+      { domain: 'alice.recued.net', unbound_by_client_id: 'paired-1' },
     );
 
     expect(result).toEqual({
       ok: true,
       released: true,
-      domain: 'alice.recued.cloud',
+      domain: 'alice.recued.net',
       handle: 'alice',
     });
     expect(ddns.releaseCalls).toEqual([{ handle: 'alice' }]);
     expect(effects.rows).toEqual([
       {
         action: 'pro_acme_unbound',
-        domain: 'alice.recued.cloud',
+        domain: 'alice.recued.net',
         handle: 'alice',
         unbound_by_client_id: 'paired-1',
       },
     ]);
     expect(store.list().map((e) => e.domain)).not.toContain(
-      'alice.recued.cloud',
+      'alice.recued.net',
     );
   });
 
   it('passes operator reason through to BOTH the DDNS release + the audit row', async () => {
     const store = buildStore();
-    await uploadProAcmeRow(store, 'bob.recued.cloud');
+    await uploadProAcmeRow(store, 'bob.recued.net');
     const ddns = buildDdnsStub();
     const effects = buildAuditStub();
 
     await proAcmeUnbind(
       { store, ddns, effects },
       {
-        domain: 'bob.recued.cloud',
+        domain: 'bob.recued.net',
         unbound_by_client_id: 'paired-2',
         reason: 'switching to BYO domain',
       },
@@ -303,27 +317,27 @@ describe('D-148 FU5 substrate — happy path + ordering', () => {
 
   it('canonicalises input domain to match the W3.6 store row (mixed-case + whitespace)', async () => {
     const store = buildStore();
-    await uploadProAcmeRow(store, 'alice.recued.cloud');
+    await uploadProAcmeRow(store, 'alice.recued.net');
     const ddns = buildDdnsStub();
     const effects = buildAuditStub();
 
     const result = await proAcmeUnbind(
       { store, ddns, effects },
       {
-        domain: '  Alice.Recued.Cloud  ',
+        domain: '  Alice.Recued.Net  ',
         unbound_by_client_id: 'paired-1',
       },
     );
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.domain).toBe('alice.recued.cloud');
+    expect(result.domain).toBe('alice.recued.net');
     expect(result.handle).toBe('alice');
   });
 
   it('orders DDNS release BEFORE audit emit (transaction invariant)', async () => {
     const store = buildStore();
-    await uploadProAcmeRow(store, 'alice.recued.cloud');
+    await uploadProAcmeRow(store, 'alice.recued.net');
     const callOrder: string[] = [];
 
     const ddns: DdnsHandleControl = {
@@ -340,7 +354,7 @@ describe('D-148 FU5 substrate — happy path + ordering', () => {
 
     await proAcmeUnbind(
       { store, ddns, effects },
-      { domain: 'alice.recued.cloud', unbound_by_client_id: 'paired-1' },
+      { domain: 'alice.recued.net', unbound_by_client_id: 'paired-1' },
     );
 
     expect(callOrder).toEqual(['ddns', 'audit']);
@@ -348,7 +362,7 @@ describe('D-148 FU5 substrate — happy path + ordering', () => {
 
   it('orders audit emit BEFORE cert removal (W3.5 audit-first invariant)', async () => {
     const store = buildStore();
-    await uploadProAcmeRow(store, 'alice.recued.cloud');
+    await uploadProAcmeRow(store, 'alice.recued.net');
     const observations: Array<{ step: string; rowPresent: boolean }> = [];
     const ddns = buildDdnsStub();
     const effects: ProAcmeAuditSink = {
@@ -357,14 +371,14 @@ describe('D-148 FU5 substrate — happy path + ordering', () => {
           step: 'audit',
           rowPresent: store
             .list()
-            .some((e) => e.domain === 'alice.recued.cloud'),
+            .some((e) => e.domain === 'alice.recued.net'),
         });
       },
     };
 
     await proAcmeUnbind(
       { store, ddns, effects },
-      { domain: 'alice.recued.cloud', unbound_by_client_id: 'paired-1' },
+      { domain: 'alice.recued.net', unbound_by_client_id: 'paired-1' },
     );
 
     // The audit row was emitted while the cert row was still present —
@@ -382,13 +396,13 @@ describe('D-148 FU5 substrate — error outcomes', () => {
   it('returns pro_acme_not_found when the domain doesn\'t exist in the store', async () => {
     const opts = buildOptions();
     const result = await proAcmeUnbind(opts, {
-      domain: 'never-existed.recued.cloud',
+      domain: 'never-existed.recued.net',
       unbound_by_client_id: 'paired-1',
     });
     expect(result).toEqual({
       ok: false,
       error: 'pro_acme_not_found',
-      domain: 'never-existed.recued.cloud',
+      domain: 'never-existed.recued.net',
     });
   });
 
@@ -427,31 +441,31 @@ describe('D-148 FU5 substrate — error outcomes', () => {
 
   it('returns pro_acme_ddns_release_failed when the cloud helper throws', async () => {
     const store = buildStore();
-    await uploadProAcmeRow(store, 'alice.recued.cloud');
+    await uploadProAcmeRow(store, 'alice.recued.net');
     const ddns = buildDdnsStub();
     ddns.setFailure(new Error('cloud quota exceeded'));
     const effects = buildAuditStub();
 
     const result = await proAcmeUnbind(
       { store, ddns, effects },
-      { domain: 'alice.recued.cloud', unbound_by_client_id: 'paired-1' },
+      { domain: 'alice.recued.net', unbound_by_client_id: 'paired-1' },
     );
 
     expect(result).toEqual({
       ok: false,
       error: 'pro_acme_ddns_release_failed',
-      domain: 'alice.recued.cloud',
+      domain: 'alice.recued.net',
     });
     // CRITICAL: audit MUST NOT have emitted, cert row MUST still exist.
     // A failed cloud-side release means no real cloud effect happened;
     // emitting "pro_acme_unbound" anyway would be a false durable record.
     expect(effects.rows).toEqual([]);
-    expect(store.list().map((e) => e.domain)).toContain('alice.recued.cloud');
+    expect(store.list().map((e) => e.domain)).toContain('alice.recued.net');
   });
 
   it('audit-emit failure propagates AFTER DDNS release (cert row stays for retry)', async () => {
     const store = buildStore();
-    await uploadProAcmeRow(store, 'alice.recued.cloud');
+    await uploadProAcmeRow(store, 'alice.recued.net');
     const ddns = buildDdnsStub();
     const effects = buildAuditStub();
     effects.setFailure(new Error('audit-log persistence failure'));
@@ -459,7 +473,7 @@ describe('D-148 FU5 substrate — error outcomes', () => {
     await expect(
       proAcmeUnbind(
         { store, ddns, effects },
-        { domain: 'alice.recued.cloud', unbound_by_client_id: 'paired-1' },
+        { domain: 'alice.recued.net', unbound_by_client_id: 'paired-1' },
       ),
     ).rejects.toThrow('audit-log persistence failure');
 
@@ -468,7 +482,7 @@ describe('D-148 FU5 substrate — error outcomes', () => {
     // Cert row stays — retry path: cloud release idempotent → audit
     // emit re-fires (operator clears the underlying audit-log issue) →
     // cert removed.
-    expect(store.list().map((e) => e.domain)).toContain('alice.recued.cloud');
+    expect(store.list().map((e) => e.domain)).toContain('alice.recued.net');
   });
 });
 
@@ -479,29 +493,29 @@ describe('D-148 FU5 substrate — error outcomes', () => {
 describe('D-148 FU5 substrate — idempotent retry', () => {
   it('second call after success returns pro_acme_not_found (cert row already removed)', async () => {
     const store = buildStore();
-    await uploadProAcmeRow(store, 'alice.recued.cloud');
+    await uploadProAcmeRow(store, 'alice.recued.net');
     const opts = buildOptions({ store });
 
     const first = await proAcmeUnbind(opts, {
-      domain: 'alice.recued.cloud',
+      domain: 'alice.recued.net',
       unbound_by_client_id: 'paired-1',
     });
     expect(first.ok).toBe(true);
 
     const second = await proAcmeUnbind(opts, {
-      domain: 'alice.recued.cloud',
+      domain: 'alice.recued.net',
       unbound_by_client_id: 'paired-1',
     });
     expect(second).toEqual({
       ok: false,
       error: 'pro_acme_not_found',
-      domain: 'alice.recued.cloud',
+      domain: 'alice.recued.net',
     });
   });
 
   it('retry after audit-emit failure re-fires DDNS release + audit + removes cert (idempotent)', async () => {
     const store = buildStore();
-    await uploadProAcmeRow(store, 'alice.recued.cloud');
+    await uploadProAcmeRow(store, 'alice.recued.net');
     const ddns = buildDdnsStub();
     const effects = buildAuditStub();
     effects.setFailure(new Error('transient'));
@@ -509,7 +523,7 @@ describe('D-148 FU5 substrate — idempotent retry', () => {
     await expect(
       proAcmeUnbind(
         { store, ddns, effects },
-        { domain: 'alice.recued.cloud', unbound_by_client_id: 'paired-1' },
+        { domain: 'alice.recued.net', unbound_by_client_id: 'paired-1' },
       ),
     ).rejects.toThrow();
 
@@ -517,7 +531,7 @@ describe('D-148 FU5 substrate — idempotent retry', () => {
     effects.setFailure(null);
     const retry = await proAcmeUnbind(
       { store, ddns, effects },
-      { domain: 'alice.recued.cloud', unbound_by_client_id: 'paired-1' },
+      { domain: 'alice.recued.net', unbound_by_client_id: 'paired-1' },
     );
 
     expect(retry.ok).toBe(true);
@@ -527,7 +541,7 @@ describe('D-148 FU5 substrate — idempotent retry', () => {
     // persisted).
     expect(effects.rows).toHaveLength(1);
     expect(store.list().map((e) => e.domain)).not.toContain(
-      'alice.recued.cloud',
+      'alice.recued.net',
     );
   });
 });
@@ -544,7 +558,7 @@ describe('D-148 FU5 rpc handler — `pro_acme.unbind`', () => {
 
   beforeEach(async () => {
     store = buildStore();
-    await uploadProAcmeRow(store, 'alice.recued.cloud');
+    await uploadProAcmeRow(store, 'alice.recued.net');
     ddns = buildDdnsStub();
     effects = buildAuditStub();
     deps = {
@@ -556,7 +570,7 @@ describe('D-148 FU5 rpc handler — `pro_acme.unbind`', () => {
     try {
       await handleProAcmeUnbind(
         deps,
-        { domain: 'alice.recued.cloud' },
+        { domain: 'alice.recued.net' },
         { instance_id: null },
       );
       throw new Error('expected RpcError');
@@ -572,7 +586,7 @@ describe('D-148 FU5 rpc handler — `pro_acme.unbind`', () => {
     try {
       await handleProAcmeUnbind(
         deps,
-        { domain: 'https://alice.recued.cloud/path' },
+        { domain: 'https://alice.recued.net/path' },
         pairedCaller,
       );
       throw new Error('expected RpcError');
@@ -598,7 +612,7 @@ describe('D-148 FU5 rpc handler — `pro_acme.unbind`', () => {
     try {
       await handleProAcmeUnbind(
         deps,
-        { domain: 'alice.recued.cloud', reason: 42 },
+        { domain: 'alice.recued.net', reason: 42 },
         pairedCaller,
       );
       throw new Error('expected RpcError');
@@ -611,12 +625,12 @@ describe('D-148 FU5 rpc handler — `pro_acme.unbind`', () => {
   it('happy path returns { released, domain, handle } from the wire', async () => {
     const result = await handleProAcmeUnbind(
       deps,
-      { domain: 'alice.recued.cloud' },
+      { domain: 'alice.recued.net' },
       pairedCaller,
     );
     expect(result).toEqual({
       released: true,
-      domain: 'alice.recued.cloud',
+      domain: 'alice.recued.net',
       handle: 'alice',
     });
   });
@@ -624,7 +638,7 @@ describe('D-148 FU5 rpc handler — `pro_acme.unbind`', () => {
   it('threads operator reason through the substrate', async () => {
     await handleProAcmeUnbind(
       deps,
-      { domain: 'alice.recued.cloud', reason: 'subscription lapse' },
+      { domain: 'alice.recued.net', reason: 'subscription lapse' },
       pairedCaller,
     );
     expect(ddns.releaseCalls).toEqual([
@@ -637,7 +651,7 @@ describe('D-148 FU5 rpc handler — `pro_acme.unbind`', () => {
     try {
       await handleProAcmeUnbind(
         deps,
-        { domain: 'never-existed.recued.cloud' },
+        { domain: 'never-existed.recued.net' },
         pairedCaller,
       );
       throw new Error('expected RpcError');
@@ -654,7 +668,7 @@ describe('D-148 FU5 rpc handler — `pro_acme.unbind`', () => {
     try {
       await handleProAcmeUnbind(
         deps,
-        { domain: 'alice.recued.cloud' },
+        { domain: 'alice.recued.net' },
         pairedCaller,
       );
       throw new Error('expected RpcError');

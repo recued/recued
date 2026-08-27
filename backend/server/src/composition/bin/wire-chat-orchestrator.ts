@@ -177,6 +177,7 @@ import {
 import {
   buildChatIndexContext,
   CHAT_INDEX_TOO_COMMON_CAP,
+  CHAT_INDEX_PROBE_ARGS,
 } from '../../chat-index-context.js';
 import {
   RECALL_SEARCH_TOOL_NAME,
@@ -192,12 +193,17 @@ import {
   type ExecuteChatAiCall,
 } from '../../chat-orchestrator.js';
 import {
+  createChatSessionBusyRegistry,
+  withChatSessionBusy,
+} from '../../chat-session-busy.js';
+import {
   resolveLlmSystemPrompt,
   type LlmPromptSurface,
 } from '../../llm-system-prompt.js';
 import type { ChatRpcDeps } from '../../chat-handler.js';
 import { assertRecordsNonOwnerRecipeExposure } from '../../records/non-owner-exposure.js';
 import { buildChatToolRegistryInputs } from '../../chat-tool-handlers.js';
+import type { FileViewResolver } from '../../file-view-resolver.js';
 import { DATA_FILE_RECEIVED_SLUG } from '../../collections/file/file-read-handler.js';
 import { tokenUsageToReport } from '../../chat-token-usage.js';
 import type { EventBus } from '../../events/bus.js';
@@ -267,6 +273,11 @@ export interface ComposeChatOrchestratorDeps {
   /** Late-bound late-resolution getters — see module doc. */
   getContactStore: () => ContactStore | undefined;
   getCollectionRegistry: () => CollectionRegistry | undefined;
+  /** The unified local+remote file view `file.search`'s owner-wide scope reads.
+   *  Late-bound because the D-192 meta store is assigned after this wire is
+   *  built; absent ⇒ the tool falls back to the single-collection read, which is
+   *  the pre-existing behaviour. */
+  getFileViewResolver?: () => FileViewResolver | undefined;
   getEnrichmentStore: () => EnrichmentStore | undefined;
   /** D-198 Slice 4 — the `user_memory` store the `memory.write` chat tool writes
    *  to + the widened `memory.search` unions. Late-bound like the other store
@@ -642,6 +653,9 @@ export const composeChatOrchestrator = (
     // only the owner-wide scope, which is the one we deliberately made
     // opt-in — so the seam being wired is what keeps the safe default usable.
     getChatStore: () => chatStore,
+    // D-192 Fork B — the owner-wide file scope now spans enrolled remote
+    // Sources, not just the CAS collection. See `getFileViewResolver`.
+    ...(deps.getFileViewResolver ? { getFileViewResolver: deps.getFileViewResolver } : {}),
     getAuditLog: () => auditLog,
     // D-198 Slice 4 — memory.write target + memory.search union source + the
     // redaction store (recall omits forgotten rows) + the realtime bus so an AI
@@ -1174,7 +1188,11 @@ export const composeChatOrchestrator = (
     };
   };
 
-  const orchestrator = createChatOrchestrator({
+  // One registry, two readers: the orchestrator decorator below marks turns
+  // as they run, and `chatDeps` reports the set on `chat.sessions.list`.
+  const sessionBusy = createChatSessionBusyRegistry(broadcast);
+
+  const orchestrator = withChatSessionBusy(createChatOrchestrator({
     chatStore,
     // Pre-seed INDEX. Probes the ordinary Tier-1 read handlers for the owner's
     // own distinctive terms and reports only WHICH STORES answered — never a
@@ -1272,7 +1290,13 @@ export const composeChatOrchestrator = (
         // cap + 1 so `hasHit` can tell "some matches" from "too many to mean
         // anything here" — the per-owner replacement for a static word list.
         return handler(
-          { query: term, limit: CHAT_INDEX_TOO_COMMON_CAP + 1 },
+          {
+            query: term,
+            limit: CHAT_INDEX_TOO_COMMON_CAP + 1,
+            // Per-store probe args — see `CHAT_INDEX_PROBE_ARGS`. Without this
+            // `file.search` probes its SESSION scope and answers empty forever.
+            ...(CHAT_INDEX_PROBE_ARGS[store] ?? {}),
+          },
           probeCtx,
         );
       }),
@@ -1422,7 +1446,7 @@ export const composeChatOrchestrator = (
       getCrmRecordMirror ?? (() => undefined),
       () => liveVendorRegistry(getExecuteDeps()?.localManifestStore),
     ),
-  });
+  }), sessionBusy);
 
   const chatDeps: ChatRpcDeps = {
     store: chatStore,
@@ -1435,6 +1459,7 @@ export const composeChatOrchestrator = (
       connectionMcpPackCoverage(name)?.size ?? 0,
     orchestrator,
     broadcast,
+    sessionBusy,
     ...(auditLog ? { auditLog } : {}),
     selfSignature,
     planApprovalStore: planApprovalStoreShared,

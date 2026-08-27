@@ -27,6 +27,7 @@
  *  embeds the rpc method, a timeout duration, or an error code. */
 
 import { RpcError } from '@recued/contracts';
+import { isConnectionBlockedByBrowserOrigin } from '../net/insecure-origin.js';
 
 /** Coarse class for presentation routing. */
 export type RpcErrorKind =
@@ -119,6 +120,13 @@ const CONNECTION_COPY: Record<
   },
 };
 
+/** The one connection cause the server can never report, because the browser
+ *  refuses the socket before the server sees it. See `net/insecure-origin.ts`. */
+const BLOCKED_BY_BROWSER_COPY =
+  'This browser blocked the connection: the page is secure (https) but your '
+  + 'server’s address is not. Open the webclient from the server’s own address, '
+  + 'or give the server a certificate.';
+
 const codeOf = (err: unknown): string | null => {
   if (err instanceof RpcError) return err.code;
   // Structural fallback — an RpcError that crossed a module boundary, or a
@@ -140,9 +148,18 @@ export const classifyRpcError = (err: unknown): ClassifiedRpcError => {
   if (code !== null) {
     const mapped = CONNECTION_COPY[code];
     if (mapped !== undefined) {
+      // ⛔ REFINE THE ONE VERDICT THAT WAS WRONG. `offline` is what a browser-
+      // blocked socket and a genuinely unreachable server BOTH produce (close
+      // 1006, no status, no headers), so this copy was telling owners their
+      // server was down while it sat there answering. Only `offline` is
+      // narrowed: `timeout` / `unresponsive` / `auth` / `cancelled` are each
+      // diagnosed on their own evidence and must not be overwritten.
+      const copy = mapped.kind === 'offline' && isConnectionBlockedByBrowserOrigin()
+        ? BLOCKED_BY_BROWSER_COPY
+        : mapped.copy;
       return {
         kind: mapped.kind,
-        copy: mapped.copy,
+        copy,
         code,
         // Everything mapped except the caller-abort/teardown pair is a
         // genuine connection cause that should defer to the banner.

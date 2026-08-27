@@ -12,6 +12,7 @@
  *  model. No `[Enter]`, no `[Ctrl+C]`, no clipboard mutation.
  */
 
+import { formatPairTtlLabel } from '../pairing.js';
 import type { PairingManager } from '../pairing.js';
 import type { RecoveryKeyCheckStore } from '../recovery-key-store.js';
 import {
@@ -53,10 +54,7 @@ export async function cmdPair(
 ): Promise<void> {
   const out = options.out ?? ((line: string) => { console.log(line); });
   const code = deps.pairing.refreshCode();
-  const remainingMin = Math.max(1, Math.floor(deps.pairing.timeRemaining() / 60_000));
-  const ttlLabel = remainingMin >= 60
-    ? `${Math.floor(remainingMin / 60)} hour${remainingMin >= 120 ? 's' : ''}`
-    : `${remainingMin} min`;
+  const ttlLabel = formatPairTtlLabel(deps.pairing.timeRemaining());
 
   out('');
   out(`  Pairing code: ${code}   (TTL ${ttlLabel})`);

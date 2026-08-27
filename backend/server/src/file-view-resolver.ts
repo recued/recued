@@ -183,6 +183,56 @@ export interface FileViewResolverDeps {
   now?: () => number;
 }
 
+/** How well a file's name + path answers a needle. ⛔ ONE DEFINITION, BECAUSE
+ *  THIS RULE HAS NOW BEEN WRITTEN THREE TIMES AND WAS WRONG IN A DIFFERENT
+ *  DIRECTION EACH TIME: the mirror-search matched only `path` (so CAS rows,
+ *  which lack one, were invisible), `file.search` matched only `filename` (so
+ *  the FOLDER — usually the subject — was invisible), and both matched the whole
+ *  query as ONE literal substring.
+ *
+ *  🔑 MATCHING IS NOT BINARY, AND FLATTENING IT LOSES REAL SIGNAL. A file whose
+ *  text contains the needle VERBATIM is a better answer than one that merely
+ *  contains each word somewhere, and the caller should be able to tell them
+ *  apart. Two tiers:
+ *
+ *    2 — the needle appears as a PHRASE      `renewal notice` in `renewal-notice-83.pdf`
+ *    1 — every TERM appears, order-free      `Sandhurst invoice` in `Sandhurst/invoice-10823.pdf`
+ *    0 — no match
+ *
+ *  Tier 1 is what makes a folder-per-client tree work: `Sandhurst/invoice-…pdf`
+ *  is NOT a substring match for "Sandhurst invoice" — a `/` sits between the
+ *  words — and on exactly that shape the substring-only rule missed 4 of 5
+ *  realistic queries while the single-keyword case looked fine.
+ *
+ *  ⛔ THERE IS DELIBERATELY NO "SOME TERMS MATCHED" TIER. That is the same
+ *  widening `RECUED_PARTIAL_SLOTS` already tested on the FTS stores, where it
+ *  was measured to have a STRUCTURAL CEILING — past ~20 competing rows a decoy
+ *  takes the slot — and it ships OFF. A partial match here would answer
+ *  "Sandhurst invoice" with every invoice you own. If it is ever wanted it needs
+ *  the same thing that gate needs: a LABEL, so a weak row is not handed over as
+ *  though the query asked for it. */
+export const scoreFileNeedle = (
+  filename: string,
+  path: string,
+  needle: string,
+): 0 | 1 | 2 => {
+  const trimmed = needle.trim().toLowerCase();
+  if (trimmed.length === 0) return 0;
+  const hay = `${filename}\n${path}`.toLowerCase();
+  // ⛔ THE PHRASE TIER IS UNREACHABLE WITHOUT THIS. Files are named with
+  // separators and people type spaces: `renewal-notice-83.pdf` versus "renewal
+  // notice". Measured — before normalising, the verbatim tier scored 1 (not 2)
+  // on its own best case, so tier 2 would have been dead code that looked
+  // implemented. Folding `- _ / . \` to spaces is what makes a phrase hit
+  // expressible at all.
+  const haySeparated = hay.replace(/[-_/.\\]+/g, ' ');
+  if (hay.includes(trimmed) || haySeparated.includes(trimmed)) return 2;
+  const terms = trimmed.split(/\s+/).filter((t) => t.length > 0);
+  if (terms.length === 0) return 0;
+  // Terms match the RAW haystack, so `10823` still finds `invoice-10823.pdf`.
+  return terms.every((t) => hay.includes(t)) ? 1 : 0;
+};
+
 export interface FileViewResolver {
   /** Hydrate ONE unified view by record id — a `file:remote:*` id resolves
    *  from the meta-store, a `file:<hex>` id from the CAS collection. `null`
@@ -237,7 +287,8 @@ export const createFileViewResolver = (deps: FileViewResolverDeps): FileViewReso
     for (const rec of deps.casList(FILE_VIEW_CAS_SCAN_CAP)) {
       const h = rec.hot_fields;
       const path = typeof h.path === 'string' ? h.path : '';
-      if (`${h.filename ?? ''}\n${path}`.toLowerCase().includes(needleLower)) add(projectCas(rec));
+      const filename = typeof h.filename === 'string' ? h.filename : '';
+      if (scoreFileNeedle(filename, path, trimmed) > 0) add(projectCas(rec));
     }
     // Remote — the meta-store's cross-scope filename/path SQL search.
     if (deps.fileMetaStore) {

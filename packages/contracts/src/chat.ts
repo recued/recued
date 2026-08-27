@@ -1219,6 +1219,22 @@ export interface ChatMessage {
    *  chat store on insert; rows persisted before the column derive from
    *  role at read time, so the facet is always present on read. */
   contributor: ChatSessionContributor;
+  /** The turn that produced this row — the durable half of the link the
+   *  client otherwise rebuilds by hand from live `chat.message_complete`
+   *  events, which only works if it was connected when the turn ended.
+   *
+   *  ⛔ OPTIONAL, AND ABSENT MEANS *UNKNOWN* — never "no turn". Two
+   *  populations carry nothing: rows written before the column existed, and
+   *  every row from a server older than this slice (a paired webclient talks
+   *  to the OWNER'S server, which they update on their own schedule — there is
+   *  no deploy order here to lean on). A reader may therefore treat a MATCH as
+   *  proof the turn produced this message, and must never treat an absence as
+   *  proof it did not.
+   *
+   *  🔑 It also only ever proves the POSITIVE. A turn that failed writes no
+   *  assistant row at all, so "no assistant message bears turn T" is not
+   *  evidence that T is still running. */
+  turn_id?: string;
   ts: number;
 }
 
@@ -1246,6 +1262,20 @@ export interface ChatSessionSummary {
   created_at: number;
   last_active_at: number;
   message_count: number;
+  /** How many messages this session held when the owner last looked at it.
+   *  Unread is `message_count > last_seen_message_count`.
+   *
+   *  ⛔ A COUNT, NOT A TIMESTAMP, on purpose. `last_active_at` is bumped by six
+   *  different writes — the picker and model-pref updates among them — so a
+   *  timestamp key would mark a chat unread for changing its model. A count
+   *  moves only when a message lands.
+   *
+   *  ⛔ ABSENT MEANS SEEN. Sessions that predate this field carry nothing, and
+   *  reading that as "zero seen" would light up every old chat at once on the
+   *  first boot after an upgrade. Sessions created since are stamped at birth,
+   *  so they are markable from their first message without inventing a past
+   *  for anything older. */
+  last_seen_message_count?: number;
   archived: boolean;
   picker_state: { current: ChatPickerTarget };
   model_routing: {
@@ -1538,17 +1568,47 @@ export const isChatBroadcastEventKind = (
 /** § Contract Tightening Wire A — `chat.session_changed` field
  *  discriminator (kept narrow so the renderer doesn't grow open
  *  branches). New fields = substrate change. */
+/** How many messages `chat.session.get` returns when the caller asks for a
+ *  window. Enough that a normal conversation arrives whole and nobody ever
+ *  sees the affordance, small enough that a 2,000-message thread stops costing
+ *  146ms of AEAD decrypt and ~2.4MB on the wire for every open AND every
+ *  reconnect recovery. */
+export const CHAT_HISTORY_WINDOW = 100;
+
+/** Ceiling the SERVER clamps any requested window to. A limit arrives from a
+ *  client, and a client is not the authority on how much work this server does.
+ *  ⚠ Clamping is silent by design: the response reports what it actually
+ *  returned via `has_more`, so an over-asking caller is told the truth in the
+ *  only field it should be reading anyway. */
+export const CHAT_HISTORY_WINDOW_MAX = 500;
+
+/** Where an older page resumes from. The message list is ordered
+ *  `(ts, message_id)`, and BOTH halves are needed: `ts` alone is not unique —
+ *  the wordless-drop path deliberately writes two rows in the same
+ *  millisecond — so a ts-only cursor would either skip a message or repeat one
+ *  at every page boundary. */
+export interface ChatHistoryCursor {
+  ts: number;
+  message_id: string;
+}
+
 export type ChatSessionChangedField =
   | 'picker'
   | 'model_pref'
   | 'title'
-  | 'archived';
+  | 'archived'
+  /** A turn started or ended on this session — `value` is a boolean. The one
+   *  field here that is PROCESS state rather than stored state: it is never
+   *  read back from a row, and after a server restart every session is idle
+   *  because a restart ends turns rather than interrupting them. */
+  | 'busy';
 
 export const CHAT_SESSION_CHANGED_FIELDS: ReadonlyArray<ChatSessionChangedField> = [
   'picker',
   'model_pref',
   'title',
   'archived',
+  'busy',
 ] as const;
 
 export const CHAT_SESSION_CHANGED_FIELD_SET: ReadonlySet<ChatSessionChangedField> =
@@ -1972,13 +2032,13 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
         query: {
           type: 'string',
           description:
-            'Match against the file name (case-insensitive, substring). Omit to list everything in scope, newest first — the normal way to answer "what did I send you?".',
+            'Match against the file NAME and its FOLDER PATH, case-insensitive. Every word must appear somewhere in the two, in any order, so "Sandhurst invoice" finds `Sandhurst/invoice-10823.pdf` — a folder per client works. A verbatim run of words ranks above a scattered one. Omit to list everything in scope, newest first — the normal way to answer "what did I send you?" — but note a query is what reaches files in connected remote sources; an omitted query lists locally-held files only.',
         },
         scope: {
           type: 'string',
           enum: ['session', 'all'],
           description:
-            "`session` (the default) = files attached to THIS conversation. `all` = every file Mary holds, including uploads from strangers. Say nothing to get `session`; widen only on an explicit request from HER.",
+            "`session` (the default) = files attached to THIS conversation. `all` = every file Mary holds — uploads from strangers included, and files in her connected remote sources (Dropbox, Drive, …), which are reachable ONLY at this scope and only with a query. Say nothing to get `session`; widen only on an explicit request from HER.",
         },
         limit: { type: 'number', description: 'Max files to return. Default 20.' },
       },

@@ -188,6 +188,7 @@ import {
   CONNECTION_INDICATOR_STYLES,
   CONNECTION_INDICATOR_STYLES_MARKER,
   type ConnectionIndicatorMount,
+  CONNECTION_BANNER_HEIGHT_VAR,
 } from './shell/connection-indicator.js';
 import {
   SERVER_SWITCHER_STYLES,
@@ -988,7 +989,10 @@ const WEBCLIENT_DRAWER_SECTIONS: ReadonlyArray<WebclientDrawerSection> = [
   },
 ];
 
-const WEBCLIENT_SHELL_STYLES = `
+/** Exported for the drawer's bottom-padding ratchet, which has to read the rule
+ *  itself: the padding must stay expressed in terms of the banner's published
+ *  height rather than reverting to a literal. */
+export const WEBCLIENT_SHELL_STYLES = `
 [${WEBCLIENT_SHELL_HOST_ATTR}] {
   /* Inherit the shell tokens from index.html :root (which ships the
      light + prefers-color-scheme:dark palette) instead of hard-pinning
@@ -1232,7 +1236,13 @@ const WEBCLIENT_SHELL_STYLES = `
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 12px 12px 16px;
+  /* ⛔ The connection banner is fixed to the bottom of the viewport and spans
+     its full width, so
+     it sits ON TOP of whatever the drawer's scroll ends with — and this menu is
+     now taller than a normal desktop window, so what it covered was the last
+     item. Padding by the banner's MEASURED height (0px when it is not showing)
+     lets the list scroll clear of it instead of ending underneath it. */
+  padding: 12px 12px calc(16px + var(${CONNECTION_BANNER_HEIGHT_VAR}, 0px));
   border-right: 1px solid var(--border);
   background:
     linear-gradient(160deg, var(--accent-weak), transparent 180px),

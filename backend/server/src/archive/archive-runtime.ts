@@ -150,6 +150,19 @@ export const RESTORE_GUARD_NON_USER_TABLES: ReadonlySet<string> = new Set<string
   // kind to add without thinking about this guard, and nothing outside these
   // tests connects the two.
   'audit_usage',
+  // Boot-created 2026-08-26 by the FTS content-format marker (`@recued/fts`):
+  // one row per index recording which text shape it holds, so a format change
+  // rebuilds each index exactly once instead of half-matching forever. Pure
+  // derived bookkeeping — a table NAME and an integer, no user content — so
+  // denylisting it removes no user-data signal.
+  //
+  // ⛔ AND IT LANDED IN PRECISELY THE TRAP THE NOTE ABOVE DESCRIBES. "A derived-
+  // bookkeeping table is the easiest kind to add without thinking about this
+  // guard" — written about `audit_usage`, and the next such table walked into it
+  // the same way: five reds in the fresh-baseline test, nothing else in the tree
+  // connecting an FTS migration marker to a restore guard. The guard worked; the
+  // habit it warns about is the durable finding.
+  'fts_content_format',
   // 2. SERVER identity / config / networking / system state — populated by
   //    SETUP (identity, hostnames, TLS, exposure, operator config), never by user
   //    activity. Empty on the empty-config fresh-baseline yet non-empty on a

@@ -205,6 +205,14 @@ const expectedChatDepsKeys = [
   // Best-effort orphan cleanup: the carrier is minted BEFORE the token, so a
   // failed issuance would otherwise leave a live contract bound to nothing.
   'revokeTokenContract',
+  // Which sessions are running a turn. Listed here because a missing wiring
+  // has to be a RED rather than a quiet degradation: `chat.sessions.list`
+  // reports `busy_session_ids` only when this is present, and a client reads
+  // the field's ABSENCE as "this server cannot tell me", falling back to
+  // inferring liveness from its own sends. That fallback is invisible — the
+  // list still returns, every session still opens — so nothing else in the
+  // suite would notice the registry had quietly stopped being passed.
+  'sessionBusy',
 ].sort();
 
 /** ⚠ D-228 slice 6 — the `tool` / `classification` parameters are GONE, and

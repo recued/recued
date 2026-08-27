@@ -110,12 +110,16 @@ describe('contact — substring already, so a prefix would BREAK it', () => {
 });
 
 describe('CHAT_INDEX_STORES — what each store can actually be asked', () => {
-  it('declares [store, hitField, andCapable]', () => {
+  it('declares [store, hitField, andMode]', () => {
     for (const entry of CHAT_INDEX_STORES) {
       expect(entry).toHaveLength(3);
       expect(typeof entry[0]).toBe('string');
       expect(typeof entry[1]).toBe('string');
-      expect(typeof entry[2]).toBe('boolean');
+      // ⛔ A MODE, NOT A BOOLEAN — the boolean conflated two questions ("does
+      // this store mean AND?" and "does it parse FTS5?") that a store can
+      // answer differently. `file.search` requires every term but reads a query
+      // as plain text, so it is AND-capable AND cannot take the FTS form.
+      expect(['none', 'fts', 'terms']).toContain(entry[2]);
     }
   });
 
@@ -127,12 +131,23 @@ describe('CHAT_INDEX_STORES — what each store can actually be asked', () => {
     // question when it holds one word of it. That is not hypothetical: a live
     // run emitted `agreed sandhurst renewal: memory.search, mail.search`
     // against a memory row containing neither `agreed` nor `renewal`.
-    const byName = new Map(CHAT_INDEX_STORES.map(([n, , a]) => [n, a]));
-    for (const n of ['mail.search', 'calendar.search', 'file.search']) {
-      expect(byName.get(n), `${n} is FTS-backed`).toBe(true);
+    const byName = new Map(CHAT_INDEX_STORES.map(([n, , m]) => [n, m]));
+    for (const n of ['mail.search', 'calendar.search']) {
+      expect(byName.get(n), `${n} is FTS-backed`).toBe('fts');
     }
+    // ⛔ `file.search` is STILL NOT FTS-backed, despite the file collection
+    // owning an FTS table — the TOOL lists the collection and matches in JS. I
+    // classified it from the store's capabilities rather than the tool's path
+    // once already, the identical mistake made with `contact.search`.
+    //
+    // ⚠ BUT IT IS NOW `'terms'`, NOT `'none'`, AND THE DIFFERENCE IS REAL: it
+    // used to match the WHOLE query as one literal substring, so a multi-word
+    // probe meant nothing to it. It now requires EVERY term across name+path,
+    // which is exactly the AND the collapse asks about — it simply must be
+    // asked in plain words, never in FTS5 quoting.
+    expect(byName.get('file.search'), 'AND-capable, but plain-text only').toBe('terms');
     for (const n of ['recall.search', 'memory.search', 'contact.search']) {
-      expect(byName.get(n), `${n} matches by substring — AND does not hold`).toBe(false);
+      expect(byName.get(n), `${n} degrades to OR — AND does not hold`).toBe('none');
     }
   });
 

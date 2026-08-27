@@ -8,7 +8,7 @@
 
 services:
   recued:
-    image: recued/server:26.8.26
+    image: recued/server:26.8.27
     container_name: recued
     restart: unless-stopped
     # D-105 exit-code contract. `on-failure` respects the supervisor's

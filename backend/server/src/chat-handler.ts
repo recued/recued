@@ -65,6 +65,8 @@ import {
   type ChatPlanRecord,
   type ChatSession,
   type ChatSessionChangedField,
+  CHAT_HISTORY_WINDOW_MAX,
+  type ChatHistoryCursor,
   type ChatSessionSummary,
   type ChatToolCatalogScopeState,
   type ConnectionMcpAnnotationState,
@@ -86,6 +88,7 @@ import type { AuditLogStore } from '@recued/storage';
 import type { WsClient } from './ws-server.js';
 import type { ChatBroadcastEmitter } from './chat-orchestrator.js';
 import type { ChatOrchestrator } from './chat-orchestrator.js';
+import type { ChatSessionBusyRegistry } from './chat-session-busy.js';
 import type { ChatStore } from './storage/chat-store.js';
 import type { ChatToolCatalogStore } from './storage/chat-tool-catalog-store.js';
 import type { ChatConnectionMcpStore } from './storage/chat-connection-mcp-store.js';
@@ -243,6 +246,10 @@ export interface ChatRpcDeps {
   revokeTokenContract?: (contractId: string) => void;
   orchestrator: ChatOrchestrator;
   broadcast?: ChatBroadcastEmitter;
+  /** Which sessions are running a turn. Optional so a partial harness (and a
+   *  server built before this existed) simply omits `busy_session_ids` from
+   *  the list result rather than reporting a confident, wrong empty set. */
+  sessionBusy?: ChatSessionBusyRegistry;
   auditLog?: AuditLogStore;
   /** Recued server signature for `picker_at_send` defaults at session
    *  creation. Mirrors the orchestrator's `selfSignature` so a session
@@ -267,6 +274,7 @@ type ChatMethods =
   | 'chat.session.get'
   | 'chat.session.create'
   | 'chat.session.delete'
+  | 'chat.session.mark_seen'
   | 'chat.session.export'
   | 'chat.egress.get'
   | 'chat.send'
@@ -470,8 +478,16 @@ const ensurePeerPickerTargetIsLive = (
 
 export const handleSessionsList = (
   deps: ChatRpcDeps,
-): { sessions: ChatSessionSummary[] } => {
-  return { sessions: deps.store.listSessions() };
+): { sessions: ChatSessionSummary[]; busy_session_ids?: string[] } => {
+  const sessions = deps.store.listSessions();
+  // ⛔ PRESENT-BUT-EMPTY AND ABSENT MEAN DIFFERENT THINGS, and the client
+  // depends on the difference. `[]` is the complete answer "nothing is running
+  // a turn"; the field missing entirely is "this server cannot tell you",
+  // which is what an older one says by saying nothing. Collapsing them would
+  // put the client back to inferring, which is the whole reason this exists.
+  return deps.sessionBusy === undefined
+    ? { sessions }
+    : { sessions, busy_session_ids: deps.sessionBusy.busySessionIds() };
 };
 
 export const handleSessionGet = async (
@@ -481,6 +497,11 @@ export const handleSessionGet = async (
   ChatSession & {
     messages: ChatMessage[];
     plans: ReadonlyArray<ChatPlanRecord>;
+    /** Present ONLY when a window was applied. Absent means the caller was
+     *  handed the whole conversation — see the return below. */
+    has_more?: boolean;
+    /** Where an older page resumes. Present only alongside `has_more`. */
+    oldest_cursor?: ChatHistoryCursor;
   }
 > => {
   const safe = ensureRecordArgs('chat.session.get', args);
@@ -490,12 +511,80 @@ export const handleSessionGet = async (
     safe.session_id,
   );
   const session = ensureSession(deps, session_id);
-  const messages = await deps.store.listMessages(session_id);
+  // ⛔ ABSENT `limit` MUST STILL MEAN "EVERYTHING", and that is a compatibility
+  // rule rather than a default worth debating. A webclient older than this
+  // slice sends no limit and has no "load earlier" control; if the server
+  // windowed by default, that client would show a silently truncated history
+  // with no way to reach the rest and nothing on screen admitting it. The
+  // caller opts IN to a window, and only a caller that can page should.
+  const requestedLimit = safe.limit;
+  const limit = requestedLimit === undefined
+    ? null
+    : Math.max(
+        1,
+        Math.min(
+          CHAT_HISTORY_WINDOW_MAX,
+          Math.floor(ensureFiniteNumber('chat.session.get', 'limit', requestedLimit)),
+        ),
+      );
+  const before = parseHistoryCursor(safe.before);
+  const page = limit === null
+    ? null
+    : await deps.store.listMessagePage(session_id, limit, before ?? undefined);
+  const messages = page === null
+    ? await deps.store.listMessages(session_id)
+    : page.messages;
   const plans =
     deps.planApprovalStore?.listForSession === undefined
       ? []
       : await deps.planApprovalStore.listForSession(session_id);
-  return { ...session, messages, plans };
+  // 🔑 OPENING A SESSION IS SEEING IT, so the common case costs no extra round
+  // trip and cannot be forgotten by a client. ⚠ Stamped AFTER the read, so the
+  // caller still receives whatever was unread — the mark describes what they
+  // are being handed, not what they had before.
+  deps.store.markSessionSeen?.(session_id);
+  // ⛔ `has_more` is reported ONLY when a window was actually applied. An old
+  // server omits it because it knows nothing about it, and a new server
+  // omits it when the caller asked for everything — and in BOTH cases the
+  // caller was handed the whole conversation, so its absence means "complete"
+  // rather than "unknown". That is the opposite of `busy_session_ids`, where
+  // absence means the server cannot answer, and the difference is worth
+  // stating: here the un-windowed read IS the complete answer.
+  return page === null
+    ? { ...session, messages, plans }
+    : {
+        ...session,
+        messages,
+        plans,
+        has_more: page.has_more,
+        ...(page.oldest ? { oldest_cursor: page.oldest } : {}),
+      };
+};
+
+/** ⛔ A cursor is only usable if BOTH halves survive the wire. A caller that
+ *  sends half of one is not paging from somewhere earlier, it is paging from
+ *  somewhere undefined — so this returns null and the read falls back to the
+ *  newest page rather than silently ordering against `undefined`. */
+const ensureFiniteNumber = (
+  method: string,
+  field: string,
+  value: unknown,
+): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new RpcError('bad_request', `${method}: ${field} must be a number`, 400);
+  }
+  return value;
+};
+
+const parseHistoryCursor = (value: unknown): ChatHistoryCursor | null => {
+  if (value === null || value === undefined || typeof value !== 'object') {
+    return null;
+  }
+  const ts = (value as { ts?: unknown }).ts;
+  const message_id = (value as { message_id?: unknown }).message_id;
+  if (typeof ts !== 'number' || !Number.isFinite(ts)) return null;
+  if (typeof message_id !== 'string' || message_id.length === 0) return null;
+  return { ts, message_id };
 };
 
 /** Route-independent approval-inbox recovery. Unlike `chat.session.get`, this
@@ -503,6 +592,28 @@ export const handleSessionGet = async (
  * no execution resume, and no approval consumption. Unavailable encrypted
  * payloads remain visible as non-executable shells so the owner can safely
  * cancel them. */
+/** Record that the owner has looked at this session.
+ *
+ *  ⚠ Exists ALONGSIDE the stamp on `chat.session.get` rather than instead of
+ *  it, because the two answer different moments. Opening covers "I came here";
+ *  this covers "I am still here and it just moved" — a turn settling in the
+ *  session on screen bumps its message count, and without this the owner would
+ *  walk away from a chat they watched answer and find it marked unread. */
+export const handleSessionMarkSeen = (
+  deps: ChatRpcDeps,
+  args: { session_id: string },
+): { ok: true } => {
+  const safe = ensureRecordArgs('chat.session.mark_seen', args);
+  const session_id = ensureNonEmptyString(
+    'chat.session.mark_seen',
+    'session_id',
+    safe.session_id,
+  );
+  ensureSession(deps, session_id);
+  deps.store.markSessionSeen?.(session_id);
+  return { ok: true };
+};
+
 export const handlePlansPendingList = async (
   deps: ChatRpcDeps,
 ): Promise<{ plans: ReadonlyArray<ChatPlanRecord> }> => {
@@ -2674,6 +2785,8 @@ export const makeChatHandlers = (
     ],
     handlers: {
       'chat.sessions.list': async () => handleSessionsList(deps),
+      'chat.session.mark_seen': async (args: unknown) =>
+        handleSessionMarkSeen(deps, args as { session_id: string }),
       'chat.session.get': async (args) =>
         handleSessionGet(deps, args as { session_id: string }),
       'chat.session.create': async (args) =>

@@ -8,6 +8,7 @@ import {
   type ChatSessionSummary,
   type ContractDefinitionView,
   type ServerEvent,
+  CHAT_HISTORY_WINDOW,
 } from '@recued/contracts';
 
 import {
@@ -107,6 +108,7 @@ import {
   CHAT_ROUTE_SESSION_DELETE_CONFIRM_ATTR,
   CHAT_ROUTE_SESSION_EXPORT_ATTR,
   CHAT_ROUTE_SESSION_ROW_ATTR,
+  CHAT_ROUTE_SESSION_STATUS_ATTR,
   CHAT_ROUTE_SOURCE_ACTION_ATTR,
   CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR,
   CHAT_ROUTE_SOURCE_ANSWER_ATTR,
@@ -3571,9 +3573,14 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     });
     await tick(8);
 
+    // ⚠ `limit` joined the request when hydration became windowed. Asserted
+    // rather than loosened: it is the whole point of the change that the
+    // client OPTS IN — a read without it asks a current server for the entire
+    // conversation, which is what this was measured costing (146ms of AEAD
+    // decrypt and ~2.4MB at 2,000 messages, on every open and every reconnect).
     expect(calls).toContainEqual({
       method: 'chat.session.get',
-      payload: { session_id: 'chat_1' },
+      payload: { session_id: 'chat_1', limit: CHAT_HISTORY_WINDOW },
     });
     expect(route.getThread().session?.id).toBe('chat_1');
     expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe('');
@@ -5488,10 +5495,17 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     initial.click();
     const pending = collectByAttr(root, CHAT_ROUTE_SESSION_ROW_ATTR)[0]!;
     expect(pending.disabled).toBe(false);
-    expect(pending.getAttribute('aria-disabled')).toBe('true');
+    // BUSY, not unavailable. A row mid-open used to be `aria-disabled` too,
+    // because the route refused every click while one was loading; a newer
+    // click on a DIFFERENT chat now wins, so "unavailable" is no longer true
+    // of this list. What is still true of THIS row is that it is loading.
+    expect(pending.getAttribute('aria-disabled')).toBe(null);
     expect(pending.getAttribute('aria-busy')).toBe('true');
     expect(allText(pending)).toContain('Opening…');
     expect(doc.activeElement).toBe(pending);
+    // ⛔ Single-flight per TARGET is the half that survives: re-clicking the
+    // chat already opening is not a new intent and must not spend a second
+    // `chat.session.get` arriving where it was already going.
     pending.click();
     pending.click();
     expect(sessionGetCalls).toBe(1);
@@ -5540,22 +5554,33 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       (button) => button.textContent === 'Start a new chat',
     )!;
     expect(pending.textContent).toBe('Opening chat…');
-    expect(pending.getAttribute('aria-disabled')).toBe('true');
     expect(pending.getAttribute('aria-busy')).toBe('true');
     expect(pending.disabled).toBe(false);
     expect(doc.activeElement).toBe(pending);
-    expect(newChat.getAttribute('aria-disabled')).toBe('true');
-    expect(startNew.getAttribute('aria-disabled')).toBe('true');
+    // Re-clicking the chat already opening stays a no-op…
     pending.click();
-    newChat.click();
-    startNew.click();
     expect(sessionGetCalls).toBe(1);
     expect(collectByAttr(root, CHAT_ROUTE_HISTORY_LANDING_ATTR)).toHaveLength(1);
     expect(addresses).toEqual([]);
 
+    // ⛔ …but changing your mind is not. These two used to be `aria-disabled`
+    // and swallow the click, so a person who clicked Continue and then thought
+    // better of it watched "Start a new chat" do nothing at all. A new chat is
+    // a NAVIGATION and it is the later intent, so it takes the generation and
+    // the loading open stands down.
+    expect(newChat.getAttribute('aria-disabled')).toBe(null);
+    expect(startNew.getAttribute('aria-disabled')).toBe(null);
+    startNew.click();
+    await tick();
+    expect(collectByAttr(root, CHAT_ROUTE_HISTORY_LANDING_ATTR)).toHaveLength(0);
+    expect(addresses).toEqual(['#chat/new']);
+
+    // ⛔ And the superseded open landing LATE must not haul the person back
+    // into the chat they navigated away from, nor push its address.
     resolveOpen({ ...chatSession(), messages: [] });
     await tick(8);
-    expect(addresses).toEqual(['#chat/session/chat_1']);
+    expect(route.getThread().session).toBe(null);
+    expect(addresses).toEqual(['#chat/new']);
     expect(doc.activeElement?.getAttribute(CHAT_ROUTE_INPUT_ATTR)).toBe('');
     route.dispose();
   });
@@ -6352,22 +6377,44 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     const otherChat = collectByAttr(root, CHAT_ROUTE_SESSION_ROW_ATTR).find(
       (row) => row.getAttribute(CHAT_ROUTE_SESSION_ROW_ATTR) === 'chat_2',
     )!;
-    expect(newChat.disabled).toBe(false);
-    expect(newChat.getAttribute('aria-disabled')).toBe('true');
-    expect(otherChat.disabled).toBe(false);
-    expect(otherChat.getAttribute('aria-disabled')).toBe('true');
+    // ⛔ THESE ASSERTED `aria-disabled="true"` UNTIL THE BACKGROUND-TURN SLICE.
+    // A pending turn used to freeze every navigation control, and clicking one
+    // did nothing at all — with no `disabled`, no CSS for the aria state, and
+    // no message, so the control looked live and silently refused. The turn is
+    // the server's work; it no longer owns the tab. What still holds the
+    // navigation here is the DRAFT GUARD, and that is the point of the rewrite:
+    // the typed draft was always what deserved protecting, not the turn.
+    expect(newChat.getAttribute('aria-disabled')).toBe(null);
+    expect(otherChat.getAttribute('aria-disabled')).toBe(null);
 
-    newChat.click();
     otherChat.click();
     await tick();
     expect(route.getThread().session?.id).toBe('chat_1');
-    expect(collectByAttr(root, CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR)).toHaveLength(0);
+    expect(collectByAttr(root, CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR)).toHaveLength(1);
     expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value)
       .toBe('Keep this next thought');
-    expect(doc.activeElement).toBe(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]);
     expect(calls.filter((call) => call.method === 'chat.session.get'))
       .toHaveLength(1);
     expect(addresses).toEqual([]);
+
+    // Discarding the draft is what the guard is asking about, and it releases
+    // the navigation the pending turn no longer blocks.
+    const discard = collectByAttr(root, CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR)[0]!
+      .children.flatMap((child) => child.children)
+      .find((button) => button.textContent === 'Discard and open')!;
+    discard.click();
+    await tick(8);
+    expect(route.getThread().session?.id).toBe('chat_2');
+    // The turn left behind in chat_1 is still this tab's work, and chat_1's
+    // row says so rather than going quiet.
+    expect(route.hasInFlightWork()).toBe(true);
+    const busyRow = collectByAttr(root, CHAT_ROUTE_SESSION_ROW_ATTR).find(
+      (row) => row.getAttribute(CHAT_ROUTE_SESSION_ROW_ATTR) === 'chat_1',
+    )!;
+    expect(
+      collectByAttr(busyRow, CHAT_ROUTE_SESSION_STATUS_ATTR)[0]
+        ?.getAttribute(CHAT_ROUTE_SESSION_STATUS_ATTR),
+    ).toBe('working');
     route.dispose();
   });
 
