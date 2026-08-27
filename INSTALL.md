@@ -18,8 +18,8 @@ curl -fsSL https://recued.com/install.sh | sh
 irm https://recued.com/install.ps1 | iex
 ```
 
-Linux and Windows on x64 or arm64. macOS on Apple Silicon; Intel Macs are not
-published yet.
+Linux and Windows on x64 or arm64. macOS on Apple Silicon and Intel — both
+signed and notarized with a Developer ID.
 
 ### Options
 
