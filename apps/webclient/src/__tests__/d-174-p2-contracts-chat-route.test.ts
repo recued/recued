@@ -1577,6 +1577,8 @@ describe('D-174 P2 chat route', () => {
       if (method === 'chat.send') {
         return { turn_id: 'turn_1' };
       }
+      if (method === 'collection.connection.list') return { connections: [] };
+      if (method === 'recipe.list') return { recipes: [] };
       throw new Error(`unexpected method ${method}`);
     }) as ChatRouteConn;
 
@@ -1612,6 +1614,10 @@ const chatConnWithConfig = (
     if (method === 'chat.session.create') return { session_id: 'chat_2' };
     if (method === 'chat.send') return { turn_id: 'turn_1' };
     if (method === 'server.getLLMConfig') return { config: llmConfig };
+    // A first-run owner has connected nothing and installed nothing — which is
+    // what makes the connect / automate cards outstanding and therefore shown.
+    if (method === 'collection.connection.list') return { connections: [] };
+    if (method === 'recipe.list') return { recipes: [] };
     throw new Error(`unexpected method ${method}`);
   }) as ChatRouteConn;
 
@@ -2451,6 +2457,8 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       }
       if (method === 'server.getLLMConfig') return { config: llmConfig };
       if (method === 'prefs.get') return { prefs: {} };
+      if (method === 'collection.connection.list') return { connections: [] };
+      if (method === 'recipe.list') return { recipes: [] };
       throw new Error(`unexpected method ${method}`);
     }) as ChatRouteConn;
   };

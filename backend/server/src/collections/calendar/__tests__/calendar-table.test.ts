@@ -465,7 +465,10 @@ describe('search (FTS5)', () => {
     const matches = table.search({ query: 'deliverables' });
     expect(matches).toHaveLength(1);
     expect(matches[0].hot.summary).toBe('Sprint review');
-    expect(matches[0].snippet).toContain('<b>');
+    // The event's own description, hydrated from the row this search already
+    // fetched — not a `snippet()` window over it.
+    expect(matches[0].body).toContain('deliverables');
+    expect(matches[0].body).not.toContain('<b>');
   });
 
   it('still finds rows by summary when description is in CAS', () => {

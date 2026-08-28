@@ -339,7 +339,55 @@ for (const t of targets) {
       + '  every upgrade. Import the package statically so the bundle carries it.');
   }
   say(`  ws upgrade answered: ${wsReply.split('\r\n')[0]} ✓`);
-  say(`  boot smoke ok — starts, loads the addon, serves websockets ✓`);
+
+  // ── 6b. daemon smoke: `recued start` must produce a server `status` sees ──
+  //
+  // ⛔⛔ SAME DEFECT CLASS AS THE ws PROBE ABOVE, AND IT SHIPPED THE SAME WAY.
+  // `daemon.ts` built its child command one way only — `npx tsx <dir>/bin.ts` —
+  // which is correct from a source checkout and impossible in a SEA: there is no
+  // `bin.ts` on disk, `import.meta.dirname` is not a directory, so the path fell
+  // back to the process CWD and the daemon spawned somebody else's node and tsx.
+  // It died on ERR_MODULE_NOT_FOUND, and `recued status` then said "stopped" —
+  // accurately, which is why this looked like a status bug for weeks. On a
+  // machine with no Node installed, `npx` is not even spawnable.
+  //
+  // 🔑 Foreground `serve` cannot see it. The whole defect lives in the step
+  // where the process re-launches ITSELF, so the check has to go through
+  // `start` and ask `status`, exactly as an owner would. The installer prints
+  // `recued start` as the way to run in the background.
+  // ⛔ ITS OWN DIRECTORY. The realm lock is `{data_path}/recued-server.lock`,
+  // keyed on the DIRECTORY rather than the db file, so a daemon sharing a
+  // directory with any other server — including the boot smoke above, whose
+  // lock outlives a SIGTERM — is refused with "already running against this
+  // data folder" and the gate reports a defect that is not there.
+  const dmnDir = mkdtempSync(join(tmpdir(), `recued-${t.triple}-daemon-`));
+  const dmnDb = join(dmnDir, 'daemon-smoke.db');
+  const dmnPort = SMOKE_PORT + 1;
+  const exePath = join(BIN_DIR, exeName);
+  const runCli = (args) => spawnSync(exePath, args, { encoding: 'utf8', timeout: 90_000 });
+  say(`  daemon smoke on port ${dmnPort} …`);
+  const started = runCli(['start', '--db', dmnDb, '--port', String(dmnPort)]);
+  const status = runCli(['status', '--db', dmnDb, '--port', String(dmnPort)]);
+  // ⚠ CASE MATTERS AND IT BIT ME. The boot BANNER prints `Status:    Running`;
+  // the `status` VERB prints `Status:  running`. Matching the banner's spelling
+  // made this gate fail on a binary that was working correctly — a false red is
+  // as expensive as a false green when it blocks a release.
+  const running = /Status:\s*running/i.test(`${status.stdout ?? ''}${status.stderr ?? ''}`);
+  runCli(['stop', '--db', dmnDb]);
+  let dmnLog = '';
+  try { dmnLog = readFileSync(join(dirname(dmnDb), 'recued-server.log'), 'utf8').slice(-1200); } catch { /* none */ }
+  rmSync(dmnDir, { recursive: true, force: true });
+  if (!running) {
+    fail(`${t.triple}: \`recued start\` did not produce a server that \`recued status\` can see.\n`
+      + `  start said: ${(started.stdout ?? '').trim() || '(nothing)'}\n`
+      + `  status said: ${(status.stdout ?? '').trim().split('\n')[0] || '(nothing)'}\n`
+      + (dmnLog ? `  daemon log tail:\n${dmnLog}\n` : '')
+      + '  A packaged binary must re-execute ITSELF (process.execPath) to daemonize;\n'
+      + '  spawning `npx tsx bin.ts` only works in a source checkout.');
+  }
+  say(`  daemon smoke ok — start → status: Running ✓`);
+
+  say(`  boot smoke ok — starts, loads the addon, serves websockets, daemonizes ✓`);
 
   // ── 7. into the staging dir under the canonical names ─────────────────
   // release-build discovers triples by LISTING this directory, so the names
@@ -442,32 +490,73 @@ if (!NOTARY_PROFILE) {
       + '  Fetch the detail: xcrun notarytool log <submission-id> --keychain-profile '
       + NOTARY_PROFILE);
   }
-  say(`notarize: Accepted ✓ (${/id:\s*([0-9a-f-]{36})/i.exec(out)?.[1] ?? 'submission'})`);
-  // ⛔ VERIFY WITH `codesign --test-requirement`, NOT `spctl`. `spctl -t exec`
-  // assesses APPLICATIONS: handed a bare Mach-O it answers "rejected (the code
-  // is valid but does not seem to be an app)" whether or not the thing is
-  // notarized — a verdict that reads like failure and means nothing here.
-  // Measured on these exact artifacts after a successful notarization.
-  // `=notarized` asks the only question that matters and answers it for a
-  // plain executable.
+  const submissionId = /id:\s*([0-9a-f-]{36})/i.exec(out)?.[1];
+  say(`notarize: Accepted ✓ (${submissionId ?? 'submission'})`);
+  // ⛔⛔ ASK APPLE WHAT IT TICKETED; DO NOT ASK GATEKEEPER WHETHER IT HAS HEARD.
+  // The question worth answering is "does a ticket exist for EXACTLY these
+  // bytes" — that is what catches a re-sign or a rebuild after submission, the
+  // only way an Accepted status can stop applying. `notarytool log` answers it
+  // immediately and authoritatively: `ticketContents` lists one cdhash per
+  // artifact, and comparing those against the cdhash on disk is a strictly
+  // stronger check than the one this used to make.
+  //
+  // ⛔ THE OLD CHECK FAILED THE 26.8.28 BUILD ON A CORRECTLY NOTARIZED SET.
+  // `codesign --test-requirement==notarized` performs an ONLINE ticket lookup,
+  // and that distribution is EVENTUALLY CONSISTENT. Measured on this release:
+  // Apple returned Accepted with all four cdhashes ticketed, both `.node`
+  // addons satisfied the requirement within seconds, and both 140 MB binaries
+  // still did not 17 minutes later — same submission, same machine, same
+  // network, identical signatures (CodeDirectory v=20500, hardened runtime,
+  // secure timestamp) to the 26.8.27 binaries that satisfy it today. Nothing
+  // was wrong with the artifacts; the gate was reading a replica that had not
+  // caught up, and failing the release closed on it.
+  //
+  // 🔑 So: the ticket match is the GATE, and the Gatekeeper lookup is a
+  // best-effort confirmation that may lag. A build must not be blocked by a
+  // read that is allowed to be stale.
+  const cdhashOf = (path) => {
+    const r = spawnSync('/usr/bin/codesign', ['-dvvv', path], { encoding: 'utf8' });
+    return /^CDHash=([0-9a-f]+)$/mi.exec(`${r.stdout ?? ''}${r.stderr ?? ''}`)?.[1]?.toLowerCase();
+  };
+
+  let ticketed = null;
+  if (submissionId) {
+    const logOut = spawnSync('xcrun',
+      ['notarytool', 'log', submissionId, '--keychain-profile', NOTARY_PROFILE],
+      { encoding: 'utf8' });
+    try {
+      const doc = JSON.parse(`${logOut.stdout ?? ''}`.slice(`${logOut.stdout ?? ''}`.indexOf('{')));
+      if (Array.isArray(doc.ticketContents)) {
+        ticketed = new Set(doc.ticketContents.map((t) => String(t.cdhash ?? '').toLowerCase()));
+      }
+      if (doc.issues) say(`  notarize: Apple reported issues: ${JSON.stringify(doc.issues).slice(0, 400)}`);
+    } catch { /* fall through to the lookup-only path below */ }
+  }
+  if (!ticketed) {
+    fail('notarize: could not read the submission log, so there is no proof the ticket\n'
+      + '  covers these exact bytes. Fetch it by hand:\n'
+      + `    xcrun notarytool log ${submissionId ?? '<submission-id>'} --keychain-profile ${NOTARY_PROFILE}`);
+  }
+
   for (const f of staged) {
     const path = join(OUT, f);
-    // ⛔ `codesign` REPORTS ON STDERR, and `execFileSync` returns only stdout —
-    // so reading its return value tests an EMPTY STRING and calls every
-    // notarized artifact unnotarized. That is why this uses `spawnSync`: it
-    // hands back both streams on success as well as failure. The shell form
-    // this was ported from worked only because `2>&1` merged them.
+    const cd = cdhashOf(path);
+    if (!cd) fail(`${f}: could not read a cdhash — it is not a signed Mach-O.`);
+    if (!ticketed.has(cd)) {
+      fail(`${f} is NOT covered by the notarization ticket (cdhash ${cd}).\n`
+        + '  The ticket is keyed to the bytes, so something re-signed or rebuilt this\n'
+        + '  artifact after the submission and it must not ship.');
+    }
+    // Best effort, and explicitly allowed to be behind. `codesign` reports on
+    // STDERR and `execFileSync` returns only stdout, which is why this uses
+    // `spawnSync` — reading a return value here once called every notarized
+    // artifact unnotarized.
     const r = spawnSync('/usr/bin/codesign',
       ['--test-requirement==notarized', '--verify', '-vv', path],
       { encoding: 'utf8' });
-    const ok = r.status === 0
+    const live = r.status === 0
       && /explicit requirement satisfied/.test(`${r.stdout ?? ''}${r.stderr ?? ''}`);
-    if (!ok) {
-      fail(`${f} is NOT notarized after an Accepted submission.\n`
-        + '  The ticket is keyed to the bytes — if anything re-signed or rebuilt after\n'
-        + '  the submission, it no longer applies and this artifact must not ship.');
-    }
-    say(`  ${f}: notarized ✓`);
+    say(`  ${f}: ticketed ✓${live ? ' + Gatekeeper agrees ✓' : ' (Gatekeeper lookup has not caught up yet — expected)'}`);
   }
 }
 

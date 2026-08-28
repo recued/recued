@@ -126,11 +126,20 @@ describe('classifyStartupFailure — browser-blocked socket', () => {
   // refusing an insecure dial looks identical to a server that never answered.
   const wsFailure = new Error('webclient.browser-transport: WS closed before open (code=1006)');
 
-  it('narrows to insecure_socket_blocked when an https page dialled http', () => {
+  it('narrows to insecure_socket_blocked when an https page dialled a NON-loopback http address', () => {
+    expect(classifyStartupFailure(wsFailure, true, {
+      serverUrl: 'http://192.168.1.42:7717',
+      pageProtocol: 'https:',
+    })).toBe('insecure_socket_blocked');
+  });
+
+  it('leaves LOOPBACK as server_unreachable — Chrome permits that dial', () => {
+    // ⛔ Blaming the browser here was a false accusation that hid the real
+    // cause of every failed local connection.
     expect(classifyStartupFailure(wsFailure, true, {
       serverUrl: 'http://127.0.0.1:7717',
       pageProtocol: 'https:',
-    })).toBe('insecure_socket_blocked');
+    })).toBe('server_unreachable');
   });
 
   it('stays server_unreachable with no context — the prior behaviour', () => {

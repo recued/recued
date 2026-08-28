@@ -127,9 +127,37 @@ foreach ($triple in ($Triples -split ',' | ForEach-Object { $_.Trim() } | Where-
     Get-Content $err | Select-String -Pattern 'Error|FATAL|MISSING' | Select-Object -First 3 | ForEach-Object { Write-Output ('  ! ' + $_.Line.Trim()) }
   }
 
+  # !! AND `recued start` -- THE SAME DEFECT CLASS AS THE ws PROBE ABOVE.
+  # daemon.ts built its child command one way only: `npx tsx <dir>/bin.ts`.
+  # That is right from a source checkout and impossible in a packaged binary --
+  # there is no bin.ts on disk, import.meta.dirname is not a directory, so the
+  # path fell back to the process CWD and the daemon spawned whatever node and
+  # tsx were on PATH. On a Windows box with no Node installed, npx is not even
+  # spawnable. `recued status` then said "stopped", accurately, which is why it
+  # read as a status bug. Foreground serve cannot see this: the whole defect is
+  # in the step where the process re-launches ITSELF.
+  # !! ITS OWN DIRECTORY, not just its own db file. The realm lock is
+  # {data_path}\recued-server.lock, keyed on the DIRECTORY -- and the foreground
+  # server above is still running out of $root, so a sibling db there is refused
+  # with "already running against this data folder" and this gate would report a
+  # defect that is not there.
+  $dmnRoot = Join-Path $root 'daemon'
+  New-Item -ItemType Directory -Force -Path $dmnRoot | Out-Null
+  $dmnDb = Join-Path $dmnRoot 'daemon-smoke.db'
+  $dmnPort = $port + 100
+  $dmnOk = $false
+  try {
+    & $bin start --db $dmnDb --port "$dmnPort" 2>&1 | Out-Null
+    $dmnOut = (& $bin status --db $dmnDb --port "$dmnPort" 2>&1 | Out-String)
+    # The banner prints 'Status:    Running'; the status VERB prints 'Status:  running'.
+    $dmnOk = $dmnOut -match 'Status:\s*running'
+    & $bin stop --db $dmnDb 2>&1 | Out-Null
+  } catch { $dmnOk = $false }
+  Write-Output ('  daemon-start = ' + $(if ($dmnOk) { 'start -> status: running' } else { 'FAILED (start produced nothing status can see)' }))
+
   if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
   Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
-  $results += ("$triple=" + $(if ($dbSeen -and $portSeen -and $wsOk) { 'OK' } else { 'FAILED' }))
+  $results += ("$triple=" + $(if ($dbSeen -and $portSeen -and $wsOk -and $dmnOk) { 'OK' } else { 'FAILED' }))
   $port++
 }
 

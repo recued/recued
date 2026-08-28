@@ -276,6 +276,17 @@ export const CHAT_ROUTE_GREETING_ATTR = 'data-recued-chat-route-greeting';
  *  separate persisted onboarding state. */
 export const CHAT_ROUTE_ACTIVATION_ATTR = 'data-recued-chat-route-activation';
 /** One outcome card: `ask`, `connect`, or `automate`. */
+/** The returning-owner pointer: one line under the greeting, naming only the
+ *  setup steps still outstanding. Distinct from the first-run card grid, which
+ *  replaces the greeting entirely. */
+export const CHAT_ROUTE_ACTIVATION_POINTER_ATTR =
+  'data-recued-chat-route-activation-pointer';
+export const CHAT_ROUTE_ACTIVATION_POINTER_LINK_ATTR =
+  'data-recued-chat-route-activation-pointer-link';
+/** Where the pointer sends someone: the public first-steps guide, which can
+ *  explain a connection, a model, a contract and a pack in one place without
+ *  any of it having to live in the empty state of a chat. */
+export const ACTIVATION_GUIDE_URL = 'https://recued.com/first-steps';
 export const CHAT_ROUTE_ACTIVATION_CARD_ATTR =
   'data-recued-chat-route-activation-card';
 /** Primary action inside an activation card. Value matches the card intent. */
@@ -379,6 +390,12 @@ export interface ChatRouteConn {
     method: 'chat.session.mark_seen',
     payload: { session_id: string },
   ): Promise<{ ok: true }>;
+  /** Activation state — has the owner connected anything, installed anything.
+   *  Only the COUNT is read; nothing about either list is rendered here. */
+  (method: 'collection.connection.list'): Promise<{
+    connections: ReadonlyArray<unknown>;
+  }>;
+  (method: 'recipe.list'): Promise<{ recipes: ReadonlyArray<unknown> }>;
   (
     method: 'chat.session.export',
     payload: { session_id: string },
@@ -1402,6 +1419,21 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+}
+/* Quiet by construction — it sits under a greeting, not in place of one. */
+[${CHAT_ROUTE_ACTIVATION_POINTER_ATTR}] {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+[${CHAT_ROUTE_ACTIVATION_POINTER_LINK_ATTR}] {
+  color: var(--accent);
+  font-weight: 650;
+  text-decoration: none;
+}
+[${CHAT_ROUTE_ACTIVATION_POINTER_LINK_ATTR}]:hover,
+[${CHAT_ROUTE_ACTIVATION_POINTER_LINK_ATTR}]:focus-visible {
+  text-decoration: underline;
 }
 [${CHAT_ROUTE_ACTIVATION_CARD_ATTR}] {
   min-width: 0;
@@ -3600,6 +3632,23 @@ export const bootstrapChatRoute = (
   // Derived from durable chat history and live completion events — no separate
   // "has seen onboarding" flag to go stale across browsers or restores.
   let hasCompletedChat = false;
+  /** Has the owner connected anything, and installed anything? `null` while
+   *  unknown.
+   *
+   *  ⛔ THE CARDS COULD NOT ANSWER THEIR OWN QUESTION BEFORE. All three sat
+   *  behind ONE gate — `!hasCompletedChat` — so the whole surface retired the
+   *  moment any session had a message. That is right for "Ask Recued": after
+   *  your first chat you have asked. It is wrong for the other two, which
+   *  describe exactly what somebody has NOT done after one chat, and which are
+   *  the two steps that make a self-hosted server worth running. They got one
+   *  showing, on the screen where the person was trying to do something else,
+   *  and then were gone for good.
+   *
+   *  ⚠ `null` is not `false`. Until the read lands, a card must not claim its
+   *  step is outstanding — a flash of "Connect my work" at every boot for
+   *  somebody who connected months ago is the nagging this is meant to avoid. */
+  let hasConnection: boolean | null = null;
+  let hasInstalledRecipe: boolean | null = null;
 
   /** Preserve the user's Chat context across the focused Settings detour.
    * A draft returns through `start` (which only seeds true first-run users);
@@ -6243,7 +6292,7 @@ export const bootstrapChatRoute = (
           chatSetupHref(),
         )
       : activationButton('ask', 'Try a starter prompt', seedStarterPrompt);
-    grid.appendChild(buildActivationCard({
+    if (!hasCompletedChat) grid.appendChild(buildActivationCard({
       intent: 'ask',
       status: state.aiAvailable === true
         ? 'Model selected'
@@ -6264,10 +6313,10 @@ export const bootstrapChatRoute = (
       action: askAction,
     }));
 
-    grid.appendChild(buildActivationCard({
+    if (hasConnection === false) grid.appendChild(buildActivationCard({
       intent: 'connect',
       status: 'Bring in your context',
-      statusState: 'neutral',
+      statusState: 'needs-setup',
       title: 'Connect my work',
       copy: 'Add mail, calendars, files, and the services you already use.',
       action: activationLink(
@@ -6284,10 +6333,10 @@ export const bootstrapChatRoute = (
           serializeShellRoute('recipes'),
         )
       : activationButton('automate', 'Choose a recipe', opts.openRunPalette);
-    grid.appendChild(buildActivationCard({
+    if (hasInstalledRecipe === false) grid.appendChild(buildActivationCard({
       intent: 'automate',
       status: 'Save repeat work',
-      statusState: 'neutral',
+      statusState: 'needs-setup',
       title: 'Automate a task',
       copy: 'Use a ready-made recipe now, on a schedule, or when something happens.',
       action: automateAction,
@@ -6295,6 +6344,39 @@ export const bootstrapChatRoute = (
 
     activation.appendChild(grid);
     return activation;
+  };
+
+  /** One line for the owner who is past first-run but has not taken every
+   *  step. ⛔ Deliberately NOT the card grid: the grid replaces the greeting,
+   *  and a returning owner who never connected a mailbox should not lose their
+   *  greeting to a sales pitch on every new chat. It names only what is
+   *  actually outstanding, and disappears entirely once nothing is. */
+  const buildActivationPointer = (): HTMLElement => {
+    const row = doc.createElement('p');
+    row.setAttribute(CHAT_ROUTE_ACTIVATION_POINTER_ATTR, '');
+    const lead = doc.createElement('span');
+    const connectOutstanding = hasConnection === false;
+    const automateOutstanding = hasInstalledRecipe === false;
+    lead.textContent = connectOutstanding && automateOutstanding
+      ? 'Recued can also read your world and act on it. '
+      : connectOutstanding
+        ? 'Recued can also read your world. '
+        : 'Recued can also do this on a schedule. ';
+    row.appendChild(lead);
+    const link = doc.createElement('a');
+    link.setAttribute(CHAT_ROUTE_ACTIVATION_POINTER_LINK_ATTR, '');
+    link.setAttribute('href', ACTIVATION_GUIDE_URL);
+    // ⚠ Leaves the app for the public site, so it says so and opens away —
+    // an in-app link that silently swapped origins would be worse.
+    link.setAttribute('target', '_blank');
+    link.setAttribute('rel', 'noreferrer noopener');
+    link.textContent = connectOutstanding && automateOutstanding
+      ? 'See what to set up next'
+      : connectOutstanding
+        ? 'Connect your mail, calendar and files'
+        : 'Browse ready-made recipes';
+    row.appendChild(link);
+    return row;
   };
 
   // Shell-frame Step 3 — the composer: a toolbar row (model picker) above the
@@ -7404,6 +7486,19 @@ export const bootstrapChatRoute = (
       && state.phase === 'ready'
       && returnableSessions.length > 0
       && !showConnectedSourceHandoff;
+    // Each card answers its OWN question now. A step is offered while it is
+    // outstanding and stops being offered once it is done — so somebody fully
+    // set up never sees any of this, and somebody who has only ever chatted
+    // still gets told the other two exist.
+    // ⛔ THE GRID STAYS FIRST-RUN ONLY. Letting it persist while any step was
+    // outstanding SUPPRESSES the returning-user greeting — the two are
+    // alternatives in this layout — so somebody who has chatted for months but
+    // never connected a mailbox would get a card grid instead of a greeting
+    // every time they opened a new chat. That is nagging, not guidance, and it
+    // broke two shipped assertions that were right to object. What a returning
+    // owner gets instead is one quiet line, below.
+    const connectOutstanding = hasConnection === false;
+    const automateOutstanding = hasInstalledRecipe === false;
     const showFirstRunActivation =
       isEmpty
       && !showConnectedSourceHandoff
@@ -7415,6 +7510,16 @@ export const bootstrapChatRoute = (
       && opts.enableFirstRunActivation === true
       && state.phase === 'ready'
       && !hasCompletedChat;
+    // The returning owner's version: no grid, no greeting displaced — a single
+    // line offering the steps they have not taken, and nothing once they have.
+    const showActivationPointer =
+      isEmpty
+      && !showFirstRunActivation
+      && !showConnectedSourceHandoff
+      && connectedSource === null
+      && opts.enableFirstRunActivation === true
+      && state.phase === 'ready'
+      && (connectOutstanding || automateOutstanding);
 
     if (isEmpty) {
       if (showReturningHistory) {
@@ -7484,6 +7589,9 @@ export const bootstrapChatRoute = (
           greeting.textContent = 'What can Recued help you with?';
           hero.appendChild(greeting);
           if (aiNotice !== null) hero.appendChild(aiNotice);
+          if (showActivationPointer) {
+            hero.appendChild(buildActivationPointer());
+          }
         }
         // Empty hero — composer centered, the buttons expanded below it.
         hero.appendChild(buildComposer(false));
@@ -8326,6 +8434,50 @@ export const bootstrapChatRoute = (
       } else {
         render();
       }
+    }
+  };
+
+  /** Which activation steps are still outstanding.
+   *
+   *  ⚠ Read once at boot, beside the LLM-config read the `ask` card already
+   *  depends on — the same shape and the same cost. Not free, and worth being
+   *  explicit that this is two more reads at mount.
+   *
+   *  ⛔ A FAILED READ LEAVES THE CARD SILENT, not offered. `null` stays `null`,
+   *  and a card whose own state could not be established has no business
+   *  telling somebody to go and do the thing they may already have done. */
+  const loadActivationState = async (): Promise<void> => {
+    await Promise.all([
+      (async () => {
+        try {
+          const { connections } = await opts.conn('collection.connection.list');
+          if (!disposed) hasConnection = connections.length > 0;
+        } catch {
+          /* leave unknown — see the header */
+        }
+      })(),
+      (async () => {
+        try {
+          const { recipes } = await opts.conn('recipe.list');
+          if (!disposed) hasInstalledRecipe = recipes.length > 0;
+        } catch {
+          /* leave unknown — see the header */
+        }
+      })(),
+    ]);
+    // ⛔ RENDER ONLY WHERE THESE CARDS CAN APPEAR — i.e. the empty draft, with
+    // no session open. This is the THIRD time an extra render has retired a
+    // one-shot `role="status"` announcement in this route: several surfaces
+    // paint one and drop it on the next render, so a boot read that repaints
+    // unconditionally silences whatever the landing had just announced. If the
+    // owner arrived on a durable session or a deep link, nothing here is on
+    // screen and there is nothing to repaint.
+    if (
+      !disposed
+      && state.thread.session === null
+      && state.activeSessionId === null
+    ) {
+      renderPreservingHandoffFocus();
     }
   };
 
@@ -10021,6 +10173,7 @@ export const bootstrapChatRoute = (
     && connectedSource === null
     && initialSessionIdOnLoad === null;
   const initialLoad = Promise.all([
+    loadActivationState(),
     loadSessions(),
     loadAiAvailability(),
     loadDefaultModelPref(),

@@ -42,6 +42,7 @@ const STARTUP_FAILURE_DIAGNOSTIC_PANEL_ID =
 const STARTUP_FAILURE_TRIAGE_STYLES_MARKER =
   'data-recued-startup-failure-triage-styles';
 import {
+  isCertainlyBlockedServerAddress,
   isInsecureSocketFromSecurePage,
   readPageProtocol,
 } from '../net/insecure-origin.js';
@@ -255,7 +256,12 @@ export const classifyStartupFailure = (
     // offline is diagnosed on its own evidence; this narrows the one verdict
     // that was wrong — "the server did not answer" — when the browser is the
     // thing that refused to ask.
-    return isInsecureSocketFromSecurePage(context.serverUrl, context.pageProtocol)
+    // ⛔ Same narrowing as `isConnectionBlockedByBrowserOrigin`: only claim the
+    // browser blocked it where the answer does not depend on WHICH browser —
+    // a non-loopback `http://` address. Chrome permits a loopback dial from a
+    // secure page, so inferring there turns every local-server failure into a
+    // false accusation that reads like a diagnosis.
+    return isCertainlyBlockedServerAddress(context.serverUrl, context.pageProtocol)
       ? 'insecure_socket_blocked'
       : 'server_unreachable';
   }

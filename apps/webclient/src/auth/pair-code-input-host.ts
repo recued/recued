@@ -93,7 +93,6 @@ import {
 import type { ArchiveUploadFile } from '../settings/archive-backup-panel.js';
 import {
   isCertainlyBlockedServerAddress,
-  isInsecureSocketFromSecurePage,
   readPageProtocol,
 } from '../net/insecure-origin.js';
 
@@ -527,7 +526,7 @@ export const submitPairCodeInput = async (
     // the address combination is the only evidence available. Checked ONLY on
     // failure: Chrome permits a loopback dial from an https page, and a working
     // setup must never be warned at.
-    if (isInsecureSocketFromSecurePage(serverUrl, readPageProtocol())) {
+    if (isCertainlyBlockedServerAddress(serverUrl, readPageProtocol())) {
       return {
         ok: false,
         error: 'pair_code_input_blocked_by_browser',

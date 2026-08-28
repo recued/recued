@@ -145,15 +145,29 @@ describe('CollectionListQuery / SearchQuery shape', () => {
 });
 
 describe('CollectionSearchMatch shape', () => {
-  it('carries rank + snippet alongside the record reference', () => {
+  it('carries rank + the record body alongside the record reference', () => {
     const m: CollectionSearchMatch = {
       record_id: 'uid:7@INBOX',
       hot_fields: { subject: 'Q3 review' },
       rank: -3.14,
-      snippet: '…the <b>project</b> <b>Q3 review</b> meeting…',
+      body: 'Moving the Q3 review to Thursday; the deck is attached.',
     };
     expect(m.rank).toBeLessThan(0);
-    expect(m.snippet).toContain('<b>');
+    expect(m.body).toContain('Thursday');
+  });
+
+  // ⛔ A row whose body was CUT or WITHHELD says so. Without this the reader
+  // cannot tell a 64 KB contract it was handed 2 KB of from a short note it was
+  // handed whole, which is the failure the retired `snippet` shipped for years.
+  it('marks a body it could not hand over in full', () => {
+    const m: CollectionSearchMatch = {
+      record_id: 'uid:8@INBOX',
+      hot_fields: { subject: 'Master agreement' },
+      rank: -1.2,
+      body_truncated: true,
+    };
+    expect(m.body).toBeUndefined();
+    expect(m.body_truncated).toBe(true);
   });
 });
 

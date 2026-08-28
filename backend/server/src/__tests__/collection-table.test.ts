@@ -328,9 +328,16 @@ describe('search — FTS5', () => {
     expect(hits.map((h) => h.record_id)).toEqual(['a']);
   });
 
-  it('returns a snippet with the configured highlight markers', () => {
+  // ⛔ WAS `returns a snippet with the configured highlight markers`. The
+  // snippet was retired: a window centred on the query terms was being read as
+  // the record, and it cut before the facts questions needed. What replaces it
+  // is the record's OWN text — so the assertion that matters is no longer "the
+  // match is marked up" but "the row carries what it holds".
+  it('hands back the record body, not a window over it', () => {
     const hits = table.search({ platform: 'mail', slug: 'work', query: 'brown' });
-    expect(hits[0].snippet).toMatch(/<b>brown<\/b>/);
+    expect(hits[0].body).toContain('brown');
+    // No markup: this is the stored text, not a highlighted preview.
+    expect(hits[0].body).not.toContain('<b>');
   });
 
   it('hydrates hot_fields alongside the match', () => {

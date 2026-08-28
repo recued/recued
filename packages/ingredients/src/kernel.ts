@@ -239,11 +239,18 @@ const collectionRecordMetadataOnly = (
   return projected;
 };
 
+/** ⛔ `snippet` RETIRED 2026-08-28 — it was an FTS5 window centred on the query
+ *  terms, read by consumers as the record. `body` is the record's own text,
+ *  hydrated from the base table by id and bounded; `body_truncated` marks a row
+ *  whose body was cut or withheld, so a fragment is never read as the whole
+ *  thing. See `CollectionSearchMatch` in `@recued/contracts`. */
 export interface KernelCollectionSearchMatch {
   record_id: string;
   hot_fields: Record<string, unknown>;
   rank: number;
-  snippet: string;
+  received_at?: number;
+  body?: string;
+  body_truncated?: boolean;
 }
 
 export type KernelCollectionPlatform = 'mail' | 'file' | 'webhook';
@@ -1009,7 +1016,7 @@ export interface KernelDispatchers {
     query: string;
     limit?: number;
   }) => Promise<{
-    matches: Array<KernelCalendarHotFields & { snippet: string }>;
+    matches: Array<KernelCalendarHotFields & { body?: string; body_truncated?: boolean }>;
     source_freshness?: CollectionSourceFreshness;
   }>;
 

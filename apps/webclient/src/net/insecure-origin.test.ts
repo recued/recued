@@ -155,9 +155,31 @@ describe('the dialled-address record', () => {
   });
 
   it('composes the record with the page protocol', () => {
-    noteDialledServerUrl('ws://127.0.0.1:7717/ws');
+    // A NON-loopback address: no browser permits this, so the address alone
+    // is a sound basis for the claim.
+    noteDialledServerUrl('ws://192.168.1.42:7717/ws');
     expect(isConnectionBlockedByBrowserOrigin(docWith('https:'))).toBe(true);
     expect(isConnectionBlockedByBrowserOrigin(docWith('http:'))).toBe(false);
+  });
+
+  it('does NOT blame the browser for a LOOPBACK failure without proof', () => {
+    // ⛔ THE REGRESSION THIS EXISTS FOR. It first shipped inferring from
+    // `isInsecureSocketFromSecurePage`, which is true for loopback — so every
+    // failed local connection was reported as "this browser blocked the
+    // connection". Chrome PERMITS a loopback dial from a secure page, so on
+    // the dominant browser that accusation is false, and it reads like a
+    // diagnosis, which hides whatever actually broke: a stopped server, a
+    // wrong port, a server whose own WebSocket layer is dead.
+    noteDialledServerUrl('ws://127.0.0.1:7717/ws');
+    expect(isConnectionBlockedByBrowserOrigin(docWith('https:'))).toBe(false);
+  });
+
+  it('DOES blame it for loopback once the browser has proven it', () => {
+    // A constructor SecurityError is the browser saying so itself — the only
+    // honest source for the loopback case.
+    noteDialledServerUrl('ws://127.0.0.1:7717/ws');
+    noteBrowserRefusedSocket();
+    expect(isConnectionBlockedByBrowserOrigin(docWith('https:'))).toBe(true);
   });
 
   it('follows the LATEST dial — a re-pair to a secure address clears it', () => {

@@ -189,7 +189,7 @@ export const handleCalendarSearch = async (
   deps: CalendarDispatcherDeps,
   input: { slug: string; query: string; limit?: number },
 ): Promise<{
-  matches: Array<CalendarRecordHotFields & { snippet: string }>;
+  matches: Array<CalendarRecordHotFields & { body?: string; body_truncated?: boolean }>;
   source_freshness: CollectionSourceFreshness;
 }> => {
   const { collection, caps } = requireRead(deps, input.slug);
@@ -207,7 +207,10 @@ export const handleCalendarSearch = async (
   return {
     matches: matches.map((m) => ({
       ...m.hot,
-      snippet: m.snippet,
+      // The event's own description, hydrated from the row — not a window over
+      // it. `body_truncated` rides along so a cut body is never read as whole.
+      ...(m.body !== undefined ? { body: m.body } : {}),
+      ...(m.body_truncated ? { body_truncated: true } : {}),
     })),
     // D-236 — zero matches is an absence, same ambiguity as an empty list.
     source_freshness: collectionSourceFreshnessOf(collection.health, (deps.now ?? Date.now)()),

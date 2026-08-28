@@ -22,6 +22,24 @@ const batchRecords = [
   { record_id: 'r2', text: 'Second record' },
 ];
 
+/** ⚠ `ai-score`'s single-mode bytes CHANGED on 2026-08-27, deliberately. This
+ *  block exists so the D-162 BATCH work could not perturb single mode by
+ *  accident — it is a drift ratchet, not a freeze, and a measured change to the
+ *  prompt is exactly the case it should let through once the snapshot is
+ *  re-taken on purpose.
+ *
+ *  What moved: `breakdown` now precedes `score`. `score` is documented in that
+ *  same prompt as the AVERAGE of the breakdown, and the schema asked for it
+ *  first — the average of terms not yet written. Every contracted ai-* call runs
+ *  under `response_format:{type:'json_object'}`, so key order is generation
+ *  order. Measured over 14 runs each, only the order varying: the stated overall
+ *  matched the average of its own breakdown 5/14 before and 14/14 after
+ *  (p = 0.0006), at unchanged output length.
+ *
+ *  ⛔ `ai-classify` is UNCHANGED and that is also deliberate — its answer is a
+ *  LABEL, which depends on nothing else in the object. Reordering it measured
+ *  WORSE (16/16 → 13/16, three outputs with no `category`) and grew the response
+ *  ~6x, which in batch mode truncates the array. See the note in `prompts.ts`. */
 describe('D-162 P0 I-1 / N.7 single-mode prompt bytes', () => {
   it('ai-classify is byte-unchanged in single mode', () => {
     expect(buildContractedPrompt('ai-classify', {
@@ -57,7 +75,7 @@ describe('D-162 P0 I-1 / N.7 single-mode prompt bytes', () => {
         {
           "content": "You are a scoring engine. Score the data against each criterion on the provided scale. Produce a per-criterion breakdown, an overall score (average, rounded to one decimal), and a brief reasoning.
 
-      Schema: { "score": <number>, "breakdown": [{ "criterion": "<name>", "score": <number>, "notes": "<short>" }], "reasoning": "<2-3 sentences>" }
+      Schema: { "breakdown": [{ "criterion": "<name>", "score": <number>, "notes": "<short>" }], "score": <number>, "reasoning": "<2-3 sentences>" }
 
       Respond with ONLY a valid JSON object matching the exact schema. No markdown, no code fences, no preamble, no explanation outside the JSON.",
           "role": "system",

@@ -155,9 +155,26 @@ export const noteBrowserRefusedSocket = (): void => {
 export const isSocketRefusalProven = (): boolean => browserRefusedSocket;
 
 /** The composed question every surface should ask before blaming the server. */
+/** ⛔⛔ INFERENCE USES THE **CERTAIN** PREDICATE — LOOPBACK NEEDS PROOF.
+ *
+ *  This first shipped using `isInsecureSocketFromSecurePage`, which is true for
+ *  `ws://127.0.0.1` on an https page. Chrome PERMITS that dial (loopback is
+ *  potentially trustworthy), so on the dominant browser the address tells us
+ *  nothing — and every socket failure to a local server got reported as "this
+ *  browser blocked the connection". A dead server, a wrong port, a server whose
+ *  own WebSocket layer is broken: all of them accused the browser, and the
+ *  accusation READS like a diagnosis, so it actively hides the real cause.
+ *  Reported from app.recued.com against a local server, 2026-08-27.
+ *
+ *  🔑 THE RULE THE PROACTIVE HINT ALREADY HAD, applied here too late: infer
+ *  only where the answer does not depend on which browser is asking — a
+ *  NON-loopback `http://` address, which no browser permits from a secure page.
+ *  For loopback, the only honest source is the browser's own refusal
+ *  (`browserRefusedSocket`, a constructor SecurityError). Absent that, we do
+ *  not know, and "can't reach your server" is the truthful answer. */
 export const isConnectionBlockedByBrowserOrigin = (doc?: Document): boolean =>
   browserRefusedSocket
-  || isInsecureSocketFromSecurePage(dialled, readPageProtocol(doc));
+  || isCertainlyBlockedServerAddress(dialled, readPageProtocol(doc));
 
 /** Reset for tests — production never calls this. */
 export const resetInsecureOriginProbeForTest = (): void => {

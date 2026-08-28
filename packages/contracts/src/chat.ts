@@ -1759,8 +1759,11 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
             + 'reads as a QUESTION or a proposal — "move from 30d to 90d?" — because the '
             + 'answer is a reply that repeats none of your search words, so NO query can '
             + 'reach it and re-searching will keep returning the question. Ask for '
-            + '`next: 2`. Adjacency follows the correspondents and the thread when one '
-            + 'exists, so it works even where the provider threads badly or not at all. '
+            + '`next: 2`. Adjacency follows the two CORRESPONDENTS — mail either way '
+            + 'between the same pair — and the thread when one exists, so it still '
+            + 'reaches a reply that BROKE the thread (a forward, or a fresh message '
+            + 'sent because replying was inconvenient), and it works where the '
+            + 'provider threads badly or not at all. '
             + 'Reporting a proposal as the outcome without checking the reply is the '
             + 'failure this prevents.',
         },

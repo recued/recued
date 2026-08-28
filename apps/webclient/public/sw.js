@@ -113,7 +113,7 @@ const CACHE_PREFIX = 'webclient-';
 // opens. Writing this as `` `${CACHE_PREFIX}v9` `` reddens that test rather than
 // drifting silently, which is the behaviour you want; it just means the prefix
 // relationship is asserted separately instead of expressed here.
-const CACHE_NAME = 'webclient-shell-v17';
+const CACHE_NAME = 'webclient-shell-v20';
 
 /** Pre-cache list — the app shell. Network-only for everything else.
  *  Adding a new shell asset requires an entry here + a `CACHE_NAME`

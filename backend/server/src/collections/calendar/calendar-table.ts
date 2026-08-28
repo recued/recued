@@ -183,11 +183,17 @@ export interface CalendarSearchQuery {
   limit?: number;
 }
 
+/** ⛔ `snippet` RETIRED 2026-08-28. This search ALREADY did `SELECT * FROM
+ *  <table> WHERE record_id IN (...)` — it held the whole row and still returned
+ *  a 15-token window centred on the query terms. `body` is the event's own
+ *  description, bounded; `body_truncated` marks a row that was cut or is
+ *  CAS-stored. See `CollectionSearchMatch` in `@recued/contracts`. */
 export interface CalendarSearchMatch {
   record_id: string;
   hot: CalendarRecordHotFields;
   rank: number;
-  snippet: string;
+  body?: string;
+  body_truncated?: boolean;
 }
 
 export interface CalendarCollectionTable {
@@ -299,6 +305,11 @@ export interface CreateCalendarTableOptions {
 // ────────────────────────────────────────────────────────────────
 // Row helpers
 // ────────────────────────────────────────────────────────────────
+
+/** Per-event and whole-result-set body caps — the calendar twins of
+ *  `SEARCH_BODY_MAX_CHARS` / `SEARCH_BODY_TOTAL_CHARS` in `collections/table.ts`. */
+const CALENDAR_BODY_MAX_CHARS = 2000;
+const CALENDAR_BODY_TOTAL_CHARS = 12000;
 
 interface Row {
   record_id: string;
@@ -769,11 +780,11 @@ export const createCalendarTable = (
     const ftsQuery = toFtsMatch(query.query);
     if (ftsQuery === null) return [];
     // The FTS column (index 1) contains summary + description + location +
-    // attendee / organizer text (see ftsTextFor). snippet() uses the
-    // default 15-token window.
+    // attendee / organizer text (see ftsTextFor).
+    // The index answers WHICH ROWS; the `SELECT *` below answers what is in
+    // them. No `snippet()` — that round-trip was already being made.
     const sql = `
-      SELECT key, rank,
-             snippet(${ftsName}, 1, '<b>', '</b>', '…', 15) AS snippet
+      SELECT key, rank
       FROM ${ftsName}
       WHERE ${ftsName} MATCH ?
       ORDER BY rank
@@ -783,7 +794,6 @@ export const createCalendarTable = (
     let matches = stmt.all(ftsQuery, limit) as Array<{
       key: string;
       rank: number;
-      snippet: string;
     }>;
     // Which expression produced `matches` — the recency floor must rerun the
     // SAME one or it would surface rows relevance never considered.
@@ -819,15 +829,36 @@ export const createCalendarTable = (
       .prepare(`SELECT * FROM ${tableName} WHERE record_id IN (${placeholders})`)
       .all(...matches.map((m) => m.key)) as Row[];
     const byId = new Map<string, Row>(rows.map((r) => [r.record_id, r]));
+    // Same two bounds as the generic table, and for the same reason: per row so
+    // one long description cannot take the turn, across the set so a wide search
+    // cannot blow the packet. Spent in rank order — the tail degrades first.
+    let bodyBudget = CALENDAR_BODY_TOTAL_CHARS;
     return matches
       .map((m) => {
         const row = byId.get(m.key);
         if (!row) return null;
+        const raw = row.body_inline;
+        let body: { body?: string; body_truncated?: boolean };
+        if (raw === null || raw === '') {
+          // ⛔ NULL `body_inline` IS AMBIGUOUS ON ITS OWN — the description
+          // spilled to CAS, or there was never a description. `blob_hash` is
+          // the only thing that separates them, and an event with no agenda
+          // must not look like one whose agenda was withheld.
+          body = row.blob_hash !== null ? { body_truncated: true } : {};
+        } else if (bodyBudget <= 0) {
+          body = { body_truncated: true };
+        } else {
+          const room = Math.min(CALENDAR_BODY_MAX_CHARS, bodyBudget);
+          const cut = raw.length > room;
+          const text = cut ? raw.slice(0, room) : raw;
+          bodyBudget -= text.length;
+          body = cut ? { body: text, body_truncated: true } : { body: text };
+        }
         return {
           record_id: m.key,
           hot: rowHotFields(row),
           rank: m.rank,
-          snippet: m.snippet,
+          ...body,
         };
       })
       .filter((x): x is CalendarSearchMatch => x !== null);

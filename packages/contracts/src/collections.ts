@@ -123,11 +123,69 @@ export interface CollectionSearchQuery {
  *  FTS5's BM25 — smaller is better (FTS5 convention: negative numbers
  *  sort higher). `snippet` is a short highlighted excerpt around the
  *  first match. */
+/** ⛔⛔ `snippet` WAS RETIRED FROM THIS SHAPE (2026-08-28). It was an FTS5
+ *  `snippet()` — N tokens centred on the query terms — and every consumer that
+ *  mattered read it as THE RECORD. A row could be retrieved perfectly and still
+ *  hand on a fragment that stopped before the fact the question needed.
+ *
+ *  🔑 THE ROUND-TRIP TO THE BASE TABLE WAS ALREADY HAPPENING. Search resolves
+ *  `WHERE record_id IN (...)` to hydrate `hot_fields`; the record's own text was
+ *  one more column away the whole time. Using the index to find ids and the
+ *  TABLE to fetch rows is the ordinary FTS pattern, and the window was standing
+ *  in for a step that was already paid for.
+ *
+ *  ⚠ Nothing rendered it. `collection.search` returns this shape wholesale over
+ *  rpc, but no webclient / MCP / door surface read `.snippet` — the model was
+ *  its only consumer, which is why a preview-shaped content field was a
+ *  correctness bug rather than a cosmetic one. */
 export interface CollectionSearchMatch {
   record_id: string;
   hot_fields: Record<string, unknown>;
   rank: number;
-  snippet: string;
+  /** When the record arrived. ⛔⛔ ABSENT UNTIL 2026-08-27, AND ITS ABSENCE MADE
+   *  A RETRIEVED CONVERSATION UNORDERABLE. A search returns rows in RELEVANCE
+   *  order, so a seven-message negotiation came back scrambled — measured,
+   *  `n0 n4 n5 n3 n6 n1 n2` — with no date on any row. The reader could not tell
+   *  the refusal in message 2 from the acceptance in message 6, and for a
+   *  negotiation the ORDER IS THE MEANING: a discount applies to a price stated
+   *  earlier, a quantity clears an MOQ stated earlier.
+   *
+   *  ⚠ The list path (no query) carried `received_at` the whole time. Two paths
+   *  of ONE tool answered with different shapes, and the one a question reaches
+   *  is the one that lost the fact.
+   *
+   *  Optional because a caller that pre-dates this may construct matches without
+   *  it; every collection search path in this repo now populates it. */
+  received_at?: number;
+  /** The record's own text, hydrated from the base table by `record_id` —
+   *  NOT a match-centred window.
+   *
+   *  ⛔⛔ THE SNIPPET IS A RELEVANCE PREVIEW AND IT WAS BEING READ AS CONTENT.
+   *  `snippet()` returns N tokens centred on the match, so a row can be
+   *  retrieved perfectly and still hand on a fragment that stops before the
+   *  fact the question needs. Measured on bench 276 (a 7-message negotiation
+   *  whose unit price is DERIVED, never stated): the right mail was reached
+   *  11/11 and the answer was right 0/11, with SEVEN DISTINCT wrong totals,
+   *  because the pivotal snippet cut at `"At that volume I can…"` — one token
+   *  before the two discount rates. The same 7 messages rendered whole into a
+   *  single api call answered 9-11/11 correct, so the arithmetic was never the
+   *  problem: the model was not shown the numbers and filled the gap.
+   *
+   *  🔑 SEARCH IS THE ONLY CONTENT SURFACE FOR MOST COLLECTIONS. `work` has a
+   *  `work.read`; mail / calendar / deal / account / contact / enrichment do
+   *  not, so whatever search omits is unreachable for the rest of the turn —
+   *  there is no second call that recovers the body. That is what makes a
+   *  preview-shaped content field a correctness bug rather than a UX one.
+   *
+   *  Absent when the record is CAS-stored (not `body_inline`) or when the
+   *  result set exhausted its character budget; `body_truncated` says which
+   *  side of that line a given row fell on. */
+  body?: string;
+  /** True when `body` is NOT the whole record — either cut at the per-record
+   *  cap or omitted entirely for budget. The reader needs to know it is
+   *  holding a fragment, because the alternative is treating a cut-off body
+   *  as a complete one, which is exactly the failure `body` exists to fix. */
+  body_truncated?: boolean;
   /** True when the row matched only SOME of the query's terms — surfaced
    *  deliberately, because the record that CORRECTS a fact rarely restates the
    *  wording of the fact it corrects ("actually Ridgeway is 90 days" carries

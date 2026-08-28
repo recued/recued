@@ -322,6 +322,29 @@ const classifyPrompt = (
   const system =
     'You are a classifier. Choose exactly one category from the provided list that best fits the data. ' +
     'Output a confidence between 0 and 1 and a one-sentence reasoning.\n\n' +
+    // ⛔ `reasoning` STAYS LAST HERE — MEASURED, NOT OVERLOOKED, and the contrast
+    // with `ai-score` (below) and with chat's shape is the point.
+    //
+    // Both run under the same constrained decoding, so the same worry applies:
+    // does answering into the FIRST key cost accuracy? For a classifier it does
+    // not. `category` is a one-of-N LABEL, so the model can work internally and
+    // emit a short token; it does not have to compose anything before it knows
+    // the answer. Measured on a deliberately derivation-heavy classification —
+    // the agreed unit price is 6% off an ask stated four messages earlier, and a
+    // shallow read anchors on the counter-offer instead — the SHIPPED schema was
+    // 16/16 correct, with the working visible in the trailing `reasoning`.
+    //
+    // ⛔ AND THE "FIX" MEASURED WORSE: a reasoning-first variant went 13/16 with
+    // three outputs carrying no `category` at all, and grew the response from
+    // ~150 to 350-1900 characters. These calls also run in BATCH mode over N
+    // records against a `max_tokens` of 4000-8000, where a long per-record
+    // preamble truncates the ARRAY — losing every record, not one. A change that
+    // buys nothing and risks the whole batch is not a safe default.
+    //
+    // ⇒ The rule is not "put reasoning first in JSON mode". It is: a field the
+    // model must COMPOSE (chat's prose `response`) or COMPUTE FROM SIBLINGS
+    // (`ai-score`'s average) must not precede what it depends on. A label
+    // depends on nothing in the object.
     'Schema: { "category": "<one of the provided categories>", "confidence": <0-1>, "reasoning": "<one sentence>" }\n\n' +
     JSON_ONLY;
 
@@ -353,7 +376,7 @@ const scorePrompt = (
       'overall score (average, rounded to one decimal), and a brief reasoning.\n\n' +
       batchSchemaBlock(
         idField,
-        '"score": <number>, "breakdown": [{ "criterion": "<name>", "score": <number>, "notes": "<short>" }], "reasoning": "<2-3 sentences>"',
+        '"breakdown": [{ "criterion": "<name>", "score": <number>, "notes": "<short>" }], "score": <number>, "reasoning": "<2-3 sentences>"',
       );
     const user =
       `Scale: ${scale}\nCriteria: ${JSON.stringify(criteria)}\n\nRecords:\n${stringify(data)}`;
@@ -367,7 +390,28 @@ const scorePrompt = (
     'You are a scoring engine. Score the data against each criterion on the provided scale. ' +
     'Produce a per-criterion breakdown, an overall score (average, rounded to one decimal), ' +
     'and a brief reasoning.\n\n' +
-    'Schema: { "score": <number>, "breakdown": [{ "criterion": "<name>", "score": <number>, "notes": "<short>" }], "reasoning": "<2-3 sentences>" }\n\n' +
+    // ⛔⛔ `breakdown` BEFORE `score`, AND THE ORDER IS THE WHOLE FIX. `score` is
+    // documented — one line above, in this same prompt — as the AVERAGE of the
+    // breakdown, and the schema used to ask for it FIRST: the average of terms
+    // the model had not written yet. Every contracted ai-* call runs under
+    // `response_format:{type:'json_object'}` (`executor.ts` — `contracted ||
+    // llm.output_format==='json'`), so this is constrained decoding, not a
+    // suggestion; the model emits the number in key order and then has to make
+    // the breakdown agree with it.
+    //
+    // Measured, one 7-criterion opportunity, 14 runs each, only the key order
+    // varying: the stated overall matched the average of its OWN breakdown
+    // 5/14 with `score` first and 14/14 with `breakdown` first (Fisher
+    // p = 0.0006). Median drift 0.13 → 0.04, worst 0.61 → 0.04. Output length
+    // is unchanged (1503 → 1530 chars) — this costs nothing.
+    //
+    // ⚠ NOT the same fix as chat's `reasoning`-first key, and deliberately not
+    // that fix. Chat's `response` is COMPOSED PROSE that IS the deliverable, so
+    // it needed a scratch field ahead of it. Here the answer is a NUMBER whose
+    // inputs are already a field in the same object — reordering two existing
+    // keys is enough, and adding a verbose reasoning-first field would only
+    // lengthen a batch that is already near its `max_tokens`.
+    'Schema: { "breakdown": [{ "criterion": "<name>", "score": <number>, "notes": "<short>" }], "score": <number>, "reasoning": "<2-3 sentences>" }\n\n' +
     JSON_ONLY;
 
   const user =

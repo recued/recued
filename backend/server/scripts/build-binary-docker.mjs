@@ -290,7 +290,44 @@ const wsUpgradeSmoke = async (triple, outDir, port) => {
           : `answered by the stub handle: ${JSON.stringify(statusLine)}`,
       };
     }
-    return { ok: true, statusLine };
+    // ⛔⛔ AND THE DAEMON, IN THE SAME CONTAINER. Same defect class as the ws
+    // probe, shipped the same way: `daemon.ts` built its child command one way
+    // only — `npx tsx <dir>/bin.ts` — which is correct from a source checkout
+    // and impossible in a SEA. `import.meta.dirname` is not a directory there,
+    // so the path resolved against the process CWD and the daemon spawned
+    // somebody else's node and tsx. This container is `debian:stable-slim`: it
+    // has NO node and NO npx, which is exactly the machine the installer
+    // targets, so the old code cannot even spawn here.
+    //
+    // 🔑 Foreground `serve` cannot see it — the defect is entirely in the step
+    // where the process re-launches ITSELF.
+    //
+    // ⛔ ITS OWN DIRECTORY, not just its own db file. The realm lock is
+    // `{data_path}/recued-server.lock`, keyed on the DIRECTORY — and this
+    // container's own server runs with `-w /tmp` and the default db, so `/tmp`
+    // is already locked. A sibling db there would be refused and the gate would
+    // report a defect that is not there.
+    const dexec = (args) => execFileSync('docker', ['exec', name, ...args],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    let daemonOut = '';
+    try {
+      dexec(['/opt/recued/recued', 'start', '--db', '/tmp/daemon-smoke/daemon.db', '--port', String(port + 1)]);
+      daemonOut = dexec(['/opt/recued/recued', 'status', '--db', '/tmp/daemon-smoke/daemon.db', '--port', String(port + 1)]);
+    } catch (e) {
+      const detail = e && typeof e === 'object' && 'stderr' in e ? String(e.stderr ?? '') : String(e);
+      return { ok: false, why: `\`recued start\` failed inside the container: ${detail.trim().slice(-400)}` };
+    }
+    // The banner says `Status:    Running`; the status VERB says `Status:  running`.
+    if (!/Status:\s*running/i.test(daemonOut)) {
+      return {
+        ok: false,
+        why: '`recued start` did not produce a server `recued status` can see — '
+          + `status said ${JSON.stringify(daemonOut.trim().split('\n')[0] ?? '')}. `
+          + 'A packaged binary must re-execute ITSELF (process.execPath) to daemonize.',
+      };
+    }
+
+    return { ok: true, statusLine, daemon: 'start → status: running' };
   } catch (e) {
     return { ok: false, why: e instanceof Error ? e.message : String(e) };
   } finally {
@@ -389,6 +426,7 @@ for (const r of results) {
       continue;
     }
     console.log(`[build-binary-docker]   ws upgrade answered: ${wsSmoke.statusLine}`);
+    console.log(`[build-binary-docker]   daemon: ${wsSmoke.daemon}`);
   } else {
     failed += 1;
     console.error(`[build-binary-docker]   ⛔ smoke FAILED (exit ${smoke.code}) — the binary does not start:`);

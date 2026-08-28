@@ -7,6 +7,77 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.8.28 — 2026-08-28
+
+`recued start` — the command the installer prints as the way to run in the
+background — has never worked in a released binary. It reported that it had
+started, and `recued status` then said `stopped`, truthfully: the process it
+launched was already dead. This is the same shape as the three faults 26.8.27
+fixed, and it survived for the same reason. The daemon launched the server the
+way a source checkout does, by handing a TypeScript file to a toolchain that
+only exists in a development tree; on a machine that installed the binary,
+there is nothing there to run it.
+
+Running from source was never affected, and neither was start-at-login — the
+macOS and Linux service units run the server in the foreground, so a machine
+set up by the installer has been starting correctly all along. If you hit this,
+`recued serve` was the way through it.
+
+This release also stops the class from shipping again: the publish now boots
+the actual artifact, opens it in a real browser, and pairs to it — through both
+`recued serve` and `recued start` — before anything is signed.
+
+### Fixed
+
+- **`recued start` could not start anything.** The packaged binary now
+  re-executes itself to run in the background, and lands in your realm's
+  directory rather than wherever the command was typed — a restart could
+  otherwise have opened a different database.
+- **A failure reaching your own server is no longer blamed on the browser.**
+  26.8.27 taught Recued to recognise a connection the browser itself refuses;
+  the test it used was also true for `127.0.0.1`, which browsers permit, so
+  local failures were attributed to the wrong cause and the real one went
+  unreported.
+- **Search results in a conversation could not be put back in order.** Results
+  come back by relevance, which is right for retrieval, but they carried no
+  date — so a negotiation arrived scrambled, and in a negotiation the order is
+  the meaning: the refusal that provoked a counter-offer reads as terms if you
+  cannot see that it came first.
+- **Neighbouring messages followed one side of a conversation, not both.** The
+  walk was scoped to whoever sent the message you started from, though it was
+  described as following the correspondents. Anchored on their message it
+  missed your own out-of-thread reply; anchored on yours it pulled in unrelated
+  mail you had sent to other people. It follows the pair now.
+- **A file search that found nothing now says why.** When several search terms
+  match different files but no single file matches them all, the result reports
+  that instead of a flat "nothing found" — which was hiding files that were
+  plainly relevant.
+- **Scores no longer disagree with their own breakdown.** An overall score
+  defined as the average of its criteria was being written before the criteria
+  were, so the model had to make the terms agree with a number it had already
+  committed to.
+
+### Improved
+
+- **The model gets somewhere to work before it answers.** Responses are
+  structured so reasoning is written before the answer rather than after it,
+  which matters for questions whose answer is derived rather than stated — a
+  price that only follows from a discount and a quantity mentioned several
+  messages apart.
+- **Setup steps stop disappearing after your first chat.** The cards for
+  connecting an account and adding a model described exactly what you had not
+  done yet, and retired themselves the moment any conversation had a message.
+
+### A note on Chrome 149 and local servers
+
+Chrome now asks permission before a page on a public site may reach a server on
+your own machine, `127.0.0.1` included. Pairing the hosted webclient at
+`app.recued.com` to a server on your desktop needs that permission granted; if
+it is denied, the request fails before it leaves the browser and the pairing
+screen can only report that it could not reach the server. This is the browser
+asking, not Recued — a server on the same machine you are browsing from is
+exactly the case the permission exists for.
+
 ## 26.8.27 — 2026-08-27
 
 If you installed Recued from a released binary, it could not be paired to — at

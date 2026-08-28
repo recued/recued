@@ -43,15 +43,25 @@ describe('classifyRpcError — a browser-blocked connection', () => {
     resetInsecureOriginProbeForTest();
   });
 
-  it('names the browser when an https page dialled a ws:// address', () => {
+  it('names the browser when an https page dialled a NON-loopback ws:// address', () => {
     stubSecurePage();
-    noteDialledServerUrl('ws://127.0.0.1:7717/ws');
+    noteDialledServerUrl('ws://192.168.1.42:7717/ws');
     const c = classifyRpcError(rpc('server_offline', 'webclient rpc: server offline'));
     expect(c.kind).toBe('offline');
     expect(c.copy).toMatch(/browser blocked the connection/i);
     // It must say what to DO, not just what happened.
     expect(c.copy).toMatch(/webclient from the server|certificate/i);
     expect(c.copy).not.toMatch(/Can't reach your server right now/);
+  });
+
+  it('keeps the plain offline copy for a LOOPBACK failure — the browser is not to blame', () => {
+    // ⛔ Regression: this said "this browser blocked the connection" for every
+    // failed connection to a local server, which Chrome permits. The honest
+    // answer when we cannot tell is the plain one.
+    stubSecurePage();
+    noteDialledServerUrl('ws://127.0.0.1:7717/ws');
+    expect(classifyRpcError(rpc('server_offline', 'x')).copy)
+      .toBe("Can't reach your server right now.");
   });
 
   it('keeps the plain offline copy when the page is not secure', () => {

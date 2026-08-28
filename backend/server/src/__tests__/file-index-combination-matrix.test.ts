@@ -83,6 +83,9 @@ const world = () => {
   const call = (name: string) =>
     (handlers as Record<string, (a: unknown, c: unknown) => Promise<unknown>>)[name];
 
+  const raw = async (query: string) => await call('file.search')(
+    { query, limit: 20, scope: 'all' }, ctx,
+  ) as { result?: { files?: unknown[]; partial_term_matches?: number; no_match_reason?: string } };
   const hits = async (query: string): Promise<string[]> => {
     const r = await call('file.search')({ query, limit: 20, scope: 'all' }, ctx) as
       { result?: { files?: Array<{ file_id: string; posture?: string }> } };
@@ -99,7 +102,7 @@ const world = () => {
     };
     return String(await buildChatIndexContext(message, ctx, probe as never) ?? '');
   };
-  return { db, hits, line };
+  return { db, hits, line, raw };
 };
 
 describe('the file combination matrix, exhausted without a live model', () => {
@@ -157,6 +160,55 @@ describe('the file combination matrix, exhausted without a live model', () => {
     const { db, line } = world();
     try {
       expect(await line('nothinghere at all'), 'no hit anywhere ⇒ no line').toBe('');
+    } finally { db.close(); }
+  });
+});
+
+describe('an empty file page NAMES ITS CAUSE', () => {
+  it('discloses a partial-term count instead of a flat absence', async () => {
+    // ⛔⛔ MEASURED AGAINST A LIVE MODEL, 7 RUNS OUT OF 7. The index line read
+    // `renewal: file.search; sandhurst: file.search` — two entries, two
+    // DIFFERENT files. The model asked `file.search("Sandhurst renewal")`,
+    // matched nothing (correctly — no one file is both), and reported "no
+    // Sandhurst renewal document" WITHOUT ever surfacing the two plainly
+    // relevant files. Not one run invented the intersection, which was the risk
+    // worth checking; every run hid the parts.
+    //
+    // ⚠ A DISCLOSURE, NOT PARTIAL RESULTS: a COUNT, and none of the rows.
+    // Handing the weak rows over is the `RECUED_PARTIAL_SLOTS` widening, which
+    // was measured on the FTS stores to have a structural ceiling and ships OFF.
+    // A partial row presented as a hit is worse than a stated absence; a stated
+    // absence WITH its cause is better than either.
+    const { db, raw } = world();
+    try {
+      const r = await raw('Sandhurst renewal');
+      expect(r.result?.files ?? [], 'no single file is both — that stays true').toHaveLength(0);
+      // L1 and R1 both sit under `Sandhurst/`, L2 carries `renewal` in its
+      // name — THREE, across both postures. ⚠ I first wrote 2 here, from the
+      // bench fixture's two files rather than this world's four; the count is
+      // the union over terms, and it spans the CAS and remote spaces.
+      expect(r.result?.partial_term_matches, 'L1 + R1 by folder, L2 by name').toBe(3);
+      expect(r.result?.no_match_reason ?? '').toContain('match some of those words');
+      expect(
+        r.result?.no_match_reason ?? '',
+        'and it must steer, not just describe',
+      ).toContain('do not report');
+    } finally { db.close(); }
+  });
+
+  it('stays SILENT when the absence is genuine — no misleading hint', async () => {
+    // The control. A disclosure that fires on every empty page teaches the model
+    // to doubt every absence, which is the opposite of the point.
+    const { db, raw } = world();
+    try {
+      const none = await raw('totally unrelated words');
+      expect(none.result?.files ?? []).toHaveLength(0);
+      expect(none.result?.partial_term_matches ?? 0, 'nothing matched any term').toBe(0);
+      expect(none.result?.no_match_reason, 'so there is nothing to disclose').toBeUndefined();
+      // And a query that DID match must not carry it either.
+      const hit = await raw('sandhurst');
+      expect((hit.result?.files ?? []).length).toBeGreaterThan(0);
+      expect(hit.result?.no_match_reason).toBeUndefined();
     } finally { db.close(); }
   });
 });

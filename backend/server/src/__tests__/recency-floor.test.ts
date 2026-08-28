@@ -135,10 +135,50 @@ describe('partial slots (labelled)', () => {
     return t;
   };
 
-  it('is OFF by default — the re-phrased correction stays invisible', () => {
+  /** The same world, but with a HEALTHY full-match page: enough rows carry every
+   *  query term that the search is not near-empty. Needed because the default-off
+   *  assertion below is about the env flag, and on a one-row page the near-empty
+   *  broadening now fires on its own — which would make that test pass or fail
+   *  for a reason that has nothing to do with the flag. */
+  const buildHealthy = () => {
+    const t = build();
+    const now = Date.now();
+    const day = 86_400_000;
+    for (const n of [1, 2, 3]) {
+      t.upsert({
+        record_id: `uid:bulk${n}`, received_at: now - (100 + n) * day,
+        modified_at: now - (100 + n) * day,
+        hot_fields: { from: 'a@b.c', subject: `bulk${n}`, is_read: true },
+        size_bytes: 10, source_id: `<bulk${n}>`,
+        body_inline: 'Ridgeway renewal notice period restated.',
+        origin_actor: 'system',
+      } as never);
+    }
+    return t;
+  };
+
+  it('is OFF by default on a healthy page — the re-phrased correction stays invisible', () => {
+    delete process.env.RECUED_PARTIAL_SLOTS;
+    const res = buildHealthy().search({ platform: 'mail', slug: 'w', query: 'ridgeway renewal notice', limit: 20 });
+    // Every returned row matched every term; the re-phrased correction did not.
+    expect(res.some((r) => r.record_id === 'uid:fix')).toBe(false);
+    expect(res.length).toBeGreaterThan(2);
+  });
+
+  /** ⛔ A DELIBERATE CHANGE TO A SHIPPED DEFAULT, PINNED SO IT IS NOT SILENT.
+   *  The partial-slot machinery used to run only under `RECUED_PARTIAL_SLOTS`.
+   *  A NEAR-EMPTY page now runs it regardless, because an `AND` that matched
+   *  almost nothing is a failed search wearing a success's clothes — measured on
+   *  bench 276, where an over-specific opening query returned ONE row of a
+   *  seven-message thread and the model answered from it. The flag still governs
+   *  the always-on case; only the distress case is unconditional. */
+  it('broadens a NEAR-EMPTY page even with the flag off — and still labels it', () => {
     delete process.env.RECUED_PARTIAL_SLOTS;
     const res = build().search({ platform: 'mail', slug: 'w', query: 'ridgeway renewal notice', limit: 20 });
-    expect(res.map((r) => r.record_id)).toEqual(['uid:stale']);
+    const fix = res.find((r) => r.record_id === 'uid:fix');
+    expect(fix, 'a near-empty page must reach the re-phrased correction').toBeDefined();
+    expect(fix?.partial_match).toBe(true);
+    expect(res.find((r) => r.record_id === 'uid:stale')?.partial_match).toBeUndefined();
   });
 
   it('surfaces the correction, and LABELS it', () => {

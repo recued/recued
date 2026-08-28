@@ -1267,8 +1267,22 @@ const createMailSearchHandler =
               collection_slug: c.slug,
               record_id: m.record_id,
               hot_fields: m.hot_fields,
+              // ⛔ The DATE must reach the model. Search returns RELEVANCE order,
+              // so without this a retrieved conversation cannot be re-sorted and
+              // the reader cannot tell a refusal from the acceptance that
+              // followed it. The list path carried this all along.
+              ...(typeof m.received_at === 'number' ? { received_at: m.received_at } : {}),
               rank: m.rank,
-              snippet: m.snippet,
+              // ⛔⛔ THE BODY MUST SURVIVE THIS PROJECTION, and it is the reason
+              // the row is worth anything. `snippet` is a window centred on the
+              // match terms; hydrated `body` is the record. Dropped here, the
+              // model is back to computing from a fragment — bench 276 reached
+              // the right mail 11/11 and answered 0/11 that way, because the
+              // window stopped one token before the rates the sum needed. There
+              // is no `mail.read` to recover it with: search IS the content
+              // surface, so what this projection omits is gone for the turn.
+              ...(typeof m.body === 'string' ? { body: m.body } : {}),
+              ...(m.body_truncated ? { body_truncated: true } : {}),
               // ⛔ The label MUST survive this projection. Dropped here, the row
               // reaches the model indistinguishable from a full match and the
               // whole disclose-don't-decide argument for surfacing it collapses.
@@ -1413,7 +1427,9 @@ const createCalendarSearchHandler =
               record_id: m.record_id,
               hot_fields: m.hot,
               rank: m.rank,
-              snippet: m.snippet,
+              // Calendar's own description, hydrated from the row.
+              ...(typeof m.body === 'string' ? { body: m.body } : {}),
+              ...(m.body_truncated ? { body_truncated: true } : {}),
             });
           }
         } else {
@@ -1878,6 +1894,9 @@ const createFileSearchHandler =
     // Set when the unified resolver answered: it has already matched AND ranked,
     // so the local filter/sort below must not run over its output.
     let resolved = false;
+    /** How many files matched SOME of a multi-term query that matched none in
+     *  full — the cause behind an empty page. 0 when not applicable. */
+    let partialTermMatches = 0;
     if (scope === 'session') {
       const store = deps.getChatStore?.();
       if (!store || ctx.session_id === undefined) {
@@ -1919,16 +1938,29 @@ const createFileSearchHandler =
       // only — stated in the tool description rather than left to be discovered.
       const resolver = deps.getFileViewResolver?.();
       if (resolver && query.length > 0) {
-        rows = resolver
-          .searchFileViews(query, Math.min(FILE_SEARCH_MAX_LIMIT, Math.max(limit, 1)))
-          .map(projectFileView);
+        const cap = Math.min(FILE_SEARCH_MAX_LIMIT, Math.max(limit, 1));
+        rows = resolver.searchFileViews(query, cap).map(projectFileView);
         resolved = true;
+        // ⛔ THE CAUSE MUST BE COMPUTED HERE TOO, AND THE FIRST CUT PUT IT ONLY
+        // ON THE FALLBACK PATH — where production never goes for this scope.
+        // My own test caught it: the matrix wires a resolver, so the disclosure
+        // silently never fired on the one path that matters. A branch that
+        // exists only where the code does not run is worse than no branch.
+        const qTerms = query.split(/\s+/).filter((t) => t.length > 0);
+        if (rows.length === 0 && qTerms.length > 1) {
+          const seenIds = new Set<string>();
+          for (const t of qTerms) {
+            for (const v of resolver.searchFileViews(t, cap)) seenIds.add(v.record_id);
+          }
+          partialTermMatches = seenIds.size;
+        }
       } else {
         const listed = collection.list?.(FILE_SEARCH_MAX_LIMIT) ?? [];
         rows = (listed as Parameters<typeof projectChatFileRow>[0][]).map(projectChatFileRow);
       }
     }
 
+    const terms = query.split(/\s+/).filter((t) => t.length > 0);
     // ⚠ `resolved` ⇒ the resolver ALREADY applied `scoreFileNeedle` and ranked.
     // Re-filtering here would be the same rule run twice, and re-sorting would
     // discard its merge order across the two postures.
@@ -1962,11 +1994,33 @@ const createFileSearchHandler =
       // query "renewal notice" and let recency alone decide — which is the same
       // relevance-then-recency ordering the FTS stores get, thrown away.
       const scored = new Map<string, 0 | 1 | 2>();
+      const before = rows;
       rows = rows.filter((r) => {
         const score = scoreFileNeedle(r.filename, r.path ?? '', query);
         if (score > 0) scored.set(r.file_id, score);
         return score > 0;
       });
+      // ⛔⛔ AN EMPTY ANSWER MUST NAME ITS CAUSE. Measured against a live model,
+      // 7 runs out of 7: the index line said `renewal: file.search; sandhurst:
+      // file.search` — two entries, two DIFFERENT files — the model asked
+      // `file.search("Sandhurst renewal")`, matched nothing (correctly: no one
+      // file is both), and reported "no Sandhurst renewal document" WITHOUT
+      // ever surfacing the two files that were plainly relevant. Not one run
+      // invented the intersection, which was the risk worth checking; every run
+      // hid the parts.
+      //
+      // ⚠ THIS IS A DISCLOSURE, NOT PARTIAL RESULTS. It reports a COUNT of
+      // rows matching some-but-not-all terms and returns none of them. Handing
+      // the weak rows over is the `RECUED_PARTIAL_SLOTS` widening, which was
+      // measured on the FTS stores to have a structural ceiling and ships OFF —
+      // a partial row presented as a hit is worse than a stated absence. A
+      // stated absence with its CAUSE is better than either.
+      if (rows.length === 0 && terms.length > 1) {
+        partialTermMatches = before.filter((r) => {
+          const hay = `${r.filename}\n${r.path ?? ''}`.toLowerCase();
+          return terms.some((t) => hay.includes(t));
+        }).length;
+      }
       rows.sort((a, b) => (scored.get(b.file_id) ?? 0) - (scored.get(a.file_id) ?? 0)
         || b.received_at - a.received_at);
     }
@@ -1993,6 +2047,21 @@ const createFileSearchHandler =
         scope,
         source_freshness: fileSourceFreshness(),
         ...(truncated ? { truncated: true } : {}),
+        // ⛔ THE CAUSE OF AN EMPTY PAGE, when there is one to give. See the note
+        // where this is computed: a multi-term query that matches nothing in
+        // full, while files match some of the words, is the shape that made a
+        // model report a flat absence 7 runs out of 7 and never mention the
+        // relevant files. A COUNT, never the rows.
+        ...(partialTermMatches > 0
+          ? {
+            partial_term_matches: partialTermMatches,
+            no_match_reason:
+              `No file matches ALL of ${JSON.stringify(query)}, but `
+              + `${partialTermMatches} file(s) match some of those words. `
+              + `Search a single distinctive word to see them — do not report `
+              + `that Mary has nothing on this.`,
+          }
+          : {}),
         // The scope is stated back on EVERY result, not just when widened. A
         // model that forgot which set it searched will otherwise report an
         // absence it never actually established.

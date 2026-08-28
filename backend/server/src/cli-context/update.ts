@@ -37,6 +37,7 @@
 
 import { dirname, join, resolve as resolvePath } from 'node:path';
 import { getArg, getFlag, parsePositionals } from '../cli/parse.js';
+import { runningAsPackagedBinary } from '../packaged-binary.js';
 import { createInstanceLock, type LockInfo } from '../lifecycle/instance-lock.js';
 import { runApply, runRollback } from '../update/apply-orchestrator.js';
 import type { BootTrace } from '../cli/boot-trace.js';
@@ -116,36 +117,24 @@ const printCheck = (res: ReleaseCheckResponse, channel: DistributionChannel): vo
   }
 };
 
-/** Are we actually running as the packaged Recued binary?
- *
- *  ⛔⛔ THE CHECK THAT KEEPS THIS FROM OVERWRITING THE USER'S NODE.
- *  `resolveDistributionChannel` DEFAULTS TO `binary` when
- *  `RECUED_DISTRIBUTION_CHANNEL` is unset, and on that channel the apply target
- *  is `process.execPath`. Run this verb from a source checkout or an npm
- *  install and `process.execPath` is the NODE RUNTIME — so the apply would
- *  preserve the owner's `node` as `node.old` and rename a Recued SEA over
- *  `/usr/local/bin/node`, breaking every other thing on the machine that runs
- *  JavaScript. Measured on this dev box: channel resolved `binary`, execPath
- *  `/opt/homebrew/Cellar/node/25.9.0_1/bin/node`.
- *
- *  `sea.isSea()` asks the question directly — am I the single-executable
- *  build — rather than inferring it from a channel string that defaults to a
- *  lie on every non-binary install.
+/** ⛔⛔ WHY THIS VERB ASKS `runningAsPackagedBinary` — THE CHECK THAT KEEPS AN
+ *  APPLY FROM OVERWRITING THE USER'S NODE. `resolveDistributionChannel`
+ *  DEFAULTS TO `binary` when `RECUED_DISTRIBUTION_CHANNEL` is unset, and on that
+ *  channel the apply target is `process.execPath`. Run this verb from a source
+ *  checkout or an npm install and `process.execPath` is the NODE RUNTIME — so
+ *  the apply would preserve the owner's `node` as `node.old` and rename a Recued
+ *  SEA over `/usr/local/bin/node`, breaking every other thing on the machine
+ *  that runs JavaScript. Measured on this dev box: channel resolved `binary`,
+ *  execPath `/opt/homebrew/Cellar/node/25.9.0_1/bin/node`.
  *
  *  ⚠ NOT APPLIED TO `docker-thin`, which legitimately runs UNDER node while
  *  targeting `/data/bin/recued`. There the binary being swapped is not
  *  execPath at all, so this check would refuse a channel that is working
- *  correctly. */
-const runningAsPackagedBinary = (): boolean => {
-  try {
-    if (typeof require === 'undefined') return false;
-    const sea = require('node:sea') as { isSea(): boolean };
-    return sea.isSea();
-  } catch {
-    // `node:sea` absent (older base) — then this is not a SEA either.
-    return false;
-  }
-};
+ *  correctly.
+ *
+ *  The predicate itself lives in `packaged-binary.ts` — `daemon.ts` needs the
+ *  same answer to decide whether to re-execute itself or shell out to tsx, and
+ *  two copies of "am I the SEA" is one copy too many. */
 
 /** Is a live server holding this realm?
  *

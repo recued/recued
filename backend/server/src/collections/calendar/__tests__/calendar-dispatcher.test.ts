@@ -156,7 +156,7 @@ interface Harness {
   upserted: ProviderEventPayload[];
   deleted: string[];
   enrollInstance: (slug: string, caps?: CalendarCollectionCaps, auth_state?: 'healthy' | 'expired') => CollectionInstanceRow;
-  seedEvent: (event?: Partial<CanonicalEvent>) => CanonicalEvent;
+  seedEvent: (event?: Partial<CanonicalEvent>, description?: string) => CanonicalEvent;
 }
 
 const buildHarness = (
@@ -244,9 +244,16 @@ const buildHarness = (
     };
   };
 
-  const seedEvent = (overrides: Partial<CanonicalEvent> = {}): CanonicalEvent => {
+  const seedEvent = (
+    overrides: Partial<CanonicalEvent> = {},
+    description?: string,
+  ): CanonicalEvent => {
     const event = baseEvent(overrides);
-    table.upsert({ event, size_bytes: 0 });
+    table.upsert({
+      event,
+      size_bytes: description === undefined ? 0 : Buffer.byteLength(description, 'utf8'),
+      ...(description === undefined ? {} : { body_inline: description }),
+    });
     return event;
   };
 
@@ -375,13 +382,32 @@ describe('calendar dispatcher — read handlers', () => {
     expect(missing.record).toBeNull();
   });
 
-  it('search returns matches with snippets', async () => {
-    h.seedEvent({ source_id: 'evt-1', summary: 'Quarterly review' });
+  it('search returns matches carrying the event body', async () => {
+    // ⛔ WAS `toHaveProperty('snippet')` over description-less fixtures — which
+    // would pass against ANY string the dispatcher happened to attach. The
+    // description is seeded HERE so the assertion has something to be wrong
+    // about: the agenda line is what a reader actually needs, and it is what a
+    // window centred on "review" would have been free to cut.
+    h.seedEvent(
+      { source_id: 'evt-1', summary: 'Quarterly review' },
+      'Agenda: pipeline, then the renewal terms — 83 day notice.',
+    );
     h.seedEvent({ source_id: 'evt-2', summary: 'Standup' });
     const res = await handleCalendarSearch(h.deps, { slug: 'work', query: 'review' });
     expect(res.matches.length).toBeGreaterThan(0);
     expect(res.matches[0].summary).toBe('Quarterly review');
-    expect(res.matches[0]).toHaveProperty('snippet');
+    expect(res.matches[0]).not.toHaveProperty('snippet');
+    expect(res.matches[0].body).toContain('83 day notice');
+  });
+
+  it('omits body for an event that has no description', async () => {
+    // The honest empty: no description is not a truncated one, and the two must
+    // not look alike — `body_truncated` is reserved for content withheld.
+    h.seedEvent({ source_id: 'evt-3', summary: 'Bare review slot' });
+    const res = await handleCalendarSearch(h.deps, { slug: 'work', query: 'bare' });
+    expect(res.matches.length).toBeGreaterThan(0);
+    expect(res.matches[0].body).toBeUndefined();
+    expect(res.matches[0].body_truncated).toBeUndefined();
   });
 
   it('stat returns exists:false for missing source_id', async () => {

@@ -88,7 +88,13 @@ describe('a legacy-format index rebuilds itself at boot', () => {
   });
 });
 
-describe('the snippet window survives per-grapheme tokenisation', () => {
+/** ⛔ THESE TESTS OUTLIVED THE MECHANISM THEY WERE WRITTEN AGAINST. They were
+ *  built when search returned an FTS5 `snippet()` and the fix was to WIDEN the
+ *  window for unspaced scripts. The window is gone (2026-08-28): search now
+ *  hydrates the record's own `body` from the base table. The PROPERTY they
+ *  guard is unchanged and is the whole point — a search result must carry the
+ *  answer, not a fragment that stops short of it — so they assert it of `body`. */
+describe('search results carry the answer under per-grapheme tokenisation', () => {
   it('a CJK query reaches text a 15-TOKEN window would have cut off', () => {
     // ⛔⛔ FOUND BY A LIVE MODEL, NOT BY THE SUBSTRATE. `snippet()` counts
     // TOKENS, and format 2 made a CJK token ONE CHARACTER — so the fixed count
@@ -114,33 +120,37 @@ describe('the snippet window survives per-grapheme tokenisation', () => {
         size_bytes: 40, source_id: 'inbox',
       } as never);
       for (const q of ['续约', '通知', '商定', '桑德赫斯特 续约 通知期']) {
-        const r = table.search({ query: q, limit: 3 } as never) as Array<{ snippet?: string }>;
+        const r = table.search({ query: q, limit: 3 } as never) as Array<{ body?: string }>;
         expect(r.length, `${q} must match`).toBeGreaterThan(0);
         expect(
-          r[0]?.snippet ?? '',
-          `the snippet for ${q} must carry the answer, not stop short of it`,
+          r[0]?.body ?? '',
+          `the result for ${q} must carry the answer, not stop short of it`,
         ).toContain('83');
       }
     } finally { db.close(); }
   });
 
-  it('and the LATIN window is not widened — the cost stays where the problem is', () => {
+  // ⛔⛔ THIS TEST USED TO PIN THE DEFECT. It asserted a Latin query "must keep
+  // the narrow window it always had" — the CJK fix widened one script and this
+  // guarded the decision not to widen the other. The reasoning was that the
+  // measured failure was CJK-only. It was not: bench 276 reached the right mail
+  // 11/11 and answered 0/11 on Latin rows, because the same window cut the same
+  // way. A test can hold a defect in place by asserting the half-fix, and this
+  // is what that looks like — so it now asserts the property, not the tuning.
+  it('and a LATIN query gets the record too — the fix is not script-specific', () => {
     const db = new Database(':memory:');
     try {
       const table = build(db);
       seed(table, 2);
       const r = table.search({ query: 'sandhurst', limit: 2 } as never) as
-        Array<{ snippet?: string }>;
+        Array<{ body?: string }>;
       expect(r.length).toBeGreaterThan(0);
-      expect(
-        (r[0]?.snippet ?? '').length,
-        'a Latin query must keep the narrow window it always had',
-      ).toBeLessThan(200);
+      expect(r[0]?.body, 'a Latin match must carry its record body').toBeTruthy();
     } finally { db.close(); }
   });
 });
 
-describe('the mail snippet shows the ANSWER, not the address headers', () => {
+describe('the mail result shows the ANSWER, not the address headers', () => {
   it('surfaces body text a leading from/to line used to push out of the window', () => {
     // ⛔⛔ FOUND BY A LIVE MODEL, AND IT REPORTED THE SYMPTOM ACCURATELY.
     // `snippet()` returns a TOKEN window centred on the match. The mail blob
@@ -168,15 +178,16 @@ describe('the mail snippet shows the ANSWER, not the address headers', () => {
         size_bytes: 46, source_id: 'inbox',
       } as never);
       for (const q of ['Sandhurst renewal notice period', 'renewal notice period', 'notice period']) {
-        const r = table.search({ query: q, limit: 3 } as never) as Array<{ snippet?: string }>;
+        const r = table.search({ query: q, limit: 3 } as never) as Array<{ body?: string }>;
         expect(r.length, `${q} must match`).toBeGreaterThan(0);
         expect(
-          r[0]?.snippet ?? '',
-          `the snippet for "${q}" must carry the figure, not stop short of it`,
+          r[0]?.body ?? '',
+          `the result for "${q}" must carry the figure, not stop short of it`,
         ).toContain('83');
       }
-      // ⚠ And the addresses are still INDEXED — reordering the blob moves them
-      // out of the snippet window, it does not remove them from the index.
+      // ⚠ And the addresses are still INDEXED. Reordering the blob changed what
+      // a window centred on the match happened to show; it never changed what
+      // the index holds, and the body hydration does not change it either.
       expect(
         (table.search({ query: 'sandhurst-bench.test', limit: 3 } as never) as unknown[]).length,
         'an address must remain searchable',

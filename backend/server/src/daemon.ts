@@ -13,6 +13,7 @@ import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from '
 import { dirname, join, resolve } from 'node:path';
 import { openSync } from 'node:fs';
 import { readAutoDisabledFromDb, renderAutoDisabledTable } from './cli-status-extras.js';
+import { runningAsPackagedBinary } from './packaged-binary.js';
 
 /** Find the npx binary path. Falls back to 'npx' (relies on PATH). */
 const findNpx = (): string => {
@@ -74,6 +75,48 @@ export interface DaemonOptions {
   extraArgs?: string[];
 }
 
+export interface DaemonSpawn { cmd: string; args: string[]; cwd: string }
+
+/** How the background server is launched — pure, so the rule can be asserted
+ *  without building a 140 MB executable to look at it.
+ *
+ *  ⛔⛔ THE PACKAGED BINARY MUST RE-EXECUTE ITSELF. This had one branch —
+ *  `npx tsx <dir>/bin.ts` — which is right from a source checkout and impossible
+ *  anywhere else. In a SEA there is no `bin.ts` on disk and `import.meta.dirname`
+ *  is not a directory, so the path resolved against the process CWD and the
+ *  daemon spawned `npx tsx ./bin.ts`: it borrowed whatever node and tsx happened
+ *  to be on the owner's PATH, died instantly with ERR_MODULE_NOT_FOUND, and left
+ *  `recued status` truthfully reporting "stopped". That is why this read as a
+ *  status bug. On a machine with no Node installed — every machine the installer
+ *  targets — `npx` is not even spawnable, so `recued start` could never have
+ *  worked in a published build.
+ *
+ *  🔑 The binary IS the entrypoint: `process.execPath` with the server args and
+ *  no subcommand is exactly the foreground `serve` the banner documents, and it
+ *  carries its own runtime plus the `lib/` sidecar beside it.
+ *
+ *  ⚠ CWD IS PART OF THE CONTRACT, not incidental. The db path default is
+ *  CWD-relative, so the child must land somewhere deterministic or a restart can
+ *  open a DIFFERENT database. Source keeps the repo root it always used; the
+ *  binary gets the realm directory — already the agreed place, since the pidfile
+ *  and the log live there. */
+export const buildDaemonSpawn = (opts: DaemonOptions, packaged: boolean): DaemonSpawn => {
+  const serverArgs = [
+    '--port', String(opts.port),
+    '--db', opts.dbPath,
+    ...(opts.extraArgs ?? []),
+  ];
+  if (packaged) {
+    return { cmd: process.execPath, args: serverArgs, cwd: dirname(resolve(opts.dbPath)) };
+  }
+  const binPath = resolve(import.meta.dirname ?? __dirname, 'bin.ts');
+  return {
+    cmd: findNpx(),
+    args: ['tsx', binPath, ...serverArgs],
+    cwd: resolve(import.meta.dirname ?? __dirname, '..', '..', '..'),
+  };
+};
+
 /** Start the server as a background process. */
 export const daemonStart = async (opts: DaemonOptions): Promise<void> => {
   const { pidFile, logFile } = resolvePaths(opts.dbPath);
@@ -95,17 +138,9 @@ export const daemonStart = async (opts: DaemonOptions): Promise<void> => {
   const dir = dirname(pidFile);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
-  // Build child command: re-invoke bin.ts via npx tsx (the same way
-  // the user invokes it). npx tsx handles .js→.ts import rewriting.
-  const binPath = resolve(import.meta.dirname ?? __dirname, 'bin.ts');
-  const npxPath = findNpx();
-  const childCmd = npxPath;
-  const childArgs = [
-    'tsx', binPath,
-    '--port', String(opts.port),
-    '--db', opts.dbPath,
-    ...(opts.extraArgs ?? []),
-  ];
+  // See `buildDaemonSpawn` — the SEA and the source checkout launch differently.
+  const { cmd: childCmd, args: childArgs, cwd: childCwd } =
+    buildDaemonSpawn(opts, runningAsPackagedBinary());
 
   // Open log file for append
   const logFd = openSync(logFile, 'a');
@@ -114,7 +149,7 @@ export const daemonStart = async (opts: DaemonOptions): Promise<void> => {
     detached: true,
     stdio: ['ignore', logFd, logFd],
     env: { ...process.env },
-    cwd: resolve(import.meta.dirname ?? __dirname, '..', '..', '..'),
+    cwd: childCwd,
   });
 
   child.unref();

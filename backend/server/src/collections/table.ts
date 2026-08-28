@@ -208,7 +208,8 @@ export interface CreateCollectionTableOptions {
    *  from + to + subject + body so a "mail from / about <person>" query
    *  matches the SENDER / SUBJECT, not just the body (the calendar-table
    *  analog, whose composite index covers attendees). The composed text is
-   *  FTS-only; `body_inline` stays the pure body for snippets / display. */
+   *  FTS-only; `body_inline` stays the pure body, and is what search hands
+   *  back as `body`. */
   ftsTextFor?: (record: CollectionRecord) => string;
 }
 
@@ -435,6 +436,12 @@ const asciiLower = (s: string): string => s.replace(/[A-Z]/g, (c) => c.toLowerCa
  *  makes no reference to time at all.
  *
  *  Relevance still orders the result; recency just stops being truncatable. */
+/** How many of an anchor's recipients the neighbour PAIR scope expands over. A
+ *  wide distribution list would otherwise emit an unbounded OR chain into the
+ *  SQL; the first few carry the conversation in every realistic case, and the
+ *  thread clause still catches the rest when the provider threaded it. */
+const NEIGHBOUR_PAIR_MAX_RECIPIENTS = 5;
+
 const RECENCY_FLOOR_FRACTION = 0.25;
 
 /** How many full matches the partial pass will exclude. Bounded because the
@@ -459,20 +466,59 @@ const partialSlotCount = (limit: number): number => {
   return Math.max(1, Math.floor(limit * 0.15));
 };
 
+/** ⛔⛔ AN `AND` QUERY THAT MATCHES ALMOST NOTHING IS A FAILED SEARCH WEARING A
+ *  SUCCESS'S CLOTHES, and until 2026-08-28 only the ZERO case was treated as
+ *  one. FTS5 ANDs bare terms, so one over-specific word collapses the result:
+ *  measured on bench 276, `"Kestrel invoice first release item A"` returned
+ *  exactly ONE row — "invoice" appears only in the last message of a
+ *  seven-message negotiation — and that single row was handed back looking like
+ *  the answer set. 10 of 11 runs opened with a query of that shape.
+ *
+ *  🔑 RELAXATION ALONE COULD NOT HAVE FIXED IT. `relaxToPresentPrefixTokens`
+ *  drops tokens absent from the WHOLE INDEX and re-ANDs the rest; every term
+ *  here exists somewhere, so relaxing produced the same AND and the same one
+ *  row. Widening the trigger without widening the MECHANISM would have been a
+ *  no-op that looked like a fix — the broadening has to come from the OR pass
+ *  (`partialMatches`), which is why this reuses it rather than adding a second.
+ *
+ *  ⚠ 2, not 1: a first search returning TWO rows failed the same way and for
+ *  the same reason. Absolute rather than a fraction of `limit`, because "the
+ *  AND matched almost nothing" is a fact about the corpus, not about how many
+ *  rows the caller asked for. */
+const NEAR_EMPTY_MATCH_CEILING = 2;
+/** How many OR-matched rows a near-empty page may pull in. Capped so a narrow
+ *  query cannot turn into a whole-mailbox dump, and clamped to the caller's own
+ *  `limit` so broadening never overruns what was asked for. Token cost past the
+ *  first few rows is already bounded by `SEARCH_BODY_TOTAL_CHARS` — rows beyond
+ *  the body budget arrive as metadata plus `body_truncated`. */
+const NEAR_EMPTY_FILL_CAP = 12;
+
+/** Is this a query the substrate may BROADEN without answering a different
+ *  question?
+ *
+ *  ⛔⛔ ONE RULE, TWO CALLERS, AND IT HAS TO STAY THAT WAY. A caller who wrote
+ *  real FTS5 syntax (`OR` / `NEAR` / `"phrase"` / an explicit `fox*`) asked for
+ *  something specific; every widening path owes them the same restraint. This
+ *  started life inline in `relaxToPresentPrefixTokens` and was extracted when
+ *  near-empty broadening became a SECOND widening path and immediately
+ *  regressed the test that pins it — `thornfield OR nothingmatches` came back
+ *  with a row. A guard that protects one door is not a guard.
+ *
+ *  ⛔ AND / OR / NOT / NEAR ARE OPERATORS MADE ENTIRELY OF LETTERS, so the
+ *  charset test alone lets a deliberate expression through as "plain words".
+ *  Both halves are load-bearing. */
+export const isPlainWordQuery = (raw: string): boolean => {
+  if (!/^[\p{L}\p{N}\s]+$/u.test(raw.trim())) return false;
+  if (/(?:^|\s)(?:AND|OR|NOT|NEAR)(?:\s|$)/.test(raw)) return false;
+  return true;
+};
+
 export const relaxToPresentPrefixTokens = (
   db: Database.Database,
   ftsName: string,
   raw: string,
 ): string | null => {
-  // Only relax a PLAIN-WORD query. A caller who wrote real FTS5 syntax
-  // (`OR` / `NEAR` / `"phrase"` / an explicit `fox*`) asked for something
-  // specific, and quietly broadening it would answer a different question.
-  // ⛔ AND / OR / NOT / NEAR ARE OPERATORS MADE ENTIRELY OF LETTERS, so a
-  // charset test alone lets `thornfield OR nothingmatches` through as "plain
-  // words" and quietly rewrites a deliberate expression. Caught by a test that
-  // expected the query left alone and got a relaxed match back.
-  if (!/^[\p{L}\p{N}\s]+$/u.test(raw.trim())) return null;
-  if (/(?:^|\s)(?:AND|OR|NOT|NEAR)(?:\s|$)/.test(raw)) return null;
+  if (!isPlainWordQuery(raw)) return null;
   const tokens = raw.match(/[\p{L}\p{N}]+/gu);
   if (!tokens || tokens.length === 0) return null;
   const probe = db.prepare(
@@ -521,8 +567,7 @@ export const applyRecencyFloor = <T extends { key: string }>(
   const floorN = Math.max(1, Math.floor(limit * RECENCY_FLOOR_FRACTION));
   try {
     const recent = db.prepare(`
-      SELECT key, rank,
-             snippet(${ftsName}, 1, '<b>', '</b>', '…', 15) AS snippet
+      SELECT key, rank
       FROM ${ftsName}
       WHERE ${ftsName} MATCH ?
       ORDER BY (
@@ -531,6 +576,15 @@ export const applyRecencyFloor = <T extends { key: string }>(
       ) DESC
       LIMIT ?
     `).all(expr, floorN) as T[];
+    // ⚠⚠ THE `catch` BELOW SWALLOWS A SYNTAX ERROR IN *OUR OWN* SQL, NOT JUST A
+    // BAD USER EXPRESSION — and the two failures are not alike. Retiring the
+    // snippet column from this SELECT left `SELECT key, rank,` with a dangling
+    // comma; every call threw, every call returned `matches` unchanged, and the
+    // recency floor was a NO-OP with nothing logged and no test-visible edge
+    // except the three that assert its behaviour directly. A defensive catch
+    // around a query built from a caller's string is right; the same catch also
+    // covers the parts WE wrote, and there it converts a total outage into
+    // silence. If this grows a third failure mode, split it.
     const present = new Set(matches.map((r) => r.key));
     const missing = recent.filter((r) => !present.has(r.key));
     if (missing.length === 0) return matches;
@@ -569,7 +623,7 @@ const partialMatches = (
   terms: readonly string[],
   slots: number,
   fullKeys: ReadonlySet<string>,
-): Array<{ key: string; rank: number; snippet: string }> => {
+): Array<{ key: string; rank: number }> => {
   if (terms.length < 2 || slots <= 0) return [];
   const orExpr = terms.map((t) => `"${t.replace(/"/g, '""')}"*`).join(' OR ');
   // ⛔ ORDER BY RECENCY, NOT RELEVANCE. Measured: with ~20+ competing partial
@@ -595,7 +649,7 @@ const partialMatches = (
   // ambient traffic does not. Measured on the trap fixture: the correction was
   // the top thread-linked candidate while both decoys, on other threads, were
   // excluded outright.
-  const threadLane = (n: number): Array<{ key: string; rank: number; snippet: string }> => {
+  const threadLane = (n: number): Array<{ key: string; rank: number }> => {
     if (n <= 0 || fullKeys.size === 0) return [];
     try {
       const threads = new Set<string>();
@@ -610,8 +664,7 @@ const partialMatches = (
       if (threads.size === 0) return [];
       const placeholders = [...threads].map(() => '?').join(',');
       return db.prepare(`
-        SELECT f.key AS key, 0 AS rank,
-               snippet(${ftsName}, 1, '<b>', '</b>', '…', 15) AS snippet
+        SELECT f.key AS key, 0 AS rank
         FROM ${ftsName} f
         JOIN ${tableName} d ON d.record_id = f.key
         WHERE ${ftsName} MATCH ?
@@ -620,7 +673,7 @@ const partialMatches = (
         LIMIT ?
       `).all(orExpr, ...threads, n + fullKeys.size)
         .filter((r) => !fullKeys.has((r as { key: string }).key))
-        .slice(0, n) as Array<{ key: string; rank: number; snippet: string }>;
+        .slice(0, n) as Array<{ key: string; rank: number }>;
     } catch {
       return [];
     }
@@ -630,12 +683,12 @@ const partialMatches = (
   const dateOrder =
     `(SELECT received_at FROM ${tableName} WHERE ${tableName}.record_id = ${ftsName}.key) DESC`;
   const fetch = (order: string, n: number) => db.prepare(`
-      SELECT key, rank, snippet(${ftsName}, 1, '<b>', '</b>', '…', 15) AS snippet
+      SELECT key, rank
       FROM ${ftsName}
       WHERE ${ftsName} MATCH ?
       ORDER BY ${order}
       LIMIT ?
-    `).all(orExpr, n + fullKeys.size) as Array<{ key: string; rank: number; snippet: string }>;
+    `).all(orExpr, n + fullKeys.size) as Array<{ key: string; rank: number }>;
   try {
     // Priority: thread-linked, then newest, then best-matching.
     const byThread = threadLane(Math.max(1, Math.floor(slots / 3)));
@@ -677,7 +730,7 @@ const threadNeighbours = (
   seedKeys: ReadonlySet<string>,
   perThread: number,
   budget: number,
-): Array<{ key: string; rank: number; snippet: string }> => {
+): Array<{ key: string; rank: number }> => {
   if (seedKeys.size === 0 || budget <= 0) return [];
   try {
     const threads = new Set<string>();
@@ -689,20 +742,20 @@ const threadNeighbours = (
       if (typeof tid === 'string' && tid.length > 0) threads.add(tid);
     }
     if (threads.size === 0) return [];
-    const out: Array<{ key: string; rank: number; snippet: string }> = [];
+    const out: Array<{ key: string; rank: number }> = [];
     for (const tid of threads) {
       if (out.length >= budget) break;
       const rows = db.prepare(`
-        SELECT record_id AS key, body_inline
+        SELECT record_id AS key
         FROM ${tableName}
         WHERE json_extract(hot_fields, '$.thread_id') = ?
         ORDER BY received_at DESC
         LIMIT ?
-      `).all(tid, perThread + seedKeys.size) as Array<{ key: string; body_inline: string | null }>;
+      `).all(tid, perThread + seedKeys.size) as Array<{ key: string }>;
       for (const r of rows) {
         if (out.length >= budget) break;
         if (seedKeys.has(r.key)) continue;
-        out.push({ key: r.key, rank: 0, snippet: (r.body_inline ?? '').slice(0, 160) });
+        out.push({ key: r.key, rank: 0 });
         if (out.filter((x) => x.key === r.key).length >= perThread) break;
       }
     }
@@ -1030,39 +1083,56 @@ export const createCollectionTable = (
     return rows.map(rowToRecord);
   };
 
-  /** FTS5 `snippet()` counts TOKENS, and format 2 made a CJK token ONE CHARACTER —
- *  so a fixed count silently became a fixed CHARACTER window for unspaced
- *  scripts, roughly a seventh of the text a Latin row gets.
+/** ⛔⛔ `snippetTokens` WAS RETIRED WITH THE SNIPPET ITSELF (2026-08-28), and
+ *  what it was tuning is worth keeping because it is the whole argument.
  *
- *  ⛔ MEASURED AGAINST A LIVE MODEL, AND INVISIBLE TO EVERY SUBSTRATE TEST. On
- *  the CJK inverted-spread task the index did its job — the model reached mail
- *  6/7 against 0/7 — and then answered "I found the email but cannot see the
- *  details" in four of those, because the 15-token snippet stopped before the
- *  figure it needed. Retrieval was correct; the CONTEXT handed on was not, and
- *  nothing that asserts "did the row match" can see that.
+ *  It sized an FTS5 `snippet()` window, in TOKENS. Format 2 made a CJK token ONE
+ *  CHARACTER, so a fixed count silently became a fixed CHARACTER window for
+ *  unspaced scripts — roughly a seventh of the text a Latin row got. Measured
+ *  against a live model on the CJK inverted-spread task: the index did its job
+ *  (mail reached 6/7 against 0/7) and the model still answered "I found the
+ *  email but cannot see the details" in four of those, because the window
+ *  stopped before the figure it needed. The count was raised to 96 for unspaced
+ *  queries and LEFT AT THE DEFAULT 15 FOR LATIN.
  *
- *  ⚠ The widened count applies when the QUERY carries unspaced script, which is
- *  where the failure was measured. A Latin query matching a CJK row still gets
- *  the narrow window; the snippet centres on the Latin match there, so widening
- *  would not reliably reach a CJK answer elsewhere in the row. */
-const snippetTokens = (rawQuery: string): number =>
-  hasUnspacedScript(rawQuery) ? 96 : 15;
+ *  ⛔ THAT FIX TREATED THE SYMPTOM AND LEFT THE SAME DEFECT LIVE FOR EVERY LATIN
+ *  ROW. Bench 276 — a seven-message negotiation whose unit price is DERIVED,
+ *  never stated — reached the right mail 11/11 and answered correctly 0/11,
+ *  emitting SEVEN DISTINCT wrong totals, the pivotal window cutting at `"At that
+ *  volume I can…"`, one token before the two discount rates the sum needed. The
+ *  control rules out the model: those same messages rendered whole into ONE api
+ *  call answered 9-11/11 correct — chronological, shuffled, and under the
+ *  verbatim `RECUED_CORE_TEXT` envelope alike, so the envelope's `"short, calm
+ *  reply"` (the first suspect) is innocent.
+ *
+ *  🔑 A WINDOW OVER A ROW CANNOT BE TUNED INTO A ROW. Every value is wrong for
+ *  some question, because the window is centred on the QUERY and the answer is
+ *  wherever it happens to sit. The index answers WHICH ROWS; the base table
+ *  answers WHAT IS IN THEM — see BODY HYDRATION in `search`. */
+
+/** Per-record body cap. Sized to carry a normal business email WHOLE — the case
+ *  where a preview and a record differ is exactly the case that failed — while
+ *  keeping one long row from taking the whole budget. */
+const SEARCH_BODY_MAX_CHARS = 2000;
+/** Across the whole result set. `limit` can reach MAX_LIST_LIMIT, and a wide
+ *  search returning full bodies for every hit would blow the turn's packet.
+ *  Spent in rank order, so the tail degrades before the head. */
+const SEARCH_BODY_TOTAL_CHARS = 12000;
 
 const search = (query: CollectionSearchQuery): CollectionSearchMatch[] => {
     const limit = Math.max(1, Math.min(query.limit ?? DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT));
-    // `blob_text` is column index 1 (key is column 0, UNINDEXED).
-    // snippet(table, colIdx, start, end, ellipsis, tokens). Using
-    // the default 15-token window.
+    // ⛔ THE INDEX ANSWERS "WHICH ROWS", NOT "WHAT IS IN THEM". No `snippet()`:
+    // the ids come from FTS and the CONTENT comes from the base table below,
+    // which is the round-trip this search was making anyway.
     const sql = `
-      SELECT key, rank,
-             snippet(${ftsName}, 1, '<b>', '</b>', '…', ${snippetTokens(query.query)}) AS snippet
+      SELECT key, rank
       FROM ${ftsName}
       WHERE ${ftsName} MATCH ?
       ORDER BY rank
       LIMIT ?
     `;
     const stmt = db.prepare(sql);
-    type FtsRow = { key: string; rank: number; snippet: string };
+    type FtsRow = { key: string; rank: number };
     let matches: FtsRow[];
     // Which expression actually produced `matches` — the recency pass must run
     // the SAME one, or it would surface rows the relevance pass never saw.
@@ -1123,7 +1193,19 @@ const search = (query: CollectionSearchQuery): CollectionSearchMatch[] => {
     // Kept apart from `partialKeys`: these matched NOTHING, and saying so is the
     // point — the label has to be honest about why a weak row is on the page.
     const threadKeys = new Set<string>();
-    if (process.env.RECUED_PARTIAL_SLOTS === '1') {
+    // Two independent reasons to run the OR pass. The env flag is the standing
+    // opt-in for surfacing a re-phrased CORRECTION on an otherwise healthy page.
+    // `nearEmpty` is a distress signal: the AND matched almost nothing, so what
+    // came back is not a short answer, it is a narrow question. Same mechanism,
+    // same `partial_match` label — only the trigger and the slot count differ.
+    const partialSlotsOn = process.env.RECUED_PARTIAL_SLOTS === '1';
+    // ⛔ NOT FOR AN EXPLICIT EXPRESSION. `thornfield OR nothingmatches` returning
+    // nothing is the CORRECT answer to what was asked; broadening it answers a
+    // different question, and this regressed exactly that test when the guard
+    // lived only in `relaxToPresentPrefixTokens`.
+    const nearEmpty = matches.length <= NEAR_EMPTY_MATCH_CEILING
+      && isPlainWordQuery(query.query);
+    if (partialSlotsOn || nearEmpty) {
       const terms = (query.query.match(/[\p{L}\p{N}]+/gu) ?? [])
         .filter((t) => t.length >= 2);
       // ⛔ EXCLUDE **ALL** FULL MATCHES, NOT THE PAGE OF THEM. `matches` is
@@ -1147,20 +1229,29 @@ const search = (query: CollectionSearchQuery): CollectionSearchMatch[] => {
         }
       } catch { /* fall back to the page below */ }
       for (const m of matches) allFull.add(m.key);
-      const extra = partialMatches(
-        db, ftsName, tableName, terms,
-        partialSlotCount(limit),
-        allFull,
-      );
+      // A healthy page reserves a couple of slots for a correction. A
+      // near-empty one is trying to REBUILD a result set, so it fills toward
+      // the caller's limit instead of sipping at it.
+      const slots = nearEmpty
+        ? Math.max(0, Math.min(limit - matches.length, NEAR_EMPTY_FILL_CAP))
+        : partialSlotCount(limit);
+      const extra = partialMatches(db, ftsName, tableName, terms, slots, allFull);
       for (const r of extra) partialKeys.add(r.key);
       matches = [...matches, ...extra];
       // Thread neighbours LAST: they are the only rows here that matched
       // nothing, so they are the weakest claim on the page — but for a
       // conversational answer they are the only claim there is.
-      const seeds = new Set(matches.map((m) => m.key));
-      const neighbours = threadNeighbours(db, tableName, seeds, 2,
-        Math.max(1, Math.floor(limit * 0.1)));
-      for (const r of neighbours) { threadKeys.add(r.key); matches.push(r); }
+      // ⚠ Still gated on the standing opt-in. A near-empty page broadens by
+      // TERMS, which is a defensible widening of the question the caller asked;
+      // pulling in rows that matched NO term is a different and larger claim,
+      // and turning both on with one measurement would leave neither
+      // attributable.
+      if (partialSlotsOn) {
+        const seeds = new Set(matches.map((m) => m.key));
+        const neighbours = threadNeighbours(db, tableName, seeds, 2,
+          Math.max(1, Math.floor(limit * 0.1)));
+        for (const r of neighbours) { threadKeys.add(r.key); matches.push(r); }
+      }
     }
 
     if (matches.length === 0) return [];
@@ -1169,21 +1260,74 @@ const search = (query: CollectionSearchQuery): CollectionSearchMatch[] => {
     const placeholders = matches.map(() => '?').join(',');
     const hotRows = db
       .prepare(
-        `SELECT record_id, hot_fields FROM ${tableName} WHERE record_id IN (${placeholders})`,
+        `SELECT record_id, hot_fields, received_at, body_inline, blob_hash FROM ${tableName} `
+        + `WHERE record_id IN (${placeholders})`,
       )
       .all(...matches.map((m) => m.key)) as Array<{
         record_id: string;
         hot_fields: string;
+        received_at: number;
+        body_inline: string | null;
+        blob_hash: string | null;
       }>;
     const hotById = new Map<string, Record<string, unknown>>();
+    // ⛔ THE DATE RIDES THE HYDRATION QUERY THAT WAS ALREADY HAPPENING — one more
+    // column, no extra round-trip. Without it a searched thread reaches the
+    // reader in relevance order with nothing to re-sort by, which is fatal for
+    // anything where sequence carries the meaning.
+    const atById = new Map<string, number>();
+    const bodyById = new Map<string, { inline: string | null; cas: boolean }>();
     for (const r of hotRows) {
       hotById.set(r.record_id, JSON.parse(r.hot_fields));
+      atById.set(r.record_id, r.received_at);
+      bodyById.set(r.record_id, { inline: r.body_inline, cas: r.blob_hash !== null });
     }
+    // ── BODY HYDRATION ─────────────────────────────────────────────────────
+    // ⛔⛔ THE ROUND-TRIP WAS ALREADY HAPPENING. This is `WHERE record_id IN
+    // (...)` over the base table — the rows are being fetched by id regardless,
+    // so the CONTENT costs one more column, not one more query. What it
+    // replaces is reading `snippet()` as though it were the record: a window of
+    // N tokens centred on the match terms, which on bench 276 cut one token
+    // before the two discount rates the sum needed (reached 11/11, correct
+    // 0/11, seven distinct wrong totals). The same messages rendered whole into
+    // one api call answered 9-11/11 — the model was never shown the numbers.
+    //
+    // ⚠ BOUNDED TWICE, AND BOTH BOUNDS ARE LOAD-BEARING. Per record, because
+    // one long thread would otherwise fill the turn; across the set, because
+    // `limit` can be MAX_LIST_LIMIT and a wide search would blow the packet.
+    // Matches arrive in rank order, so the budget is spent on the most relevant
+    // rows first and the tail degrades to metadata-only rather than the head
+    // being cut. A row that gets no body is NOT silently thinner — it carries
+    // `body_truncated`, because a fragment read as a whole record is the exact
+    // failure this fixes.
+    let bodyBudget = SEARCH_BODY_TOTAL_CHARS;
+    const bodyFor = (key: string): { body?: string; body_truncated?: boolean } => {
+      const entry = bodyById.get(key);
+      if (entry === undefined) return {};
+      const raw = entry.inline;
+      if (raw === null || raw.length === 0) {
+        // ⛔ `body_inline IS NULL` MEANS TWO DIFFERENT THINGS and only
+        // `blob_hash` separates them: a record whose body spilled to CAS
+        // (>64 KB — content exists, this table holds no blob handle to reach
+        // it) versus one that genuinely has no body. Collapsing them would make
+        // an unreachable 64 KB contract look like an empty note, which is the
+        // same class of lie the snippet told. `body_truncated` means "there is
+        // content here you were not handed"; `{}` means "there is none".
+        return entry.cas ? { body_truncated: true } : {};
+      }
+      if (bodyBudget <= 0) return { body_truncated: true };
+      const room = Math.min(SEARCH_BODY_MAX_CHARS, bodyBudget);
+      const cut = raw.length > room;
+      const body = cut ? raw.slice(0, room) : raw;
+      bodyBudget -= body.length;
+      return cut ? { body, body_truncated: true } : { body };
+    };
     return matches.map((m) => ({
       record_id: m.key,
       hot_fields: hotById.get(m.key) ?? {},
+      ...(atById.has(m.key) ? { received_at: atById.get(m.key) as number } : {}),
       rank: m.rank,
-      snippet: m.snippet,
+      ...bodyFor(m.key),
       ...(partialKeys.has(m.key) ? { partial_match: true } : {}),
       ...(threadKeys.has(m.key) ? { thread_context: true } : {}),
     }));
@@ -1196,19 +1340,50 @@ const search = (query: CollectionSearchQuery): CollectionSearchMatch[] => {
     if (!anchor) return [];
     const hot = JSON.parse(anchor.hot_fields) as Record<string, unknown>;
     const thread = typeof hot.thread_id === 'string' ? hot.thread_id : null;
-    // Same correspondents OR same thread — a message qualifies on either, so a
-    // provider that threads badly degrades to correspondent adjacency rather
-    // than returning nothing.
     const from = typeof hot.from === 'string' ? hot.from : null;
+    const to = Array.isArray(hot.to)
+      ? hot.to.filter((v): v is string => typeof v === 'string' && v.length > 0)
+      : [];
     const clauses: string[] = [];
     const params: unknown[] = [];
     if (thread !== null) {
       clauses.push(`json_extract(hot_fields, '$.thread_id') = ?`);
       params.push(thread);
     }
+    // ⛔⛔ THE PAIR, BOTH DIRECTIONS — NOT THE SENDER. This clause used to be
+    // `from = <anchor's from>`, described as "follows the correspondents". It
+    // follows ONE ENDPOINT, and that is wrong in both directions:
+    //
+    //   anchored on THEIR message → matches their other mail and NEVER the
+    //     owner's, so a reply the owner typed OUTSIDE the thread — a forward, a
+    //     fresh mail sent because replying was inconvenient — falls out
+    //     entirely. Measured on a four-message fixture: missed.
+    //   anchored on the OWNER'S message → `from = me@` matches EVERY message
+    //     the owner ever sent, to anyone. Measured: pulled in unrelated mail to
+    //     a third party. On a real mailbox that is the whole sent folder,
+    //     bounded only by the next/prev cursor.
+    //
+    // A conversation is the unordered PAIR {A, B}: `[me,him] + [him,me]`. The
+    // thread stays OR'd in as a hint, so a provider that threads well still
+    // benefits and one that threads badly degrades to the pair rather than to
+    // one endpoint.
+    //
+    // ⚠ `to` is a JSON ARRAY, so this cannot be a scalar equality —
+    // `json_extract` would compare against the array TEXT and match nothing (the
+    // same trap `countByAddress` documents for its scalar-only contract).
     if (from !== null) {
-      clauses.push(`json_extract(hot_fields, '$.from') = ?`);
-      params.push(from);
+      for (const other of to.slice(0, NEIGHBOUR_PAIR_MAX_RECIPIENTS)) {
+        clauses.push(
+          `(json_extract(hot_fields, '$.from') = ? AND EXISTS (`
+          + `SELECT 1 FROM json_each(hot_fields, '$.to') WHERE value = ?))`,
+        );
+        params.push(from, other);
+        clauses.push(
+          `(json_extract(hot_fields, '$.from') = ? AND EXISTS (`
+          + `SELECT 1 FROM json_each(hot_fields, '$.to') WHERE value = ?))`,
+        );
+        params.push(other, from);
+      }
     }
     if (clauses.length === 0) return [];
     const scope = `(${clauses.join(' OR ')})`;
