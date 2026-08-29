@@ -62,7 +62,12 @@ keyring reads a root-only host key. A Linux desktop session installs a user
 unit and needs no root.
 
 ## Pack
-Pack is a json declares how to connect to any resources (cli, saas, rest api, mcp), and you can delare permission for each operations, by default all write, admin, destructive actions need manual approval. Premade packs are available free on https://recued.com/packs, you can also create your own with build-in editor or json.
+
+A pack is a JSON file that declares how to connect to any resource (CLI, SaaS,
+REST API, MCP), and you can declare permissions for each operation — by default
+all write, admin and destructive actions need manual approval. Premade packs are
+available free at https://recued.com/packs, and you can create your own with the
+built-in editor or in JSON.
 
 ## `SKILL.md` and recipes
 
