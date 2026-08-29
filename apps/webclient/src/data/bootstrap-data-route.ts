@@ -98,6 +98,7 @@ import type {
   WorkEntityUpsertRpcResponse,
   TimelineRollup,
 } from '@recued/contracts';
+import { rankSearchable } from '@recued/contracts';
 import {
   getContactSourceDeclaration,
   CONTACT_SOURCE_ID_DERIVED,
@@ -239,6 +240,27 @@ import {
   COLLECTION_RETRY_ATTR,
   type CollectionExplorerDetailState,
 } from './collection-explorer.js';
+import type { PackInstalledListCaller, RosterPack } from '../discover/pack-discovery.js';
+import {
+  renderUniversalSearch,
+  UNIVERSAL_SEARCH_STYLES,
+  SEARCH_OPEN_RECIPE_ACTION,
+  SEARCH_RECIPE_ID_ATTR,
+  SEARCH_OPEN_PACK_ACTION,
+  SEARCH_PACK_SLUG_ATTR,
+  SEARCH_MARKETPLACE_ACTION,
+  SEARCH_OPEN_MARKET_PACK_ACTION,
+  type UniversalSearchRecipeMatch,
+  type UniversalSearchPackMatch,
+  type UniversalSearchMarketMatch,
+  SEARCH_OPEN_RECORD_ACTION,
+  SEARCH_OPEN_GROUP_ACTION,
+  SEARCH_RETRY_ACTION,
+  SEARCH_RECORD_ID_ATTR,
+  SEARCH_GROUP_SLUG_ATTR,
+  SEARCH_GROUP_PLATFORM_ATTR,
+  SEARCH_INPUT_ATTR,
+} from './universal-search.js';
 import {
   RECORDS_CANCEL_DELETE_ACTION,
   RECORDS_CANCEL_PURGE_ACTION,
@@ -276,6 +298,7 @@ import type {
   CollectionListQuery,
   CollectionPlatform,
   CollectionRecord,
+  CollectionSearchGroup,
   Link,
   SharedListEntry,
 } from '@recued/contracts';
@@ -451,6 +474,7 @@ export type DataTabId =
   | MirrorDataKind
   | 'webhook'
   | 'records'
+  | 'search'
   | DataSingleCollectionTabId;
 
 export const DATA_OWN_IT_TABS: readonly DataOwnItTabId[] = [
@@ -483,6 +507,11 @@ export const DATA_PROVENANCE_TABS: readonly DataProvenanceTabId[] = [
 export const DATA_SHARED_TABS: readonly DataTabId[] = ['shared'];
 export const DATA_RECORDS_TABS: readonly DataTabId[] = ['records'];
 
+/** Its own cluster: universal search is a FINDING surface ACROSS the other
+ *  clusters, not another lens within one of them. Grouping it under "Connected"
+ *  or "Owned" would imply a scope it does not have. */
+const DATA_SEARCH_TABS: readonly DataTabId[] = ['search'];
+
 const DATA_TABS: readonly DataTabId[] = [
   ...DATA_OWN_IT_TABS,
   ...DATA_RECEIVED_TABS,
@@ -491,6 +520,9 @@ const DATA_TABS: readonly DataTabId[] = [
   ...DATA_PROVENANCE_TABS,
   ...DATA_SHARED_TABS,
   ...DATA_RECORDS_TABS,
+  // 2026-08-28 — universal search. Last in the list because it is a FINDING
+  // surface across the others rather than another lens onto one collection.
+  'search',
 ];
 
 /** The "Received" cluster's DISPLAY tabs — `form_response` (its own bespoke
@@ -680,6 +712,10 @@ export type DataCollectionListInstancesCaller = () => Promise<{
 export type DataCollectionListCaller = (
   args: CollectionListQuery,
 ) => Promise<{ records: CollectionRecord[] }>;
+/** UNIVERSAL SEARCH — one query fanned across every collection, GROUPED. */
+export type DataCollectionSearchAllCaller = (
+  args: { query: string; per_group?: number },
+) => Promise<{ groups: CollectionSearchGroup[] }>;
 export type DataCollectionGetCaller = (
   args: { platform: CollectionPlatform; slug: string; record_id: string },
 ) => Promise<{ record: CollectionRecord | null }>;
@@ -839,6 +875,23 @@ export interface BootstrapDataRouteOptions {
   collectionListInstancesCaller?: DataCollectionListInstancesCaller;
   collectionListCaller?: DataCollectionListCaller;
   collectionGetCaller?: DataCollectionGetCaller;
+  /** Present → the Search tab searches every collection; absent → a not-wired
+   *  notice, matching how every other read caller degrades here. */
+  collectionSearchAllCaller?: DataCollectionSearchAllCaller;
+  /** Debounce for the universal-search box, matching the contact-search knob. */
+  universalSearchDebounceMs?: number;
+  /** Installed packs, for the coarser half of the capability search. Optional —
+   *  absent simply means no packs group, like every other read caller here. */
+  packInstalledListCaller?: PackInstalledListCaller;
+  /** ⛔ THE ONLY CLOUD CALL THIS SURFACE CAN MAKE, and it fires ONLY on an
+   *  explicit click after the owner's own results came back empty. Absent → no
+   *  marketplace offer at all, which is also the correct posture for a server
+   *  the owner has deliberately kept off the network. */
+  marketplacePackSearchCaller?: (query: string) => Promise<{
+    packs: ReadonlyArray<{
+      slug: string; name: string; description?: string; publisher_id?: string;
+    }>;
+  }>;
   /** D-198 Phase 2 — the "Provenance" cluster reads (`annotation.list` /
    *  `link.list`). Present → the Annotations / Links tabs browse the whole
    *  collection; absent → a not-wired notice. */
@@ -2159,6 +2212,8 @@ const isDataTab = (tab: string): tab is DataTabId =>
 
 const tabLabel = (tab: DataTabId): string => {
   switch (tab) {
+    case 'search':
+      return 'Search';
     case 'contact':
       return 'Contacts';
     case 'task':
@@ -2632,6 +2687,7 @@ const renderTabs = (active: DataTabId, locked = false): string => `
     ${renderTabGroup('Provenance', DATA_PROVENANCE_TABS, active, locked)}
     ${renderTabGroup('Storage', DATA_SHARED_TABS, active, locked)}
     ${renderTabGroup('Records', DATA_RECORDS_TABS, active, locked)}
+    ${renderTabGroup('Find', DATA_SEARCH_TABS, active, locked)}
   </div>
 `;
 
@@ -4795,6 +4851,8 @@ export const bootstrapDataRoute = (
       MEMORY_LENS_STYLES,
       // D-198 Slice 5 — the mail / calendar / files collection explorer.
       COLLECTION_EXPLORER_STYLES,
+      // 2026-08-28 — universal search across every collection.
+      UNIVERSAL_SEARCH_STYLES,
       // D-221 — full-ref, schema-driven pack Records owner explorer.
       RECORDS_EXPLORER_STYLES,
     ].join('\n');
@@ -5137,6 +5195,31 @@ export const bootstrapDataRoute = (
   let explorerCollection: CanonicalCollectionName | null = null;
   let explorerInstances: CollectionInstanceRow[] = [];
   let explorerSelectedSlug: string | null = null;
+  // ── UNIVERSAL SEARCH state ───────────────────────────────────────────────
+  // ⚠ `groups === undefined` means "not searched yet" and `[]` means "searched,
+  // nothing matched" — the renderer shows a prompt for the first and a scoped
+  // empty for the second. Collapsing them would tell an owner their data is
+  // absent when the search simply has not run.
+  let universalSearchQuery = '';
+  let universalSearchGroups: CollectionSearchGroup[] | undefined;
+  let universalSearchLoading = false;
+  let universalSearchError: string | undefined;
+  /** Installed recipes matching the same query — the owner's CAPABILITIES.
+   *  Filtered CLIENT-SIDE from `recipe.list`, which the route already loads:
+   *  a capability catalog is tens-to-hundreds of entries, so a round trip per
+   *  keystroke would buy nothing. Ranked by the SHARED `rankSearchable`, so the
+   *  owner and `tools.search` agree on what matches. */
+  let universalSearchRecipes: UniversalSearchRecipeMatch[] = [];
+  let universalSearchPacks: UniversalSearchPackMatch[] = [];
+  let universalSearchMarket: UniversalSearchMarketMatch[] = [];
+  let universalSearchMarketLoading = false;
+  let universalSearchMarketError: string | undefined;
+  /** The query the marketplace results belong to — a stale set must never sit
+   *  under a different query the owner has since typed. */
+  let universalSearchMarketQuery = '';
+  /** Guards against an out-of-order response overwriting a newer one. */
+  let universalSearchSeq = 0;
+
   let explorerRecords: CollectionRecord[] = [];
   let explorerDetail: CollectionExplorerDetailState | null = null;
   // D-210 step 3 — the open calendar record's timeline (its move history:
@@ -6246,6 +6329,34 @@ export const bootstrapDataRoute = (
             bookingManageLinkNotice,
             workEntityDiscardGuardOpen,
           )
+        : activeTab === 'search'
+          ? renderUniversalSearch({
+              query: universalSearchQuery,
+              ...(universalSearchLoading ? { loading: true } : {}),
+              ...(universalSearchGroups !== undefined
+                ? { groups: universalSearchGroups }
+                : {}),
+              ...(universalSearchRecipes.length > 0
+                ? { recipes: universalSearchRecipes }
+                : {}),
+              ...(universalSearchPacks.length > 0
+                ? { packs: universalSearchPacks }
+                : {}),
+              ...(universalSearchMarket.length > 0
+                ? { marketplace: universalSearchMarket }
+                : {}),
+              ...(universalSearchMarketLoading ? { marketplaceLoading: true } : {}),
+              ...(universalSearchMarketError !== undefined
+                ? { marketplaceError: universalSearchMarketError }
+                : {}),
+              ...(opts.marketplacePackSearchCaller !== undefined
+                ? { marketplaceOffered: true }
+                : {}),
+              ...(universalSearchError !== undefined
+                ? { error: universalSearchError }
+                : {}),
+              actionAttr: DATA_ROUTE_ACTION_ATTR,
+            }, (opts.now ?? Date.now)())
         : activeTab === 'records'
           ? renderRecordsExplorer(recordsState)
         : isExplorerTab(activeTab) || isSingleCollectionTab(activeTab)
@@ -8613,6 +8724,188 @@ export const bootstrapDataRoute = (
   const bookingSearchRefresh = createDebouncedRefresh(
     opts.bookingSearchDebounceMs ?? 180,
   );
+
+  /** ⚠ ITS OWN TIMER, NOT `createDebouncedRefresh`. That helper debounces the
+   *  route's whole-page `startRefresh()`, which re-reads every lens; this loader
+   *  is self-contained and repaints itself, so borrowing the shared one would
+   *  reload the world on every keystroke to fetch one list. */
+  let universalSearchTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Capability hits are a hint, not a browse — a long list of recipes would
+   *  bury the records the owner was probably looking for. */
+  const RECIPE_SEARCH_LIMIT = 5;
+  const PACK_SEARCH_LIMIT = 5;
+  const MARKET_SEARCH_LIMIT = 6;
+
+  /** ⛔ SEQUENCE-GUARDED. Typing "kes" fires three searches; without the guard
+   *  the slowest response wins and the owner sees results for a prefix they have
+   *  already moved past. The same discipline the explorer uses for its records. */
+  const runUniversalSearch = async (): Promise<void> => {
+    const caller = opts.collectionSearchAllCaller;
+    const query = universalSearchQuery.trim();
+    if (query === '') {
+      universalSearchGroups = undefined;
+      universalSearchRecipes = [];
+      universalSearchPacks = [];
+      universalSearchMarket = [];
+      universalSearchMarketError = undefined;
+      universalSearchLoading = false;
+      universalSearchError = undefined;
+      return;
+    }
+    if (caller === undefined) {
+      // ⛔ MUST REPAINT. An early return without `render()` leaves the owner
+      // typing into a box where nothing ever happens — indistinguishable from a
+      // broken search, and the one state where saying so matters most. Caught
+      // by the route test, not by any unit test on either side of the seam.
+      universalSearchGroups = undefined;
+      universalSearchError = 'Search is not wired on this server.';
+      universalSearchLoading = false;
+      render();
+      return;
+    }
+    const seq = ++universalSearchSeq;
+    universalSearchLoading = true;
+    universalSearchError = undefined;
+    // A new local search retires any marketplace answer: it belonged to the
+    // previous query, and leaving it up would attach cloud results to words the
+    // owner never sent.
+    if (universalSearchMarketQuery !== query) {
+      universalSearchMarket = [];
+      universalSearchMarketError = undefined;
+    }
+    // ⚠ Fetched ALONGSIDE the collection search, not before it: the two are
+    // independent, and serialising them would make every keystroke pay both
+    // latencies. A recipe-list failure must not sink the record results, so it
+    // degrades to no capability group rather than to an error.
+    const recipeList = await (async (): Promise<ServerRecipeListEntry[]> => {
+      const listCaller = opts.recipeListCaller;
+      if (listCaller === undefined) return [];
+      try {
+        return (await listCaller()).recipes.slice();
+      } catch {
+        return [];
+      }
+    })();
+    const packList = await (async (): Promise<ReadonlyArray<RosterPack>> => {
+      const packCaller = opts.packInstalledListCaller;
+      if (packCaller === undefined) return [];
+      try {
+        return (await packCaller()).packs// ⚠ `installed_any_version` too: a pack installed at a DIFFERENT version than
+        // the server bundle is still one the owner has, and omitting it would hide
+        // a capability they demonstrably possess.
+        .filter((p) => p.installed || p.installed_any_version === true);
+      } catch {
+        return [];
+      }
+    })();
+    if (disposed || seq !== universalSearchSeq) return;
+
+    universalSearchPacks = rankSearchable(
+      packList,
+      (p) => ({
+        name: p.name ?? p.slug,
+        ...(p.description !== undefined ? { description: p.description } : {}),
+      }),
+      query,
+      PACK_SEARCH_LIMIT,
+    ).map((p) => ({
+      slug: p.slug,
+      name: p.name ?? p.slug,
+      ...(p.description !== undefined ? { description: p.description } : {}),
+      ...(p.publisher !== undefined ? { publisher: p.publisher } : {}),
+    }));
+
+    // ⛔⛔ A MEMBER IS ABSORBED ONLY WHEN ITS PACK ALSO MATCHED. Suppressing every
+    // bundled recipe outright looks tidier and LOSES REAL HITS: measured on the
+    // shipped corpus, `recued-core/fleet-money` carries a recipe called
+    // "Settlements" and the pack's own text contains none of that word — so an
+    // owner searching "settlements" for a recipe they demonstrably have would
+    // get nothing. Same capability at two granularities collapses to the pack;
+    // a member whose pack did not match still surfaces, attributed to it.
+    const matchedPackSlugs = new Set(universalSearchPacks.map((p) => p.slug));
+    const bundleSlug = (bundle: string): string => bundle.split('/').pop() ?? bundle;
+    universalSearchRecipes = rankSearchable(
+      recipeList,
+      (r) => ({
+        name: r.recipe.metadata.name,
+        description: r.recipe.metadata.description,
+        ...(r.recipe.metadata.tags !== undefined ? { tags: r.recipe.metadata.tags } : {}),
+      }),
+      query,
+      RECIPE_SEARCH_LIMIT,
+    ).filter((r) => {
+      const bundle = r.recipe.metadata.recipe_bundle;
+      return bundle === undefined || !matchedPackSlugs.has(bundleSlug(bundle));
+    }).map((r) => {
+      const bundle = r.recipe.metadata.recipe_bundle;
+      return {
+        recipe_id: r.recipe_id,
+        name: r.recipe.metadata.name,
+        description: r.recipe.metadata.description,
+        publisher_id: r.publisher_id,
+        ...(bundle !== undefined ? { bundle } : {}),
+      };
+    });
+    render();
+    try {
+      const { groups } = await caller({ query });
+      if (disposed || seq !== universalSearchSeq) return;
+      universalSearchGroups = groups;
+      universalSearchError = undefined;
+    } catch (err) {
+      if (disposed || seq !== universalSearchSeq) return;
+      universalSearchGroups = undefined;
+      universalSearchError = humanizeRpcError(err);
+    } finally {
+      if (!disposed && seq === universalSearchSeq) {
+        universalSearchLoading = false;
+        render();
+      }
+    }
+  };
+
+  /** ⛔ OWNER-INITIATED. Never called from the input path — see the caller's
+   *  contract. Typing must not become a stream of cloud queries. */
+  const runMarketplaceSearch = async (): Promise<void> => {
+    const caller = opts.marketplacePackSearchCaller;
+    const query = universalSearchQuery.trim();
+    if (caller === undefined || query === '') return;
+    universalSearchMarketLoading = true;
+    universalSearchMarketError = undefined;
+    render();
+    try {
+      const { packs } = await caller(query);
+      if (disposed) return;
+      universalSearchMarketQuery = query;
+      universalSearchMarket = packs.slice(0, MARKET_SEARCH_LIMIT).map((p) => ({
+        slug: p.slug,
+        name: p.name,
+        ...(p.description !== undefined ? { description: p.description } : {}),
+        ...(p.publisher_id !== undefined ? { publisher_id: p.publisher_id } : {}),
+      }));
+    } catch (err) {
+      if (disposed) return;
+      universalSearchMarket = [];
+      universalSearchMarketError = humanizeRpcError(err);
+    } finally {
+      if (!disposed) {
+        universalSearchMarketLoading = false;
+        render();
+      }
+    }
+  };
+
+  const scheduleUniversalSearch = (): void => {
+    if (universalSearchTimer !== null) clearTimeout(universalSearchTimer);
+    const scheduled = universalSearchQuery;
+    universalSearchTimer = setTimeout(() => {
+      universalSearchTimer = null;
+      // Still the same query, still on this tab — otherwise the keystroke that
+      // scheduled this is no longer what the owner is looking at.
+      if (disposed || activeTab !== 'search' || universalSearchQuery !== scheduled) return;
+      void runUniversalSearch();
+    }, opts.universalSearchDebounceMs ?? 180);
+  };
 
   const scheduleContactSearchRefresh = (): void => {
     const scheduledSearch = contactSearch;
@@ -12542,6 +12835,90 @@ export const bootstrapDataRoute = (
       closeExplorerDetail();
       return;
     }
+    // ── UNIVERSAL SEARCH ────────────────────────────────────────────────────
+    if (action === SEARCH_OPEN_RECORD_ACTION) {
+      // ⛔⛔ THE HANDOFF IS THREE STEPS AND THEY ARE ORDERED. `openExplorerRecord`
+      // reads `activeTab` + `explorerSelectedSlug` — it was written for a click
+      // INSIDE an explorer, where both already point at the record's own
+      // collection. On the search tab neither does: `EXPLORER_TAB_PLATFORM`
+      // has no entry for `search`, so the original one-liner hit the
+      // `platform === undefined` guard and returned. No error, no navigation —
+      // the row was simply inert, which a render test could not see.
+      // `selectExplorerInstance` reads `EXPLORER_TAB_PLATFORM[activeTab]` in its
+      // FIRST line, so `selectTab` must have LANDED before it runs, and the
+      // record open must wait for the instance. Hence await, not `void`.
+      const recordId = target.getAttribute(SEARCH_RECORD_ID_ATTR);
+      const slug = target.getAttribute(SEARCH_GROUP_SLUG_ATTR);
+      const platform = target.getAttribute(SEARCH_GROUP_PLATFORM_ATTR);
+      if (
+        recordId !== null && recordId.length > 0
+        && slug !== null && platform !== null && isDataTab(platform)
+      ) {
+        void (async () => {
+          await selectTab(platform);
+          // A guard in `selectTab` (unsaved editor, in-flight records work) can
+          // refuse the switch. Opening the record anyway would resolve it
+          // against whatever tab is still showing, so stop where it stopped.
+          if (activeTab !== platform) return;
+          await selectExplorerInstance(slug);
+          await openExplorerRecord(recordId);
+        })();
+      }
+      return;
+    }
+    if (action === SEARCH_OPEN_GROUP_ACTION) {
+      // "More in <group>" hands off to the explorer for that collection —
+      // the search is a FINDING surface; reading a collection is what the
+      // explorer already does well, and duplicating it here would be a second
+      // implementation of the same list.
+      const slug = target.getAttribute(SEARCH_GROUP_SLUG_ATTR);
+      const platform = target.getAttribute(SEARCH_GROUP_PLATFORM_ATTR);
+      if (slug !== null && platform !== null && isDataTab(platform)) {
+        void selectTab(platform);
+        void selectExplorerInstance(slug);
+      }
+      return;
+    }
+    if (action === SEARCH_OPEN_RECIPE_ACTION) {
+      // ⛔ OPENS, NEVER RUNS. A search result is a finding affordance; running a
+      // recipe is an action that belongs on the approval path, not on a click
+      // in a list the owner is scanning.
+      const recipeId = target.getAttribute(SEARCH_RECIPE_ID_ATTR);
+      const view = doc.defaultView;
+      if (recipeId !== null && recipeId.length > 0 && view !== null && view !== undefined) {
+        view.location.hash = serializeShellRoute('recipes', recipeId);
+      }
+      return;
+    }
+    if (action === SEARCH_OPEN_PACK_ACTION) {
+      // Pack detail owns install / uninstall / grants — a pack install carries
+      // permissions, so it can never be a click in a result list.
+      const slug = target.getAttribute(SEARCH_PACK_SLUG_ATTR);
+      const view = doc.defaultView;
+      if (slug !== null && slug.length > 0 && view !== null && view !== undefined) {
+        view.location.hash = serializeShellRoute('packs', slug);
+      }
+      return;
+    }
+    if (action === SEARCH_MARKETPLACE_ACTION) {
+      void runMarketplaceSearch();
+      return;
+    }
+    if (action === SEARCH_OPEN_MARKET_PACK_ACTION) {
+      // Same destination as an installed pack: `#packs/<slug>` detail owns
+      // install and its grants. One landing, one place the permissions are
+      // shown, whether the owner already has it or not.
+      const slug = target.getAttribute(SEARCH_PACK_SLUG_ATTR);
+      const view = doc.defaultView;
+      if (slug !== null && slug.length > 0 && view !== null && view !== undefined) {
+        view.location.hash = serializeShellRoute('packs', slug);
+      }
+      return;
+    }
+    if (action === SEARCH_RETRY_ACTION) {
+      void runUniversalSearch();
+      return;
+    }
     if (action === 'open-create-contact') {
       openCreateContactDialog();
       return;
@@ -12884,6 +13261,23 @@ export const bootstrapDataRoute = (
   const onInput = (ev: Event): void => {
     const target = ev.target as HTMLInputElement | HTMLTextAreaElement | null;
     if (target === null) return;
+    if (
+      typeof target.hasAttribute === 'function'
+      && target.hasAttribute(SEARCH_INPUT_ATTR)
+    ) {
+      universalSearchQuery = target.value;
+      // ⛔ NO `render()` HERE. Repainting on every keystroke replaces the input
+      // element the owner is typing into, which drops the caret to the end and
+      // makes editing mid-string impossible. The value is already on screen —
+      // the DOM has it — so state catches up silently and the debounced search
+      // repaints when results arrive.
+      if (universalSearchQuery.trim() === '') {
+        universalSearchGroups = undefined;
+        universalSearchError = undefined;
+      }
+      scheduleUniversalSearch();
+      return;
+    }
     if (
       typeof target.hasAttribute === 'function'
       && target.hasAttribute(RECORDS_PURGE_CONFIRMATION_ATTR)
@@ -13498,6 +13892,11 @@ export const bootstrapDataRoute = (
       disposeUploadWidget();
       routeRoot.removeEventListener('click', onClick);
       routeRoot.removeEventListener('input', onInput);
+      // A pending keystroke must not fire a search into a torn-down route.
+      if (universalSearchTimer !== null) {
+        clearTimeout(universalSearchTimer);
+        universalSearchTimer = null;
+      }
       routeRoot.removeEventListener('change', onChange);
       routeRoot.removeEventListener('keydown', onKeyDown);
       try {

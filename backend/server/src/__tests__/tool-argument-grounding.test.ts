@@ -492,3 +492,83 @@ describe('the grounding corpus is what the model was GIVEN, not what it SENT', (
     ).toEqual([]);
   });
 });
+
+/** ⛔⛔ THE DATE ARM — same class as the phone arm above, and it cost a whole
+ *  turn before it existed. The owner's message said "14 October 2026"; the model
+ *  sent `2026-10-14`; a literal comparison called that an invention and told it
+ *  to "run the step that returns it first" — advice with no step to run, because
+ *  the value came from the USER. The model re-sent the identical call until the
+ *  turn timed out.
+ *
+ *  ⚠ THE PERMITTING CASES ARE FIRST, for the reason stated at the top of this
+ *  file; the refusing cases below are what prove the arm is not a hole. */
+describe('tool-argument grounding — the date arm is not a hole', () => {
+  const packetProse = 'user_message: the Marlowe site handover is on 14 October 2026';
+
+  it('grounds an ISO date the owner wrote in prose', () => {
+    expect(ungroundedArgumentsInCall({ to: '2026-10-14' }, packetProse)).toHaveLength(0);
+  });
+
+  it('grounds in the other direction — prose value, ISO packet', () => {
+    expect(ungroundedArgumentsInCall(
+      { to: '14 October 2026' },
+      'user_message: handover is 2026-10-14',
+    )).toHaveLength(0);
+  });
+
+  it('grounds the month-first spelling', () => {
+    expect(ungroundedArgumentsInCall({ to: '2026-10-14' },
+      'user_message: handover is October 14, 2026')).toHaveLength(0);
+  });
+
+  /** ⛔ THE ARM CANNOT LAUNDER AN INVENTION. A different day is still absent
+   *  however it is written — without this the permitting cases would pass on a
+   *  rule that grounded every date. */
+  it('still refuses a date the packet never carried', () => {
+    const found = ungroundedArgumentsInCall({ to: '2026-11-14' }, packetProse);
+    expect(found).toHaveLength(1);
+    expect(found[0]?.why).toBe('ungrounded');
+  });
+
+  /** ⛔ AN OPAQUE ID THAT MERELY CONTAINS A DATE IS NOT A DATE. Scanning the
+   *  value for an embedded date rather than requiring the value to BE one would
+   *  ground a fabricated identifier by its suffix. */
+  it('refuses an identifier that merely embeds a grounded date', () => {
+    const found = ungroundedArgumentsInCall({ deal_id: 'deal_2026-10-14' }, packetProse);
+    expect(found).toHaveLength(1);
+    expect(found[0]?.why).toBe('ungrounded');
+  });
+
+  /** ⛔ AMBIGUOUS NUMERIC FORMS ARE OUT ON PURPOSE. `01/02/2026` is 1 February
+   *  or 2 January by locale; recognising it would let the model ground a day the
+   *  owner never wrote. This must stay REFUSED, and that is a deliberate missed
+   *  rescue rather than a bug. */
+  it('does not recognise a dd/mm/yyyy packet date', () => {
+    const found = ungroundedArgumentsInCall(
+      { to: '2026-02-01' },
+      'user_message: the handover is on 01/02/2026',
+    );
+    expect(found).toHaveLength(1);
+  });
+
+  /** ⛔ A PARTIAL DATE IS NOT A DAY. A bare year must never ground a full date,
+   *  or every date in a packet mentioning the year would be admitted. */
+  it('does not ground a full date against a bare year', () => {
+    const found = ungroundedArgumentsInCall(
+      { to: '2026-10-14' },
+      'user_message: sometime in 2026, probably October',
+    );
+    expect(found).toHaveLength(1);
+  });
+
+  /** ⛔ AN IMPOSSIBLE DAY IS NOT A DATE. 31 February parses arithmetically in
+   *  many libraries by rolling over into March; a value that is not a real day
+   *  must not be grounded as one. */
+  it('refuses an impossible calendar day', () => {
+    const found = ungroundedArgumentsInCall(
+      { to: '2026-02-31' },
+      'user_message: due 2026-03-03',
+    );
+    expect(found).toHaveLength(1);
+  });
+});

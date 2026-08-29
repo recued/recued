@@ -29,7 +29,8 @@ the workspace packages they are built from.
 - Encrypts your data at rest; the 24-word recovery key is the only way back in.
 - No third party in the middle, taking a cut of your revenue or piping your
   data.
-- Works with any AI provider, hosted or local.
+- Works with any AI provider, hosted or local, two default slots and unlimited rotational slot pool.
+- Every risky action can be gated and only be executed upon your approval.
 - Free to run, with no feature gates.
 
 ## Install
@@ -59,6 +60,9 @@ On a **headless Linux** box, starting at boot needs root — run the installer
 with `sudo` — because the only sealing rung available without a desktop
 keyring reads a root-only host key. A Linux desktop session installs a user
 unit and needs no root.
+
+## Pack
+Pack is a json declares how to connect to any resources (cli, saas, rest api, mcp), and you can delare permission for each operations, by default all write, admin, destructive actions need manual approval. Premade packs are available free on https://recued.com/packs, you can also create your own with build-in editor or json.
 
 ## `SKILL.md` and recipes
 

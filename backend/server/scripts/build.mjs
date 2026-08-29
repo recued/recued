@@ -164,6 +164,12 @@ const SEA_EXTERNAL = [
  *  Stale-output protection is unaffected: the esbuild entry points are still
  *  wiped every run, and `assertNoStaleSrcJsShadow` still guards the shadowing
  *  hazard the blanket clean was really there for. */
+// ⛔ DO NOT ADD THE e2e SEED HERE. Preserving it under `dist/` looked like the
+// obvious fix when a build deleted it mid-verification — and `npm pack` then
+// shipped the whole realm (`seed-test.db`, `seed-identity.json`,
+// `seed-recovery-key.txt`) inside the published package, which the Phase E
+// files[] test caught. A fixture that is a SERVER REALM does not belong in the
+// packaged tree; `make-e2e-seed.mjs` writes outside it.
 const PRESERVED_DIST_DIRS = new Set(['binary', 'binary-docker', 'release']);
 
 console.log('[build] cleaning dist/ (preserving release artifacts)');
@@ -253,6 +259,42 @@ const assertManifestPackagesPresent = (outfile, format) => {
   process.exit(1);
 };
 
+const BUILD_DEFINES = {
+  '__RECUED_SERVER_VERSION__': JSON.stringify(VERSION),
+};
+
+/** Every `define` key must be GONE from the emitted bundle.
+ *
+ *  ⛔⛔ A DEFINE SUBSTITUTES IDENTIFIER REFERENCES, NOT PROPERTY NAMES. Written
+ *  as `__RECUED_SERVER_VERSION__` it becomes the version literal; written as
+ *  `globalThis.__RECUED_SERVER_VERSION__` it is a member expression, esbuild
+ *  leaves it alone, nothing ever assigns that property, and it reads
+ *  `undefined` forever. Both forms look correct in review and only one works.
+ *
+ *  🔑 THIS SHIPPED FOR THREE MONTHS AND TOOK THE UPDATE PATH WITH IT. The
+ *  property form landed 2026-05-28 for `system.status`; D-178 later wired the
+ *  release check and `boot-reconcile` to the same variable, so a booted server
+ *  reported its identity as `stable:unknown`, never matched the staged
+ *  `stable:<version>`, and counted every HEALTHY boot as a failed one —
+ *  auto-reverting the update on the third restart. Measured against published
+ *  26.8.28 on an enrolled realm: three clean boots, then `rolled_back … boot
+ *  health failed 3 times`. No update could ever commit.
+ *
+ *  The name surviving into the output is the whole signal, and it is exact:
+ *  a substituted define leaves nothing behind. */
+const assertDefinesSubstituted = (outfile, defines) => {
+  const src = readFileSync(outfile, 'utf8');
+  const left = Object.keys(defines).filter((k) => src.includes(k));
+  if (left.length === 0) return;
+  throw new Error(
+    `${basename(outfile)}: build define(s) survived into the bundle: ${left.join(', ')}.\n`
+    + '  esbuild replaces IDENTIFIER references only. Something reads one as a\n'
+    + '  property — `globalThis.NAME` or `obj.NAME` — which is never substituted and\n'
+    + '  is `undefined` at runtime. Read the bare identifier (see server-version.ts),\n'
+    + '  or import the resolved constant instead.',
+  );
+};
+
 const assertNoUnresolvedBareRequires = (outfile) => {
   const text = readFileSync(outfile, 'utf8');
   const builtins = new Set([...builtinModules, ...builtinModules.map((m) => `node:${m}`)]);
@@ -298,9 +340,7 @@ const common = {
   resolveExtensions: ['.ts', '.tsx', '.mjs', '.js', '.json'],
   // Constants injected at build time. Source code reads these as
   // declared globals; esbuild replaces them verbatim in the bundle.
-  define: {
-    '__RECUED_SERVER_VERSION__': JSON.stringify(VERSION),
-  },
+  define: BUILD_DEFINES,
   // ⛔ Give the ESM output a REAL `require`. Without this, every deferred
   // `require()` in our source — `nodemailer`, `imapflow`, `ws` — compiles to
   // esbuild's `__require` shim, whose body is:
@@ -365,6 +405,7 @@ const binResult = await build({
 });
 assertNoStaleSrcJsShadow(binResult.metafile, 'bin.js');
 assertManifestPackagesPresent(join(OUT, 'bin.js'), 'esm');
+assertDefinesSubstituted(join(OUT, 'bin.js'), BUILD_DEFINES);
 
 const indexResult = await build({
   ...common,
@@ -408,6 +449,7 @@ const seaResult = await build({
 assertNoStaleSrcJsShadow(seaResult.metafile, 'bin.cjs');
 assertNoUnresolvedBareRequires(join(OUT, 'bin.cjs'));
 assertManifestPackagesPresent(join(OUT, 'bin.cjs'), 'sea');
+assertDefinesSubstituted(join(OUT, 'bin.cjs'), BUILD_DEFINES);
 
 // D-178 — the thin `:managed` image launcher (I-9 frozen verify-and-exec loop).
 // Bundled standalone so the `:managed` image carries ONLY the launcher + node,

@@ -188,6 +188,7 @@ import type { InitialAcmeDomainIssuer } from '../keys/rotation/acme-domain-renew
 import { buildApplyOrchestratorDeps, buildReleaseCheckDeps, buildUpdateModeDeps } from '../update/release-config.js';
 import { buildUpdateReleaseEntry, updateAutoApplyRegistry } from '../update/auto-apply-registry.js';
 import { runUpdateBootReconcile as runUpdateBootReconcileImpl } from '../update/boot-reconcile.js';
+import { SERVER_VERSION } from '../server-version.js';
 import type { RpcContext } from './compose-rpc-context.js';
 import type { StorageContext } from './compose-storage-context.js';
 
@@ -904,12 +905,27 @@ export const composeListeners = async (
   // through it; the post-construct line below assigns the live handle.
   let wsHandleForStatusRef: WsServerHandle | undefined;
   const serverStartedAtSeconds = Math.floor(Date.now() / 1000);
-  const SERVER_VERSION_DEFINE =
-    (globalThis as { __RECUED_SERVER_VERSION__?: string }).__RECUED_SERVER_VERSION__;
+  // ⛔⛔ READ THE IDENTIFIER, NEVER `globalThis.__RECUED_SERVER_VERSION__`.
+  // `__RECUED_SERVER_VERSION__` is an esbuild DEFINE, and a define substitutes
+  // IDENTIFIER REFERENCES — not the property half of a member expression. So
+  // this line compiled to a literal `globalThis.__RECUED_SERVER_VERSION__`
+  // lookup in every shipped bundle (verified in 26.8.28's `dist/bin.js`),
+  // nothing ever assigns that property, and it was `undefined` on every server
+  // that has ever run. The banner reads correctly only because it goes through
+  // `SERVER_VERSION`, which uses the bare identifier.
+  //
+  // 🔑 IT WAS NOT COSMETIC. D-178 later wired the update path to this same
+  // variable, so `boot-reconcile` compared `stable:unknown` against the staged
+  // `stable:<version>`, never matched, and counted every HEALTHY boot as a
+  // failed one — auto-reverting the update on the third restart. Measured on a
+  // real enrolled realm against the published 26.8.28: three clean boots
+  // (`Status: Running`, /health 200), then `rolled_back … boot health failed 3
+  // times`. No update could ever commit.
+  const SERVER_VERSION_DEFINE: string = SERVER_VERSION;
   const systemStatusDeps: SystemStatusDeps = {
     getServerDisplayName: () =>
       execution.executeDeps?.serverName ?? 'recued',
-    getServerVersion: () => SERVER_VERSION_DEFINE ?? 'unknown',
+    getServerVersion: () => SERVER_VERSION_DEFINE,
     getUptimeSeconds: () =>
       Math.max(0, Math.floor(Date.now() / 1000) - serverStartedAtSeconds),
     getWsServer: () => wsHandleForStatusRef,
@@ -975,7 +991,7 @@ export const composeListeners = async (
   // from the build-time define. Undefined on an unsupported platform.
   const releaseCheckDeps = buildReleaseCheckDeps({
     db: storage.db,
-    currentVersion: SERVER_VERSION_DEFINE ?? 'unknown',
+    currentVersion: SERVER_VERSION_DEFINE,
   });
   const updateModeDeps = buildUpdateModeDeps(storage.db);
 
@@ -1081,7 +1097,7 @@ export const composeListeners = async (
             await runUpdateBootReconcileImpl({
               ports: updateApplyDeps.ports,
               channel: releaseCheckDeps.channel === 'edge' ? 'edge' : 'stable',
-              currentVersion: SERVER_VERSION_DEFINE ?? 'unknown',
+              currentVersion: SERVER_VERSION_DEFINE,
               ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
               notify: (m) => console.error(`[update] ${m}`),
             });

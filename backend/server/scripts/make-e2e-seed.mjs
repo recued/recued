@@ -54,7 +54,10 @@ const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(`--${n}`); return i === -1 ? d : (argv[i + 1] ?? d); };
 const has = (n) => argv.includes(`--${n}`);
 
-const OUT = resolve(flag('out', join(SERVER_DIR, 'dist', 'e2e-seed')));
+// ⛔ OUTSIDE THE PACKAGED TREE. Under `backend/server/dist/` this is deleted by
+// every build, and preserving it there makes `npm pack` ship the realm — db,
+// identity and recovery-key file — inside the published package.
+const OUT = resolve(flag('out', join(SERVER_DIR, '..', '..', '.cache', 'e2e-seed')));
 /** ⛔ THE IDENTITY MUST BE SEALED BY SOMETHING THAT TRAVELS. Left to itself the
  *  server seals the keyfile with the best rung the machine offers — on macOS
  *  that is `os-keyring`, and a keyfile sealed that way is bound to the keychain

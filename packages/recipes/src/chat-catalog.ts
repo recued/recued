@@ -51,6 +51,7 @@ import {
   isCliIngredient,
   kernelOpBackingSlug,
   parseOpId,
+  rankSearchable,
 } from '@recued/contracts';
 
 /** Spec § A.1.1, amended 2026-07-02 (the 300-pack-wave default flip) —
@@ -658,41 +659,23 @@ export const buildTier2Catalog = (
  *  whole-word) matching is deliberate — it keeps plural/stem recall
  *  ("email" finds "emails") at the cost of some 2-char noise, which stays
  *  low-ranked; whole-word + embeddings is the precision refinement. */
-const MIN_QUERY_TERM_LENGTH = 2;
-
-const tokenizeToolQuery = (query: string): string[] =>
-  query
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((token) => token.length >= MIN_QUERY_TERM_LENGTH);
-
-const scoreToolEntry = (entry: ToolEntry, terms: ReadonlyArray<string>): number => {
-  const name = entry.name.toLowerCase();
-  const description = (entry.description ?? '').toLowerCase();
-  const tags = entry.topic_tags.map((tag) => tag.toLowerCase());
-  let score = 0;
-  for (const term of terms) {
-    if (name.includes(term)) score += 3;
-    if (tags.some((tag) => tag.includes(term))) score += 2;
-    if (description.includes(term)) score += 1;
-  }
-  return score;
-};
+/** ⛔ THE SCORER LIVES IN `@recued/contracts` (`scoreSearchable`), NOT HERE.
+ *  The owner's Data → Find surface searches the same installed recipes through
+ *  its own projection; two scorers with matching weights are two rules that
+ *  agree only until someone edits one, and the symptom — "the assistant found it
+ *  and my search did not" — is invisible from either side. */
 
 export const searchToolCatalog = (
   entries: ReadonlyArray<ToolEntry>,
   query: string,
   limit: number,
-): ReadonlyArray<ToolEntry> => {
-  const terms = tokenizeToolQuery(query);
-  if (terms.length === 0 || limit <= 0) return [];
-  const scored = entries
-    .map((entry) => ({ entry, score: scoreToolEntry(entry, terms) }))
-    .filter((candidate) => candidate.score > 0);
-  scored.sort(
-    (a, b) =>
-      b.score - a.score ||
-      (a.entry.name < b.entry.name ? -1 : a.entry.name > b.entry.name ? 1 : 0),
-  );
-  return scored.slice(0, limit).map((candidate) => candidate.entry);
-};
+): ReadonlyArray<ToolEntry> => rankSearchable(
+  entries,
+  (entry) => ({
+    name: entry.name,
+    ...(entry.description !== undefined ? { description: entry.description } : {}),
+    tags: entry.topic_tags,
+  }),
+  query,
+  limit,
+);

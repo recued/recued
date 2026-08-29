@@ -98,6 +98,7 @@ import type {
   CollectionPlatform,
   CollectionRecord,
   CollectionSearchMatch,
+  CollectionSearchGroup,
   CollectionSearchQuery,
   FileAdapterType,
   FileCollectionCaps,
@@ -5185,6 +5186,23 @@ export type ServerRpcRegistry = {
     CollectionSearchQuery,
     { matches: CollectionSearchMatch[] }
   >;
+  /** UNIVERSAL SEARCH — one query fanned across every registered collection,
+   *  returned GROUPED BY COLLECTION and never globally ranked.
+   *
+   *  ⛔ The absence of a unified order is the design, not an omission. FTS5
+   *  `rank` is BM25 computed per index, so a mail rank and a file rank are
+   *  scored against different corpora and are not comparable; interleaving them
+   *  produces an order that looks authoritative and means nothing. Groups come
+   *  back ordered by hit count then slug — deterministic, and not a relevance
+   *  claim across stores.
+   *
+   *  A blank query returns no groups rather than erroring (this fires on
+   *  keystrokes). `per_group` defaults to 5 and clamps at 25 — a finding
+   *  surface, not a reading one. One store throwing is skipped, not fatal. */
+  'collection.searchAll': RpcMethodSpec<
+    { query: string; per_group?: number; platforms?: CollectionPlatform[] },
+    { groups: CollectionSearchGroup[] }
+  >;
   /** Fetch one record by `record_id`. Returns `{ record: null }` when
    *  the record doesn't exist — `COLLECTION_NOT_FOUND` is reserved for
    *  the `(platform, slug)` pair being unknown. */
@@ -7335,6 +7353,7 @@ export const SERVER_RPC_METHODS = [
   'server.resetCrashLoop',
   'collection.list',
   'collection.search',
+  'collection.searchAll',
   'collection.get',
   'collection.runRetention',
   'collection.listEndpoints',

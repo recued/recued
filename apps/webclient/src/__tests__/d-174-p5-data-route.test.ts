@@ -16,6 +16,13 @@ import type {
   WorkEntityKind,
 } from '@recued/contracts';
 import { FILE_VENDOR_DECLARATIONS, WORK_ENTITY_KINDS } from '@recued/contracts';
+import {
+  SEARCH_INPUT_ATTR,
+  SEARCH_OPEN_RECORD_ACTION,
+  SEARCH_GROUP_SLUG_ATTR,
+  SEARCH_GROUP_PLATFORM_ATTR,
+  SEARCH_RECORD_ID_ATTR,
+} from '../data/universal-search.js';
 
 import {
   DATA_ROUTE_CONTACT_DETAIL_ATTR,
@@ -56,6 +63,7 @@ import {
   DATA_ROUTE_VERIFICATION_NEXT_ATTR,
   DATA_ROUTE_WORK_ENTITY_LOAD_MORE_ATTR,
   bootstrapDataRoute,
+  type DataCollectionSearchAllCaller,
   type BootstrapDataRouteOptions,
   type DataContactDeleteCaller,
   type DataContactContributionsCaller,
@@ -534,6 +542,12 @@ const makeSubscribe = () => {
 };
 
 const mountRoute = (overrides: {
+  /** Universal search — opt-in, so the bare rig exercises the unwired notice. */
+  collectionSearchAllCaller?: DataCollectionSearchAllCaller;
+  universalSearchDebounceMs?: number;
+  marketplacePackSearchCaller?: (query: string) => Promise<{
+    packs: ReadonlyArray<{ slug: string; name: string; description?: string }>;
+  }>;
   sourceListCaller?: WorkEntitySourceListCaller;
   workEntityListCaller?: DataWorkEntityListCaller;
   workEntityGetCaller?: DataWorkEntityGetCaller;
@@ -887,6 +901,15 @@ const mountRoute = (overrides: {
       ? { contactImportFileApplyCaller: overrides.contactImportFileApplyCaller }
       : {}),
     ...(overrides.now !== undefined ? { now: overrides.now } : {}),
+    ...(overrides.collectionSearchAllCaller !== undefined
+      ? { collectionSearchAllCaller: overrides.collectionSearchAllCaller }
+      : {}),
+    ...(overrides.universalSearchDebounceMs !== undefined
+      ? { universalSearchDebounceMs: overrides.universalSearchDebounceMs }
+      : {}),
+    ...(overrides.marketplacePackSearchCaller !== undefined
+      ? { marketplacePackSearchCaller: overrides.marketplacePackSearchCaller }
+      : {}),
   });
 
   return {
@@ -6746,5 +6769,240 @@ describe('D-205 #5c — the file import panel', () => {
     await rig.route.applyImportFile();
     expect(applyCaller).toHaveBeenCalledTimes(1);
     rig.route.dispose();
+  });
+});
+
+/** UNIVERSAL SEARCH — the COMPOSITION, which is the only part provable here.
+ *  The renderer is proved in `universal-search.test.ts` and the aggregator in
+ *  `collection-search-all.test.ts`. What neither can see is whether a keystroke
+ *  in the mounted route actually reaches the caller — the seam where a wiring
+ *  mistake leaves both sides green and the feature inert. */
+describe('Data → Search wiring', () => {
+  const typeInto = (rig: ReturnType<typeof mountRoute>, value: string): void => {
+    // ⚠ The listeners live on the SHELL (`root.children[0]`), not the mount
+    // root — the same target every other input test in this file uses.
+    emitInput(rig.root.children[0]!, {
+      value,
+      hasAttribute: (k: string) => k === SEARCH_INPUT_ATTR,
+      getAttribute: () => null,
+    });
+  };
+
+  it('offers the tab', async () => {
+    const rig = mountRoute();
+    await rig.route.whenLoaded();
+    expect(rig.root.children[0]!.innerHTML).toContain(`${DATA_ROUTE_TAB_ATTR}="search"`);
+  });
+
+  it('⛔ a keystroke reaches the caller, debounced, with the typed query', async () => {
+    const calls: string[] = [];
+    const rig = mountRoute({
+      universalSearchDebounceMs: 1,
+      collectionSearchAllCaller: async ({ query }) => {
+        calls.push(query);
+        return { groups: [] };
+      },
+    });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('search');
+    typeInto(rig, 'kestrel');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(calls).toEqual(['kestrel']);
+  });
+
+  it('⛔ DOES NOT REPAINT ON EVERY KEYSTROKE — that would drop the caret', async () => {
+    // Re-rendering replaces the input the owner is typing into, sending the
+    // caret to the end and making mid-string editing impossible. The DOM
+    // already holds the value; state catches up silently.
+    const rig = mountRoute({
+      universalSearchDebounceMs: 5_000,
+      collectionSearchAllCaller: async () => ({ groups: [] }),
+    });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('search');
+    const before = rig.root.children[0]!.innerHTML;
+    typeInto(rig, 'k');
+    typeInto(rig, 'ke');
+    expect(rig.root.children[0]!.innerHTML).toBe(before);
+  });
+
+  it('debounces a burst into ONE call for the final query', async () => {
+    const calls: string[] = [];
+    const rig = mountRoute({
+      universalSearchDebounceMs: 10,
+      collectionSearchAllCaller: async ({ query }) => {
+        calls.push(query);
+        return { groups: [] };
+      },
+    });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('search');
+    typeInto(rig, 'k');
+    typeInto(rig, 'ke');
+    typeInto(rig, 'kes');
+    await new Promise((r) => setTimeout(r, 40));
+    expect(calls).toEqual(['kes']);
+  });
+
+  it('renders the groups it got back', async () => {
+    const rig = mountRoute({
+      universalSearchDebounceMs: 1,
+      collectionSearchAllCaller: async () => ({
+        groups: [{
+          platform: 'mail', slug: 'inbox', more: false,
+          source_freshness: { stale: false },
+          matches: [{
+            record_id: 'm1', hot_fields: { subject: 'Kestrel pricing' },
+            rank: -1, body: 'body',
+          }],
+        }] as never,
+      }),
+    });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('search');
+    typeInto(rig, 'kestrel');
+    await new Promise((r) => setTimeout(r, 20));
+    const html = rig.root.children[0]!.innerHTML;
+    expect(html).toContain('Kestrel pricing');
+    expect(html).toContain(SEARCH_OPEN_RECORD_ACTION);
+  });
+
+  it('says so when search is not wired, rather than looking empty', async () => {
+    const rig = mountRoute({ universalSearchDebounceMs: 1 });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('search');
+    typeInto(rig, 'kestrel');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(rig.root.children[0]!.innerHTML).toContain('not wired');
+  });
+
+  it('opening a result does not throw', async () => {
+    const rig = mountRoute({
+      universalSearchDebounceMs: 1,
+      collectionSearchAllCaller: async () => ({ groups: [] }),
+    });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('search');
+    // ⚠ `rig.root.children[0]` — the route mounts a HOST div inside the root and
+    // attaches its click listener THERE. Emitting at `rig.root` finds no
+    // listener, so the click never dispatches and the test passes without
+    // exercising a line of the handler.
+    expect(() => emitClick(rig.root.children[0]!, SEARCH_OPEN_RECORD_ACTION, {
+      [SEARCH_RECORD_ID_ATTR]: 'mail:m1',
+    })).not.toThrow();
+  });
+
+  /** ⛔⛔ THE ASSERTION IS THE TAB SWITCH, NOT THE ABSENCE OF A THROW. The test
+   *  above is real — a click with missing attributes must not explode — but it
+   *  passed for the whole life of a handler that navigated NOWHERE. Opening a
+   *  record from search is a handoff to the explorer that OWNS the collection,
+   *  and `openExplorerRecord` reads `activeTab` / `explorerSelectedSlug`: on the
+   *  search tab, `EXPLORER_TAB_PLATFORM.search` is undefined, so it returned at
+   *  its own guard. Silent, throwless, inert — caught only by clicking it in a
+   *  browser. Assert the DESTINATION. */
+  it('opening a result hands off to the explorer that owns the collection', async () => {
+    const rig = mountRoute({
+      universalSearchDebounceMs: 1,
+      collectionSearchAllCaller: async () => ({
+        groups: [{
+          platform: 'mail', slug: 'inbox', more: false,
+          source_freshness: { stale: false },
+          matches: [{
+            record_id: 'mail:m1', hot_fields: { subject: 'Kestrel pricing' },
+            rank: -1, body: 'body',
+          }],
+        }] as never,
+      }),
+    });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('search');
+    typeInto(rig, 'kestrel');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(rig.route.activeTab()).toBe('search');
+
+    emitClick(rig.root.children[0]!, SEARCH_OPEN_RECORD_ACTION, {
+      [SEARCH_RECORD_ID_ATTR]: 'mail:m1',
+      [SEARCH_GROUP_SLUG_ATTR]: 'inbox',
+      [SEARCH_GROUP_PLATFORM_ATTR]: 'mail',
+    });
+    await new Promise((r) => setTimeout(r, 250));
+    expect(rig.route.activeTab()).toBe('mail');
+  });
+
+  /** The row must SHIP the coordinates the handoff needs. Rendering the id alone
+   *  is what made the handler guess, and a handler test that hand-builds the
+   *  attributes would keep passing after the renderer stopped emitting them. */
+  it('renders each record row with its owning platform and instance', async () => {
+    const rig = mountRoute({
+      universalSearchDebounceMs: 1,
+      collectionSearchAllCaller: async () => ({
+        groups: [{
+          platform: 'mail', slug: 'inbox', more: false,
+          source_freshness: { stale: false },
+          matches: [{
+            record_id: 'mail:m1', hot_fields: { subject: 'Kestrel pricing' },
+            rank: -1, body: 'body',
+          }],
+        }] as never,
+      }),
+    });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('search');
+    typeInto(rig, 'kestrel');
+    await new Promise((r) => setTimeout(r, 20));
+    const html = rig.root.children[0]!.innerHTML;
+    expect(html).toContain(`${SEARCH_GROUP_PLATFORM_ATTR}="mail"`);
+    expect(html).toContain(`${SEARCH_GROUP_SLUG_ATTR}="inbox"`);
+  });
+});
+
+/** ⛔⛔ THE ONE THING THIS SURFACE MUST NEVER DO. Every other part of Data → Find
+ *  is local; the marketplace call leaves the machine. A wiring slip that fired
+ *  it from the input path would turn a private search box into a stream of cloud
+ *  queries, and NOTHING in the renderer or the aggregator could detect that. */
+describe('Data → Search never reaches the cloud on its own', () => {
+  const typeInto = (rig: ReturnType<typeof mountRoute>, value: string): void => {
+    emitInput(rig.root.children[0]!, {
+      value,
+      hasAttribute: (k: string) => k === SEARCH_INPUT_ATTR,
+      getAttribute: () => null,
+    });
+  };
+
+  it('⛔ typing does NOT call the marketplace, even with nothing found locally', async () => {
+    const cloudCalls: string[] = [];
+    const rig = mountRoute({
+      universalSearchDebounceMs: 1,
+      collectionSearchAllCaller: async () => ({ groups: [] }),
+      marketplacePackSearchCaller: async (query) => {
+        cloudCalls.push(query);
+        return { packs: [] };
+      },
+    });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('search');
+    typeInto(rig, 'invoicing');
+    await new Promise((r) => setTimeout(r, 30));
+    expect(cloudCalls).toEqual([]);
+  });
+
+  it('calls it only on the explicit click', async () => {
+    const cloudCalls: string[] = [];
+    const rig = mountRoute({
+      universalSearchDebounceMs: 1,
+      collectionSearchAllCaller: async () => ({ groups: [] }),
+      marketplacePackSearchCaller: async (query) => {
+        cloudCalls.push(query);
+        return { packs: [{ slug: 'invoice-book', name: 'Invoice book' }] };
+      },
+    });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('search');
+    typeInto(rig, 'invoicing');
+    await new Promise((r) => setTimeout(r, 30));
+    emitClick(rig.root.children[0]!, 'universal-search-marketplace');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(cloudCalls).toEqual(['invoicing']);
+    expect(rig.root.children[0]!.innerHTML).toContain('Invoice book');
   });
 });

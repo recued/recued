@@ -43,6 +43,10 @@ import {
   resolveEnabledKinds,
   type ChatCatalogDeliveryMode,
 } from './chat-orchestrator.js';
+import {
+  DOC_MATCHES_GUIDANCE,
+  searchDocIndex,
+} from './chat-doc-search.js';
 import { TOOLS_SEARCH_TOOL_NAME } from './chat-tools-search-name.js';
 
 // Re-exported so existing importers (`chat-tool-handlers.ts`, tests) resolve it
@@ -63,7 +67,7 @@ export const TOOLS_SEARCH_TOOL_ENTRY: ToolEntry = {
   name: TOOLS_SEARCH_TOOL_NAME,
   tier: 1,
   description:
-    "Find installed recipe tools by capability. Recipe tools that \"available_tools\" does not fully show — listed with only a one-line summary and no argument schema (index mode), or not listed at all (lean-core mode) — are recovered here: pass a short `query` describing the capability (\"draft a follow-up email\", \"summarize a PDF\", \"find overdue invoices\") and it returns every matching tool, each with the `args_schema` you then call directly by `recipe_slug` (pass `limit` only if you want fewer). The always-listed core tools (contact / mail / calendar / memory / enrichment / deal / account / work search + read, recipe.run) are ALREADY fully defined — never search for those. If a search returns no match, do NOT retry with reworded queries: satisfy the request with the core tools or your own knowledge, or tell the user no matching recipe is installed.",
+    "Find installed recipe tools by capability. Recipe tools that \"available_tools\" does not fully show — listed with only a one-line summary and no argument schema (index mode), or not listed at all (lean-core mode) — are recovered here: pass a short `query` describing the capability (\"draft a follow-up email\", \"summarize a PDF\", \"find overdue invoices\") and it returns every matching tool, each with the `args_schema` you then call directly by `recipe_slug` (pass `limit` only if you want fewer). The always-listed core tools (contact / mail / calendar / memory / enrichment / deal / account / work search + read, recipe.run) are ALREADY fully defined — never search for those. This ALSO searches the documentation for THIS server and returns any matching sections as `doc_matches` — use it for \"how does X work\" / \"where do I set X up\" questions, which nothing in your own knowledge can answer about this product. If a search returns no match at all, do NOT retry with reworded queries: satisfy the request with the core tools, or tell the user that no matching recipe is installed and the documentation does not cover it.",
   arg_schema: {
     type: 'object',
     properties: {
@@ -92,6 +96,16 @@ export const TOOLS_SEARCH_TOOL_ENTRY: ToolEntry = {
 // the found recipe to the user instead.
 const TOOLS_SEARCH_MATCHES_GUIDANCE =
   'These are invocable tool definitions. Call the one you need NOW by its `recipe_slug` with args matching its `args_schema` — EMIT that tool call; do not describe or summarize the recipe to the user instead of running it. You already have everything required; do not search again for it.';
+/** No recipe does it, but the manual explains it. Deliberately does NOT repeat
+ *  the "answer from your own knowledge" clause: the model has no prior
+ *  knowledge of this product, so improvising here is how a plausible, wrong set
+ *  of menu steps gets stated with confidence. */
+const TOOLS_SEARCH_DOCS_ONLY_GUIDANCE =
+  'No installed recipe tool matches this request, but the documentation below '
+  + 'covers it. Answer from those sections and cite the `url`. Do NOT retry '
+  + 'tools.search with reworded queries, and do NOT describe menus, settings or '
+  + 'steps that the sections do not actually mention.';
+
 const TOOLS_SEARCH_NO_MATCH_GUIDANCE =
   'No installed recipe tool matches this request. Do NOT retry tools.search with reworded queries. Handle it with the core tools already listed, answer the user from your own knowledge, or tell the user that no matching recipe is installed.';
 
@@ -174,6 +188,12 @@ const dispatchToolsSearch = (
       (entry) => !gated.has(entry.name) && (reachable === undefined || reachable(entry.name)),
     );
     const matches = searchToolCatalog(visible, args.query, limit);
+    // ⛔ SEARCHED ALWAYS, RETURNED SECOND. The docs answer "how does this work"
+    // where the catalog answers "what can I run", and a question often wants
+    // both — but a tool is a thing the model can DO, so it leads. Doc hits are
+    // capped hard (`DOC_MATCH_LIMIT`) so they can never crowd the matches that
+    // let the turn actually accomplish something.
+    const docs = searchDocIndex(args.query);
     return {
       ok: true,
       result: {
@@ -184,8 +204,23 @@ const dispatchToolsSearch = (
           description: entry.description,
           args_schema: entry.arg_schema,
         })),
+        // ⚠ Omitted entirely when empty rather than sent as `[]`. An empty key
+        // still costs packet budget on every no-doc search, and an absent one
+        // cannot be misread as "the docs say nothing about this".
+        ...(docs.length > 0
+          ? { doc_matches: docs, doc_guidance: DOC_MATCHES_GUIDANCE }
+          : {}),
         guidance:
-          matches.length > 0 ? TOOLS_SEARCH_MATCHES_GUIDANCE : TOOLS_SEARCH_NO_MATCH_GUIDANCE,
+          matches.length > 0
+            ? TOOLS_SEARCH_MATCHES_GUIDANCE
+            : docs.length > 0
+              // ⛔ NOT the no-match copy. That copy tells the model to fall back
+              // on "your own knowledge", which for a private product is the
+              // confidently-wrong answer this whole feature exists to prevent —
+              // and here it would be saying so while holding the documentation
+              // that answers the question.
+              ? TOOLS_SEARCH_DOCS_ONLY_GUIDANCE
+              : TOOLS_SEARCH_NO_MATCH_GUIDANCE,
       },
     };
   };

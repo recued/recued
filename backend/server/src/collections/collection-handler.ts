@@ -23,6 +23,7 @@ import type {
   CollectionPlatform,
   CollectionRecord,
   CollectionSearchMatch,
+  CollectionSearchGroup,
   CollectionSearchQuery,
   CollectionSourceFreshness,
   HandlerSlice,
@@ -288,6 +289,93 @@ export const handleCollectionSearch = async (
     matches: collection.search(search),
     source_freshness: collectionSourceFreshnessOf(collection.health, (deps.now ?? Date.now)()),
   };
+};
+
+// ────────────────────────────────────────────────────────────────
+// collection.searchAll — the owner's own universal search
+// ────────────────────────────────────────────────────────────────
+
+/** Per-group default and ceiling. Deliberately small: a universal search is a
+ *  FINDING surface, not a reading one — the owner picks a group and drills in.
+ *  A large per-group page also means every group pays the body-hydration budget
+ *  in `table.search`, and ten groups of fifty would blow it on the first store. */
+const SEARCH_ALL_DEFAULT_PER_GROUP = 5;
+const SEARCH_ALL_MAX_PER_GROUP = 25;
+
+/** 🔑 THE NON-AI PATH TO THE OWNER'S OWN WAREHOUSE. Until this existed, the only
+ *  way to search across mail / calendar / files / webhooks was to ask the AI —
+ *  an odd shape for a product whose thesis is that the AI is OPTIONAL and the
+ *  owner is in control.
+ *
+ *  ⛔ NO GLOBAL RANKING. See `CollectionSearchGroup`: BM25 is per-index, so
+ *  cross-store ranks are not comparable and interleaving them fabricates an
+ *  order. Groups are ordered by HIT COUNT then slug — deterministic, and it
+ *  answers the question a searcher actually has ("where is my stuff") without
+ *  claiming a relevance comparison the substrate cannot make.
+ *
+ *  ⚠ EVERY RETRIEVAL FIX ON THE CHAT PATH IS INHERITED HERE FOR FREE, because
+ *  this fans out over the SAME `collection.search`: body hydration, near-empty
+ *  broadening, thread gap-fill, the recency floor, `partial_match` labelling.
+ *  Those were justified by model failures and matter MORE to a person — someone
+ *  who searches "Kestrel invoice", gets one row and concludes "that is all there
+ *  is" has drawn the same wrong conclusion with no second turn to correct it.
+ *
+ *  ⚠ A blank query returns `{groups: []}` rather than erroring — this fires on
+ *  keystrokes, and the mirror picker learned the same lesson. */
+export const handleCollectionSearchAll = async (
+  deps: CollectionHandlerDeps,
+  args: { query?: unknown; per_group?: unknown; platforms?: unknown },
+): Promise<{ groups: CollectionSearchGroup[] }> => {
+  if (typeof args.query !== 'string') {
+    throw new RpcError('bad_request', 'query must be a string', 400);
+  }
+  const query = args.query.trim();
+  if (query === '') return { groups: [] };
+
+  let perGroup = SEARCH_ALL_DEFAULT_PER_GROUP;
+  if (args.per_group !== undefined) {
+    if (typeof args.per_group !== 'number' || args.per_group <= 0) {
+      throw new RpcError('bad_request', 'per_group must be a positive number', 400);
+    }
+    perGroup = Math.max(1, Math.min(Math.floor(args.per_group), SEARCH_ALL_MAX_PER_GROUP));
+  }
+  // Optional narrowing to named platforms. An unknown name is a caller error
+  // rather than a silent empty — a typo'd filter that returns nothing looks
+  // exactly like "you have no mail about this".
+  let platforms: ReadonlySet<CollectionPlatform> | undefined;
+  if (args.platforms !== undefined) {
+    if (!Array.isArray(args.platforms)) {
+      throw new RpcError('bad_request', 'platforms must be an array', 400);
+    }
+    platforms = new Set(args.platforms.map((p) => requirePlatform(p)));
+  }
+
+  const now = (deps.now ?? Date.now)();
+  const groups: CollectionSearchGroup[] = [];
+  for (const c of deps.registry.list()) {
+    if (platforms !== undefined && !platforms.has(c.platform)) continue;
+    let matches: CollectionSearchMatch[];
+    try {
+      matches = c.search({ platform: c.platform, slug: c.slug, query, limit: perGroup });
+    } catch {
+      // ⚠ ONE STORE MUST NOT SINK THE SEARCH. A malformed FTS expression or a
+      // store mid-migration throws; the other collections still have answers,
+      // and a universal search that returns nothing because one shelf is on
+      // fire is worse than one that returns the rest.
+      continue;
+    }
+    if (matches.length === 0) continue;
+    groups.push({
+      platform: c.platform,
+      slug: c.slug,
+      matches,
+      more: matches.length >= perGroup,
+      source_freshness: collectionSourceFreshnessOf(c.health, now),
+    });
+  }
+  // Hit count first, then slug — deterministic, and NOT a relevance claim.
+  groups.sort((a, b) => (b.matches.length - a.matches.length) || a.slug.localeCompare(b.slug));
+  return { groups };
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -811,6 +899,7 @@ export const handleCollectionDeleteRecord = async (
 export type CollectionMethods =
   | 'collection.list'
   | 'collection.search'
+  | 'collection.searchAll'
   // D-174 #22 — mirror drill-down name→entity_id search. Lives in this
   // slice because it fans out over the collection registry; named in the
   // `data.*` read vocabulary it shares with `data.timeline`.
@@ -913,6 +1002,7 @@ export const makeCollectionHandlers = (
     methods: [
       'collection.list',
       'collection.search',
+      'collection.searchAll',
       'data.mirror.search',
       'collection.get',
       'collection.runRetention',
@@ -956,6 +1046,8 @@ export const makeCollectionHandlers = (
         handleCollectionList(deps, args as Parameters<typeof handleCollectionList>[1]),
       'collection.search': async (args) =>
         handleCollectionSearch(deps, args as Parameters<typeof handleCollectionSearch>[1]),
+      'collection.searchAll': async (args) =>
+        handleCollectionSearchAll(deps, args as Parameters<typeof handleCollectionSearchAll>[1]),
       'data.mirror.search': async (args) =>
         handleMirrorSearch(deps, args as Parameters<typeof handleMirrorSearch>[1]),
       'collection.get': async (args) =>

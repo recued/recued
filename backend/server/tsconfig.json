@@ -10,7 +10,12 @@
     // is types-only, no runtime effect.
     "lib": ["ES2022", "DOM"]
   },
-  "include": ["src"],
+  "include": ["src",
+    // The docs corpus ships as DATA, not a `.ts` module — see
+    // `chat-doc-index.generated.json`. It has to be in the project for the
+    // typed import to resolve and for `tsc` to copy it to `dist`.
+    "src/**/*.json"
+  ],
   "references": [
     { "path": "../../packages/approvals" },
     { "path": "../../packages/cache" },

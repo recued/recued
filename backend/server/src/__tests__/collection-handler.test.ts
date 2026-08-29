@@ -400,6 +400,11 @@ describe('makeCollectionHandlers', () => {
       'collection.resync',
       'collection.runRetention',
       'collection.search',
+      // 2026-08-28 — universal search: one query fanned across every registered
+      // collection, GROUPED and never globally ranked (BM25 is per-index, so
+      // cross-store ranks are not comparable). The owner's non-AI path to their
+      // own warehouse — until this, searching across it meant asking the AI.
+      'collection.searchAll',
       'collection.service.clear_crash',
       'collection.service.delete',
       'collection.service.enroll',

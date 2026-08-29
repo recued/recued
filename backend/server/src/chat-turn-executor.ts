@@ -123,6 +123,45 @@ const CHAT_CHANNEL_DEFAULT_TIER: ModelTier = 'fast';
  * Subjects, snippets, bodies, and hot fields stay out of the plaintext
  * provenance column; the Data detail resolves display content after the
  * owner's normal collection-read gate. */
+/** Stable identity for one tool call: name + arguments with object keys sorted,
+ *  so `{a,b}` and `{b,a}` are the SAME call. Used only to notice a model
+ *  re-emitting a call that has already been refused — never for dispatch. */
+const toolCallIdentity = (tool: string, args: unknown): string => {
+  const canonical = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(canonical);
+    if (v !== null && typeof v === 'object') {
+      return Object.fromEntries(
+        Object.entries(v as Record<string, unknown>)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([k, val]) => [k, canonical(val)]),
+      );
+    }
+    return v;
+  };
+  return `${tool}\u0000${JSON.stringify(canonical(args))}`;
+};
+
+/** ⛔⛔ A REFUSAL THE MODEL CANNOT ACT ON COSTS A FULL ROUND EACH TIME IT IS
+ *  IGNORED. Measured: a turn whose user message said "14 October 2026" had the
+ *  model normalise it to `2026-10-14` and pass it to a tool; the argument-
+ *  grounding gate refused it as "not in anything you have been given" and told it
+ *  to "run the step that returns it first" — advice with no step to run, because
+ *  the value came from the USER. The model re-emitted the byte-identical call on
+ *  every round: 15 requests, zero dispatches, the turn dead at its timeout and the
+ *  NEXT turn truncated to an empty answer.
+ *
+ *  ⚠ `CHAT_MAIN_TURN_TOOL_LOOP_CAP` does bound the loop, so this is not unbounded
+ *  — but ten rounds of a call that cannot succeed is enough to spend the whole
+ *  turn budget, and the cap cannot tell a productive round from a repeated one.
+ *  This bound is SEMANTIC: the same call, refused once, will be refused again for
+ *  the same reason, so there is nothing to learn by sending it.
+ *
+ *  🔑 SCOPE, deliberately narrow: only an IDENTICAL `(tool, args)` pair is
+ *  short-circuited. Change any argument and the call is evaluated fresh — the
+ *  guard must never turn a model that is genuinely correcting itself into one
+ *  that is blocked. */
+const REPEAT_REFUSAL_LIMIT = 1;
+
 export const CHAT_RECORD_PROVENANCE_LIMIT = 8;
 
 const RECORD_SEARCH_PLATFORMS = {
@@ -921,7 +960,250 @@ interface ChatMainTurnPromptPacket {
    *  the egress's data-field scan list does not include it. Omitted from
    *  the wire shape when absent (every non-retry call). */
   readonly output_feedback?: string;
+  /** EXPERIMENT, MEASURED AND NEGATIVE (env-gated, `RECUED_CARRY_REASONING=1`,
+   *  OFF BY DEFAULT) — the PREVIOUS turn's own `reasoning` text, carried into
+   *  this packet.
+   *
+   *  ⛔⛔ DO NOT TURN THIS ON WITHOUT NEW EVIDENCE. Three tasks built
+   *  specifically to make cross-turn continuity matter all came back at
+   *  ceiling; see the 2026-08-28 optimization-log entry for the numbers. It is
+   *  kept, dark, because the idea is a reasonable one that WILL be had again
+   *  (Anthropic's extended thinking makes replaying thinking blocks mandatory
+   *  for tool-use continuations), and re-running the measurement against this
+   *  flag costs an afternoon where rebuilding the harness costs a week.
+   *
+   *  ⛔⛔ THE NAME IS THE CONTRACT. It is `unverified` because it is model-authored
+   *  text that nothing checked: it may contain a hallucination, a stale
+   *  assumption, or a number the model transposed. Re-injecting it under a
+   *  friendlier name ("established facts", "prior findings") is what turns a
+   *  guess into an assumption the model then DEFENDS instead of re-examining.
+   *
+   *  ⚠ WHY IT MIGHT EARN ITS KEEP DESPITE THAT: what re-derivation cannot
+   *  regenerate is INTENT. "This result looks incomplete, I should fetch
+   *  downstream", "these values changed over time, re-verify after computing" —
+   *  those are self-directed corrections about the SEARCH, not facts about the
+   *  world, and the raw tool results carry no trace of them. Facts survive in
+   *  `prior_tool_calls`; intent does not survive anywhere.
+   *
+   *  ⚠ Serialized BEFORE `prior_tool_calls` on purpose — the turn's freshest
+   *  evidence stays LAST (D-137 Trio #B), and unverified working must not sit
+   *  closer to the generation point than the results it is reasoning about.
+   *
+   *  Carries ONE turn only, never an accumulation: measured at ~1220 tokens
+   *  against a 9563-token packet, +5.4% on a full live run, flat per turn
+   *  rather than cumulative.
+   *
+   *  🔑 WHAT THE MEASUREMENT FOUND, so it is not re-derived from scratch:
+   *   · bench 276 live A/B on this flag — 4/12 off vs 6/11 on, p = 0.41. The
+   *     direction is favourable and the size is unresolvable: detecting
+   *     44% → 55% at 80% power needs ~323 runs PER ARM.
+   *   · a purpose-built cross-turn task (two suppliers, a separate multi-step
+   *     derivation each) — 12/12 both arms.
+   *   · a purpose-built SUPERSESSION task (turn 1 computes a notice date from a
+   *     30-day figure; turn 2 reveals an addendum extending it to 90) — the
+   *     correction was caught 14/14 in BOTH arms.
+   *
+   *  ⛔ AND THE LAUNDERING RISK DID NOT MATERIALISE, which was the main argument
+   *  AGAINST carrying working: 0/14 defended the superseded value, and the
+   *  treatment reasoning never referenced its own carried text — it cited the
+   *  tool result and re-derived. This model treats evidence as authoritative
+   *  over its own prior conclusion.
+   *
+   *  ⇒ **The evidence regenerates the working.** `prior_tool_calls` already
+   *  carries full results including bodies, so re-derivation is cheap and
+   *  reliable and the carried text adds nothing. If results ever start being
+   *  PRUNED under context pressure, that reasoning expires and this is worth
+   *  re-measuring. */
+  readonly prior_working_unverified?: string;
+  /** EXPERIMENT (env-gated, `RECUED_VERIFY_PASS=1`, OFF by default) — the
+   *  model's OWN draft answer, handed back for one re-examination pass before
+   *  it is shown to the user.
+   *
+   *  🔑 THE HYPOTHESIS IT TESTS, and why it is NOT the carry-reasoning flag
+   *  again: on bench 276 the runs that took a SECOND retrieval round answered
+   *  correctly 5/7 against 5/17 for the runs that took one — and BOTH groups had
+   *  retrieved all seven messages (7.0/7 each), so the second round supplied NO
+   *  new evidence. What separated them was one extra PASS over material both
+   *  already held. `prior_working_unverified` carries planning from a turn that
+   *  had not yet seen the evidence; this carries a conclusion drawn FROM the
+   *  complete evidence, which is the case the correlation actually points at.
+   *
+   *  ✅ MEASURED — bench 276, n=28, PAIRED (same run, draft vs final): it fixed
+   *  **7 of the 12 wrong drafts and broke 0** of the 16 correct ones. McNemar
+   *  p = 0.0078.
+   *
+   *  ⛔⛔ THE FIRST WRITE-UP OF THIS SAID "44% -> 82%" AND THAT WAS WRONG — a
+   *  cross-arm comparison of final-vs-baseline when the two groups' DRAFT rates
+   *  already differed (pass arms 29/47 = 62%, flag-off baseline 16/36 = 44%,
+   *  Fisher p = 0.13, i.e. variance). Crediting the pass with that gap inflated
+   *  it. ⇒ **When an intervention runs INSIDE a run, compare the run to itself;
+   *  a cross-arm rate silently absorbs every difference between the groups.**
+   *  ⛔ AND IT IS MONOTONE, which matters more than the rate: of the drafts it
+   *  changed, **7 were wrong-to-corrected and 0 were right-to-broken** (one-
+   *  sided binomial p = 0.0078). A review step that can damage a good answer is
+   *  a different and worse trade; this one did not, across 28 runs.
+   *  🔑 The mechanism is CONFIRMED rather than inferred: it fired 28/28 and
+   *  changed the answer in half of them — unlike `prior_working_unverified`,
+   *  which the model referenced 0/12 times.
+   *
+   *  ⛔⛔ AND IT IS THE STEER DOING THE WORK, NOT THE PASS — so this text is
+   *  OVERFIT to bench 276 and must not be read as a general result. Two control
+   *  arms, same extra pass, same packet, wording only varying:
+   *   · `neutral` ("this is your own draft; produce the final answer") fixed
+   *     **0 of 2** wrong drafts and made ZERO edits in 9 runs. Inert.
+   *   · `mechanical` (advisory DERIVED from the data — see `scatterAdvisory`)
+   *     fixed **1 of 4**, broke 0. Right direction, far too few to call.
+   *  The shipped text names the exact failure this task exhibits, which is what
+   *  an author does when they already know the answer. A general version has to
+   *  come from the data, and `mechanical` is the honest attempt at one.
+   *
+   *  ⚠ STILL OFF BY DEFAULT, and the reason is COST, not doubt: **+62% tokens
+   *  per run** (55,588 vs 34,236) and roughly one extra model call. That is
+   *  worth paying on a derivation and pure waste on "what meetings are today",
+   *  and there is no signal yet for telling those apart. Shipping it on is a
+   *  product call about that trade, not a further measurement question. */
+  readonly draft_for_review?: string;
 }
+
+/** EXPERIMENT (`RECUED_CARRY_REASONING=1`) — pull the previous turn's own
+ *  `reasoning` out of its AIOutput so the next packet can carry it.
+ *
+ *  ⛔ `reasoning` IS NOT ON THE `AIOutput` TYPE, and that is deliberate rather
+ *  than an oversight: it is a GENERATION-ORDER device (see `RECUED_CORE_TEXT`),
+ *  not a contract field, and `coerceAIOutput` passes it through untouched while
+ *  `validateAIOutput` ignores it. Reading it here through a cast keeps it out of
+ *  the typed surface — promoting it to `AIOutput` would invite consumers, and
+ *  the ONLY sanctioned consumer of this text is this experiment.
+ *
+ *  Bounded here, at the read: a runaway reasoning field must not be able to
+ *  push the turn's actual evidence out of the context budget. */
+const CARRIED_WORKING_MAX_CHARS = 6000;
+const carriedWorkingFrom = (output: AIOutput | undefined): string | undefined => {
+  if (process.env.RECUED_CARRY_REASONING !== '1') return undefined;
+  const raw = (output as unknown as { reasoning?: unknown } | undefined)?.reasoning;
+  if (typeof raw !== 'string') return undefined;
+  const text = raw.trim();
+  if (text.length === 0) return undefined;
+  return text.length > CARRIED_WORKING_MAX_CHARS
+    ? `${text.slice(0, CARRIED_WORKING_MAX_CHARS)}…[truncated]`
+    : text;
+};
+
+/** MECHANICAL SCATTER SIGNAL — where the QUERY'S OWN TERMS landed among the
+ *  records that came back, computed with no knowledge of the question or answer.
+ *
+ *  🔑 THE SIGNAL IS THE RECORDS *BETWEEN* THE MATCHES. A keyword search returns
+ *  the records that NAME the topic; the ones that sit between them in the same
+ *  thread are replies that carry the substance without repeating the vocabulary.
+ *  On bench 276 `kestrel` matched records {0,1,3,6} and the un-matched 2, 4 and 5
+ *  are the buyer's own messages — "54 is above our budget", "split 250 now and
+ *  150 in Q3", "that rate holds only against the full 400". Every one is load-
+ *  bearing for the answer and none of them names the search term.
+ *
+ *  ⛔⛔ SCOPE IS WHAT WAS RETRIEVED, NOT WHAT MATCHED, and this cost two wrong
+ *  formalisations to learn. Anchoring the span on term matches structurally
+ *  CANNOT see a supersession: a correction rephrases, so it carries none of the
+ *  original vocabulary — the same reason the recency floor exists. Measured, a
+ *  term-scoped span reported "no mutation" on a task built entirely around one.
+ *
+ *  ✅ THE TRIGGER GENERALISES — fired 10/10 on bench 276 and 8/8 on bench 278, a
+ *  supersession task it was never tuned against, while staying silent on two
+ *  trivial lookups in offline validation.
+ *
+ *  ⛔⛔ AND THE ADVISORY IS INERT — 0 edits in 10 runs on 276, the task it was
+ *  built from. Knowing WHEN to look harder turns out to be far easier than
+ *  knowing WHAT to say. Measured gradient across four advisories, same pass,
+ *  same packet, only the wording varying:
+ *    names nothing ("produce the final answer")            -> 0 edits
+ *    names WHERE   (this signal: "records between matches") -> 0 edits
+ *    names WHAT    ("values 6, 3, 50, 54 appear")           -> 1 fix of 4
+ *    names the RELATIONSHIP ("which value each rate applies
+ *      to" — authored from a KNOWN failure)                 -> 7 fixes of 12
+ *  ⇒ **The more precisely an advisory names the relationship at risk, the more
+ *  it works and the more it is overfit.** A mechanical detector solves the
+ *  trigger and does not touch the advice. The only non-zero result from anything
+ *  that did not already know the answer is the VALUE signal, and one fix in four
+ *  is not a result. */
+interface ScatterSignals {
+  readonly records: number;
+  /** Widest run of retrieved records lying BETWEEN two matches of one term. */
+  readonly between: number;
+  /** Positions of the records no query term named — the connective tissue. */
+  readonly unnamed: readonly number[];
+}
+
+/** Below this the "between" records are adjacent replies, not a chain worth
+ *  warning about. Two separates both hard cases from both trivial ones in the
+ *  validation set; it is a floor chosen from four points and should move if the
+ *  set grows. */
+const SCATTER_BETWEEN_FLOOR = 2;
+
+/** The three experiment modes. `'1'` = the authored review text (names the
+ *  failure it expects, and is therefore overfit); `'neutral'` = the same extra
+ *  pass with the steer removed (measured INERT — 0 edits in 9 runs);
+ *  `'mechanical'` = trigger and advisory derived from the data, pass SKIPPED
+ *  when no signal fires. */
+const VERIFY_PASS_MODES: ReadonlySet<string> = new Set(['1', 'neutral', 'mechanical']);
+
+const scatterSignalsFrom = (
+  prior: ReadonlyArray<ChatPriorToolCall>,
+): ScatterSignals => {
+  const byId = new Map<string, { body: string; at: number }>();
+  const terms = new Set<string>();
+  for (const call of prior) {
+    const q = (call as { args?: { query?: unknown } }).args?.query;
+    if (typeof q === 'string') {
+      for (const w of q.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []) terms.add(w);
+    }
+    const matches = (call as { result?: { matches?: unknown } }).result?.matches;
+    if (!Array.isArray(matches)) continue;
+    for (const m of matches as Array<Record<string, unknown>>) {
+      const id = typeof m.record_id === 'string' ? m.record_id : undefined;
+      if (id === undefined || byId.has(id)) continue;
+      const hot = (m.hot_fields ?? {}) as Record<string, unknown>;
+      byId.set(id, {
+        body: `${typeof hot.subject === 'string' ? hot.subject : ''} ${
+          typeof m.body === 'string' ? m.body : ''}`.toLowerCase(),
+        at: typeof m.received_at === 'number' ? m.received_at : 0,
+      });
+    }
+  }
+  // Chronological, because "between" is a position in the conversation — the
+  // relevance order search returns them in carries no adjacency meaning.
+  const recs = [...byId.values()].sort((a, b) => a.at - b.at);
+  let between = 0;
+  const named = new Set<number>();
+  for (const t of terms) {
+    const hits = recs.map((r, i) => (r.body.includes(t) ? i : -1)).filter((i) => i >= 0);
+    hits.forEach((i) => named.add(i));
+    if (hits.length > 1) {
+      between = Math.max(between, hits[hits.length - 1] - hits[0] - 1);
+    }
+  }
+  return {
+    records: recs.length,
+    between,
+    unnamed: recs.map((_, i) => i).filter((i) => !named.has(i)),
+  };
+};
+
+/** The advisory, composed from positions only — `undefined` when nothing fired,
+ *  which SKIPS the pass entirely and is the cost control. */
+const scatterAdvisory = (sig: ScatterSignals): string | undefined => {
+  if (sig.between < SCATTER_BETWEEN_FLOOR) return undefined;
+  const tissue = sig.unnamed.length > 0
+    ? ` ${sig.unnamed.length} of them match none of the search terms at all, so they `
+      + 'will not look relevant while being part of the same exchange.'
+    : '';
+  // ⚠ Names WHAT WAS SEEN, never what is true. "Records lie between your
+  // matches" is an observation; "the 6% applies to the 50" is an answer, and a
+  // substrate that supplies answers is back to guessing.
+  return `Your search terms matched records scattered across this set, with up to `
+    + `${sig.between} records lying BETWEEN two matches of the same term.${tissue} `
+    + 'Before finalising, check the records between your matches: in a thread they '
+    + 'are usually replies that carry conditions, revisions or counter-offers '
+    + 'without repeating the words you searched for.';
+};
 
 /** D-164 prompt-cache restructure (Round 1) — the chat main-turn prompt body
  *  split into a byte-stable CACHEABLE PREFIX + the complete body.
@@ -1060,8 +1342,12 @@ export const composeChatMainTurnPromptParts = (
       : {}),
     ...(packet.index_context ? { index_context: packet.index_context } : {}),
     ...(recall.length > 0 ? { recall_context: recall } : {}),
+    ...(packet.prior_working_unverified
+      ? { prior_working_unverified: packet.prior_working_unverified }
+      : {}),
     ...(prior.length > 0 ? { prior_tool_calls: prior } : {}),
     ...(packet.output_feedback ? { output_feedback: packet.output_feedback } : {}),
+    ...(packet.draft_for_review ? { draft_for_review: packet.draft_for_review } : {}),
   });
   // Byte-identical to the legacy merged `JSON.stringify`: head sans `}`, a
   // joining comma, then tail sans `{`.
@@ -1364,9 +1650,15 @@ export const runChatTurn = async (
    *  the tool calls that call produced. Set inside `tryMainTurn`, read by the
    *  pre-dispatch check in the tool loop. */
   let lastPacketBody = '';
+  // EXPERIMENT — the previous turn's own working, when the flag is on. Set after
+  // every successful main turn; read by the tool-loop continuation below.
+  let carriedWorking: string | undefined;
+  // EXPERIMENT — the verify pass runs at most once per turn (see the loop exit).
+  let verifyPassUsed = false;
   const tryMainTurn = async (
     prior_tool_calls?: ReadonlyArray<ChatPriorToolCall>,
     output_feedback?: string,
+    draft_for_review?: string,
   ): Promise<
     | { kind: 'ok'; output: AIOutput; usage?: TokenUsageReport }
     | {
@@ -1426,7 +1718,9 @@ export const runChatTurn = async (
         ...(fittedPriorToolCalls.length > 0
           ? { prior_tool_calls: fittedPriorToolCalls }
           : {}),
+        ...(carriedWorking ? { prior_working_unverified: carriedWorking } : {}),
         ...(output_feedback ? { output_feedback } : {}),
+        ...(draft_for_review ? { draft_for_review } : {}),
       });
     // Estimate against the role we will ACTUALLY send under — an owner who
     // re-roles the prompt to `user` must not get a budget computed for a
@@ -1644,6 +1938,12 @@ export const runChatTurn = async (
           ...(result.usage !== undefined ? { usage: result.usage } : {}),
         };
       }
+      // EXPERIMENT — stash THIS turn's working for the NEXT packet. Set on the
+      // sole clean-success path, so a turn that failed validation or exhausted
+      // its length never contributes working: carrying the reasoning of a call
+      // whose OUTPUT we rejected would be re-injecting the worst possible text.
+      // Overwrites rather than accumulates — one turn's working only.
+      carriedWorking = carriedWorkingFrom(body as AIOutput);
       return {
         kind: 'ok',
         output: body as AIOutput,
@@ -1876,6 +2176,10 @@ export const runChatTurn = async (
       const priorToolCalls: ChatPriorToolCall[] = [];
       let nextToolCalls: ReadonlyArray<ToolCall> = currentAiOutput.tool_calls;
       let roundIndex = 0;
+      // `(tool, args)` → how many times this EXACT call has been refused in this
+      // turn. Turn-scoped on purpose: a later turn may legitimately retry the
+      // same call once the conversation has supplied what the gate wanted.
+      const refusedCallCounts = new Map<string, number>();
       // The cap counts WORK, not rounds. A round that dispatched nothing but
       // `tools.search` is the lean-core catalog's own tax — it converts an
       // omitted recipe entry into a callable name and does nothing the owner
@@ -2043,9 +2347,33 @@ export const runChatTurn = async (
             // path makes it retry PROPERLY — fetch, wait, then use the real
             // value. That is also how a genuinely sequenced chain gets
             // produced, which nothing else in the loop currently requires.
+            // ⛔ ALREADY REFUSED, BYTE FOR BYTE — do not spend a round re-deciding
+            // it. The detail deliberately does NOT repeat the original advice: the
+            // model already had that and acted on it by sending the same thing
+            // again, so restating it invites a third identical call. Say that this
+            // call is closed and name the two ways forward.
+            const identity = toolCallIdentity(tc.tool, tc.args);
+            if ((refusedCallCounts.get(identity) ?? 0) > REPEAT_REFUSAL_LIMIT - 1) {
+              const completed_at = now();
+              return {
+                result: {
+                  ok: false as const,
+                  reason: 'invalid_args' as const,
+                  detail:
+                    `This exact call to \`${tc.tool}\` was already refused in this turn `
+                    + 'and was not sent again. Repeating it unchanged cannot succeed. '
+                    + 'Either call it with different arguments, or answer using what you '
+                    + 'already have and say which part you could not complete.',
+                },
+                started_at,
+                completed_at,
+              };
+            }
+
             const ungrounded = ungroundedArgumentsInCall(tc.args, lastPacketBody);
             if (ungrounded.length > 0) {
               const completed_at = now();
+              refusedCallCounts.set(identity, (refusedCallCounts.get(identity) ?? 0) + 1);
               return {
                 result: {
                   ok: false as const,
@@ -2088,6 +2416,15 @@ export const runChatTurn = async (
                 : {}),
             });
             const completed_at = now();
+            // ⚠ THE GATE IS NOT THE ONLY SOURCE OF AN UNACTIONABLE REFUSAL. A
+            // dispatcher `invalid_args` (bad shape, unknown enum, a tool that
+            // cannot serve these arguments) is equally unchanged by sending it
+            // again, so it feeds the same ledger. Other failures — a timeout, an
+            // upstream outage — are NOT counted: those can genuinely succeed on a
+            // retry, and blocking them would turn a transient fault into a refusal.
+            if (result.ok === false && result.reason === 'invalid_args') {
+              refusedCallCounts.set(identity, (refusedCallCounts.get(identity) ?? 0) + 1);
+            }
             return { result, started_at, completed_at };
           },
         });
@@ -2328,6 +2665,75 @@ export const runChatTurn = async (
         });
 
         if (!moreTools) {
+          // ── VERIFY PASS (env-gated, OFF by default) ──────────────────────
+          // One extra look at the SAME evidence before the draft is shown.
+          // ⛔ ONCE PER TURN, and the guard is why: this sits at the loop's
+          // exit, so an unguarded re-invoke that also returns no tool calls
+          // would re-enter here forever.
+          // ⚠ The draft REPLACES the answer only when the pass returns a
+          // non-empty output. A verify pass that decodes empty must not be
+          // able to blank an answer the model had already produced —
+          // reviewing is allowed to improve a reply, never to lose it.
+          if (
+            VERIFY_PASS_MODES.has(process.env.RECUED_VERIFY_PASS ?? '')
+            && !verifyPassUsed
+            && currentAiOutput.response.trim().length > 0
+          ) {
+            verifyPassUsed = true;
+            // ⛔ THE INSTRUCTION RIDES IN THE VALUE, NOT IN THE SYSTEM PROMPT.
+            // The field only exists when the flag is on, so a dark experiment
+            // must not cost the default path a single token of `RECUED_CORE_TEXT`
+            // — and an unexplained key in the packet is a shape the model has
+            // to guess at, which is its own failure mode.
+            // ⛔⛔ TWO INSTRUCTIONS, BECAUSE "DOES REVIEWING HELP" AND "DOES THIS
+            // WORDING HELP" ARE DIFFERENT QUESTIONS. The targeted text names the
+            // exact failure bench 276 exhibits (which stated value a percentage
+            // applies to), so a gain from it alone would be OVERFITTING to one
+            // task and would not generalise. `RECUED_VERIFY_PASS=neutral` runs
+            // the same extra pass with no such steer — if the gain survives
+            // there, it belongs to the PASS and not to the wording.
+            // MECHANICAL mode: the trigger AND the advisory come from the data.
+            // When no signal fires the pass is SKIPPED — that is the cost
+            // control the authored variants do not have.
+            const mechanical = process.env.RECUED_VERIFY_PASS === 'mechanical';
+            const advisory = mechanical
+              ? scatterAdvisory(scatterSignalsFrom(priorToolCalls))
+              : undefined;
+            if (mechanical && advisory === undefined) {
+              terminationReason = 'completed';
+              break;
+            }
+            const neutral = process.env.RECUED_VERIFY_PASS === 'neutral';
+            const reviewInstruction = mechanical
+              ? 'This is YOUR OWN draft answer for this turn, not a tool result '
+                + `and not the user speaking. ${advisory} If the draft holds, `
+                + 'reply with it unchanged; if any step is wrong, reply with the '
+                + `corrected answer. Draft:\n${currentAiOutput.response}`
+              : neutral
+              ? 'This is YOUR OWN draft answer for this turn, not a tool result '
+                + 'and not the user speaking. Produce the final answer for the '
+                + `user. Draft:\n${currentAiOutput.response}`
+              : 'This is YOUR OWN draft answer for this turn, not a tool result '
+                + 'and not the user speaking. Before it is shown, re-derive every '
+                + 'figure in it from "prior_tool_calls" — check which stated value '
+                + 'each percentage or rate actually applies to. If the draft is '
+                + 'right, reply with it unchanged; if any step is wrong, reply '
+                + `with the corrected answer. Draft:\n${currentAiOutput.response}`;
+            const reviewed = await tryMainTurn(
+              priorToolCalls.slice(),
+              undefined,
+              reviewInstruction,
+            );
+            totalUsage = aggregateTokenUsageReports(totalUsage, reviewed.usage);
+            if (
+              reviewed.kind === 'ok'
+              && !isEmptyChatAiOutput(reviewed.output)
+              && (reviewed.output.tool_calls?.length ?? 0) === 0
+            ) {
+              currentAiOutput = reviewed.output;
+              assistantContent = currentAiOutput.response;
+            }
+          }
           terminationReason = 'completed';
           break;
         }

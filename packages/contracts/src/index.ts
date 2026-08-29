@@ -2969,6 +2969,7 @@ export type {
   CollectionListQuery,
   CollectionSearchQuery,
   CollectionSearchMatch,
+  CollectionSearchGroup,
   CollectionState,
   CollectionHealth,
   // Phase 7 (D-110) — capability model + instance rows.
@@ -6359,3 +6360,5 @@ export type {
   ActivityMetricId,
   AutopilotClass,
 } from './metric-registry.js';
+export * from './date-compute.js';
+export * from './searchable-score.js';

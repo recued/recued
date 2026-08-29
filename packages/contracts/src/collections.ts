@@ -123,6 +123,29 @@ export interface CollectionSearchQuery {
  *  FTS5's BM25 — smaller is better (FTS5 convention: negative numbers
  *  sort higher). `snippet` is a short highlighted excerpt around the
  *  first match. */
+/** One collection's slice of a universal search — `collection.searchAll`.
+ *
+ *  ⛔⛔ GROUPED, NOT GLOBALLY RANKED, AND THAT IS THE WHOLE DESIGN. FTS5 `rank`
+ *  is BM25 computed per index: a mail rank of -3.8 and a file rank of -2.1 are
+ *  not comparable, because they are scored against different corpora with
+ *  different term statistics. Interleaving them into one list produces an order
+ *  that LOOKS authoritative and means nothing — the same class of lie as a
+ *  snippet standing in for a record. Grouping sidesteps a comparison that has no
+ *  right answer rather than papering over it with a fabricated unified score.
+ *
+ *  ⚠ `more` is approximate BY DESIGN, and inherits the reasoning from
+ *  `more_matches` on the chat path: a store that returned exactly its quota
+ *  probably has more, and a false *"there may be more"* is cheap where a false
+ *  *"that is all"* is the bug. */
+export interface CollectionSearchGroup {
+  platform: CollectionPlatform;
+  slug: string;
+  matches: CollectionSearchMatch[];
+  /** True when this group filled its per-group quota — see the caveat above. */
+  more: boolean;
+  source_freshness: CollectionSourceFreshness;
+}
+
 /** ⛔⛔ `snippet` WAS RETIRED FROM THIS SHAPE (2026-08-28). It was an FTS5
  *  `snippet()` — N tokens centred on the query terms — and every consumer that
  *  mattered read it as THE RECORD. A row could be retrieved perfectly and still

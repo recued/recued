@@ -243,6 +243,102 @@ const groundsAsPhone = (value: string, packet: string): boolean => {
   return false;
 };
 
+/** ⛔⛔ A DATE THE MODEL NORMALISED OUT OF THE OWNER'S PROSE IS NOT A
+ *  FABRICATION — the THIRD instance of the `EMBEDDED_ADDRESS` / `groundsAsPhone`
+ *  class, and the one that cost a whole turn.
+ *
+ *  🔑🔑 WHAT THIS IS, STATED SO NOBODY BUILDS ON IT: a BEST-EFFORT, OPTIONAL,
+ *  DETERMINISTIC RESCUE, and explicitly NOT a date capability. Owners write dates
+ *  every which way — "next Tuesday", "14/10", "the 14th", "Oct" — and no parser
+ *  here will ever cover that, so **nothing may depend on this firing.** Its whole
+ *  contract is asymmetric: when it recognises a date on BOTH sides it turns a
+ *  wrong refusal into a dispatch; when it does not, the value falls through to
+ *  the literal comparison and is refused exactly as before. **A miss is a missed
+ *  rescue, never a false admission** — which is why the unrecognised forms below
+ *  are left unrecognised rather than guessed at.
+ *
+ *  ⛔ AND THE ANSWER IS NOT A DATE TOOL. The turn that exposed this had the model
+ *  reaching for a `compute.date` primitive to do the arithmetic; that primitive is
+ *  built and deliberately wired to nothing (`packages/contracts/src/date-compute.ts`
+ *  carries the negative measurement). Handing the model a tool to normalise dates
+ *  puts a round-trip, a schema and a failure mode in front of something the gate
+ *  can settle locally in microseconds with no model involvement at all. This is
+ *  tier-0 detection at the boundary, not a capability the model calls.
+ *
+ *  Measured: the owner's message said **"14 October 2026"**. The model sent
+ *  `2026-10-14`, this gate compared literal strings, saw a value absent from the
+ *  packet, and refused with *"run the step that returns it first"* — advice with
+ *  no step to run, because the value came from the USER. The model re-emitted the
+ *  identical call every round until the turn died at its timeout, and the next
+ *  turn was truncated. (The repeat-refusal guard in `chat-turn-executor.ts` now
+ *  bounds the cost of that; this closes the hole.)
+ *
+ *  🔑 EVERY LITERAL-COMPARISON GATE HAS THIS HOLE FOR EVERY TYPE WITH MORE THAN
+ *  ONE WRITTEN FORM. Email was fixed in 2026-08 (`EMBEDDED_ADDRESS`), phone after
+ *  it (`groundsAsPhone`), and each fix was written for its own type only. Dates
+ *  are the third. Ask what other types the owner writes one way and the model
+ *  sends another before assuming this is the last.
+ *
+ *  ⛔ THE GUARANTEE IS PRESERVED, NOT RELAXED. This is not fuzzy matching: a value
+ *  grounds only if it is a COMPLETE calendar date AND some complete date in the
+ *  packet resolves to the SAME DAY. The model still cannot introduce a date the
+ *  owner never wrote — it can only write one the owner did write in another form.
+ *
+ *  ⛔ AMBIGUOUS NUMERIC FORMS ARE DELIBERATELY NOT RECOGNISED, on either side.
+ *  `01/02/2026` is 1 February or 2 January depending on locale, and accepting both
+ *  readings would let a model ground EITHER — inventing a day the owner never
+ *  wrote, which is exactly what this gate exists to stop. Two-digit years are out
+ *  for the same reason (ambiguous century). Only ISO and month-NAME forms count,
+ *  and both are unambiguous by construction. ⚠ A packet that writes dates ONLY in
+ *  `dd/mm/yyyy` therefore grounds nothing here and falls through to the literal
+ *  test — a missed rescue, never a false admission. */
+const MONTH_BY_NAME: Readonly<Record<string, number>> = {
+  jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3, apr: 4, april: 4,
+  may: 5, jun: 6, june: 6, jul: 7, july: 7, aug: 8, august: 8,
+  sep: 9, sept: 9, september: 9, oct: 10, october: 10,
+  nov: 11, november: 11, dec: 12, december: 12,
+};
+const MONTH_ALTERNATION = Object.keys(MONTH_BY_NAME).sort((a, b) => b.length - a.length).join('|');
+/** `2026-10-14`. Anchored per-token by the callers below. */
+const ISO_DATE_RE = /\b(\d{4})-(\d{1,2})-(\d{1,2})\b/g;
+/** `14 october 2026`, `14th oct 2026`, `14 oct, 2026`. */
+const DMY_NAMED_RE = new RegExp(
+  `\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?(${MONTH_ALTERNATION})\\.?,?\\s+(\\d{4})\\b`, 'g');
+/** `october 14, 2026`, `oct 14 2026`. */
+const MDY_NAMED_RE = new RegExp(
+  `\\b(${MONTH_ALTERNATION})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(\\d{4})\\b`, 'g');
+
+/** A real calendar day, or null. Rejects month 13 and 31 February outright — a
+ *  value that is not a day cannot be grounded AS one. */
+const canonicalDay = (y: number, m: number, d: number): string | null => {
+  if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return null;
+  return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+};
+
+/** Every complete calendar date written anywhere in `text`, canonicalised. */
+const daysIn = (text: string): ReadonlySet<string> => {
+  const out = new Set<string>();
+  const add = (v: string | null): void => { if (v !== null) out.add(v); };
+  for (const m of text.matchAll(ISO_DATE_RE)) add(canonicalDay(+m[1]!, +m[2]!, +m[3]!));
+  for (const m of text.matchAll(DMY_NAMED_RE)) add(canonicalDay(+m[3]!, MONTH_BY_NAME[m[2]!]!, +m[1]!));
+  for (const m of text.matchAll(MDY_NAMED_RE)) add(canonicalDay(+m[3]!, MONTH_BY_NAME[m[1]!]!, +m[2]!));
+  return out;
+};
+
+const groundsAsDate = (value: string, packet: string): boolean => {
+  // ⛔ THE VALUE MUST BE A DATE AND NOTHING ELSE. Scanning it for an embedded date
+  // would ground `deal_2026-10-14` — an opaque id that merely contains one.
+  const own = daysIn(value.trim());
+  if (own.size !== 1) return false;
+  const [day] = [...own];
+  // A whole-value match: the trimmed value must BE the date, not contain it.
+  const bare = value.trim().replace(/[.,]$/, '');
+  if (daysIn(bare).size !== 1 || bare.length > 32) return false;
+  return daysIn(packet).has(day!);
+};
+
 const isGrounded = (value: string, lowerPacket: string): boolean => {
   const lower = value.toLowerCase();
   if (lowerPacket.includes(lower)) return true;
@@ -250,6 +346,8 @@ const isGrounded = (value: string, lowerPacket: string): boolean => {
   // `groundsAsPhone`. Checked before the address arm because a phone-shaped
   // value carries no `@` and would fail it anyway.
   if (groundsAsPhone(lower, lowerPacket)) return true;
+  // A date the owner wrote in prose and the model sent as ISO (or the reverse).
+  if (groundsAsDate(lower, lowerPacket)) return true;
   const embedded = lower.match(EMBEDDED_ADDRESS);
   return embedded !== null
     && embedded.length > 0

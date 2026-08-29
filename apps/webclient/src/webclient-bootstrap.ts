@@ -366,11 +366,14 @@ import {
   type RecipesToolCatalogCaller,
 } from './recipes/bootstrap-recipes-route.js';
 import { fileRefOptionsFromMirrorResults } from './recipes/file-ref-picker.js';
+import type { PackInstalledListCaller, RosterPack } from './discover/pack-discovery.js';
 import { mountDiscoverySurface } from './discover/discovery-surface.js';
 import { mountRecipeDiscovery } from './discover/recipe-discovery.js';
 import {
   fetchPackCatalog,
+  fetchPackSearch,
   fetchRecipeCatalog,
+  type CatalogPackRow,
 } from './discover/catalog-client.js';
 import {
   bootstrapDataRoute,
@@ -391,6 +394,7 @@ import {
   type DataMirrorSearchCaller,
   type DataFileReadCaller,
   type DataCollectionGetCaller,
+  type DataCollectionSearchAllCaller,
   type DataCollectionListCaller,
   type DataCollectionListInstancesCaller,
   type DataAnnotationListCaller,
@@ -6686,6 +6690,36 @@ export const bootstrapWebclient = async (
     rpcConn.call('collection.list', args);
   const dataCollectionGetCaller: DataCollectionGetCaller = (args) =>
     rpcConn.call('collection.get', args);
+  // Universal search — one query across every collection, grouped server-side.
+  const dataCollectionSearchAllCaller: DataCollectionSearchAllCaller = (args) =>
+    rpcConn.call('collection.searchAll', args);
+  /** Installed packs, for the capability half of Data → Find. */
+  const dataPackInstalledListCaller: PackInstalledListCaller = async () => {
+    const result = await rpcConn.call('packs.list', undefined);
+    return { packs: result.packs as unknown as ReadonlyArray<RosterPack> };
+  };
+  /** ⛔ THE ONLY CLOUD CALL Data → Find CAN MAKE, and the route fires it ONLY on
+   *  an explicit click after the owner's own results came back empty. See the
+   *  caller's contract there — typing must never become a stream of cloud
+   *  queries.
+   *
+   *  ⚠ The endpoint answers `{ rows }`, NOT `{ packs }` — verified live against
+   *  recued.com/catalog/search. Mapping it here rather than widening the route's
+   *  contract keeps the wire shape at the edge that owns it. */
+  const dataMarketplacePackSearchCaller = async (query: string) => {
+    const result = await fetchPackSearch({
+      search: query, filters: {}, sort: 'popular', page: 1, perPage: 6,
+    });
+    if (result.status !== 'ok') throw new Error(result.message);
+    return {
+      packs: result.page.rows.map((r: CatalogPackRow) => ({
+        slug: r.slug,
+        name: r.name,
+        ...(r.description !== undefined ? { description: r.description } : {}),
+        publisher_id: r.publisher_id,
+      })),
+    };
+  };
   // D-198 Phase 2 — the "Provenance" cluster reads: annotation / link whole-
   // collection browse (empty filter = whole table).
   const dataAnnotationListCaller: DataAnnotationListCaller = () =>
@@ -9681,6 +9715,9 @@ export const bootstrapWebclient = async (
         collectionListInstancesCaller: dataCollectionListInstancesCaller,
         collectionListCaller: dataCollectionListCaller,
         collectionGetCaller: dataCollectionGetCaller,
+        collectionSearchAllCaller: dataCollectionSearchAllCaller,
+        packInstalledListCaller: dataPackInstalledListCaller,
+        marketplacePackSearchCaller: dataMarketplacePackSearchCaller,
         annotationListCaller: dataAnnotationListCaller,
         linkListCaller: dataLinkListCaller,
         sharedListCaller: dataSharedListCaller,

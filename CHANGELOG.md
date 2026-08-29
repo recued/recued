@@ -7,6 +7,67 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.8.29 — 2026-08-29
+
+If you installed Recued from a released binary, updates have never actually
+completed. The update downloaded, verified, and swapped correctly — and then
+the server, on booting the new version, could not recognise it as the one it
+had just staged. It counted each healthy start as a failed one and rolled you
+back to the previous version on the third restart. Every fix we have shipped
+since the update system landed could be applied and could not stick. This is
+the first release that can deliver itself.
+
+Two other things that had never worked are fixed with it: `recued start`, and —
+on Windows — start-at-login, which is built on `recued start`.
+
+### Fixed
+
+- **Updates now stick.** The server read its own version through a build-time
+  constant that was never substituted, so it reported itself as `unknown`,
+  never matched the release it had staged, and treated every successful boot as
+  a failed one. If you applied 26.8.28 and later found yourself back on
+  26.8.27, that is why. Nothing was at risk — the fallback was the previous
+  working version — but the fix could not reach you.
+- **`recued start` works.** In a released binary it launched the server the way
+  a development checkout does, by handing a source file to a toolchain that
+  only exists in one; on a machine that installed the binary there is nothing
+  there to run it. It reported success and `recued status` then said `stopped`,
+  truthfully.
+- **Start-at-login on Windows.** It is built on `recued start`, so it had never
+  worked either. macOS and Linux were unaffected — they run the server directly.
+- **Opening a result from search did nothing.** No navigation and no error.
+
+### Added
+
+- **Search your own data without asking the AI.** One query across mail,
+  calendar, files and webhooks, grouped by where each result came from rather
+  than blended into one ranked list. It also finds installed packs and the
+  capabilities inside them. Recued's premise is that the AI is optional, and
+  until now searching your own warehouse was the one thing that required it.
+- **Ask how Recued itself works.** The assistant can now answer setup and
+  concept questions from the documentation the server ships, instead of
+  guessing. Recued is not public, so a model has no prior knowledge of it — and
+  an invented menu path reads exactly like a real one.
+- **A simpler first run.** On a new install the server now starts under your
+  system's own supervisor immediately, and setup is:
+
+  ```
+  recued pair      # prints a pairing code and a link
+  ```
+
+  Previously you ran a server in a terminal, paired, and were left to work out
+  how to hand it over to the thing that starts it at login. If you install with
+  start-at-login turned off (`RECUED_AUTOSTART=0`), nothing changes for you —
+  there is no supervisor to hand off to, so running it yourself is still the
+  whole story.
+
+### Improved
+
+- **Dates you write in your own words are no longer rejected.** Writing
+  "14 October 2026" and having the assistant use `2026-10-14` was treated as an
+  invented value, with advice to run a step that did not exist because the date
+  came from you.
+
 ## 26.8.28 — 2026-08-28
 
 `recued start` — the command the installer prints as the way to run in the

@@ -724,6 +724,82 @@ const partialMatches = (
  *  ⚠ Bounded per thread and per page: a long thread would otherwise flood the
  *  result with everything anyone said. Newest-first, because a reply that
  *  supersedes comes after the message it answers. */
+/** GAP-FILL — the records lying BETWEEN two matches of the same thread.
+ *
+ *  🔑 BOUNDED BY THE MATCHES, WHICH IS WHAT MAKES IT SAFE. `threadNeighbours`
+ *  below takes the NEWEST rows of a thread a seed belongs to — a speculative
+ *  widening, which is why it stays behind an opt-in. This is a different claim:
+ *  a record with a match BEFORE it and a match AFTER it, in the same thread, is
+ *  the middle of an exchange the query already matched at both ends. It cannot
+ *  wander outside a span the caller has already reached.
+ *
+ *  ⛔⛔ WHY IT IS WORTH FETCHING AT ALL: THE MIDDLE IS WHERE THE ANSWER LIVES.
+ *  On bench 276 the term `kestrel` matches records {0,1,3,6} and the unmatched
+ *  2, 4 and 5 are the buyer's own replies — "54 is above our budget", "split 250
+ *  now and 150 in Q3", "that rate holds only against the full 400 commitment".
+ *  Every one is load-bearing for the answer and none of them repeats the search
+ *  vocabulary, because a reply does not restate the subject it is replying to.
+ *  A keyword index structurally cannot see them; their POSITION is the only
+ *  thing that identifies them.
+ *
+ *  ⚠ Threads only. A record with no `thread_id` has no "between" — ordering by
+ *  arrival across unrelated records would make adjacency meaningless, which is
+ *  exactly the speculative widening this avoids.
+ *
+ *  ⚠⚠ MEASURED AS A NO-OP ON EVERY TASK CURRENTLY AVAILABLE, and shipped anyway
+ *  on the strength of the argument rather than a number. Bench 276 and 278 both
+ *  reach 7/7 records with ZERO gap rows added, because near-empty broadening
+ *  already retrieved everything before this runs. That is coverage OVERLAP, not
+ *  redundancy: broadening fires only on a near-empty page (<= 2 matches), so the
+ *  case this exists for — a HEALTHY page with five matches and holes in the
+ *  middle — is one neither task exercises and broadening never sees. ⇒ Its
+ *  correctness is tested (`thread-gap-fill.test.ts`, including the bound and the
+ *  single-match degenerate); its VALUE is argued, not demonstrated. A task with
+ *  a long thread and a term that recurs across it would settle that. */
+const threadGapFill = (
+  db: Database.Database,
+  tableName: string,
+  seedKeys: ReadonlySet<string>,
+  budget: number,
+): Array<{ key: string; rank: number }> => {
+  if (seedKeys.size === 0 || budget <= 0) return [];
+  try {
+    const placeholders = [...seedKeys].map(() => '?').join(',');
+    const seeds = db.prepare(
+      `SELECT record_id, received_at, json_extract(hot_fields, '$.thread_id') AS tid `
+      + `FROM ${tableName} WHERE record_id IN (${placeholders})`,
+    ).all(...seedKeys) as Array<{ record_id: string; received_at: number; tid: string | null }>;
+    // Per thread, the window the caller already matched at both ends.
+    const spans = new Map<string, { lo: number; hi: number }>();
+    for (const s of seeds) {
+      if (typeof s.tid !== 'string' || s.tid.length === 0) continue;
+      const cur = spans.get(s.tid);
+      if (cur === undefined) spans.set(s.tid, { lo: s.received_at, hi: s.received_at });
+      else { cur.lo = Math.min(cur.lo, s.received_at); cur.hi = Math.max(cur.hi, s.received_at); }
+    }
+    const out: Array<{ key: string; rank: number }> = [];
+    for (const [tid, span] of spans) {
+      // A single match in a thread spans nothing — there is no BETWEEN.
+      if (span.hi <= span.lo || out.length >= budget) continue;
+      const rows = db.prepare(`
+        SELECT record_id AS key
+        FROM ${tableName}
+        WHERE json_extract(hot_fields, '$.thread_id') = ?
+          AND received_at > ? AND received_at < ?
+        ORDER BY received_at ASC
+        LIMIT ?
+      `).all(tid, span.lo, span.hi, budget) as Array<{ key: string }>;
+      for (const r of rows) {
+        if (out.length >= budget) break;
+        if (!seedKeys.has(r.key)) out.push({ key: r.key, rank: 0 });
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+};
+
 const threadNeighbours = (
   db: Database.Database,
   tableName: string,
@@ -1113,6 +1189,11 @@ export const createCollectionTable = (
 /** Per-record body cap. Sized to carry a normal business email WHOLE — the case
  *  where a preview and a record differ is exactly the case that failed — while
  *  keeping one long row from taking the whole budget. */
+/** How many gap records one search may pull in. Bounded because a long thread
+ *  matched at both ends could otherwise return its entire middle; the body
+ *  budget then bounds the token cost of whatever arrives. */
+const GAP_FILL_CAP = 12;
+
 const SEARCH_BODY_MAX_CHARS = 2000;
 /** Across the whole result set. `limit` can reach MAX_LIST_LIMIT, and a wide
  *  search returning full bodies for every hit would blow the turn's packet.
@@ -1241,6 +1322,22 @@ const search = (query: CollectionSearchQuery): CollectionSearchMatch[] => {
       // Thread neighbours LAST: they are the only rows here that matched
       // nothing, so they are the weakest claim on the page — but for a
       // conversational answer they are the only claim there is.
+      // ── GAP-FILL, DEFAULT ON ────────────────────────────────────────────
+      // ⛔ NOT the same claim as the neighbour lane below, and that distinction
+      // is the whole reason this is unconditional while that stays opt-in. A
+      // record BETWEEN two matches of one thread is the middle of an exchange
+      // the query already reached at both ends; the neighbour lane takes the
+      // NEWEST rows of a thread a seed merely belongs to. One is bounded by the
+      // caller's own matches, the other is a guess about relevance.
+      //
+      // ⚠ It answers a failure a keyword index CANNOT see: a reply does not
+      // restate the subject it replies to, so the connective tissue of a thread
+      // carries the conditions and counter-offers while matching none of the
+      // search terms. Position is the only thing that identifies it.
+      const gapSeeds = new Set(matches.map((m) => m.key));
+      for (const r of threadGapFill(db, tableName, gapSeeds, GAP_FILL_CAP)) {
+        if (!gapSeeds.has(r.key)) { threadKeys.add(r.key); matches.push(r); }
+      }
       // ⚠ Still gated on the standing opt-in. A near-empty page broadens by
       // TERMS, which is a defensible widening of the question the caller asked;
       // pulling in rows that matched NO term is a different and larger claim,

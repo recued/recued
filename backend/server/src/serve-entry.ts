@@ -123,13 +123,40 @@ if (getFlag(inputArgs, 'require-enrolled')) {
     return;
   }
 
+  // ⛔ D-252 — AN UNENROLLED REALM IS SERVED, NOT REFUSED. This used to return
+  // here, and that refusal was the whole reason first run took two phases: the
+  // unit could not be the thing you pair to, so the owner had to run a server in
+  // a terminal, pair, and then hand off to a supervisor with nothing telling them
+  // how. The natural guess was `recued start` — a DIFFERENT supervision
+  // mechanism that contends with the unit for the same realm.
+  //
+  // 🔑 WHAT MADE THE REFUSAL SAFE TO DROP, and it is not "we decided the risk is
+  // fine". The stated danger was an unconfigured server "listening on 0.0.0.0
+  // holding a live pairing code that prints to a log the owner never reads.
+  // Nothing legitimate can use that server, because the one credential needed to
+  // adopt it went to /dev/null." Both halves are already answered:
+  //
+  //   · ADOPTION IS CODE-GATED AT THE SERVER, not in the client form. `server.ts`
+  //     refuses `!realmEnrolled && !code` with 400 "code is required for the
+  //     first pair on this server", evaluated BEFORE any recovery-key side
+  //     effect. Reachable and unenrolled is not adoptable.
+  //   · `recued pair` IS THAT CREDENTIAL PATH. It needs no running server, mints
+  //     against the db, and REFRESHES the single live code — so the copy in a
+  //     boot log is superseded the moment the owner runs it, and expires anyway.
+  //
+  // ⛔⛔ THE OTHER HALF OF THIS FLAG STAYS. `--require-enrolled` also separates an
+  // unenrolled realm from an UNOPENABLE one, and that difference decides whether
+  // the supervisor retries — see the measurement above. Only the enrolment
+  // refusal is gone; the `probeError` branch is untouched.
+  //
+  // ⚠ ONLY UNITS PASS THIS FLAG, so a hand-run `recued serve` is unaffected
+  // either way, and `RECUED_AUTOSTART=0` keeps the old flow by never arming a
+  // unit at all.
   if (!enrolled) {
-    console.log('[recued] not set up yet — this realm has no recovery key enrolled.');
-    console.log('[recued] Autostart is armed and will take over once you have paired.');
-    console.log('[recued] Finish setup now by running the server yourself:');
-    console.log('[recued]     recued serve');
-    console.log('[recued] then pair a client with the code it prints.');
-    return;
+    console.log('[recued] this realm is not set up yet, and the server is running so you can');
+    console.log('[recued] finish it without a terminal session:');
+    console.log('[recued]     recued pair          # prints a pairing code + the pair link');
+    console.log('[recued] then pair a client. Nothing can adopt this server without that code.');
   }
 }
 
