@@ -11,7 +11,9 @@ import { METRIC_ABSENT, METRIC_UNBOUNDED, metricValue, type MetricReadEntry } fr
 import {
   buildPublishPayload,
   renderPublishDialog,
+  renderPublishStart,
   renderStopPublishing,
+  renderSubmitNow,
   toWireDecimal,
 } from '../stats/publish-dialog.js';
 
@@ -155,5 +157,196 @@ describe('D-250 — escaping', () => {
     }));
     expect(html).not.toContain('<script>x');
     expect(html).not.toContain('<img onerror');
+  });
+});
+
+
+// ────────────────────────────────────────────────────────────────
+// § D7 — the entry point INTO the dialog
+// ────────────────────────────────────────────────────────────────
+
+describe('D-250 § D7 — the publish entry point', () => {
+  /** ⛔⛔ THE DIALOG WAS BUILT AND NOTHING OPENED IT. `renderPublications` returns ''
+   *  with no publications, publishing was the only way to get one, and no surface asked
+   *  for a tag — so every case in this file was exercising markup no owner could reach.
+   *  These cases cover the door. */
+  it('⛔ AN UNMEASURED METRIC OFFERS A REASON, NOT A CONTROL', () => {
+    // Publishing `absent` would put a blank row on a public board, and § D2's reading
+    // kinds exist precisely so "not measured" never renders as a number.
+    const html = renderPublishStart({ metric: metric({ reading: METRIC_ABSENT }) });
+    expect(html).not.toContain('data-recued-publish-preview-action');
+    expect(html).toContain('data-recued-publish-unmeasured');
+    expect(html).toContain('nothing to publish');
+  });
+
+  it('an UNBOUNDED reading is unpublishable for the same reason', () => {
+    const html = renderPublishStart({ metric: metric({ reading: METRIC_UNBOUNDED }) });
+    expect(html).not.toContain('data-recued-publish-preview-action');
+    expect(html).toContain('data-recued-publish-unmeasured');
+  });
+
+  it('⛔ A NON-PUBLISHABLE METRIC RENDERS NOTHING AT ALL — not even a reason', () => {
+    // § D2: a count publishes VOLUME, not skill. The rpc refuses it, so an entry point
+    // here would be a control that can only fail.
+    expect(renderPublishStart({ metric: metric({ publishable: false }) })).toBe('');
+  });
+
+  it('⛔⛔ A HOSTILE TAG IS ESCAPED INTO THE CONFIRM BUTTON\'S ATTRIBUTES', () => {
+    // The tag is owner-typed free text and lands in `data-tag="…"`. Unescaped, a quote
+    // closes the attribute and the rest is markup.
+    const html = renderPublishStart({
+      metric: metric(),
+      pending: { tag: '" onclick="x', season_id: '1' },
+    });
+    expect(html).not.toContain('" onclick="x"');
+    expect(html).toContain('&quot; onclick=&quot;x');
+  });
+
+  it('the confirm button carries the SAME tag and season the preview was opened with', () => {
+    // ⚠ The route reads the payload back off these attributes, so a drift between what
+    // the dialog SHOWS and what the button CARRIES publishes something unseen.
+    const html = renderPublishStart({
+      metric: metric(), pending: { tag: 'ops', season_id: '2026h2' },
+    });
+    expect(html).toContain('data-tag="ops"');
+    expect(html).toContain('data-season="2026h2"');
+    expect(html).toContain('https://recued.com/explore/ops');
+  });
+});
+
+describe('D-250 § B3.3 — the send-now control', () => {
+  it('⛔ NO PUBLICATIONS, NO CONTROL — there is no batch to send', () => {
+    expect(renderSubmitNow({ publications: 0 })).toBe('');
+  });
+
+  it('one publication is enough', () => {
+    expect(renderSubmitNow({ publications: 1 })).toContain('data-recued-submit-action');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// § B3.3 — the send-now control REPORTS what it did
+// ────────────────────────────────────────────────────────────────
+
+describe('D-250 § B3.3 — the submit outcome is rendered, not swallowed', () => {
+  /** ⛔⛔ THE OUTCOME USED TO BE DISCARDED. The route ran
+   *  `void submit().then(refresh, refresh)` and the screen was identical before and after
+   *  — and with no board existing anywhere yet, `sent: false` was the guaranteed result,
+   *  so the button was certain to do nothing visible, forever, with no explanation. */
+  const REASONS = [
+    'no_identity', 'no_handle', 'no_publications', 'nothing_measured', 'send_failed',
+  ] as const;
+
+  it('⛔ NO OUTCOME YET RENDERS NO STATUS — silence before the first press is correct', () => {
+    const html = renderSubmitNow({ publications: 1 });
+    expect(html).toContain('data-recued-submit-action');
+    expect(html).not.toContain('data-recued-submit-status');
+  });
+
+  const sent = (over: Partial<{
+    ranked: number; withdrawn: number; rejected: number; rejectedReasons: readonly string[];
+  }> = {}) => ({
+    sent: true as const, ranked: 0, withdrawn: 0, rejected: 0, rejectedReasons: [], ...over,
+  });
+
+  it('a successful send counts the boards that were UPDATED', () => {
+    const html = renderSubmitNow({ publications: 1, outcome: sent({ ranked: 2 }) });
+    expect(html).toContain('data-recued-submit-status="sent"');
+    expect(html).toContain('2 boards updated');
+  });
+
+  it('one board is not pluralised', () => {
+    expect(renderSubmitNow({ publications: 1, outcome: sent({ ranked: 1 }) }))
+      .toContain('1 board updated');
+  });
+
+  /** ⛔⛔ THE DEFECT THIS SECTION NOW COVERS. The status line read "N boards answered" off
+   *  `results.length`, and a rejection IS an answer — so a batch whose every entry came
+   *  back `unknown_board` rendered as an unqualified success. Harmless only while no board
+   *  exists to be rejected against; once they do, `unknown_board` is the ORDINARY failure
+   *  for a local fork or a retired season, so the reassuring version was the common case. */
+  it('⛔⛔ AN ALL-REJECTED BATCH DOES NOT READ AS SUCCESS', () => {
+    const html = renderSubmitNow({
+      publications: 1,
+      outcome: sent({ rejected: 2, rejectedReasons: ['unknown_board'] }),
+    });
+    expect(html).toContain('data-recued-submit-status="rejected"');
+    expect(html).toContain('Nothing was accepted');
+    expect(html).toContain('unknown_board');
+    // ⛔ AND IT MUST NOT LEAD WITH THE GOOD NEWS.
+    expect(html).not.toContain('Sent.');
+  });
+
+  it('a mixed batch reports BOTH halves, and still counts as sent', () => {
+    const html = renderSubmitNow({
+      publications: 1,
+      outcome: sent({ ranked: 1, rejected: 1, rejectedReasons: ['unknown_board'] }),
+    });
+    expect(html).toContain('data-recued-submit-status="sent"');
+    expect(html).toContain('1 board updated');
+    expect(html).toContain('1 entry rejected');
+  });
+
+  it('⛔ A CONFIRMED WITHDRAWAL IS REPORTED — it is what ends § C4’s retry', () => {
+    const html = renderSubmitNow({ publications: 1, outcome: sent({ withdrawn: 1 }) });
+    expect(html).toContain('1 withdrawal confirmed');
+    expect(html).toContain('data-recued-submit-status="sent"');
+  });
+
+  it('repeated rejection reasons are said once', () => {
+    const html = renderSubmitNow({
+      publications: 1,
+      outcome: sent({ rejected: 3, rejectedReasons: ['unknown_board'] }),
+    });
+    expect(html.match(/unknown_board/g) ?? []).toHaveLength(1);
+    expect(html).toContain('3 entries rejected');
+  });
+
+  it('⛔ A 200 WITH NO RESULTS DOES NOT CLAIM A LANDING', () => {
+    const html = renderSubmitNow({ publications: 1, outcome: sent() });
+    expect(html).toContain('reported nothing back');
+  });
+
+  it('⛔⛔ EVERY SKIP REASON RENDERS ITS OWN SENTENCE — none falls through to silence', () => {
+    // A missing map entry would render an empty <p>, which is the defect this replaces
+    // wearing a different shape.
+    const texts = new Set<string>();
+    for (const reason of REASONS) {
+      const html = renderSubmitNow({ publications: 1, outcome: { sent: false, reason } });
+      expect(html, reason).toContain(`data-recued-submit-status="${reason}"`);
+      const body = /<p class="publish-submit-status"[^>]*>([^<]+)<\/p>/.exec(html)?.[1] ?? '';
+      expect(body.trim().length, reason).toBeGreaterThan(20);
+      texts.add(body);
+    }
+    // ⛔ AND THEY ARE FIVE DIFFERENT SENTENCES. One shared string would satisfy every
+    // assertion above while telling the owner nothing.
+    expect(texts.size).toBe(REASONS.length);
+  });
+
+  it('⛔ ONLY send_failed READS AS A FAULT — the rest are a working server, not an error', () => {
+    // § D4: publishing is never automatic, so "you have not opted in" phrased as a
+    // failure would be a lie in the owner's own dashboard.
+    for (const reason of ['no_identity', 'no_handle', 'no_publications', 'nothing_measured'] as const) {
+      const html = renderSubmitNow({ publications: 1, outcome: { sent: false, reason } });
+      expect(html.toLowerCase(), reason).not.toMatch(/\berror\b|\bfailed\b/);
+    }
+    // ⛔ AND IT MUST NOT PROMISE A RETRY EITHER. There is no scheduled send, so "the next
+    // send will try again" would be the same false claim as the note this section removed.
+    const failed = renderSubmitNow({ publications: 1, outcome: { sent: false, reason: 'send_failed' } });
+    expect(failed).toContain('press send again');
+    expect(failed.toLowerCase()).not.toMatch(/next send|will retry|tries again/);
+  });
+
+  it('⛔⛔ NO CLAIM OF A SCHEDULE THAT DOES NOT EXIST', () => {
+    // The note used to read "Your server also sends these on its own schedule." Nothing
+    // calls the submit path but this button — there is no submit housekeeping task — so
+    // that sentence was a promise the product does not keep. Removed rather than reworded:
+    // § B3.4 makes a scheduled submission ride a delegation rule the owner has to mint,
+    // and describing it before it exists is the same defect in gentler words.
+    for (const outcome of [undefined, sent({ ranked: 1 })]) {
+      const html = renderSubmitNow({ publications: 1, ...(outcome ? { outcome } : {}) });
+      expect(html.toLowerCase()).not.toContain('own schedule');
+      expect(html.toLowerCase()).not.toContain('automatically');
+    }
   });
 });

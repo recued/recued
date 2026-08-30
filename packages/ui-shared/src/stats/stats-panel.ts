@@ -25,14 +25,33 @@
  *  an owner gesture, not from a button sitting next to a number.
  */
 
-import type { MetricReadOutput } from '@recued/contracts';
+import type { MetricReadOutput, MetricSubmitSkipReason } from '@recued/contracts';
 
-import { renderPublishDialog, renderStopPublishing } from './publish-dialog.js';
+import {
+  renderPublishDialog,
+  renderPublishStart,
+  renderStopPublishing,
+  renderSubmitNow,
+} from './publish-dialog.js';
 
 import { e } from '../template.js';
 
 export interface StatsPanelProps {
   readonly data: MetricReadOutput;
+  /** § D7 — the metric whose publish preview is open, and the tag typed for it. Held by
+   *  the caller so this render stays pure. */
+  readonly pendingPublish?: { readonly metric_id: string; readonly tag: string; readonly season_id: string };
+  /** § B3.3 — what the owner's last press of "send now" actually did. Held by the caller
+   *  so this render stays pure; absent until they have pressed it. */
+  readonly submitOutcome?:
+    | {
+        readonly sent: true;
+        readonly ranked: number;
+        readonly withdrawn: number;
+        readonly rejected: number;
+        readonly rejectedReasons: readonly string[];
+      }
+    | { readonly sent: false; readonly reason: MetricSubmitSkipReason };
   /** For the "as of" phrasing. Injected so the render stays pure. */
   readonly now: number;
 }
@@ -65,11 +84,55 @@ const formatReading = (
   return `${Math.round(reading.value * 100) / 100}`;
 };
 
-const ARTIFACT_LABELS: Readonly<Record<string, string>> = {
-  burst: 'Best burst',
-  'hands_off.current': 'Hands-off streak',
-  'hands_off.longest': 'Longest hands-off streak',
+/** ⛔⛔ AN ARTIFACT THIS DOES NOT NAME IS NOT RENDERED AT ALL.
+ *
+ *  The artifact store is also the producers' BOOKKEEPING: a fold cursor, a per-recipe
+ *  run accumulator, an unattended-run counter. `?? a.key` published every one of them as
+ *  an owner-facing "Record" under its internal key — a live server showed
+ *  `20693 · hands_off.last_day · set just now`, which is an epoch DAY INDEX rendered as
+ *  a score. There is no formatting fix for that row; it should not exist.
+ *
+ *  ⚠ SO THE FALLBACK IS SILENCE, and silence hides a genuinely new record just as
+ *  quietly as it hides a cursor. That is why `d-250-artifact-keys.test.ts` in the SERVER
+ *  suite — the only place that can see both the producers and this map — fails when a
+ *  key is written that is neither named here nor declared internal there. Adding a
+ *  producer key without deciding which it is turns red, not invisible. */
+interface ArtifactCopy {
+  readonly label: string;
+  /** ⚠ PLURAL FORM. `2 days`, `1 day` — a bare number in a table of mixed quantities
+   *  reads as whatever the row above it was. */
+  readonly unit: string;
+  readonly meaning: string;
+}
+
+const ARTIFACT_COPY: Readonly<Record<string, ArtifactCopy>> = {
+  burst: {
+    label: 'Best burst',
+    unit: 'actions',
+    meaning: 'The most actions Recued took in one unbroken stretch.',
+  },
+  'hands_off.longest': {
+    label: 'Longest hands-off streak',
+    unit: 'days',
+    meaning: 'The longest run of working days that never needed a decision from you.',
+  },
+  'hands_off.current': {
+    label: 'Hands-off streak',
+    unit: 'days',
+    meaning: 'Days in a row Recued ran and never needed a decision from you.',
+  },
+  'unattended_days.current': {
+    label: 'Days fully on autopilot',
+    unit: 'days',
+    meaning: 'Days in a row where everything that ran, ran without you starting it.',
+  },
 };
+
+export const artifactLabel = (key: string): string | undefined => ARTIFACT_COPY[key]?.label;
+
+/** `2 days` / `1 day` — the unit is singular at exactly one. */
+const withUnit = (value: number, unit: string): string =>
+  `${value} ${value === 1 ? unit.replace(/s$/, '') : unit}`;
 
 /** § D4 / § D7 — what this server publishes, and how to stop.
  *
@@ -111,24 +174,68 @@ export const renderStatsPanel = (props: StatsPanelProps): string => {
       </section>`;
   }
 
+  // ⛔ NO VERSION ON THE ROW. `metric_version` stays on the wire and is still rendered
+  // where it decides something — the publish dialog's payload preview — because § D3.1a
+  // puts it on a BOARD row, whose audience is *"strangers reading a leaderboard"*
+  // comparing servers that upgraded at different rates. Your own page has one server and
+  // one answer to "which arithmetic am I reading", so here it was decoration.
+  // ⛔ EVERY ROW SAYS WHAT IT MEANS, IN A SENTENCE. `62.5% · Autopilot · higher is
+  // better · v1` is four fragments that assume the reader already knows the schema —
+  // and on an absent reading it explained how to rank a number that was not there.
+  // ⚠ The direction is appended to the MEANING rather than standing alone, and only
+  // when there is a value to rank.
   const cards = data.snapshot.metrics
-    .map((m) => `
-      <li class="stats-card" data-metric="${e(m.metric_id)}">
-        <span class="stats-card__value">${e(formatReading(m.reading, m.shape))}</span>
-        <span class="stats-card__label">${e(m.label)}</span>
-        <span class="stats-card__meta">${m.direction === 'higher' ? 'higher is better' : 'lower is better'} · v${m.metric_version}</span>
-      </li>`)
+    .map((m) => {
+      const ranked = m.reading.kind === 'absent'
+        ? ''
+        : ` ${m.direction === 'higher' ? 'Higher is better.' : 'Lower is better.'}`;
+      return `
+      <tr data-metric="${e(m.metric_id)}">
+        <th scope="row" class="stats-table__name">${e(m.label)}</th>
+        <td class="stats-table__value">${e(formatReading(m.reading, m.shape))}</td>
+        <td class="stats-table__meaning">${e((m.description ?? '') + ranked).trim()}</td>
+      </tr>`;
+    })
     .join('');
 
-  const records = data.artifacts
-    .filter((a) => a.kind !== 'once')
-    .map((a) => `
-      <li class="stats-record" data-artifact="${e(a.key)}">
-        <span class="stats-record__value">${e(String(Math.round(a.value)))}</span>
-        <span class="stats-record__label">${e(ARTIFACT_LABELS[a.key] ?? a.key)}</span>
-        <span class="stats-record__meta">set ${e(ago(a.updated_at, now))}</span>
-      </li>`)
+  // ⛔ RECORDS AND STREAKS ARE NOT ONE LIST. "These only ever go up — a quiet day never
+  // takes one away" is TRUE of a record and FALSE of `hands_off.current`, which resets
+  // to zero the moment a decision is answered. One heading over both made the page
+  // promise something about a number that does not keep it.
+  const named = data.artifacts.filter((a) => a.kind !== 'once' && ARTIFACT_COPY[a.key] !== undefined);
+  const artifactRow = (a: typeof named[number], trailer: string): string => {
+    const copy = ARTIFACT_COPY[a.key]!;
+    return `
+      <tr data-artifact="${e(a.key)}">
+        <th scope="row" class="stats-table__name">${e(copy.label)}</th>
+        <td class="stats-table__value">${e(withUnit(Math.round(a.value), copy.unit))}</td>
+        <td class="stats-table__meaning">${e(copy.meaning + trailer)}</td>
+      </tr>`;
+  };
+  const records = named
+    .filter((a) => a.kind === 'record')
+    .map((a) => artifactRow(a, ` Set ${ago(a.updated_at, now)}.`))
     .join('');
+  // ⚠ NO TIMESTAMP ON A STREAK. It is rewritten every cycle, so "set just now" says
+  // only that the server is awake — which the reader already knows, and which read as
+  // if the streak had just been achieved.
+  const streaks = named
+    .filter((a) => a.kind === 'counter')
+    .map((a) => artifactRow(a, ''))
+    .join('');
+
+  /** One table shape for every section, so a row reads the same way wherever it is. */
+  const table = (nowHeading: string, rows: string): string => `
+      <div class="stats-table-wrap">
+        <table class="stats-table">
+          <thead><tr>
+            <th scope="col">Measure</th>
+            <th scope="col">${e(nowHeading)}</th>
+            <th scope="col">What it means</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
 
   const milestones = data.milestones
     .map((m) => {
@@ -136,15 +243,22 @@ export const renderStatsPanel = (props: StatsPanelProps): string => {
       // one tells the owner "you have not done this" when the truth is "we are not
       // looking" — which is why `detectable` is on the wire at all.
       const state = m.earned_at !== null ? 'earned' : m.detectable ? 'pending' : 'untracked';
-      const note =
-        state === 'earned' ? `earned ${e(ago(m.earned_at!, now))}`
-          : state === 'pending' ? e(m.description)
-          : 'not tracked yet';
+      const status =
+        state === 'earned' ? `Earned ${ago(m.earned_at!, now)}`
+          : state === 'pending' ? 'Not yet'
+          : 'Not tracked yet';
+      // ⚠ THE DESCRIPTION SHOWS IN ALL THREE STATES. v1 replaced it with the status for
+      // an earned one, so the page could tell you that you had done something without
+      // ever saying what it was.
+      const meaning = state === 'untracked'
+        ? `${m.description} This build cannot detect it yet.`
+        : m.description;
       return `
-        <li class="stats-milestone stats-milestone--${state}" data-milestone="${e(m.milestone_id)}">
-          <span class="stats-milestone__label">${e(m.label)}</span>
-          <span class="stats-milestone__note">${note}</span>
-        </li>`;
+        <tr class="stats-milestone stats-milestone--${state}" data-milestone="${e(m.milestone_id)}">
+          <th scope="row" class="stats-table__name">${e(m.label)}</th>
+          <td class="stats-table__value stats-milestone__status">${e(status)}</td>
+          <td class="stats-table__meaning">${e(meaning)}</td>
+        </tr>`;
     })
     .join('');
 
@@ -162,17 +276,51 @@ export const renderStatsPanel = (props: StatsPanelProps): string => {
       <h2>Your stats</h2>
       <p class="stats-asof">Measured over the current UTC day · computed ${e(ago(data.snapshot.computed_at, now))}</p>
 
-      <ul class="stats-cards">${cards}</ul>
+      ${cards === '' ? `
+      <p class="stats-note">No metric in this snapshot is one this build still knows how
+      to display.</p>` : table('Today', cards)}
+
+      ${streaks === '' ? '' : `
+      <h3>Streaks</h3>
+      <p class="stats-note">Counted in whole days, and only days Recued actually ran —
+      a day off ends the run.</p>
+      ${table('Now', streaks)}`}
 
       ${records === '' ? '' : `
       <h3>Records</h3>
       <p class="stats-note">These only ever go up — a quiet day never takes one away.</p>
-      <ul class="stats-records">${records}</ul>`}
+      ${table('Best', records)}`}
 
       ${renderPublications(data)}
 
+      <h3>Publish a score</h3>
+      <p class="stats-note">Nothing leaves this server until you publish it, and only the
+      ratio leaves — never the figures it came from.</p>
+      ${data.snapshot.metrics
+        .filter((m) => m.publishable)
+        .map((m) => renderPublishStart({
+          metric: m,
+          ...(props.pendingPublish?.metric_id === m.metric_id
+            ? { pending: { tag: props.pendingPublish.tag, season_id: props.pendingPublish.season_id } }
+            : {}),
+        }))
+        .join('')}
+      ${renderSubmitNow({
+        publications: data.publications.length,
+        ...(props.submitOutcome !== undefined ? { outcome: props.submitOutcome } : {}),
+      })}
+
       <h3>Milestones</h3>
-      <ul class="stats-milestones">${milestones}</ul>
+      <div class="stats-table-wrap">
+        <table class="stats-table stats-milestones">
+          <thead><tr>
+            <th scope="col">Milestone</th>
+            <th scope="col">Status</th>
+            <th scope="col">What it takes</th>
+          </tr></thead>
+          <tbody>${milestones}</tbody>
+        </table>
+      </div>
 
       <details class="stats-coverage">
         <summary>Coverage and diagnostics</summary>

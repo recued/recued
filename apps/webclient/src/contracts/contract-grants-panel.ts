@@ -39,8 +39,13 @@ import {
   KERNEL_OP_REGISTRY,
   OWNER_CONTRACT_ID,
   PEER_ASK_LABEL_MAX,
+  OP_ENTITY_COLLECTION,
+  OP_ENTITY_LABEL,
+  WORK_ENTITY_KINDS,
+  type OpEntity,
   READABLE_COLLECTIONS,
   TIER1_TOOL_DESCRIPTORS,
+  TIER1_TOOL_ENTITY,
   TIER1_TOOL_NAMES,
   collectionGrantEntry,
   recipeGrantEntry,
@@ -221,6 +226,20 @@ const buildUniverse = (
 ): GrantUniverseEntry[] => {
   const entries: GrantUniverseEntry[] = [];
 
+  // ⛔⛔ ONE GROUP PER ENTITY, ACROSS BOTH REGISTRIES. Kernel ops and Tier-1 chat
+  // primitives are the same grant KIND ('op') and now share the same `entity` axis,
+  // so `core.storage.file.read` and `file.search` land under one "Files" heading. The
+  // previous split — `Kernel · storage` versus `Assistant · always-on tools` — is what
+  // let an owner revoke one file control while another kept admitting, and made
+  // "always-on" read as a policy when those rows are ordinary revocable grants.
+  //
+  // ⛔ THE SORT IS LOAD-BEARING, NOT COSMETIC. `renderKindGroup` groups by RUN-LENGTH
+  // (`if (entry.group !== currentGroup)` opens a new sub-section), so it relies on
+  // same-group entries being ADJACENT. Grouping by domain happened to satisfy that
+  // because the registry is written domain-by-domain; grouping by entity does not —
+  // `core.storage.file.*` and `file.search` come from different loops. Without this
+  // sort the panel renders "Files" twice and neither section looks wrong on its own.
+  const opEntries: GrantUniverseEntry[] = [];
   for (const k of KERNEL_OP_REGISTRY) {
     let entry_key: string;
     try {
@@ -228,33 +247,15 @@ const buildUniverse = (
     } catch {
       continue;
     }
-    entries.push({
+    opEntries.push({
       entry_key,
       kind: 'op',
       label: k.op,
-      group: ['Kernel', k.domain].join(' · '),
+      group: OP_ENTITY_LABEL[k.entity],
       risk_tier: k.risk,
       authorDefault: k.risk === 'read',
     });
   }
-
-  // ⛔⛔ D-228 slice 5 — the Tier-1 chat primitives (`primitive.<tool>`).
-  //
-  // These were MISSING from every universe: the catalog slice below is derived
-  // from installed ingredient catalogs, and a primitive is an engine handler,
-  // not an ingredient op — so `mail.search` / `contact.search` / `recipe.run`
-  // could never appear here at all. Two consequences, both now fixed:
-  //
-  //   1. DB = UI was BROKEN in one direction. `reconcileOwnerGrants` seeds a
-  //      `granted:true` row per primitive, and this panel is what the reconcile
-  //      means by "the owner's grant rows mirror the UI 1:1". Rows the UI cannot
-  //      render are rows the owner cannot revoke — a permission that exists in
-  //      the store and nowhere a human can reach it.
-  //   2. A contract could not be MINTED with them. `collection.contract.mint`
-  //      folds `scope.operation_ids` into explicit grant rows via `opGrantEntry`,
-  //      which accepts a `primitive.` id fine — the mint was never the blocker.
-  //      Nothing simply told the minter these ids existed.
-  //
   // ⚠ `authorDefault` comes from `TIER1_TOOL_DESCRIPTORS`, never from the name.
   // `memory.write` and `recipe.run` are classified `unknown` (not `write`)
   // deliberately — see the descriptor doc — so the read-vs-not test is the
@@ -262,15 +263,17 @@ const buildUniverse = (
   // from a `.write` suffix.
   for (const name of TIER1_TOOL_NAMES) {
     const descriptor = TIER1_TOOL_DESCRIPTORS[name];
-    entries.push({
+    opEntries.push({
       entry_key: primitiveGrantEntry(name),
       kind: 'op',
       label: name,
-      group: 'Assistant · always-on tools',
+      group: OP_ENTITY_LABEL[TIER1_TOOL_ENTITY[name]],
       risk_tier: descriptor.classification === 'read' ? 'read' : 'write',
       authorDefault: descriptor.classification === 'read',
     });
   }
+  opEntries.sort((a, b) => a.group.localeCompare(b.group) || a.label.localeCompare(b.label));
+  entries.push(...opEntries);
 
   // The installed-pack-catalog op slice — shared with the by-PACK view.
   entries.push(...catalogOpUniverseEntries(catalog?.ingredients ?? []));
@@ -308,7 +311,7 @@ const buildUniverse = (
       entry_key: collectionGrantEntry(collection),
       kind: 'collection',
       label: collection,
-      group: '',
+      group: collectionGroupLabel(collection),
       // D-187 slice 5 (codex HIGH) — match the BACKEND collection read-fence default:
       // `read-grant-checker.ts isCollectionReadGranted` resolves a no-row collection to
       // `isCollectionReadAdmissible(c, ALL)` = TRUE (the documented D-177 admit-all-then-
@@ -418,8 +421,41 @@ const KIND_TITLE: Record<GrantEntryKind, string> = {
  *  placed — which is the whole reason the union is closed. A kind that compiled
  *  without being grouped would render nowhere, and § 234.4's "a findable surface,
  *  or standing means forgotten" would be unmet in the one place it is now met. */
-const OPS_KINDS: readonly GrantEntryKind[] = ['op', 'peer_label'];
-const ENTITIES_KINDS: readonly GrantEntryKind[] = ['collection', 'topic'];
+/** ⛔ TEST SEAM — `buildUniverse` is the only place the entity grouping is decided,
+ *  and its one hard invariant (op-kind entries SORTED so equal groups are ADJACENT)
+ *  is invisible in the rendered DOM: a duplicated heading looks like two legitimate
+ *  sections. Exposing the builder lets that be asserted on the data instead of
+ *  inferred from markup. Not part of the mount API. */
+export const _testing = { buildUniverse };
+
+/** ⛔ A COLLECTION ROW HEADS UNDER THE SAME ENTITY AS THE OPS OVER THAT DATA. `data.file`
+ *  and `core.storage.file.read` and `file.search` are three controls over one thing; the
+ *  owner should meet them together. The reverse map is derived from
+ *  `OP_ENTITY_COLLECTION` rather than hand-listed, so a new entity/collection pairing
+ *  cannot drift into a heading of its own.
+ *
+ *  ⚠ WORK-ENTITY KINDS FAN IN. `task` / `note` / `commitment` / `project` / `booking`
+ *  are each their own `READABLE_COLLECTIONS` member but share the `work` entity, so they
+ *  all land under one heading — which is the point, not a rounding error.
+ *
+ *  ⚠ A collection with no entity behind it keeps an empty heading rather than inventing
+ *  one; that is the pre-existing render and is strictly better than a wrong group. */
+const COLLECTION_ENTITY: ReadonlyMap<string, OpEntity> = new Map([
+  ...Object.entries(OP_ENTITY_COLLECTION)
+    .map(([entity, collection]) => [collection as string, entity as OpEntity] as const),
+  ...WORK_ENTITY_KINDS.map((k) => [k as string, 'work' as OpEntity] as const),
+]);
+const collectionGroupLabel = (collection: string): string => {
+  const entity = COLLECTION_ENTITY.get(collection);
+  return entity === undefined ? '' : OP_ENTITY_LABEL[entity];
+};
+
+/** ⛔ `collection` MOVED OUT OF `ENTITIES_KINDS` INTO THE OPS ROOT — one root now
+ *  answers "what may reach my data", instead of an owner having to know that a path
+ *  fence lives in a different tab from the tools it fences. `topic` stays: an enrichment
+ *  topic is a derived FACT, not a reach. */
+const OPS_KINDS: readonly GrantEntryKind[] = ['op', 'collection', 'peer_label'];
+const ENTITIES_KINDS: readonly GrantEntryKind[] = ['topic'];
 /** D-247 — the recipe axis gets its OWN root, not a corner of Entities. It is a
  *  different question ("what may the AI reach") from a different vocabulary,
  *  and burying it under Entities is how it stays unfound. */
@@ -810,8 +846,8 @@ export const mountContractGrantsPanel = (
     heading.textContent = KIND_TITLE[kind];
     group.appendChild(heading);
 
-    if (kind === 'op') {
-      // Ops nest under their ingredient/domain group.
+    if (kind === 'op' || kind === 'collection') {
+      // Ops AND collection fences nest under their ENTITY group.
       let currentGroup: string | null = null;
       let groupBody: HTMLElement = group;
       for (const entry of entries) {

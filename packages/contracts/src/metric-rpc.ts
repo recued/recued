@@ -17,6 +17,10 @@ export interface MetricReadEntry {
   readonly metric_version: number;
   readonly reading: MetricReading;
   readonly label: string;
+  /** ⚠ OPTIONAL ON THE WIRE, deliberately: a client newer than the server it is paired
+   *  to must render the row without one rather than fabricate a meaning for a number the
+   *  old server computed. */
+  readonly description?: string;
   readonly shape: MetricShape;
   readonly direction: MetricDirection;
   /** § D2 — a count is internal. The publish surface must not offer it. */
@@ -77,3 +81,30 @@ export interface MetricReadOutput {
    *  normal state: computing is automatic, publishing never is. */
   readonly publications: readonly MetricPublicationEntry[];
 }
+
+/** Why a submission sent nothing.
+ *
+ *  ⛔⛔ `sent: false` ALONE IS A UNIFORM SIGNAL THAT NAMES NO GUILTY MEMBER. Four
+ *  unrelated states collapsed into it — a server with no signing identity, one with no
+ *  reserved handle, one publishing nothing measurable, and one whose POST was refused —
+ *  and the owner-facing surface could only ever say "nothing happened". Three of those
+ *  are the normal default and one is a fault; a person cannot act on the difference
+ *  without being told which.
+ *
+ *  ⚠ NOT AN ERROR CHANNEL. Every value except `send_failed` describes a server that is
+ *  working correctly and has simply not opted into something — § D4's whole point is
+ *  that publishing is never automatic. */
+export type MetricSubmitSkipReason =
+  /** No booted signing identity, so nothing can be signed. */
+  | 'no_identity'
+  /** An identity, but no reserved publisher handle — nothing to publish AS. */
+  | 'no_handle'
+  /** § D4 — the owner has granted no publication. The default state. */
+  | 'no_publications'
+  /** Publications exist, but no metric they name has a measured value this window.
+   *  ⛔ DISTINCT FROM `no_publications`: § B3's retention keeps yesterday's number, so
+   *  saying nothing is the honest outcome and the owner's board entry is untouched. */
+  | 'nothing_measured'
+  /** The cloud refused the batch or was unreachable. ⚠ THE ONLY FAULT IN THIS UNION —
+   *  and § C4's withdrawals keep riding the next batch, so it is also recoverable. */
+  | 'send_failed';

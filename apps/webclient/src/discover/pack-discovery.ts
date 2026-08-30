@@ -76,6 +76,11 @@ export interface RosterPack {
    *  than the server bundle (usually the marketplace version is higher). */
   installed_any_version?: boolean;
   recipe_count?: number;
+  /** D-145 PA10 — a foundation pack, auto-installed at every server boot rather
+   *  than chosen. Carried so the row can SAY so: the owner who reported this saw
+   *  four `Reception —` packs on a server they had installed nothing on, and the
+   *  roster gave them no way to tell those from packs they picked. */
+  pre_install?: boolean;
   /** The bundled manifest (bundled packs only) — its `service_kind` / `tags` /
    *  `pack_kind` project a roster-only pack into the browse corpus. */
   manifest?: {
@@ -177,8 +182,23 @@ import { packSpec } from './discover-specs.js';
 
 export { packSpec };
 
-export const packBadges = (r: CatalogPackRow): DiscoverBadge[] => {
+/** ⚠ `preInstall` IS A SLUG SET FROM THE LOCAL ROSTER, not a field on the row.
+ *  The catalog does not carry `pre_install`, and once these packs are published
+ *  they stop being pinned rows and arrive as ordinary catalog rows — so a badge
+ *  read off the projection alone would vanish exactly when it publishes. The
+ *  roster knows either way. */
+export const packBadges = (
+  r: CatalogPackRow,
+  preInstall?: ReadonlySet<string>,
+): DiscoverBadge[] => {
   const out: DiscoverBadge[] = [];
+  if (preInstall?.has(r.slug) === true) {
+    out.push({
+      label: 'Included',
+      tone: 'muted',
+      title: 'Ships with Recued and installs itself on every server boot — you did not choose it.',
+    });
+  }
   if (r.publisher_certified === true) out.push({ label: '✓ Certified', tone: 'accent' });
   if (r.service_kind !== undefined) {
     out.push({ label: SERVICE_KIND_LABEL[r.service_kind] ?? r.service_kind, tone: 'muted' });
@@ -450,6 +470,11 @@ export const mountPackDiscovery = (
    *  absent one is unpublished, so the server search will never return it and it
    *  would silently vanish from Discover. `null` map (probe not yet landed /
    *  failed) → none yet; they pop in on the probe's `onChange` refresh. */
+  /** Slugs the SERVER pre-installed. Read live off the roster so it is correct
+   *  before and after those packs reach the catalog. */
+  const preInstallSlugs = (): ReadonlySet<string> =>
+    new Set(bundledRoster.filter((p) => p.pre_install === true).map((p) => p.slug));
+
   const pinnedCandidates = (): CatalogPackRow[] => {
     const map = updates?.read();
     if (map === null || map === undefined) return [];
@@ -572,7 +597,7 @@ export const mountPackDiscovery = (
     },
     title: (r) => r.name,
     description: (r) => r.description,
-    badges: packBadges,
+    badges: (r) => packBadges(r, preInstallSlugs()),
     metaLine: packMeta,
     filterGroups: [
       { key: 'service_kind', label: 'Kind' },

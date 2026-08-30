@@ -28,6 +28,13 @@
 import { createInterface } from 'node:readline';
 import { createHash } from 'node:crypto';
 import { handleExecute, type ExecuteHandlerDeps } from './execute-handler.js';
+import {
+  canonicalOpToolsForConnections,
+  runCanonicalSearchFanout,
+} from './canonical-op-tool-catalog.js';
+import { buildCanonicalOpRecipe, CANONICAL_OP_CONNECTION_VAR } from '@recued/recipes';
+import { CANONICAL_OP_TOOL_PREFIX } from '@recued/contracts';
+import { resolveConnectionVendor } from './storage/connection-store.js';
 import { buildVersionedContractSnapshot } from './contract-snapshot-version.js';
 import {
   HELD_FOR_APPROVAL_MESSAGE,
@@ -1662,7 +1669,23 @@ const handleToolsList = async (deps: McpDeps): Promise<unknown> => {
   // a per-token checklist. What loses access is precisely a caller carrying
   // NEITHER, which on stdio means no `--token` / `RECUED_MCP_TOKEN`; the CLI
   // prints that instruction to stderr, so the refusal is recoverable.
-  const allTools = [...TOOLS, ...ingredientTools, ...registryTools, ...rawOpTools];
+  // D-255 — the canonical op tools (`recued_canonical_<alias>.<verb>`). Added to
+  // the SAME array the per-token filter below walks, so they are gated by
+  // `isCheckedListGranted` on their wire name exactly as every other tool is —
+  // the enumeration mirror of the dispatch gate stays one predicate.
+  const canonicalOpTools = canonicalOpToolsForConnections(
+    deps.connectionStore,
+    resolveConnectionVendor,
+    deps.connectionOperationProfiles,
+  ).map((d) => ({
+    name: d.wireName,
+    description: d.description,
+    inputSchema: d.inputSchema,
+  }));
+
+  const allTools = [
+    ...TOOLS, ...ingredientTools, ...registryTools, ...rawOpTools, ...canonicalOpTools,
+  ];
   return {
     tools: allTools.filter((t) => {
       // Continuation status is an authenticated protocol utility, not a new
@@ -2484,6 +2507,10 @@ const preflightMcpCustomerUsage = (
     || params.name === 'recipe.run'
     || params.name.startsWith(INGREDIENT_TOOL_PREFIX)
     || params.name.startsWith(OP_TOOL_PREFIX)
+    // D-255 — a canonical op runs a transient recipe through `handleExecute`, so
+    // it is execute-backed exactly as `recued_runRecipe` is: defer the reservation
+    // or a validation/approval/failure path consumes capacity before dispatch.
+    || params.name.startsWith(CANONICAL_OP_TOOL_PREFIX)
     || registryEntry?.tier === 2;
   return {
     ok: true,
@@ -2871,6 +2898,71 @@ const handleToolCall = async (
   // grant so the next identical call auto-admits — the hold substrate
   // (`checkpointStore` / `preflightNotifier` / `sessionGrantResolver`) rides
   // `deps` (McpDeps ⊇ ExecuteHandlerDeps); absent ⇒ the degraded not-wired ask.
+  // D-255 — a CANONICAL op (`recued_canonical_<alias>.<verb>`) runs as a TRANSIENT
+  // one-step recipe, because a canonical op-step expands to a vendor dispatch PLUS
+  // the projection that makes the result canonical. Dispatching "the resolved op"
+  // would drop the projection and hand back vendor-shaped records.
+  //
+  // ⛔ IT REUSES `recued_runRecipe`'s INLINE PATH DELIBERATELY, not a parallel
+  // spine: same `ExecuteRequest`, same execution source + contract snapshot, same
+  // `handleExecute`. R2 resolves the canonical step against the named connection
+  // INSIDE that call (`execute-handler.ts:1797`), well upstream of the gate at
+  // `:3042` — so the connection profile and the op axis both judge the RESOLVED
+  // vendor op, and nothing here needs a grant axis of its own. Gate A already
+  // denied an ungranted wire name above ("no checklist ⇒ nothing").
+  if (params.name.startsWith(CANONICAL_OP_TOOL_PREFIX)) {
+    const opId = params.name.slice(CANONICAL_OP_TOOL_PREFIX.length);
+    const dot = opId.indexOf('.');
+    if (dot <= 0) return err(`Unknown canonical operation tool: ${params.name}`);
+    const verb = opId.slice(dot + 1);
+    const connection = args.connection;
+    const named = typeof connection === 'string' && connection.length > 0;
+    // ⛔⛔ FAN-OUT IS `search`-ONLY. Omitting the connection on a write would write
+    // to EVERY connected CRM, and `read` takes an id that belongs to exactly one
+    // connection (D-254). `search` alone has no id and no side effect.
+    if (!named && verb !== 'search') {
+      return err(
+        `'${params.name}' requires a 'connection' argument naming the enrolled `
+        + 'connection to resolve against.',
+      );
+    }
+    const built = buildCanonicalOpRecipe({
+      alias: opId.slice(0, dot),
+      verb: opId.slice(dot + 1),
+      ...(args.args !== undefined ? { args: args.args as Record<string, unknown> } : {}),
+    });
+    if (!built.ok) return err(built.reason);
+
+    const executionSource = buildMcpExecutionSource(deps);
+    const contractSnapshot = buildMcpContractSnapshot(executionSource, deps);
+    const runOne = (conn: string): Promise<unknown> => handleExecute(deps, {
+      recipe: built.recipe,
+      config: { [CANONICAL_OP_CONNECTION_VAR]: conn },
+      trigger_source: 'mcp',
+      execution_source: executionSource,
+      contract_snapshot: contractSnapshot,
+    } as ExecuteRequest);
+    try {
+      if (named) return text(await runOne(connection as string));
+      // Unnamed `search` — fan out over the connections the DESCRIPTOR offers,
+      // which is already the profile-granted set, so this can never reach a
+      // connection the catalog would not have advertised.
+      const serving = canonicalOpToolsForConnections(
+        deps.connectionStore,
+        resolveConnectionVendor,
+        deps.connectionOperationProfiles,
+      ).find((d) => d.opId === opId)?.connections ?? [];
+      if (serving.length === 0) {
+        return err(
+          `no connection serves '${opId}' — name one, or enrol a connection that does.`,
+        );
+      }
+      return text(await runCanonicalSearchFanout(serving, runOne));
+    } catch (e) {
+      return err(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   if (params.name.startsWith(OP_TOOL_PREFIX)) {
     const opId = params.name.slice(OP_TOOL_PREFIX.length);
     try {

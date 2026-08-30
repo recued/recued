@@ -60,8 +60,8 @@ describe('D-250 § D7 — a reading means what it says', () => {
     // ⚠ SCOPED TO THE CARD VALUE. A bare `not.toContain('—')` fails on the page's own
     // prose em-dashes — an over-broad negative that would have to be weakened later,
     // which is how a real assertion gets quietly deleted.
-    expect(html).toMatch(/<span class="stats-card__value">all clear<\/span>/);
-    expect(html).not.toMatch(/<span class="stats-card__value">—<\/span>/);
+    expect(html).toMatch(/<td class="stats-table__value">all clear<\/td>/);
+    expect(html).not.toMatch(/<td class="stats-table__value">—<\/td>/);
   });
 
   it('⛔ A SHARE IS A PERCENTAGE AND A RATIO IS NOT — 100x apart', () => {
@@ -76,10 +76,68 @@ describe('D-250 § D7 — a reading means what it says', () => {
     expect(ratio).not.toContain('475');
   });
 
-  it('shows the direction and the version it was computed under', () => {
+  it('shows the direction, as a sentence rather than a fragment', () => {
     const html = render(out());
-    expect(html).toContain('higher is better');
-    expect(html).toContain('v1');
+    // ⚠ `62.5% · Autopilot · higher is better · v1` was four pieces that assumed the
+    // reader already knew the schema.
+    expect(html).toContain('Higher is better.');
+  });
+
+  it('⛔ THE DEFINITION VERSION IS NOT ON THE DASHBOARD ROW', () => {
+    // ⛔ AND `metric_version` STAYS ON THE WIRE — this is a display decision, not a
+    // retirement. § D3.1a puts the version on a BOARD row, whose audience is *"strangers
+    // reading a leaderboard"* comparing servers that upgraded at different rates; the
+    // publish dialog still renders it in the payload preview, which is where a number
+    // actually leaves this server. Your own page has one server and one answer to
+    // "which arithmetic am I reading".
+    expect(render(out())).not.toContain('stats-table__ver');
+  });
+
+  it('⛔ EVERY ROW CARRIES A PLAIN SENTENCE SAYING WHAT THE NUMBER MEANS', () => {
+    // The description travels on the wire rather than being looked up client-side, for
+    // the same reason `direction` does: a client and the server it is paired to version
+    // independently, so a locally-held description would eventually describe a rule the
+    // server no longer runs.
+    const html = render(out({ snapshot: { ...out().snapshot!, metrics: [
+      { metric_id: 'autopilot', metric_version: 1, reading: metricValue(0.625),
+        label: 'Autopilot', description: 'Share of runs that started on their own.',
+        shape: 'share', direction: 'higher', publishable: true },
+    ] } }));
+    expect(html).toContain('Share of runs that started on their own.');
+  });
+
+  it('⛔ A HEADERS-ONLY TABLE IS NOT RENDERED — a snapshot can hold no displayable row', () => {
+    // The handler drops a metric the registry no longer knows, so a stored snapshot that
+    // outlived a release can arrive with an empty list. A table of column headings over
+    // nothing reads as a broken page rather than as an explained one.
+    const html = render(out({ snapshot: { ...out().snapshot!, metrics: [] } }));
+    expect(html).not.toContain('What it means');
+    expect(html).toContain('still knows how');
+  });
+
+  it('⛔ A ROW FROM AN OLDER SERVER RENDERS WITHOUT ONE, rather than inventing it', () => {
+    // `description` is optional on the wire precisely so this degrades instead of
+    // breaking, and the client must not substitute its own registry's copy.
+    const html = render(out());
+    expect(html).toContain('Autopilot');
+    expect(html).toContain('62.5%');
+  });
+
+  it('⛔ AN ABSENT CARD SAYS SO INSTEAD OF RANKING A NUMBER IT DOES NOT HAVE', () => {
+    // "— Autopilot · higher is better · v1" tells the reader how to read a value that
+    // is not there. The dash already means "not measured"; the meta should agree.
+    const html = render(out({ snapshot: {
+      computed_at: NOW - 600_000,
+      window: { from: NOW - 86_400_000, to: NOW },
+      metrics: [
+        { metric_id: 'autopilot', metric_version: 1, reading: METRIC_ABSENT,
+          label: 'Autopilot', shape: 'share', direction: 'higher', publishable: true },
+      ],
+    } }));
+    expect(html).toMatch(/<td class="stats-table__value">—<\/td>/);
+    // ⛔ NO RANKING ON A MISSING NUMBER. "Higher is better" tells the reader how to read
+    // a value that is not there.
+    expect(html).not.toContain('Higher is better.');
   });
 });
 
@@ -106,6 +164,52 @@ describe('D-250 amendment 17 — records read differently from window values', (
     expect(html).toContain('Hands-off streak');
     expect(html).toContain('Longest hands-off streak');
   });
+
+  it('⛔ THE NUMBER CARRIES ITS UNIT, and the unit is singular at exactly one', () => {
+    // A bare number in a table of mixed quantities reads as whatever the row above it
+    // was — `12` next to `47` gives no hint that one is days and the other is actions.
+    const html = render(out({ artifacts: [
+      { key: 'hands_off.current', kind: 'counter', value: 1, updated_at: NOW },
+      { key: 'hands_off.longest', kind: 'record', value: 12, updated_at: NOW },
+      { key: 'burst', kind: 'record', value: 47, updated_at: NOW },
+    ] }));
+    expect(html).toContain('1 day<');
+    expect(html).toContain('12 days<');
+    expect(html).toContain('47 actions<');
+  });
+
+  it('⛔⛔ AN ARTIFACT THE PANEL DOES NOT NAME IS NOT RENDERED AT ALL', () => {
+    // Reported from a live server: `20693 · hands_off.last_day · set just now`. That is
+    // the producers' fold CURSOR — an epoch day index — rendered as a score, because the
+    // label lookup fell back to the raw key. Per-recipe run accumulators leaked the same
+    // way, one row each.
+    const html = render(out({ artifacts: [
+      { key: 'hands_off.last_day', kind: 'counter', value: 20_693, updated_at: NOW },
+      { key: 'recipe_runs.recued-core/inbox-triage', kind: 'counter', value: 47, updated_at: NOW },
+      { key: 'burst', kind: 'record', value: 9, updated_at: NOW },
+    ] }));
+    expect(html).not.toContain('20693');
+    expect(html).not.toContain('hands_off.last_day');
+    expect(html).not.toContain('recipe_runs');
+    expect(html).toContain('Best burst'); // ...and the real record still shows
+  });
+
+  it('⛔⛔ THE ONLY-GO-UP PROMISE IS NOT MADE ABOUT A STREAK, WHICH RESETS', () => {
+    const streakOnly = render(out({ artifacts: [
+      { key: 'hands_off.current', kind: 'counter', value: 3, updated_at: NOW },
+    ] }));
+    expect(streakOnly).toContain('Streaks');
+    expect(streakOnly).not.toContain('only ever go up');
+    // ⚠ And a streak carries no "set just now" — it is rewritten every cycle, so the
+    // timestamp reported that the server was awake, not that anything was achieved.
+    expect(streakOnly).not.toContain('set just now');
+
+    const recordOnly = render(out({ artifacts: [
+      { key: 'burst', kind: 'record', value: 9, updated_at: NOW },
+    ] }));
+    expect(recordOnly).toContain('only ever go up');
+    expect(recordOnly).not.toContain('Streaks');
+  });
 });
 
 describe('D-250 § D5.3 — milestones have THREE states', () => {
@@ -125,13 +229,20 @@ describe('D-250 § D5.3 — milestones have THREE states', () => {
     expect(html).toContain('stats-milestone--earned');
     expect(html).toContain('stats-milestone--pending');
     expect(html).toContain('stats-milestone--untracked');
-    expect(html).toContain('not tracked yet');
+    expect(html).toContain('Not tracked yet');
+    // ⚠ ...and it says WHY, rather than leaving "not tracked" to be read as "not done".
+    expect(html).toContain('This build cannot detect it yet.');
   });
 
-  it('an earned milestone shows when, not what it takes', () => {
+  it('⛔⛔ AN EARNED MILESTONE SHOWS BOTH WHEN AND WHAT IT TOOK', () => {
+    // ⛔ INVERTED DELIBERATELY. This read `expect(html).not.toContain('do a thing')`:
+    // the description was REPLACED by the status once earned, so the page could tell
+    // you that you had achieved something without ever saying what it was — and the
+    // owner reading a row has no other place to find out. The status moved to its own
+    // column, so there is no longer a slot being competed for.
     const html = render(out({ milestones: [m({ earned_at: NOW - 3 * 86_400_000 })] }));
-    expect(html).toContain('earned 3 days ago');
-    expect(html).not.toContain('do a thing');
+    expect(html).toContain('Earned 3 days ago');
+    expect(html).toContain('do a thing');
   });
 });
 

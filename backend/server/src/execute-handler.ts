@@ -269,6 +269,7 @@ import type { EnrichmentStore } from './storage/enrichment-store.js';
 import { createEnrichmentReader } from './storage/enrichment-resolver.js';
 import { createStoredRowOriginResolver } from './stored-root-origin.js';
 import type { WsClient } from './ws-server.js';
+import { remoteFileConnectionNamesIn } from './collections/file/remote-file-byte-resolver.js';
 
 /** D-153 P2.C — closed set of system-actor channels whose dispatch
  *  path runs through the Engine-boundary policy gate. The first slice
@@ -3162,6 +3163,37 @@ export const handleExecute = async (
                   code: 'op_not_granted',
                   detail: `operation '${String(overlayOpId)}' is not granted to this dispatch's governing contract (revoked)`,
                 });
+              }
+              // ⛔⛔ THE CONNECTION FENCE — `scope.connection_names`, which until now was
+              // DERIVED, STORED, RENDERED AND NEVER READ for a standing door. Census
+              // 2026-08-29: two production callers of `contractScopeMatches` — the
+              // session-grant resolver (threads `connection_name`, enforces it) and the
+              // overlay's metering probe (states outright that it does not). Meanwhile
+              // `derive-recipe-capability` goes out of its way to COMPLETE the axis so
+              // "the fence would bite", and nothing bit.
+              //
+              // ⛔ IT CANNOT LIVE IN `scope_restrictions`. `connection.*` is
+              // unconditionally kept by `SCOPE_FENCE_KEEP_PATTERNS`, so the path fence
+              // can never narrow a connection — this axis is the only place the control
+              // exists.
+              //
+              // 🔑 ASKED HERE BECAUSE THIS IS WHERE BOTH FACTS MEET: the gate has the
+              // `ExecutionSource` (so it knows the door) AND the RESOLVED input (so it
+              // knows which connection the dispatch is about to use). The remote-byte
+              // resolver has the second and not the first, which is why the
+              // `core.storage.file.fetch-remote` gate one layer down had to be
+              // server-wide.
+              if (preflightDecision.verdict !== 'deny' && deps.contractOverlay !== undefined) {
+                for (const connectionName of remoteFileConnectionNamesIn(input)) {
+                  if (deps.contractOverlay.admitsConnection(executionSource, connectionName)) {
+                    continue;
+                  }
+                  return Object.freeze({
+                    verdict: 'deny',
+                    code: 'connection_not_in_scope',
+                    detail: `this dispatch reads a file from connection '${connectionName}', which this dispatch's governing contract does not admit`,
+                  });
+                }
               }
               return preflightDecision;
             };

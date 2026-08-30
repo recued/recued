@@ -30,6 +30,13 @@ const recipe = (id: string, version = 1): RecipeDefinition => ({
   output: { sidebar: [] },
 } as unknown as RecipeDefinition);
 
+/** A kernel recipe is marked by `metadata.author === 'recued'` — the same marker
+ *  `chat-tool-handlers` and `mcp-server` filter on. */
+const kernelRecipe = (id: string): RecipeDefinition => ({
+  ...recipe(id),
+  metadata: { ...recipe(id).metadata, author: 'recued' },
+} as unknown as RecipeDefinition);
+
 const SERVER_STARTED_AT = 1_700_000_000_000;
 
 describe('listServerRecipes', () => {
@@ -37,6 +44,33 @@ describe('listServerRecipes', () => {
 
   beforeEach(() => {
     db = new Database(':memory:');
+  });
+
+  it('⛔⛔ A KERNEL RECIPE IS NOT LISTED — `#recipes` IS the manage UI', () => {
+    // Reported from a live webclient: kernel recipes showing on the Recipes page.
+    // CLAUDE.md's publisher table says the `recued` namespace is "invisible in
+    // marketplace / install / manage UI"; the rule was enforced at the chat catalog
+    // door and the MCP door, over this SAME store, and missing at this one.
+    const store = createRecipeStore('/nonexistent', db);
+    store.save(kernelRecipe('memory-embed'), 'recued-core', 'pair-sync', 1_700_001_000_000);
+    store.save(recipe('detect-deal-risk'), 'recued-core', 'pair-sync', 1_700_001_000_000);
+
+    const result = listServerRecipes({ store, serverStartedAt: SERVER_STARTED_AT });
+
+    expect(result.recipes.map((r) => r.recipe_id)).toEqual(['detect-deal-risk']);
+  });
+
+  it('⛔ THE MARKER IS metadata.author, NOT the emitted publisher_id', () => {
+    // The bundled branch HARDCODES `publisher_id: 'recued-core'`, so a kernel recipe
+    // is emitted under the same publisher as first-party marketplace content. A filter
+    // written against the emitted field would match nothing and look like it worked.
+    const store = createRecipeStore('/nonexistent', db);
+    store.save(recipe('ordinary'), 'recued-core', 'pair-sync', 1_700_001_000_000);
+
+    const listed = listServerRecipes({ store, serverStartedAt: SERVER_STARTED_AT }).recipes;
+    expect(listed).toHaveLength(1);
+    expect(listed[0].publisher_id).toBe('recued-core');
+    expect(listed[0].recipe.metadata.author).toBe('test');
   });
 
   it('returns SQLite-stored recipes with their stored hash + version + source', () => {
@@ -72,6 +106,19 @@ describe('listServerRecipes', () => {
       source: 'bundled',
       installed_at: SERVER_STARTED_AT,
     });
+  });
+
+  it('⛔⛔ AND A BUNDLED KERNEL RECIPE IS EXCLUDED — this is the branch that fires', () => {
+    // ⚠ THE PRODUCTION PATH IS THE BUNDLED ONE. Kernel recipes are never in
+    // `installRegistry`, so they reach `ids()` and never `listStored()`; a filter that
+    // only covered the stored branch would have passed its test and fixed nothing.
+    const store = createRecipeStore('/nonexistent');
+    store.register(kernelRecipe('run-ingredient'));
+    store.register(recipe('bundled-fixture', 1));
+
+    const result = listServerRecipes({ store, serverStartedAt: SERVER_STARTED_AT });
+
+    expect(result.recipes.map((r) => r.recipe_id)).toEqual(['bundled-fixture']);
   });
 
   it('SQLite row wins when the same id exists in both bundled + db', () => {

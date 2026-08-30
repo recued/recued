@@ -92,6 +92,17 @@ export const ADMISSION_DENY_CODES = [
   'scope_not_in_restrictions',
   'op_risk_denied',
   'op_not_granted',
+  /** The governing contract's `scope.connection_names` axis does not admit the
+   *  connection this dispatch would authenticate with.
+   *
+   *  ⛔ NOT `scope_not_in_restrictions`, and the distinction is diagnostic, not
+   *  cosmetic. That code means the snapshot's `scope_restrictions` PATH patterns
+   *  refused the dispatch — and `connection.*` is unconditionally KEPT in
+   *  `SCOPE_FENCE_KEEP_PATTERNS`, so anyone sent to look there would find the
+   *  connection admitted and conclude the denial was a bug. Two different fences;
+   *  reusing one name for both is the mistake the peer-ceiling code below spells
+   *  out at length. */
+  'connection_not_in_scope',
   'server_paused',
   /** D-234 § 234.1 — the owner's CEILING declined to answer this peer.
    *

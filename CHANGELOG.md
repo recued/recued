@@ -7,6 +7,41 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.8.30 — 2026-08-30
+
+Mostly things that existed and did nothing. The public metric boards had no
+boards in them, so every submission was rejected. The publisher handle you need
+to appear on one was charged for in code and free in the pricing — which made
+publishing a Pro feature by accident. Both are fixed, and the boards are live.
+
+### Fixed
+
+- **The metric boards accept entries now.** The surface was built and deployed
+  with nothing behind it: no boards existed, so every server that submitted was
+  turned away. Six are live — autopilot, economy, toolmaker, waved through,
+  burst, throughput.
+- **A publisher handle is free, as the pricing has always said.** Reserving,
+  changing or transferring one returned "Pro subscription required". Since a
+  board entry needs a handle, that quietly made publishing Pro-only. Pro still
+  buys what it always bought: the DDNS subdomain and the certificate.
+- **Uninstall now tells you to stop the server first.** Since the installer
+  started running your server for you at install time, removing the files
+  without stopping it left your system trying to restart a program that was no
+  longer there. The instructions name the right command for how your machine
+  actually starts it — which is not the same command on every platform.
+- **Smaller reporting honesty fixes on the boards**: a rank of zero is not a
+  rank, "1 participants" is not a count, a rejected entry is no longer counted
+  as a successful one, and "send now" says what it did rather than promising a
+  schedule.
+
+### Improved
+
+- **Searching across connected services fans out by default.** Ask for
+  something and it looks everywhere it can; naming a connection narrows *where*
+  it looks, and a filter narrows *what* it looks for. Where a general tool
+  already searched more widely than a service-specific one, the narrower
+  duplicate was removed rather than left to shadow it.
+
 ## 26.8.29 — 2026-08-29
 
 If you installed Recued from a released binary, updates have never actually

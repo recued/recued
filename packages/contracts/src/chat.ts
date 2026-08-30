@@ -28,6 +28,7 @@
 import type { ContractSnapshot, ExecutionSource } from './commits.js';
 import type { CollectionPlatform } from './collections.js';
 import { INGREDIENT_KINDS, type IngredientKind } from './ingredient.js';
+import type { OpEntity } from './kernel-op-registry.js';
 import type { DependencyReadAdmission } from './work-entity-dependency-admission.js';
 // ⚠ The tool enums below are DERIVED from this list. A hand-copy here is the
 // worst kind of stale: the backend guard is derived, so a new kind WORKS —
@@ -1692,6 +1693,37 @@ export interface Tier1ToolDescriptor {
   concurrency_safe: boolean;
 }
 
+/** ⛔⛔ WHICH ENTITY GROUP EACH TIER-1 PRIMITIVE BELONGS TO — the same axis
+ *  `KernelOpEntry.entity` carries, deliberately sharing {@link OpEntity} so the
+ *  Contracts panel renders ONE section per entity across BOTH registries. Without
+ *  this the kernel ops group by what they reach and the chat tools sit in a separate
+ *  "always-on" heap, which is the split that made `data.file` look like it governed
+ *  `file.search` when it did not.
+ *
+ *  ⛔ A `Record` OVER THE CLOSED UNION, NOT A LOOKUP WITH A FALLBACK. It is
+ *  compile-time exhaustive: adding a `Tier1ToolName` without deciding its group does
+ *  not build. A `Partial` + a default would let a new tool land in whatever bucket the
+ *  default names, and an op filed under the wrong heading is a permission an owner
+ *  revokes believing it covered something else.
+ *
+ *  ⚠ NOT PARSED FROM THE NAME, for the same reason the kernel side is not: most read
+ *  `<entity>.<verb>` but `deal.search` / `account.search` reach REMOTE CRM records
+ *  (grouped `crm`, not a local collection) and `recipe.run` reaches the catalog. */
+export const TIER1_TOOL_ENTITY: Readonly<Record<Tier1ToolName, OpEntity>> = {
+  'contact.search': 'contact',
+  'mail.search': 'mail',
+  'calendar.search': 'calendar',
+  'memory.search': 'memory',
+  'memory.write': 'memory',
+  'enrichment.search': 'enrichment',
+  'deal.search': 'crm',
+  'account.search': 'crm',
+  'work.search': 'work',
+  'work.read': 'work',
+  'file.search': 'file',
+  'recipe.run': 'recipe',
+};
+
 /** P1 placeholder descriptor table — one entry per `Tier1ToolName`.
  *  Closed at substrate level (the type union enforces exhaustivity).
  *  Per-primitive landings update each entry in place. */
@@ -3317,6 +3349,18 @@ export interface IssuedMcpInboundToken {
  *  A third copy of the literal in a package that already imports contracts would
  *  be a third thing to keep in sync. */
 export const RAW_OP_TOOL_PREFIX = 'recued_op_';
+
+/** D-255 — the wire prefix for a CANONICAL op tool (`recued_canonical_contact.
+ *  update`). A sibling of {@link RAW_OP_TOOL_PREFIX} and exported for the same
+ *  reason its neighbour is: the name is reconstructed in more than one place, and a
+ *  second copy of the literal is a second thing to keep in sync.
+ *
+ *  ⛔ DISTINCT FROM `recued_op_` ON PURPOSE. A raw op names ONE vendor operation on
+ *  one installed pack; a canonical op names an (alias × verb) that resolves to
+ *  whichever vendor the supplied connection is. Sharing a prefix would make the two
+ *  indistinguishable to every checklist, grant projection and loopback filter that
+ *  routes on it — and they are granted, dispatched and audited differently. */
+export const CANONICAL_OP_TOOL_PREFIX = 'recued_canonical_';
 
 /** § A.9 — pure helper: walks a catalog snapshot + projects the
  *  default-deny posture per spec. Read-classified Tier 1 + Tier 3

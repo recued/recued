@@ -568,27 +568,31 @@ describe('D-228 slice 5 — the Tier-1 primitives are reachable in the UI', () =
 });
 
 describe('contract-grants panel — universe split across Ops / Entities', () => {
-  it('routes op entries to opsRoot and collections + topics to entitiesRoot', async () => {
+  it('routes ops AND collection fences to opsRoot, topics to entitiesRoot', async () => {
     const { panel } = mountPanelWith();
     await panel.whenLoaded();
 
     const opsKinds = collectByAttr(opsRootEl(panel), CONTRACT_GRANTS_KIND_GROUP_ATTR).map((g) =>
       g.getAttribute('data-kind'),
     );
-    expect(opsKinds).toEqual(['op']);
+    // ⚠ WAS `['op']`. The `data.*` collection fence moved INTO the Ops root and under
+    // the same ENTITY heading as the tools it fences — one root now answers "what may
+    // reach my data", instead of a path fence living in a different tab from the ops it
+    // governs. `topic` stays in Entities: a derived fact is not a reach.
+    expect(opsKinds).toEqual(['op', 'collection']);
     // ops = kernel ops + the two pack ops; the read op + write op both appear.
     expect(cellFor(opsRootEl(panel), READ_OP)).toBeDefined();
     expect(cellFor(opsRootEl(panel), WRITE_OP)).toBeDefined();
-    // no op cell leaks into entities; no collection/topic into ops.
-    expect(cellFor(opsRootEl(panel), collectionGrantEntry('mail'))).toBeUndefined();
+    // The collection fence now lives WITH its ops; only topics stay behind.
+    expect(cellFor(opsRootEl(panel), collectionGrantEntry('mail'))).toBeDefined();
+    expect(cellFor(entitiesRootEl(panel), collectionGrantEntry('mail'))).toBeUndefined();
     expect(cellFor(entitiesRootEl(panel), READ_OP)).toBeUndefined();
 
     const entityKinds = collectByAttr(
       entitiesRootEl(panel),
       CONTRACT_GRANTS_KIND_GROUP_ATTR,
     ).map((g) => g.getAttribute('data-kind'));
-    expect(entityKinds).toEqual(['collection', 'topic']);
-    expect(cellFor(entitiesRootEl(panel), collectionGrantEntry('mail'))).toBeDefined();
+    expect(entityKinds).toEqual(['topic']);
     expect(cellFor(entitiesRootEl(panel), topicGrantEntry(PUBLIC_TOPIC))).toBeDefined();
   });
 
@@ -872,13 +876,13 @@ describe('contract-grants panel — write / reconcile + chrome', () => {
     // every read-tier op is on by default; the total is kernel + 2 pack ops.
     expect(opsSummary?.textContent).toMatch(/^\d+ of \d+ granted$/);
     const entSummary = collectByAttr(entitiesRootEl(panel), CONTRACT_GRANTS_SUMMARY_ATTR)[0];
-    // entities total = collections + 2 topics. D-187 slice 5: on a door every normal
-    // READABLE_COLLECTION is ON (admit-all-then-narrow); the two owner-only raw
-    // collections are OFF, and of the 2 topics only the public one is on.
-    const grantedEntities = READABLE_COLLECTIONS.length - OWNER_ONLY_COLLECTIONS.length + 1;
-    expect(entSummary?.textContent).toBe(
-      `${grantedEntities} of ${READABLE_COLLECTIONS.length + 2} granted`,
-    );
+    // ⚠ WAS collections + 2 topics. The collection fences moved to the Ops root (they
+    // group with the ops they fence), so Entities is TOPICS ONLY: of the 2, the public
+    // one is on. The collections' own grant semantics are unchanged — D-187 slice 5's
+    // admit-all-then-narrow still governs them, it is now counted in the Ops summary.
+    expect(entSummary?.textContent).toBe('1 of 2 granted');
+    // And the collections really did land in Ops rather than vanishing.
+    expect(cellFor(opsRootEl(panel), collectionGrantEntry('mail'))).toBeDefined();
   });
 
   it('debounces the Ops type-along filter and keeps the input focused/stable', async () => {
@@ -933,12 +937,13 @@ describe('contract-grants panel — degrade + lifecycle', () => {
     expect(panel.getEntries().map((e) => e.entry_key))
       .toContain(primitiveGrantEntry('mail.search'));
     expect(panel.getEntries().some((e) => e.kind === 'topic')).toBe(false);
-    // entities still has the collections, but the topics kind-group is absent.
+    // ⚠ WAS "entities still has the collections". Collections moved to Ops; with no
+    // registry there are no topics either, so the Entities root has NO kind-groups.
     expect(
       collectByAttr(entitiesRootEl(panel), CONTRACT_GRANTS_KIND_GROUP_ATTR).map((g) =>
         g.getAttribute('data-kind'),
       ),
-    ).toEqual(['collection']);
+    ).toEqual([]);
   });
 
   it('a grant-read failure surfaces a top-level error in both roots', async () => {
@@ -965,12 +970,17 @@ describe('contract-grants panel — degrade + lifecycle', () => {
   });
 
   it('an empty universe renders the empty note (no callers, kernel ops still present)', async () => {
-    // Kernel ops + collections are compiled-in, so ops + entities both have
-    // content; assert the empty note appears only where a kind is truly absent.
+    // ⚠ INVERTED BY THE COLLECTION MOVE, AND THE INVERSION IS THE ASSERTION. Kernel
+    // ops AND the collection fences are compiled-in, so the OPS root always has
+    // content; Entities is now topics-only, which without a registry means it is
+    // genuinely empty and SHOULD say so. Asserting both halves keeps this honest —
+    // a version that only flipped the number would pass on a panel that rendered
+    // nothing at all.
     const { panel } = mountPanelWith({ withCatalog: false, withRegistry: false });
     await panel.whenLoaded();
-    // entities still has collections → no empty note.
-    expect(collectByAttr(entitiesRootEl(panel), CONTRACT_GRANTS_EMPTY_ATTR)).toHaveLength(0);
+    expect(collectByAttr(opsRootEl(panel), CONTRACT_GRANTS_EMPTY_ATTR)).toHaveLength(0);
+    expect(cellFor(opsRootEl(panel), collectionGrantEntry('mail'))).toBeDefined();
+    expect(collectByAttr(entitiesRootEl(panel), CONTRACT_GRANTS_EMPTY_ATTR)).toHaveLength(1);
   });
 });
 

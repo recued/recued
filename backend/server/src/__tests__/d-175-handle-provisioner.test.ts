@@ -336,7 +336,7 @@ describe('D-175 handle provisioner — gating', () => {
       current: reservedState(FINGERPRINT, 'alice'),
       change: {
         ok: false,
-        error: 'handle_subscription_lapsed',
+        error: 'handle_taken',
         message: 'Pro subscription required',
       },
     });
@@ -348,7 +348,7 @@ describe('D-175 handle provisioner — gating', () => {
     );
     expect(out).toEqual({
       outcome: 'reserve_failed',
-      reason: 'handle_subscription_lapsed',
+      reason: 'handle_taken',
       message: 'Pro subscription required',
     });
     expect(handle.changeHandle).toHaveBeenCalledTimes(1);
@@ -469,20 +469,28 @@ describe('D-175 handle provisioner — gating', () => {
     },
   );
 
-  it('cloud reserve rejection (subscription lapsed) → reserve_failed, surfaced for retry', async () => {
+  /** ⚠ RETARGETED 2026-08-30. This drove a fake cloud returning
+   *  `handle_subscription_lapsed` and was titled "(subscription lapsed)" — a scenario the
+   *  real cloud can no longer produce, since the handle endpoints' Pro gate was lifted
+   *  (a handle is free with any account; Pro buys DDNS + the certificate). A fake
+   *  returning an unreachable code tests the propagation but ADVERTISES a policy that no
+   *  longer exists, and reads to the next person as if it does. `handle_taken` is a
+   *  rejection the cloud genuinely returns, so the propagation is exercised against
+   *  something real. */
+  it('cloud reserve rejection (handle taken) → reserve_failed, surfaced for retry', async () => {
     const handle = mkHandle({
       current: null,
       reserve: {
         ok: false,
-        error: 'handle_subscription_lapsed',
-        message: 'Pro subscription required',
+        error: 'handle_taken',
+        message: 'handle already reserved by another publisher',
       },
     });
     const out = await provisionHandleFromBinding(baseDeps({ handle }));
     expect(out).toEqual({
       outcome: 'reserve_failed',
-      reason: 'handle_subscription_lapsed',
-      message: 'Pro subscription required',
+      reason: 'handle_taken',
+      message: 'handle already reserved by another publisher',
     });
     // It DID attempt — the publisher_id was correct; the cloud flag gated.
     expect(handle.reserveInitial).toHaveBeenCalledTimes(1);

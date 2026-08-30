@@ -182,6 +182,12 @@ describe('createContractStore — seedSchema', () => {
       ['composite_keys', 'override'],
       ['composite_keys', 'owner_operation'],
       ['composite_keys', 'policy_resolution'],
+      // ⛔ The primitive-grandfather watermark — one row per non-owner contract,
+      // recording that the D-228 slice-5 migration already covered it. A SEPARATE
+      // scope from `contract_grant` on purpose: `listForContract(...).length > 0` is
+      // used as a truthiness test elsewhere, so a bookkeeping row must not sit where
+      // policy rows are counted. ('policy' < 'primitive' < 'quality' by seg_key.)
+      ['composite_keys', 'primitive_grandfather'],
       // D-202 — quality VERDICT signal rows (Slice 1) + suggestion rows (Task 5);
       // 'signal' < 'suggestion' by seg_key sort.
       ['composite_keys', 'quality_delegation_signal'],

@@ -134,11 +134,28 @@ describe('D-213 A1 — owner recall corpus scope', () => {
   });
 });
 
-describe('D-213 A1 — no grant handle exists', () => {
-  it('does not register a context domain or recall/context kernel operation', () => {
+describe('D-213 A1 — `context` has no grant handle; `recall` was given one', () => {
+  it('registers no context domain and no `core.context.read`', () => {
     expect(KERNEL_DOMAINS.map((entry) => entry.domain)).not.toContain('context');
-    const ops = KERNEL_OP_REGISTRY.map((entry) => entry.op);
-    expect(ops).not.toContain('core.context.read');
-    expect(ops).not.toContain('core.recall.search');
+    expect(KERNEL_OP_REGISTRY.map((entry) => entry.op)).not.toContain('core.context.read');
+  });
+
+  it('⛔ REGISTERS `core.recall.search` — D-253 REVERSED this half deliberately', () => {
+    // This assertion used to read `.not.toContain('core.recall.search')`, and it was
+    // right when D-213 wrote it: recall was hand-built into the chat registry view
+    // so it would never enter the raw MCP registry, and its own header recorded the
+    // consequence — "interaction recall acquires no grant handle and cannot be
+    // discovered there."
+    //
+    // 🔑 D-253 CALLED THAT THE DEFECT, NOT THE DESIGN. Fail-closed for DOORS was
+    // correct; having no row was wrong for the OWNER, who could not switch off the
+    // most sensitive corpus on the server. `kernel-ops.ts` now states it outright:
+    // "the whole reason recall needs a grant is that it is the most sensitive
+    // corpus on the server."
+    //
+    // ⚠ So this is NOT a relaxed ratchet — it is the same ratchet pointing the
+    // other way. Removing the row again must red here.
+    expect(KERNEL_DOMAINS.map((entry) => entry.domain)).toContain('recall');
+    expect(KERNEL_OP_REGISTRY.map((entry) => entry.op)).toContain('core.recall.search');
   });
 });

@@ -177,6 +177,11 @@ const operationSpec = (composition: CompositionIngredient, op: PackOperationRow)
   // V3 operation-local pagination contract. Omitted means one upstream call;
   // present means the runtime gateway walks pages behind the scenes.
   pagination: op.pagination,
+  // D-254 slice 1 — LOWER the authored record-id arg so the runtime gateway can
+  // unwrap a platform-record id to the vendor-native one before grants/approval/
+  // dispatch. Inert without this: the router reads `OperationSpec.record_id_arg`,
+  // and an authored row that never lowers is a declaration nothing consults.
+  record_id_arg: op.record_id_arg,
 });
 
 const operationsRecord = (

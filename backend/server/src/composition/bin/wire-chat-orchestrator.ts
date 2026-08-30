@@ -33,6 +33,8 @@
  */
 
 import type Database from 'better-sqlite3';
+import { canonicalOpToolsForConnections } from '../../canonical-op-tool-catalog.js';
+import { resolveConnectionVendor } from '../../storage/connection-store.js';
 import {
   LLMError,
   executeLLM,
@@ -53,7 +55,7 @@ import type {
   WebChatTab,
 } from '@recued/contracts';
 import type { ExecutionSource, ToolEntry } from '@recued/contracts';
-import { recipeGrantEntry, primitiveGrantEntry,
+import { isExecutionSource, opGrantEntry, recipeGrantEntry, primitiveGrantEntry,
   isGrantableKernelOp,
   isRegisteredKernelOp,
   RAW_OP_TOOL_PREFIX,
@@ -686,6 +688,19 @@ export const composeChatOrchestrator = (
     // `dispatchRawOp` takes a Pick of the execute deps, so this is the same
     // handle, narrowed by the callee rather than here.
     getRawOpDispatchDeps: () => getExecuteDeps(),
+    // D-255 — the SAME builder `mcp-server` calls, so the owner's chat catalog and
+    // a door's MCP catalog derive canonical tools from one source. The owner is the
+    // `user_self` contract and a door is another contract id; a second producer
+    // here would be an owner/door branch by another name. Late-bound for the same
+    // reason its neighbours are — this composes before the execute deps exist.
+    getCanonicalOpTools: () => {
+      const ex = getExecuteDeps();
+      return canonicalOpToolsForConnections(
+        ex?.connectionStore,
+        resolveConnectionVendor,
+        ex?.connectionOperationProfiles,
+      );
+    },
     preflightExternalRecipeDispatch: (recipe) => {
       const recordsStore = getExecuteDeps()?.recordsStore;
       if (recordsStore === undefined) return;
@@ -1040,6 +1055,15 @@ export const composeChatOrchestrator = (
       getContractDefinitionStore: () => {
         const store = getContractStore?.();
         return store ? createContractDefinitionStore(store) : undefined;
+      },
+      // ⛔ THE OWNER'S REVOKE OF `core.recall.search`. Same gate + same shape as
+      // `admitTier1` above — ONE RULE, ONE DEFINITION: `isOpGranted` applies its own
+      // contract-free semantics (a source with no governing contract is admitted), so
+      // this must CALL it rather than re-derive "is it granted" from a row.
+      isRecallGranted: (source) => {
+        const gate = getExecuteDeps()?.opAdmissionGate;
+        if (gate === undefined || !isExecutionSource(source)) return true;
+        return gate.isOpGranted(source, opGrantEntry('core.recall.search'));
       },
     },
   );

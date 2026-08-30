@@ -313,10 +313,14 @@ describe('D-148 P8 — handle reservation', () => {
     }
   });
 
-  it('cloud subscription_lapsed propagates as error', async () => {
+  /** ⚠ RETARGETED 2026-08-30 — the fake returned `handle_subscription_lapsed`, which the
+   *  real cloud can no longer send for a reserve: the handle endpoints' Pro gate was
+   *  lifted (free with any account; Pro buys DDNS + the certificate). The propagation is
+   *  the property under test, so it now propagates a rejection the cloud actually makes. */
+  it('a cloud reserve rejection propagates as error', async () => {
     const ik = generateEd25519Keypair('server_identity_key');
     const cloud = makeCloud();
-    cloud.reserveWillFail('alice', 'handle_subscription_lapsed');
+    cloud.reserveWillFail('alice', 'handle_taken');
     const { machine } = makeMachine(ik, cloud);
     const result = await machine.reserveInitial({
       publisher_id: 'pub_1',
@@ -326,7 +330,7 @@ describe('D-148 P8 — handle reservation', () => {
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error).toBe('handle_subscription_lapsed');
+      expect(result.error).toBe('handle_taken');
     }
   });
 

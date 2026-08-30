@@ -207,6 +207,31 @@ describe('createRecuedCloudHandleClient', () => {
     }
   });
 
+  /** ⛔⛔ THE CASE THAT MAKES REMOVING `handle_subscription_lapsed` SAFE. It was a member
+   *  of `HandleRpcErrorCode` until 2026-08-30, when the handle endpoints' Pro gate was
+   *  lifted and the cloud stopped emitting it. Keeping a literal for a refusal the system
+   *  can no longer make would advertise a policy that does not exist — but removing it is
+   *  only safe if an owner still sees WHAT THE CLOUD SAID. They do: the raw code and
+   *  message survive in the text, so the information is preserved while the typed
+   *  vocabulary stays truthful. Pinned here rather than argued in a comment. */
+  it('⛔ A RETIRED CODE STILL REACHES THE OWNER VERBATIM, it is not swallowed', async () => {
+    const fetchFake: typeof fetch = async () =>
+      errResponse(402, 'handle_subscription_lapsed', 'Pro subscription required');
+    const client = createRecuedCloudHandleClient({ cloud_base_url, fetch: fetchFake });
+    const result = await client.reserveHandle({
+      publisher_id: 'pub_1', handle: 'a', nonce: 'n', signature: 's', timestamp: 1,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // Typed as a generic validation failure — no code implying a Pro gate…
+      expect(result.error).toBe('handle_validation_error');
+      // …and every word the cloud actually said is still in front of the owner.
+      expect(result.message).toContain('402');
+      expect(result.message).toContain('handle_subscription_lapsed');
+      expect(result.message).toContain('Pro subscription required');
+    }
+  });
+
   it('reports network failures via handle_validation_error', async () => {
     const fetchFake: typeof fetch = async () => {
       throw new Error('ECONNREFUSED');
@@ -627,7 +652,6 @@ describe('HANDLE_RPC_ERROR_CODES ratchet', () => {
     const sentinel: Record<HandleRpcErrorCode, true> = {
       handle_signature_invalid: true,
       handle_publisher_unknown: true,
-      handle_subscription_lapsed: true,
       handle_replay_window_exceeded: true,
       handle_replay_duplicate: true,
       handle_taken: true,

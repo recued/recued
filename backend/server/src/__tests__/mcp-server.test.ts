@@ -1162,6 +1162,10 @@ describe('MCP tool: recued_runRecipe held projection', () => {
       shouldMeterUse: vi.fn(() => true),
       recordUse: vi.fn(),
       isContractLive: vi.fn(() => true),
+      // D-253 follow-on — required on `ContractOverlayResolver`. Admits: this
+      // fixture binds no governing contract, which is exactly the case the real
+      // resolver admits.
+      admitsConnection: vi.fn(() => true),
     };
 
     const customerUsage = {

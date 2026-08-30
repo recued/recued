@@ -1028,6 +1028,7 @@ export {
   OWNER_CONTRACT_ID, isReservedOwnerContractId,
   PUBLIC_CONTRACT_ID, isReservedPublicContractId,
   contractLifecycleState, isContractActive, contractScopeMatches,
+  contractScopeAdmitsConnection,
   CONTRACT_GRANT_KINDS, isContractGrantKind, isStandingContractDefinition,
   isCustomerContractGrantKind,
   // D-202 — the quality-delegation grant-kind discriminator (second axis).
@@ -2502,6 +2503,24 @@ export type {
   DateGranularity,
   FieldDerivation,
 } from './connection-vendors.js';
+
+// D-254 slice 1 — the inverse of `composePlatformRecordTargetId`. The composer
+// shipped without one, so no caller could recover WHICH CONNECTION a platform
+// record came from; `matchCrmAlias` recovers the `<vendor>_<entity>_` prefix
+// only. This is the routing primitive the pack-op path needs.
+export {
+  CONNECTION_NAME_REGEX,
+  parsePlatformRecordTargetId,
+  isPlatformRecordTargetId,
+  PlatformRecordIdError,
+  routePlatformRecordOperationArgs,
+  stampPlatformRecordIds,
+} from './platform-record-id.js';
+export type {
+  PlatformRecordTargetId,
+  PlatformRecordIdErrorCode,
+  PlatformRecordRouting,
+} from './platform-record-id.js';
 
 // D-192 M1 — messenger (chat transport) vendor declaration registry. The
 // canonical-vocabulary half of the taxonomy §0 rule (mirrors the
@@ -4207,6 +4226,7 @@ export {
   TIER1_CLASSIFICATIONS,
   TIER1_CONCURRENCY_SAFE,
   TIER1_TOOL_DESCRIPTORS,
+  TIER1_TOOL_ENTITY,
   CHAT_DISPATCH_CHANNELS,
   CHAT_DISPATCH_CHANNEL_SET,
   isChatDispatchChannel,
@@ -4296,6 +4316,7 @@ export {
   MCP_INBOUND_TOKEN_PREFIX,
   // D-225 auto-mint — the raw-op wire prefix, shared with the loopback filter.
   RAW_OP_TOOL_PREFIX,
+  CANONICAL_OP_TOOL_PREFIX,
   buildDefaultMcpInboundTokenGrants,
   isMcpInboundTokenActive,
   isMcpInboundTokenToolAuthorized,
@@ -6349,6 +6370,7 @@ export type {
   MetricArtifactEntry,
   MetricMilestoneEntry,
   MetricPublicationEntry,
+  MetricSubmitSkipReason,
 } from './metric-rpc.js';
 export type {
   MetricDefinition,

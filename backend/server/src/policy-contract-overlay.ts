@@ -51,6 +51,7 @@
 
 import {
   contractPermitsDoorType,
+  contractScopeAdmitsConnection,
   contractScopeMatches,
   executionSourceContractId,
   isContractActive,
@@ -130,6 +131,21 @@ export interface ContractOverlayResolver {
    *  MCP transport consumes before applying any seller-customer admission
    *  overlay. */
   isContractLive(contract_id: string): boolean;
+  /** ⛔⛔ THE CONNECTION FENCE, FINALLY GIVEN AN ACCESS-TIME CALLER. True iff the
+   *  contract governing this dispatch admits `connection_name` on its
+   *  `scope.connection_names` axis.
+   *
+   *  ⛔ A CONTRACT-FREE SOURCE ADMITS, and that is the same posture every other axis
+   *  takes here — the owner's own HID, housekeeping, cron and reactive resolve to NO
+   *  governing contract, so there is no scope to consult and nothing to fence. A
+   *  dead / absent definition admits for the same reason `resolveContractScopeRestrictions`
+   *  short-circuits: an unresolvable contract is handled by the grant gate, not by
+   *  inventing a denial here.
+   *
+   *  ⚠ The axis is a WILDCARD when empty, so this returns true for every door that
+   *  did not author one — which is most of them. It bites only where a minter (or
+   *  `derive-recipe-capability`) actually named connections. */
+  admitsConnection(source: ExecutionSource, connection_name: string | undefined): boolean;
   /** D-196 R1a — classify a live token-bound contract from the authoritative
    *  `contract_definition` row. Seller admission uses this to distinguish an
    *  ordinary standing door (no Seller row required) from a
@@ -386,6 +402,13 @@ export const createContractOverlayResolver = (
     },
     resolveReadGrantChecker(source): ReadGrantChecker {
       return buildReadGrantChecker(source);
+    },
+    admitsConnection(source, connection_name): boolean {
+      const governing = resolveGrantGoverningContractId(source, deps.definitionStore, now);
+      if (governing === undefined) return true;
+      const def = deps.definitionStore.get(governing);
+      if (def === null) return true;
+      return contractScopeAdmitsConnection(def.scope, connection_name);
     },
   };
 };

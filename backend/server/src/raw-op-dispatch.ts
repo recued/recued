@@ -99,9 +99,12 @@ import {
   isExternallyExposableIngredient,
   isPreflightRequiredSignal,
   parseOpId,
+  PlatformRecordIdError,
   QualifiedWorkEntityIdError,
   resolveSessionGrantOffer,
+  routePlatformRecordOperationArgs,
   routeQualifiedWorkEntityOperationArgs,
+  stampPlatformRecordIds,
 } from '@recued/contracts';
 import {
   deriveChannelSessionId,
@@ -115,7 +118,7 @@ import type {
   CatalogSessionGrantHooks,
   ExecutionContext,
 } from '@recued/engine';
-import { runCatalogOperation } from '@recued/engine';
+import { runCatalogOperation, resolveCatalogRecordsPath } from '@recued/engine';
 
 /** `StepMeta | undefined` — the 8th positional arg of `runCatalogOperation`.
  *  Derived rather than imported because `@recued/engine` does not re-export
@@ -123,6 +126,7 @@ import { runCatalogOperation } from '@recued/engine';
 type RawOpStepMeta = Parameters<typeof runCatalogOperation>[7];
 import type { CheckpointStore } from '@recued/storage';
 import { buildPackOpResolution } from './pack-inventory.js';
+import { resolveConnectionVendor } from './storage/connection-store.js';
 import type { OpAdmissionGate } from './op-admission-gate.js';
 import type { ExecuteHandlerDeps } from './execute-handler.js';
 import { connectionBaseUrlFromConfig } from './execute-handler.js';
@@ -134,6 +138,7 @@ import {
   DIRECT_MCP_TOOL_CALL_BASE_RESERVATION_KEY,
 } from './seller/customer-surface-usage.js';
 import type { SessionGrantResolver } from './session-grant-resolver.js';
+import { remoteFileConnectionNamesIn } from './collections/file/remote-file-byte-resolver.js';
 import {
   createBoundExecutor,
   createGatewayAuditEmitter,
@@ -290,7 +295,13 @@ export type RawOpDispatchOutcome =
   | {
       kind: 'refused';
       message: string;
-      code?: QualifiedWorkEntityIdError['code'];
+      /** Two id families refuse here and each keeps its own codes — D-254 kept
+       *  the platform-record codes distinct from the work-entity ones so a
+       *  reader chasing one is never sent to the other router. */
+      code?: QualifiedWorkEntityIdError['code'] | PlatformRecordIdError['code'];
+      /** Work-entity refusals only: the tool to retry with. A platform-record
+       *  mismatch retries the SAME tool against another connection, which the
+       *  message names instead. */
       retry_with?: string;
       expected_source?: string;
       actual_source?: string;
@@ -389,6 +400,35 @@ export const dispatchRawOp = async (
     throw error;
   }
 
+  // 4b — D-254 slice 1 — the platform-record id family, unwrapped at the same
+  //      point and for the same reason. `routingManifestForRawOp` augments only
+  //      `work_entity_sources`, so the binding is read from the manifest's own
+  //      `operations` map. No `retry_with`: the retry here is the SAME tool
+  //      naming a different connection, not a different tool.
+  try {
+    opArgs = routePlatformRecordOperationArgs({
+      id_arg: manifest.operations?.[operation]?.record_id_arg,
+      operation,
+      connection_name: connectionName,
+      args: opArgs,
+    }).args;
+  } catch (error) {
+    if (error instanceof PlatformRecordIdError) {
+      return {
+        kind: 'refused',
+        message: error.message,
+        code: error.code,
+        ...(error.expected_source !== undefined
+          ? { expected_source: error.expected_source }
+          : {}),
+        ...(error.actual_source !== undefined
+          ? { actual_source: error.actual_source }
+          : {}),
+      };
+    }
+    throw error;
+  }
+
   // 5 — contract policy_matrix admission (Inc B-admission) — shared with the
   //     resume path (`admitRawOp`).
   const admission = admitRawOp(deps, {
@@ -396,6 +436,7 @@ export const dispatchRawOp = async (
     manifest,
     operation,
     executionSource,
+    args: req.args,
     ...(req.contractSnapshot !== undefined ? { contractSnapshot: req.contractSnapshot } : {}),
   });
   if (admission.verdict === 'deny') {
@@ -486,7 +527,42 @@ export const dispatchRawOp = async (
       },
     );
   }
-  return { kind: 'result', result: dispatch.result };
+  // D-254 slice 2 — COMPOSE ON THE WAY OUT, at this door only.
+  //
+  // ⛔ NOT in `runCatalogOperation`. A recipe's connection is fixed by its binding,
+  // so the read and the write it feeds are the same account and a bare native id is
+  // already unambiguous there — while stamping the gateway would push a Recued
+  // storage key into the vendor-shaped payload recipes consume, against D-190 C2
+  // (`id` stays a vendor selector), D-206/D-205 ruling 3 (vendor refs stay raw) and
+  // the reconciler's own "the projection emits none".
+  //
+  // 🔑 THIS DOOR IS THE CASE THAT NEEDS IT. Here the caller names the connection
+  // PER CALL (`RAW_OP_CONNECTION_ARG`) and supplies the id separately, so nothing
+  // stops a model reading from `hubspot1` and then writing with
+  // `connection: hubspot2` and that id: a bare native id parses as nothing, falls
+  // through, and updates the WRONG ACCOUNT's record 47291. Handing the id back
+  // COMPOSED is what lets the write half refuse it.
+  //
+  // ⛔ The records path comes from the ENGINE's own resolver. Re-deriving it here
+  // would agree until a pack declares a per-op `result_path` override and then
+  // disagree silently — no ids emitted, indistinguishable from an empty result.
+  return {
+    kind: 'result',
+    result: stampPlatformRecordIds({
+      result: dispatch.result,
+      vendor: connectionName.length > 0 && deps.connectionStore !== undefined
+        ? resolveConnectionVendor(
+          deps.connectionStore.get('api', connectionName) ?? { config_json: '' },
+        )
+        : undefined,
+      // The op family IS the entity, registry-checked inside the stamper —
+      // `deal.read` → deal. A family that is not a registered entity
+      // (`engagement.list`, `deal_contacts.list`) composes nothing.
+      entity: operation.split('.')[0] ?? '',
+      connection_name: connectionName,
+      records_path: resolveCatalogRecordsPath(manifest, operation),
+    }),
+  };
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -604,6 +680,8 @@ const admitRawOp = (
     operation: string;
     executionSource: ExecutionSource;
     contractSnapshot?: ContractSnapshot;
+    /** Forwarded to the shared core's connection fence — see its doc. */
+    args?: Record<string, unknown>;
   },
 ): ReturnType<typeof evaluatePreflightAdmission> => {
   const { binding, manifest, operation, executionSource } = p;
@@ -619,6 +697,10 @@ const admitRawOp = (
         }
       : p.contractSnapshot;
   return admitCatalogOpForSource(deps.opAdmissionGate, {
+    ...(p.args !== undefined ? { args: p.args } : {}),
+    ...(deps.contractOverlay !== undefined
+      ? { admitsConnection: (src, name) => deps.contractOverlay!.admitsConnection(src, name) }
+      : {}),
     catalogSlug: binding.catalog_slug,
     manifest,
     operation,
@@ -675,10 +757,37 @@ export const admitCatalogOpForSource = (
     operation: string;
     executionSource: ExecutionSource;
     contractSnapshot?: ContractSnapshot;
+    /** ⛔ The dispatch's ARGS + the connection-axis predicate — the one admission term
+     *  that depends on WHAT is dispatched rather than WHICH op. Both optional: absent
+     *  ⇒ the fence is a no-op, matching every other grant seam here (a resume re-admits
+     *  without re-reading args, and its original dispatch already passed). */
+    args?: Record<string, unknown>;
+    admitsConnection?: (source: ExecutionSource, connection_name: string) => boolean;
   },
 ): ReturnType<typeof evaluatePreflightAdmission> => {
   const { catalogSlug, manifest, operation, executionSource } = p;
   const hasContract = executionSourceHasContract(executionSource);
+  // ⛔⛔ THE CONNECTION FENCE — THE SECOND DOOR. `admitOne` in `execute-handler.ts` is
+  // the first and is a SEPARATE implementation, not a caller of this. Putting the term
+  // in this shared core covers both remaining callers at once — raw-op dispatch (how an
+  // MCP door invokes a catalog op directly, which is exactly the caller a
+  // `connection_names` scope is authored to restrict) and the D-192 work-entity
+  // escalation seam.
+  //
+  // 🔑 ONE RULE, TWO DOORS, AND THIS FILE'S OWN HEADER ALREADY NAMES THE PAIR for the
+  // op gate. A term added at one door and not the other is the `file.search` failure
+  // wearing different clothes: correct-looking at each site, and one of them admits.
+  if (p.admitsConnection !== undefined) {
+    const fenced = remoteFileConnectionNamesIn(p.args)
+      .find((name) => !p.admitsConnection!(executionSource, name));
+    if (fenced !== undefined) {
+      return Object.freeze({
+        verdict: 'deny',
+        code: 'connection_not_in_scope',
+        detail: `this dispatch reads a file from connection '${fenced}', which this dispatch's governing contract does not admit`,
+      }) as ReturnType<typeof evaluatePreflightAdmission>;
+    }
+  }
   // Short op key → DECLARED operation_id (`?? operation` fallback, the canonical
   // pattern at raw-op-dispatch:595) — the op-grant-entry format for the op-admission
   // gate (`isOpGranted`, below). The op axis retired when `contract_grant` became the

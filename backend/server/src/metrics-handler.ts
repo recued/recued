@@ -20,6 +20,7 @@ import {
   type MetricReadEntry,
   type MetricPublicationEntry,
   type MetricReadOutput,
+  type MetricSubmitSkipReason,
 } from '@recued/contracts';
 
 import { createMetricArtifactStore } from './metrics/artifact-store.js';
@@ -57,6 +58,7 @@ export const handleMetricRead = async (deps: MetricRpcDeps): Promise<MetricReadO
       metric_version: m.metric_version,
       reading: m.reading,
       label: def.label,
+      description: def.description,
       shape: def.shape,
       direction: def.direction,
       publishable: def.publishable,
@@ -155,6 +157,10 @@ export const handleMetricSubmit = async (
 ): Promise<{
   ok: true;
   sent: boolean;
+  /** ⛔ PRESENT IFF `sent` IS FALSE — see `MetricSubmitSkipReason`. Three of its five
+   *  values describe a correctly-working server that has not opted in; one is a fault.
+   *  Without it the surface can only say "nothing happened", which is what it said. */
+  skip_reason?: MetricSubmitSkipReason;
   results: ReadonlyArray<{
     kind: string; board_id: string; rank?: number; participants?: number; reason?: string;
   }>;
@@ -162,14 +168,18 @@ export const handleMetricSubmit = async (
   const wiring = deps.submitter?.();
   // ⚠ A server with no publishing identity reports not-sent. Throwing would make "I have
   // not set this up" indistinguishable from "the send failed".
-  if (wiring === undefined) return { ok: true, sent: false, results: [] };
+  if (wiring === undefined) {
+    return { ok: true, sent: false, results: [], skip_reason: 'no_identity' };
+  }
   const res = await submitBoards({
     ...wiring,
     publications: createBoardPublicationStore(deps.db),
     snapshot: createMetricSnapshotStore(deps.db),
     now: deps.now ?? (() => Date.now()),
   });
-  return { ok: true, sent: res.sent, results: res.results };
+  return res.sent
+    ? { ok: true, sent: true, results: res.results }
+    : { ok: true, sent: false, results: res.results, skip_reason: res.reason };
 };
 
 export const makeMetricHandlers = (deps: MetricRpcDeps | undefined) => {

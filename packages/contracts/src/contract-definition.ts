@@ -643,6 +643,36 @@ export const contractScopeMatches = (
   );
 };
 
+/** ⛔⛔ THE CONNECTION AXIS ALONE — "may this contract use THIS connection?"
+ *
+ *  Exists because the axis was AUTHORED AND NEVER READ. `derive-recipe-capability`
+ *  goes out of its way to complete `scope.connection_names`, twice noting that an
+ *  empty axis is a wildcard and *"the connection fence would not bite"*, and
+ *  `mint-door-contract` writes it onto the door — but a census (2026-08-29) found
+ *  exactly two production callers of {@link contractScopeMatches}: the session-grant
+ *  resolver, which threads `connection_name` and DOES enforce it, and the policy
+ *  overlay's metering probe, which states outright that `connection_name` is
+ *  unthreaded. Every other read is a mint-time merge or a display projection. So for
+ *  a STANDING DOOR the axis was decorative.
+ *
+ *  ⛔ IT SHARES `axisAdmits` WITH THE FULL MATCHER, deliberately. A second
+ *  `includes()` written here is how a wildcard (empty ⇒ admit-any) and a restriction
+ *  drift apart — and the drift direction that matters is the silent one: a
+ *  re-implementation that treated empty as DENY would dark-boot every door whose
+ *  scope leaves the axis open, which is most of them.
+ *
+ *  ⚠ An ABSENT connection name on a dispatch that HAS a restricted axis fails CLOSED,
+ *  same as the full matcher — a caller that cannot say which connection it is about
+ *  to use must not be admitted against a list that names some. */
+export const contractScopeAdmitsConnection = (
+  scope: ContractScope,
+  connection_name: string | undefined,
+): boolean => {
+  const allowed = scope.connection_names;
+  if (allowed === undefined || allowed.length === 0) return true; // wildcard
+  return connection_name !== undefined && allowed.includes(connection_name);
+};
+
 // ════════════════════════════════════════════════════════════════
 // D-186 Slice C — session-grant live-control surface
 // (`collection.contract.session_grant.{list,revoke}`)

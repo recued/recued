@@ -19,8 +19,13 @@ import { createPublicKey } from 'node:crypto';
 
 import { resolveProEntitlementPublicKey } from '../pro-convenience/entitlement-source.js';
 
-const PROD_CLOUD = 'https://api.recued.com';
-const STAGING_CLOUD = 'https://api.mirror.example';
+/** ⛔⛔ THESE USED TO BE `cloudBaseUrl` ARGUMENTS, AND THAT PARAMETER DID NOTHING.
+ *  Several cases here iterated base URLs and asserted the production key came back for
+ *  every one — true only because the option was ignored, while reading as though the
+ *  host selected the key. The option is deleted; what selects is `cloudApex` (+ the
+ *  override), and these now say so. */
+const PROD_APEX = 'recued.com';
+const MIRROR_APEX = 'mirror.example';
 
 /** Import the base64 SPKI DER exactly as `verifyClaimEnvelope` would need to.
  *  Throws on anything that is not a real Ed25519 public key. */
@@ -32,17 +37,17 @@ const importSpki = (b64: string) =>
   });
 
 describe('resolveProEntitlementPublicKey', () => {
-  it('never resolves empty — a missing key fails closed silently', () => {
-    for (const cloudBaseUrl of [PROD_CLOUD, STAGING_CLOUD, undefined]) {
-      expect(resolveProEntitlementPublicKey({ cloudBaseUrl })).toBeTruthy();
+  it('never resolves empty for the shipped apex — a missing key fails closed silently', () => {
+    for (const cloudApex of [PROD_APEX, undefined]) {
+      expect(resolveProEntitlementPublicKey({ cloudApex })).toBeTruthy();
     }
   });
 
-  it('both constants are importable Ed25519 SPKI keys, not just non-empty strings', () => {
-    for (const cloudBaseUrl of [PROD_CLOUD, STAGING_CLOUD]) {
-      const key = importSpki(resolveProEntitlementPublicKey({ cloudBaseUrl }));
-      expect(key.asymmetricKeyType).toBe('ed25519');
-    }
+  it('the shipped constant is an importable Ed25519 SPKI key, not just a non-empty string', () => {
+    // ⚠ ONE constant, not two — a mirror supplies its own via the override, so there is
+    // no second embedded key to iterate over.
+    const key = importSpki(resolveProEntitlementPublicKey({ cloudApex: PROD_APEX }));
+    expect(key.asymmetricKeyType).toBe('ed25519');
   });
 
   it('ships exactly ONE trust anchor — a mirror supplies its own', () => {
@@ -54,11 +59,13 @@ describe('resolveProEntitlementPublicKey', () => {
     expect(resolveProEntitlementPublicKey({ override: 'OTHER' })).toBe('OTHER');
   });
 
-  it('defaults to production for an unknown / absent cloud host', () => {
-    const prod = resolveProEntitlementPublicKey({ cloudBaseUrl: PROD_CLOUD });
-    expect(resolveProEntitlementPublicKey({})).toBe(prod);
-    expect(resolveProEntitlementPublicKey({ cloudBaseUrl: 'https://example.invalid' })).toBe(prod);
-    expect(resolveProEntitlementPublicKey({ cloudBaseUrl: 'not a url' })).toBe(prod);
+  it('an absent apex defaults to production', () => {
+    // ⛔ AND AN UNKNOWN APEX DOES NOT — it refuses (next case). The old version of this
+    // asserted that `example.invalid` and even `'not a url'` resolved to production,
+    // which sounded like a safe default and was really the parameter being discarded.
+    expect(resolveProEntitlementPublicKey({})).toBe(
+      resolveProEntitlementPublicKey({ cloudApex: PROD_APEX }),
+    );
   });
 
   it('⛔⛔ a configured apex with NO key override REFUSES rather than mis-verifying', () => {
@@ -67,30 +74,33 @@ describe('resolveProEntitlementPublicKey', () => {
     // closed, but silently and a long way from the cause. There used to be a
     // second hardcoded key kept in step by a host sniff; with both now
     // configuration, the pairing is enforced instead of assumed.
-    expect(() => resolveProEntitlementPublicKey({ cloudApex: 'mirror.example' })).toThrow(
+    expect(() => resolveProEntitlementPublicKey({ cloudApex: MIRROR_APEX })).toThrow(
       /RECUED_PRO_ENTITLEMENT_PUBLIC_KEY_B64/,
     );
     // …and supplying the pair is fine.
     expect(
-      resolveProEntitlementPublicKey({ cloudApex: 'mirror.example', override: 'KEY' }),
+      resolveProEntitlementPublicKey({ cloudApex: MIRROR_APEX, override: 'KEY' }),
     ).toBe('KEY');
   });
 
-  it('the cloud host no longer selects a key — only the apex + override do', () => {
-    const prod = resolveProEntitlementPublicKey({});
-    expect(resolveProEntitlementPublicKey({ cloudBaseUrl: 'https://cloud.mirror.example' })).toBe(prod);
+  it('⛔ PASSING A CLOUD BASE URL IS NOW A COMPILE ERROR, not a silent no-op', () => {
+    // @ts-expect-error — `cloudBaseUrl` was removed precisely so this cannot compile.
+    // Six call sites were passing it as though it selected the environment, including
+    // both live-drive tools and the entitlement checker's own negative control.
+    expect(() => resolveProEntitlementPublicKey({ cloudBaseUrl: 'https://api.mirror.example' }))
+      .not.toThrow();
   });
 
   it('an explicit override wins, so a private deployment can point at its own signer', () => {
-    const other = resolveProEntitlementPublicKey({ cloudBaseUrl: STAGING_CLOUD });
+    const other = resolveProEntitlementPublicKey({ cloudApex: MIRROR_APEX, override: 'MIRROR_KEY' });
     expect(
-      resolveProEntitlementPublicKey({ override: other, cloudBaseUrl: PROD_CLOUD }),
+      resolveProEntitlementPublicKey({ override: other, cloudApex: PROD_APEX }),
     ).toBe(other);
   });
 
   it('a blank / whitespace override is ignored rather than resolving to empty', () => {
-    const prod = resolveProEntitlementPublicKey({ cloudBaseUrl: PROD_CLOUD });
-    expect(resolveProEntitlementPublicKey({ override: '', cloudBaseUrl: PROD_CLOUD })).toBe(prod);
-    expect(resolveProEntitlementPublicKey({ override: '   ', cloudBaseUrl: PROD_CLOUD })).toBe(prod);
+    const prod = resolveProEntitlementPublicKey({ cloudApex: PROD_APEX });
+    expect(resolveProEntitlementPublicKey({ override: '', cloudApex: PROD_APEX })).toBe(prod);
+    expect(resolveProEntitlementPublicKey({ override: '   ', cloudApex: PROD_APEX })).toBe(prod);
   });
 });

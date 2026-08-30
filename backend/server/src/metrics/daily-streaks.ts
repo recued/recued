@@ -9,6 +9,13 @@
  *  at 10am is a guess that an approval at 4pm falsifies — and since a streak feeds a
  *  RECORD, a wrong credit is permanent. So this walks COMPLETE days only, never today.
  *
+ *  ⛔⛔ A HANDS-OFF DAY REQUIRES WORK (v2). "Zero approvals" alone credits an IDLE
+ *  server one day per day forever — the user who reported it had nothing running and a
+ *  streak of 2 — and makes running nothing the optimal play. So a day counts only if at
+ *  least one run STARTED and no decision was answered. ⚠ An idle day BREAKS the run
+ *  rather than holding it: "5 consecutive days" has to mean five actual days, and a hold
+ *  would let a streak span an arbitrary quiet stretch.
+ *
  *  ⛔⛔ AND THE DEFINITION IS NARROWER THAN § D5.3's WORDING, WHICH CANNOT BE BUILT.
  *  The spec says "days needing zero approvals". **There is no `approval_ask_raised`
  *  action** — the audit log records `approval_allow` / `approval_deny`, i.e. ANSWERS.
@@ -36,6 +43,15 @@ export const HANDS_OFF_LONGEST_KEY = 'hands_off.longest';
  *  times a day — would advance the streak once per CYCLE instead of once per day. */
 export const HANDS_OFF_LAST_DAY_KEY = 'hands_off.last_day';
 export const UNATTENDED_RUN_KEY = 'unattended_days.current';
+/** Which hands-off rule the STORED numbers were computed under.
+ *
+ *  ⛔⛔ A v1 STREAK IS NOT A SMALL v2 STREAK — it is a different quantity. v1 counted
+ *  days with no answered decision, idle days included; v2 counts days of real work with
+ *  no answered decision. `current` self-corrects on the next fold, but `longest` is a
+ *  RECORD and only ever rises, so a number minted from idle days would stand for the
+ *  life of the server. It is retired once, here, rather than left to look earned. */
+export const HANDS_OFF_RULE_VERSION_KEY = 'hands_off.rule_version';
+export const HANDS_OFF_RULE_VERSION = 2;
 /** Per-recipe accumulated run total. ⛔ ACCUMULATED, NOT COUNTED. A `GROUP BY` over the
  *  audit log would silently measure "runs still RETAINED" — the log is quota'd and evicts
  *  oldest-first — so the badge would un-earn itself as the log rolled. Adding each
@@ -66,6 +82,9 @@ const sourcesIn = (cls: AutopilotClass): string => {
 
 export interface DailyStreakResult {
   readonly days_folded: number;
+  /** True on the single fold that discarded v1 numbers — surfaced so the dashboard can
+   *  say the record went away because the RULE changed, not because it was never set. */
+  readonly reset_for_rule_change: boolean;
   readonly hands_off_current: number;
   readonly hands_off_longest: number;
   /** True when a coverage gap forced a reset — surfaced so the dashboard can say the
@@ -84,6 +103,24 @@ export const advanceDailyStreaks = (
   const today = dayIndex(now);
   const lastFolded = artifact.readCounter(HANDS_OFF_LAST_DAY_KEY);
   const earned: string[] = [];
+
+  // ⛔ ONE-TIME, AND ONLY FOR A SERVER THAT ACTUALLY HAS v1 NUMBERS. A fresh server has
+  // no fold cursor, so it is stamped at the current rule and nothing is retired — the
+  // correction must not read as "your records were reset" on first boot.
+  let reset_for_rule_change = false;
+  if (artifact.readCounter(HANDS_OFF_RULE_VERSION_KEY) === undefined) {
+    if (lastFolded !== undefined) {
+      artifact.setCounter(HANDS_OFF_CURRENT_KEY, 0, now);
+      artifact.retireForRuleChange(HANDS_OFF_LONGEST_KEY);
+      // ⚠ THE BADGE GOES WITH THE NUMBER THAT EARNED IT. "Hands off" was awarded on the
+      // first day with no decisions — which on an idle server was its second day alive.
+      // Keeping the badge while retiring the streak would leave the page asserting the
+      // same thing in the section that is harder to argue with.
+      artifact.retireForRuleChange('first_zero_approval_day');
+      reset_for_rule_change = true;
+    }
+    artifact.setCounter(HANDS_OFF_RULE_VERSION_KEY, HANDS_OFF_RULE_VERSION, now);
+  }
 
   // ⛔ THE FIRST EVER RUN SEEDS AND FOLDS NOTHING. Setting the cursor to `today - 2`
   // would fold yesterday immediately — crediting a day on which THIS SERVER WAS NOT
@@ -124,8 +161,13 @@ export const advanceDailyStreaks = (
         AND json_extract(data, '$.timestamp') < ?`,
   );
 
+  // ⛔ `total` IS NOT `unattended + attended`. A run whose trigger_source falls in
+  // NEITHER class (an unclassified source — the diagnostics carry that count) is still a
+  // run that happened. Hands-off asks "did it work", not "was the work classifiable", so
+  // an unclassified source must not silently break a real streak.
   const runs = db.prepare(
     `SELECT
+       COUNT(*) AS total,
        COALESCE(SUM(CASE WHEN json_extract(data, '$.trigger_source')
                            IN (${sourcesIn('unattended')}) THEN 1 ELSE 0 END), 0) AS unattended,
        COALESCE(SUM(CASE WHEN json_extract(data, '$.trigger_source')
@@ -143,9 +185,20 @@ export const advanceDailyStreaks = (
     const from = day * DAY_MS;
     const to = from + DAY_MS;
     const decisions = (answered.get(from, to) as { n: number }).n;
-    const r = runs.get(from, to) as { unattended: number; attended: number };
+    const r = runs.get(from, to) as { total: number; unattended: number; attended: number };
 
-    current = decisions === 0 ? current + 1 : 0;
+    // ⛔⛔ WORK IS REQUIRED, NOT JUST QUIET. v1 credited any day with zero answered
+    // decisions, so an IDLE server accrued a "hands-off streak" of one per day forever —
+    // and the way to maximise the number was to run nothing, which is § D6's optimal
+    // cheat exactly. A day with no runs is not hands-off; it is a day off.
+    //   🔑 THIS OVERTURNS A DELIBERATE v1 CARVE-OUT, not an oversight: the sibling
+    //   counter below already demanded real work, and this one was reasoned as "about
+    //   decisions, not work" — three tests asserted it. The owner ruled the OUTCOME
+    //   wrong: a growing streak on a server doing nothing claims credit for idleness,
+    //   while the label promises autonomy.
+    // ⚠ The two counters still differ, and that is the point: hands-off wants ANY run
+    // with no approvals; the autopilot week below wants runs that are ALL unattended.
+    current = r.total > 0 && decisions === 0 ? current + 1 : 0;
     // ⚠ AT LEAST ONE UNATTENDED RUN IS REQUIRED, so an IDLE server does not earn a week
     // on autopilot. Rewarding "did nothing" would be § D6's failure exactly — an
     // optimal cheat that is not the desired behaviour.
@@ -193,6 +246,7 @@ export const advanceDailyStreaks = (
 
   return {
     days_folded: folded,
+    reset_for_rule_change,
     hands_off_current: current,
     hands_off_longest: artifact.readRecord(HANDS_OFF_LONGEST_KEY) ?? 0,
     reset_for_gap: reset,

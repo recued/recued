@@ -344,7 +344,7 @@ export const distinctiveTerms = (userMessage: string): readonly string[] => {
 
 /** A hit is a NON-EMPTY named array, and nothing else.
  *
- *  ⛔ A DENIED READ ANSWERS `ok: true`, NOT `ok: false`. `collectionReadFenced`
+ *  ⛔ A DENIED READ ANSWERS `ok: true`, NOT `ok: false`. `wrapCollectionFence`
  *  returns `{ ok: true, result: { matches: [], hint } }` on purpose — the Tier-1
  *  ANTI-LOOP invariant, so a fenced model is told the fence rather than looping.
  *  That makes `ok` useless as a permission signal here; the EMPTY ARRAY is what

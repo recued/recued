@@ -73,7 +73,9 @@ import {
   readOwnerOperationOverride,
   standingClosureAdmits,
   operationSpecHash,
+  PlatformRecordIdError,
   QualifiedWorkEntityIdError,
+  routePlatformRecordOperationArgs,
   resolveCatalogOperationPolicy,
   resolveCliReachabilityPolicy,
   resolveTrustCeiling,
@@ -982,6 +984,34 @@ const outputPath = (path: string): string[] => ['result', ...pathSegments(path)]
 const recordsPathForResultPath = (resultPath: string): string[] =>
   resultPath.length > 0 ? outputPath(resultPath) : ['result'];
 
+/** D-254 slice 2 — WHERE THE RECORDS SIT in the value `runCatalogOperation`
+ *  returns, resolved from the manifest exactly as the pagination follower resolves
+ *  it: a non-empty per-op `result_path` override wins over the surface default,
+ *  then `result.` is prepended.
+ *
+ *  ⛔⛔ EXPORTED SO NOBODY RE-DERIVES IT. A caller that wants to read the returned
+ *  records — the raw-op door, composing routable ids — cannot guess this: the
+ *  leading `result` segment is an executor-envelope detail, and the override
+ *  precedence is a second rule on top. Re-deriving `'result.' + result_path` at a
+ *  second site would agree with this one until the day a pack declares a per-op
+ *  override, and then disagree SILENTLY — the caller would read an absent path,
+ *  find nothing, and emit no ids, which is indistinguishable from an op that
+ *  returned no records. One rule, one function, two consumers. */
+export const resolveCatalogRecordsPath = (
+  manifest: IngredientManifest,
+  operationKey: string,
+): readonly string[] => {
+  const opResultPath = manifest.operations?.[operationKey]?.result_path;
+  const api = manifest.surfaces?.api;
+  const resultPath =
+    typeof opResultPath === 'string' && opResultPath.length > 0
+      ? opResultPath
+      : typeof api?.result_path === 'string'
+        ? api.result_path
+        : '';
+  return recordsPathForResultPath(resultPath);
+};
+
 const pageParamKey = (placement: 'query' | 'body', param: string): string => `${placement}.${param}`;
 
 /** An explicitly empty static body is lowered to `body_raw: '{}'` so a required
@@ -1510,13 +1540,7 @@ const followPagination = async (
   // read-projection ref (`effectiveResultPath`), so the follower merges pages at
   // exactly the envelope the projection reads (a 3rd-party pack may use a per-op
   // envelope; first-party CRM catalogs declare none → the surface default).
-  const opResultPath = a.manifest.operations?.[a.operationKey]?.result_path;
-  const resultPath =
-    typeof opResultPath === 'string' && opResultPath.length > 0
-      ? opResultPath
-      : typeof api?.result_path === 'string'
-        ? api.result_path
-        : '';
+
   // Pagination applies to READ-tier ops with an operation-local contract or a
   // legacy surface dialect. Non-read op / no dialect → no follow (the gated first
   // result is returned as-is). `result_path` may be empty: that is the catalog
@@ -1532,7 +1556,7 @@ const followPagination = async (
     return { result: a.firstResult };
   }
 
-  const recordsPath = recordsPathForResultPath(resultPath);
+  const recordsPath = resolveCatalogRecordsPath(a.manifest, a.operationKey);
   const accumulated: unknown[] = [...asArrayValue(getByPath(a.firstResult, recordsPath))];
   let pages = 1;
   let lastPage: unknown = a.firstResult;
@@ -2398,6 +2422,36 @@ export const runCatalogOperation = async (
     }
     throw error;
   }
+
+  // D-254 slice 1 — the same rule for the OTHER id family. A platform-record id
+  // (`<vendor>_<entity>_<connection>_<native>`) is routing metadata too, and
+  // until now nothing could read it back: the composer shipped with no inverse,
+  // so a record that reached a recipe step could not say which connection it
+  // came from. Unwrapped HERE, beside the work-entity twin and for the identical
+  // reason — a mismatch must not be approved into a wrong-account call.
+  try {
+    effectiveArgs = routePlatformRecordOperationArgs({
+      id_arg: manifest.operations?.[call.operation_id]?.record_id_arg,
+      operation: call.operation_id,
+      connection_name: call.connection_name,
+      args: effectiveArgs,
+    }).args;
+  } catch (error) {
+    if (error instanceof PlatformRecordIdError) {
+      emitGatewayAudit(ctx, {
+        ...auditBase(slug, call, resolution, ctx, stepMeta, auditArgHash),
+        outcome: 'failed',
+        // Deliberately NOT the work-entity classifier. Two id families fail for
+        // the same reason and a shared code would send whoever greps it to the
+        // wrong router.
+        failure_mode: error.code === 'PLATFORM_ID_SOURCE_MISMATCH'
+          ? 'platform_record_source_mismatch'
+          : 'platform_record_connection_required',
+      });
+    }
+    throw error;
+  }
+
   auditArgHash = auditCanonicalArgHash(
     effectiveArgs,
     manifest.operations?.[call.operation_id]?.hash_exclude_args,

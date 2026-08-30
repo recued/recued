@@ -65,12 +65,16 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // second per-(peer, label) flag store beside the contract that already answers
   // that question; the label is a `peer.label.*` contract grant now.
   peer: 3,
+  /** ⛔ D-213's interaction-recall corpus gets its OWN domain, not a `core.memory.*`
+   *  id — the two are different stores and an id saying `memory` would re-conflate
+   *  them. One op: the grant handle that finally makes `recall.search` revocable. */
+  recall: 1,
   data: 18, // D-210 closeout — + form-response-list
   webhook: 1,
   // D-232 § 23 — +1 for `core.storage.exchange.status`, the asker's own
   // "what happened to my letter" read.
   // 19 → 23 on 2026-08-16: D-244 csv.filter/columns/stats, D-245 file.put-ref.
-  storage: 23,
+  storage: 24,
   schedule: 1,
   // D-207 §4.5 — 14 offer/order + the 4 D-196 `customer-access` ops merged in
   // from their retired top-level domain (`core.seller.customer-access.*`), + the
@@ -270,6 +274,11 @@ describe('D-182 slice 3a — kernel op registry', () => {
       // exists on every server rather than only where a pack was added.
       'core.peer.receive-answer|peer|(native)|write',
       'core.peer.receive-ask|peer|(native)|write',
+      // ⛔ NATIVE, own domain — the grant handle for `recall.search`. It buys the ROW
+      // without touching the WIRE: the tool stays hand-built into the chat registry
+      // view, so no door gains it. Adding it to `TIER1_TOOL_NAMES` would have bought
+      // the row by also exposing it, which inverts D-213.
+      'core.recall.search|recall|(native)|read',
       'core.schedule.recipe|schedule|schedule-recipe|write',
       // D-207 §4.5 — the op path moved under `seller`; the backing capability
       // slug (`customer-access-*`) is deliberately unchanged.
@@ -304,6 +313,13 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.storage.data-file-read|storage|data-file-read|read',
       'core.storage.exchange.status|storage|exchange-status|read',
       'core.storage.file.delete|storage|file-delete|destructive',
+      // ⛔ NATIVE (no backing ingredient) — the one grant that says "may bytes be
+      // fetched from a connected vendor". It gates `resolveRemoteFileBytes`, the single
+      // function both remote-reach routes funnel through (`handleFileRead`'s
+      // `file:remote:*` branch + the CLI executor's `input_materialize` reader). It is
+      // deliberately NOT a second `core.storage.file.read`: that op's local/remote
+      // branch is chosen by the ARG, and an op gate fires before the arg is known.
+      'core.storage.file.fetch-remote|storage|(native)|read',
       'core.storage.file.get|storage|file-get|read',
       'core.storage.file.list|storage|file-list|read',
       'core.storage.file.move|storage|file-move|destructive',
@@ -459,11 +475,13 @@ describe('D-182 slice 3a — kernel op registry', () => {
       domain: 'mail',
       backing_slug: 'mail-get',
       risk: 'read',
+      entity: 'mail',
     };
     const okNative: KernelOpEntry = {
       op: 'core.data.enrichment.read',
       domain: 'data',
       risk: 'read',
+      entity: 'enrichment',
       native: true,
     };
 
@@ -482,7 +500,7 @@ describe('D-182 slice 3a — kernel op registry', () => {
     it('rejects a non-closed-kind (canonical-convention) domain', () => {
       expect(() =>
         assertKernelOpRegistry([
-          { op: 'core.crm.deal.search', domain: 'crm', backing_slug: 'x', risk: 'read' },
+          { op: 'core.crm.deal.search', domain: 'crm', backing_slug: 'x', risk: 'read', entity: 'crm' },
         ]),
       ).toThrow(/closed-kind/);
     });
@@ -512,7 +530,7 @@ describe('D-182 slice 3a — kernel op registry', () => {
     it('still rejects a native op in a NON-closed-kind domain (item 2 holds for native)', () => {
       expect(() =>
         assertKernelOpRegistry([
-          { op: 'core.crm.deal.search', domain: 'crm', risk: 'read', native: true },
+          { op: 'core.crm.deal.search', domain: 'crm', risk: 'read', native: true, entity: 'crm' },
         ]),
       ).toThrow(/closed-kind/);
     });

@@ -140,6 +140,7 @@ import {
 import { grandfatherPrimitiveGrants, reconcileOwnerGrants } from '../owner-grant-reconcile.js';
 import { installRecipeGrantSeed } from '../recipe-grant-seed.js';
 import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
+import { createRemoteFetchAdmitter } from '../remote-fetch-admission.js';
 import { catalogSlugForConnection } from '../connection-operation-profile-boot.js';
 import { createLocalManifestStore } from '../ingredient-authoring/local-manifest-store.js';
 import { liveVendorRegistry } from '../connection-convention-families.js';
@@ -583,6 +584,7 @@ export const composeAppContext = (
   // undefined until both exist; the stateless byte-resolver registry is built
   // once (memoized). Mirrors the inline bundle the pair-RPC used to build.
   let remoteByteResolversMemo: RemoteFileByteResolverRegistry | undefined;
+  const admitRemoteFetch = createRemoteFetchAdmitter(() => contractStoreRef);
   const getRemoteFileReadDeps = (): RemoteFileReadDeps | undefined => {
     if (!fileMetaStoreRef || !fileSourceConnResolverRef) return undefined;
     remoteByteResolversMemo ??= buildRemoteFileByteResolvers();
@@ -590,6 +592,7 @@ export const composeAppContext = (
       fileMetaStore: fileMetaStoreRef,
       resolveConnection: fileSourceConnResolverRef,
       byteResolvers: remoteByteResolversMemo,
+      admitRemoteFetch,
     };
   };
   let workEntitySourceMirrorRef: WorkEntitySourceMirrorStore | undefined;

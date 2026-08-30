@@ -114,6 +114,25 @@ export const DISPATCH_ROLES = [
   // never absent — a `granted:false` revoke survives the reconcile). Isolated from every
   // policy role so a grant row never enters a contract/policy dispatch.
   'contract_grant',
+  // ⛔⛔ THE PRIMITIVE-GRANDFATHER WATERMARK — one row per non-owner contract, written
+  // the first (and only) time `grandfatherPrimitiveGrants` covers it.
+  //
+  // The grandfather exists because D-228 slice 5's gate would otherwise STRIP the
+  // always-on tools from every already-issued door on upgrade: those doors could hold
+  // no `primitive.*` row, and an absent row is fail-closed for a scoped door. So it
+  // writes `granted:true` for anything missing. Without a watermark it cannot tell the
+  // two causes of "missing" apart — "this contract predates the gate" (grandfather it)
+  // and "this PRIMITIVE was added after this contract was minted" (its minter never
+  // saw it, and must not be given it). Driven: adding a name to `TIER1_TOOL_NAMES` and
+  // rebooting flipped an existing door's row from `undefined` to `true`.
+  //
+  // ⛔ A SEPARATE SCOPE, NOT A RESERVED KEY IN `contract_grant`. A marker row in the
+  // grant scope is enumerated by `listForContract` — and `stripe-entitlement-sync.ts`
+  // uses `listForContract(id).length > 0` as a truthiness test, so the marker would
+  // make an otherwise-empty contract read as non-empty. `contract-grant-handler` and
+  // `peer-exposed-tools` walk the same rows. A bookkeeping row must not sit where
+  // policy rows are counted.
+  'primitive_grandfather',
 ] as const;
 export type DispatchRole = (typeof DISPATCH_ROLES)[number];
 export const isDispatchRole = (v: unknown): v is DispatchRole =>
@@ -155,6 +174,8 @@ export const INVENTORY_DISPATCH_ROLES = [
   // Grant-foundation slice 3 — the unified (contract_id × entry_key) grant set: read
   // directly by the grant resolver, never a merged policy → NOT policy-projected.
   'contract_grant',
+  // Bookkeeping, read directly by the boot grandfather — never a merged policy.
+  'primitive_grandfather',
 ] as const satisfies readonly DispatchRole[];
 export const isInventoryRole = (role: DispatchRole): boolean =>
   (INVENTORY_DISPATCH_ROLES as readonly string[]).includes(role);
@@ -373,6 +394,18 @@ const VALUE_SHAPES: Readonly<Record<string, ValueShape>> = {
    *  (`clearForSourcePack`) without disturbing a hand-minted door's own
    *  `scope.operation_ids` grant or an owner/manual row (which carry no
    *  `source_pack`). Optional: mint-fold / owner / manual writes omit it. */
+  /** The primitive-grandfather watermark. `primitive_count` is diagnostic, not a
+   *  decision input — it records WHAT the contract was grandfathered against, so a
+   *  later reader can tell a v1 mark (12 primitives) from one written after the set
+   *  grew, without re-deriving it from a changelog. */
+  primitive_grandfather_mark: {
+    fields: ['grandfathered_at', 'primitive_count'],
+    types: {
+      grandfathered_at: 'datetime',
+      primitive_count: 'number?',
+    },
+    required: ['grandfathered_at'],
+  },
   grant_entry: {
     fields: ['granted', 'set_at', 'source_pack'],
     types: {
@@ -1137,6 +1170,18 @@ const COMPOSITE_KEYS: Readonly<Record<string, CompositeKeySchema>> = {
     merge_precedence: 0,
     merge_rule: 'override',
     writeable_by: 'user+kernel',
+  },
+  primitive_grandfather: {
+    // Path `contract.primitive_grandfather.<contract_id>`. One row per contract, written
+    // ONCE. `kernel` only — this is not a user decision, it is a record that a migration
+    // already ran, and letting the UI clear it would re-open the door it closed.
+    segments: ['contract_id'],
+    required: ['contract_id'],
+    value_shape: 'primitive_grandfather_mark',
+    applies_to: ['primitive_grandfather'],
+    merge_precedence: 0,
+    merge_rule: 'override',
+    writeable_by: 'kernel',
   },
 };
 

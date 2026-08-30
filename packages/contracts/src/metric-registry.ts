@@ -88,6 +88,13 @@ export interface MetricDefinition {
   readonly publishable: boolean;
   /** Human label for the dashboard. */
   readonly label: string;
+  /** ⛔⛔ ONE PLAIN SENTENCE SAYING WHAT THE NUMBER MEANS, and it travels on the wire
+   *  for the same reason `direction` does (see `metric-rpc.ts`): client and server
+   *  version independently, so a description held client-side would eventually describe
+   *  a rule the server no longer runs. ⚠ It restates `logic` for a reader who does not
+   *  know the schema — it is not a second definition, and it must not disagree with the
+   *  logic line above it. */
+  readonly description: string;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -231,6 +238,7 @@ export const METRIC_REGISTRY: Readonly<Record<string, MetricDefinition>> = {
     direction: 'higher',
     publishable: true,
     label: 'Autopilot',
+    description: 'Of the runs Recued could classify, the share that started on their own instead of you starting them.',
   },
   economy: {
     metric_id: 'economy',
@@ -244,6 +252,7 @@ export const METRIC_REGISTRY: Readonly<Record<string, MetricDefinition>> = {
     direction: 'higher',
     publishable: true,
     label: 'Economy',
+    description: 'Useful items finished for every 1,000 tokens spent.',
   },
   toolmaker: {
     metric_id: 'toolmaker',
@@ -257,6 +266,7 @@ export const METRIC_REGISTRY: Readonly<Record<string, MetricDefinition>> = {
     direction: 'higher',
     publishable: true,
     label: 'Toolmaker',
+    description: 'The share of AI actions that went through one of your recipes rather than being improvised.',
   },
   waved_through: {
     metric_id: 'waved_through',
@@ -270,6 +280,7 @@ export const METRIC_REGISTRY: Readonly<Record<string, MetricDefinition>> = {
     direction: 'higher',
     publishable: true,
     label: 'Waved through',
+    description: 'Actions that could have asked you, for each decision you actually answered.',
   },
   creator: {
     metric_id: 'creator',
@@ -281,6 +292,7 @@ export const METRIC_REGISTRY: Readonly<Record<string, MetricDefinition>> = {
     // ⛔ § D2 — a count publishes VOLUME, not SKILL. Dashboard only.
     publishable: false,
     label: 'Creator',
+    description: 'How many actions were risky enough that they could have asked you.',
   },
   burst: {
     metric_id: 'burst',
@@ -297,6 +309,7 @@ export const METRIC_REGISTRY: Readonly<Record<string, MetricDefinition>> = {
     direction: 'higher',
     publishable: true,
     label: 'Burst',
+    description: 'The most actions Recued took in one unbroken stretch.',
   },
   throughput: {
     metric_id: 'throughput',
@@ -310,6 +323,7 @@ export const METRIC_REGISTRY: Readonly<Record<string, MetricDefinition>> = {
     direction: 'higher',
     publishable: true,
     label: 'Throughput',
+    description: 'Useful items finished per minute of run time.',
   },
 };
 

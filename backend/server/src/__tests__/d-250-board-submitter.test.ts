@@ -289,3 +289,74 @@ describe('D-250 § B3.6 — the wire decimal', () => {
     expect(toWireDecimal(0.62499)).toBe('0.6250');
   });
 });
+
+// ────────────────────────────────────────────────────────────────
+// 7. § B3.3 — a not-sent result NAMES ITS CAUSE
+// ────────────────────────────────────────────────────────────────
+
+/** ⛔⛔ FOUR UNRELATED STATES USED TO RETURN THE SAME `{sent:false, results:[]}` — no
+ *  identity, no handle, nothing granted, nothing measured, and a refused POST. Three of
+ *  those are a correctly-working server that has not opted in and one is a fault, and the
+ *  owner-facing surface could only ever say "nothing happened". A live drive is what made
+ *  it visible: with no board existing anywhere yet, `sent:false` was the guaranteed answer
+ *  and the button produced no change of any kind.
+ *
+ *  🔑 EACH CASE MUTATES ONE INPUT FROM A WORKING SEND. Asserting five reasons off five
+ *  differently-broken fixtures would pass even if the code returned a constant — the
+ *  discrimination is the property, so the fixtures must differ in exactly one thing. */
+describe('D-250 § B3.3 — `sent: false` names which nothing it is', () => {
+  it('the control: a complete setup SENDS, and carries no reason', async () => {
+    seed();
+    const res = await submitBoards(deps());
+    expect(res.sent).toBe(true);
+    expect((res as { reason?: unknown }).reason).toBeUndefined();
+  });
+
+  it('⛔ NO HANDLE — nothing to publish AS', async () => {
+    seed();
+    const res = await submitBoards(deps({ resolveTarget: async () => null }));
+    expect(res).toMatchObject({ sent: false, reason: 'no_handle' });
+  });
+
+  it('⛔ NOTHING GRANTED — § D4’s default state, not a fault', async () => {
+    // Snapshot written, nothing published. The owner has opted into nothing.
+    stores().snapshot.write({
+      computed_at: NOW,
+      window: { from: NOW - 86_400_000, to: NOW },
+      metrics: [{ metric_id: 'autopilot', metric_version: 3, reading: metricValue(0.5) }],
+    });
+    const res = await submitBoards(deps());
+    expect(res).toMatchObject({ sent: false, reason: 'no_publications' });
+  });
+
+  it('⛔⛔ GRANTED BUT UNMEASURED IS A DIFFERENT FACT — the entry keeps its old number', async () => {
+    // § B3's retention means saying nothing leaves yesterday's value standing. Collapsing
+    // this into `no_publications` would tell an owner who IS on a board that they are not.
+    seed(METRIC_ABSENT);
+    const res = await submitBoards(deps());
+    expect(res).toMatchObject({ sent: false, reason: 'nothing_measured' });
+  });
+
+  it('⛔ A REFUSED POST IS THE ONLY FAULT IN THE UNION', async () => {
+    seed();
+    const res = await submitBoards(deps({
+      post: vi.fn(async () => ({ ok: false, text: async () => 'nope' })),
+    }));
+    expect(res).toMatchObject({ sent: false, reason: 'send_failed' });
+  });
+
+  it('⛔⛔ THE FIVE OUTCOMES ARE DISTINCT — a constant would pass every case above', async () => {
+    // Each assertion alone survives a `reason` hard-coded to its own value. Only reading
+    // them together proves the function discriminates.
+    const seen = new Set<string>();
+    seed();
+    seen.add((await submitBoards(deps({ resolveTarget: async () => null })) as { reason: string }).reason);
+    seen.add((await submitBoards(deps({
+      post: vi.fn(async () => ({ ok: false, text: async () => '' })),
+    })) as { reason: string }).reason);
+    stores().publications.revoke('ops', NOW);
+    stores().publications.confirmWithdrawn('ops');
+    seen.add((await submitBoards(deps()) as { reason: string }).reason);
+    expect(seen.size).toBe(3);
+  });
+});

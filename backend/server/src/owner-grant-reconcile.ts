@@ -76,6 +76,12 @@ export interface PrimitiveGrandfatherResult {
  *  Idempotent + revoke-preserving by the same three-state read the owner
  *  reconcile uses: a stored `false` is an owner tightening and is never
  *  overwritten. The OWNER contract is skipped — `reconcileOwnerGrants` owns it. */
+/** The watermark scope — see `contract-schema.ts`'s `primitive_grandfather` entry.
+ *  One row per contract, written ONCE, recording that this contract has already been
+ *  covered. Its presence is the whole fix: it is what lets an absent `primitive.*` row
+ *  mean "the minter did not choose this" instead of "we have not run yet". */
+const PRIMITIVE_GRANDFATHER_SCOPE = 'primitive_grandfather';
+
 export const grandfatherPrimitiveGrants = (
   contractStore: ContractStore,
   now: () => number = () => Date.now(),
@@ -90,6 +96,16 @@ export const grandfatherPrimitiveGrants = (
   contractStore.transaction(() => {
     for (const def of definitionStore.list()) {
       if (def.contract_id === OWNER_CONTRACT_ID) continue;
+      // ⛔⛔ THE WATERMARK — the reason this is a ONE-TIME migration in fact and not
+      // only in its own doc. Already marked ⇒ skip the contract ENTIRELY, so a
+      // primitive added after this contract was covered falls through to
+      // `opAuthorDefault` (fail-closed for a scoped door and a D-196 customer
+      // instance) instead of arriving `granted: true` on a door whose minter never
+      // saw it. Without this the loop reads the CURRENT `TIER1_TOOL_NAMES` on every
+      // boot and cannot tell "predates the gate" from "added since".
+      if (contractStore.get(PRIMITIVE_GRANDFATHER_SCOPE, [def.contract_id]) !== null) {
+        continue;
+      }
       let wrote = false;
       for (const name of TIER1_TOOL_NAMES) {
         const entry = primitiveGrantEntry(name);
@@ -98,6 +114,15 @@ export const grandfatherPrimitiveGrants = (
         seeded += 1;
         wrote = true;
       }
+      // ⛔ THE MARK IS WRITTEN WHETHER OR NOT ANY ROW WAS. A contract that already held
+      // every primitive row (minted with them, or covered by a prior run before this
+      // slice) still needs marking — otherwise it stays unmarked forever and every
+      // future primitive lands on it, which is the exact bug, surviving in the one case
+      // that looks most benign.
+      contractStore.put(PRIMITIVE_GRANDFATHER_SCOPE, [def.contract_id], {
+        grandfathered_at: ts,
+        primitive_count: TIER1_TOOL_NAMES.length,
+      });
       if (wrote) contracts += 1;
     }
   });

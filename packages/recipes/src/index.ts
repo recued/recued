@@ -179,6 +179,20 @@ export {
   vendorEntityResponseRows,
   buildProjectionTemplate,
 } from './connection-agnostic.js';
+
+// D-255 (post-retraction) — a canonical op invocation as the transient one-step
+// recipe the R2 dispatch path already runs. A canonical op is RECIPE-shaped (it
+// expands to a raw dispatch + a projection step), so the unit of exposure is a
+// recipe and every existing gate applies to the resolved vendor op.
+export {
+  buildCanonicalOpRecipe,
+  CANONICAL_OP_CONNECTION_VAR,
+  CANONICAL_OP_STEP_ID,
+} from './canonical-op-invocation.js';
+export type {
+  CanonicalOpInvocation,
+  CanonicalOpRecipeResult,
+} from './canonical-op-invocation.js';
 // Per-operand connection slots (R2 step 5, doc §1.3) — the shared slot-ref
 // grammar (`{{config.<var>}}`) + parse, one rule across resolver / validator /
 // install plan / dispatch slot derivation.

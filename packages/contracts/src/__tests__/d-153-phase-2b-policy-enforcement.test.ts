@@ -27,6 +27,13 @@ const EXPECTED_DENY_CODES: readonly AdmissionDenyCode[] = [
   'op_risk_denied',
   // D-187 AMENDMENT 3b — added by the backend op-admission grant gate.
   'op_not_granted',
+  // D-253 follow-on — the governing contract's `scope.connection_names` axis did
+  // not admit the connection this dispatch would authenticate with. ⛔ Deliberately
+  // NOT `scope_not_in_restrictions`: `connection.*` is unconditionally KEPT in
+  // `SCOPE_FENCE_KEEP_PATTERNS`, so anyone sent to inspect the path patterns would
+  // find the connection admitted and conclude the denial was a bug. Two fences,
+  // two codes.
+  'connection_not_in_scope',
   // D-188 — the master "Pause server" circuit-breaker denies at admission.
   'server_paused',
   // D-234 § 234.1 — the owner's per-peer CEILING declined to answer this peer
@@ -49,7 +56,7 @@ const expectDeny = (
 };
 
 describe('D-153 / D-187 — closed-list invariants', () => {
-  it('ADMISSION_DENY_CODES is the ordered seven-code closed list', () => {
+  it('ADMISSION_DENY_CODES is the ordered eight-code closed list', () => {
     expect(ADMISSION_DENY_CODES).toEqual(EXPECTED_DENY_CODES);
   });
 

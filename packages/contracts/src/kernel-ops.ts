@@ -90,6 +90,12 @@ export const KERNEL_DOMAINS: readonly KernelDomain[] = [
   { domain: 'mail', class: 'closed_kind' },
   { domain: 'contact', class: 'closed_kind' },
   { domain: 'memory', class: 'closed_kind' },
+  // ⛔ D-213's interaction-recall corpus — prior-conversation history, a DIFFERENT
+  // store from `memory` (curated knowledge). It gets its own domain rather than a
+  // `core.memory.recall.*` id precisely because D-213 separated the two: an id saying
+  // `memory` would re-conflate them for every future reader, and the whole reason
+  // recall needs a grant is that it is the most sensitive corpus on the server.
+  { domain: 'recall', class: 'closed_kind' },
   // D-198 follow-on (2026-07-11) — RUN HISTORY is its own kernel surface, not
   // "memory". `core.audit.read` (the `recued_getAudit` verb-op) used to live at
   // `core.memory.audit.read`, a D-120 fossil from when "memory" MEANT the

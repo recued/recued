@@ -338,12 +338,14 @@ export {
 } from './mail-compose/index.js';
 
 // D-250 § D7 — the owner's own stats surface.
-export { renderStatsPanel } from './stats/stats-panel.js';
+export { renderStatsPanel, artifactLabel } from './stats/stats-panel.js';
 export type { StatsPanelProps } from './stats/stats-panel.js';
 export {
   renderPublishDialog,
   renderStopPublishing,
   buildPublishPayload,
   toWireDecimal,
+  renderPublishStart,
+  renderSubmitNow,
 } from './stats/publish-dialog.js';
 export type { PublishDialogProps } from './stats/publish-dialog.js';

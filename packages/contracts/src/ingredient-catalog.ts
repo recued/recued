@@ -662,6 +662,28 @@ export interface OperationSpec {
    *  denying an out-of-scope call with `failure_mode: 'path_scope_violation'`.
    *  Absent → no path gating (whole-account access, the default). */
   path_scope?: PathScopeContract;
+  /** D-254 slice 1 — which arg carries a PLATFORM RECORD id
+   *  (`<vendor>_<entity>_<connection>_<native>`). Present ⇒ the gateway parses
+   *  that arg and unwraps it to the vendor-native id BEFORE grants, approval or
+   *  dispatch; an id naming another connection is refused there rather than
+   *  approved into a wrong-account call.
+   *
+   *  🔑 ONE FIELD, BECAUSE THE ID CARRIES THE REST. It already names the vendor,
+   *  the entity and the connection. What it cannot say is WHERE IN THE ARGS IT
+   *  SITS — and that is the whole declaration. An earlier cut also declared the
+   *  op's vendor and entity: the vendor duplicated the connection↔catalog pin
+   *  (`ConnectionOperationProfile.catalog_slug`) and the entity restated the op's
+   *  own annotation.
+   *
+   *  ⛔ THE ARG IS NAMED, NEVER GUESSED. Same rule the work-entity twin states
+   *  (`WorkEntitySourceOpBinding.id_arg`: "the declaration must NAME the arg; the
+   *  substrate never guesses"). Sniffing every string that parses would rewrite a
+   *  `query` arg holding an id from composed to native and silently change what
+   *  the operation searches for.
+   *
+   *  Absent ⇒ no routing; the arg passes through verbatim, which is what every
+   *  shipped vendor recipe passing a bare native id relies on. */
+  record_id_arg?: string;
   /** Connection-agnostic op dispatch — OPTIONAL per-op override of the
    *  surface-level `ProviderApiSurface.result_path` (where a collection op's
    *  records array sits in the raw vendor response), LOWERED from the authoring

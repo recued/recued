@@ -315,14 +315,15 @@ export const composeCertStack = async (
     ? createHttpProEntitlementSource({
         loadBinding: () => signingIdentity.keyStore.loadAccountBinding(),
         getEndpointUrl: () =>
+          // ⚠ NO APEX ARG — production resolves it from `RECUED_CLOUD_APEX`, and the
+          // env override above is what a mirror deployment uses. `cloudBaseUrl` used to
+          // be passed here and was never read.
           resolveProEntitlementMintUrl({
             override: env.RECUED_PRO_ENTITLEMENT_MINT_URL,
-            cloudBaseUrl,
           }),
         getPublicKeyB64: () =>
           resolveProEntitlementPublicKey({
             override: env.RECUED_PRO_ENTITLEMENT_PUBLIC_KEY_B64,
-            cloudBaseUrl,
           }),
       })
     : undefined;

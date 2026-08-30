@@ -150,6 +150,7 @@ export const ownerMetricsComputeTask: HousekeepingTaskInstance = {
         // OFF, not because a decision was answered — two very different readings that
         // a bare 0 cannot tell apart.
         streak_reset_for_gap: streaks.reset_for_gap,
+        streak_reset_for_rule_change: streaks.reset_for_rule_change,
         milestones_earned: streaks.milestones_earned,
       },
     });

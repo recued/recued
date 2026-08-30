@@ -48,6 +48,11 @@ const EXPECTED_DISPATCH_ROLES = [
   // grant set inventory role (read directly by the grant resolver, never merged). D-187
   // AMENDMENT folded the retired `enrichment_visibility` role into this one.
   'contract_grant',
+  // ⛔ The primitive-grandfather watermark — one row per non-owner contract
+  // recording that D-228 slice 5's migration already covered it. Its own scope,
+  // not a reserved key in `contract_grant`: `listForContract(...).length > 0` is a
+  // truthiness test elsewhere, so a bookkeeping row must not sit among policy rows.
+  'primitive_grandfather',
 ] as const satisfies readonly DispatchRole[];
 
 const EXPECTED_MERGE_RULES = [
@@ -274,6 +279,11 @@ describe('D-165 contract schema seed', () => {
       // entry_key) grant set (op / collection / topic in one namespace). D-187 AMENDMENT
       // folded the retired `enrichment` (per-topic visibility) scope into this one.
       'contract_grant',
+      // ⛔ The primitive-grandfather watermark — one row per non-owner contract
+      // recording that D-228 slice 5's migration already covered it. Its own scope,
+      // not a reserved key in `contract_grant`: `listForContract(...).length > 0` is a
+      // truthiness test elsewhere, so a bookkeeping row must not sit among policy rows.
+      'primitive_grandfather',
     ]);
     expect(Object.keys(D165_CONTRACT_SCHEMA.value_shapes)).toEqual([
       'installed_ingredient_info',
@@ -282,6 +292,9 @@ describe('D-165 contract schema seed', () => {
       // D-182 §7.2 — per-contract cli reachability state (allowlist bit).
       'cli_reachability_state',
       // Grant-foundation slice 3 (D-187 amendment) — one unified grant entry value.
+      // The watermark's value shape — `grandfathered_at` plus a diagnostic
+      // `primitive_count` recording WHAT the contract was covered against.
+      'primitive_grandfather_mark',
       'grant_entry',
       'grant_policy',
       'merge_card_resolution',
@@ -394,6 +407,8 @@ describe('D-165 contract schema seed', () => {
       // entry_key), no composition (override). D-187 AMENDMENT folded the retired
       // `enrichment` (per-topic visibility) scope into this one.
       contract_grant: 0,
+      // One row per (contract_id) — no composition, so precedence 0 like the rest.
+      primitive_grandfather: 0,
     });
   });
 

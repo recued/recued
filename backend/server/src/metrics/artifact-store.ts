@@ -54,6 +54,19 @@ export interface MetricArtifactStore {
   setCounter(key: string, value: number, now: number): void;
 
   /** Everything stored, for the dashboard. */
+  /** ⛔⛔ THE ONE WAY A VALUE COMES BACK DOWN, AND IT IS NAMED FOR ITS ONLY REASON.
+   *
+   *  Every setter here is guarded — `advanceRecord` only raises, `earnMilestone` only
+   *  fires once — because a record that can be lowered is not a record. But when the
+   *  RULE that minted a value is replaced, the old value is not a smaller record, it is
+   *  a value of a different quantity, and leaving it standing publishes a number no
+   *  current rule would produce.
+   *
+   *  ⚠ IT DELETES RATHER THAN ZEROING. "No record yet" is the truth after a rule change;
+   *  a stored 0 would render as an achievement of zero, and would also claim the key had
+   *  been legitimately measured under the new rule. */
+  retireForRuleChange(key: string): void;
+
   entries(): ReadonlyArray<{ key: string; kind: ArtifactKind; value: number; updated_at: number }>;
 }
 
@@ -73,6 +86,7 @@ export const createMetricArtifactStore = (db: Database.Database): MetricArtifact
   const all = db.prepare(
     `SELECT key, kind, value, updated_at FROM metric_artifact ORDER BY key`,
   );
+  const del = db.prepare(`DELETE FROM metric_artifact WHERE key = ?`);
 
   /** Read a key and assert it is the kind the caller expects.
    *  ⛔ A KIND MISMATCH THROWS RATHER THAN COERCING. Accepting a `record` key through
@@ -129,6 +143,10 @@ export const createMetricArtifactStore = (db: Database.Database): MetricArtifact
     setCounter(key, value, now) {
       readAs(key, 'counter');
       put.run(key, 'counter', String(value), now);
+    },
+
+    retireForRuleChange(key) {
+      del.run(key);
     },
 
     entries() {

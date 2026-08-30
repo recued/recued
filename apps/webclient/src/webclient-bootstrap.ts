@@ -9888,6 +9888,10 @@ export const bootstrapWebclient = async (
         read: () => rpcConn.call('metric.read', undefined),
         // § C4 — leaving a board is always one click.
         unpublish: (args) => rpcConn.call('metric.unpublish', args),
+        // § D4 — joining one is the owner's explicit act, and needs its own grant.
+        publish: (args) => rpcConn.call('metric.publish', args),
+        // § B3.3 — the daily batch also goes on demand.
+        submit: () => rpcConn.call('metric.submit', undefined),
       }));
     }
 

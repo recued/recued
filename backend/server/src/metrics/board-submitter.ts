@@ -21,6 +21,7 @@
  */
 
 import { canonicalJSONStringify } from '@recued/crypto';
+import type { MetricSubmitSkipReason } from '@recued/contracts';
 
 import type { BoardPublicationStore } from './publication-store.js';
 import type { MetricSnapshotStore } from './snapshot-store.js';
@@ -99,20 +100,41 @@ export const buildBatch = (
   return entries;
 };
 
+/** ⛔ `sent: false` CARRIES A REASON, ALWAYS. Four unrelated states used to collapse into
+ *  the bare boolean and the owner-facing surface could only say "nothing happened" — see
+ *  `MetricSubmitSkipReason`. The reason is REQUIRED on the not-sent arm and ABSENT on the
+ *  sent arm, so a caller cannot read one without having handled the other. */
+export type BoardSubmitOutcome =
+  | { sent: true; results: readonly BoardSubmissionResult[] }
+  | {
+      sent: false;
+      results: readonly BoardSubmissionResult[];
+      reason: MetricSubmitSkipReason;
+    };
+
 export const submitBoards = async (
   deps: BoardSubmitterDeps,
-): Promise<{ sent: boolean; results: readonly BoardSubmissionResult[] }> => {
+): Promise<BoardSubmitOutcome> => {
   const target = await deps.resolveTarget();
   // ⚠ NO HANDLE ⇒ NOTHING TO PUBLISH AS. Reported as not-sent rather than thrown: a
   // server without a reserved handle has simply not set publishing up, which is the
   // default state and not a fault.
-  if (target === null) return { sent: false, results: [] };
+  if (target === null) return { sent: false, results: [], reason: 'no_handle' };
 
   const entries = buildBatch(deps);
   // ⚠ NOTHING TO SEND IS NOT AN ERROR, and it must not post an empty batch — the cloud
   // rejects one (`MAX_ENTRIES_PER_BATCH` has a floor of 1), and a server that publishes
   // nothing is the DEFAULT state, not a broken one.
-  if (Object.keys(entries).length === 0) return { sent: false, results: [] };
+  // ⛔ WHICH KIND OF NOTHING. "Granted nothing" and "granted something with no number
+  // this window" are different facts about the owner's server, and only the second one
+  // means their board entry is quietly keeping yesterday's value (§ B3 retention).
+  if (Object.keys(entries).length === 0) {
+    return {
+      sent: false,
+      results: [],
+      reason: deps.publications.pending().length === 0 ? 'no_publications' : 'nothing_measured',
+    };
+  }
 
   const payload = {
     publisher_id: target.publisher_id,
@@ -123,7 +145,9 @@ export const submitBoards = async (
   const signature = deps.sign(canonicalJSONStringify(payload));
 
   const res = await deps.post(deps.endpoint, JSON.stringify({ ...payload, signature }));
-  if (!res.ok) return { sent: false, results: [] };
+  // ⚠ THE ONLY FAULT IN THE UNION. § C4's withdrawals keep riding the next batch, so
+  // this is recoverable and must not read like a lost withdrawal.
+  if (!res.ok) return { sent: false, results: [], reason: 'send_failed' };
 
   const body = JSON.parse(await res.text()) as { results?: BoardSubmissionResult[] };
   const results = body.results ?? [];

@@ -35,6 +35,9 @@
  *  identical to the legacy `not_implemented` behaviour. */
 
 import {
+  isReadableCollection,
+  OP_ENTITY_COLLECTION,
+  TIER1_TOOL_ENTITY,
   CONNECTION_MCP_READ_SLUG,
   CONNECTION_MCP_WRITE_SLUG,
   isCliIngredient,
@@ -154,7 +157,14 @@ import {
   rawOpToolEntriesFrom,
   visibleRawOps,
   type RawOpToolEntry,
+  type RawOpToolDescriptor,
 } from './raw-op-tool-catalog.js';
+import {
+  runCanonicalSearchFanout,
+  type CanonicalOpToolDescriptor,
+} from './canonical-op-tool-catalog.js';
+import { buildCanonicalOpRecipe, CANONICAL_OP_CONNECTION_VAR } from '@recued/recipes';
+import { CANONICAL_OP_TOOL_PREFIX } from '@recued/contracts';
 import {
   dispatchRawOp,
   type RawOpDispatchDeps,
@@ -305,6 +315,16 @@ export interface ChatToolHandlerDeps {
    *  composed `executeDeps` at call time). When undefined the
    *  `recipe.run` + Tier 2 handlers surface `execution_error`. */
   getExecuteRecipe: () => ChatRecipeExecutor | undefined;
+  /** D-255 — the canonical op tools reachable for this server's bound
+   *  connections, already filtered by each connection's operation profile.
+   *
+   *  🔑 A THUNK, because the OWNER'S CATALOG AND A DOOR'S MUST COME FROM ONE
+   *  BUILDER. The owner is the `user_self` contract and a door is another
+   *  contract id; both resolve through the same grant, so a second producer here
+   *  would be an owner/door branch wearing a different name. The composition root
+   *  supplies `canonicalOpToolsForConnections(...)`, the same call `mcp-server`
+   *  makes. Absent ⇒ no canonical tools in chat, which is the dbless posture. */
+  getCanonicalOpTools?: () => ReadonlyArray<CanonicalOpToolDescriptor>;
   /** D-221 §3.3.3 defense-in-depth for an external MCP invocation. Grant
    * preflight owns the exposure-time refusal; this live check closes stale
    * grants, recipe upgrades, and the generic `recipe.run` umbrella. */
@@ -1094,19 +1114,12 @@ const createContactSearchHandler =
 // mail.search — generic Collection fan-out
 // ────────────────────────────────────────────────────────────────
 
-/** D-205 #3 — the GUIDED-EMPTY a fenced read returns on the `{ matches, collections }`
- *  envelope (`mail.search` / `calendar.search`). `ok: true` + a `hint`: never `ok:false`
- *  (the Tier-1 ANTI-LOOP invariant) and never a BARE empty — `{ matches: [] }` is
- *  indistinguishable from an empty mailbox, so without the hint the model reports the
- *  fence to the user as *"you have no mail from Bob"*. */
-const collectionReadFenced = (collection: ReadableCollection) => ({
-  ok: true as const,
-  result: {
-    matches: [] as Array<Record<string, unknown>>,
-    collections: [] as string[],
-    hint: collectionReadFencedHint(collection),
-  },
-});
+/** ⚠ `collectionReadFenced` LIVED HERE AND IS GONE. It built the fenced result for the
+ *  three handlers that each called the fence by hand; `wrapCollectionFence` now does it
+ *  at the table, from the tool's own `entity` + `FENCED_EMPTY_CONTAINER`, so nothing
+ *  called this any more. TypeScript does not flag an unused module const, so it sat
+ *  green — the same shape as the fence it replaced. `collectionReadFencedHint` survives
+ *  and is the live copy. */
 
 /** D-INDEX — did a fan-out FILL its quota, i.e. is the caller seeing a SLICE?
  *
@@ -1132,9 +1145,6 @@ const createMailSearchHandler =
   async (raw, ctx) => {
     // D-205 #3 — the `data.mail` read fence, BEFORE the registry is touched. Same hole
     // `contact.search` had, and `mail` is the more sensitive collection.
-    if (!isCollectionReadGrantedForDispatch(deps, ctx, 'mail')) {
-      return collectionReadFenced('mail');
-    }
     const registry = deps.getCollectionRegistry();
     if (!registry) return executionError('collection registry unavailable');
     const args = asObject(raw);
@@ -1370,9 +1380,6 @@ const createCalendarSearchHandler =
   (deps: ChatToolHandlerDeps): Tier1Handler =>
   async (raw, ctx) => {
     // D-205 #3 — the `data.calendar` read fence, BEFORE the registry is touched.
-    if (!isCollectionReadGrantedForDispatch(deps, ctx, 'calendar')) {
-      return collectionReadFenced('calendar');
-    }
     const registry = deps.getCollectionRegistry();
     if (!registry) return executionError('collection registry unavailable');
     const args = asObject(raw);
@@ -3483,7 +3490,11 @@ export const createChatManifestLookup =
  *
  *  ⚠ Model-facing string — see `chat-prompt-optimization-log.md`. */
 const EMPTY_RESULT_CONTAINERS = [
-  'matches', 'candidates', 'entries', 'memories', 'enrichments', 'rows', 'items',
+  // ⚠ `files` was ABSENT until the collection fence needed it, so `file.search`'s
+  // empty result never got the explicit-empty sentence every other reader got — the
+  // same enumeration-missed-one shape as the fence itself. An unlisted container does
+  // not fail; it just stays quiet, which is the failure mode this list exists to fix.
+  'matches', 'candidates', 'entries', 'memories', 'enrichments', 'rows', 'items', 'files',
 ] as const;
 
 export const withExplicitEmpty = (
@@ -3538,9 +3549,91 @@ export const withExplicitEmpty = (
   };
 };
 
+/** ⛔⛔ THE COLLECTION READ FENCE, APPLIED AT THE TABLE — derived from the tool's own
+ *  `entity`, never hand-written per handler.
+ *
+ *  ⛔ THIS EXISTS BECAUSE THE HAND-WRITTEN VERSION MISSED ONE AND NOTHING FAILED.
+ *  `contact` / `mail` / `calendar` each called the fence inside their handler;
+ *  `file.search` never did, so an owner who revoked `data.file` still got their files
+ *  back — driven, not theorised. The mail handler's own comment already recorded the
+ *  pattern ("Same hole `contact.search` had"), which is the tell: a fence retrofitted
+ *  reader-by-reader is a fence the next reader forgets. Same reasoning as
+ *  `wrapEmptyResults` directly below — "applied at the TABLE, not inside each handler."
+ *
+ *  ⛔ IT FENCES THE TOOL'S OWN COLLECTION ONLY. The two other `contact` checks in this
+ *  file are PLANE CROSSINGS — `deal.search` resolving a CRM record's contact reads the
+ *  core graph — and belong where they are: they gate a sub-read inside a tool whose own
+ *  entity is `crm`. Hoisting those here would fence the whole tool on a grant that only
+ *  governs part of its answer.
+ *
+ *  ⚠ `work.*` IS DELIBERATELY OUT. Its collection is the work-entity KIND, which varies
+ *  per call (`task` / `note` / `commitment` / …), so the check has to see the args —
+ *  `work-entity-read-tools.ts` keeps it for that reason, through the same predicate. */
+/** ⛔⛔ TOOLS WHOSE ANSWER SPANS PLANES, SO THE FENCE MUST STAY PER-SOURCE.
+ *  `contact.search` fans out across the local graph AND the CRM mirrors. Its local
+ *  source already fences — by THROWING, so the fan-out converts it into a NAMED
+ *  `partial_failure` and the vendor candidates still come back. Fencing the whole tool
+ *  at the table would replace a partial answer with an empty one and drop the CRM half
+ *  on a grant that never governed it.
+ *
+ *  ⚠ THIS IS A HAND-WRITTEN EXCEPTION TO A DERIVED RULE, WHICH IS USUALLY THE BUG
+ *  REPORT RATHER THAN THE FIX. The property it stands in for is "this tool reads
+ *  exactly one collection", and nothing declares that today. The principled version is
+ *  a per-tool marker on `Tier1ToolDescriptor` (single-source vs fan-out); until that
+ *  exists, one named entry with its reason is honest and a silent regression is not. */
+const FAN_OUT_TOOLS: ReadonlySet<string> = new Set(['contact.search']);
+
+/** The array field each table-fenced tool answers in. A fenced read must return the
+ *  tool's OWN empty container beside the hint — a caller that reads `files` and gets a
+ *  bare `{hint}` sees an absent key, which is a third state neither "denied" nor
+ *  "empty". The hand-written fence returned a mail-shaped `{matches, collections}` for
+ *  every collection, so a fenced `calendar.search` answered in a field its own schema
+ *  does not describe.
+ *
+ *  ⛔ Every tool `wrapCollectionFence` wraps MUST appear here — asserted by test, since
+ *  a missing entry produces exactly the bare `{hint}` described above and nothing
+ *  throws. */
+export const FENCED_EMPTY_CONTAINER: Readonly<Record<string, string>> = {
+  'mail.search': 'matches',
+  'calendar.search': 'matches',
+  'file.search': 'files',
+};
+
+export const wrapCollectionFence = (
+  handlers: Record<string, Tier1Handler>,
+  deps: ChatToolHandlerDeps,
+): Record<string, Tier1Handler> =>
+  Object.fromEntries(Object.entries(handlers).map(([tool, handler]) => {
+    const entity = TIER1_TOOL_ENTITY[tool as keyof typeof TIER1_TOOL_ENTITY];
+    const collection = entity === undefined || entity === 'work' || FAN_OUT_TOOLS.has(tool)
+      ? undefined
+      : OP_ENTITY_COLLECTION[entity];
+    if (collection === undefined || !isReadableCollection(collection)) return [tool, handler];
+    return [
+      tool,
+      (async (raw, ctx) => {
+        if (!isCollectionReadGrantedForDispatch(deps, ctx, collection)) {
+          // The tool's OWN empty shape + the fence hint — not a borrowed one. The
+          // hand-written version returned a mail-shaped `{matches, collections}` for
+          // contact and calendar too, so a fenced `contact.search` answered in a field
+          // its caller does not read.
+          const container = FENCED_EMPTY_CONTAINER[tool];
+          return {
+            ok: true,
+            result: {
+              ...(container !== undefined ? { [container]: [] as unknown[] } : {}),
+              hint: collectionReadFencedHint(collection),
+            },
+          };
+        }
+        return handler(raw, ctx);
+      }) satisfies Tier1Handler,
+    ];
+  }));
+
 export const buildChatTier1Handlers = (
   deps: ChatToolHandlerDeps,
-): Record<string, Tier1Handler> => wrapEmptyResults({
+): Record<string, Tier1Handler> => wrapCollectionFence(wrapEmptyResults({
   'contact.search': createContactSearchHandler(deps),
   'mail.search': createMailSearchHandler(deps),
   'calendar.search': createCalendarSearchHandler(deps),
@@ -3553,7 +3646,7 @@ export const buildChatTier1Handlers = (
   'work.read': createWorkReadHandler(deps),
   'file.search': createFileSearchHandler(deps),
   'recipe.run': createRecipeRunHandler(deps),
-});
+}), deps);
 
 /** ⛔ Applied at the TABLE, not inside each handler. Eight readers each
  *  remembering to describe their own empty is eight chances to drift, and the
@@ -3650,8 +3743,15 @@ export const createChatTier2GrantFilter = (
 export const createChatRawOpSource = (
   deps: ChatToolHandlerDeps,
 ): ((source?: ExecutionSource) => RawOpToolEntry[]) => (source) => {
+  // ⛔ COMPUTED BEFORE THE PACK-SCAN EARLY EXIT. Canonical tools do not come from
+  // an installed pack, so a server with no packs scanned must still offer them —
+  // the first cut sat below `if (!scan) return []` and contributed nothing on
+  // exactly the setup that has connections but no Tier-P packs.
+  const canonical = rawOpToolEntriesFrom(
+    (deps.getCanonicalOpTools?.() ?? []) as unknown as readonly RawOpToolDescriptor[],
+  );
   const scan = deps.scanInstalledPacks;
-  if (!scan) return [];
+  if (!scan) return canonical;
   const getManifest = (slug: string) => deps.getExecutorConfig().manifests.get(slug);
   // D-247 open item 2 — §8 RECIPE-PREFERRED SUPPRESSION, same as the door.
   // ⛔ This call passed two args while the MCP door passed three, so a raw WRITE
@@ -3679,14 +3779,23 @@ export const createChatRawOpSource = (
   // ⚠ No gate wired ⇒ unfiltered, which is today's behaviour and keeps every
   // dbless / partial harness working. Deliberate, and pinned by test so it stays
   // a decision someone reads rather than a hole.
-  if (!gate) return rawOpToolEntriesFrom(universe);
+  // D-255 — canonical entries ride the SAME source hook, so chat-orchestrator's
+  // single `rawOpSource` lookup finds them and routes them to the single
+  // `rawOpDispatch`. ⛔ They carry NO per-op contract grant of their own: a
+  // canonical op dispatches its RESOLVED vendor op, which the gate judges inside
+  // the run, and its visibility was already decided by the connection's operation
+  // profile in the builder.
+  if (!gate) return [...rawOpToolEntriesFrom(universe), ...canonical];
   // ⛔ An ABSENT source DENIES. `TurnContext.source` is optional ("only for bare
   // test harnesses"), so a missing one is reachable — and `isOpGranted` returns
   // TRUE when no contract governs, so passing a synthesised or undefined source
   // would make the filter admit everything while looking identical to a working
   // one. Fail closed instead: no source, no derived catalog.
   if (!source) return [];
-  return rawOpToolEntriesFrom(visibleRawOps(universe, (opId) => gate.isOpGranted(source, opId)));
+  return [
+    ...rawOpToolEntriesFrom(visibleRawOps(universe, (opId) => gate.isOpGranted(source, opId))),
+    ...canonical,
+  ];
 };
 
 /** D-225 § 9.5.1 step 2b — invoke a raw catalog op from chat.
@@ -3706,9 +3815,90 @@ export const createChatRawOpSource = (
  *  ⚠ `held` and `ask` are NOT errors. A held write is the expected, successful
  *  outcome of asking for one; returning an error envelope would tell a weak
  *  model to retry, which is exactly the loop the door's own handler avoids. */
+/** D-255 — dispatch a CANONICAL op from chat. Routed inside the raw-op dispatch
+ *  below, so one hook serves both and chat-orchestrator needs no branch.
+ *
+ *  ⛔ THE SAME TRANSIENT-RECIPE PATH THE DOOR USES. A canonical op-step expands to
+ *  a vendor dispatch PLUS the projection that makes the result canonical, so the
+ *  unit of execution is a recipe; R2 resolves it against the named connection
+ *  INSIDE the run, and the gate judges the RESOLVED vendor op. Chat supplies
+ *  `(chat, user_self)` and a door supplies its own contract — the same code, a
+ *  different contract id, which is the whole point of not branching here. */
+const dispatchChatCanonicalOp = async (
+  deps: ChatToolHandlerDeps,
+  toolName: string,
+  args: unknown,
+  ctx: ChatDispatchContext,
+): Promise<ChatDispatchResult> => {
+  // ⛔ VALIDATE BEFORE REACHING FOR THE EXECUTOR. A bad alias or a missing
+  // connection is the caller's error and must say so; surfacing "executor
+  // unavailable" first would blame the server for the caller's typo.
+  const opId = toolName.slice(CANONICAL_OP_TOOL_PREFIX.length);
+  const dot = opId.indexOf('.');
+  if (dot <= 0) {
+    return { ok: false, reason: 'execution_error', detail: `unknown canonical op '${toolName}'` };
+  }
+  const a = (args ?? {}) as Record<string, unknown>;
+  const verb = opId.slice(dot + 1);
+  const connection = a.connection;
+  const named = typeof connection === 'string' && connection.length > 0;
+  // ⛔⛔ FAN-OUT IS `search`-ONLY. Omitting the connection on a write would write to
+  // EVERY connected CRM, and `read` takes an id that belongs to exactly one
+  // connection (D-254). `search` alone has no id and no side effect, so
+  // "look everywhere unless told otherwise" is safe and is what a caller means.
+  if (!named && verb !== 'search') {
+    return {
+      ok: false,
+      reason: 'execution_error',
+      detail: `'${toolName}' requires a 'connection' argument naming the enrolled connection.`,
+    };
+  }
+  const built = buildCanonicalOpRecipe({
+    alias: opId.slice(0, dot),
+    verb: opId.slice(dot + 1),
+    ...(a.args !== undefined ? { args: a.args as Record<string, unknown> } : {}),
+  });
+  if (!built.ok) return { ok: false, reason: 'execution_error', detail: built.reason };
+
+  const execute = deps.getExecuteRecipe?.();
+  if (!execute) {
+    return { ok: false, reason: 'execution_error', detail: 'recipe executor unavailable' };
+  }
+  const runOne = (conn: string): Promise<unknown> => execute({
+    recipe: built.recipe,
+    config: { [CANONICAL_OP_CONNECTION_VAR]: conn },
+    trigger_source: 'chat',
+    ...(ctx.execution_source !== undefined ? { execution_source: ctx.execution_source } : {}),
+  } as unknown as ExecuteRequest);
+
+  if (named) {
+    return { ok: true, result: (await runOne(connection as string)) as Record<string, unknown> };
+  }
+  // Unnamed `search` — every connection the DESCRIPTOR offers, which is already the
+  // profile-granted set, so the fan-out can never reach a connection the catalog
+  // would not have advertised.
+  const serving = (deps.getCanonicalOpTools?.() ?? [])
+    .find((d) => d.opId === opId)?.connections ?? [];
+  if (serving.length === 0) {
+    return {
+      ok: false,
+      reason: 'execution_error',
+      detail: `no connection serves '${opId}' — name one, or enrol a connection that does.`,
+    };
+  }
+  const fanout = await runCanonicalSearchFanout(serving, runOne);
+  return { ok: true, result: fanout as unknown as Record<string, unknown> };
+};
+
 export const createChatRawOpDispatch = (
   deps: ChatToolHandlerDeps,
 ): ChatRawOpDispatch => async (toolName, args, ctx) => {
+  // D-255 — one hook, two derived families. Routed by prefix here rather than by a
+  // second hook in chat-orchestrator, so the catalog lookup, the dispatch seam and
+  // the audit path stay single.
+  if (toolName.startsWith(CANONICAL_OP_TOOL_PREFIX)) {
+    return dispatchChatCanonicalOp(deps, toolName, args, ctx);
+  }
   const getDispatchDeps = deps.getRawOpDispatchDeps;
   if (!getDispatchDeps) return executionError('raw op dispatch unavailable');
   const dispatchDeps = getDispatchDeps();

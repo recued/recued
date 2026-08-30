@@ -1298,6 +1298,14 @@ export interface PackOperationRow {
   timeout_ms?: number;
   /** per-op read-cache TTL override (ms). */
   cache_ttl_ms?: number;
+  /** D-254 slice 1 — the arg carrying a platform-record id
+   *  (`<vendor>_<entity>_<connection>_<native>`). Lowered verbatim onto the
+   *  installed `OperationSpec.record_id_arg`; present ⇒ the gateway unwraps that
+   *  arg to the vendor-native id before grants/approval/dispatch and refuses an
+   *  id belonging to another connection. Name the arg the binding interpolates
+   *  (`contact_id` for `PATCH /crm/v3/objects/contacts/{{contact_id}}`).
+   *  Targeted ops only — a `list` walks a collection and a `create` has no id. */
+  record_id_arg?: string;
   /** Free-form labels on the operation, in the same spirit as pack and ingredient tags.
    *
    *  ⚠ DECLARED HERE BECAUSE 3,703 SHIPPED OPERATIONS ALREADY CARRY IT AND THIS TYPE DID NOT

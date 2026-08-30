@@ -4098,9 +4098,16 @@ export type ServerRpcRegistry = {
   // SCHEDULED submission hold unless the owner mints a delegation rule — so this method
   // is the manual path, and the automation rides that existing mechanism rather than a
   // new exemption.
+  // ⛔ `skip_reason` IS PRESENT IFF `sent` IS FALSE. The bare boolean was a uniform
+  // signal naming no guilty member — no identity, no handle, nothing granted, nothing
+  // measured and a refused POST all read identically, so the surface could only say
+  // "nothing happened". Three of those are a correctly-working server that has not opted
+  // in; one is a fault. See `MetricSubmitSkipReason`.
   'metric.submit': RpcMethodSpec<
     void,
-    { ok: true; sent: boolean; results: ReadonlyArray<{ kind: string; board_id: string;
+    { ok: true; sent: boolean;
+      skip_reason?: import('../metric-rpc.js').MetricSubmitSkipReason;
+      results: ReadonlyArray<{ kind: string; board_id: string;
         rank?: number; participants?: number; reason?: string }> }
   >;
   'housekeeping.task.run_now': RpcMethodSpec<

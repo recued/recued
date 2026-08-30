@@ -24,6 +24,7 @@ import {
   HANDS_OFF_CURRENT_KEY,
   HANDS_OFF_LONGEST_KEY,
   MAX_CATCHUP_DAYS,
+  HANDS_OFF_LAST_DAY_KEY,
   CENTURY_RUNS,
   recipeRunsKey,
 } from '../metrics/daily-streaks.js';
@@ -84,13 +85,18 @@ describe('D-250 § D5.3 — a day is decidable only once it is over', () => {
 
   it('yesterday IS folded, once a prior fold exists', () => {
     advanceDailyStreaks(db, art, at(1)); // seeds the cursor at day-1... i.e. day 0
+    runOn(1, 'schedule'); // v2: a hands-off day is a day of WORK with no decisions
     const r = advanceDailyStreaks(db, art, at(2));
     expect(r.days_folded).toBe(1);
     expect(r.hands_off_current).toBe(1);
   });
 
   it('⛔ AN APPROVAL ANSWERED THAT DAY BREAKS THE STREAK', () => {
+    // ⛔⛔ THE RUN IS LOAD-BEARING. Under v2 an idle day is ALSO 0, so without work on
+    // day 1 this passes whether or not the approval is noticed at all — a negative that
+    // does not name its cause. The run makes the day hands-off but for the approval.
     advanceDailyStreaks(db, art, at(1));
+    runOn(1, 'schedule');
     approvalOn(1);
     const r = advanceDailyStreaks(db, art, at(2));
     expect(r.hands_off_current).toBe(0);
@@ -104,6 +110,7 @@ describe('D-250 § D5.3 — a day is decidable only once it is over', () => {
 describe('D-250 — the task runs many times a day; the streak advances once', () => {
   it('⛔⛔ THREE CYCLES IN ONE DAY ADVANCE THE STREAK BY ONE', () => {
     advanceDailyStreaks(db, art, at(1));
+    runOn(1, 'schedule');
     advanceDailyStreaks(db, art, at(2, 1));
     advanceDailyStreaks(db, art, at(2, 9));
     const r = advanceDailyStreaks(db, art, at(2, 23));
@@ -111,8 +118,9 @@ describe('D-250 — the task runs many times a day; the streak advances once', (
     expect(r.days_folded).toBe(0); // the later two folded nothing
   });
 
-  it('consecutive quiet days accumulate', () => {
+  it('consecutive WORKING days with no decisions accumulate', () => {
     advanceDailyStreaks(db, art, at(1));
+    for (let d = 1; d <= 6; d += 1) runOn(d, 'schedule');
     for (let d = 2; d <= 6; d += 1) advanceDailyStreaks(db, art, at(d));
     expect(art.readCounter(HANDS_OFF_CURRENT_KEY)).toBe(5);
   });
@@ -125,6 +133,7 @@ describe('D-250 — the task runs many times a day; the streak advances once', (
 describe('D-250 slice 1 — current is a counter, longest is a record', () => {
   it('⛔⛔ A BROKEN STREAK RESETS CURRENT AND LEAVES LONGEST STANDING', () => {
     advanceDailyStreaks(db, art, at(1));
+    for (let d = 1; d <= 7; d += 1) runOn(d, 'schedule');
     for (let d = 2; d <= 6; d += 1) advanceDailyStreaks(db, art, at(d));
     expect(art.readRecord(HANDS_OFF_LONGEST_KEY)).toBe(5);
     approvalOn(6);
@@ -144,9 +153,12 @@ describe('D-250 — a server that was OFF cannot verify the days it missed', () 
     // rows are gone" are the SAME observation. Crediting would mint a streak out of
     // missing data.
     advanceDailyStreaks(db, art, at(1));
+    for (let d = 1; d <= 6; d += 1) runOn(d, 'schedule');
     for (let d = 2; d <= 6; d += 1) advanceDailyStreaks(db, art, at(d));
     expect(art.readCounter(HANDS_OFF_CURRENT_KEY)).toBe(5);
 
+    // ⚠ The day AFTER the gap must itself contain work, or v2 folds it as a day off.
+    runOn(6 + MAX_CATCHUP_DAYS + 4, 'schedule');
     const r = advanceDailyStreaks(db, art, at(6 + MAX_CATCHUP_DAYS + 5));
     expect(r.reset_for_gap).toBe(true);
     // ⚠ 1, NOT 0 — and the difference is the point. The unverifiable days are DISCARDED,
@@ -159,8 +171,9 @@ describe('D-250 — a server that was OFF cannot verify the days it missed', () 
 
   it('a SHORT gap is walked, because those days are still in the log', () => {
     advanceDailyStreaks(db, art, at(1));
+    for (let d = 1; d <= 4; d += 1) runOn(d, 'schedule');
     advanceDailyStreaks(db, art, at(2));
-    const r = advanceDailyStreaks(db, art, at(5)); // days 2,3,4 all quiet
+    const r = advanceDailyStreaks(db, art, at(5)); // days 2,3,4 worked, no decisions
     expect(r.reset_for_gap).toBe(false);
     expect(r.hands_off_current).toBe(4);
   });
@@ -182,8 +195,9 @@ describe('D-250 § D5.3 — milestones are a category with its own registry', ()
     expect(AUDIT_DERIVABLE_MILESTONES).toHaveLength(Object.keys(MILESTONE_REGISTRY).length);
   });
 
-  it('first_zero_approval_day is earned on the first quiet complete day', () => {
+  it('first_zero_approval_day is earned on the first WORKING complete day', () => {
     advanceDailyStreaks(db, art, at(1));
+    runOn(1, 'schedule');
     const r = advanceDailyStreaks(db, art, at(2));
     expect(r.milestones_earned).toContain('first_zero_approval_day');
     expect(art.hasMilestone('first_zero_approval_day')).toBe(true);
@@ -191,6 +205,7 @@ describe('D-250 § D5.3 — milestones are a category with its own registry', ()
 
   it('⛔ IT IS EARNED ONCE — a later quiet day does not re-announce it', () => {
     advanceDailyStreaks(db, art, at(1));
+    for (let d = 1; d <= 3; d += 1) runOn(d, 'schedule');
     advanceDailyStreaks(db, art, at(2));
     const again = advanceDailyStreaks(db, art, at(3));
     expect(again.milestones_earned).toEqual([]);
@@ -203,14 +218,21 @@ describe('D-250 § D5.3 — milestones are a category with its own registry', ()
     expect(art.hasMilestone('first_unattended_week')).toBe(true);
   });
 
-  it('⛔⛔ AN IDLE SERVER DOES NOT EARN A WEEK ON AUTOPILOT', () => {
+  it('⛔⛔ AN IDLE SERVER EARNS NOTHING AT ALL', () => {
     // Rewarding "did nothing" would be § D6's failure exactly — an optimal cheat that
     // is not the desired behaviour. Zero attended runs is necessary, not sufficient.
+    //
+    // ⛔⛔ THE SECOND ASSERTION IS INVERTED FROM v1, DELIBERATELY. It read `.toBe(true)`
+    // under the comment *"...while the quiet-day milestone IS earned, because that one
+    // is about decisions"* — a reasoned carve-out, not an oversight. It shipped, and the
+    // owner hit it: nothing running, and the page showed a hands-off streak of 2 with
+    // the badge earned. A measure whose best score comes from an idle server is not
+    // measuring autonomy. Both counters now require real work; they differ only in how
+    // much autonomy they demand of it.
     advanceDailyStreaks(db, art, at(1));
     for (let d = 2; d <= 12; d += 1) advanceDailyStreaks(db, art, at(d));
     expect(art.hasMilestone('first_unattended_week')).toBe(false);
-    // ...while the quiet-day milestone IS earned, because that one is about decisions.
-    expect(art.hasMilestone('first_zero_approval_day')).toBe(true);
+    expect(art.hasMilestone('first_zero_approval_day')).toBe(false);
   });
 
   it('⛔ ONE ATTENDED RUN BREAKS THE UNATTENDED WEEK', () => {
@@ -223,6 +245,94 @@ describe('D-250 § D5.3 — milestones are a category with its own registry', ()
 
   it('a version bump owes a logic line', () => {
     expect(() => assertMilestoneRegistryConsistent()).not.toThrow();
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// 5b. v2 — A DAY OFF IS NOT A DAY HANDS-OFF
+// ────────────────────────────────────────────────────────────────
+
+describe('D-250 v2 — an idle day is a day off, not a hands-off day', () => {
+  it('⛔⛔ A SERVER RUNNING NOTHING ACCRUES NO STREAK AND NO RECORD', () => {
+    // Reported from a live server: nothing installed, nothing running, and the page
+    // showed `hands off current: 2, hands off longest 2`. Under v1 every complete day
+    // with no answered decision was +1, and an idle day trivially has none.
+    advanceDailyStreaks(db, art, at(1));
+    for (let d = 2; d <= 6; d += 1) advanceDailyStreaks(db, art, at(d));
+    expect(art.readCounter(HANDS_OFF_CURRENT_KEY)).toBe(0);
+    expect(art.readRecord(HANDS_OFF_LONGEST_KEY) ?? 0).toBe(0);
+  });
+
+  it('⛔ AN IDLE DAY IN THE MIDDLE BREAKS THE RUN — consecutive means consecutive', () => {
+    advanceDailyStreaks(db, art, at(1));
+    for (const d of [1, 2, 4, 5]) runOn(d, 'schedule'); // day 3 idle
+    for (let d = 2; d <= 6; d += 1) advanceDailyStreaks(db, art, at(d));
+    expect(art.readCounter(HANDS_OFF_CURRENT_KEY)).toBe(2); // days 4 and 5
+    expect(art.readRecord(HANDS_OFF_LONGEST_KEY)).toBe(2);
+  });
+
+  it('⛔ AN ATTENDED-ONLY DAY IS STILL HANDS-OFF — you started it, it never asked', () => {
+    // This is exactly where the two counters part company: the autopilot week below
+    // demands runs you did NOT start, hands-off only demands it never interrupted you.
+    advanceDailyStreaks(db, art, at(1));
+    for (let d = 1; d <= 3; d += 1) runOn(d, 'manual');
+    for (let d = 2; d <= 4; d += 1) advanceDailyStreaks(db, art, at(d));
+    expect(art.readCounter(HANDS_OFF_CURRENT_KEY)).toBe(3);
+  });
+
+  it('⛔ A RUN WITH AN UNCLASSIFIED TRIGGER STILL COUNTS AS WORK', () => {
+    // `total` is COUNT(*), not unattended + attended. A source in neither class is
+    // still a run that happened, and must not silently break a real streak.
+    advanceDailyStreaks(db, art, at(1));
+    for (let d = 1; d <= 3; d += 1) runOn(d, 'not_a_known_trigger_source');
+    for (let d = 2; d <= 4; d += 1) advanceDailyStreaks(db, art, at(d));
+    expect(art.readCounter(HANDS_OFF_CURRENT_KEY)).toBe(3);
+  });
+});
+
+describe('D-250 v2 — the numbers v1 minted are retired, once', () => {
+  /** A server as it looked under v1: a fold cursor, a streak, and a record — all of it
+   *  accrued while nothing ran. */
+  const seedV1Server = (): void => {
+    art.setCounter(HANDS_OFF_LAST_DAY_KEY, dayIndex(at(5)), at(5));
+    art.setCounter(HANDS_OFF_CURRENT_KEY, 2, at(5));
+    art.advanceRecord(HANDS_OFF_LONGEST_KEY, 2, at(5));
+    art.earnMilestone('first_zero_approval_day', at(5));
+  };
+
+  it('⛔⛔ THE v1 RECORD IS RETIRED, NOT LEFT STANDING — it only ever rises', () => {
+    // `current` self-corrects on the next fold; `longest` never would, so an idle
+    // server would show "Longest hands-off streak 2" for the life of the machine.
+    seedV1Server();
+    const r = advanceDailyStreaks(db, art, at(6));
+    expect(r.reset_for_rule_change).toBe(true);
+    expect(art.readRecord(HANDS_OFF_LONGEST_KEY)).toBeUndefined();
+    expect(art.readCounter(HANDS_OFF_CURRENT_KEY)).toBe(0);
+    // ⚠ ABSENT, NOT ZERO — a stored 0 would claim the key was measured under v2.
+    expect(art.entries().some((e) => e.key === HANDS_OFF_LONGEST_KEY)).toBe(false);
+  });
+
+  it('⛔ THE BADGE GOES WITH IT — the same claim, in a section harder to argue with', () => {
+    seedV1Server();
+    advanceDailyStreaks(db, art, at(6));
+    expect(art.hasMilestone('first_zero_approval_day')).toBe(false);
+  });
+
+  it('⛔⛔ IT HAPPENS ONCE — a later fold does not keep retiring a real record', () => {
+    seedV1Server();
+    advanceDailyStreaks(db, art, at(6));
+    for (let d = 6; d <= 9; d += 1) runOn(d, 'schedule');
+    const again = advanceDailyStreaks(db, art, at(10));
+    expect(again.reset_for_rule_change).toBe(false);
+    // ...and a record earned under v2 survives every later fold.
+    expect(art.readRecord(HANDS_OFF_LONGEST_KEY)).toBeGreaterThan(0);
+  });
+
+  it('⛔ A FRESH SERVER IS NOT TOLD ITS RECORDS WERE RESET', () => {
+    // No fold cursor means nothing was ever minted. Stamping the rule version is all
+    // that is owed; reporting a reset on first boot would be a lie about history.
+    const r = advanceDailyStreaks(db, art, at(1));
+    expect(r.reset_for_rule_change).toBe(false);
   });
 });
 

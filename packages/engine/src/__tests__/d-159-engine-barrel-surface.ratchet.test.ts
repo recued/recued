@@ -100,6 +100,14 @@ const EXPECTED_RUNTIME_EXPORTS = [
   'isPrototypeSensitiveKey',
   // Poll-manager / G6 — see the catalog-gateway keep-list note above.
   'runCatalogOperation',
+  // D-254 slice 2 — the records-path resolver, exported for ONE reason: the
+  // raw-op door composes routable ids from the returned records and must not
+  // re-derive where they sit. The leading `result` segment is an executor-envelope
+  // detail and the per-op `result_path` override is a second rule on top, so a
+  // second derivation would agree until a pack declares an override and then
+  // disagree SILENTLY — no ids emitted, indistinguishable from an empty result.
+  // The pagination follower consumes the same function.
+  'resolveCatalogRecordsPath',
 ].sort();
 
 const reexportSpecifiers = (txt: string): string[] =>

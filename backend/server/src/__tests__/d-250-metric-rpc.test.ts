@@ -308,18 +308,52 @@ describe('D-250 § B4.2 — only the ack deletes', () => {
     expect(store.get('ops')).toBeUndefined();
   });
 
-  it('⛔ RE-PUBLISHING CLEARS A PENDING WITHDRAWAL — the owner changed their mind', () => {
+  /** ⛔⛔ THIS CASE USED TO CHANGE THE KEY, AND THAT IS WHAT MADE IT WRONG. It granted
+   *  `(ops, autopilot, 1)`, revoked, then granted `(ops, ECONOMY, 2)` and called the
+   *  cleared withdrawal "the owner changed their mind". The reasoning holds for a
+   *  re-grant of the SAME board key and collapses for a different one: the withdrawal
+   *  would have erased the old key's row up in the cloud, and dropping it left the owner
+   *  publicly listed on a board they had explicitly left. A live drive caught it; this
+   *  test had asserted the defect as the expectation and stayed green over it.
+   *
+   *  🔑 The two halves are now separate cases, because they are separate claims. */
+  it('⛔ RE-PUBLISHING THE SAME KEY CLEARS THE WITHDRAWAL — the owner changed their mind', () => {
+    const store = createBoardPublicationStore(db);
+    store.grant({ tag: 'ops', metric_id: 'autopilot', season_id: '1' }, NOW);
+    store.revoke('ops', NOW + 1000);
+    store.grant({ tag: 'ops', metric_id: 'autopilot', season_id: '1' }, NOW + 2000);
+    const p = store.get('ops')!;
+    expect(p.state).toBe('active');
+    expect(p.withdrawn_at).toBeNull();
+    // Nothing is orphaned: the value that ships next overwrites the very row the
+    // withdrawal would have deleted.
+    expect(p.metric_id).toBe('autopilot');
+    expect(p.season_id).toBe('1');
+    // ⚠ granted_at keeps its ORIGINAL value — it answers "since when has this been
+    // published", and re-stamping it on every edit would erase that.
+    expect(p.granted_at).toBe(NOW);
+  });
+
+  it('⛔⛔ A RE-GRANT THAT CHANGES THE KEY LEAVES THE OLD BOARD ROW BEHIND', () => {
+    // The local store is `tag PRIMARY KEY`, so this is lossy BY CONSTRUCTION — after the
+    // second grant nothing here remembers season 1 ever shipped. That is not fixable in
+    // this store without making it disagree with the wire, which carries one entry per
+    // tag; the erase is enforced in `board-apply.ts`, which is the only side that can see
+    // both board rows. This case PINS the local half of that contract so the next reader
+    // does not mistake the missing withdrawal for an oversight.
     const store = createBoardPublicationStore(db);
     store.grant({ tag: 'ops', metric_id: 'autopilot', season_id: '1' }, NOW);
     store.revoke('ops', NOW + 1000);
     store.grant({ tag: 'ops', metric_id: 'economy', season_id: '2' }, NOW + 2000);
+
+    expect(store.list()).toHaveLength(1);
     const p = store.get('ops')!;
-    expect(p.state).toBe('active');
-    expect(p.withdrawn_at).toBeNull();
     expect(p.metric_id).toBe('economy');
-    // ⚠ granted_at keeps its ORIGINAL value — it answers "since when has this been
-    // published", and re-stamping it on every edit would erase that.
-    expect(p.granted_at).toBe(NOW);
+    expect(p.season_id).toBe('2');
+    // ⛔ THE WITHDRAWAL IS GONE, and `pending()` is exactly what the next batch carries —
+    // so no `{unpublish:true}` will ever ship for the season-1 row. The cloud's
+    // sibling-prune is what removes it, on the next value submission for this tag.
+    expect(store.pending().some((x) => x.state === 'withdrawing')).toBe(false);
   });
 });
 
@@ -357,16 +391,27 @@ describe('D-250 § B3.3 / § D4 — the daily submission is an EXPLICIT act', ()
   it('⛔ A SERVER THAT CANNOT PUBLISH REPORTS not-sent, it does not throw', async () => {
     // No bound account, no identity key — not publishing is the DEFAULT state. Throwing
     // would make "I have not set this up" indistinguishable from "the send failed".
+    //
+    // ⛔⛔ AND THE BARE BOOLEAN MADE THEM INDISTINGUISHABLE ANYWAY. This comment named the
+    // exact confusion while the assertion pinned a shape that could not express the
+    // difference — the surface could only ever say "nothing happened". `skip_reason` is
+    // what makes the sentence above true rather than aspirational.
     const res = await handleMetricSubmit({ db });
-    expect(res).toEqual({ ok: true, sent: false, results: [] });
+    expect(res).toEqual({
+      ok: true, sent: false, results: [], skip_reason: 'no_identity',
+    });
   });
 
   it('⛔⛔ THE SUBMITTER DEP IS BUILT AT THE COMPOSITION ROOT — the last hop', () => {
     // Three hops now: compose-listeners BUILDS metricDeps, server.ts FORWARDS it, and
     // ws-server REGISTERS the slice. The `submitter` field is a FOURTH thing to forget —
-    // and forgetting it is invisible: `metric.submit` answers `sent: false`, which is
-    // also the correct answer for a server that simply has not set publishing up. That
-    // is the worst kind of gap, because the failure mode is the default state.
+    // and forgetting it used to be invisible: `metric.submit` answered `sent: false`,
+    // which is also the correct answer for a server that simply has not set publishing
+    // up. That was the worst kind of gap, because the failure mode was the default state.
+    // ⚠ `skip_reason` NARROWS IT BUT DOES NOT CLOSE IT: a dropped `submitter` now answers
+    // `no_identity` while a set-up-but-handle-less server answers `no_handle`, so the two
+    // are distinguishable — but a server that genuinely has no identity gives the same
+    // answer as the wiring gap, which is why this source-level check stays.
     const compose = readFileSync(
       pathJoin(dirname(fileURLToPath(import.meta.url)), '..', 'serve/compose-listeners.ts'),
       'utf8',

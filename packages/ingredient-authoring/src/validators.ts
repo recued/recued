@@ -1692,7 +1692,7 @@ const PACK_OPERATION_ROW_KEYS = new Set([
   'op', 'ingredient', 'risk', 'approval', 'approval_reason', 'args', 'bind', 'description',
   'required_scopes', 'operation_bound_webhook', 'idempotency', 'accepts_media', 'produces_media',
   'request_schema', 'response_schema', 'editable_args', 'result_path', 'pagination',
-  'timeout_ms', 'cache_ttl_ms', 'tags',
+  'timeout_ms', 'cache_ttl_ms', 'tags', 'record_id_arg',
 ]);
 
 const validateOperations = (
@@ -1732,6 +1732,32 @@ const validateOperations = (
       if (!PACK_OPERATION_ROW_KEYS.has(key)) {
         add('error', 'composition_operation_unknown_key', `${path}.${key}`,
           `operation declares '${key}', which is not a PackOperationRow field`);
+      }
+    }
+    // D-254 — `record_id_arg` names the arg carrying a platform-record id. A NAME
+    // is all it is, so a typo is silent: the runtime router looks the arg up, finds
+    // nothing, and passes the call through exactly as it does for a legitimate bare
+    // native id. Nothing throws and the op is simply never routed. So the check that
+    // matters is the COMPOSITION one — the named arg must be a token the row's own
+    // binding interpolates. Two separate shape checks would both pass.
+    if (row.record_id_arg !== undefined) {
+      if (!isNonEmptyString(row.record_id_arg)) {
+        add('error', 'composition_operation_record_id_arg_shape', `${path}.record_id_arg`,
+          'record_id_arg must be a non-empty string when present');
+      } else {
+        // Scoped to path-templated binds on purpose: a body-borne id has no token to
+        // match, and inventing a rule for one would be a guess. Silence there, not a
+        // false verdict.
+        const bind = isPlainObject(row.bind) ? row.bind : undefined;
+        const template = bind !== undefined && typeof bind.path_template === 'string'
+          ? bind.path_template
+          : undefined;
+        if (template !== undefined && !template.includes(`{{${row.record_id_arg}}}`)) {
+          add('error', 'composition_operation_record_id_arg_unbound', `${path}.record_id_arg`,
+            `record_id_arg '${row.record_id_arg}' is not interpolated by this operation's `
+            + `path_template ('${template}') — the id would never be unwrapped and the op `
+            + 'would silently stay unrouted');
+        }
       }
     }
     if (!isNonEmptyString(row.op)) {

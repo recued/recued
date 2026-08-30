@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "1c696b2fbdb8cd6eafca53165df95aad341ad77d",
-    "tree": "375fbb95d8167699b90a563838438dae22100ae6",
-    "committed_at": "2026-08-29T02:05:16-07:00"
+    "commit": "75bd4a33542c1185646b9427da85fb8087dfaa69",
+    "tree": "22190de65696bc90e4045885ebbcedd07b479d6a",
+    "committed_at": "2026-08-30T08:28:36-07:00"
   },
-  "export_manifest_sha256": "fef7f3a3be0594f5b342fd9713ecd639619733901e62a02bb29d5b6b9d7ea6f5",
-  "version": "26.8.29",
+  "export_manifest_sha256": "601d21f1bb117f1d5292e1adea90b9ff880a3bbe43224c0ad9dc08a01bdfc404",
+  "version": "26.8.30",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -351,6 +351,7 @@
       "packages/ingredient-authoring/src/__tests__/d-216-social-publishing-pack.test.ts",
       "packages/ingredient-authoring/src/__tests__/d-217-upload-binding-passthrough.test.ts",
       "packages/ingredient-authoring/src/__tests__/d-234-peer-review-pack-audit.test.ts",
+      "packages/ingredient-authoring/src/__tests__/d-254-hubspot-record-id-arg.test.ts",
       "packages/ingredient-authoring/src/__tests__/decision-log-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/deeptutor-daily-mastery-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/excel-workbook-pack-audit.test.ts",
@@ -539,7 +540,7 @@
       "packages/recipes/src/__tests__/zendesk-ticket-count-truth-pack-audit.test.ts",
       "packages/recipes/src/__tests__/zendesk-ticket-reply-closure-loop.test.ts"
     ],
-    "sha256": "369869ee6cb1962eeb54bb25f2638c8e125ec7cc30abdaa5e2af0fedf0cdf735",
+    "sha256": "3ba0097600b9f796ecc5a2ee7944bd68e041c8a570ddcb67004169aadb581a6e",
     "roots": [
       "apps/auth-worker",
       "backend/api",
@@ -646,7 +647,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 5531,
-    "sha256": "1150f3c24f6c5a80f68ed183f40aa17379baee0cebe552190b71fc3221d0131b"
+    "file_count": 5547,
+    "sha256": "a8dfe5405b469fd3a2b8e5cfd6505ac7ea21e5e5268ef77dfd2383af33113ca3"
   }
 }

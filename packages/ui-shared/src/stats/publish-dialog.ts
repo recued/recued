@@ -15,7 +15,7 @@
  *  BECAUSE they are not leaving; the contrast is the point.
  */
 
-import type { MetricReadEntry } from '@recued/contracts';
+import type { MetricReadEntry, MetricSubmitSkipReason } from '@recued/contracts';
 
 import { e } from '../template.js';
 
@@ -145,3 +145,153 @@ export const renderStopPublishing = (props: { tag: string; withdrawing: boolean 
           Stop publishing and erase my entry
         </button>
       </section>`;
+
+/** § D4 / § D7 — the ENTRY POINT. ⛔⛔ WITHOUT THIS THE DIALOG IS UNREACHABLE: publications
+ *  are the only thing that makes {@link renderPublishDialog} render, and nothing else can
+ *  create one. Omitting it was a deliberate call — "choosing a tag is a distinct act, so no
+ *  button should guess one" — and the reasoning was right about GUESSING while the
+ *  conclusion was wrong: the answer is to ASK for the tag, not to leave no way in.
+ *
+ *  🔑 TWO STEPS, AND § D7 REQUIRES THE ORDER. *"The publish dialog carries the whole
+ *  payload … before any of it leaves."* So: name the tag, SEE the exact bytes, then confirm.
+ *  A one-click publish would send a number the owner never saw. */
+export const renderPublishStart = (props: {
+  readonly metric: MetricReadEntry;
+  readonly pending?: { readonly tag: string; readonly season_id: string };
+}): string => {
+  const { metric } = props;
+  // ⛔ A non-publishable metric offers no entry at all — § D2 refuses it at the rpc, and a
+  // control that always fails is worse than an absent one.
+  if (!metric.publishable) return '';
+  if (metric.reading.kind !== 'value') {
+    return `<p class="publish-note" data-recued-publish-unmeasured="${e(metric.metric_id)}">
+      ${e(metric.label)} has no measured value yet, so there is nothing to publish.</p>`;
+  }
+  if (props.pending !== undefined) {
+    return `
+      <div class="publish-confirm" data-recued-publish-confirm="${e(metric.metric_id)}">
+        ${renderPublishDialog({
+          metric,
+          tag: props.pending.tag,
+          season_id: props.pending.season_id,
+          destination: `https://recued.com/explore/${props.pending.tag}`,
+        })}
+        <button type="button" data-recued-publish-confirm-action
+          data-metric="${e(metric.metric_id)}" data-tag="${e(props.pending.tag)}"
+          data-season="${e(props.pending.season_id)}">Publish this number</button>
+        <button type="button" data-recued-publish-cancel-action>Cancel</button>
+      </div>`;
+  }
+  return `
+    <form class="publish-start" data-recued-publish-start="${e(metric.metric_id)}">
+      <label>Publish ${e(metric.label)} to
+        <input type="text" data-recued-publish-tag placeholder="tag" required>
+      </label>
+      <label>season
+        <input type="text" data-recued-publish-season value="1" required>
+      </label>
+      <button type="button" data-recued-publish-preview-action
+        data-metric="${e(metric.metric_id)}">Preview what would be sent</button>
+    </form>`;
+};
+
+/** § B3.3 — send the batch now. ⚠ Rendered only when something IS published: a send with an
+ *  empty batch posts nothing, so a button offering it would do visibly nothing. */
+/** What the last send did, as the owner needs to read it.
+ *
+ *  ⛔⛔ THE OUTCOME USED TO BE DISCARDED ENTIRELY — the route did
+ *  `void submit().then(refresh, refresh)` and the screen was identical before and after.
+ *  With no board existing anywhere yet, that button was guaranteed to do nothing visible,
+ *  forever, with no explanation. A live drive is what made that obvious; nothing else
+ *  could have, because "worked" and "silently did nothing" render the same.
+ *
+ *  🔑 EVERY LINE NAMES WHAT IS TRUE OF THE SERVER, NOT WHAT FAILED. Four of the five
+ *  outcomes are a correctly-working server that has not opted into something (§ D4), so
+ *  phrasing them as errors would be a lie in the owner's own dashboard. */
+const SUBMIT_OUTCOME_TEXT: Readonly<Record<MetricSubmitSkipReason, string>> = {
+  no_identity: 'This server has no signing identity yet, so it cannot publish. '
+    + 'Nothing was sent and nothing was lost.',
+  no_handle: 'This server needs a publisher handle before it can publish — it is free '
+    + 'with any account. Nothing was sent.',
+  no_publications: 'You are not publishing anything, so there was nothing to send.',
+  nothing_measured: 'Nothing measured for the boards you are on this window, so nothing '
+    + 'was sent. Your entry keeps the number it already had.',
+  // ⛔ DO NOT SAY "the next send will retry". There is no next send — this button is the
+  // only caller of the submit path, which is exactly the false promise removed from the
+  // note above. Telling the owner to press it again is both true and actionable.
+  send_failed: 'Could not reach the board. Nothing changed — press send again in a moment.',
+};
+
+const plural = (n: number, one: string, many: string): string =>
+  `${n} ${n === 1 ? one : many}`;
+
+/** ⛔⛔ A REJECTION IS AN ANSWER, AND COUNTING IT AS ONE READ AS SUCCESS. This said
+ *  "Sent. N boards answered." off `results.length`, so a batch whose every entry came
+ *  back `{kind:'rejected', reason:'unknown_board'}` rendered as an unqualified success.
+ *  Harmless only while no board exists to be rejected against — and once boards exist,
+ *  `unknown_board` becomes the ORDINARY way a local fork or a retired season fails, so
+ *  the reassuring version would have been the common case.
+ *
+ *  🔑 THREE KINDS, THREE MEANINGS. `ranked` is a score that landed; `withdrawn` is § C4's
+ *  ack, the only thing that terminates a withdrawal's retry and worth saying out loud;
+ *  `rejected` is an entry the board refused. Summing them answers no question anyone has. */
+const submitSentText = (o: {
+  readonly ranked: number; readonly withdrawn: number;
+  readonly rejected: number; readonly rejectedReasons: readonly string[];
+}): string => {
+  const parts: string[] = [];
+  if (o.ranked > 0) parts.push(`${plural(o.ranked, 'board', 'boards')} updated`);
+  if (o.withdrawn > 0) parts.push(`${plural(o.withdrawn, 'withdrawal', 'withdrawals')} confirmed`);
+  const why = o.rejectedReasons.length > 0 ? ` (${o.rejectedReasons.join(', ')})` : '';
+  // ⛔ ALL-REJECTED IS NOT A SEND THAT WORKED. The request succeeded and NOTHING the owner
+  // published was accepted; leading with "Sent." would bury that behind good news.
+  if (o.ranked === 0 && o.withdrawn === 0) {
+    return o.rejected > 0
+      ? `Nothing was accepted — ${plural(o.rejected, 'entry', 'entries')} rejected${why}.`
+      // A 200 carrying no results at all. Rare, and saying "sent" alone would imply a
+      // landing this cannot confirm.
+      : 'Sent, but the board reported nothing back.';
+  }
+  const rejected = o.rejected > 0
+    ? `, ${plural(o.rejected, 'entry', 'entries')} rejected${why}`
+    : '';
+  return `Sent. ${parts.join(', ')}${rejected}.`;
+};
+
+export const renderSubmitNow = (props: {
+  readonly publications: number;
+  /** Absent until the owner has actually pressed the button this session. */
+  readonly outcome?:
+    | {
+        readonly sent: true;
+        readonly ranked: number;
+        readonly withdrawn: number;
+        readonly rejected: number;
+        /** Distinct reasons, so a batch of ten `unknown_board`s says it once. */
+        readonly rejectedReasons: readonly string[];
+      }
+    | { readonly sent: false; readonly reason: MetricSubmitSkipReason };
+}): string => {
+  if (props.publications === 0) return '';
+  const { outcome } = props;
+  // ⛔ A SEND WHERE NOTHING LANDED GETS ITS OWN STATUS VALUE, not `sent`. The attribute is
+  // what styling and tests key on, so folding it into `sent` would hide the case in both.
+  const state = outcome === undefined
+    ? ''
+    : !outcome.sent
+      ? outcome.reason
+      : outcome.ranked === 0 && outcome.withdrawn === 0 && outcome.rejected > 0
+        ? 'rejected'
+        : 'sent';
+  const status = outcome === undefined
+    ? ''
+    : `<p class="publish-submit-status" data-recued-submit-status="${e(state)}">${
+        outcome.sent
+          ? e(submitSentText(outcome))
+          : e(SUBMIT_OUTCOME_TEXT[outcome.reason])
+      }</p>`;
+  return `<div class="publish-submit">
+        <button type="button" data-recued-submit-action>Send today’s scores now</button>
+        ${status}
+      </div>`;
+};

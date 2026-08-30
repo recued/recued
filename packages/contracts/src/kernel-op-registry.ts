@@ -55,6 +55,120 @@ import type { RiskTier } from './ingredient.js';
  *  (`native: true`): a grantable handle for an MCP-server-native direct-return
  *  read tool that has NO backing ingredient and is NOT recipe-runnable (see
  *  {@link KernelOpEntry.native}). */
+/** ⛔⛔ WHAT AN OP REACHES — the axis the Contracts panel groups by, so an owner
+ *  answers "what can touch my files?" by reading ONE section instead of recognising
+ *  a naming convention across three tabs.
+ *
+ *  ⛔ IT IS AN ANNOTATION, NOT A PARSE, AND THAT IS THE WHOLE POINT. The entity is
+ *  NOT recoverable from the op id: its segment position varies by domain —
+ *  `core.mail.send` (2), `core.memory.read` (2), `core.contact.upsert` (2) versus
+ *  `core.data.calendar.get` (3), `core.storage.file.read` (3) — and several ops
+ *  reach something their id does not name at all (`core.storage.csv.*` and
+ *  `core.storage.data-file-read` reach FILES; `core.storage.exchange.status`
+ *  reaches PEER; `core.customer.status` is SELLER). A prefix parser would put those
+ *  five in the wrong group while looking right, and a mis-grouped op is a permission
+ *  an owner revokes believing it covered something else.
+ *
+ *  ⚠ TWO KINDS LIVE IN ONE LIST, DELIBERATELY. Most members are DATA the owner holds
+ *  (`mail` / `file` / `memory` / …). Four are CAPABILITIES with no stored entity
+ *  behind them — `ai` (calls a model), `browser` (drives the Bridge's DOM),
+ *  `schedule` (arms a cron), `watch` (declares a trigger). Splitting them into a
+ *  second field would buy a distinction no owner is asking about; forcing them to a
+ *  `'none'` bucket would dump 22 ops into one undifferentiated heap, which is worse
+ *  for the reader than the mild category impurity. The panel renders both as groups.
+ *
+ *  ⚠ `notification` and `peer` are data-ish, `seller` spans an entire subsystem —
+ *  the test is "would an owner look for this op under this heading", not taxonomy. */
+export const OP_ENTITIES = [
+  // data the owner holds
+  'mail', 'calendar', 'contact', 'file', 'shared', 'memory', 'audit',
+  'enrichment', 'work', 'form_response', 'webhook', 'peer', 'seller',
+  'notification', 'recall',
+  // capabilities with no stored entity behind them
+  'ai', 'browser', 'schedule', 'watch',
+  // ⚠ NO KERNEL OP CARRIES THESE TWO — they exist for the Tier-1 chat primitives
+  // (`TIER1_TOOL_ENTITY` in `chat.ts`), which share this vocabulary so the panel can
+  // render ONE group per entity across both registries. `crm` is `deal.search` /
+  // `account.search` (remote vendor records, not a local collection); `recipe` is
+  // `recipe.run` (it reaches the recipe catalog, not data). Keeping them here rather
+  // than in a second union is what makes "one group per entity" expressible at all.
+  'crm', 'recipe',
+] as const;
+
+/** String-literal union derived from {@link OP_ENTITIES}. */
+export type OpEntity = (typeof OP_ENTITIES)[number];
+
+/** ⛔⛔ WHICH ENTITIES ARE ALSO FENCE-GOVERNED COLLECTIONS — the bridge that lets the
+ *  `data.*` axis retire as a CONTROL while surviving as an ENFORCEMENT detail.
+ *
+ *  ⛔ `data.*` DOES TWO JOBS AND ONLY ONE OF THEM CAN BECOME AN OP ANNOTATION.
+ *  Job one is a grant row the tool handlers read — that one is now derived from the
+ *  op's own `entity` and needs no separate checkbox. Job two is
+ *  `scopeRestrictionsFromReadableCollections`, which emits `data.<c>.*` PATH PATTERNS
+ *  consumed by `evaluateScopeAdmissibility` at the execute gate: the ingredient-read
+ *  fence over recipe template reads (`{{data.mail.<id>}}`). Those reads dispatch NO
+ *  OP, so there is nothing to hang a per-op grant on, and retiring the row outright
+ *  would leave every recipe's raw collection read ungated.
+ *
+ *  ⇒ The row stays, the CHECKBOX goes. The entity group toggle writes the collection
+ *  row alongside its ops, so one owner action still means one thing on both fences —
+ *  which is the invariant `read-collection-grant.ts` already states: the two "can never
+ *  disagree about what a checkbox means."
+ *
+ *  ⚠ NOT EVERY ENTITY MAPS. `ai` / `browser` / `schedule` / `watch` / `recipe` / `crm`
+ *  / `seller` / `shared` / `peer` / `notification` / `enrichment` / `memory` / `audit`
+ *  have no `READABLE_COLLECTIONS` member behind them — enrichment and memory carry
+ *  their own gates (topic grants, `core.memory.*` verb-ops), and the rest are not
+ *  collections at all. Absent here means "no path fence", never "denied". */
+export const OP_ENTITY_COLLECTION: Readonly<Partial<Record<OpEntity, string>>> = {
+  mail: 'mail',
+  calendar: 'calendar',
+  file: 'file',
+  contact: 'contact',
+  form_response: 'form_response',
+  webhook: 'webhook',
+  // ⚠ `work` IS ABSENT ON PURPOSE and this map is deliberately one-to-one. It fans out
+  // to every `WORK_ENTITY_KINDS` member of `READABLE_COLLECTIONS` (task / note /
+  // commitment / project / booking), which a `Partial<Record<OpEntity, string>>` cannot
+  // express. The reverse direction — collection -> entity, which IS total — is built in
+  // the Contracts panel (`COLLECTION_ENTITY`) by folding the work kinds in there.
+};
+
+/** The owner-facing heading for each entity — what the Contracts panel prints above
+ *  the group. A `Record` over the closed union, so a new entity cannot ship without a
+ *  human-readable name; a fallback like `entity` raw would surface `form_response` to
+ *  a person.
+ *
+ *  ⚠ Named for what the owner calls the thing, not for the registry's vocabulary:
+ *  `work` reads as "Tasks & notes" because nobody looks for a commitment under
+ *  "work-entity", and `shared` says "Shared store" because "shared" alone names
+ *  nothing on its own. */
+export const OP_ENTITY_LABEL: Readonly<Record<OpEntity, string>> = {
+  mail: 'Mail',
+  calendar: 'Calendar',
+  contact: 'Contacts',
+  file: 'Files',
+  shared: 'Shared store',
+  memory: 'Memory',
+  recall: 'Conversation history',
+  audit: 'Audit trail',
+  enrichment: 'Enrichments',
+  work: 'Tasks & notes',
+  form_response: 'Form responses',
+  webhook: 'Webhooks',
+  peer: 'Peers',
+  seller: 'Selling',
+  notification: 'Notifications',
+  crm: 'CRM records',
+  recipe: 'Recipes',
+  ai: 'AI models',
+  browser: 'Browser',
+  schedule: 'Schedules',
+  watch: 'Triggers',
+};
+
+export const OP_ENTITY_SET: ReadonlySet<string> = new Set(OP_ENTITIES);
+
 export interface KernelOpEntry {
   /** the fully-qualified Tier-K op id (`core.mail.get`,
    *  `core.work-entity.task.mark-done`). Parses via `parseOpId` as
@@ -72,6 +186,11 @@ export interface KernelOpEntry {
   /** kernel-defined risk — taken verbatim from the backing ingredient's
    *  `risk_tier` (or kernel-assigned for a {@link KernelOpEntry.native} op). */
   risk: RiskTier;
+  /** What this op reaches — see {@link OP_ENTITIES}. REQUIRED, so a new op cannot
+   *  be added without deciding where an owner would look for it; an optional field
+   *  would let ops accumulate ungrouped and the panel would quietly under-report
+   *  what reaches a collection. */
+  entity: OpEntity;
   /** D-187 grant-foundation slice 3 — a NATIVE verb-op: a grant handle for an
    *  MCP-server-native direct-return read tool (`timeline` reuses the existing
    *  `core.memory.timeline.read`; `registry.describe` / `enrichment.read` /
@@ -155,7 +274,8 @@ const op = (
   domain: string,
   backing_slug: string,
   risk: RiskTier,
-): KernelOpEntry => ({ op: opId, domain, backing_slug, risk });
+  entity: OpEntity,
+): KernelOpEntry => ({ op: opId, domain, backing_slug, risk, entity });
 
 /** D-187 grant-foundation slice 3 — builder for a NATIVE verb-op
  *  ({@link KernelOpEntry.native}): a grant handle for an MCP-server-native
@@ -165,6 +285,7 @@ const nativeOp = (
   opId: string,
   domain: string,
   risk: RiskTier,
+  entity: OpEntity,
   /** D-234 § 234.4 — see {@link KernelOpEntry.mcp_tool}. Supply it only for a
    *  native op that is genuinely callable as a static MCP tool. */
   mcp_tool?: string,
@@ -172,6 +293,7 @@ const nativeOp = (
   op: opId,
   domain,
   risk,
+  entity,
   native: true,
   ...(mcp_tool !== undefined ? { mcp_tool } : {}),
 });
@@ -187,29 +309,29 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   // ── ai — the contracted functions; `core.ai.<fn>` → the `core-ai-<fn>`
   //    anti-shadow-fenced slug. `core.ai.embed` (D-174 R28) routes to the
   //    embeddings executor; the rest are chat. All `risk_tier: 'read'`.
-  op('core.ai.classify', 'ai', 'core-ai-classify', 'read'),
-  op('core.ai.compare', 'ai', 'core-ai-compare', 'read'),
-  op('core.ai.embed', 'ai', 'core-ai-embed', 'read'),
-  op('core.ai.extract', 'ai', 'core-ai-extract', 'read'),
-  op('core.ai.generate', 'ai', 'core-ai-generate', 'read'),
-  op('core.ai.prompt', 'ai', 'core-ai-prompt', 'read'),
-  op('core.ai.rewrite', 'ai', 'core-ai-rewrite', 'read'),
-  op('core.ai.score', 'ai', 'core-ai-score', 'read'),
-  op('core.ai.sentiment', 'ai', 'core-ai-sentiment', 'read'),
-  op('core.ai.summarize', 'ai', 'core-ai-summarize', 'read'),
-  op('core.ai.translate', 'ai', 'core-ai-translate', 'read'),
+  op('core.ai.classify', 'ai', 'core-ai-classify', 'read', 'ai'),
+  op('core.ai.compare', 'ai', 'core-ai-compare', 'read', 'ai'),
+  op('core.ai.embed', 'ai', 'core-ai-embed', 'read', 'ai'),
+  op('core.ai.extract', 'ai', 'core-ai-extract', 'read', 'ai'),
+  op('core.ai.generate', 'ai', 'core-ai-generate', 'read', 'ai'),
+  op('core.ai.prompt', 'ai', 'core-ai-prompt', 'read', 'ai'),
+  op('core.ai.rewrite', 'ai', 'core-ai-rewrite', 'read', 'ai'),
+  op('core.ai.score', 'ai', 'core-ai-score', 'read', 'ai'),
+  op('core.ai.sentiment', 'ai', 'core-ai-sentiment', 'read', 'ai'),
+  op('core.ai.summarize', 'ai', 'core-ai-summarize', 'read', 'ai'),
+  op('core.ai.translate', 'ai', 'core-ai-translate', 'read', 'ai'),
 
   // ── mail — warehouse mail/email reads + the direct send.
-  op('core.mail.get', 'mail', 'mail-get', 'read'),
-  op('core.mail.body-read', 'mail', 'mail-body-read', 'read'),
-  op('core.mail.thread-read', 'mail', 'mail-thread-reader', 'read'),
-  op('core.mail.send', 'mail', 'mail-send', 'write'),
+  op('core.mail.get', 'mail', 'mail-get', 'read', 'mail'),
+  op('core.mail.body-read', 'mail', 'mail-body-read', 'read', 'mail'),
+  op('core.mail.thread-read', 'mail', 'mail-thread-reader', 'read', 'mail'),
+  op('core.mail.send', 'mail', 'mail-send', 'write', 'mail'),
   /** D-210 §7 — notify a booking's visitor server-side. A sibling outbound send to
    *  `mail-send`, but the recipient (the visitor's SEALED email) is resolved by the
    *  dispatcher from the booking's own `reception_record_id`, never authored by
    *  the caller and never returned. `write` + the outbound-send lift, so it holds at
    *  the D-157 gate exactly like `mail-send` (the owner reviews the booking). */
-  op('core.mail.notify-booking-visitor', 'mail', 'notify-booking-visitor', 'write'),
+  op('core.mail.notify-booking-visitor', 'mail', 'notify-booking-visitor', 'write', 'mail'),
   /** D-207 slice 3d — the general no-resend fence, lifted out of D-200.
    *
    *  `write` because it settles the claim, but note what a caller CANNOT do with it:
@@ -218,7 +340,7 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
    *  rather than a status the caller names. So there is no argument through which a
    *  forged `matched` could be smuggled — and a forged `matched` is the dangerous
    *  one, because it marks a document DELIVERED that was never sent. */
-  op('core.mail.sent.reconcile', 'mail', 'mail-sent-reconcile', 'write'),
+  op('core.mail.sent.reconcile', 'mail', 'mail-sent-reconcile', 'write', 'mail'),
   /** D-239 — the mail WRITE-BACK: mutating the state of a message that already
    *  exists, as distinct from `core.mail.send`, which creates a new one.
    *
@@ -234,27 +356,27 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
    *  door takes the LOW ceiling, where a `write` surfaces for approval. So the
    *  owner's own recipe files mail silently and an agent's request to do it asks —
    *  which is the split the tier exists to express. */
-  op('core.mail.mark', 'mail', 'mail-mark', 'write'),
-  op('core.mail.flag', 'mail', 'mail-flag', 'write'),
-  op('core.mail.move', 'mail', 'mail-move', 'write'),
+  op('core.mail.mark', 'mail', 'mail-mark', 'write', 'mail'),
+  op('core.mail.flag', 'mail', 'mail-flag', 'write', 'mail'),
+  op('core.mail.move', 'mail', 'mail-move', 'write', 'mail'),
   /** `destructive` — the always-class. No trust ceiling can relax it (the FLOOR
    *  can't cross an always), so deleting mail asks EVERY time, for every actor,
    *  including the owner's own unattended automation. Same tier as
    *  `calendar-delete`, for the same reason: the provider's trash is the only copy
    *  left once the warehouse row is gone. */
-  op('core.mail.delete', 'mail', 'mail-delete', 'destructive'),
-  op('core.mail.email.get', 'mail', 'email-get', 'read'),
-  op('core.mail.email.list', 'mail', 'email-list', 'read'),
-  op('core.mail.email.search', 'mail', 'email-search', 'read'),
+  op('core.mail.delete', 'mail', 'mail-delete', 'destructive', 'mail'),
+  op('core.mail.email.get', 'mail', 'email-get', 'read', 'mail'),
+  op('core.mail.email.list', 'mail', 'email-list', 'read', 'mail'),
+  op('core.mail.email.search', 'mail', 'email-search', 'read', 'mail'),
 
   // ── contact — the personal contact graph.
-  op('core.contact.resolve', 'contact', 'contact-resolve', 'read'),
-  op('core.contact.business-context', 'contact', 'contact-business-context', 'read'),
-  op('core.contact.upsert', 'contact', 'contact-upsert', 'write'),
+  op('core.contact.resolve', 'contact', 'contact-resolve', 'read', 'contact'),
+  op('core.contact.business-context', 'contact', 'contact-business-context', 'read', 'contact'),
+  op('core.contact.upsert', 'contact', 'contact-upsert', 'write', 'contact'),
   // D-187 slice 3b — NATIVE verb-op for the `recued_contactEngagementsList` MCP tool
   // (contact-rooted engagement evidence; D-139). No backing ingredient. OWNER-default-only
   // (sensitive — exposes a contact's engagement history): see OWNER_DEFAULT_ONLY_GRANT_ENTRIES.
-  nativeOp('core.contact.engagements.read', 'contact', 'read'),
+  nativeOp('core.contact.engagements.read', 'contact', 'read', 'contact'),
 
   // ── notification — the alert-dispatch surface; backed by the anti-shadow
   //    `core-notification-send` slug (bare `notification-send` is the alias).
@@ -301,7 +423,7 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
    *  ⇒ If a door must not be able to ring the owner's phone, revoke the OP on
    *  that door; do not re-tier the op, which would put the double-notification
    *  back on every recipe. */
-  op('core.notification.send', 'notification', 'core-notification-send', 'read'),
+  op('core.notification.send', 'notification', 'core-notification-send', 'read', 'notification'),
   // A bounded, coalescing hint with a flat pointer/settings envelope to a
   // contract-bound MCP client. The transport adds no query result; the client
   // must call `query_tool` through the ordinary live token/contract gates, and
@@ -311,29 +433,30 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
     'notification',
     'core-notification-recipe-callback',
     'write',
+    'notification',
   ),
 
   // ── work-entity — the note / task / commitment / project / booking entity CRUD.
-  op('core.work-entity.note.create', 'work-entity', 'note-create', 'write'),
-  op('core.work-entity.note.update', 'work-entity', 'note-update', 'write'),
-  op('core.work-entity.note.delete', 'work-entity', 'note-delete', 'destructive'),
-  op('core.work-entity.task.create', 'work-entity', 'task-create', 'write'),
-  op('core.work-entity.task.update', 'work-entity', 'task-update', 'write'),
-  op('core.work-entity.task.delete', 'work-entity', 'task-delete', 'destructive'),
-  op('core.work-entity.task.mark-done', 'work-entity', 'task-mark-done', 'write'),
-  op('core.work-entity.commitment.create', 'work-entity', 'commitment-create', 'write'),
+  op('core.work-entity.note.create', 'work-entity', 'note-create', 'write', 'work'),
+  op('core.work-entity.note.update', 'work-entity', 'note-update', 'write', 'work'),
+  op('core.work-entity.note.delete', 'work-entity', 'note-delete', 'destructive', 'work'),
+  op('core.work-entity.task.create', 'work-entity', 'task-create', 'write', 'work'),
+  op('core.work-entity.task.update', 'work-entity', 'task-update', 'write', 'work'),
+  op('core.work-entity.task.delete', 'work-entity', 'task-delete', 'destructive', 'work'),
+  op('core.work-entity.task.mark-done', 'work-entity', 'task-mark-done', 'write', 'work'),
+  op('core.work-entity.commitment.create', 'work-entity', 'commitment-create', 'write', 'work'),
   // D-192 F1 — the review-then-approve PROPOSAL surface: same mint effect as
   // commitment.create, but `commitment-propose` is in
   // COMMITMENT_PROPOSAL_INGREDIENT_SLUGS (op-risk-admission.ts), whose lift
   // raises admit → ask for EVERY actor — a proposal HOLDS at the D-157 gate
   // no matter who dispatches (invariant 3: the owner ratifies every capture).
-  op('core.work-entity.commitment.propose', 'work-entity', 'commitment-propose', 'write'),
-  op('core.work-entity.commitment.update', 'work-entity', 'commitment-update', 'write'),
-  op('core.work-entity.commitment.cancel', 'work-entity', 'commitment-cancel', 'write'),
-  op('core.work-entity.commitment.fulfill', 'work-entity', 'commitment-fulfill', 'write'),
-  op('core.work-entity.project.create', 'work-entity', 'project-create', 'write'),
-  op('core.work-entity.project.update', 'work-entity', 'project-update', 'write'),
-  op('core.work-entity.project.archive', 'work-entity', 'project-archive', 'write'),
+  op('core.work-entity.commitment.propose', 'work-entity', 'commitment-propose', 'write', 'work'),
+  op('core.work-entity.commitment.update', 'work-entity', 'commitment-update', 'write', 'work'),
+  op('core.work-entity.commitment.cancel', 'work-entity', 'commitment-cancel', 'write', 'work'),
+  op('core.work-entity.commitment.fulfill', 'work-entity', 'commitment-fulfill', 'write', 'work'),
+  op('core.work-entity.project.create', 'work-entity', 'project-create', 'write', 'work'),
+  op('core.work-entity.project.update', 'work-entity', 'project-update', 'write', 'work'),
+  op('core.work-entity.project.archive', 'work-entity', 'project-archive', 'write', 'work'),
   // D-210 — booking. THREE verbs, not the commitment quartet: a booking's
   // lifecycle move rides `update` (which re-stamps `state_changed_at` only on a
   // real transition) rather than earning dedicated `-cancel` / `-fulfill` ops.
@@ -342,11 +465,11 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   // through `commitment-update`). A booking has no such machine — any state may
   // follow any other, because a real reservation genuinely does go
   // confirmed → cancelled → confirmed again.
-  op('core.work-entity.booking.create', 'work-entity', 'booking-create', 'write'),
-  op('core.work-entity.booking.update', 'work-entity', 'booking-update', 'write'),
-  op('core.work-entity.booking.delete', 'work-entity', 'booking-delete', 'destructive'),
-  op('core.work-entity.list', 'work-entity', 'work-entity-list', 'read'),
-  op('core.work-entity.get', 'work-entity', 'work-entity-get', 'read'),
+  op('core.work-entity.booking.create', 'work-entity', 'booking-create', 'write', 'work'),
+  op('core.work-entity.booking.update', 'work-entity', 'booking-update', 'write', 'work'),
+  op('core.work-entity.booking.delete', 'work-entity', 'booking-delete', 'destructive', 'work'),
+  op('core.work-entity.list', 'work-entity', 'work-entity-list', 'read', 'work'),
+  op('core.work-entity.get', 'work-entity', 'work-entity-get', 'read', 'work'),
   /** NATIVE verb-op for the Tier-1 `work.search` + `work.read` tools — the READ
    *  half of this domain, which had no grant handle at all while all 15 writes
    *  above had one. No backing ingredient (the tools are registry-native, not
@@ -366,20 +489,20 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
    *  collection. Keeping them separate is what lets the grants panel keep
    *  labelling the DATA rows in the user's own vocabulary (`task`) while this
    *  row names the tool. `feedback_separate_authorization_axes`. */
-  nativeOp('core.work-entity.read', 'work-entity', 'read'),
+  nativeOp('core.work-entity.read', 'work-entity', 'read', 'work'),
 
   // ── memory — the provenance / audit / annotation + links graph + timeline
   //    (CLAUDE.md: data.memory = audit/memory + provenance links + annotations).
-  op('core.memory.annotation.create', 'memory', 'annotation-create', 'write'),
-  op('core.memory.annotation.delete', 'memory', 'annotation-delete', 'write'),
-  op('core.memory.annotation.list', 'memory', 'annotation-list', 'read'),
-  op('core.memory.annotation.search', 'memory', 'annotation-search', 'read'),
-  op('core.memory.link.create', 'memory', 'link-create', 'write'),
-  op('core.memory.link.delete', 'memory', 'link-delete', 'write'),
-  op('core.memory.link.list', 'memory', 'link-list', 'read'),
-  op('core.memory.timeline.read', 'memory', 'timeline-read', 'read'),
-  op('core.memory.annotate', 'memory', 'data-annotate', 'write'),
-  op('core.memory.link', 'memory', 'data-link', 'write'),
+  op('core.memory.annotation.create', 'memory', 'annotation-create', 'write', 'memory'),
+  op('core.memory.annotation.delete', 'memory', 'annotation-delete', 'write', 'memory'),
+  op('core.memory.annotation.list', 'memory', 'annotation-list', 'read', 'memory'),
+  op('core.memory.annotation.search', 'memory', 'annotation-search', 'read', 'memory'),
+  op('core.memory.link.create', 'memory', 'link-create', 'write', 'memory'),
+  op('core.memory.link.delete', 'memory', 'link-delete', 'write', 'memory'),
+  op('core.memory.link.list', 'memory', 'link-list', 'read', 'memory'),
+  op('core.memory.timeline.read', 'memory', 'timeline-read', 'read', 'memory'),
+  op('core.memory.annotate', 'memory', 'data-annotate', 'write', 'memory'),
+  op('core.memory.link', 'memory', 'data-link', 'write', 'memory'),
   // D-187 slice 3b — NATIVE verb-op for the `recued_getAudit` MCP tool (run-history /
   // audit-log read). No backing ingredient. OWNER-default-only (sensitive — run history
   // reveals the owner's automation activity): see OWNER_DEFAULT_ONLY_GRANT_ENTRIES.
@@ -388,7 +511,7 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   // then "memory" MEANT the provenance substrate) that made an audit grant look
   // like part of the D-198 knowledge-pool family in the grant surface. Pre-launch
   // → renamed outright, no migration (`feedback_pre_launch_no_migration`).
-  nativeOp('core.audit.read', 'audit', 'read'),
+  nativeOp('core.audit.read', 'audit', 'read', 'audit'),
   // D-198 Slice 4 — NATIVE verb-ops for contract-governed collective memory: a
   // contracted AI / customer WRITES memory (`memory.write` primitive / chat tool)
   // or READS the shared pool (`memory.search` / `memory.recall`) only when the
@@ -396,12 +519,29 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   // not recipe-runnable). Both are OWNER-default-only (ON for owner, OFF for every
   // door by default — the seller opts a tier in per §3): see
   // OWNER_DEFAULT_ONLY_GRANT_ENTRIES.
-  nativeOp('core.memory.write', 'memory', 'write'),
-  nativeOp('core.memory.read', 'memory', 'read'),
+  nativeOp('core.memory.write', 'memory', 'write', 'memory'),
+  nativeOp('core.memory.read', 'memory', 'read', 'memory'),
+  /** ⛔⛔ THE GRANT HANDLE FOR `recall.search` — the one AI-reachable read surface that
+   *  had NO ROW AT ALL. `chat-recall-search-tool.ts` is hand-built into the CHAT
+   *  registry view specifically so it never enters the raw MCP registry, and its own
+   *  header records the consequence: "interaction recall acquires no grant handle and
+   *  cannot be discovered there." Correct for DOORS — `resolveOwnerRecallCorpusScope`
+   *  fail-closes everything but `(chat, owner)` — and wrong for the OWNER, who could
+   *  not switch off the tool that reads every conversation they have ever had.
+   *
+   *  🔑 THE FIX IS TO SPLIT TWO LISTS THAT WERE ACCIDENTALLY ONE: "has a grant row" and
+   *  "is on the MCP wire". Adding it to `TIER1_TOOL_NAMES` would have bought the row by
+   *  ALSO exposing it to doors — inverting D-213. A kernel op id buys the row alone; the
+   *  chat-only wrapper is untouched, so the wire posture is exactly as before. The
+   *  precedent already exists in reverse: Tier-3 entries sit in the registry and are
+   *  refused at the wire (`mcp-server.ts`).
+   *
+   *  `native: true` — no backing ingredient, not recipe-runnable. `read` risk. */
+  nativeOp('core.recall.search', 'recall', 'read', 'recall'),
 
   // ── data — typed warehouse collections plus accepted free-form responses.
-  op('core.data.enrichment.upsert', 'data', 'enrichment-upsert', 'write'),
-  op('core.data.enrichment.list', 'data', 'enrichment-list', 'read'),
+  op('core.data.enrichment.upsert', 'data', 'enrichment-upsert', 'write', 'enrichment'),
+  op('core.data.enrichment.list', 'data', 'enrichment-list', 'read', 'enrichment'),
   // D-187 grant-foundation slice 3 — NATIVE verb-ops (no backing ingredient, not
   // recipe-runnable): grant handles for the three MCP-server-native enrichment
   // read tools, so the amendment §3 read gate can gate the VERB (`verb-op ∧
@@ -413,36 +553,36 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   // channel; Fork B). DISTINCT from the recipe-runnable `core.data.enrichment.list`
   // above (which lowers to `enrichment-list`); these have no lowering target.
   // (timeline's verb-op is the existing `core.memory.timeline.read`.)
-  nativeOp('core.data.enrichment.read', 'data', 'read'),
-  nativeOp('core.data.enrichment.vector-search', 'data', 'read'),
-  nativeOp('core.data.enrichment.describe', 'data', 'read'),
-  op('core.data.calendar.get', 'data', 'calendar-get', 'read'),
-  op('core.data.calendar.list', 'data', 'calendar-list', 'read'),
-  op('core.data.calendar.search', 'data', 'calendar-search', 'read'),
-  op('core.data.calendar.stat', 'data', 'calendar-stat', 'read'),
-  op('core.data.calendar.create', 'data', 'calendar-create', 'write'),
-  op('core.data.calendar.update', 'data', 'calendar-update', 'write'),
-  op('core.data.calendar.delete', 'data', 'calendar-delete', 'destructive'),
-  op('core.data.calendar.rsvp', 'data', 'calendar-rsvp', 'write'),
+  nativeOp('core.data.enrichment.read', 'data', 'read', 'enrichment'),
+  nativeOp('core.data.enrichment.vector-search', 'data', 'read', 'enrichment'),
+  nativeOp('core.data.enrichment.describe', 'data', 'read', 'enrichment'),
+  op('core.data.calendar.get', 'data', 'calendar-get', 'read', 'calendar'),
+  op('core.data.calendar.list', 'data', 'calendar-list', 'read', 'calendar'),
+  op('core.data.calendar.search', 'data', 'calendar-search', 'read', 'calendar'),
+  op('core.data.calendar.stat', 'data', 'calendar-stat', 'read', 'calendar'),
+  op('core.data.calendar.create', 'data', 'calendar-create', 'write', 'calendar'),
+  op('core.data.calendar.update', 'data', 'calendar-update', 'write', 'calendar'),
+  op('core.data.calendar.delete', 'data', 'calendar-delete', 'destructive', 'calendar'),
+  op('core.data.calendar.rsvp', 'data', 'calendar-rsvp', 'write', 'calendar'),
   // Accepted intake responses carry arbitrary visitor-authored values. The
   // operation is recipe-runnable, but its author default is owner-only (see
   // OWNER_DEFAULT_ONLY_GRANT_ENTRIES) and its dispatch scope is additionally
   // fenced to the exact `data.form_response` collection.
-  op('core.data.form-response.list', 'data', 'form-response-list', 'read'),
-  op('core.data.form-response.get', 'data', 'form-response-get', 'read'),
+  op('core.data.form-response.list', 'data', 'form-response-list', 'read', 'form_response'),
+  op('core.data.form-response.get', 'data', 'form-response-get', 'read', 'form_response'),
   // D-210 A.8 slice 2 — advance the owner-authored lifecycle. Named
   // `set-state`, NOT `update`: it can change `lifecycle_state` and nothing
   // else, and a model reading `update` would go looking for the answer fields
   // it cannot touch. The same reason the `booking-*` manifests state what they
   // do not carry (see internal design notes).
-  op('core.data.form-response.set-state', 'data', 'form-response-set-state', 'write'),
-  op('core.data.webhook.get', 'data', 'webhook-get', 'read'),
-  op('core.data.webhook.list', 'data', 'webhook-list', 'read'),
+  op('core.data.form-response.set-state', 'data', 'form-response-set-state', 'write', 'form_response'),
+  op('core.data.webhook.get', 'data', 'webhook-get', 'read', 'webhook'),
+  op('core.data.webhook.list', 'data', 'webhook-list', 'read', 'webhook'),
 
   // D-201 Slice 4 — run-scoped accepted-event read. The backing ingredient
   // accepts only an opaque event ref; engine-only StepMeta supplies the recipe
   // and run identities used by the consumer-binding authorization check.
-  op('core.webhook.event.get', 'webhook', 'webhook-event-get', 'read'),
+  op('core.webhook.event.get', 'webhook', 'webhook-event-get', 'read', 'webhook'),
 
   // ── peer — D-234 § 234.4, what this server offers another server's OWNER.
   //
@@ -456,7 +596,7 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   // they answer. Spending someone else's attention is an outward action, and the
   // owner should see it proposed before it leaves — the same tier that gates a
   // mail send, for the same reason.
-  op('core.peer.ask', 'peer', 'peer-ask', 'write'),
+  op('core.peer.ask', 'peer', 'peer-ask', 'write', 'peer'),
   // D-234 § 234.4 — THE INBOUND DOOR, as a NATIVE verb-op.
   //
   // ⛔⛔ NATIVE, NOT RECIPE-BACKED, AND THE FIRST CUT GOT THIS WRONG. It shipped
@@ -482,7 +622,7 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   // DOOR a peer calls, so the token that reaches it has to be able to name it —
   // and until this field the only name the mint accepted was one the gate never
   // read. See {@link KernelOpEntry.mcp_tool}.
-  nativeOp('core.peer.receive-ask', 'peer', 'write', 'recued_peerAsk'),
+  nativeOp('core.peer.receive-ask', 'peer', 'write', 'peer', 'recued_peerAsk'),
   // D-234 § 234.4 — THE RETURN LEG'S DOOR: where the peer's ANSWER comes back.
   //
   // ⛔ A SEPARATE OP FROM `receive-ask`, NOT A MODE ON IT, because the two admit
@@ -498,7 +638,7 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   // `isSelfGatedNativeMcpTool` for why the synchronous-path ceiling is
   // substituted rather than applied — § 234.2 already ruled that the reply you
   // asked for needs no prompt.
-  nativeOp('core.peer.receive-answer', 'peer', 'write', 'recued_peerAnswer'),
+  nativeOp('core.peer.receive-answer', 'peer', 'write', 'peer', 'recued_peerAnswer'),
   // ⛔⛔ D-234 § 234.4j — `core.peer.expose` / `.revoke` / `.exposures` USED TO SIT
   // HERE AND WERE DELETED. They wrote a `peer_exposures` table saying "this peer
   // may ask me things under this label" — which is the SAME QUESTION the peer's
@@ -507,9 +647,9 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   // Do not re-add a per-peer flag store: the contract IS the flag store.
 
   // ── storage — the generic KV / blob surface (data.shared + data.file).
-  op('core.storage.shared.write', 'storage', 'shared-write', 'write'),
-  op('core.storage.shared.compare-and-set', 'storage', 'shared-compare-and-set', 'write'),
-  op('core.storage.shared.read', 'storage', 'shared-read', 'read'),
+  op('core.storage.shared.write', 'storage', 'shared-write', 'write', 'shared'),
+  op('core.storage.shared.compare-and-set', 'storage', 'shared-compare-and-set', 'write', 'shared'),
+  op('core.storage.shared.read', 'storage', 'shared-read', 'read', 'shared'),
   // D-232 § 23 — the asker's own question. `output.exchange` returns a ref, and
   // until this op the ref addressed nothing a RECIPE could query: the audit
   // lookup behind it was wired only to the AI door, so a model could ask what
@@ -521,27 +661,27 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   // both halves of getting this wrong in turn. The backing ingredient's own
   // `kind` is `storage` and the answer is an audit read, so `storage` is the
   // honest home rather than a domain invented for one op.
-  op('core.storage.exchange.status', 'storage', 'exchange-status', 'read'),
-  op('core.storage.shared.delete', 'storage', 'shared-delete', 'write'),
-  op('core.storage.shared.delete-prefix', 'storage', 'shared-delete-prefix', 'destructive'),
-  op('core.storage.shared.list', 'storage', 'shared-list', 'read'),
-  op('core.storage.shared.search', 'storage', 'shared-search', 'read'),
-  op('core.storage.file.read', 'storage', 'file-read', 'read'),
-  op('core.storage.file.write', 'storage', 'file-write', 'write'),
-  op('core.storage.file.delete', 'storage', 'file-delete', 'destructive'),
-  op('core.storage.file.get', 'storage', 'file-get', 'read'),
-  op('core.storage.file.list', 'storage', 'file-list', 'read'),
-  op('core.storage.file.move', 'storage', 'file-move', 'destructive'),
-  op('core.storage.file.stat', 'storage', 'file-stat', 'read'),
+  op('core.storage.exchange.status', 'storage', 'exchange-status', 'read', 'peer'),
+  op('core.storage.shared.delete', 'storage', 'shared-delete', 'write', 'shared'),
+  op('core.storage.shared.delete-prefix', 'storage', 'shared-delete-prefix', 'destructive', 'shared'),
+  op('core.storage.shared.list', 'storage', 'shared-list', 'read', 'shared'),
+  op('core.storage.shared.search', 'storage', 'shared-search', 'read', 'shared'),
+  op('core.storage.file.read', 'storage', 'file-read', 'read', 'file'),
+  op('core.storage.file.write', 'storage', 'file-write', 'write', 'file'),
+  op('core.storage.file.delete', 'storage', 'file-delete', 'destructive', 'file'),
+  op('core.storage.file.get', 'storage', 'file-get', 'read', 'file'),
+  op('core.storage.file.list', 'storage', 'file-list', 'read', 'file'),
+  op('core.storage.file.move', 'storage', 'file-move', 'destructive', 'file'),
+  op('core.storage.file.stat', 'storage', 'file-stat', 'read', 'file'),
   // D-185 Slice 4 — the explicit temp→cas keep step: ingest a run-scoped temp
   // file_ref's bytes into data.file.received, returning a durable cas_ref.
-  op('core.storage.file.persist', 'storage', 'file-persist', 'write'),
+  op('core.storage.file.persist', 'storage', 'file-persist', 'write', 'file'),
   /** D-245 — write a REF's bytes into a record the RECIPE named. Closes the knot
    *  that a CAS id is content-derived (no name a recipe can choose in advance)
    *  while the only writer for a named `{slug, path}` record is value-shaped
    *  (`file-write { body_b64 }`, so a large file round-trips through step state).
    *  A stable NAME or memory-safe BYTES — this is what makes it both. */
-  op('core.storage.file.put-ref', 'storage', 'file-put-ref', 'write'),
+  op('core.storage.file.put-ref', 'storage', 'file-put-ref', 'write', 'file'),
   // D-200 Slice 3 — strict deterministic Markdown substitution from one
   // durable template file ref to one run-scoped temp file ref.
   op(
@@ -549,12 +689,41 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
     'storage',
     'file-render-markdown-template',
     'write',
+    'file',
   ),
   // D-173 P5 (scan-gate part B) — the post-scan write-back: patch a
   // data.file.received record's scan_status hot field to a local scanner's
   // verdict. MCP-reserved (the backing kernel ingredient is not in
   // `MCP_EXPOSED_KERNEL_INGREDIENTS`) — only the reactive scan recipe writes it.
-  op('core.storage.file.set-scan-status', 'storage', 'file-set-scan-status', 'write'),
+  op('core.storage.file.set-scan-status', 'storage', 'file-set-scan-status', 'write', 'file'),
+  /** ⛔⛔ THE ONE GRANT THAT SAYS "MAY BYTES LEAVE THIS MACHINE'S STORAGE AND BE
+   *  FETCHED FROM A CONNECTED VENDOR". It gates `resolveRemoteFileBytes` — the single
+   *  function BOTH remote-reach routes funnel through: `handleFileRead` for a
+   *  `file:remote:*` id, and the CLI executor's `input_materialize` reader.
+   *
+   *  🔑 IT IS NOT A SECOND `file.read`, AND THAT IS WHY IT IS ITS OWN OP. The local
+   *  and remote branches of `core.storage.file.read` are chosen by the ARG
+   *  (`{slug,path}` / a CAS `record_id` → local; a `file:remote:*` id → the vendor),
+   *  so one grant on that id cannot distinguish them — an op gate fires on the op id,
+   *  before the arg is known. Measured on the shipped corpus (3,400 JSON files): all 9
+   *  `core.storage.file.read` steps pass `{slug,path}`, ZERO pass `record_id`, so this
+   *  op is purely additive there. The real reach is the CLI path — 101 ops across 46
+   *  packs declare `input_materialize` and 45 of the 46 shipped call sites pass a
+   *  DYNAMIC `source` (`{{step.file_ref}}` out of SharePoint, `{{item}}`, …). Those are
+   *  101 DIFFERENT ops, so the capability cannot live on an op id there either: remote
+   *  reach is a property of the BINDING. Hence one grant, at the boundary.
+   *
+   *  ⚠ SERVER-WIDE, NOT PER-CONTRACT — stated so it is not mistaken for more. Neither
+   *  caller carries an `ExecutionSource` (`handleFileRead(deps, args)`; the CLI reader
+   *  is a bare `(record_id) => bytes` closure), so the predicate reads the OWNER's row
+   *  and answers the same for every dispatch. Per-door granularity needs the source
+   *  threaded through kernel-op dispatch and is deliberately NOT bundled here.
+   *
+   *  `native: true` — no backing ingredient, not recipe-runnable; it is a capability
+   *  handle, not a step an author writes. `read` risk: it mutates nothing. What makes
+   *  it worth its own row is EGRESS OF THE OWNER'S VENDOR CREDENTIAL, not mutation, and
+   *  that is what the grant expresses — the ceiling axis has no way to say it. */
+  nativeOp('core.storage.file.fetch-remote', 'storage', 'read', 'file'),
   /** D-244 — whole-file CSV filtering, in the KERNEL rather than a CLI pack.
    *  csvkit and xlsx2csv are Python tools an owner must install; a spreadsheet
    *  used as a customer list is too common a case to have its search silently
@@ -569,15 +738,15 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
    *  unaudited second path to those bytes and undefined on two of three hosts.
    *  Transforms operate on what is already in step state; kernel ops are how
    *  bytes enter it. */
-  op('core.storage.csv.filter', 'storage', 'csv-filter', 'read'),
-  op('core.storage.csv.stats', 'storage', 'csv-stats', 'read'),
-  op('core.storage.csv.columns', 'storage', 'csv-columns', 'read'),
-  op('core.storage.data-file-read', 'storage', 'data-file-read', 'read'),
+  op('core.storage.csv.filter', 'storage', 'csv-filter', 'read', 'file'),
+  op('core.storage.csv.stats', 'storage', 'csv-stats', 'read', 'file'),
+  op('core.storage.csv.columns', 'storage', 'csv-columns', 'read', 'file'),
+  op('core.storage.data-file-read', 'storage', 'data-file-read', 'read', 'file'),
 
   // ── schedule — D-193 installed-recipe scheduling control plane.
   //    Creates recurring or one-shot rows for recipes already installed in the
   //    local RecipeStore. Write risk because it arms autonomous future execution.
-  op('core.schedule.recipe', 'schedule', 'schedule-recipe', 'write'),
+  op('core.schedule.recipe', 'schedule', 'schedule-recipe', 'write', 'schedule'),
 
   // ── seller — core-owned commerce registry. Recipes can establish and read
   //    fixed-shape offers, but only Seller owns the DB/schema/menu/UI and the
@@ -585,15 +754,16 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   //    a one-way creator-recipe self-link, never arbitrary definition or
   //    transaction editing. Pack provenance never grants identity or mutation
   //    authority.
-  op('core.seller.offer.ensure', 'seller', 'seller-offer-ensure', 'write'),
+  op('core.seller.offer.ensure', 'seller', 'seller-offer-ensure', 'write', 'seller'),
   op(
     'core.seller.offer.attach-fulfillment',
     'seller',
     'seller-offer-attach-fulfillment',
     'write',
+    'seller',
   ),
-  op('core.seller.offer.get', 'seller', 'seller-offer-get', 'read'),
-  op('core.seller.offer.list', 'seller', 'seller-offer-list', 'read'),
+  op('core.seller.offer.get', 'seller', 'seller-offer-get', 'read', 'seller'),
+  op('core.seller.offer.list', 'seller', 'seller-offer-list', 'read', 'seller'),
 
   // ── seller.order — D-207 §4.3, the money leg. One purchase of one offer.
   //
@@ -616,21 +786,23 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   //    anonymous channel performs no writes at all. It renders a link to the
   //    owner's pre-created checkout, and payment confirmation arrives on the
   //    `webhook` channel, which carries owner authority.
-  op('core.seller.order.open', 'seller', 'seller-order-open', 'write'),
-  op('core.seller.order.get', 'seller', 'seller-order-get', 'read'),
-  op('core.seller.order.list', 'seller', 'seller-order-list', 'read'),
-  op('core.seller.order.quote', 'seller', 'seller-order-quote', 'write'),
+  op('core.seller.order.open', 'seller', 'seller-order-open', 'write', 'seller'),
+  op('core.seller.order.get', 'seller', 'seller-order-get', 'read', 'seller'),
+  op('core.seller.order.list', 'seller', 'seller-order-list', 'read', 'seller'),
+  op('core.seller.order.quote', 'seller', 'seller-order-quote', 'write', 'seller'),
   op(
     'core.seller.order.attach-payment',
     'seller',
     'seller-order-attach-payment',
     'write',
+    'seller',
   ),
   op(
     'core.seller.order.confirm-payment',
     'seller',
     'seller-order-confirm-payment',
     'write',
+    'seller',
   ),
   //    D-196 renewal — the second specialized `paid` writer. A renewal order is
   //    keyed on the provider invoice that caused it (`origin_kind:
@@ -646,25 +818,29 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
     'seller',
     'seller-order-confirm-renewal-payment',
     'write',
+    'seller',
   ),
   op(
     'core.seller.order.confirm-refund',
     'seller',
     'seller-order-confirm-refund',
     'write',
+    'seller',
   ),
   op(
     'core.seller.order.attach-artifact',
     'seller',
     'seller-order-attach-artifact',
     'write',
+    'seller',
   ),
-  op('core.seller.order.transition', 'seller', 'seller-order-transition', 'write'),
+  op('core.seller.order.transition', 'seller', 'seller-order-transition', 'write', 'seller'),
   op(
     'core.seller.order.link-work-entity',
     'seller',
     'seller-order-link-work-entity',
     'write',
+    'seller',
   ),
   //    §4.5 — binds a paid order to the seller customer its fulfilment issued.
   //    `order.open` already accepts a `customer_id` (a renewal's customer exists
@@ -676,6 +852,7 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
     'seller',
     'seller-order-link-customer',
     'write',
+    'seller',
   ),
 
   // ── seller.tier — D-196 §4.5 ingress: the vendor-neutral tier read. The tier
@@ -688,8 +865,8 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   //    family takes an entitlement key and the server resolves the template,
   //    so no recipe can name tools/scopes), and never a tier row id (the KEY
   //    is the recipe-facing identity; it survives a re-sync, row ids do not).
-  op('core.seller.tier.get', 'seller', 'seller-tier-get', 'read'),
-  op('core.seller.tier.list', 'seller', 'seller-tier-list', 'read'),
+  op('core.seller.tier.get', 'seller', 'seller-tier-get', 'read', 'seller'),
+  op('core.seller.tier.list', 'seller', 'seller-tier-list', 'read', 'seller'),
 
   // ── seller.customer-access — D-196 seller-customer lifecycle control plane.
   //    These mutate local seller customers, customer-instance contracts, and
@@ -703,20 +880,21 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   //    (`customer-access-*`) is deliberately unchanged. Pre-launch, zero
   //    installs and zero stored grant rows carry the old ids → renamed
   //    outright, no compat shim.
-  op('core.seller.customer-access.issue', 'seller', 'customer-access-issue', 'write'),
-  op('core.seller.customer-access.extend', 'seller', 'customer-access-extend', 'write'),
+  op('core.seller.customer-access.issue', 'seller', 'customer-access-issue', 'write', 'seller'),
+  op('core.seller.customer-access.extend', 'seller', 'customer-access-extend', 'write', 'seller'),
   op(
     'core.seller.customer-access.swap-tier',
     'seller',
     'customer-access-swap-tier',
     'write',
+    'seller',
   ),
-  op('core.seller.customer-access.close', 'seller', 'customer-access-close', 'write'),
+  op('core.seller.customer-access.close', 'seller', 'customer-access-close', 'write', 'seller'),
 
   // ── customer — D-196 customer self-service. Native read op: no backing
   //    ingredient, not recipe-runnable, resolved strictly from the caller's
   //    bound seller customer context by the MCP transport.
-  nativeOp('core.customer.status', 'customer', 'read'),
+  nativeOp('core.customer.status', 'customer', 'read', 'seller'),
 
   // ── watch — D-182 trigger-position kernel ops. Each backs a reactive
   //    `trigger_steps` gate (D-115) and lowers to a kernel watcher ingredient
@@ -763,14 +941,14 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   //    through the D-179 reactive watch-poll source, which reads via the paired
   //    Bridge; see `backend` `watch/dom-source.ts`. The inert D-115 `dom-watcher`
   //    kernel slug + this op were removed.)
-  op('core.watch.time', 'watch', 'time-watcher', 'read'),
-  op('core.watch.time-relative', 'watch', 'time-relative-watcher', 'read'),
-  op('core.watch.mail', 'watch', 'mail-watcher', 'read'),
-  op('core.watch.calendar', 'watch', 'calendar-watcher', 'read'),
-  op('core.watch.file', 'watch', 'file-watcher', 'read'),
-  op('core.watch.http', 'watch', 'http-watcher', 'read'),
-  op('core.watch.recipe', 'watch', 'recipe-watcher', 'read'),
-  op('core.watch.webhook', 'watch', 'webhook-watcher', 'read'),
+  op('core.watch.time', 'watch', 'time-watcher', 'read', 'watch'),
+  op('core.watch.time-relative', 'watch', 'time-relative-watcher', 'read', 'watch'),
+  op('core.watch.mail', 'watch', 'mail-watcher', 'read', 'watch'),
+  op('core.watch.calendar', 'watch', 'calendar-watcher', 'read', 'watch'),
+  op('core.watch.file', 'watch', 'file-watcher', 'read', 'watch'),
+  op('core.watch.http', 'watch', 'http-watcher', 'read', 'watch'),
+  op('core.watch.recipe', 'watch', 'recipe-watcher', 'read', 'watch'),
+  op('core.watch.webhook', 'watch', 'webhook-watcher', 'read', 'watch'),
 
   // ── dom — D-182 "core.dom" close-out. The Bridge-actuated DOM action ops
   //    (SEQUENTIAL-position — a recipe step, not a trigger watcher).
@@ -783,8 +961,8 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   //    uniform executor); `target` is the actuation domain, gated by op risk +
   //    the Bridge domain_allowlist. read → never, write → ask. Both are
   //    `SERVER_NOT_REACHABLE`-class without a paired Bridge (extension-actuated).
-  op('core.dom.read', 'dom', 'dom-read', 'read'),
-  op('core.dom.write', 'dom', 'dom-write', 'write'),
+  op('core.dom.read', 'dom', 'dom-read', 'read', 'browser'),
+  op('core.dom.write', 'dom', 'dom-write', 'write', 'browser'),
 ];
 
 // ────────────────────────────────────────────────────────────────

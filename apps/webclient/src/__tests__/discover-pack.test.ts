@@ -154,6 +154,32 @@ describe('pack-discovery config', () => {
     expect(b[0]).toMatchObject({ label: '✓ Certified', tone: 'accent' });
     expect(b[1]).toMatchObject({ label: 'CLI', tone: 'muted' });
   });
+  it('⛔⛔ A PRE-INSTALLED PACK SAYS SO — the owner did not choose it', () => {
+    // Reported live: four `Reception —` packs on a server with nothing installed.
+    // They are `pre_install: true` foundation packs that auto-install at every
+    // boot, and the roster gave no way to tell them from packs the owner picked.
+    const b = packBadges(pr({ slug: 'reception-intake' }), new Set(['reception-intake']));
+    expect(b[0]).toMatchObject({ label: 'Included', tone: 'muted' });
+    expect(b[0].title).toContain('every server boot');
+  });
+
+  it('⛔ AND A PACK THE OWNER CHOSE CARRIES NO SUCH BADGE', () => {
+    expect(packBadges(pr({ slug: 'queue-desk' }), new Set(['reception-intake'])))
+      .not.toContainEqual(expect.objectContaining({ label: 'Included' }));
+    // ...nor when there is no roster to read at all (offline / first paint).
+    expect(packBadges(pr({ slug: 'reception-intake' })))
+      .not.toContainEqual(expect.objectContaining({ label: 'Included' }));
+  });
+
+  it('⛔ THE BADGE IS KEYED ON THE ROSTER, NOT ON THE PROJECTION', () => {
+    // These packs are about to be PUBLISHED. Once they are, they arrive as
+    // ordinary catalog rows rather than roster projections — a badge derived
+    // from the projection would disappear at exactly that moment.
+    const catalogRow = pr({ slug: 'mail-compose-foundation', download_count: 42 });
+    expect(packBadges(catalogRow, new Set(['mail-compose-foundation']))[0])
+      .toMatchObject({ label: 'Included' });
+  });
+
   it('meta shows publisher · installs · items', () => {
     expect(packMeta(pr({ publisher_id: 'x', download_count: 1, item_count: 1 }))).toBe('x · 1 install · 1 item');
     expect(packMeta(pr({ publisher_id: 'x', download_count: 3, item_count: 5 }))).toBe('x · 3 installs · 5 items');

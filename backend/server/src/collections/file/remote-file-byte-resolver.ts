@@ -41,7 +41,14 @@ export type RemoteFileReadErrorCode =
   /** The object exceeds {@link REMOTE_FILE_READ_MAX_BYTES}. */
   | 'remote_too_large'
   /** The vendor fetch failed (network / auth / vendor error) — transient. */
-  | 'remote_fetch_failed';
+  | 'remote_fetch_failed'
+  /** The owner revoked `core.storage.file.fetch-remote`. PERMANENT until they
+   *  re-grant it — never retried, and deliberately distinct from
+   *  `remote_provider_unsupported` (a vendor nobody wired) and
+   *  `file_storage_missing` (a connection that is gone). A caller that cannot tell
+   *  "you turned this off" from "this is broken" reports the wrong thing to the
+   *  owner, and the owner then debugs a setting they chose. */
+  | 'remote_fetch_not_granted';
 
 /** What a per-vendor resolver receives — the SAME credential seam the list
  *  adapters use (`FileConnectionResolver`), the vendor `remote_id` locator, the
@@ -90,7 +97,76 @@ export interface RemoteFileReadDeps {
   byteResolvers: RemoteFileByteResolverRegistry;
   /** Byte ceiling (defaults to {@link REMOTE_FILE_READ_MAX_BYTES}). */
   maxBytes?: number;
+  /** ⛔⛔ THE `core.storage.file.fetch-remote` GATE — the ONE place the "may bytes be
+   *  fetched from a connected vendor" question is asked. Injected as a PREDICATE, not
+   *  a grant store, so this module grows no contract dependency (the same shape
+   *  `work-entity-read-tools.ts` uses for its collection fence, and for the same
+   *  reason: a fence that each call site re-implements is a fence one call site
+   *  forgets).
+   *
+   *  ⛔ ASKED HERE, NOT AT THE CALL SITES, BECAUSE THERE ARE TWO AND THEY LOOK
+   *  NOTHING ALIKE — `handleFileRead`'s `file:remote:*` branch and the CLI executor's
+   *  `input_materialize` reader. Gating either one alone leaves the other open, and
+   *  the CLI one is the route the shipped corpus actually uses (45 of 46 call sites
+   *  pass a dynamic `source`).
+   *
+   *  ⚠ ABSENT ⇒ ADMIT, matching every other grant seam here (`opAdmissionGate`:
+   *  "Absent ⇒ no op gate (additive)"). Fail-closed would dark-boot remote reads on
+   *  every composition that has not wired it yet, and a capability that silently
+   *  stops working is the harm this whole gate exists to make legible. */
+  admitRemoteFetch?: () => boolean;
 }
+
+/** ⛔⛔ THE CONNECTION A `file:remote:*` READ WILL AUTHENTICATE WITH, recovered from
+ *  the RECORD ID ALONE — no meta-store lookup, no connection resolve.
+ *
+ *  That property is the point: it lets the ADMISSION GATE know which connection a
+ *  dispatch is about to use, at a layer that has the `ExecutionSource` but has not yet
+ *  touched storage. Everything needed is already in the id — `file:remote:<b64
+ *  scope>:<b64 target>` where scope is `<provider>.<connection>.file`, the same shape
+ *  {@link connectionNameFromSourceScope} strips. The provider is the scope's leading
+ *  segment, so the caller does not have to supply it.
+ *
+ *  `undefined` for a CAS id, a malformed id, or a scope that does not parse — never a
+ *  guess. An undefined name reaching a restricted `connection_names` axis fails CLOSED
+ *  at the gate, which is the correct direction: a dispatch that cannot say which
+ *  connection it is about to use must not be admitted against a list that names some. */
+export const remoteFileConnectionName = (record_id: unknown): string | undefined => {
+  if (typeof record_id !== 'string' || record_id.length === 0) return undefined;
+  const parsed = parseRemoteFileRecordId(record_id);
+  if (!parsed) return undefined;
+  const dot = parsed.scope.indexOf('.');
+  if (dot <= 0) return undefined;
+  return connectionNameFromSourceScope(parsed.scope, parsed.scope.slice(0, dot)) ?? undefined;
+};
+
+/** Every connection a dispatch's RESOLVED INPUT would authenticate with, by scanning
+ *  its values for `file:remote:*` ids.
+ *
+ *  ⛔⛔ A SCAN, NOT A PER-OP ARG LOOKUP, AND THAT IS THE WHOLE VALUE. Two unrelated
+ *  paths reach remote bytes: `core.storage.file.read` names the id in `record_id`, and
+ *  the CLI executor's `input_materialize` ops name it in whatever arg their own
+ *  `bind.input_materialize.arg` declares — `source` for all 101 shipped today, but
+ *  that is a pack's choice, not a rule. Keying the fence on a slug or an arg name
+ *  enumerates a set that grows without this file, and the miss is silent: a new
+ *  materializing op would simply not be fenced. The id prefix is distinctive enough to
+ *  find without asking anyone what it is called.
+ *
+ *  ⚠ One level deep, values only. A remote id nested inside an object or array is not
+ *  found — inputs are flat by the time they reach the gate, and a recursive walk over
+ *  arbitrary resolved input is a cost on every dispatch for a shape nothing produces.
+ *  If that changes, this is the place. */
+export const remoteFileConnectionNamesIn = (
+  input: Record<string, unknown> | undefined,
+): string[] => {
+  if (input === undefined) return [];
+  const out = new Set<string>();
+  for (const value of Object.values(input)) {
+    const name = remoteFileConnectionName(value);
+    if (name !== undefined) out.add(name);
+  }
+  return [...out];
+};
 
 /** Recover the connection NAME from a file Source scope. The file Source id is
  *  minted `CONNECTION_SOURCE_ID(provider, name, 'file')` = `<provider>.<name>.file`
@@ -129,6 +205,17 @@ export const resolveRemoteFileBytes = async (
   deps: RemoteFileReadDeps,
   record_id: string,
 ): Promise<RemoteFileReadResult> => {
+  // ⛔ BEFORE ANYTHING ELSE — before the id is parsed, before the mirror row is read,
+  // and long before a credential is decrypted. A revoked capability must not cause a
+  // connection lookup, so the refusal cannot be distinguished from a miss by timing.
+  if (deps.admitRemoteFetch !== undefined && !deps.admitRemoteFetch()) {
+    throw new RpcError(
+      'remote_fetch_not_granted',
+      'file.read: fetching bytes from a connected file source is not granted '
+        + '(core.storage.file.fetch-remote) — re-grant it in Contracts to allow this',
+      403,
+    );
+  }
   const parsed = parseRemoteFileRecordId(record_id);
   if (!parsed) {
     throw new RpcError('bad_request', `file.read: '${record_id}' is not a remote file id`, 400);

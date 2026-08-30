@@ -496,10 +496,21 @@ export interface HandleAbuseReportResponse {
  *      `authority.handle === row.handle` invariant from correctness
  *      fold #5; emitted when an actor tries to operate on a stale row.
  */
+/** ⛔⛔ `handle_subscription_lapsed` WAS HERE AND IS GONE (2026-08-30). The cloud's handle
+ *  endpoints stopped emitting it when the Pro gate was lifted — a marketplace publisher
+ *  handle is FREE with any account, and Pro buys the DDNS subdomain and the certificate
+ *  (that gate lives on as `ddns_subscription_lapsed`). Keeping the literal would have
+ *  advertised a refusal this system can no longer make.
+ *
+ *  🔑 REMOVING IT LOSES NOTHING, WHICH IS WHY TRUTHFUL WINS HERE. An unrecognised code is
+ *  not dropped: `recued-cloud-client.ts` folds it to `handle_validation_error` while
+ *  preserving the raw pair in the message — `HTTP 402 handle_subscription_lapsed: Pro
+ *  subscription required`. So an owner still sees exactly what the cloud said, and no
+ *  typed code implies a policy that does not exist.
+ */
 export type HandleRpcErrorCode =
   | 'handle_signature_invalid'
   | 'handle_publisher_unknown'
-  | 'handle_subscription_lapsed'
   | 'handle_replay_window_exceeded'
   | 'handle_replay_duplicate'
   | 'handle_taken'
@@ -527,7 +538,6 @@ export type HandleRpcErrorCode =
 export const HANDLE_RPC_ERROR_CODES: ReadonlyArray<HandleRpcErrorCode> = [
   'handle_signature_invalid',
   'handle_publisher_unknown',
-  'handle_subscription_lapsed',
   'handle_replay_window_exceeded',
   'handle_replay_duplicate',
   'handle_taken',

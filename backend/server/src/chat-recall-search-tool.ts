@@ -760,6 +760,18 @@ export interface RecallSearchWrapOptions {
   readonly getContractDefinitionStore:
     () => ContractDefinitionStore | undefined;
   readonly now?: () => number;
+  /** ⛔⛔ THE `core.recall.search` GATE — what finally makes interaction recall
+   *  REVOCABLE BY THE OWNER. Every other AI-reachable read carries a grant row; this
+   *  tool carried none, because it is hand-built into the chat registry view to keep it
+   *  off the MCP wire and that same absence kept it out of the grant catalog. The kernel
+   *  op supplies the row without touching the wire posture.
+   *
+   *  ⛔ AN INJECTED PREDICATE, not a grant store: this module stays free of contract
+   *  plumbing, the same shape the collection fence and the remote-byte gate use.
+   *
+   *  ⚠ ABSENT ⇒ ADMIT, matching every other grant seam here — fail-closed would dark-boot
+   *  recall on any composition that has not wired it. */
+  readonly isRecallGranted?: (source: unknown) => boolean;
 }
 
 const createRecallSearchHandler = (
@@ -771,6 +783,20 @@ const createRecallSearchHandler = (
 ) => Promise<ChatDispatchResult>) =>
   async (raw, ctx) => {
     const state = getTurnState(ctx.turn_state);
+    // ⛔ THE OWNER'S REVOKE, CHECKED FIRST — before the turn budget, before the corpus
+    // scope, before a single row is read. A guided EMPTY rather than `ok:false`: this
+    // file's own anti-loop invariant (see `createMemorySearchHandler`) is that an
+    // ungranted read must not error, because a reasoning model retries an errored tool
+    // until the turn times out. The hint has to SAY it was a permission, though —
+    // "nothing found" about a corpus the owner switched off is a false statement about
+    // their data.
+    if (options.isRecallGranted?.(state?.turn_source ?? ctx.execution_source) === false) {
+      return guidedEmpty(
+        'recall.search is not granted on this contract (core.recall.search), so prior '
+        + 'conversations were NOT searched. This is not an empty result — say the tool '
+        + 'is switched off rather than concluding nothing was found, and do not retry.',
+      );
+    }
     if (
       state === null
       || ctx.channel !== 'internal_function_call'

@@ -159,8 +159,12 @@ const mkWorld = async (): Promise<World> => {
   for (const c of registry.list()) {
     await c.sync.start();
   }
-  // Give fs.watch a tick to finish its recursive walk.
-  await new Promise((r) => setTimeout(r, 30));
+  // ⛔ NO SLEEP HERE, AND NONE IS NEEDED. `sync.start()` is already the barrier:
+  // the fs watcher's `start()` resolves only after the initial directory walk
+  // completes and `fs.watch` is attached (`file-collection.ts`: "resolves only
+  // after the initial directory walk completes (`scanDir(root)` in fs-adapter)").
+  // The 30 ms tick that used to sit here described a guarantee it did not provide
+  // and the loop above already had — a barrier made of hope beside a real one.
 
   return {
     dir: base, watchedDir, db, blobs, bus, events, registry, gates, mailStub, webhookCollection: webhookColl,
@@ -193,18 +197,62 @@ describe('Phase D e2e — composition', () => {
 // File collection — real fs.watch round-trip
 // ────────────────────────────────────────────────────────────────
 
+/** ⛔ POLL FOR THE RECORD, NEVER SLEEP FOR IT.
+ *
+ *  This replaced `await setTimeout(650)` — 500 ms of production fs.watch debounce
+ *  plus a 150 ms margin. A 30% margin is nothing on a loaded four-worker run, so
+ *  the test passed in isolation and failed under directory-wide parallelism, which
+ *  reads as flake and was really the assertion firing before the pipeline finished.
+ *  Confirmed causally rather than assumed: shrinking the sleep to 20 ms reproduces
+ *  `expected 0 to be greater than 0` — the exact message the parallel run printed.
+ *
+ *  🔑 Polling is BOTH more robust and faster. It returns the moment the record
+ *  lands (~500 ms idle) instead of always paying the worst case, and under load it
+ *  waits as long as the machine needs. A genuine regression still fails — after the
+ *  deadline, with a message naming what never arrived instead of a bare `0`. */
+const waitForSourceId = async (
+  deps: CollectionHandlerDeps,
+  query: { platform: string; slug: string },
+  sourceId: string,
+  // ⚠ GENEROUS ON PURPOSE, AND IT COSTS NOTHING. The poll returns the moment the
+  // record lands (~500 ms idle), so the deadline is paid ONLY on a genuine failure.
+  // 10 s was not enough under a full multi-root suite: this failed repeatedly there
+  // while passing 7/7 in isolation, which is starvation, not a missing event.
+  timeoutMs = 45_000,
+): Promise<Awaited<ReturnType<typeof handleCollectionList>>['records'][number]> => {
+  const deadline = Date.now() + timeoutMs;
+  let seen = 0;
+  for (;;) {
+    const list = await handleCollectionList(deps, query);
+    seen = list.records.length;
+    const hit = list.records.find((r) => r.source_id === sourceId);
+    if (hit) return hit;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        // ⛔ STATES THE FACTS AND DOES NOT ADJUDICATE THE CAUSE. The first version
+        // ended "which is a real failure and not a slow machine" — and a slow
+        // machine is exactly what it turned out to be under a full-suite run. A
+        // diagnostic that rules out a cause it cannot rule out sends the next
+        // reader hunting a pipeline bug that is not there.
+        `waitForSourceId: '${sourceId}' never appeared in `
+        + `${query.platform}/${query.slug} within ${timeoutMs} ms `
+        + `(${seen} record(s) indexed). Either the collection pipeline did not `
+        + 'deliver it, or this run was starved of scheduling — the count above '
+        + 'distinguishes them: 0 with a healthy pipeline means the event never '
+        + 'arrived.',
+      );
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+};
+
 describe('Phase D e2e — file collection', () => {
   it('indexes an existing file + emits a warehouse event', async () => {
     w = await mkWorld();
     writeFileSync(join(w.watchedDir, 'hello.txt'), 'full text contents');
-    // Wait for fs.watch debounce (500 ms in production; fs-adapter
-    // uses its own debounce, we just need longer than one tick).
-    await new Promise((r) => setTimeout(r, 650));
 
     const deps: CollectionHandlerDeps = { registry: w.registry };
-    const list = await handleCollectionList(deps, { platform: 'file', slug: 'docs' });
-    expect(list.records.length).toBeGreaterThan(0);
-    const rec = list.records.find((r) => r.source_id === 'hello.txt');
+    const rec = await waitForSourceId(deps, { platform: 'file', slug: 'docs' }, 'hello.txt');
     expect(rec).toBeDefined();
     const fullRec = await handleCollectionGet(deps, { platform: 'file', slug: 'docs', record_id: rec!.record_id });
     expect(fullRec.record?.body_inline).toBe('full text contents');

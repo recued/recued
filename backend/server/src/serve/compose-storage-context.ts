@@ -570,14 +570,19 @@ export const composeStorageContext = async (
       entitlement: createHttpProEntitlementSource({
         loadBinding: () => requireSigningIdentityForBinding().keyStore.loadAccountBinding(),
         getEndpointUrl: () =>
+          // ⚠ `cloudBaseUrl: readCloudBaseUrl(runtimeConfig)` WAS PASSED HERE AND NEVER
+          // READ — dropped rather than converted, deliberately. Converting it to
+          // `cloudApex` would CHANGE production resolution (a server configured with
+          // `cloud.base_url` pointing at a mirror would start resolving that mirror's
+          // apex and fail closed instead of silently using the prod key). That may well
+          // be the right behaviour, but it is a live-server change and not this one.
+          // The apex comes from `RECUED_CLOUD_APEX`; the override above is the escape.
           resolveProEntitlementMintUrl({
             override: process.env.RECUED_PRO_ENTITLEMENT_MINT_URL,
-            cloudBaseUrl: readCloudBaseUrl(runtimeConfig),
           }),
         getPublicKeyB64: () =>
           resolveProEntitlementPublicKey({
             override: process.env.RECUED_PRO_ENTITLEMENT_PUBLIC_KEY_B64,
-            cloudBaseUrl: readCloudBaseUrl(runtimeConfig),
           }),
       }),
     });

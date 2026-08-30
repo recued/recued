@@ -101,8 +101,13 @@ export const PRO_ENTITLEMENT_MINT_PATH = '/v1/account/entitlement/mint';
 
 export interface ResolveProEntitlementMintUrlOptions {
   override?: string;
-  /** ⚠ Retained for callers, no longer read — see `resolveCloudApex`. */
-  cloudBaseUrl?: string;
+  /** ⛔ `cloudBaseUrl` WAS HERE AND WAS IGNORED — REMOVED 2026-08-30. It was kept "for
+   *  callers" with a comment saying it is no longer read, and SIX call sites went on
+   *  passing it as if it selected the environment — including both live-drive tools and
+   *  the entitlement checker's own negative control, which therefore compared production
+   *  against production and could never have caught the shared key it exists to catch. A
+   *  retained-but-ignored option is not a compatibility shim, it is a control that does
+   *  nothing; deleting it turns every such call into a compile error. Use `cloudApex`. */
   /** Apex override for tests; production reads `RECUED_CLOUD_APEX`. */
   cloudApex?: string;
 }
@@ -142,8 +147,13 @@ export interface ResolveProEntitlementPublicKeyOptions {
   /** `RECUED_PRO_ENTITLEMENT_PUBLIC_KEY_B64` — wins when set. Kept so a local
    *  rig / a private deployment can point at its own signer without a rebuild. */
   override?: string;
-  /** ⚠ Retained for callers, no longer read — see `RECUED_CLOUD_APEX`. */
-  cloudBaseUrl?: string;
+  /** ⛔ `cloudBaseUrl` WAS HERE AND WAS IGNORED — REMOVED 2026-08-30. It was kept "for
+   *  callers" with a comment saying it is no longer read, and SIX call sites went on
+   *  passing it as if it selected the environment — including both live-drive tools and
+   *  the entitlement checker's own negative control, which therefore compared production
+   *  against production and could never have caught the shared key it exists to catch. A
+   *  retained-but-ignored option is not a compatibility shim, it is a control that does
+   *  nothing; deleting it turns every such call into a compile error. Use `cloudApex`. */
   /** Apex override for tests; production reads `RECUED_CLOUD_APEX`. */
   cloudApex?: string;
 }

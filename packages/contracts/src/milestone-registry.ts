@@ -51,11 +51,18 @@ export interface MilestoneDefinition {
 export const MILESTONE_REGISTRY: Readonly<Record<string, MilestoneDefinition>> = {
   first_zero_approval_day: {
     milestone_id: 'first_zero_approval_day',
-    version: 1,
-    logic: ['v1: the first COMPLETE UTC day with zero approval_allow/approval_deny activities.'],
+    version: 2,
+    logic: [
+      'v1: the first COMPLETE UTC day with zero approval_allow/approval_deny activities.',
+      // ⛔ v1 CREDITED AN IDLE SERVER. Zero answered decisions is trivially true when
+      // nothing ran, so a server doing nothing earned "Hands off" on its second day and
+      // grew a streak forever. v2 requires the day to contain work.
+      'v2: the first COMPLETE UTC day with at least one run STARTED and zero '
+        + 'approval_allow/approval_deny activities.',
+    ],
     source: 'audit_window',
     label: 'Hands off',
-    description: 'A whole day where nothing needed your decision.',
+    description: 'A whole day where Recued worked and nothing needed your decision.',
   },
   first_unattended_week: {
     milestone_id: 'first_unattended_week',
