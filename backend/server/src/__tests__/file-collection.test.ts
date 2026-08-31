@@ -72,7 +72,20 @@ const waitForRecord = async (
   path: string,
   predicate: (record: CollectionRecord) => boolean = () => true,
 ): Promise<CollectionRecord | undefined> => {
-  const deadline = Date.now() + 3_000;
+  // ⛔ THE FLOOR HERE IS A 500 ms DEBOUNCE, so a flat 3 s was only 6x it.
+  // Measured idle 2026-08-31: 612 ms and 716 ms — the variable part is ~150 ms,
+  // the rest is `debounceMs: 500` in file-collection.ts. Under the full suite
+  // (`pool: 'forks'`, `maxWorkers: 10` on 10 CPUs) timer delivery stretches
+  // enough to exhaust 6x, which failed three retries in a row while passing 3/3
+  // in isolation and 6/6 under moderate load.
+  //
+  // 🔑 STARVATION, NOT A LOST EVENT — checked, not assumed: `sync.start()`
+  // resolves only after `fs.watch` is attached (fs-adapter attaches after
+  // `scanDir`), so there is no window in which the write could be missed.
+  //
+  // 15 s is 30x the debounce and still half of `testTimeout: 30_000`. Paid only
+  // on a real failure: a genuinely lost event never arrives at any budget.
+  const deadline = Date.now() + 15_000;
   do {
     const record = findRecordByPath(collection, path);
     if (record && predicate(record)) return record;
@@ -85,7 +98,8 @@ const waitForEvent = async (
   events: readonly WarehouseEvent[],
   eventKind: WarehouseEvent['event_kind'],
 ): Promise<WarehouseEvent | undefined> => {
-  const deadline = Date.now() + 3_000;
+  // Same 500 ms debounce floor as `waitForRecord` above — same budget.
+  const deadline = Date.now() + 15_000;
   do {
     const event = events.find((e) => e.event_kind === eventKind);
     if (event) return event;

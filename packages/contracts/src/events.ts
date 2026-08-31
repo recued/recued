@@ -39,6 +39,7 @@ import type {
 } from './chat.js';
 import type { SessionLifecycleState } from './session-routing.js';
 import type { RecipeRunnabilityEntry } from './recipe-runnability.js';
+import type { UpdateApplyStatus } from './release-update.js';
 import type {
   DerivedPresetLabel,
   PathResolution,
@@ -1074,6 +1075,48 @@ export type ServerEvent =
        *  `CertRotationNotice` shape in `d-148-rotation.ts` — the
        *  rotation event surface and the broadcast bus carry the same
        *  fields. */
+      /** D-257 — an update run changed phase. Mirrors the update LEDGER, which
+       *  is the source of truth for where an apply has got to; a parallel
+       *  progress vocabulary would drift the first time a phase was added to one
+       *  and not the other.
+       *
+       *  ⛔ WHY THIS EXISTS AT ALL: `update.apply` used to await the entire
+       *  apply, and the artifact is ~144 MB against a 30s client timeout, so the
+       *  in-app update reported failure on every real update while the server
+       *  finished it. The rpc returns `applying` now and the outcome arrives
+       *  here. */
+      kind: 'update.progress';
+      /** Server-assigned, monotonic — every variant carries one. */
+      cursor: number;
+      /** The ledger transition — `apply_started`, `apply_staged`,
+       *  `apply_committed`, `apply_reverted`, `rolled_back`. Deliberately the
+       *  ledger's own vocabulary rather than a UI-facing one. */
+      phase: string;
+      /** `<channel>:<version>` the run targets. */
+      release_identity?: string;
+      from_version?: string;
+      to_version?: string;
+      /** Short, non-secret reason — e.g. the auto-revert's cause. */
+      detail?: string;
+      /** Present on the TERMINAL emit (`phase: 'result'`) only.
+       *
+       *  ⛔ THE LEDGER DOES NOT COVER EVERY OUTCOME. `runApply` returns `busy`,
+       *  `deferred` and `insufficient-storage` from its preconditions WITHOUT
+       *  writing an entry, so a bus that mirrored only ledger transitions would
+       *  leave the caller waiting forever on a run that already declined. The
+       *  terminal emit carries the status the rpc used to return. */
+      status?: UpdateApplyStatus;
+      /** The server-ledger receipt, on the terminal emit that accepted a
+       *  restart.
+       *
+       *  ⛔ IT USED TO RIDE THE RPC RESPONSE, and making the apply asynchronous
+       *  took it away — `serverUpdateReceiptVerification` persists this to
+       *  confirm the exact operation after the reconnect a restart forces, so
+       *  dropping it would have quietly disabled that check. Caught by the
+       *  handler test that asserted the response carried it. */
+      operation_id?: string;
+    }
+  | {
       kind: 'cert.rotation_notice';
       /** `sha256:<hex>` fingerprint of the cert the server is
        *  currently serving. Receiving client uses this to confirm the
@@ -1273,6 +1316,7 @@ export const ALL_BROADCAST_EVENT_KINDS = [
   'session_lifecycle',
   'supervision',
   'token.rotated',
+  'update.progress',
   'upstream_merge_failed',
   'warehouse',
 ] as const satisfies readonly BroadcastEventKind[];

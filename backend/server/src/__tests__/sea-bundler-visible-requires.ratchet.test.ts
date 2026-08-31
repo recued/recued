@@ -21,7 +21,19 @@
  *  cheap sibling that names the CAUSE at review time instead of at build time.
  *
  *  Node builtins (`node:fs`, `node:sea`, …) are exempt: they resolve inside a
- *  SEA by definition. Relative paths are exempt: they are part of the bundle. */
+ *  SEA by definition. Relative paths are exempt: they are part of the bundle.
+ *
+ *  ⚠ IF YOU ADD A LEGITIMATE `createRequire` TO A SHIPPED FILE, anchor it as
+ *  `createRequire(import.meta.url ?? __filename)`. esbuild replaces
+ *  `import.meta` with `{}` in CJS output, so `import.meta.url` is UNDEFINED in
+ *  the SEA bundle and `createRequire(undefined)` throws at MODULE LOAD —
+ *  `recued serve` died before printing anything, with "The argument 'filename'
+ *  must be a file URL object, file URL string, or absolute path string.
+ *  Received undefined". `__filename` is native in CJS and is never evaluated
+ *  under ESM (`??` short-circuits), so one expression covers the ESM source,
+ *  the ESM bundle and the CJS/SEA bundle. Relocated here from `ws-server.ts`
+ *  on 2026-08-30, when the static `import * as wsLib from 'ws'` left that
+ *  file's own shadow dead — the code went, the trap did not. */
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';

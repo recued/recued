@@ -44,6 +44,7 @@ import {
   type DistributionChannel,
   type UpdateModeStore,
 } from './update/update-mode-store.js';
+import type { ServerEvent } from '@recued/contracts';
 import type { WsClient } from './ws-server.js';
 
 /** Apply-policy deps: the persisted user override + the build-stamped channel +
@@ -67,7 +68,22 @@ export interface UpdateApplyDeps {
   rollbackContext: () => RollbackContext | null;
 }
 
+/** D-257 — the update-progress variant minus the bus-assigned `cursor`, the
+ *  same shape `pair-handler` and `contract-handler` use. The bus stamps the
+ *  cursor; the handler supplies the phase. */
+export type UpdateProgressEvent = Omit<
+  Extract<ServerEvent, { kind: 'update.progress' }>,
+  'cursor'
+>;
+
 export interface UpdateHandlerDeps {
+  /** D-257 — broadcast bus emit seam for `update.progress`.
+   *
+   *  The apply no longer completes inside the rpc, so this is how the caller
+   *  learns what happened. Optional and swallowed on failure, mirroring
+   *  `pair-handler`'s discipline: a no-bus harness still applies correctly, it
+   *  just has nobody to tell. */
+  broadcast?: (event: UpdateProgressEvent) => void;
   /** Build the per-call orchestrator deps (clock / fetch / state / config). */
   releaseCheckDeps: ReleaseCheckDeps;
   /** Apply-policy read/write deps. */
@@ -167,7 +183,37 @@ export const makeUpdateHandlers = (
         if (resolved.isMajor && !force) {
           return { status: 'major-blocked', release_identity: resolved.releaseIdentity, to_version: resolved.toVersion };
         }
-        const result = await runApply(applyDeps.ports, {
+        const base = { release_identity: resolved.releaseIdentity, to_version: resolved.toVersion };
+        const emit = (event: UpdateProgressEvent): void => {
+          // Observability only — never abort an apply because nobody listened.
+          try { deps.broadcast?.(event); } catch { /* no bus wired */ }
+        };
+
+        // ⛔⛔ DO NOT AWAIT THIS. The apply downloads ~144 MB and takes minutes;
+        // awaiting it inside the rpc is what made Settings -> Updates report a
+        // failure on every real update, because the webclient's per-call timeout
+        // is 30s while the server went on to finish the work it had been told to
+        // do. The outcome arrives on `update.progress` instead.
+        //
+        // 🔑 The cheap refusals stay SYNCHRONOUS above (not-applicable,
+        // not-available, major-blocked) — those are answers, not work. And
+        // `runApply`'s own preconditions (`busy`, `deferred`,
+        // `insufficient-storage`) return WITHOUT writing a ledger entry, which is
+        // exactly why the terminal emit carries a `status` rather than the bus
+        // mirroring ledger transitions alone.
+        const ports: ApplyOrchestratorPorts = {
+          ...applyDeps.ports,
+          notifyLedger: (entry) => emit({
+            kind: 'update.progress',
+            phase: entry.kind,
+            release_identity: entry.release_identity,
+            from_version: entry.from_version,
+            to_version: entry.to_version,
+            ...(entry.detail === undefined ? {} : { detail: entry.detail }),
+          }),
+        };
+
+        void runApply(ports, {
           releaseIdentity: resolved.releaseIdentity,
           fromVersion: resolved.fromVersion,
           toVersion: resolved.toVersion,
@@ -179,27 +225,39 @@ export const makeUpdateHandlers = (
           // Owner-initiated UI/CLI apply — proceeds without the quiesce wait
           // (the caller forces quiesce); auto/housekeeping defers separately.
           trigger: 'manual',
-        });
-        const base = { release_identity: resolved.releaseIdentity, to_version: resolved.toVersion };
-        switch (result.status) {
-          case 'restarting':
-            return {
-              status: 'restarting',
-              operation_id: result.operationId,
+        }).then(
+          (result) => {
+            const detail = 'detail' in result && typeof result.detail === 'string'
+              ? result.detail
+              : 'reason' in result && typeof result.reason === 'string'
+                ? result.reason
+                : undefined;
+            emit({
+              kind: 'update.progress',
+              phase: 'result',
               ...base,
-            };
-          case 'deferred':
-            return { status: 'deferred', ...base, detail: result.reason };
-          case 'busy':
-            return { status: 'busy', ...base };
-          case 'not-configured':
-            return { status: 'not-configured' };
-          case 'insufficient-storage':
-          case 'download-failed':
-          case 'verify-failed':
-          case 'stage-failed':
-            return { status: result.status, ...base, detail: result.detail };
-        }
+              status: result.status,
+              ...(detail === undefined ? {} : { detail }),
+              ...('operationId' in result && typeof result.operationId === 'string'
+                ? { operation_id: result.operationId }
+                : {}),
+            });
+          },
+          (err: unknown) => {
+            // A throw is not a status `runApply` models, and silence would leave
+            // the UI applying forever. Report the closest terminal shape rather
+            // than inventing a new one.
+            emit({
+              kind: 'update.progress',
+              phase: 'result',
+              ...base,
+              status: 'stage-failed',
+              detail: err instanceof Error ? err.message : String(err),
+            });
+          },
+        );
+
+        return { status: 'applying', ...base };
       },
       'update.rollback': async (_args, client): Promise<UpdateRollbackResponse> => {
         requireRegisteredClient(client);

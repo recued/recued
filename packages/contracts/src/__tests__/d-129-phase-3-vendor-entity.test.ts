@@ -48,6 +48,10 @@ describe('D-129 P3 — hubspot.contact entity registration', () => {
       'phone',
       'mailing_address',
       'company',
+      // Portable role field — paired with salesforce.contact `job_title`.
+      'job_title',
+      // HubSpot-only, like `company` — the portable home is `account.industry`.
+      'industry',
     ]);
   });
 

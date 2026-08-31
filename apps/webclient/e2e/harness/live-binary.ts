@@ -85,14 +85,25 @@ export const resolveLiveConfig = (): LiveConfig | { unavailable: string } => {
  *  status` reporting "stopped". The two paths reach the same server by
  *  different routes, so a drive that only ever takes one of them proves nothing
  *  about the other. */
-export type BootMode = 'foreground' | 'daemon';
+export type BootMode = 'foreground' | 'daemon' | 'unit';
 
 export type LiveServer = {
   /** Origin a browser dials, e.g. http://127.0.0.1:7817 */
   url: string;
   port: number;
-  /** One-time code from the boot banner. Fresh realm copy per run, so it is unused. */
+  /** One-time code from the boot banner. Fresh realm copy per run, so it is unused.
+   *  ⚠ Prefer `freshCode()` when actually pairing — see below. */
   pairCode: string;
+  /** Mint and return a CURRENT pairing code.
+   *
+   *  ⛔ THERE IS ONE LIVE CODE, AND `recued pair` REPLACES IT. The boot banner's
+   *  code is only valid until something refreshes it — including a test that
+   *  merely asserts `pair` works. That is not hypothetical: adding such a test
+   *  ahead of the pairing drive silently invalidated the code the drive was
+   *  holding, and the drive failed as "pairing did not complete" with nothing
+   *  wrong on either side. It also expires on its own (~14 min), which a slow
+   *  run can outlive. Mint at the moment of use. */
+  freshCode: () => string;
   /** The realm's 24 words. ⛔ NEVER log, print, or assert on this value. */
   recoveryWords: string[];
   log: () => string;
@@ -109,8 +120,16 @@ export type LiveServer = {
  *  identity file's NAME matters: the server looks for `recued-server-identity.json`
  *  beside the database. The -wal/-shm siblings come too, or the copy silently
  *  loses whatever had not been checkpointed. */
-const stageRealm = (seedDir: string): string => {
+export const stageRealm = (seedDir: string, mode: BootMode): string => {
   const dir = mkdtempSync(join(tmpdir(), 'recued-e2e-realm-'));
+  // ⛔ `unit` GETS NOTHING. The whole property under test is that an UNENROLLED
+  // realm is served rather than refused, so copying the enrolled seed here would
+  // make the mode pass without exercising the change at all. The server mints its
+  // own db and identity on first boot.
+  if (mode === 'unit') {
+    mkdirSync(join(dir, 'bin', 'lib'), { recursive: true });
+    return dir;
+  }
   copyFileSync(join(seedDir, 'seed-test.db'), join(dir, 'verify.db'));
   for (const suffix of ['-wal', '-shm']) {
     const from = join(seedDir, `seed-test.db${suffix}`);
@@ -121,6 +140,21 @@ const stageRealm = (seedDir: string): string => {
   return dir;
 };
 
+/** Put the two-file install into a staged dir and return the executable path.
+ *
+ *  ⛔ THE BINARY SHIPS AS TWO FILES and says so when the second is missing:
+ *  `lib/better_sqlite3.node` must sit beside the executable. Shared with the
+ *  update spec, which stages an OLDER binary into the same shape so the swap it
+ *  performs is the real one. */
+export const placeBinary = (dir: string, binary: string, sidecar: string): string => {
+  const exe = join(dir, 'bin', process.platform === 'win32' ? 'recued.exe' : 'recued');
+  mkdirSync(join(dir, 'bin', 'lib'), { recursive: true });
+  copyFileSync(binary, exe);
+  copyFileSync(sidecar, join(dir, 'bin', 'lib', 'better_sqlite3.node'));
+  if (process.platform !== 'win32') chmodSync(exe, 0o755);
+  return exe;
+};
+
 /** Boot the packaged binary and wait for the banner it prints for a human.
  *  The banner is the contract: `Status: Running` means the realm is ENROLLED,
  *  and the pairing code is printed right under it. */
@@ -129,11 +163,8 @@ export const bootLiveServer = async (
   { port = 7817, timeoutMs = 60_000, mode = 'foreground' }:
     { port?: number; timeoutMs?: number; mode?: BootMode } = {},
 ): Promise<LiveServer> => {
-  const dir = stageRealm(config.seedDir);
-  const exe = join(dir, 'bin', process.platform === 'win32' ? 'recued.exe' : 'recued');
-  copyFileSync(config.binary, exe);
-  copyFileSync(config.sidecar, join(dir, 'bin', 'lib', 'better_sqlite3.node'));
-  if (process.platform !== 'win32') chmodSync(exe, 0o755);
+  const dir = stageRealm(config.seedDir, mode);
+  const exe = placeBinary(dir, config.binary, config.sidecar);
 
   const dbPath = join(dir, 'verify.db');
   const childEnv = {
@@ -183,7 +214,12 @@ export const bootLiveServer = async (
         + (log ? `daemon log:\n${log}` : '(the daemon wrote no log at all)'));
     }
   } else {
-    child = spawn(exe, ['--db', dbPath, '--port', String(port)], {
+    // `unit` reproduces the unit's own argv, flag included — the flag is only
+    // ever passed BY a unit, so this is the only mode that may carry it.
+    const args = mode === 'unit'
+      ? ['serve', '--require-enrolled', '--db', dbPath, '--port', String(port)]
+      : ['--db', dbPath, '--port', String(port)];
+    child = spawn(exe, args, {
       cwd: dir,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: childEnv,
@@ -202,13 +238,29 @@ export const bootLiveServer = async (
     }
     const text = readAll();
     const m = /Pairing code:\s*([A-Z0-9-]+)/.exec(text);
-    if (m && /Status:\s*Running/.test(text)) { code = m[1]; break; }
+    // ⚠ READINESS DIFFERS BY MODE. An enrolled realm banners `Status: Running`;
+    // a brand-new one banners `Status: Not enrolled` — which for `unit` is the
+    // SUCCESS case, because the point is that it serves anyway. Requiring
+    // "Running" here would hang until the timeout and report it as a dead boot.
+    const ready = mode === 'unit'
+      ? /Status:\s*(Running|Not enrolled)/.test(text)
+      : /Status:\s*Running/.test(text);
+    if (m && ready) { code = m[1]; break; }
     await new Promise((r) => setTimeout(r, 250));
   }
   if (!code) {
     const why = readAll().trim() || '(the binary printed nothing at all)';
     stop();
-    throw new Error(`the binary never reached "Status: Running" with a pairing code `
+    // ⚠ SAY WHAT THIS MODE WAS WAITING FOR. `unit` accepts "Not enrolled" as a
+    // success banner, so reporting a missing "Status: Running" would send the
+    // reader after the wrong thing — the failure there is a REFUSAL: a binary
+    // without D-252 prints "finish setup by running the server yourself", exits
+    // 0, and binds nothing.
+    const wanted = mode === 'unit'
+      ? '"Status: Running" or "Status: Not enrolled" (a pre-D-252 binary REFUSES an '
+        + 'unenrolled realm under --require-enrolled and exits 0)'
+      : '"Status: Running"';
+    throw new Error(`the binary never reached ${wanted} with a pairing code `
       + `(${mode} mode):\n${why}`);
   }
 
@@ -227,6 +279,14 @@ export const bootLiveServer = async (
   return {
     url: `http://127.0.0.1:${port}`, port, pairCode: code, recoveryWords,
     log: () => readAll(), stop, mode, cli, dbPath,
+    freshCode: () => {
+      const out = cli(['pair', '--db', dbPath]);
+      const found = /Pairing code:\s*([A-Z0-9-]+)/.exec(`${out.stdout}${out.stderr}`)?.[1];
+      if (!found) {
+        throw new Error(`\`recued pair\` printed no code:\n${out.stdout}${out.stderr}`);
+      }
+      return found;
+    },
   };
 };
 

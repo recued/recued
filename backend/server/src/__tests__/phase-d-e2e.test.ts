@@ -247,6 +247,13 @@ const waitForSourceId = async (
 };
 
 describe('Phase D e2e — file collection', () => {
+  // ⛔ 60s, BECAUSE `waitForSourceId` ASKS FOR 45 AND THE SUITE ALLOWS 30.
+  // `vitest.config.ts` sets `testTimeout: 30_000`, so the helper's deliberately
+  // generous 45s deadline was unreachable: vitest killed the test at 30,010 ms
+  // and reported an opaque timeout instead of the helper's own message naming
+  // the source id that never appeared. The budget was a lie and the diagnostic
+  // was lost with it. Measured under a full-suite run 2026-08-31. Paid only on a
+  // genuine failure — the poll returns the moment the record lands (~500 ms).
   it('indexes an existing file + emits a warehouse event', async () => {
     w = await mkWorld();
     writeFileSync(join(w.watchedDir, 'hello.txt'), 'full text contents');
@@ -256,7 +263,7 @@ describe('Phase D e2e — file collection', () => {
     expect(rec).toBeDefined();
     const fullRec = await handleCollectionGet(deps, { platform: 'file', slug: 'docs', record_id: rec!.record_id });
     expect(fullRec.record?.body_inline).toBe('full text contents');
-  });
+  }, 60_000);
 });
 
 // ────────────────────────────────────────────────────────────────

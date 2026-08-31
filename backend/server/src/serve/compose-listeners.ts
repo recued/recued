@@ -2459,6 +2459,12 @@ export const composeListeners = async (
             releaseCheckDeps,
             modeDeps: updateModeDeps,
             ...(updateApplyDeps ? { applyDeps: updateApplyDeps } : {}),
+            // D-257 — `update.apply` returns `applying` and the outcome comes
+            // back on the bus. WITHOUT THIS WIRE the rpc answers immediately and
+            // nothing ever reports the result, which is worse than the
+            // 30s-timeout bug it replaces: the UI would sit on "applying"
+            // forever. Same emit seam the contract handler uses.
+            broadcast: (event) => rpc.observabilityBundle.eventsDeps.bus.emit(event),
           },
         }
       : {}),

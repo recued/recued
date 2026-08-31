@@ -74,7 +74,8 @@ if (pairCodeTtlRaw !== undefined) {
 // resolves, because nothing about rebooting enrols a realm.
 if (getFlag(inputArgs, 'require-enrolled')) {
   const { getArg: getArgFor } = await import('./cli/parse.js');
-  const dbPath = getArgFor(inputArgs, 'db') ?? process.env.DB_PATH ?? './recued-server.db';
+  const { resolveRealmDbPath } = await import('./realm-db-path.js');
+  const dbPath = resolveRealmDbPath(getArgFor(inputArgs, 'db') ?? process.env.DB_PATH);
   const { openDatabase: open } = await import('./open-database.js');
   const { createRecoveryKeyCheckStore } = await import('./recovery-key-store.js');
   let enrolled = false;

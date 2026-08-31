@@ -768,6 +768,18 @@ export const CONNECTION_VENDOR_ENTITIES: ReadonlyArray<ConnectionVendorEntity> =
       // DERIVED — structured object assembled from multiple address fields (G3, read-only).
       { key: 'mailing_address', type: 'object', description: 'structured mailing address (address1/address2/city/state/zip/country)' },
       { key: 'company', type: 'string', source_path: 'properties.company', description: 'company (HubSpot contact-level company-string property; distinct from associatedcompanyid)' },
+      // Portable with salesforce.contact.Title — the person's role at that company,
+      // which `company` / `account_id` do not carry. Both vendors already FETCH it
+      // on their contact read (hubspot pack `properties` list; salesforce pack
+      // Contact `fields`), so this maps a column the packs were already paying for.
+      { key: 'job_title', type: 'string', source_path: 'properties.jobtitle', description: 'jobtitle — the role held at the associated company' },
+      // HubSpot-only, and deliberately so — the same shape as `company` above.
+      // ⛔ `account.industry` is the PORTABLE home for this concept (both vendors
+      // carry it); this is HubSpot's denormalised contact-level copy, which
+      // Salesforce has no counterpart for (its Contact exposes `Department`, a
+      // different thing, and the industry lives on the linked Account). A recipe
+      // that needs industry on every CRM should read `account_id` → `account.industry`.
+      { key: 'industry', type: 'string', source_path: 'properties.industry', description: 'industry (HubSpot contact-level copy; the portable home is account.industry)' },
     ],
   }),
   buildConnectionVendorEntity({
@@ -949,6 +961,9 @@ export const CONNECTION_VENDOR_ENTITIES: ReadonlyArray<ConnectionVendorEntity> =
       { key: 'phone', type: 'string', source_path: 'Phone', description: 'Phone (canonicalized E.164 at projection time)' },
       // DERIVED — structured object assembled from MailingStreet/City/State/PostalCode/Country (G3, read-only).
       { key: 'mailing_address', type: 'object', description: 'structured mailing address from MailingStreet/City/State/PostalCode/Country' },
+      // Portable with hubspot.contact.jobtitle. Standard Contact field `Title`
+      // (Text 128), already in the salesforce pack's Contact `fields` list.
+      { key: 'job_title', type: 'string', source_path: 'Title', description: 'Title — the role held at the associated account' },
     ],
   }),
   buildConnectionVendorEntity({
@@ -1830,6 +1845,8 @@ export const CANONICAL_CRM_FIELD_SCHEMA: Record<CrmAlias, ReadonlyArray<Canonica
     { name: 'lifecycle_stage', type: 'string', required: false, description: 'Lifecycle/lead stage (HubSpot/Salesforce; Salesforce approximates with LeadSource).' },
     { name: 'mailing_address', type: 'object', required: false, description: 'Structured mailing address (HubSpot/Salesforce; unprojected pending a compose derivation).' },
     { name: 'company', type: 'string', required: false, description: 'Company name string (HubSpot).' },
+    { name: 'job_title', type: 'string', required: false, description: 'Role held at the associated company (HubSpot jobtitle / Salesforce Title). Pipedrive models a person\u2019s title as a custom field, so it maps nothing here.' },
+    { name: 'industry', type: 'string', required: false, description: 'Industry, as HubSpot denormalises it onto the contact. Salesforce and Pipedrive hold it only on the linked account \u2014 `account.industry` is the portable home.' },
     { name: 'updated_at', type: 'date_ms', required: false, description: 'Record update time (Pipedrive).' },
   ],
   account: [

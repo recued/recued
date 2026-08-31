@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "75bd4a33542c1185646b9427da85fb8087dfaa69",
-    "tree": "22190de65696bc90e4045885ebbcedd07b479d6a",
-    "committed_at": "2026-08-30T08:28:36-07:00"
+    "commit": "7f4544e36e9814309123f3255faf4128127b7ebe",
+    "tree": "0025ba499e178adb2e8f5261d1a0767e25e4f071",
+    "committed_at": "2026-08-31T02:36:20-07:00"
   },
-  "export_manifest_sha256": "601d21f1bb117f1d5292e1adea90b9ff880a3bbe43224c0ad9dc08a01bdfc404",
-  "version": "26.8.30",
+  "export_manifest_sha256": "cecda112d1b5cca510d6cc70dd9e93a41ce778dfa2b1bd781295314d9558de98",
+  "version": "26.8.31",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -44,6 +44,7 @@
   ],
   "omitted_private_coupled_tests": {
     "paths": [
+      "apps/webclient/e2e/live-update-path.spec.ts",
       "apps/webclient/src/__tests__/d-200-slice6g4-intake-recipe-pair-section.test.ts",
       "apps/webclient/src/__tests__/pack-app-model.test.ts",
       "apps/webclient/src/__tests__/recipes-required-file-slugs.test.ts",
@@ -247,6 +248,11 @@
       "packages/engine/src/__tests__/d-207-slice3d5-observe-payment-execution.test.ts",
       "packages/engine/src/__tests__/d-207-slice3d5-reconcilers-execution.test.ts",
       "packages/engine/src/__tests__/d-241-file-download-capture-runtime.test.ts",
+      "packages/engine/src/__tests__/d-255-canonical-conversion-drive.test.ts",
+      "packages/engine/src/__tests__/d-255-canonical-tranche-drive.test.ts",
+      "packages/engine/src/__tests__/d-255-canonical-write-conversion-drive.test.ts",
+      "packages/engine/src/__tests__/d-255-deal-health-probability-scale.test.ts",
+      "packages/engine/src/__tests__/d-255-forecast-probability-scale.test.ts",
       "packages/engine/src/__tests__/deeptutor-daily-mastery-execution.test.ts",
       "packages/engine/src/__tests__/expected-quotation-email-watcher-execution.test.ts",
       "packages/engine/src/__tests__/job-status-board-execution.test.ts",
@@ -540,7 +546,7 @@
       "packages/recipes/src/__tests__/zendesk-ticket-count-truth-pack-audit.test.ts",
       "packages/recipes/src/__tests__/zendesk-ticket-reply-closure-loop.test.ts"
     ],
-    "sha256": "3ba0097600b9f796ecc5a2ee7944bd68e041c8a570ddcb67004169aadb581a6e",
+    "sha256": "3d4a70dd8b7daaedef910cbc6073db11706db98b86c4c04571b66f78dd21a36d",
     "roots": [
       "apps/auth-worker",
       "backend/api",
@@ -647,7 +653,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 5547,
-    "sha256": "a8dfe5405b469fd3a2b8e5cfd6505ac7ea21e5e5268ef77dfd2383af33113ca3"
+    "file_count": 5551,
+    "sha256": "1862c3a1b2d2ddde738a13d9246cd4de132891346db1321da4de28fc8e10348e"
   }
 }

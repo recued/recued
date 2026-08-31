@@ -3,6 +3,7 @@ import { loadConfig, type Distribution } from '@recued/config';
 import { getArg } from '../cli/parse.js';
 import type { BootTrace } from '../cli/boot-trace.js';
 import { cmdArchive } from '../commands/archive.js';
+import { resolveRealmDbPath } from '../realm-db-path.js';
 
 export interface ArchiveProfileOptions {
   args: string[];
@@ -33,7 +34,7 @@ const stripArchiveGlobals = (args: string[]): string[] => {
 
 export async function runArchiveProfile(options: ArchiveProfileOptions): Promise<void> {
   const env = options.env ?? process.env;
-  const dbPath = getArg(options.args, 'db') ?? env.DB_PATH ?? './recued-server.db';
+  const dbPath = resolveRealmDbPath(getArg(options.args, 'db') ?? env.DB_PATH);
   const distribution: Distribution =
     (env.RECUED_DISTRIBUTION as Distribution | undefined) ?? 'source';
   const loadedConfig = loadConfig({

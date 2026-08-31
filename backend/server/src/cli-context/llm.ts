@@ -6,6 +6,7 @@ import { createBundleStore } from '../bundle-store.js';
 import { createKeyManager } from '../key-manager.js';
 import { createLLMConfigManager } from '../llm-config.js';
 import { resolveLLMConfigFromEnv } from '../llm-env.js';
+import { resolveRealmDbPath } from '../realm-db-path.js';
 
 export interface LlmProfileOptions {
   args: string[];
@@ -34,7 +35,7 @@ const llmCommandArgs = (args: string[]): string[] => {
 
 export async function runLlmProfile(options: LlmProfileOptions): Promise<void> {
   const env = options.env ?? process.env;
-  const dbPath = getArg(options.args, 'db') ?? env.DB_PATH ?? './recued-server.db';
+  const dbPath = resolveRealmDbPath(getArg(options.args, 'db') ?? env.DB_PATH);
 
   options.bootTrace?.markDbOpenAttempted('configured-db-path');
   const db = await openDatabase(dbPath);

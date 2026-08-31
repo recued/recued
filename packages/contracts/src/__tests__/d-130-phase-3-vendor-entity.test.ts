@@ -47,6 +47,8 @@ describe('D-130 P3 — salesforce.contact entity registration', () => {
       // D-138 P1
       'phone',
       'mailing_address',
+      // Portable role field — paired with hubspot.contact `job_title`.
+      'job_title',
     ]);
   });
 

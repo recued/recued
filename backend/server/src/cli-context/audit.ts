@@ -9,6 +9,7 @@ import { cmdAudit } from '../commands/audit.js';
 import { ensureAuditIndexes } from '../audit-indexes.js';
 import { createSQLiteCollection } from '../sqlite-collection.js';
 import { openDatabase } from '../open-database.js';
+import { resolveRealmDbPath } from '../realm-db-path.js';
 
 export interface AuditProfileOptions {
   args: string[];
@@ -20,7 +21,7 @@ export async function runAuditProfile(options: AuditProfileOptions): Promise<voi
   const env = options.env ?? process.env;
   const positionals = parsePositionals(options.args);
   const target = positionals[1];
-  const dbPath = getArg(options.args, 'db') ?? env.DB_PATH ?? './recued-server.db';
+  const dbPath = resolveRealmDbPath(getArg(options.args, 'db') ?? env.DB_PATH);
 
   options.bootTrace?.markDbOpenAttempted('configured-db-path');
   const db = await openDatabase(dbPath);

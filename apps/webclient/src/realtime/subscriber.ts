@@ -284,6 +284,11 @@ export const WEBCLIENT_DEFAULT_SUBSCRIPTIONS: ReadonlyArray<BroadcastEventKind> 
   // `target_token_id` mismatch. Subscribed by default so seamless
   // re-auth works without the user re-pairing.
   'token.rotated',
+  // ⛔ D-257 — WITHOUT THIS LINE THE HANDLER IS DEAD ON THE WIRE. The server
+  // fans only the kinds a client NAMES, so a reducer case for an unsubscribed
+  // kind is unreachable; `chat.data_diagnosis_resolved` sat handled-but-
+  // unsubscribed for two and a half weeks.
+  'update.progress',
   'upstream_merge_failed',
   // R18 — Data warehouse live-update. The server EMITS these on every warehouse
   // write (contact / work-entity / mirror sync — `kind: 'warehouse'`) + memory

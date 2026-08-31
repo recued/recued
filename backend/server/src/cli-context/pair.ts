@@ -8,6 +8,7 @@ import { createPairingManager, parsePairCodeTtl } from '../pairing.js';
 import { createPairingStateStore } from '../pairing-state-store.js';
 import { createRecoveryKeyCheckStore } from '../recovery-key-store.js';
 import { openDatabase } from '../open-database.js';
+import { resolveRealmDbPath } from '../realm-db-path.js';
 
 export interface PairProfileOptions {
   args: string[];
@@ -46,7 +47,7 @@ export async function runPairProfile(options: PairProfileOptions): Promise<void>
     return;
   }
 
-  const dbPath = getArg(options.args, 'db') ?? env.DB_PATH ?? './recued-server.db';
+  const dbPath = resolveRealmDbPath(getArg(options.args, 'db') ?? env.DB_PATH);
   const port = resolveBindPort({ args: options.args, env });
   const serverDisplayName = env.RECUED_SERVER_NAME ?? hostname() ?? 'recued';
 

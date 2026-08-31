@@ -164,6 +164,71 @@ const isTestRunner = (): boolean =>
  *  provider unexercised on its own platform is a declared-not-backed seam whose
  *  failure mode is a realm nobody can boot. They belong in this file, added one
  *  at a time, each verified on its own OS. */
+/** ⛔⛔ THE ONE QUESTION A SESSION-SCOPED RUNG MUST ASK: will this session EXIST
+ *  AGAIN when the server next starts? Not "is there a session now" — that is the
+ *  weaker question, and answering it is what sealed a headless droplet's keyfile
+ *  to a root SSH keyring it could never reach again at boot.
+ *
+ *  🔑 LIFTED OUT OF THE PROVIDERS ON PURPOSE. `isAvailable()` returns false
+ *  immediately under `isTestRunner()`, and again off-platform — so on any one dev
+ *  box BOTH short-circuit and a test of the provider passes just as happily with
+ *  every gate deleted. Two fixes to this decision were merged on source-shape
+ *  assertions alone before it was worth admitting that is not a test. These are
+ *  pure: hand them any combination of facts, on any OS, and they answer.
+ *
+ *  ⚠ Both fail CLOSED. An unrecognised session type, a missing probe, an
+ *  unexpected manager name — all decline the rung. Declining costs protection
+ *  (the realm falls to a lower rung, or to a passphrase); accepting wrongly locks
+ *  the realm out of its own key at the next boot, which is unrecoverable without
+ *  re-enrolling. */
+export interface SessionFacts {
+  platform: NodeJS.Platform;
+  isTestRunner: boolean;
+  /** Effective uid, or -1 where the platform has none. */
+  uid: number;
+  /** `launchctl managername`, trimmed. macOS. */
+  launchdManagerName?: string | undefined;
+  /** `DBUS_SESSION_BUS_ADDRESS`. Linux. */
+  dbusSessionBusAddress?: string | undefined;
+  /** `XDG_SESSION_TYPE`. Linux. */
+  xdgSessionType?: string | undefined;
+}
+
+/** macOS login keychain. `Aqua` is a GUI login session — unlocked now and again
+ *  at the next login. A LaunchDaemon reports `System`, an ssh login reports
+ *  `Background`; in both the keychain is locked at start. */
+export const osKeyringSessionIsSafe = (f: SessionFacts): boolean =>
+  f.platform === 'darwin' && !f.isTestRunner && f.launchdManagerName === 'Aqua';
+
+/** Linux Secret Service. Same question as `osKeyringSessionIsSafe`, asked with
+ *  the facts Linux offers.
+ *
+ *  ⛔ ROOT NEVER. A server running as root is the thing that outlives a login,
+ *  and `pam_systemd` hands root a user bus over plain SSH — which is what made
+ *  "a bus exists" look like "a desktop is here".
+ *
+ *  ⛔ AND A GRAPHICAL SESSION, not merely a bus: a NON-root user unit with
+ *  `loginctl enable-linger` boots with no login session at all, so the uid gate
+ *  alone still mis-seals it. ssh reports `tty`; a desktop reports `x11` or
+ *  `wayland`. */
+export const secretServiceSessionIsSafe = (f: SessionFacts): boolean =>
+  f.platform === 'linux'
+  && !f.isTestRunner
+  && f.uid !== 0
+  && !!f.dbusSessionBusAddress
+  && (f.xdgSessionType === 'x11' || f.xdgSessionType === 'wayland');
+
+/** The live facts, gathered impurely so the predicates above never touch a
+ *  global. `launchdManagerName` is filled in by the macOS rung, which must spawn
+ *  to learn it. */
+export const currentSessionFacts = (): SessionFacts => ({
+  platform,
+  isTestRunner: isTestRunner(),
+  uid: typeof process.getuid === 'function' ? process.getuid() : -1,
+  dbusSessionBusAddress: process.env.DBUS_SESSION_BUS_ADDRESS,
+  xdgSessionType: process.env.XDG_SESSION_TYPE,
+});
+
 const macosKeyring: MachineSecretProvider = {
   id: 'os-keyring',
 
@@ -180,7 +245,10 @@ const macosKeyring: MachineSecretProvider = {
       // `launchctl` that is missing or errors — falls through to a lower rung,
       // which costs protection but never locks a realm out.
       const { stdout } = await run('/bin/launchctl', ['managername'], { timeout: 5_000 });
-      if (stdout.trim() !== 'Aqua') return false;
+      if (!osKeyringSessionIsSafe({
+        ...currentSessionFacts(),
+        launchdManagerName: stdout.trim(),
+      })) return false;
       await run('/usr/bin/security', ['default-keychain'], { timeout: 5_000 });
       return true;
     } catch {
@@ -335,10 +403,10 @@ const secretService: MachineSecretProvider = {
   id: 'secret-service',
 
   async isAvailable() {
-    if (platform !== 'linux' || isTestRunner()) return false;
-    // No session bus means no session, so nothing that would be unlocked again
-    // next start. Checked first because it is free and unambiguous.
-    if (!process.env.DBUS_SESSION_BUS_ADDRESS) return false;
+    // The entire gate is `secretServiceSessionIsSafe` — pure, and tested there
+    // against every combination of uid, bus and session type. What is left here
+    // is the one thing that must touch the host: does the daemon answer.
+    if (!secretServiceSessionIsSafe(currentSessionFacts())) return false;
     try {
       await run('secret-tool', ['search', 'service', SERVICE_NAME], { timeout: 5_000 });
       return true;

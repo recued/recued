@@ -186,6 +186,41 @@ if (EMBED_ADDON) {
         + 'Refusing to emit a binary that claims to be self-contained and is not.',
     );
   }
+  // ⛔⛔ AND ITS ABI, NOT ONLY ITS EXISTENCE. The comment above states the
+  // invariant — the addon must match the Node ABI of THIS process, because
+  // `process.execPath` is what becomes the SEA — and nothing enforced it. A
+  // mismatched addon produces the worst artifact we know how to build: it boots,
+  // prints a healthy banner, serves `/health` and `/webclient/` with 200s, and
+  // fails only on the one path that matters. That is the `ws` outage of
+  // 2026-08-27 with a different cause, and no test can see it, because every
+  // suite runs from source where `node_modules` is right there.
+  //
+  // The cause is mundane and recurs: `npm rebuild` run under a different Node
+  // than the build. It happened in this tree on 2026-08-28 — both addons went to
+  // ABI 141 while the release target is Node 24 — and was found only by hand.
+  //
+  // 🔑 PROBED IN A CHILD, NOT HERE. `process.dlopen` in this process would LOAD a
+  // matching addon into the builder as a side effect. A child of the same
+  // `process.execPath` answers the same question and leaves the build clean.
+  const probeSrc =
+    'try{process.dlopen({exports:{}},' + JSON.stringify(addonPath) + ');console.log("ok")}'
+    + 'catch(e){var m=/NODE_MODULE_VERSION (\\d+)/.exec(e.message);'
+    + 'console.log(m?m[1]:"load-failed")}';
+  const probe = execFileSync(process.execPath, ['-e', probeSrc], { encoding: 'utf8' }).trim();
+  if (probe !== 'ok') {
+    fail(
+      `the addon at ${addonPath} does not match the Node this build embeds.\n`
+        + `  this build embeds Node ${process.versions.node} (ABI ${process.versions.modules}); `
+        + `the addon reports ${/^\d+$/.test(probe) ? `ABI ${probe}` : probe}.\n`
+        + '  Rebuild it under THIS Node, not whichever one is on PATH:\n'
+        + '      npm rebuild better-sqlite3-multiple-ciphers\n'
+        + '  ⛔ Shipping the mismatch yields a binary that boots, answers /health 200,\n'
+        + '  and cannot be paired to.',
+    );
+  }
+  console.log(
+    `[build-binary] addon ABI ${process.versions.modules} matches the embedded Node — ok`,
+  );
   console.log(`[build-binary] embedding addon as SEA asset: ${addonPath}`);
 }
 

@@ -28,7 +28,6 @@ import type { IncomingMessage, Server } from 'node:http';
 import type { Socket } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import type { PortUpgradeHandler } from '@recued/server-tls';
-import { createRequire } from 'node:module';
 
 /** ⛔⛔ STATIC, NOT `require('ws')`, AND THIS IS THE WHOLE BUG. The runtime
  *  require below (`createRequire`) is invisible to the bundler, so the SEA
@@ -474,16 +473,6 @@ const loadPrefsOrUndefined = (
 };
 import type { LLMConfigManager } from './llm-config.js';
 import type { RuntimeConfigStore } from '@recued/config';
-
-// ⛔ `?? __filename` is what makes this survive inside the SEA binary, not
-// defensive padding. esbuild replaces `import.meta` with `{}` in CJS output, so
-// `import.meta.url` is UNDEFINED there and `createRequire(undefined)` throws at
-// MODULE LOAD — `recued serve` died before printing anything with "The argument
-// 'filename' must be a file URL object, file URL string, or absolute path
-// string. Received undefined". `__filename` is native in CJS and never
-// evaluated under ESM (`??` short-circuits), so one expression covers the ESM
-// source, the ESM bundle, and the CJS/SEA bundle.
-const require = createRequire(import.meta.url ?? __filename);
 
 /** D-169 P0 follow-on — empty-but-typed capability profile used as the
  *  seed value at WS-upgrade `bridgeRegistry.attach()` time. The bridge

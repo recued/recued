@@ -2,6 +2,7 @@ import { hostname } from 'node:os';
 import { getArg, getFlag, parsePositionals } from '../cli/parse.js';
 import { resolveBindPort } from '../cli/resolve-bind-port.js';
 import type { BootTrace } from '../cli/boot-trace.js';
+import { resolveRealmDbPath } from '../realm-db-path.js';
 
 export interface DaemonProfileOptions {
   args: string[];
@@ -26,7 +27,7 @@ export async function runDaemonProfile(options: DaemonProfileOptions): Promise<v
   const env = options.env ?? process.env;
   const positionals = parsePositionals(options.args);
   const subcommand = positionals[0];
-  const dbPath = getArg(options.args, 'db') ?? env.DB_PATH ?? './recued-server.db';
+  const dbPath = resolveRealmDbPath(getArg(options.args, 'db') ?? env.DB_PATH);
   const serverDisplayName = env.RECUED_SERVER_NAME ?? hostname() ?? 'recued';
 
   // Resolve the bind port lazily + once. Recovery commands (stop, logs) must

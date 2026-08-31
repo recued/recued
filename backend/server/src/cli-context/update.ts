@@ -50,6 +50,7 @@ import {
 import { runReleaseCheck } from '../update/release-check.js';
 import type { ReleaseCheckResponse } from '@recued/contracts';
 import type { DistributionChannel } from '../update/update-mode-store.js';
+import { resolveRealmDbPath } from '../realm-db-path.js';
 
 export interface UpdateProfileOptions {
   args: string[];
@@ -295,7 +296,7 @@ export async function runUpdateProfile(options: UpdateProfileOptions): Promise<v
   const env = options.env ?? process.env;
   const positionals = parsePositionals(options.args);
   const sub = positionals[1] ?? 'check';
-  const dbPath = getArg(options.args, 'db') ?? env.DB_PATH ?? './recued-server.db';
+  const dbPath = resolveRealmDbPath(getArg(options.args, 'db') ?? env.DB_PATH);
 
   // `--apply` / `--rollback` accepted as aliases for the subcommands: the flag
   // form is what people reach for after reading about it, and accepting both

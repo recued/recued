@@ -50,6 +50,17 @@ export interface ApplyContext {
 
 export interface ApplyOrchestratorPorts {
   ledger: UpdateLedger;
+  /** Mirror every ledger transition outward (D-257).
+   *
+   *  ⛔ THE LEDGER IS THE PHASE SOURCE, so this hangs off the one place that
+   *  writes it rather than a second enum kept in step by hand. `apply_started` /
+   *  `apply_staged` / `apply_committed` / `rolled_back` already describe the run
+   *  exactly, and a parallel progress vocabulary would drift the first time a
+   *  phase was added here and not there.
+   *
+   *  Optional and BEST EFFORT: an apply must not fail because nobody was
+   *  listening, so the caller wraps its own throw. */
+  notifyLedger?: (entry: UpdateLedgerEntry) => void;
   bootFailureCounter: BootFailureCounter;
   /** Download the artifact to the staging path. */
   download: (url: string, destPath: string) => Promise<void>;
@@ -370,6 +381,9 @@ const appendEntry = (
     ...extra,
   };
   ports.ledger.append(entry);
+  // Best effort by contract — see `notifyLedger`. A broadcast that throws must
+  // not abort an apply that has already changed the disk.
+  try { ports.notifyLedger?.(entry); } catch { /* nobody listening is not a failure */ }
   return entry;
 };
 

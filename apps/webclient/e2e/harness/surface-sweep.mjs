@@ -332,12 +332,27 @@ window.__sweep = (() => {
     for (let i = 0; i < s.length; i += 1) { h = ((h << 5) - h + s.charCodeAt(i)) | 0; }
     return h; };
 
+  // ⛔ A native FILE PICKER is an outcome — the control asked the user for a
+  // file — and it is invisible to every other signal here: no DOM mutation, no
+  // hash, no in-page dialog, no focus move. The chat composer's "+" is
+  // \`attach.addEventListener('click', () => fileInput.click())\`, and it was
+  // reported INERT on all four chat surfaces while working perfectly. Same
+  // class as the confirm() trap above, and the same remedy: observe the OS
+  // surface the control opens rather than the DOM it does not touch.
+  let filePickerOpens = 0;
+  const nativeInputClick = HTMLInputElement.prototype.click;
+  HTMLInputElement.prototype.click = function () {
+    if (this.type === 'file') filePickerOpens += 1;
+    return nativeInputClick.call(this);
+  };
+
   const capture = () => ({
     hash: location.hash,
     bodyChildren: document.body.children.length,
     dialogs: dialogCount(),
     textHash: hashOf(visibleText()),
     elements: document.querySelectorAll('*').length,
+    filePickers: filePickerOpens,
   });
 
   /** Local horizontal overflow at the current viewport.
@@ -774,8 +789,21 @@ window.__sweep = (() => {
           controlState: pressedSemanticBefore !== null
             && pressedSemanticAfter !== null
             && pressedSemanticBefore !== pressedSemanticAfter,
+          filePicker: after.filePickers > before.filePickers,
         },
       };
+    },
+    /** Is the control with this signature visible RIGHT NOW?
+     *
+     *  ⛔ \`control.visible\` comes from the per-state ENUMERATION, taken once
+     *  before any press. Presses within a state run against one live page, so
+     *  an earlier press can hide or detach a later control — and judging that
+     *  control INERT reports the app for a change the sweep itself caused. */
+    visibleSig: (sig) => {
+      // ⚠ findBySig returns a DESCRIPTOR, not an element — and the descriptor
+      // already carries 'visible', recomputed by describe() on every call.
+      const found = findBySig(sig);
+      return found === null || found === undefined ? false : found.visible === true;
     },
     pressSig: (sig) => {
       const seen = new Map();
@@ -1013,7 +1041,7 @@ const judge = (result, noisy) => {
   const c = result.changed;
   const strong = c.hash || c.bodyChildren !== 0 || c.dialogs !== 0 || c.text
     || c.elements !== 0 || c.focusMoved === true || c.controlState === true
-    || c.nativeDialog === true;
+    || c.nativeDialog === true || c.filePicker === true;
   if (strong) return 'alive';
   if (noisy) return 'unjudged';
   return result.mutations > 0 ? 'alive' : 'inert';
@@ -1150,6 +1178,28 @@ const sweepSurface = async (browser, surface) => {
         // Quiesce first: a mutation still in flight from the PREVIOUS press
         // would be attributed to this one and make a dead control look alive.
         record.quietBeforePress = await waitForQuiet(page);
+
+        // ⛔ PRESSES WITHIN A STATE ARE NOT INDEPENDENT. `controls` is
+        // enumerated ONCE, then pressed one after another against the SAME live
+        // page, so an earlier press can destroy a later control's precondition.
+        // The list preview is the exact case: `Close` sorts before `Open full
+        // record`, dismissing the preview (`active = null`, root hidden) — and
+        // `Open` then hit its own `if (id === undefined) return` and was
+        // reported INERT on all five seller surfaces while working correctly
+        // when driven on its own. Judging that is reporting the app for a
+        // change the SWEEP made. A control that has gone since enumeration is
+        // UNMEASURED, never dead — the mirror of this file's rule that a noisy
+        // state is never silently counted as alive.
+        // ⚠ RECORDED, NEVER ACTED ON HERE. Skipping the press outright cost 14%
+        // of the sweep's coverage in one slice — 1448 presses fell to 1249 and
+        // 205 controls were skipped — because controls are transiently
+        // invisible mid-render far more often than they are genuinely gone.
+        // Trading a false POSITIVE for a false NEGATIVE is the wrong direction
+        // for an audit tool, so the press still happens and only an otherwise-
+        // INERT verdict is downgraded below.
+        record.visibleAtPress = await page
+          .evaluate(`window.__sweep.visibleSig(${JSON.stringify(control.sig)})`)
+          .catch(() => null);
         const before = await page.evaluate('window.__sweep.begin()');
         const pressed = await page.evaluate(`window.__sweep.pressSig(${JSON.stringify(control.sig)})`)
           .catch((e) => ({ pressed: false, reason: 'threw:' + String(e).split('\n')[0] }));
@@ -1191,7 +1241,16 @@ const sweepSurface = async (browser, surface) => {
           result.changed.nativeDialog = true;
           record.nativeDialogs = pressDialogs;
         }
+        if (result.changed.filePicker === true) {
+          record.filePickers = result.after.filePickers - result.before.filePickers;
+        }
         record.verdict = judge(result, state.noisy || !state.wentQuiet);
+        // A control that was NOT VISIBLE when pressed is UNMEASURED, not dead —
+        // a user could not have pressed it either. Only an inert verdict is
+        // downgraded: a control that still produced a signal stays alive.
+        if (record.verdict === 'inert' && record.visibleAtPress === false) {
+          record.verdict = 'unjudged-not-visible';
+        }
         record.signal = result.changed;
         record.mutations = result.mutations;
         const reportableOrphans = orphansWorthReporting(result);

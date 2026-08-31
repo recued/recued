@@ -105,6 +105,7 @@ import {
 import { composeExecutorConfig } from '../composition/bin/wire-executor-config.js';
 import { composeHousekeepingStores } from '../composition/bin/wire-housekeeping-substrate.js';
 import { composeLlmSubstrate } from '../composition/bin/wire-llm-substrate.js';
+import { resolveRealmDbPath } from '../realm-db-path.js';
 
 export interface McpProfileOptions {
   args: string[];
@@ -128,7 +129,7 @@ const ensureServerInstanceId = async (db: Database.Database): Promise<string> =>
 
 export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   const env = options.env ?? process.env;
-  const dbPath = getArg(options.args, 'db') ?? env.DB_PATH ?? './recued-server.db';
+  const dbPath = resolveRealmDbPath(getArg(options.args, 'db') ?? env.DB_PATH);
 
   options.bootTrace?.markDbOpenAttempted('configured-db-path');
   const db = await openDatabase(dbPath);

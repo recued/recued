@@ -99,6 +99,14 @@ const call = <M extends keyof Slice['handlers']>(slice: Slice, method: M, args: 
 
 const REG = { instance_id: 'web-1' };
 
+/** D-257 — `update.apply` no longer completes inside the rpc: it answers
+ *  `applying` and reports the outcome on `update.progress`. Tests therefore have
+ *  to let the backgrounded promise settle before asserting what happened, and
+ *  read the RESULT off the bus rather than the response. */
+const settle = (): Promise<void> => new Promise((r) => { setTimeout(r, 0); });
+const terminalStatus = (events: { phase: string; status?: string }[]): string | undefined =>
+  events.find((e) => e.phase === 'result')?.status;
+
 describe('makeUpdateHandlers', () => {
   it('drops (undefined) when deps are absent → not_configured at the dispatcher', () => {
     expect(makeUpdateHandlers(undefined)).toBeUndefined();
@@ -151,13 +159,16 @@ describe('makeUpdateHandlers', () => {
   });
 
   // ── update.apply / update.rollback ────────────────────────────────
+  let emitted: { phase: string; status?: string; detail?: string; operation_id?: string }[] = [];
   const applyHandler = (
     applyDeps?: UpdateApplyDeps,
     releaseCheckDeps: ReleaseCheckDeps = stubDeps(),
   ) => {
+    emitted = [];
     const slice = makeUpdateHandlers({
       ...handlerDeps({ releaseCheckDeps }),
       ...(applyDeps ? { applyDeps } : {}),
+      broadcast: (event) => { emitted.push(event as typeof emitted[number]); },
     });
     if (!slice) throw new Error('expected slice');
     return slice;
@@ -180,10 +191,13 @@ describe('makeUpdateHandlers', () => {
       operation_id?: string;
       to_version?: string;
     };
-    expect(res.status).toBe('restarting');
-    expect(res.operation_id).toBe('e0');
+    // D-257 — the rpc ACCEPTS; it does not wait. `restarting` is now the
+    // terminal status on the bus, not the response.
+    expect(res.status).toBe('applying');
     expect(res.to_version).toBe('1.4.0');
+    await settle();
     expect(restart).toHaveBeenCalledOnce();
+    expect(terminalStatus(emitted)).toBe('restarting');
   });
 
   it('update.apply blocks a major bump unless forced (I-4)', async () => {
@@ -191,7 +205,9 @@ describe('makeUpdateHandlers', () => {
     const blocked = (await call(applyHandler(deps), 'update.apply', {}, REG)) as { status: string };
     expect(blocked.status).toBe('major-blocked');
     const forced = (await call(applyHandler(deps), 'update.apply', { force: true }, REG)) as { status: string };
-    expect(forced.status).toBe('restarting');
+    expect(forced.status).toBe('applying');
+    await settle();
+    expect(terminalStatus(emitted)).toBe('restarting');
   });
 
   it('update.apply maps a non-applyable resolve to not-available', async () => {
@@ -203,8 +219,10 @@ describe('makeUpdateHandlers', () => {
   it('update.apply surfaces a verify failure (fail-closed)', async () => {
     const deps = stubApplyDeps({ ports: okPorts({ verifyArtifact: () => ({ ok: false, reason: 'sha256 mismatch' }) }) });
     const res = (await call(applyHandler(deps), 'update.apply', {}, REG)) as { status: string; detail?: string };
-    expect(res.status).toBe('verify-failed');
-    expect(res.detail).toMatch(/sha256/);
+    expect(res.status).toBe('applying');
+    await settle();
+    expect(terminalStatus(emitted)).toBe('verify-failed');
+    expect(emitted.find((e) => e.phase === 'result')?.detail).toMatch(/sha256/);
   });
 
   it('update.rollback → not-applicable without applyDeps', async () => {
@@ -226,7 +244,7 @@ describe('makeUpdateHandlers', () => {
       operation_id?: string;
     };
     expect(res.status).toBe('rolled-back');
-    expect(res.operation_id).toBe('e0');
+    await settle();
     expect(restart).toHaveBeenCalledOnce();
   });
 
@@ -239,7 +257,10 @@ describe('makeUpdateHandlers', () => {
       {},
       REG,
     )) as { operation_id?: string };
-    expect(applied.operation_id).toBe('e0');
+    // D-257 — the receipt arrives with the terminal emit, not the response.
+    await settle();
+    const receipt = emitted.find((e) => e.phase === 'result')?.operation_id;
+    expect(receipt).toBe('e0');
 
     await expect(call(
       slice,

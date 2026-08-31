@@ -297,6 +297,24 @@ export interface MountUpdatesPageOptions {
     'status' | 'onStatus'
   >;
   /** Boot-owned exact receipt verifier. It exposes no receipt or raw error. */
+  /** D-257 — live phases for a run the server accepted with `applying`.
+   *
+   *  ⛔ WITHOUT THIS THE PAGE NEVER LEARNS THE OUTCOME. `update.apply` no longer
+   *  waits for the work — it downloads ~144 MB, which outlasted the 30s per-call
+   *  timeout and made every real update report a failure the server then went on
+   *  to complete. The rpc answers `applying` and the result arrives here.
+   *
+   *  ⚠ Optional, and the page must still handle a TERMINAL status coming straight
+   *  back from the rpc: an OLD server blocks and answers the old way, and the
+   *  hosted webclient meets old servers constantly. */
+  updateProgress?: {
+    subscribe: (cb: (event: {
+      phase: string;
+      status?: UpdateApplyResponse['status'];
+      detail?: string;
+      to_version?: string;
+    }) => void) => () => void;
+  };
   serverUpdateReceiptVerification?: Pick<
     ServerUpdateReceiptVerificationController,
     | 'read'
@@ -327,6 +345,11 @@ export interface UpdatesPageState {
   checkError: string | null;
   applying: boolean;
   applyResult: UpdateApplyResponse | null;
+  /** D-257 — the latest ledger phase of a run the server accepted, so the page
+   *  can say something true while a multi-minute apply is in flight rather than
+   *  sitting on one static line. `null` until a phase arrives; irrelevant once
+   *  `applyResult` lands. */
+  applyPhase: string | null;
   applyError: string | null;
   mode: UpdateModeStatus | null;
   modeBusy: boolean;
@@ -369,6 +392,7 @@ const BASELINE_POSTURE_COPY: Readonly<Record<ReleaseCheckStatus, string>> = {
 };
 
 const APPLY_STATUS_COPY: Readonly<Record<UpdateApplyResponse['status'], string>> = {
+  applying: 'Downloading and verifying the update — this takes a few minutes. You can leave this page.',
   restarting: 'Updating now — the server will restart and be briefly unavailable.',
   deferred: "The server is busy, so the update did not start. Try again once it's idle.",
   busy: 'Another update is already in progress.',
@@ -423,6 +447,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     checkError: null,
     applying: false,
     applyResult: null,
+    applyPhase: null,
     applyError: null,
     mode: null,
     modeBusy: false,

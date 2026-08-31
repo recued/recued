@@ -8294,7 +8294,12 @@ export const bootstrapWebclient = async (
     ? (args) => rpcConn.call('update.set_mode', args)
     : undefined;
   const updateApplyCaller: UpdateApplyCaller | undefined = updatesEnabled
-    ? (args) => rpcConn.call('update.apply', args)
+  // ⚠ AN OLD SERVER STILL BLOCKS. Pre-D-257 servers await the whole apply
+  // inside the rpc — ~144 MB, minutes — and the hosted webclient meets old
+  // servers constantly. The 30s default rejected those while the server went
+  // on to finish, which is exactly the bug D-257 fixes server-side; this
+  // keeps the CLIENT honest against servers that have not taken it yet.
+    ? (args) => rpcConn.call('update.apply', args, { timeout: 900_000 })
     : undefined;
   const updateRollbackCaller: UpdateRollbackCaller | undefined = updatesEnabled
     ? () => rpcConn.call('update.rollback', undefined)
@@ -10603,6 +10608,25 @@ export const bootstrapWebclient = async (
           ? {
               updateCheckCaller,
               updatesStartPoll,
+              // D-257 — the apply no longer completes inside the rpc, so the page
+              // learns the outcome here. ⛔ A kind the client does not NAME never
+              // arrives, so this seam is live only because `update.progress` is in
+              // WEBCLIENT_DEFAULT_SUBSCRIPTIONS.
+              updateProgress: {
+                subscribe: (cb: (event: {
+                  phase: string;
+                  status?: Awaited<ReturnType<UpdateApplyCaller>>['status'];
+                  detail?: string;
+                  to_version?: string;
+                }) => void) => subscriber.on('update.progress', (event) => {
+                  cb({
+                    phase: event.phase,
+                    ...(event.status === undefined ? {} : { status: event.status }),
+                    ...(event.detail === undefined ? {} : { detail: event.detail }),
+                    ...(event.to_version === undefined ? {} : { to_version: event.to_version }),
+                  });
+                }),
+              },
               credentialRotationServerUpdateContinuity,
               ...(credentialRotationTabConvergence !== null
                 ? {

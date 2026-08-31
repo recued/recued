@@ -149,6 +149,7 @@ describe('D-121 Phase 6 — broadcast event constants', () => {
       // targeted client wraps + persists + applies. Sibling
       // subscribers ignore on `target_token_id` mismatch.
       'token.rotated',
+      'update.progress',
       'upstream_merge_failed',
       'warehouse',
     ];

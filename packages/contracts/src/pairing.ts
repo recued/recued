@@ -169,6 +169,8 @@ export const DEFAULT_SUBSCRIPTIONS: BroadcastEventKind[] = [
   // filter on `target_token_id` mismatch so a rotation for the
   // user's laptop bearer is a no-op on the user's phone PWA.
   'token.rotated',
+  // D-257 — update-run phases, mirrored from the ledger.
+  'update.progress',
   'upstream_merge_failed',
   'warehouse',
 ];

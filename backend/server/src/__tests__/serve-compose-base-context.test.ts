@@ -103,7 +103,10 @@ bind_port = 8080
 `);
 
     const context = composeBaseContext(['--config', configPath], {
-      env: { HOME: dir },
+      // ⚠ DB_PATH pinned: this test is about the PORT. Left unset, the realm
+      // resolver refuses when a stray ./recued-server.db sits in the checkout,
+      // which made a port test depend on the developer's working directory.
+      env: { HOME: dir, DB_PATH: join(dir, 'realm.db') },
     });
 
     expect(context.port).toBe(8080);
@@ -123,7 +126,7 @@ bind_port = 8080
 `);
 
     const context = composeBaseContext(['--config', configPath], {
-      env: { HOME: dir, PORT: '9000' },
+      env: { HOME: dir, PORT: '9000', DB_PATH: join(dir, 'realm.db') },
     });
 
     expect(context.port).toBe(9000);

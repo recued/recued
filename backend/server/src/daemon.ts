@@ -9,6 +9,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { createServer as netCreateServer } from 'node:net';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { openSync } from 'node:fs';
@@ -63,6 +64,17 @@ const pingHealth = async (port: number): Promise<boolean> => {
     return false;
   }
 };
+
+/** Is anything holding the port? Distinguishes "nothing is there" from "held by
+ *  a process this command did not start" — `pingHealth` alone cannot, because a
+ *  non-recued listener and an empty port both fail it identically. */
+const portInUse = (port: number): Promise<boolean> =>
+  new Promise((res) => {
+    const probe = netCreateServer();
+    probe.once('error', (e: NodeJS.ErrnoException) => res(e.code === 'EADDRINUSE'));
+    probe.once('listening', () => probe.close(() => res(false)));
+    try { probe.listen(port, '127.0.0.1'); } catch { res(false); }
+  });
 
 // ────────────────────────────────────────────────────────────────
 // Public commands
@@ -207,7 +219,16 @@ export const daemonStop = async (opts: Pick<DaemonOptions, 'dbPath'>): Promise<v
   const pid = readPid(pidFile);
 
   if (!pid) {
-    console.log('No pidfile found — server is not running.');
+    // ⛔ THIS SAID "server is not running", WHICH IT CANNOT KNOW. The pidfile
+    // records what `recued start` launched; a server started by a systemd or
+    // launchd unit, or a foreground `recued serve` in another shell, leaves no
+    // pidfile and is invisible here. Asserting it is not running — to an owner
+    // staring at EADDRINUSE — sends them hunting the wrong fault. Say only what
+    // this command actually knows.
+    console.log('No pidfile — `recued stop` only manages a server started by `recued start`.');
+    console.log('  If something is serving on the port anyway (an autostart unit, or a');
+    console.log('  foreground `recued serve` in another shell), this cannot stop it.');
+    console.log('  `recued status` will say which case you are in.');
     return;
   }
 
@@ -255,7 +276,31 @@ export const daemonStatus = async (opts: DaemonOptions): Promise<void> => {
   }
 
   if (!pid) {
-    console.log('Status: stopped');
+    // ⛔⛔ "stopped" IS A CLAIM ABOUT THE PIDFILE, NOT ABOUT THE PORT — and the
+    // two now disagree routinely, because D-178 autostart units start the server
+    // at boot and write no pidfile. The owner then reads `Status: stopped` next
+    // to an `EADDRINUSE` from `recued serve` and cannot tell which is lying.
+    // Neither is: they answer different questions.
+    //
+    // 🔑 A negative must name its cause. Three outcomes, never one:
+    //    answers /health       → a recued server is up, just not ours to stop
+    //    port held, no health  → something else owns it; serve keeps failing
+    //    port free             → genuinely stopped
+    const answering = await pingHealth(opts.port);
+    if (answering) {
+      console.log('Status: running — but NOT under `recued start` (no pidfile).');
+      console.log(`  A recued server is answering /health on port ${opts.port}.`);
+      console.log('  `recued stop` cannot stop it: it only manages what it started.');
+      console.log(`  Find the owner:  ss -ltnp | grep ${opts.port}   (or: lsof -i :${opts.port})`);
+      console.log('                   systemctl status recued   (the autostart unit, if armed)');
+    } else if (await portInUse(opts.port)) {
+      console.log(`Status: stopped — but port ${opts.port} is already in use.`);
+      console.log('  Whatever holds it does not answer /health, so it is probably not a');
+      console.log('  recued server. `recued serve` will fail with EADDRINUSE until it is freed.');
+      console.log(`  Find the owner:  ss -ltnp | grep ${opts.port}   (or: lsof -i :${opts.port})`);
+    } else {
+      console.log('Status: stopped');
+    }
     if (autoDisabledBlock) console.log(autoDisabledBlock);
     return;
   }

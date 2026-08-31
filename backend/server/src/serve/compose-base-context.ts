@@ -17,6 +17,7 @@ import {
 import { getArg, parsePositionals } from '../cli/parse.js';
 import { resolveBindPort } from '../cli/resolve-bind-port.js';
 import { reconcileServerBundleSwapConfigBeforeLoad } from '../archive/server-bundle-swap.js';
+import { resolveRealmDbPath } from '../realm-db-path.js';
 
 export interface BaseVaultQuotas {
   perPublisherBytes?: number;
@@ -67,7 +68,7 @@ export const composeBaseContext = (
   });
   bootTrace.mark('cli-parsed');
 
-  const dbPath = getArg(args, 'db') ?? env.DB_PATH ?? './recued-server.db';
+  const dbPath = resolveRealmDbPath(getArg(args, 'db') ?? env.DB_PATH);
   const distribution: Distribution =
     (env.RECUED_DISTRIBUTION as Distribution | undefined) ?? 'source';
   let loadedConfig = loadConfig({

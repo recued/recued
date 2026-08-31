@@ -7,6 +7,45 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.8.31 — 2026-08-31
+
+The update button stops telling you it failed when it did not. Applying an
+update from Settings → Updates reported a failure on every real update, because
+the request timed out in the browser after 30 seconds while the server carried
+on downloading and finished the job perfectly well. The outcome was right and
+the message was wrong, which is a bad combination — you were likely to retry a
+144 MB download, or give up on a server that had already updated itself.
+
+### Fixed
+
+- **The in-app update reports what actually happened.** The server now accepts
+  the request immediately and reports progress and the outcome as it goes,
+  rather than making the browser wait for the whole download. If your server is
+  older than this release, the page still handles it the old way — and it no
+  longer gives up after 30 seconds, so the false failure is gone either way.
+- **One database location, instead of wherever you were standing.** The default
+  was relative to your current directory, so running the server from two
+  different folders quietly created two different servers. On a real machine
+  this produced three separate installs in twenty-five minutes. There is one
+  standard path now, and an ambiguous case is refused rather than guessed.
+- **`recued status` and `recued stop` no longer say "not running" about a
+  running server.** They read a file that only exists when the server was
+  started in the background, so a server started in the foreground — which is
+  what the setup instructions tell you to do — looked stopped to both.
+- **Start-at-login on a headless Linux server.** Running as root now installs a
+  boot service rather than a login-session one, and the credential store refuses
+  to seal a server's keys to a login session that will not survive a reboot.
+- **A weighted-forecast figure that was 100 times too small.** Three HubSpot
+  recipes divided a probability by 100 when it was already a fraction — an
+  812,700 pipeline reported as 5,836.
+
+### Improved
+
+- The build now checks that the packaged database engine matches the runtime it
+  ships with, instead of only checking that it is present. A mismatch produces
+  the worst kind of build: it starts, looks healthy, and fails the moment it
+  opens your data.
+
 ## 26.8.30 — 2026-08-30
 
 Mostly things that existed and did nothing. The public metric boards had no

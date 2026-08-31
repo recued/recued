@@ -21,6 +21,7 @@ import {
   rotateKeyfilePassphrase,
 } from '../keyfile-passphrase-rotation.js';
 import { resolveIdentityKeysPath } from '../identity/boot.js';
+import { resolveRealmDbPath } from '../realm-db-path.js';
 
 export interface RotatePassphraseProfileOptions {
   args: string[];
@@ -46,7 +47,7 @@ export async function runRotatePassphraseProfile(
   const env = options.env ?? process.env;
   const out = options.out ?? ((line: string) => process.stdout.write(`${line}\n`));
   const ask = options.readSecret ?? promptForSecret;
-  const dbPath = getArg(options.args, 'db') ?? env.DB_PATH ?? './recued-server.db';
+  const dbPath = resolveRealmDbPath(getArg(options.args, 'db') ?? env.DB_PATH);
   const keyfilePath = resolveIdentityKeysPath(dbPath);
 
   out('');

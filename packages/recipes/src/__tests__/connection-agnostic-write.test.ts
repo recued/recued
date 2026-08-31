@@ -530,6 +530,8 @@ describe('resolveConnectionAgnosticRecipe - write reverse projection', () => {
         recent_activity_at: '{{item.properties.notes_last_contacted | date_ms}}',
         phone: '{{item.properties.phone}}',
         company: '{{item.properties.company}}',
+        job_title: '{{item.properties.jobtitle}}',
+        industry: '{{item.properties.industry}}',
       },
     });
     expect(recipe.steps[1]).not.toHaveProperty('array');

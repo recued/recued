@@ -19,6 +19,7 @@ import {
   regenerateKeyfileFromRecoveryKey,
 } from '../keyfile-recovery.js';
 import { resolveIdentityKeysPath } from '../identity/boot.js';
+import { resolveRealmDbPath } from '../realm-db-path.js';
 
 export interface RecoverKeyfileProfileOptions {
   args: string[];
@@ -42,7 +43,7 @@ export async function runRecoverKeyfileProfile(
 ): Promise<void> {
   const env = options.env ?? process.env;
   const out = options.out ?? ((line: string) => process.stdout.write(`${line}\n`));
-  const dbPath = getArg(options.args, 'db') ?? env.DB_PATH ?? './recued-server.db';
+  const dbPath = resolveRealmDbPath(getArg(options.args, 'db') ?? env.DB_PATH);
   const keyfilePath = resolveIdentityKeysPath(dbPath);
 
   // ⛔ Say the cost BEFORE asking for the key. The keyfile is not only the

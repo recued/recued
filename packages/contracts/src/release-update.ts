@@ -82,6 +82,17 @@ export interface UpdateModeStatus {
  *  `insufficient-storage` is the up-front disk guard — the data volume can't fit
  *  the artifact download + the pre-migration snapshot. */
 export type UpdateApplyStatus =
+  /** D-257 — accepted and RUNNING; the outcome arrives on `update.progress`.
+   *
+   *  ⛔ THE RPC USED TO AWAIT THE WHOLE APPLY, and the artifact is ~144 MB. The
+   *  webclient's per-call timeout is 30s, so Settings → Updates rejected on every
+   *  real update while the server went on to finish it — the owner was told it
+   *  failed by the one surface that could see it succeed.
+   *
+   *  ⚠ A NEW CLIENT MAY STILL MEET AN OLD SERVER, which blocks and then answers
+   *  with a terminal status. Both shapes have to be handled; this one is not a
+   *  replacement for them. */
+  | 'applying'
   | 'restarting'
   | 'deferred'
   | 'busy'

@@ -98,10 +98,14 @@ test('the upgrade probe reports silence as silence', async () => {
  *  `npx tsx bin.ts`, died, and `recued status` said "stopped" — and every drive
  *  in this repository went through the foreground path, so nothing saw it.
  *  A binary is not shippable because ONE of its two front doors opens. */
-const PORT_FOR: Record<BootMode, number> = { foreground: 7817, daemon: 7818 };
+const PORT_FOR: Record<BootMode, number> = { foreground: 7817, daemon: 7818, unit: 7819 };
 
-for (const mode of ['foreground', 'daemon'] as const) {
-const launched = mode === 'daemon' ? 'with `recued start`' : 'in the foreground';
+for (const mode of ['foreground', 'daemon', 'unit'] as const) {
+const launched = mode === 'daemon'
+  ? 'with `recued start`'
+  : mode === 'unit'
+    ? 'by a unit, on a realm that has never been set up'
+    : 'in the foreground';
 test.describe(`the packaged binary, launched ${launched}`, () => {
   let server: LiveServer;
 
@@ -148,6 +152,31 @@ test.describe(`the packaged binary, launched ${launched}`, () => {
     });
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- narrowed by the loop
+  if (mode === 'unit') {
+    test('serves an unenrolled realm instead of refusing it', async () => {
+      // ⛔ THE WHOLE OF D-252 IN TWO ASSERTIONS. Until 26.8.29 this combination —
+      // the unit's own argv, a realm with no recovery key — printed "finish setup
+      // by running the server yourself", exited 0 and bound NOTHING, so a
+      // supervised server could never be the thing you pair to and first run
+      // needed a terminal session and a handoff nobody documented.
+      expect(server.log(), 'the realm must genuinely be unenrolled, or this passes for the wrong reason')
+        .toMatch(/Status:\s*Not enrolled/);
+      // And it is serving anyway. A status line back from the upgrade is proof of
+      // a bound listener; the refusal case has nothing to connect to at all.
+      expect(await probeUpgrade(server.port), 'unenrolled + --require-enrolled must LISTEN')
+        .toMatch(/^HTTP\/1\.1 \d{3}/);
+    });
+
+    test('`recued pair` mints a code against it', () => {
+      // The other half of the flow the installer now prints. `pair` needs no
+      // running server, but the point here is that there IS one to pair to.
+      const { stdout, stderr } = server.cli(['pair', '--db', server.dbPath]);
+      expect(`${stdout}${stderr}`, '`recued pair` must print a usable code')
+        .toMatch(/Pairing code:\s*[A-Z0-9-]{6,}/);
+    });
+  }
+
   test('pairs a real browser and opens a live socket', async ({ page, context, baseURL }) => {
     // ⛔ CHROME 149 GATES THIS, AND THE GATE IS THE PRODUCT'S FRONT DOOR.
     // A page on https://app.recued.com reaching http://127.0.0.1:7717 is a
@@ -191,7 +220,11 @@ test.describe(`the packaged binary, launched ${launched}`, () => {
     await expect(page.getByRole('heading', { name: 'Pair this browser' })).toBeVisible();
 
     await page.getByRole('textbox', { name: 'Server URL' }).fill(server.url);
-    await page.getByLabel(/^\s*Pairing code/).fill(server.pairCode);
+    // ⛔ MINT IT HERE, do not reuse the boot banner's. One live code exists at a
+    // time and `recued pair` replaces it, so anything that ran `pair` earlier in
+    // the file has already invalidated the boot code — which presents as
+    // "pairing did not complete" with nothing wrong on either side.
+    await page.getByLabel(/^\s*Pairing code/).fill(server.freshCode());
 
     // Enrolled realm ⇒ the owner proves it with the existing key. 'enter' is the
     // default mode; clicking is idempotent and keeps this honest if that changes.
@@ -245,6 +278,19 @@ test.describe(`the packaged binary, launched ${launched}`, () => {
 
     expect(pageErrors.map((e) => e.message), 'uncaught page errors').toEqual([]);
   });
+
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- narrowed by the loop
+  if (mode === 'unit') {
+    // ⛔ LAST FOR THIS MODE — it reads state the pairing above produced.
+    test('the pairing enrolled the realm in place, with no restart', () => {
+      // The server that answered the pair is the same process that started
+      // unenrolled. If enrolment needed a restart, first run would still have a
+      // handoff — which is the thing D-252 removed.
+      const { stdout, stderr } = server.cli(['pair', '--db', server.dbPath]);
+      expect(`${stdout}${stderr}`, 'the realm should no longer announce itself as unenrolled')
+        .not.toMatch(/has not been enrolled yet/i);
+    });
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- narrowed by the loop
   if (mode === 'daemon') {
