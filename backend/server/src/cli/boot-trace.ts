@@ -12,6 +12,13 @@ export type BootCommandProfile =
   /** D-212 — re-seal the keyfile under a new passphrase. Separate from
    *  recovery: it keeps the identity, and needs no recovery key. */
   | 'rotate-passphrase'
+  /** D-178 — the outer supervisor's verdict. Its own profile because it must run
+   *  when the LIVE binary cannot start at all; `recued.old` executes it. */
+  | 'report-boot-failure'
+  | 'revert-release'
+  | 'self-test'
+  | 'update-lease'
+  | 'release-floor'
   | 'mcp'
   | 'serve'
   | 'command';
@@ -84,6 +91,17 @@ export const classifyBootProfile = (input: BootProfileInput): BootCommandProfile
   if (input.subcommand === 'update') return 'update';
   if (input.subcommand === 'recover-keyfile') return 'recover-keyfile';
   if (input.subcommand === 'rotate-passphrase') return 'rotate-passphrase';
+  if (input.subcommand === 'report-boot-failure') return 'report-boot-failure';
+  // The `docker-thin` launcher's half of the same supervisor pair — see
+  // `cli-context/revert-release.ts`. Its own profile rather than `command`
+  // because, like its sibling, it must open nothing and boot nothing.
+  if (input.subcommand === 'revert-release') return 'revert-release';
+  // The installer's post-swap probe. Its own profile because, like its siblings,
+  // it must boot nothing — the whole point is to load ONE thing and see if it
+  // works.
+  if (input.subcommand === 'self-test') return 'self-test';
+  if (input.subcommand === 'update-lease') return 'update-lease';
+  if (input.subcommand === 'release-floor') return 'release-floor';
   return 'command';
 };
 

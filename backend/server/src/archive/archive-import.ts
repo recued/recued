@@ -26,6 +26,7 @@
 
 import { createReadStream } from 'node:fs';
 import { serverBundleFromJSON } from '@recued/crypto';
+import { isValidReleaseVersion } from '@recued/release';
 import {
   AEAD_TAG_LEN,
   ARCHIVE_FORMAT_VERSION,
@@ -180,18 +181,67 @@ const readUint32BE = (buf: Buffer, offset: number): number => {
   return buf.readUInt32BE(offset);
 };
 
-/** Version comparison: supports `X.Y.Z` + pre-release suffixes.
+/** Version comparison: supports `yy.m.d[.n]` + pre-release suffixes.
  *  Returns negative when a < b, 0 when equal, positive when a > b.
- *  We don't pull in semver — this is a narrow three-segment compare. */
+ *  We don't pull in semver — this is a narrow four-segment compare.
+ *
+ *  ⛔⛔ THIS READ EXACTLY THREE SEGMENTS AND THEREFORE FAILED **OPEN**. D-258
+ *  added the same-day hotfix `yy.m.d.n`, and a three-segment loop truncates it:
+ *  a `26.9.1` server checked against an archive requiring `26.9.1.1` compared
+ *  EQUAL and the restore was ACCEPTED — measured. `min_consumer_version` is a
+ *  fail-CLOSED contract ("this archive needs at least this server"), so
+ *  truncation inverts it precisely on the floors that exist to protect a
+ *  restore, and the failure is a successful restore onto a server that cannot
+ *  read the data rather than a refusal anyone sees.
+ *
+ *  ⚠ Latent rather than live when it was found: `MIN_CONSUMER_VERSION` is the
+ *  static `'0.2.0'`, never derived from the server version, so no first-party
+ *  archive carries a 4-segment floor today. The contract was still wrong, and a
+ *  floor is exactly the field a future hotfix would want to raise.
+ *
+ *  🔑 Same ordering as `compareVersions` (packages/release + version-guard.mjs):
+ *  a missing segment reads as 0, so every existing triple compares as it always
+ *  did. It is NOT shared with them — this one throws on a non-numeric segment
+ *  because an unreadable floor must refuse the restore, where the release
+ *  comparator coerces to 0 to keep the update path total. */
 const cmpVersion = (a: string, b: string): number => {
-  const pa = a.split('-')[0].split('.').map(Number);
-  const pb = b.split('-')[0].split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
+  // ⛔⛔ A SEGMENT COUNT IS PART OF THE GRAMMAR, AND SLICING IS NOT REJECTING.
+  // Widening the loop from 3 to 4 fixed the truncation at the boundary that
+  // existed and left the same hole one segment further out: `26.9.1.1.1` and
+  // `26.9.1.1` still compared EQUAL, so an archive declaring a five-segment
+  // floor was ACCEPTED by a server below it — measured. `min_consumer_version`
+  // arrives from the archive FILE, which is attacker- or corruption-supplied, so
+  // "whatever it says, coerced to numbers" is not a floor. Parse, or refuse.
+  //
+  // 🔑 The grammar is IMPORTED, not restated. `isValidReleaseVersion` is the
+  // authority in `@recued/release` (which this package already depends on for
+  // the update path), so the floor an archive declares is judged by exactly the
+  // rule that judges a release version — including the positive-ordinal rule
+  // that a bare `/^\d+$/` per segment would let `26.9.1.0` through.
+  // ⛔⛔ VALIDATE THE FIELD AS SUPPLIED, NOT A VERSION DERIVED FROM IT. This
+  // carried the old code's `split('-')[0]` forward and then validated the STUMP,
+  // so `26.9.1-rc.1` and `26.9.1.1-rc1` were accepted by a check whose whole
+  // purpose is to reject what the canonical grammar rejects — the strip handed
+  // the validator a different string than the one being compared. Nothing needs
+  // the suffix tolerance: `MIN_CONSUMER_VERSION` is a plain triple and the
+  // consumer version is this server's own, which the grammar already governs.
+  //
+  // 🔑 A validator that normalises its input first is answering about the
+  // normalised value. `min_consumer_version` arrives from the archive FILE, so
+  // the value judged must be the value used.
+  const parse = (v: string): number[] => {
+    if (!isValidReleaseVersion(v)) {
+      throw new Error(
+        `ARCHIVE_FUTURE_VERSION: '${v}' is not a version — expected yy.m.d or yy.m.d.n`,
+      );
+    }
+    return v.split('.').map(Number);
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  for (let i = 0; i < 4; i++) {
     const x = pa[i] ?? 0;
     const y = pb[i] ?? 0;
-    if (Number.isNaN(x) || Number.isNaN(y)) {
-      throw new Error(`ARCHIVE_FUTURE_VERSION: cannot compare versions '${a}' vs '${b}'`);
-    }
     if (x !== y) return x - y;
   }
   return 0;

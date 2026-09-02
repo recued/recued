@@ -678,6 +678,16 @@ export interface BootstrapSettingsRouteOptions {
   /** Periodic availability re-check scheduler (returns a cancel fn) + interval.
    *  Production wires a `setInterval` wrapper; omit → check-on-mount only. */
   updatesStartPoll?: (cb: () => void, ms: number) => () => void;
+  /** D-257 — the apply is asynchronous, so its OUTCOME arrives on the bus, not
+   *  in the rpc reply.
+   *
+   *  ⛔ THIS OPTION DID NOT EXIST HERE, so the seam the bootstrap built and the
+   *  handler the page declared were joined by NOTHING. The page saw only the
+   *  immediate `applying` reply, took it for a finished non-restart, cleared
+   *  shared progress and re-enabled its controls — failures invisible, a second
+   *  apply startable over the first, and exact receipt verification unable to
+   *  arm. Typed off the page's own option so the two cannot drift apart again. */
+  updateProgress?: MountUpdatesPageOptions['updateProgress'];
   updatesPollIntervalMs?: number;
   /** D-145 PA11 — `housekeeping.cache.stats` rpc caller forwarded to
    *  the AI / Models section's "LLM result cache" card. Production wires
@@ -1779,6 +1789,9 @@ export const bootstrapSettingsRoute = (
         : {}),
       ...(opts.updatesStartPoll !== undefined
         ? { startPoll: opts.updatesStartPoll }
+        : {}),
+      ...(opts.updateProgress !== undefined
+        ? { updateProgress: opts.updateProgress }
         : {}),
       ...(opts.updatesPollIntervalMs !== undefined
         ? { pollIntervalMs: opts.updatesPollIntervalMs }

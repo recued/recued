@@ -2981,6 +2981,10 @@ export type {
   LifecycleStatus,
 } from './lifecycle.js';
 
+// D-188 / the un-supervised-update guard — VALUES, so a separate export: both
+// the webclient's Restart gate and the server's apply guard ask this one list.
+export { SUPERVISOR_MODES_THAT_RESPAWN, supervisorWillRespawn } from './lifecycle.js';
+
 // Phase D — warehouse collections (mail / file / webhook shared shape).
 export type {
   CollectionPlatform,
@@ -3487,6 +3491,7 @@ export {
 } from './webclient-bundle.js';
 export type {
   WebclientBundleManifest,
+  WebclientBundleBuildAttestation,
   WebclientBundleManifestEntry,
   WebclientBundleFile,
   WebclientBundleVerifyErrorCode,

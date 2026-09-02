@@ -106,7 +106,11 @@ interface World {
 
 const BIG_QUOTA = 128 * 1024 * 1024;
 
-const mkWorld = async (): Promise<World> => {
+/** `seed` writes into the watched directory BEFORE any adapter starts, so a file
+ *  is picked up by the initial directory walk rather than by a live `fs.watch`
+ *  event. See the "existing file" test for why that distinction decides whether
+ *  the test is deterministic. */
+const mkWorld = async (opts: { seed?: (watchedDir: string) => void } = {}): Promise<World> => {
   const base = mkdtempSync(join(tmpdir(), 'phase-d-e2e-'));
   const watchedDir = join(base, 'files');
   const data = join(base, 'data');
@@ -153,6 +157,11 @@ const mkWorld = async (): Promise<World> => {
     config: () => ({ backfill_days: 30, retention_days: 365, quota_bytes: BIG_QUOTA }),
   });
   registry.register(mailColl);
+
+  // ⛔ BEFORE `sync.start()`, DELIBERATELY. A file seeded here is found by the
+  // initial directory walk, which `start()` awaits; a file written after start
+  // is found only if the OS delivers an `fs.watch` event.
+  opts.seed?.(watchedDir);
 
   // Start all sync adapters so the file scan completes + webhook +
   // mail providers stand up their listeners / stub callbacks.
@@ -255,8 +264,20 @@ describe('Phase D e2e — file collection', () => {
   // was lost with it. Measured under a full-suite run 2026-08-31. Paid only on a
   // genuine failure — the poll returns the moment the record lands (~500 ms).
   it('indexes an existing file + emits a warehouse event', async () => {
-    w = await mkWorld();
-    writeFileSync(join(w.watchedDir, 'hello.txt'), 'full text contents');
+    // ⛔⛔ SEEDED BEFORE START, WHICH IS WHAT "EXISTING" MEANS. Writing the file
+    // AFTER `sync.start()` made this test depend on a live `fs.watch` event, and
+    // an OS watch event is LOSSY under load: in a full-suite run it failed with
+    // `0 record(s) indexed` after polling 45s — zero for 45 seconds is an event
+    // that never arrived, not a slow one, and no timeout can fix that. Seeding
+    // first routes it through the initial directory walk, which `start()`
+    // genuinely awaits, so the record exists before the first poll.
+    //
+    // 🔑 NO COVERAGE IS LOST. The watch path has its own dedicated test —
+    // `file-collection.test.ts` "fires change events when a new file appears" —
+    // which is where a lossy-event dependency belongs, named for what it tests.
+    w = await mkWorld({
+      seed: (dir) => { writeFileSync(join(dir, 'hello.txt'), 'full text contents'); },
+    });
 
     const deps: CollectionHandlerDeps = { registry: w.registry };
     const rec = await waitForSourceId(deps, { platform: 'file', slug: 'docs' }, 'hello.txt');

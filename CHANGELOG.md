@@ -7,6 +7,89 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.9.2 — 2026-09-02
+
+This release is about what happens when an update is interrupted. Power loss, a
+reboot, a closed terminal — anything that stops a server halfway through
+replacing itself. Previously some of those moments could leave a machine that
+would not start, with the version it came from already consumed. That is now a
+transaction: the next start either finishes the swap or undoes it, before
+anything else loads. Updating on Windows got most of the attention it was owed,
+and updates no longer expire.
+
+### Fixed
+
+- **An interrupted update leaves a server that still starts.** Replacing the
+  program means moving two files that have to match — the executable and the
+  database engine it was built against. If the machine died between them, you
+  were left with a mismatched pair that boots, looks healthy, and fails the
+  moment it opens your data, with nothing to go back to. Both halves now move
+  as one step, and a server that finds a half-finished swap completes or
+  reverses it before it loads anything.
+- **`recued update rollback` works on Windows.** It looked for the previous
+  version under a filename without `.exe`, so it reported "no previous binary"
+  and left the new one running — on the one platform that has no service manager
+  to fall back on. Rolling back from a stopped server also no longer depends on
+  the component that may be why you are rolling back.
+- **Rolling back the server rolls back the app with it.** An update replaced the
+  bundled web app and removed the backup as soon as the new one landed, so a
+  rollback put an older server behind a newer interface — a pairing neither half
+  expects.
+- **Updates stop expiring.** A release feed carried a freshness date, and past it
+  your server stopped being offered updates and the installer refused to install
+  at all, even though the release was signed, current, and the newest one
+  available. A feed that has simply not changed and a feed someone is holding
+  still look identical from the outside, and the only response available was to
+  refuse the newest release anyone has. Downgrades are still refused, which was
+  always the part doing the work.
+- **Installing on Windows with `-Channel edge` failed outright**, and a re-install
+  could put an older version over a newer one. The Windows installer now resolves
+  a channel the same way every other part of Recued does, refuses a downgrade,
+  and applies the same manifest checks the Linux and macOS installer has had:
+  it will not accept a replayed feed, a manifest from a newer format it cannot
+  read, or bytes that do not match what was signed.
+- **A failed install no longer destroys the install you had.** An upgrade that
+  failed partway could leave you with neither version.
+- **Running two servers on one machine no longer confuses an update.** Update
+  state was tracked per database rather than per machine, so a second server
+  could act during the first one's update, and a feed one had already refused as
+  a replay could still be accepted by the other.
+- **If you run Recued from source, an update from the web interface could
+  overwrite the program you launched it with.** It now refuses instead.
+- **Settings → Updates asks about the release you actually read about.** If a
+  newer one is published while the page is open, it tells you and asks again
+  rather than installing something you did not agree to. Applying an update
+  reports progress and its real outcome, and a reply lost to the restart is
+  recovered rather than leaving the page guessing. On Windows, where start-at-
+  login is not a service manager, the page now says so before downloading
+  anything instead of stranding a stopped daemon.
+
+### Added
+
+- **A server that cannot start at all is put back automatically.** Until now the
+  safety net counted failures inside the server, which cannot help if the new
+  version never runs — a truncated download, the wrong architecture, a missing
+  system library. Installing now also writes a small supervisor that sits
+  outside the program, is never replaced by an update, and hands the decision to
+  the previous version, which is known to work because restoring it is the whole
+  point.
+- **A snapshot before an update that changes the database.** The first start on
+  a release that migrates your data now records the state it came from, so a
+  rollback can restore the data as well as the program. If there is no snapshot
+  to restore, the rollback is refused rather than performed halfway.
+- **Same-day fixes.** Versions are dates, which allowed one release per day. An
+  urgent fix can now ship as a fourth number — 26.9.2.1 — on the same day as the
+  release it repairs.
+
+### Improved
+
+- **What a release proves about itself before it is published.** Every
+  downloadable file is now checked to be a real executable of the right shape for
+  the platform it claims, to carry the exact version the release is labelled
+  with, and to have been run and exercised on the machine that built it. Docker
+  images are verified on both architectures rather than only the one doing the
+  publishing, and a release is signed against the source it was built from.
+
 ## 26.8.31 — 2026-08-31
 
 The update button stops telling you it failed when it did not. Applying an

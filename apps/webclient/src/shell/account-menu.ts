@@ -303,7 +303,7 @@ const ACCOUNT_BASELINE_POSTURE_COPY: Readonly<
   'update-available': 'a newer release is available',
   'up-to-date': 'the release feed reports this version is current',
   'not-configured': 'in-place release checks are not configured',
-  'stale-feed': 'the release feed is stale and will not be acted on',
+  'stale-feed': 'this server is on an older release check that ignores the current feed',
   'launcher-outdated': 'the launcher must be updated first',
   replay: 'an older release manifest was ignored',
   'fetch-failed': 'the running version is known; the release feed is unreachable',
@@ -340,7 +340,7 @@ const accountServerUpdateTriageStep = (
     return 'The server rejected an older signed release manifest. Restore a current release feed before checking again.';
   }
   if (triage.checkStatus === 'stale-feed') {
-    return 'Publish or restore a fresh signed release manifest, then check this selected server again.';
+    return 'Re-run the installer on this server to update its release check, then check again.';
   }
   if (triage.checkStatus === 'fetch-failed') {
     return 'Check this server’s outbound access and configured release-feed endpoint before checking again.';

@@ -28,11 +28,14 @@ import {
   appendFileSync,
   closeSync,
   existsSync,
+  fsyncSync,
   openSync,
   readFileSync,
   readSync,
   statSync,
 } from 'node:fs';
+import { dirname } from 'node:path';
+import { fsyncDir } from './durable-fs.js';
 
 export interface JsonlLedger<T> {
   append(entry: T): void;
@@ -93,7 +96,19 @@ export const createJsonlLedger = <T>(
   return {
     append(entry) {
       const prefix = endsWithNewline() ? '' : '\n';
-      appendFileSync(path, `${prefix}${JSON.stringify(entry)}\n`, 'utf8');
+      const existed = existsSync(path);
+      // `appendFileSync(path, ...)` closes the descriptor after copying into the
+      // kernel page cache; it does not make this cross-restart source of truth
+      // survive power loss. Hold the append descriptor long enough to fsync its
+      // bytes, then persist the directory entry when this append created the file.
+      const fd = openSync(path, 'a', 0o600);
+      try {
+        appendFileSync(fd, `${prefix}${JSON.stringify(entry)}\n`, 'utf8');
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      if (!existed) fsyncDir(dirname(path));
     },
     readAll,
     tail(n) {

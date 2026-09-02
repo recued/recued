@@ -1,35 +1,30 @@
 {
-  "_comment": "D-178 release pipeline input — copy to release.config.json (gitignored) per release. `release:build` reads it → dist/release/; `release:publish` uploads to R2. base_url sets each artifact's URL in the manifest, so it MUST match where release:publish uploads: with the recommended flat layout (one bucket at releases.recued.com, --prefix ''), base_url = the domain root, so binaries sit beside manifest.json. For a prefixed/cdn layout, base_url's path must equal release:publish's --prefix (the publisher warns on a mismatch). docker digests must be real (pull is digest-anchored, I-2).",
-
-  "_trap_version": "⛔ `version` MUST equal what the built binary self-reports (backend/server/package.json). If the manifest advertises a version the binary does not claim, a server applies the update, still reports the old version, and is offered the same release again on every check — forever. Under the yy.m.d scheme this bites whenever you date-name a release without bumping package.json first. Bump and rebuild together, or ship the version the tree already has.",
+  "_comment": "D-178 release pipeline input — copy to release.config.json (gitignored) per release. `release:build` reads it → dist/release/; `release:publish` uploads to R2. base_url is the release origin/root and must match release:publish's --prefix. Hosted bytes are emitted below immutable artifacts/<sequence>/ keys; the stable manifest pointers remain at <base_url>/<channel>/manifest.json plus the legacy flat manifest path. For a prefixed/cdn layout, base_url's path must equal release:publish's --prefix. docker digests must be real (pull is digest-anchored, I-2).",
+  "_trap_version": "⛔ `version` MUST equal what the built binary self-reports (backend/server/package.json), AND every channel here must carry the SAME version — one build signs ONE set of binaries and hands the same `artifacts` to every channel, so a channel naming a different version mislabels bytes it did not build. `release:build` and `release:publish` now REFUSE a mismatch (this file used to ship stable 26.8.0 alongside edge 26.8.1, a release that cannot exist). Channels differ by `rollout_pct`, not by version. This file is version-stamped by `version-date.mjs`, so a fresh copy already names the current release. If the manifest advertises a version the binary does not claim, a server applies the update, still reports the old version, and is offered the same release again on every check — forever. Under the yy.m.d scheme this bites whenever you date-name a release without bumping package.json first. Bump and rebuild together, or ship the version the tree already has.",
   "_trap_sequence": "⛔ `sequence` is monotonic and effectively irreversible. The anti-replay floor persists PER INSTALL, so once a server has accepted sequence N it refuses anything ≤ N as a replay — a mistakenly-high sequence cannot be walked back remotely, and a reused one is silently ignored by exactly the servers that already updated.",
   "_trap_notes_url": "⛔ Only set `notes_url` if the page exists. It is surfaced as a clickable link in the D-158 update notification, so a 404 here is a dead link pushed to every owner.",
-  "_trap_optional": "`notes_url`, `docker_baked`, `docker_thin` and the whole `edge` channel are OPTIONAL — omit them rather than shipping placeholders. A `sha256:REPLACE_WITH_REAL_DIGEST` left in place is a digest-anchored pull that can never succeed.",
-  "_note_manifest_paths": "`base_url` is the ARTIFACT root and must keep matching release:publish's --prefix (that is what the ALIGNMENT warning checks). The MANIFEST is separate: release:publish uploads the signed pair to <base_url>/<channel>/manifest.json for EVERY channel declared below, plus the legacy flat <base_url>/manifest.json. Identical bytes at every path — one signature, one sequence, all channels inside each copy — so verification and anti-replay are unaffected. The split is purely so Cloudflare's path counts can separate a stable fleet from an edge one (stage-gates §2a: 7 req/server/week stable at the 24h cadence, 28 edge at 6h). Adding a channel here automatically adds its manifest path at publish; removing one leaves the old path serving a stale manifest until you delete the object.",
+  "_trap_optional": "`notes_url`, `docker_baked`, `docker_thin` and the whole `edge` channel are OPTIONAL - omit them rather than shipping placeholders. They are omitted HERE for that reason: a digest is the whole point of a docker artifact (the pull is digest-anchored, I-2), and `parseManifest` now REFUSES anything that is not `sha256:` + 64 lowercase hex - so the `sha256:REPLACE_WITH_REAL_DIGEST` this file used to ship made a copied config unbuildable, which is better than the release it used to produce: a manifest naming an image that can never be pulled. Add them back with a REAL digest (`docker buildx imagetools inspect`) only when you are actually publishing images.",
+  "_note_manifest_paths": "`base_url` is the release root and must keep matching release:publish's --prefix. release:build appends artifacts/<sequence>/<file>, and the publisher REFUSES any signed hosted URL outside that immutable namespace. The MANIFEST is separate: release:publish uploads the signed pair to <base_url>/<channel>/manifest.json for every known fetch channel, plus the legacy flat <base_url>/manifest.json. Identical bytes at every path — one signature, one sequence, all channels inside each copy — so verification and anti-replay are unaffected. The split is purely so Cloudflare's path counts can separate a stable fleet from an edge one (stage-gates §2a: 7 req/server/week stable at the 24h cadence, 28 edge at 6h).",
   "sequence": 1,
-  "expires_at": "2026-08-06T00:00:00Z",
+  "expires_at": "2099-01-01T00:00:00Z",
   "min_launcher_version": 1,
   "base_url": "https://releases.recued.com",
   "channels": {
     "stable": {
-      "version": "26.8.0",
+      "version": "26.9.2",
       "released_at": "2026-07-06T00:00:00Z",
       "min_supported": "26.6.0",
       "migration": false,
       "rollout_pct": 100,
-      "notes_url": "https://recued.com/releases/26.8.0",
-      "docker_baked": { "image": "recued/server:26.8.0", "digest": "sha256:REPLACE_WITH_REAL_DIGEST" },
-      "docker_thin": { "image": "recued/server:26.8.0-managed", "digest": "sha256:REPLACE_WITH_REAL_DIGEST" }
+      "notes_url": "https://recued.com/releases/26.8.31"
     },
     "edge": {
-      "version": "26.8.1",
+      "version": "26.9.2",
       "released_at": "2026-07-06T00:00:00Z",
       "min_supported": "26.6.0",
       "migration": false,
       "rollout_pct": 25,
-      "notes_url": "https://recued.com/releases/26.8.1",
-      "docker_baked": { "image": "recued/server:26.8.1", "digest": "sha256:REPLACE_WITH_REAL_DIGEST" },
-      "docker_thin": { "image": "recued/server:26.8.1-managed", "digest": "sha256:REPLACE_WITH_REAL_DIGEST" }
+      "notes_url": "https://recued.com/releases/26.8.31"
     }
   }
 }

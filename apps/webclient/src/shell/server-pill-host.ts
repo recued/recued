@@ -33,17 +33,8 @@ import {
   WEBCLIENT_HEARTBEAT_STALE_MS,
   type WebclientConnectionStatus,
 } from '../realtime/connection-status.js';
+import { supervisorWillRespawn } from '@recued/contracts';
 import { classifyRpcError } from './rpc-error-copy.js';
-
-/** D-188 — supervisor modes that actually RESPAWN the process on a restart
- *  handoff. `native` (bare process) + `dev` (npx tsx) do NOT — a restart there
- *  just exits and stays down — so the Restart button is hidden for them. */
-const SUPERVISED_MODES: ReadonlySet<string> = new Set([
-  'systemd',
-  'launchd',
-  'docker',
-  'docker-thin',
-]);
 
 /** Minimal HTML escape for the one dynamic string the popover renders (the
  *  humanized rpc error). The action labels + status are a fixed enum. */
@@ -461,7 +452,7 @@ export const mountWebclientServerPill = (
   // process — otherwise restart = exit-and-stay-down (a footgun).
   const canRestart = (): boolean =>
     runRequestRestart !== undefined
-    && SUPERVISED_MODES.has(latest?.supervisor_mode ?? '');
+    && supervisorWillRespawn(latest?.supervisor_mode);
 
   const freshHeartbeatTargetAvailable = (): boolean => {
     if (

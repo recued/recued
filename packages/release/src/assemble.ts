@@ -21,6 +21,29 @@
  *  `backend/server/scripts/release-build.mjs`.
  */
 
+/** The shortest `expires_at` horizon a publish may carry, in days.
+ *
+ *  ⛔⛔ IT EXISTS BECAUSE OLD SERVERS STILL GATE ON A FIELD NOTHING READS. D-260
+ *  withdrew the freshness gate: no current consumer reads `expires_at` to decide
+ *  anything. A server built BEFORE that change does — past expires_at + a 7-day
+ *  grace it resolves `stale-feed`, which makes `resolveForApply` non-applyable,
+ *  so it refuses EVERY update INCLUDING the one that removes the gate. A
+ *  near-dated publish therefore strands every such server, whose only route back
+ *  is re-running install.sh by hand.
+ *
+ *  🔑 ONE CONSTANT, BOTH ENDS. The publisher's guard (`release-build.mjs`) and
+ *  the release driver's default window (`release/lib/release-expiry.mjs`) each
+ *  had their own number — 365 and 30 — so the DEFAULT release path refused
+ *  ITSELF: `npm run release` produced a 30-day window that `release:build` then
+ *  rejected. A floor and a default that can disagree are two policies wearing
+ *  one name. Both import this. */
+export const MIN_EXPIRY_HORIZON_DAYS = 365;
+
+/** The horizon a publish uses when nobody names one. Far enough out that no
+ *  server still gating on the field is stranded within any plausible support
+ *  window, and re-anchored on every cut so it never creeps toward the floor. */
+export const DEFAULT_EXPIRY_HORIZON_DAYS = 3650;
+
 import { sign } from './minisign.js';
 import {
   parseManifest,

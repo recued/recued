@@ -7,8 +7,8 @@
  */
 
 import {
-  chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync,
-  writeFileSync,
+  chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync,
+  unlinkSync, writeFileSync,
 } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
@@ -21,6 +21,7 @@ import {
   resolveDatabaseKeyFromServerFiles,
 } from './database-encryption.js';
 import { resolveServerBundleSwapMarkerPath } from './archive/server-bundle-swap.js';
+import { manualRollbackJournalPathForDb } from './update/manual-rollback-journal.js';
 
 type CipherDatabaseHandle = Database.Database & {
   key(key: Buffer): number;
@@ -400,6 +401,16 @@ export const openDatabase = (
           + 'start the server once to reconcile it before opening the database',
       );
     }
+    // A stopped-server update rollback can die after replacing this database
+    // with its pre-migration snapshot but before restoring the previous binary.
+    // Only bin.ts can choose the matching generation safely, before any SQLite
+    // handle exists. All other entry points fail closed at this shared door.
+    if (dbPath && existsSync(manualRollbackJournalPathForDb(dbPath))) {
+      throw new Error(
+        `MANUAL_ROLLBACK_RECOVERY_REQUIRED: a stopped update rollback is pending for ${dbPath}; `
+          + 'start the server once to reconcile it before opening the database',
+      );
+    }
     const databaseKey = hasSuppliedKey
       ? suppliedDatabaseKey ?? null
       : dbPath
@@ -471,16 +482,65 @@ export const openDatabase = (
 /** Consistent logical copy that preserves the source connection's cipher.
  * The fork rejects `db.backup()` when its implicit target has no matching key;
  * `VACUUM INTO` inherits the keyed connection and includes committed WAL pages. */
+/** The infix every snapshot staging file carries, so `sweepSnapshotStaging`
+ *  matches what the writers actually produce. Construction and matching live
+ *  together on purpose — a sweep that rebuilt the pattern itself would keep
+ *  passing while a writer drifted. */
+const SNAPSHOT_STAGING_INFIX = '.vacuum-';
+
+const snapshotStagingPath = (destination: string): string =>
+  `${destination}${SNAPSHOT_STAGING_INFIX}${process.pid}-${randomBytes(6).toString('hex')}`;
+
 export const copyDatabaseForSnapshot = async (
   db: Database.Database,
   destination: string,
 ): Promise<void> => {
-  const staging = `${destination}.vacuum-${process.pid}-${randomBytes(6).toString('hex')}`;
+  const staging = snapshotStagingPath(destination);
   try {
     db.prepare('VACUUM INTO ?').run(staging);
     // Rename straight over the destination. Unlinking it first opened a window
     // in which NEITHER the old snapshot nor the new one existed — POSIX
     // `rename` replaces atomically, so the window was pure downside.
+    renameSync(staging, destination);
+    restrictToOwner(destination);
+  } catch (err) {
+    try { unlinkSync(staging); } catch { /* absent — fine */ }
+    throw err;
+  }
+};
+
+/** Snapshot a realm whose CONNECTION IS ALREADY CLOSED — the restart drain's
+ *  `close_db` step has run and the apply is committing inside that window.
+ *
+ *  ⛔ `VACUUM INTO` IS NOT AVAILABLE HERE, AND IS NOT NEEDED. It runs ON a
+ *  connection, and there is deliberately none: the whole reason the snapshot
+ *  moved into the drain is that a snapshot taken while the server was still
+ *  accepting writes excluded everything written after it. With the last handle
+ *  closed, SQLite has checkpointed and removed the WAL, so the main file IS the
+ *  consistent copy and a byte copy is the faithful one — including for an
+ *  encrypted realm, where copying the ciphertext keeps the same cipher and key
+ *  by construction rather than re-deriving them.
+ *
+ *  ⛔⛔ A SURVIVING `-wal` MEANS THE PREMISE IS FALSE. SQLite removes it when the
+ *  LAST connection closes, so one that is still here (and non-empty) says
+ *  something else has this realm open — exactly the state a snapshot must not be
+ *  taken in, because the copy would be missing its committed tail. Throwing is
+ *  what turns that into a refused apply rather than a snapshot that silently is
+ *  not one. */
+export const copyClosedDatabaseForSnapshot = async (
+  dbPath: string,
+  destination: string,
+): Promise<void> => {
+  const wal = `${dbPath}-wal`;
+  if (existsSync(wal) && statSync(wal).size > 0) {
+    throw new Error(
+      `copyClosedDatabaseForSnapshot: ${wal} survived the close, so this realm is still open `
+      + 'somewhere and the copy would be incomplete',
+    );
+  }
+  const staging = snapshotStagingPath(destination);
+  try {
+    copyFileSync(dbPath, staging);
     renameSync(staging, destination);
     restrictToOwner(destination);
   } catch (err) {
@@ -509,7 +569,7 @@ export const sweepSnapshotStaging = (dir: string): number => {
   }
   let removed = 0;
   for (const name of names) {
-    if (!name.includes('.vacuum-')) continue;
+    if (!name.includes(SNAPSHOT_STAGING_INFIX)) continue;
     try {
       unlinkSync(join(dir, name));
       removed += 1;

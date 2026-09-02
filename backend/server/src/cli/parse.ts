@@ -44,6 +44,20 @@ export const FLAGS_WITH_VALUES = new Set([
   // token — the unit tests all called the context directly and skipped the
   // router entirely.
   '--token',
+  // D-178 — `recued report-boot-failure --exit-code <n> [--bin-dir <dir>]`.
+  // Same trap as `--token` directly above: an unlisted value-flag leaves its
+  // value sitting in `positionals[0]`, where it is read as the subcommand.
+  '--exit-code',
+  '--bin-dir',
+  // D-178 — `recued update-lease claim --pid <pid> --operation <text>`. This
+  // verb READS `positionals[1]` (claim/release), so an unlisted value-flag does
+  // not merely land harmlessly further down the list the way `--reason` does on
+  // `revert-release`: it lands ON the action and the verb refuses itself.
+  '--pid',
+  '--operation',
+  // D-178 — `recued release-floor raise --sequence <n>`. Reads `positionals[1]`
+  // like the lease verb, so an unlisted value-flag lands ON the action.
+  '--sequence',
 ]);
 
 export const getFlag = (args: string[], name: string): boolean =>

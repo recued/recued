@@ -112,7 +112,21 @@ export const resolveWebclientBundleDir = (
   dirOverride: string | undefined,
 ): string | undefined =>
   dirOverride?.trim() ||
-  (cacheBlobsRoot ? join(dirname(cacheBlobsRoot), 'webclient') : undefined);
+  (cacheBlobsRoot ? webclientBundleDirForDataDir(dirname(cacheBlobsRoot), undefined) : undefined);
+
+/** The same convention, resolved from the realm's DATA DIR rather than its CAS
+ *  root — for callers that have a db path and no composed app (the supervised
+ *  boot-failure revert, which runs in `recued.old` with nothing open).
+ *
+ *  ⛔ `resolveWebclientBundleDir` DELEGATES HERE rather than repeating the join.
+ *  The apply replaces this dir and keeps the displaced generation at
+ *  `<dir>.old`; a revert that computed the path even slightly differently would
+ *  find no backup, report success, and leave the NEW UI in front of the OLD
+ *  server — the exact pairing `rollbackSwap`'s webclient half exists to prevent. */
+export const webclientBundleDirForDataDir = (
+  dataDir: string,
+  dirOverride: string | undefined,
+): string => dirOverride?.trim() || join(dataDir, 'webclient');
 
 /** True iff `dir` holds a bundle manifest — the cheap "is there anything to
  *  load here" probe the candidate walk below uses to choose between dirs.

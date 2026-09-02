@@ -782,7 +782,7 @@ const serverUpdateTriageReasonCopy = (
     return `The selected server reports version ${current}, but it rejected an older signed release manifest. Restore a current release feed before retrying.`;
   }
   if (triage.checkStatus === 'stale-feed') {
-    return `The selected server reports version ${current}, but its signed release manifest is stale. Publish or restore a fresh manifest before retrying.`;
+    return `The selected server reports version ${current}, but it is on an older release check that ignores the current feed. Re-run the installer on that server to update it.`;
   }
   if (triage.checkStatus === 'fetch-failed') {
     return `The selected server reports version ${current}, but it could not fetch its release feed. Check this server’s outbound access and configured feed endpoint before retrying.`;
@@ -815,7 +815,7 @@ const serverUpdateBaselinePostureCopy: Readonly<
   'update-available': 'a newer release is available',
   'up-to-date': 'the release feed reports this version is current',
   'not-configured': 'in-place release checks are not configured',
-  'stale-feed': 'the release feed is stale and will not be acted on',
+  'stale-feed': 'this server is on an older release check that ignores the current feed',
   'launcher-outdated': 'the launcher must be updated first',
   replay: 'an older release manifest was ignored',
   'fetch-failed': 'the running version is known; the release feed is unreachable',

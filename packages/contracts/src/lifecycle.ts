@@ -114,6 +114,47 @@ export type SupervisorMode =
 /** The concrete modes the wire surfaces emit (post-auto-resolution). */
 export type ResolvedSupervisorMode = Exclude<SupervisorMode, 'auto'>;
 
+/** ⛔⛔ THE MODES THAT ACTUALLY RESPAWN THE PROCESS ON A RESTART HANDOFF.
+ *  `native` (bare process) and `dev` do NOT — the server exits and STAYS DOWN.
+ *
+ *  D-188 already gated the webclient's Restart button on this, calling an
+ *  un-supervised restart "a footgun". `update.apply` performs the SAME handoff
+ *  and was not gated, so on a hand-run server it staged the new binary, exited,
+ *  and nothing brought it back: Settings → Updates sat on "Waiting for server…"
+ *  forever while Account → Servers said "can't reach your server". Reported on
+ *  macOS 2026-08-31. The update was not lost — it commits on the next healthy
+ *  boot — but nothing said so, and nothing was going to boot.
+ *
+ *  🔑 LIVES IN CONTRACTS BECAUSE TWO SURFACES ASK IT. The webclient had its own
+ *  copy of this list; a second copy in the server would be the shape that lets
+ *  one of them quietly fall behind the union above. */
+export const SUPERVISOR_MODES_THAT_RESPAWN: ReadonlySet<ResolvedSupervisorMode> = new Set<
+  ResolvedSupervisorMode
+>([
+  'systemd',
+  'launchd',
+  'docker',
+  'docker-thin',
+  // ⛔ `native` IS SUPERVISED — resolved 2026-08-31 by the owner, against D-188's
+  // original "bare process" reading. `native` is not "no launcher": it resolves
+  // ONLY from `RECUED_LAUNCHER=1`, exported by exactly one thing —
+  // `backend/server/scripts/recued-server-launcher.sh` — and that script is a
+  // `while true` loop whose exit-3 branch prints "restart requested (3).
+  // Respawning."
+  //
+  // ⚠ Excluding it cost twice: the webclient Restart button was hidden from
+  // installs where it works, and once `update.apply` began gating on this list,
+  // updates were REFUSED there too. A wrong entry in a safety list does not fail
+  // safe — it just fails somewhere else.
+  'native',
+])
+
+/** True when a restart handoff will actually bring the process back.
+ *  ⚠ Fails CLOSED on an unknown/absent mode: an older server that reports
+ *  nothing must not be treated as supervised. */
+export const supervisorWillRespawn = (mode: string | undefined): boolean =>
+  mode !== undefined && (SUPERVISOR_MODES_THAT_RESPAWN as ReadonlySet<string>).has(mode);
+
 /** Read-only snapshot returned by `server.getLifecycleState`. Mirrors
  *  the heartbeat envelope's lifecycle fields. Cheap to compute — two
  *  `server_state` reads + in-memory state. */

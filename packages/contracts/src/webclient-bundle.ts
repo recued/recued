@@ -87,7 +87,19 @@ export const WEBCLIENT_BUNDLE_MANIFEST_FILENAME = 'webclient-bundle-manifest.jso
  *  webclient at minimum `index.html`). Bundle releases MUST list every
  *  file they want served. */
 export interface WebclientBundleManifest {
+  /** Release-custody provenance. Runtime integrity verification deliberately
+   * ignores it; `release-build` requires the exact clean revision/config before
+   * it signs an archive. Optional for legacy on-disk bundles. */
+  readonly build?: WebclientBundleBuildAttestation;
   readonly files: ReadonlyArray<WebclientBundleManifestEntry>;
+}
+
+export interface WebclientBundleBuildAttestation {
+  readonly schema: 1;
+  readonly source_revision: string | null;
+  readonly source_dirty: boolean;
+  readonly cloud_apex: string;
+  readonly minified: boolean;
 }
 
 export interface WebclientBundleManifestEntry {

@@ -48,7 +48,14 @@ export interface BootstrapHandlerDeps {
    *  `Lifecycle.requestDrain({ intent: 'restart', reason })`). Phase A
    *  compositions that only record the intent pass a simple logger
    *  and keep the Phase A semantics. */
-  onRestartRequested?: (reason: string) => void;
+  onRestartRequested?: (
+    reason: string,
+    /** Runs AFTER the drain has quiesced writers and CLOSED the database, before
+     *  the process exits — the only window in a live server where the database
+     *  FILE can be replaced. `drainOk` false means a writer may still hold it, so
+     *  the callback must change nothing. Used by the update auto-revert. */
+    onDrained?: (drainOk: boolean) => void | Promise<void>,
+  ) => void;
   /** Optional predicate — when present, `handleRequestRestart`
    *  returns `{ accepted: false }` while a drain is already active.
    *  Absent → always `accepted: true` (Phase A compatibility). */

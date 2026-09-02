@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { parseManifest, type ReleaseManifest } from '../manifest.js';
-import { compareVersions, DEFAULT_FRESHNESS_GRACE_MS, inRolloutCohort, resolveRelease, type ResolveInput } from '../resolve.js';
+import { isValidReleaseVersion, parseManifest, type ReleaseManifest } from '../manifest.js';
+import { compareVersions, inRolloutCohort, resolveRelease, type ResolveInput } from '../resolve.js';
 
 const manifest = (over: Partial<Record<string, unknown>> = {}, channels?: Record<string, unknown>): ReleaseManifest =>
   parseManifest(JSON.stringify({
@@ -14,7 +14,7 @@ const manifest = (over: Partial<Record<string, unknown>> = {}, channels?: Record
         migration: true, rollout_pct: 100, notes_url: '',
         artifacts: {
           'linux-x64': { url: 'https://x/l', sha256: 'aa', sig: 'ss' },
-          'docker-thin': { image: 'recued/recued:managed', digest: 'sha256:dd' },
+          'docker-thin': { image: 'recued/recued:managed', digest: `sha256:${'d'.repeat(64)}` },
         },
       },
     },
@@ -42,9 +42,23 @@ describe('compareVersions', () => {
     expect(compareVersions('2.0.0', '1.9.9')).toBe(1);
     expect(compareVersions('1.4.0', '1.4.0')).toBe(0);
   });
-  it('reads a missing segment as 0 and ignores pre-release trailers', () => {
+  it('reads a missing segment as 0, and COERCES anything else rather than throwing', () => {
     expect(compareVersions('1.4', '1.4.0')).toBe(0);
-    expect(compareVersions('1.5.0-rc1', '1.5.0')).toBe(0);
+
+    // ⛔ THIS IS NOT "IGNORES PRE-RELEASE TRAILERS" — IT IS THE COERCION THAT
+    // MADE THEM DANGEROUS, and this test used to be titled as though it were a
+    // feature. Where the trailer lands decides whether the version reads EQUAL
+    // to the release it precedes or NEWER than it:
+    expect(compareVersions('1.5.0-rc1', '1.5.0')).toBe(0);   // parseInt('0-rc1') → 0
+    expect(compareVersions('26.9.1-rc.1', '26.9.1')).toBe(1); // parseInt('1-rc') → 1, then .1 wins
+    // ⇒ a prerelease would be INSTALLED OVER the final release it precedes.
+    //
+    // 🔑 The comparator stays TOTAL on purpose — it runs on the update path and
+    // must never throw there. Refusing malformed input is the GRAMMAR's job, and
+    // `isValidReleaseVersion` (applied by `parseManifest` before any of these
+    // values reach a comparison) is what makes the coercion unreachable.
+    expect(isValidReleaseVersion('1.5.0-rc1')).toBe(false);
+    expect(isValidReleaseVersion('26.9.1-rc.1')).toBe(false);
   });
 });
 
@@ -82,15 +96,24 @@ describe('resolveRelease', () => {
     expect(resolveRelease(base({ highestAcceptedSequence: 200 })).status).toBe('replay');
   });
 
-  it('surfaces a stale feed past expiry + grace', () => {
-    const past = NOW + DEFAULT_FRESHNESS_GRACE_MS + 1;
-    // expires_at 2026-07-16; push now well beyond expiry + grace.
-    const r = resolveRelease(base({ nowMs: Date.parse('2026-08-01T00:00:00Z') }));
-    expect(r.status).toBe('stale-feed');
-    // within grace → still resolves normally
-    const r2 = resolveRelease(base({ nowMs: Date.parse('2026-07-18T00:00:00Z') }));
-    expect(r2.status).toBe('update-available');
-    void past;
+  it('⛔ STILL OFFERS THE RELEASE LONG PAST expires_at — there is no freshness gate', () => {
+    // ⛔⛔ THIS ARM IS THE INVERSE OF THE ONE IT REPLACES, and the inversion is the
+    // decision (2026-09-01, owner). The old rule refused a manifest past
+    // `expires_at` + a 7-day grace. It punished the wrong party: a feed that has
+    // merely stopped moving and a feed an attacker is freezing are
+    // INDISTINGUISHABLE from here, so the only response available was to refuse
+    // the newest release anyone actually has — a scheduled outage against a
+    // seasonal release cadence, not a defence.
+    //
+    // `expires_at` is 2026-07-16 in this fixture. Years past it, the answer is
+    // still the release.
+    expect(resolveRelease(base({ nowMs: Date.parse('2030-01-01T00:00:00Z') })).status)
+      .toBe('update-available');
+    // ⚠ AND THE HALF THAT STILL DEFENDS IS UNTOUCHED: a manifest below the floor
+    // is a downgrade attempt whatever the clock says, so dropping freshness must
+    // not read as dropping anti-replay.
+    expect(resolveRelease(base({ nowMs: Date.parse('2030-01-01T00:00:00Z'), highestAcceptedSequence: 200 })).status)
+      .toBe('replay');
   });
 
   it('stops applying when the launcher is below min_launcher_version', () => {
@@ -212,5 +235,30 @@ describe('resolveRelease', () => {
       if (r.status !== 'update-available') return;
       expect(r.libArtifact).toBeNull();
     });
+  });
+});
+
+/** ⛔ AN UNREADABLE EXPIRY IS STALE, NOT FRESH. `resolveRelease` takes a manifest
+ *  OBJECT, so a caller that builds one itself bypasses `parseManifest` entirely —
+ *  which is why the resolver owes its own answer rather than trusting the parser. */
+describe('resolveRelease freshness fails closed', () => {
+  // Built through the file's own `base()` rather than a hand-assembled input, so
+  // this differs from every other resolve case in exactly ONE field. A bespoke
+  // input can drift from the others silently and then assert about a scenario
+  // nothing else in the file shares.
+  const withExpiry = (expires_at: string) =>
+    resolveRelease(base({ manifest: { ...manifest(), expires_at } }));
+
+  it('does not READ the expiry at all — a malformed one changes nothing', () => {
+    // ⚠ THIS ARM ONCE ASSERTED THE OPPOSITE, and the history is worth keeping:
+    // the resolver skipped its staleness comparison when `Date.parse` returned
+    // NaN, so `expires_at: "not-a-date"` was fresh forever — a freshness check
+    // failing OPEN on exactly the input it existed to catch. That was fixed, and
+    // then the gate itself was removed. What the arm guards now is that no
+    // decision reads the field: a value the parser would reject and a real
+    // timestamp resolve identically.
+    expect(withExpiry('not-a-date').status).toBe('update-available');
+    expect(withExpiry('2026-07-16T10:00:00Z').status).toBe('update-available');
+    expect(withExpiry('1999-01-01T00:00:00Z').status).toBe('update-available');
   });
 });

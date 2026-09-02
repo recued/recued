@@ -22,7 +22,7 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { connect } from 'node:net';
 
 /** The binary ships as TWO files and says so when the second is missing:
@@ -85,7 +85,18 @@ export const resolveLiveConfig = (): LiveConfig | { unavailable: string } => {
  *  status` reporting "stopped". The two paths reach the same server by
  *  different routes, so a drive that only ever takes one of them proves nothing
  *  about the other. */
-export type BootMode = 'foreground' | 'daemon' | 'unit';
+export type BootMode = 'foreground' | 'daemon' | 'unit' | 'launcher';
+
+/** ⛔ THE REAL SUPERVISOR, NOT A DECLARED ONE. `launcher` boots the server under
+ *  `scripts/recued-server-launcher.sh` — the shipped respawn loop — so a restart
+ *  handoff is performed by something OTHER than this harness. Every other mode
+ *  declares a supervisor it does not have and relies on the spec to stop and
+ *  reboot, which is exactly why the existing RUNNING arm passes green on a
+ *  configuration that strands a real owner. */
+const LAUNCHER_SH = resolve(
+  import.meta.dirname,
+  '../../../../backend/server/scripts/recued-server-launcher.sh',
+);
 
 export type LiveServer = {
   /** Origin a browser dials, e.g. http://127.0.0.1:7817 */
@@ -160,8 +171,19 @@ export const placeBinary = (dir: string, binary: string, sidecar: string): strin
  *  and the pairing code is printed right under it. */
 export const bootLiveServer = async (
   config: LiveConfig,
-  { port = 7817, timeoutMs = 60_000, mode = 'foreground' }:
-    { port?: number; timeoutMs?: number; mode?: BootMode } = {},
+  {
+    port = 7817,
+    timeoutMs = 60_000,
+    mode = 'foreground',
+    unsupervised = false,
+  }: {
+    port?: number;
+    timeoutMs?: number;
+    mode?: BootMode;
+    /** Force the server to resolve `dev` — nothing will respawn it. For the arm
+     *  that asserts `update.apply` REFUSES rather than stranding the owner. */
+    unsupervised?: boolean;
+  } = {},
 ): Promise<LiveServer> => {
   const dir = stageRealm(config.seedDir, mode);
   const exe = placeBinary(dir, config.binary, config.sidecar);
@@ -170,7 +192,43 @@ export const bootLiveServer = async (
   const childEnv = {
     ...process.env,
     ...(config.passphrase ? { RECUED_IDENTITY_PASSPHRASE: config.passphrase } : {}),
-  };
+    // ⛔⛔ DECLARE A SUPERVISOR, BECAUSE THIS HARNESS IS ONE. `update.apply` now
+    // refuses an apply that would exit a RUNNING server into nothing — under
+    // `native` or `dev` there is no supervisor and the server stages, exits and
+    // stays down (reported on macOS 2026-08-31: "Waiting for server…" forever
+    // while Account → Servers said "can't reach your server").
+    //
+    // Without this the spawned server resolves to `dev` — no INVOCATION_ID, no
+    // com.recued.* XPC name, no /.dockerenv, no RECUED_LAUNCHER — so the RUNNING
+    // arm's `update.apply` would be DEFERRED, the binary would never swap, and
+    // the spec would fail at "the rpc apply never swapped the binary away from
+    // …" post-publish, during a cut, on a release that was actually fine.
+    //
+    // 🔑 It is a declaration, not a fib: this harness stops the server after the
+    // swap and boots it again on the next port to assert the commit
+    // (`assertCommittedAndStable`). Something DOES bring it back — that is the
+    // property the guard asks about, and `RECUED_SUPERVISOR_MODE` exists exactly
+    // so a deployment can state its own answer. The value names the closest
+    // real supervisor; it does not claim journald is present.
+    //
+    // ⛔ TWO MODES MUST NOT INHERIT THAT DECLARATION:
+    //   `launcher`     — the script exports `RECUED_LAUNCHER=1` and the server
+    //                    resolves `native` on its own. Declaring systemd here
+    //                    would hide whether the REAL supervisor works, which is
+    //                    the entire point of that mode.
+    //   `unsupervised` — the arm that asserts the apply is REFUSED. Declaring a
+    //                    supervisor would make the guard pass and the test
+    //                    assert nothing.
+    ...(mode === 'launcher' || unsupervised
+      ? {}
+      : { RECUED_SUPERVISOR_MODE: 'systemd' }),
+  } as NodeJS.ProcessEnv;
+  if (mode === 'launcher') {
+    // An inherited value would out-rank the script's own signal (the env
+    // override is highest precedence), so clear it rather than assume absence.
+    delete childEnv.RECUED_SUPERVISOR_MODE;
+  }
+  if (unsupervised) childEnv.RECUED_SUPERVISOR_MODE = 'dev';
   const cli = (args: string[]) => {
     const r = spawnSync(exe, args, { cwd: dir, encoding: 'utf8', timeout: 90_000, env: childEnv });
     return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };
@@ -189,6 +247,10 @@ export const bootLiveServer = async (
       // be aimed at nothing. `stop` is also the verb an owner uses, so failing
       // to shut down cleanly is itself worth finding out about.
       try { cli(['stop', '--db', dbPath]); } catch { /* best effort on teardown */ }
+    } else if (mode === 'launcher' && child?.pid !== undefined && !child.killed) {
+      // Negative pid = the process GROUP. Killing only the launcher would leave
+      // the server it spawned running on the port.
+      try { process.kill(-child.pid, 'SIGTERM'); } catch { /* already gone */ }
     } else if (child && !child.killed) {
       child.kill('SIGTERM');
     }
@@ -216,6 +278,25 @@ export const bootLiveServer = async (
   } else {
     // `unit` reproduces the unit's own argv, flag included — the flag is only
     // ever passed BY a unit, so this is the only mode that may carry it.
+    if (mode === 'launcher') {
+      // ⛔ DETACHED ON PURPOSE. The launcher spawns the server as its own child,
+      // so SIGTERM to the launcher alone orphans a live server holding the port
+      // — the next arm then fails on a bind conflict that has nothing to do with
+      // it. `detached` puts both in one process group we can signal together.
+      child = spawn('bash', [LAUNCHER_SH, '--db', dbPath, '--port', String(port)], {
+        cwd: dir,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true,
+        env: {
+          ...childEnv,
+          RECUED_SERVER_BIN: exe,
+          // The default 1s backoff is dead time in every restart assertion.
+          RECUED_LAUNCHER_BACKOFF_MS: '250',
+        },
+      });
+      child.stdout?.on('data', (b: Buffer) => { out += b.toString(); });
+      child.stderr?.on('data', (b: Buffer) => { out += b.toString(); });
+    } else {
     const args = mode === 'unit'
       ? ['serve', '--require-enrolled', '--db', dbPath, '--port', String(port)]
       : ['--db', dbPath, '--port', String(port)];
@@ -224,6 +305,7 @@ export const bootLiveServer = async (
       stdio: ['ignore', 'pipe', 'pipe'],
       env: childEnv,
     });
+    }
     child.stdout?.on('data', (b) => { out += String(b); });
     child.stderr?.on('data', (b) => { out += String(b); });
   }

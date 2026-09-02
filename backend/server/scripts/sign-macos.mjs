@@ -3,9 +3,9 @@
  *
  *  Takes a Developer ID as one argument, and falls back to AD-HOC signing when
  *  none is given (still useful for a local build). Notarization is the rest of
- *  S4 -- the D-178 table puts codesign -> notarytool -> staple in S4 and gives
- *  S5 to Windows Authenticode; earlier revisions of this header called
- *  notarization "S5", which was wrong.
+ *  S4 -- the D-178 table puts codesign -> notarytool -> ticket verification in
+ *  S4. The former S5 Windows Authenticode slice was retired when the verified
+ *  PowerShell distribution path made unsigned Windows bytes explicit policy.
  *
  *  Usage:
  *    node scripts/sign-macos.mjs --dir dist/binary                 # ad-hoc

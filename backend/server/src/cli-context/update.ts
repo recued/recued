@@ -12,8 +12,9 @@
  *  Apply / rollback ARE CLI verbs now, for the STOPPED server only. The old
  *  reasoning — a standalone process cannot restart the running daemon — is
  *  still true, and this does not try: it refuses while a server holds the
- *  instance lock and points at the surface that CAN restart itself
- *  (webclient → Settings → Updates).
+ *  instance lock and points at the surface that CAN restart itself. On Windows,
+ *  Startup is not a respawning supervisor, so the stopped CLI remains the
+ *  supported path.
  *
  *  ⛔ WHY IT HAD TO EXIST. `update.apply` is an rpc, so it rides the WebSocket.
  *  A defect in the socket layer therefore takes the updater with it — and one
@@ -35,11 +36,15 @@
  *  resolves to `not-configured` and says so.
  */
 
-import { dirname, join, resolve as resolvePath } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+
+import { acquireUpdateLease, updateLeasePathFor } from '../update/update-lease.js';
+import { resolveUpdateBinaryPath } from '../update/release-config.js';
 import { getArg, getFlag, parsePositionals } from '../cli/parse.js';
 import { runningAsPackagedBinary } from '../packaged-binary.js';
-import { createInstanceLock, type LockInfo } from '../lifecycle/instance-lock.js';
-import { runApply, runRollback } from '../update/apply-orchestrator.js';
+import { deriveInFlightRelease, runApply, runRollback } from '../update/apply-orchestrator.js';
+import type { UpdateLedger } from '../update/update-ledger.js';
 import type { BootTrace } from '../cli/boot-trace.js';
 import { openDatabase } from '../open-database.js';
 import {
@@ -51,6 +56,12 @@ import { runReleaseCheck } from '../update/release-check.js';
 import type { ReleaseCheckResponse } from '@recued/contracts';
 import type { DistributionChannel } from '../update/update-mode-store.js';
 import { resolveRealmDbPath } from '../realm-db-path.js';
+import { manualRollbackJournalPathForDb } from '../update/manual-rollback-journal.js';
+import {
+  liveServerHolding,
+  refuseUnpackagedBinaryUpdate,
+  refuseWhileRunning,
+} from './update-profile-guards.js';
 
 export interface UpdateProfileOptions {
   args: string[];
@@ -65,8 +76,15 @@ const selfApplies = (channel: DistributionChannel): boolean =>
   channel === 'binary' || channel === 'docker-thin';
 
 /** One line on HOW this install takes an available update, given its channel. */
-const applyGuidance = (channel: DistributionChannel): string => {
+export const buildUpdateApplyGuidance = (
+  channel: DistributionChannel,
+  res: ReleaseCheckResponse,
+  platform: NodeJS.Platform = process.platform,
+): string => {
   if (selfApplies(channel)) {
+    if (channel === 'binary' && platform === 'win32') {
+      return 'Stop the Windows daemon, then run: recued update apply';
+    }
     // Both paths, in the order most owners want them. The webclient one is
     // still preferable when the server is up — it restarts itself; the CLI one
     // is what remains when it cannot be reached, which is exactly when an
@@ -74,7 +92,9 @@ const applyGuidance = (channel: DistributionChannel): string => {
     return 'Apply it from the webclient (Settings → Updates), or stop the server and run: recued update apply';
   }
   if (channel === 'docker-baked') {
-    return 'This install updates by re-pulling the pinned image — see the release notes for the new digest.';
+    return res.docker
+      ? `Recreate this server from the signed manifest digest: ${res.docker.pull_ref}`
+      : 'This install updates by re-pulling the digest-pinned image; this manifest did not declare one for docker-baked.';
   }
   if (channel === 'source') {
     return 'This is a source build — rebuild from the tagged release to update.';
@@ -93,18 +113,16 @@ const printCheck = (res: ReleaseCheckResponse, channel: DistributionChannel): vo
       console.log(`${head} — update available: ${a.version}${a.is_major ? ' (major)' : ''}.`);
       if (a.below_min_supported) console.log('  ⚠ Your version is below the minimum supported — updating is URGENT.');
       if (a.migration) console.log('  This release migrates the database on first boot (a snapshot is taken for rollback).');
-      console.log(`  ${applyGuidance(channel)}`);
+      console.log(`  ${buildUpdateApplyGuidance(channel, res)}`);
       if (a.notes_url) console.log(`  Release notes: ${a.notes_url}`);
       return;
     }
     case 'not-configured':
       console.log(`${head} — update checks are not available on this build yet (no signing key).`);
       return;
-    case 'stale-feed':
-      console.log(`${head} — the release feed is stale (past its freshness window). Not acting on it.`);
-      return;
     case 'launcher-outdated':
       console.log(`${head} — the launcher is too old to apply updates; update the launcher first.`);
+      if (res.docker) console.log(`  Recreate from the signed manifest digest: ${res.docker.pull_ref}`);
       return;
     case 'replay':
       console.log(`${head} — the release feed served an older manifest than we've already seen (refused).`);
@@ -137,58 +155,20 @@ const printCheck = (res: ReleaseCheckResponse, channel: DistributionChannel): vo
  *  same answer to decide whether to re-execute itself or shell out to tsx, and
  *  two copies of "am I the SEA" is one copy too many. */
 
-/** Is a live server holding this realm?
- *
- *  ⛔ THE INSTANCE LOCK, NOT A PIDFILE AND NOT `pgrep`. The daemon pidfile only
- *  exists when the server was started via `recued start`; a foreground
- *  `recued serve` — what the banner, the docs and the installer all tell owners
- *  to run — writes none, so a pidfile check reports "not running" for the
- *  common case. `pgrep` would see any process named `recued`, including one
- *  serving a DIFFERENT database, and does not exist on Windows.
- *
- *  The lock is written by the serve path itself
- *  (`compose-lifecycle.ts`: `dataPath = dirname(dbPath)`), so it answers the
- *  question actually being asked: is anything running on THE REALM I am about
- *  to update. Derived here the same way, from the same `dbPath`.
- *
- *  ⚠ `lifecycle.lock_file` exists in the config schema as an override and is
- *  read NOWHERE (verified 2026-08-27), so the fallback below is the only path
- *  production takes. If that setting is ever wired, this must honour it or the
- *  guard silently stops firing. */
-const liveServerHolding = (dbPath: string): LockInfo | null => {
-  const lockPath = join(dirname(resolvePath(dbPath)), 'recued-server.lock');
-  const info = createInstanceLock({ lockPath }).inspect();
-  if (!info) return null;
-  return pidAlive(info.pid) ? info : null;
-};
-
-/** `process.kill(pid, 0)` liveness.
- *
- *  ⚠ EPERM MEANS ALIVE. The signal is refused because the process belongs to
- *  another user — which is precisely a case we must treat as running. Only
- *  ESRCH (no such process) means the lock is stale. Getting this backwards
- *  would let an apply proceed under a live server owned by someone else. */
-const pidAlive = (pid: number): boolean => {
+/** One y/N question on the terminal. Resolves false on EOF or anything that is
+ *  not an explicit yes — the safe default for a gate whose whole purpose is to
+ *  stop something happening by accident. */
+const promptYesNo = async (question: string): Promise<boolean> => {
+  const { createInterface } = await import('node:readline/promises');
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'EPERM';
+    const answer = await rl.question(question);
+    return /^y(es)?$/i.test(answer.trim());
+  } catch {
+    return false;
+  } finally {
+    rl.close();
   }
-};
-
-/** Refuse, and say which restart path this install actually has. */
-const refuseWhileRunning = (holder: LockInfo, sub: string): void => {
-  console.error(
-    `A Recued server is running on this realm (pid ${holder.pid}, port ${holder.bind_port}).\n` +
-      `\`recued update ${sub}\` swaps the binary on disk and cannot restart a live daemon, so it\n` +
-      'refuses rather than leaving you on the old process believing it applied.\n' +
-      '\n' +
-      'Either:\n' +
-      '  · let the server do it — webclient → Settings → Updates (it stages and restarts itself), or\n' +
-      '  · stop the server, run this again, then start it the same way you started it.',
-  );
-  process.exitCode = 2;
 };
 
 /** ⚠ SAYS "STAGED", NOT "UPDATED". `runApply` returns `restarting` because on
@@ -197,19 +177,98 @@ const refuseWhileRunning = (holder: LockInfo, sub: string): void => {
  *  successful boot and rolls it back automatically if the new binary fails to
  *  start. Reporting "updated" would claim a result that has not been reached,
  *  and the owner would have no reason to start the server. */
-const printApply = (result: Awaited<ReturnType<typeof runApply>>, from: string, to: string): void => {
+/** ⛔ `restarting` IS THE ACCEPTANCE, NOT THE OUTCOME. `runApply` hands the
+ *  snapshot + swap to `requestRestart`'s callback and returns before it runs; on
+ *  a live server that outcome rides the ledger and `update.progress`, but here
+ *  there is a person reading stdout, and telling them "Staged 26.9.1 → 26.9.2"
+ *  for a commit that failed is a lie they would only discover by starting a
+ *  server still on the old release.
+ *
+ *  🔑 THE LEDGER ANSWERS IT. A failed commit appends its own terminal, and a
+ *  terminal is exactly what resolves the in-flight entry — so "still in flight"
+ *  means staged and awaiting the boot commit, and "resolved" means the commit
+ *  gave up and said why. */
+export const resolveCliApplyOutcome = (
+  result: Awaited<ReturnType<typeof runApply>>,
+  ledger: UpdateLedger,
+): Awaited<ReturnType<typeof runApply>> =>
+  result.status === 'restarting' && deriveInFlightRelease(ledger) === null
+    ? { status: 'stage-failed', detail: lastLedgerDetail(ledger) }
+    : result;
+
+/** The `detail` of the newest ledger entry — the commit's own account of why it
+ *  failed, so the CLI reports that rather than a generic "staging failed". */
+const lastLedgerDetail = (ledger: UpdateLedger): string => {
+  try {
+    const entries = ledger.readAll();
+    return entries[entries.length - 1]?.detail ?? 'the update could not be staged';
+  } catch {
+    return 'the update could not be staged';
+  }
+};
+
+const printApply = (
+  result: Awaited<ReturnType<typeof runApply>>,
+  from: string,
+  to: string,
+  supervised: boolean,
+): void => {
   switch (result.status) {
     case 'restarting':
       console.log(`Staged ${from} → ${to}.`);
       console.log('');
       console.log('  Start the server to complete it. The update commits on the first successful');
-      console.log('  boot, and rolls back on its own if the new binary fails to start.');
-      // ⚠ NOT "undo it with rollback" — measured 2026-08-27, `rollbackContext()`
-      // is null until the apply COMMITS on that first boot, so telling an owner
-      // to roll back now sends them to "Nothing to roll back" and leaves them
-      // believing the update cannot be undone.
-      console.log('  After it has started once, `recued update rollback` returns to the previous');
-      console.log('  binary. Before then, the previous one is preserved beside it as `recued.old`.');
+      // ⛔⛔ THIS USED TO PROMISE "and rolls back on its own if the new binary
+      // fails to start", AND ON THIS CHANNEL THAT IS NOT TRUE. The boot-failure
+      // counter is only ever incremented from the POST-LISTENER reconcile, which
+      // by definition does not run when the binary fails to start — a new binary
+      // that cannot load its addon, open its database, or bind its listener never
+      // increments anything and never restores `recued.old`. It crash-loops.
+      //
+      // Automatic revert IS real on `docker-thin`, where an outer launcher
+      // supervises the exec and can count what the child never reached. The
+      // binary channel has no such outer process: systemd and launchd exec the
+      // binary directly, so nothing survives its failure to observe it.
+      //
+      // ⚠ Saying it anyway is worse than saying nothing: it tells an owner to
+      // walk away from a machine that will not recover. Until the binary channel
+      // grows an equivalent supervisor, this says what actually happens and how
+      // to get back.
+      console.log('  boot.');
+      console.log('');
+      // ⛔⛔ THE COMMENT ABOVE ENDED "until the binary channel grows an equivalent
+      // supervisor". It has one (D-178, 2026-08-31): `install.sh` writes
+      // `recued-supervise` beside the binary and every generated unit execs it,
+      // so a payload that never starts IS counted and IS reverted. But only when
+      // the SERVICE starts it — an owner running `recued serve` by hand is still
+      // the unsupervised case, and the promise has to say which is which rather
+      // than becoming a blanket claim in the other direction.
+      if (supervised) {
+        console.log('  If it does NOT start, the service reverts to the previous binary after');
+        console.log('  three failed starts and logs why. Started by hand instead, nothing');
+        console.log('  supervises it — stop it and run `recued update rollback`.');
+      } else {
+        console.log('  If it does NOT start, nothing reverts it automatically on this install —');
+        console.log('  stop it and run `recued update rollback`.');
+      }
+      // ⛔⛔ THIS PARAGRAPH USED TO SAY THE OPPOSITE, AND THE NOTE EXPLAINING WHY
+      // SAT THREE LINES BELOW THE ADVICE THAT CONTRADICTED IT. It read: "After it
+      // has started once, `recued update rollback` returns to the previous binary.
+      // Before then, the previous one is preserved beside it as `recued.old`" —
+      // i.e. do not roll back yet — while the branches above told the owner to do
+      // exactly that. Both halves were right about the code and the code was
+      // wrong: `rollbackContext()` sees only COMMITTED releases, so a staged
+      // release answered "Nothing to roll back". Someone measured that, fixed the
+      // trailing sentence, and left the advice. The command handles the staged
+      // case now, so the advice is finally true and the caveat is gone.
+      //
+      // ⚠ `recued.old` IS NO LONGER OFFERED AS THE OWNER'S MOVE. Restoring it by
+      // hand puts back the EXECUTABLE ALONE, beside the new addon, the new
+      // webclient and a database the release may already have migrated — the
+      // skew the rollback transaction exists to avoid. It is still there, and the
+      // recovery paths still use it; it is not a step to hand to a person.
+      console.log('  That undoes the staged update completely — binary, native addon, webclient');
+      console.log('  and, if this release migrated, the pre-migration database snapshot.');
       return;
     case 'not-configured':
       console.error('No trusted release key is wired into this build — refusing to apply.');
@@ -241,7 +300,9 @@ const printApply = (result: Awaited<ReturnType<typeof runApply>>, from: string, 
 const printRollback = (result: ReturnType<typeof runRollback>): void => {
   switch (result.status) {
     case 'rolled-back':
-      console.log('Rolled back to the previous binary.');
+      console.log(result.recovery_pending
+        ? 'Rollback committed; pre-open recovery will finish the binary swap.'
+        : 'Rolled back to the previous binary.');
       if (result.restored_snapshot) {
         console.log('  The pre-migration database snapshot was restored as well.');
       }
@@ -260,7 +321,21 @@ const printRollback = (result: ReturnType<typeof runRollback>): void => {
 /** Every non-applyable resolve, phrased for someone at a terminal. `up-to-date`
  *  is the ordinary case and is NOT an error exit — a scripted `update apply` in
  *  a loop should not fail simply because there was nothing to do. */
-const printNotApplyable = (status: string, channel: string): void => {
+const printNotApplyable = (status: string, channel: string, detail?: string): void => {
+  // ⛔⛔ THE DETAIL IS NOT DECORATION — `bad-signature` DOES NOT MEAN THE
+  // SIGNATURE FAILED. `checkForRelease` returns it for a signature failure AND
+  // for a manifest that is signed correctly but MALFORMED (`release-check.ts` —
+  // "a signed-but-malformed manifest is an integrity problem, not a fetch one"),
+  // with the actual cause only in `detail`. Dropping it told an operator whose
+  // manifest was missing one numeric field that their release had failed
+  // signature verification.
+  //
+  // 🔑 Measured 2026-08-31 while standing up a real-binary swap test against a
+  // local feed: four consecutive runs reported a signature failure for four
+  // different MISSING FIELDS, and the only way to see any of them was to run
+  // `recued update` (the check path), which had printed the detail all along.
+  // Two commands, same underlying result, one of them honest.
+  const because = detail ? `: ${detail}` : '';
   switch (status) {
     case 'up-to-date':
       console.log('Already on the newest release for this channel.');
@@ -269,28 +344,110 @@ const printNotApplyable = (status: string, channel: string): void => {
       console.log('No trusted release key is wired into this build; updates are unavailable.');
       return;
     case 'no-artifact':
-      console.error(`The newest release publishes no binary for this platform (channel \`${channel}\`).`);
+      console.error(`The newest release publishes no binary for this platform (channel \`${channel}\`)${because}.`);
       break;
     case 'fetch-failed':
-      console.error('Could not fetch the release manifest. Check network access to releases.recued.com.');
+      // Do NOT name the default host: an operator on a staging or self-hosted
+      // feed is then sent to check access to a machine they are not using.
+      console.error(`Could not fetch the release manifest${because}.`);
       break;
     case 'bad-signature':
-      console.error('The release manifest FAILED signature verification — refusing to go further.');
-      break;
-    case 'stale-feed':
-      console.error('The release feed is stale (its freshness window has expired); refusing to apply.');
+      console.error(`The release manifest was REJECTED — refusing to go further${because}.`);
       break;
     case 'replay':
-      console.error('The release feed went backwards (anti-replay floor); refusing to apply.');
+      console.error(`The release feed went backwards (anti-replay floor); refusing to apply${because}.`);
       break;
     case 'launcher-outdated':
-      console.error('This install needs a newer launcher before it can take this release.');
+      console.error(`This install needs a newer launcher before it can take this release${because}.`);
       break;
     default:
-      console.error(`Cannot apply: ${status}`);
+      console.error(`Cannot apply: ${status}${because}`);
   }
   process.exitCode = 1;
 };
+
+/** The CLI's apply ports, lifted out of the command so they can be ASSERTED.
+ *
+ *  ⛔⛔ WHY THIS IS A NAMED FUNCTION AND NOT AN INLINE LITERAL. `runApply` refuses
+ *  an apply that would exit a RUNNING server into nothing, and the port that says
+ *  otherwise is OPTIONAL and fails CLOSED — so this command omitting it did not
+ *  crash, it silently refused every `recued update apply`. Nothing caught that:
+ *  no test in the repo reaches `runApply` through the CLI, because
+ *  `resolveForApply()` must first return `applyable`, which needs a manifest
+ *  SIGNED against the pinned release pubkey. There is deliberately no
+ *  skip-verify seam server-side, and there should not be one — the whole security
+ *  of self-update rests on that signature being unavoidable.
+ *
+ *  🔑 So the testable boundary is the COMPOSITION, not the network: a test builds
+ *  these ports for real and asserts what they answer. That covers the thing that
+ *  broke without putting an injectable trust root in the shipped binary.
+ *
+ *  ⚠ The two ports below are a PAIR and only make sense together: no restart to
+ *  hand off to, therefore nothing that could be stranded. `refuseWhileRunning`
+ *  above has already rejected the command if anything holds this realm's
+ *  instance lock, so by here there is no server to lose. */
+export const buildCliApplyDeps = (args: {
+  db: Parameters<typeof buildApplyOrchestratorDeps>[0]['db'];
+  releaseCheckDeps: Parameters<typeof buildApplyOrchestratorDeps>[0]['releaseCheckDeps'];
+  env: NodeJS.ProcessEnv;
+  /** Asked at CALL time, not build time — the rollback path closes the database
+   *  between building these ports and using them, which is the entire point. */
+  holdsDatabaseOpen: () => boolean;
+  /** Threaded so a test can build the REAL ports for a packaged install without
+   *  being a SEA. Production omits it and the shared builder asks `node:sea`. */
+  isPackagedBinary?: () => boolean;
+  /** Receives the apply's commit promise. `runApply` hands the snapshot + swap to
+   *  `requestRestart`'s callback so a LIVE server does that work inside its drain;
+   *  this path has no drain to wait for, so it runs the callback immediately and
+   *  the caller awaits what it captures here before reporting. */
+  captureCommit?: (committed: Promise<void>) => void;
+}): ReturnType<typeof buildApplyOrchestratorDeps> =>
+  buildApplyOrchestratorDeps({
+    db: args.db,
+    releaseCheckDeps: args.releaseCheckDeps,
+    // Nothing to hand off to. The CLI *is* the process; the owner starts it
+    // again themselves, with the invocation that knows their DB_PATH and cwd.
+    //
+    // ⛔ BUT THE CALLBACK STILL RUNS, AND `true` IS A FACT HERE RATHER THAN AN
+    // OPTIMISM. `drainOk` asks one thing — has everything that writes this realm
+    // stopped — and on this path `liveServerHolding` and the update lease already
+    // proved nothing else holds it, while this process serves nothing. The quiet
+    // moment a live server has to drain to reach is simply now. Ignoring the
+    // callback instead would have been the silent failure: a migrating CLI apply
+    // would take NO snapshot and leave the next boot to migrate with nothing to
+    // roll back to.
+    requestRestart: (onDrained) => {
+      // ⛔⛔⛔ THE LAST LOOK, AT THE LAST MOMENT. `drainOk` asks one thing — has
+      // everything that writes this realm stopped — and this path answered a flat
+      // `true` on the strength of a check taken BEFORE a resolve and a ~144 MB
+      // download, i.e. minutes earlier. A server starting in that window made the
+      // answer false without changing it, and the commit went on to snapshot and
+      // swap underneath it. Boot now stands down while this lease is held, so the
+      // window is already tiny; asking again HERE, immediately before the only
+      // step that touches disk, is what makes it zero-width rather than small.
+      //
+      // ⚠ `false` IS NOT A FAILURE OF THIS PROCESS. The commit changes nothing
+      // and terminates the apply, which leaves the install exactly as it was and
+      // the owner free to stop the server and retry.
+      const holder = liveServerHolding(args.db.name);
+      if (holder !== null) {
+        console.error(
+          `A Recued server started on this realm while the update was downloading `
+          + `(pid ${holder.pid}, port ${holder.bind_port}). Nothing was installed — stop it and `
+          + 'run this again.',
+        );
+      }
+      args.captureCommit?.(Promise.resolve(onDrained?.(holder === null)));
+    },
+    // …and therefore nothing the supervisor guard could strand. See above.
+    supervisorWillRespawn: () => true,
+    // Trivially true: nothing is running on this realm. Only consulted for
+    // `auto` triggers anyway; this path is always `manual`.
+    isQuiesced: () => true,
+    holdsDatabaseOpen: args.holdsDatabaseOpen,
+    ...(args.isPackagedBinary === undefined ? {} : { isPackagedBinary: args.isPackagedBinary }),
+    env: args.env,
+  });
 
 export async function runUpdateProfile(options: UpdateProfileOptions): Promise<void> {
   const env = options.env ?? process.env;
@@ -298,11 +455,37 @@ export async function runUpdateProfile(options: UpdateProfileOptions): Promise<v
   const sub = positionals[1] ?? 'check';
   const dbPath = resolveRealmDbPath(getArg(options.args, 'db') ?? env.DB_PATH);
 
+  // ⛔ A RETAINED MANUAL-ROLLBACK JOURNAL OWNS THE NEXT DATABASE OPEN. The
+  // serve profile settles it before importing SQLite; this standalone profile
+  // used to open the database first, so re-running `recued update` after a crash
+  // could migrate or write the restored snapshot under the current binary before
+  // recovery had chosen a generation. Refuse without opening anything and route
+  // the owner through the pre-open reconciler.
+  const retainedRollbackJournal = manualRollbackJournalPathForDb(dbPath);
+  if (existsSync(retainedRollbackJournal)) {
+    console.error(
+      `A stopped-server rollback still requires pre-open recovery (${retainedRollbackJournal}).\n`
+      + '  Start the server once; it will finish or safely refuse that recovery before opening\n'
+      + '  the database. Then re-run this update command.',
+    );
+    process.exitCode = 74;
+    return;
+  }
+
   // `--apply` / `--rollback` accepted as aliases for the subcommands: the flag
   // form is what people reach for after reading about it, and accepting both
   // costs one line against a confusing "unknown subcommand" for a spelling.
   const wantsRollback = sub === 'rollback' || getFlag(options.args, 'rollback');
   const wantsApply = !wantsRollback && (sub === 'apply' || getFlag(options.args, 'apply'));
+
+  if (wantsRollback) {
+    // Direct callers get the same semantics as bin.ts. Production reaches this
+    // preflight before importing this module so a broken native addon cannot
+    // prevent it from running at all. Repeating the cheap ledger read here also
+    // catches state that changed while the ordinary profile was being imported.
+    const { tryRunStagedUpdateRollback } = await import('./update-staged-rollback.js');
+    if (await tryRunStagedUpdateRollback(options)) return;
+  }
 
   if (wantsApply || wantsRollback) {
     const verb = wantsRollback ? 'rollback' : 'apply';
@@ -316,10 +499,54 @@ export async function runUpdateProfile(options: UpdateProfileOptions): Promise<v
       refuseWhileRunning(holder, verb);
       return;
     }
+    // Refuse a source runtime before deriving/claiming a lease beside
+    // `process.execPath`. Besides protecting Node from the later swap, this
+    // avoids trying to create `recued-update.lock` in a system Node directory
+    // that may be read-only and masking the useful diagnosis as lease failure.
+    if (resolveDistributionChannel(env) === 'binary' && !runningAsPackagedBinary()) {
+      refuseUnpackagedBinaryUpdate();
+      return;
+    }
 
-    options.bootTrace?.markDbOpenAttempted('configured-db-path');
-    const db = await openDatabase(dbPath);
+    // The host lease is also the database-admission gate for mutating CLI
+    // verbs. Taking it after `openDatabase()` left a losing second CLI holding
+    // WAL/SHM handles while the winner replaced a rollback snapshot. A server
+    // liveness glance cannot exclude another stopped CLI, so no SQLite handle
+    // is admitted until this process owns the target-wide mutex.
+    let db: Awaited<ReturnType<typeof openDatabase>> | null = null;
+    // The rollback path closes this EARLY and on purpose — see the branch below.
+    let dbClosed = true;
+    let updateLease: { release: () => void } | null = null;
     try {
+      // ⛔⛔ HELD ACROSS DATABASE ADMISSION + RESOLVE + DOWNLOAD + SWAP. The
+      // canonical lease is keyed on the shared executable rather than the realm,
+      // so two stopped CLIs cannot open one realm under another's file restore.
+      const leasePath = updateLeasePathFor(resolveUpdateBinaryPath(env));
+      try {
+        updateLease = acquireUpdateLease({ leasePath, operation: verb });
+      } catch (err) {
+        const holder = (err as { holder?: { pid: number; operation: string } }).holder;
+        console.error(
+          holder
+            ? `Another update is already running on this install (pid ${holder.pid}, ${holder.operation}).\n`
+              + '  Wait for it to finish, or if that process is gone, remove:\n'
+              + `    ${leasePath}`
+            : 'Another update is already running on this install.',
+        );
+        process.exitCode = 1;
+        return;
+      }
+
+      // Re-check the realm after winning exclusion: a server can start between
+      // the first glance and this claim, but boot now contends on the same lease.
+      const holderUnderLease = liveServerHolding(dbPath);
+      if (holderUnderLease) {
+        refuseWhileRunning(holderUnderLease, verb);
+        return;
+      }
+      options.bootTrace?.markDbOpenAttempted('configured-db-path');
+      db = await openDatabase(dbPath);
+      dbClosed = false;
       db.pragma('journal_mode = WAL');
       db.pragma('foreign_keys = ON');
       options.bootTrace?.mark('db-opened');
@@ -334,18 +561,15 @@ export async function runUpdateProfile(options: UpdateProfileOptions): Promise<v
         return;
       }
 
-      const applyDeps = buildApplyOrchestratorDeps({
+      let applyCommitted: Promise<void> = Promise.resolve();
+      const applyDeps = buildCliApplyDeps({
         db,
         releaseCheckDeps,
-        // Nothing to hand off to. The CLI *is* the process, and we refused above
-        // if a server were running — so there is no daemon whose lifetime we
-        // could own. The owner starts it again themselves, with their own
-        // invocation, which is the only one that knows their DB_PATH and cwd.
-        requestRestart: () => {},
-        // Trivially true: nothing is running on this realm. Only consulted for
-        // `auto` triggers anyway; this path is always `manual`.
-        isQuiesced: () => true,
         env,
+        // Asked at CALL time: the rollback branch closes the db between here and
+        // there, which is exactly what makes the restore safe.
+        holdsDatabaseOpen: () => !dbClosed,
+        captureCommit: (committed) => { applyCommitted = committed; },
       });
       if (!applyDeps) {
         console.error(
@@ -359,18 +583,6 @@ export async function runUpdateProfile(options: UpdateProfileOptions): Promise<v
       // ⛔ See `runningAsPackagedBinary`. The channel says `binary` by DEFAULT,
       // including from a source checkout, where the apply target would be the
       // owner's node runtime.
-      if (resolveDistributionChannel(env) === 'binary' && !runningAsPackagedBinary()) {
-        console.error(
-          'This is not the packaged Recued binary — it is running under Node (a source\n' +
-            'checkout or an npm install), where the update target would be the node\n' +
-            'executable itself. Refusing.\n' +
-            '\n' +
-            '  source checkout: git pull && npm ci && npm run build:server\n' +
-            '  npm install:     npm i -g @recued/server@latest',
-        );
-        process.exitCode = 2;
-        return;
-      }
 
       if (wantsRollback) {
         const ctx = applyDeps.rollbackContext();
@@ -378,14 +590,88 @@ export async function runUpdateProfile(options: UpdateProfileOptions): Promise<v
           console.log('Nothing to roll back — no previously committed update on this install.');
           return;
         }
+        // ⛔⛔ CLOSE FIRST, AND CLOSE HERE. A `restore-snapshot` rollback replaces
+        // the database FILE, and doing that under an open handle leaves this
+        // process reading an unlinked inode and accepting writes that vanish
+        // (reproduced 2026-08-31). `refuseWhileRunning` above already proved no
+        // OTHER process holds this realm, so ours is the last handle — and it is
+        // ours to drop. Everything the rollback still needs is file-level
+        // (existsSync, renames, the JSONL ledger), and the db path was captured
+        // when the ports were built.
+        db.close();
+        dbClosed = true;
         printRollback(runRollback(applyDeps.ports, ctx));
         return;
       }
 
       const resolved = await applyDeps.resolveForApply();
       if (resolved.status !== 'applyable') {
-        printNotApplyable(resolved.status, resolveDistributionChannel(env));
+        printNotApplyable(
+          resolved.status,
+          resolveDistributionChannel(env),
+          'detail' in resolved && typeof resolved.detail === 'string' ? resolved.detail : undefined,
+        );
         return;
+      }
+      // ── I-4: a major bump is notify-only until explicitly forced ─────────
+      // ⛔ THE RPC HAS ALWAYS REQUIRED `force` HERE AND THE CLI REQUIRED NOTHING,
+      // so an in-cohort non-interactive `recued update apply` could cross a major
+      // version that the web path refuses without a second, deliberate click.
+      // Two actuators, one policy, enforced in one of them.
+      if (resolved.isMajor && !getFlag(options.args, 'force')) {
+        console.error(
+          `Version ${resolved.toVersion} is a MAJOR update from ${resolved.fromVersion}.\n`
+          + '  Major versions are never applied automatically (I-4). Re-run with --force to\n'
+          + '  take it deliberately, after reading the release notes.',
+        );
+        process.exitCode = 1;
+        return;
+      }
+
+      // ── Staged rollout: say so, and let a human decline ──────────────────
+      // The spec calls an out-of-cohort manual apply "an EXPLICIT, confirmed,
+      // audited act". It was none of the three: the wire did not carry
+      // `rollout_pct`, nothing rendered cohort state, and `trigger: 'manual'` was
+      // the whole record.
+      //
+      // ⚠ ASKED, NOT REFUSED — and that is deliberate, permanently. `rollout_pct` is 0 on the
+      // live stable channel today, so EVERY install is outside the cohort; a hard
+      // gate here would stop every owner from updating. So: state it, ask when a
+      // human is there to answer, and audit it either way.
+      if (!resolved.inRolloutCohort) {
+        console.log(
+          `This release is in staged rollout (${resolved.rolloutPct}%) and this install `
+          + 'is not in the cohort yet.',
+        );
+        if (getFlag(options.args, 'yes')) {
+          console.log('  --yes given — installing early and recording it as a bypass.');
+        } else if (process.stdin.isTTY === true) {
+          const answer = await promptYesNo('Install it anyway? [y/N] ');
+          if (!answer) {
+            console.log('Nothing installed. It will be offered automatically once the rollout reaches this install.');
+            return;
+          }
+        } else {
+          // ⛔ NO TERMINAL AND NO `--yes` IS A REFUSAL, NOT A PROCEED. This used
+          // to print a note and carry on, which meant the one caller that CANNOT
+          // be asked — cron, a pipeline — was the one that never confirmed
+          // anything. The spec calls the bypass "an EXPLICIT, confirmed" act, and
+          // a confirmation nobody can decline is neither.
+          //
+          // ⚠ THIS CAN BREAK AN EXISTING UNATTENDED UPDATE, and that is the
+          // point: with `rollout_pct` at 0 every install is outside the cohort,
+          // so an unattended `recued update apply` today IS an unreviewed early
+          // adoption of every release. The flag is named in the message so the
+          // fix is one word.
+          console.error(
+            'This release is in staged rollout and this install is not in the cohort. '
+            + 'There is no terminal to confirm on, so nothing was installed.\n'
+            + '  Pass --yes to take it early on purpose (it is recorded as a bypass), '
+            + 'or wait for the rollout to reach this install.',
+          );
+          process.exitCode = 1;
+          return;
+        }
       }
       const result = await runApply(applyDeps.ports, {
         releaseIdentity: resolved.releaseIdentity,
@@ -397,10 +683,30 @@ export async function runUpdateProfile(options: UpdateProfileOptions): Promise<v
         libArtifact: resolved.libArtifact,
         webclientArtifact: resolved.webclientArtifact,
         trigger: 'manual',
+        ...(resolved.inRolloutCohort
+          ? {}
+          : { rolloutBypass: { rolloutPct: resolved.rolloutPct, clientConfirmed: true } }),
       });
-      printApply(result, resolved.fromVersion, resolved.toVersion);
+      // ⛔ WAIT FOR THE COMMIT, THEN REPORT WHAT ACTUALLY HAPPENED. `restarting` is
+      // now the ACCEPTANCE — the snapshot + swap run in the callback above, after
+      // `runApply` has returned. On a live server that outcome rides the ledger
+      // and `update.progress`; here there is a person reading stdout, so telling
+      // them "Staged 26.9.1 → 26.9.2" for a commit that failed and terminated the
+      // operation would be a plain lie, and one they would only discover by
+      // starting a server that is still on the old release.
+      await applyCommitted;
+      const outcome = resolveCliApplyOutcome(result, applyDeps.ports.ledger);
+      // Is there an outer supervisor beside the binary? `install.sh` writes
+      // `recued-supervise` only when it arms a unit, so its presence is exactly
+      // the question "will something count a payload that never starts".
+      const supervised = existsSync(
+        join(dirname(resolveUpdateBinaryPath(env)), 'recued-supervise'),
+      );
+      printApply(outcome, resolved.fromVersion, resolved.toVersion, supervised);
     } finally {
-      db.close();
+      // The rollback path closes early and on purpose; closing twice throws.
+      if (db !== null && !dbClosed) db.close();
+      updateLease?.release();
     }
     return;
   }

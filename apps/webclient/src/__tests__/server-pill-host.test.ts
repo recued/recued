@@ -764,8 +764,13 @@ describe('webclient server pill — restart + crash-halt (D-188)', () => {
     return { mount, parts, status };
   };
 
-  it('hides Restart when the supervisor will not respawn (dev / native)', () => {
-    for (const mode of ['dev', 'native'] as const) {
+  /** ⚠ `native` MOVED OUT OF THIS LIST 2026-08-31. It is not a bare process: it
+   *  resolves ONLY from `RECUED_LAUNCHER=1`, exported by
+   *  `scripts/recued-server-launcher.sh`, which is a `while true` loop whose
+   *  exit-3 branch respawns. `dev` is the only mode left that genuinely stays
+   *  down — see the sibling test below, which pins the other direction. */
+  it('hides Restart when the supervisor will not respawn (dev)', () => {
+    for (const mode of ['dev'] as const) {
       const { mount, parts } = mountWith(runningSnapshot({ supervisor_mode: mode }), {
         runRequestRestart: vi.fn(async () => ({ accepted: true })),
       });
@@ -774,6 +779,19 @@ describe('webclient server pill — restart + crash-halt (D-188)', () => {
       expect(parts().popoverHost?.innerHTML, mode).not.toContain('Restart');
       mount.dispose();
     }
+  });
+
+  it('shows Restart under `native` — the launcher script respawns', () => {
+    // ⛔ THE OTHER HALF OF THE 2026-08-31 DECISION. Excluding `native` hid this
+    // button from installs where it works, and — once `update.apply` gated on
+    // the same list — refused their updates too. If this ever goes red again,
+    // check `recued-server-launcher.sh` still loops before "fixing" the test.
+    const { mount, parts } = mountWith(runningSnapshot({ supervisor_mode: 'native' }), {
+      runRequestRestart: vi.fn(async () => ({ accepted: true })),
+    });
+    parts().pillHost?.fire('click', pillClick);
+    expect(parts().popoverHost?.innerHTML).toContain('Restart');
+    mount.dispose();
   });
 
   it('shows Restart under a respawning supervisor (systemd)', () => {
@@ -934,7 +952,9 @@ describe('webclient server pill — restart + crash-halt (D-188)', () => {
     parts().popoverHost?.fire('click', popoverClick('restart-request'));
     expect(parts().popoverHost?.innerHTML).toContain('Confirm restart');
     // The supervisor drops to a non-respawning mode before the user confirms.
-    mount.noteSnapshot(runningSnapshot({ supervisor_mode: 'native' }));
+    // (`dev`, not `native` — the property is unchanged, only which mode means
+    // "will not come back".)
+    mount.noteSnapshot(runningSnapshot({ supervisor_mode: 'dev' }));
     expect(parts().popoverHost?.innerHTML).not.toContain('Confirm restart'); // auto-disarmed
     // Even a stale confirm click cannot fire the rpc — the action-boundary gate.
     parts().popoverHost?.fire('click', popoverClick('restart-confirm'));
@@ -958,7 +978,7 @@ describe('webclient server pill — restart + crash-halt (D-188)', () => {
 
   it('crash-halt without a supervisor shows the info but no Restart button', () => {
     const { mount, parts } = mountWith(
-      runningSnapshot({ crash_halt_active: true, supervisor_mode: 'native' }),
+      runningSnapshot({ crash_halt_active: true, supervisor_mode: 'dev' }),
       { runRequestRestart: vi.fn(async () => ({ accepted: true })) },
     );
     parts().pillHost?.fire('click', pillClick);

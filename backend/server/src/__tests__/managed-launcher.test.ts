@@ -1,17 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { generateKeypair, sign } from '@recued/release';
 import {
+  BOOT_FAILURE_COUNTER_FILE,
   decideLaunch,
   runLauncher,
   readFailureCount,
   incrementFailureCount,
   resetFailureCount,
-  revertToOld,
-  recordLedgerRevert,
+  repairInterruptedOutgoingSignatures,
   seedIfAbsent,
   verifyBinarySignature,
   verifyPayloadSignature,
@@ -104,6 +104,47 @@ describe('verifyBinarySignature', () => {
     const bin = join(d, 'recued');
     writeFileSync(bin, 'x');
     expect(verifyBinarySignature(bin, 'RWQ-some-key')).toBe(false);
+  });
+});
+
+describe('interrupted outgoing signature recovery', () => {
+  it('authenticates and moves a stranded signature before launch selection', () => {
+    const kp = generateKeypair();
+    const d = mkdtempSync(join(tmpdir(), 'launcher-sig-repair-'));
+    const current = join(d, 'recued');
+    const old = `${current}.old`;
+    const body = Buffer.from('OUTGOING');
+    writeFileSync(old, body);
+    writeFileSync(`${current}.minisig`, sign({
+      content: body,
+      secretSeed: kp.secretSeed,
+      keyId: kp.keyId,
+      trustedComment: 'test',
+    }));
+
+    expect(repairInterruptedOutgoingSignatures(current, old, addonPathFor(current), kp.publicKeyText))
+      .toBe(1);
+    expect(existsSync(`${current}.minisig`)).toBe(false);
+    expect(verifyBinarySignature(old, kp.publicKeyText)).toBe(true);
+  });
+
+  it('does not adopt a signature that does not verify the preserved payload', () => {
+    const kp = generateKeypair();
+    const d = mkdtempSync(join(tmpdir(), 'launcher-sig-refuse-'));
+    const current = join(d, 'recued');
+    const old = `${current}.old`;
+    writeFileSync(old, 'OUTGOING');
+    writeFileSync(`${current}.minisig`, sign({
+      content: Buffer.from('SOMETHING ELSE'),
+      secretSeed: kp.secretSeed,
+      keyId: kp.keyId,
+      trustedComment: 'test',
+    }));
+
+    expect(repairInterruptedOutgoingSignatures(current, old, addonPathFor(current), kp.publicKeyText))
+      .toBe(0);
+    expect(existsSync(`${current}.minisig`)).toBe(true);
+    expect(existsSync(`${old}.minisig`)).toBe(false);
   });
 });
 
@@ -212,54 +253,16 @@ describe('⛔ launcher/server addon-path lockstep', () => {
   });
 });
 
-describe('revertToOld', () => {
-  it('moves old binary + sig sidecar into the current path', () => {
-    const d = mkdtempSync(join(tmpdir(), 'launcher-rev-'));
-    const cur = join(d, 'recued');
-    const old = join(d, 'recued.old');
-    writeFileSync(cur, 'NEW');
-    writeFileSync(`${cur}.minisig`, 'newsig');
-    writeFileSync(old, 'OLD');
-    writeFileSync(`${old}.minisig`, 'oldsig');
-    revertToOld(cur, old);
-    expect(readFileSync(cur, 'utf8')).toBe('OLD');
-    expect(readFileSync(`${cur}.minisig`, 'utf8')).toBe('oldsig');
-    expect(existsSync(old)).toBe(false);
-  });
-
-  it('⛔ reverts the ADDON with the exe, sig and all', () => {
-    // Restoring only the executable pairs it with the addon of the release being
-    // abandoned — the same N-API ABI mismatch that fails at the first database
-    // open. The revert would "succeed" and the container still could not serve.
-    const d = mkdtempSync(join(tmpdir(), 'launcher-rev-addon-'));
-    const cur = join(d, 'recued');
-    const old = `${cur}.old`;
-    const addon = addonPathFor(cur);
-    mkdirSync(dirname(addon), { recursive: true });
-    writeFileSync(cur, 'NEW');
-    writeFileSync(`${cur}.minisig`, 'newsig');
-    writeFileSync(old, 'OLD');
-    writeFileSync(`${old}.minisig`, 'oldsig');
-    writeFileSync(addon, 'NEW-ADDON');
-    writeFileSync(`${addon}.minisig`, 'new-addon-sig');
-    writeFileSync(`${addon}.old`, 'OLD-ADDON');
-    writeFileSync(`${addon}.old.minisig`, 'old-addon-sig');
-
-    revertToOld(cur, old);
-
-    expect(readFileSync(addon, 'utf8')).toBe('OLD-ADDON');
-    expect(readFileSync(`${addon}.minisig`, 'utf8')).toBe('old-addon-sig');
-    expect(existsSync(`${addon}.old`)).toBe(false);
-  });
-
-  it('leaves the live addon alone on a pre-sidecar volume (no .old addon)', () => {
-    const d = mkdtempSync(join(tmpdir(), 'launcher-rev-nolib-'));
-    const cur = join(d, 'recued');
-    const old = `${cur}.old`;
-    writeFileSync(cur, 'NEW');
-    writeFileSync(old, 'OLD');
-    expect(() => revertToOld(cur, old)).not.toThrow();
-    expect(readFileSync(cur, 'utf8')).toBe('OLD');
+describe('⛔ launcher/server boot-counter lockstep', () => {
+  it('the launcher counts in the same file the revert clears', async () => {
+    // ⛔⛔ TWO PROCESSES, ONE FILE. The launcher reads this to count crashes; the
+    // revert runs inside `recued.old` and clears it from there. A drift would not
+    // fail — it would LOOP: the reset clears a file nobody reads, the launcher
+    // still sees the threshold, and it reverts an install that is already fixed,
+    // over and over. Duplicated on purpose (the launcher imports nothing from the
+    // server bundle), so it is pinned here instead.
+    const server = await import('../update/boot-failure-counter.js');
+    expect(BOOT_FAILURE_COUNTER_FILE).toBe(server.BOOT_FAILURE_COUNTER_FILE);
   });
 });
 
@@ -320,48 +323,6 @@ describe('seedIfAbsent', () => {
   });
 });
 
-describe('recordLedgerRevert', () => {
-  it('appends an apply_reverted terminal for the in-flight apply (un-wedges the server lock)', async () => {
-    const { createUpdateLedger } = await import('../update/update-ledger.js');
-    const d = mkdtempSync(join(tmpdir(), 'launcher-ledger-'));
-    const p = join(d, 'updates.log');
-    const ledger = createUpdateLedger(p);
-    ledger.append({
-      id: 'a', kind: 'apply_started', at: 1, from_version: '1.3.0', to_version: '1.4.2',
-      channel: 'stable', trigger: 'auto', release_identity: 'stable:1.4.2', migration: false,
-    });
-    ledger.append({
-      id: 'b', kind: 'apply_staged', at: 2, from_version: '1.3.0', to_version: '1.4.2',
-      channel: 'stable', trigger: 'auto', release_identity: 'stable:1.4.2', migration: false,
-    });
-
-    recordLedgerRevert(p, 'boot health failed', 99);
-
-    const all = createUpdateLedger(p).readAll();
-    const terminal = all.find((e) => e.kind === 'apply_reverted');
-    expect(terminal).toBeDefined();
-    expect(terminal!.release_identity).toBe('stable:1.4.2');
-    expect(terminal!.trigger).toBe('revert');
-  });
-
-  it('is a no-op when nothing is in flight (server already recorded the terminal)', async () => {
-    const { createUpdateLedger } = await import('../update/update-ledger.js');
-    const d = mkdtempSync(join(tmpdir(), 'launcher-ledger2-'));
-    const p = join(d, 'updates.log');
-    const ledger = createUpdateLedger(p);
-    ledger.append({
-      id: 'a', kind: 'apply_started', at: 1, from_version: '1.3.0', to_version: '1.4.2',
-      channel: 'stable', trigger: 'auto', release_identity: 'stable:1.4.2', migration: false,
-    });
-    ledger.append({
-      id: 'b', kind: 'apply_committed', at: 2, from_version: '1.3.0', to_version: '1.4.2',
-      channel: 'stable', trigger: 'auto', release_identity: 'stable:1.4.2', migration: false,
-    });
-    recordLedgerRevert(p, 'x', 99);
-    expect(createUpdateLedger(p).readAll().filter((e) => e.kind === 'apply_reverted')).toHaveLength(0);
-  });
-});
-
 describe('runLauncher loop', () => {
   const writeBin = (dir: string, name: string, content = 'bin') => writeFileSync(join(dir, name), content);
 
@@ -389,18 +350,69 @@ describe('runLauncher loop', () => {
     expect(readFailureCount(join(d, 'boot-failures.json'))).toBe(0);
   });
 
-  it('counts crashes then auto-reverts to old at the threshold', async () => {
+  // ⛔⛔ THE REVERT IS DELEGATED, and this is the seam that proves it. The launcher
+  // used to swap the files itself — the binary pair ONLY, with no pre-migration
+  // snapshot, no webclient and no safety gate — while the server's own revert grew
+  // all three. It cannot import that rule (frozen image entrypoint, I-9), so it
+  // runs it inside the binary it is reverting TO, exactly as the binary channel's
+  // supervising script does. `recued.old revert-release` is that call.
+  it('counts crashes then asks the PREVIOUS binary to perform the revert', async () => {
     const d = mkdtempSync(join(tmpdir(), 'launcher-run3-'));
     writeBin(d, 'recued', 'NEW');
     writeBin(d, 'recued.old', 'OLD');
-    // crash on the NEW binary every time; once reverted to OLD, exit clean.
-    const runBinary = vi.fn(async (binPath: string) =>
-      readFileSync(binPath, 'utf8') === 'NEW' ? 1 : 0,
+    // Crash on the NEW binary every time. The verdict call is what the REAL
+    // `revert-release` profile would do to disk; once reverted, OLD exits clean.
+    const runBinary = vi.fn(async (binPath: string, a: string[]) => {
+      if (a[0] === 'revert-release') {
+        renameSync(join(d, 'recued.old'), join(d, 'recued'));
+        return 0;
+      }
+      return readFileSync(binPath, 'utf8') === 'NEW' ? 1 : 0;
+    });
+    const code = await runLauncher({
+      binDir: d, pubkey: '', args: ['--db', '/data/recued.db'], runBinary, crashBackoffMs: 0, log: () => {},
+    });
+    expect(code).toBe(0);
+    expect(readFileSync(join(d, 'recued'), 'utf8')).toBe('OLD');
+
+    const verdict = runBinary.mock.calls.find((c) => c[1][0] === 'revert-release');
+    expect(verdict, 'the launcher must ask for the revert, not perform it').toBeDefined();
+    // Run BY `recued.old` — the point of delegating is that the rule executes in
+    // the known-good binary, not in the frozen launcher.
+    expect(verdict![0]).toBe(join(d, 'recued.old'));
+    expect(verdict![1]).toContain('--bin-dir');
+    expect(verdict![1][verdict![1].indexOf('--bin-dir') + 1]).toBe(d);
+    // The DECISION stays with the launcher and rides along: it reverts for causes
+    // no exit code can carry (a missing or unverifiable binary), so the reason is
+    // the only record of which one this was.
+    expect(verdict![1][verdict![1].indexOf('--reason') + 1]).toMatch(/consecutive boots/);
+    // …and the SAME `--db` the server was given, so the revert cannot aim at a
+    // different realm than the one that failed.
+    expect(verdict![1]).toEqual(expect.arrayContaining(['--db', '/data/recued.db']));
+    expect(runBinary).toHaveBeenCalledTimes(BOOT_FAILURE_THRESHOLD + 2); // 3 crashes + verdict + OLD
+  });
+
+  // ⛔⛔ A REFUSAL IS NOT A REASON TO SWAP ANYWAY. `revert-release` refuses when the
+  // failed release migrated the database and there is no snapshot — the state where
+  // the old binary would come back onto the new schema. Swapping regardless is what
+  // made that unrecoverable: it consumes `recued.old`, so nothing downstream can
+  // retry. Halting leaves every option on disk for an operator.
+  it('halts without touching the binaries when the previous one refuses the revert', async () => {
+    const d = mkdtempSync(join(tmpdir(), 'launcher-run3b-'));
+    writeBin(d, 'recued', 'NEW');
+    writeBin(d, 'recued.old', 'OLD');
+    const runBinary = vi.fn(async (binPath: string, a: string[]) =>
+      a[0] === 'revert-release' ? 20 : (readFileSync(binPath, 'utf8') === 'NEW' ? 1 : 0),
     );
     const code = await runLauncher({ binDir: d, pubkey: '', args: [], runBinary, crashBackoffMs: 0, log: () => {} });
-    expect(code).toBe(0);
-    // 3 crashes of NEW (count hits threshold) → revert → OLD exits clean
-    expect(readFileSync(join(d, 'recued'), 'utf8')).toBe('OLD');
+    expect(code).toBe(1);
+    expect(readFileSync(join(d, 'recued'), 'utf8')).toBe('NEW');
+    expect(readFileSync(join(d, 'recued.old'), 'utf8')).toBe('OLD');
+    // ⛔⛔ AND IT STOPPED, RATHER THAN SPINNING. Exit 1 with both binaries in place
+    // is ALSO what running the refusal over and over until the iteration cap looks
+    // like from outside — so the outcome alone names no cause. Three crashes and
+    // ONE verdict is the whole of it: the launcher asked once, was told no, and
+    // halted. Verified by removing the halt, which turns this red and nothing else.
     expect(runBinary).toHaveBeenCalledTimes(BOOT_FAILURE_THRESHOLD + 1);
   });
 

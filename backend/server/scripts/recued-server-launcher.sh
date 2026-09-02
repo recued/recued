@@ -29,9 +29,22 @@ backoff() {
   sleep "$(awk -v ms="$RESTART_BACKOFF_MS" 'BEGIN { printf "%.3f", ms/1000 }')"
 }
 
+# ⛔⛔ `|| status=$?` IS WHAT MAKES THE LOOP A LOOP. `set -e` above exits the
+# shell on ANY unhandled non-zero command, and the binary here is a bare command
+# in a loop body — not a condition — so it counted. Measured 2026-08-31: this
+# script ran the server exactly ONCE and died the moment it exited 3, never
+# reaching the `case` below. Every branch of that case was unreachable for a
+# non-zero status, so the whole retry contract this file exists for did nothing.
+#
+# ⚠ AND IT WAS BELIEVED. D-188 excluded `native` from the supervised modes for a
+# WRONG stated reason ("bare process") but the right practical one — this really
+# did not respawn. Reading the loop says it retries; running it says otherwise.
+#
+# `|| status=$?` makes the failure HANDLED, so `set -e` stands down and the
+# `case` decides, which is what the contract above describes.
 while true; do
-  "$RECUED_SERVER_BIN" "$@"
-  status=$?
+  status=0
+  "$RECUED_SERVER_BIN" "$@" || status=$?
   case "$status" in
     0)
       echo "[launcher] recued exited cleanly (0). Stopping."

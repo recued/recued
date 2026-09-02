@@ -6775,9 +6775,21 @@ export type ServerRpcRegistry = {
    *  downloads / verifies / swaps the platform artifact. A major bump
    *  is refused (`major-blocked`, I-4); a delegated channel (docker /
    *  source) returns `not-applicable`. `force` skips the auto-eligible
-   *  gate for an owner-initiated apply of an in-cohort non-major. */
+   *  gate for an owner-initiated apply of an in-cohort non-major.
+   *
+   *  ⛔ THE ANSWER IS ASYNCHRONOUS AND CARRIES ITS OWN NAME. It returns
+   *  `applying` immediately (the artifact is ~144 MB) with the
+   *  `operation_id` that identifies this run, RESERVED before the work
+   *  starts — so a caller that goes away can still ask
+   *  `update.operation_status` what became of it. The id used to arrive
+   *  only on the terminal `update.progress` event, i.e. only to a caller
+   *  still listening, which is precisely the one that did not need it.
+   *
+   *  ⚠ `expected_release_identity` BINDS the caller's consent to the
+   *  release it reviewed; see `UpdateApplyArgs` for why every field is
+   *  optional and what an older peer on either end does with them. */
   'update.apply': RpcMethodSpec<
-    { force?: boolean } | void,
+    import('../release-update.js').UpdateApplyArgs | void,
     import('../release-update.js').UpdateApplyResponse
   >;
 
@@ -6786,7 +6798,7 @@ export type ServerRpcRegistry = {
    *  never consults the manifest (I-10); refused while an apply is in
    *  flight (I-6) or when there is nothing to roll back to. */
   'update.rollback': RpcMethodSpec<
-    void,
+    import('../release-update.js').UpdateRollbackArgs | void,
     import('../release-update.js').UpdateRollbackResponse
   >;
 

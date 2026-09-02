@@ -22,28 +22,33 @@
  *  minisign verifier the server + installer use) + node builtins — never the
  *  server bundle (the thing it launches, which changes every release).
  *
+ *  ⛔⛔ AND THAT IS WHY THE REVERT IS NOT PERFORMED HERE. It used to be, and the
+ *  copy drifted: this file swapped the binary pair while the server's own revert
+ *  grew a pre-migration snapshot restore, a webclient restore, and a safety gate
+ *  that refuses a revert onto a schema the failed release already migrated. The
+ *  launcher cannot import that rule without importing the engine it exists to be
+ *  independent of — so it does what the binary channel's supervising script does
+ *  and RUNS the rule inside `recued.old`: `recued revert-release`. The DECISION
+ *  stays here, where the signature evidence is.
+ *
  *  The pure `decideLaunch` core is unit-tested; `runLauncher` is the thin IO loop
- *  (spawn + counter IO + the atomic revert swap). */
+ *  (spawn + counter IO + the delegated revert). */
 
 import { spawn as nodeSpawn } from 'node:child_process';
 import {
+  closeSync,
   copyFileSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
+  openSync,
   readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { verify } from '@recued/release';
-import {
-  createUpdateLedger,
-  UPDATE_LEDGER_FILE,
-  type UpdateLedgerEntry,
-  type UpdateLedgerKind,
-} from '../update/update-ledger.js';
 
 /** The launcher's verification-contract version. Reported to the server via
  *  `RECUED_LAUNCHER_VERSION`; the server's resolve refuses to apply a release
@@ -74,8 +79,15 @@ export const ADDON_RELATIVE_PATH = 'lib/better_sqlite3.node';
  *  Lockstep with `release-config.ts`; see `ADDON_RELATIVE_PATH`. */
 export const OLD_SUFFIX = '.old';
 
-/** The addon path for a given binary path — the launcher's half of the
- *  agreement `release-config.ts` makes on the server side. */
+/** The addon path for a given binary path — the launcher's half of the agreement
+ *  the SERVER side now makes in ONE place, `sidecarPathsFor`
+ *  (`update/binary-apply-executor.ts`). Two copies, deliberately: this module is
+ *  the frozen image launcher and may not import the server bundle.
+ *
+ *  ⚠ THEY ARE NOT IDENTICAL, AND THE DIFFERENCE IS INTENDED. The server side also
+ *  honours `RECUED_NATIVE_BINDING`, because a server that reads its addon from an
+ *  override has to SWAP and REVERT that same file. The launcher execs the binary
+ *  rather than loading the addon, so it has no such override to respect. */
 export const addonPathFor = (binaryPath: string): string =>
   join(dirname(binaryPath), ...ADDON_RELATIVE_PATH.split('/'));
 
@@ -83,6 +95,18 @@ export const addonPathFor = (binaryPath: string): string =>
  *  launcher reverts to `recued.old` (matches `apply-state-machine.BOOT_FAILURE_
  *  THRESHOLD`). */
 export const BOOT_FAILURE_THRESHOLD = 3;
+
+/** The boot-failure counter sidecar, beside the binary. Duplicated from
+ *  `update/boot-failure-counter.ts` for the same I-9 reason as
+ *  `ADDON_RELATIVE_PATH`, and pinned against it by `managed-launcher.test.ts`.
+ *
+ *  ⛔⛔ THE AGREEMENT IS NOW LOAD-BEARING ACROSS A PROCESS BOUNDARY. The launcher
+ *  READS this file to count crashes; the revert that ends the crash loop happens
+ *  inside `recued.old` (`revert-release`) and CLEARS it from there. If the two
+ *  names ever drifted, the reset would clear a file nobody reads: the launcher
+ *  would see the count still at the threshold, ask for the revert again, and loop
+ *  — reverting forever over an install that is already fixed. */
+export const BOOT_FAILURE_COUNTER_FILE = 'boot-failures.json';
 
 /** Server exit-code contract under the `docker-thin` supervisor (standard codes —
  *  NOT the plain-`docker` `restart→1` remap). The launcher's loop branches on
@@ -175,6 +199,58 @@ export const verifyBinarySignature = (binaryPath: string, pubkey: string): boole
   }
 };
 
+/** Repair the one split-pair shape the launcher must understand before it can
+ * verify either candidate: `preserveAndSwap` renamed an outgoing payload to
+ * `.old`, then the process died before renaming its detached signature.
+ *
+ * The server has a broader interrupted-swap reconciler, but it cannot run until
+ * this launcher executes a verified binary. Moving a signature on disk SHAPE
+ * alone would weaken I-2, so the stranded signature is adopted only after it
+ * verifies the exact `.old` payload under the pinned key. */
+export const repairInterruptedOutgoingSignatures = (
+  currentPath: string,
+  oldPath: string,
+  currentAddonPath: string,
+  pubkey: string,
+): number => {
+  if (!pubkey) return 0; // pre-GA already treats unsigned candidates as runnable
+  let repaired = 0;
+  const repairOne = (livePath: string, preservedPath: string): void => {
+    const strandedSig = `${livePath}${SIG_SIDECAR_SUFFIX}`;
+    const preservedSig = `${preservedPath}${SIG_SIDECAR_SUFFIX}`;
+    if (
+      existsSync(livePath)
+      || !existsSync(preservedPath)
+      || existsSync(preservedSig)
+      || !existsSync(strandedSig)
+    ) return;
+    try {
+      const verified = verify({
+        content: readFileSync(preservedPath),
+        signatureText: readFileSync(strandedSig, 'utf8'),
+        publicKeyText: pubkey,
+      });
+      if (!verified.ok) return;
+      renameSync(strandedSig, preservedSig);
+      repaired += 1;
+    } catch {
+      // Leave both witnesses untouched. The ordinary verifier will fail closed.
+    }
+  };
+
+  repairOne(currentPath, oldPath);
+  repairOne(currentAddonPath, `${currentAddonPath}${OLD_SUFFIX}`);
+  if (repaired > 0) {
+    // Best-effort durability for the repair itself. Directory handles are not
+    // portable to Windows, where the rename is still atomic and repeatable.
+    try {
+      const fd = openSync(dirname(currentPath), 'r');
+      try { fsyncSync(fd); } finally { closeSync(fd); }
+    } catch { /* best-effort */ }
+  }
+  return repaired;
+};
+
 /** D-178 item 6 — verify the WHOLE payload: the executable AND the native addon
  *  it dlopen's at its first database open.
  *
@@ -251,43 +327,6 @@ export const resetFailureCount = (counterPath: string): void => {
   }
 };
 
-/** Swap `recued.old` (+ its sig sidecar) back into the current binary path —
- *  the launcher's boot-health revert. Atomic same-fs renames.
- *
- *  RESIDUAL (tiny same-fs crash sub-window): the binary + sig are two renames;
- *  a crash between them can leave the restored binary paired with a stale sig.
- *  Under a real key the next start would then refuse + halt (recoverable by
- *  re-pulling the digest-anchored image → reseed) rather than silently running
- *  unverified content. A fully atomic pair-swap (verified-pair directory rename)
- *  is the proper fix — follow-up before docker-thin GA. */
-export const revertToOld = (currentPath: string, oldPath: string): void => {
-  /** Move `from` into `to`, carrying the detached sig and never leaving a
-   *  mismatched pair behind (a stale destination sig would let the next verify
-   *  check the restored file against the signature of the one it replaced). */
-  const swapWithSig = (from: string, to: string): void => {
-    const fromSig = `${from}${SIG_SIDECAR_SUFFIX}`;
-    const toSig = `${to}${SIG_SIDECAR_SUFFIX}`;
-    if (process.platform === 'win32' && existsSync(to)) rmSync(to);
-    renameSync(from, to);
-    if (existsSync(fromSig)) {
-      if (existsSync(toSig)) rmSync(toSig);
-      renameSync(fromSig, toSig);
-    } else if (existsSync(toSig)) {
-      rmSync(toSig);
-    }
-  };
-
-  swapWithSig(oldPath, currentPath);
-
-  // ⛔ The addon reverts WITH the exe. A revert that restores only the
-  // executable pairs it with the addon of the release being abandoned — an
-  // N-API ABI mismatch that fails at the first database open, i.e. the revert
-  // "succeeds" and the container still cannot serve. Absent `.old` addon means
-  // a pre-sidecar install: nothing to restore, and the live one stays put.
-  const addon = addonPathFor(currentPath);
-  const addonOld = `${addon}${OLD_SUFFIX}`;
-  if (existsSync(addonOld)) swapWithSig(addonOld, addon);
-};
 
 /** First-boot seed: when the data volume has no binary yet, copy the baked
  *  initial binary (+ its sig sidecar) from the image into the volume so the
@@ -319,53 +358,6 @@ export const seedIfAbsent = (currentPath: string, binDir: string, seedBinaryPath
   return true;
 };
 
-/** Record the launcher's boot-health auto-revert as a TERMINAL ledger entry so
- *  the server's apply lock + on-boot reconcile see the staged release as
- *  resolved. Without this the launcher physically reverts `recued.old` but the
- *  ledger still shows an unterminated `apply_started` — the server would then
- *  block every future apply AND try its own auto-revert into a `recued.old` the
- *  launcher already consumed (`rollbackSwap` throws). Reuses the dependency-free
- *  ledger module (the stable update substrate — not the changing engine, so it
- *  doesn't compromise the launcher's I-9 frozenness). Best-effort: a ledger
- *  write failure must never block the revert that's recovering the install. */
-const TERMINAL_LEDGER_KINDS: ReadonlySet<UpdateLedgerKind> = new Set<UpdateLedgerKind>([
-  'apply_committed',
-  'apply_reverted',
-  'rolled_back',
-]);
-
-export const recordLedgerRevert = (ledgerPath: string, reason: string, now: number): void => {
-  try {
-    const ledger = createUpdateLedger(ledgerPath);
-    // Find the still-in-flight apply (the last `apply_started` with no later
-    // terminal for the same release) — the same derivation the server uses.
-    const pending: UpdateLedgerEntry[] = [];
-    for (const e of ledger.readAll()) {
-      if (e.kind === 'apply_started') {
-        pending.push(e);
-      } else if (TERMINAL_LEDGER_KINDS.has(e.kind)) {
-        const i = pending.findIndex((p) => p.release_identity === e.release_identity);
-        if (i >= 0) pending.splice(i, 1);
-      }
-    }
-    const inFlight = pending[pending.length - 1];
-    if (!inFlight) return; // nothing in flight — server-side revert already recorded
-    ledger.append({
-      id: randomUUID(),
-      kind: 'apply_reverted',
-      at: now,
-      from_version: inFlight.from_version,
-      to_version: inFlight.to_version,
-      channel: inFlight.channel,
-      trigger: 'revert',
-      release_identity: inFlight.release_identity,
-      migration: inFlight.migration ?? false,
-      detail: `launcher boot-health revert: ${reason}`,
-    });
-  } catch {
-    /* best-effort — never block the recovery revert on a ledger write */
-  }
-};
 
 // ────────────────────────────────────────────────────────────────
 // IO loop
@@ -382,10 +374,6 @@ export interface RunLauncherOptions {
   /** Baked initial binary path (image-side, e.g. `/opt/recued-seed/recued`).
    *  Copied into `binDir` on first boot when the volume has no binary yet. */
   seedBinaryPath?: string;
-  /** Data-volume root holding the update ledger (`updates.log`). Defaults to the
-   *  parent of `binDir` (`/data`). The launcher records its boot-health revert
-   *  there so the server's apply lock stays consistent. */
-  dataDir?: string;
   /** Crash backoff before re-exec (ms). Tests pass 0. */
   crashBackoffMs?: number;
   /** Injected spawn-and-wait → resolved exit code. Tests stub it. */
@@ -409,12 +397,10 @@ export const runLauncher = async (opts: RunLauncherOptions): Promise<number> => 
   const currentPath = join(binDir, 'recued');
   const oldPath = `${currentPath}${OLD_SUFFIX}`;
   const addonPath = addonPathFor(currentPath);
-  const counterPath = join(binDir, 'boot-failures.json');
-  const ledgerPath = join(opts.dataDir ?? dirname(binDir), UPDATE_LEDGER_FILE);
+  const counterPath = join(binDir, BOOT_FAILURE_COUNTER_FILE);
   const runBinary = opts.runBinary ?? defaultRunBinary;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const log = opts.log ?? ((m: string) => console.error(`[launcher] ${m}`));
-  const now = () => Date.now();
   const baseEnv = opts.env ?? process.env;
   const crashBackoffMs = opts.crashBackoffMs ?? 2000;
 
@@ -438,6 +424,15 @@ export const runLauncher = async (opts: RunLauncherOptions): Promise<number> => 
   const MAX_ITERATIONS = 50;
 
   for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
+    const repairedSignatures = repairInterruptedOutgoingSignatures(
+      currentPath,
+      oldPath,
+      addonPath,
+      opts.pubkey,
+    );
+    if (repairedSignatures > 0) {
+      log(`repaired ${repairedSignatures} interrupted detached-signature move(s)`);
+    }
     // Whole-payload verification (exe + addon). The `.old` candidate is paired
     // with the `.old` ADDON, not the live one — see `verifyPayloadSignature`.
     const decision = decideLaunch({
@@ -455,15 +450,43 @@ export const runLauncher = async (opts: RunLauncherOptions): Promise<number> => 
     }
     if (decision.action === 'revert-and-exec-old') {
       log(`auto-revert to previous binary: ${decision.reason}`);
-      try {
-        // Record the terminal FIRST (while the in-flight `apply_started` is
-        // still derivable + `recued.old` still present) so the server's apply
-        // lock can never wedge if the swap below is interrupted.
-        recordLedgerRevert(ledgerPath, decision.reason, now());
-        revertToOld(currentPath, oldPath);
-        resetFailureCount(counterPath);
-      } catch (err) {
-        log(`revert failed: ${err instanceof Error ? err.message : String(err)}`);
+      // ⛔⛔⛔ THE REVERT IS PERFORMED BY THE BINARY WE ARE REVERTING TO, NOT HERE.
+      // This used to swap the files itself — and swapping the BINARY PAIR is all
+      // it ever did. No pre-migration snapshot, no webclient, no check that the
+      // revert was even safe. So a `docker-thin` install whose new release had
+      // migrated came back on the OLD binary against the NEW schema, behind the
+      // NEW webclient, with `recued.old` consumed and a terminal written — which
+      // is the state from which nothing downstream can retry.
+      //
+      // 🔑 IT IS NOT A COPY THAT DRIFTED BY ACCIDENT; IT IS A COPY, AND COPIES
+      // DRIFT. The same rule lives in `update/supervised-boot-failure.ts`, and
+      // this file may not import it: it is the frozen image entrypoint, bundled
+      // standalone, deliberately free of the changing engine (I-9). The binary
+      // channel met this exact wall and answered it by having its supervising
+      // script run the verdict IN `recued.old`. This is that answer, here.
+      //
+      // ⚠ EXEC'ING `recued.old` IS ALREADY SANCTIONED AT THIS POINT, and only at
+      // this point: `decideLaunch` returns `revert-and-exec-old` ONLY when the
+      // previous payload passed its full signature re-verify. We are about to run
+      // it as the server anyway.
+      //
+      // ⚠ AND THE DECISION STAYS HERE. `--reason` carries it, because the
+      // launcher reverts for causes no exit code can express — a current binary
+      // that is missing, or one that fails I-2 verification — which is why this
+      // asks for the ACT and not for a verdict.
+      const verdict = await runBinary(
+        oldPath,
+        ['revert-release', '--bin-dir', binDir, '--reason', decision.reason, ...opts.args],
+        baseEnv,
+      );
+      if (verdict !== 0) {
+        // ⛔ HALT, DO NOT SWAP ANYWAY. A refusal here means the revert would be
+        // unsafe (the failed release migrated and there is no snapshot) or the
+        // previous binary could not run it — and a previous binary that cannot
+        // run cannot serve either, so reverting to it would only trade a halt for
+        // a crash loop. Both want an operator, and the log line is what tells
+        // them. Nothing has been changed on disk.
+        log(`the previous binary did not complete the revert (exit ${verdict}) — halting`);
         return 1;
       }
       continue; // re-decide over the reverted binary

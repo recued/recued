@@ -20,6 +20,7 @@ param(
   [string] $Artifacts = 'C:\artifacts',
   [int]    $BasePort  = 7791,
   [int]    $TimeoutSec= 45,
+  [string] $ExpectedVersion = '',
   # PROTOTYPE (single-file): '1' INVERTS the sidecar assertion below. A binary
   # carrying the addon as a SEA asset must boot with NO lib\better_sqlite3.node
   # present -- and if one were lying around, the run would prove nothing about
@@ -56,6 +57,14 @@ foreach ($triple in ($Triples -split ',' | ForEach-Object { $_.Trim() } | Where-
       Write-Output '  MISSING SIDECAR'; $results += "$triple=MISSING"; $port++; continue
     }
   }
+
+  $reportedVersion = ''
+  $versionOk = $false
+  try {
+    $reportedVersion = ((& $bin --version 2>&1 | Out-String).Trim())
+    $versionOk = ($LASTEXITCODE -eq 0) -and ($ExpectedVersion -ne '') -and ($reportedVersion -ceq $ExpectedVersion)
+  } catch { $versionOk = $false }
+  Write-Output ('  version      = ' + $(if ($versionOk) { $reportedVersion } else { "FAILED (got '$reportedVersion', expected '$ExpectedVersion')" }))
 
   Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
   New-Item -ItemType Directory -Force -Path $root | Out-Null
@@ -157,7 +166,7 @@ foreach ($triple in ($Triples -split ',' | ForEach-Object { $_.Trim() } | Where-
 
   if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
   Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
-  $results += ("$triple=" + $(if ($dbSeen -and $portSeen -and $wsOk -and $dmnOk) { 'OK' } else { 'FAILED' }))
+  $results += ("$triple=" + $(if ($versionOk -and $dbSeen -and $portSeen -and $wsOk -and $dmnOk) { 'OK' } else { 'FAILED' }))
   $port++
 }
 

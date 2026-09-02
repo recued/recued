@@ -674,6 +674,82 @@ describe('credential rotation tab convergence', () => {
     convergence.close();
   });
 
+  // ⛔⛔ THE MESSAGE, NOT JUST THE CALL. A receipt was accepted on
+  // `awaiting_reconnect` alone and DROPPED IN SILENCE on any other phase — so the
+  // page could publish an `applying` latch carrying its operation id, see the
+  // call succeed, and leave behind a latch that named nothing. A dropped notify
+  // is indistinguishable from a notify nobody made, which is why a stub with no
+  // such rule keeps every caller's test green while production loses the id.
+  it('carries a receipt on an applying latch, not only on an accepted restart', () => {
+    const { storage } = memoryStorage();
+    const tab = createBrowserCredentialRotationTabConvergence({
+      document: fakeDocument(storage).document,
+      scopeId: 'profile-latch',
+      storage,
+      now: () => 100,
+      eventId: () => 'latch-applying',
+    })!;
+
+    tab.notifyServerUpdateProgress({
+      phase: 'applying',
+      operation: 'update',
+      operationId: 'op-42',
+    });
+    expect(tab.readServerUpdateProgress()).toMatchObject({
+      phase: 'applying',
+      operation: 'update',
+      operationId: 'op-42',
+    });
+    tab.close();
+  });
+
+  // ⛔⛔ THE REAP RESTS ON ONE PREMISE — that nobody can advance an "applying"
+  // latch once its owner is gone — and a receipt makes that premise FALSE: any
+  // tab can ask the server what became of that exact operation. Retiring it
+  // anyway throws away the only pointer to a run that is still going, which is
+  // the whole reason the id is on the latch.
+  it('keeps an ownerless applying latch that names its operation', async () => {
+    const { storage } = memoryStorage();
+    const locks = exclusiveLocks();
+    const owner = createBrowserCredentialRotationTabConvergence({
+      document: fakeDocument(storage).document,
+      scopeId: 'profile-receipt',
+      storage,
+      ownershipLockProvider: locks.provider,
+      now: () => 100,
+      eventId: () => 'owner-receipt',
+    })!;
+    const sibling = createBrowserCredentialRotationTabConvergence({
+      document: fakeDocument(storage).document,
+      scopeId: 'profile-receipt',
+      storage,
+      ownershipLockProvider: locks.provider,
+      now: () => 101,
+      eventId: () => 'sibling-receipt',
+    })!;
+
+    const ownerLease = await owner.claimServerUpdateOwnership();
+    expect(ownerLease).not.toBeNull();
+    owner.notifyServerUpdateProgress({
+      phase: 'applying',
+      operation: 'update',
+      operationId: 'op-42',
+    });
+
+    owner.close();
+    await vi.waitFor(() => expect(
+      locks.isHeld(serverUpdateOwnershipLockName('profile-receipt')),
+    ).toBe(false));
+
+    // Ownerless, and kept: the receipt is what makes it answerable.
+    expect(await sibling.reconcileServerUpdateProgress()).toMatchObject({
+      phase: 'applying',
+      operation: 'update',
+      operationId: 'op-42',
+    });
+    sibling.close();
+  });
+
   it('elects one update owner per profile and clears only an orphaned applying marker', async () => {
     const { storage, values } = memoryStorage();
     const locks = exclusiveLocks();
@@ -844,6 +920,19 @@ describe('credential rotation tab convergence', () => {
       key,
       envelope('late-current-apply', 'applying', 200, 'rollback'),
     );
+    expect(convergence.readServerUpdateProgress()).toEqual({
+      phase: 'awaiting_reconnect',
+      operation: 'rollback',
+      startedAt: 200,
+      operationId: 'rollback-receipt',
+    });
+    // The same regression can arrive locally when an rpc acceptance resolves
+    // after the bootstrap listener has already advanced the terminal event.
+    convergence.notifyServerUpdateProgress({
+      phase: 'applying',
+      operation: 'rollback',
+      operationId: 'rollback-receipt',
+    });
     expect(convergence.readServerUpdateProgress()).toEqual({
       phase: 'awaiting_reconnect',
       operation: 'rollback',

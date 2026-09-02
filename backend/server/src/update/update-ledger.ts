@@ -25,9 +25,11 @@ export const UPDATE_LEDGER_FILE = 'updates.log';
 /** The lifecycle events an update produces. Two-phase apply walks
  *  `apply_started → apply_staged → (apply_committed | apply_reverted)`; rollback
  *  emits `rolled_back` (with snapshot metadata when it restored one); a restore
- *  replay emits `restore_replayed`. `operation_closed` is an owner-reviewed
- *  recovery marker for a receipt the server can no longer resolve; it makes no
- *  claim about whether that operation succeeded. */
+ *  replay emits `restore_replayed`. `operation_reserved` makes an RPC receipt
+ *  durable before its first asynchronous manifest read; `operation_refused`
+ *  settles a reservation that never reached `apply_started`. `operation_closed`
+ *  is an owner-reviewed recovery marker for a receipt the server can no longer
+ *  resolve; it makes no claim about whether that operation succeeded. */
 export type UpdateLedgerKind =
   | 'apply_started'
   | 'apply_staged'
@@ -36,6 +38,8 @@ export type UpdateLedgerKind =
   | 'rolled_back'
   | 'snapshot_taken'
   | 'restore_replayed'
+  | 'operation_reserved'
+  | 'operation_refused'
   | 'operation_closed';
 
 export interface UpdateLedgerEntry {
@@ -54,16 +58,30 @@ export interface UpdateLedgerEntry {
   release_identity: string;
   /** The applied release migrated the schema — drives the rollback guard. */
   migration?: boolean;
-  /** Snapshot file path when a pre-migration snapshot was taken/restored. */
+  /** Realm-scoped snapshot path reserved by an apply. It is present on the
+   * opening entry before the snapshot itself is taken so sibling realms can
+   * identify the owner of a shared-directory ledger. */
   snapshot_ref?: string;
   /** Free-form non-secret detail (e.g. a revert reason). */
   detail?: string;
+  /** A pre-swap webclient promotion could not be compensated before this
+   * `apply_reverted` terminal was written. The terminal still releases the
+   * update operation; this durable bit tells pre-open recovery that the
+   * retained webclient journal remains an obligation rather than stale debris. */
+  webclient_recovery_pending?: boolean;
   /** Present only on `operation_closed`: the opaque receipt whose unresolved
    * recovery was durably retired. This remains server-local ledger material. */
   closed_operation_id?: string;
   /** Present only on `operation_closed`: the operation the owner expected.
    * This labels the unresolved closure; it does not assert an outcome. */
   closed_operation?: 'update' | 'rollback';
+  /** Present on receipt reservation/refusal rows. The real `apply_started` row
+   * keeps this value as its own `id` for backward compatibility. */
+  reserved_operation_id?: string;
+  reserved_operation?: 'update' | 'rollback';
+  /** Process that owns an unresolved reservation. A later boot can safely
+   * settle only reservations belonging to a dead predecessor. */
+  reservation_process_id?: number;
 }
 
 export type UpdateLedger = JsonlLedger<UpdateLedgerEntry>;

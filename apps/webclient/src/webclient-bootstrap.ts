@@ -151,6 +151,7 @@ import type {
   ReachabilityReport,
   RpcRequest,
   ServerRpcRegistry,
+  UpdateOperationStatusResponse,
   WebclientServerProfile,
   WebclientTokenRecord,
 } from '@recued/contracts';
@@ -1450,6 +1451,7 @@ interface WebclientShell {
 }
 
 const WEBCLIENT_SHELL_DRAWER_ID = 'webclient-shell-drawer';
+const SERVER_UPDATE_APPLY_RECEIPT_POLL_DELAY_MS = 2_500;
 
 /** Best-effort focus — guarded so the fake-DOM tests (no `.focus`) + detached
  *  nodes never throw out of an open/close transition. */
@@ -2315,7 +2317,8 @@ export interface BootstrapWebclientOptions {
   recoveryIntentContinuationStorage?:
     RecoveryIntentContinuationStorage | null;
   /** Bounded receipt-retry timer seam. Production uses a short setTimeout;
-   * tests may capture callbacks without sleeping. */
+   * tests may capture callbacks without sleeping. Shared by accepted-restart
+   * verification and the applying-receipt poll. */
   serverUpdateReceiptScheduleRetry?:
     ServerUpdateReceiptVerificationScheduler;
   /** D-219 item 2b — same-tab carrier for an AI-written recipe draft. Defaults
@@ -4476,6 +4479,9 @@ export const bootstrapWebclient = async (
     () => undefined;
   let detachCredentialRotationCapabilityReconnect: () => void =
     () => undefined;
+  /** The apply's terminal, consumed OUTSIDE the settings route — see where it is
+   *  wired for why the route cannot be the only listener. */
+  let detachServerUpdateProgress: () => void = () => undefined;
   let detachServerUpdateReceiptVerification: () => void =
     () => undefined;
   type UntypedRpcCall = (method: string, payload?: unknown) => Promise<unknown>;
@@ -7449,6 +7455,12 @@ export const bootstrapWebclient = async (
     readonly startedAt: number;
   } | null = null;
   let credentialRotationCapabilityCheckGeneration = 0;
+  const scheduleServerUpdateReceiptRetry:
+    ServerUpdateReceiptVerificationScheduler =
+      options.serverUpdateReceiptScheduleRetry ?? ((callback, delayMs) => {
+        const handle = globalThis.setTimeout(callback, delayMs);
+        return () => globalThis.clearTimeout(handle);
+      });
   serverUpdateReceiptVerification =
     createServerUpdateReceiptVerification({
       readProgress: () => credentialRotationTabConvergence
@@ -7519,18 +7531,168 @@ export const bootstrapWebclient = async (
       clearProgress: async (progress) =>
         await credentialRotationTabConvergence
           ?.clearServerUpdateProgress(progress) ?? false,
-      ...(options.serverUpdateReceiptScheduleRetry !== undefined
-        ? { scheduleRetry: options.serverUpdateReceiptScheduleRetry }
-        : {}),
+      scheduleRetry: scheduleServerUpdateReceiptRetry,
     });
   detachServerUpdateReceiptVerification =
     serverUpdateReceiptVerification.subscribe((state) => {
       credentialRotationServerUpdateContinuity
         .observeServerUpdateVerification(state);
     });
+  // ⛔⛔ THE APPLY'S OUTCOME IS NOT THE SETTINGS ROUTE'S PROPERTY. D-257 made the
+  // apply asynchronous — the rpc answers `applying` and the real status arrives
+  // here, minutes later — and the only listener was inside Settings → Updates,
+  // whose own card says "You can leave this page". Taking that invitation
+  // detached the listener, so the terminal (a FAILURE included) landed with
+  // nobody to hear it and the durable latch was never advanced to the
+  // `awaiting_reconnect` state the receipt check engages on. The run completed
+  // and its outcome was unobservable.
+  //
+  // 🔑 SO THE LATCH IS ADVANCED HERE, at bootstrap scope, which outlives every
+  // route. The page keeps its own subscription for what only it can do — render
+  // the result, release its ownership lease — and this owns the durable half.
+  //
+  // ⚠ A kind the client does not NAME never arrives: this seam is live only
+  // because `update.progress` is in `WEBCLIENT_DEFAULT_SUBSCRIPTIONS`.
+  let cancelOrphanApplyReceiptRetry: (() => void) | null = null;
+  const cancelOrphanApplyReceiptPoll = (): void => {
+    cancelOrphanApplyReceiptRetry?.();
+    cancelOrphanApplyReceiptRetry = null;
+  };
+  detachServerUpdateProgress = subscriber.on('update.progress', (event) => {
+    // Non-terminal phases are ledger transitions; only the emit carrying a
+    // status ends the run.
+    if (event.status === undefined) return;
+    const progress = credentialRotationTabConvergence?.readServerUpdateProgress() ?? null;
+    if (progress === null || progress.operation !== 'update') return;
+    if (
+      event.operation_id !== undefined
+      && progress.operationId !== undefined
+      && event.operation_id !== progress.operationId
+    ) return;
+    cancelOrphanApplyReceiptPoll();
+    if (event.status === 'restarting') {
+      credentialRotationTabConvergence?.notifyServerUpdateProgress({
+        phase: 'awaiting_reconnect',
+        operation: 'update',
+        ...(event.operation_id === undefined
+          ? {}
+          : { operationId: event.operation_id }),
+      });
+      return;
+    }
+    // Anything else ended the run WITHOUT a restart, so there is no reconnect to
+    // wait for and nothing left to verify: retire the latch so the owner is not
+    // left looking at an update that is not happening.
+    void credentialRotationTabConvergence?.clearServerUpdateProgress(progress);
+  });
+  let orphanApplyReconcileQueued = false;
   const reconcileServerUpdateOutcome = (): void => {
     if (disposed) return;
     serverUpdateReceiptVerification?.reconcile();
+    if (orphanApplyReconcileQueued) return;
+    orphanApplyReconcileQueued = true;
+    // A route deliberately persists its caller-minted receipt immediately
+    // BEFORE dispatch so a lost rpc reply remains answerable. The convergence
+    // emitter is synchronous, so probing inline here used to put
+    // `update.operation_status` on the wire before `update.apply`/`rollback`
+    // could reserve that receipt; the truthful `unknown` answer then erased it.
+    // Defer one microtask: the initiating click stack dispatches first, while a
+    // restored/bootstrap latch still probes during this same event-loop turn.
+    void Promise.resolve().then(async () => {
+      orphanApplyReconcileQueued = false;
+      await resolveOrphanedApplyLatch();
+    });
+  };
+  /** ⛔⛔ THE ONE TERMINAL NOBODY COULD HEAR: the one that fired while this tab
+   *  was RELOADING. The subscription above catches every terminal from a live
+   *  tab, and the durable latch now survives a route change so the run stays
+   *  answerable — but a reload tears down the listener and rebuilds it, and an
+   *  apply that ended in that gap leaves an `applying` latch nothing will ever
+   *  advance. That latch blocks the Update button, so the failure mode of the
+   *  fix would be an owner permanently unable to update.
+   *
+   *  🔑 A RECEIPT IS EXACTLY WHAT MAKES THAT ANSWERABLE. Ask the server what
+   *  became of that operation: still running (`waiting_for_restart`) leaves the
+   *  latch alone, because it is telling the truth; anything terminal retires it.
+   *  This is the reason the id is reserved at acceptance rather than reported
+   *  at the end.
+   *
+   *  ⚠ A `waiting_for_restart` ANSWER IS A SNAPSHOT, NOT A TERMINAL. A normal
+   *  restart tears down the transport and re-arms the read against the returned
+   *  server. But a refused/failed apply can reach its terminal without taking
+   *  this socket down, and its best-effort terminal broadcast can be lost. A
+   *  bounded-interval exact-receipt poll therefore continues on the same
+   *  transport until an outcome, a disconnect, a newer lineage, or disposal. */
+  let probedApplyReceipt: string | null = null;
+  let applyProbeTransportGeneration = 0;
+  const scheduleOrphanApplyReceiptPoll = (
+    receipt: string,
+    requestGeneration: number,
+  ): void => {
+    cancelOrphanApplyReceiptPoll();
+    cancelOrphanApplyReceiptRetry = scheduleServerUpdateReceiptRetry(() => {
+      cancelOrphanApplyReceiptRetry = null;
+      const current = credentialRotationTabConvergence
+        ?.readServerUpdateProgress() ?? null;
+      if (
+        disposed
+        || requestGeneration !== applyProbeTransportGeneration
+        || connectionStatus.status() !== 'connected'
+        || current?.phase !== 'applying'
+        || current.operationId !== receipt
+      ) return;
+      probedApplyReceipt = null;
+      reconcileServerUpdateOutcome();
+    }, SERVER_UPDATE_APPLY_RECEIPT_POLL_DELAY_MS);
+  };
+  const resolveOrphanedApplyLatch = async (): Promise<void> => {
+    if (disposed) return;
+    const progress = credentialRotationTabConvergence?.readServerUpdateProgress() ?? null;
+    const receipt = progress?.phase === 'applying' ? progress.operationId : undefined;
+    if (progress === null || receipt === undefined) {
+      cancelOrphanApplyReceiptPoll();
+      return;
+    }
+    if (
+      probedApplyReceipt === receipt
+      || connectionStatus.status() !== 'connected'
+    ) return;
+    cancelOrphanApplyReceiptPoll();
+    probedApplyReceipt = receipt;
+    const requestGeneration = applyProbeTransportGeneration;
+    let outcome: UpdateOperationStatusResponse;
+    try {
+      outcome = await rpcConn.call('update.operation_status', {
+        operation_id: receipt,
+        include_closed: true,
+      });
+    } catch {
+      // Unreachable or refused: leave the latch and retry at the same bounded
+      // interval. The latch is the honest state — we do not know that the run
+      // ended — but one transient reply loss must not make it permanent.
+      if (requestGeneration === applyProbeTransportGeneration) {
+        scheduleOrphanApplyReceiptPoll(receipt, requestGeneration);
+      }
+      return;
+    }
+    // A reply from the transport that just went away cannot settle the lineage
+    // now being checked against its replacement. The disconnect invalidates the
+    // one-shot guard and the connected callback issues a fresh exact-receipt read.
+    if (
+      disposed
+      || requestGeneration !== applyProbeTransportGeneration
+    ) return;
+    if (outcome.status === 'waiting_for_restart') {
+      scheduleOrphanApplyReceiptPoll(receipt, requestGeneration);
+      return;
+    }
+    cancelOrphanApplyReceiptPoll();
+    // `unknown` means the server cannot resolve this receipt at all (a different
+    // realm, or a ledger that no longer holds it) — which is as terminal for this
+    // tab as a real outcome: nothing further will ever advance the latch.
+    const current = credentialRotationTabConvergence?.readServerUpdateProgress() ?? null;
+    if (current === null || current.operationId !== receipt) return;
+    await credentialRotationTabConvergence?.clearServerUpdateProgress(current);
   };
   const reconcileCredentialRotationServerCapability = (
     hint: CredentialRotationTabHint,
@@ -7662,6 +7824,14 @@ export const bootstrapWebclient = async (
     connectionStatus.onStatus((status) => {
       const progress = credentialRotationTabConvergence
         ?.readServerUpdateProgress() ?? null;
+      if (status !== 'connected' && progress?.phase === 'applying') {
+        // `waiting_for_restart` on the old server is not an outcome. Re-arm the
+        // exact receipt for the next connected transport, and disown any reply
+        // still racing back from this one.
+        cancelOrphanApplyReceiptPoll();
+        applyProbeTransportGeneration += 1;
+        probedApplyReceipt = null;
+      }
       if (progress === null) {
         serverUpdateReconnectProof = null;
       } else if (
@@ -8302,7 +8472,7 @@ export const bootstrapWebclient = async (
     ? (args) => rpcConn.call('update.apply', args, { timeout: 900_000 })
     : undefined;
   const updateRollbackCaller: UpdateRollbackCaller | undefined = updatesEnabled
-    ? () => rpcConn.call('update.rollback', undefined)
+    ? (args) => rpcConn.call('update.rollback', args)
     : undefined;
   const connectionsCredentialRotationServerUpdateTriageCaller:
     ConnectionsCredentialRotationServerUpdateTriageCaller | undefined =
@@ -10618,12 +10788,21 @@ export const bootstrapWebclient = async (
                   status?: Awaited<ReturnType<UpdateApplyCaller>>['status'];
                   detail?: string;
                   to_version?: string;
+                  operation_id?: string;
                 }) => void) => subscriber.on('update.progress', (event) => {
                   cb({
                     phase: event.phase,
                     ...(event.status === undefined ? {} : { status: event.status }),
                     ...(event.detail === undefined ? {} : { detail: event.detail }),
                     ...(event.to_version === undefined ? {} : { to_version: event.to_version }),
+                    // ⛔ FORWARD `operation_id`. It rides the TERMINAL emit and is
+                    // what `serverUpdateReceiptVerification` confirms the exact
+                    // operation with after the reconnect a restart forces. Dropping
+                    // it disarmed that check silently — the contract's own comment
+                    // warns this is exactly how it breaks.
+                    ...(event.operation_id === undefined
+                      ? {}
+                      : { operation_id: event.operation_id }),
                   });
                 }),
               },
@@ -12999,6 +13178,9 @@ export const bootstrapWebclient = async (
       detachCredentialRotationCapabilityLineage = () => undefined;
       detachCredentialRotationCapabilityReconnect();
       detachCredentialRotationCapabilityReconnect = () => undefined;
+      detachServerUpdateProgress();
+      detachServerUpdateProgress = () => undefined;
+      cancelOrphanApplyReceiptPoll();
       detachServerUpdateReceiptVerification();
       detachServerUpdateReceiptVerification = () => undefined;
       serverUpdateReceiptVerification?.dispose();

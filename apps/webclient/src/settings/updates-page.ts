@@ -25,6 +25,8 @@ import type {
   UpdateMode,
   UpdateModeStatus,
   UpdateRollbackResponse,
+  UpdateRollbackArgs,
+  UpdateApplyArgs,
 } from '@recued/contracts';
 import type {
   ServerUpdateReceiptVerificationState,
@@ -48,7 +50,7 @@ import type {
   WebclientConnectionStatus,
   WebclientConnectionStatusController,
 } from '../realtime/connection-status.js';
-import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
 
 export const UPDATES_PAGE_ATTR = 'data-recued-updates-page';
 export const UPDATES_PAGE_STATE_ATTR = 'data-recued-updates-page-state';
@@ -60,6 +62,12 @@ export const UPDATES_AVAILABLE_ATTR = 'data-recued-updates-available';
 export const UPDATES_APPLY_BTN_ATTR = 'data-recued-updates-apply';
 export const UPDATES_FORCE_APPLY_BTN_ATTR = 'data-recued-updates-force-apply';
 export const UPDATES_APPLY_RESULT_ATTR = 'data-recued-updates-apply-result';
+/** Present on the available-release card when this install is OUTSIDE the staged
+ *  rollout cohort, i.e. clicking Update is an early adoption. */
+export const UPDATES_ROLLOUT_NOTICE_ATTR = 'data-recued-updates-rollout-notice';
+/** On the Update button while it is ARMED but not yet confirmed for an
+ *  out-of-cohort (early) install. */
+export const UPDATES_ROLLOUT_CONFIRM_ATTR = 'data-recued-updates-rollout-confirm';
 export const UPDATES_MODE_SELECT_ATTR = 'data-recued-updates-mode';
 export const UPDATES_MODE_NOTE_ATTR = 'data-recued-updates-mode-note';
 export const UPDATES_ROLLBACK_BTN_ATTR = 'data-recued-updates-rollback';
@@ -82,6 +90,27 @@ export const UPDATES_TAB_PROGRESS_STATUS_ATTR =
   'data-recued-updates-tab-progress-status';
 export const UPDATES_TAB_PROGRESS_PRIVACY_ATTR =
   'data-recued-updates-tab-progress-privacy';
+/** ⛔⛔ THE PHASES THAT NEED NOBODY — the NORMAL path, where Recued is confirming
+ *  the operation and retrying on its own. The receipt-recovery panel is hidden
+ *  for exactly these; every other phase shows it.
+ *
+ *  The panel used to appear at `waiting`, so an ordinary update surfaced a panel
+ *  about "receipts" and the machinery for a rare case colonised the common one.
+ *  Reported 2026-08-31.
+ *
+ *  🔑 A LIST OF WHAT TO HIDE, NOT WHAT TO SHOW, AND THAT DIRECTION IS THE POINT.
+ *  Listing the problem phases meant any phase added to the verification
+ *  controller later defaulted to HIDDEN — I wrote that version first and it
+ *  stranded `reviewing_closure` and `closing`, i.e. the owner mid-recovery with
+ *  the panel gone. Inverted, a new phase defaults to VISIBLE: showing a step
+ *  nobody needs is noise, hiding one they do is a dead end.
+ *
+ *  ⚠ One definition, two consumers (this panel and the progress banner). */
+const RECEIPT_SELF_RESOLVING_PHASES: ReadonlySet<string> = new Set([
+  'checking',
+  'waiting',
+]);
+
 export const UPDATES_RECEIPT_RECOVERY_ATTR =
   'data-recued-updates-receipt-recovery';
 export const UPDATES_RECEIPT_RETRY_ATTR =
@@ -248,8 +277,24 @@ export const UPDATES_POLL_INTERVAL_MS = 6 * 60 * 60 * 1000;
 export type UpdateCheckCaller = () => Promise<ReleaseCheckResponse>;
 export type UpdateModeGetCaller = () => Promise<UpdateModeStatus>;
 export type UpdateModeSetCaller = (args: { mode: UpdateMode }) => Promise<UpdateModeStatus>;
-export type UpdateApplyCaller = (args: { force?: boolean }) => Promise<UpdateApplyResponse>;
-export type UpdateRollbackCaller = () => Promise<UpdateRollbackResponse>;
+/** ⛔ THE ARGS TYPE IS THE CONTRACT'S, NOT A HAND-WRITTEN SUBSET. It read
+ *  `{ force?: boolean }` while the call site was already passing
+ *  `expected_release_identity` and `confirm_rollout` — which compiled only
+ *  because both go in through SPREADS, and TypeScript skips excess-property
+ *  checking on those. So the port silently stopped describing the call years
+ *  before anything noticed; the first DIRECT property added to that literal is
+ *  what surfaced it. */
+export type UpdateApplyCaller = (args: UpdateApplyArgs) => Promise<UpdateApplyResponse>;
+export type UpdateRollbackCaller = (args: UpdateRollbackArgs) => Promise<UpdateRollbackResponse>;
+
+interface UpdateProgressEvent {
+  phase: string;
+  status?: UpdateApplyResponse['status'];
+  detail?: string;
+  to_version?: string;
+  /** On the terminal emit; binds this global event to one accepted operation. */
+  operation_id?: string;
+}
 
 export interface MountUpdatesPageOptions {
   host: HTMLElement;
@@ -308,12 +353,7 @@ export interface MountUpdatesPageOptions {
    *  back from the rpc: an OLD server blocks and answers the old way, and the
    *  hosted webclient meets old servers constantly. */
   updateProgress?: {
-    subscribe: (cb: (event: {
-      phase: string;
-      status?: UpdateApplyResponse['status'];
-      detail?: string;
-      to_version?: string;
-    }) => void) => () => void;
+    subscribe: (cb: (event: UpdateProgressEvent) => void) => () => void;
   };
   serverUpdateReceiptVerification?: Pick<
     ServerUpdateReceiptVerificationController,
@@ -344,6 +384,10 @@ export interface UpdatesPageState {
   check: ReleaseCheckResponse | null;
   checkError: string | null;
   applying: boolean;
+  /** The owner has armed an early (out-of-cohort) install on this card. Reset by
+   *  every fresh check, so a new release has to be confirmed on its own terms
+   *  rather than inheriting consent given for the previous one. */
+  rolloutConfirmed: boolean;
   applyResult: UpdateApplyResponse | null;
   /** D-257 — the latest ledger phase of a run the server accepted, so the page
    *  can say something true while a multi-minute apply is in flight rather than
@@ -373,7 +417,10 @@ const CHECK_STATUS_COPY: Readonly<Record<ReleaseCheckStatus, string>> = {
   'update-available': '',
   'up-to-date': "You're on the latest version.",
   'not-configured': "Automatic updates aren't configured on this server yet.",
-  'stale-feed': 'The release feed is past its freshness window — not acting on it.',
+  // ⛔ LEGACY — only a server old enough to still gate on `expires_at` can
+  // produce this; the freshness gate was removed 2026-09-01. Say what is
+  // actionable (update that server) rather than teaching a retired concept.
+  'stale-feed': 'This server is on an older release check that ignores the current feed. Re-run the installer on it to update.',
   'launcher-outdated': 'The launcher is too old to apply updates; update the launcher first.',
   replay: 'The release feed served an older manifest than this server has already seen (ignored).',
   'fetch-failed': "Couldn't reach the release feed.",
@@ -384,7 +431,7 @@ const BASELINE_POSTURE_COPY: Readonly<Record<ReleaseCheckStatus, string>> = {
   'update-available': 'A newer release is available now.',
   'up-to-date': 'The release feed reports this version is current.',
   'not-configured': 'In-place release checks are not configured on this server.',
-  'stale-feed': 'The release feed is stale, so Recued will not act on it.',
+  'stale-feed': 'This server is on an older release check that ignores the current feed.',
   'launcher-outdated': 'The launcher must be updated before an in-place update.',
   replay: 'The server ignored an older release manifest.',
   'fetch-failed': 'The running version is confirmed, but the release feed is unreachable.',
@@ -402,6 +449,10 @@ const APPLY_STATUS_COPY: Readonly<Record<UpdateApplyResponse['status'], string>>
   'verify-failed': 'The downloaded update failed signature verification.',
   'stage-failed': 'Staging the update failed.',
   'not-applicable': 'This install updates via its image or package, not in place.',
+  // ⛔ NOT AN ERROR — the offer changed under the card. The server refused rather
+  // than spending a confirmation the owner gave for a different version.
+  'review-stale': 'A newer release was published while you were reading. Reviewing it now — '
+    + 'confirm again to install it.',
   'not-available': 'No installable update is available right now.',
   'not-configured': "Automatic updates aren't configured on this server yet.",
 };
@@ -446,6 +497,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     check: null,
     checkError: null,
     applying: false,
+    rolloutConfirmed: false,
     applyResult: null,
     applyPhase: null,
     applyError: null,
@@ -829,7 +881,15 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   const rollbackBlock = make('div');
   rollbackBlock.appendChild(
     make('p', {
-      text: 'If a recent update caused problems, you can return to the previous version (the pre-update database snapshot is restored).',
+      // ⛔ CONDITIONAL, NOT A PROMISE. This said the snapshot "is restored" flatly,
+      // regardless of whether the applied release migrated anything or whether a
+      // snapshot exists at all — and a snapshot-restoring rollback is REFUSED
+      // from here anyway (it cannot replace the database file under a live
+      // server; that one is a stopped-server CLI operation). Promising it on the
+      // surface that cannot do it is the worst of both.
+      text: 'If a recent update caused problems, you can return to the previous version. '
+        + 'If that update migrated the database, restoring its pre-update snapshot has to be '
+        + 'done with the server stopped: recued update rollback.',
     }),
   );
   const rollbackBtn = make('button', {
@@ -857,6 +917,25 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   host.appendChild(root);
 
   let disposed = false;
+  /** Held across an ASYNC apply. The rpc returns `applying` and the run is still
+   *  going, so the ownership lease must outlive the call that started it and be
+   *  released by the terminal `update.progress` emit instead. */
+  let pendingApplyLease: CredentialRotationOwnershipLease | null = null;
+  /** Rollback can restart the server before its rpc reply arrives. Disposal must
+   * therefore own this lease from dispatch onward, just as it owns apply's. */
+  let pendingRollbackLease: CredentialRotationOwnershipLease | null = null;
+  /** The shared-progress lineage this page owns across an ASYNC apply. Captured
+   *  when the apply starts and cleared by the terminal `update.progress` event —
+   *  which is the only place that knows the run is over. */
+  let pendingApplyProgress: ServerUpdateTabProgress | null = null;
+  /** True only between dispatch and the apply rpc reply. Progress is parked
+   * before dispatch so disposal can own it; it can no longer double as this
+   * ordering sentinel for a terminal that beats acceptance. */
+  let applyAcceptancePending = false;
+  /** An older async server may mint its own id and emit the terminal before its
+   * rpc reply tells us that id. Hold one mismatch only across that response
+   * window; the reply either binds it to this run or proves it belongs elsewhere. */
+  let deferredUpdateTerminal: UpdateProgressEvent | null = null;
   let receiptDiagnosticCopyInFlight = false;
   let receiptDiagnosticGeneration = 0;
   let receiptDiagnosticKey: string | null = null;
@@ -952,6 +1031,23 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     }
   };
 
+  /** Return the current shared latch only when it is still the exact applying
+   * lineage this route created. A route-disposal reply may refine that lineage,
+   * but it must never recreate one bootstrap cleared or overwrite a successor. */
+  const exactOwnedApplyingProgress = (
+    owned: ServerUpdateTabProgress | null,
+  ): ServerUpdateTabProgress | null => {
+    const current = readServerUpdateProgress();
+    return current !== null
+      && owned !== null
+      && current.phase === 'applying'
+      && current.operation === owned.operation
+      && current.startedAt === owned.startedAt
+      && current.operationId === owned.operationId
+      ? current
+      : null;
+  };
+
   const progressOperationCopy = (
     operation: ServerUpdateOperation,
   ): string => operation === 'update' ? 'update' : 'rollback';
@@ -1004,49 +1100,36 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
         || exactVerification?.phase === 'closed'
       ) tabProgressEl.setAttribute('aria-busy', 'false');
       else tabProgressEl.setAttribute('aria-busy', 'true');
-      tabProgressTitleEl.textContent =
-        exactVerification?.phase === 'checking_baseline'
-          ? 'Confirming current server state'
-          : exactVerification?.phase === 'baseline_retryable'
-            ? 'Current server state not confirmed'
-            : exactVerification?.phase === 'baseline_confirmed'
-              ? exactVerification.reason === 'finish_unavailable'
-                ? 'Current state confirmed — finish needs retry'
-                : 'Current server state confirmed'
-              : exactVerification?.phase === 'closed'
-                ? 'Closure recorded — current state required'
-                : exactVerification?.phase === 'finishing'
-                  ? 'Finishing receipt recovery'
-        : exactVerification?.phase === 'retryable'
-          || exactVerification?.phase === 'unknown'
-          ? `${progress.operation === 'update' ? 'Update' : 'Rollback'} result unconfirmed`
-          : checkingReceipt
-            ? `Checking ${progress.operation === 'update' ? 'update' : 'rollback'} result`
-            : `${progress.operation === 'update' ? 'Update' : 'Rollback'} accepted — waiting for restart`;
-      tabProgressStatusEl.textContent =
-        progress.operationId === undefined
-          ? `The server accepted the ${operation}. Keep this tab open; it will verify its own reconnect before enabling server controls again.`
-          : exactVerification?.phase === 'waiting'
-            ? `The exact receipt is not confirmed yet. Recued will retry automatically; use the recovery controls below if you want to check now.`
-            : exactVerification?.phase === 'retryable'
-              ? `Automatic receipt checks stopped safely. Use the recovery controls below; the ${operation} itself will not be repeated.`
-            : exactVerification?.phase === 'unknown'
-              ? `The paired server could not safely resolve the receipt. Confirm the selected profile and use the recovery handoff below.`
-              : exactVerification?.phase === 'closed'
-                ? 'The unresolved receipt is durably closed. Confirm the server state that exists now before another update or rollback can start.'
-                : exactVerification?.phase === 'checking_baseline'
-                  ? 'Recued is reading the running version, release posture, and affected connection where applicable. The original outcome remains unknown.'
-                  : exactVerification?.phase === 'baseline_retryable'
-                    ? 'The current-state read failed safely. Use the recovery controls below to retry; server changes remain unavailable.'
-                    : exactVerification?.phase === 'baseline_confirmed'
-                      ? exactVerification.reason === 'finish_unavailable'
-                        ? 'The current-state baseline remains confirmed, but this browser could not retire the exact recovery latch. Retry Finish recovery below; no server action will be repeated.'
-                        : 'A fresh current-state baseline is ready to review below. The original update or rollback outcome remains unknown.'
-                      : exactVerification?.phase === 'finishing'
-                        ? 'The reviewed baseline is confirmed. Recued is retiring only this browser recovery latch.'
-              : checkingReceipt
-                  ? `This tab is connected and is checking the server-issued restart receipt before enabling server controls again.`
-                  : `The server accepted the ${operation}. This tab will check the server-issued restart receipt after reconnect or reload before enabling server controls again.`;
+      // ⛔⛔ ONE USER-FACING STATE PER OUTCOME, NOT ONE PER INTERNAL PHASE. This
+      // was a nested ternary over eleven receipt/baseline phases, and it narrated
+      // vocabulary no owner has: "the exact receipt", "a fresh current-state
+      // baseline", "retiring only this browser recovery latch", "durably closed".
+      // Reported 2026-08-31 — the owner watched it say nothing was needed while
+      // nothing progressed, beside three greyed buttons, and could not tell what
+      // to do. The machinery below is unchanged and still correct; it simply
+      // stopped being the thing the screen is about.
+      //
+      // 🔑 Three states, because three is what an owner can act on: it is
+      // working, it is checking, or it needs you. Everything finer is why the
+      // recovery controls exist — those still render, and they carry their own
+      // labels for the case where one is actually needed.
+      const needsAttention = exactVerification !== null
+        && !RECEIPT_SELF_RESOLVING_PHASES.has(exactVerification.phase);
+      const opLabel = progress.operation === 'update' ? 'Update' : 'Rollback';
+
+      tabProgressTitleEl.textContent = needsAttention
+        ? `${opLabel} needs attention`
+        : checkingReceipt
+          ? `Confirming the ${operation}`
+          : `${opLabel} in progress`;
+
+      tabProgressStatusEl.textContent = needsAttention
+        ? `Recued could not confirm how this ${operation} finished. It was not repeated, `
+          + 'and nothing else can start until it is resolved — use the controls below.'
+        : checkingReceipt
+          ? `Reconnected. Checking that the ${operation} finished before re-enabling server controls.`
+          : `The server is applying the ${operation} and will restart itself. Keep this tab `
+            + 'open — it reconnects on its own, and this can take a few minutes.';
     }
     tabProgressPrivacyEl.textContent =
       'Tabs share only an opaque ID for the selected server profile, the '
@@ -1100,6 +1183,38 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     if (a.is_major) {
       availableEl.appendChild(make('p', { text: 'This is a major version update.' }));
     }
+    // ⛔ SAY WHEN THIS INSTALL IS AHEAD OF THE QUEUE. The spec calls an
+    // out-of-cohort manual apply "an EXPLICIT, confirmed, audited act" — and the
+    // card said nothing at all, so an owner clicking Update could not know they
+    // were taking a release the fleet had not been given yet. The percentage
+    // comes from the server; an older server omits it, and then this says the
+    // honest half rather than rendering "undefined%".
+    if (a.in_rollout_cohort === false) {
+      const notice = make('p', {
+        text: typeof a.rollout_pct === 'number'
+          ? `This release is in staged rollout (${a.rollout_pct}%) and this server is not in the `
+            + 'cohort yet. Updating now installs it early.'
+          : 'This release is in staged rollout and this server is not in the cohort yet. '
+            + 'Updating now installs it early.',
+      });
+      // The attribute goes on the PARAGRAPH, not the card: a test that asserts
+      // "quiet when in cohort" against a container's textContent passes
+      // vacuously in a fake DOM that does not aggregate text. A locator that
+      // exists or does not cannot pass for the wrong reason.
+      notice.setAttribute(UPDATES_ROLLOUT_NOTICE_ATTR, '');
+      availableEl.appendChild(notice);
+    }
+    const docker = state.check?.docker;
+    if (docker) {
+      availableEl.appendChild(make('p', {
+        text: docker.artifact === 'docker-baked'
+          ? 'This server is updated by recreating it from the signed image digest:'
+          : 'Signed recovery image for this release:',
+      }));
+      const pullRef = make('code', { text: docker.pull_ref });
+      pullRef.setAttribute('data-update-docker-pull-ref', '');
+      availableEl.appendChild(pullRef);
+    }
     if (a.notes_url.length > 0) {
       const link = make('a', { text: 'Release notes' });
       link.setAttribute('href', a.notes_url);
@@ -1107,15 +1222,32 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       link.setAttribute('rel', 'noopener noreferrer');
       availableEl.appendChild(link);
     }
+    // A baked container cannot apply a host registry image in-place. The exact
+    // digest above is the action; rendering a disabled "Update now" control
+    // makes that delegated path look broken rather than intentionally external.
+    if (docker?.artifact === 'docker-baked') {
+      if (restoreApplyFocus || restoreForceApplyFocus) focusElement(versionEl);
+      return;
+    }
+    // ⛔ AN OUT-OF-COHORT UPDATE ASKS FIRST. The card DISCLOSED the staged
+    // rollout and the ledger RECORDED the bypass, but the first ordinary click
+    // still went straight through — so "explicit, CONFIRMED, audited" was only
+    // ever two of three. The first click arms; the second installs. Same shape
+    // as the major-bump confirm directly below, which is the precedent for
+    // "this is unusual, say so twice".
+    const needsRolloutConfirm = a.in_rollout_cohort === false && !state.rolloutConfirmed;
     const applyBtn = make('button', {
       text: state.applying
         ? 'Updating…'
         : readServerUpdateProgress() !== null
           ? 'Update already in progress'
-          : 'Update now',
+          : needsRolloutConfirm
+            ? 'Update now — install early?'
+            : 'Update now',
       className: 'rx-btn rx-btn-primary',
       attrs: { type: 'button', [UPDATES_APPLY_BTN_ATTR]: '' },
     });
+    if (needsRolloutConfirm) applyBtn.setAttribute(UPDATES_ROLLOUT_CONFIRM_ATTR, '');
     const localApplyPending = state.applying;
     const serverActionElsewhere =
       !localApplyPending && readServerUpdateProgress() !== null;
@@ -1128,7 +1260,16 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       applyBtn.setAttribute('aria-disabled', 'true');
       applyBtn.setAttribute('aria-busy', 'true');
     }
-    applyBtn.addEventListener('click', () => void doApply(false));
+    applyBtn.addEventListener('click', () => {
+      if (a.in_rollout_cohort === false && !state.rolloutConfirmed) {
+        // Arm, do not apply. Re-render so the button says what the second click
+        // will do rather than silently changing meaning.
+        state.rolloutConfirmed = true;
+        render();
+        return;
+      }
+      void doApply(false);
+    });
     availableEl.appendChild(applyBtn);
     // The server refuses a major bump until forced; surface an explicit confirm.
     let forceBtn: HTMLElement | null = null;
@@ -1425,15 +1566,32 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     const verification = opts.serverUpdateReceiptVerification?.read() ?? null;
     if (
       verification === null
-      || (verification.phase === 'checking' && !receiptRecoveryExposed)
+      || RECEIPT_SELF_RESOLVING_PHASES.has(verification.phase)
     ) {
       if (verification === null) receiptRecoveryExposed = false;
       setHidden(receiptRecoveryEl, true);
-      receiptRecoveryEl.removeAttribute('data-phase');
-      receiptRecoveryEl.removeAttribute('aria-busy');
+      // ⚠ `data-phase` DESCRIBES STATE, NOT VISIBILITY — keep it accurate while
+      // the panel is hidden. It is how the latch is observed (a restored receipt
+      // must stay pinned across a reconnect), and clearing it on the normal path
+      // made "no panel" indistinguishable from "no receipt". Only a genuinely
+      // absent verification clears it.
+      if (verification === null) {
+        receiptRecoveryEl.removeAttribute('data-phase');
+        receiptRecoveryEl.removeAttribute('aria-busy');
+      } else {
+        receiptRecoveryEl.setAttribute('data-phase', verification.phase);
+        // Inert on a hidden node, but it is the state marker the latch is read
+        // through; `hidden` is what says "do not show this", not these two.
+        receiptRecoveryEl.setAttribute('aria-busy', 'true');
+      }
       receiptRecoveryTitleEl.textContent = '';
       receiptRecoveryStatusEl.textContent = '';
       receiptRecoveryPrivacyEl.textContent = '';
+      // ⚠ The retry too. The early return skips the block that normally decides
+      // this button's visibility, so without it the control keeps whatever state
+      // the last problem-phase render left — invisible only because its container
+      // is hidden. Reset every child on the way out, not all-but-one.
+      setHidden(receiptRecoveryRetry, true);
       setHidden(receiptClosureReviewButton, true);
       setHidden(receiptClosureReview, true);
       setHidden(receiptClosureFinish, true);
@@ -1602,11 +1760,23 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       receiptBaselineBoundaryEl.textContent =
         `Confirmed current state only. The original ${operation} outcome remains unknown.`;
     }
-    const showRetry =
-      verification.phase === 'waiting'
-      || verification.phase === 'retryable'
-      || verification.phase === 'unknown'
-      || verification.phase === 'checking';
+    // ⛔⛔ A CONTROL THAT CANNOT ACT IS NOT INFORMATION, IT IS FURNITURE. This
+    // used to SHOW the retry while disabled, relabelled "Retry when connected",
+    // and it showed during `waiting`/`checking` — i.e. while the panel's own text
+    // promises "Recued will retry automatically". So an owner watching an update
+    // saw buttons that contradicted the sentence above them and could not be
+    // pressed. Reported 2026-08-31 with the server actually gone, where neither
+    // the automatic retry nor the manual one could ever have succeeded.
+    //
+    // 🔑 SHOW IT ONLY WHEN IT IS THE WAY FORWARD:
+    //   · `waiting` / `checking` — automatic retry is RUNNING. The text says so;
+    //     a manual button adds nothing and denies it.
+    //   · disconnected — nothing can act, automatic or manual. The status line
+    //     already says the server has to come back first.
+    //   · `retryable` / `unknown` — automatic retry has STOPPED. Here a manual
+    //     retry is the only way forward, so here is where the button belongs.
+    const showRetry = connected
+      && (verification.phase === 'retryable' || verification.phase === 'unknown');
     setHidden(receiptRecoveryRetry, !showRetry);
     receiptRecoveryRetry.textContent = connected
       ? verification.phase === 'checking'
@@ -1629,8 +1799,10 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
         || !connected
         || opts.serverUpdateReceiptVerification === undefined,
     );
-    const canReviewClosure =
-      verification.phase === 'unknown'
+    // Same rule: reviewing a closure requires asking the server, so offering it
+    // while disconnected is a button that can only decline.
+    const canReviewClosure = connected
+      && verification.phase === 'unknown'
       && verification.reason === 'unknown_receipt';
     setHidden(receiptClosureReviewButton, !canReviewClosure);
     setDisabled(
@@ -1799,10 +1971,13 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     if (state.phase === 'checking') statusEl.textContent = 'Checking…';
     else if (state.check !== null && state.check.status !== 'update-available') {
       const base = CHECK_STATUS_COPY[state.check.status];
-      statusEl.textContent =
+      const diagnostic =
         state.check.detail !== undefined && state.check.detail.length > 0
           ? `${base} (${state.check.detail})`
           : base;
+      statusEl.textContent = state.check.docker
+        ? `${diagnostic} Recreate with ${state.check.docker.pull_ref}.`
+        : diagnostic;
     } else statusEl.textContent = '';
 
     if (state.checkError !== null) {
@@ -1920,6 +2095,11 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     try {
       const res = await opts.runCheck();
       if (disposed) return;
+      // A new check is a new decision: consent given for the previous
+      // release must not carry over to this one.
+      if (state.check?.available?.version !== res.available?.version) {
+        state.rolloutConfirmed = false;
+      }
       state.check = res;
       const retryMarker =
         opts.credentialRotationServerUpdateContinuity?.read() ?? null;
@@ -1970,12 +2150,17 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       if (lease === null) {
         await opts.serverUpdateTabConvergence
           .reconcileServerUpdateProgress();
+        if (disposed) return;
         state.applyError = UPDATE_OWNER_CONFLICT_COPY;
         render();
         return;
       }
       const joinedProgress = await opts.serverUpdateTabConvergence
         .reconcileServerUpdateProgress();
+      if (disposed) {
+        lease.release();
+        return;
+      }
       if (joinedProgress !== null) {
         lease.release();
         render();
@@ -1986,15 +2171,148 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       opts.credentialRotationServerUpdateContinuity?.read() ?? null;
     state.applying = true;
     state.applyError = null;
+    // ⛔⛔ THE RECEIPT IS MINTED AND LATCHED BEFORE THE REQUEST LEAVES. The server
+    // reserves an operation id before it starts work, so a caller that goes away
+    // can still ask `update.operation_status` — but that id travelled only on the
+    // REPLY. A socket lost between acceptance and the reply left the update
+    // running and this tab holding an ID-LESS latch, which the catch below then
+    // cleared: the one case the reservation exists for was the one it could not
+    // serve. Naming the run before sending it is what makes an uncertain delivery
+    // recoverable.
+    const requestedOperationId = crypto.randomUUID();
     opts.serverUpdateTabConvergence?.notifyServerUpdateProgress({
       phase: 'applying',
       operation: 'update',
+      operationId: requestedOperationId,
     });
-    const ownedProgress =
+    let ownedProgress =
       opts.serverUpdateTabConvergence?.readServerUpdateProgress() ?? null;
+    // ⛔ OWNERSHIP MUST OUTLIVE THE ROUTE FROM THE MOMENT THE REQUEST CAN LEAVE.
+    // Parking only after the rpc answered left the lease in this local variable
+    // while `dispose()` could see only `pendingApplyLease`. Navigating away in
+    // that window therefore leaked the Web Lock until the tab closed. Transfer
+    // both pieces before the await; terminal handling and disposal now address
+    // the same ownership object regardless of reply timing.
+    pendingApplyLease = lease;
+    lease = null;
+    pendingApplyProgress = ownedProgress;
+    applyAcceptancePending = true;
     render();
     try {
-      state.applyResult = await opts.runApply(force ? { force: true } : {});
+      // ⛔⛔ SAY WHICH RELEASE THIS "YES" IS FOR. The server re-fetches the feed
+      // and resolves again, so an unbound confirmation — `force` above all, which
+      // means "I have read the notes for this MAJOR version" — could answer for a
+      // release published between the card being rendered and the click.
+      //
+      // ⚠ ECHOED, NOT REBUILT: the identity uses the INSTALL's channel and an
+      // `edge` install can resolve to a stable release, so assembling it from
+      // what this card shows would mismatch. An older server omits the field, we
+      // then send no binding, and the apply behaves exactly as it did before.
+      const reviewed = state.check?.available?.release_identity;
+      const accepted = await opts.runApply({
+        ...(force ? { force: true } : {}),
+        // ⛔⛔ THE BINDING AND THE CLAIM TRAVEL AS A PAIR. `strict` says "I bound
+        // this apply — refuse me if I ever stop", so sending it WITHOUT
+        // `expected_release_identity` asks the server to refuse a request that is
+        // already missing what it promises. That is a self-refusal, and a gate
+        // that can block an owner's update is exactly what this whole area has
+        // been avoiding. A server new enough to enforce `strict` always returns
+        // `release_identity` on `update-available`, so the pair is present
+        // whenever it matters; an older server omits it AND ignores the flag.
+        ...(reviewed === undefined ? {} : { expected_release_identity: reviewed, strict: true }),
+        // The audit half of "explicit, CONFIRMED, audited": this click is the
+        // second one, and `state.rolloutConfirmed` is what the first one set.
+        ...(state.check?.available?.in_rollout_cohort === false && state.rolloutConfirmed
+          ? { confirm_rollout: true }
+          : {}),
+        // ⚠ An older server drops this and mints its own; the reply is still
+        // authoritative, which is why the latch is re-stamped from it below.
+        operation_id: requestedOperationId,
+      });
+      applyAcceptancePending = false;
+      if (disposed) {
+        // The bootstrap owns terminal convergence after this route goes away.
+        // A late rpc reply may refine the receipt only while our exact applying
+        // lineage still exists; it may never recreate a latch the bootstrap
+        // cleared or regress `awaiting_reconnect` back to `applying`.
+        const current = exactOwnedApplyingProgress(ownedProgress);
+        if (current !== null) {
+          if (accepted.status === 'applying') {
+            opts.serverUpdateTabConvergence?.notifyServerUpdateProgress({
+              phase: 'applying',
+              operation: 'update',
+              ...(accepted.operation_id === undefined
+                ? {}
+                : { operationId: accepted.operation_id }),
+            });
+          } else if (accepted.status === 'restarting') {
+            opts.serverUpdateTabConvergence?.notifyServerUpdateProgress({
+              phase: 'awaiting_reconnect',
+              operation: 'update',
+              ...(accepted.operation_id === undefined
+                ? {}
+                : { operationId: accepted.operation_id }),
+            });
+          } else {
+            await clearServerUpdateProgress(current);
+          }
+        }
+        return;
+      }
+      // ⛔⛔⛔ A TERMINAL CAN LAND BEFORE THIS ANSWER DOES, and this used to
+      // overwrite it. The handler starts the run and only THEN returns
+      // `applying`, so a refusal `runApply` reaches immediately — `busy`,
+      // `deferred`, `insufficient-storage` — resolves into the broadcast while the
+      // rpc reply is still being dispatched. Probed against the real handler:
+      // `["emit:busy", "rpc:applying"]`. The bus handler below then correctly
+      // ended the run, and the line here put `applying` back over the top of it:
+      // the button stayed on "Updating…", the ownership lease was parked for a
+      // terminal that had already been and gone, and the refusal was never shown.
+      //
+      // 🔑 THE FIX IS ORDER-INDEPENDENCE, NOT ORDERING. The acceptance and the
+      // outcome travel on two different channels; nothing can promise which
+      // arrives first, and a server-side reordering would only move the race. So:
+      // whichever ENDS the run wins, and `state.applying` is exactly the record of
+      // whether one already has.
+      state.applyResult = state.applying ? accepted : (state.applyResult ?? accepted);
+      // ⛔⛔ THE RECEIPT GOES INTO THE DURABLE LATCH IMMEDIATELY, NOT ONLY AT THE
+      // END. `applying` returns at once and the run continues for minutes; the
+      // operation id used to reach this tab only on the TERMINAL bus event, so
+      // leaving the page before then left a latch that named no operation and
+      // nothing that could ever ask what became of it. With the id on the latch,
+      // the run is answerable by `update.operation_status` from any later tab.
+      // ⛔ THE REPLY'S ID WINS. It equals the one we sent on a current server and
+      // DIFFERS on one too old to read the field — where ours names nothing, and
+      // taking the server's is the difference between a receipt and a guess.
+      if (state.applyResult.status === 'applying') {
+        // ⛔⛔ AND AN `applying` WITH NO RECEIPT MEANS THE SERVER IS TOO OLD TO
+        // HAVE READ OURS — so ours names NOTHING there and must come back OFF the
+        // latch. Keeping it would be worse than the bug being fixed: a later tab
+        // would resolve a receipt the server never issued, get `unknown`, and be
+        // walked through the closure flow for an update that is running fine.
+        // Dropping it restores exactly the receipt-free latch that shipped before.
+        opts.serverUpdateTabConvergence?.notifyServerUpdateProgress({
+          phase: 'applying',
+          operation: 'update',
+          ...(state.applyResult.operation_id === undefined
+            ? {}
+            : { operationId: state.applyResult.operation_id }),
+        });
+        ownedProgress =
+          opts.serverUpdateTabConvergence?.readServerUpdateProgress() ?? ownedProgress;
+        // The reply can replace a caller-minted id with the receipt minted by an
+        // older server. Move the parked lineage at the same time so a terminal
+        // that arrived before this reply is compared with the authoritative id,
+        // not the provisional one.
+        pendingApplyProgress = ownedProgress;
+        const deferredTerminal = deferredUpdateTerminal;
+        deferredUpdateTerminal = null;
+        if (
+          deferredTerminal?.operation_id !== undefined
+          && state.applyResult.operation_id !== undefined
+          && deferredTerminal.operation_id === state.applyResult.operation_id
+        ) handleUpdateProgress(deferredTerminal);
+      }
       if (
         retryMarker !== null
         && state.applyResult.status === 'restarting'
@@ -2012,8 +2330,17 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
             ? { operationId: state.applyResult.operation_id }
             : {}),
         });
-      } else {
+      } else if (state.applyResult.status !== 'applying') {
         await clearServerUpdateProgress(ownedProgress);
+      }
+      // ⛔ THE CONFIRMATIONS DIE WITH THE RELEASE THEY WERE GIVEN FOR. A stale
+      // review means the offer changed under the card; re-arming would carry a
+      // major-bump "yes" onto a version nobody has read the notes for, which is
+      // the whole reason the server refused. Re-check so the card shows what is
+      // actually offered, and make the owner say it again.
+      if (state.applyResult.status === 'review-stale') {
+        state.rolloutConfirmed = false;
+        void doCheck();
       }
       // An apply that proves nothing is installable reconciles the rail badge —
       // otherwise it stays lit against a card the result contradicts (Codex F2).
@@ -2025,11 +2352,41 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
         signalAvailability(false);
       }
     } catch (err) {
+      applyAcceptancePending = false;
       state.applyError = humanizeRpcError(err);
-      await clearServerUpdateProgress(ownedProgress);
+      // ⛔⛔ A THROW IS NOT PROOF THE APPLY DID NOT START. This cleared the latch
+      // unconditionally, which is correct for a refusal the server actually
+      // answered and WRONG for a socket that dropped after it accepted: the work
+      // is running and the receipt naming it has just been thrown away.
+      //
+      // 🔑 AND THE DISTINCTION ALREADY HAS A NAME. `classifyRpcError` mints
+      // `in_doubt` for exactly this — "dispatched but the connection dropped
+      // before its reply; its outcome is unknown" — alongside `unresponsive`, a
+      // timeout that may equally have been dispatched. Keeping the receipt in
+      // those two costs at most one `update.operation_status` that answers
+      // `unknown`; discarding it costs the only handle on a running update.
+      // Every other kind is an answer the server actually gave, so no run began
+      // and the latch is ours to drop.
+      const failure = classifyRpcError(err);
+      if (failure.kind !== 'in_doubt' && failure.kind !== 'unresponsive') {
+        await clearServerUpdateProgress(ownedProgress);
+      }
     } finally {
-      state.applying = false;
-      lease?.release();
+      applyAcceptancePending = false;
+      // ⛔ `applying` IS NOT A TERMINAL STATUS — STAY PENDING. D-257 made the
+      // apply asynchronous: the rpc accepts and returns immediately, and the real
+      // outcome arrives on `update.progress`. Clearing here re-enabled the button
+      // over a run that was still going, so a second apply could be started on top
+      // of the first and a failure never appeared at all. The bus handler below
+      // releases both. An OLD server still answers terminally in the rpc, and that
+      // path is unchanged.
+      if (state.applyResult?.status !== 'applying') {
+        state.applying = false;
+        pendingApplyLease?.release();
+        pendingApplyLease = null;
+      } else {
+        pendingApplyProgress = ownedProgress;
+      }
     }
     if (disposed) return;
     render();
@@ -2091,12 +2448,17 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       if (lease === null) {
         await opts.serverUpdateTabConvergence
           .reconcileServerUpdateProgress();
+        if (disposed) return;
         state.rollbackError = ROLLBACK_OWNER_CONFLICT_COPY;
         render();
         return;
       }
       const joinedProgress = await opts.serverUpdateTabConvergence
         .reconcileServerUpdateProgress();
+      if (disposed) {
+        lease.release();
+        return;
+      }
       if (joinedProgress !== null) {
         lease.release();
         render();
@@ -2108,30 +2470,63 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     state.rollbackBusy = true;
     state.rollbackError = null;
     state.rollbackResult = null;
+    // Rollback restarts synchronously inside the rpc, so the connection can
+    // disappear after the server accepted the swap but before its reply arrives.
+    // Reserve and latch the receipt before dispatch, exactly as apply does.
+    const requestedOperationId = crypto.randomUUID();
     opts.serverUpdateTabConvergence?.notifyServerUpdateProgress({
       phase: 'applying',
       operation: 'rollback',
+      operationId: requestedOperationId,
     });
     const ownedProgress =
       opts.serverUpdateTabConvergence?.readServerUpdateProgress() ?? null;
+    // The request below may restart the server and never answer. Transfer the
+    // lease out of this stack frame before dispatch so route disposal can release
+    // it immediately instead of waiting for a reply that may never exist.
+    pendingRollbackLease = lease;
+    lease = null;
     render();
     try {
-      state.rollbackResult = await opts.runRollback();
+      const rollbackResult = await opts.runRollback({
+        operation_id: requestedOperationId,
+      });
+      if (disposed) {
+        // Bootstrap or a sibling tab owns convergence after route disposal. A
+        // late reply may advance only this route's exact applying lineage; it
+        // cannot mint progress over a cleared latch or a newer operation.
+        const current = exactOwnedApplyingProgress(ownedProgress);
+        if (current !== null) {
+          if (rollbackResult.status === 'rolled-back') {
+            opts.serverUpdateTabConvergence?.notifyServerUpdateProgress({
+              phase: 'awaiting_reconnect',
+              operation: 'rollback',
+              ...(rollbackResult.operation_id === undefined
+                ? {}
+                : { operationId: rollbackResult.operation_id }),
+            });
+          } else {
+            await clearServerUpdateProgress(current);
+          }
+        }
+        return;
+      }
+      state.rollbackResult = rollbackResult;
       if (
         retryMarker !== null
-        && state.rollbackResult.status === 'rolled-back'
+        && rollbackResult.status === 'rolled-back'
       ) {
         opts.credentialRotationServerUpdateContinuity?.markAwaitingReconnect({
           kind: retryMarker.kind,
           name: retryMarker.name,
         }, state.check?.current_version);
       }
-      if (state.rollbackResult.status === 'rolled-back') {
+      if (rollbackResult.status === 'rolled-back') {
         opts.serverUpdateTabConvergence?.notifyServerUpdateProgress({
           phase: 'awaiting_reconnect',
           operation: 'rollback',
-          ...(state.rollbackResult.operation_id !== undefined
-            ? { operationId: state.rollbackResult.operation_id }
+          ...(rollbackResult.operation_id !== undefined
+            ? { operationId: rollbackResult.operation_id }
             : {}),
         });
       } else {
@@ -2139,10 +2534,14 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       }
     } catch (err) {
       state.rollbackError = humanizeRpcError(err);
-      await clearServerUpdateProgress(ownedProgress);
+      const failure = classifyRpcError(err);
+      if (failure.kind !== 'in_doubt' && failure.kind !== 'unresponsive') {
+        await clearServerUpdateProgress(ownedProgress);
+      }
     } finally {
       state.rollbackBusy = false;
-      lease?.release();
+      pendingRollbackLease?.release();
+      pendingRollbackLease = null;
     }
     if (disposed) return;
     render();
@@ -2154,6 +2553,73 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   const detachServerStatus =
     opts.serverConnectionStatus?.onStatus(() => render())
     ?? (() => undefined);
+  /** D-257 — the apply's OUTCOME. The rpc answers `applying`; the terminal emit
+   *  carries the status the rpc used to return, plus the `operation_id` the
+   *  receipt check needs after the restart-forced reconnect.
+   *
+   *  ⛔ THIS SUBSCRIPTION IS THE POINT. The option was declared here and built in
+   *  the bootstrap, but the settings route never forwarded it — so nothing ever
+   *  called `subscribe`, and a handler nobody wires is dead exactly like a
+  *  broadcast kind nobody names. */
+  function handleUpdateProgress(event: UpdateProgressEvent): void {
+    if (disposed) return;
+    // Non-terminal phases are ledger transitions; only the emit carrying a
+    // status ends the run.
+    if (event.status === undefined) return;
+    const ownedProgress = pendingApplyProgress ?? readServerUpdateProgress();
+    // `update.progress` is server-global. A busy/refused operation from another
+    // client can finish while this page owns a different accepted apply. When
+    // both sides carry receipts, only the exact operation may end this page's
+    // state; absent ids retain compatibility with older servers.
+    if (
+      event.operation_id !== undefined
+      && ownedProgress?.operationId !== undefined
+      && event.operation_id !== ownedProgress.operationId
+    ) {
+      if (applyAcceptancePending && state.applying) deferredUpdateTerminal = event;
+      return;
+    }
+    deferredUpdateTerminal = null;
+    state.applyResult = {
+      status: event.status,
+      ...(event.to_version === undefined ? {} : { to_version: event.to_version }),
+      ...(event.operation_id === undefined ? {} : { operation_id: event.operation_id }),
+    } as typeof state.applyResult;
+    if (event.detail !== undefined && event.status !== 'restarting') {
+      state.applyError = event.detail;
+    }
+    state.applying = false;
+    pendingApplyLease?.release();
+    pendingApplyLease = null;
+    if (event.status === 'restarting') {
+      // ⚠ THE BOOTSTRAP WRITES THIS TOO, and deliberately: it subscribes at a
+      // scope that outlives every route, which is the only reason a terminal
+      // arriving after the owner leaves Updates still advances the latch. Both
+      // writes carry identical content, so the second is a no-op — this one
+      // stays because the page is also mounted standalone (its own suite has no
+      // bootstrap), and because the in-route path should not depend on
+      // subscription ORDER to leave the latch correct.
+      opts.serverUpdateTabConvergence?.notifyServerUpdateProgress({
+        phase: 'awaiting_reconnect',
+        operation: 'update',
+        ...(event.operation_id === undefined
+          ? {}
+          : { operationId: event.operation_id }),
+      });
+    } else {
+      // ⛔ `null` MEANT "DO NOTHING". `clearServerUpdateProgress` ignores a null
+      // expected value by design — it clears only a lineage it can prove is its
+      // own — so this call released nothing and the shared progress stayed
+      // latched until some later reconciliation or a tab shutdown. The apply
+      // captured the owned lineage; the terminal event has to clear THAT.
+      void clearServerUpdateProgress(ownedProgress);
+      pendingApplyProgress = null;
+    }
+    render();
+  }
+  const detachUpdateProgress =
+    opts.updateProgress?.subscribe(handleUpdateProgress) ?? (() => {});
+
   const detachReceiptVerification =
     opts.serverUpdateReceiptVerification?.subscribe((next) => {
       if (next?.phase === 'completed' && next.baseline !== undefined) {
@@ -2241,8 +2707,29 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      // ⛔ RELEASE WHAT WE STILL HOLD. An async apply parks its ownership lease
+      // here until the terminal bus event arrives; if the route is disposed
+      // first — the owner navigates away mid-update — that lease was never
+      // released, and convergence then saw its OWN held lock and could not
+      // reconcile it, blocking sibling tabs until a later sweep or a tab close.
+      pendingApplyLease?.release();
+      pendingApplyLease = null;
+      pendingRollbackLease?.release();
+      pendingRollbackLease = null;
+      // ⛔⛔ BUT DO NOT DISCARD A RUN THAT IS STILL GOING. This cleared the latch
+      // unconditionally, and the card above says "You can leave this page" — so
+      // taking that invitation deleted the only pointer to an update still in
+      // progress, for every tab, along with any failure it was about to report.
+      // A latch carrying a receipt is answerable by whoever asks the server next;
+      // one without a receipt is the pre-D-257 shape that nothing can advance
+      // once its owner is gone, so that one is still retired here.
+      if (pendingApplyProgress?.operationId === undefined) {
+        void clearServerUpdateProgress(pendingApplyProgress);
+      }
+      pendingApplyProgress = null;
       if (cancelPoll !== null) cancelPoll();
       detachServerStatus();
+      detachUpdateProgress();
       detachReceiptVerification();
       detachCredentialRetry();
       detachServerUpdateTabs();

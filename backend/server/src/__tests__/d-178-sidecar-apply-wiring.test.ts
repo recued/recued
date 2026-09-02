@@ -108,6 +108,32 @@ describe('D-178 item 4 — composed sidecar ports', () => {
     expect(readFileSync(livePath, 'utf8')).toBe('OLD-ADDON');
   });
 
+  it('journals the complete executable/addon rollback candidate before mutation', () => {
+    const { ports, binaryPath, livePath } = install();
+    writeFileSync(ports.stagedPath, 'NEW-EXE');
+    writeFileSync(ports.stagedLibPath!, 'NEW-ADDON');
+    ports.preserveAndSwap(true);
+
+    ports.beginManualRollbackJournal!({
+      operationId: 'manual-rollback',
+      releaseIdentity: 'stable:2.0.0',
+      fromVersion: '2.0.0',
+      toVersion: '1.0.0',
+      channel: 'stable',
+      migration: false,
+      restoredSnapshot: false,
+    });
+
+    expect(ports.inspectManualRollbackJournal!()?.journal).toMatchObject({
+      previous_generation: [
+        { path: `${binaryPath}.old`, sha256: expect.stringMatching(/^[0-9a-f]{64}$/) },
+        { path: `${binaryPath}.old.minisig`, sha256: null },
+        { path: `${livePath}.old`, sha256: expect.stringMatching(/^[0-9a-f]{64}$/) },
+        { path: `${livePath}.old.minisig`, sha256: null },
+      ],
+    });
+  });
+
   it('preserveAndSwap(false) leaves the live addon untouched', () => {
     // A release with no sidecar must not disturb the addon already installed —
     // and must not invent one from a leftover staged file.
@@ -145,5 +171,46 @@ describe('D-178 item 4 — composed sidecar ports', () => {
     await expect(ports.download('http://127.0.0.1:1/lib.node', ports.stagedLibPath!)).rejects.toThrow();
 
     expect(existsSync(join(binDir, 'lib'))).toBe(true);
+  });
+});
+
+/** ⛔ THE PORT EXISTS ≠ THE PORT IS WIRED. `boot-reconcile` calls
+ *  `ports.dropApplyAside?.()` optionally, so a composition root that forgot it
+ *  leaves every behaviour test green and the install carrying a third generation
+ *  forever — a whole extra binary on disk, and `recued.old` ambiguous to readers.
+ *  Assert the real factory. */
+describe('the real ports factory wires dropApplyAside', () => {
+  it('drops the aside the swap parked, at the path the swap used', () => {
+    const { ports, binaryPath } = install();
+    const old = `${binaryPath}.old`;
+    writeFileSync(old, 'R2');
+    writeFileSync(`${old}.apply-aside`, 'R1');
+
+    expect(ports.dropApplyAside, 'the port must be wired').toBeTypeOf('function');
+    ports.dropApplyAside!();
+    expect(existsSync(`${old}.apply-aside`), 'the parked generation is gone').toBe(false);
+    expect(readFileSync(old, 'utf8'), 'and the real rollback target is untouched').toBe('R2');
+  });
+
+  it('wires the shared-target version probe and durable revert-journal ports', () => {
+    const { ports } = install();
+    expect(ports.installedVersion).toBeTypeOf('function');
+    expect(ports.revertJournalMatchesCurrent).toBeTypeOf('function');
+    expect(ports.dropRevertJournal).toBeTypeOf('function');
+  });
+
+  it('asks the executable occupying the real target path for its version', () => {
+    const dataDir = tmp();
+    const deps = buildApplyOrchestratorDeps({
+      db: new Database(':memory:'),
+      releaseCheckDeps,
+      requestRestart: () => {},
+      isQuiesced: () => true,
+      env: { RECUED_DISTRIBUTION_CHANNEL: 'binary' },
+      binaryPath: process.execPath,
+      dataDir,
+    });
+    if (!deps) throw new Error('expected apply deps on the binary channel');
+    expect(deps.ports.installedVersion?.()).toBe(process.version);
   });
 });

@@ -71,6 +71,23 @@ describe('describeAvailable', () => {
     expect(m.link_url).toBeUndefined();
   });
 
+  it('delivers the exact signed Docker pull reference without sending the owner to notes', () => {
+    const pullRef = `registry.example/recued/server@sha256:${'a'.repeat(64)}`;
+    const response: ReleaseCheckResponse = {
+      ...res(),
+      docker: {
+        artifact: 'docker-baked',
+        version: '1.4.2',
+        release_identity: 'stable:1.4.2',
+        image: 'registry.example/recued/server',
+        digest: `sha256:${'a'.repeat(64)}`,
+        pull_ref: pullRef,
+        notes_url: 'https://releases.example/notes/1.4.2',
+      },
+    };
+    expect(describeAvailable(response, '1.4.2').text).toContain(pullRef);
+  });
+
   it('carries every flag at once without dropping any', () => {
     // The combination is the case a per-flag test cannot catch: an early return
     // or an else-if chain passes each single-flag test and loses the rest.

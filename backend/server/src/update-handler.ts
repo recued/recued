@@ -35,6 +35,8 @@ import {
   runApply,
   runRollback,
   closeUnresolvedUpdateOperation,
+  refuseReservedUpdateOperation,
+  reserveUpdateOperationReceipt,
   resolveUpdateOperationOutcome,
   type ApplyOrchestratorPorts,
   type RollbackContext,
@@ -122,6 +124,7 @@ const requireRegisteredClient = (client: WsClient): void => {
 
 const VALID_MODES: readonly UpdateMode[] = ['auto', 'notify', 'off'];
 const UPDATE_OPERATION_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+const REQUESTED_OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const makeUpdateHandlers = (
   deps: UpdateHandlerDeps | undefined,
@@ -172,107 +175,288 @@ export const makeUpdateHandlers = (
         // Delegated channel (docker / source) or unsupported platform — the
         // binary self-apply path doesn't exist; the host updates the image.
         if (!applyDeps) return { status: 'not-applicable' };
-        const resolved = await applyDeps.resolveForApply();
-        if (resolved.status !== 'applyable') {
-          return { status: NOT_APPLYABLE[resolved.status] };
+        // Reserve the caller-visible receipt BEFORE the first asynchronous feed
+        // read. A reloaded tab can now distinguish "resolution is still running"
+        // from "this server never heard of the receipt".
+        const requestedId = typeof args?.operation_id === 'string' ? args.operation_id : undefined;
+        if (requestedId !== undefined) {
+          if (!REQUESTED_OPERATION_ID.test(requestedId)) {
+            throw new RpcError('invalid_args', 'operation_id must be a UUID', 400);
+          }
+          if (applyDeps.ports.ledger.readAll().some((entry) =>
+            entry.id === requestedId
+            || entry.reserved_operation_id === requestedId)) {
+            throw new RpcError(
+              'invalid_args',
+              'operation_id is already in use — ask update.operation_status about it instead',
+              400,
+            );
+          }
         }
-        // I-4 — a major bump is notify-only; an owner can force it explicitly.
-        // Strict `=== true` so only the literal boolean forces (a stray truthy
-        // value off the wire must not bypass the major-block guard).
-        const force = args?.force === true;
-        if (resolved.isMajor && !force) {
-          return { status: 'major-blocked', release_identity: resolved.releaseIdentity, to_version: resolved.toVersion };
-        }
-        const base = { release_identity: resolved.releaseIdentity, to_version: resolved.toVersion };
-        const emit = (event: UpdateProgressEvent): void => {
-          // Observability only — never abort an apply because nobody listened.
-          try { deps.broadcast?.(event); } catch { /* no bus wired */ }
-        };
-
-        // ⛔⛔ DO NOT AWAIT THIS. The apply downloads ~144 MB and takes minutes;
-        // awaiting it inside the rpc is what made Settings -> Updates report a
-        // failure on every real update, because the webclient's per-call timeout
-        // is 30s while the server went on to finish the work it had been told to
-        // do. The outcome arrives on `update.progress` instead.
-        //
-        // 🔑 The cheap refusals stay SYNCHRONOUS above (not-applicable,
-        // not-available, major-blocked) — those are answers, not work. And
-        // `runApply`'s own preconditions (`busy`, `deferred`,
-        // `insufficient-storage`) return WITHOUT writing a ledger entry, which is
-        // exactly why the terminal emit carries a `status` rather than the bus
-        // mirroring ledger transitions alone.
-        const ports: ApplyOrchestratorPorts = {
-          ...applyDeps.ports,
-          notifyLedger: (entry) => emit({
-            kind: 'update.progress',
-            phase: entry.kind,
-            release_identity: entry.release_identity,
-            from_version: entry.from_version,
-            to_version: entry.to_version,
-            ...(entry.detail === undefined ? {} : { detail: entry.detail }),
-          }),
-        };
-
-        void runApply(ports, {
-          releaseIdentity: resolved.releaseIdentity,
-          fromVersion: resolved.fromVersion,
-          toVersion: resolved.toVersion,
-          channel: resolved.channel,
-          migration: resolved.migration,
-          artifact: resolved.artifact,
-          libArtifact: resolved.libArtifact,
-          webclientArtifact: resolved.webclientArtifact,
-          // Owner-initiated UI/CLI apply — proceeds without the quiesce wait
-          // (the caller forces quiesce); auto/housekeeping defers separately.
-          trigger: 'manual',
-        }).then(
-          (result) => {
-            const detail = 'detail' in result && typeof result.detail === 'string'
-              ? result.detail
-              : 'reason' in result && typeof result.reason === 'string'
-                ? result.reason
-                : undefined;
-            emit({
-              kind: 'update.progress',
-              phase: 'result',
-              ...base,
-              status: result.status,
-              ...(detail === undefined ? {} : { detail }),
-              ...('operationId' in result && typeof result.operationId === 'string'
-                ? { operation_id: result.operationId }
-                : {}),
-            });
-          },
-          (err: unknown) => {
-            // A throw is not a status `runApply` models, and silence would leave
-            // the UI applying forever. Report the closest terminal shape rather
-            // than inventing a new one.
-            emit({
-              kind: 'update.progress',
-              phase: 'result',
-              ...base,
-              status: 'stage-failed',
-              detail: err instanceof Error ? err.message : String(err),
-            });
-          },
+        const operationId = requestedId ?? applyDeps.ports.newEntryId();
+        reserveUpdateOperationReceipt(
+          applyDeps.ports,
+          operationId,
+          'update',
+          deps.releaseCheckDeps.currentVersion,
+          deps.releaseCheckDeps.channel,
         );
+        const refuseReceipt = (detail: string): void => {
+          refuseReservedUpdateOperation(applyDeps.ports, operationId, detail);
+        };
+        try {
+          const resolved = await applyDeps.resolveForApply();
+          if (resolved.status !== 'applyable') {
+            refuseReceipt(`release resolution returned ${resolved.status}`);
+            return { status: NOT_APPLYABLE[resolved.status] };
+          }
+          // ⛔⛔ THE CONSENT BELONGS TO A RELEASE, AND UNTIL NOW IT NAMED NONE. The
+          // client reviews the card `update.check` produced and clicks; the server
+          // then re-fetches the feed and resolves AGAIN. A publish landing between
+          // those two reads answered the owner's "yes" — `force`, i.e. "I have read
+          // the notes for this MAJOR version", included — for a version they never
+          // saw. Refuse instead, and name the release that is actually offered so
+          // the client can re-render and ask again.
+          //
+          // ⚠ ONLY WHEN THE CALLER SUPPLIED IT. An older client sends nothing here
+          // and must keep working exactly as it did; there is no deploy order to
+          // rely on when the client is always-newest and the server is whatever the
+          // owner installed.
+          const expected = typeof args?.expected_release_identity === 'string'
+            ? args.expected_release_identity
+            : undefined;
+          if (expected !== undefined && expected !== resolved.releaseIdentity) {
+            refuseReceipt('the reviewed release changed before apply resolution completed');
+            return {
+              status: 'review-stale',
+              release_identity: resolved.releaseIdentity,
+              to_version: resolved.toVersion,
+            };
+          }
+          // I-4 — a major bump is notify-only; an owner can force it explicitly.
+          // Strict `=== true` so only the literal boolean forces (a stray truthy
+          // value off the wire must not bypass the major-block guard).
+          const force = args?.force === true;
+          const strict = args?.strict === true;
+          // ⛔⛔ `force` WITHOUT A BINDING IS A SENTENCE ABOUT NO PARTICULAR RELEASE.
+          // It means "I have read the notes for this MAJOR version", and the server
+          // re-fetches the feed and resolves again after the caller clicked — so
+          // unbound it can answer for a release published in between, which is the
+          // one thing the major gate exists to prevent. Refused rather than
+          // honoured, and refused for EVERY caller: this constrains only somebody
+          // already doing something deliberate, so it does not need an opt-in.
+          //
+          // ⚠ `invalid_args`, NOT A NEW STATUS. A caller too old to bind its consent
+          // is also too old to know a status we invent now, and would render an
+          // unknown one as nothing at all; every client has generic rpc-error
+          // handling. The compat cost is real and bounded: a client that crosses a
+          // major without naming the release is refused, and should be.
+          if (force && expected === undefined) {
+            refuseReceipt('force was not bound to an expected release identity');
+            throw new RpcError(
+              'invalid_args',
+              'force requires expected_release_identity — a major-version confirmation must name '
+              + 'the release it was given for',
+              400,
+            );
+          }
+          if (strict && expected === undefined) {
+            refuseReceipt('strict apply was not bound to an expected release identity');
+            throw new RpcError(
+              'invalid_args',
+              'strict apply requires expected_release_identity',
+              400,
+            );
+          }
+          // ⛔ AND UNDER `strict`, THE OUT-OF-COHORT CONFIRMATION BECOMES A GATE —
+          // for the caller that asked for one, and only for it.
+          //
+          // ⛔⛔ UNCONDITIONAL IS NOT A LATER OPTION, IT IS PERMANENTLY WRONG.
+          // `rollout_pct: 0` is a STANDING DECISION, not a value waiting to move —
+          // `release.config.json` says so in as many words ("not a leftover
+          // stopgap"), because whether a server applies an update BY ITSELF is the
+          // owner's preference and not ours to make. So EVERY install is out of
+          // cohort, permanently, and a fleet-wide requirement would refuse every
+          // update from every caller predating the field, forever. This is the
+          // long-term shape, not a stopgap.
+          //
+          // What `strict` buys is that a client which today confirms in its UI
+          // cannot silently STOP doing so — a regression becomes a refusal
+          // instead of an unbound
+          // apply nobody notices.
+          if (strict && !resolved.inRolloutCohort && args?.confirm_rollout !== true) {
+            refuseReceipt('strict apply lacked the required rollout confirmation');
+            throw new RpcError(
+              'invalid_args',
+              'strict apply of an out-of-cohort release requires confirm_rollout',
+              400,
+            );
+          }
+          if (resolved.isMajor && !force) {
+            refuseReceipt('the target is a major release and was not explicitly forced');
+            return { status: 'major-blocked', release_identity: resolved.releaseIdentity, to_version: resolved.toVersion };
+          }
+          const base = { release_identity: resolved.releaseIdentity, to_version: resolved.toVersion };
+          const emit = (event: UpdateProgressEvent): void => {
+            // Observability only — never abort an apply because nobody listened.
+            try { deps.broadcast?.(event); } catch { /* no bus wired */ }
+          };
 
-        return { status: 'applying', ...base };
+          // ⛔⛔ DO NOT AWAIT THIS. The apply downloads ~144 MB and takes minutes;
+          // awaiting it inside the rpc is what made Settings -> Updates report a
+          // failure on every real update, because the webclient's per-call timeout
+          // is 30s while the server went on to finish the work it had been told to
+          // do. The outcome arrives on `update.progress` instead.
+          //
+          // 🔑 The cheap refusals stay SYNCHRONOUS above (not-applicable,
+          // not-available, major-blocked) — those are answers, not work. And
+          // `runApply`'s own preconditions (`busy`, `deferred`,
+          // `insufficient-storage`) return WITHOUT writing a ledger entry, which is
+          // exactly why the terminal emit carries a `status` rather than the bus
+          // mirroring ledger transitions alone.
+          // ⛔⛔ THE CALLER MAY NAME ITS OWN RECEIPT, AND THAT IS THE POINT. Reserving
+          // the id here was already right; what was missing is that it reached the
+          // caller only on the REPLY, so a socket lost between acceptance and that
+          // reply left the work running and the caller unable to name it — the one
+          // case the reservation exists for.
+          //
+          // ⚠ VALIDATED, NEVER SILENTLY REPLACED. This becomes the ledger entry id.
+          // Accepting a malformed one would corrupt the audit dedup key; quietly
+          // minting our own instead would hand back an id the caller cannot match
+          // if the reply is the thing that goes missing, which is the failure being
+          // removed. Both are refusals a caller can act on.
+          const ports: ApplyOrchestratorPorts = {
+            ...applyDeps.ports,
+            notifyLedger: (entry) => emit({
+              kind: 'update.progress',
+              phase: entry.kind,
+              release_identity: entry.release_identity,
+              from_version: entry.from_version,
+              to_version: entry.to_version,
+              ...(entry.detail === undefined ? {} : { detail: entry.detail }),
+              operation_id: operationId,
+            }),
+          };
+
+          void runApply(ports, {
+            releaseIdentity: resolved.releaseIdentity,
+            fromVersion: resolved.fromVersion,
+            toVersion: resolved.toVersion,
+            channel: resolved.channel,
+            migration: resolved.migration,
+            artifact: resolved.artifact,
+            libArtifact: resolved.libArtifact,
+            webclientArtifact: resolved.webclientArtifact,
+            // Owner-initiated UI/CLI apply — proceeds without the quiesce wait
+            // (the caller forces quiesce); auto/housekeeping defers separately.
+            trigger: 'manual',
+            // ⛔ AUDITED, NOT REFUSED. The spec calls an out-of-cohort manual apply
+            // "an EXPLICIT, confirmed, AUDITED act"; only the audit half belongs on
+            // the server. Refusing here is wrong PERMANENTLY, not just today:
+            // `rollout_pct: 0` is a standing decision (see `_note_rollout`), so every
+            // install is outside the cohort for good and a hard gate would block
+            // every owner from updating at all, forever. The confirming
+            // is the client's job — it now receives `rollout_pct` and can say what
+            // the spec asks it to say — and this makes the ledger able to answer,
+            // afterwards, which installs jumped the queue.
+            ...(resolved.inRolloutCohort
+              ? {}
+              : {
+                  rolloutBypass: {
+                    rolloutPct: resolved.rolloutPct,
+                    // ⚠ THE CLIENT'S OWN REPORT, RECORDED AS SUCH. It is not proof —
+                    // nothing here can prove a human was asked — and it is not a
+                    // gate, because `rollout_pct: 0` is a standing decision and
+                    // refusing would stop every owner updating — not until the
+                    // number moves, but for as long as owners choose when to apply.
+                    // It is the difference between a
+                    // ledger that can say "somebody was shown this" and one that
+                    // cannot. Absence means the client did not report, NOT that it
+                    // did not confirm: every client older than the field confirms
+                    // in its UI and has no way to say so.
+                    ...(args?.confirm_rollout === true ? { clientConfirmed: true } : {}),
+                  },
+                }),
+            // Reserved BEFORE the work starts, so the id can be returned with the
+            // acceptance below rather than only to a caller still listening at the
+            // end. It becomes the `apply_started` entry's id — the receipt
+            // `update.operation_status` resolves.
+            operationId,
+          }).then(
+            (result) => {
+              if (result.status !== 'restarting') {
+                refuseReceipt(`apply ended before staging with status ${result.status}`);
+              }
+              const detail = 'detail' in result && typeof result.detail === 'string'
+                ? result.detail
+                : 'reason' in result && typeof result.reason === 'string'
+                  ? result.reason
+                  : undefined;
+              emit({
+                kind: 'update.progress',
+                phase: 'result',
+                ...base,
+                status: result.status,
+                operation_id: operationId,
+                ...(detail === undefined ? {} : { detail }),
+              });
+            },
+            (err: unknown) => {
+              refuseReceipt('apply threw before it could establish an operation row');
+              // A throw is not a status `runApply` models, and silence would leave
+              // the UI applying forever. Report the closest terminal shape rather
+              // than inventing a new one.
+              emit({
+                kind: 'update.progress',
+                phase: 'result',
+                ...base,
+                status: 'stage-failed',
+                operation_id: operationId,
+                detail: err instanceof Error ? err.message : String(err),
+              });
+            },
+          );
+
+          return { status: 'applying', operation_id: operationId, ...base };
+        } catch (err) {
+          refuseReceipt(err instanceof Error ? err.message : 'apply request failed before staging');
+          throw err;
+        }
       },
-      'update.rollback': async (_args, client): Promise<UpdateRollbackResponse> => {
+      'update.rollback': async (args, client): Promise<UpdateRollbackResponse> => {
         requireRegisteredClient(client);
         if (!applyDeps) return { status: 'not-applicable' };
         const ctx = applyDeps.rollbackContext();
         // No prior committed apply → nothing to roll back to (the rollback
         // guard would refuse on the missing `recued.old` anyway).
         if (!ctx) return { status: 'refused', detail: 'no previous release to roll back to' };
-        const result = runRollback(applyDeps.ports, ctx);
+        const requestedId = typeof args?.operation_id === 'string' ? args.operation_id : undefined;
+        if (requestedId !== undefined) {
+          if (!REQUESTED_OPERATION_ID.test(requestedId)) {
+            throw new RpcError('invalid_args', 'operation_id must be a UUID', 400);
+          }
+          if (applyDeps.ports.ledger.readAll().some((e) => e.id === requestedId)) {
+            throw new RpcError(
+              'invalid_args',
+              'operation_id is already in use — ask update.operation_status about it instead',
+              400,
+            );
+          }
+        }
+        const result = runRollback(applyDeps.ports, {
+          ...ctx,
+          operationId: requestedId ?? applyDeps.ports.newEntryId(),
+        });
         switch (result.status) {
           case 'rolled-back':
             return {
               status: 'rolled-back',
               operation_id: result.operationId,
               restored_snapshot: result.restored_snapshot,
+              ...(result.recovery_pending ? {
+                recovery_pending: true,
+                detail: 'rollback committed; its physical pair swap will be completed before the restarted server opens its database',
+              } : {}),
             };
           case 'refused':
             return { status: 'refused', detail: result.reason };

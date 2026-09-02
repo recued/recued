@@ -163,7 +163,8 @@ export interface CredentialRotationTabConvergence {
   readServerUpdateProgress(): ServerUpdateTabProgress | null;
   /** Publish update/restart progress. No connection identity, version,
    * endpoint, credential, form value, or raw error crosses tabs; an accepted
-   * restart may add only its opaque server-ledger receipt. */
+   * APPLY or restart may add only its opaque server-ledger receipt — which is
+   * what makes a latch answerable after the tab that started it has gone. */
   notifyServerUpdateProgress(progress: {
     phase: ServerUpdateProgressPhase;
     operation: ServerUpdateOperation;
@@ -378,7 +379,9 @@ const parseServerUpdateProgressMessage = (
   if (
     hasOperationId
     && (
-      value.phase !== 'awaiting_reconnect'
+      // Both phases a run can carry a receipt in — see the note on
+      // `notifyServerUpdateProgress`. The id's own shape is still validated.
+      (value.phase !== 'awaiting_reconnect' && value.phase !== 'applying')
       || !validServerUpdateOperationId(value.operation_id)
     )
   ) return null;
@@ -959,12 +962,36 @@ export const createBrowserCredentialRotationTabConvergence = (
     operationId?: string;
   }): void => {
     if (closed) return;
+  // ⛔⛔ A RECEIPT IS NOT ONLY A RESTART'S. It was accepted on `awaiting_reconnect`
+  // ALONE, and a notify carrying one on any other phase was dropped in SILENCE —
+  // which is where the receipt now arrives: `update.apply` answers `applying`
+  // with the id reserved before the work starts, so the run is answerable from
+  // the moment it is accepted rather than only once a restart was reached. A
+  // latch that names its operation is the one thing that survives its owner
+  // leaving the page, so dropping it here disarmed exactly the case it exists
+  // for — and did so invisibly, because a dropped notify looks like a notify
+  // nobody made.
+  //
+  // ⚠ Cross-version, same browser: a tab running an older build parses an
+  // `applying` latch carrying a receipt as malformed and removes it. That is the
+  // pre-existing behaviour for anything it cannot name, and the cost is a latch
+  // retired early — never a wrong one accepted.
     if (
       progress.operationId !== undefined
       && (
-        progress.phase !== 'awaiting_reconnect'
+        (progress.phase !== 'awaiting_reconnect' && progress.phase !== 'applying')
         || !validServerUpdateOperationId(progress.operationId)
       )
+    ) return;
+    // A terminal restart advances one lineage from applying to
+    // awaiting_reconnect. An rpc acceptance can resolve after that terminal (the
+    // two travel on different channels), but it is older evidence and must not
+    // mint a fresh applying lineage over the receipt verifier's state.
+    if (
+      serverUpdateProgress !== null
+      && serverUpdateProgress.operation === progress.operation
+      && serverUpdateProgress.phase === 'awaiting_reconnect'
+      && progress.phase === 'applying'
     ) return;
     const eventId = (options.eventId ?? defaultEventId)();
     if (!validEventId(eventId)) return;
@@ -1176,6 +1203,14 @@ export const createBrowserCredentialRotationTabConvergence = (
       serverUpdateProgress?.phase !== 'applying'
       || ownershipLockProvider === null
       || ownershipLeases.has(serverUpdateOwnershipKey)
+      // ⛔⛔ A LATCH THAT NAMES ITS OPERATION IS NOT STRANDED. The retirement below
+      // rests on one premise — nobody can advance an "applying" marker once its
+      // owner is gone — and a receipt makes that premise false: any tab can ask
+      // the server what became of that exact operation. Reaping it anyway throws
+      // away the only pointer to a run that is still going, which is the whole
+      // reason the id is on the latch. The receipt-free shape is unchanged and
+      // still retired: nothing can answer for it.
+      || serverUpdateProgress.operationId !== undefined
     ) return cloneProgress(serverUpdateProgress);
 
     const probeLease = await claimServerUpdateOwnership();

@@ -1,109 +1,39 @@
-/** D-178 slice 3 — the two-phase apply state machine + update lock + boot-health
- *  auto-revert + rollback×migration decision (spec § Update machinery,
- *  "Two-phase apply", "One update at a time", § Rollback × migrations).
+/** D-178 — the two decisions an update makes when a release misbehaves:
+ *  should a failing boot trip an auto-revert, and how should a rollback be
+ *  performed (spec § Update machinery, "Rollback × migrations").
  *
- *  Pure decision logic — no fs, no clock, no process. The orchestrator (slice
- *  3b) drives the real download/verify/swap/restart against these transitions
- *  and persists the lock state + boot-failure counter in the update LEDGER (so
- *  they survive crash loops + snapshot restores).
+ *  Pure decision logic — no fs, no clock, no process.
  *
- *  Invariants encoded here:
- *    - ONE update at a time (host-wide lock keyed by release identity):
- *      concurrent triggers for the SAME release coalesce; a DIFFERENT release
- *      arriving mid-apply queues behind commit/revert; a third is refused.
- *    - Rollback is refused while an apply is in flight (so `recued.old` is
- *      never overwritten mid-swap — I-6).
- *    - Apply is stage → boot → commit; a binary that fails its boot-health
- *      probe N consecutive times auto-reverts to `recued.old` (signatures
- *      prove authenticity, not boot health).
- *    - Rollback past a migrating release restores the pre-migration snapshot
- *      (mechanism c) and refuses if no snapshot exists (guard b).
+ *  ⛔⛔ THIS FILE USED TO CARRY AN APPLY LOCK AND A PHASE MACHINE, AND NOTHING
+ *  EVER CALLED THEM (removed 2026-09-01). `acquireApply` / `advanceApply` /
+ *  `isValidPhaseTransition` / `canRollback` / `APPLY_PHASES` had ZERO production
+ *  references — built, typed and tested, driven only by their own unit test.
+ *
+ *  🔑 AND THEY WERE WORSE THAN DEAD, because they encoded a DIFFERENT POLICY
+ *  than the one that ships, in a module whose docblock claimed the orchestrator
+ *  drove them:
+ *    · one-at-a-time was an in-memory lock that COALESCED a duplicate and
+ *      QUEUED one other release. Production excludes with the host-wide
+ *      `link()` lease (`update-lease.ts`) and has no queue at all — a second
+ *      apply is refused.
+ *    · "rollback is refused while an apply is in flight" (I-6) was
+ *      `canRollback(state) => !state.inFlight`, over an `ApplyLockState` nothing
+ *      maintained. Production derives it from the LEDGER on disk
+ *      (`deriveInFlightRelease`), which is the only version that survives a
+ *      restart.
+ *
+ *  So a reader chasing "where is the apply lock?" had three believable answers,
+ *  one of which was fiction with tests behind it. Both invariants keep their
+ *  coverage on the live paths: I-6 in `apply-orchestrator.test.ts` ("busy"), and
+ *  exclusion in `update-lease-concurrency.test.ts`, across real processes.
+ *
+ *  ⚠ THE FILENAME IS NOW A MISNOMER — there is no state machine here. Renaming
+ *  it touches importers a concurrent session is editing, so it is left as a
+ *  deliberate follow-up rather than folded into a removal.
  */
 
 /** Consecutive failed boots of an UNCOMMITTED binary before auto-revert. */
 export const BOOT_FAILURE_THRESHOLD = 3;
-
-export const APPLY_PHASES = ['staging', 'staged', 'booting', 'committed', 'reverting', 'reverted'] as const;
-export type ApplyPhase = (typeof APPLY_PHASES)[number];
-
-/** Terminal phases — the in-flight slot frees once one is reached. */
-const TERMINAL: ReadonlySet<ApplyPhase> = new Set<ApplyPhase>(['committed', 'reverted']);
-
-/** Legal forward transitions. `staged → reverting` covers a stage-time abort;
- *  `booting → reverting` covers a boot-health failure. */
-const NEXT: Record<ApplyPhase, readonly ApplyPhase[]> = {
-  staging: ['staged', 'reverting'],
-  staged: ['booting', 'reverting'],
-  booting: ['committed', 'reverting'],
-  committed: [],
-  reverting: ['reverted'],
-  reverted: [],
-};
-
-export const isValidPhaseTransition = (from: ApplyPhase, to: ApplyPhase): boolean =>
-  NEXT[from].includes(to);
-
-export interface ApplyLockState {
-  /** The apply currently holding the host-wide lock. */
-  inFlight?: { releaseIdentity: string; phase: ApplyPhase };
-  /** A single release queued behind the in-flight one. */
-  queued?: { releaseIdentity: string };
-}
-
-export type AcquireDecision = 'acquired' | 'coalesced' | 'queued' | 'busy-queue-full';
-
-export interface AcquireResult {
-  decision: AcquireDecision;
-  state: ApplyLockState;
-}
-
-/** Request the apply lock for `releaseIdentity`. */
-export const acquireApply = (state: ApplyLockState, releaseIdentity: string): AcquireResult => {
-  if (!state.inFlight) {
-    return { decision: 'acquired', state: { inFlight: { releaseIdentity, phase: 'staging' } } };
-  }
-  if (state.inFlight.releaseIdentity === releaseIdentity) {
-    return { decision: 'coalesced', state };
-  }
-  if (state.queued) {
-    // Already an in-flight + a queued release; refuse a third (no unbounded queue).
-    if (state.queued.releaseIdentity === releaseIdentity) return { decision: 'coalesced', state };
-    return { decision: 'busy-queue-full', state };
-  }
-  return { decision: 'queued', state: { ...state, queued: { releaseIdentity } } };
-};
-
-/** Advance the in-flight apply to `to`. Throws on an illegal transition or no
- *  in-flight apply — callers drive phases in order. Pass `expectedReleaseIdentity`
- *  to bind the call to a specific release (defense-in-depth: a stale advance from
- *  a just-committed release must not drive a freshly-promoted queued one). */
-export const advanceApply = (
-  state: ApplyLockState,
-  to: ApplyPhase,
-  expectedReleaseIdentity?: string,
-): ApplyLockState => {
-  if (!state.inFlight) throw new Error('advanceApply: no apply in flight');
-  if (expectedReleaseIdentity !== undefined && state.inFlight.releaseIdentity !== expectedReleaseIdentity) {
-    throw new Error(
-      `advanceApply: release mismatch (in-flight ${state.inFlight.releaseIdentity}, expected ${expectedReleaseIdentity})`,
-    );
-  }
-  if (!isValidPhaseTransition(state.inFlight.phase, to)) {
-    throw new Error(`advanceApply: illegal transition ${state.inFlight.phase} → ${to}`);
-  }
-  const next: ApplyLockState = { ...state, inFlight: { ...state.inFlight, phase: to } };
-  // On a terminal phase the lock frees; a queued release is promoted to in-flight.
-  if (TERMINAL.has(to)) {
-    if (state.queued) {
-      return { inFlight: { releaseIdentity: state.queued.releaseIdentity, phase: 'staging' } };
-    }
-    return {};
-  }
-  return next;
-};
-
-/** Rollback is allowed only when no apply is in flight (I-6). */
-export const canRollback = (state: ApplyLockState): boolean => !state.inFlight;
 
 /** Boot-health auto-revert decision: N consecutive failed boots of an
  *  uncommitted binary trips the revert (counted OUTSIDE the DB). */

@@ -168,10 +168,55 @@ export const describeAvailable = (
   if (a && !a.in_rollout_cohort) {
     lines.push('The staged rollout has not reached this server yet. You can still apply it yourself.');
   }
+  if (res.docker) {
+    lines.push(
+      res.docker.artifact === 'docker-baked'
+        ? `Recreate this server with the signed image: ${res.docker.pull_ref}`
+        : `Recovery image (signed manifest digest): ${res.docker.pull_ref}`,
+    );
+  }
   return {
     title: a?.below_min_supported ? 'Update urgently available' : 'Update available',
     text: lines.join(' '),
     ...(a?.notes_url ? { link_url: a.notes_url } : {}),
+  };
+};
+
+/** Launcher policy is itself an owner intervention. In particular, docker-thin
+ * defaults to auto mode, so suppressing this result leaves a headless install
+ * permanently stuck while every scheduled cycle appears successful. */
+export const describeLauncherOutdated = (res: ReleaseCheckResponse): NotificationMessage => {
+  const lines = ['This server cannot apply the signed release until its update launcher is replaced.'];
+  if (res.docker) {
+    lines.push(
+      `Recreate it with the signed ${res.docker.artifact} image: ${res.docker.pull_ref}`,
+      `That image carries Recued ${res.docker.version}; this server runs ${res.current_version}.`,
+    );
+  }
+  return {
+    title: 'Update launcher required',
+    text: lines.join(' '),
+    ...(res.docker?.notes_url ? { link_url: res.docker.notes_url } : {}),
+  };
+};
+
+/** A signed release can be globally available while omitting this host's
+ * executable or paired native addon. Calling that merely "Update available"
+ * sends the owner to an apply action that deterministically cannot work. */
+export const describeArtifactUnavailable = (res: ReleaseCheckResponse): NotificationMessage => {
+  const version = res.available?.version ?? 'unknown';
+  const lines = [
+    `Recued ${version} is available, but it has no complete binary and native-addon pair for this server.`,
+  ];
+  if (res.docker) {
+    lines.push(`Recreate it with the signed recovery image: ${res.docker.pull_ref}`);
+  } else {
+    lines.push('Keep the current version running and report the missing platform artifact.');
+  }
+  return {
+    title: 'Update unavailable for this platform',
+    text: lines.join(' '),
+    ...(res.available?.notes_url ? { link_url: res.available.notes_url } : {}),
   };
 };
 
@@ -186,6 +231,106 @@ export const createUpdateAutoApplyTask = (
   deps: UpdateAutoApplyTaskDeps,
 ): HousekeepingTaskInstance => {
   const random = deps.random ?? Math.random;
+
+  /** Report an outcome that needs owner action. This accepts the projection
+   * carried by resolveForApply, so auto mode neither performs a second fetch
+   * nor silently loses a no-artifact / major / cohort / launcher refusal. */
+  const reportOutcome = async (
+    ctx: HousekeepingContext,
+    res: ReleaseCheckResponse,
+    reason: 'available' | 'no-artifact' | 'launcher-outdated' =
+      res.status === 'launcher-outdated' ? 'launcher-outdated' : 'available',
+  ): Promise<void> => {
+    const available = res.status === 'update-available' ? res.available : undefined;
+    const launcher = reason === 'launcher-outdated' && res.status === 'launcher-outdated';
+    const artifactUnavailable = reason === 'no-artifact' && available !== undefined;
+    if (!available && !launcher) return;
+
+    const reportKey = artifactUnavailable
+      ? `artifact:${available.version}`
+      : available
+        ? available.version
+        : `launcher:${res.docker?.version ?? res.current_version}:${res.docker?.digest ?? 'no-digest'}`;
+    if (deps.readLastReported?.() === reportKey) return;
+
+    let told = false;
+    try {
+      if (artifactUnavailable) {
+        ctx.emitAuditRow({
+          ts: ctx.now(),
+          event_at: ctx.now(),
+          action: 'update_artifact_unavailable',
+          target: `${res.channel}:${available.version}`,
+          run_mode: 'live',
+          detail: {
+            from_version: res.current_version,
+            to_version: available.version,
+            channel: res.channel,
+            reason: 'missing_binary_or_native_addon',
+          },
+        });
+      } else if (available) {
+        ctx.emitAuditRow({
+          ts: ctx.now(),
+          event_at: ctx.now(),
+          action: 'update_available',
+          target: `${res.channel}:${available.version}`,
+          run_mode: 'live',
+          detail: {
+            from_version: res.current_version,
+            to_version: available.version,
+            channel: res.channel,
+            migration: available.migration,
+            is_major: available.is_major,
+            below_min_supported: available.below_min_supported,
+            in_rollout_cohort: available.in_rollout_cohort,
+          },
+        });
+      } else {
+        ctx.emitAuditRow({
+          ts: ctx.now(),
+          event_at: ctx.now(),
+          action: 'update_launcher_outdated',
+          target: res.docker?.release_identity ?? `${res.channel}:launcher`,
+          run_mode: 'live',
+          detail: {
+            from_version: res.current_version,
+            to_version: res.docker?.version,
+            channel: res.channel,
+            artifact: res.docker?.artifact,
+            pull_ref: res.docker?.pull_ref,
+          },
+        });
+      }
+      told = true;
+    } catch {
+      /* best-effort — the notify below may still carry it */
+    }
+
+    if (deps.notifyOwner) {
+      try {
+        await deps.notifyOwner(
+          artifactUnavailable
+            ? describeArtifactUnavailable(res)
+            : available
+              ? describeAvailable(res, available.version)
+              : describeLauncherOutdated(res),
+        );
+        told = true;
+      } catch {
+        /* a transport failure must not stop the housekeeping cycle */
+      }
+    }
+
+    // LAST: this key means at least one owner-visible path accepted the report.
+    if (told) {
+      try {
+        deps.writeLastReported?.(reportKey);
+      } catch {
+        /* best-effort */
+      }
+    }
+  };
 
   /** The check-only cycle: fetch + verify + resolve, and record an available
    *  release ONCE per version.
@@ -209,68 +354,7 @@ export const createUpdateAutoApplyTask = (
 
     const interval = res.channel === 'edge' ? EDGE_CHECK_INTERVAL_MS : STABLE_CHECK_INTERVAL_MS;
 
-    // not-configured (pre-GA) / up-to-date / replay / stale-feed / bad-signature
-    // / fetch-failed / launcher-outdated — nothing to tell the owner. The floor
-    // advancement already happened inside the check.
-    if (res.status !== 'update-available' || !res.available) {
-      return { status: 'complete', cursor: reschedule(interval) };
-    }
-
-    const version = res.available.version;
-    if (deps.readLastReported?.() === version) {
-      return { status: 'complete', cursor: reschedule(interval) };
-    }
-
-    // Two report paths, and the marker advances if EITHER landed. The audit row
-    // is the durable trace; the D-158 notify is what actually reaches a person.
-    // Neither is a fallback for the other — an owner whose audit sink is down
-    // should still be told, and a boot with no notification block still needs
-    // the release on the record.
-    let told = false;
-
-    try {
-      ctx.emitAuditRow({
-        ts: ctx.now(),
-        event_at: ctx.now(),
-        action: 'update_available',
-        target: `${res.channel}:${version}`,
-        run_mode: 'live',
-        detail: {
-          from_version: res.current_version,
-          to_version: version,
-          channel: res.channel,
-          migration: res.available.migration,
-          is_major: res.available.is_major,
-          below_min_supported: res.available.below_min_supported,
-          in_rollout_cohort: res.available.in_rollout_cohort,
-        },
-      });
-      told = true;
-    } catch {
-      /* best-effort — the notify below may still carry it */
-    }
-
-    if (deps.notifyOwner) {
-      try {
-        await deps.notifyOwner(describeAvailable(res, version));
-        told = true;
-      } catch {
-        /* the block never throws; a transport that did is still not our problem */
-      }
-    }
-
-    // ⛔ LAST. The marker means "the owner has been told about this version" —
-    // advancing it before telling them loses the release silently, and this is
-    // the one direction that cannot be recovered on the next cycle. Failing the
-    // other way just repeats a notification once.
-    if (told) {
-      try {
-        deps.writeLastReported?.(version);
-      } catch {
-        /* best-effort */
-      }
-    }
-
+    await reportOutcome(ctx, res);
     return { status: 'complete', cursor: reschedule(interval) };
   };
 
@@ -326,14 +410,20 @@ export const createUpdateAutoApplyTask = (
       return { status: 'complete', cursor: reschedule(PRE_RESOLVE_INTERVAL_MS) };
     }
 
-    const channelInterval =
-      resolved.status === 'applyable' && resolved.channel === 'edge'
-        ? EDGE_CHECK_INTERVAL_MS
-        : STABLE_CHECK_INTERVAL_MS;
+    const channelInterval = resolved.report.channel === 'edge'
+      ? EDGE_CHECK_INTERVAL_MS
+      : STABLE_CHECK_INTERVAL_MS;
 
     if (resolved.status !== 'applyable') {
-      // not-configured (pre-GA) / up-to-date / replay / stale-feed / no-artifact
-      // / fetch / signature — nothing to auto-apply this cycle.
+      // Most outcomes are quiet. A signed available release with no applicable
+      // pair and a launcher-outdated recovery target are owner interventions;
+      // reportOutcome selects those from the same resolve.
+      const reportReason = resolved.status === 'no-artifact'
+        ? 'no-artifact'
+        : resolved.status === 'launcher-outdated'
+          ? 'launcher-outdated'
+          : 'available';
+      await reportOutcome(ctx, resolved.report, reportReason);
       return { status: 'complete', cursor: reschedule(channelInterval) };
     }
 
@@ -341,6 +431,7 @@ export const createUpdateAutoApplyTask = (
     // an out-of-rollout release is notify-only (the check rpc / update card
     // surfaces it; the owner applies it explicitly via `update.apply`).
     if (!resolved.autoApplyEligible) {
+      await reportOutcome(ctx, resolved.report);
       return { status: 'complete', cursor: reschedule(channelInterval) };
     }
 

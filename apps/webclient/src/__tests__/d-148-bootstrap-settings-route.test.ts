@@ -23,7 +23,7 @@
  *   - dispose tears the panel down + removes the route root from the
  *     host. */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   bootstrapSettingsRoute,
@@ -55,6 +55,7 @@ import {
 import {
   UPDATES_PAGE_STYLES,
   UPDATES_ROLLBACK_BTN_ATTR,
+  UPDATES_APPLY_BTN_ATTR,
 } from '../settings/updates-page.js';
 import type {
   TransparencyPrefsGetCaller,
@@ -2297,6 +2298,99 @@ describe('bootstrapSettingsRoute: the rail is addressable', () => {
       findByAttrValue(host, SETTINGS_ROUTE_SECTION_ATTR, 'server')
         ?.getAttribute(SETTINGS_ROUTE_ACTIVE_ATTR),
     ).toBe('true');
+    route.dispose();
+  });
+});
+
+describe('D-257 — the async apply outcome reaches the Updates page', () => {
+  /** ⛔⛔ THIS IS A COMPOSITION TEST ON PURPOSE. The bootstrap BUILT the
+   *  `updateProgress` seam and the Updates page DECLARED the option, and both
+   *  were individually correct — the settings route in between simply never
+   *  declared or forwarded it, so nothing ever called `subscribe`. Every unit
+   *  test on either side passed, because each hand-built its own options.
+   *
+   *  A test that passes `updateProgress` straight to `mountUpdatesPage` would
+   *  pass with the route broken. It has to go THROUGH `bootstrapSettingsRoute`. */
+  it('the route forwards updateProgress, so the page actually subscribes', () => {
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    const subscribe = vi.fn(() => () => {});
+    const route = bootstrapSettingsRoute({
+      root: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      localStore: createInMemoryWebclientLocalStore(),
+      initialSectionId: 'updates',
+      updateCheckCaller: async () => ({
+        status: 'up-to-date',
+        current_version: '26.8.0',
+        channel: 'stable',
+      }),
+      updateProgress: { subscribe },
+    });
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    route.dispose();
+  });
+
+  it('a terminal FAILURE on the bus is surfaced, not silently completed', async () => {
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    let emit: ((e: {
+      phase: string;
+      status?: string;
+      detail?: string;
+      operation_id?: string;
+    }) => void) | null = null;
+    const route = bootstrapSettingsRoute({
+      root: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      localStore: createInMemoryWebclientLocalStore(),
+      initialSectionId: 'updates',
+      updateCheckCaller: async () => ({
+        status: 'update-available',
+        current_version: '26.8.0',
+        channel: 'stable',
+        available: {
+          version: '26.9.0',
+          migration: false,
+          is_major: false,
+          below_min_supported: false,
+          in_rollout_cohort: true,
+          auto_apply_eligible: true,
+          notes_url: '',
+        },
+      }),
+      // The server accepts and returns immediately; the outcome comes later.
+      updateApplyCaller: async () => ({ status: 'applying' }),
+      updateProgress: {
+        subscribe: (cb: (e: {
+          phase: string;
+          status?: string;
+          detail?: string;
+          operation_id?: string;
+        }) => void) => {
+          emit = cb as typeof emit;
+          return () => {};
+        },
+      },
+    } as unknown as Parameters<typeof bootstrapSettingsRoute>[0]);
+
+    await Promise.resolve();
+    const btn = findByAttr(host, UPDATES_APPLY_BTN_ATTR);
+    if (btn) {
+      btn.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      // Still pending: `applying` is not a terminal status, so the run owns the
+      // controls until the bus says otherwise.
+      expect(route.hasInFlightWork()).toBe(true);
+    }
+
+    expect(emit).not.toBeNull();
+    emit!({ phase: 'result', status: 'stage-failed', detail: 'disk full' });
+    await Promise.resolve();
+    // The failure ended the run. Before the wiring existed the page had already
+    // called this done at the rpc reply and would never have seen this at all.
+    expect(route.hasInFlightWork()).toBe(false);
     route.dispose();
   });
 });

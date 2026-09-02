@@ -36,6 +36,9 @@ const makePorts = (over: Partial<ApplyOrchestratorPorts> = {}): ApplyOrchestrato
     hasSnapshot: () => false,
     isQuiesced: () => true,
     requestRestart: vi.fn(),
+    // Supervised is the normal case; the un-supervised refusal is covered
+    // in apply-orchestrator.test.ts, where the guard lives.
+    supervisorWillRespawn: () => true,
     newEntryId: () => `e${++idSeq}`,
     now: () => 1000,
     trustedPubkey: 'PUB',
@@ -44,22 +47,46 @@ const makePorts = (over: Partial<ApplyOrchestratorPorts> = {}): ApplyOrchestrato
   };
 };
 
-const applyable = (over: Partial<Extract<ResolveForApplyResult, { status: 'applyable' }>> = {}): ResolveForApplyResult => ({
-  status: 'applyable',
-  releaseIdentity: 'stable:1.4.2',
-  fromVersion: '1.3.0',
-  toVersion: '1.4.2',
-  channel: 'stable',
-  migration: false,
-  isMajor: false,
-  autoApplyEligible: true,
-  artifact: { url: 'https://x/bin', sha256: 'aa', sig: 'ss', size_bytes: 1 } as never,
-  // An `applyable` resolution now always carries its native addon — a release
-  // without one is refused as `no-artifact` upstream (D-178 item 4).
-  libArtifact: { url: 'https://x/lib', sha256: 'bb', sig: 'tt', size_bytes: 1 } as never,
-  webclientArtifact: null,
-  ...over,
-});
+const applyable = (
+  over: Partial<Extract<ResolveForApplyResult, { status: 'applyable' }>> = {},
+): ResolveForApplyResult => {
+  const result = {
+    status: 'applyable' as const,
+    releaseIdentity: 'stable:1.4.2',
+    fromVersion: '1.3.0',
+    toVersion: '1.4.2',
+    channel: 'stable' as const,
+    migration: false,
+    isMajor: false,
+    autoApplyEligible: true,
+    inRolloutCohort: true,
+    rolloutPct: 100,
+    artifact: { url: 'https://x/bin', sha256: 'aa', sig: 'ss', size_bytes: 1 } as never,
+    libArtifact: { url: 'https://x/lib', sha256: 'bb', sig: 'tt', size_bytes: 1 } as never,
+    webclientArtifact: null,
+    ...over,
+  };
+  return {
+    ...result,
+    report: over.report ?? ({
+      status: 'update-available',
+      current_version: result.fromVersion,
+      channel: result.channel,
+      sequence: 8,
+      available: {
+        version: result.toVersion,
+        release_identity: result.releaseIdentity,
+        migration: result.migration,
+        is_major: result.isMajor,
+        below_min_supported: false,
+        in_rollout_cohort: result.inRolloutCohort,
+        rollout_pct: result.rolloutPct,
+        auto_apply_eligible: result.autoApplyEligible,
+        notes_url: 'https://x/notes',
+      },
+    } satisfies ReleaseCheckResponse),
+  };
+};
 
 const modeStore = (mode: UpdateMode | null): UpdateModeStore => ({
   readUserMode: () => mode,
@@ -105,6 +132,21 @@ const available = (over: Partial<NonNullable<ReleaseCheckResponse['available']>>
       ...over,
     },
   }) as ReleaseCheckResponse;
+
+const launcherOutdated = (): ReleaseCheckResponse => ({
+  status: 'launcher-outdated',
+  current_version: '1.3.0',
+  channel: 'stable',
+  docker: {
+    artifact: 'docker-thin',
+    version: '1.4.2',
+    release_identity: 'stable:1.4.2',
+    image: 'registry.example/recued/server',
+    digest: `sha256:${'a'.repeat(64)}`,
+    pull_ref: `registry.example/recued/server@sha256:${'a'.repeat(64)}`,
+    notes_url: 'https://x/notes',
+  },
+});
 
 /** For the apply-path tests: `mode=auto` on a self-applying channel resolves
  *  through `resolveForApply` and must never reach the check. Throwing here
@@ -166,18 +208,70 @@ describe('createUpdateAutoApplyTask', () => {
     expect(ports.requestRestart).not.toHaveBeenCalled();
   });
 
-  it('does NOT apply a major / out-of-cohort release (autoApplyEligible=false)', async () => {
+  it('does NOT apply a major / out-of-cohort release, but reports it from the same resolve', async () => {
+    auditRows.length = 0;
     const ports = makePorts();
+    const notifyOwner = vi.fn(async (_message: NotificationMessage) => {});
     const task = createUpdateAutoApplyTask({
       apply: { ports, resolveForApply: async () => applyable({ isMajor: true, autoApplyEligible: false }) },
       runCheck: unusedCheck,
       modeStore: modeStore('auto'),
       channel: 'binary',
+      notifyOwner,
       random: () => 0.5,
     });
     const r = await task.step(ctxAt(1000), NOT_DUE, 60_000);
     expect(r.status).toBe('complete');
     expect(ports.requestRestart).not.toHaveBeenCalled();
+    expect(notifyOwner).toHaveBeenCalledWith(expect.objectContaining({ title: 'Update available' }));
+    expect(auditRows.filter((row) => row.action === 'update_available')).toHaveLength(1);
+  });
+
+  it('reports a signed release that cannot apply because its native pair is absent', async () => {
+    auditRows.length = 0;
+    const notifyOwner = vi.fn(async (_message: NotificationMessage) => {});
+    const task = createUpdateAutoApplyTask({
+      apply: {
+        ports: makePorts(),
+        resolveForApply: async (): Promise<ResolveForApplyResult> => ({
+          status: 'no-artifact',
+          report: available(),
+        }),
+      },
+      runCheck: unusedCheck,
+      modeStore: modeStore('auto'),
+      channel: 'docker-thin',
+      notifyOwner,
+      random: () => 0.5,
+    });
+    await task.step(ctxAt(1000), NOT_DUE, 60_000);
+    expect(notifyOwner).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Update unavailable for this platform',
+      text: expect.stringContaining('no complete binary and native-addon pair'),
+    }));
+    expect(auditRows.filter((row) => row.action === 'update_artifact_unavailable')).toHaveLength(1);
+  });
+
+  it('reports launcher-outdated in auto mode with the exact signed recovery image', async () => {
+    auditRows.length = 0;
+    const notifyOwner = vi.fn(async (_message: NotificationMessage) => {});
+    const report = launcherOutdated();
+    const task = createUpdateAutoApplyTask({
+      apply: {
+        ports: makePorts(),
+        resolveForApply: async (): Promise<ResolveForApplyResult> => ({ status: 'launcher-outdated', report }),
+      },
+      runCheck: unusedCheck,
+      modeStore: modeStore('auto'),
+      channel: 'docker-thin',
+      notifyOwner,
+      random: () => 0.5,
+    });
+    await task.step(ctxAt(1000), NOT_DUE, 60_000);
+    const message = notifyOwner.mock.calls[0]?.[0];
+    expect(message?.title).toBe('Update launcher required');
+    expect(message?.text).toContain(report.docker?.pull_ref);
+    expect(auditRows.filter((row) => row.action === 'update_launcher_outdated')).toHaveLength(1);
   });
 
   it('defers when the engine is not quiesced (busy)', async () => {
@@ -407,6 +501,19 @@ describe('createUpdateAutoApplyTask', () => {
     await task.step(ctxAt(2000), NOT_DUE, 60_000);
     expect(notifyOwner).toHaveBeenCalledOnce();
     expect(notifyOwner.mock.calls[0]?.[0]).toMatchObject({ title: 'Update available' });
+  });
+
+  it('reports launcher-outdated during a check-only cycle', async () => {
+    const notifyOwner = vi.fn(async (_message: NotificationMessage) => {});
+    const task = createUpdateAutoApplyTask({
+      runCheck: async () => launcherOutdated(),
+      notifyOwner,
+      modeStore: modeStore('notify'),
+      channel: 'docker-thin',
+      random: () => 0.5,
+    });
+    await task.step(ctxAt(1000), NOT_DUE, 60_000);
+    expect(notifyOwner).toHaveBeenCalledWith(expect.objectContaining({ title: 'Update launcher required' }));
   });
 
   it('a notify that throws does not stop the cycle or lose the audit row', async () => {

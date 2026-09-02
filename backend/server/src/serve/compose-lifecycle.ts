@@ -1,3 +1,4 @@
+import { DRAIN_STEP_NAMES } from '@recued/contracts';
 import { dirname } from 'node:path';
 
 import type Database from 'better-sqlite3';
@@ -8,8 +9,13 @@ import type { BootstrapHandlerDeps } from '../bootstrap-handler.js';
 import type { BackgroundServiceRegistry } from '../composition/bin/wire-background-services.js';
 import type { SchedulersBundle } from '../composition/bin/wire-schedulers.js';
 import type { EvictionCascade } from '../eviction-cascade.js';
-import { createLifecycle, type Lifecycle } from '../lifecycle/index.js';
+import { createLifecycle, type Lifecycle
+} from '../lifecycle/index.js';
 import { LockHeldError } from '../lifecycle/instance-lock.js';
+import { EXIT_LOCK_HELD } from '../launcher/managed-launcher.js';
+import { inspectUpdateLease, updateLeasePathFor } from '../update/update-lease.js';
+import { releaseEarlyBootUpdateLease } from '../update/early-boot-update-lease.js';
+import { resolveUpdateBinaryPath } from '../update/release-config.js';
 import type { CollectionContext } from './compose-collection-context.js';
 import type { StorageContext } from './compose-storage-context.js';
 import type { BaseContext } from './compose-base-context.js';
@@ -215,6 +221,39 @@ export const composeServeLifecycle = async (
       // auto-revert. No `onCrashLoopDetected` flag write remains.
     });
     lifecycle.lock.claim({ boot_at: Date.now(), bind_port: base.port });
+    // `bin.ts` took the HOST-wide update lease before it touched an interrupted
+    // pair and kept it across the native-addon/database-open graph. The realm is
+    // now claimed, so release that early lease: an updater arriving afterwards
+    // sees this realm, while a boot arriving during an updater cannot reach the
+    // database at all. Holding it for the server lifetime would block every
+    // other realm on this install from updating.
+    releaseEarlyBootUpdateLease();
+    // A CLI can claim in the instant after the release above. Inspect once more
+    // so both participants back off cleanly; its mandatory post-claim realm
+    // re-check sees our claim and will not touch the database.
+    //
+    // ⚠ EXIT 4, NOT A CRASH. `EXIT_LOCK_HELD` is the code both supervisors
+    // already read as "someone else owns this — halt cleanly", so this cannot be
+    // mistaken for a boot failure. It matters: a boot failure DURING an apply is
+    // counted against the release being staged, and three would revert it.
+    // ⚠ THE SAME DERIVATION, FROM THE SAME INPUT, AS THE OTHER SIDE. The lease
+    // path is `dirname(<the binary an update would swap>)`, and this reads it via
+    // the function the CLI uses off the environment the CLI reads — not off
+    // `base.distribution`, which is this composition's own view and could differ.
+    // Two participants computing one path by two routes is a lock neither holds.
+    const updateHolder = inspectUpdateLease(
+      updateLeasePathFor(resolveUpdateBinaryPath(process.env)),
+    );
+    if (updateHolder !== null && updateHolder.pid !== process.pid) {
+      lifecycle.lock.release();
+      console.error(
+        `[lifecycle] an update is in progress on this install (pid ${updateHolder.pid}, `
+        + `${updateHolder.operation}) — not starting, because it is about to replace the `
+        + 'binary and may restore the database. Start the server again once it finishes.',
+      );
+      exit(EXIT_LOCK_HELD);
+      return undefined;
+    }
     // Boot-persistence: the kill-switch flag survives a restart, but the
     // storage gates are freshly constructed in the `running` state, so a
     // crash-loop halt that outlived the process would silently lapse. Replay
@@ -239,17 +278,38 @@ export const composeServeLifecycle = async (
     throw err;
   }
 
-  bootstrapDeps.onRestartRequested = (reason) => {
+  bootstrapDeps.onRestartRequested = (reason, onDrained) => {
     const lc = lifecycle;
     if (!lc) return;
     void lc
       .requestDrain({ intent: 'restart', reason: reason || 'rpc' })
-      .then(() => {
+      .then(async (result) => {
+        // ⛔ "Drained" means EVERY step ran and none aborted — the same bar the
+        // archive runtime's staged-restore commit uses, for the same reason:
+        // `close_db` is one of those steps, and a caller that replaces the
+        // database FILE needs it to have actually happened. A partial drain can
+        // leave a writer holding it, so that reports NOT ok.
+        // ⛔ READ THE RESULT DEFENSIVELY. A shape without these arrays threw here,
+        // and the throw escaped into `.catch` — which does NOT restart, it exits
+        // 1. So a malformed drain result cost the RESTART, not just the revert.
+        // Missing data reads as "not drained": the disk work is skipped (safe)
+        // and the handoff still happens (correct).
+        const completed: readonly string[] = result?.completed ?? [];
+        const aborted: readonly unknown[] = result?.aborted ?? [];
+        const drainOk =
+          aborted.length === 0
+          && DRAIN_STEP_NAMES.every((step) => completed.includes(step));
+        if (onDrained) await onDrained(drainOk);
         const code = lc.supervisor.handoff('restart');
         exit(code);
       })
-      .catch((err) => {
+      .catch(async (err) => {
         console.error('[lifecycle] restart drain failed', err);
+        // A drain that REJECTED did not complete, so it takes the same
+        // change-nothing path rather than being skipped silently.
+        if (onDrained) {
+          try { await onDrained(false); } catch { /* the restart is what matters */ }
+        }
         exit(1);
       });
   };

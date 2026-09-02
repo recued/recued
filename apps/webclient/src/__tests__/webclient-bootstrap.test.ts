@@ -234,6 +234,7 @@ import {
   ARCHIVE_BACKUP_VIEW_ATTR,
 } from '../settings/archive-backup-panel.js';
 import {
+  UPDATES_APPLY_BTN_ATTR,
   UPDATES_CHECK_BTN_ATTR,
   UPDATES_CREDENTIAL_RETRY_ATTR,
   UPDATES_CREDENTIAL_RETRY_RETURN_ATTR,
@@ -244,6 +245,7 @@ import {
   UPDATES_RECEIPT_DIAGNOSTIC_ATTR,
   UPDATES_RECEIPT_RECOVERY_ATTR,
   UPDATES_RECEIPT_RETRY_ATTR,
+  UPDATES_ROLLBACK_BTN_ATTR,
 } from '../settings/updates-page.js';
 
 // ──────────────────────────────────────────────────────────────────
@@ -5736,6 +5738,463 @@ describe('bootstrapWebclient: Account server profiles', () => {
     await handle.dispose();
     expect(rooms.size === 0 || [...rooms.values()].every((room) => room.size === 0))
       .toBe(true);
+  });
+
+  it.each([
+    {
+      operation: 'update',
+      buttonAttr: UPDATES_APPLY_BTN_ATTR,
+      rpcMethod: 'update.apply',
+    },
+    {
+      operation: 'rollback',
+      buttonAttr: UPDATES_ROLLBACK_BTN_ATTR,
+      rpcMethod: 'update.rollback',
+    },
+  ] as const)(
+    'dispatches $rpcMethod before bootstrap probes its freshly latched receipt',
+    async ({ operation, buttonAttr, rpcMethod }) => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE], 'p1');
+    const tabStorage = memorySessionStorage();
+    fixture.hashSource.setHash('#settings/updates');
+    (fixture.fakeDoc as { defaultView?: unknown }).defaultView = {
+      localStorage: tabStorage,
+      history: { replaceState: vi.fn() },
+      location: { hash: '#settings/updates' },
+      addEventListener: (): void => undefined,
+      removeEventListener: (): void => undefined,
+    };
+
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      credentialRotationTabStorage: tabStorage,
+    });
+    await flush();
+
+    const check = findLatestRpcCall(fixture.transportControls, 'update.check');
+    const mode = findLatestRpcCall(fixture.transportControls, 'update.mode');
+    expect(check).toBeDefined();
+    expect(mode).toBeDefined();
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: check!.request_id,
+      result: {
+        status: 'update-available',
+        current_version: '26.8.31',
+        channel: 'stable',
+        available: {
+          version: '26.9.1',
+          release_identity: 'stable:26.9.1',
+          migration: false,
+          is_major: false,
+          below_min_supported: false,
+          in_rollout_cohort: true,
+          auto_apply_eligible: true,
+          notes_url: 'https://recued.com/releases/26.9.1',
+        },
+      },
+    });
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: mode!.request_id,
+      result: {
+        mode: 'auto',
+        source: 'default',
+        env_locked: false,
+        channel_default: 'auto',
+      },
+    });
+    await flush();
+
+    const actionButton = findChildByAttr(fixture.root, buttonAttr);
+    expect(actionButton).not.toBeNull();
+    expect(actionButton?.hasAttribute('disabled')).toBe(false);
+    const beforeClick = fixture.transportControls.sendCalls().length;
+    actionButton?.click();
+    await flush();
+
+    const actionCalls = fixture.transportControls.sendCalls().slice(beforeClick).filter(
+      (message): message is {
+        type: 'rpc';
+        request_id: string;
+        method: string;
+        args: Record<string, unknown>;
+      } => message !== null
+        && typeof message === 'object'
+        && (message as { type?: unknown }).type === 'rpc'
+        && (
+          (message as { method?: unknown }).method === rpcMethod
+          || (message as { method?: unknown }).method === 'update.operation_status'
+        ),
+    );
+    expect(actionCalls.map((call) => call.method)).toEqual([
+      rpcMethod,
+      'update.operation_status',
+    ]);
+    expect(actionCalls[1]?.args.operation_id).toBe(
+      actionCalls[0]?.args.operation_id,
+    );
+
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: actionCalls[0]!.request_id,
+      result: operation === 'update'
+        ? {
+            status: 'applying',
+            operation_id: actionCalls[0]!.args.operation_id,
+          }
+        : {
+            status: 'rolled-back',
+            restored_snapshot: false,
+            operation_id: actionCalls[0]!.args.operation_id,
+          },
+    });
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: actionCalls[1]!.request_id,
+      result: { status: 'waiting_for_restart', operation },
+    });
+    await flush();
+    await handle.dispose();
+    },
+  );
+
+  // ⛔⛔ THE APPLY'S OUTCOME WAS THE SETTINGS ROUTE'S PROPERTY, and its own card
+  // says "You can leave this page". D-257 made the apply asynchronous — the rpc
+  // answers `applying` and the terminal arrives minutes later — and the only
+  // listener lived inside that route. Leaving detached it, so the run finished
+  // with nobody to hear it and the durable latch was never advanced to the state
+  // the receipt check engages on.
+  it('advances the update latch from a terminal that arrives with no Updates route mounted', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE], 'p1');
+    const tabStorage = memorySessionStorage();
+    const progressKey = serverUpdateProgressStorageKey('p1');
+    tabStorage.setItem(progressKey, JSON.stringify({
+      type: 'recued.webclient.server-update-progress',
+      version: 1,
+      scope_id: 'p1',
+      event_id: 'accepted-then-left',
+      phase: 'applying',
+      operation: 'update',
+      started_at: 1_700_000_000_000,
+      operation_id: 'server-ledger-receipt',
+    }));
+    // Deliberately NOT on #settings/updates: nothing route-local is listening.
+    fixture.hashSource.setHash('#recipes');
+    (fixture.fakeDoc as { defaultView?: unknown }).defaultView = {
+      localStorage: tabStorage,
+      history: { replaceState: vi.fn() },
+      location: { hash: '#recipes' },
+      addEventListener: (): void => undefined,
+      removeEventListener: (): void => undefined,
+    };
+
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      credentialRotationTabStorage: tabStorage,
+    });
+    await flush();
+
+    fixture.transportControls.fireMessage({
+      type: 'server_event',
+      event: {
+        kind: 'update.progress',
+        phase: 'result',
+        status: 'restarting',
+        release_identity: 'stable:26.8.0',
+        from_version: '26.7.3',
+        to_version: '26.8.0',
+        operation_id: 'server-ledger-receipt',
+      },
+    });
+    await flush();
+
+    const latch = JSON.parse(tabStorage.getItem(progressKey)!) as {
+      phase: string;
+      operation_id?: string;
+    };
+    expect(latch.phase).toBe('awaiting_reconnect');
+    expect(latch.operation_id).toBe('server-ledger-receipt');
+    handle.dispose?.();
+  });
+
+  it('does not retire the durable update latch for another operation terminal', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE], 'p1');
+    const tabStorage = memorySessionStorage();
+    const progressKey = serverUpdateProgressStorageKey('p1');
+    tabStorage.setItem(progressKey, JSON.stringify({
+      type: 'recued.webclient.server-update-progress',
+      version: 1,
+      scope_id: 'p1',
+      event_id: 'owned-apply',
+      phase: 'applying',
+      operation: 'update',
+      started_at: 1_700_000_000_000,
+      operation_id: 'owned-op',
+    }));
+    fixture.hashSource.setHash('#recipes');
+    (fixture.fakeDoc as { defaultView?: unknown }).defaultView = {
+      localStorage: tabStorage,
+      history: { replaceState: vi.fn() },
+      location: { hash: '#recipes' },
+      addEventListener: (): void => undefined,
+      removeEventListener: (): void => undefined,
+    };
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      credentialRotationTabStorage: tabStorage,
+    });
+    await flush();
+
+    fixture.transportControls.fireMessage({
+      type: 'server_event',
+      event: {
+        kind: 'update.progress',
+        phase: 'result',
+        status: 'busy',
+        operation_id: 'other-op',
+      },
+    });
+    await flush();
+    expect(JSON.parse(tabStorage.getItem(progressKey)!)).toMatchObject({
+      phase: 'applying',
+      operation_id: 'owned-op',
+    });
+
+    fixture.transportControls.fireMessage({
+      type: 'server_event',
+      event: {
+        kind: 'update.progress',
+        phase: 'result',
+        status: 'busy',
+        operation_id: 'owned-op',
+      },
+    });
+    await flush();
+    expect(JSON.parse(tabStorage.getItem(progressKey)!)).toMatchObject({
+      phase: 'idle',
+      operation: 'update',
+    });
+    await handle.dispose();
+  });
+
+  // ⛔⛔ THE ONE TERMINAL NOBODY COULD HEAR: the one that fired while the tab was
+  // RELOADING. The subscription above covers a live tab and the latch now
+  // survives a route change — but a reload rebuilds the listener, and a run that
+  // ended in that gap would leave an `applying` latch nothing will ever advance,
+  // which BLOCKS the Update button. So the failure mode of the fix would be an
+  // owner permanently unable to update; a receipt is what makes it answerable.
+  it('resolves an applying latch orphaned by a reload, then retires it', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE], 'p1');
+    const tabStorage = memorySessionStorage();
+    const progressKey = serverUpdateProgressStorageKey('p1');
+    tabStorage.setItem(progressKey, JSON.stringify({
+      type: 'recued.webclient.server-update-progress',
+      version: 1,
+      scope_id: 'p1',
+      event_id: 'orphaned-by-reload',
+      phase: 'applying',
+      operation: 'update',
+      started_at: 1_700_000_000_000,
+      operation_id: 'orphan-receipt',
+    }));
+    fixture.hashSource.setHash('#recipes');
+    (fixture.fakeDoc as { defaultView?: unknown }).defaultView = {
+      localStorage: tabStorage,
+      history: { replaceState: vi.fn() },
+      location: { hash: '#recipes' },
+      addEventListener: (): void => undefined,
+      removeEventListener: (): void => undefined,
+    };
+
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      credentialRotationTabStorage: tabStorage,
+    });
+    await flush();
+
+    const probe = findRpcCall(fixture.transportControls, 'update.operation_status');
+    expect(probe?.args).toEqual({
+      operation_id: 'orphan-receipt',
+      include_closed: true,
+    });
+
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: probe!.request_id,
+      result: { status: 'reverted', operation: 'update' },
+    });
+    await flush();
+
+    // Terminal on the server → the latch is retired, so the owner is not left
+    // looking at an update that is not happening.
+    const raw = tabStorage.getItem(progressKey);
+    expect(raw === null ? 'idle' : (JSON.parse(raw) as { phase: string }).phase).toBe('idle');
+    handle.dispose?.();
+  });
+
+  it('re-probes an applying receipt on reconnect after the old server still reported waiting', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE], 'p1');
+    const tabStorage = memorySessionStorage();
+    const progressKey = serverUpdateProgressStorageKey('p1');
+    tabStorage.setItem(progressKey, JSON.stringify({
+      type: 'recued.webclient.server-update-progress',
+      version: 1,
+      scope_id: 'p1',
+      event_id: 'waiting-before-reconnect',
+      phase: 'applying',
+      operation: 'update',
+      started_at: 1_700_000_000_000,
+      operation_id: 'reconnect-receipt',
+    }));
+    fixture.hashSource.setHash('#recipes');
+    (fixture.fakeDoc as { defaultView?: unknown }).defaultView = {
+      localStorage: tabStorage,
+      history: { replaceState: vi.fn() },
+      location: { hash: '#recipes' },
+      addEventListener: (): void => undefined,
+      removeEventListener: (): void => undefined,
+    };
+
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      credentialRotationTabStorage: tabStorage,
+    });
+    await flush();
+
+    const firstProbe = findLatestRpcCall(
+      fixture.transportControls,
+      'update.operation_status',
+    )!;
+    expect(firstProbe.args).toEqual({
+      operation_id: 'reconnect-receipt',
+      include_closed: true,
+    });
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: firstProbe.request_id,
+      result: { status: 'waiting_for_restart', operation: 'update' },
+    });
+    await flush();
+
+    // The best-effort `restarting` event is deliberately absent. The transport
+    // boundary itself must re-arm the exact receipt against the returned server.
+    fixture.transportControls.fireState('reconnecting');
+    fixture.transportControls.fireState('connected');
+    await flush();
+    const secondProbe = findLatestRpcCall(
+      fixture.transportControls,
+      'update.operation_status',
+    )!;
+    expect(secondProbe.request_id).not.toBe(firstProbe.request_id);
+    expect(secondProbe.args).toEqual(firstProbe.args);
+
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: secondProbe.request_id,
+      result: { status: 'completed', operation: 'update' },
+    });
+    await flush();
+    const raw = tabStorage.getItem(progressKey);
+    expect(raw === null ? 'idle' : (JSON.parse(raw) as { phase: string }).phase)
+      .toBe('idle');
+    await handle.dispose();
+  });
+
+  it('polls an applying receipt to terminal on the same connected transport', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE], 'p1');
+    const tabStorage = memorySessionStorage();
+    const progressKey = serverUpdateProgressStorageKey('p1');
+    tabStorage.setItem(progressKey, JSON.stringify({
+      type: 'recued.webclient.server-update-progress',
+      version: 1,
+      scope_id: 'p1',
+      event_id: 'waiting-without-disconnect',
+      phase: 'applying',
+      operation: 'update',
+      started_at: 1_700_000_000_000,
+      operation_id: 'same-transport-receipt',
+    }));
+    fixture.hashSource.setHash('#recipes');
+    (fixture.fakeDoc as { defaultView?: unknown }).defaultView = {
+      localStorage: tabStorage,
+      history: { replaceState: vi.fn() },
+      location: { hash: '#recipes' },
+      addEventListener: (): void => undefined,
+      removeEventListener: (): void => undefined,
+    };
+    const scheduled: Array<{
+      callback: () => void;
+      delayMs: number;
+      cancelled: boolean;
+    }> = [];
+
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      credentialRotationTabStorage: tabStorage,
+      serverUpdateReceiptScheduleRetry: (callback, delayMs) => {
+        const retry = { callback, delayMs, cancelled: false };
+        scheduled.push(retry);
+        return () => { retry.cancelled = true; };
+      },
+    });
+    await flush();
+
+    const firstProbe = findLatestRpcCall(
+      fixture.transportControls,
+      'update.operation_status',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: firstProbe.request_id,
+      result: { status: 'waiting_for_restart', operation: 'update' },
+    });
+    await flush();
+
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0]).toMatchObject({ delayMs: 2_500, cancelled: false });
+
+    // No reconnect and no terminal broadcast: the durable receipt itself must
+    // remain an active recovery source while this transport stays connected.
+    scheduled[0]!.callback();
+    await flush();
+    const secondProbe = findLatestRpcCall(
+      fixture.transportControls,
+      'update.operation_status',
+    )!;
+    expect(secondProbe.request_id).not.toBe(firstProbe.request_id);
+    expect(secondProbe.args).toEqual(firstProbe.args);
+
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: secondProbe.request_id,
+      result: { status: 'completed', operation: 'update' },
+    });
+    await flush();
+
+    const raw = tabStorage.getItem(progressKey);
+    expect(raw === null ? 'idle' : (JSON.parse(raw) as { phase: string }).phase)
+      .toBe('idle');
+    expect(scheduled).toHaveLength(1);
+    await handle.dispose();
   });
 
   it('verifies a restored accepted receipt after a cold return without changing the exact route', async () => {

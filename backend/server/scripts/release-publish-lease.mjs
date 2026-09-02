@@ -1,0 +1,283 @@
+#!/usr/bin/env node
+/**
+ * A distributed, conditional R2 lease for `release-publish.mjs`.
+ *
+ * R2 is strongly consistent, but concurrent writes to the same key are
+ * last-writer-wins. That is exactly the wrong primitive for a signed release
+ * pointer: two publishers can both validate sequence N, then a slower N+1 can
+ * overwrite N+2 (or compensate back to N) after clients have accepted it.
+ *
+ * This helper uses R2's S3-compatible conditional PutObject support:
+ *
+ *   - a missing lock is acquired with `If-None-Match: *`;
+ *   - a released lock is acquired with `If-Match: <etag>`; and
+ *   - release itself is an `If-Match` transition owned by the exact token.
+ *
+ * There is deliberately no time-based lease expiry. A publisher that is merely
+ * slow must never lose authority while it is changing feed pointers. If a host
+ * dies without releasing, the next operator must inspect the recorded owner and
+ * pass the recorded owner token to `--break-release-lease`; that takeover is
+ * itself conditional on the exact ETag belonging to that inspected token, so
+ * two recovery attempts cannot both win and a late recovery cannot steal a new
+ * publisher it never inspected.
+ *
+ * Production credentials are the standard R2 S3 credentials documented by
+ * Cloudflare. The publisher continues using Wrangler for object transfer, but
+ * conditional writes require this S3 surface because Wrangler's object command
+ * does not expose If-Match/If-None-Match.
+ */
+
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { hostname } from 'node:os';
+import { dirname, join } from 'node:path';
+
+import { AwsClient } from 'aws4fetch';
+
+const die = (message) => {
+  console.error(`[release-publish-lease] ${message}`);
+  process.exit(1);
+};
+
+const args = process.argv.slice(2);
+const command = args[0];
+const valueAfter = (name) => {
+  const at = args.indexOf(name);
+  return at >= 0 ? (args[at + 1] ?? '') : '';
+};
+
+const bucket = valueAfter('--bucket');
+const key = valueAfter('--key');
+const providedToken = valueAfter('--token');
+const ownerToken = providedToken || randomUUID();
+const version = valueAfter('--version');
+const sequence = valueAfter('--sequence');
+const expectedEtag = valueAfter('--etag');
+const expectedBreakToken = valueAfter('--break-token');
+
+if (!['acquire', 'release'].includes(command)) die('expected acquire or release');
+if (!bucket || !key) die('--bucket and --key are required');
+if (command === 'acquire' && (!version || !Number.isSafeInteger(Number(sequence)) || Number(sequence) < 1)) {
+  die('acquire requires --version and a positive integer --sequence');
+}
+
+const canonicalJson = (value) => `${JSON.stringify(value, null, 2)}\n`;
+const etagOf = (bytes) => `"${createHash('md5').update(bytes).digest('hex')}"`;
+const activeBody = () => Buffer.from(canonicalJson({
+  schema: 1,
+  state: 'active',
+  token: ownerToken,
+  version,
+  sequence: Number(sequence),
+  pid: process.ppid,
+  host: hostname(),
+  acquired_at: new Date().toISOString(),
+}));
+const releasedBody = () => Buffer.from(canonicalJson({
+  schema: 1,
+  state: 'released',
+  token: ownerToken,
+  released_at: new Date().toISOString(),
+}));
+
+/** The integration suite uses the same filesystem as its fake Wrangler. This
+ * branch is impossible outside NODE_ENV=test and a test-bucket, so it cannot be
+ * turned into a production no-lock escape hatch. The per-key guard directory is
+ * an atomic local mutex; the state transition beneath it mirrors R2 CAS. */
+const testRoot = process.env.RECUED_TEST_R2_STORE;
+const useTestStore = process.env.NODE_ENV === 'test'
+  && bucket.startsWith('test-bucket')
+  && typeof testRoot === 'string'
+  && testRoot.length > 0;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const withTestGuard = async (path, fn) => {
+  const guard = `${path}.cas-lock`;
+  mkdirSync(dirname(path), { recursive: true });
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      mkdirSync(guard);
+      try { return await fn(); } finally { rmSync(guard, { recursive: true, force: true }); }
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      await sleep(10);
+    }
+  }
+  throw new Error(`timed out taking test CAS guard for ${path}`);
+};
+
+const testRead = (path) => {
+  if (!existsSync(path)) return { kind: 'missing' };
+  const bytes = readFileSync(path);
+  return { kind: 'present', bytes, etag: etagOf(bytes) };
+};
+
+const testConditionalPut = async (path, body, { ifMatch = '', ifNoneMatch = false } = {}) =>
+  withTestGuard(path, async () => {
+    const current = testRead(path);
+    if (ifNoneMatch && current.kind !== 'missing') return { ok: false, precondition: true };
+    if (ifMatch && (current.kind !== 'present' || current.etag !== ifMatch)) {
+      return { ok: false, precondition: true };
+    }
+    mkdirSync(dirname(path), { recursive: true });
+    const tmp = `${path}.tmp.${process.pid}.${randomUUID()}`;
+    writeFileSync(tmp, body);
+    renameSync(tmp, path);
+    return { ok: true, etag: etagOf(body) };
+  });
+
+const encodedKey = key.split('/').map(encodeURIComponent).join('/');
+const accountId = process.env.CLOUDFLARE_ACCOUNT_ID ?? '';
+const accessKeyId = process.env.AWS_ACCESS_KEY_ID
+  ?? process.env.RECUED_RELEASE_R2_ACCESS_KEY_ID
+  ?? '';
+const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY
+  ?? process.env.RECUED_RELEASE_R2_SECRET_ACCESS_KEY
+  ?? '';
+const sessionToken = process.env.AWS_SESSION_TOKEN
+  ?? process.env.RECUED_RELEASE_R2_SESSION_TOKEN;
+
+let client;
+let objectUrl;
+if (!useTestStore) {
+  if (!accountId || !accessKeyId || !secretAccessKey) {
+    die(
+      'conditional release locking requires CLOUDFLARE_ACCOUNT_ID plus R2 S3 credentials '
+        + '(AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, or the RECUED_RELEASE_R2_* aliases)',
+    );
+  }
+  client = new AwsClient({
+    accessKeyId,
+    secretAccessKey,
+    sessionToken,
+    service: 's3',
+    region: 'auto',
+    retries: 2,
+  });
+  objectUrl = `https://${accountId}.r2.cloudflarestorage.com/${encodeURIComponent(bucket)}/${encodedKey}`;
+}
+
+const readRemote = async () => {
+  if (useTestStore) return testRead(join(testRoot, bucket, key));
+  const response = await client.fetch(objectUrl, { method: 'GET' });
+  if (response.status === 404) return { kind: 'missing' };
+  if (!response.ok) {
+    throw new Error(`GET ${objectUrl} returned HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
+  }
+  const bytes = Buffer.from(await response.arrayBuffer());
+  const etag = response.headers.get('etag') ?? '';
+  if (!etag) throw new Error(`GET ${objectUrl} returned no ETag; cannot perform a conditional transition`);
+  return { kind: 'present', bytes, etag };
+};
+
+const conditionalPut = async (body, { ifMatch = '', ifNoneMatch = false } = {}) => {
+  if (useTestStore) return testConditionalPut(join(testRoot, bucket, key), body, { ifMatch, ifNoneMatch });
+  const headers = new Headers({ 'content-type': 'application/json' });
+  if (ifMatch) headers.set('if-match', ifMatch);
+  if (ifNoneMatch) headers.set('if-none-match', '*');
+  const response = await client.fetch(objectUrl, {
+    method: 'PUT',
+    headers,
+    body,
+    aws: { allHeaders: true },
+  });
+  if (response.status === 412) return { ok: false, precondition: true };
+  if (!response.ok) {
+    throw new Error(`PUT ${objectUrl} returned HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
+  }
+  const etag = response.headers.get('etag') ?? '';
+  if (!etag) throw new Error(`PUT ${objectUrl} returned no ETag; cannot own the resulting lease`);
+  return { ok: true, etag };
+};
+
+const parseLease = (state) => {
+  if (state.kind !== 'present') return null;
+  try { return JSON.parse(state.bytes.toString('utf8')); } catch { return null; }
+};
+
+const isValidLease = (lease) => {
+  if (
+    !lease
+    || lease.schema !== 1
+    || !['active', 'released'].includes(lease.state)
+    || typeof lease.token !== 'string'
+    || lease.token.length === 0
+  ) return false;
+  if (lease.state === 'released') return typeof lease.released_at === 'string';
+  return typeof lease.version === 'string'
+    && lease.version.length > 0
+    && Number.isSafeInteger(lease.sequence)
+    && lease.sequence > 0
+    && Number.isSafeInteger(lease.pid)
+    && lease.pid > 0
+    && typeof lease.host === 'string'
+    && lease.host.length > 0
+    && typeof lease.acquired_at === 'string';
+};
+
+try {
+  if (command === 'acquire') {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const current = await readRemote();
+      const prior = parseLease(current);
+      if (current.kind === 'present' && !isValidLease(prior)) {
+        die(`release lease at r2://${bucket}/${key} is malformed; refusing to overwrite custody evidence`);
+      }
+      if (current.kind === 'present' && prior.state === 'active') {
+        // The operator authorizes the token they INSPECTED, not whichever active
+        // owner happens to be present on this process's first GET. R2's If-Match
+        // then binds that identity check to the exact object generation. If a
+        // competing recovery already replaced it, its new token cannot be stolen.
+        if (!expectedBreakToken || prior.token !== expectedBreakToken) {
+          die(
+            `another release publisher owns r2://${bucket}/${key}: `
+              + `${prior.version || '?'} seq ${prior.sequence ?? '?'} on ${prior.host || '?'} `
+              + `(pid ${prior.pid ?? '?'}, acquired ${prior.acquired_at || '?'}). `
+              + 'If that host is definitively dead, inspect its token and re-run with '
+              + '--break-release-lease <recorded-owner-token>.',
+          );
+        }
+      } else if (expectedBreakToken) {
+        die('the recorded active release lease changed during takeover; no publish authority was granted');
+      }
+
+      const result = current.kind === 'missing'
+        ? await conditionalPut(activeBody(), { ifNoneMatch: true })
+        : await conditionalPut(activeBody(), { ifMatch: current.etag });
+      if (result.ok) {
+        process.stdout.write(canonicalJson({ ok: true, token: ownerToken, etag: result.etag, key }));
+        process.exit(0);
+      }
+      if (expectedBreakToken) {
+        die('the recorded active release lease changed during takeover; no publish authority was granted');
+      }
+      await sleep(25 * (attempt + 1));
+    }
+    die('release lease changed repeatedly while acquiring it; no publish authority was granted');
+  }
+
+  if (!expectedEtag || !providedToken) die('release requires --etag and --token');
+  const current = await readRemote();
+  const held = parseLease(current);
+  if (
+    current.kind !== 'present'
+    || current.etag !== expectedEtag
+    || held?.state !== 'active'
+    || held?.token !== ownerToken
+  ) {
+    die('release lease ownership changed; refusing to release a lock this process no longer owns');
+  }
+  const result = await conditionalPut(releasedBody(), { ifMatch: expectedEtag });
+  if (!result.ok) die('release lease changed during release; it remains owned by another state');
+  process.stdout.write(canonicalJson({ ok: true, released: true, etag: result.etag, key }));
+} catch (error) {
+  die(error instanceof Error ? error.message : String(error));
+}

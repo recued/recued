@@ -46,6 +46,12 @@ import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  assertSourceTreeClean,
+  removeNativeBuildAttestation,
+  resolveSourceRevision,
+  writeNativeBuildAttestation,
+} from './release-native-attestation.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SERVER_DIR = resolve(HERE, '..');
@@ -104,6 +110,12 @@ if (!existsSync(join(REPO_ROOT, 'package-lock.json'))) {
 }
 
 mkdirSync(OUT, { recursive: true });
+assertSourceTreeClean({ repoRoot: REPO_ROOT });
+const SOURCE_REVISION = resolveSourceRevision({ repoRoot: REPO_ROOT });
+// A prior successful receipt must never survive a rebuild or --skip-smoke run.
+// Even byte-identical output needs a fresh proof that this invocation exercised
+// the final pair.
+for (const triple of triples) removeNativeBuildAttestation({ stagingDir: OUT, triple });
 
 /** The in-container build. Kept as one shell string so the whole thing is
  *  visible in one place, and `set -e` makes any step's failure the run's. */
@@ -427,6 +439,19 @@ for (const r of results) {
     }
     console.log(`[build-binary-docker]   ws upgrade answered: ${wsSmoke.statusLine}`);
     console.log(`[build-binary-docker]   daemon: ${wsSmoke.daemon}`);
+    try {
+      writeNativeBuildAttestation({
+        stagingDir: OUT,
+        triple: r.triple,
+        version: EXPECTED_VERSION,
+        sourceRevision: SOURCE_REVISION,
+        producer: 'build-binary-docker',
+      });
+      console.log(`[build-binary-docker]   receipt: exact pair + functional smoke bound to ${SOURCE_REVISION.slice(0, 12)}`);
+    } catch (err) {
+      failed += 1;
+      console.error(`[build-binary-docker]   ⛔ could not write native build receipt: ${err?.message ?? err}`);
+    }
   } else {
     failed += 1;
     console.error(`[build-binary-docker]   ⛔ smoke FAILED (exit ${smoke.code}) — the binary does not start:`);

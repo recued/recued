@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -410,6 +411,73 @@ describe('composeServeLifecycle', () => {
     });
     expect(lifecycle.supervisor.handoff).toHaveBeenCalledWith('restart');
     expect(exit).toHaveBeenCalledWith(8);
+  });
+
+  // ⛔⛔ THE WINDOW `cli-context/update.ts` NAMED AND LEFT OPEN. `recued update
+  // apply` refuses while a server holds the realm, takes the host-wide lease, and
+  // re-checks — then spends MINUTES resolving and downloading before it swaps.
+  // Nothing consulted that lease at boot, so a server starting inside that window
+  // walked straight past it and the CLI went on snapshotting a database somebody
+  // else was writing to.
+  it('stands down when an update holds the host-wide lease', async () => {
+    const binDir = mkdtempSync(join(tmpdir(), 'boot-lease-'));
+    writeFileSync(
+      join(binDir, 'recued-update.lock'),
+      // ⚠ `process.ppid`, NOT `process.pid`: a live pid that is NOT us. Our own
+      // pid is deliberately skipped — the lease is re-entrant within a process —
+      // so a fixture holding it under this pid tests the re-entrancy path and
+      // reports the gate missing when it is working.
+      JSON.stringify({ pid: process.ppid, operation: 'apply', at: 1, token: 't' }),
+    );
+    const release = vi.fn();
+    const lifecycle = makeLifecycle({ lock: { claim: vi.fn(), release } });
+    lifecycleMocks.createLifecycle.mockReturnValue(lifecycle);
+    const exit = vi.fn();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.stubEnv('RECUED_DISTRIBUTION_CHANNEL', 'docker-thin');
+    vi.stubEnv('RECUED_BIN_DIR', binDir);
+
+    try {
+      const result = await composeServeLifecycle(makeOptions({ exit }));
+
+      expect(result).toBeUndefined();
+      // ⚠ 4, NOT A CRASH: the code both supervisors read as "someone else owns
+      // this — halt cleanly". A boot FAILURE during an apply is counted against
+      // the release being staged, and three of them would revert it.
+      expect(exit).toHaveBeenCalledWith(4);
+      // The claim we took to look must not be left behind, or the update's own
+      // re-check would find a "server" that is this refusal.
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(String(errorSpy.mock.calls[0]?.[0])).toMatch(/an update is in progress/);
+    } finally {
+      vi.unstubAllEnvs();
+      errorSpy.mockRestore();
+      rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it('boots normally when the lease is held by a process that is gone', async () => {
+    // ⚠ A LEASE OUTLIVES THE PROCESS THAT TOOK IT. Reading a dead holder as live
+    // would keep a server down after one killed update — the gate would cost more
+    // than the race it closes, and it would do it unattended.
+    const binDir = mkdtempSync(join(tmpdir(), 'boot-lease-dead-'));
+    writeFileSync(
+      join(binDir, 'recued-update.lock'),
+      JSON.stringify({ pid: 2_147_483_646, operation: 'apply', at: 1, token: 't' }),
+    );
+    const lifecycle = makeLifecycle({ lock: { claim: vi.fn(), release: vi.fn() } });
+    lifecycleMocks.createLifecycle.mockReturnValue(lifecycle);
+    const exit = vi.fn();
+    vi.stubEnv('RECUED_DISTRIBUTION_CHANNEL', 'docker-thin');
+    vi.stubEnv('RECUED_BIN_DIR', binDir);
+
+    try {
+      expect(await composeServeLifecycle(makeOptions({ exit }))).toBe(lifecycle);
+      expect(exit).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(binDir, { recursive: true, force: true });
+    }
   });
 
   it('exits with code 4 when the instance lock is held', async () => {

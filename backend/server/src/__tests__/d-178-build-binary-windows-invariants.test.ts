@@ -201,14 +201,16 @@ describe('the transport does not leak or over-expose', () => {
 });
 
 describe('the smoke test proves the binary RUNS', () => {
-  it('⛔ boots the server — it does not settle for --version', () => {
+  it('checks the exact version AND boots the server rather than settling for identity alone', () => {
     // --version and --help never open the database, so both pass on a binary
     // whose addon is missing or the wrong architecture. Measured: a binary
     // printed 26.8.2 correctly and then failed D178_SIDECAR_MISSING.
     expect(smokeCode).toMatch(/Start-Process/);
     expect(smokeCode).toMatch(/db-created/);
     expect(smokeCode).toMatch(/port-listens/);
-    expect(smokeCode).not.toMatch(/--version/);
+    expect(smokeCode).toMatch(/& \$bin --version/);
+    expect(smokeCode).toMatch(/\$reportedVersion -ceq \$ExpectedVersion/);
+    expect(smokeCode).toMatch(/\$versionOk -and \$dbSeen/);
   });
 
   it('requires the sidecar to be present before it even starts', () => {

@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "7f4544e36e9814309123f3255faf4128127b7ebe",
-    "tree": "0025ba499e178adb2e8f5261d1a0767e25e4f071",
-    "committed_at": "2026-08-31T02:36:20-07:00"
+    "commit": "0e2c8a933ab08c67a3cf56a469192108a829508d",
+    "tree": "45f12bbb71cb4a3079ff0142923f1d1a3320e0dd",
+    "committed_at": "2026-09-02T10:02:32-07:00"
   },
-  "export_manifest_sha256": "cecda112d1b5cca510d6cc70dd9e93a41ce778dfa2b1bd781295314d9558de98",
-  "version": "26.8.31",
+  "export_manifest_sha256": "1c0ba852164d4fd8aaff4318a61bba1d73d5c72cdf99c724b2ee2b8786f4d148",
+  "version": "26.9.2",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -29,8 +29,10 @@
     "backend/server/src/__tests__/d-149-phase-10-deployment-integration.test.ts",
     "backend/server/src/__tests__/d-178-release-publish-channel-paths.test.ts",
     "backend/server/src/__tests__/d-178-release-publish-signing-gate.test.ts",
+    "backend/server/src/__tests__/d-260-expiry-horizon-guard.test.ts",
     "backend/server/src/__tests__/phase-e-package.test.ts",
     "backend/server/src/__tests__/prefetch-pii-coverage-measure.test.ts",
+    "backend/server/src/__tests__/release-native-attestation.test.ts",
     "backend/server/src/dev",
     "packages/contracts/src/__tests__/connection-signing.test.ts",
     "packages/contracts/src/__tests__/d-148-phase-1-role-boundary.test.ts",
@@ -150,6 +152,9 @@
       "backend/server/src/__tests__/foundation-pack-op-step-pre-install.test.ts",
       "backend/server/src/__tests__/helpers/records-pack-harness.ts",
       "backend/server/src/__tests__/horizon-plan-classifier.test.ts",
+      "backend/server/src/__tests__/install-sh-local-feed.test.ts",
+      "backend/server/src/__tests__/installer-safety-guards.test.ts",
+      "backend/server/src/__tests__/installer-shell-functions.test.ts",
       "backend/server/src/__tests__/kernel-manifests.test.ts",
       "backend/server/src/__tests__/ledger-book-business-workflow.test.ts",
       "backend/server/src/__tests__/local-cli-pack-live-drive.test.ts",
@@ -179,6 +184,8 @@
       "backend/server/src/__tests__/split-pack-op-provenance.test.ts",
       "backend/server/src/__tests__/statement-import-business-workflow.test.ts",
       "backend/server/src/__tests__/stranger-first-walk-e2e.test.ts",
+      "backend/server/src/__tests__/supervisor-contract.test.ts",
+      "backend/server/src/__tests__/supervisor-join.test.ts",
       "backend/server/src/__tests__/watch-canonical-poll.test.ts",
       "backend/server/src/__tests__/zoho-desk-tickets-pack.test.ts",
       "backend/server/src/collections/service/__tests__/starter-pack.test.ts",
@@ -546,7 +553,7 @@
       "packages/recipes/src/__tests__/zendesk-ticket-count-truth-pack-audit.test.ts",
       "packages/recipes/src/__tests__/zendesk-ticket-reply-closure-loop.test.ts"
     ],
-    "sha256": "3d4a70dd8b7daaedef910cbc6073db11706db98b86c4c04571b66f78dd21a36d",
+    "sha256": "ba6c696bcf962c8fd5920da01707cc5f22decd8857c20613a35ef6dbdef52314",
     "roots": [
       "apps/auth-worker",
       "backend/api",
@@ -557,7 +564,7 @@
     ]
   },
   "internal_reference_scrub": {
-    "files_changed": 1035,
+    "files_changed": 1037,
     "rules": [
       {
         "id": "internal-spec-reference",
@@ -565,7 +572,7 @@
       },
       {
         "id": "internal-design-document",
-        "comments_rewritten": 88
+        "comments_rewritten": 90
       },
       {
         "id": "internal-handover-note",
@@ -581,7 +588,7 @@
       },
       {
         "id": "internal-repository-root",
-        "comments_rewritten": 4
+        "comments_rewritten": 5
       }
     ]
   },
@@ -653,7 +660,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 5551,
-    "sha256": "1862c3a1b2d2ddde738a13d9246cd4de132891346db1321da4de28fc8e10348e"
+    "file_count": 5619,
+    "sha256": "3696ae88b6a3e1081943582fd676b9b2b4a8f129d68c165c4fd705191fd2e0a6"
   }
 }

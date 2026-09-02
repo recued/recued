@@ -122,6 +122,7 @@ import {
 } from '../file-view-resolver.js';
 import { createPreviewConnectionExecute } from '../ingredient-authoring/preview-execute.js';
 import type { IngredientDraftRpcDeps } from '../ingredient-authoring/draft-preview-rpc.js';
+import { supervisorWillRespawn as supervisorRespawns } from '@recued/contracts';
 import type { Lifecycle } from '../lifecycle/index.js';
 import type { ArchiveRpcDeps } from '../archive/archive-handler.js';
 import { createHostnameSniBindingLookup } from '../hostname/index.js';
@@ -1054,7 +1055,12 @@ export const composeListeners = async (
       ? buildApplyOrchestratorDeps({
           db: storage.db,
           releaseCheckDeps,
-          requestRestart: () => bootstrapDeps?.onRestartRequested?.('update apply'),
+          requestRestart: (onDrained) =>
+            bootstrapDeps?.onRestartRequested?.('update apply', onDrained),
+          // ⛔ The orchestrator refuses an apply nothing would restart. The mode
+          // comes from the SAME supervisor the handoff above uses, so the guard
+          // and the exit can never disagree about who is watching.
+          supervisorWillRespawn: () => supervisorRespawns(lifecycle?.supervisor.mode),
           isQuiesced: isQuiescedNow,
           // D-152 § A.16 — lets a self-update extract the matched webclient to the
           // SAME dir the loader below reads (RECUED_WEBCLIENT_DIR / CAS sibling).
@@ -1094,13 +1100,19 @@ export const composeListeners = async (
     updateApplyDeps && releaseCheckDeps
       ? async (): Promise<void> => {
           try {
-            await runUpdateBootReconcileImpl({
+            const outcome = await runUpdateBootReconcileImpl({
               ports: updateApplyDeps.ports,
               channel: releaseCheckDeps.channel === 'edge' ? 'edge' : 'stable',
               currentVersion: SERVER_VERSION_DEFINE,
               ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
               notify: (m) => console.error(`[update] ${m}`),
             });
+            if (outcome.action === 'manual-rollback-recovery-failed') {
+              console.error(
+                `[update] manual rollback recovery FAILED for ${outcome.releaseIdentity}: `
+                + `${outcome.reason}. The durable journal was retained for operator recovery.`,
+              );
+            }
           } catch (err) {
             console.error('[update] boot reconcile failed', err);
           }

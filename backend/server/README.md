@@ -11,7 +11,7 @@ Pick the install path that matches your setup. All four deliver the same `recued
 | Distribution | Best for | Command |
 |---|---|---|
 | **npm** | Developers + VPS operators already running Node | `npm install -g @recued/server` |
-| **Docker** | Container-first hosts, Docker Compose stacks, Fly.io | `docker run -v recued-data:/var/lib/recued recued/server:26.8.31` |
+| **Docker** | Container-first hosts, Docker Compose stacks, Fly.io | `docker run -v recued-data:/var/lib/recued recued/server@sha256:<signed-digest>` |
 | **Homebrew** | macOS desktop + headless Mac | `brew install recued/tap/recued-server` |
 | **cloud-init** | Advanced unattended provisioning on DigitalOcean / Hetzner / Linode | paste [`distribution/vps/cloud-init.yml`](../../distribution/vps/cloud-init.yml) into user-data |
 
@@ -61,11 +61,13 @@ resolves it against this install locally — it works on every install
 (binary, Docker, Homebrew, source) because the *check* is universal.
 It prints the available version (if any) plus how to apply it for your
 channel. Applying is channel-specific:
-Docker users upgrade via `docker pull recued/server:<tag>`; Homebrew
+Docker users copy the exact `recued/server@sha256:…` reference printed by
+`recued update` from the verified signed manifest, pull it, and recreate the
+container; Homebrew
 users via `brew upgrade recued-server`; on the self-updating binary channel the
 running server stages + restarts from the webclient (Settings →
-Updates). `recued update apply` is not a CLI action — it mutates the
-live binary and restarts the daemon, so it runs on the server itself.
+Updates). A stopped binary/docker-thin server can also run
+`recued update apply`; docker-baked remains pull-and-recreate by digest.
 
 ### `recued archive`
 

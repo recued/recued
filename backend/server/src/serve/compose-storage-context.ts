@@ -27,7 +27,26 @@ import {
 
 import type { ServerAccountStore } from '../account-store.js';
 import { createServerAccountStore } from '../account-store.js';
-import { openDatabase } from '../open-database.js';
+import { copyFileSync, existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { copyDatabaseForSnapshot, openDatabase } from '../open-database.js';
+import { SERVER_VERSION } from '../server-version.js';
+import { deriveInFlightEntry } from '../update/apply-orchestrator.js';
+import {
+  legacyRealmSnapshotPath,
+  prepareRealmForRelease,
+  readReleaseGenerationTransition,
+  realmSnapshotMatchesTransition,
+  realmSnapshotPath,
+  snapshotRealmOnNewRelease,
+  writeReleaseGenerationTransition,
+} from '../update/realm-generation-snapshot.js';
+import {
+  consumePendingSnapshotRestore,
+  markSnapshotRestorePending,
+} from '../update/binary-apply-executor.js';
+import { resolveUpdateBinaryPath } from '../update/install-paths.js';
+import { createUpdateLedger, UPDATE_LEDGER_FILE } from '../update/update-ledger.js';
 import {
   createAuditRetention,
   type AuditRetention,
@@ -274,10 +293,92 @@ const readCloudBaseUrl = (
   }
 };
 
+const storagePathIdentity = (path: string): string => {
+  const resolved = resolve(path);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+};
+
 export const composeStorageContext = async (
   options: ComposeStorageContextOptions,
 ): Promise<StorageContext> => {
   const { dbPath, bootTrace, runtimeConfig, vaultQuotas, getVaultKey } = options;
+
+  // ⛔ BEFORE THE FIRST DATABASE HANDLE. A rollback swaps the host executable,
+  // not one realm, so a realm that did not initiate it may still hold the newer
+  // schema. Its generation-bound snapshot is the only safe bridge back.
+  const updateBinaryPath = resolveUpdateBinaryPath(process.env);
+  let transition = readReleaseGenerationTransition(updateBinaryPath);
+
+  // A deployed N-1 release predates the host-generation witness but still left
+  // a complete apply ledger and pre-migration snapshot. Reconstruct the exact
+  // transition before downgrade preparation or the first database handle, so a
+  // stale scoped marker cannot make recovery refuse before it sees the proof.
+  // A malformed or unreadable ledger remains fail-closed below.
+  let inFlightApply = false;
+  try {
+    const ledgerPath = join(dirname(resolve(dbPath)), UPDATE_LEDGER_FILE);
+    if (existsSync(ledgerPath)) {
+      const entry = deriveInFlightEntry(createUpdateLedger(ledgerPath));
+      if (entry !== null) {
+        if (
+          transition === null
+          && entry.to_version === SERVER_VERSION
+          && typeof entry.migration === 'boolean'
+        ) {
+          transition = {
+            schema: 1,
+            from_version: entry.from_version,
+            to_version: entry.to_version,
+            migration: entry.migration,
+          };
+          writeReleaseGenerationTransition(updateBinaryPath, transition);
+        }
+        const scopedSnapshot = storagePathIdentity(realmSnapshotPath(dbPath));
+        const legacySnapshot = storagePathIdentity(legacyRealmSnapshotPath(dbPath));
+        const declaredSnapshot = typeof entry.snapshot_ref === 'string'
+          ? storagePathIdentity(entry.snapshot_ref)
+          : null;
+        if (declaredSnapshot === scopedSnapshot) {
+          inFlightApply = true;
+        } else if (
+          entry.migration === true
+          && (declaredSnapshot === null || declaredSnapshot === legacySnapshot)
+        ) {
+          // A deployed N-1 entry did not carry a scoped owner. While its flat
+          // snapshot exists, the snapshot module performs the conservative
+          // single-SQLite-realm proof. After adoption, only the realm whose
+          // scoped metadata matches this transition remains the applying realm.
+          inFlightApply = existsSync(legacySnapshot)
+            || (transition !== null && realmSnapshotMatchesTransition(dbPath, transition));
+        }
+      }
+    }
+  } catch {
+    // Unreadable means an apply may be in flight. Skipping a fresh snapshot is
+    // safer than overwriting a real pre-migration recovery copy before DDL.
+    inFlightApply = true;
+  }
+
+  const prepared = await prepareRealmForRelease({
+    dbPath,
+    releaseIdentity: SERVER_VERSION,
+    transition,
+    restoreSnapshot: (snapshotPath) => {
+      markSnapshotRestorePending(dbPath, snapshotPath);
+      const restored = consumePendingSnapshotRestore(
+        dbPath,
+        (from, to) => copyFileSync(from, to),
+        (message) => console.error(`[update] ${message}`),
+      );
+      if (!restored.restored) throw new Error('the generation-bound snapshot restore did not complete');
+    },
+  });
+  if (prepared.action === 'downgrade-prepared') {
+    console.error(
+      `[update] prepared this realm for host rollback ${prepared.from} → ${prepared.to}`
+      + (prepared.restoredSnapshot ? ' (pre-migration snapshot restored)' : ''),
+    );
+  }
 
   bootTrace.markDbOpenAttempted('configured-db-path');
   const db = await openDatabase(dbPath, {
@@ -302,6 +403,21 @@ export const composeStorageContext = async (
   db.pragma('cache_size = -64000');
   db.pragma('foreign_keys = ON');
   bootTrace.mark('db-opened');
+
+  // ⛔ BEFORE ANY STORE IS CONSTRUCTED. Store setup is what runs the schema DDL,
+  // and not all of it is additive — it DROPs columns. A realm meeting a binary
+  // generation it has never run gets its own pre-migration copy first, so the
+  // ordinary "stop the server, back up, update, restore" workflow and a second
+  // `--db` path are covered by the same rule. `realm-generation-snapshot.ts`
+  // says why the realm that ran the update is deliberately excluded.
+  await snapshotRealmOnNewRelease({
+    dbPath,
+    releaseIdentity: SERVER_VERSION,
+    transition,
+    hasInFlightApply: () => inFlightApply,
+    takeSnapshot: (destination) => copyDatabaseForSnapshot(db, destination),
+  });
+
   bootTrace.mark('shared-setup-start');
 
   const manifests = createManifestRegistry();

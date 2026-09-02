@@ -11,6 +11,7 @@
  *  guessed artifact. */
 
 import type { ChannelName, Platform, ReleaseManifest } from './manifest.js';
+import { resolveChannelTarget } from './resolve.js';
 import { binaryFileName } from './target.js';
 
 export interface InstallSelection {
@@ -46,9 +47,17 @@ export const selectInstallArtifact = (
   manifest: ReleaseManifest,
   input: SelectInstallInput,
 ): InstallSelectionResult => {
-  const channel: ChannelName = input.channel ?? 'stable';
-  const ch = manifest.channels[channel];
-  if (!ch) return { ok: false, reason: 'channel-missing' };
+  const requested: ChannelName = input.channel ?? 'stable';
+  // ⛔ `edge` MEANS max(stable, edge), NOT `channels[requested]`. This read the
+  // requested channel directly, so it selected edge `26.9.1` over stable
+  // `26.9.1.1` — pulling an edge subscriber BACKWARDS past a hotfix — and
+  // answered `channel-missing` for a stable-only manifest, which is the shape
+  // the live edge feed actually has. `resolveChannelTarget` is the same
+  // primitive `resolveRelease` uses, so the exported installer selector and the
+  // server's own update path can no longer disagree about what a channel means.
+  const resolved = resolveChannelTarget(manifest, requested);
+  if (!resolved) return { ok: false, reason: 'channel-missing' };
+  const { channel, release: ch } = resolved;
   const artifact = ch.artifacts[input.platform];
   if (!artifact) return { ok: false, reason: 'platform-unavailable' };
   return {

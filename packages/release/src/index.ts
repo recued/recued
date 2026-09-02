@@ -26,10 +26,12 @@ export {
   isDockerArtifact,
   isLibKey,
   libKeyFor,
+  isValidReleaseVersion,
   MANIFEST_SCHEMA_VERSION,
   ManifestError,
   parseManifest,
   PLATFORMS,
+  RELEASE_VERSION_RE,
   type Artifact,
   type BinaryArtifact,
   type ChannelName,
@@ -49,6 +51,8 @@ export {
 } from './target.js';
 
 export {
+  DEFAULT_EXPIRY_HORIZON_DAYS,
+  MIN_EXPIRY_HORIZON_DAYS,
   artifactTrustedComment,
   assembleManifest,
   manifestTrustedComment,
@@ -80,8 +84,8 @@ export {
 
 export {
   compareVersions,
-  DEFAULT_FRESHNESS_GRACE_MS,
   inRolloutCohort,
+  resolveChannelTarget,
   resolveRelease,
   type ReleaseResolution,
   type ResolveInput,

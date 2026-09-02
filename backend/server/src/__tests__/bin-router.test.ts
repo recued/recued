@@ -491,6 +491,128 @@ describe('production router', () => {
     expect(existsSync(dbPath)).toBe(false);
   });
 
+  it('reverts a staged update before importing SQLite or the ordinary update profile', () => {
+    const dir = makeTmp();
+    const binDir = join(dir, 'bin');
+    const dbPath = join(dir, 'recued.db');
+    const tracePath = join(dir, 'staged-rollback-modules.jsonl');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, 'recued'), 'NEW-BINARY', { mode: 0o755 });
+    writeFileSync(join(binDir, 'recued.old'), 'OLD-BINARY', { mode: 0o755 });
+    const updateBase = {
+      at: 1,
+      from_version: '26.8.31',
+      to_version: '26.9.1',
+      channel: 'stable',
+      trigger: 'manual',
+      release_identity: 'stable:26.9.1',
+      migration: false,
+    } as const;
+    writeFileSync(join(dir, 'updates.log'), [
+      JSON.stringify({ ...updateBase, id: 'started', kind: 'apply_started' }),
+      JSON.stringify({ ...updateBase, id: 'staged', kind: 'apply_staged', at: 2 }),
+    ].join('\n') + '\n');
+
+    const result = runBin(['update', 'rollback', '--db', dbPath], {
+      env: {
+        RECUED_BOOT_TRACE: '1',
+        RECUED_DISTRIBUTION_CHANNEL: 'docker-thin',
+        RECUED_BIN_DIR: binDir,
+      },
+      loaderTracePath: tracePath,
+    });
+    const loaded = readModuleLoads(tracePath);
+    const forbiddenRecoveryLoad = loaded.filter((entry) => loadedModuleMatches(entry, (value) =>
+      value.includes('better-sqlite3')
+      || value.includes('/backend/server/src/open-database.')
+      || value.includes('/backend/server/src/cli-context/update.'),
+    ));
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Abandoned the staged update');
+    expect(readFileSync(join(binDir, 'recued'), 'utf8')).toBe('OLD-BINARY');
+    expect(forbiddenRecoveryLoad).toEqual([]);
+    const events = parseBootTrace(result.stderr);
+    expect(events.some((event) => event.detail === './cli-context/update-staged-rollback.js'))
+      .toBe(true);
+    expect(events.every((event) => event.db_open_attempted === false)).toBe(true);
+  }, 30_000);
+
+  it('reverts a physically swapped update when apply_staged was lost before SQLite imports', () => {
+    const dir = makeTmp();
+    const binDir = join(dir, 'bin');
+    const dbPath = join(dir, 'recued.db');
+    const tracePath = join(dir, 'lost-staged-entry-modules.jsonl');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, 'recued'), 'NEW-BINARY', { mode: 0o755 });
+    writeFileSync(join(binDir, 'recued.old'), 'OLD-BINARY', { mode: 0o755 });
+    // The production router reports this package version. With only
+    // `apply_started`, equality is the independent witness that the physical
+    // pair swap completed before the ledger append was lost.
+    const runningVersion = JSON.parse(
+      readFileSync(join(repoRoot, 'backend/server/package.json'), 'utf8'),
+    ).version as string;
+    writeFileSync(join(dir, 'updates.log'), `${JSON.stringify({
+      id: 'started-only',
+      kind: 'apply_started',
+      at: 1,
+      from_version: '26.8.30',
+      to_version: runningVersion,
+      channel: 'stable',
+      trigger: 'manual',
+      release_identity: `stable:${runningVersion}`,
+      migration: false,
+    })}\n`);
+
+    const result = runBin(['update', 'rollback', '--db', dbPath], {
+      env: {
+        RECUED_BOOT_TRACE: '1',
+        RECUED_DISTRIBUTION_CHANNEL: 'docker-thin',
+        RECUED_BIN_DIR: binDir,
+      },
+      loaderTracePath: tracePath,
+    });
+    const forbiddenRecoveryLoad = readModuleLoads(tracePath).filter((entry) =>
+      loadedModuleMatches(entry, (value) =>
+        value.includes('better-sqlite3')
+        || value.includes('/backend/server/src/open-database.')
+        || value.includes('/backend/server/src/cli-context/update.'),
+      ));
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Abandoned the staged update');
+    expect(readFileSync(join(binDir, 'recued'), 'utf8')).toBe('OLD-BINARY');
+    expect(forbiddenRecoveryLoad).toEqual([]);
+    expect(parseBootTrace(result.stderr).every((event) => event.db_open_attempted === false))
+      .toBe(true);
+  }, 30_000);
+
+  it('does not let pre-SQLite recovery mistake the source runtime for a Recued binary', () => {
+    const dir = makeTmp();
+    const dbPath = join(dir, 'recued.db');
+    const updateBase = {
+      from_version: '26.8.31',
+      to_version: '26.9.1',
+      channel: 'stable',
+      trigger: 'manual',
+      release_identity: 'stable:26.9.1',
+      migration: false,
+    } as const;
+    writeFileSync(join(dir, 'updates.log'), [
+      JSON.stringify({ ...updateBase, id: 'started', kind: 'apply_started', at: 1 }),
+      JSON.stringify({ ...updateBase, id: 'staged', kind: 'apply_staged', at: 2 }),
+    ].join('\n') + '\n');
+
+    const result = runBin(['update', 'rollback', '--db', dbPath], {
+      env: { RECUED_DISTRIBUTION_CHANNEL: '', RECUED_BOOT_TRACE: '1' },
+    });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('not the packaged Recued binary');
+    expect(parseBootTrace(result.stderr).every((event) => event.db_open_attempted === false))
+      .toBe(true);
+  }, 30_000);
+
   it('traces --version as profile none with no DB-open attempt', () => {
     const result = runBin(['--version'], {
       env: { RECUED_BOOT_TRACE: '1' },

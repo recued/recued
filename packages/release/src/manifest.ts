@@ -131,6 +131,57 @@ const reqNum = (o: Record<string, unknown>, k: string): number => {
   return v;
 };
 
+/** A counter field: a non-negative safe INTEGER, not merely "a number".
+ *
+ *  ⛔ `reqNum` ACCEPTED 200.7, AND EVERY CONSUMER OF THESE TREATS THEM AS
+ *  INTEGERS. `sequence` becomes a persisted anti-replay floor and is compared
+ *  with `<`; `min_launcher_version` is compared against an integer the launcher
+ *  reports; `rollout_pct` indexes a 0–99 bucket. A fraction is not a value any of
+ *  them has a meaning for — it is a malformed field that every one of them
+ *  silently coerced. Same shape as the `migration` boolean two functions down,
+ *  and as the version grammar beside it: the field's TYPE was checked, its
+ *  GRAMMAR was not. */
+const reqInt = (o: Record<string, unknown>, k: string, max?: number): number => {
+  const v = o[k];
+  if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0 || (max !== undefined && v > max)) {
+    throw new ManifestError(
+      `manifest: "${k}" must be a non-negative integer${max === undefined ? '' : ` no greater than ${max}`}`,
+    );
+  }
+  return v;
+};
+
+/** The ONLY shape a manifest timestamp may take — a canonical RFC 3339 instant in
+ *  UTC, `YYYY-MM-DDTHH:MM:SS[.mmm]Z`.
+ *
+ *  ⛔⛔ THE ORIGINAL REASON IS HISTORY NOW, AND THE FIELD IS STILL VALIDATED.
+ *  `reqStr` accepted any non-empty string, so `expires_at: "not-a-date"` parsed,
+ *  `resolve.ts` got NaN from `Date.parse`, and its `Number.isFinite` guard
+ *  SKIPPED the staleness check altogether — a freshness gate failing OPEN on
+ *  exactly the input it existed to catch. That was fixed; then the gate itself
+ *  was withdrawn (D-260, 2026-09-01), so nothing decides on this value any more.
+ *
+ *  🔑 SO WHY KEEP IT STRICT. Because a published, signed field that nobody
+ *  validates is one that quietly rots: `expires_at` remains reference data on
+ *  every manifest, and a future design that wants freshness back should find
+ *  well-formed instants there rather than a decade of whatever the pipeline
+ *  happened to emit. Validating a value you do not act on is cheap; discovering
+ *  it is garbage when you finally need it is not.
+ *
+ *  ⚠ IT IS NO LONGER A CROSS-CONSUMER CONTRACT. `install.sh` used to compare this
+ *  field lexically with `sort`, which made the canonical shape load-bearing in
+ *  two places at once. The installer no longer reads it at all. */
+const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
+const reqInstant = (o: Record<string, unknown>, k: string): string => {
+  const v = o[k];
+  if (typeof v !== 'string' || !INSTANT.test(v) || !Number.isFinite(Date.parse(v))) {
+    throw new ManifestError(
+      `manifest: "${k}" must be a canonical RFC 3339 UTC instant (YYYY-MM-DDTHH:MM:SSZ)`,
+    );
+  }
+  return v;
+};
+
 /** Validate the KNOWN artifact entries so a parsed manifest can't hand a
  *  consumer a binary artifact missing its detached `sig` (the integrity
  *  boundary, I-2) or a docker artifact missing its pinned `digest` (rev 2).
@@ -163,23 +214,111 @@ const validateArtifacts = (raw: Record<string, unknown>, channel: string): Chann
     } else {
       reqEntryStr(entry, key, 'image');
       reqEntryStr(entry, key, 'digest');
+      const image = (entry as Record<string, unknown>).image as string;
+      if (/\s|@|:\/\//.test(image)) {
+        throw new ManifestError(
+          `manifest: channel "${channel}" artifact "${key}" image must be a registry repository `
+            + 'without a scheme, whitespace, or an embedded digest; the signed digest is a separate field',
+        );
+      }
+      // ⛔⛔ A DIGEST IS THE WHOLE POINT OF A DOCKER ARTIFACT, AND "non-empty
+      // string" IS NOT A DIGEST. A docker pull here is digest-anchored precisely
+      // so the image cannot be swapped under a tag (I-2, rev 2) — and the
+      // placeholder `sha256:REPLACE_WITH_REAL_DIGEST` that ships in
+      // `release.config.example.json` satisfied a non-empty check exactly as well
+      // as a real one. A manifest naming an unpullable image is a channel that
+      // fails at apply time, on every server, after the release is irreversible.
+      const digest = (entry as Record<string, unknown>).digest as string;
+      if (!/^sha256:[0-9a-f]{64}$/.test(digest)) {
+        throw new ManifestError(
+          `manifest: channel "${channel}" artifact "${key}" digest "${digest}" is not a `
+            + 'sha256 digest (expected sha256: followed by 64 lowercase hex). A tag is not a '
+            + 'pin, and the example config\'s REPLACE_WITH_REAL_DIGEST placeholder passed the '
+            + 'old non-empty check.',
+        );
+      }
     }
   }
   return raw as ChannelRelease['artifacts'];
 };
 
+/** The ONLY shape a release version may take: `yy.m.d` or a same-day hotfix
+ *  `yy.m.d.n`. Exactly three or four numeric segments, no leading zeros, and a
+ *  fourth segment that is a POSITIVE ordinal.
+ *
+ *  ⛔⛔ THE COMPARATOR CANNOT BE THE GRAMMAR, AND FOR ONE RELEASE IT WAS THE ONLY
+ *  CHECK. `compareVersions` slices to four segments and `parseInt`s each, so
+ *  every malformed version quietly became a NUMBER instead of an error. Measured
+ *  against the version they should have been distinguishable from:
+ *
+ *    26.9.1.0     == 26.9.1    (a zero ordinal is not an ordinal)
+ *    26.9.1.dev   == 26.9.1    (parseInt('dev') → NaN → coerced to 0)
+ *    26.9.1.1.1   == 26.9.1.1  (the fifth segment is sliced off, not rejected)
+ *    26.9.1-rc.1   > 26.9.1    (parseInt('1-rc') → 1; the ordinal then wins)
+ *
+ *  Each of the first three would SILENTLY HIDE a release — the same failure D-258
+ *  exists to prevent, arriving through the parser instead of the comparator. The
+ *  last is worse: a prerelease sorts ABOVE the final release it precedes, so
+ *  `26.9.1-rc.1` would be installed over `26.9.1`.
+ *
+ *  🔑 A version scheme is a GRAMMAR plus an ordering. D-258 shipped the ordering
+ *  and left `reqStr` — "a non-empty string" — as the grammar. */
+/** ⛔ SEGMENTS ARE BOUNDED TO 9 DIGITS, AND THE BOUND IS THE POINT.
+ *  An unbounded `\d*` is only orderable in a runtime with unbounded integers,
+ *  and not one of the three that compare these strings has them:
+ *
+ *    JS       `parseInt` → a double. `26.9.1.9007199254740992` and `…993` are
+ *             both valid and compare EQUAL (past 2^53 the doubles collide), and
+ *             a 400-digit ordinal parses to `Infinity`, so `Infinity - Infinity`
+ *             is `NaN`, `!== 0` is false, and it compares EQUAL to `26.9.1`.
+ *    PowerShell  `[int]::TryParse` is signed 32-bit; anything larger fails to
+ *             parse and silently reads as 0.
+ *    POSIX sh  platform integer arithmetic, typically 64-bit, undefined beyond.
+ *
+ *  Measured, all three above. ⇒ the GRAMMAR bounds the domain so every runtime
+ *  that compares agrees, rather than each clamping differently. 9 digits keeps
+ *  every segment below 2^31 (so int32 is safe) and exactly representable as a
+ *  double (so JS is exact) — and a calendar version needs 2. */
+export const MAX_VERSION_SEGMENT_DIGITS = 9;
+
+export const RELEASE_VERSION_RE = /^(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})(?:\.[1-9]\d{0,8})?$/;
+
+/** Is this a well-formed release version? */
+export const isValidReleaseVersion = (v: string): boolean => RELEASE_VERSION_RE.test(v);
+
+/** Read a version-shaped field, rejecting anything the comparator would silently
+ *  coerce. Applied to BOTH `version` and `min_supported`: a malformed floor is a
+ *  malformed gate, and `min_supported` decides who is locked out of updating. */
+const reqVersion = (o: Record<string, unknown>, k: string, channel: string): string => {
+  const v = reqStr(o, k);
+  if (!isValidReleaseVersion(v)) {
+    throw new ManifestError(
+      `manifest: channel "${channel}" ${k} "${v}" is not a release version — expected `
+        + 'yy.m.d or a same-day hotfix yy.m.d.n (3 or 4 numeric segments, no leading '
+        + 'zeros, positive ordinal). The comparator would coerce this to a number '
+        + 'rather than refuse it, and silently mis-order the release.',
+    );
+  }
+  return v;
+};
+
 const parseChannel = (raw: unknown, name: string): ChannelRelease => {
   if (!isObj(raw)) throw new ManifestError(`manifest: channel "${name}" must be an object`);
-  const rollout = reqNum(raw, 'rollout_pct');
-  if (rollout < 0 || rollout > 100) throw new ManifestError(`manifest: channel "${name}" rollout_pct out of range`);
+  const rollout = reqInt(raw, 'rollout_pct', 100);
   if (!isObj(raw.artifacts)) throw new ManifestError(`manifest: channel "${name}" missing artifacts`);
   // `migration` drives the rollback/snapshot rule — a malformed value must not
   // silently read as "no migration"; require an explicit boolean.
   if (typeof raw.migration !== 'boolean') throw new ManifestError(`manifest: channel "${name}" "migration" must be a boolean`);
   return {
-    version: reqStr(raw, 'version'),
+    version: reqVersion(raw, 'version', name),
+    // ⚠ DELIBERATELY NOT `reqInstant`, AND THE ASYMMETRY IS THE POINT. `expires_at`
+    // is a GATE: a malformed one turned the freshness check off, so strictness
+    // there protects. `released_at` is DISPLAY — nothing parses it — so refusing a
+    // signed feed over its shape would take the whole release out of reach to fix
+    // a cosmetic string. Fail closed where it protects; not where it only breaks.
+    // ⇒ If anything ever starts PARSING this, tighten it here first.
     released_at: reqStr(raw, 'released_at'),
-    min_supported: reqStr(raw, 'min_supported'),
+    min_supported: reqVersion(raw, 'min_supported', name),
     migration: raw.migration,
     rollout_pct: rollout,
     notes_url: typeof raw.notes_url === 'string' ? raw.notes_url : '',
@@ -199,7 +338,20 @@ export const parseManifest = (json: string): ReleaseManifest => {
   }
   if (!isObj(raw)) throw new ManifestError('manifest: root must be an object');
 
-  const schemaVersion = reqNum(raw, 'schema_version');
+  // ⛔ `schema_version` IS A COUNTER TOO, AND IT WAS THE ONE LEFT ON `reqNum`.
+  // `sequence`, `min_launcher_version` and `rollout_pct` were tightened to
+  // `reqInt` on the rule that every consumer treats them as integers — this field
+  // is compared with `>` against an integer constant and is exactly the same
+  // kind, but kept the looser check. Measured: `schema_version: 0.5` and `-1`
+  // both PARSED as a supported schema, and the parser then walked the document
+  // field-by-field on the assumption the shape held.
+  //
+  // 🔑 AND IT MADE THE SHELL STRICTER THAN THE CANONICAL PARSER. `install.sh`
+  // already refuses a non-digit `schema_version` outright ("no usable
+  // schema_version — refusing"), so a manifest existed that the installer
+  // rejected and `parseManifest` accepted. That divergence is the thing the
+  // freshness work above exists to prevent; it just pointed the other way.
+  const schemaVersion = reqInt(raw, 'schema_version');
   if (schemaVersion > MANIFEST_SCHEMA_VERSION) {
     throw new ManifestError(`manifest: schema_version ${schemaVersion} is newer than supported (${MANIFEST_SCHEMA_VERSION})`);
   }
@@ -213,9 +365,9 @@ export const parseManifest = (json: string): ReleaseManifest => {
 
   return {
     schema_version: schemaVersion,
-    sequence: reqNum(raw, 'sequence'),
-    expires_at: reqStr(raw, 'expires_at'),
-    min_launcher_version: reqNum(raw, 'min_launcher_version'),
+    sequence: reqInt(raw, 'sequence'),
+    expires_at: reqInstant(raw, 'expires_at'),
+    min_launcher_version: reqInt(raw, 'min_launcher_version'),
     channels,
   };
 };

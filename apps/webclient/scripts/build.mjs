@@ -50,6 +50,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -64,6 +65,7 @@ const PKG_ROOT = resolve(__dirname, '..');
 const SRC = join(PKG_ROOT, 'src');
 const PUBLIC_DIR = join(PKG_ROOT, 'public');
 const OUT = join(PKG_ROOT, 'build');
+const REPO_ROOT = resolve(PKG_ROOT, '..', '..');
 
 const minify = process.argv.includes('--minify');
 
@@ -152,9 +154,34 @@ const manifestFiles = walk(OUT)
     path: rel,
     sha256: createHash('sha256').update(readFileSync(join(OUT, rel))).digest('hex'),
   }));
+let sourceRevision = null;
+let sourceDirty = true;
+try {
+  sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+  }).trim();
+  sourceDirty = execFileSync(
+    'git',
+    ['status', '--porcelain', '--untracked-files=normal'],
+    { cwd: REPO_ROOT, encoding: 'utf8' },
+  ).trim().length > 0;
+} catch {
+  // A developer build remains usable, but custody will refuse to sign an
+  // unprovable source tree. Keep the failure explicit in the emitted receipt.
+}
 writeFileSync(
   join(OUT, BUNDLE_MANIFEST_FILENAME),
-  JSON.stringify({ files: manifestFiles }, null, 2) + '\n',
+  JSON.stringify({
+    build: {
+      schema: 1,
+      source_revision: sourceRevision,
+      source_dirty: sourceDirty,
+      cloud_apex: CLOUD_APEX,
+      minified: minify,
+    },
+    files: manifestFiles,
+  }, null, 2) + '\n',
 );
 console.log(`[build-webclient] manifest lists ${manifestFiles.length} file(s)`);
 

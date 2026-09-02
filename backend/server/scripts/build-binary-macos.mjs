@@ -58,6 +58,12 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { connect } from 'node:net';
+import {
+  assertSourceTreeClean,
+  removeNativeBuildAttestation,
+  resolveSourceRevision,
+  writeNativeBuildAttestation,
+} from './release-native-attestation.mjs';
 
 const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO_ROOT = resolve(PKG_ROOT, '../..');
@@ -78,6 +84,9 @@ const NODE = resolve(flag('node', process.execPath));
 const NODE_X64_RAW = flag('node-x64', '');
 const NODE_X64 = NODE_X64_RAW ? resolve(NODE_X64_RAW) : '';
 const SMOKE_PORT = Number(flag('smoke-port', '7899'));
+assertSourceTreeClean({ repoRoot: REPO_ROOT });
+const EXPECTED_VERSION = JSON.parse(readFileSync(join(PKG_ROOT, 'package.json'), 'utf8')).version;
+const SOURCE_REVISION = resolveSourceRevision({ repoRoot: REPO_ROOT });
 
 /** Notarization profile — a `notarytool store-credentials` keychain profile
  *  NAME (not a credential). Also read from `RECUED_MACOS_NOTARY_PROFILE` so the
@@ -134,6 +143,7 @@ const describeNode = (nodePath, label) => {
 
 const targets = [describeNode(NODE, '--node')];
 if (NODE_X64) targets.push(describeNode(NODE_X64, '--node-x64'));
+for (const target of targets) removeNativeBuildAttestation({ stagingDir: OUT, triple: target.triple });
 
 /** ⚠ A MISSING TRIPLE IS A SKIP; A DIFFERENTLY-SUPPLIED ONE IS NOT. Passing an
  *  x64 node as `--node` is a legitimate way to build macos-x64 on its own —
@@ -265,6 +275,16 @@ for (const t of targets) {
   } catch { fail('signing failed'); }
 
   // ── 6. boot smoke. A signed binary is not a working one ───────────────
+  let reportedVersion = '';
+  try {
+    reportedVersion = execFileSync(join(BIN_DIR, exeName), ['--version'], { encoding: 'utf8' }).trim();
+  } catch (e) {
+    fail(`${t.triple}: signed binary could not execute --version:\n  ${(e.stderr || e.message || '').toString().trim()}`);
+  }
+  if (reportedVersion !== EXPECTED_VERSION) {
+    fail(`${t.triple}: signed binary reports ${JSON.stringify(reportedVersion)}, package.json is ${EXPECTED_VERSION}`);
+  }
+  say(`  version smoke: ${reportedVersion} ✓`);
   const smokeDb = join(tmpdir(), `recued-${t.triple}-smoke-${process.pid}.db`);
   say(`  boot smoke on port ${SMOKE_PORT} …`);
   const smoke = await new Promise((done) => {
@@ -427,6 +447,7 @@ for (const f of staged) say(`  ${f}`);
 // stays server-side and Gatekeeper looks it up online. See the header of
 // `sign-macos.mjs` for why that is sufficient on every path recued ships
 // through — `curl` sets no quarantine attribute, measured.
+let notarizationProof = null;
 if (!NOTARY_PROFILE) {
   say('notarize: SKIPPED — no --notary-profile / RECUED_MACOS_NOTARY_PROFILE.');
   say('  ⚠ These binaries are SIGNED but NOT NOTARIZED. `spctl` reports');
@@ -557,6 +578,31 @@ if (!NOTARY_PROFILE) {
     const live = r.status === 0
       && /explicit requirement satisfied/.test(`${r.stdout ?? ''}${r.stderr ?? ''}`);
     say(`  ${f}: ticketed ✓${live ? ' + Gatekeeper agrees ✓' : ' (Gatekeeper lookup has not caught up yet — expected)'}`);
+  }
+  notarizationProof = {
+    kind: 'apple-notarization',
+    status: 'accepted',
+    submission_id: submissionId,
+    ticket_coverage: 'passed',
+  };
+}
+
+// A signed-but-unnotarized build remains useful for local diagnosis, but it
+// receives no custody-admissible receipt. release-build therefore refuses it
+// even if somebody overlooks the warning above and points staging at it.
+if (notarizationProof === null) {
+  say('receipt: SKIPPED — unnotarized macOS artifacts are diagnostic-only and cannot be published.');
+} else {
+  for (const target of targets) {
+    writeNativeBuildAttestation({
+      stagingDir: OUT,
+      triple: target.triple,
+      version: EXPECTED_VERSION,
+      sourceRevision: SOURCE_REVISION,
+      producer: 'build-binary-macos',
+      platformTrust: notarizationProof,
+    });
+    say(`receipt: ${target.triple} exact pair + functional smoke + Apple ticket bound to ${SOURCE_REVISION.slice(0, 12)} ✓`);
   }
 }
 

@@ -9,10 +9,9 @@
  * script always targets `process.platform`/`process.arch` and resolves the
  * triple from the running host via `@recued/release`.
  *
- * Pipeline (per the D-178 ordering: build → [S4/S5 platform-sign] → sha256 →
- * [S2 minisign]). THIS script owns only the first step — the produced binary
- * is the unsigned input that S4/S5 platform-sign and S2 minisign-sign + name
- * in the manifest as `BinaryArtifact { url, sha256, sig }`.
+ * Pipeline: build → [S4 macOS sign + notarize] → native receipt → SHA-256 →
+ * [S2 Minisign]. THIS script owns only the first step. macOS mutates and
+ * notarizes its output; Windows deliberately keeps these unsigned final bytes.
  *
  * Output:
  *   dist/binary/recued-<triple>[.exe]   — the host binary
@@ -310,7 +309,7 @@ try {
 } catch (err) {
   fail(
     `postject injection failed (${err?.message ?? err}). On macOS the binary must also be ` +
-      `re-signed AFTER injection (S4); on Windows re-signed via S5.`,
+      `re-signed AFTER injection (S4); Windows artifacts intentionally remain unsigned.`,
   );
 }
 
@@ -327,5 +326,7 @@ writeFileSync(join(OUT, `${binName}.sha256`), `${sha256}  ${binName}\n`);
 console.log(`[build-binary] done → ${binPath}`);
 console.log(`[build-binary] sha256: ${sha256}`);
 console.log(
-  '[build-binary] NEXT: platform-sign (S4/S5) → minisign + manifest (S2).',
+  process.platform === 'darwin'
+    ? '[build-binary] NEXT: Developer ID sign + notarize (S4) → receipt → Minisign + manifest (S2).'
+    : '[build-binary] NEXT: native smoke receipt → Minisign + manifest (S2).',
 );

@@ -2061,7 +2061,55 @@
     "section": "Your own domain, with Pro",
     "eyebrow": "Setup",
     "url": "https://recued.com/docs/setup/reachability#your-own-domain-with-pro",
-    "body": "Recued issues and renews the certificate for a domain you own. Two DNS records,\ncreated once. The second is the one that does the work.\n\n| | Name | Type | Value |\n| --- | --- | --- | --- |\n| Routing | `recued.your-domain.com` | CNAME | `<handle>.recued.net` |\n| Certificates | `_acme-challenge.recued.your-domain.com` | CNAME | `_acme-challenge.<handle>.recued.net` |\n\nThe first record makes your domain reach your server. The second lets Recued\nprove it may issue certificates for that name.\n\nYou need both, and the failure when you have only the first is the confusing\none: your domain resolves, your server answers, and no certificate can ever be\nissued. Certificates are validated against `_acme-challenge.your-domain.com` —\na different name, in a zone Recued cannot write to. The second record points\nthat name at a zone Recued *can* write to, and the certificate authority\nfollows it.\n\n**Settings → Server → Hostnames** fills both records in with your own handle,\nchecks them live, and tells you which one is wrong.\n\n### Three things that catch people out\n\n**Names are relative.** Most DNS providers want the name relative to your zone,\nso enter `_acme-challenge.recued`, not the full\n`_acme-challenge.recued.your-domain.com`. Pasting the full name usually\nproduces `_acme-challenge.recued.your-domain.com.your-domain.com` without any\ncomplaint — the record looks created and resolves nowhere.\n\n**Proxying hides the record.** If your provider can proxy a record — the orange\ncloud in Cloudflare — the `_acme-challenge` one must be set to \"DNS only\". A\nproxied CNAME is answered with the provider's own addresses instead, so the\ncertificate authority cannot follow it. Cloudflare proxies by default, so this\nis the common case rather than an exotic one.\n\n**A root domain needs ALIAS or flattenin…"
+    "body": "Recued issues and renews the certificate for a domain you own. Two DNS records,\ncreated once. The second is the one that does the work.\n\n| | Name | Type | Value |\n| --- | --- | --- | --- |\n| Routing | `recued.your-domain.com` | CNAME | `<handle>.recued.net` |\n| Certificates | `_acme-challenge.recued.your-domain.com` | CNAME | `_acme-challenge.<handle>.recued.net` |\n\nThe first record makes your domain reach your server. The second lets Recued\nprove it may issue certificates for that name.\n\nYou need both, and the failure when you have only the first is the confusing\none: your domain resolves, your server answers, and no certificate can ever be\nissued. Certificates are validated against `_acme-challenge.your-domain.com` —\na different name, in a zone Recued cannot write to. The second record points\nthat name at a zone Recued *can* write to, and the certificate authority\nfollows it.\n\n**Settings → Server → Hostnames** fills both records in with your own handle,\nchecks them live, and tells you which one is wrong."
+  },
+  {
+    "id": "setup/reachability#a-subdomain-or-your-root-domain",
+    "doc": "Reachability",
+    "section": "A subdomain or your root domain",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/reachability#a-subdomain-or-your-root-domain",
+    "body": "Both work, and Recued issues certificates for either. The choice changes\n**one record** — the routing one — because DNS forbids a CNAME at the root of a\nzone. The `_acme-challenge` record is identical in both cases.\n\n### A subdomain — `recued.your-domain.com`\n\nThe path with no caveats. Any DNS provider can do it, and both records are\nordinary CNAMEs.\n\n| | Name | Type | Value |\n| --- | --- | --- | --- |\n| Routing | `recued.your-domain.com` | CNAME | `<handle>.recued.net` |\n| Certificates | `_acme-challenge.recued.your-domain.com` | CNAME | `_acme-challenge.<handle>.recued.net` |\n\nThe label is yours to pick — `recued`, `home`, `hq`, anything. Nothing in\nRecued reads it.\n\n### Your root domain — `your-domain.com`\n\nAlso supported. The routing record cannot be a plain CNAME, so it uses your\nprovider's ALIAS, ANAME, or CNAME-flattening option instead — a record type\nthat behaves like a CNAME but answers with addresses, which is legal at a root.\nCloudflare, Route 53, DNSimple, and deSEC all have one, under one of those\nthree names.\n\n| | Name | Type | Value |\n| --- | --- | --- | --- |\n| Routing | `your-domain.com` (`@`) | ALIAS / ANAME / flattened CNAME | `<handle>.recued.net` |\n| Certificates | `_acme-challenge.your-domain.com` | CNAME | `_acme-challenge.<handle>.recued.net` |\n\n⚠ **Only the routing record changes.** The second record is still a plain\nCNAME, because `_acme-challenge.your-domain.com` is a *subdomain* of your root,\nnot the root itself. The CNAME restriction does not reach it, and no ALIAS\nequivalent is needed. This is the step most people over-think."
+  },
+  {
+    "id": "setup/reachability#what-to-expect-on-a-root-domain",
+    "doc": "Reachability",
+    "section": "What to expect on a root domain",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/reachability#what-to-expect-on-a-root-domain",
+    "body": "### The routing check stays a warning\n\nOnce a flattened record is in place, the Hostnames panel reports the routing\ncheck as a warning rather than a pass:\n\n> Resolves to the right address today, but as a flattened A record rather than\n> a CNAME — if your provider does not keep it in sync with your Recued address,\n> it will break when your IP changes.\n\nThat is the expected steady state for a root domain, and it is a warning rather\nthan a pass because DNS cannot tell Recued the difference between a provider\nthat re-flattens on every change and an address somebody typed in once. It does\nnot block anything: certificate issuance depends on the `_acme-challenge`\nrecord and your CAA records, never on the routing record.\n\n### Do not pin an address by hand\n\nThe one way to get a root domain wrong is to look up your server's current\naddress and enter it as an `A` record. It works until the address changes, and\nthen the name points at somebody else's machine — the failure dynamic DNS\nexists to prevent. Recued reports it as *\"Points at an address that is no longer\nyours\"*, but only once it has already happened.\n\nUse ALIAS, ANAME, or flattening instead, so your provider re-resolves\n`<handle>.recued.net` on its own.\n\n### If your provider has no ALIAS option\n\nSome registrars' bundled DNS has none. Two ways out, in order of preference:\n\n- **Move DNS for the domain** to a provider that supports it. Your registration\n  stays where it is; only the nameservers change.\n- **Use a subdomain instead.** `recued.your-domain.com` needs nothing special\n  and works on every provider.\n\nA root-domain redirect service is not a substitute — it answers HTTP, and\nRecued needs the name itself to resolve to your server."
+  },
+  {
+    "id": "setup/reachability#using-both-the-root-and-www",
+    "doc": "Reachability",
+    "section": "Using both the root and `www`",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/reachability#using-both-the-root-and-www",
+    "body": "They are two hostnames. Enrol each in **Settings → Server → Hostnames** and\ngive each its own pair of records — a flattened routing record at the root, an\nordinary CNAME at `www` — plus an `_acme-challenge` CNAME for each. Each gets\nits own certificate and counts separately against the five-domain limit below."
+  },
+  {
+    "id": "setup/reachability#getting-the-records-right",
+    "doc": "Reachability",
+    "section": "Getting the records right",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/reachability#getting-the-records-right",
+    "body": "**Names are relative.** Most DNS providers want the name relative to your zone,\nso enter `_acme-challenge.recued`, not the full\n`_acme-challenge.recued.your-domain.com`. Pasting the full name usually\nproduces `_acme-challenge.recued.your-domain.com.your-domain.com` without any\ncomplaint — the record looks created and resolves nowhere. On a root domain the\nrouting record's relative name is `@`, and its challenge record's is\n`_acme-challenge`. The Hostnames panel shows both the relative and the full\nform of every record for this reason.\n\n**Proxying hides the record.** If your provider can proxy a record — the orange\ncloud in Cloudflare — both records must be set to \"DNS only\". A proxied CNAME\nis answered with the provider's own addresses instead, so the certificate\nauthority cannot follow the `_acme-challenge` one; and a proxied routing record\nputs that provider in the path of your traffic and terminates TLS there, which\nis the arrangement the rest of this page exists to avoid. Cloudflare proxies by\ndefault, so this is the common case rather than an exotic one — and on a root\ndomain it is easy to miss, because Cloudflare's flattening and its proxy are\nseparate settings on the same record.\n\nA trailing dot on a value is fine either way; providers differ and both\nspellings are accepted."
+  },
+  {
+    "id": "setup/reachability#leave-the-acme-challenge-record-in-place",
+    "doc": "Reachability",
+    "section": "Leave the `_acme-challenge` record in place",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/reachability#leave-the-acme-challenge-record-in-place",
+    "body": "It is not a one-time step. Every renewal uses it, so deleting it breaks nothing\ntoday and everything about sixty days from now, when the certificate expires.\n\nRecued re-checks the record on a schedule rather than waiting for a renewal to\nfail, and flags the hostname as soon as it stops resolving — quietly when there\nis plenty of certificate left, and urgently as expiry approaches."
+  },
+  {
+    "id": "setup/reachability#limits",
+    "doc": "Reachability",
+    "section": "Limits",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/reachability#limits",
+    "body": "Up to five custom domains per server, and this one is Pro: it uses Recued's\ncertificate-issuing capacity on your behalf. Each domain gets its own\ncertificate rather than sharing one, so a mistake in your zone can never affect\nyour `<handle>.recued.net` name — which is the address you would need in order\nto come back and fix it.\n\nIf your CAA records restrict which authorities may issue for your domain, add\nall of `sectigo.com`, `pki.goog`, and `letsencrypt.org`. Recued rotates between\nthem, and permitting only some produces a certificate that renews most of the\ntime — the worst kind of failure to diagnose. CAA is inherited down the tree,\nso a record set at your root applies to a subdomain too — worth checking even\nwhen the name you are enrolling has none of its own."
   },
   {
     "id": "setup/reachability#use-https",

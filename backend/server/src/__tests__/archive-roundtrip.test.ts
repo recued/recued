@@ -348,6 +348,96 @@ describe('archive security invariants', () => {
     expect(() => checkManifestCompat(ok, MIN_CONSUMER_VERSION, false)).not.toThrow();
   });
 
+  it('⛔ D-258 — a 4-segment min_consumer_version is ENFORCED, not truncated away', () => {
+    // The compare read exactly three segments, so a `26.9.1` server checked
+    // against an archive requiring `26.9.1.1` compared EQUAL and the restore was
+    // ACCEPTED. `min_consumer_version` is a fail-CLOSED contract, and truncation
+    // inverted it exactly on the floors a same-day hotfix would raise — the
+    // failure being a successful restore onto a server that cannot read the
+    // data, which nobody sees.
+    const requiring = (floor: string): ArchiveManifest => ({
+      producer_version: floor,
+      min_consumer_version: floor,
+      archive_format_version: ARCHIVE_FORMAT_VERSION,
+      schema_version: SCHEMA_VERSION,
+      created_at: 0,
+      db_size_bytes: 0,
+      blob_count: 0,
+      blob_bytes: 0,
+      encryption: {
+        algorithm: 'aes-256-gcm',
+        key_derivation: 'hkdf-sha-256',
+        salt_hex: 'aa'.repeat(32),
+        info: 'recued-archive-v1',
+      },
+    });
+
+    // The exact rejection that was missing: the base triple is EQUAL, and only
+    // the fourth segment separates them.
+    expect(() => checkManifestCompat(requiring('26.9.1.1'), '26.9.1', false))
+      .toThrow(/ARCHIVE_FUTURE_VERSION: archive requires server >= 26\.9\.1\.1/);
+    // And between two ordinals of one day.
+    expect(() => checkManifestCompat(requiring('26.9.1.2'), '26.9.1.1', false))
+      .toThrow(/ARCHIVE_FUTURE_VERSION/);
+    // `force` stays the escape hatch, as for every other future-version refusal.
+    expect(() => checkManifestCompat(requiring('26.9.1.1'), '26.9.1', true)).not.toThrow();
+
+    // ⚠ AND THE ORDINAL MUST NOT MAKE THE FLOOR STRICTER THAN IT IS. A hotfix
+    // consumer satisfies its own base's floor, and a later ordinal satisfies an
+    // earlier one — otherwise this fix would refuse restores that used to work.
+    expect(() => checkManifestCompat(requiring('26.9.1'), '26.9.1.1', false)).not.toThrow();
+    expect(() => checkManifestCompat(requiring('26.9.1.1'), '26.9.1.5', false)).not.toThrow();
+    expect(() => checkManifestCompat(requiring('26.9.1.1'), '26.9.2', false)).not.toThrow();
+    // Plain triples compare exactly as they always did.
+    expect(() => checkManifestCompat(requiring('26.9.1'), '26.9.1', false)).not.toThrow();
+    expect(() => checkManifestCompat(requiring('26.9.1'), '26.8.31', false))
+      .toThrow(/ARCHIVE_FUTURE_VERSION/);
+  });
+
+  it('⛔ a MALFORMED floor is refused, not coerced — the grammar, not the segment count', () => {
+    // ⚠ WIDENING THE LOOP FROM 3 TO 4 MOVED THE HOLE, IT DID NOT CLOSE IT.
+    // `26.9.1.1.1` and `26.9.1.1` still compared EQUAL, so an archive declaring a
+    // five-segment floor was ACCEPTED by a server below it — and `26.9.1.0` was
+    // accepted by `26.9.1`. `min_consumer_version` arrives from the archive FILE
+    // (attacker- or corruption-supplied), so "whatever it says, coerced to
+    // numbers" is not a floor. The grammar is IMPORTED from `@recued/release`
+    // rather than restated, so a floor is judged by the rule that judges a
+    // release version.
+    const requiring = (floor: string): ArchiveManifest => ({
+      producer_version: '26.9.1',
+      min_consumer_version: floor,
+      archive_format_version: ARCHIVE_FORMAT_VERSION,
+      schema_version: SCHEMA_VERSION,
+      created_at: 0,
+      db_size_bytes: 0,
+      blob_count: 0,
+      blob_bytes: 0,
+      encryption: {
+        algorithm: 'aes-256-gcm',
+        key_derivation: 'hkdf-sha-256',
+        salt_hex: 'aa'.repeat(32),
+        info: 'recued-archive-v1',
+      },
+    });
+
+    // ⛔ INCLUDING SUFFIXED FORMS. The check began life as
+    // `isValidReleaseVersion(v.split('-')[0])` — it stripped a `-suffix` and then
+    // validated the STUMP, so `26.9.1-rc.1` and `26.9.1.1-rc1` passed a gate whose
+    // whole purpose is to reject what the canonical grammar rejects. A validator
+    // that normalises its input first is answering about the normalised value,
+    // and the value COMPARED here is the one the archive supplied.
+    for (const bad of ['26.9.1.1.1', '26.9.1.0', '26.9.1.dev', '26.9', '26.09.1', '',
+                       '26.9.1-rc.1', '26.9.1.1-rc1', '26.9.1.1-']) {
+      expect(() => checkManifestCompat(requiring(bad), '26.9.1.1', false), bad)
+        .toThrow(/ARCHIVE_FUTURE_VERSION/);
+    }
+    // ⚠ AND `force` MUST NOT WAVE THROUGH A STRING THAT IS NOT A VERSION. The
+    // escape hatch exists for "newer than me", which is a comparison — it cannot
+    // mean "compare this unparseable thing anyway".
+    expect(() => checkManifestCompat(requiring('26.9.1.1.1'), '26.9.1.1', true))
+      .toThrow(/ARCHIVE_FUTURE_VERSION/);
+  });
+
   it('parseManifest rejects non-RECA magic', () => {
     const bogus = Buffer.concat([Buffer.from('XXXX'), Buffer.alloc(100)]);
     expect(() => parseManifest(bogus)).toThrow(/ARCHIVE_INVALID: magic/);

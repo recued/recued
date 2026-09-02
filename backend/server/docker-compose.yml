@@ -1,14 +1,15 @@
 # recued — reference docker-compose (Phase E, D-107).
 #
-# Copy this file next to a `config.toml` of your choice, then run:
-#   docker compose up -d
+# Copy this file next to a `config.toml`, then use the exact image@sha256 value
+# printed by `recued update` from the verified signed release manifest:
+#   RECUED_IMAGE_REF='recued/server@sha256:<64-hex-digest>' docker compose up -d
 #
 # The service is self-contained: SQLite data + blob CAS lives in the
 # named volume, config is bind-mounted read-only.
 
 services:
   recued:
-    image: recued/server:26.8.31
+    image: "${RECUED_IMAGE_REF:?Set RECUED_IMAGE_REF to the signed recued/server@sha256 digest printed by recued update}"
     container_name: recued
     restart: unless-stopped
     # D-105 exit-code contract. `on-failure` respects the supervisor's
@@ -64,7 +65,7 @@ services:
       # (Caddy / ngrok / Tailscale / Cloudflare Tunnel in front).
       # RECUED_PUBLIC_REACHABLE: "true"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:7717/health"]
+      test: ["CMD", "node", "-e", "fetch('http://localhost:7717/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       start_period: 10s

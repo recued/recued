@@ -24,11 +24,12 @@
  * artifacts back. The transport is where the traps are, so they are named at the
  * point that works around them rather than in a comment block up here.
  *
- * ⚠ WHAT THIS DOES NOT DO: sign. The binaries come back unsigned, and postject
- * warns "signature seems corrupted" during injection because Node's official
- * Windows build IS Authenticode-signed and injection invalidates it. That is
- * expected and is what D-178 S5 re-signing exists for. Do not ship these to a
- * channel without it.
+ * ⚠ INTENTIONALLY UNSIGNED AT THE WINDOWS OS LAYER. postject warns "signature
+ * seems corrupted" because Node's official Windows build is Authenticode-signed
+ * and SEA injection invalidates that signature. Recued's documented PowerShell
+ * install/run path was verified without SmartScreen blocking or warning, so
+ * Authenticode is not a release requirement. Minisign + manifest SHA-256 remain
+ * mandatory, and the receipt below binds their final unsigned bytes.
  *
  * Config, from the environment or the repository rootdev.env`:
  *   WIN_VM_SSH_HOST  WIN_VM_SSH_PORT  WIN_VM_USER  WIN_VM_PASS
@@ -57,6 +58,11 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  removeNativeBuildAttestation,
+  resolveSourceRevision,
+  writeNativeBuildAttestation,
+} from './release-native-attestation.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SERVER_DIR = resolve(HERE, '..');
@@ -90,6 +96,11 @@ const embedAddon = has('embed-addon');
 const SOURCE = flag('source', 'HEAD');
 const OUT = resolve(flag('out', join(SERVER_DIR, 'dist', 'binary-windows')));
 const REUSE = has('reuse-source');
+const SOURCE_REVISION = resolveSourceRevision({ repoRoot: REPO_ROOT, ref: SOURCE });
+const EXPECTED_VERSION = JSON.parse(execFileSync(
+  'git', ['show', `${SOURCE_REVISION}:backend/server/package.json`],
+  { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+)).version;
 
 // ── config ──────────────────────────────────────────────────────────────────
 /** dev.env lives OUTSIDE the repo (the wrapper folder) so it is never in a
@@ -215,6 +226,7 @@ const runPs1 = async (name, args, timeoutSec) => {
 const serveDir = join(tmpDir, 'serve');
 mkdirSync(serveDir, { recursive: true });
 mkdirSync(OUT, { recursive: true });
+for (const triple of triples) removeNativeBuildAttestation({ stagingDir: OUT, triple });
 
 const startServer = () =>
   new Promise((res) => {
@@ -331,6 +343,7 @@ try {
   // a stray sidecar would load normally and the run would prove nothing.
   const smokeOut = await runPs1('smoke', {
     Triples: triples.join(','),
+    ExpectedVersion: EXPECTED_VERSION,
     ...(embedAddon ? { EmbedAddon: '1' } : {}),
   }, 900);
   for (const line of smokeOut.split('\n')) if (line.trim()) console.log(`  ${line}`);
@@ -356,13 +369,29 @@ for (const t of triples) {
   console.log(`    sidecar ${statSync(lib).size} bytes`);
 }
 
+if (failed === 0 && REUSE) {
+  console.warn('[build-binary-windows] --reuse-source is diagnostic only: no source-bound receipt was emitted.');
+  console.warn('  release-build will refuse these artifacts; rebuild from an archived --source for publication.');
+} else if (failed === 0) {
+  for (const triple of triples) {
+    writeNativeBuildAttestation({
+      stagingDir: OUT,
+      triple,
+      version: EXPECTED_VERSION,
+      sourceRevision: SOURCE_REVISION,
+      producer: 'build-binary-windows',
+    });
+    console.log(`[build-binary-windows] ${triple}: receipt bound to ${SOURCE_REVISION.slice(0, 12)}`);
+  }
+}
+
 console.log('');
 console.log(`[build-binary-windows] artifacts in ${OUT}:`);
 for (const f of readdirSync(OUT).sort()) console.log(`    ${f}`);
 console.log('');
-console.log('⚠ These are UNSIGNED. postject warns "signature seems corrupted" during');
-console.log('   injection because Node\'s official Windows build is Authenticode-signed');
-console.log('   and injection invalidates it — that is what S5 re-signing is for. Do not');
-console.log('   publish to a channel until they are signed.');
+console.log('These are intentionally unsigned Windows artifacts. postject warns');
+console.log('"signature seems corrupted" because SEA injection invalidates Node\'s');
+console.log('upstream Authenticode signature. Recued publishes these exact bytes under');
+console.log('the Minisign + manifest SHA-256 + native-smoke custody chain.');
 
 process.exit(failed === 0 ? 0 : 1);
