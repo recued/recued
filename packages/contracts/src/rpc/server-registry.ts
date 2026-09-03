@@ -1182,6 +1182,18 @@ export type ServerRpcRegistry = {
     },
     { dish: Dish }
   >;
+  /** D-259 §6.1 — owner promotion from a canonical chat/run-log address.
+   * The server re-reads recipe_id + config_snapshot from the terminal audit
+   * anchor; neither is accepted from the caller. Always mints a new,
+   * non-default standing dish. */
+  'dishes.createFromRun': RpcMethodSpec<
+    {
+      run_id: string;
+      name?: string;
+      enabled?: boolean;
+    },
+    { dish: Dish }
+  >;
   'dishes.update': RpcMethodSpec<
     {
       dish_id: string;
@@ -6897,6 +6909,7 @@ export const SERVER_RPC_METHODS = [
   'schedules.delete',
   'dishes.list',
   'dishes.create',
+  'dishes.createFromRun',
   'dishes.update',
   'dishes.delete',
   'dishes.history',

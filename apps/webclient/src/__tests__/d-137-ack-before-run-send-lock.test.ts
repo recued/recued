@@ -1,14 +1,10 @@
-/** Ack-before-run flip — route send serialization.
+/** D-259 client-first steering — route send serialization.
  *
  *  The `chat.send` ack now resolves at the server's COMMIT POINT (user
- *  message durable, model-bound body still running), so the route keeps
- *  the composer locked on `pending_turn_id` until the sent turn
- *  SETTLES: its `chat.message_complete` lands, OR its failure paints
- *  (`turn_failures` — incl. the post-accept `engine.turn_failed`
- *  signal), OR the user navigates to another session (whose events
- *  would never settle the lock). Order-agnostic: under an ack-after-run
- *  server the completion precedes the ack and the lock settles at ack
- *  time. Harness mirrors `d-137-p3-plan-approval-card.test.ts`. */
+ *  message durable, model-bound body still running). `sending` protects only
+ *  that RPC window; the composer reopens at the ack so a follow-up can steer
+ *  the active work through a concurrent server turn. Accepted turns remain
+ *  visible in the history busy state and independently settle. */
 
 import { describe, expect, it, vi } from 'vitest';
 import type {
@@ -357,19 +353,21 @@ const typeDraft = (root: FakeEl, text = 'another message'): void => {
   for (const listener of input.listeners.get('input') ?? []) listener();
 };
 
-describe('D-137 ack-before-run — route send lock', () => {
-  it('keeps the composer locked after the early ack until message_complete settles it', async () => {
+describe('D-259 ack-before-run — dispatch-only send lock', () => {
+  it('reopens the composer after the early ack while the accepted turn continues', async () => {
     const h = mountChatRoute(async () => ({ turn_id: 't1' }));
     await tick();
     await h.route.openSession('chat_1');
 
     await h.route.sendMessage('run something slow');
 
-    // Ack landed (in-flight scaffold exists) but the turn has not
-    // completed — the composer must stay locked.
+    // Ack landed (in-flight scaffold exists) but the turn has not completed.
+    // A fresh draft is sendable immediately: this is the steering reachability
+    // edge the server-side in-flight context depends on.
     expect(h.route.getThread().inflight?.turn_id).toBe('t1');
-    expect(sendButton(h.root).disabled).toBe(true);
-    expect(sendButton(h.root).textContent).toBe('Sending...');
+    typeDraft(h.root, 'change the running task');
+    expect(sendButton(h.root).disabled).toBe(false);
+    expect(sendButton(h.root).textContent).toBe('Send');
 
     h.publish({
       kind: 'chat.message_complete',
@@ -383,6 +381,7 @@ describe('D-137 ack-before-run — route send lock', () => {
     typeDraft(h.root);
     expect(sendButton(h.root).disabled).toBe(false);
     expect(sendButton(h.root).textContent).toBe('Send');
+    expect(h.route.hasInFlightWork()).toBe(false);
 
     h.route.dispose();
   });
@@ -442,6 +441,32 @@ describe('D-137 ack-before-run — route send lock', () => {
     h.route.dispose();
   });
 
+  it('does not resurrect a failed turn when its failure preceded the ack', async () => {
+    const send = deferred<{ turn_id: string }>();
+    const h = mountChatRoute(() => send.promise);
+    await tick();
+    await h.route.openSession('chat_1');
+
+    const sending = h.route.sendMessage('old ordering failure');
+    await tick();
+    h.publish({
+      kind: 'chat.transparency',
+      session_id: 'chat_1',
+      turn_id: 't1',
+      event: { kind: 'engine.turn_failed' },
+      cursor: 1,
+    });
+    send.resolve({ turn_id: 't1' });
+    await sending;
+    await tick();
+
+    expect(h.route.hasInFlightWork()).toBe(false);
+    typeDraft(h.root);
+    expect(sendButton(h.root).disabled).toBe(false);
+
+    h.route.dispose();
+  });
+
   /** ⛔ THIS TEST HAS NOW INVERTED TWICE. READ BOTH TURNS BEFORE A THIRD.
    *
    *  v1 required that switching sessions mid-pending CLEARED the lock, because
@@ -456,11 +481,11 @@ describe('D-137 ack-before-run — route send lock', () => {
    *  the switch is allowed, the turn keeps running, and the lock follows the
    *  session rather than the tab.
    *
-   *  🔑 What v1 got right and v2 keeps: the lock must still exist somewhere, or
-   *  a second turn lands in a session whose history tail the first is still
-   *  writing. `turnsInFlightBySession` is where it lives now — RETURNING to a
-   *  running session re-takes the lock. That is the assertion to protect. */
-  it('lets you leave a pending turn, keeps it running, and re-locks on return', async () => {
+   *  D-259 removes the final same-session lock: the server already owns
+   *  concurrent turn persistence, and the next turn receives a bounded snapshot
+   *  of active execution intent. Returning therefore preserves liveness without
+   *  disabling the composer. */
+  it('lets you leave a pending turn, keeps it running, and stays open on return', async () => {
     const h = mountChatRoute(async () => ({ turn_id: 't1' }));
     await tick();
     await h.route.openSession('chat_1');
@@ -485,12 +510,13 @@ describe('D-137 ack-before-run — route send lock', () => {
         ?.getAttribute(CHAT_ROUTE_SESSION_STATUS_ATTR),
     ).toBe('working');
 
-    // ⛔ Returning RE-LOCKS: two turns in one session would read the same
-    // history tail at start and append into it blind.
+    // Returning keeps the accepted turn visible without conflating it with a
+    // local RPC dispatch lock.
     await h.route.openSession('chat_1');
     await tick();
-    expect(sendButton(h.root).disabled).toBe(true);
-    expect(sendButton(h.root).textContent).toBe('Sending...');
+    typeDraft(h.root, 'steer it from here');
+    expect(sendButton(h.root).disabled).toBe(false);
+    expect(sendButton(h.root).textContent).toBe('Send');
 
     // The original turn still settles it — the thing v1 could not deliver.
     h.publish({
@@ -786,11 +812,9 @@ describe('D-137 ack-before-run — route send lock', () => {
     h.route.dispose();
   });
 
-  /** The discriminating case. The history PROVES the server stamps turns, and
-   *  no assistant row bears this one — so it really is still running, and the
-   *  lock has to hold. This is what the blanket reconnect clear used to get
-   *  wrong: it reopened the double-send window on every socket blip. */
-  it('keeps the visible lock across a reconnect when the turn is genuinely unfinished', async () => {
+  /** The history still proves the turn is running across reconnect, but that
+   *  truth now drives the busy indicator rather than disabling steering. */
+  it('keeps unfinished liveness across reconnect without closing the composer', async () => {
     let history: readonly ChatMessage[] = [];
     const h = mountChatRoute(
       async () => ({ turn_id: 't1' }),
@@ -818,8 +842,9 @@ describe('D-137 ack-before-run — route send lock', () => {
     await tick(10);
 
     typeDraft(h.root);
-    expect(sendButton(h.root).disabled).toBe(true);
-    expect(sendButton(h.root).textContent).toBe('Sending...');
+    expect(sendButton(h.root).disabled).toBe(false);
+    expect(sendButton(h.root).textContent).toBe('Send');
+    expect(h.route.hasInFlightWork()).toBe(true);
 
     // …and the real completion, whenever it lands, still settles it.
     h.publish({
@@ -911,6 +936,46 @@ describe('D-137 ack-before-run — route send lock', () => {
     typeDraft(h.root);
     expect(sendButton(h.root).disabled).toBe(false);
     expect(sendButton(h.root).textContent).toBe('Send');
+    expect(h.route.hasInFlightWork()).toBe(false);
+
+    h.route.dispose();
+  });
+
+  it('keeps aggregate server busy truth after one locally-known sibling settles', async () => {
+    const h = mountChatRoute(async () => ({ turn_id: 't1' }));
+    await tick();
+    await h.route.openSession('chat_1');
+    await h.route.sendMessage('my long turn');
+
+    // The aggregate true edge may cover this turn plus a concurrent turn from
+    // another client. That second refcount increment intentionally emits no
+    // duplicate true edge and its turn id is unknowable here.
+    h.publish({
+      kind: 'chat.session_changed',
+      session_id: 'chat_1',
+      field: 'busy',
+      value: true,
+      cursor: 1,
+    } as unknown as ServerEvent);
+    h.publish({
+      kind: 'chat.message_complete',
+      session_id: 'chat_1',
+      turn_id: 't1',
+      final: assistantMessage('msg_1'),
+      cursor: 2,
+    });
+    await tick();
+
+    expect(h.route.hasInFlightWork()).toBe(true);
+
+    h.publish({
+      kind: 'chat.session_changed',
+      session_id: 'chat_1',
+      field: 'busy',
+      value: false,
+      cursor: 3,
+    } as unknown as ServerEvent);
+    await tick();
     expect(h.route.hasInFlightWork()).toBe(false);
 
     h.route.dispose();

@@ -279,6 +279,14 @@ export const EXECUTE_RESPONSE_AUDIT_RUN_ID: unique symbol = Symbol(
   'recued.execute_response_audit_run_id',
 );
 
+/** Internal-only metadata key for the standing dish that was actually
+ * dispatched. Ephemeral dish ids are deliberately never stamped: they are a
+ * pure function of `run_id`, resolve to no store row, and would look like an
+ * owner-manageable handle on the canonical chat log. */
+export const EXECUTE_RESPONSE_STANDING_DISH_ID: unique symbol = Symbol(
+  'recued.execute_response_standing_dish_id',
+);
+
 /** POST /execute response on success. Mirrors engine ExecutionResult.
  *  Render blocks carry an index signature for block-specific extras
  *  (label, source, etc.) — same shape as engine/src/types.ts. */
@@ -286,6 +294,8 @@ export interface ExecuteResponse {
   /** Host-internal, non-serializable audit address. See
    * `stampExecuteResponseAuditRun`. */
   readonly [EXECUTE_RESPONSE_AUDIT_RUN_ID]?: string;
+  /** Host-internal, non-serializable standing-dish address. */
+  readonly [EXECUTE_RESPONSE_STANDING_DISH_ID]?: string;
   recipe_id: string;
   recipe_hash: string;
   success: boolean;
@@ -432,6 +442,27 @@ export const stampExecuteResponseAuditRun = (
 export const executeResponseAuditRunId = (
   response: ExecuteResponse,
 ): string | undefined => response[EXECUTE_RESPONSE_AUDIT_RUN_ID];
+
+/** Attach the existing standing dish that was dispatched. Callers must pass
+ * only a persisted dish id; the execute handler owns that discrimination. */
+export const stampExecuteResponseStandingDish = (
+  response: ExecuteResponse,
+  dish_id: string | undefined,
+): ExecuteResponse => {
+  if (dish_id === undefined) return response;
+  Object.defineProperty(response, EXECUTE_RESPONSE_STANDING_DISH_ID, {
+    value: dish_id,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return response;
+};
+
+/** Read the host-stamped standing dish address, if this run used one. */
+export const executeResponseStandingDishId = (
+  response: ExecuteResponse,
+): string | undefined => response[EXECUTE_RESPONSE_STANDING_DISH_ID];
 
 // ────────────────────────────────────────────────────────────────
 // Recipe store — pair-sync cache of recipes the extension pushed

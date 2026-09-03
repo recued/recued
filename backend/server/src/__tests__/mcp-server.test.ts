@@ -14,6 +14,8 @@ import type {
   ToolEntry,
 } from '@recued/contracts';
 import { RpcError } from '@recued/contracts';
+import { InFlightRegistry } from '../execution/in-flight-registry.js';
+import { LaneSemaphore } from '../execution/lane-semaphore.js';
 
 /** The MCP server uses handleExecute + recipe/manifest registries
  *  internally. This test exercises those components the same way
@@ -171,6 +173,138 @@ import {
   type McpDeps,
 } from '../mcp-server.js';
 
+describe('D-259 MCP tool: recued_stopRecipe', () => {
+  const mcpSource = (token: string): ExecutionSource => ({
+    channel: 'mcp',
+    actor: 'contracted_user',
+    agent_id: `agent-${token}`,
+    tool_call_id: `call-${token}`,
+    mcp_token_id: token,
+    contract_id: `contract-${token}`,
+  });
+
+  const stopDeps = (over: Partial<McpDeps> = {}) => ({
+    ...makeDeps(),
+    inFlightRegistry: new InFlightRegistry(new LaneSemaphore()),
+    mcpTokenId: 'token-a',
+    mcpPrincipalActive: () => true,
+    // Stop is self-scoped protocol control, not a checklist grant.
+    inboundTokenAuthorize: () => false,
+    ...over,
+  }) as McpDeps;
+
+  it('advertises an exact-one intent schema outside the grant checklist', () => {
+    const tool = _testing.STATIC_TOOLS.find((entry) => entry.name === 'recued_stopRecipe');
+    expect(tool?.inputSchema).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+      oneOf: [
+        { required: ['run_id'] },
+        { required: ['recipe_id'] },
+      ],
+    });
+  });
+
+  it('stops its own attended run and makes retry terminal-safe', async () => {
+    const abort = vi.fn();
+    const d = stopDeps();
+    d.inFlightRegistry!.registerRun({
+      run_id: 'run-own',
+      recipe_id: 'recipe-own',
+      source: mcpSource('token-a'),
+      origin: 'attended',
+      started_at: 77,
+      abort,
+    });
+
+    const stopped = await _testing.handleToolCall(
+      { name: 'recued_stopRecipe', arguments: { recipe_id: 'recipe-own' } },
+      d,
+    ) as { structuredContent: Record<string, unknown> };
+    expect(stopped.structuredContent).toEqual({
+      status: 'stopped',
+      run_id: 'run-own',
+      recipe_id: 'recipe-own',
+      started_at: 77,
+    });
+    expect(abort).toHaveBeenCalledOnce();
+
+    const retried = await _testing.handleToolCall(
+      { name: 'recued_stopRecipe', arguments: { run_id: 'run-own' } },
+      d,
+    ) as { structuredContent: Record<string, unknown> };
+    expect(retried.structuredContent).toEqual({
+      status: 'already_terminal',
+      run_id: 'run-own',
+    });
+  });
+
+  it('collapses not_yours on the wire while retaining it in private audit', async () => {
+    const logActivity = vi.fn(async (_entry: unknown) => {});
+    const d = stopDeps({
+      auditLog: { logActivity } as unknown as McpDeps['auditLog'],
+    });
+    d.inFlightRegistry!.registerRun({
+      run_id: 'run-other',
+      recipe_id: 'recipe-other',
+      source: mcpSource('token-b'),
+      origin: 'attended',
+      started_at: 88,
+      abort: vi.fn(),
+    });
+
+    const result = await _testing.handleToolCall(
+      { name: 'recued_stopRecipe', arguments: { run_id: 'run-other' } },
+      d,
+    ) as { structuredContent: Record<string, unknown> };
+    expect(result.structuredContent).toEqual({ status: 'not_found' });
+    const row = logActivity.mock.calls[0]?.[0] as { detail?: string };
+    expect(JSON.parse(row.detail ?? '{}')).toMatchObject({
+      status: 'not_yours',
+      requested_run_id: 'run-other',
+      source: { mcp_token_id: 'token-a' },
+    });
+  });
+
+  it('remains available after bound-contract death, but not after token death', async () => {
+    const livePrincipal = stopDeps({
+      boundContractId: 'contract-dead',
+      boundContractActive: false,
+    });
+    const listed = await _testing.handleToolsList(livePrincipal) as {
+      tools: Array<{ name: string }>;
+    };
+    expect(listed.tools.map((tool) => tool.name)).toEqual(['recued_stopRecipe']);
+
+    const deadPrincipal = stopDeps({ mcpPrincipalActive: () => false });
+    const hidden = await _testing.handleToolsList(deadPrincipal) as {
+      tools: Array<{ name: string }>;
+    };
+    expect(hidden.tools.map((tool) => tool.name)).not.toContain('recued_stopRecipe');
+    const refused = await _testing.handleToolCall(
+      { name: 'recued_stopRecipe', arguments: { run_id: 'anything' } },
+      deadPrincipal,
+    ) as { isError?: boolean; content: Array<{ text: string }> };
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0]?.text).toMatch(/no longer active/);
+  });
+
+  it('rejects caller-authored identity and non-exclusive intent', async () => {
+    const d = stopDeps();
+    for (const args of [
+      { run_id: 'a', recipe_id: 'b' },
+      { run_id: 'a', mcp_token_id: 'token-b' },
+      {},
+    ]) {
+      const result = await _testing.handleToolCall(
+        { name: 'recued_stopRecipe', arguments: args },
+        d,
+      ) as { isError?: boolean };
+      expect(result.isError).toBe(true);
+    }
+  });
+});
+
 describe('D-196 MCP customer usage metering', () => {
   const makeCustomerUsage = (
     reserveImpl: () => McpCustomerUsageAdmission = () => ({ admitted: true }),
@@ -315,6 +449,7 @@ describe('D-196 MCP customer usage metering', () => {
       'recued_listIngredients',
       'recued_listRecipes',
       'recued_registryDescribe',
+      'recued_stopRecipe',
       'setup.status',
       'tools.search',
     ]);
@@ -1785,7 +1920,9 @@ describe('D-171 slice-2c follow-on #1 — buildMcpGrantCatalogLegacyEntries', ()
   const grantCatalogMetaToolNames = () =>
     _testing.STATIC_TOOLS
       .map((tool) => tool.name)
-      .filter((name) => name !== 'recued_customerStatus');
+      .filter((name) =>
+        name !== 'recued_customerStatus'
+        && name !== 'recued_stopRecipe');
 
   it('projects grant-cataloged recued_* meta tools with read/write/unknown classifications', () => {
     const entries = buildMcpGrantCatalogLegacyEntries(buildManifests());
@@ -1806,9 +1943,10 @@ describe('D-171 slice-2c follow-on #1 — buildMcpGrantCatalogLegacyEntries', ()
     expect(byName.get('recued_runRecipe')?.classification).toBe('unknown');
   });
 
-  it('does not project customer.status into inbound-token business-tool grants', () => {
+  it('does not project self-scoped protocol utilities into business-tool grants', () => {
     const entries = buildMcpGrantCatalogLegacyEntries(buildManifests());
     expect(entries.map((entry) => entry.name)).not.toContain('recued_customerStatus');
+    expect(entries.map((entry) => entry.name)).not.toContain('recued_stopRecipe');
   });
 
   it('projects recued_ingredient_<slug> tools classified by risk_tier, skipping non-exposed kernel ingredients', () => {

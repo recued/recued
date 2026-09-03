@@ -4,9 +4,11 @@ import {
   closeSync,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   openSync,
+  readSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -14,6 +16,7 @@ import {
   statSync,
   writeFileSync,
   writeSync,
+  createReadStream,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -21,6 +24,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import type { CliInvocationCall, CliInvocationExecutor } from '@recued/engine';
 import {
   cliSpawnErrorReason,
+  isD259CliProgressSpec,
+  isReadyCliDetachedSupervisionSpec,
   isInPlaceCapture,
   isStdoutCapture,
   isPinnedCasFileRef,
@@ -42,6 +47,14 @@ import { allocateRunScratchDir } from './execution/run-scratch.js';
 import type { InFlightRegistry } from './execution/in-flight-registry.js';
 import { isInboundFileRecordId } from './collections/file/inbound-file-collection.js';
 import { parseRemoteFileRecordId } from './file-view-resolver.js';
+import {
+  killProcessGroup,
+  reapProcessGroupAfterLeaderExit,
+} from './supervision/process-group-kill.js';
+import {
+  cliProgressAdapterStream,
+  createCliProgressAdapter,
+} from './execution/cli-progress-adapters.js';
 
 /** D-241 P4 — the two id shapes `input_materialize` will fetch: a CAS
  *  `data.file.received` record (`file:<32 hex>`) and a File Source MIRROR row
@@ -66,15 +79,16 @@ const isMaterializableFileRef = (value: unknown): value is string =>
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MIN_TIMEOUT_MS = 100;
 const MAX_TIMEOUT_MS = 120_000;
+/** Keep the existing by-value stdout channel small. D-259 removes the 64 MiB
+ * produced-file ceiling by streaming file refs; it must not turn that old file
+ * bound into permission to send 64 MiB of stdout through recipes/the model. */
 const CAPTURE_CAP_BYTES = 1024 * 1024;
 const DEFAULT_LAUNCH_TIMEOUT_MS = 1_000;
 const CLI_FILE_REF_ARRAY_MAX_ITEMS = 32;
-/** Default ceiling on a captured tool-output file (`output_capture`). A parsed
- *  document is text and small; a runaway / malformed tool output must fail loud
- *  rather than read an unbounded file into memory before ingest. Overridable via
- *  `CliInvocationExecutorOptions.outputCaptureMaxBytes` (tests shrink it). */
+/** Compatibility-only guard for the legacy byte ingestor. Production streams
+ * captured files by path and has no file-size ceiling; embedders that still
+ * accept a single Buffer must remain bounded to avoid an unbounded read. */
 const DEFAULT_OUTPUT_CAPTURE_MAX_BYTES = 64 * 1024 * 1024;
-
 type SpawnFn = typeof nodeSpawn;
 
 /** D-181 Slice 3 — optional overrides for the foreground stall monitor's
@@ -89,6 +103,11 @@ export interface StallTuning {
 
 export interface CliInvocationExecutorOptions {
   spawn?: SpawnFn;
+  /** Process-tree termination seam. Production defaults to the shared
+   * cross-platform group killer. The same seam reaps any descendants left when
+   * a finite leader exits. Tests with a synthetic spawn default to the child
+   * mock's `kill` unless they inject this explicitly. */
+  killProcessTree?: (pid: number, signal: NodeJS.Signals) => void;
   launchTimeoutMs?: number;
   now?: () => number;
   /** D-181 Slice 3 — foreground stall-monitor window overrides. */
@@ -99,6 +118,10 @@ export interface CliInvocationExecutorOptions {
    *  `execution.kill` can reach the child. Detached on close/error. Absent ⇒ no
    *  external kill handle (the stall monitor's auto-kill still applies). */
   inFlightRegistry?: InFlightRegistry;
+  /** Migrated long-lived daemons are established by the single supervisor,
+   *  including when invoked from a recipe. The supervisor's own raw spawn
+   *  passes a binding with `supervision` removed, avoiding recursion. */
+  startSupervisedDaemon?: (call: CliInvocationCall) => Promise<unknown>;
   /** Document-toolkit — sink for `CliOutputCaptureSpec`. When an op declares
    *  `binding.output_capture`, the executor reads the file the cli produced in
    *  its engine-managed temp dir and hands the bytes here to land as a
@@ -106,9 +129,12 @@ export interface CliInvocationExecutorOptions {
    *  `result.file_ref`. Absent ⇒ an op that declares `output_capture` fails
    *  closed (it would otherwise silently drop the parsed output). */
   ingestToolOutput?: ToolOutputIngestor;
-  /** Document-toolkit — override the captured-output size ceiling (bytes).
-   *  Default `DEFAULT_OUTPUT_CAPTURE_MAX_BYTES`. */
+  /** Ceiling for the compatibility byte-ingestor path. Ignored when the
+   *  streaming `ingestToolOutputFile` path is wired. */
   outputCaptureMaxBytes?: number;
+  /** Streaming counterpart used by production. The source path remains owned
+   *  by the executor and is deleted only after this Promise resolves. */
+  ingestToolOutputFile?: ToolOutputFileIngestor;
   /** SMB-finance slice 3 — read CAS bytes for a `file_ref` so an op that
    *  declares `input_materialize` can materialize that arg to a temp file the
    *  cli reads (storage-gdrive `file.download` → `file_ref` → docling). Absent
@@ -150,6 +176,19 @@ export type ToolOutputIngestor = (
   input: ToolOutputIngestInput,
 ) => Promise<{ record_id: string }>;
 
+export interface ToolOutputFileIngestInput {
+  src_path: string;
+  filename: string;
+  mime_type: string;
+  content_hash: string;
+  size_bytes: number;
+  source_id: string;
+}
+
+export type ToolOutputFileIngestor = (
+  input: ToolOutputFileIngestInput,
+) => Promise<{ record_id: string }>;
+
 interface CapturedStream {
   chunks: Buffer[];
   bytes: number;
@@ -161,6 +200,7 @@ const SCALAR_TYPES = new Set(['string', 'number', 'boolean', 'bigint']);
 
 const resolveTimeoutMs = (raw: unknown): number => {
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return DEFAULT_TIMEOUT_MS;
+  if (raw === 0) return 0;
   if (raw < MIN_TIMEOUT_MS) return MIN_TIMEOUT_MS;
   if (raw > MAX_TIMEOUT_MS) return MAX_TIMEOUT_MS;
   return raw;
@@ -402,6 +442,7 @@ const normalizeExitCode = (code: number | null, signal: NodeJS.Signals | null): 
 const waitForLaunch = (
   child: ChildProcess,
   timeoutMs: number,
+  killProcessTree?: (pid: number, signal: NodeJS.Signals) => void,
 ): Promise<void> =>
   new Promise((resolve, reject) => {
     let settled = false;
@@ -417,10 +458,14 @@ const waitForLaunch = (
     const onError = (err: Error): void => finish(() => reject(err));
     const timer = setTimeout(() => {
       finish(() => {
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          /* process may not have spawned yet */
+        if (child.pid !== undefined && killProcessTree) {
+          killProcessTree(child.pid, 'SIGKILL');
+        } else {
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            /* process may not have spawned yet */
+          }
         }
         reject(new Error(`cli_invocation launch timed out after ${timeoutMs}ms`));
       });
@@ -431,15 +476,17 @@ const waitForLaunch = (
 
 /** D-181 Slice 3 — build the foreground stall monitor for an op that declared
  *  a progress contract. Returns `undefined` when no contract is declared (the
- *  op keeps the tight `timeout_ms` cap, behaviour-neutral). Maps an un-watchable
- *  `file-growth` (no/failed `watch_path`) and the irrelevant `provider-event`
- *  contract down to `silent` (bounded by the generous fail-safe — never a false
- *  no-progress kill). */
+ *  op keeps the tight `timeout_ms` cap, behaviour-neutral). A legacy
+ *  un-watchable `file-growth` declaration maps to `silent` to preserve its
+ *  fail-safe-only behavior. A strict D-259 declaration instead observes zero
+ *  progress and reaches its explicit stall threshold; a broken path must not
+ *  silently disable the only bound on `timeout_ms: 0`. */
 const buildForegroundMonitor = (
   call: CliInvocationCall,
   now: () => number,
   tuning: StallTuning,
   cwd: string | undefined,
+  onProgressSignal?: (contract: 'heartbeat' | 'file-growth', at: number) => void,
 ): StallMonitor | undefined => {
   const spec = call.binding.progress;
   if (!spec) return undefined;
@@ -455,7 +502,7 @@ const buildForegroundMonitor = (
   }
   const effectiveContract = spec.contract === 'heartbeat'
     ? 'heartbeat'
-    : spec.contract === 'file-growth' && source
+    : spec.contract === 'file-growth'
       ? 'file-growth'
       : 'silent';
 
@@ -463,11 +510,15 @@ const buildForegroundMonitor = (
     contract: effectiveContract,
     origin: runAttentionForTriggerSource(call.stepMeta?.trigger_source),
     now,
+    ...(effectiveContract === 'heartbeat' || effectiveContract === 'file-growth'
+      ? { onSignal: (at: number) => onProgressSignal?.(effectiveContract, at) }
+      : {}),
     ...(source ? { source } : {}),
     ...(tuning.pollMs !== undefined ? { pollMs: tuning.pollMs } : {}),
-    ...(tuning.factorK !== undefined ? { factorK: tuning.factorK } : {}),
-    ...(tuning.expectedIntervalMs !== undefined ? { expectedIntervalMs: tuning.expectedIntervalMs } : {}),
-    ...(tuning.silentHardCapMs !== undefined ? { silentHardCapMs: tuning.silentHardCapMs } : {}),
+    factorK: 1,
+    expectedIntervalMs: spec.stall_ms,
+    silentHardCapMs: Number.POSITIVE_INFINITY,
+    killOnNoProgress: true,
   });
 };
 
@@ -476,7 +527,7 @@ const buildForegroundMonitor = (
  *  the `from_stdout` capture branch — every other caller leaves it undefined and
  *  the stream behaves exactly as before. */
 export interface StdoutFileSink {
-  /** Append one chunk. Throws once the byte ceiling is passed. */
+  /** Append one chunk. May throw when a compatibility byte ceiling is active. */
   write: (chunk: Buffer) => void;
 }
 
@@ -487,6 +538,8 @@ const runForeground = async (
   now: () => number,
   tuning: StallTuning,
   registry: InFlightRegistry | undefined,
+  killProcessTree: ((pid: number, signal: NodeJS.Signals) => void) | undefined,
+  reapProcessTreeAfterExit: ((pid: number, signal: NodeJS.Signals) => void) | undefined,
   stdoutSink?: StdoutFileSink,
 ): Promise<unknown> =>
   new Promise((resolve, reject) => {
@@ -510,10 +563,18 @@ const runForeground = async (
     const stdin = stdinPayload(call.binding.stdin_handling, call.args);
     const [cmd, ...rest] = argv;
     const cwd = resolveCwd(call);
+    if (call.signal?.aborted) {
+      reject(new Error(`cli_invocation '${call.operation_id}' cancelled before spawn`));
+      return;
+    }
     let child: ChildProcess;
     try {
       child = spawn(cmd, rest, {
         shell: false,
+        // Waiting and ownership are independent: every finite child leads a
+        // process group so timeout, owner kill, stall, and budget abort reach
+        // descendants too.
+        detached: true,
         stdio: [stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
         ...(cwd ? { cwd } : {}),
       });
@@ -521,6 +582,18 @@ const runForeground = async (
       reject(spawnFailureError(call, cmd, err));
       return;
     }
+
+    const killTree = (): void => {
+      if (child.pid !== undefined && killProcessTree !== undefined) {
+        killProcessTree(child.pid, 'SIGKILL');
+        return;
+      }
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        /* process already exited */
+      }
+    };
 
     // D-181 slice 4 — register this `local-heavy` subprocess on the in-flight
     // registry so the owner's `execution.kill` can SIGKILL it. Keyed by run id
@@ -530,13 +603,7 @@ const runForeground = async (
     const killRunId = call.stepMeta?.run_id;
     let killChildId: string | undefined;
     if (registry && killRunId !== undefined && child.pid !== undefined) {
-      killChildId = registry.attachSubprocess(killRunId, child.pid, () => {
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          /* process already exited */
-        }
-      });
+      killChildId = registry.attachSubprocess(killRunId, child.pid, killTree);
     }
     const detachKill = (): void => {
       if (registry && killRunId !== undefined && killChildId !== undefined) {
@@ -544,12 +611,30 @@ const runForeground = async (
       }
     };
 
-    // D-181 Slice 3 — progress-based stall detection for a gated heavy op.
-    // When the op declares a progress contract the monitor governs it (no tight
-    // cap — heavy ops are uncapped, bounded by progress detection + the human);
-    // otherwise the existing foreground `timeout_ms` SIGKILL cap stands.
-    const monitor = buildForegroundMonitor(call, now, tuning, cwd);
-    const heartbeat = call.binding.progress?.contract === 'heartbeat';
+    // D-181/D-259 progress-based stall detection. Legacy progress declarations
+    // retain their old monitor-only behavior. A D-259 declaration adds semantic
+    // stall detection without replacing the absolute timeout: `timeout_ms: 0`
+    // is the explicit unbounded form, still bounded by owner cancellation and
+    // (when declared) the progress contract.
+    const monitor = buildForegroundMonitor(
+      call,
+      now,
+      tuning,
+      cwd,
+      registry && killRunId !== undefined
+        ? (contract, at) => registry.reportProgress(killRunId, contract, at)
+        : undefined,
+    );
+    const progress = call.binding.progress;
+    const d259Heartbeat = progress !== undefined && progress.contract === 'heartbeat'
+      ? progress
+      : undefined;
+    const semanticHeartbeat = d259Heartbeat
+      ? createCliProgressAdapter(d259Heartbeat.adapter)
+      : undefined;
+    const semanticHeartbeatStream = d259Heartbeat
+      ? cliProgressAdapterStream(d259Heartbeat.adapter)
+      : undefined;
     let stalled = false;
     let stalledReason: StallReason | null = null;
     let progressFlagged = false;
@@ -568,11 +653,7 @@ const runForeground = async (
           // so the active list shows it stalled for the brief window before the
           // kill fails the step (the registry clears the flag on completeRun).
           if (registry && killRunId !== undefined) registry.markStalled(killRunId);
-          try {
-            child.kill('SIGKILL');
-          } catch {
-            /* process already exited */
-          }
+          killTree();
         },
         // Attended no-progress flag: the op is NOT killed (the human governs via
         // the slice-4 active list); slice 3 surfaces it as run telemetry so the
@@ -599,19 +680,21 @@ const runForeground = async (
           stdoutSink.write(chunk);
         } catch (err) {
           sinkFailure ??= err as Error;
-          try {
-            child.kill('SIGKILL');
-          } catch {
-            /* already exited */
-          }
+          killTree();
         }
       }
-      if (heartbeat) monitor?.signal();
+      if (semanticHeartbeatStream === 'stdout' || semanticHeartbeatStream === 'both') {
+        const count = semanticHeartbeat?.push(chunk, 'stdout') ?? 0;
+        for (let idx = 0; idx < count; idx += 1) monitor?.signal();
+      }
     });
     child.stderr?.on('data', (chunk: Buffer) => {
       appendCapture(stderr, chunk);
       appendStderrTail(stderrTail, chunk);
-      if (heartbeat) monitor?.signal(); // many cli tools emit progress on stderr (ffmpeg)
+      if (semanticHeartbeatStream === 'stderr' || semanticHeartbeatStream === 'both') {
+        const count = semanticHeartbeat?.push(chunk, 'stderr') ?? 0;
+        for (let idx = 0; idx < count; idx += 1) monitor?.signal();
+      }
     });
     if (stdin !== undefined) {
       child.stdin?.on('error', () => {
@@ -621,27 +704,51 @@ const runForeground = async (
     }
 
     let timedOut = false;
+    let aborted = false;
     const timeoutMs = resolveTimeoutMs(call.timeout_ms);
-    const timer = monitor
+    // Only an explicit `timeout_ms: 0` skips the wall deadline. Legacy
+    // progress used to skip it implicitly; that shape no longer exists (§ 0.1.1).
+    const timer = timeoutMs === 0
       ? undefined
       : setTimeout(() => {
         timedOut = true;
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          /* process already exited */
-        }
+        killTree();
       }, timeoutMs);
+    const onAbort = (): void => {
+      aborted = true;
+      killTree();
+    };
+    call.signal?.addEventListener('abort', onAbort, { once: true });
+    if (call.signal?.aborted) onAbort();
+    const detachAbort = (): void => {
+      call.signal?.removeEventListener('abort', onAbort);
+    };
 
     child.once('error', (err) => {
       if (timer !== undefined) clearTimeout(timer);
       monitor?.stop();
+      detachAbort();
       detachKill();
       reject(spawnFailureError(call, cmd, err));
     });
     child.once('close', (rawCode, signal) => {
       if (timer !== undefined) clearTimeout(timer);
+      const finalSignals = semanticHeartbeat?.end() ?? 0;
+      for (let idx = 0; idx < finalSignals; idx += 1) monitor?.signal();
       monitor?.stop();
+      // A finite operation owns the WHOLE process tree even on exit 0. A tool
+      // can spawn a background child with ignored stdio and then let its leader
+      // exit; without this reap the Promise would settle while that descendant
+      // kept running (and could keep mutating an output-capture path). POSIX
+      // targets only the old group id, avoiding a bare-pid reuse race.
+      if (child.pid !== undefined) {
+        if (reapProcessTreeAfterExit !== undefined) {
+          reapProcessTreeAfterExit(child.pid, 'SIGKILL');
+        } else {
+          try { child.kill('SIGKILL'); } catch { /* leader already exited */ }
+        }
+      }
+      detachAbort();
       detachKill();
       // ⛔ Reported BEFORE the exit code. The ceiling kills the child with
       // SIGKILL, so without this the run surfaces as a generic tool failure and
@@ -651,7 +758,7 @@ const runForeground = async (
         reject(sinkFailure);
         return;
       }
-      const exitCode = (timedOut || stalled) ? -9 : normalizeExitCode(rawCode, signal);
+      const exitCode = (timedOut || stalled || aborted) ? -9 : normalizeExitCode(rawCode, signal);
       const durationMs = now() - started;
       const result: Record<string, unknown> = {
         mode: 'foreground',
@@ -684,6 +791,10 @@ const runForeground = async (
       }
       if (stalled) {
         reject(makeStallError(stalledReason, monitor?.signalCount ?? 0));
+        return;
+      }
+      if (aborted) {
+        reject(new Error(`cli_invocation '${call.operation_id}' cancelled`));
         return;
       }
       if (timedOut) {
@@ -855,6 +966,7 @@ const runDetached = async (
   spawn: SpawnFn,
   now: () => number,
   launchTimeoutMs: number,
+  killProcessTree?: (pid: number, signal: NodeJS.Signals) => void,
 ): Promise<unknown> => {
   if (argv.length === 0) {
     throw makeCliFailureError(
@@ -929,7 +1041,7 @@ const runDetached = async (
   });
 
   try {
-    await waitForLaunch(child, launchTimeoutMs);
+    await waitForLaunch(child, launchTimeoutMs, killProcessTree);
   } catch (err) {
     // A spawn error (ENOENT/EACCES) carries a Node `.code` → classify which tool;
     // the launch-timeout Error has none → `timeout`.
@@ -1014,19 +1126,18 @@ const capturedOutputError = (
  *  a name pulled straight from that listing means there is no caller-influenced
  *  path to traverse. Requires exactly one matching file: zero ⇒ the cli claimed
  *  success but wrote nothing (fail loud); more than one ⇒ ambiguous capture
- *  (fail loud rather than guess). Bounds the size BEFORE the caller reads bytes
- *  — a runaway / malformed tool output fails loud rather than OOM-ing the
- *  server. Shared by the `cas` (ingest) and `temp` (D-185 §3.4) backings. */
+ *  (fail loud rather than guess). Shared by the `cas` (ingest) and `temp`
+ *  (D-185 §3.4) backings. File size is deliberately not capped: file refs are
+ *  the large-output carrier. */
 const selectCapturedFile = (
   outDir: string,
   capture: CliOutputCaptureSpec,
   call: CliInvocationCall,
-  maxBytes: number,
 ): { filePath: string; filename: string } => {
   // D-182 — these are `bad_output` failures: the tool exited successfully but its
-  // output is unusable (no / ambiguous / oversized produced file). Classified (not
-  // NETWORK_ERROR) so the run names the failing op + tool. No stderr here — the
-  // process already closed; the file listing, not stderr, is the diagnostic.
+  // output is unusable (no or ambiguous produced file). Classified (not
+  // NETWORK_ERROR) so the run names the failing op + tool. No stderr here —
+  // the process already closed; the file listing, not stderr, is diagnostic.
   const ext = CAPTURE_MIME_EXT[capture.mime_type];
   const files = readdirSync(outDir, { withFileTypes: true })
     .filter((entry) => entry.isFile())
@@ -1048,28 +1159,19 @@ const selectCapturedFile = (
   }
   const filename = matches[0];
   const filePath = join(outDir, filename);
-  const { size } = statSync(filePath);
-  if (size > maxBytes) {
-    throw capturedOutputError(
-      call,
-      `cli_invocation output_capture: '${call.operation_id}' output ${filename} is ${size} bytes, over the ${maxBytes}-byte cap`,
-    );
-  }
   return { filePath, filename };
 };
 
 /** IN-PLACE capture — the produced file is the materialized INPUT the tool
  *  edited, so there is no directory to scan and no ambiguity to resolve: the
  *  path is the one the materialize wrapper already substituted into the arg.
- *  Enforces the same size ceiling as `selectCapturedFile` before any caller
- *  reads bytes, and the same `bad_output` classification when the tool exited
+ *  Uses the same `bad_output` classification when the tool exited
  *  successfully but left nothing usable behind. A missing file here means the
  *  tool deleted or renamed its input rather than editing it — fail loud rather
  *  than capture whatever else happens to be around. */
 const selectInPlaceCapturedFile = (
   inputPath: string,
   call: CliInvocationCall,
-  maxBytes: number,
 ): { filePath: string; filename: string } => {
   if (!existsSync(inputPath)) {
     throw capturedOutputError(
@@ -1077,35 +1179,45 @@ const selectInPlaceCapturedFile = (
       `cli_invocation output_capture: '${call.operation_id}' in-place input ${basename(inputPath)} is missing after the run (the tool removed or renamed it instead of editing in place)`,
     );
   }
-  const stat = statSync(inputPath);
+  // Do not follow a replacement symlink here. The child controls this path
+  // while it runs; accepting a symlink it leaves behind would turn an
+  // engine-chosen materialization path into a read/ingest of an arbitrary
+  // same-user path after the process exits.
+  const stat = lstatSync(inputPath);
   if (!stat.isFile()) {
     throw capturedOutputError(
       call,
       `cli_invocation output_capture: '${call.operation_id}' in-place path ${basename(inputPath)} is not a regular file`,
     );
   }
-  if (stat.size > maxBytes) {
-    throw capturedOutputError(
-      call,
-      `cli_invocation output_capture: '${call.operation_id}' output ${basename(inputPath)} is ${stat.size} bytes, over the ${maxBytes}-byte cap`,
-    );
-  }
   return { filePath: inputPath, filename: basename(inputPath) };
 };
 
-/** A fixed PDF capture is authority for the MIME recorded on the durable
- * data.file row. Verify the minimum PDF envelope before CAS ingest so a broken
- * or substituted binary cannot stamp arbitrary bytes as application/pdf. PDF
- * requires a `%PDF-` header and an EOF marker within the final 1,024 bytes. */
-const assertCapturedBytesMatchMime = (
-  bytes: Buffer,
+const readFileWindow = (path: string, position: number, length: number): Buffer => {
+  const fd = openSync(path, 'r');
+  try {
+    const out = Buffer.alloc(length);
+    const read = readSync(fd, out, 0, length, position);
+    return out.subarray(0, read);
+  } finally {
+    closeSync(fd);
+  }
+};
+
+/** The declared capture MIME is authority for the durable data.file row. Verify
+ * formats with a cheap, dependable envelope before ingest so broken or
+ * substituted bytes cannot inherit a trusted PDF/OOXML label. */
+const assertCapturedFileMatchesMime = (
+  path: string,
   capture: CliOutputCaptureSpec,
   call: CliInvocationCall,
 ): void => {
+  const size = statSync(path).size;
   if (capture.mime_type === 'application/pdf') {
-    const headerMatches = bytes.subarray(0, 5).toString('ascii') === '%PDF-';
-    const tail = bytes.subarray(Math.max(0, bytes.length - 1_024)).toString('latin1');
-    if (!headerMatches || !tail.includes('%%EOF')) {
+    const head = readFileWindow(path, 0, Math.min(5, size));
+    const tailSize = Math.min(1_024, size);
+    const tail = readFileWindow(path, Math.max(0, size - tailSize), tailSize);
+    if (head.toString('ascii') !== '%PDF-' || !tail.toString('latin1').includes('%%EOF')) {
       throw capturedOutputError(
         call,
         `cli_invocation output_capture: '${call.operation_id}' produced invalid PDF bytes`,
@@ -1113,17 +1225,8 @@ const assertCapturedBytesMatchMime = (
     }
     return;
   }
-  // Same reasoning as PDF, for the OOXML family an in-place editor produces
-  // (`officecli batch` on .docx/.xlsx/.pptx). Every OOXML part is a ZIP
-  // container, so a truncated write or a tool that replaced the file with an
-  // error page cannot be stamped as a Word document. Header only — unlike PDF's
-  // `%%EOF` there is no cheap tail marker (the central directory is a structure,
-  // not a sentinel), and reading it properly would mean parsing the archive.
   if (OOXML_MIME_TYPES.has(capture.mime_type)) {
-    const sig = bytes.subarray(0, 4);
-    // `PK\x03\x04` — a normal local file header. `PK\x05\x06` (empty archive)
-    // and `PK\x07\x08` (spanned) are valid ZIP signatures but never a usable
-    // document, so they are rejected with everything else.
+    const sig = readFileWindow(path, 0, Math.min(4, size));
     const isZip = sig[0] === 0x50 && sig[1] === 0x4b && sig[2] === 0x03 && sig[3] === 0x04;
     if (!isZip) {
       throw capturedOutputError(
@@ -1134,6 +1237,12 @@ const assertCapturedBytesMatchMime = (
   }
 };
 
+const sha256File = async (path: string): Promise<string> => {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer);
+  return hash.digest('hex');
+};
+
 /** Explicit `storage: 'cas'` — ingest the produced file into the CAS
  *  (`data.file.received`) and surface a bare `record_id` string as
  *  `result.file_ref` (asymmetric union: a `cas` ref stays a string). */
@@ -1141,7 +1250,9 @@ const captureToolOutputToCas = async (
   selected: { filePath: string; filename: string },
   capture: CliOutputCaptureSpec,
   call: CliInvocationCall,
-  ingest: ToolOutputIngestor,
+  ingest: ToolOutputIngestor | undefined,
+  ingestFile: ToolOutputFileIngestor | undefined,
+  compatibilityMaxBytes: number,
 ): Promise<{
   file_ref: string;
   filename: string;
@@ -1150,9 +1261,9 @@ const captureToolOutputToCas = async (
   size_bytes?: number;
 }> => {
   const { filePath, filename } = selected;
-  const bytes = readFileSync(filePath);
-  assertCapturedBytesMatchMime(bytes, capture, call);
-  const content_sha256 = createHash('sha256').update(bytes).digest('hex');
+  assertCapturedFileMatchesMime(filePath, capture, call);
+  const size_bytes = statSync(filePath).size;
+  const content_sha256 = await sha256File(filePath);
   // The content suffix is load-bearing for foreach/repeated-op safety. A fixed
   // output name (for example D-200's `document.pdf`) is reused by every call;
   // run+op+filename alone would therefore upsert every iteration onto one
@@ -1160,12 +1271,29 @@ const captureToolOutputToCas = async (
   // bytes. Same content keeps the same id for crash-resume idempotency while
   // distinct content receives a distinct record inside the same run.
   const source_id = `${call.stepMeta?.run_id ?? 'cli'}:${call.operation_id}:${filename}:${content_sha256}`;
-  const { record_id } = await ingest({
-    bytes,
-    filename,
-    mime_type: capture.mime_type,
-    source_id,
-  });
+  if (!ingestFile && size_bytes > compatibilityMaxBytes) {
+    throw capturedOutputError(
+      call,
+      `cli_invocation output_capture: '${call.operation_id}' output ${filename} is ${size_bytes} bytes, over the ${compatibilityMaxBytes}-byte cap`,
+    );
+  }
+  const { record_id } = ingestFile
+    ? await ingestFile({
+        src_path: filePath,
+        filename,
+        mime_type: capture.mime_type,
+        content_hash: content_sha256,
+        size_bytes,
+        source_id,
+      })
+    : await ingest!({
+        // Compatibility seam for existing focused tests/custom embedders.
+        // Production always wires `ingestFile` and never takes this whole-file arm.
+        bytes: readFileSync(filePath),
+        filename,
+        mime_type: capture.mime_type,
+        source_id,
+      });
   return {
     file_ref: record_id,
     filename,
@@ -1175,7 +1303,7 @@ const captureToolOutputToCas = async (
     // narrow: other CAS-producing CLI ops retain their historical ref-only
     // contract (plus declared filename/MIME) and do not gain a content oracle.
     ...(capture.mime_type === 'application/pdf'
-      ? { content_sha256, size_bytes: bytes.length }
+      ? { content_sha256, size_bytes }
       : {}),
   };
 };
@@ -1206,12 +1334,19 @@ export const createCliInvocationExecutor = (
   const now = options.now ?? (() => Date.now());
   const tuning = options.stallTuning ?? {};
   const registry = options.inFlightRegistry;
+  const startSupervisedDaemon = options.startSupervisedDaemon;
+  const processTreeKiller = options.killProcessTree
+    ?? (options.spawn === undefined ? killProcessGroup : undefined);
+  const settledProcessTreeReaper = options.killProcessTree
+    ?? (options.spawn === undefined ? reapProcessGroupAfterLeaderExit : undefined);
   const ingestToolOutput = options.ingestToolOutput;
+  const ingestToolOutputFile = options.ingestToolOutputFile;
   const readFileBytes = options.readFileBytes;
   // Defaults to os.tmpdir(); a suite injects its own so its cleanup assertions
   // are about a directory it owns rather than a global one it shares.
   const tempRoot = options.tempRoot ?? tmpdir();
-  const outputCaptureMaxBytes = options.outputCaptureMaxBytes ?? DEFAULT_OUTPUT_CAPTURE_MAX_BYTES;
+  const outputCaptureMaxBytes = options.outputCaptureMaxBytes
+    ?? DEFAULT_OUTPUT_CAPTURE_MAX_BYTES;
   const launchTimeoutMs = resolveTimeoutMs(
     options.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS,
   );
@@ -1239,11 +1374,30 @@ export const createCliInvocationExecutor = (
           `cli_invocation '${call.operation_id}': input_materialize is foreground-only and cannot combine with a detached job spec`,
         );
       }
-      return runDetached(call, resolveArgv(call), spawn, now, launchTimeoutMs);
+      if (call.binding.detached.supervision && startSupervisedDaemon) {
+        return startSupervisedDaemon(call);
+      }
+      return runDetached(
+        call,
+        resolveArgv(call),
+        spawn,
+        now,
+        launchTimeoutMs,
+        processTreeKiller,
+      );
     }
     const capture = call.binding.output_capture;
     if (!capture) {
-      return runForeground(call, resolveArgv(call), spawn, now, tuning, registry);
+      return runForeground(
+        call,
+        resolveArgv(call),
+        spawn,
+        now,
+        tuning,
+        registry,
+        processTreeKiller,
+        settledProcessTreeReaper,
+      );
     }
     // Output-capture path: the engine owns a throwaway output dir, binds it to
     // the op's `dir_arg` token (overriding any recipe-supplied value — the
@@ -1298,13 +1452,15 @@ export const createCliInvocationExecutor = (
           now,
           tuning,
           registry,
+          processTreeKiller,
+          settledProcessTreeReaper,
           {
             write: (chunk) => {
               written += chunk.length;
-              // The same ceiling the other arms enforce at selection time —
-              // applied HERE because there is no file to inspect afterwards, and
-              // an unbounded print would otherwise fill the data dir.
-              if (written > outputCaptureMaxBytes) {
+              // Production streams this file to the CAS and therefore has no
+              // produced-file ceiling. The compatibility Buffer ingestor must
+              // stop before an unbounded print fills disk and is read into RAM.
+              if (!ingestToolOutputFile && written > outputCaptureMaxBytes) {
                 throw new Error(
                   `cli_invocation '${call.operation_id}': stdout exceeded the ${outputCaptureMaxBytes}-byte capture ceiling`,
                 );
@@ -1334,12 +1490,22 @@ export const createCliInvocationExecutor = (
             ),
           };
         }
-        if (!ingestToolOutput) {
+        if (!ingestToolOutput && !ingestToolOutputFile) {
           throw new Error(
             `cli_invocation '${call.operation_id}' declares output_capture but no tool-output ingestor is wired`,
           );
         }
-        return { ...base, ...await captureToolOutputToCas(selected, capture, call, ingestToolOutput) };
+        return {
+          ...base,
+          ...await captureToolOutputToCas(
+            selected,
+            capture,
+            call,
+            ingestToolOutput,
+            ingestToolOutputFile,
+            outputCaptureMaxBytes,
+          ),
+        };
       } finally {
         closeFd();
         rmSync(outDir, { recursive: true, force: true });
@@ -1354,6 +1520,8 @@ export const createCliInvocationExecutor = (
         now,
         tuning,
         registry,
+        processTreeKiller,
+        settledProcessTreeReaper,
       )) as Record<string, unknown>;
       const inPlacePath = readArg(call.args, capture.from_input_arg);
       if (typeof inPlacePath !== 'string' || inPlacePath.length === 0) {
@@ -1361,7 +1529,7 @@ export const createCliInvocationExecutor = (
           `cli_invocation '${call.operation_id}' in-place output_capture arg '${capture.from_input_arg}' did not resolve to a materialized path`,
         );
       }
-      const selected = selectInPlaceCapturedFile(inPlacePath, call, outputCaptureMaxBytes);
+      const selected = selectInPlaceCapturedFile(inPlacePath, call);
       if (storage === 'temp') {
         const scratchDir = allocateRunScratchDir(call.stepMeta?.run_id ?? '');
         const keptPath = join(scratchDir, selected.filename);
@@ -1372,7 +1540,7 @@ export const createCliInvocationExecutor = (
         );
         return { ...base, ...captured };
       }
-      if (!ingestToolOutput) {
+      if (!ingestToolOutput && !ingestToolOutputFile) {
         throw new Error(
           `cli_invocation '${call.operation_id}' declares output_capture but no tool-output ingestor is wired`,
         );
@@ -1382,6 +1550,8 @@ export const createCliInvocationExecutor = (
         capture,
         call,
         ingestToolOutput,
+        ingestToolOutputFile,
+        outputCaptureMaxBytes,
       );
       return { ...base, ...captured };
     }
@@ -1406,9 +1576,11 @@ export const createCliInvocationExecutor = (
         now,
         tuning,
         registry,
+        processTreeKiller,
+        settledProcessTreeReaper,
       )) as Record<string, unknown>;
       const captured = captureToolOutputToTemp(
-        selectCapturedFile(outDir, capture, call, outputCaptureMaxBytes),
+        selectCapturedFile(outDir, capture, call),
         capture,
       );
       return { ...base, ...captured };
@@ -1418,7 +1590,7 @@ export const createCliInvocationExecutor = (
     // ingested into the CAS as a `data.file` ref, removed in `finally` on
     // success AND on any throw — so the only durable copy is the content-
     // addressed, Gateway-gated `data.file` record.
-    if (!ingestToolOutput) {
+    if (!ingestToolOutput && !ingestToolOutputFile) {
       throw new Error(
         `cli_invocation '${call.operation_id}' declares output_capture but no tool-output ingestor is wired`,
       );
@@ -1436,12 +1608,16 @@ export const createCliInvocationExecutor = (
         now,
         tuning,
         registry,
+        processTreeKiller,
+        settledProcessTreeReaper,
       )) as Record<string, unknown>;
       const captured = await captureToolOutputToCas(
-        selectCapturedFile(tempDir, capture, call, outputCaptureMaxBytes),
+        selectCapturedFile(tempDir, capture, call),
         capture,
         call,
         ingestToolOutput,
+        ingestToolOutputFile,
+        outputCaptureMaxBytes,
       );
       return { ...base, ...captured };
     } finally {

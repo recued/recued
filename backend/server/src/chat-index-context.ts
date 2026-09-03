@@ -134,8 +134,20 @@ export const CHAT_INDEX_STORES: ReadonlyArray<
   //    produced `pausing: recall.search; safety: recall.search; clears:
   //    recall.search`, one entry per word, all self-matches. That is noise with
   //    the shape of signal, and it would name recall on every line forever.
-  //    `hasHit` therefore drops matches whose `session_relation` is `current`:
-  //    the current session is already in `chat_tail` and needs no index.
+  //
+  //    ⛔⛔ THE SUPPRESSION IS D-213's, NOT A SECOND COPY OF IT. This used to
+  //    drop every row whose `session_relation` is `current`, justified as "the
+  //    current session is already in `chat_tail`". That is true for
+  //    `CHAT_TAIL_LIMIT` (=3) rows and FALSE for every turn before them: at
+  //    turn 19, turns 1-15 are in neither the tail nor the index, so the one
+  //    store that holds them is never named — and naming a subset is this
+  //    feature's own measured harm mode (0/10 reached vs 16/23 with no index
+  //    at all). The probe now registers the turn's `visible_recall_item_ids`
+  //    (D-213: tail rows + the current user row) onto its own scratch Map, so
+  //    the recall lane excludes them at SEARCH time via `excluded_item_ids` —
+  //    the same rule the model's own dispatches get, one definition.
+  //    ⚠ That registration is load-bearing: without it every self-match comes
+  //    back and the noise above returns. BOTH turn surfaces must pass the ids.
   ['recall.search', 'matches', 'none'],
   ['memory.search', 'memories', 'none'],
   ['mail.search', 'matches', 'fts'],
@@ -342,6 +354,24 @@ export const distinctiveTerms = (userMessage: string): readonly string[] => {
   return out;
 };
 
+/** ⚗ EXPERIMENT GATE, DEFAULT OFF — own-session rows older than `chat_tail`.
+ *
+ *  OFF (shipped): the probe registers nothing, the recall lane returns
+ *  own-session rows, and `usableCount` drops every one of them on
+ *  `session_relation`. Byte-identical to the behaviour this replaces.
+ *
+ *  ON: the probe registers the turn's `visible_recall_item_ids`, the lane
+ *  excludes exactly those at SEARCH time, and the session filter is skipped —
+ *  so a turn that has aged out of the 3-row tail becomes nameable.
+ *
+ *  ⛔⛔ BOTH HALVES MOVE TOGETHER OR THE ARM IS NOT THE ARM. Registering
+ *  without skipping the filter changes CONTROL (excluded rows stop consuming
+ *  the lane's ≤20-row page, so more non-current rows survive to be counted);
+ *  skipping the filter without registering re-admits every self-match. Read
+ *  once here so one env read cannot disagree with the other mid-turn. */
+export const chatIndexSessionRowsEnabled = (): boolean =>
+  process.env.RECUED_CHAT_INDEX_SESSION_ROWS === '1';
+
 /** A hit is a NON-EMPTY named array, and nothing else.
  *
  *  ⛔ A DENIED READ ANSWERS `ok: true`, NOT `ok: false`. `wrapCollectionFence`
@@ -357,13 +387,18 @@ const usableCount = (result: ChatDispatchResult, hitField: string): number => {
   if (value === null || typeof value !== 'object') return 0;
   const field = (value as Record<string, unknown>)[hitField];
   if (!Array.isArray(field) || field.length === 0) return 0;
-  // A match in the CURRENT session is not something an index can usefully point
-  // at — the model already has it in `chat_tail`. Rows without the field (every
-  // other store) are kept, so this narrows recall only.
-  const usable = field.filter((row) =>
-    row === null
-    || typeof row !== 'object'
-    || (row as Record<string, unknown>).session_relation !== 'current');
+  // ON: rows already in the prompt were excluded by the recall lane itself
+  // (`excluded_item_ids`, seeded from the probe's registered
+  // `visible_recall_item_ids`), so a row that REACHES here is one the model does
+  // NOT already hold — including an own-session turn aged out of the 3-row tail.
+  // OFF: the lane returned them, so drop own-session rows here. Rows without the
+  // field (every other store) are kept, so this narrows recall only.
+  const usable = chatIndexSessionRowsEnabled()
+    ? field
+    : field.filter((row) =>
+      row === null
+      || typeof row !== 'object'
+      || (row as Record<string, unknown>).session_relation !== 'current');
   // 0 = no hit; >CAP = present but not discriminating. Both are "don't name it",
   // but the COUNT is what lets terms be ranked against each other below.
   return usable.length <= CHAT_INDEX_TOO_COMMON_CAP ? usable.length : 0;

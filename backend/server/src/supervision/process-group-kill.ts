@@ -23,6 +23,18 @@
  */
 import { spawn } from 'node:child_process';
 
+const isSafeLeaderPid = (pid: number): boolean =>
+  Number.isInteger(pid) && pid > 1;
+
+const taskkillTree = (pid: number): void => {
+  try {
+    const child = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
+    child.on('error', () => { /* taskkill unavailable — best-effort */ });
+  } catch {
+    /* synchronous spawn failure / process already gone — best-effort */
+  }
+};
+
 /** Terminate a detached job's whole process group by its leader pid.
  *
  *  Best-effort + never throws: a process that already exited (ESRCH / a stale
@@ -37,7 +49,7 @@ export const killProcessGroup = (
   signal: NodeJS.Signals = 'SIGTERM',
   platform: NodeJS.Platform = process.platform,
 ): void => {
-  if (!Number.isInteger(pid) || pid <= 1) {
+  if (!isSafeLeaderPid(pid)) {
     // Guard: pid 0 signals the CALLER's own group, pid 1 is init, negatives are
     // already group-form. A malformed pid (e.g. from a corrupt `.pid` marker)
     // must never be turned into a self- or init-kill.
@@ -45,18 +57,9 @@ export const killProcessGroup = (
   }
 
   if (platform === 'win32') {
-    try {
-      // Fire-and-forget — we don't await taskkill's exit (the daemon's own
-      // `.exit.<code>` marker is the authoritative death signal the supervisor
-      // watches). `/T` kills the child tree, `/F` forces it.
-      const child = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
-      // A spawn failure (e.g. taskkill not on PATH) is delivered via the async
-      // 'error' event, NOT a thrown exception — without a listener Node crashes
-      // the process on an unhandled 'error'. Swallow it to honour "never throws".
-      child.on('error', () => { /* taskkill unavailable — best-effort */ });
-    } catch {
-      /* synchronous spawn failure / process already gone — best-effort */
-    }
+    // Fire-and-forget — the caller observes its own lifecycle signal. `/T`
+    // kills the child tree and `/F` forces it. Async spawn errors are swallowed.
+    taskkillTree(pid);
     return;
   }
 
@@ -70,5 +73,29 @@ export const killProcessGroup = (
     } catch {
       /* already exited — nothing to signal */
     }
+  }
+};
+
+/** Reap descendants after a finite process-group leader has already exited.
+ *
+ * POSIX deliberately has NO bare-pid fallback here: after the leader exits its
+ * numeric pid can be reused, while the negative group id still identifies any
+ * surviving descendants. Windows has no group-id primitive, so the best
+ * available tree cleanup remains `taskkill /T /F` against the just-exited
+ * leader. Best-effort and never throws. */
+export const reapProcessGroupAfterLeaderExit = (
+  pid: number,
+  signal: NodeJS.Signals = 'SIGKILL',
+  platform: NodeJS.Platform = process.platform,
+): void => {
+  if (!isSafeLeaderPid(pid)) return;
+  if (platform === 'win32') {
+    taskkillTree(pid);
+    return;
+  }
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    /* group already gone — do not target a potentially reused bare pid */
   }
 };

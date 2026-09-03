@@ -6,6 +6,8 @@ import type { ChildProcess } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
 import { createCliInvocationExecutor } from '../cli-invocation-executor.js';
+import { InFlightRegistry } from '../execution/in-flight-registry.js';
+import { LaneSemaphore } from '../execution/lane-semaphore.js';
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => { setTimeout(resolve, ms); });
@@ -464,108 +466,9 @@ describe('cli_invocation foreground stall detection (D-181 slice 3)', () => {
         argv_template: [process.execPath, '-e', 'setTimeout(() => {}, 60000)'],
         shape: 'text',
         exit_code_handling: 'zero_is_success',
-        progress: { contract: 'heartbeat' },
+        progress: { contract: 'heartbeat', adapter: 'codex-jsonl', stall_ms: 50 },
       },
     })).rejects.toThrow(/killed: no_progress stall/);
-  });
-
-  it('spares a heartbeat op that keeps emitting stdout', async () => {
-    const exec = createCliInvocationExecutor({ stallTuning: tinyTuning });
-
-    const result = await exec({
-      slug: 'docling',
-      operation_key: 'docling.convert',
-      operation_id: 'recued-core/docling.convert',
-      args: {},
-      stepMeta: { step_id: 's1', trigger_source: 'reactive' },
-      binding: {
-        kind: 'cli_invocation',
-        // emits a line every 15ms for ~300ms, then exits 0 — never silent for k·T.
-        argv_template: [
-          process.execPath,
-          '-e',
-          'let n=0;const i=setInterval(()=>{process.stdout.write("tick\\n");if(++n>20){clearInterval(i);process.exit(0)}},15)',
-        ],
-        shape: 'text',
-        exit_code_handling: 'zero_is_success',
-        progress: { contract: 'heartbeat' },
-      },
-    }) as { exit_code: number; progress_signal_count: number };
-
-    expect(result.exit_code).toBe(0);
-    expect(result.progress_signal_count).toBeGreaterThan(0);
-  });
-
-  it('bounds a silent op only by the generous hard cap', async () => {
-    const exec = createCliInvocationExecutor({ stallTuning: { ...tinyTuning, silentHardCapMs: 200 } });
-
-    await expect(exec({
-      slug: 'pandoc',
-      operation_key: 'pandoc.convert',
-      operation_id: 'recued-core/pandoc.convert',
-      args: {},
-      stepMeta: { step_id: 's1', trigger_source: 'reactive' },
-      binding: {
-        kind: 'cli_invocation',
-        argv_template: [process.execPath, '-e', 'setTimeout(() => {}, 60000)'],
-        shape: 'text',
-        exit_code_handling: 'zero_is_success',
-        progress: { contract: 'silent' },
-      },
-    })).rejects.toThrow(/killed: silent_cap stall/);
-  });
-
-  it('does NOT auto-kill an attended heartbeat op on no-progress (human governs)', async () => {
-    // attended + no signals: the no-progress flag must NOT kill; only the
-    // generous fail-safe (here shrunk to 250ms) eventually bounds it.
-    const exec = createCliInvocationExecutor({
-      stallTuning: { pollMs: 10, factorK: 2, expectedIntervalMs: 10, silentHardCapMs: 250 },
-    });
-
-    const start = Date.now();
-    await expect(exec({
-      slug: 'docling',
-      operation_key: 'docling.convert',
-      operation_id: 'recued-core/docling.convert',
-      args: {},
-      stepMeta: { step_id: 's1', trigger_source: 'manual' }, // attended
-      binding: {
-        kind: 'cli_invocation',
-        argv_template: [process.execPath, '-e', 'setTimeout(() => {}, 60000)'],
-        shape: 'text',
-        exit_code_handling: 'zero_is_success',
-        progress: { contract: 'heartbeat' },
-      },
-    })).rejects.toThrow(/killed: silent_cap stall/);
-    // k·T = 20ms would have killed an unattended op; it survived well past that.
-    expect(Date.now() - start).toBeGreaterThanOrEqual(150);
-  });
-
-  it('surfaces progress_flagged on an attended op that stalled then completed', async () => {
-    // attended + heartbeat + silent for k·T (=20ms) → flagged but not killed;
-    // it exits 0 well before the generous cap, carrying progress_flagged.
-    const exec = createCliInvocationExecutor({
-      stallTuning: { pollMs: 10, factorK: 2, expectedIntervalMs: 10, silentHardCapMs: 5_000 },
-    });
-
-    const result = await exec({
-      slug: 'docling',
-      operation_key: 'docling.convert',
-      operation_id: 'recued-core/docling.convert',
-      args: {},
-      stepMeta: { step_id: 's1', trigger_source: 'manual' }, // attended
-      binding: {
-        kind: 'cli_invocation',
-        // silent for ~150ms (flags at k·T=20ms) then exits 0.
-        argv_template: [process.execPath, '-e', 'setTimeout(() => process.exit(0), 150)'],
-        shape: 'text',
-        exit_code_handling: 'zero_is_success',
-        progress: { contract: 'heartbeat' },
-      },
-    }) as { exit_code: number; progress_flagged?: boolean };
-
-    expect(result.exit_code).toBe(0);
-    expect(result.progress_flagged).toBe(true);
   });
 
   it('keeps the tight timeout_ms cap when no progress contract is declared', async () => {
@@ -586,6 +489,246 @@ describe('cli_invocation foreground stall detection (D-181 slice 3)', () => {
       },
     })).rejects.toThrow(/timed out after 100ms/);
   });
+});
+
+describe('cli_invocation D-259 finite semantics', () => {
+  const invoke = (
+    script: string,
+    over: {
+      timeout_ms?: number;
+      progress?: {
+        contract: 'heartbeat';
+        adapter: 'codex-jsonl';
+        stall_ms: number;
+      } | {
+        contract: 'file-growth';
+        watch_path: string;
+        stall_ms: number;
+      };
+      signal?: AbortSignal;
+    },
+  ): Promise<unknown> => createCliInvocationExecutor({
+    stallTuning: { pollMs: 10 },
+  })({
+    slug: 'codex-pack',
+    operation_key: 'codex.review',
+    operation_id: 'recued-core/codex.review',
+    args: {},
+    timeout_ms: over.timeout_ms,
+    ...(over.signal ? { signal: over.signal } : {}),
+    stepMeta: { step_id: 'review', trigger_source: 'chat' },
+    binding: {
+      kind: 'cli_invocation',
+      argv_template: [process.execPath, '-e', script],
+      shape: 'text',
+      exit_code_handling: 'zero_is_success',
+      ...(over.progress ? { progress: over.progress } : {}),
+    },
+  });
+
+  it('does not count arbitrary output noise as semantic progress, even when attended', async () => {
+    await expect(invoke(
+      'setInterval(() => process.stdout.write("still noisy\\n"), 10)',
+      {
+        timeout_ms: 0,
+        progress: {
+          contract: 'heartbeat',
+          adapter: 'codex-jsonl',
+          stall_ms: 300,
+        },
+      },
+    )).rejects.toThrow(/no_progress stall/);
+  });
+
+  it('keeps the absolute deadline armed while semantic progress continues', async () => {
+    const semanticProgress = [
+      'let n=0;',
+      'setInterval(() => {',
+      '  process.stdout.write(JSON.stringify({type:"item.completed",item:{id:String(++n)}})+"\\n");',
+      '}, 20);',
+    ].join('');
+    await expect(invoke(semanticProgress, {
+      timeout_ms: 600,
+      progress: {
+        contract: 'heartbeat',
+        adapter: 'codex-jsonl',
+        stall_ms: 500,
+      },
+    })).rejects.toThrow(/timed out after 600ms/);
+  });
+
+  it('publishes only adapter-validated heartbeat liveness to the owning run', async () => {
+    const registry = new InFlightRegistry(new LaneSemaphore());
+    registry.registerRun({
+      run_id: 'run-progress',
+      recipe_id: 'recipe-progress',
+      source: {
+        channel: 'user',
+        actor: 'user_self',
+        user_id: 'u1',
+        client_token_id: 'client1',
+      },
+      origin: 'attended',
+      session_id: 'client1',
+      started_at: 1,
+      abort: () => {},
+    });
+    const exec = createCliInvocationExecutor({
+      inFlightRegistry: registry,
+      stallTuning: { pollMs: 10 },
+    });
+
+    await exec({
+      slug: 'codex-pack',
+      operation_key: 'codex.review',
+      operation_id: 'recued-core/codex.review',
+      args: {},
+      timeout_ms: 1_000,
+      stepMeta: {
+        run_id: 'run-progress',
+        step_id: 'review',
+        trigger_source: 'chat',
+      },
+      binding: {
+        kind: 'cli_invocation',
+        argv_template: [
+          process.execPath,
+          '-e',
+          'process.stdout.write("noise\\n"+JSON.stringify({type:"item.completed",item:{id:"1"}})+"\\n")',
+        ],
+        shape: 'text',
+        exit_code_handling: 'zero_is_success',
+        progress: {
+          contract: 'heartbeat',
+          adapter: 'codex-jsonl',
+          stall_ms: 500,
+        },
+      },
+    });
+
+    const progress = registry.snapshot('client1').entries[0]?.progress;
+    expect(progress?.contract).toBe('heartbeat');
+    expect(progress?.last_signal_at).toEqual(expect.any(Number));
+    expect(progress?.stalled).toBe(false);
+  });
+
+  it('treats timeout_ms zero as explicitly unbounded rather than clamping it to the minimum', async () => {
+    const result = await invoke('setTimeout(() => process.exit(0), 250)', {
+      timeout_ms: 0,
+    }) as { exit_code: number };
+    expect(result.exit_code).toBe(0);
+  });
+
+  it('fails toward the declared stall threshold when a D-259 file-growth path cannot resolve', async () => {
+    await expect(invoke('setTimeout(() => {}, 60000)', {
+      timeout_ms: 0,
+      progress: {
+        contract: 'file-growth',
+        watch_path: '{missing}/artifact.bin',
+        stall_ms: 250,
+      },
+    })).rejects.toThrow(/no_progress stall/);
+  });
+
+  it('kills and settles an explicitly unbounded child when the run aborts', async () => {
+    const controller = new AbortController();
+    const running = invoke('setTimeout(() => {}, 60000)', {
+      timeout_ms: 0,
+      signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(), 150);
+    await expect(running).rejects.toThrow(/cancelled/);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'kills a finite child\'s descendant process before cancellation settles',
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'recued-cli-tree-'));
+      const heartbeat = join(root, 'grandchild-heartbeat');
+      const grandchild = [
+        'const fs=require("node:fs");',
+        'const path=process.argv[1];',
+        'setInterval(()=>fs.appendFileSync(path,"x"),10);',
+      ].join('');
+      const parent = [
+        'const cp=require("node:child_process");',
+        `cp.spawn(process.execPath,["-e",${JSON.stringify(grandchild)},process.argv[1]],Object.fromEntries([["stdio","ignore"]]));`,
+        'setInterval(()=>{},1000);',
+      ].join('');
+      const controller = new AbortController();
+      const exec = createCliInvocationExecutor();
+      try {
+        const running = exec({
+          slug: 'tree-owner',
+          operation_key: 'work.run',
+          operation_id: 'recued-core/tree-owner.work.run',
+          args: { heartbeat },
+          timeout_ms: 0,
+          signal: controller.signal,
+          binding: {
+            kind: 'cli_invocation',
+            argv_template: [process.execPath, '-e', parent, '{heartbeat}'],
+            shape: 'text',
+            exit_code_handling: 'zero_is_success',
+          },
+        });
+        await waitForFile(heartbeat);
+        controller.abort();
+        await expect(running).rejects.toThrow(/cancelled/);
+
+        // Allow any write already in the kernel to land, then prove the
+        // descendant did not survive the parent close/Promise settlement.
+        await sleep(30);
+        const settledBytes = readFileSync(heartbeat).byteLength;
+        await sleep(120);
+        expect(readFileSync(heartbeat).byteLength).toBe(settledBytes);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'reaps a finite child\'s background descendant after a successful leader exit',
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'recued-cli-tree-success-'));
+      const heartbeat = join(root, 'grandchild-heartbeat');
+      const grandchild = [
+        'const fs=require("node:fs");',
+        'const path=process.argv[1];',
+        'setInterval(()=>fs.appendFileSync(path,"x"),10);',
+      ].join('');
+      const parent = [
+        'const fs=require("node:fs");',
+        'const cp=require("node:child_process");',
+        `cp.spawn(process.execPath,["-e",${JSON.stringify(grandchild)},process.argv[1]],Object.fromEntries([["stdio","ignore"]]));`,
+        'const poll=setInterval(()=>{if(fs.existsSync(process.argv[1])){clearInterval(poll);process.exit(0)}},5);',
+      ].join('');
+      const exec = createCliInvocationExecutor();
+      try {
+        await expect(exec({
+          slug: 'tree-owner',
+          operation_key: 'work.run',
+          operation_id: 'recued-core/tree-owner.work.run',
+          args: { heartbeat },
+          timeout_ms: 5_000,
+          binding: {
+            kind: 'cli_invocation',
+            argv_template: [process.execPath, '-e', parent, '{heartbeat}'],
+            shape: 'text',
+            exit_code_handling: 'zero_is_success',
+          },
+        })).resolves.toMatchObject({ exit_code: 0 });
+
+        await sleep(30);
+        const settledBytes = readFileSync(heartbeat).byteLength;
+        await sleep(120);
+        expect(readFileSync(heartbeat).byteLength).toBe(settledBytes);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe('cli_invocation executor — D-185 output shape', () => {

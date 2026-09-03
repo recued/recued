@@ -308,20 +308,14 @@ export const createInternalToolRegistry = (
   const tier1Index = new Map<string, ToolEntry>(
     tier1Catalog.map((entry) => [entry.name, entry] as const),
   );
-  const tier1Handlers: Record<Tier1ToolName, Tier1Handler> = {
-    'contact.search': notImplementedHandler,
-    'mail.search': notImplementedHandler,
-    'calendar.search': notImplementedHandler,
-    'memory.search': notImplementedHandler,
-    'memory.write': notImplementedHandler,
-    'enrichment.search': notImplementedHandler,
-    'deal.search': notImplementedHandler,
-    'account.search': notImplementedHandler,
-    'work.search': notImplementedHandler,
-    'work.read': notImplementedHandler,
-    'file.search': notImplementedHandler,
-    'recipe.run': notImplementedHandler,
-  };
+  // ⛔ DERIVED from the name list, not hand-mirrored. This used to be twelve
+  //    literal keys, so adding a Tier-1 tool meant editing the union AND this
+  //    map — and a miss surfaced as `handler is not a function` at DISPATCH,
+  //    not at the edit. The catalog above already derives from
+  //    `TIER1_TOOL_NAMES`; this now does too, so the two cannot disagree.
+  const tier1Handlers = Object.fromEntries(
+    TIER1_TOOL_NAMES.map((name) => [name, notImplementedHandler] as const),
+  ) as Record<Tier1ToolName, Tier1Handler>;
   if (options.tier1Handlers) {
     for (const [name, handler] of Object.entries(options.tier1Handlers) as Array<
       [Tier1ToolName, Tier1Handler]

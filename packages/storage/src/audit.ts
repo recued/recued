@@ -913,6 +913,17 @@ export type ActivityAction =
   // the burst; a healthy daemon emits one `started` and stays running).
   | 'supervised_daemon_started' | 'supervised_daemon_crashed'
   | 'supervised_daemon_stopped' | 'supervised_daemon_permanently_crashed'
+  // D-259 compatibility-window usage telemetry. One non-reserve row per
+  // invocation of a legacy CLI progress, unsupervised-detach, or
+  // readiness-less-supervision declaration. `target` is `<slug>/<op>` and
+  // `detail` contains only declaration kind + canonical operation id. This is
+  // the field evidence required before the additive decoder can be removed.
+  // ⛔ NO LONGER EMITTED (D-259 § 0.1.1 — the deprecation telemetry was
+  // deleted with the decoders it measured). RETAINED so historical rows
+  // written during the compatibility window still read: an action name is a
+  // stored fact, and dropping it from the union would make old audit entries
+  // unparseable. Do not re-use the name.
+  | 'cli_legacy_declaration_used'
   // Supervision feature — the owner's `supervision.set` ENROLLMENT decision
   // (distinct from the autonomous lifecycle rows above): enrolling / reconfiguring
   // a daemon to manual|auto, or un-enrolling it (mode -> off). `target` carries

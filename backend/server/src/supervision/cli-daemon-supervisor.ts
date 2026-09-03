@@ -40,14 +40,22 @@ import {
   rmSync as nodeRmSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import {
   SERVICE_CONSECUTIVE_CRASHES_MAX,
+  SERVICE_HEALTH_CHECK_INTERVAL_MS_FLOOR,
   SERVICE_RESTART_BACKOFF_MS,
+  isReadyCliDetachedSupervisionSpec,
   type CliMethodBinding,
   type IngredientManifest,
+  type ReadyCliDetachedSupervisionSpec,
+  type ServiceCheckResult,
+  type ServiceCheckSpec,
+  type ServiceHealthState,
   type ServiceRestartPolicy,
   type ServiceState,
+  type SupervisedDaemonReadiness,
 } from '@recued/contracts';
 import type { CliInvocationCall, CliInvocationExecutor } from '@recued/engine';
 
@@ -91,11 +99,20 @@ export interface SupervisedDaemonStatus {
   op: string;
   /** Reuses the D-118 `ServiceState` vocabulary. */
   state: ServiceState;
+  readiness: SupervisedDaemonReadiness;
+  readiness_detail: string | null;
+  ready_at: number | null;
+  health: ServiceHealthState;
+  health_detail: string | null;
+  last_health_at: number | null;
   pid: number | null;
   started_at: number | null;
   consecutive_crashes: number;
   last_crash_at: number | null;
   last_exit_code: number | null;
+  /** Raw detached-launch receipt retained so a migrated recipe receives a
+   *  superset of the historical launch card after readiness succeeds. */
+  launch_receipt: Record<string, unknown> | null;
 }
 
 /** A daemon's runtime-state TRANSITION, handed to the optional `audit` seam so
@@ -179,6 +196,13 @@ export interface CliDaemonSupervisorDeps {
    *  swallows a throw (must never break the state machine), tracks an async
    *  writer without blocking transitions, and drains it at disposal. */
   audit?: (event: DaemonAuditEvent) => void | Promise<void>;
+  /** D-118 closed checker registry. Required by migrated declarations; kept
+   *  injectable so the supervisor state machine remains deterministic in unit
+   *  tests. */
+  runCheck?: (
+    spec: ServiceCheckSpec,
+    config: Record<string, unknown>,
+  ) => Promise<ServiceCheckResult>;
 }
 
 export interface CliDaemonSupervisor {
@@ -211,7 +235,14 @@ interface DaemonRecord {
   consecutive_crashes: number;
   last_crash_at: number | null;
   last_exit_code: number | null;
+  launch_receipt: Record<string, unknown> | null;
   state: ServiceState;
+  readiness: SupervisedDaemonReadiness;
+  readiness_detail: string | null;
+  ready_at: number | null;
+  health: ServiceHealthState;
+  health_detail: string | null;
+  last_health_at: number | null;
   // control
   pollTimer: NodeJS.Timeout | null;
   restartTimer: NodeJS.Timeout | null;
@@ -219,6 +250,14 @@ interface DaemonRecord {
    *  timer clears itself before that async call settles, so the Promise is the
    *  only reliable stop / shutdown drain handle after the timer has fired. */
   launchPromise: Promise<void> | null;
+  healthPromise: Promise<void> | null;
+  /** Cancellable readiness backoff. A stop/dispose must wake the launch loop
+   * immediately rather than waiting one full probe interval. */
+  readinessTimer: NodeJS.Timeout | null;
+  readinessWake: (() => void) | null;
+  /** Invalidates async readiness/health completions from an older process
+   * lifetime before a restarted daemon can become running again. */
+  generation: number;
   /** True between a deliberate `stop()` and the daemon's actual exit — so a
    *  marker / pid-death isn't misclassified as a crash. */
   shuttingDown: boolean;
@@ -275,10 +314,21 @@ export const createCliDaemonSupervisor = (
     consecutive_crashes: 0,
     last_crash_at: null,
     last_exit_code: null,
+    launch_receipt: null,
     state: 'unknown',
+    readiness: 'legacy',
+    readiness_detail: null,
+    ready_at: null,
+    health: 'unknown',
+    health_detail: null,
+    last_health_at: null,
     pollTimer: null,
     restartTimer: null,
     launchPromise: null,
+    healthPromise: null,
+    readinessTimer: null,
+    readinessWake: null,
+    generation: 0,
     shuttingDown: false,
   });
 
@@ -286,11 +336,18 @@ export const createCliDaemonSupervisor = (
     ingredient_slug: r.config.ingredient_slug,
     op: r.config.op,
     state: r.state,
+    readiness: r.readiness,
+    readiness_detail: r.readiness_detail,
+    ready_at: r.ready_at,
+    health: r.health,
+    health_detail: r.health_detail,
+    last_health_at: r.last_health_at,
     pid: r.pid,
     started_at: r.started_at,
     consecutive_crashes: r.consecutive_crashes,
     last_crash_at: r.last_crash_at,
     last_exit_code: r.last_exit_code,
+    launch_receipt: r.launch_receipt,
   });
 
   /** Set a daemon's live state, emitting a `supervision` broadcast on a real
@@ -349,6 +406,57 @@ export const createCliDaemonSupervisor = (
     return binding;
   };
 
+  const checkConfig = (r: DaemonRecord): Record<string, unknown> => ({
+    ...r.config.args,
+    result_dir: r.resultDir,
+    key: DAEMON_MARKER_KEY,
+  });
+
+  const emitStatusChange = (r: DaemonRecord): void => {
+    if (closed) return;
+    try {
+      deps.broadcast?.({ ingredient_slug: r.config.ingredient_slug, op: r.config.op });
+    } catch {
+      /* best-effort live push */
+    }
+  };
+
+  const setHealth = (
+    r: DaemonRecord,
+    health: ServiceHealthState,
+    detail: string | null,
+  ): void => {
+    const changed = r.health !== health || r.health_detail !== detail;
+    r.health = health;
+    r.health_detail = detail;
+    r.last_health_at = now();
+    if (changed) emitStatusChange(r);
+  };
+
+  const runHealthCheck = (r: DaemonRecord, binding: CliMethodBinding): void => {
+    const supervision = binding.detached?.supervision;
+    if (!supervision || !isReadyCliDetachedSupervisionSpec(supervision)
+      || !supervision.health || !deps.runCheck || r.healthPromise) return;
+    const generation = r.generation;
+    const task = deps.runCheck(supervision.health, checkConfig(r))
+      .then((result) => {
+        if (closed || r.state !== 'running' || r.generation !== generation) return;
+        setHealth(r, result.passed ? 'healthy' : 'unhealthy', result.detail ?? null);
+      })
+      .catch((err) => {
+        if (closed || r.state !== 'running' || r.generation !== generation) return;
+        setHealth(
+          r,
+          'unhealthy',
+          `check threw: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      })
+      .finally(() => {
+        if (r.healthPromise === task) r.healthPromise = null;
+      });
+    r.healthPromise = task;
+  };
+
   const readPidMarker = (r: DaemonRecord): number | null => {
     try {
       const pid = parseInt(fs.readFileSync(join(r.resultDir, `${DAEMON_MARKER_KEY}.pid`), 'utf8').trim(), 10);
@@ -402,6 +510,33 @@ export const createCliDaemonSupervisor = (
     }
   };
 
+  const cancelReadinessWait = (r: DaemonRecord): void => {
+    if (r.readinessTimer !== null) {
+      clearTimeoutFn(r.readinessTimer);
+      r.readinessTimer = null;
+    }
+    const wake = r.readinessWake;
+    r.readinessWake = null;
+    wake?.();
+  };
+
+  const waitForReadinessPoll = (r: DaemonRecord, ms: number): Promise<void> =>
+    new Promise((resolve) => {
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        if (r.readinessTimer !== null) {
+          clearTimeoutFn(r.readinessTimer);
+          r.readinessTimer = null;
+        }
+        if (r.readinessWake === finish) r.readinessWake = null;
+        resolve();
+      };
+      r.readinessWake = finish;
+      r.readinessTimer = setTimeoutFn(finish, ms);
+    });
+
   const startPoll = (r: DaemonRecord): void => {
     stopPoll(r);
     const tick = (): void => {
@@ -412,6 +547,11 @@ export const createCliDaemonSupervisor = (
       // pid gone but no marker yet — confirm before concluding (the marker write
       // races the pid death for a daemon we launched; an adopted daemon has none).
       if (r.pid !== null && !isPidAlive(r.pid)) { confirmDeath(r); return; }
+      const binding = resolveBinding(r.config);
+      if (binding && (r.last_health_at === null
+        || now() - r.last_health_at >= SERVICE_HEALTH_CHECK_INTERVAL_MS_FLOOR)) {
+        runHealthCheck(r, binding);
+      }
       r.pollTimer = setTimeoutFn(tick, pollIntervalMs);
     };
     r.pollTimer = setTimeoutFn(tick, pollIntervalMs);
@@ -451,9 +591,20 @@ export const createCliDaemonSupervisor = (
   /** A daemon exited on its own (marker / pid-death) OR a launch threw. */
   const handleExit = (r: DaemonRecord, code: number | null): void => {
     stopPoll(r);
+    cancelReadinessWait(r);
+    r.generation += 1;
     r.pid = null;
     r.started_at = null;
     r.last_exit_code = code;
+    r.launch_receipt = null;
+    if (r.readiness !== 'failed' || r.readiness_detail === null) {
+      r.readiness = 'failed';
+      r.readiness_detail = code === null ? 'process exited' : `process exited with code ${code}`;
+    }
+    r.ready_at = null;
+    r.health = 'unknown';
+    r.health_detail = null;
+    r.last_health_at = null;
 
     if (closed) return;
 
@@ -489,8 +640,98 @@ export const createCliDaemonSupervisor = (
    *  the detached job via the cli executor + arm the liveness poll. Reused by
    *  the initial `start()` and by `scheduleRestart` (which keeps the crash
    *  counter — only `start()` resets it). */
+  const awaitDeclaredReadiness = async (
+    r: DaemonRecord,
+    supervision: ReadyCliDetachedSupervisionSpec,
+    generation: number,
+  ): Promise<boolean> => {
+    if (!deps.runCheck) {
+      r.readiness = 'failed';
+      r.readiness_detail = 'readiness checker is not configured';
+    } else {
+      const deadline = now() + supervision.ready_timeout_ms;
+      let lastDetail: string | undefined;
+      for (;;) {
+        if (closed || r.shuttingDown || r.generation !== generation) return false;
+        const marker = findExitMarker(r);
+        if (marker.present || r.pid === null || !isPidAlive(r.pid)) {
+          handleExit(r, marker.present ? marker.code : null);
+          return false;
+        }
+        const probeBudget = deadline - now();
+        if (probeBudget <= 0) {
+          r.readiness = 'failed';
+          r.readiness_detail = lastDetail
+            ? `readiness timed out: ${lastDetail}`
+            : 'readiness timed out';
+          break;
+        }
+        // A checker is IO and may itself wedge. Race every attempt against the
+        // one absolute readiness deadline and the same cancellable wake used by
+        // stop/dispose. A late checker completion is reduced to data by both
+        // promise branches, so it cannot become an unhandled rejection or
+        // mutate a newer process generation.
+        const probe = Promise.resolve()
+          .then(() => deps.runCheck!(supervision.readiness, checkConfig(r)))
+          .then(
+            (result) => ({ kind: 'result' as const, result }),
+            (error: unknown) => ({ kind: 'error' as const, error }),
+          );
+        const deadlineOrCancel = waitForReadinessPoll(r, probeBudget)
+          .then(() => ({ kind: 'wake' as const }));
+        const outcome = await Promise.race([probe, deadlineOrCancel]);
+        if (outcome.kind !== 'wake') cancelReadinessWait(r);
+        if (closed || r.shuttingDown || r.generation !== generation) return false;
+
+        if (outcome.kind === 'wake') {
+          r.readiness = 'failed';
+          r.readiness_detail = lastDetail
+            ? `readiness timed out: ${lastDetail}`
+            : 'readiness timed out';
+          break;
+        }
+        const passed = outcome.kind === 'result' && outcome.result.passed;
+        if (outcome.kind === 'result') {
+          lastDetail = outcome.result.detail;
+        } else {
+          lastDetail = outcome.error instanceof Error
+            ? outcome.error.message
+            : String(outcome.error);
+        }
+        // The readiness deadline is absolute. A probe that started in time but
+        // returned late cannot turn an already-expired start into success.
+        const remaining = deadline - now();
+        if (passed && remaining >= 0) {
+          r.readiness = 'ready';
+          r.readiness_detail = lastDetail ?? null;
+          r.ready_at = now();
+          return true;
+        }
+        if (remaining <= 0) {
+          r.readiness = 'failed';
+          r.readiness_detail = lastDetail
+            ? `readiness timed out: ${lastDetail}`
+            : 'readiness timed out';
+          break;
+        }
+        await waitForReadinessPoll(r, Math.min(pollIntervalMs, remaining));
+      }
+    }
+
+    if (r.pid !== null) {
+      const pid = r.pid;
+      killGroup(pid, 'SIGTERM');
+      await awaitPidDeath(pid);
+    }
+    if (closed || r.shuttingDown || r.generation !== generation) return false;
+    handleExit(r, -1);
+    return false;
+  };
+
   const launch = async (r: DaemonRecord): Promise<void> => {
     if (closed) return;
+    const generation = ++r.generation;
+    cancelReadinessWait(r);
     const binding = resolveBinding(r.config);
     if (!binding) {
       // The daemon never launched — stamp the runtime fields so the 'crashed'
@@ -508,6 +749,16 @@ export const createCliDaemonSupervisor = (
       return;
     }
 
+    const supervision = binding.detached?.supervision;
+    const hasReadiness = !!supervision && isReadyCliDetachedSupervisionSpec(supervision);
+    r.readiness = hasReadiness ? 'starting' : 'legacy';
+    r.readiness_detail = null;
+    r.ready_at = null;
+    r.health = 'unknown';
+    r.health_detail = null;
+    r.last_health_at = null;
+    r.launch_receipt = null;
+
     try { fs.mkdirSync(r.resultDir, { recursive: true }); } catch { /* executor re-creates */ }
     // Drop any stale exit marker so the poll only ever sees THIS run's death.
     // NB: we deliberately do NOT group-kill a `.pid`-marker "survivor" here. A
@@ -519,19 +770,28 @@ export const createCliDaemonSupervisor = (
     // fresh-start) or was just reaped (stop() awaits death before start()).
     clearExitMarkers(r);
 
+    const { supervision: _supervision, ...detachedWithoutSupervision } = binding.detached!;
+    void _supervision;
     const call: CliInvocationCall = {
       slug: r.config.ingredient_slug,
       operation_key: r.config.op,
       operation_id: r.config.op,
-      binding,
+      // The public executor delegates supervised declarations back to this
+      // supervisor. Remove only that declaration for the internal raw spawn;
+      // completion/cancel and all compatibility receipt fields stay intact.
+      binding: {
+        ...binding,
+        detached: detachedWithoutSupervision,
+      },
+      supervisor_managed_launch: true,
       // result_dir / key are server-owned (not from config.args) so markers land
       // in the confined daemon dir.
       args: { ...r.config.args, result_dir: r.resultDir, key: DAEMON_MARKER_KEY },
     };
 
-    let result: { pid?: number | null };
+    let result: { pid?: number | null } & Record<string, unknown>;
     try {
-      result = (await deps.cliInvocationExecutor(call)) as { pid?: number | null };
+      result = (await deps.cliInvocationExecutor(call)) as { pid?: number | null } & Record<string, unknown>;
     } catch (err) {
       log('warn', `daemon '${r.config.ingredient_slug}/${r.config.op}' launch failed`, {
         err: err instanceof Error ? err.message : String(err),
@@ -548,11 +808,23 @@ export const createCliDaemonSupervisor = (
     if (closed) return;
 
     r.pid = typeof result.pid === 'number' ? result.pid : null;
+    r.launch_receipt = result;
     r.started_at = now();
     // A stop that raced this executor is waiting on launchPromise. Publish the
     // pid for it to terminate, but do not briefly resurrect the daemon or arm a
     // poll while the explicit stop is pending.
-    if (r.shuttingDown) return;
+    if (r.shuttingDown || r.generation !== generation) return;
+
+    if (r.pid === null) {
+      r.readiness = 'failed';
+      r.readiness_detail = 'detached launch returned no process id';
+      handleExit(r, -1);
+      return;
+    }
+
+    if (hasReadiness) {
+      if (!await awaitDeclaredReadiness(r, supervision, generation)) return;
+    }
     setState(r, 'running');
     startPoll(r);
   };
@@ -577,9 +849,18 @@ export const createCliDaemonSupervisor = (
    *  launch). Audited as `supervised_daemon_started` (via setState) — the
    *  process didn't start this instant, but "supervisor began tracking this live
    *  daemon at boot" is the forensically meaningful lifecycle event. */
-  const adopt = (r: DaemonRecord, pid: number): void => {
+  const adopt = async (r: DaemonRecord, pid: number): Promise<void> => {
+    const generation = ++r.generation;
     r.pid = pid;
     r.started_at = now();
+    const binding = resolveBinding(r.config);
+    const supervision = binding?.detached?.supervision;
+    if (binding && supervision && isReadyCliDetachedSupervisionSpec(supervision)) {
+      r.readiness = 'starting';
+      if (!await awaitDeclaredReadiness(r, supervision, generation)) return;
+    } else {
+      r.readiness = 'legacy';
+    }
     setState(r, 'running');
     startPoll(r);
   };
@@ -589,8 +870,24 @@ export const createCliDaemonSupervisor = (
     const key = recordKey(config.ingredient_slug, config.op);
     let r = records.get(key);
     if (r) {
+      // One `(ingredient_slug, op)` is one service instance. Never make the
+      // durable/in-memory policy describe NEW args while an OLD process (or its
+      // launch) is still active. Explicit reconfiguration goes through
+      // stop-then-start; an identical concurrent start merely joins the launch.
+      const active = r.pid !== null
+        || r.launchPromise !== null
+        || r.state === 'running'
+        || r.readiness === 'starting';
+      if (active) {
+        if (!isDeepStrictEqual(r.config, config)) {
+          throw new Error(
+            `supervised daemon '${config.ingredient_slug}/${config.op}' is already active with different configuration; stop it before reconfiguring`,
+          );
+        }
+        if (r.launchPromise) await r.launchPromise;
+        return statusOf(r);
+      }
       r.config = config;
-      if (r.state === 'running' && r.pid !== null) return statusOf(r);
       cancelRestart(r);
     } else {
       r = newRecord(config);
@@ -630,18 +927,24 @@ export const createCliDaemonSupervisor = (
     if (!r) {
       return {
         ingredient_slug, op, state: 'stopped', pid: null, started_at: null,
+        readiness: 'legacy', readiness_detail: null, ready_at: null,
+        health: 'unknown', health_detail: null, last_health_at: null,
         consecutive_crashes: 0, last_crash_at: null, last_exit_code: null,
+        launch_receipt: null,
       };
     }
     cancelRestart(r);
     stopPoll(r);
     r.shuttingDown = true;
+    r.generation += 1;
+    cancelReadinessWait(r);
     // A restart timer clears its handle before awaiting the detached executor.
     // Drain that launch so its eventual pid cannot appear after stop returns.
     if (r.launchPromise) {
       try { await r.launchPromise; } catch { /* launch owns failure state */ }
       cancelRestart(r);
       stopPoll(r);
+      cancelReadinessWait(r);
     }
     const pid = r.pid;
     if (pid !== null) {
@@ -652,6 +955,12 @@ export const createCliDaemonSupervisor = (
     }
     r.pid = null;
     r.started_at = null;
+    r.readiness = 'failed';
+    r.readiness_detail = 'stopped by owner';
+    r.ready_at = null;
+    r.health = 'unknown';
+    r.health_detail = null;
+    r.last_health_at = null;
     r.shuttingDown = false;
     setState(r, 'stopped');
     return statusOf(r);
@@ -669,7 +978,7 @@ export const createCliDaemonSupervisor = (
       const marker = findExitMarker(r);
       if (!marker.present && survivor !== null && isPidAlive(survivor)) {
         // Survived our restart — adopt regardless of restart_on_server_start.
-        adopt(r, survivor);
+        await adopt(r, survivor);
       } else if (config.restart_on_server_start) {
         // Dead + boot-persistent → relaunch fresh.
         try { await runLaunch(r); }
@@ -694,6 +1003,7 @@ export const createCliDaemonSupervisor = (
     for (const r of current) {
       cancelRestart(r);
       stopPoll(r);
+      cancelReadinessWait(r);
       // Intentionally NOT killing — daemons are detached and survive the bounce.
     }
     const activeLaunches = current.flatMap((r) =>

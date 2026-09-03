@@ -205,6 +205,7 @@ export interface ComposeExecutionContextOptions {
     | 'workEntityDispatchers'
     | 'inboundFileCollection'
     | 'uploadStagingRegistry'
+    | 'supervisionStack'
   >;
   baseVault: Record<string, unknown>;
   lateBound: ExecutionLateBoundRefs;
@@ -689,6 +690,9 @@ export const composeExecutionContext = async (
     // registry by token, so the chunk's bytes never cross the dispatch input.
     ...(collection.uploadStagingRegistry
       ? { uploadStagingRegistry: collection.uploadStagingRegistry }
+      : {}),
+    ...(collection.supervisionStack
+      ? { startSupervisedDaemon: collection.supervisionStack.startFromInvocation }
       : {}),
     // D-188 — the master pause flag so the op-admission gate freezes every
     // governed dispatch (owner-AI + doors) while paused. Read live per

@@ -9,8 +9,8 @@
  * minted store is `dispose()`d when the run resolves — so the real PII it held
  * is dropped, not left reachable — across the no-budget path, the budget-race
  * path (run completes), AND the budget-TIMEOUT path (budget wins while a step is
- * in flight: the abandoned inner run's restore must still find the ledger, so
- * disposal is deferred to inner-settle, not race-resolve). A caller-supplied
+ * in flight: D-259 waits for cancellation cleanup before finalizing, then
+ * disposes at inner-settle). A caller-supplied
  * store is NEVER disposed by the engine — it belongs to the caller, who disposes
  * it once itself. The guard is an ownership boundary only: it does NOT relax the
  * no-cross-run-sharing rule (a supplied store must still be per-run, since output
@@ -228,15 +228,18 @@ describe('D-167 P4 — engine per-run PII ledger lifecycle', () => {
     expect(base.get(handles[0])).toBeDefined();
   });
 
-  it('budget TIMEOUT (budget wins mid-flight): a caller-supplied store survives — abandoned inner run still restores real values, engine never disposes it', async () => {
-    // A gated ingredient between protect and restore blocks until released, so
-    // the budget timer reliably wins the race while the inner run is in flight.
-    // The store is caller-supplied, so the engine never disposes it — the ledger
-    // stays live for the abandoned inner run's later `pii-restore`, which restores
-    // the REAL value rather than leaking the alias. (The MINTED-store inner-settle
-    // deferral is covered by its own test in the next describe block.)
-    let releaseGate!: () => void;
-    const gate = new Promise<void>((r) => { releaseGate = r; });
+  it('budget TIMEOUT waits for cancellation settlement and never disposes a caller-supplied store', async () => {
+    // The budget expires while the ingredient is in flight. The deliberately
+    // uncooperative test ingredient settles later; D-259 keeps the run pending
+    // until that boundary is clean, then the post-call abort check halts before
+    // `pii-restore`. The caller-owned ledger remains the caller's to dispose.
+    let gateSettled = false;
+    const gate = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        gateSettled = true;
+        resolve();
+      }, 75);
+    });
     let disposeCount = 0;
     const base = createPiiLedgerStore();
     const handles: string[] = [];
@@ -274,22 +277,11 @@ describe('D-167 P4 — engine per-run PII ledger lifecycle', () => {
     };
 
     const result = await executeRecipe(ctx);
-    // Budget won the race while `slow` was gated → caller gets the failure, but
-    // the inner run is still in flight: `restore` has not run, the store is intact.
     expect(result.success).toBe(false);
+    expect(result.errors[0].code).toBe('RECIPE_BUDGET_EXCEEDED');
+    expect(gateSettled).toBe(true); // executeRecipe awaited inner cleanup
     expect(disposeCount).toBe(0);
     expect(ctx.stores.step.restore).toBeUndefined();
-    expect(base.get(handles[0])).toBeDefined();
-
-    // Let the abandoned inner run finish: `slow` returns, then `restore` runs.
-    releaseGate();
-    await vi.waitFor(() => { expect(ctx.stores.step.restore).toBeDefined(); });
-
-    // restore found the still-live ledger → the REAL value, not the alias
-    // `m1@d1.invalid` (no leak). And the engine NEVER disposed the caller's store.
-    const restore = ctx.stores.step.restore as { restored: Record<string, string> };
-    expect(restore.restored.from).toBe('alice@acme.com');
-    expect(disposeCount).toBe(0);
     expect(base.get(handles[0])).toBeDefined();
   });
 
@@ -360,12 +352,15 @@ describe('D-167 P4 — engine-MINTED store IS disposed (ownership guard does not
     expect(mintHooks.disposeCount).toBe(1);
   });
 
-  it('budget-TIMEOUT path: defers the minted-store disposal to inner-settle, then disposes exactly once', async () => {
+  it('budget-TIMEOUT path: awaits inner settlement, then disposes the minted store exactly once', async () => {
     mintHooks.trackMinted = true;
-    // A gated ingredient between protect and restore blocks until released, so
-    // the budget timer reliably wins the race while the inner run is in flight.
-    let releaseGate!: () => void;
-    const gate = new Promise<void>((r) => { releaseGate = r; });
+    let gateSettled = false;
+    const gate = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        gateSettled = true;
+        resolve();
+      }, 75);
+    });
 
     const recipe: RecipeDefinition = {
       recipe_id: 'pii-budget-timeout-minted',
@@ -392,22 +387,11 @@ describe('D-167 P4 — engine-MINTED store IS disposed (ownership guard does not
     }; // no supplied store → the engine mints + owns it
 
     const result = await executeRecipe(ctx);
-    // Budget won mid-flight: the caller gets the failure, but the inner run is
-    // still executing → the OWNED store must NOT be disposed yet (deferral), and
-    // restore has not run. A race-resolve dispose would make this count 1 here.
     expect(result.success).toBe(false);
-    expect(mintHooks.disposeCount).toBe(0);
+    expect(result.errors[0].code).toBe('RECIPE_BUDGET_EXCEEDED');
+    expect(gateSettled).toBe(true); // cancellation boundary settled first
+    expect(mintHooks.disposeCount).toBe(1);
     expect(ctx.stores.step.restore).toBeUndefined();
-
-    // Release the gate → the abandoned inner run finishes → restore runs against
-    // the still-live ledger → THEN the owned store is disposed (inner-settle).
-    // Wait on the dispose count directly (bounded by vi.waitFor): a regression
-    // that never disposes fails here in ~1s rather than hanging to the timeout.
-    releaseGate();
-    await vi.waitFor(() => { expect(mintHooks.disposeCount).toBe(1); });
-
-    const restore = ctx.stores.step.restore as { restored: Record<string, string> };
-    expect(restore.restored.from).toBe('alice@acme.com'); // real value, no alias leak
     expect(mintHooks.disposeCount).toBe(1); // disposed exactly once, on inner-settle
   });
 });

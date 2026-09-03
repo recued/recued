@@ -9,13 +9,14 @@
  *  `recued-cli-out-*` dir in THIS SUITE'S OWN temp root — see `TEMP_ROOT`. */
 
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
   createCliInvocationExecutor,
+  type ToolOutputFileIngestInput,
   type ToolOutputIngestInput,
 } from '../cli-invocation-executor.js';
 
@@ -346,6 +347,37 @@ describe('cli_invocation output_capture', () => {
     await expect(
       exec(call(captureBinding(writeFilesScript([['invoice.md', 'WAY TOO LONG']])))),
     ).rejects.toThrow(/over the 4-byte cap/);
+    expect(tmpCaptureDirs()).toEqual([]);
+  });
+
+  it('streams production file capture by path without the compatibility Buffer ceiling', async () => {
+    const produced = 'WAY TOO LONG FOR FOUR BYTES';
+    let ingested: ToolOutputFileIngestInput | undefined;
+    const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
+      // This cap protects only the legacy Buffer seam. A source-path ingestor
+      // is the production path and must carry ordinary media/archive sizes.
+      outputCaptureMaxBytes: 4,
+      ingestToolOutputFile: async (input) => {
+        expect(existsSync(input.src_path)).toBe(true);
+        expect(readFileSync(input.src_path, 'utf8')).toBe(produced);
+        ingested = input;
+        return { record_id: 'file:streamed' };
+      },
+    });
+
+    const result = await exec(
+      call(captureBinding(writeFilesScript([['invoice.md', produced]])), { run_id: 'run-stream' }),
+    ) as Record<string, unknown>;
+
+    expect(result.file_ref).toBe('file:streamed');
+    expect(ingested).toMatchObject({
+      filename: 'invoice.md',
+      mime_type: 'text/markdown',
+      size_bytes: Buffer.byteLength(produced),
+      content_hash: createHash('sha256').update(produced).digest('hex'),
+    });
+    expect(ingested?.source_id).toContain(':invoice.md:');
     expect(tmpCaptureDirs()).toEqual([]);
   });
 

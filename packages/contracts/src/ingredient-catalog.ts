@@ -37,7 +37,7 @@
 
 import type { IngredientKind, RiskTier } from './ingredient.js';
 import { RISK_TIER_RANK } from './ingredient.js';
-import type { ServiceRestartPolicy } from './service.js';
+import type { ServiceCheckSpec, ServiceRestartPolicy } from './service.js';
 import type { ExecutionSource } from './commits.js';
 import type { ProgressContract } from './execution-lane.js';
 import { canonicalizeSubresourcePath } from './connection.js';
@@ -1791,23 +1791,39 @@ export interface CliDetachedCancelSpec {
   pid_pattern: string;
 }
 
-/** Optional keep-alive for a detached cli job. When present, the pack declares
- *  the job is a supervised long-running daemon: the server supervisor watches the
- *  pid / `.exit.<code>` marker and re-launches per `restart_policy`. Enrolling +
- *  flipping manual/auto is a UI action (pack-detail), not a recipe step — a
- *  fire-and-forget recipe can launch the job but cannot keep it alive. The
- *  `recipe run_detached` path stays for one-shot, unsupervised launches.
- *  v1 has no separate liveness probe — pid/marker IS the signal (a `health_check`
- *  may be added later). */
-export interface CliDetachedSupervisionSpec {
-  /** Re-launch behavior when the job exits. Mirrors `lifecycle.start.restart_policy`:
-   *  `'never'` = manual (UI start/stop, no auto-restart); `'on-crash' | 'always'`
-   *  = auto (supervisor keeps it alive). */
+/** Pre-D-259 supervisor declaration. Kept as an explicit compatibility shape
+ * so installed manifests retain their launch-receipt semantics during the
+ * supported migration window. */
+export interface LegacyCliDetachedSupervisionSpec {
   restart_policy: ServiceRestartPolicy;
-  /** Re-launch the supervised job when the server (re)starts — reconcile after a
-   *  host reboot or server update. */
   restart_on_server_start?: boolean;
 }
+
+/** D-259 supervised-service declaration. Readiness uses the existing closed
+ * D-118 check registry; successful spawn alone is never reported as ready. */
+export interface ReadyCliDetachedSupervisionSpec extends LegacyCliDetachedSupervisionSpec {
+  readiness: ServiceCheckSpec;
+  health?: ServiceCheckSpec;
+  ready_timeout_ms: number;
+}
+
+/** Optional keep-alive for a detached cli job. When present, the pack declares
+ *  the job is a supervised long-running daemon: the server supervisor watches
+ *  the pid / `.exit.<code>` marker and re-launches per `restart_policy`.
+ *  D-259 declarations add readiness/health and recipe starts delegate to that
+ *  same supervisor. The legacy readiness-less and unsupervised launch shapes
+ *  remain explicit compatibility variants until the installed-revision and
+ *  telemetry cutover gates are satisfied. */
+export type CliDetachedSupervisionSpec =
+  | LegacyCliDetachedSupervisionSpec
+  | ReadyCliDetachedSupervisionSpec;
+
+/** Presence-based generation discriminator required by D-259. Never infer a
+ * manifest generation from a tool name, revision number, or elapsed time. */
+export const isReadyCliDetachedSupervisionSpec = (
+  spec: CliDetachedSupervisionSpec,
+): spec is ReadyCliDetachedSupervisionSpec =>
+  'readiness' in spec || 'ready_timeout_ms' in spec || 'health' in spec;
 
 export interface CliDetachedJobSpec {
   /** Recued detaches the child when the CLI does not expose a native detach flag. */
@@ -1883,25 +1899,59 @@ export interface ConnectorMethodBinding {
   args_mapping?: unknown;
 }
 
-/** D-181 Slice 3 — per-operation progress declaration for a foreground cli
+/** ⛔ D-259 § 0.1.1 — the pre-D-259 progress shape (`{ contract, watch_path? }`
+ * with no `stall_ms`) is NO LONGER REPRESENTABLE. It was the implicit spelling
+ * of "do not cap me"; `timeout_ms: 0` is the honest one. Collapsing the union
+ * is what makes that structural rather than advisory — with one publisher
+ * there was nobody to strand by removing it. */
+/** Host-implemented semantic progress adapters. Adding a member requires
+ * executor code and tests; manifests cannot turn arbitrary output noise into
+ * progress by inventing a name. */
+export const CLI_PROGRESS_ADAPTERS = [
+  'codex-jsonl',
+  'ffmpeg-progress',
+  'yt-dlp-progress',
+] as const;
+export type CliProgressAdapter = (typeof CLI_PROGRESS_ADAPTERS)[number];
+
+/** D-259 semantic heartbeat declaration. `adapter` names registered host code
+ * that recognizes real forward progress; arbitrary stdout is not a heartbeat. */
+export interface CliHeartbeatProgressSpec {
+  contract: 'heartbeat';
+  adapter: CliProgressAdapter;
+  stall_ms: number;
+}
+
+/** D-259 growing-artifact declaration. The path is resolved only after the
+ * executor has injected any engine-owned output location. */
+export interface CliFileGrowthProgressSpec {
+  contract: 'file-growth';
+  watch_path: string;
+  stall_ms: number;
+}
+
+export type D259CliProgressSpec =
+  | CliHeartbeatProgressSpec
+  | CliFileGrowthProgressSpec;
+
+/** D-181/D-259 per-operation progress declaration for a foreground cli
  *  op (the catalog-form sibling of the simple-form
  *  `IngredientManifest.progress_contract`). Declared per binding because a
  *  catalog hosts many ops with different progress shapes (a quick `status`
  *  call vs a 20-min docling render). When omitted, the foreground cli op keeps
- *  the tight `timeout_ms` cap unchanged (behaviour-neutral); when present, the
- *  stall monitor governs the call and the tight cap is dropped (heavy ops are
- *  uncapped — progress detection + the human bound them, §6). */
-export interface CliProgressSpec {
-  /** How this op surfaces progress. `heartbeat` watches stdout cadence;
-   *  `file-growth` polls `watch_path`'s size+mtime; `silent` is bounded only
-   *  by the generous wall-clock fail-safe. `provider-event` is not meaningful
-   *  for a local subprocess (it is the http/streaming contract). */
-  contract: ProgressContract;
-  /** `file-growth` only — the argv-template (`{arg}` refs) of the output file
-   *  the op writes incrementally; the monitor polls it for growth. Resolved
-   *  against the op's args at dispatch, like `argv_template` tokens. */
-  watch_path?: string;
-}
+ *  its absolute `timeout_ms` cap. D-259 progress adds a semantic no-progress
+ *  threshold without extending that deadline; only an explicit `timeout_ms: 0`
+ *  is unbounded. Installed legacy progress declarations retain the pre-D-259
+ *  monitor-governed timeout behavior during compatibility. */
+export type CliProgressSpec = D259CliProgressSpec;
+
+/** Presence-based generation discriminator required by D-259. */
+/** ⛔ RETIRED as a discriminator (§ 0.1.1): `CliProgressSpec` has one member
+ * now, so there is nothing to discriminate. Kept only so a stale caller fails
+ * to COMPILE rather than silently taking a branch that no longer exists.
+ * @deprecated every `CliProgressSpec` is a D-259 spec; delete the call. */
+export const isD259CliProgressSpec = (spec: CliProgressSpec): spec is D259CliProgressSpec =>
+  'stall_ms' in spec;
 
 /** Document-toolkit — capture a foreground cli op's OUTPUT FILE as a file ref.
  *  The executor owns the `dir_arg` output location and captures exactly one

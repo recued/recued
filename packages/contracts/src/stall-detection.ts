@@ -131,6 +131,10 @@ export interface StallEvalInput {
   factor_k?: number;
   /** Generous wall-clock fail-safe; defaults to `SILENT_OP_HARD_CAP_MS`. */
   silent_hard_cap_ms?: number;
+  /** D-259 explicit semantic-progress declarations are author-chosen kill
+   * thresholds, including on attended runs. Legacy D-181 declarations omit
+   * this and keep the attended flag-only policy. */
+  kill_on_no_progress?: boolean;
 }
 
 export interface StallDecision {
@@ -168,7 +172,9 @@ export const evaluateStall = (input: StallEvalInput): StallDecision => {
   const progressStalled = input.contract !== 'silent' && t > 0 && idleMs >= k * t;
   const silentExceeded = runMs >= cap;
 
-  const stalled = input.origin === 'unattended'
+  const stalled = input.kill_on_no_progress === true
+    ? progressStalled || silentExceeded
+    : input.origin === 'unattended'
     ? progressStalled || silentExceeded
     : silentExceeded; // attended: only the fail-safe kills; no-progress flags
 

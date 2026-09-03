@@ -84,7 +84,7 @@ import {
 } from '../../execution/in-flight-registry.js';
 import {
   createCliInvocationExecutor,
-  type ToolOutputIngestInput,
+  type ToolOutputFileIngestInput,
 } from '../../cli-invocation-executor.js';
 import type { InboundFileCollection } from '../../collections/file/inbound-file-collection.js';
 import {
@@ -316,6 +316,10 @@ export interface ComposeExecuteDepsDeps {
    *  the token the engine put on the wire. Absent (dbless / no-CAS harness) ⇒ a
    *  chunked upload fails closed before any byte leaves. */
   uploadStagingRegistry?: UploadStagingRegistry;
+  /** Single supervised-daemon entry point. Present on the full server compose;
+   *  absent in db-less/MCP-only harnesses, where legacy executor behavior is
+   *  retained. */
+  startSupervisedDaemon?: (call: import('@recued/engine').CliInvocationCall) => Promise<unknown>;
   /** D-188 — the master "Pause server" flag (server-state `isPaused`).
    *  When provided, the op-admission gate FREEZES every governed dispatch
    *  (owner-AI + doors) with a `server_paused` deny while paused; the
@@ -713,10 +717,12 @@ export const composeExecuteDeps = (
   // declares `output_capture` lands its produced file as a `tool_output`
   // data.file and surfaces the record_id as `result.file_ref`.
   const inboundFileCollection = deps.inboundFileCollection;
-  const ingestToolOutput = inboundFileCollection
-    ? async (input: ToolOutputIngestInput): Promise<{ record_id: string }> => {
+  const ingestToolOutputFile = inboundFileCollection
+    ? async (input: ToolOutputFileIngestInput): Promise<{ record_id: string }> => {
         const record = await inboundFileCollection.ingest({
-          bytes: input.bytes,
+          src_path: input.src_path,
+          content_hash: input.content_hash,
+          size_bytes: input.size_bytes,
           filename: input.filename,
           mime_type: input.mime_type,
           origin: 'tool_output',
@@ -762,7 +768,10 @@ export const composeExecuteDeps = (
     : undefined;
   const cliInvocationExecutor = createCliInvocationExecutor({
     inFlightRegistry,
-    ...(ingestToolOutput ? { ingestToolOutput } : {}),
+    ...(deps.startSupervisedDaemon
+      ? { startSupervisedDaemon: deps.startSupervisedDaemon }
+      : {}),
+    ...(ingestToolOutputFile ? { ingestToolOutputFile } : {}),
     ...(readFileBytes ? { readFileBytes } : {}),
   });
   // SMB-finance slice 3 — land a captured REST download body (a

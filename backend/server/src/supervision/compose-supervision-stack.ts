@@ -14,10 +14,11 @@
  *  throws rather than silently dropping the daemon.
  */
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 
 import type Database from 'better-sqlite3';
 import type { IngredientManifest, ServiceState } from '@recued/contracts';
-import type { CliInvocationExecutor } from '@recued/engine';
+import type { CliInvocationCall, CliInvocationExecutor } from '@recued/engine';
 import type { ActivityAction, ActivityEntry, AuditLogStore } from '@recued/storage';
 
 import {
@@ -30,6 +31,7 @@ import {
   type SupervisedDaemonStore,
 } from './supervised-daemon-store.js';
 import type { SupervisionRpcDeps } from '../supervision-handler.js';
+import { runCheck } from '../collections/service/checkers/dispatcher.js';
 
 export interface SupervisionStack {
   store: SupervisedDaemonStore;
@@ -38,6 +40,10 @@ export interface SupervisionStack {
   rpcDeps: SupervisionRpcDeps;
   /** Bind the cli executor once `compose-execution-context` has built it. */
   bindExecutor: (exec: CliInvocationExecutor) => void;
+  /** Recipe/catalog entry point for a migrated service declaration. Persists
+   *  the declared supervisor policy, awaits readiness, and returns the legacy
+   *  launch receipt plus the new readiness/health state. */
+  startFromInvocation: (call: CliInvocationCall) => Promise<unknown>;
   /** Boot reconcile — adopt survivors / relaunch each enabled daemon. */
   startAll: () => Promise<void>;
   /** Shutdown — close admission and drain async supervisor work before dropping
@@ -142,6 +148,7 @@ export const composeSupervisionStack = (
     dataPath: options.dataPath,
     ...(options.broadcast ? { broadcast: options.broadcast } : {}),
     ...(options.auditLog ? { audit: buildDaemonAuditEmitter(options.auditLog) } : {}),
+    runCheck: (spec, config) => runCheck(spec, {}, config),
     ...options.supervisorOverrides,
   });
 
@@ -158,6 +165,99 @@ export const composeSupervisionStack = (
       ...(options.auditLog ? { auditLog: options.auditLog } : {}),
     },
     bindExecutor: (exec) => { boundExecutor = exec; },
+    startFromInvocation: async (call) => {
+      if (call.signal?.aborted) {
+        throw new Error(`supervised daemon '${call.operation_id}' start cancelled before launch`);
+      }
+      const supervision = call.binding.detached?.supervision;
+      if (!supervision) {
+        throw new Error(`cli daemon '${call.operation_id}' has no supervision declaration`);
+      }
+      const { result_dir: _resultDir, key: _key, code: _code, ...args } = call.args;
+      void _resultDir;
+      void _key;
+      void _code;
+      const config = {
+        ingredient_slug: call.slug,
+        op: call.operation_key,
+        restart_policy: supervision.restart_policy,
+        restart_on_server_start: supervision.restart_on_server_start ?? false,
+        enabled: true,
+        args,
+      };
+      const priorStatus = supervisor.status(call.slug, call.operation_key);
+      const priorActive = priorStatus !== null
+        && priorStatus.state !== 'stopped'
+        && priorStatus.state !== 'crashed'
+        && priorStatus.state !== 'permanently_crashed';
+      if (priorActive) {
+        const priorConfig = store.get(call.slug, call.operation_key);
+        if (!priorConfig || !isDeepStrictEqual(priorConfig, config)) {
+          throw new Error(
+            `supervised daemon '${call.operation_id}' is already active with different configuration; stop it before reconfiguring`,
+          );
+        }
+      } else {
+        store.upsert(config);
+      }
+
+      // The call that established an inactive singleton owns launch cleanup.
+      // A same-config follower only joins readiness; cancelling that follower
+      // must not stop the original caller's service.
+      const ownsLaunch = !priorActive;
+      let aborted = false;
+      let abortStop: Promise<unknown> | undefined;
+      let signalAbort!: () => void;
+      const abortGate = new Promise<{ kind: 'aborted' }>((resolve) => {
+        signalAbort = () => { resolve({ kind: 'aborted' }); };
+      });
+      const onAbort = (): void => {
+        aborted = true;
+        if (ownsLaunch) {
+          abortStop ??= supervisor.stop(call.slug, call.operation_key);
+        }
+        signalAbort();
+      };
+      call.signal?.addEventListener('abort', onAbort, { once: true });
+      if (call.signal?.aborted) onAbort();
+      let outcome:
+        | { kind: 'status'; status: Awaited<ReturnType<CliDaemonSupervisor['start']>> }
+        | { kind: 'error'; error: unknown }
+        | { kind: 'aborted' };
+      try {
+        const starting = supervisor.start(config).then(
+          (status) => ({ kind: 'status' as const, status }),
+          (error: unknown) => ({ kind: 'error' as const, error }),
+        );
+        outcome = await Promise.race([starting, abortGate]);
+        if (aborted) {
+          if (abortStop) await abortStop;
+          throw new Error(`supervised daemon '${call.operation_id}' start cancelled`);
+        }
+      } finally {
+        call.signal?.removeEventListener('abort', onAbort);
+      }
+      if (outcome.kind === 'aborted') {
+        if (abortStop) await abortStop;
+        throw new Error(`supervised daemon '${call.operation_id}' start cancelled`);
+      }
+      if (outcome.kind === 'error') throw outcome.error;
+      const { status } = outcome;
+      if (status.state !== 'running'
+        || (status.readiness !== 'ready' && status.readiness !== 'legacy')) {
+        throw new Error(
+          `supervised daemon '${call.operation_id}' failed readiness: `
+            + (status.readiness_detail ?? status.state),
+        );
+      }
+      return {
+        ...(status.launch_receipt ?? { mode: 'detached', launched: true, pid: status.pid }),
+        readiness: status.readiness,
+        readiness_detail: status.readiness_detail,
+        ready_at: status.ready_at,
+        health: status.health,
+      };
+    },
     startAll: () => supervisor.startAll(store.list()),
     disposeAll: () => supervisor.disposeAll(),
   };

@@ -31,6 +31,7 @@ export const MCP_TOOL_CATALOG = [
   'recued_getRecipe',
   'recued_listIngredients',
   'recued_runRecipe',
+  'recued_stopRecipe',
   'recued_getAudit',
   'recued_saveRecipe',
   'recued_dataTimeline',
@@ -69,6 +70,10 @@ export const isMcpToolName = (name: string): boolean => {
  *  Prefixes are matched against the full rpc method name (e.g.
  *  `'contact.merge.list'.startsWith('contact.merge.')` is true). */
 export const MCP_RESERVED_RPC_PREFIXES = [
+  // D-259 §6.1 — Dishes are the owner's standing-work control plane. An
+  // external agent can stop only its own attended run through the narrow
+  // recued_stopRecipe capability; it cannot enumerate, mint, or mutate dishes.
+  'dishes.',
   // D-221 — pack-owned Records carry arbitrary pack-defined business data.
   // Listing, exporting, deleting, quota/retention changes, and accounting
   // repair are owner control-plane actions; external agents reach Records only

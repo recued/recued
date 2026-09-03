@@ -205,7 +205,7 @@ describe('D-170 N.8 CLI argv_template guards', () => {
     expect(nonTarget.valid).toBe(false);
   });
 
-  it('allows runtime-managed detached CLI jobs with fixed argv and marker completion', () => {
+  it('allows a SUPERVISED detached CLI service with fixed argv and marker completion', () => {
     const result = validateComposition(cliComposition(
       ['codex', 'exec', '--cd', '{repo_dir}', '{task}'],
       {
@@ -220,6 +220,14 @@ describe('D-170 N.8 CLI argv_template guards', () => {
           cancel: {
             kind: 'process_group',
             pid_pattern: '{result_dir}/{key}.pid',
+          },
+          // D-259 § 0.1.1 — detachment is for SUPERVISED services only, and
+          // supervision requires a real readiness probe: a live pid reports
+          // ready for a process about to crash.
+          supervision: {
+            restart_policy: 'on-crash',
+            readiness: { kind: 'pid_file', path: '{result_dir}/{key}.pid' },
+            ready_timeout_ms: 30_000,
           },
         },
       },

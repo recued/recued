@@ -70,6 +70,64 @@ if (command === 'acquire' && (!version || !Number.isSafeInteger(Number(sequence)
 
 const canonicalJson = (value) => `${JSON.stringify(value, null, 2)}\n`;
 const etagOf = (bytes) => `"${createHash('md5').update(bytes).digest('hex')}"`;
+
+/** ⛔⛔ AN ENTITY TAG IS COMPARED BY ITS OPAQUE VALUE, NOT BY ITS SPELLING.
+ *
+ *  The lease's identity check compares the etag recorded when the lock was
+ *  WRITTEN against the etag read back when it is RELEASED — two different
+ *  responses from the store. HTTP allows the same tag to be spelled several
+ *  ways (`"abc"`, `W/"abc"`, and some implementations answer a bare `abc`), and
+ *  a store is free to answer a PUT and a GET differently. Compared verbatim,
+ *  that spelling difference reads as "somebody else owns this lock".
+ *
+ *  🔑 MEASURED, NOT SUPPOSED: 26.9.2 published successfully and then failed to
+ *  release its lease with `ownership changed`, while the lock object was
+ *  provably untouched — its `md5(body)` still equalled the store's etag, its
+ *  `state` was `active`, and its `token` was the one that run generated. Every
+ *  other conjunct held, so only the etag comparison could have failed, on a
+ *  value that had not changed. The publish is fail-safe, so the release was
+ *  live and correct; the cost was a lock stuck `active` and a manual takeover
+ *  on the NEXT publish — every publish, forever.
+ *
+ *  ⚠ NORMALISE FOR COMPARISON ONLY. What goes out in `If-Match` stays exactly
+ *  the bytes the store gave us: the server is the authority on its own tag
+ *  syntax, and rewriting a validator we send would be inventing one. This
+ *  weakens nothing — a weak validator is still only equal to the same opaque
+ *  value, and a mismatched lock still refuses.
+ *
+ *  ⚠ AND THE TEST DOUBLE COULD NOT HAVE CAUGHT IT. `testRead` and
+ *  `testConditionalPut` both derive their tag from `etagOf`, so the double is
+ *  self-consistent by construction and cannot express two spellings of one
+ *  tag. `RECUED_TEST_R2_ETAG_SKEW` exists to give it that vocabulary. */
+const normaliseEtag = (value) => {
+  const trimmed = String(value ?? '').trim();
+  const unweak = trimmed.startsWith('W/') ? trimmed.slice(2) : trimmed;
+  return unweak.length >= 2 && unweak.startsWith('"') && unweak.endsWith('"')
+    ? unweak.slice(1, -1)
+    : unweak;
+};
+
+/** Do these two entity tags identify the same representation? Empty never
+ *  matches — an absent tag is not agreement, and both call sites already refuse
+ *  a missing one before reaching here. */
+const etagMatches = (left, right) => {
+  const a = normaliseEtag(left);
+  const b = normaliseEtag(right);
+  return a.length > 0 && a === b;
+};
+
+/** ⚠ TEST-STORE ONLY, and the reason it exists is above: the local double
+ *  answered one spelling on both sides, so the release path's verbatim
+ *  comparison passed there while failing against the real store. This lets a
+ *  test answer a READ in a different (equally valid) spelling from the WRITE,
+ *  which is the variation production actually met. */
+const skewReadEtag = (etag) => {
+  switch (process.env.RECUED_TEST_R2_ETAG_SKEW ?? '') {
+    case 'weak': return `W/${etag}`;
+    case 'unquoted': return normaliseEtag(etag);
+    default: return etag;
+  }
+};
 const activeBody = () => Buffer.from(canonicalJson({
   schema: 1,
   state: 'active',
@@ -117,14 +175,14 @@ const withTestGuard = async (path, fn) => {
 const testRead = (path) => {
   if (!existsSync(path)) return { kind: 'missing' };
   const bytes = readFileSync(path);
-  return { kind: 'present', bytes, etag: etagOf(bytes) };
+  return { kind: 'present', bytes, etag: skewReadEtag(etagOf(bytes)) };
 };
 
 const testConditionalPut = async (path, body, { ifMatch = '', ifNoneMatch = false } = {}) =>
   withTestGuard(path, async () => {
     const current = testRead(path);
     if (ifNoneMatch && current.kind !== 'missing') return { ok: false, precondition: true };
-    if (ifMatch && (current.kind !== 'present' || current.etag !== ifMatch)) {
+    if (ifMatch && (current.kind !== 'present' || !etagMatches(current.etag, ifMatch))) {
       return { ok: false, precondition: true };
     }
     mkdirSync(dirname(path), { recursive: true });
@@ -269,7 +327,7 @@ try {
   const held = parseLease(current);
   if (
     current.kind !== 'present'
-    || current.etag !== expectedEtag
+    || !etagMatches(current.etag, expectedEtag)
     || held?.state !== 'active'
     || held?.token !== ownerToken
   ) {

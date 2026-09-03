@@ -72,7 +72,7 @@ export interface InFlightToolCall {
   detail?: ChatToolCall['detail'];
 }
 
-/** Single in-flight turn — built up incrementally from broadcast
+/** One in-flight turn — built up incrementally from broadcast
  *  events until `chat.message_complete`. The scaffold is created by
  *  whichever signal lands FIRST: the turn's first broadcast event
  *  (adoption — the production case, since the `chat.send` ack resolves
@@ -91,6 +91,10 @@ export interface InFlightTurn {
     kind: string;
     payload: unknown;
   }>;
+  /** Additional concurrent turns in the same session. Kept on the primary
+   *  scaffold as an optional compatibility extension so existing single-turn
+   *  state snapshots remain byte-for-byte unchanged. */
+  siblings?: ReadonlyArray<InFlightTurn>;
 }
 
 /** PB7 failure paint — one user-visible notice per FAILED turn,
@@ -316,11 +320,11 @@ export const prependOlderMessages = (
  *  scaffold handling makes this a CONFIRMATION, not the sole creation
  *  point: a no-op when the turn already completed (production
  *  ack-after-run — `message_complete` precedes the ack) or when the
- *  turn's first broadcast event already adopted a scaffold. A
- *  DIFFERENT-turn in-flight is still replaced — the local user's
- *  explicit send wins the single slot over an adopted concurrent turn
- *  (e.g. another tab's). Under an ack-before-run server this is the
- *  creation point again and adoption never fires — both orderings work. */
+ *  turn's first broadcast event already adopted a scaffold. A different
+ *  concurrent turn is preserved as a primary or sibling scaffold; the local
+ *  ack adopts another sibling rather than displacing another tab's work.
+ *  Under an ack-before-run server this is the creation point again and
+ *  adoption never fires — both orderings work. */
 export const beginInFlightTurn = (
   state: ChatThreadState,
   turn_id: string,
@@ -329,15 +333,13 @@ export const beginInFlightTurn = (
   if (state.inflight !== null && state.inflight.turn_id === turn_id) {
     return state;
   }
-  return {
-    ...state,
-    inflight: {
-      turn_id,
-      assistant_content: '',
-      tool_calls: [],
-      transparency: [],
-    },
-  };
+  if (state.inflight?.siblings?.some((turn) => turn.turn_id === turn_id)) return state;
+  return replaceInflightTurn(state, {
+    turn_id,
+    assistant_content: '',
+    tool_calls: [],
+    transparency: [],
+  });
 };
 
 /** Closed-list discriminator for *chat-thread*-scoped broadcast events.
@@ -631,16 +633,13 @@ export const reduceChatThreadEvent = (
           };
     const inflight = inflightForTurnEvent(base, event.turn_id);
     if (inflight === null) return base;
-    return {
-      ...base,
-      inflight: {
-        ...inflight,
-        transparency: [
-          ...inflight.transparency,
-          { kind: 'transparency', payload: event.event },
-        ],
-      },
-    };
+    return replaceInflightTurn(base, {
+      ...inflight,
+      transparency: [
+        ...inflight.transparency,
+        { kind: 'transparency', payload: event.event },
+      ],
+    });
   }
 
   // The remaining 3 kinds ride the resolved (possibly just-adopted)
@@ -649,30 +648,24 @@ export const reduceChatThreadEvent = (
   if (inflight === null) return baseState;
 
   if (event.kind === 'chat.token_streamed') {
-    return {
-      ...baseState,
-      inflight: {
-        ...inflight,
-        assistant_content: inflight.assistant_content + event.delta,
-      },
-    };
+    return replaceInflightTurn(baseState, {
+      ...inflight,
+      assistant_content: inflight.assistant_content + event.delta,
+    });
   }
   if (event.kind === 'chat.tool_call_started') {
-    return {
-      ...baseState,
-      inflight: {
-        ...inflight,
-        tool_calls: [
-          ...inflight.tool_calls,
-          {
-            tool_name: event.tool_name,
-            tier: event.tier,
-            args: event.args,
-            status: 'started',
-          },
-        ],
-      },
-    };
+    return replaceInflightTurn(baseState, {
+      ...inflight,
+      tool_calls: [
+        ...inflight.tool_calls,
+        {
+          tool_name: event.tool_name,
+          tier: event.tier,
+          args: event.args,
+          status: 'started',
+        },
+      ],
+    });
   }
   if (event.kind === 'chat.tool_call_completed') {
     // One completion finishes ONE dispatch: patch only the first
@@ -700,10 +693,7 @@ export const reduceChatThreadEvent = (
         ...(event.detail !== undefined ? { detail: event.detail } : {}),
       };
     });
-    return {
-      ...baseState,
-      inflight: { ...inflight, tool_calls: updated },
-    };
+    return replaceInflightTurn(baseState, { ...inflight, tool_calls: updated });
   }
   return baseState;
 };
@@ -711,11 +701,7 @@ export const reduceChatThreadEvent = (
 /** Route-side scaffold handling — resolve which in-flight scaffold a
  *  turn-scoped event applies to:
  *
- *    - the active scaffold, when its turn matches;
- *    - NULL when the single slot is held by a DIFFERENT turn (no
- *      stealing — the slot owner keeps streaming; the displaced turn's
- *      failure paint still records via the gate-independent PB7
- *      projection);
+ *    - an existing primary or sibling scaffold when its turn matches;
  *    - NULL when the turn already completed (late replay after
  *      `message_complete` must not resurrect a scaffold);
  *    - otherwise a FRESH scaffold for the event's turn — ADOPTION. In
@@ -730,7 +716,9 @@ const inflightForTurnEvent = (
   turn_id: string,
 ): InFlightTurn | null => {
   if (state.inflight !== null) {
-    return state.inflight.turn_id === turn_id ? state.inflight : null;
+    if (state.inflight.turn_id === turn_id) return state.inflight;
+    const sibling = state.inflight.siblings?.find((turn) => turn.turn_id === turn_id);
+    if (sibling) return sibling;
   }
   if (state.completed_turn_ids.includes(turn_id)) return null;
   return {
@@ -738,6 +726,34 @@ const inflightForTurnEvent = (
     assistant_content: '',
     tool_calls: [],
     transparency: [],
+  };
+};
+
+/** Replace/adopt one scaffold without displacing its concurrent siblings. */
+const replaceInflightTurn = (
+  state: ChatThreadState,
+  updated: InFlightTurn,
+): ChatThreadState => {
+  const { siblings: _nested, ...flatUpdated } = updated;
+  void _nested;
+  if (state.inflight === null) return { ...state, inflight: flatUpdated };
+  if (state.inflight.turn_id === updated.turn_id) {
+    const siblings = state.inflight.siblings;
+    return {
+      ...state,
+      inflight: siblings && siblings.length > 0
+        ? { ...flatUpdated, siblings }
+        : flatUpdated,
+    };
+  }
+  const siblings = state.inflight.siblings ?? [];
+  const found = siblings.some((turn) => turn.turn_id === updated.turn_id);
+  const nextSiblings = found
+    ? siblings.map((turn) => turn.turn_id === updated.turn_id ? flatUpdated : turn)
+    : [...siblings, flatUpdated];
+  return {
+    ...state,
+    inflight: { ...state.inflight, siblings: nextSiblings },
   };
 };
 
@@ -882,10 +898,20 @@ const applyMessageComplete = (
   return {
     ...state,
     messages: nextMessages,
-    inflight:
-      state.inflight !== null && state.inflight.turn_id === event.turn_id
-        ? null
-        : state.inflight,
+    inflight: (() => {
+      if (state.inflight === null) return null;
+      const siblings = state.inflight.siblings ?? [];
+      if (state.inflight.turn_id === event.turn_id) {
+        const [promoted, ...rest] = siblings;
+        if (!promoted) return null;
+        return rest.length > 0 ? { ...promoted, siblings: rest } : promoted;
+      }
+      const remaining = siblings.filter((turn) => turn.turn_id !== event.turn_id);
+      if (remaining.length === siblings.length) return state.inflight;
+      const { siblings: _drop, ...primary } = state.inflight;
+      void _drop;
+      return remaining.length > 0 ? { ...primary, siblings: remaining } : primary;
+    })(),
     turn_failures,
     plan_cards,
     completed_turn_ids,

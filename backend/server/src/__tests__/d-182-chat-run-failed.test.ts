@@ -8,6 +8,7 @@ import { wrapRecipeRunResult } from '../chat-tool-handlers.js';
 import { toolCallProvenanceEntry } from '../chat-turn-executor.js';
 import {
   stampExecuteResponseAuditRun,
+  stampExecuteResponseStandingDish,
   type ExecuteResponse,
 } from '../types.js';
 
@@ -29,16 +30,19 @@ const resp = (over: Partial<ExecuteResponse>): ExecuteResponse =>
 
 describe('D-182 — wrapRecipeRunResult run_failed', () => {
   it('threads only a host-stamped durable run id outside the model-visible result', () => {
-    const response = stampExecuteResponseAuditRun(
+    const response = stampExecuteResponseStandingDish(stampExecuteResponseAuditRun(
       resp({ success: true }),
       'run-exact-1',
-    );
+    ), 'dsh_standing_1');
     const r = wrapRecipeRunResult(response);
 
     expect(r.ok).toBe(true);
     expect(r.run_id).toBe('run-exact-1');
+    expect(r.dish_id).toBe('dsh_standing_1');
     expect(JSON.stringify(response)).not.toContain('run-exact-1');
+    expect(JSON.stringify(response)).not.toContain('dsh_standing_1');
     expect(Object.keys(response)).not.toContain('run_id');
+    expect(Object.keys(response)).not.toContain('dish_id');
   });
 
   it('a FAILED run → ok:true (model anti-loop) + run_failed = the first error message', () => {
@@ -90,8 +94,51 @@ describe('D-182 — persisted tool-call provenance honours run_failed (the row S
   });
 
   it('an ordinary ok dispatch still persists as status:ok with a result_ref', () => {
-    const entry = provEntry({ ok: true, result: { rows: [] } });
+    const entry = provEntry({
+      ok: true,
+      result: { rows: [] },
+      run_id: 'run-logged-1',
+      dish_id: 'dsh_logged_1',
+    });
     expect(entry.status).toBe('ok');
     expect(entry.result_ref).toBe('sess:turn:recipe.run');
+    expect(entry.run_id).toBe('run-logged-1');
+    expect(entry.dish_id).toBe('dsh_logged_1');
+    expect(entry.dish_promotable).toBeUndefined();
+  });
+
+  it('marks only a terminal successful ad-hoc run as dish-promotable', () => {
+    const completed = provEntry({
+      ok: true,
+      result: { rows: [] },
+      run_id: 'run-promotable',
+    });
+    const held = provEntry({
+      ok: true,
+      result: { awaiting_approval: true },
+      run_held: { kind: 'approval' },
+      run_id: 'run-held',
+    });
+
+    expect(completed.dish_promotable).toBe(true);
+    expect(held.run_id).toBe('run-held');
+    expect(held.dish_promotable).toBeUndefined();
+  });
+
+  it('a failed/cancelled dispatch keeps its durable addresses and detail', () => {
+    const entry = provEntry({
+      ok: false,
+      reason: 'run_cancelled',
+      detail: 'the owner stopped it',
+      run_id: 'run-logged-2',
+      dish_id: 'dsh_logged_2',
+    });
+    expect(entry).toMatchObject({
+      status: 'error',
+      reason: 'run_cancelled',
+      detail: 'the owner stopped it',
+      run_id: 'run-logged-2',
+      dish_id: 'dsh_logged_2',
+    });
   });
 });

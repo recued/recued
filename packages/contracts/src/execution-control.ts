@@ -20,6 +20,7 @@
 import type { ExecutionSource } from './commits.js';
 import type { ExecutionLane, ProgressContract } from './execution-lane.js';
 import type { StallReason } from './stall-detection.js';
+import type { RiskTier } from './ingredient.js';
 
 /** Display-clarity category for a failed / killed run, surfaced on the Runs
  *  surface so the user can tell *why* a run ended (D-181 §5/§12). Mapped from
@@ -133,12 +134,11 @@ export type KillDescriptor =
 
 /** The lifecycle state of an active entry as it appears on the live list.
  *  `stopping` (D-181 slice-4 #1 resolution) is a run the owner has killed /
- *  whose queued call was cancelled but which has not yet retired from the list:
- *  the engine is unwinding (a SIGKILLed subprocess fails fast; an in-flight
- *  external-io / `ai` await still runs to completion before the run halts at the
- *  next step boundary). It gives the owner instant feedback that the kill
- *  registered — the entry flips `running` → `stopping` on the `killed` /
- *  `cancelled` delta, then drops on `retired` when the run actually completes. */
+ *  whose queued call was cancelled but which has not yet retired from the list.
+ *  It gives the owner instant feedback that the kill registered — the entry
+ *  flips `running` → `stopping`, then drops when the caller-facing run abandons
+ *  its await. A non-cancellable external/AI transport may continue draining
+ *  behind that terminal boundary; its late result is commit-tombstoned. */
 export type ActiveExecutionState = 'running' | 'waiting_slot' | 'detached' | 'stopping';
 
 /** One row of the live active-list (D-181 §4). A `run` entry is a recipe run
@@ -155,6 +155,12 @@ export interface ActiveExecutionEntry {
   run_id?: string;
   recipe_id: string;
   dish_id?: string;
+  /** Bounded, host-derived description of what the live run is doing. These
+   *  fields are safe to project into an agent turn: they describe declared
+   *  recipe form only and never include config, vault, context, or outputs. */
+  intent?: string;
+  risk?: RiskTier;
+  effect?: string;
   step_id?: string;
   /** The lane this entry occupies / waits on; absent for a detached-job. */
   lane?: ExecutionLane;

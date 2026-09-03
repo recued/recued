@@ -180,6 +180,9 @@ const notifier = (): PreflightNotifier & {
 };
 
 const killedRegistry = (): InFlightRegistry => ({
+  runningTwin: () => null,
+  claimRunningTwin: () => ({ leader: true }),
+  settleRunningTwin: () => {},
   registerRun: () => {},
   completeRun: () => {},
   takeTermination: () => 'killed',

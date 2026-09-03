@@ -884,14 +884,20 @@ export type {
   ApiExecutionBinding, RestExecutionBinding, RestResponseCaptureSpec, RestResponseJsonSpec, RestRequestJsonSpec, GraphQLExecutionBinding, McpExecutionBinding,
   WebhookExecutionBinding, QueueSubscriptionBinding, PushChannelBinding,
   ConnectorRuntimeSpec, ConnectorLifecycleSpec, ConnectorExecutionBinding,
-  ConnectorMethodBinding, CliArgvTemplateEntry, CliInvocationCwdSpec, CliMethodBinding, CliInputMaterializeSpec, CliProgressSpec, CliOutputCaptureSpec, CliDetachedMarkerCompletion,
+  ConnectorMethodBinding, CliArgvTemplateEntry, CliInvocationCwdSpec, CliMethodBinding, CliInputMaterializeSpec,
+  CliProgressSpec, D259CliProgressSpec,
+  CliHeartbeatProgressSpec, CliFileGrowthProgressSpec,
+  CliProgressAdapter,
+  CliOutputCaptureSpec, CliDetachedMarkerCompletion,
   // The three `CliOutputCaptureSpec` arms. `dir_arg` is the historical
   // engine-owned output dir; `from_input_arg` captures the file the tool edited
   // in place at its materialized input path; `from_stdout` streams what the tool
   // PRINTED to an engine-owned file — the arm that lets a stdout-only filter
   // (csvgrep, ripgrep, jq) read a warehouse file at all.
   CliOutputDirCaptureSpec, CliOutputInPlaceCaptureSpec, CliOutputStdoutCaptureSpec,
-  CliDetachedCancelSpec, CliDetachedJobSpec, ConnectorEventSpec,
+  CliDetachedCancelSpec, CliDetachedJobSpec, CliDetachedSupervisionSpec,
+  LegacyCliDetachedSupervisionSpec, ReadyCliDetachedSupervisionSpec,
+  ConnectorEventSpec,
   ApiTransport, McpPackReviewRow, AuthKind, OAuth2Flow, CallbackUrlStrategy, OAuthScopeSeparator,
   RestMethod, GraphQLOperationType, QueueKind, ApiExecutionBindingKind,
   ConnectorTransport, ConnectorWireProtocol, ConnectorAuthMethod,
@@ -919,7 +925,9 @@ export {
   isCatalogForm, resolveCatalogOperationPolicy, resolveCliReachabilityPolicy, isRiskTierAtMost,
   // Capture-arm narrowing. Both validators and the executor discriminate
   // through these helpers rather than sniffing keys.
-  isInPlaceCapture, isStdoutCapture,
+  isInPlaceCapture, isStdoutCapture, isD259CliProgressSpec,
+  isReadyCliDetachedSupervisionSpec,
+  CLI_PROGRESS_ADAPTERS,
   // D-209 §1.3 — the op-risk APPROVAL FLOOR (the single source the runtime clamp +
   // the composition/manifest authoring validators derive from). D-211 §2 adds
   // `clampToFloor` — the owner-override clamp (write-gate + fail-closed resolve) —
@@ -3061,6 +3069,7 @@ export {
 export type {
   ServiceInstallKind,
   ServiceCheckKind,
+  ServiceCheckSpec,
   ServiceEventName,
   ServiceRestartPolicy,
   ServiceTemplateOS,
@@ -3132,6 +3141,7 @@ export {
 // Supervision feature — cli-daemon keep-alive `supervision.*` rpc wire types.
 export type {
   SupervisionMode,
+  SupervisedDaemonReadiness,
   SupervisionSetRequest,
   SupervisionDaemonRow,
   SupervisionListResponse,

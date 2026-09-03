@@ -937,6 +937,9 @@ interface ChatMainTurnPromptPacket {
    *  stores match titles (9/10 vs 9/10) and beat no-index (1/10) on the
    *  two-referent case, and 9/10 vs 4/10 on multi-store spread. */
   readonly index_context?: string;
+  /** D-259 §7.4.2 — one bounded declaration-only line per live run in this
+   * caller's session, plus the conflict-avoidance steering sentence. */
+  readonly in_flight_context?: string;
   /** Day-granular current-date stamp (`formatChatCurrentDate`) so the
    *  model can anchor date-relative asks ("tomorrow", "this week") —
    *  without it the model has NO clock: observed live (bench task 43,
@@ -1331,6 +1334,7 @@ export const composeChatMainTurnPromptParts = (
       : {}),
     chat_tail: packet.content.chat_tail,
     ...(packet.current_date ? { current_date: packet.current_date } : {}),
+    ...(packet.in_flight_context ? { in_flight_context: packet.in_flight_context } : {}),
     user_message: packet.content.user_message,
     ...(packet.execution_case_context
       && packet.execution_case_context.cards.length > 0
@@ -1377,6 +1381,10 @@ export const toolCallProvenanceEntry = (
   const tier: ToolTier = tier_override
     ?? registry.getByName(tc.tool)?.tier
     ?? (isTier1ToolName(tc.tool as Tier1ToolName) ? 1 : 2);
+  const runAddress = {
+    ...(result.run_id !== undefined ? { run_id: result.run_id } : {}),
+    ...(result.dish_id !== undefined ? { dish_id: result.dish_id } : {}),
+  };
   if (result.ok) {
     // D-182 — a FAILED run (run_failed set) PERSISTS as an error row, mirroring the
     // live broadcast — else `chat.message_complete` would replace the transient
@@ -1389,6 +1397,7 @@ export const toolCallProvenanceEntry = (
         status: 'error',
         reason: 'execution_error',
         detail: result.run_failed.detail,
+        ...runAddress,
         started_at,
         completed_at,
       };
@@ -1399,6 +1408,12 @@ export const toolCallProvenanceEntry = (
       args: tc.args,
       result_ref: `${session_id}:${turn_id}:${tc.tool}`,
       status: 'ok',
+      ...runAddress,
+      ...(result.run_id !== undefined
+        && result.dish_id === undefined
+        && result.run_held === undefined
+          ? { dish_promotable: true as const }
+          : {}),
       started_at,
       completed_at,
     };
@@ -1409,6 +1424,8 @@ export const toolCallProvenanceEntry = (
     args: tc.args,
     status: 'error',
     reason: result.reason,
+    ...(result.detail !== undefined ? { detail: result.detail } : {}),
+    ...runAddress,
     started_at,
     completed_at,
   };
@@ -1514,6 +1531,7 @@ export interface RunChatTurnInputs {
    *  orchestrator gathered (Tier 2/3 gates already applied). */
   readonly available_tools: ReadonlyArray<ChatMainTurnTool>;
   readonly index_context?: string;
+  readonly in_flight_context?: string;
   /** The assembled content prompt parts (`chat_tail` + current
    *  `user_message`) after the before-turn gather. The model packet keeps
    *  the legacy JSON field names, but their source is the prompt content
@@ -1703,6 +1721,9 @@ export const runChatTurn = async (
         content: contentForPrompt(),
         current_date: currentDate,
         ...(inputs.index_context ? { index_context: inputs.index_context } : {}),
+        ...(inputs.in_flight_context
+          ? { in_flight_context: inputs.in_flight_context }
+          : {}),
         ...(inputs.correction_context.length > 0
           ? { correction_context: inputs.correction_context }
           : {}),

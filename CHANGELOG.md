@@ -7,6 +7,58 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.9.3 — 2026-09-03
+
+Recued can now stop a job it started for you. Ask it to run something, change
+your mind, and say "do this instead" — until now the new thing started and the
+old one kept going, so "instead" quietly became "as well". Alongside that: if
+you started your server the way the setup instructions tell you to, there was no
+supported way to upgrade it. That is fixed, and so is a search that was getting
+worse the longer you talked to it.
+
+### Fixed
+
+- **`recued stop` can stop the server Recued actually starts.** A server run with
+  `recued serve` — what the startup banner prints, and what start-at-login uses
+  on both Linux and macOS — left no process file behind, so `recued stop` could
+  not see it. That closed a circle: the installer refuses to upgrade a working
+  install and points at `recued update apply`; `apply` refuses while a server is
+  running and points at stopping it; `stop` could not stop it. If you had no
+  browser tab paired, there was no way through. `stop` now finds the running
+  server the same way the updater already did, and tells you if start-at-login
+  will bring it back.
+- **`recued status` answers about your server, not about a port.** It asked
+  whether *anything* was answering on the port it was given, so a second server
+  on the same port looked like yours, and your own server could be missed if it
+  had bound a different one.
+- **Search stopped requiring every word.** Asking Recued to recall something
+  only matched when *every* word in your question appeared in the same record —
+  so the more you said, the less it found. On a fixed set of records where two of
+  the words always matched, five-word questions found nothing at all. Longer,
+  more natural questions now work rather than working against you.
+- **Chat setup steps and a messaging gap** left over from the previous release.
+
+### Added
+
+- **"Stop that" works.** Recued can end a run it started, so redirecting it
+  mid-task no longer leaves the first job running against your accounts.
+- **A startup warning when an installed pack can no longer run.** Some older
+  packs declared their command-line steps in a form Recued no longer accepts.
+  Nothing looked wrong at startup and the first sign was a step failing at the
+  moment you wanted it — your server now tells you at boot, and names the pack,
+  instead of leaving you to find out.
+
+### Improved
+
+- **A step with no time limit can no longer also be unwatched.** Removing the
+  deadline from a long-running command left nothing able to notice it had hung —
+  it would simply run until you spotted it and stopped it by hand. A step without
+  a deadline must now report progress, so a stall is detected either way.
+- **Release publishing** verifies its own bookkeeping more carefully: a
+  successful publish no longer leaves its internal lock held, and the check that
+  compares the published source against this one no longer trips over which
+  machine built it.
+
 ## 26.9.2 — 2026-09-02
 
 This release is about what happens when an update is interrupted. Power loss, a

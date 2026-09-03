@@ -15,8 +15,9 @@
 //   - the **cli executor** attaches a SIGKILL handle for the `service`
 //     subprocess of the run it's currently executing.
 //
-// Control: `kill` (a running run — SIGKILL the subprocess if attached, else
-// abandon the run's await), `cancel` / `promote` (a queued call — delegated to
+// Control: `kill` (a running run — SIGKILL the subprocess if attached and
+// abort the caller-facing await; a non-cancellable transport drains behind the
+// killed terminal), `cancel` / `promote` (a queued call — delegated to
 // the semaphore). Owner-only enforcement + the bridge-approval gate live in the
 // rpc handler; this class is unauthenticated substrate. See D-181
 // §7.
@@ -31,7 +32,10 @@ import type {
   KillDescriptor,
   LaneStatus,
   ProgressContract,
+  RiskTier,
 } from '@recued/contracts';
+import { deriveChannelSessionId } from '@recued/gateway';
+
 import type { GatedCallEntry, LaneSemaphore } from './lane-semaphore.js';
 
 /** How the live-control surface terminated a run, as recorded by the registry.
@@ -46,6 +50,10 @@ export interface RunRegistration {
   run_id: string;
   recipe_id: string;
   dish_id?: string;
+  /** Host-derived declaration summary. Never caller data or run output. */
+  intent?: string;
+  risk?: RiskTier;
+  effect?: string;
   source: ExecutionSource;
   /** Attended (a human is plausibly watching) vs unattended (scheduled /
    *  reactive / housekeeping / webhook). The caller derives it from the run's
@@ -54,11 +62,52 @@ export interface RunRegistration {
   /** Session-scoping for the active list (§7b). Absent for unattended runs. */
   session_id?: string;
   started_at: number;
-  /** Abandon the run's await — the external-io/`ai` kill path (no inference
-   *  cancel; the dangling result is tombstoned by the handler). Invoked by
-   *  `kill` after any subprocess SIGKILL. */
+  /** Abort the caller-facing run await — the external-io/`ai` kill path (no
+   *  inference cancel; the draining result is tombstoned by the commit
+   *  Gateway). Invoked by `kill` after any subprocess SIGKILL. */
   abort: () => void;
 }
+
+/** A running-twin never rejects its shared promise. Keeping failure as data
+ *  prevents an unobserved leader failure from becoming an unhandled rejection
+ *  when no duplicate happened to attach. */
+export type RunningTwinOutcome =
+  | { status: 'completed'; response: unknown }
+  | { status: 'failed'; error: unknown };
+
+export type RunningTwinClaim =
+  | { leader: true }
+  | { leader: false; run_id: string; outcome: Promise<RunningTwinOutcome> };
+
+interface RunningTwinSlot {
+  run_id: string;
+  outcome: Promise<RunningTwinOutcome>;
+  settle: (outcome: RunningTwinOutcome) => void;
+}
+
+export interface AgentStopCandidate {
+  run_id: string;
+  recipe_id: string;
+  started_at: number;
+}
+
+/** Internal result keeps `not_yours` distinct for audit. The MCP wire collapses
+ * it to `not_found` so a guessed run id cannot become an ownership oracle. */
+export type AgentStopResult =
+  | ({ status: 'stopped' } & AgentStopCandidate)
+  | { status: 'ambiguous'; candidates: AgentStopCandidate[] }
+  | { status: 'already_terminal'; run_id?: string }
+  | { status: 'not_found' }
+  | { status: 'not_yours' };
+
+interface TerminalRunAddress extends AgentStopCandidate {
+  origin: RunRegistration['origin'];
+  source: ExecutionSource;
+  completed_at: number;
+}
+
+const TERMINAL_ADDRESS_LIMIT = 256;
+const TERMINAL_ADDRESS_TTL_MS = 60 * 60 * 1_000;
 
 /** A minimal narrow emit hook so the registry can fan live deltas onto the
  *  D-121 execution bus without importing the bus module (keeps this substrate
@@ -83,13 +132,35 @@ interface SubprocessHandle {
   kill: () => void;
 }
 
+interface RunProgress {
+  contract: ProgressContract;
+  last_signal_at: number;
+}
+
 export class InFlightRegistry {
   private readonly runs = new Map<string, RunRegistration>();
+  /** D-259 — exact D-157 action identity to one pre-dispatch leader. The slot
+   *  intentionally outlives active-list retirement until the handler has built
+   *  its final response, so a late duplicate receives that same response. */
+  private readonly runningTwins = new Map<string, RunningTwinSlot>();
+  private readonly runningTwinKeyByRun = new Map<string, string>();
+  /** Recent addressability only, for D-259's `already_terminal` response. The
+   * durable audit log remains authoritative history; this bounded cache holds
+   * no args, outputs, config, or control handle. */
+  private readonly terminalRuns = new Map<string, TerminalRunAddress>();
   /** run_id → (child_id → handle). Keyed per CHILD, not per run: a run can have
    *  several `service` subprocesses live at once (parallel prefetch), and a kill
    *  must reach every one while each child detaches only its own handle. */
   private readonly subprocesses = new Map<string, Map<string, SubprocessHandle>>();
+  /** Owner-kill callers may abandon an external/AI await immediately, but a
+   * finite CLI tree must finish its close/error cleanup first. These waiters
+   * resolve when the last attached child for a run detaches. */
+  private readonly subprocessDrainWaiters = new Map<string, Set<() => void>>();
   private readonly terminated = new Map<string, RunTermination>();
+  /** Latest host-observed liveness for each run. This is deliberately only a
+   *  contract + timestamp: progress payloads, arguments, and results never
+   *  enter the next-turn prompt context. */
+  private readonly progressByRun = new Map<string, RunProgress>();
   /** Runs whose current heavy call the stall monitor flagged — surfaced as
    *  `progress.stalled` in the snapshot + fanned as a `stalled` delta. Cleared
    *  by `completeRun`. */
@@ -116,14 +187,54 @@ export class InFlightRegistry {
     this.terminated.delete(reg.run_id);
   }
 
+  /** Non-claiming fast path for a duplicate that arrives after the leader has
+   *  crossed its dispatch boundary. A miss is only a hint; callers must still
+   *  use `claimRunningTwin` at their own boundary to close the race. */
+  runningTwin(identity_key: string): { run_id: string; outcome: Promise<RunningTwinOutcome> } | null {
+    const slot = this.runningTwins.get(identity_key);
+    return slot === undefined ? null : { run_id: slot.run_id, outcome: slot.outcome };
+  }
+
+  /** Atomically become the one effect-producing leader for an action identity,
+   *  or attach to the already-running leader. JavaScript's synchronous Map
+   *  mutation makes the check+insert indivisible within this process. */
+  claimRunningTwin(identity_key: string, run_id: string): RunningTwinClaim {
+    const existing = this.runningTwins.get(identity_key);
+    if (existing !== undefined) {
+      return { leader: false, run_id: existing.run_id, outcome: existing.outcome };
+    }
+    let settle!: (outcome: RunningTwinOutcome) => void;
+    const outcome = new Promise<RunningTwinOutcome>((resolve) => {
+      settle = resolve;
+    });
+    this.runningTwins.set(identity_key, { run_id, outcome, settle });
+    this.runningTwinKeyByRun.set(run_id, identity_key);
+    return { leader: true };
+  }
+
+  /** Resolve and retire a leader slot. Idempotent and ownership-checked: a stale
+   *  run can never settle a newer leader that reused the same identity. */
+  settleRunningTwin(run_id: string, outcome: RunningTwinOutcome): void {
+    const key = this.runningTwinKeyByRun.get(run_id);
+    if (key === undefined) return;
+    const slot = this.runningTwins.get(key);
+    this.runningTwinKeyByRun.delete(run_id);
+    if (slot === undefined || slot.run_id !== run_id) return;
+    this.runningTwins.delete(key);
+    slot.settle(outcome);
+  }
+
   /** Drop a run from the live list. Call AFTER the handler has read any
    *  termination (`takeTermination`) — this also clears the `terminated` marker
    *  so a killed-then-thrown run can't leak it. */
   completeRun(run_id: string): void {
     const reg = this.runs.get(run_id);
+    if (reg !== undefined) this.rememberTerminal(reg);
     this.runs.delete(run_id);
     this.subprocesses.delete(run_id);
+    this.resolveSubprocessDrain(run_id);
     this.terminated.delete(run_id);
+    this.progressByRun.delete(run_id);
     this.stalledRuns.delete(run_id);
     // D-181 slice-4 follow-up #2 — a run leaving the active list is a membership
     // change that, on the durable-pause / trigger-skipped exit paths, carries NO
@@ -149,6 +260,78 @@ export class InFlightRegistry {
    *  the auto-run scheduler's own in-flight counter + adapter drains. */
   activeRunCount(): number {
     return this.runs.size;
+  }
+
+  /** D-259 §7.4.3–4 — correlate intent and stop exactly one live run owned by
+   * this caller. The caller supplies recipe OR run intent; authority is derived
+   * from the STORED source, never from request fields.
+   *
+   * 🔑 Scoped by `channel_session_id`, not by a per-channel field, so ONE
+   * method serves every door: `mcp:<token>` for an agent, `chat:<session>` for
+   * the chat model, `messenger:<vendor>:<from>` for messenger. The arity rule
+   * (§7.4.3) — one match stops, more than one REFUSES rather than picks — is
+   * the part that must not be re-implemented per channel, which is why this
+   * generalised instead of growing a twin. */
+  stopOwnRun(
+    channel_session_id: string,
+    intent: { recipe_id: string } | { run_id: string },
+  ): AgentStopResult {
+    this.pruneTerminalAddresses();
+    const owns = (reg: Pick<RunRegistration, 'origin' | 'source'>): boolean =>
+      reg.origin === 'attended'
+      && deriveChannelSessionId(reg.source) === channel_session_id;
+    const candidate = (reg: Pick<RunRegistration, 'run_id' | 'recipe_id' | 'started_at'>): AgentStopCandidate => ({
+      run_id: reg.run_id,
+      recipe_id: reg.recipe_id,
+      started_at: reg.started_at,
+    });
+
+    if ('run_id' in intent) {
+      const live = this.runs.get(intent.run_id);
+      if (live !== undefined) {
+        if (!owns(live)) return { status: 'not_yours' };
+        const status = this.kill(live.run_id);
+        return status === 'killed'
+          ? { status: 'stopped', ...candidate(live) }
+          : { status: 'already_terminal', run_id: live.run_id };
+      }
+      const terminal = this.terminalRuns.get(intent.run_id);
+      if (terminal !== undefined) {
+        return owns(terminal)
+          ? { status: 'already_terminal', run_id: terminal.run_id }
+          : { status: 'not_yours' };
+      }
+      return { status: 'not_found' };
+    }
+
+    const liveForRecipe = [...this.runs.values()].filter(
+      (reg) => reg.recipe_id === intent.recipe_id && owns(reg),
+    );
+    if (liveForRecipe.length > 1) {
+      return {
+        status: 'ambiguous',
+        candidates: liveForRecipe.map(candidate).sort((a, b) => a.started_at - b.started_at),
+      };
+    }
+    if (liveForRecipe.length === 1) {
+      const live = liveForRecipe[0]!;
+      const status = this.kill(live.run_id);
+      return status === 'killed'
+        ? { status: 'stopped', ...candidate(live) }
+        : { status: 'already_terminal', run_id: live.run_id };
+    }
+    const ownTerminal = [...this.terminalRuns.values()]
+      .filter((reg) => reg.recipe_id === intent.recipe_id && owns(reg))
+      .sort((a, b) => b.completed_at - a.completed_at)[0];
+    if (ownTerminal !== undefined) {
+      return { status: 'already_terminal', run_id: ownTerminal.run_id };
+    }
+    const existsButNotOwned = [...this.runs.values()].some(
+      (reg) => reg.recipe_id === intent.recipe_id,
+    ) || [...this.terminalRuns.values()].some(
+      (reg) => reg.recipe_id === intent.recipe_id,
+    );
+    return existsButNotOwned ? { status: 'not_yours' } : { status: 'not_found' };
   }
 
   /** The control-driven termination for a settled run, if any (`killed` /
@@ -180,10 +363,41 @@ export class InFlightRegistry {
     const inner = this.subprocesses.get(run_id);
     if (!inner) return;
     inner.delete(child_id);
-    if (inner.size === 0) this.subprocesses.delete(run_id);
+    if (inner.size === 0) {
+      this.subprocesses.delete(run_id);
+      this.resolveSubprocessDrain(run_id);
+    }
+  }
+
+  /** Await real finite-child cleanup after a kill. External/AI-only runs have
+   * no attached child and resolve immediately, preserving abandon-await. */
+  waitForSubprocessDrain(run_id: string): Promise<void> {
+    if ((this.subprocesses.get(run_id)?.size ?? 0) === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      let waiters = this.subprocessDrainWaiters.get(run_id);
+      if (waiters === undefined) {
+        waiters = new Set();
+        this.subprocessDrainWaiters.set(run_id, waiters);
+      }
+      waiters.add(resolve);
+    });
   }
 
   // ── progress (cli stall monitor) ─────────────────────────────────
+
+  /** D-259 §7.4.2 — record one semantic liveness signal for the live
+   *  run. The engine reports phase transitions as `provider-event`; the CLI
+   *  monitor reports only adapter-validated heartbeat/file-growth signals.
+   *  No-op after retirement, and a real signal clears a prior stall flag. */
+  reportProgress(
+    run_id: string,
+    contract: Exclude<ProgressContract, 'silent'>,
+    at: number = Date.now(),
+  ): void {
+    if (!this.runs.has(run_id)) return;
+    this.progressByRun.set(run_id, { contract, last_signal_at: at });
+    this.stalledRuns.delete(run_id);
+  }
 
   /** D-181 slice-4 follow-up #2 — the cli stall monitor raised a no-progress
    *  flag (attended) or an imminent auto-kill (unattended) on this run's current
@@ -307,12 +521,23 @@ export class InFlightRegistry {
       const kill: KillDescriptor = firstChild
         ? { mechanism: 'sigkill', pid: firstChild.pid }
         : { mechanism: 'abandon_await', run_id: reg.run_id };
-      const progressContract: ProgressContract = 'silent';
+      const observedProgress = this.progressByRun.get(reg.run_id);
+      const laneSignalAt = held?.last_signal_at;
+      const lastSignalAt = observedProgress === undefined
+        ? laneSignalAt
+        : laneSignalAt === undefined
+          ? observedProgress.last_signal_at
+          : Math.max(observedProgress.last_signal_at, laneSignalAt);
+      const progressContract: ProgressContract = observedProgress?.contract
+        ?? (laneSignalAt === undefined ? 'silent' : 'provider-event');
       entries.push({
         entry_kind: 'run',
         run_id: reg.run_id,
         recipe_id: reg.recipe_id,
         ...(reg.dish_id !== undefined ? { dish_id: reg.dish_id } : {}),
+        ...(reg.intent !== undefined ? { intent: reg.intent } : {}),
+        ...(reg.risk !== undefined ? { risk: reg.risk } : {}),
+        ...(reg.effect !== undefined ? { effect: reg.effect } : {}),
         ...(held?.descriptor.step_id !== undefined ? { step_id: held.descriptor.step_id } : {}),
         ...(held ? { lane: held.lane } : {}),
         // D-181 slice-4 #1 resolution — a run the owner KILLED but which has not
@@ -338,7 +563,7 @@ export class InFlightRegistry {
         ...(held ? { slot_acquired_at: held.slot_acquired_at } : {}),
         progress: {
           contract: progressContract,
-          ...(held?.last_signal_at !== undefined ? { last_signal_at: held.last_signal_at } : {}),
+          ...(lastSignalAt !== undefined ? { last_signal_at: lastSignalAt } : {}),
           // The stall flag is owned by the cli monitor (`markStalled`), not the
           // lane running-entry — the run's heavy subprocess and its lane slot are
           // distinct layers — so the registry's per-run flag is authoritative.
@@ -359,6 +584,9 @@ export class InFlightRegistry {
         ...(run_id !== undefined ? { run_id } : {}),
         recipe_id: g.descriptor.recipe_id,
         ...(reg?.dish_id !== undefined ? { dish_id: reg.dish_id } : {}),
+        ...(reg?.intent !== undefined ? { intent: reg.intent } : {}),
+        ...(reg?.risk !== undefined ? { risk: reg.risk } : {}),
+        ...(reg?.effect !== undefined ? { effect: reg.effect } : {}),
         ...(g.descriptor.step_id !== undefined ? { step_id: g.descriptor.step_id } : {}),
         lane: g.lane,
         state: 'waiting_slot',
@@ -382,11 +610,84 @@ export class InFlightRegistry {
     return { entries: filtered, lanes: this.semaphore.laneStatus() };
   }
 
+  /** D-259 §7.4.2 — narrow model context for the caller's NEXT concurrent
+   * turn. One bounded line per attended run, no queue-management view and no
+   * caller arguments/results. Unattended work is deliberately excluded even
+   * though the owner's `snapshot(session_id)` includes it. */
+  promptContext(session_id: string): string | undefined {
+    const rows = this.snapshot(session_id).entries
+      .filter((entry) =>
+        entry.entry_kind === 'run'
+        && entry.origin === 'attended'
+        && entry.session_id === session_id
+        && entry.run_id !== undefined)
+      .sort((a, b) => a.started_at - b.started_at);
+    if (rows.length === 0) return undefined;
+    const lines = rows.map((entry) => {
+      const progress = [
+        entry.progress.contract,
+        entry.progress.last_signal_at === undefined
+          ? 'last=none'
+          : `last=${entry.progress.last_signal_at}`,
+        `stalled=${String(entry.progress.stalled)}`,
+      ].join(',');
+      const line = [
+        `run=${entry.run_id}`,
+        `recipe=${entry.recipe_id}`,
+        ...(entry.dish_id === undefined ? [] : [`dish=${entry.dish_id}`]),
+        `state=${entry.state}`,
+        `started_at=${entry.started_at}`,
+        `progress=${progress}`,
+        ...(entry.intent === undefined ? [] : [`intent=${JSON.stringify(entry.intent)}`]),
+        ...(entry.risk === undefined ? [] : [`risk=${entry.risk}`]),
+        ...(entry.effect === undefined ? [] : [`effect=${JSON.stringify(entry.effect)}`]),
+      ].join('; ');
+      return line.length <= 512 ? line : `${line.slice(0, 511)}…`;
+    });
+    return [
+      'Work is already in flight. Prefer answering, inspecting, or stopping it before starting a matching or conflicting write.',
+      ...lines,
+    ].join('\n');
+  }
+
   /** Per-lane occupancy snapshot — the slice-5 server-status lanes line
    *  (D-181 §12) reads this directly without building the full active-list
    *  entry set. Pure passthrough to the governor. */
   laneStatus(): LaneStatus[] {
     return this.semaphore.laneStatus();
+  }
+
+  private rememberTerminal(reg: RunRegistration): void {
+    this.terminalRuns.delete(reg.run_id);
+    this.terminalRuns.set(reg.run_id, {
+      run_id: reg.run_id,
+      recipe_id: reg.recipe_id,
+      started_at: reg.started_at,
+      origin: reg.origin,
+      source: reg.source,
+      completed_at: Date.now(),
+    });
+    this.pruneTerminalAddresses();
+    while (this.terminalRuns.size > TERMINAL_ADDRESS_LIMIT) {
+      const oldest = this.terminalRuns.keys().next().value;
+      if (oldest === undefined) break;
+      this.terminalRuns.delete(oldest);
+    }
+  }
+
+  private resolveSubprocessDrain(run_id: string): void {
+    const waiters = this.subprocessDrainWaiters.get(run_id);
+    if (waiters === undefined) return;
+    this.subprocessDrainWaiters.delete(run_id);
+    for (const resolve of waiters) resolve();
+  }
+
+  private pruneTerminalAddresses(): void {
+    const floor = Date.now() - TERMINAL_ADDRESS_TTL_MS;
+    for (const [run_id, terminal] of this.terminalRuns) {
+      if (terminal.completed_at >= floor) continue;
+      this.terminalRuns.delete(run_id);
+    }
   }
 
   private findGated(call_id: string): GatedCallEntry | undefined {

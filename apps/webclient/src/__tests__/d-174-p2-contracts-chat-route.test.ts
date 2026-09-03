@@ -62,6 +62,8 @@ import {
   CHAT_ROUTE_ACTIVATION_ATTR,
   CHAT_ROUTE_ACTIVATION_CARD_ATTR,
   CHAT_ROUTE_ACTIVITY_ATTR,
+  CHAT_ROUTE_ACTIVITY_DISH_PROMOTE_ATTR,
+  CHAT_ROUTE_ACTIVITY_DISH_STATUS_ATTR,
   CHAT_ROUTE_ACTIVITY_ROW_ATTR,
   CHAT_ROUTE_ACTIVITY_TOGGLE_ATTR,
   CHAT_ROUTE_ANSWER_WAITING_ATTR,
@@ -1915,7 +1917,9 @@ describe('D-174 P2 chat route — route-side scaffold handling', () => {
     [key: string]: unknown;
   };
 
-  const mountChatRouteWithStreamingBroadcasts = () => {
+  const mountChatRouteWithStreamingBroadcasts = (
+    createDishFromRun?: (payload: { run_id: string }) => Promise<{ dish: { dish_id: string } }>,
+  ) => {
     const doc = makeFakeDocument();
     const root = doc.createElement('div');
     const listeners = new Map<string, Array<(event: RouteBroadcast) => void>>();
@@ -1923,12 +1927,15 @@ describe('D-174 P2 chat route — route-side scaffold handling', () => {
     const sendGate = new Promise<{ turn_id: string }>((resolve) => {
       resolveSend = resolve;
     });
-    const conn: ChatRouteConn = (async (method: string) => {
+    const conn: ChatRouteConn = (async (method: string, payload?: unknown) => {
       if (method === 'chat.sessions.list') return { sessions: [sessionSummary()] };
       if (method === 'chat.session.get') return { ...chatSession(), messages: [] };
       if (method === 'chat.session.create') return { session_id: 'chat_2' };
       if (method === 'chat.send') return sendGate;
       if (method === 'server.getLLMConfig') return { config: { local: { enabled: true } } };
+      if (method === 'dishes.createFromRun' && createDishFromRun !== undefined) {
+        return createDishFromRun(payload as { run_id: string });
+      }
       throw new Error(`unexpected method ${method}`);
     }) as ChatRouteConn;
 
@@ -2215,6 +2222,84 @@ describe('D-174 P2 chat route — route-side scaffold handling', () => {
       expect(disclosureRows).toHaveLength(1);
       expect(allText(disclosureRows[0]!)).toContain('used mail.search ' + checkMark);
       expect(allText(row)).not.toContain('checking prior notes');
+
+      h.route.dispose();
+    });
+
+    it('lets the owner keep a succeeded ad-hoc run as a dish without duplicating standing dishes', async () => {
+      const createDishFromRun = vi.fn(async (payload: { run_id: string }) => ({
+        dish: { dish_id: `dsh_${payload.run_id}` },
+      }));
+      const h = mountChatRouteWithStreamingBroadcasts(createDishFromRun);
+      await tick();
+      await h.route.openSession('chat_1');
+      await tick();
+
+      h.publish({
+        kind: 'chat.message_complete',
+        session_id: 'chat_1',
+        turn_id: 'turn_promote',
+        final: {
+          ...chatMessage(),
+          id: 'msg_promote',
+          tool_calls: [{
+            tool_name: 'recipe.run',
+            tier: 2,
+            args: { recipe_id: 'review-repo' },
+            status: 'ok',
+            result_ref: 'chat_1:turn_promote:recipe.run',
+            run_id: 'run_259',
+            dish_promotable: true,
+            started_at: 1_000,
+            completed_at: 1_100,
+          }],
+        } satisfies ChatMessage,
+        cursor: 1,
+      });
+      await tick();
+
+      const promote = collectByAttr(h.root, CHAT_ROUTE_ACTIVITY_DISH_PROMOTE_ATTR)[0]!;
+      expect(promote.textContent).toBe('Keep as dish');
+      expect(promote.getAttribute('data-run-id')).toBe('run_259');
+      promote.click();
+      await tick();
+      await tick();
+
+      expect(createDishFromRun).toHaveBeenCalledWith({ run_id: 'run_259' });
+      expect(collectByAttr(h.root, CHAT_ROUTE_ACTIVITY_DISH_PROMOTE_ATTR)).toHaveLength(0);
+      const saved = collectByAttr(h.root, CHAT_ROUTE_ACTIVITY_DISH_STATUS_ATTR)[0]!;
+      expect(saved.textContent).toBe('Saved as dish');
+      expect(saved.getAttribute('data-dish-id')).toBe('dsh_run_259');
+
+      h.publish({
+        kind: 'chat.message_complete',
+        session_id: 'chat_1',
+        turn_id: 'turn_standing',
+        final: {
+          ...chatMessage(),
+          id: 'msg_standing',
+          tool_calls: [{
+            tool_name: 'recipe.run',
+            tier: 2,
+            args: { recipe_id: 'review-repo' },
+            status: 'ok',
+            result_ref: 'chat_1:turn_standing:recipe.run',
+            run_id: 'run_260',
+            dish_id: 'dsh_existing',
+            started_at: 1_200,
+            completed_at: 1_300,
+          }],
+        } satisfies ChatMessage,
+        cursor: 2,
+      });
+      await tick();
+
+      expect(collectByAttr(h.root, CHAT_ROUTE_ACTIVITY_DISH_PROMOTE_ATTR)).toHaveLength(0);
+      expect(
+        collectByAttr(h.root, CHAT_ROUTE_ACTIVITY_DISH_STATUS_ATTR)
+          .some((status) => status.textContent === 'Standing dish'
+            && status.getAttribute('data-dish-id') === 'dsh_existing'),
+      ).toBe(true);
 
       h.route.dispose();
     });

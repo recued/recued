@@ -283,7 +283,13 @@ describe('D-221 production execute-handler namespace lease', () => {
     await expect(handleExecute({
       recipeStore,
       recordsStore,
-      inFlightRegistry: { registerRun, completeRun } as never,
+      inFlightRegistry: {
+        runningTwin: () => null,
+        claimRunningTwin: () => ({ leader: true }),
+        settleRunningTwin: () => {},
+        registerRun,
+        completeRun,
+      } as never,
       executorConfig: { manifests, kernelDispatchers: {} },
       baseVault: {},
       instanceId: 'records-lease-refusal-test',

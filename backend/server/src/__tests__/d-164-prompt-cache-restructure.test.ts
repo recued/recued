@@ -46,6 +46,7 @@ interface Packet {
   readonly correction_context?: readonly string[];
   readonly prefetch_context?: readonly string[];
   readonly current_date?: string;
+  readonly in_flight_context?: string;
   readonly prior_tool_calls?: ReadonlyArray<ChatPriorToolCall>;
 }
 
@@ -65,6 +66,7 @@ const legacyBody = (p: Packet): string => {
       : {}),
     chat_tail: p.content.chat_tail,
     ...(p.current_date ? { current_date: p.current_date } : {}),
+    ...(p.in_flight_context ? { in_flight_context: p.in_flight_context } : {}),
     user_message: p.content.user_message,
     ...(recall.length > 0 ? { recall_context: recall } : {}),
     ...(prior.length > 0 ? { prior_tool_calls: prior } : {}),
@@ -82,6 +84,7 @@ const CASES: ReadonlyArray<{ name: string; p: Packet }> = [
   { name: 'recall only (memory.search partitions to recall)', p: { available_tools: [tool('a')], content: C, prior_tool_calls: [priorCall('memory.search')] } },
   { name: 'mixed prior + recall', p: { available_tools: [tool('a')], content: C, prior_tool_calls: [priorCall('contact.search'), priorCall('memory.search')] } },
   { name: 'current_date present', p: { available_tools: [tool('a')], content: C, current_date: 'Tuesday 2026-06-09 12:00 (UTC+00:00)' } },
+  { name: 'in-flight context present', p: { available_tools: [tool('a')], content: C, in_flight_context: 'run=run_1; recipe=review' } },
   { name: 'everything present', p: { available_tools: [tool('a'), tool('b')], content: C, correction_context: ['c'], prefetch_context: ['p'], current_date: 'Tuesday 2026-06-09 12:00 (UTC+00:00)', prior_tool_calls: [priorCall('contact.search'), priorCall('memory.search')] } },
 ];
 
@@ -137,6 +140,26 @@ describe('current_date in the per-turn tail', () => {
     });
     expect(a.cacheable_prefix).toBe(b.cacheable_prefix);
     expect(a.body).not.toBe(b.body);
+  });
+});
+
+describe('D-259 in-flight state in the per-turn tail', () => {
+  it('sits beside the current prompt and never invalidates the catalog prefix', () => {
+    const parts = composeChatMainTurnPromptParts({
+      available_tools: [tool('a')],
+      content: C,
+      in_flight_context: 'run=run_1; recipe=review; risk=write',
+    });
+    const parsed = JSON.parse(parts.body) as Record<string, unknown>;
+    expect(parts.cacheable_prefix).not.toContain('in_flight_context');
+    expect(parsed.in_flight_context).toBe('run=run_1; recipe=review; risk=write');
+    expect(Object.keys(parsed)).toEqual([
+      'available_tools',
+      'commitment_context',
+      'chat_tail',
+      'in_flight_context',
+      'user_message',
+    ]);
   });
 });
 

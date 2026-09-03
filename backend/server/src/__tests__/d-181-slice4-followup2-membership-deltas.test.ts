@@ -258,7 +258,7 @@ describe('cli stall monitor → registry stalled delta', () => {
           argv_template: [process.execPath, '-e', 'setTimeout(() => {}, 60000)'],
           shape: 'text',
           exit_code_handling: 'zero_is_success',
-          progress: { contract: 'heartbeat' },
+          progress: { contract: 'heartbeat', adapter: 'codex-jsonl', stall_ms: 50 },
         },
       }),
     ).rejects.toThrow(/killed: no_progress stall/);

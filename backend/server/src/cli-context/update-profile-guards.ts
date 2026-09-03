@@ -13,23 +13,11 @@ import { createInstanceLock, type LockInfo } from '../lifecycle/instance-lock.js
  * The serve path writes this lock beside the resolved database. A daemon pidfile
  * would miss foreground/supervised servers, while a process-name scan would mix
  * together different realms and is unavailable on Windows. */
-export const liveServerHolding = (dbPath: string): LockInfo | null => {
-  const lockPath = join(dirname(resolve(dbPath)), 'recued-server.lock');
-  const info = createInstanceLock({ lockPath }).inspect();
-  if (!info) return null;
-  return pidAlive(info.pid) ? info : null;
-};
-
-/** `process.kill(pid, 0)` liveness. EPERM means the process is alive but owned
- * by somebody else; only ESRCH is an absent holder. */
-const pidAlive = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'EPERM';
-  }
-};
+// ⚠ RE-EXPORTED, NOT REDEFINED. It moved to `lifecycle/instance-lock`, beside
+// the lock it reads, because `recued stop` needs the same answer and a
+// cli-context module is not reachable from another profile — see the note there.
+// Existing callers keep importing it from here.
+export { liveServerHolding } from '../lifecycle/instance-lock.js';
 
 /** Refuse, and say which restart path this install actually has.
  *
@@ -44,9 +32,14 @@ export const runningServerUpdateRemedy = (
   ? 'Windows Startup cannot respawn this daemon after an in-server update restart.\n' +
     '\n' +
     `  Stop it with \`recued stop\`, run \`recued update ${sub}\` again, then start Recued again.`
+  // ⚠ NAME THE COMMAND. This used to say "stop the server ... then start it the
+  // same way you started it", which asked the owner for something the tool knows
+  // and they often do not — and pointed at a `recued stop` that could not stop a
+  // `serve`-started server at all, closing the loop. `stop` now falls back to
+  // the instance lock, so the instruction is one the owner can actually follow.
   : 'Either:\n' +
     '  · let the supervised server do it — webclient → Settings → Updates, or\n' +
-    '  · stop the server, run this again, then start it the same way you started it.';
+    `  · \`recued stop\`, run \`recued update ${sub}\` again, then start Recued again.`;
 
 export const refuseWhileRunning = (
   holder: LockInfo,

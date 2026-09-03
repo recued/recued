@@ -231,6 +231,42 @@ describe('chat activity projections', () => {
     expect(projectMessageActivity(chatMessage({ role: 'user' }))).toEqual([]);
     expect(projectMessageActivity(chatMessage())).toEqual([]);
   });
+
+  it('carries host-authored promotion and standing-dish addresses into activity rows', () => {
+    expect(
+      projectMessageActivity(
+        chatMessage({
+          tool_calls: [
+            toolCall({
+              status: 'ok',
+              run_id: 'run_259',
+              dish_promotable: true,
+            }),
+            toolCall({
+              status: 'ok',
+              run_id: 'run_260',
+              dish_id: 'dsh_standing',
+            }),
+          ],
+        }),
+      ),
+    ).toEqual([
+      {
+        kind: 'tool',
+        text: 'used mail.search ' + checkMark,
+        status: 'ok',
+        run_id: 'run_259',
+        dish_promotable: true,
+      },
+      {
+        kind: 'tool',
+        text: 'used mail.search ' + checkMark,
+        status: 'ok',
+        run_id: 'run_260',
+        dish_id: 'dsh_standing',
+      },
+    ]);
+  });
 });
 
 describe('chat activity transparency settings', () => {

@@ -29,7 +29,7 @@ import {
   stepType,
 } from '@recued/contracts';
 import { runCatalogOperation } from './catalog-gateway.js';
-import { invokeGoverned } from './lane.js';
+import { invokeGoverned, throwIfRunKilled } from './lane.js';
 import type { CliFailureDetail, ContainerPickDetail, CreatePlanDetail, RecipeError, RecipeErrorCode } from '@recued/contracts';
 import { getTransform } from '@recued/transforms';
 import { estimateSize } from '@recued/cache';
@@ -60,6 +60,7 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
   const start = Date.now();
   const type = stepType(step as unknown as Record<string, unknown>) as StepLog['type'];
   const id = step.id;
+  throwIfRunKilled(ctx);
 
   // Connection-agnostic op-steps are rewritten to a concrete catalog fetch +
   // projection at install (R1, `resolveConnectionAgnosticRecipe`). The engine has
@@ -137,6 +138,11 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
       : type === 'ingredient' ? await runIngredient(step, ctx)
       : type === 'guard' ? runGuard(step, ctx)
       : null;
+
+    // A host may already have returned the killed result while a non-cancellable
+    // provider/AI call drained. Its late value must never enter step state or
+    // unlock a later side effect.
+    throwIfRunKilled(ctx);
 
     setNamespaceValue(ctx.stores.step as Record<string, unknown>, id, result);
     // ⛔ A `defaults` step ALSO publishes each field under its own name, so

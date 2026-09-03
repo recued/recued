@@ -48,12 +48,30 @@ import type { InFlightTurn } from './state.js';
  *  status that drives the glyph + tone. */
 export type ChatActivityRow =
   | { kind: 'note'; text: string }
-  | { kind: 'tool'; text: string; status: ChatToolCall['status'] };
+  | {
+      kind: 'tool';
+      text: string;
+      status: ChatToolCall['status'];
+      /** D-259 owner addressability. Only completed persisted calls normally
+       * carry these; in-flight projections simply omit them. */
+      run_id?: string;
+      dish_id?: string;
+      dish_promotable?: true;
+    };
 
 /** Both the ephemeral `InFlightToolCall` and the authoritative
  *  `ChatToolCall` satisfy this — the projection reads only the
  *  fields they share. */
-type ToolCallLike = Pick<ChatToolCall, 'tool_name' | 'status' | 'reason' | 'detail'>;
+type ToolCallLike = Pick<
+  ChatToolCall,
+  | 'tool_name'
+  | 'status'
+  | 'reason'
+  | 'detail'
+  | 'run_id'
+  | 'dish_id'
+  | 'dish_promotable'
+>;
 
 /** D-182 — a compact one-line form of a (possibly long / multi-line) error detail
  *  for the activity row: first line, ~160 chars, ellipsised. */
@@ -83,6 +101,9 @@ const toolCallRow = (call: ToolCallLike): ChatActivityRow => ({
   kind: 'tool',
   text: toolCallText(call),
   status: call.status,
+  ...(call.run_id !== undefined ? { run_id: call.run_id } : {}),
+  ...(call.dish_id !== undefined ? { dish_id: call.dish_id } : {}),
+  ...(call.dish_promotable === true ? { dish_promotable: true as const } : {}),
 });
 
 /** Project one scaffold transparency payload into its narrative line,

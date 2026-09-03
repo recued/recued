@@ -26,6 +26,7 @@ import {
   type CatalogSessionGrantHooks,
   type CliInvocationExecutor,
   type ExecutionContext,
+  type ExecutionResult,
   type IngredientExecutor,
   type SharedResolvers,
 } from '@recued/engine';
@@ -118,6 +119,7 @@ import {
   FILTER_CONFIG_KEY_NOT_ALLOWED,
   FILTER_INVOCATION_FORBIDDEN,
   FILTER_INVOCATION_STALE,
+  RISK_TIER_RANK,
   SESSION_GRANT_RISK_TIERS,
   UNDECLARED_CONFIG_ARGUMENT,
   undeclaredConfigArgumentMessage,
@@ -136,6 +138,7 @@ import {
   deriveRunYield,
   runIsAuditExemptRender,
   ephemeralDishId,
+  isEphemeralDishId,
   isSolicitedReply,
   parsePeerExchangeAck,
   peerAdmissionIdentity,
@@ -172,6 +175,7 @@ import {
 import {
   executeResponseAuditRunId,
   stampExecuteResponseAuditRun,
+  stampExecuteResponseStandingDish,
 } from './types.js';
 import type { McpActionStore } from './mcp-action-store.js';
 import type {
@@ -1409,6 +1413,128 @@ const nestedRunFailureDetail = (errors: readonly unknown[]): string => {
     : `${String(errors.length)} error(s), none readable`;
 };
 
+const boundLiveText = (value: string, max: number): string =>
+  value.replace(/\s+/g, ' ').trim().length <= max
+    ? value.replace(/\s+/g, ' ').trim()
+    : `${value.replace(/\s+/g, ' ').trim().slice(0, Math.max(0, max - 1))}…`;
+
+/** D-259 §7.4 — the only recipe facts admitted to live agent context. This
+ * walks the already-lowered recipe and installed declarations; it never reads
+ * resolved args, config, context, vault, step results, or subprocess output. */
+const liveRunDeclaration = (
+  recipe: RecipeDefinition,
+  manifests: ExecuteHandlerDeps['executorConfig']['manifests'],
+): { intent: string; risk?: RiskTier; effect: string } => {
+  const effects = new Set<string>();
+  let risk: RiskTier | undefined;
+  for (const raw of [
+    ...(recipe.trigger_steps ?? []),
+    ...(recipe.prefetch_steps ?? []),
+    ...(recipe.steps ?? []),
+  ]) {
+    const step = raw as unknown as {
+      ingredient?: unknown;
+      ingredient_version?: unknown;
+      input?: unknown;
+    };
+    if (typeof step.ingredient !== 'string' || step.ingredient.length === 0) continue;
+    const requestedVersion = Number.isSafeInteger(step.ingredient_version)
+      ? step.ingredient_version as number
+      : undefined;
+    const manifest = manifests.get(step.ingredient, requestedVersion);
+    const input = step.input !== null && typeof step.input === 'object'
+      ? step.input as Record<string, unknown>
+      : undefined;
+    const operation = typeof input?.operation === 'string' ? input.operation : undefined;
+    const declaredRisk = operation !== undefined
+      ? manifest?.operations?.[operation]?.risk_tier ?? manifest?.risk_tier
+      : manifest?.risk_tier;
+    if (
+      declaredRisk !== undefined
+      && (risk === undefined || RISK_TIER_RANK[declaredRisk] > RISK_TIER_RANK[risk])
+    ) {
+      risk = declaredRisk;
+    }
+    effects.add(operation === undefined ? step.ingredient : `${step.ingredient}.${operation}`);
+  }
+  const effectList = [...effects];
+  const shown = effectList.slice(0, 3).join(', ');
+  const remainder = effectList.length - 3;
+  return {
+    intent: boundLiveText(recipe.metadata.name || recipe.recipe_id, 120),
+    ...(risk !== undefined ? { risk } : {}),
+    effect: boundLiveText(
+      effectList.length === 0
+        ? 'local transforms only'
+        : `${shown}${remainder > 0 ? `, +${remainder} more` : ''}`,
+      180,
+    ),
+  };
+};
+
+const attachedRunningResponse = async (
+  outcome: Promise<import('./execution/in-flight-registry.js').RunningTwinOutcome>,
+): Promise<ExecuteResponse> => {
+  const settled = await outcome;
+  if (settled.status === 'completed') return settled.response as ExecuteResponse;
+  throw settled.error;
+};
+
+interface AbortAwareExecutionOutcome {
+  result: ExecutionResult;
+  /** Settles only after the abandoned engine has finished unwinding its active
+   * transport. The caller-facing response does not await it; host-owned leases
+   * and scratch do. This promise never rejects. */
+  drain?: Promise<void>;
+}
+
+/** D-181 §7c / D-259 §7.4 — abandon the caller's await without pretending
+ * the upstream transport was cancelled. The engine keeps draining against its
+ * aborted signal, so it can terminalize the late per-call commit and release a
+ * real lane only when the transport settles. */
+const awaitExecutionOrOwnerAbort = async (
+  execution: Promise<ExecutionResult>,
+  signal: AbortSignal,
+  killedResult: () => ExecutionResult,
+  beforeAbandon: () => Promise<void> = () => Promise.resolve(),
+): Promise<AbortAwareExecutionOutcome> => {
+  type Winner =
+    | { kind: 'result'; result: ExecutionResult }
+    | { kind: 'error'; error: unknown }
+    | { kind: 'aborted' };
+
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<Winner>((resolve) => {
+    onAbort = () => {
+      // Finite subprocesses own a real process tree and their close/error
+      // cleanup remains awaited. External/AI-only runs resolve this gate
+      // immediately and preserve true abandon-await semantics.
+      void beforeAbandon().then(
+        () => resolve({ kind: 'aborted' }),
+        () => resolve({ kind: 'aborted' }),
+      );
+    };
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  });
+  const settled: Promise<Winner> = execution.then(
+    (result) => ({ kind: 'result', result }),
+    (error) => ({ kind: 'error', error }),
+  );
+
+  try {
+    const winner = await Promise.race([settled, aborted]);
+    if (winner.kind === 'result') return { result: winner.result };
+    if (winner.kind === 'error') throw winner.error;
+    return {
+      result: killedResult(),
+      drain: settled.then(() => undefined),
+    };
+  } finally {
+    if (onAbort !== undefined) signal.removeEventListener('abort', onAbort);
+  }
+};
+
 /** Handle recipe execution. Pure handler — takes parsed request,
  *  returns the ExecuteResponse on success or throws `RpcError` for
  *  request-shape problems (missing recipe, recipe_id not found).
@@ -2040,14 +2166,12 @@ export const handleExecute = async (
   // The dedup identity, computed ONCE when eligible (undefined otherwise) so
   // the entry-time check AND the concurrent-TOCTOU claim at the hold-creation
   // point key on the exact same facets.
-  const heldActionIdentity: HeldActionIdentity | undefined =
+  const runningActionIdentity: HeldActionIdentity | undefined =
     internal.run_id === undefined
     && request.context === undefined
     && request.vault === undefined
     && request.execution_source !== undefined
     && HELD_DEDUP_CHANNELS.has(request.execution_source.channel)
-    && deps.auditLog !== undefined
-    && deps.checkpointStore !== undefined
       ? {
           channel_session_id: deriveChannelSessionId(request.execution_source),
           recipe_id: recipe.recipe_id,
@@ -2061,16 +2185,28 @@ export const handleExecute = async (
   // `?? undefined` — a `null` key (identity not canonicalizable under the
   // D-177 N.7 hash, e.g. a non-finite config value) degrades to "no in-flight
   // dedup", the same best-effort posture as a twin-lookup failure.
-  const heldActionKey =
-    heldActionIdentity !== undefined
-      ? computeHeldActionKey(heldActionIdentity) ?? undefined
+  const runningActionKey =
+    runningActionIdentity !== undefined
+      ? computeHeldActionKey(runningActionIdentity) ?? undefined
       : undefined;
+  const heldActionIdentity =
+    deps.auditLog !== undefined && deps.checkpointStore !== undefined
+      ? runningActionIdentity
+      : undefined;
+  const heldActionKey = heldActionIdentity !== undefined ? runningActionKey : undefined;
   // Set when this run becomes the LEADER of an in-flight hold-creation (the
   // concurrent backstop in the awaiting block). `settle`d in the outer try's
   // `finally` with `status: 'durable'` iff the awaiting anchor was written (see
   // `heldActionDurable`), else `status: 'failed'` — releasing any follower.
   let heldClaim: InflightHoldClaim | undefined;
   let heldActionDurable = false;
+
+  // Sequential running resend: attach before minting a second lifecycle/audit
+  // identity. A concurrent miss is closed atomically at the dispatch boundary.
+  if (runningActionKey !== undefined && deps.inFlightRegistry !== undefined) {
+    const twin = deps.inFlightRegistry.runningTwin(runningActionKey);
+    if (twin !== null) return attachedRunningResponse(twin.outcome);
+  }
 
   // Entry-time collapse — a SEQUENTIAL resend onto a durable live hold.
   if (heldActionIdentity !== undefined) {
@@ -2388,11 +2524,25 @@ export const handleExecute = async (
   // threads back to the same recipe. `complete` / `error` fire
   // post-execute; cursor order preserves start → complete pairing.
   const lifecycle_run_id = pre_run_id ?? `inflight:${recipe.recipe_id}:${Date.now().toString(36)}`;
-  emitExecution(deps.eventBus, {
-    recipe_id: recipe.recipe_id,
-    run_id: lifecycle_run_id,
-    op: 'start',
-  });
+  let lifecycleStarted = false;
+  const ensureLifecycleStarted = (): void => {
+    if (lifecycleStarted) return;
+    emitExecution(deps.eventBus, {
+      recipe_id: recipe.recipe_id,
+      run_id: lifecycle_run_id,
+      op: 'start',
+    });
+    lifecycleStarted = true;
+  };
+  // A contract-bearing MCP dispatch yields during preflight before it reaches
+  // the atomic running-twin claim. If two exact twins enter together, emitting
+  // here would create a second `start` for the follower even though that call
+  // later attaches and never owns a run. Defer only for dedup-eligible calls;
+  // the winning claim emits below, while a policy denial emits immediately
+  // before its paired terminal event.
+  if (runningActionKey === undefined || deps.inFlightRegistry === undefined) {
+    ensureLifecycleStarted();
+  }
 
   // D-153 P2.C — pre-execution policy gate at the Engine dispatch
   // boundary. Three channel sets gate today:
@@ -2891,6 +3041,7 @@ export const handleExecute = async (
         );
       })();
       if (peerAdmissionDenial !== undefined) {
+        ensureLifecycleStarted();
         return await handlePolicyGateDenial({
           deps,
           recipe,
@@ -2917,6 +3068,7 @@ export const handleExecute = async (
         grantedRecipeSteps,
       );
       if (!gateResult.admit) {
+        ensureLifecycleStarted();
         return await handlePolicyGateDenial({
           deps,
           recipe,
@@ -4142,6 +4294,11 @@ export const handleExecute = async (
   // matched contract's use counter at the actual-proceed point (once per
   // boundary-crossing dispatch), counting the approval-resume path the
   // per-call probe could not see.
+  // Mint before composing the commit Gateway so the same host-owned signal
+  // governs both the engine's step boundary and late commit outcome capture.
+  // It is registered as a control handle only after all pre-run gates pass.
+  const killController = new AbortController();
+
   const commitGatewayActive =
     runIdentity !== undefined && deps.commitStore !== undefined;
   /** A direct-MCP customer meter must still see the real ingredient boundary
@@ -4204,6 +4361,7 @@ export const handleExecute = async (
       ? wrapWithCommitGateway(cacheAwareGatewayInner(ingredientExecutor), {
           commitStore: deps.commitStore!,
           identity: runIdentity,
+          runAbortSignal: killController.signal,
           getIngredientCategory: (slug) =>
             deps.executorConfig.manifests.get(slug)?.category,
           // D-177 P1b — action-identity hash basis (N.2): the SAME
@@ -4393,6 +4551,7 @@ export const handleExecute = async (
     }
   }
   let recordsExecutionLease: ReturnType<RecordsStore['acquireExecutionLease']> | undefined;
+  let drainingExecution: Promise<void> | undefined;
 
   // D-181 slice 4 — register the run on the in-flight active-list (when a
   // registry + execution_source are wired) and mint its kill signal. The
@@ -4400,9 +4559,10 @@ export const handleExecute = async (
   // heavy calls) + SIGKILLs any running subprocess; the registry then carries a
   // `killed` termination marker the anchor build reads below. Unattended vs
   // attended origin mirrors the slice-3 stall monitor (trigger-source derived).
-  const killController = new AbortController();
   const registerLiveRun = deps.inFlightRegistry !== undefined && executionSource !== undefined;
   let liveRunRegistered = false;
+  let runningTwinLeader = false;
+  let runningTwinSettled = false;
   // D-185 Slice 2 — a DURABLE pause (a preflight `ask` that wrote a checkpoint)
   // resumes later as a fresh process invocation under the SAME `run_id`, so the
   // run's `storage:'temp'` files must SURVIVE the pause (a paused-then-resumed
@@ -4411,12 +4571,20 @@ export const handleExecute = async (
   // terminal invocation reclaim the scratch root.
   let resumablePause = false;
   try {
+  if (registerLiveRun && runningActionKey !== undefined) {
+    const claim = deps.inFlightRegistry!.claimRunningTwin(runningActionKey, run_id);
+    if (!claim.leader) return attachedRunningResponse(claim.outcome);
+    runningTwinLeader = true;
+    ensureLifecycleStarted();
+  }
   if (registerLiveRun) {
     const sessionId = deriveChannelSessionId(executionSource);
+    const declaration = liveRunDeclaration(recipe, deps.executorConfig.manifests);
     deps.inFlightRegistry!.registerRun({
       run_id,
       recipe_id: recipe.recipe_id,
       ...(boundDish?.dish_id !== undefined ? { dish_id: boundDish.dish_id } : {}),
+      ...declaration,
       source: executionSource!,
       origin: runAttentionForTriggerSource(request.trigger_source),
       ...(sessionId ? { session_id: sessionId } : {}),
@@ -4438,6 +4606,7 @@ export const handleExecute = async (
   // (`request.recipe !== undefined`) persist a snapshot, so only they clone.
   const preEngineRecipeSnapshot =
     request.recipe !== undefined ? structuredClone(recipe) : undefined;
+  const preEngineRecipeHash = hashRecipe(preEngineRecipeSnapshot ?? recipe);
   // D-232 — the cycle guard's ancestor set, SEEDED WITH THIS RUN'S RECIPE.
   // Without the seed the guard is a sender-only guard that silently admits
   // `A → A`, and nothing downstream can tell the two apart (see
@@ -4467,7 +4636,8 @@ export const handleExecute = async (
       targets: [...recordsLeaseBindings.values()].map((binding) => ({ binding })),
     });
   }
-    const result = await executeRecipe({
+    const executionStartedAt = Date.now();
+    const execution = executeRecipe({
       recipe,
       outputRecipeHash: authoredRecipeHash,
       stores,
@@ -4488,6 +4658,17 @@ export const handleExecute = async (
       // signal rejects the run's queued calls when the owner kills it.
       run_id,
       ...(registerLiveRun ? { runAbortSignal: killController.signal } : {}),
+      // D-259 §7.4.2 — engine phase transitions are host-observed
+      // liveness. Store only a contract + timestamp for the next concurrent
+      // turn; individual CLI heartbeat/file-growth signals replace this with
+      // their more specific contract inside the CLI executor.
+      ...(registerLiveRun
+        ? {
+            onProgress: () => {
+              deps.inFlightRegistry!.reportProgress(run_id, 'provider-event');
+            },
+          }
+        : {}),
       // D-181 Slice 2 — bound heavy calls inline through the two-lane governor.
       ...(deps.laneGovernor ? { laneGovernor: deps.laneGovernor } : {}),
       // D-181 §10 — the duration-threshold classifier (default-gated fast-lane demotion).
@@ -5041,14 +5222,39 @@ export const handleExecute = async (
           }
         : {}),
     });
-    // D-181 slice 4 — the instant the engine returns, consume the run's KILL
+    const executionOutcome = registerLiveRun
+      ? await awaitExecutionOrOwnerAbort(
+          execution,
+          killController.signal,
+          () => ({
+            recipe_id: recipe.recipe_id,
+            // `preEngineRecipeSnapshot` is the exact object state the engine
+            // hashed at entry; use it rather than the earlier authored hash,
+            // which may precede canonical lowering.
+            recipe_hash: preEngineRecipeHash,
+            success: false,
+            output: { render: [], sidebar: [] },
+            steps: [],
+            errors: [],
+            duration_ms: Date.now() - executionStartedAt,
+            validation_issues: [],
+          }),
+          () => deps.inFlightRegistry!.waitForSubprocessDrain?.(run_id) ?? Promise.resolve(),
+        )
+      : { result: await execution };
+    const result = executionOutcome.result;
+    drainingExecution = executionOutcome.drain;
+    // D-181 slice 4 / D-259 §7.4 — the instant the engine returns OR the
+    // caller-facing await is abandoned, consume the run's KILL
     // marker (the only marker `registerLiveRun` now records — `cancel()` no longer
     // writes a run-level marker, §7c) and retire the run from the live active-list
     // — BEFORE any post-engine await (checkpoint persistence / ask raise). This
-    // runs synchronously after the `executeRecipe` await resolves, so no concurrent
+    // runs synchronously after the selected outcome, so no concurrent
     // `execution.kill` can interleave to mis-stamp an already-finished or paused
-    // run. `completeRun` is idempotent (the `finally` repeats it on the throw
-    // path); a kill arriving after this point finds the run retired (`not_found`).
+    // run. On abandon, the engine may still be draining a non-cancellable
+    // transport; it can no longer advance the recipe and its late commit is
+    // `cancelled`. `completeRun` is idempotent (the `finally` repeats it on the
+    // throw path); a kill arriving after this point finds the run retired.
     const consumedTermination = registerLiveRun
       ? deps.inFlightRegistry!.takeTermination(run_id)
       : undefined;
@@ -5325,10 +5531,18 @@ export const handleExecute = async (
           break;
         }
         if (collapse) {
-          return stampExecuteResponseAuditRun(
+          const response = stampExecuteResponseAuditRun(
             buildHeldResponseForRecipe(recipe.recipe_id, result.recipe_hash),
             collapsedRunId,
           );
+          if (runningTwinLeader) {
+            deps.inFlightRegistry!.settleRunningTwin(run_id, {
+              status: 'completed',
+              response,
+            });
+            runningTwinSettled = true;
+          }
+          return response;
         }
       }
       if (!deps.auditLog) {
@@ -6656,7 +6870,7 @@ export const handleExecute = async (
       }
     }
 
-    return stampExecuteResponseAuditRun({
+    const response = stampExecuteResponseStandingDish(stampExecuteResponseAuditRun({
       recipe_id: result.recipe_id,
       recipe_hash: result.recipe_hash,
       // D-157 P1 slice 4 — a pause-downgrade surfaces `success: false`
@@ -6725,8 +6939,20 @@ export const handleExecute = async (
       // returned an empty result because their convention's provider is not
       // connected (the recipe ran on empty data). Present only when ≥1 fired.
       ...(runnabilityWarnings.length > 0 ? { runnability_warnings: runnabilityWarnings } : {}),
-    }, auditAnchorWritten ? run_id : undefined);
+    }, auditAnchorWritten ? run_id : undefined), boundDish?.dish_id);
+    if (runningTwinLeader) {
+      deps.inFlightRegistry!.settleRunningTwin(run_id, {
+        status: 'completed',
+        response,
+      });
+      runningTwinSettled = true;
+    }
+    return response;
   } catch (e) {
+    if (runningTwinLeader && !runningTwinSettled) {
+      deps.inFlightRegistry!.settleRunningTwin(run_id, { status: 'failed', error: e });
+      runningTwinSettled = true;
+    }
     // Preserve already-coded errors (shouldn't happen from the engine,
     // but keeps the abstraction honest if a deeper layer ever throws one).
     emitExecution(deps.eventBus, {
@@ -6741,6 +6967,13 @@ export const handleExecute = async (
       500,
     );
   } finally {
+    if (runningTwinLeader && !runningTwinSettled) {
+      deps.inFlightRegistry!.settleRunningTwin(run_id, {
+        status: 'failed',
+        error: new Error('execution ended before producing a response'),
+      });
+      runningTwinSettled = true;
+    }
     // D-157 Part C — settle this run's in-flight hold claim (if it led one),
     // releasing any concurrent follower awaiting the outcome. `status:
     // 'durable'` iff the awaiting anchor was written (so the follower
@@ -6758,15 +6991,34 @@ export const handleExecute = async (
     // also clears any unconsumed termination marker). The run's heavy-call
     // slots already released on settle via the governor's `finally`.
     if (registerLiveRun) deps.inFlightRegistry!.completeRun(run_id);
-    recordsExecutionLease?.release();
-    // D-185 Slice 2 — reclaim this run's `storage:'temp'` cli output at the
-    // TERMINAL run end (success, throw, killed, or pause-downgraded-to-failure).
-    // Every `temp` ref the run produced lives under `runScratchRoot(run_id)`;
-    // removing it enforces "a temp ref must not outlive its run" (§3.4). SKIPPED
-    // on a resumable pause: that run continues under the same `run_id` in a later
-    // invocation, which performs the terminal sweep. Best-effort + idempotent +
-    // a no-op when the run produced no temp output (the root never existed).
-    if (!resumablePause) cleanupRunScratch(run_id);
+    const releaseRunResources = (): void => {
+      recordsExecutionLease?.release();
+      // D-185 Slice 2 — reclaim this run's `storage:'temp'` cli output at the
+      // TERMINAL run end (success, throw, killed, or pause-downgraded-to-failure).
+      // Every `temp` ref the run produced lives under `runScratchRoot(run_id)`;
+      // removing it enforces "a temp ref must not outlive its run" (§3.4). SKIPPED
+      // on a resumable pause: that run continues under the same `run_id` in a later
+      // invocation, which performs the terminal sweep. Best-effort + idempotent +
+      // a no-op when the run produced no temp output (the root never existed).
+      if (!resumablePause) cleanupRunScratch(run_id);
+    };
+    if (drainingExecution !== undefined) {
+      // The caller-facing killed result intentionally stopped awaiting an
+      // external/AI transport. Keep execution leases and scratch alive until
+      // the engine has observed that late settlement and halted at its abort
+      // boundary; releasing them now would let late catalog adaptation write
+      // through resources the run already reclaimed. Clear any usage reported
+      // after the killed anchor claimed the first snapshot as well.
+      void drainingExecution.then(() => {
+        try {
+          releaseRunResources();
+        } finally {
+          deps.executorConfig?.runTokenUsage?.take(run_id);
+        }
+      }).catch(() => undefined);
+    } else {
+      releaseRunResources();
+    }
   }
 };
 
@@ -6944,7 +7196,7 @@ const handlePolicyGateDenial = async (args: {
     }
   }
 
-  return stampExecuteResponseAuditRun({
+  return stampExecuteResponseStandingDish(stampExecuteResponseAuditRun({
     recipe_id: recipe.recipe_id,
     recipe_hash,
     success: false,
@@ -6952,7 +7204,8 @@ const handlePolicyGateDenial = async (args: {
     steps: [],
     errors: [policyDenyError],
     duration_ms: 0,
-  }, auditAnchorWritten ? run_id : undefined);
+  }, auditAnchorWritten ? run_id : undefined),
+  isEphemeralDishId(dish_id) ? undefined : dish_id);
 };
 
 /** D-120 Phase 3 — resolve the surrogate `recipe_insights.id` for the

@@ -99,6 +99,8 @@ import type { ContactStore } from './storage/contact-store.js';
 import type { EnrichmentStore } from './storage/enrichment-store.js';
 import type { CrmRecordMirrorStore } from './storage/crm-record-mirror-store.js';
 import type { CollectionRegistry } from './collections/registry.js';
+import { deriveChannelSessionId } from '@recued/gateway';
+import type { InFlightRegistry } from './execution/in-flight-registry.js';
 import { DATA_FILE_RECEIVED_SLUG } from './collections/file/file-read-handler.js';
 import { scoreFileNeedle, type FileViewResolver, type DataFileView } from './file-view-resolver.js';
 import type { Collection } from './collections/types.js';
@@ -113,7 +115,10 @@ import {
 import { RUN_INGREDIENT_RECIPE } from './run-ingredient-recipe.js';
 
 import type { ServerExecutorConfig } from './server-executor.js';
-import { executeResponseAuditRunId } from './types.js';
+import {
+  executeResponseAuditRunId,
+  executeResponseStandingDishId,
+} from './types.js';
 import type { ExecuteRequest, ExecuteResponse } from './types.js';
 import {
   AUTHOR_DEFAULT_READ_GRANT_CHECKER,
@@ -183,6 +188,11 @@ export type ChatRecipeExecutor = (request: ExecuteRequest) => Promise<ExecuteRes
  *  stores wired after the chat orchestrator (enrichment, the enrichment-
  *  visibility resolver, the executor composite) are picked up live. */
 export interface ChatToolHandlerDeps {
+  /** D-259 § 7.4.3 — the live in-flight registry, for `recipe.stop`. Late-bound
+   *  like the executor: `bin.ts` composes the handler table before the
+   *  registry exists. Absent ⇒ `recipe.stop` reports the registry unavailable
+   *  rather than silently reporting nothing to stop. */
+  getInFlightRegistry?: () => InFlightRegistry | undefined;
   /** D-237 P1 — injectable clock for the source-freshness verdicts the
    *  collection reads now carry. Absent ⇒ `Date.now`, matching every D-236 call
    *  site. Present so a test can pin an age rather than infer one from wall
@@ -511,7 +521,11 @@ export const wrapRecipeRunResult = (
   // model-visible output. It exists only when the execute handler confirmed
   // that the exact audit anchor was durably written.
   const run_id = executeResponseAuditRunId(result);
-  const runAddress = run_id !== undefined ? { run_id } : {};
+  const dish_id = executeResponseStandingDishId(result);
+  const runAddress = {
+    ...(run_id !== undefined ? { run_id } : {}),
+    ...(dish_id !== undefined ? { dish_id } : {}),
+  };
   if (result.run_terminated !== undefined) {
     return {
       ok: false,
@@ -3631,6 +3645,52 @@ export const wrapCollectionFence = (
     ];
   }));
 
+/** D-259 § 7.4.3 — the chat/messenger half of the stop.
+ *
+ *  ⛔ WHY THIS EXISTS AT ALL: `recipe.run` is a Tier-1 tool and, until this
+ *  landed, there was no Tier-1 stop. So when the owner said "forget that, do X
+ *  instead", the model started X while the old run KEPT GOING — "instead"
+ *  silently became "as well", against their real accounts. The duplicate gate
+ *  does not catch it: that collapses an IDENTICAL recipe+args twin, and a steer
+ *  is by definition to something else.
+ *
+ *  🔑 ONE MECHANISM, ANOTHER DOOR. This does not re-implement the arity rule —
+ *  it calls the SAME `stopOwnRun` the MCP tool calls, scoped by the SAME
+ *  `deriveChannelSessionId`. Re-implementing "one match stops, more than one
+ *  refuses" per channel is how the two ends drift.
+ *
+ *  Authority is derived, never supplied: the wire carries INTENT (a recipe id)
+ *  and the server resolves ownership from the stored source. */
+const createRecipeStopHandler =
+  (deps: ChatToolHandlerDeps): Tier1Handler =>
+  async (raw, ctx) => {
+    const registry = deps.getInFlightRegistry?.();
+    if (!registry) return executionError('execution registry unavailable');
+    if (!ctx.execution_source) {
+      // No source ⇒ no ownership can be established. Fail closed rather than
+      // fall back to a broader scope.
+      return executionError('no execution source on this turn');
+    }
+    const args = asObject(raw);
+    if (!args) return invalidArgs('args must be an object');
+    const runId = typeof args.run_id === 'string' ? args.run_id.trim() : '';
+    const recipeId = typeof args.recipe_id === 'string' ? args.recipe_id.trim() : '';
+    if ((runId === '') === (recipeId === '')) {
+      return invalidArgs('pass exactly one of recipe_id or run_id');
+    }
+    const result = registry.stopOwnRun(
+      deriveChannelSessionId(ctx.execution_source),
+      runId !== '' ? { run_id: runId } : { recipe_id: recipeId },
+    );
+    // ⚠ `not_yours` is collapsed to `not_found` on the wire (§ 7.4.4): a model
+    // that can tell them apart can probe for the owner's run ids. The registry
+    // keeps both, and the audit row records which.
+    const projected = result.status === 'not_yours'
+      ? { status: 'not_found' as const }
+      : result;
+    return { ok: true, result: projected };
+  };
+
 export const buildChatTier1Handlers = (
   deps: ChatToolHandlerDeps,
 ): Record<string, Tier1Handler> => wrapCollectionFence(wrapEmptyResults({
@@ -3646,6 +3706,7 @@ export const buildChatTier1Handlers = (
   'work.read': createWorkReadHandler(deps),
   'file.search': createFileSearchHandler(deps),
   'recipe.run': createRecipeRunHandler(deps),
+  'recipe.stop': createRecipeStopHandler(deps),
 }), deps);
 
 /** ⛔ Applied at the TABLE, not inside each handler. Eight readers each

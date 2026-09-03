@@ -1483,7 +1483,7 @@ describe('D-137 P3 plan-approval chat route', () => {
     h.route.dispose();
   });
 
-  it('unlocks a pending send when restart recovery makes its action outcome unknown', async () => {
+  it('keeps an acknowledged send unlocked when restart recovery makes its action outcome unknown', async () => {
     const unknownRecord: ChatPlanRecord = {
       plan: chatPlan({
         plan_id: 'plan_restart_unlock',
@@ -1509,7 +1509,9 @@ describe('D-137 P3 plan-approval chat route', () => {
     const pendingInput = collectByAttr(h.root, CHAT_ROUTE_INPUT_ATTR)[0]!;
     pendingInput.value = 'Keep this next message.';
     for (const listener of pendingInput.listeners.get('input') ?? []) listener();
-    expect(collectByAttr(h.root, CHAT_ROUTE_SEND_ATTR)[0]?.disabled).toBe(true);
+    // D-259: the transport ACK, not the answer, releases the composer so a
+    // concurrent turn can steer the work already running.
+    expect(collectByAttr(h.root, CHAT_ROUTE_SEND_ATTR)[0]?.disabled).toBe(false);
 
     h.reconnect();
     await vi.waitFor(() => {

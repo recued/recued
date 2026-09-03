@@ -15,6 +15,11 @@ import { dirname, join, resolve } from 'node:path';
 import { openSync } from 'node:fs';
 import { readAutoDisabledFromDb, renderAutoDisabledTable } from './cli-status-extras.js';
 import { runningAsPackagedBinary } from './packaged-binary.js';
+// ⚠ THE SAME RULE THE UPDATE PATH USES, from the layer that owns the lock. A
+// second definition of "is a server holding this realm" is how two commands
+// come to disagree about one machine; importing the update profile's copy
+// would instead breach the per-profile module graph `bin-router` ratchets.
+import { liveServerHolding } from './lifecycle/instance-lock.js';
 
 /** Find the npx binary path. Falls back to 'npx' (relies on PATH). */
 const findNpx = (): string => {
@@ -219,16 +224,35 @@ export const daemonStop = async (opts: Pick<DaemonOptions, 'dbPath'>): Promise<v
   const pid = readPid(pidFile);
 
   if (!pid) {
-    // ⛔ THIS SAID "server is not running", WHICH IT CANNOT KNOW. The pidfile
-    // records what `recued start` launched; a server started by a systemd or
-    // launchd unit, or a foreground `recued serve` in another shell, leaves no
-    // pidfile and is invisible here. Asserting it is not running — to an owner
-    // staring at EADDRINUSE — sends them hunting the wrong fault. Say only what
-    // this command actually knows.
-    console.log('No pidfile — `recued stop` only manages a server started by `recued start`.');
-    console.log('  If something is serving on the port anyway (an autostart unit, or a');
-    console.log('  foreground `recued serve` in another shell), this cannot stop it.');
-    console.log('  `recued status` will say which case you are in.');
+    // ⛔⛔ SAYING "I CANNOT KNOW" WAS HONEST AND STILL A DEAD END. The previous
+    // message correctly stopped claiming the server was not running — a pidfile
+    // records only what `recued start` launched — but it left the owner with
+    // nowhere to go, and the routes it pointed at refuse in turn: the installer
+    // will not upgrade a healthy install, and `recued update apply` refuses
+    // while anything holds the realm. Three correct refusals compose into a
+    // LIVELOCK, and `recued serve` — the form the boot banner and BOTH autostart
+    // units use — is the shape that has no way out.
+    //
+    // 🔑 THE ANSWER WAS ALREADY ON DISK. The instance lock beside the database
+    // records the holder's `pid` AND `bind_port`; it is what lets `recued update
+    // apply` name them. One subsystem held the identity of the holder while this
+    // one announced it could not know.
+    //
+    // ⚠ SAFE UNDER A SUPERVISOR, AND THAT IS MEASURED RATHER THAN HOPED. Both
+    // generated units restart on FAILURE only (`KeepAlive{SuccessfulExit:false}`
+    // / `Restart=on-failure`), and `recued-supervise` forwards a clean child
+    // exit as its own `exit 0` — so a graceful stop of the payload takes the
+    // whole stack down and neither launchd nor systemd respawns it.
+    const holder = liveServerHolding(opts.dbPath);
+    if (!holder) {
+      console.log('No pidfile, and nothing holds this realm — no server to stop.');
+      console.log('  `recued stop` manages a server started by `recued start`, and falls back');
+      console.log('  to the instance lock a `recued serve` (foreground or supervised) writes.');
+      console.log('  If a port is busy anyway it belongs to another realm; `recued status` says which.');
+      return;
+    }
+    await terminate(holder.pid, `pid ${holder.pid}, port ${holder.bind_port}`);
+    noteAutostartUnitStillArmed();
     return;
   }
 
@@ -238,23 +262,50 @@ export const daemonStop = async (opts: Pick<DaemonOptions, 'dbPath'>): Promise<v
     return;
   }
 
-  // Send SIGTERM and wait for exit
-  process.kill(pid, 'SIGTERM');
+  await terminate(pid, `pid ${pid}`);
+  try { unlinkSync(pidFile); } catch {}
+};
 
-  let stopped = false;
-  for (let i = 0; i < 20; i++) {
-    await new Promise(r => setTimeout(r, 250));
-    if (!isAlive(pid)) { stopped = true; break; }
+/** SIGTERM, wait, then SIGKILL — the one stop behaviour both routes share, so a
+ *  `serve`-started server is not stopped more abruptly than a `start`-ed one. */
+const terminate = async (pid: number, label: string): Promise<void> => {
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {
+    console.log(`Server (${label}) exited before it could be signalled.`);
+    return;
   }
+  for (let i = 0; i < 20; i += 1) {
+    await new Promise((r) => setTimeout(r, 250));
+    if (!isAlive(pid)) {
+      console.log(`Server stopped (${label}).`);
+      return;
+    }
+  }
+  console.error(`Server (${label}) did not stop after 5s. Sending SIGKILL.`);
+  try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+  console.log('Killed.');
+};
 
-  if (stopped) {
-    try { unlinkSync(pidFile); } catch {}
-    console.log(`Server stopped (pid ${pid}).`);
-  } else {
-    console.error(`Server (pid ${pid}) did not stop after 5s. Sending SIGKILL.`);
-    try { process.kill(pid, 'SIGKILL'); } catch {}
-    try { unlinkSync(pidFile); } catch {}
-    console.log('Killed.');
+/** ⚠ STOPPED IS NOT DISARMED. An autostart unit brings the server back at the
+ *  next login or boot, which is correct and surprising in equal measure — so say
+ *  it, and name the command that actually disarms it on THIS platform. */
+const noteAutostartUnitStillArmed = (): void => {
+  const home = process.env.HOME ?? '';
+  const units: [string, string][] = [
+    [join(home, 'Library/LaunchAgents/com.recued.server.plist'),
+      'launchctl bootout gui/$(id -u)/com.recued.server'],
+    ['/etc/systemd/system/recued.service', 'sudo systemctl disable --now recued'],
+    [join(home, '.config/systemd/user/recued.service'), 'systemctl --user disable --now recued'],
+  ];
+  for (const [unit, disable] of units) {
+    if (unit && existsSync(unit)) {
+      console.log('');
+      console.log(`  ⚠ Start-at-login is still armed (${unit}).`);
+      console.log('    The server returns at the next login or boot. To disarm it:');
+      console.log(`      ${disable}`);
+      return;
+    }
   }
 };
 
@@ -286,11 +337,38 @@ export const daemonStatus = async (opts: DaemonOptions): Promise<void> => {
     //    answers /health       → a recued server is up, just not ours to stop
     //    port held, no health  → something else owns it; serve keeps failing
     //    port free             → genuinely stopped
+    // ⛔ ASK THE REALM BEFORE ASKING THE PORT. `pingHealth` answers "is a recued
+    // server on THIS PORT", which is a different question from "is a server
+    // running on THIS REALM" in two ways that both mislead: another realm's
+    // server bound to the same port reads as ours, and our own server bound to
+    // a port other than the one this command was handed is missed entirely.
+    // The instance lock is realm-scoped and records the port the holder ACTUALLY
+    // bound — the same source `recued stop` and `recued update` now use, so all
+    // three commands answer one machine the same way.
+    const holder = liveServerHolding(opts.dbPath);
+    if (holder) {
+      console.log(`Status: running — started by \`recued serve\` (pid ${holder.pid}, port ${holder.bind_port}).`);
+      console.log('  No pidfile: `recued start` did not launch it — a foreground `recued serve`');
+      console.log('  or an autostart unit did. That is the normal shape, not a fault.');
+      // ⚠ THIS USED TO SAY `recued stop` COULD NOT HELP, WHICH WAS TRUE AND IS
+      // NOT ANY MORE: stop reads this same lock. Leaving the old sentence here
+      // would send the owner round the loop this pair was fixed to end.
+      console.log('  `recued stop` can stop it — it reads this same instance lock.');
+      if (holder.bind_port !== opts.port) {
+        console.log('');
+        console.log(`  ⚠ It is bound to ${holder.bind_port}, not the ${opts.port} this command was given.`);
+        console.log('    Reachability below is computed for the port you passed, not the live one.');
+      }
+      if (autoDisabledBlock) console.log(autoDisabledBlock);
+      return;
+    }
+
     const answering = await pingHealth(opts.port);
     if (answering) {
-      console.log('Status: running — but NOT under `recued start` (no pidfile).');
-      console.log(`  A recued server is answering /health on port ${opts.port}.`);
-      console.log('  `recued stop` cannot stop it: it only manages what it started.');
+      console.log('Status: running — but NOT on this realm.');
+      console.log(`  A recued server is answering /health on port ${opts.port}, and nothing`);
+      console.log('  holds this realm\'s instance lock — so it is serving a DIFFERENT database.');
+      console.log('  `recued stop` cannot stop it: it manages this realm only.');
       console.log(`  Find the owner:  ss -ltnp | grep ${opts.port}   (or: lsof -i :${opts.port})`);
       console.log('                   systemctl status recued   (the autostart unit, if armed)');
     } else if (await portInUse(opts.port)) {

@@ -453,7 +453,7 @@ export const toFtsMatch = (raw: string): string | null => {
  *  lists, but they invert the sentence around them: drop `not` from "how to not
  *  delete a record" and the query relaxes into its own opposite. A word belongs
  *  here only if removing it cannot change WHICH document is the right answer. */
-const FTS_STOPWORDS: ReadonlySet<string> = new Set([
+export const FTS_STOPWORDS: ReadonlySet<string> = new Set([
   'a', 'about', 'am', 'an', 'and', 'any', 'are', 'as', 'at', 'be', 'been',
   'being', 'but', 'by', 'can', 'could', 'did', 'do', 'does', 'for', 'from',
   'had', 'has', 'have', 'he', 'her', 'hers', 'him', 'his', 'how', 'i', 'if',

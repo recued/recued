@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { executeRecipe } from '../execute.js';
 import type { ExecutionContext, IngredientExecutor } from '../types.js';
-import type { RecipeDefinition } from '@recued/contracts';
+import type { IngredientManifest, LaneGovernor, RecipeDefinition } from '@recued/contracts';
 
 const mkRecipe = (overrides: Partial<RecipeDefinition['metadata']> = {}, steps: RecipeDefinition['steps'] = []): RecipeDefinition => ({
   recipe_id: 'budget-test',
@@ -56,6 +56,51 @@ describe('RECIPE_BUDGET_EXCEEDED', () => {
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0].code).toBe('RECIPE_BUDGET_EXCEEDED');
     expect(result.errors[0].severity).toBe('error');
+  });
+
+  it('propagates the budget abort and waits for cooperative cancellation cleanup', async () => {
+    const recipe = mkRecipe(
+      { budget_ms: 40 },
+      [{ id: 'slow', ingredient: 'local-service', input: {} }],
+    );
+    let runSignal: AbortSignal | undefined;
+    let cleanupFinished = false;
+    const released: string[] = [];
+    const laneGovernor: LaneGovernor = {
+      acquire: async (request) => {
+        runSignal = request.signal;
+        return {
+          lane: 'local-heavy',
+          reportProgress() {},
+          release(outcome) { released.push(outcome); },
+        };
+      },
+    };
+    const executor: IngredientExecutor = async () => {
+      await new Promise<void>((resolve) => {
+        const cleanUp = () => {
+          setTimeout(() => {
+            cleanupFinished = true;
+            resolve();
+          }, 30);
+        };
+        if (runSignal?.aborted) cleanUp();
+        else runSignal?.addEventListener('abort', cleanUp, { once: true });
+      });
+      return { ok: true };
+    };
+    const ctx: ExecutionContext = {
+      ...mkCtx(recipe, executor),
+      laneGovernor,
+      manifestGetter: () => ({ kind: 'service' }) as IngredientManifest,
+    };
+
+    const result = await executeRecipe(ctx);
+
+    expect(result.errors[0].code).toBe('RECIPE_BUDGET_EXCEEDED');
+    expect(runSignal?.aborted).toBe(true);
+    expect(cleanupFinished).toBe(true);
+    expect(released).toEqual(['failed']);
   });
 
   it('omits enforcement when budget_ms is absent', async () => {
@@ -127,5 +172,35 @@ describe('RECIPE_BUDGET_EXCEEDED', () => {
     const recipe = mkRecipe({ budget_ms: 500 }, []);
     const result = await executeRecipe(mkCtx(recipe, fastExecutor));
     expect(result.success).toBe(true);
+  });
+
+  it('discards a late provider value after owner abort and never advances to the next step', async () => {
+    const recipe = mkRecipe({}, [
+      { id: 'slow-provider', ingredient: 'remote-read', input: {} },
+      { id: 'must-not-run', ingredient: 'second-effect', input: {} },
+    ]);
+    const controller = new AbortController();
+    let releaseProvider!: (value: { ok: true }) => void;
+    const provider = new Promise<{ ok: true }>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const calls: string[] = [];
+    const execution = executeRecipe({
+      ...mkCtx(recipe, async (slug) => {
+        calls.push(slug);
+        return slug === 'remote-read' ? provider : { should_not_happen: true };
+      }),
+      runAbortSignal: controller.signal,
+    });
+
+    await expect.poll(() => calls).toEqual(['remote-read']);
+    controller.abort();
+    releaseProvider({ ok: true });
+    const result = await execution;
+
+    expect(result.success).toBe(false);
+    expect(calls).toEqual(['remote-read']);
+    expect(result.steps[0]?.result).toBeNull();
+    expect(result.steps[0]?.error?.message).toContain('run killed by the owner');
   });
 });

@@ -8,7 +8,7 @@
  *    - chat.tool_call_completed patches matching tool_call to ok/error
  *    - chat.message_complete clears in-flight + appends authoritative
  *    - chat.session_changed patches picker / model_pref / title / archived
- *    - dropped: wrong session_id, stale turn_id, off-list event kind
+ *    - dropped: wrong session_id, completed stale turn_id, off-list event kind
  */
 
 import { describe, it, expect } from 'vitest';
@@ -384,9 +384,12 @@ describe('reduceChatThreadEvent', () => {
     expect(s).toBe(before);
   });
 
-  it('drops events for stale turn_id', () => {
+  it('drops events for a completed stale turn_id while admitting unknown concurrent turns', () => {
     let s = initialChatThreadState();
-    s = hydrateThreadFromSnapshot(s, { ...mkSession('sess-1'), messages: [] });
+    s = hydrateThreadFromSnapshot(s, {
+      ...mkSession('sess-1'),
+      messages: [{ ...mkAssistantMessage('old', 'sess-1'), turn_id: 'turn-OLD' }],
+    });
     s = beginInFlightTurn(s, 'turn-1');
     const before = s;
     s = reduceChatThreadEvent(s, {
@@ -697,27 +700,28 @@ describe('route-side scaffold handling — adopt-on-first-event', () => {
     expect(s).toBe(beforeLateReplay);
   });
 
-  it('does not let a different turn steal the adopted scaffold', () => {
+  it('tracks a different concurrent turn as a sibling without stealing the primary', () => {
     let s = reduceChatThreadEvent(hydrated(), tokenStreamed('turn-A', 'A'));
 
-    const beforeBDelta = s;
     s = reduceChatThreadEvent(s, tokenStreamed('turn-B', 'B'));
-    expect(s).toBe(beforeBDelta);
-
-    const beforeBTool = s;
     s = reduceChatThreadEvent(s, toolCallStarted('turn-B'));
-    expect(s).toBe(beforeBTool);
 
     s = reduceChatThreadEvent(s, tokenStreamed('turn-A', '+'));
     expect(s.inflight?.turn_id).toBe('turn-A');
     expect(s.inflight?.assistant_content).toBe('A+');
+    expect(s.inflight?.siblings?.[0]).toMatchObject({
+      turn_id: 'turn-B',
+      assistant_content: 'B',
+      tool_calls: [{ tool_name: 'mail.search', status: 'started' }],
+    });
   });
 
-  it('lets an explicit local send replace a different adopted scaffold without losing that completion', () => {
+  it('lets an explicit local send join an adopted scaffold and promotes it when the first completes', () => {
     let s = reduceChatThreadEvent(hydrated(), tokenStreamed('turn-A', 'from A'));
 
     s = beginInFlightTurn(s, 'turn-B');
-    expect(s.inflight).toMatchObject({ turn_id: 'turn-B', assistant_content: '' });
+    expect(s.inflight).toMatchObject({ turn_id: 'turn-A', assistant_content: 'from A' });
+    expect(s.inflight?.siblings?.[0]).toMatchObject({ turn_id: 'turn-B', assistant_content: '' });
 
     s = reduceChatThreadEvent(s, messageComplete('turn-A', 'mA', 'A done'));
     expect(s.messages.map((m) => m.id)).toEqual(['mA']);

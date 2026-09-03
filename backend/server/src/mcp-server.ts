@@ -12,6 +12,7 @@
  *  - recued_getRecipe       — detail + input schema
  *  - recued_listIngredients — ingredient catalog (for composing inline recipes)
  *  - recued_runRecipe       — execute (by id or inline)
+ *  - recued_stopRecipe      — stop this token's own attended run
  *  - recued_getAudit        — recent run history
  *  - recued_saveRecipe      — persist an MCP-authored recipe to the server's
  *                             store (extension picks it up on next pair-sync)
@@ -34,6 +35,7 @@ import {
 } from './canonical-op-tool-catalog.js';
 import { buildCanonicalOpRecipe, CANONICAL_OP_CONNECTION_VAR } from '@recued/recipes';
 import { CANONICAL_OP_TOOL_PREFIX } from '@recued/contracts';
+import { deriveChannelSessionId } from '@recued/gateway';
 import { resolveConnectionVendor } from './storage/connection-store.js';
 import { buildVersionedContractSnapshot } from './contract-snapshot-version.js';
 import {
@@ -207,6 +209,7 @@ const INGREDIENT_TOOL_PREFIX = 'recued_ingredient_';
  *  (registry Tier-1 names already carry dots; `parseOpId` handles multi-dot
  *  operations). Gate A keys on this full name. */
 const CUSTOMER_STATUS_TOOL_NAME = 'recued_customerStatus';
+const MCP_STOP_RECIPE_TOOL_NAME = 'recued_stopRecipe';
 const CUSTOMER_STATUS_OP_ID = 'core.customer.status';
 /** ⛔⛔ D-228 slice 2 (2nd attempt) — THE HAND-LIST IS GONE AND SO IS THE
  *  DERIVATION. Kernel MCP exposure is now an AUTHORED per-ingredient field,
@@ -241,6 +244,7 @@ const CUSTOMER_STATUS_OP_ID = 'core.customer.status';
 /** Direct MCP setup, status, and catalog affordances are explicitly free. */
 const MCP_FREE_CUSTOMER_TOOL_NAMES: ReadonlySet<string> = new Set([
   MCP_ACTION_STATUS_TOOL_NAME,
+  MCP_STOP_RECIPE_TOOL_NAME,
   CUSTOMER_STATUS_TOOL_NAME,
   'recued_listRecipes',
   'recued_getRecipe',
@@ -313,7 +317,9 @@ const peerConnectionNameFor = (
   return undefined;
 };
 
-const buildMcpExecutionSource = (deps: McpDeps): ExecutionSource => {
+const buildMcpExecutionSource = (
+  deps: McpDeps,
+): Extract<ExecutionSource, { channel: 'mcp' }> => {
   const mcp_token_id = deps.mcpTokenId ?? STDIO_MCP_TOKEN_ID;
   // D-166 P2 token↔contract binding — when the inbound token names a minted
   // contract (`McpInboundTokenRecord.contract_id`, resolved onto `boundContractId`
@@ -861,6 +867,31 @@ const TOOLS = [
     },
   },
   {
+    name: MCP_STOP_RECIPE_TOOL_NAME,
+    description:
+      'Stop one attended recipe run started by this same MCP token. Pass exactly one of run_id or recipe_id. A recipe_id is refused as ambiguous when more than one matching run is active; no run is stopped in that case.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        run_id: {
+          type: 'string',
+          maxLength: 256,
+          description: 'Exact run id returned by Recued.',
+        },
+        recipe_id: {
+          type: 'string',
+          maxLength: 256,
+          description: 'Recipe id, accepted only when exactly one owned run matches.',
+        },
+      },
+      oneOf: [
+        { required: ['run_id'] },
+        { required: ['recipe_id'] },
+      ],
+      additionalProperties: false,
+    },
+  },
+  {
     name: MCP_ACTION_STATUS_TOOL_NAME,
     description:
       'Query a token-bound async action returned by a Recued tool that paused for out-of-band owner approval. The same action_ref follows the entire original invocation across additional approval gates. Terminal responses include the deferred final result. Do not resend the original tool call while this reports awaiting_approval or running.',
@@ -1240,7 +1271,8 @@ const rawOpContractGrant = (deps: McpDeps, toolName: string): boolean | null => 
  *  a write the owner is choosing to hand out, and the contract axis still gates
  *  it — only the synchronous-path approval verdict is bypassed. */
 const isSelfGatedNativeMcpTool = (toolName: string): boolean =>
-  toolName === PEER_RECEIVE_ASK_TOOL
+  toolName === MCP_STOP_RECIPE_TOOL_NAME
+  || toolName === PEER_RECEIVE_ASK_TOOL
   // D-234 § 234.4 return leg — the SAME argument as the ask door, on the other
   // evidence. `recued_peerAnswer` is `write` under a delegated token's LOW
   // ceiling, so `ask` is the verdict and a synchronous tools/call can only
@@ -1372,10 +1404,13 @@ export const buildMcpGrantCatalogLegacyEntries = (
   // Static `recued_*` meta tools — verbatim name + description + arg schema
   // from `TOOLS` (the exact set `handleToolsList` emits).
   for (const tool of TOOLS) {
-    // D-196 S2b — customer.status is governed by the customer's contract op
-    // grant (`core.customer.status`), not by the inbound-token business-tool
-    // catalog/checklist.
-    if (tool.name === CUSTOMER_STATUS_TOOL_NAME) continue;
+    // Self-scoped protocol utilities are governed by principal liveness and
+    // row/run ownership, not by the inbound-token business-tool checklist.
+    // D-259 explicitly adds no authorization/grant axis for stop.
+    if (
+      tool.name === CUSTOMER_STATUS_TOOL_NAME
+      || tool.name === MCP_STOP_RECIPE_TOOL_NAME
+    ) continue;
     entries.push({
       name: tool.name,
       tier: 2,
@@ -1561,14 +1596,16 @@ const handleToolsList = async (deps: McpDeps): Promise<unknown> => {
     // token must still be able to observe how an invocation accepted before
     // revocation settled (normally as a fresh-authority denial). This utility
     // is token-row-scoped and cannot dispatch or grant a capability.
-    const actionStatus = TOOLS.find((tool) => tool.name === MCP_ACTION_STATUS_TOOL_NAME);
+    const protocolUtilities = TOOLS.filter((tool) =>
+      tool.name === MCP_ACTION_STATUS_TOOL_NAME
+      || tool.name === MCP_STOP_RECIPE_TOOL_NAME);
     return {
-      tools:
-        actionStatus !== undefined
-        && deps.mcpActionStore !== undefined
-        && deps.mcpPrincipalActive?.() === true
-          ? [actionStatus]
-          : [],
+      tools: deps.mcpPrincipalActive?.() === true
+        ? protocolUtilities.filter((tool) =>
+            tool.name === MCP_STOP_RECIPE_TOOL_NAME
+              ? deps.inFlightRegistry !== undefined
+              : deps.mcpActionStore !== undefined)
+        : [],
     };
   }
   const { routes, extManifests } = await buildRouteMap(deps);
@@ -1694,6 +1731,16 @@ const handleToolsList = async (deps: McpDeps): Promise<unknown> => {
       // liveness and row ownership are both enforced at call time too.
       if (t.name === MCP_ACTION_STATUS_TOOL_NAME) {
         return deps.mcpActionStore !== undefined
+          && (
+            deps.ownerAdmitAll === true
+            || deps.mcpPrincipalActive?.() === true
+          );
+      }
+      // D-259 §7.4 — stopping is an authenticated, same-token protocol
+      // utility. The registry performs the narrower origin/run ownership check;
+      // a checklist grant or live bound contract must not strand an accepted run.
+      if (t.name === MCP_STOP_RECIPE_TOOL_NAME) {
+        return deps.inFlightRegistry !== undefined
           && (
             deps.ownerAdmitAll === true
             || deps.mcpPrincipalActive?.() === true
@@ -2379,6 +2426,7 @@ const preflightMcpCustomerUsage = (
   const args = params.arguments ?? {};
   if (
     params.name !== MCP_ACTION_STATUS_TOOL_NAME
+    && params.name !== MCP_STOP_RECIPE_TOOL_NAME
     && deps.boundContractId !== undefined
     && deps.boundContractActive !== true
   ) {
@@ -2404,6 +2452,19 @@ const preflightMcpCustomerUsage = (
       return {
         ok: false,
         result: err('The MCP token for this async action is no longer active.'),
+      };
+    }
+  } else if (params.name === MCP_STOP_RECIPE_TOOL_NAME) {
+    if (!deps.inFlightRegistry) {
+      return {
+        ok: false,
+        result: err('Agent recipe-stop control is not configured on this server.'),
+      };
+    }
+    if (deps.ownerAdmitAll !== true && deps.mcpPrincipalActive?.() !== true) {
+      return {
+        ok: false,
+        result: err('The MCP token for this stop request is no longer active.'),
       };
     }
   } else if (params.name === CUSTOMER_STATUS_TOOL_NAME) {
@@ -2552,6 +2613,7 @@ const handleToolCall = async (
   // contract (that conflated "contract dead" with "token grants nothing").
   if (
     params.name !== MCP_ACTION_STATUS_TOOL_NAME
+    && params.name !== MCP_STOP_RECIPE_TOOL_NAME
     && deps.boundContractId !== undefined
     && deps.boundContractActive !== true
   ) {
@@ -2579,6 +2641,13 @@ const handleToolCall = async (
       && deps.mcpPrincipalActive?.() !== true
     ) {
       return err('The MCP token for this async action is no longer active.');
+    }
+  } else if (params.name === MCP_STOP_RECIPE_TOOL_NAME) {
+    if (!deps.inFlightRegistry) {
+      return err('Agent recipe-stop control is not configured on this server.');
+    }
+    if (deps.ownerAdmitAll !== true && deps.mcpPrincipalActive?.() !== true) {
+      return err('The MCP token for this stop request is no longer active.');
     }
   } else if (params.name === CUSTOMER_STATUS_TOOL_NAME) {
     if (!deps.customerStatus) {
@@ -3025,6 +3094,7 @@ const handleToolCall = async (
   if (
     params.name !== 'recued_runRecipe'
     && params.name !== MCP_ACTION_STATUS_TOOL_NAME
+    && params.name !== MCP_STOP_RECIPE_TOOL_NAME
     && params.name !== CUSTOMER_STATUS_TOOL_NAME
   ) {
     // D-187 — apply the op-risk × stage-trust APPROVAL decision (+ the per-tool ACCESS
@@ -3048,6 +3118,68 @@ const handleToolCall = async (
   }
 
   switch (params.name) {
+    // ── same-token attended-run stop ───────────────────────
+    case MCP_STOP_RECIPE_TOOL_NAME: {
+      const keys = Object.keys(args);
+      const hasRunId = typeof args.run_id === 'string'
+        && args.run_id.length > 0
+        && args.run_id.length <= 256;
+      const hasRecipeId = typeof args.recipe_id === 'string'
+        && args.recipe_id.length > 0
+        && args.recipe_id.length <= 256;
+      if (
+        keys.some((key) => key !== 'run_id' && key !== 'recipe_id')
+        || hasRunId === hasRecipeId
+        || (args.run_id !== undefined && !hasRunId)
+        || (args.recipe_id !== undefined && !hasRecipeId)
+      ) {
+        return err(
+          'Pass exactly one non-empty run_id or recipe_id (maximum 256 characters).',
+        );
+      }
+
+      const source = buildMcpExecutionSource(deps);
+      // Same derivation the chat door uses — one scope vocabulary, so a stop
+      // means the same thing whichever surface asked (§ 7.4.3).
+      const internal = deps.inFlightRegistry!.stopOwnRun(
+        deriveChannelSessionId(source),
+        hasRunId
+          ? { run_id: args.run_id as string }
+          : { recipe_id: args.recipe_id as string },
+      );
+      // Unknown and wrong-principal share one public result: a guessed id must
+      // not become an existence or ownership oracle. The private audit below
+      // retains the actual reason for forensic review.
+      const wire = internal.status === 'not_yours'
+        ? { status: 'not_found' as const }
+        : internal;
+
+      if (deps.auditLog) {
+        try {
+          await deps.auditLog.logActivity({
+            activity_id: '',
+            timestamp: Date.now(),
+            action: 'mcp_dispatch',
+            target: MCP_STOP_RECIPE_TOOL_NAME,
+            detail: JSON.stringify({
+              status: internal.status,
+              ...(hasRunId
+                ? { requested_run_id: args.run_id }
+                : { requested_recipe_id: args.recipe_id }),
+              source: {
+                channel: source.channel,
+                actor: source.actor,
+                agent_id: source.agent_id,
+                mcp_token_id: source.mcp_token_id,
+                contract_id: source.contract_id,
+              },
+            }),
+          });
+        } catch { /* stopping must not depend on audit availability */ }
+      }
+      return text(wire);
+    }
+
     // ── async action status/result ───────────────────────────
     case MCP_ACTION_STATUS_TOOL_NAME: {
       if (

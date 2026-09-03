@@ -2,6 +2,7 @@
 
 import type {
   Checkpoint,
+  ContractSnapshot,
   ExecutionSource,
   IngredientManifest,
   RecipeDefinition,
@@ -42,6 +43,9 @@ import {
   buildHeldConfigSnapshot,
   computeHeldActionKey,
 } from '../held-action-idempotency.js';
+import { InFlightRegistry } from '../execution/in-flight-registry.js';
+import { LaneSemaphore } from '../execution/lane-semaphore.js';
+import { createEventBus } from '../events/bus.js';
 import { createManifestRegistry, type ManifestRegistry } from '../manifest-loader.js';
 import { createRecipeStore } from '../recipe-store.js';
 import {
@@ -58,6 +62,24 @@ const chatSource: ExecutionSource = {
   actor: 'user_self',
   chat_session_id: 'chat-held-session',
   user_id: 'user-1',
+};
+
+const mcpSource: ExecutionSource = {
+  channel: 'mcp',
+  actor: 'contracted_user',
+  agent_id: 'agent-running-twin',
+  tool_call_id: 'tool-call-running-twin',
+  mcp_token_id: 'token-running-twin',
+  contract_id: 'contract-running-twin',
+};
+
+const mcpSnapshot: ContractSnapshot = {
+  contract_id: 'contract-running-twin',
+  contract_version: 'authority-test-v1',
+  allowed_tools: [TOOL_SLUG],
+  approval_required: [],
+  scope_restrictions: [],
+  resolved_at: FIXED_NOW,
 };
 
 const reactiveSource: ExecutionSource = {
@@ -168,6 +190,17 @@ const pausedResult = (recipe_id: string): ExecutionResult => ({
     risk_tier: 'read',
     reason: 'read fixture paused for approval',
   },
+});
+
+const completedResult = (recipe_id: string): ExecutionResult => ({
+  recipe_id,
+  recipe_hash: `engine-${recipe_id}`,
+  success: true,
+  output: { render: [], sidebar: [] },
+  steps: [],
+  errors: [],
+  duration_ms: 7,
+  validation_issues: [],
 });
 
 const commitStore = (): CommitStore & {
@@ -807,5 +840,274 @@ describe('handleExecute D-157 held-action idempotency guard', () => {
     expect(awaiting).toHaveLength(1);
     expect(awaiting[0]?.checkpoint_id).toBe(writtenCheckpoint?.checkpoint_id);
     expect(awaitInflightHold(heldActionKey)).toBeNull();
+  });
+});
+
+describe('handleExecute D-259 running-action duplicate gate', () => {
+  it('abandons the caller await immediately while the killed engine drains', async () => {
+    const recipe = buildRecipe('running-stop-abandons-await');
+    const log = auditLog();
+    const registry = new InFlightRegistry(new LaneSemaphore());
+    const deps = makeDeps(recipe, { auditLog: log, inFlightRegistry: registry });
+    const engineRelease = deferred<ExecutionResult>();
+    let engineSettled = false;
+    executeRecipeMock.mockImplementationOnce(async () => {
+      const result = await engineRelease.promise;
+      engineSettled = true;
+      return result;
+    });
+
+    const call = handleExecute(deps, {
+      recipe_id: recipe.recipe_id,
+      trigger_source: 'mcp',
+      execution_source: mcpSource,
+      contract_snapshot: mcpSnapshot,
+      config: MATCHING_CONFIG,
+    });
+    await vi.waitFor(() => {
+      expect(registry.snapshot().entries).toHaveLength(1);
+    });
+    const runId = registry.snapshot().entries[0]!.run_id!;
+
+    expect(registry.stopOwnRun('mcp:token-running-twin', { run_id: runId }))
+      .toMatchObject({ status: 'stopped', run_id: runId });
+    const response = await call;
+
+    expect(engineSettled).toBe(false);
+    expect(response).toMatchObject({
+      recipe_id: recipe.recipe_id,
+      success: false,
+      run_terminated: 'killed',
+    });
+    expect(executeResponseAuditRunId(response)).toBe(runId);
+    expect(registry.snapshot().entries).toHaveLength(0);
+    expect(await log.get(runId)).toMatchObject({ commit_status: 'killed' });
+
+    // The transport/engine may still settle later; that drain is deliberately
+    // detached from the caller response and must not create a second anchor.
+    engineRelease.resolve(completedResult(recipe.recipe_id));
+    await flushMicrotasks();
+    expect(engineSettled).toBe(true);
+    expect(await log.size()).toBe(1);
+  });
+
+  it('awaits finite-child detach before abandoning the killed engine await', async () => {
+    const recipe = buildRecipe('running-stop-awaits-process-tree-cleanup');
+    const registry = new InFlightRegistry(new LaneSemaphore());
+    const deps = makeDeps(recipe, { inFlightRegistry: registry });
+    const engineRelease = deferred<ExecutionResult>();
+    executeRecipeMock.mockImplementationOnce(async () => engineRelease.promise);
+
+    let callerSettled = false;
+    const call = handleExecute(deps, {
+      recipe_id: recipe.recipe_id,
+      trigger_source: 'mcp',
+      execution_source: mcpSource,
+      contract_snapshot: mcpSnapshot,
+      config: MATCHING_CONFIG,
+    }).finally(() => { callerSettled = true; });
+    await vi.waitFor(() => {
+      expect(registry.snapshot().entries).toHaveLength(1);
+    });
+    const runId = registry.snapshot().entries[0]!.run_id!;
+    const childId = registry.attachSubprocess(runId, 777, () => {});
+
+    expect(registry.kill(runId)).toBe('killed');
+    await flushMicrotasks();
+    expect(callerSettled).toBe(false);
+
+    registry.detachSubprocess(runId, childId);
+    const response = await call;
+    expect(response.run_terminated).toBe('killed');
+    expect(response.success).toBe(false);
+
+    engineRelease.resolve(completedResult(recipe.recipe_id));
+    await flushMicrotasks();
+  });
+
+  it('emits one lifecycle pair when exact MCP twins race before the atomic claim', async () => {
+    const recipe = buildRecipe('running-idempotency-mcp-preclaim-race');
+    const registry = new InFlightRegistry(new LaneSemaphore());
+    const eventBus = createEventBus();
+    const deps = makeDeps(recipe, { inFlightRegistry: registry, eventBus });
+    const engineRelease = deferred<ExecutionResult>();
+
+    executeRecipeMock.mockImplementationOnce(async () => engineRelease.promise);
+    const request = () => ({
+      recipe_id: recipe.recipe_id,
+      trigger_source: 'mcp' as const,
+      execution_source: mcpSource,
+      contract_snapshot: mcpSnapshot,
+      config: MATCHING_CONFIG,
+    });
+
+    // Do not await between entry calls: both MCP paths yield in contract
+    // preflight, which exercises the miss/miss/claim race rather than the
+    // sequential fast path.
+    const leaderCall = handleExecute(deps, request());
+    const followerCall = handleExecute(deps, request());
+    await flushMicrotasks();
+
+    expect(executeRecipeMock).toHaveBeenCalledTimes(1);
+    expect(eventBus.replay(0).filter((event) =>
+      event.kind === 'execution' && event.op === 'start')).toHaveLength(1);
+
+    engineRelease.resolve(completedResult(recipe.recipe_id));
+    await Promise.all([leaderCall, followerCall]);
+    const lifecycle = eventBus.replay(0).filter((event) => event.kind === 'execution');
+    expect(lifecycle.map((event) => event.op)).toEqual(['start', 'complete']);
+    expect(new Set(lifecycle.map((event) => event.run_id)).size).toBe(1);
+  });
+
+  it('attaches an exact concurrent chat twin to one engine execution and run', async () => {
+    const recipe = buildRecipe('running-idempotency-concurrent-collapse');
+    const log = auditLog();
+    const registry = new InFlightRegistry(new LaneSemaphore());
+    const deps = makeDeps(recipe, { auditLog: log, inFlightRegistry: registry });
+    const engineStarted = deferred<void>();
+    const engineRelease = deferred<ExecutionResult>();
+
+    executeRecipeMock.mockImplementationOnce(async () => {
+      engineStarted.resolve(undefined);
+      return engineRelease.promise;
+    });
+
+    const request = () => ({
+      recipe_id: recipe.recipe_id,
+      trigger_source: 'chat' as const,
+      execution_source: chatSource,
+      config: MATCHING_CONFIG,
+    });
+
+    const leaderCall = handleExecute(deps, request());
+    await engineStarted.promise;
+    let followerSettled = false;
+    const followerCall = handleExecute(deps, request()).finally(() => {
+      followerSettled = true;
+    });
+    await flushMicrotasks();
+
+    expect(executeRecipeMock).toHaveBeenCalledTimes(1);
+    expect(followerSettled).toBe(false);
+
+    engineRelease.resolve(completedResult(recipe.recipe_id));
+    const [leaderResponse, followerResponse] = await Promise.all([
+      leaderCall,
+      followerCall,
+    ]);
+    const leaderRunId = executeResponseAuditRunId(leaderResponse);
+
+    expect(executeRecipeMock).toHaveBeenCalledTimes(1);
+    expect(leaderRunId).toBeDefined();
+    expect(executeResponseAuditRunId(followerResponse)).toBe(leaderRunId);
+    expect(followerResponse).toBe(leaderResponse);
+    expect(await log.size()).toBe(1);
+  });
+
+  it('does not collapse concurrent chat actions with different resolved config', async () => {
+    const recipe = buildRecipe('running-idempotency-config-boundary');
+    const log = auditLog();
+    const registry = new InFlightRegistry(new LaneSemaphore());
+    const deps = makeDeps(recipe, { auditLog: log, inFlightRegistry: registry });
+    const bothStarted = deferred<void>();
+    const engineRelease = deferred<ExecutionResult>();
+    let engineCalls = 0;
+
+    executeRecipeMock.mockImplementation(async () => {
+      engineCalls += 1;
+      if (engineCalls === 2) bothStarted.resolve(undefined);
+      return engineRelease.promise;
+    });
+
+    const firstCall = handleExecute(deps, {
+      recipe_id: recipe.recipe_id,
+      trigger_source: 'chat',
+      execution_source: chatSource,
+      config: MATCHING_CONFIG,
+    });
+    const secondCall = handleExecute(deps, {
+      recipe_id: recipe.recipe_id,
+      trigger_source: 'chat',
+      execution_source: chatSource,
+      config: DIFFERENT_CONFIG,
+    });
+
+    await bothStarted.promise;
+    expect(executeRecipeMock).toHaveBeenCalledTimes(2);
+    engineRelease.resolve(completedResult(recipe.recipe_id));
+    const [firstResponse, secondResponse] = await Promise.all([firstCall, secondCall]);
+
+    expect(executeResponseAuditRunId(firstResponse)).not.toBe(
+      executeResponseAuditRunId(secondResponse),
+    );
+    expect(await log.size()).toBe(2);
+  });
+
+  it('does not collapse when caller context or vault dimensions are present', async () => {
+    const recipe = buildRecipe('running-idempotency-uncovered-input-boundary');
+    const registry = new InFlightRegistry(new LaneSemaphore());
+    const deps = makeDeps(recipe, { inFlightRegistry: registry });
+    const bothStarted = deferred<void>();
+    const engineRelease = deferred<ExecutionResult>();
+    let engineCalls = 0;
+
+    executeRecipeMock.mockImplementation(async () => {
+      engineCalls += 1;
+      if (engineCalls === 2) bothStarted.resolve(undefined);
+      return engineRelease.promise;
+    });
+
+    const contextCall = handleExecute(deps, {
+      recipe_id: recipe.recipe_id,
+      trigger_source: 'chat',
+      execution_source: chatSource,
+      config: MATCHING_CONFIG,
+      context: { event: { id: 'context-specific' } },
+    });
+    const vaultCall = handleExecute(deps, {
+      recipe_id: recipe.recipe_id,
+      trigger_source: 'chat',
+      execution_source: chatSource,
+      config: MATCHING_CONFIG,
+      vault: { secret: 'vault-specific' },
+    });
+
+    await bothStarted.promise;
+    expect(executeRecipeMock).toHaveBeenCalledTimes(2);
+    engineRelease.resolve(completedResult(recipe.recipe_id));
+    await Promise.all([contextCall, vaultCall]);
+  });
+
+  it('never collapses an event dispatch onto a concurrent chat action', async () => {
+    const recipe = buildRecipe('running-idempotency-channel-boundary');
+    const registry = new InFlightRegistry(new LaneSemaphore());
+    const deps = makeDeps(recipe, { inFlightRegistry: registry });
+    const bothStarted = deferred<void>();
+    const engineRelease = deferred<ExecutionResult>();
+    let engineCalls = 0;
+
+    executeRecipeMock.mockImplementation(async () => {
+      engineCalls += 1;
+      if (engineCalls === 2) bothStarted.resolve(undefined);
+      return engineRelease.promise;
+    });
+
+    const chatCall = handleExecute(deps, {
+      recipe_id: recipe.recipe_id,
+      trigger_source: 'chat',
+      execution_source: chatSource,
+      config: MATCHING_CONFIG,
+    });
+    const eventCall = handleExecute(deps, {
+      recipe_id: recipe.recipe_id,
+      trigger_source: 'auto_run',
+      execution_source: reactiveSource,
+      config: MATCHING_CONFIG,
+    });
+
+    await bothStarted.promise;
+    expect(executeRecipeMock).toHaveBeenCalledTimes(2);
+    engineRelease.resolve(completedResult(recipe.recipe_id));
+    await Promise.all([chatCall, eventCall]);
   });
 });

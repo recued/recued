@@ -152,7 +152,7 @@ import { createHousekeepingStateStore, type HousekeepingStateStore } from '../..
 import { reconciliationTaskId } from '../../housekeeping/reconciliation/vendor-reconciler.js';
 import { buildCanonicalPollDeps } from '../../watch/canonical-poll-deps.js';
 import { runCanonicalWatchPoll } from '../../watch/canonical-poll.js';
-import { piiEgress } from '@recued/gateway';
+import { deriveChannelSessionId, piiEgress } from '@recued/gateway';
 import type { AuditLogStore, Collection } from '@recued/storage';
 import type { AnnotationRpcDeps } from '../../annotation-handler.js';
 import {
@@ -178,12 +178,14 @@ import {
 } from '../../storage/chat-inbound-token-store.js';
 import {
   buildChatIndexContext,
+  chatIndexSessionRowsEnabled,
   CHAT_INDEX_TOO_COMMON_CAP,
   CHAT_INDEX_PROBE_ARGS,
 } from '../../chat-index-context.js';
 import {
   RECALL_SEARCH_TOOL_NAME,
   registerRecallTurnSource,
+  registerVisibleInteractionItemIds,
 } from '../../chat-recall-search-tool.js';
 import type { ChatDispatchContext } from '../../chat-tool-handlers.js';
 import {
@@ -683,6 +685,11 @@ export const composeChatOrchestrator = (
         ? (req) => handleExecute(executeDeps, req)
         : undefined;
     },
+    // D-259 § 7.4.3 — the SAME registry instance the executor and the MCP
+    // stop use. Late-bound for the same reason as the executor above: this
+    // composes before the executor exists. A SECOND instance here would mean
+    // the chat door could not see the runs the other doors registered.
+    getInFlightRegistry: () => getExecuteDeps()?.inFlightRegistry,
     // D-225 § 9.5.1 step 2b — the raw-op dispatch deps, late-bound for the same
     // reason `getExecuteRecipe` is: this composes before the executor exists.
     // `dispatchRawOp` takes a Pick of the execute deps, so this is the same
@@ -1218,6 +1225,13 @@ export const composeChatOrchestrator = (
 
   const orchestrator = withChatSessionBusy(createChatOrchestrator({
     chatStore,
+    // D-259 §7.4.2 — read the singleton registry at TURN time. The source is
+    // host-minted; deriving the same channel-session key used at registration
+    // keeps a concurrent chat/messenger turn scoped to its own live work.
+    buildInFlightContext: (source: ExecutionSource) =>
+      getExecuteDeps()?.inFlightRegistry?.promptContext(
+        deriveChannelSessionId(source),
+      ),
     // Pre-seed INDEX. Probes the ordinary Tier-1 read handlers for the owner's
     // own distinctive terms and reports only WHICH STORES answered — never a
     // row, a title or a count. Two gates apply and neither is re-implemented
@@ -1260,7 +1274,11 @@ export const composeChatOrchestrator = (
     //
     // The off-switch exists so that is one env var, not a redeploy.
     ...(process.env.RECUED_CHAT_INDEX !== '0' ? {
-    buildIndexContext: (userMessage: string, ctx: ChatDispatchContext) =>
+    buildIndexContext: (
+      userMessage: string,
+      ctx: ChatDispatchContext,
+      visibleItemIds: readonly string[],
+    ) =>
       buildChatIndexContext(userMessage, ctx, async (store, term, probeCtx) => {
         if (!admitTier1(store, probeCtx)) {
           return { ok: false as const, reason: 'channel_denied' as const };
@@ -1302,6 +1320,23 @@ export const composeChatOrchestrator = (
           const scratch = new Map<string, unknown>();
           if (probeCtx.execution_source !== undefined) {
             registerRecallTurnSource(scratch, probeCtx.execution_source);
+          }
+          // 3. THE VISIBLE ROWS registered into that same Map. The fresh Map
+          //    that makes the probe free also gives it an EMPTY
+          //    `visible_item_ids`, so without this the lane's
+          //    `excluded_item_ids` is empty and the probe hits the current
+          //    user row plus all three tail rows for every term the owner just
+          //    typed — the self-match noise the old `session_relation` filter
+          //    existed to suppress, and the reason that filter could be
+          //    deleted only together with this line. Seeding it here means the
+          //    probe and the model's own dispatches exclude the SAME rows by
+          //    the SAME rule, so an own-session turn that has aged out of the
+          //    tail is reachable by exactly one of them: the index.
+          //    ⚗ Gated with the filter it replaces — see
+          //    `chatIndexSessionRowsEnabled`. Registering while the filter is
+          //    still on would change CONTROL, not just the treatment.
+          if (chatIndexSessionRowsEnabled()) {
+            registerVisibleInteractionItemIds(scratch, visibleItemIds);
           }
           return baseChatRegistry.dispatch(
             RECALL_SEARCH_TOOL_NAME,

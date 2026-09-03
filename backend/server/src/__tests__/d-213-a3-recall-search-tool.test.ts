@@ -105,6 +105,11 @@ const candidate = (
   content,
   size_bytes: Buffer.byteLength(content, 'utf8'),
   score: 1,
+  // These fixtures pre-date the relaxation ladder and none of them exercises
+  // it — `exact` keeps every existing assertion describing the same rows it
+  // always described. Rung-specific behaviour is fenced in
+  // `recall-relaxation-ladder.test.ts`, not bolted onto this file.
+  match: 'exact',
 });
 
 const completeSearch = (

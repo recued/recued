@@ -100,6 +100,7 @@ import {
   createLocalManifestStore,
   type LocalManifestStore,
 } from '../ingredient-authoring/local-manifest-store.js';
+import { checkInstalledManifestsOnBoot } from '../ingredient-authoring/installed-manifest-boot-check.js';
 import {
   createDraftStore,
   type DraftStore,
@@ -437,6 +438,23 @@ export const composeStorageContext = async (
   for (const manifest of localManifestStore.listManifests()) {
     manifests.register(manifest);
   }
+  // D-259 § 0.1.1 — the same manifests, judged against the CURRENT validator.
+  //
+  // ⛔ REGISTERING A MANIFEST IS NOT CHECKING IT. The loop above makes an
+  // installed pack callable; it does not ask whether this server still RUNS the
+  // shapes it declares. Deleting the legacy CLI decoders made three of them
+  // rejected rather than tolerated, and a pack installed before that release
+  // keeps its old body on disk — so the op does not break at update time, it
+  // breaks the next time a recipe calls it, as an error about a binding the
+  // owner never wrote. There is no automatic pack update to catch it and, on an
+  // unattended server, no human opening Discover either.
+  //
+  // ⚠ It REPORTS and stops. Reinstalling changes the operation set a grant was
+  // scoped for, which is the owner's decision, not a boot path's.
+  checkInstalledManifestsOnBoot({
+    listManifests: () => localManifestStore.listManifests(),
+    log: (message: string) => console.warn(message),
+  });
   // D-170 N.4 / N.15 — draft store shares the per-pair db. No boot-register
   // step: a draft is an in-progress composition, not an installed capability.
   const draftStore = createDraftStore(db);

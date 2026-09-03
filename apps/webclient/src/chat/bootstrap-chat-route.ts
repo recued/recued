@@ -178,6 +178,12 @@ export const CHAT_ROUTE_ACTIVITY_TOGGLE_ATTR =
   'data-recued-chat-route-activity-toggle';
 export const CHAT_ROUTE_ACTIVITY_ROW_ATTR =
   'data-recued-chat-route-activity-row';
+/** D-259 — owner-only promotion of a succeeded ad-hoc run into a standing
+ * dish. Existing standing-dish calls render status, never a duplicate action. */
+export const CHAT_ROUTE_ACTIVITY_DISH_PROMOTE_ATTR =
+  'data-recued-chat-route-activity-dish-promote';
+export const CHAT_ROUTE_ACTIVITY_DISH_STATUS_ATTR =
+  'data-recued-chat-route-activity-dish-status';
 /** D-137 P3 § A.11 — interactive plan-approval card painted under the
  *  proposing turn's message. Carries `data-status` (`proposed` /
  *  `approved` / `cancelled`) + `data-plan-id`; the approve / cancel
@@ -472,6 +478,12 @@ export interface ChatRouteConn {
     method: 'chat.plan.approve' | 'chat.plan.cancel',
     payload: { plan_id: string },
   ): Promise<{ plan: ChatPlanProposal }>;
+  /** D-259 §6.1 — owner-only run-log promotion. The route sends only the
+   * durable audit address; recipe/config authority is recovered server-side. */
+  (
+    method: 'dishes.createFromRun',
+    payload: { run_id: string },
+  ): Promise<{ dish: { dish_id: string } }>;
 }
 
 /** This route's OWN chrome. Exported for the style-scale ratchet, which must
@@ -1628,6 +1640,27 @@ export const CHAT_ROUTE_CHROME_STYLES = `
 [${CHAT_ROUTE_ACTIVITY_ROW_ATTR}][data-status="error"] {
   color: var(--fail);
 }
+[${CHAT_ROUTE_ACTIVITY_DISH_PROMOTE_ATTR}] {
+  border: 1px solid var(--border);
+  border-radius: var(--chat-radius-pill);
+  background: var(--surface);
+  color: var(--fg);
+  padding: 2px 7px;
+  font: inherit;
+  cursor: pointer;
+}
+[${CHAT_ROUTE_ACTIVITY_DISH_PROMOTE_ATTR}][disabled] {
+  cursor: default;
+  opacity: 0.65;
+}
+[${CHAT_ROUTE_ACTIVITY_DISH_STATUS_ATTR}] {
+  margin-left: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+[${CHAT_ROUTE_ACTIVITY_DISH_STATUS_ATTR}][data-status="error"] {
+  color: var(--fail);
+}
 [${CHAT_ROUTE_TURN_FAILURE_ATTR}] {
   display: flex;
   flex-wrap: wrap;
@@ -2397,8 +2430,8 @@ export interface ChatRoute {
   hasUnsavedChanges(): boolean;
   /** Contextual route-leave copy when a portaled Create draft would be lost. */
   unsavedChangesPrompt(): string | null;
-  /** True from send dispatch until the accepted turn settles. A server switch
-   * cannot prove or cancel the outcome during this window. */
+  /** True only while a local send/history/action RPC is awaiting its ack.
+   * Accepted server turns are tracked separately and do not lock navigation. */
   hasInFlightWork(): boolean;
   /** Contextual route-leave copy for modal recipe writes that must keep their
    * visible owner. Ordinary server-owned Chat turns remain navigable. */
@@ -2416,15 +2449,9 @@ interface ChatRouteState {
   thread: ChatThreadState;
   error: ClassifiedRpcError | null;
   sending: boolean;
-  /** Ack-before-run send serialization — the turn the composer is
-   *  locked on. The `chat.send` ack resolves at the server's COMMIT
-   *  POINT (user message durable, model-bound body still running), so
-   *  `sending` must hold until the sent turn actually SETTLES: its
-   *  `chat.message_complete` lands (`completed_turn_ids`) or its
-   *  failure paints (`turn_failures` — incl. the post-accept
-   *  `engine.turn_failed` signal). Order-agnostic: under an
-   *  ack-after-run server the turn is already completed when the ack
-   *  returns and the lock settles immediately. */
+  /** Compatibility correlation for an older recovered send. New sends clear
+   *  this at the ack boundary: `sending` serializes transport dispatch only,
+   *  while accepted turns may run concurrently in the same session. */
   pending_turn_id: string | null;
   /** UX-review flow-09 — tri-state AI-availability signal. `null` while
    *  the LLM config is still loading (or its read failed); the cold-start
@@ -3210,16 +3237,12 @@ export const bootstrapChatRoute = (
   // `finishThreadSnapshotLoad` then returns null and aborts it — so only the
   // history-row wrapper's focus + address work needed a generation of its own.
   let navigationRequest = 0;
-  // Turns THIS TAB dispatched that have not settled yet, keyed by the session
-  // they belong to. A turn is the SERVER's work, not the visible thread's, so
-  // leaving a chat no longer abandons it — but the client still has to know
-  // which sessions are busy, for three reasons that all used to be one flag:
+  // Turns THIS TAB dispatched that have not settled yet, grouped by session.
+  // A turn is the SERVER's work, not a composer lock: after chat.send acks, a
+  // follow-up may open a concurrent turn in the same session. The set retains
+  // every known id so one completion cannot erase a sibling's busy state.
+  // The client still tracks them because:
   //
-  //   · returning to a session whose turn is still running must RE-LOCK the
-  //     composer. Two turns in one session read the same history tail at start
-  //     and append into it blind, so same-session concurrency stays forbidden
-  //     — the send lock just stopped being the thing that also blocks
-  //     navigation;
   //   · the history row says "Working…" so a background chat is visibly busy;
   //   · `hasInFlightWork` stays truthful once the visible thread is no longer
   //     the only place a turn can live.
@@ -3228,7 +3251,13 @@ export const bootstrapChatRoute = (
   // completion or failure paint — the subscriber sees EVERY session's events,
   // not just the open one) and on reconnect, where hydration is the only
   // truth about what settled while the socket was down.
-  const turnsInFlightBySession = new Map<string, string>();
+  const turnsInFlightBySession = new Map<string, Set<string>>();
+
+  const trackTurn = (sessionId: string, turnId: string): void => {
+    const turns = turnsInFlightBySession.get(sessionId);
+    if (turns) turns.add(turnId);
+    else turnsInFlightBySession.set(sessionId, new Set([turnId]));
+  };
   /** Has this chat moved since the owner last looked at it?
    *
    *  ⛔ WAS A TAB-LIFETIME `Set`, AND DIED ON RELOAD — you could be told an
@@ -3510,6 +3539,24 @@ export const bootstrapChatRoute = (
   let pendingConnectedSourceAnswer: PendingConnectedSourceAnswer | null = null;
   let pendingConnectedSourceProvisionalTurnId: string | null = null;
   const completedMessageIdsByTurn = new Map<string, string>();
+  // Terminal broadcasts can precede `chat.send`'s ack and can belong to a
+  // session the tab navigated away from while that RPC was pending. Keep a
+  // small session-qualified memory so learning the turn id at ack time cannot
+  // resurrect already-settled work in the route-level live map.
+  const settledTurnKeys = new Set<string>();
+  const settledTurnKey = (sessionId: string, turnId: string): string =>
+    `${sessionId}\u001f${turnId}`;
+  const rememberSettledTurn = (sessionId: unknown, turnId: unknown): void => {
+    if (typeof sessionId !== 'string' || typeof turnId !== 'string') return;
+    const key = settledTurnKey(sessionId, turnId);
+    settledTurnKeys.delete(key);
+    settledTurnKeys.add(key);
+    while (settledTurnKeys.size > 100) {
+      const oldest = settledTurnKeys.values().next().value;
+      if (oldest === undefined) break;
+      settledTurnKeys.delete(oldest);
+    }
+  };
   const upsertConnectedSourceTurn = (next: ConnectedSourceTurn): void => {
     const index = connectedSourceTurns.findIndex(
       (answer) => answer.turnId === next.turnId,
@@ -3823,13 +3870,11 @@ export const bootstrapChatRoute = (
     }
     for (const sessionId of authoritative) {
       turnsAwaitingVerification.delete(sessionId);
-      if (!turnsInFlightBySession.has(sessionId)) {
-        // Busy on the server, unknown to this tab — another surface, or another
-        // client, started it. There is no turn id to record from here, and the
-        // map only ever needs one to compare against a settling event, so the
-        // session id stands in until one arrives.
-        turnsInFlightBySession.set(sessionId, SERVER_REPORTED_TURN);
-      }
+      // The server's aggregate busy fact must survive settlement of any one
+      // locally-known turn: another client may have joined while the session
+      // was already busy, a refcount change that intentionally emits no second
+      // `busy:true`. The sentinel remains until the authoritative false edge.
+      trackTurn(sessionId, SERVER_REPORTED_TURN);
     }
   };
 
@@ -3876,8 +3921,14 @@ export const bootstrapChatRoute = (
     const tracked = turnsInFlightBySession.get(sessionId);
     const unverified = turnsAwaitingVerification.delete(sessionId);
     if (tracked === undefined) return false;
-    const verdict = judgeTrackedTurn(tracked, thread);
-    if (verdict === 'settled' || (unverified && verdict === 'unknown')) {
+    for (const turnId of [...tracked]) {
+      if (turnId === SERVER_REPORTED_TURN) continue;
+      const verdict = judgeTrackedTurn(turnId, thread);
+      if (verdict === 'settled' || (unverified && verdict === 'unknown')) {
+        tracked.delete(turnId);
+      }
+    }
+    if (tracked.size === 0) {
       turnsInFlightBySession.delete(sessionId);
       return true;
     }
@@ -3927,8 +3978,9 @@ export const bootstrapChatRoute = (
    *  session's events, which is the only place this can be observed. */
   const settleTrackedTurn = (sessionId: unknown, turnId: unknown): void => {
     if (typeof sessionId !== 'string' || typeof turnId !== 'string') return;
-    if (turnsInFlightBySession.get(sessionId) !== turnId) return;
-    turnsInFlightBySession.delete(sessionId);
+    const turns = turnsInFlightBySession.get(sessionId);
+    if (!turns?.delete(turnId)) return;
+    if (turns.size === 0) turnsInFlightBySession.delete(sessionId);
     if (sessionId === state.thread.session?.id) {
       // Settled in the chat on screen. ⛔ TELL THE SERVER, or walking away
       // from a chat you watched answer marks it unread — the message count it
@@ -4196,6 +4248,11 @@ export const bootstrapChatRoute = (
   // after the swap — a collapse during streaming re-expands on the
   // authoritative row), survives re-renders, dies with the tab.
   const collapsedActivity = new Set<string>();
+  type DishPromotionState =
+    | { status: 'saving' }
+    | { status: 'saved'; dish_id: string }
+    | { status: 'error'; message: string };
+  const dishPromotions = new Map<string, DishPromotionState>();
 
   const renderActivity = (
     host: HTMLElement,
@@ -4226,6 +4283,55 @@ export const bootstrapChatRoute = (
         line.setAttribute(CHAT_ROUTE_ACTIVITY_ROW_ATTR, '');
         if (row.kind === 'tool') line.setAttribute('data-status', row.status);
         line.textContent = row.text;
+        if (row.kind === 'tool' && row.status === 'ok' && row.run_id !== undefined) {
+          const promotion = dishPromotions.get(row.run_id);
+          const standingDishId = row.dish_id
+            ?? (promotion?.status === 'saved' ? promotion.dish_id : undefined);
+          if (standingDishId !== undefined) {
+            const status = doc.createElement('span');
+            status.setAttribute(CHAT_ROUTE_ACTIVITY_DISH_STATUS_ATTR, '');
+            status.setAttribute('data-dish-id', standingDishId);
+            status.textContent = row.dish_id !== undefined ? 'Standing dish' : 'Saved as dish';
+            line.appendChild(status);
+          } else if (row.dish_promotable === true) {
+            const promote = doc.createElement('button');
+            promote.type = 'button';
+            promote.setAttribute(CHAT_ROUTE_ACTIVITY_DISH_PROMOTE_ATTR, '');
+            promote.setAttribute('data-run-id', row.run_id);
+            promote.disabled = promotion?.status === 'saving';
+            promote.textContent = promote.disabled ? 'Saving…' : 'Keep as dish';
+            promote.addEventListener('click', () => {
+              dishPromotions.set(row.run_id!, { status: 'saving' });
+              renderPreservingHandoffFocus();
+              void opts.conn('dishes.createFromRun', { run_id: row.run_id! }).then(
+                ({ dish }) => {
+                  if (disposed) return;
+                  dishPromotions.set(row.run_id!, {
+                    status: 'saved',
+                    dish_id: dish.dish_id,
+                  });
+                  renderPreservingHandoffFocus();
+                },
+                (error: unknown) => {
+                  if (disposed) return;
+                  dishPromotions.set(row.run_id!, {
+                    status: 'error',
+                    message: error instanceof Error ? error.message : String(error),
+                  });
+                  renderPreservingHandoffFocus();
+                },
+              );
+            });
+            line.appendChild(promote);
+            if (promotion?.status === 'error') {
+              const status = doc.createElement('span');
+              status.setAttribute(CHAT_ROUTE_ACTIVITY_DISH_STATUS_ATTR, '');
+              status.setAttribute('data-status', 'error');
+              status.textContent = `Couldn’t save dish: ${promotion.message}`;
+              line.appendChild(status);
+            }
+          }
+        }
         block.appendChild(line);
       }
     }
@@ -7761,15 +7867,20 @@ export const bootstrapChatRoute = (
         if (failure !== undefined) renderTurnFailure(messages, failure);
       }
       if (state.thread.inflight !== null) {
+        const inflightTurns = [
+          state.thread.inflight,
+          ...(state.thread.inflight.siblings ?? []),
+        ];
+        for (const inflightTurn of inflightTurns) {
         const dataDiagnosisForTurn =
           pendingDataDiagnosisTurn?.turnId
-            === state.thread.inflight.turn_id
+            === inflightTurn.turn_id
             ? pendingDataDiagnosisTurn
             : null;
         const sourceAnswerForTurn =
           connectedSourceTurns.find(
             (sourceTurn) =>
-              sourceTurn.turnId === state.thread.inflight?.turn_id,
+              sourceTurn.turnId === inflightTurn.turn_id,
           ) ?? null;
         const sourceFailure =
           sourceAnswerForTurn !== null
@@ -7780,7 +7891,7 @@ export const bootstrapChatRoute = (
           ? null
           : projectConnectedSourceAnswer(
               sourceAnswerForTurn.source,
-              state.thread.inflight.tool_calls,
+              inflightTurn.tool_calls,
               {
                 complete: false,
                 failed: sourceFailure,
@@ -7806,11 +7917,11 @@ export const bootstrapChatRoute = (
         renderMessage(
           messages,
           {
-            id: state.thread.inflight.turn_id,
+            id: inflightTurn.turn_id,
             role: 'assistant',
-            content: state.thread.inflight.assistant_content,
+            content: inflightTurn.assistant_content,
           },
-          projectInFlightActivity(state.thread.inflight, state.transparency),
+          projectInFlightActivity(inflightTurn, state.transparency),
           sourceProjection?.pendingText
             ?? (
               dataDiagnosisForTurn === null
@@ -7831,7 +7942,7 @@ export const bootstrapChatRoute = (
         for (const card of state.thread.plan_cards) {
           if (
             card.message_id === undefined &&
-            card.turn_id === state.thread.inflight.turn_id
+            card.turn_id === inflightTurn.turn_id
           ) {
             renderPlanCard(messages, card);
             paintedPlanIds.add(card.plan_id);
@@ -7841,9 +7952,10 @@ export const bootstrapChatRoute = (
         // under its completed message — production's ack-after-run
         // ordering can leave a stale scaffold for that same turn, and
         // painting here too would duplicate the notice.
-        const failure = failuresByTurnId.get(state.thread.inflight.turn_id);
+        const failure = failuresByTurnId.get(inflightTurn.turn_id);
         if (failure !== undefined && failure.message_id === undefined) {
           renderTurnFailure(messages, failure);
+        }
         }
       }
       for (const card of state.thread.plan_cards) {
@@ -8634,20 +8746,16 @@ export const bootstrapChatRoute = (
           `message:${returnMessage.id}`,
         );
       }
-      // The composer lock follows the SESSION, not the tab. Leaving a chat
-      // releases it (that session's events are session-gated and could never
-      // settle a lock held over here); returning to a chat whose turn is
-      // still running re-takes it, which is what keeps two turns out of one
-      // session now that navigation no longer waits for the first.
+      // Reconcile the session's server work for the history row. The composer
+      // remains open: accepted turns and local send dispatch are distinct.
       reconcileTrackedTurn(sessionId, thread);
-      const resumedTurnId = turnsInFlightBySession.get(sessionId) ?? null;
       state = settlePendingSend({
         ...state,
         activeSessionId: sessionId,
         thread,
         error: null,
-        sending: resumedTurnId !== null,
-        pending_turn_id: resumedTurnId,
+        sending: false,
+        pending_turn_id: null,
       });
       landingTargetReady = true;
       planTargetChecking = false;
@@ -8980,18 +9088,7 @@ export const bootstrapChatRoute = (
       }
       let recoveredDiagnosisSettled = false;
       const recoveringDiagnosis = pendingDataDiagnosisTurn;
-      const recoveringDiagnosisFailed =
-        recoveringDiagnosis !== null
-        && tabFailures.some(
-          (failure) => failure.turn_id === recoveringDiagnosis.turnId,
-        );
-      if (
-        recoveringDiagnosis !== null
-        && (
-          state.pending_turn_id === recoveringDiagnosis.turnId
-          || recoveringDiagnosisFailed
-        )
-      ) {
+      if (recoveringDiagnosis !== null) {
         const newlyDurableAnswer = thread.messages.find(
           (message) =>
             message.role === 'assistant'
@@ -9069,9 +9166,6 @@ export const bootstrapChatRoute = (
         // proposal exists, ordinary Chat history is the only truthful record.
         planVerificationAttempts.delete(planId);
       }
-      // ⛔ The map and `sending`/`pending_turn_id` are two halves of ONE lock,
-      // and the reconnect path is where they came apart: clearing the map on
-      // its own left the composer shut with nothing able to reopen it.
       const releasedByHistory = reconcileTrackedTurn(sessionId, thread);
       const abandonedActionTurn =
         state.pending_turn_id !== null
@@ -9478,9 +9572,8 @@ export const bootstrapChatRoute = (
         activeSessionId: session_id,
         thread,
         error: null,
-        // PRESERVE the send lock `sendMessage` set before calling us (do NOT
-        // reset `sending`) — clearing it here would re-open the double-send
-        // window. A fresh session has no pending turn.
+        // Preserve the dispatch lock until the subsequent chat.send ack. A
+        // fresh session has no accepted turn correlation yet.
         pending_turn_id: null,
       };
       historyLandingActive = false;
@@ -9683,7 +9776,17 @@ export const bootstrapChatRoute = (
       // The turn is the server's now, and it outlives whatever this tab is
       // looking at — record it against ITS session before the identity fork
       // below, so a turn left behind by a switch is still tracked as running.
-      turnsInFlightBySession.set(session.id, turn_id);
+      trackTurn(session.id, turn_id);
+      // The production server may finish + broadcast the turn before returning
+      // this ack. In that ordering `message_complete` could not remove the map
+      // entry (the turn id was not known yet), so reconcile immediately against
+      // the already-updated thread. Otherwise this line would re-introduce a
+      // settled turn and leave `hasInFlightWork()` stuck true indefinitely.
+      if (settledTurnKeys.has(settledTurnKey(session.id, turn_id))) {
+        settleTrackedTurn(session.id, turn_id);
+      } else if (state.thread.session?.id === session.id) {
+        reconcileTrackedTurn(session.id, state.thread);
+      }
       if (state.thread.session?.id !== session.id) {
         renderPreservingHandoffFocus();
         return;
@@ -9786,14 +9889,15 @@ export const bootstrapChatRoute = (
         composerDraft = '';
         composerDraftProtected = false;
       }
-      // Ack-before-run — the ack means ACCEPTED, not finished: keep the
-      // composer locked on this turn until it settles (immediately,
-      // under an ack-after-run server whose completion already reduced).
-      state = settlePendingSend({
+      // The ack is the transport commit point: the user row is durable and the
+      // server owns the turn. Release the composer immediately so the next
+      // instruction can steer the running work through a concurrent turn.
+      state = {
         ...state,
-        pending_turn_id: turn_id,
+        sending: false,
+        pending_turn_id: null,
         thread: beginInFlightTurn(state.thread, turn_id),
-      });
+      };
       renderPreservingHandoffFocus();
     } catch (err) {
       if (disposed) return;
@@ -9858,12 +9962,7 @@ export const bootstrapChatRoute = (
             // clothes.
             const busy = (event as { value?: unknown }).value === true;
             if (busy) {
-              if (!turnsInFlightBySession.has(evt.session_id)) {
-                turnsInFlightBySession.set(
-                  evt.session_id,
-                  SERVER_REPORTED_TURN,
-                );
-              }
+              trackTurn(evt.session_id, SERVER_REPORTED_TURN);
             } else {
               turnsInFlightBySession.delete(evt.session_id);
               if (evt.session_id === state.thread.session?.id) {
@@ -9898,6 +9997,7 @@ export const bootstrapChatRoute = (
           }
           if (evt.kind === 'chat.message_complete') {
             hasCompletedChat = true;
+            rememberSettledTurn(evt.session_id, evt.turn_id);
             if (typeof evt.session_id === 'string') {
               settleTrackedTurn(evt.session_id, evt.turn_id);
             }
@@ -9954,6 +10054,7 @@ export const bootstrapChatRoute = (
           ) {
             // A failed turn is settled work: release the lock its session is
             // holding even when that session is not the one on screen.
+            rememberSettledTurn(evt.session_id, evt.turn_id);
             settleTrackedTurn(evt.session_id, evt.turn_id);
           }
           if (
@@ -10131,17 +10232,15 @@ export const bootstrapChatRoute = (
         // turn is now a claim this tab cannot back. The VISIBLE one it can:
         // `recoverOpenSession` re-reads that session within a round trip and
         // `reconcileTrackedTurn` settles it against the durable history — so
-        // it is kept, and a chat that really is still working stays locked
-        // across a blip instead of quietly reopening the double-send window.
+        // it is kept, and a chat that really is still working retains truthful
+        // busy state across a blip without re-locking the composer.
         //
         // ⛔ BACKGROUND sessions are still dropped, and the reason is narrow:
         // checking one costs its own `chat.session.get`, and even then a turn
         // that FAILED during the outage leaves no assistant row to find, so
         // the answer would come back "unknown" and have to fail open anyway.
-        // Dropping them costs a stale row label and a re-lock; holding them
-        // would risk a composer nothing can release. Fail toward the
-        // recoverable side — the lock guards against an accidental second
-        // turn, and bricking a chat is not something its owner can undo.
+        // Dropping them costs a stale row label; holding unverifiable sentinel
+        // state forever would be worse. Fail toward the recoverable side.
         const visibleSessionId = state.thread.session?.id ?? null;
         for (const sessionId of [...turnsInFlightBySession.keys()]) {
           if (sessionId === visibleSessionId) {

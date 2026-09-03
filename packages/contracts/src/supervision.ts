@@ -24,6 +24,17 @@
  *                un-enrol = stop + drop the row).
  */
 import type { ServiceRestartPolicy, ServiceState } from './service.js';
+import type { ServiceHealthState } from './service.js';
+
+/** Readiness of a supervised cli daemon. Legacy declarations predate a probe
+ *  and retain their spawn-means-running contract until the compatibility
+ *  cutover; migrated declarations do not become ready until their D-118 check
+ *  passes. */
+export type SupervisedDaemonReadiness =
+  | 'legacy'
+  | 'starting'
+  | 'ready'
+  | 'failed';
 
 /** The pack-detail control: un-enrol, or supervise with manual / auto restart. */
 export type SupervisionMode = 'off' | 'manual' | 'auto';
@@ -64,6 +75,12 @@ export interface SupervisionDaemonRow {
   /** Live state (the D-118 `ServiceState` vocabulary). `unknown` before the
    *  first launch / for an un-enrolled row. */
   state: ServiceState;
+  readiness: SupervisedDaemonReadiness;
+  readiness_detail: string | null;
+  ready_at: number | null;
+  health: ServiceHealthState;
+  health_detail: string | null;
+  last_health_at: number | null;
   pid: number | null;
   started_at: number | null;
   consecutive_crashes: number;

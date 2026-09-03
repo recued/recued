@@ -140,7 +140,10 @@ describe('supervision.list — discovery + merge', () => {
       ]),
       supervisor: makeSupervisor({
         ingredient_slug: 'cloudflared', op: 'tunnel.run_detached', state: 'running', pid: 4242,
+        readiness: 'legacy', readiness_detail: null, ready_at: null,
+        health: 'unknown', health_detail: null, last_health_at: null,
         started_at: 1, consecutive_crashes: 0, last_crash_at: null, last_exit_code: null,
+        launch_receipt: null,
       }),
     });
     const slice = makeSupervisionHandlers(deps)!;

@@ -29,6 +29,37 @@ const OWNER_SOURCE: ExecutionSource = {
   client_token_id: 'tok-web',
 };
 
+const MCP_SOURCE_A: ExecutionSource = {
+  channel: 'mcp',
+  actor: 'contracted_user',
+  agent_id: 'agent-a',
+  tool_call_id: 'call-a',
+  mcp_token_id: 'token-a',
+  contract_id: 'contract-a',
+};
+
+const CHAT_SOURCE_A: ExecutionSource = {
+  channel: 'chat',
+  actor: 'user_self',
+  chat_session_id: 'sess-a',
+  user_id: 'owner',
+};
+
+const MESSENGER_SOURCE_A: ExecutionSource = {
+  channel: 'messenger',
+  actor: 'user_self',
+  vendor: 'slack',
+  from: 'U123',
+};
+
+const MCP_SOURCE_B: ExecutionSource = {
+  ...MCP_SOURCE_A,
+  agent_id: 'agent-b',
+  tool_call_id: 'call-b',
+  mcp_token_id: 'token-b',
+  contract_id: 'contract-b',
+};
+
 const slot = (
   call_class: SlotRequest['call_class'],
   run_id?: string,
@@ -196,6 +227,175 @@ const registerRun = (
     abort,
   });
 
+describe('InFlightRegistry — D-259 running-twin attachment', () => {
+  it('elects one leader atomically and gives every follower the same response', async () => {
+    const reg = new InFlightRegistry(new LaneSemaphore());
+    expect(reg.runningTwin('identity')).toBeNull();
+    expect(reg.claimRunningTwin('identity', 'leader')).toEqual({ leader: true });
+
+    const followerA = reg.claimRunningTwin('identity', 'follower-a');
+    const followerB = reg.claimRunningTwin('identity', 'follower-b');
+    expect(followerA.leader).toBe(false);
+    expect(followerB.leader).toBe(false);
+    if (followerA.leader || followerB.leader) throw new Error('expected followers');
+    expect(followerA.run_id).toBe('leader');
+    expect(followerB.run_id).toBe('leader');
+
+    const response = { recipe_id: 'r', success: true };
+    reg.settleRunningTwin('leader', { status: 'completed', response });
+    await expect(followerA.outcome).resolves.toEqual({ status: 'completed', response });
+    await expect(followerB.outcome).resolves.toEqual({ status: 'completed', response });
+    expect(reg.runningTwin('identity')).toBeNull();
+  });
+
+  it('shares failures as data and ignores a non-owner settle', async () => {
+    const reg = new InFlightRegistry(new LaneSemaphore());
+    reg.claimRunningTwin('identity', 'leader');
+    const follower = reg.claimRunningTwin('identity', 'follower');
+    if (follower.leader) throw new Error('expected follower');
+    reg.settleRunningTwin('follower', { status: 'completed', response: 'wrong' });
+    expect(reg.runningTwin('identity')?.run_id).toBe('leader');
+    const error = new Error('failed');
+    reg.settleRunningTwin('leader', { status: 'failed', error });
+    await expect(follower.outcome).resolves.toEqual({ status: 'failed', error });
+  });
+});
+
+describe('InFlightRegistry — D-259 same-token MCP stop', () => {
+  const registerMcpRun = (
+    reg: InFlightRegistry,
+    opts: {
+      run_id: string;
+      recipe_id?: string;
+      source?: ExecutionSource;
+      origin?: 'attended' | 'unattended';
+      started_at?: number;
+      abort?: () => void;
+    },
+  ) => reg.registerRun({
+    run_id: opts.run_id,
+    recipe_id: opts.recipe_id ?? 'recipe-a',
+    source: opts.source ?? MCP_SOURCE_A,
+    origin: opts.origin ?? 'attended',
+    started_at: opts.started_at ?? 1,
+    abort: opts.abort ?? (() => {}),
+  });
+
+  it('stops one owned attended run and reports a second stop as already_terminal', () => {
+    const reg = new InFlightRegistry(new LaneSemaphore());
+    const abort = vi.fn();
+    registerMcpRun(reg, { run_id: 'run-a', started_at: 42, abort });
+
+    expect(reg.stopOwnRun('mcp:token-a', { run_id: 'run-a' })).toEqual({
+      status: 'stopped',
+      run_id: 'run-a',
+      recipe_id: 'recipe-a',
+      started_at: 42,
+    });
+    expect(abort).toHaveBeenCalledOnce();
+    expect(reg.stopOwnRun('mcp:token-a', { run_id: 'run-a' })).toEqual({
+      status: 'already_terminal',
+      run_id: 'run-a',
+    });
+  });
+
+  // ── D-259 § 7.4.3 — ONE method, every door ──────────────────────────────
+  //
+  // The arity rule and the ownership rule must not be re-implemented per
+  // channel, so the ONLY thing that varies is the channel-session key. These
+  // drive the two non-MCP doors and, more importantly, the ISOLATION between
+  // them: a scope that leaks would let one conversation stop another's work.
+
+  it('stops a chat-scoped run through the same method', () => {
+    const reg = new InFlightRegistry(new LaneSemaphore());
+    const abort = vi.fn();
+    registerMcpRun(reg, { run_id: 'run-chat', started_at: 7, abort, source: CHAT_SOURCE_A });
+
+    expect(reg.stopOwnRun('chat:sess-a', { recipe_id: 'recipe-a' })).toEqual({
+      status: 'stopped', run_id: 'run-chat', recipe_id: 'recipe-a', started_at: 7,
+    });
+    expect(abort).toHaveBeenCalledOnce();
+  });
+
+  it('stops a messenger-scoped run through the same method', () => {
+    const reg = new InFlightRegistry(new LaneSemaphore());
+    const abort = vi.fn();
+    registerMcpRun(reg, { run_id: 'run-msg', started_at: 9, abort, source: MESSENGER_SOURCE_A });
+
+    expect(reg.stopOwnRun('messenger:slack:U123', { recipe_id: 'recipe-a' })).toEqual({
+      status: 'stopped', run_id: 'run-msg', recipe_id: 'recipe-a', started_at: 9,
+    });
+    expect(abort).toHaveBeenCalledOnce();
+  });
+
+  it('⛔ does NOT let one channel stop another channel\'s run', () => {
+    const reg = new InFlightRegistry(new LaneSemaphore());
+    const abort = vi.fn();
+    registerMcpRun(reg, { run_id: 'run-mcp', abort, source: MCP_SOURCE_A });
+
+    // A chat turn, a messenger turn, and a DIFFERENT mcp token all miss it.
+    expect(reg.stopOwnRun('chat:sess-a', { run_id: 'run-mcp' })).toEqual({ status: 'not_yours' });
+    expect(reg.stopOwnRun('messenger:slack:U123', { run_id: 'run-mcp' })).toEqual({ status: 'not_yours' });
+    expect(reg.stopOwnRun('mcp:token-b', { run_id: 'run-mcp' })).toEqual({ status: 'not_yours' });
+    expect(abort).not.toHaveBeenCalled();
+  });
+
+  it('⛔ keeps two chat sessions isolated from each other', () => {
+    const reg = new InFlightRegistry(new LaneSemaphore());
+    const abort = vi.fn();
+    registerMcpRun(reg, { run_id: 'run-a', abort, source: CHAT_SOURCE_A });
+
+    expect(reg.stopOwnRun('chat:sess-other', { recipe_id: 'recipe-a' }))
+      .toEqual({ status: 'not_yours' });
+    expect(abort).not.toHaveBeenCalled();
+  });
+
+  it('refuses an ambiguous recipe match and kills none of the candidates', () => {
+    const reg = new InFlightRegistry(new LaneSemaphore());
+    const abortA = vi.fn();
+    const abortB = vi.fn();
+    registerMcpRun(reg, { run_id: 'run-a', started_at: 20, abort: abortA });
+    registerMcpRun(reg, { run_id: 'run-b', started_at: 10, abort: abortB });
+
+    expect(reg.stopOwnRun('mcp:token-a', { recipe_id: 'recipe-a' })).toEqual({
+      status: 'ambiguous',
+      candidates: [
+        { run_id: 'run-b', recipe_id: 'recipe-a', started_at: 10 },
+        { run_id: 'run-a', recipe_id: 'recipe-a', started_at: 20 },
+      ],
+    });
+    expect(abortA).not.toHaveBeenCalled();
+    expect(abortB).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes another token and unattended work internally', () => {
+    const reg = new InFlightRegistry(new LaneSemaphore());
+    registerMcpRun(reg, { run_id: 'other-token', source: MCP_SOURCE_B });
+    registerMcpRun(reg, { run_id: 'unattended', origin: 'unattended' });
+
+    expect(reg.stopOwnRun('mcp:token-a', { run_id: 'other-token' })).toEqual({
+      status: 'not_yours',
+    });
+    expect(reg.stopOwnRun('mcp:token-a', { run_id: 'unattended' })).toEqual({
+      status: 'not_yours',
+    });
+  });
+
+  it('keeps a bounded terminal address long enough to distinguish replay', () => {
+    const reg = new InFlightRegistry(new LaneSemaphore());
+    registerMcpRun(reg, { run_id: 'settled' });
+    reg.completeRun('settled');
+
+    expect(reg.stopOwnRun('mcp:token-a', { run_id: 'settled' })).toEqual({
+      status: 'already_terminal',
+      run_id: 'settled',
+    });
+    expect(reg.stopOwnRun('mcp:token-a', { run_id: 'unknown' })).toEqual({
+      status: 'not_found',
+    });
+  });
+});
+
 describe('InFlightRegistry — snapshot', () => {
   it('surfaces a run entry (with its held lane) + a queued-call entry', async () => {
     const sem = new LaneSemaphore({ local_heavy_n: 1 });
@@ -228,9 +428,86 @@ describe('InFlightRegistry — snapshot', () => {
     const entry = reg.snapshot().entries.find((e) => e.run_id === 'runA')!;
     expect(entry.kill).toEqual({ mechanism: 'sigkill', pid: 4321 });
   });
+
+  it('projects only the bounded host-derived declaration summary', () => {
+    const reg = new InFlightRegistry(new LaneSemaphore());
+    reg.registerRun({
+      run_id: 'runA',
+      recipe_id: 'r',
+      intent: 'Review repository',
+      risk: 'write',
+      effect: 'codex.review',
+      source: OWNER_SOURCE,
+      origin: 'attended',
+      session_id: 'sess1',
+      started_at: 1,
+      abort: () => {},
+    });
+    expect(reg.snapshot('sess1').entries[0]).toEqual(expect.objectContaining({
+      intent: 'Review repository',
+      risk: 'write',
+      effect: 'codex.review',
+    }));
+    const context = reg.promptContext('sess1')!;
+    expect(context).toContain('Prefer answering, inspecting, or stopping');
+    expect(context).toContain('run=runA; recipe=r');
+    expect(context).toContain('intent="Review repository"');
+    expect(context).toContain('risk=write');
+    expect(context.split('\n')).toHaveLength(2);
+  });
+
+  it('projects host-observed progress and clears a recovered stall', () => {
+    const reg = new InFlightRegistry(new LaneSemaphore());
+    registerRun(reg, 'runA', 'attended', 'sess1');
+    reg.markStalled('runA');
+    reg.reportProgress('runA', 'heartbeat', 1234);
+
+    const entry = reg.snapshot('sess1').entries[0]!;
+    expect(entry.progress).toEqual({
+      contract: 'heartbeat',
+      last_signal_at: 1234,
+      stalled: false,
+    });
+    expect(reg.promptContext('sess1')).toContain(
+      'progress=heartbeat,last=1234,stalled=false',
+    );
+
+    reg.completeRun('runA');
+    reg.reportProgress('runA', 'file-growth', 9999);
+    expect(reg.snapshot('sess1').entries).toHaveLength(0);
+  });
+
+  it('never injects another session or unattended work into a turn', () => {
+    const reg = new InFlightRegistry(new LaneSemaphore());
+    registerRun(reg, 'mine', 'attended', 'sess1');
+    registerRun(reg, 'theirs', 'attended', 'sess2');
+    registerRun(reg, 'cron', 'unattended', undefined);
+    const context = reg.promptContext('sess1')!;
+    expect(context).toContain('run=mine');
+    expect(context).not.toContain('theirs');
+    expect(context).not.toContain('cron');
+  });
 });
 
 describe('InFlightRegistry — kill', () => {
+  it('waits for every finite child to detach before declaring subprocess cleanup drained', async () => {
+    const reg = new InFlightRegistry(new LaneSemaphore());
+    registerRun(reg, 'runA', 'attended', 'sess1');
+    const childA = reg.attachSubprocess('runA', 91, () => {});
+    const childB = reg.attachSubprocess('runA', 92, () => {});
+    const drain = reg.waitForSubprocessDrain('runA');
+    const track = settled(drain);
+
+    reg.detachSubprocess('runA', childA);
+    await flush();
+    expect(track.state()).toBe('pending');
+    reg.detachSubprocess('runA', childB);
+    await drain;
+    expect(track.state()).toBe('resolved');
+
+    await expect(reg.waitForSubprocessDrain('runA')).resolves.toBeUndefined();
+  });
+
   it('SIGKILLs the subprocess, abandons the await, and records killed', () => {
     const sem = new LaneSemaphore();
     const reg = new InFlightRegistry(sem);

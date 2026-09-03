@@ -93,6 +93,33 @@ describe('StallMonitor — heartbeat (unattended)', () => {
     expect(stalls).toHaveLength(0);
     expect(monitor.signalCount).toBe(4 * STALL_FACTOR_K);
   });
+
+  it('reports only signal timestamps to a best-effort observer', () => {
+    const h = makeHarness();
+    const observed: number[] = [];
+    const monitor = new StallMonitor({
+      contract: 'heartbeat',
+      origin: 'unattended',
+      now: h.now,
+      setTimer: h.setTimer,
+      clearTimer: h.clearTimer,
+      onSignal: (at) => observed.push(at),
+    });
+    h.advance(25);
+    monitor.signal();
+    expect(observed).toEqual([25]);
+
+    const resilient = new StallMonitor({
+      contract: 'heartbeat',
+      origin: 'unattended',
+      now: h.now,
+      setTimer: h.setTimer,
+      clearTimer: h.clearTimer,
+      onSignal: () => { throw new Error('observer failed'); },
+    });
+    expect(() => resilient.signal()).not.toThrow();
+    expect(resilient.signalCount).toBe(1);
+  });
 });
 
 describe('StallMonitor — attended flags but does not kill on no-progress', () => {

@@ -188,7 +188,13 @@ describe('runUpdateProfile (recued update)', () => {
     expect(err).toContain(String(process.pid));
     // Both ways out — the one that restarts itself, and the one they control.
     expect(err).toMatch(/Settings → Updates/);
-    expect(err).toMatch(/stop the server/i);
+    // ⛔ NAME THE COMMAND, DO NOT DESCRIBE IT. This asserted `stop the server`,
+    // which an owner cannot act on without already knowing how theirs was
+    // started — and for a `serve`-started server the answer was "you can't",
+    // because `recued stop` read only a pidfile. That closed a livelock:
+    // installer → apply → stop → installer, each refusing correctly. `stop` now
+    // falls back to the instance lock, so the remedy is a command that works.
+    expect(err).toMatch(/`recued stop`/);
     // Ordering matters: this must beat the packaged-binary refusal, or an owner
     // with a live server is told the wrong thing about why it declined.
     expect(err).not.toMatch(/not the packaged Recued binary/);

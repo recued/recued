@@ -98,9 +98,13 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     // being able to reach the whole file store by saying nothing.
     'file.search',
     'recipe.run',
+    // D-259 § 7.4.3 — +1: `recipe.stop`, the other half of `recipe.run`.
+    // Without it "do X instead" silently became "do X as well": the model
+    // started the new work while the old run kept going.
+    'recipe.stop',
   ];
 
-  it('lists exactly twelve canonical primitives in spec order (P1 six + deal/account.search + work.search/read + memory.write + file.search)', () => {
+  it('lists exactly thirteen canonical primitives in spec order (P1 six + deal/account.search + work.search/read + memory.write + file.search + recipe.stop)', () => {
     expect(TIER1_TOOL_NAMES).toEqual(expected);
   });
 
@@ -151,9 +155,13 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     expect(TIER1_CLASSIFICATIONS['memory.write']).toBe('unknown');
   });
 
-  it('read primitives batch-safe; recipe.run sequential (D-164 § 6)', () => {
+  it('read primitives batch-safe; recipe.run + recipe.stop sequential (D-164 § 6)', () => {
+    // D-259 § 7.4.3 — `recipe.stop` joins `recipe.run` on the sequential side,
+    // and for a sharper reason than "it mutates": a stop and the call it would
+    // stop must never race inside ONE turn's tool batch.
+    const sequential = new Set(['recipe.run', 'recipe.stop']);
     for (const name of TIER1_TOOL_NAMES) {
-      expect(TIER1_CONCURRENCY_SAFE[name]).toBe(name !== 'recipe.run');
+      expect(TIER1_CONCURRENCY_SAFE[name]).toBe(!sequential.has(name));
     }
   });
 });

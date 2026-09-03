@@ -1,8 +1,9 @@
 /** Dish rpc handlers — D-179 P1, dispatched from the WS registry.
  *
- *  Four methods:
+ *  Six methods:
  *    dishes.list      list all (optional recipe_id filter)
  *    dishes.create    { recipe_id, name?, config_overlay?, enabled?, is_default? }
+ *    dishes.createFromRun { run_id, name?, enabled? } — owner promotion
  *    dishes.update    { dish_id, name?, config_overlay?, enabled? }
  *    dishes.delete    by dish_id (also clears the continuity snapshot)
  *
@@ -16,6 +17,7 @@ import {
   DISH_ID_PREFIX,
   DISH_GROUP_ID_PREFIX,
   RpcError,
+  isEphemeralDishId,
   type Dish,
   type DishGroup,
   type DishLastRun,
@@ -336,6 +338,56 @@ export const createDish = (
   return { dish };
 };
 
+/** D-259 §6.1 — promote one proven successful ad-hoc run into a NEW standing
+ * dish. The wire supplies only an audit address plus presentation choices:
+ * recipe identity and config are re-read from the authoritative run anchor.
+ * In particular, no redacted chat args are ever replayed into configuration. */
+export const createDishFromRun = async (
+  deps: DishHandlerDeps,
+  body: {
+    run_id?: unknown;
+    name?: unknown;
+    enabled?: unknown;
+  },
+): Promise<{ dish: Dish }> => {
+  if (typeof body.run_id !== 'string' || body.run_id.trim().length === 0) {
+    throw new RpcError('bad_request', 'run_id is required', 400);
+  }
+  if (!deps.auditLog) {
+    throw new RpcError(
+      'not_configured',
+      'dish promotion requires a DB-backed audit log',
+      501,
+    );
+  }
+  const anchor = await deps.auditLog.get(body.run_id);
+  if (anchor === null) {
+    throw new RpcError('not_found', `Run '${body.run_id}' not found`, 404);
+  }
+  if (anchor.commit_status !== 'succeeded') {
+    throw new RpcError(
+      'conflict',
+      `Run '${body.run_id}' is '${anchor.commit_status}', not succeeded`,
+      409,
+    );
+  }
+  if (anchor.dish_id !== undefined && !isEphemeralDishId(anchor.dish_id)) {
+    throw new RpcError(
+      'conflict',
+      `Run '${body.run_id}' already belongs to standing dish '${anchor.dish_id}'`,
+      409,
+    );
+  }
+  return createDish(deps, {
+    recipe_id: anchor.recipe_id,
+    publisher_id: 'local',
+    config_overlay: { ...anchor.config_snapshot },
+    ...(body.name !== undefined ? { name: body.name } : {}),
+    ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
+    is_default: false,
+  });
+};
+
 export const updateDish = (
   deps: DishHandlerDeps,
   dish_id: string,
@@ -577,6 +629,7 @@ export const setRecipeConfig = (
 export type DishMethods =
   | 'dishes.list'
   | 'dishes.create'
+  | 'dishes.createFromRun'
   | 'dishes.update'
   | 'dishes.delete'
   | 'dishes.history'
@@ -593,7 +646,7 @@ export const makeDishHandlers = (
   if (!deps) return undefined;
   return {
     methods: [
-      'dishes.list', 'dishes.create', 'dishes.update', 'dishes.delete',
+      'dishes.list', 'dishes.create', 'dishes.createFromRun', 'dishes.update', 'dishes.delete',
       'dishes.history',
       'dish_groups.list', 'dish_groups.create', 'dish_groups.update', 'dish_groups.delete',
       'recipe_config.get', 'recipe_config.set',
@@ -604,6 +657,7 @@ export const makeDishHandlers = (
       'dishes.list': async (args) =>
         listDishes(deps, args as { recipe_id?: string }),
       'dishes.create': async (args) => createDish(deps, args),
+      'dishes.createFromRun': async (args) => createDishFromRun(deps, args),
       'dishes.update': async (args) => {
         if (!args.dish_id || typeof args.dish_id !== 'string') {
           throw new RpcError('bad_request', 'dish_id is required', 400);

@@ -126,3 +126,10 @@ export class RunKilledError extends Error {
     this.name = 'RunKilledError';
   }
 }
+
+/** Fail a draining engine at the next safe step/protocol boundary after the
+ * host has abandoned the caller-facing await. This never cancels an upstream
+ * AI inference; it only prevents its late value from advancing the killed run. */
+export const throwIfRunKilled = (ctx: Pick<ExecutionContext, 'runAbortSignal'>): void => {
+  if (ctx.runAbortSignal?.aborted) throw new RunKilledError();
+};

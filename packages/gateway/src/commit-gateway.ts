@@ -309,6 +309,13 @@ export interface CommitGatewayDeps {
    *  slice 3b.2's inert default, and the runtime graceful-degradation
    *  path for any dispatch lacking a typed `ExecutionSource`. */
   identity?: CommitRunIdentity;
+  /** D-181 §7c / D-259 §7.4 — host-owned run cancellation. The
+   * caller-facing run may abandon this dispatch's await while the transport
+   * itself is still settling (notably AI, where there is deliberately no
+   * mid-flight inference cancel). A result observed after this signal fires is
+   * terminalized as `cancelled` with no output, never as a successful commit
+   * that a killed run could replay. Absent keeps the pre-control behavior. */
+  runAbortSignal?: AbortSignal;
   /** Resolve an ingredient slug's category so the Gateway can derive
    *  the commit kind. Absent (or returning `undefined`) →
    *  `deriveCommitKind` falls back to `'action'`. */
@@ -1588,6 +1595,13 @@ export const wrapWithCommitGateway = (
     // this point. Placed after the depth backstop, so a depth-refused call
     // is not counted; a (rare) `writePending` failure below over-counts by
     // one, exactly as the pre-relocation probe did.
+    // A run killed while it was queued behind an admission read must not burn
+    // a use or cross a fresh provider boundary after cancellation became
+    // visible.
+    if (deps.runAbortSignal?.aborted) {
+      throw Object.assign(new Error('run killed before dispatch'), { code: 'run_killed' });
+    }
+
     deps.reserveDispatchUsage?.(
       slug,
       authorityInput,
@@ -1606,6 +1620,16 @@ export const wrapWithCommitGateway = (
     // cross the boundary. The call fails before any side-effect.
     await deps.commitStore.writePending(pending);
 
+    if (deps.runAbortSignal?.aborted) {
+      await recordOutcomeBestEffort(deps.commitStore, commit_id, {
+        status: 'cancelled',
+        completed_at: now(),
+      });
+      throw Object.assign(new Error('run killed before provider dispatch'), {
+        code: 'run_killed',
+      });
+    }
+
     const probe: GatewayCallProbe = { cached: false };
     try {
       const result = await inner(
@@ -1616,6 +1640,19 @@ export const wrapWithCommitGateway = (
         forwardedStepMeta,
         probe,
       );
+      // The upstream operation may still complete after the owner abandoned
+      // the run's await. Its late value is evidence about a cancelled commit,
+      // not a value the already-killed run may publish or cache as success.
+      if (deps.runAbortSignal?.aborted) {
+        await recordOutcomeBestEffort(deps.commitStore, commit_id, {
+          status: 'cancelled',
+          completed_at: now(),
+        });
+        throw Object.assign(new Error('run killed while provider dispatch was in flight'), {
+          code: 'run_killed',
+          commitOutcomeRecorded: true,
+        });
+      }
       await recordOutcomeBestEffort(deps.commitStore, commit_id, {
         status: 'succeeded',
         // Content isolation (storage-gdrive `file.download`): a
@@ -1635,10 +1672,18 @@ export const wrapWithCommitGateway = (
       });
       return result;
     } catch (err) {
-      await recordOutcomeBestEffort(deps.commitStore, commit_id, {
-        status: isInDoubtError(err) ? 'in_doubt' : 'failed',
-        completed_at: now(),
-      });
+      const alreadyRecorded =
+        err !== null
+        && typeof err === 'object'
+        && (err as { commitOutcomeRecorded?: unknown }).commitOutcomeRecorded === true;
+      if (!alreadyRecorded) {
+        await recordOutcomeBestEffort(deps.commitStore, commit_id, {
+          status: deps.runAbortSignal?.aborted
+            ? 'cancelled'
+            : isInDoubtError(err) ? 'in_doubt' : 'failed',
+          completed_at: now(),
+        });
+      }
       throw err;
     }
   };

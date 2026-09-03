@@ -48,6 +48,21 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+const releaseArgs = (token: string, etag: string) => [
+  LEASE,
+  'release',
+  '--bucket', 'test-bucket',
+  '--key', '.release-publish.lock',
+  '--token', token,
+  '--etag', etag,
+];
+
+/** The lock as it sits on disk, so an arm can assert the STATE transition
+ *  rather than only the exit code. */
+const lockState = (root: string): string => JSON.parse(
+  readFileSync(join(root, 'test-bucket', '.release-publish.lock'), 'utf8'),
+).state;
+
 describe('distributed R2 release publication lease', () => {
   it('grants exactly one publisher when two acquire the missing key concurrently', async () => {
     const { env } = fixture();
@@ -165,6 +180,65 @@ describe('distributed R2 release publication lease', () => {
       'utf8',
     )) as { token: string };
     expect(lock.token).toBe('recovery-a');
+  });
+
+
+  // ⛔⛔ THE ARM THAT WAS MISSING WHEN 26.9.2 SHIPPED. The release path had no
+  // end-to-end coverage at all, and the double could not have expressed the
+  // defect anyway: `testRead` and `testConditionalPut` both derive their tag
+  // from `etagOf`, so one spelling answered both sides. Production met two.
+  //
+  // 🔑 The skew is the whole point. `RECUED_TEST_R2_ETAG_SKEW` makes the READ
+  // answer a different — equally valid — spelling of the SAME tag than the
+  // WRITE did, which is exactly what left 26.9.2's lock stuck `active` after a
+  // successful publish: object untouched, state active, token correct, and the
+  // verbatim etag comparison reading it as somebody else's lock.
+  it.each([
+    ['no skew — the baseline', ''],
+    ['a WEAK validator on read', 'weak'],
+    ['a BARE unquoted tag on read', 'unquoted'],
+  ])('releases a lease it owns when the store answers %s', (_label, skew) => {
+    const { root, env } = fixture();
+    const acquired = spawnSync(process.execPath, acquireArgs('publisher-a'), { env, encoding: 'utf8' });
+    expect(acquired.status, acquired.stderr).toBe(0);
+    const { etag } = JSON.parse(acquired.stdout) as { etag: string };
+    expect(lockState(root)).toBe('active');
+
+    const released = spawnSync(
+      process.execPath,
+      releaseArgs('publisher-a', etag),
+      { env: { ...env, RECUED_TEST_R2_ETAG_SKEW: skew }, encoding: 'utf8' },
+    );
+    expect(released.status, released.stderr).toBe(0);
+    expect(lockState(root)).toBe('released');
+  });
+
+  // ⚠ AND THE NORMALISATION MUST NOT FAIL OPEN. Comparing tags by their opaque
+  // value rather than their spelling is not the same as comparing them loosely:
+  // a DIFFERENT representation must still refuse, or the lock stops being one.
+  it.each([
+    ['a different etag entirely', '"0000000000000000000000000000beef"'],
+    ['the same shape, one hex digit apart', null],
+    ['an empty etag', '""'],
+  ])('still refuses to release against %s', (_label, override) => {
+    const { root, env } = fixture();
+    const acquired = spawnSync(process.execPath, acquireArgs('publisher-a'), { env, encoding: 'utf8' });
+    expect(acquired.status, acquired.stderr).toBe(0);
+    const { etag } = JSON.parse(acquired.stdout) as { etag: string };
+    // One hex digit apart proves the comparison reads the VALUE, not the length
+    // or the quoting — the failure mode a sloppy normaliser would introduce.
+    const wrong = override ?? `"${etag.replace(/"/g, '').replace(/.$/, (c) => (c === 'a' ? 'b' : 'a'))}"`;
+
+    const released = spawnSync(
+      process.execPath,
+      releaseArgs('publisher-a', wrong),
+      { env, encoding: 'utf8' },
+    );
+    expect(released.status).not.toBe(0);
+    expect(released.stderr).toMatch(/ownership changed|requires --etag/);
+    // ⛔ THE EVIDENCE SURVIVES A REFUSED RELEASE — a lock that refused to
+    // release is still held, not silently dropped.
+    expect(lockState(root)).toBe('active');
   });
 
   it('refuses malformed lock metadata without overwriting the evidence', () => {

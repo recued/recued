@@ -173,6 +173,33 @@ describe('cli_invocation in-place output_capture', () => {
     }, { source: FILE_REF }))).rejects.toThrow(/missing after the run/);
   });
 
+  it('refuses a replacement symlink instead of ingesting its target', async () => {
+    const victimDir = mkdtempSync(join(tmpdir(), 'in-place-symlink-victim-'));
+    const victim = join(victimDir, 'outside.txt');
+    writeFileSync(victim, 'OUTSIDE');
+    const replaceWithSymlink =
+      `const fs=require('fs');const p=process.argv[1],target=process.argv[2];`
+      + `fs.unlinkSync(p);fs.symlinkSync(target,p);`;
+    const ingested: unknown[] = [];
+    const exec = createCliInvocationExecutor({
+      tempRoot: TEMP_ROOT,
+      readFileBytes,
+      ingestToolOutput: async (input) => {
+        ingested.push(input);
+        return { record_id: 'file:must-not-exist' };
+      },
+    });
+
+    await expect(exec(call({
+      ...inPlaceBinding('cas'),
+      argv_template: [execPath, '-e', replaceWithSymlink, '{source}', victim],
+    }, { source: FILE_REF }))).rejects.toThrow(/not a regular file/);
+
+    expect(ingested).toHaveLength(0);
+    expect(readFileSync(victim, 'utf8')).toBe('OUTSIDE');
+    expect(tmpInDirs()).toEqual([]);
+  });
+
   it('rejects captured bytes that are not a ZIP container for an OOXML mime', async () => {
     const exec = createCliInvocationExecutor({
       tempRoot: TEMP_ROOT,

@@ -94,6 +94,7 @@ import {
   assertNoRecipeCycle,
   extendHeldRecipes,
 } from './local-recipe-cycle.js';
+import { throwIfRunKilled } from './lane.js';
 import type {
   ApiExecutionBinding,
   ApiExecutionBindingKind,
@@ -1570,6 +1571,7 @@ const followPagination = async (
       : readLegacyPaginationCursor(legacyStyle!, a.firstResult);
 
   while (step.kind === 'next') {
+    throwIfRunKilled(a.ctx);
     // Bound BEFORE fetching the next page: a cursor still exists but we are at a
     // ceiling, so the walk is being cut short — the merged set is incomplete.
     if (pages >= PAGINATION_MAX_PAGES || accumulated.length >= PAGINATION_MAX_RECORDS) {
@@ -1585,6 +1587,7 @@ const followPagination = async (
     const pageVal = await a.ctx.ingredientExecutor(
       a.slug, nextInput, a.output, a.stepOptions, a.surfaceMeta,
     );
+    throwIfRunKilled(a.ctx);
     pages += 1;
     lastPage = pageVal;
     accumulated.push(...asArrayValue(getByPath(pageVal, recordsPath)));
@@ -2126,6 +2129,7 @@ export const runCatalogOperation = async (
   stepOptions: StepOptions | undefined,
   stepMeta: StepMeta | undefined,
 ): Promise<unknown> => {
+  throwIfRunKilled(ctx);
   const rawCall = extractCatalogCall(input, connectionName);
   const call: CatalogCall = {
     ...rawCall,
@@ -2183,6 +2187,7 @@ export const runCatalogOperation = async (
   const connectionBaseUrl = !isCliOp && !isRecordsOp && !isLocalRecipeOp && connectionName
     ? await ctx.connectionBaseUrlResolver?.(connectionName)
     : undefined;
+  throwIfRunKilled(ctx);
 
   const recordsPrincipal = isRecordsOp
     ? recordsPrincipalFromExecutionSource(
@@ -2499,6 +2504,7 @@ export const runCatalogOperation = async (
     const subresourcePath = await ctx.connectionSubresourcePathResolver?.(
       call.connection_name,
     );
+    throwIfRunKilled(ctx);
     const ps = checkPathScope(op.path_scope, effectiveArgs, subresourcePath);
     if (!ps.ok) {
       emitGatewayAudit(ctx, {
@@ -2687,6 +2693,7 @@ export const runCatalogOperation = async (
         chunkedBinding, effectiveArgs, ctx, resolution.operation_id,
       )
     : undefined;
+  throwIfRunKilled(ctx);
 
   /** Raise the catalog operation's preflight-approval hold — the original
    *  `ask` pause, factored so the failed-consume / failed-claim fallbacks
@@ -3103,6 +3110,7 @@ export const runCatalogOperation = async (
   // every catalog grant/approval check and grant consumption, but before the
   // first CLI/API dispatch action. A usage denial throws and crosses no
   // provider boundary; normal recipe contexts leave the hook absent.
+  throwIfRunKilled(ctx);
   ctx.onCatalogDispatchProceed?.({
     ingredient_slug: slug,
     operation_id: resolution.operation_id,
@@ -3133,6 +3141,7 @@ export const runCatalogOperation = async (
         args: effectiveArgs,
         held_recipes: extendHeldRecipes(ctx.heldRecipes, target),
       });
+      throwIfRunKilled(ctx);
       // ⛔⛔ A NESTED RUN THAT PAUSED IS NOT A RESULT. `executeRecipe` RETURNS
       // on a preflight hold — `{success: false, errors: [], awaiting_approval}`
       // — it does not throw. Passing that object through as this step's value
@@ -3161,6 +3170,7 @@ export const runCatalogOperation = async (
         ...(ctx.outputRecipeHash ? { recipe_digest: ctx.outputRecipeHash } : {}),
         ...(ctx.recordsMutationContext ?? {}),
       });
+      throwIfRunKilled(ctx);
       emitGatewayAudit(ctx, {
         ...auditBase(slug, call, resolution, ctx, stepMeta, auditArgHash),
         outcome: 'success',
@@ -3210,6 +3220,7 @@ export const runCatalogOperation = async (
         connection_name: connectionName,
         args: dispatchArgs,
       });
+      throwIfRunKilled(ctx);
       if (!prepared
         || prepared.dispatch_args === null
         || typeof prepared.dispatch_args !== 'object'
@@ -3243,8 +3254,10 @@ export const runCatalogOperation = async (
         binding: cliBinding,
         args: effectiveArgs,
         ...(timeout_ms !== undefined ? { timeout_ms } : {}),
+        ...(ctx.runAbortSignal ? { signal: ctx.runAbortSignal } : {}),
         ...(stepMeta ? { stepMeta } : {}),
       });
+      throwIfRunKilled(ctx);
       emitGatewayAudit(ctx, {
         ...auditBase(slug, call, resolution, ctx, stepMeta, auditArgHash),
         outcome: 'success',
@@ -3281,6 +3294,7 @@ export const runCatalogOperation = async (
     const firstResult = await ctx.ingredientExecutor(
       slug, execInput, output, stepOptions, providerSurfaceMeta,
     );
+    throwIfRunKilled(ctx);
 
     // D-192 Gate E′ Gap 4a — response adaptation through the SAME protocol entry
     // that built the dispatch (graphql fail-when-data-null envelope; rest
@@ -3307,6 +3321,7 @@ export const runCatalogOperation = async (
       connectionName,
       connectionBaseUrl,
     });
+    throwIfRunKilled(ctx);
     if (adapted.kind === 'fail') {
       emitGatewayAudit(ctx, {
         ...auditBase(slug, call, resolution, ctx, stepMeta, auditArgHash),
@@ -3326,6 +3341,7 @@ export const runCatalogOperation = async (
     const projectedResult = operationBoundDispatch === undefined
       ? adapted.result
       : await operationBoundDispatch.projectResult(adapted.result);
+    throwIfRunKilled(ctx);
     emitGatewayAudit(ctx, {
       ...auditBase(slug, call, resolution, ctx, stepMeta, auditArgHash),
       outcome: 'success',

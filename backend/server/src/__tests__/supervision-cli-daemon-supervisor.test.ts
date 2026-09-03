@@ -17,9 +17,17 @@ import {
   type CliDaemonSupervisor,
   type SupervisorFs,
 } from '../supervision/cli-daemon-supervisor.js';
-import { killProcessGroup } from '../supervision/process-group-kill.js';
+import {
+  killProcessGroup,
+  reapProcessGroupAfterLeaderExit,
+} from '../supervision/process-group-kill.js';
 import type { SupervisedDaemonConfig } from '../supervision/supervised-daemon-store.js';
-import type { IngredientManifest, ServiceRestartPolicy } from '@recued/contracts';
+import type {
+  CliMethodBinding,
+  IngredientManifest,
+  ServiceCheckResult,
+  ServiceRestartPolicy,
+} from '@recued/contracts';
 
 const DATA = '/data';
 const ING = 'cloudflared';
@@ -53,6 +61,19 @@ const manifest = (): IngredientManifest =>
       },
     },
   }) as unknown as IngredientManifest;
+
+const readyManifest = (readyTimeoutMs = 500): IngredientManifest => {
+  const next = manifest();
+  const binding = next.surfaces!.connector!.executes![OP]! as CliMethodBinding;
+  binding.detached!.supervision = {
+    restart_policy: 'on-crash',
+    restart_on_server_start: true,
+    readiness: { kind: 'http_ok', url: 'http://127.0.0.1:11434/api/tags' },
+    health: { kind: 'http_ok', url: 'http://127.0.0.1:11434/api/tags' },
+    ready_timeout_ms: readyTimeoutMs,
+  };
+  return next;
+};
 
 const config = (over: Partial<SupervisedDaemonConfig> = {}): SupervisedDaemonConfig => ({
   ingredient_slug: ING,
@@ -97,20 +118,30 @@ interface Harness {
   kill: ReturnType<typeof vi.fn>;
   broadcast: ReturnType<typeof vi.fn>;
   audit: ReturnType<typeof vi.fn>;
+  runCheck: ReturnType<typeof vi.fn>;
   setAlive: (v: boolean) => void;
   /** Swap the manifest resolver mid-test — drives the no-resolvable-binding
    *  path (an uninstall between launches). */
   setManifest: (fn: () => IngredientManifest | undefined) => void;
 }
 
-const harness = (opts: { aliveDefault?: boolean; pid?: number } = {}): Harness => {
+const harness = (opts: {
+  aliveDefault?: boolean;
+  pid?: number | null;
+  manifest?: IngredientManifest;
+  runCheck?: () => Promise<ServiceCheckResult>;
+} = {}): Harness => {
   const fs = makeFs();
   let alive = opts.aliveDefault ?? true;
-  let manifestFn: () => IngredientManifest | undefined = () => manifest();
-  const executor = vi.fn(async () => ({ mode: 'detached', pid: opts.pid ?? 4242 }));
+  let manifestFn: () => IngredientManifest | undefined = () => opts.manifest ?? manifest();
+  const executor = vi.fn(async () => ({
+    mode: 'detached',
+    pid: opts.pid === undefined ? 4242 : opts.pid,
+  }));
   const kill = vi.fn();
   const broadcast = vi.fn();
   const audit = vi.fn();
+  const runCheck = vi.fn(opts.runCheck ?? (async () => ({ passed: true })));
   const supervisor = createCliDaemonSupervisor({
     cliInvocationExecutor: executor as never,
     getManifest: (slug) => (slug === ING ? manifestFn() : undefined),
@@ -121,10 +152,11 @@ const harness = (opts: { aliveDefault?: boolean; pid?: number } = {}): Harness =
     pollIntervalMs: POLL,
     broadcast,
     audit,
+    runCheck,
     log: () => {},
   });
   return {
-    supervisor, fs, executor, kill, broadcast, audit,
+    supervisor, fs, executor, kill, broadcast, audit, runCheck,
     setAlive: (v) => { alive = v; },
     setManifest: (fn) => { manifestFn = fn; },
   };
@@ -141,6 +173,146 @@ describe('cli-daemon-supervisor — launch + liveness + restart', () => {
     expect(st.state).toBe('running');
     expect(st.pid).toBe(4242);
     expect(h.supervisor.isTracked(ING, OP)).toBe(true);
+  });
+
+  it('refuses to rewrite a running singleton with different configuration', async () => {
+    const h = harness();
+    await h.supervisor.start(config());
+
+    await expect(h.supervisor.start(config({ args: { tunnel_name: 'staging' } })))
+      .rejects.toThrow(/already active with different configuration/);
+    expect(h.executor).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not report a migrated daemon running until readiness passes', async () => {
+    let checks = 0;
+    const h = harness({
+      manifest: readyManifest(),
+      runCheck: async () => ({ passed: ++checks >= 2, detail: `probe ${checks}` }),
+    });
+    let settled = false;
+    const starting = h.supervisor.start(config()).then((value) => {
+      settled = true;
+      return value;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(h.supervisor.status(ING, OP)).toMatchObject({
+      state: 'unknown',
+      readiness: 'starting',
+    });
+    await vi.advanceTimersByTimeAsync(POLL);
+    const status = await starting;
+    expect(status).toMatchObject({
+      state: 'running',
+      readiness: 'ready',
+      readiness_detail: 'probe 2',
+      pid: 4242,
+    });
+    expect(status.launch_receipt).toMatchObject({ mode: 'detached', pid: 4242 });
+  });
+
+  it('kills spawn-but-never-ready and feeds failure into restart policy', async () => {
+    const h = harness({
+      manifest: readyManifest(250),
+      runCheck: async () => ({ passed: false, detail: 'connection refused' }),
+    });
+    h.kill.mockImplementation(() => { h.setAlive(false); });
+    const starting = h.supervisor.start(config({ restart_policy: 'never' }));
+    await vi.advanceTimersByTimeAsync(300);
+    const status = await starting;
+    expect(h.kill).toHaveBeenCalledWith(4242, 'SIGTERM');
+    expect(status).toMatchObject({
+      state: 'crashed',
+      readiness: 'failed',
+    });
+    expect(status.readiness_detail).toContain('readiness timed out');
+  });
+
+  it('does not accept a passing readiness probe that returns after the deadline', async () => {
+    const h = harness({
+      manifest: readyManifest(200),
+      runCheck: () => new Promise((resolve) => {
+        setTimeout(() => resolve({ passed: true, detail: 'late success' }), 250);
+      }),
+    });
+    h.kill.mockImplementation(() => { h.setAlive(false); });
+
+    const starting = h.supervisor.start(config({ restart_policy: 'never' }));
+    await vi.advanceTimersByTimeAsync(250);
+    const status = await starting;
+
+    expect(status).toMatchObject({ state: 'crashed', readiness: 'failed' });
+    expect(status.readiness_detail).toBe('readiness timed out');
+    expect(h.kill).toHaveBeenCalledWith(4242, 'SIGTERM');
+  });
+
+  it('enforces the readiness deadline when the checker never settles', async () => {
+    const h = harness({
+      manifest: readyManifest(200),
+      runCheck: () => new Promise(() => {}),
+    });
+    h.kill.mockImplementation(() => { h.setAlive(false); });
+
+    const starting = h.supervisor.start(config({ restart_policy: 'never' }));
+    await vi.advanceTimersByTimeAsync(200);
+    const status = await starting;
+
+    expect(status).toMatchObject({
+      state: 'crashed',
+      readiness: 'failed',
+      readiness_detail: 'readiness timed out',
+    });
+    expect(h.kill).toHaveBeenCalledWith(4242, 'SIGTERM');
+  });
+
+  it('refuses to supervise a detached launch that returns no ownable pid', async () => {
+    const h = harness({ pid: null });
+    const status = await h.supervisor.start(config({ restart_policy: 'never' }));
+
+    expect(status).toMatchObject({
+      state: 'crashed',
+      pid: null,
+      readiness: 'failed',
+      readiness_detail: 'detached launch returned no process id',
+    });
+  });
+
+  it('a stop wakes an in-progress readiness wait and kills the just-launched daemon', async () => {
+    const h = harness({
+      manifest: readyManifest(30_000),
+      runCheck: () => new Promise(() => {}),
+    });
+    const starting = h.supervisor.start(config());
+    await Promise.resolve();
+    h.setAlive(false);
+    const stopped = h.supervisor.stop(ING, OP);
+    await Promise.all([starting, stopped]);
+    expect(h.kill).toHaveBeenCalledWith(4242, 'SIGTERM');
+    expect(h.supervisor.status(ING, OP)).toMatchObject({
+      state: 'stopped',
+      pid: null,
+      readiness_detail: 'stopped by owner',
+    });
+  });
+
+  it('continues health checks after readiness without treating unhealthy as exit', async () => {
+    let checks = 0;
+    const h = harness({
+      manifest: readyManifest(),
+      runCheck: async () => ++checks === 1
+        ? { passed: true, detail: 'ready' }
+        : { passed: false, detail: 'degraded' },
+    });
+    await h.supervisor.start(config());
+    await vi.advanceTimersByTimeAsync(POLL);
+    expect(h.supervisor.status(ING, OP)).toMatchObject({
+      state: 'running',
+      readiness: 'ready',
+      health: 'unhealthy',
+      health_detail: 'degraded',
+    });
+    expect(h.executor).toHaveBeenCalledTimes(1);
   });
 
   it('fans a supervision broadcast on a state transition (launch + crash)', async () => {
@@ -246,6 +418,32 @@ describe('cli-daemon-supervisor — stop + reconcile + dispose', () => {
     const st = h.supervisor.status(ING, OP)!;
     expect(st.state).toBe('running');
     expect(st.pid).toBe(9999);
+  });
+
+  it('gives an adopted migrated daemon the same readiness window as a fresh launch', async () => {
+    let checks = 0;
+    const h = harness({
+      manifest: readyManifest(),
+      runCheck: async () => ({ passed: ++checks >= 2, detail: `adopt probe ${checks}` }),
+    });
+    h.fs.set(PID_MARKER, '9999');
+
+    const adopting = h.supervisor.startAll([config()]);
+    await Promise.resolve();
+    expect(h.supervisor.status(ING, OP)).toMatchObject({
+      state: 'unknown',
+      readiness: 'starting',
+    });
+    await vi.advanceTimersByTimeAsync(POLL);
+    await adopting;
+
+    expect(h.executor).not.toHaveBeenCalled();
+    expect(h.supervisor.status(ING, OP)).toMatchObject({
+      state: 'running',
+      pid: 9999,
+      readiness: 'ready',
+      readiness_detail: 'adopt probe 2',
+    });
   });
 
   it('startAll fresh-starts a dead daemon when restart_on_server_start', async () => {
@@ -381,6 +579,15 @@ describe('process-group-kill', () => {
     expect(() => killProcessGroup(4242, 'SIGKILL', 'linux')).not.toThrow();
     expect(spy).toHaveBeenNthCalledWith(1, -4242, 'SIGKILL');
     expect(spy).toHaveBeenNthCalledWith(2, 4242, 'SIGKILL');
+  });
+
+  it('post-exit POSIX reap never falls back to a potentially reused bare pid', () => {
+    const spy = vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw new Error('ESRCH');
+    });
+    expect(() => reapProcessGroupAfterLeaderExit(4242, 'SIGKILL', 'linux')).not.toThrow();
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith(-4242, 'SIGKILL');
   });
 
   it('Windows uses taskkill (not process.kill) and never throws', () => {

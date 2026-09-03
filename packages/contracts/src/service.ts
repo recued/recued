@@ -57,6 +57,13 @@ export const SERVICE_CHECK_KINDS = [
 ] as const;
 export type ServiceCheckKind = (typeof SERVICE_CHECK_KINDS)[number];
 
+/** One closed-registry service check declaration. Individual checker modules
+ * validate the parameters for their own `kind`; this shared carrier keeps
+ * callers on the D-118 vocabulary without duplicating that parameter union. */
+export type ServiceCheckSpec = {
+  kind: ServiceCheckKind;
+} & Record<string, unknown>;
+
 /** Audit event names emitted under `type: 'service_event'`. The
  *  `service-logs` kernel ingredient filters audit rows by these. */
 export const SERVICE_EVENT_NAMES = [
@@ -434,4 +441,3 @@ export interface ServiceTemplateList {
    *  "Showing templates for macOS" without a second rpc. */
   applied_platform: ServiceTemplateOS | null;
 }
-

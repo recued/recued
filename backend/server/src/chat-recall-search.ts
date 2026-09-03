@@ -12,6 +12,8 @@ import {
 } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 
+import { FTS_STOPWORDS, type FtsMatchRung } from '@recued/fts';
+
 import { CHAT_MESSAGE_RECALL_ELIGIBILITY } from './storage/chat-store.js';
 
 import type { OwnerRecallCorpusScope } from './chat-recall-scope.js';
@@ -61,6 +63,13 @@ export interface InteractionRecallCandidate {
   readonly content: string;
   readonly size_bytes: number;
   readonly score: number;
+  /** Which relaxation rung admitted this row. ⛔ CARRIED ALL THE WAY TO THE
+   *  MODEL ON PURPOSE: relaxing without SAYING SO is worse than not relaxing,
+   *  because a `loose` row — one that shares SOME terms and may share nothing
+   *  else — would arrive looking exactly like an exact hit. `memory.search`
+   *  already reports its rung and its tool description tells the model to read
+   *  it before trusting the result; this lane now owes the same. */
+  readonly match: FtsMatchRung;
 }
 
 export interface RecallNeighbourQuery {
@@ -170,20 +179,78 @@ const countOccurrences = (text: string, term: string): number => {
   return count;
 };
 
+/** Rung bands. The gap is wider than any within-rung score can reach (the phrase
+ *  bonus is 1_000 and each term contributes at most 200), so the ladder ORDER is
+ *  total: every exact match outranks every relaxed one, which outranks every
+ *  loose one, and the existing term-frequency score only breaks ties WITHIN a
+ *  band. ⛔ That is what makes this ADDITIVE — a row that matches today is still
+ *  `exact`, still scores `RUNG_BAND.exact + <the same number as before>`, so it
+ *  keeps both its membership AND its position. Nothing that ranks today can be
+ *  displaced by a row the ladder newly admits.
+ *
+ *  ⛔⛔ THE NAME `RUNG_BAND` IS LOAD-BEARING OUTSIDE THIS FILE.
+ *  internal benchmarks greps this exact identifier as its
+ *  two-sided proof of whether the ladder is in a bundle. Renaming it makes that
+ *  ratchet pass while the ladder is present — a bundle that reports
+ *  "baseline verified: recall exact-terms-only" and is not one, which would make
+ *  any future ladder A/B compare ladder against ladder. */
+const RUNG_BAND: Readonly<Record<FtsMatchRung, number>> = {
+  exact: 3_000_000,
+  relaxed: 2_000_000,
+  loose: 1_000_000,
+};
+
+/** ⛔⛔ THIS LANE WAS AND-ONLY, AND THAT IS THE WHOLE DEFECT. `lexicalScore`
+ *  returned `null` unless EVERY query term appeared, so a query carrying two
+ *  terms that ARE in the row plus three that are not matched NOTHING.
+ *  Measured 2026-09-02 over the bench corpus, every query containing both
+ *  `Ravenscourt` and `renewal` (both present in the target row):
+ *  2 terms 1/1 hit · 3 terms 1/2 · 4 terms 1/5 · **5 terms 0/4**.
+ *  `recall.search("Ravenscourt renewal")` → 2 matches;
+ *  `recall.search("Ravenscourt renewal round land decision")` → 0, `exhausted`.
+ *  A longer conversation makes the model write LONGER queries, so recall got
+ *  strictly worse exactly where history matters most.
+ *
+ *  🔑 THE SAME BUG WAS ALREADY FOUND AND FIXED ON THE FTS SIDE. `@recued/fts`'s
+ *  `toFtsMatchLadder` records it verbatim — *"`refund policy` hit the right
+ *  entry, `What is your refund policy?` returned ZERO"* — and `memory.search`
+ *  got the substring analogue in `user-memory-store.ts`'s `substringLadder`.
+ *  The interaction lane never did. This is that same ladder, same rungs, same
+ *  order, over THIS lane's own tokens.
+ *
+ *  ⛔ RE-TOKENIZING WITH `wordTokens` WOULD BE A DIFFERENT CHANGE. Recall
+ *  segments with `Intl.Segmenter` (`segmentWords`) and the CJK work is pinned on
+ *  that; swapping tokenizers here would silently move every existing match. Only
+ *  the STOPWORD VOCABULARY is shared — one definition, imported, not copied. */
 const lexicalScore = (
   content: string,
   query: NormalizedRecallQuery | undefined,
-): number | null => {
-  if (query === undefined) return 0;
+): { readonly score: number; readonly match: FtsMatchRung } | null => {
+  if (query === undefined) return { score: 0, match: 'exact' };
   const normalized = normalizeSearchText(content);
   if (normalized.length === 0) return null;
-  if (!query.terms.every((term) => normalized.includes(term))) return null;
+
+  const contentTerms = query.terms.filter((t) => !FTS_STOPWORDS.has(t));
+  // Mirrors `substringLadder`: `relaxed` only exists when stopwords were
+  // actually dropped (otherwise it IS `exact`), and `loose` needs >1 content
+  // term or it degenerates into "any single word matches anything".
+  const rung: FtsMatchRung | null =
+    query.terms.every((t) => normalized.includes(t))
+      ? 'exact'
+      : contentTerms.length > 0
+        && contentTerms.length < query.terms.length
+        && contentTerms.every((t) => normalized.includes(t))
+        ? 'relaxed'
+        : contentTerms.length > 1 && contentTerms.some((t) => normalized.includes(t))
+          ? 'loose'
+          : null;
+  if (rung === null) return null;
 
   let score = normalized.includes(query.text) ? 1_000 : 0;
   for (const term of query.terms) {
     score += Math.min(20, countOccurrences(normalized, term)) * 10;
   }
-  return score;
+  return { score: RUNG_BAND[rung] + score, match: rung };
 };
 
 const compareCandidates = (
@@ -290,6 +357,7 @@ const decodeContinuation = (
 const candidateFromSource = (
   source: Extract<ChatRecallSourceRow, { readable: true }>,
   score: number,
+  match: FtsMatchRung,
 ): InteractionRecallCandidate => ({
   item_id: source.item_id,
   session_id: source.session_id,
@@ -298,6 +366,7 @@ const candidateFromSource = (
   content: source.content,
   size_bytes: Buffer.byteLength(source.content, 'utf8'),
   score,
+  match,
 });
 
 export const createRecallSearchBackend = (
@@ -354,7 +423,7 @@ export const createRecallSearchBackend = (
       // outranking rows that actually did.
       return rows
         .filter((r): r is Extract<typeof r, { readable: true }> => r.readable)
-        .map((r) => candidateFromSource(r, 0));
+        .map((r) => candidateFromSource(r, 0, 'exact'));
     },
 
     async search(input): Promise<RecallSearchBackendResult> {
@@ -445,9 +514,9 @@ export const createRecallSearchBackend = (
           if (input.excluded_item_ids?.has(source.item_id) === true) {
             continue;
           }
-          const score = lexicalScore(source.content, input.query);
-          if (score === null) continue;
-          const candidate = candidateFromSource(source, score);
+          const scored = lexicalScore(source.content, input.query);
+          if (scored === null) continue;
+          const candidate = candidateFromSource(source, scored.score, scored.match);
           matches.push(candidate);
           matches.sort(compareCandidates);
           if (matches.length > maxCandidates) {
@@ -523,7 +592,7 @@ export const createRecallSearchBackend = (
       }
       if (source === null) return { status: 'not_found' };
       if (!source.readable) return { status: 'unreadable' };
-      return { status: 'ok', match: candidateFromSource(source, 0) };
+      return { status: 'ok', match: candidateFromSource(source, 0, 'exact') };
     },
   };
 };

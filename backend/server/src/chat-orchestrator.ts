@@ -857,11 +857,21 @@ export interface ChatOrchestratorDeps {
    *  titles at 9/10 on the two-referent case vs 1/10 with no index), and that
    *  describing content is actively harmful — a summary variant produced a
    *  confident `12% discount` present in NO packet and contradicting the store.
-   *  Optional: absent → no line, which is the pre-index behaviour exactly. */
+   *  Optional: absent → no line, which is the pre-index behaviour exactly.
+   *
+   *  ⛔ `visibleItemIds` is REQUIRED, not a convenience: the probe registers it
+   *  onto its own scratch Map so the recall lane excludes rows already in the
+   *  prompt (D-213). Passing `[]` from a surface that HAS a tail re-admits every
+   *  self-match and the index names `recall.search` for every word just typed. */
   buildIndexContext?: (
     userMessage: string,
     ctx: ChatDispatchContext,
+    visibleItemIds: readonly string[],
   ) => Promise<string | undefined>;
+  /** D-259 §7.4.2 — bounded declaration-only state for work already live in
+   * this turn's own channel session. It is dynamic tail context, never a tool
+   * catalog or queue-management capability. */
+  buildInFlightContext?: (source: ExecutionSource) => string | undefined;
   /** D-214 §4.2 — late-bound durable root-request/span anchor deps. */
   getSpanAnchorDeps?: () => SpanAnchorDeps | undefined;
   /** D-214 §10.1/§10.4 — optional experiment-gated request augmentation. */
@@ -1692,9 +1702,12 @@ const resolveTier = (
 
 /** D-137 P1.4 — Project recent chat history into the main-turn
  *  `chat_tail` shape. Tail length is the local `CHAT_TAIL_LIMIT` (=3);
- *  we pull the last N user/assistant pairs and drop tool/system rows
- *  (those carry provenance + state shifts, not conversational
- *  context).
+ *  ⛔ it is **ROWS**, not pairs — `listRecentConversational(session_id, N)`
+ *  takes N user/assistant ROWS, assistant replies included. This comment said
+ *  "pairs" for a long time and was wrong; the difference decides whether a
+ *  given turn is still in context, so it is worth being exact about.
+ *  Tool/system rows are dropped (those carry provenance + state shifts, not
+ *  conversational context).
  *
  *  Codex P1.4 review P2 fold — `ChatVaultLockedError` is a signal
  *  (the user's vault has been re-locked) NOT a transient storage
@@ -1703,7 +1716,22 @@ const resolveTier = (
  *  Any other read failure (corrupt row, transient IO) still degrades
  *  to an empty tail — the substrate stays reachable on data-quality
  *  issues without losing the turn entirely. */
-const CHAT_TAIL_LIMIT = 3;
+/** ⚗ BENCH-ONLY OVERRIDE, and the reason it exists is that "just carry more
+ *  transcript" is the honest COMPETITOR to any retrieval-side fix here — but it
+ *  was unmeasurable while this was a bare `const`, so the A/B could only compare
+ *  the index against itself-with-a-filter and never against the alternative a
+ *  reviewer would actually propose.
+ *
+ *  ⛔ NOT A PRODUCT KNOB. Read once at module load, clamped, and absent/invalid
+ *  resolves to the shipped 3 — an arm sets it, nothing else does. Raising it in
+ *  production is a per-turn token cost that grows with session length, which is
+ *  precisely the quantity the third arm exists to price. */
+const CHAT_TAIL_LIMIT = ((): number => {
+  const raw = process.env.RECUED_CHAT_TAIL_LIMIT;
+  if (raw === undefined) return 3;
+  const n = Number.parseInt(raw, 10);
+  return Number.isInteger(n) && n >= 1 && n <= 200 ? n : 3;
+})();
 
 interface BuiltChatTail {
   readonly messages: ReadonlyArray<ChatTailMessage>;
@@ -2928,8 +2956,13 @@ export const createChatOrchestrator = (
               params.contract_snapshot,
               params.dispatch_depth,
             ),
+            // D-213 — the exact rows already in this packet (tail + current user
+            // row). The probe hands these to the recall lane so it excludes them
+            // at search time; everything OLDER in this session stays nameable.
+            params.visible_recall_item_ids ?? [],
           ).catch(() => undefined)
         : undefined;
+      const inFlightContext = deps.buildInFlightContext?.(params.execution_source);
       const piiPlan = readPiiEgressPlan(ctx.state);
       // D-167 — collect the prompt-cache before-turn hook's STRUCTURED `entity`
       // parts (raw records + a `render`) but DON'T alias them here. They thread
@@ -3061,6 +3094,7 @@ export const createChatOrchestrator = (
           content,
           correction_context: correctionContext,
           ...(indexContext ? { index_context: indexContext } : {}),
+          ...(inFlightContext ? { in_flight_context: inFlightContext } : {}),
           ...(executionCaseContext
             ? { execution_case_context: executionCaseContext }
             : {}),
@@ -3894,6 +3928,18 @@ export const createChatOrchestrator = (
           : userText,
         chat_tail: builtChatTail.messages,
       }),
+      // ⛔ D-213 WAS CHAT-ONLY, AND THAT WAS A GAP, NOT A SCOPE DECISION. The
+      // chat surface has passed these since D-213; messenger passed nothing, so
+      // `state.visible_item_ids` was EMPTY here and the model's own
+      // `recall.search` could return the very rows already in its packet. It
+      // becomes load-bearing with the pre-seed index's visible-row exclusion:
+      // an empty set there re-admits every self-match. Same projection as chat
+      // — the tail was built before the user row was appended, so the current
+      // row is added explicitly.
+      visible_recall_item_ids: [
+        ...builtChatTail.item_ids,
+        userMessageId,
+      ],
       model_layer: modelLayer,
       ...(modelHint ? { model_hint: modelHint } : {}),
       ...(modelSourceId ? { model_source_id: modelSourceId } : {}),

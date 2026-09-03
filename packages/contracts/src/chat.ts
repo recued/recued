@@ -94,7 +94,8 @@ export type Tier1ToolName =
   | 'work.search'
   | 'work.read'
   | 'file.search'
-  | 'recipe.run';
+  | 'recipe.run'
+  | 'recipe.stop';
 
 export const TIER1_TOOL_NAMES: ReadonlyArray<Tier1ToolName> = [
   'contact.search',
@@ -109,6 +110,7 @@ export const TIER1_TOOL_NAMES: ReadonlyArray<Tier1ToolName> = [
   'work.read',
   'file.search',
   'recipe.run',
+  'recipe.stop',
 ] as const;
 
 export const TIER1_TOOL_NAME_SET: ReadonlySet<Tier1ToolName> =
@@ -136,6 +138,10 @@ export const TIER1_TOPIC_TAGS: Readonly<Record<Tier1ToolName, ReadonlyArray<stri
   'work.read': [...WORK_ENTITY_KINDS, 'detail', 'lookup'],
   'file.search': ['file', 'attachment', 'document', 'upload', 'lookup'],
   'recipe.run': ['recipe', 'invoke', 'action', 'workflow'],
+  // D-259 § 7.4 — steering, not searching. Tagged beside `recipe.run` because
+  // the pair is start/stop: a model that can find only one of them turns
+  // "do X instead" into "do X as well".
+  'recipe.stop': ['recipe', 'stop', 'cancel', 'steer', 'workflow'],
 } as const;
 
 /** Per-Tier-1 read-vs-write classification. `recipe.run` is `unknown`
@@ -171,6 +177,10 @@ export const TIER1_CLASSIFICATIONS: Readonly<
   // is a separate admission and writes its own `file_content_read` audit row.
   'file.search': 'read',
   'recipe.run': 'unknown',
+  // Ends work rather than starting it. Classified `write` because it CHANGES
+  // durable run state (terminal `killed` + audit), even though it creates
+  // nothing.
+  'recipe.stop': 'write',
 } as const;
 
 /** D-164 § 6 — per-Tier-1 batch-dispatch safety. Source for
@@ -203,6 +213,9 @@ export const TIER1_CONCURRENCY_SAFE: Readonly<
   'work.read': true,
   'file.search': true,
   'recipe.run': false,
+  // Never batched in parallel with anything: a stop and the call it would stop
+  // must not race inside one turn's tool batch.
+  'recipe.stop': false,
 } as const;
 
 /** § A.1.1 — registry entry shape. The LLM sees `name` / `description`
@@ -443,6 +456,9 @@ export type ChatDispatchResult =
       /** Exact durable execution-audit anchor supplied by the host that ran
        * the recipe. This is addressability only, never execution authority. */
       run_id?: string;
+      /** Existing standing dish that was dispatched. Omitted for the
+       * run-derived ephemeral dish used by ordinary ad-hoc calls. */
+      dish_id?: string;
     }
   | {
       ok: false;
@@ -451,6 +467,8 @@ export type ChatDispatchResult =
       /** Present when the failed/cancelled dispatch still wrote a durable run
        * that the executing host can open in Logs. */
       run_id?: string;
+      /** Existing standing dish that was dispatched; never an ephemeral id. */
+      dish_id?: string;
     };
 
 /** § A.1.1 — registry surface. Implementations live in
@@ -966,6 +984,16 @@ export interface ChatToolCall {
   tool_name: string;
   tier: ToolTier;
   args: unknown;
+  /** Durable audit address for this exact recipe dispatch. Addressability
+   * only; consumers must re-read the anchor before acting on it. */
+  run_id?: string;
+  /** Existing standing dish used by the dispatch. Omitted for ephemeral
+   * manual-run attribution. */
+  dish_id?: string;
+  /** Host-confirmed terminal succeeded ad-hoc run. Presence authorizes only
+   * the owner UI affordance; the promotion RPC still re-reads the audit anchor
+   * as the final authority. Omitted for held/failed and standing-dish runs. */
+  dish_promotable?: true;
   /** Reference into chat-side ephemeral storage; the orchestrator
    *  persists the raw result keyed on this id so the message row
    *  stays compact. */
@@ -1722,6 +1750,7 @@ export const TIER1_TOOL_ENTITY: Readonly<Record<Tier1ToolName, OpEntity>> = {
   'work.read': 'work',
   'file.search': 'file',
   'recipe.run': 'recipe',
+  'recipe.stop': 'recipe',
 };
 
 /** P1 placeholder descriptor table — one entry per `Tier1ToolName`.
@@ -2117,6 +2146,41 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
     classification: TIER1_CLASSIFICATIONS['recipe.run'],
     topic_tags: TIER1_TOPIC_TAGS['recipe.run'],
     concurrency_safe: TIER1_CONCURRENCY_SAFE['recipe.run'],
+  },
+  /** D-259 § 7.4.3 — the other half of `recipe.run`.
+   *
+   *  ⛔ WITHOUT THIS, "do X instead" SILENTLY BECOMES "do X as well": the model
+   *  starts the new work while the old run keeps going, against the owner's
+   *  real accounts. The duplicate gate does not catch it — that collapses an
+   *  IDENTICAL recipe+args twin, and a steer is by definition to something
+   *  else.
+   *
+   *  Addressed by INTENT, never by an id the owner does not hold: the server
+   *  correlates `recipe_id` against the caller's OWN live runs and refuses to
+   *  pick when more than one matches, because a model's parse of "forget that"
+   *  is wrong-with-confidence by construction (D-177). */
+  'recipe.stop': {
+    name: 'recipe.stop',
+    description:
+      "Stop a recipe YOU started in this conversation that is still running. Use this the moment the user changes direction mid-run — \"forget that\", \"never mind\", \"do X instead\" — BEFORE starting the new work, or the old run keeps going alongside it. Pass `recipe_id` (`<publisher>/<slug>`) and the server finds the matching live run; pass `run_id` only if you already hold one. Outcomes: `stopped` (names what was stopped), `ambiguous` (more than one live run matched — show the user the candidates and ask which; nothing was stopped), `already_terminal` (it finished on its own — the result is available, tell the user that), `not_found` (nothing of yours matched). You can only stop runs from this conversation; the user can stop anything from the Active list.",
+    arg_schema: {
+      type: 'object',
+      properties: {
+        recipe_id: {
+          type: 'string',
+          description:
+            'The running recipe to stop, as `<publisher>/<slug>`. The usual case — the server correlates it against your own live runs.',
+        },
+        run_id: {
+          type: 'string',
+          description:
+            'Advanced — normally omit: an exact run address, when you already hold one. Provide `recipe_id` OR `run_id`.',
+        },
+      },
+    },
+    classification: TIER1_CLASSIFICATIONS['recipe.stop'],
+    topic_tags: TIER1_TOPIC_TAGS['recipe.stop'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['recipe.stop'],
   },
 } as const;
 

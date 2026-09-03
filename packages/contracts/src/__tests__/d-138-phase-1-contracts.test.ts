@@ -618,6 +618,9 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       // `ddns.status`) is owner-only local-UI; an external agent must never take
       // a user's DDNS publication offline nor read the pause posture.
       'ddns.',
+      // D-259 — standing-work CRUD remains owner-only; MCP gets only the
+      // same-token attended-run recued_stopRecipe capability.
+      'dishes.',
       // D-181 slice 4 — the `execution.*` live-control surface (owner-only;
       // kill/cancel/promote a running heavy op + the active-list reads).
       'execution.',

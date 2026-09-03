@@ -29,6 +29,7 @@ import {
 import { findRoleRestrictions } from './preflight.js';
 import { runPrefetch } from './prefetch.js';
 import { runStep, trackContextSize } from './step-runner.js';
+import { throwIfRunKilled } from './lane.js';
 import { analyzeSteps, type StepSeed } from './step-seed.js';
 import { assignOwnSafe, hasOwnSafe, setNamespaceValue } from './store-safety.js';
 
@@ -134,16 +135,23 @@ export const executeRecipe = async (inputCtx: ExecutionContext): Promise<Executi
   const budgetMs = recipe.metadata?.budget_ms;
   if (!budgetMs || budgetMs <= 0) {
     try {
-      return await fireExchangeOutput(ctx, await executeRecipeInner(ctx));
+      const result = await executeRecipeInner(ctx);
+      // An owner-abandoned run still drains its active transport, but its late
+      // terminal must not fire an exchange after the caller has already
+      // received `killed`.
+      return ctx.runAbortSignal?.aborted
+        ? result
+        : await fireExchangeOutput(ctx, result);
     } finally {
       if (ownsStore) piiStore?.dispose();
     }
   }
-  // Race the full run against the declared wall-clock budget. On
-  // budget exhaustion, in-flight steps are left to their own
-  // cancellation (engine has no kill switch for an executor) — the
-  // budget signal tells the caller the run is over and its output
-  // should be ignored. Approvals sit outside the engine boundary
+  // Race the full run against the declared wall-clock budget. D-259 gives the
+  // run a linked abort signal: a budget expiry reaches queued lane calls and
+  // an active finite CLI process tree. The public result remains the budget
+  // failure, but we wait for the inner run's cancellation cleanup before
+  // settling so a lane cannot be released while descendants still run.
+  // Approvals sit outside the engine boundary
   // (the host wakes the engine only once granted) so they do
   // not count against this timer. D-116 adds the same treatment for
   // deliberate in-engine pauses via `ctx.extendBudget`: the `wait`
@@ -154,9 +162,22 @@ export const executeRecipe = async (inputCtx: ExecutionContext): Promise<Executi
   let extraMs = 0;
   let budgetTimer: ReturnType<typeof setTimeout> | undefined;
   let resolveBudget: ((r: ExecutionResult) => void) | undefined;
+  let budgetExpired = false;
+  const budgetAbort = new AbortController();
+  const abortFromCaller = (): void => {
+    if (!budgetAbort.signal.aborted) {
+      budgetAbort.abort(inputCtx.runAbortSignal?.reason);
+    }
+  };
+  inputCtx.runAbortSignal?.addEventListener('abort', abortFromCaller, { once: true });
+  if (inputCtx.runAbortSignal?.aborted) abortFromCaller();
   const arm = (): void => {
     const remaining = Math.max(0, (budgetMs + extraMs) - (Date.now() - start));
     budgetTimer = setTimeout(() => {
+      budgetExpired = true;
+      if (!budgetAbort.signal.aborted) {
+        budgetAbort.abort(new Error(`Recipe '${recipe.recipe_id}' budget expired`));
+      }
       fireProgress(ctx, { type: 'focus_update', phase: 'done', step_id: null });
       // Coarse-resolution timers + worker scheduling can land Date.now()
       // a hair before the scheduled `remaining`, so report at least the
@@ -181,6 +202,7 @@ export const executeRecipe = async (inputCtx: ExecutionContext): Promise<Executi
   });
   const innerCtx: ExecutionContext = {
     ...ctx,
+    runAbortSignal: budgetAbort.signal,
     extendBudget: (ms: number) => {
       if (!Number.isFinite(ms) || ms <= 0) return;
       extraMs += ms;
@@ -188,20 +210,24 @@ export const executeRecipe = async (inputCtx: ExecutionContext): Promise<Executi
       arm();
     },
   };
-  // Dispose the run's real-PII ledger (only when we own it — see the ownership
-  // guard above) as the INNER run settles — NOT when the race resolves. On a
-  // budget timeout the caller gets the failure, but the abandoned inner run
-  // keeps executing (the engine has no kill switch); its later `pii-restore`
-  // steps must still find the ledger, otherwise the alias surface would bleed
-  // into a user-facing side effect (e.g. a notification rendered after the
-  // budget cutoff). Disposing on inner-settle still drops the real PII the
-  // moment the run actually ends. (The no-budget path above disposes in its own
-  // `finally`, which is likewise inner-settle.)
-  const run = executeRecipeInner(innerCtx).then((r) => fireExchangeOutput(innerCtx, r)).finally(() => { if (ownsStore) piiStore?.dispose(); });
+  // Never publish the inner run's exchange output after its budget expired.
+  // Its only remaining job is to settle cancellation and dispose run-local PII.
+  const run = executeRecipeInner(innerCtx)
+    .then((r) => budgetExpired || innerCtx.runAbortSignal?.aborted
+      ? r
+      : fireExchangeOutput(innerCtx, r))
+    .finally(() => { if (ownsStore) piiStore?.dispose(); });
   try {
-    return await Promise.race([run, budgetSignal]);
+    const raced = await Promise.race([run, budgetSignal]);
+    if (!budgetExpired) return raced;
+    // A finite CLI reacts to the linked signal by killing its owned tree and
+    // resolves this promise only from the child's close/error event. Ignore the
+    // inner outcome; the budget remains the externally authoritative terminal.
+    await run.catch(() => undefined);
+    return raced;
   } finally {
     if (budgetTimer) clearTimeout(budgetTimer);
+    inputCtx.runAbortSignal?.removeEventListener('abort', abortFromCaller);
   }
 };
 
@@ -359,6 +385,7 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
   // sequential phase).
   if (!ctx.resumeFrom && recipe.trigger_steps && recipe.trigger_steps.length > 0) {
     const triggerResult = await runTriggerSteps(ctx);
+    throwIfRunKilled(ctx);
     logs.push(...triggerResult.logs);
     if (triggerResult.error) {
       errors.push(triggerResult.error);
@@ -379,6 +406,7 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
   // the gate runs twice).
   if (!ctx.resumeFrom) {
     const prefetchLogs = await runPrefetch(ctx);
+    throwIfRunKilled(ctx);
     logs.push(...prefetchLogs);
     const fatal = prefetchLogs.find(l => l.error);
     if (fatal?.error) {
@@ -413,6 +441,7 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
   // checkpoint was minted at); fresh runs start at 0. Either way the
   // loop runs over `sequentialSteps[startIndex..]`.
   for (let i = startIndex; i < sequentialSteps.length; i++) {
+    throwIfRunKilled(ctx);
     const step = sequentialSteps[i];
     const stepId = (step as { id?: string }).id ?? `step_${i}`;
     fireProgress(ctx, { type: 'focus_update', phase: 'sequential', step_id: stepId });

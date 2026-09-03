@@ -1152,6 +1152,10 @@ const uniformContentScanDataFields = (
   // would BOTH leak the value and break the model's ability to join the two.
   // Named here per this scan's enumeration rule, not left to a walker.
   if (aliasLedgerFieldInPlace(record, 'index_context', plan)) changed = true;
+  // D-259 intent is host-derived from a recipe declaration, but user-authored
+  // recipe names can still contain personal values. Keep this newly enumerated
+  // model field on the same one-way alias boundary as every dynamic context.
+  if (aliasLedgerFieldInPlace(record, 'in_flight_context', plan)) changed = true;
   // D-214 cards are scope-checked typed projections, but their request-shape
   // facets can still echo the owner's own entity tokens. Keep them on the same
   // single egress boundary as every other dynamic context field.

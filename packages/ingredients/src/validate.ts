@@ -62,6 +62,9 @@ import {
   CLI_DETACHED_MODES,
   CLI_DETACHED_COMPLETION_KINDS,
   CLI_DETACHED_CANCEL_KINDS,
+  CLI_PROGRESS_ADAPTERS,
+  SERVICE_CHECK_KINDS,
+  SERVICE_RESTART_POLICIES,
   CATALOG_CONNECTOR_INVOKE_TIMEOUT_CAP_MS,
   CATALOG_CONNECTOR_STARTUP_TIMEOUT_CAP_MS,
   CATALOG_CONNECTOR_SHUTDOWN_TIMEOUT_CAP_MS,
@@ -1198,6 +1201,146 @@ const validateCliDetachedSpec = (
       }
     }
   }
+  const supervision = detached.supervision;
+  if (supervision === undefined) {
+    // D-259 § 0.1.1 — OUT OF THE LANGUAGE, not deprecated. An unsupervised
+    // detach returns a launch receipt in place of a result, which is the defect
+    // this D exists to end. One publisher, zero shipped uses, so there is
+    // nobody to strand by rejecting it outright.
+    add('error', 'CLI_LEGACY_UNSUPERVISED_DETACH', `${path}.supervision`,
+      'unsupervised cli detachment is not supported; use awaited finite execution, or declare supervision with readiness for a long-running service');
+    return;
+  }
+  if (!isObjectRecord(supervision)) {
+    add('error', 'CATALOG_BINDING_INVALID', `${path}.supervision`,
+      'cli_invocation detached.supervision must be an object when present');
+    return;
+  }
+  if (typeof supervision.restart_policy !== 'string'
+    || !(SERVICE_RESTART_POLICIES as readonly string[]).includes(supervision.restart_policy)) {
+    add('error', 'CATALOG_BINDING_INVALID', `${path}.supervision.restart_policy`,
+      `cli_invocation detached.supervision.restart_policy must be one of ${SERVICE_RESTART_POLICIES.join('|')}`);
+  }
+  if (supervision.restart_on_server_start !== undefined
+    && typeof supervision.restart_on_server_start !== 'boolean') {
+    add('error', 'CATALOG_BINDING_INVALID', `${path}.supervision.restart_on_server_start`,
+      'cli_invocation detached.supervision.restart_on_server_start must be a boolean when present');
+  }
+
+  const hasD259Field = hasOwn(supervision, 'readiness')
+    || hasOwn(supervision, 'health')
+    || hasOwn(supervision, 'ready_timeout_ms');
+  if (!hasD259Field) {
+    // D-259 § 0.1.1 — a WRONG signal, not a weaker one: "Successful spawn() is
+    // not readiness" (§4). pid-exists reports ready for a process about to
+    // crash, so this is rejected rather than tolerated.
+    add('error', 'CLI_LEGACY_SUPERVISION', `${path}.supervision`,
+      'cli_invocation detached.supervision requires readiness and ready_timeout_ms — a live pid is not a readiness signal');
+    return;
+  }
+  if (!isObjectRecord(cancel)) {
+    add('error', 'CATALOG_BINDING_INVALID', `${path}.cancel`,
+      'D-259 supervised cli services require process_group cancellation');
+  }
+
+  const validateProbe = (probe: unknown, probePath: string, required: boolean): void => {
+    if (probe === undefined && !required) return;
+    if (!isObjectRecord(probe)) {
+      add('error', 'CATALOG_BINDING_INVALID', probePath,
+        'supervisor probe must be an object from the closed D-118 service-check registry');
+      return;
+    }
+    if (typeof probe.kind !== 'string'
+      || !(SERVICE_CHECK_KINDS as readonly string[]).includes(probe.kind)) {
+      add('error', 'CATALOG_BINDING_INVALID', `${probePath}.kind`,
+        `supervisor probe kind must be one of ${SERVICE_CHECK_KINDS.join('|')}`);
+      return;
+    }
+
+    const nonEmptyString = (value: unknown, field: string): boolean => {
+      if (typeof value === 'string' && value.length > 0) return true;
+      add('error', 'CATALOG_BINDING_INVALID', `${probePath}.${field}`,
+        `supervisor ${probe.kind} probe ${field} must be a non-empty string`);
+      return false;
+    };
+    const positiveTimeout = (): void => {
+      if (probe.timeout_ms === undefined) return;
+      if (typeof probe.timeout_ms !== 'number'
+        || !Number.isFinite(probe.timeout_ms)
+        || probe.timeout_ms <= 0) {
+        add('error', 'CATALOG_BINDING_INVALID', `${probePath}.timeout_ms`,
+          `supervisor ${probe.kind} probe timeout_ms must be a positive number`);
+      }
+    };
+
+    switch (probe.kind) {
+      case 'binary_in_path':
+        nonEmptyString(probe.binary, 'binary');
+        break;
+      case 'file_exists':
+      case 'pid_file':
+        nonEmptyString(probe.path, 'path');
+        break;
+      case 'http_ok':
+        if (nonEmptyString(probe.url, 'url')
+          && !/^https?:\/\//i.test(probe.url as string)) {
+          add('error', 'CATALOG_BINDING_INVALID', `${probePath}.url`,
+            'supervisor http_ok probe url must start with http:// or https://');
+        }
+        if (probe.status_ok !== undefined
+          && (!Array.isArray(probe.status_ok)
+            || probe.status_ok.length === 0
+            || !probe.status_ok.every((status) =>
+              typeof status === 'number' && Number.isInteger(status)))) {
+          add('error', 'CATALOG_BINDING_INVALID', `${probePath}.status_ok`,
+            'supervisor http_ok probe status_ok must be a non-empty array of integers');
+        }
+        positiveTimeout();
+        break;
+      case 'tcp_open': {
+        nonEmptyString(probe.host, 'host');
+        const portIsNumber = typeof probe.port === 'number'
+          && Number.isInteger(probe.port)
+          && probe.port >= 1
+          && probe.port <= 65_535;
+        const portIsConfigRef = typeof probe.port === 'string'
+          && /^\s*\{\{\s*config\.[^}:\s]+\s*\}\}\s*$/.test(probe.port);
+        if (!portIsNumber && !portIsConfigRef) {
+          add('error', 'CATALOG_BINDING_INVALID', `${probePath}.port`,
+            'supervisor tcp_open probe port must be an integer in [1, 65535] or a pure {{config.*}} reference');
+        }
+        break;
+      }
+      case 'exec_ok':
+        if (!Array.isArray(probe.argv)
+          || probe.argv.length === 0
+          || !probe.argv.every((token) => typeof token === 'string' && token.length > 0)) {
+          add('error', 'CATALOG_BINDING_INVALID', `${probePath}.argv`,
+            'supervisor exec_ok probe argv must be a non-empty array of non-empty strings');
+        } else if (tokenContainsTemplateHole(probe.argv[0] as string)) {
+          add('error', 'CATALOG_BINDING_INVALID', `${probePath}.argv[0]`,
+            'supervisor exec_ok probe argv[0] must be a non-templated literal command');
+        }
+        if (probe.exit_codes_ok !== undefined
+          && (!Array.isArray(probe.exit_codes_ok)
+            || probe.exit_codes_ok.length === 0
+            || !probe.exit_codes_ok.every((code) =>
+              typeof code === 'number' && Number.isInteger(code)))) {
+          add('error', 'CATALOG_BINDING_INVALID', `${probePath}.exit_codes_ok`,
+            'supervisor exec_ok probe exit_codes_ok must be a non-empty array of integers');
+        }
+        positiveTimeout();
+        break;
+    }
+  };
+  validateProbe(supervision.readiness, `${path}.supervision.readiness`, true);
+  validateProbe(supervision.health, `${path}.supervision.health`, false);
+  if (typeof supervision.ready_timeout_ms !== 'number'
+    || !Number.isInteger(supervision.ready_timeout_ms)
+    || supervision.ready_timeout_ms <= 0) {
+    add('error', 'CATALOG_BINDING_INVALID', `${path}.supervision.ready_timeout_ms`,
+      'cli_invocation detached.supervision.ready_timeout_ms must be a positive integer');
+  }
 };
 
 /** D-181 Slice 3 — manifest-level long-op fields (`progress_contract` +
@@ -1228,6 +1371,8 @@ const validateLongOpFields = (m: Record<string, unknown>, add: AddFn): void => {
  *  or `progress` on a (foreground-only) detached binding are all rejected. */
 const validateCliProgressSpec = (
   binding: Record<string, unknown>,
+  opSpec: unknown,
+  catalogDefaultTimeoutMs: number,
   opKey: string,
   path: string,
   add: AddFn,
@@ -1244,6 +1389,7 @@ const validateCliProgressSpec = (
       `cli_invocation binding for '${opKey}' progress (foreground stall detection) is not supported on a detached binding`);
   }
   const contract = progress.contract;
+  const isD259 = hasOwn(progress, 'stall_ms');
   if (typeof contract !== 'string' || !PROGRESS_CONTRACT_SET.has(contract)) {
     add('error', 'CATALOG_BINDING_INVALID', `${path}.contract`,
       `cli_invocation binding for '${opKey}' progress.contract must be one of heartbeat|file-growth|silent`);
@@ -1251,6 +1397,49 @@ const validateCliProgressSpec = (
     add('error', 'CATALOG_BINDING_INVALID', `${path}.contract`,
       `cli_invocation binding for '${opKey}' progress.contract 'provider-event' is for http/streaming ops, not a local subprocess (use heartbeat|file-growth|silent)`);
   }
+  if (isD259) {
+    if (contract !== 'heartbeat' && contract !== 'file-growth') {
+      add('error', 'CATALOG_BINDING_INVALID', `${path}.contract`,
+        `cli_invocation binding for '${opKey}' D-259 progress.contract must be heartbeat or file-growth`);
+    }
+    if (typeof progress.stall_ms !== 'number'
+      || !Number.isInteger(progress.stall_ms)
+      || progress.stall_ms <= 0) {
+      add('error', 'CATALOG_BINDING_INVALID', `${path}.stall_ms`,
+        `cli_invocation binding for '${opKey}' progress.stall_ms must be a positive integer`);
+    }
+    if (contract === 'heartbeat') {
+      if (typeof progress.adapter !== 'string'
+        || !(CLI_PROGRESS_ADAPTERS as readonly string[]).includes(progress.adapter)) {
+        add('error', 'CATALOG_BINDING_INVALID', `${path}.adapter`,
+          `cli_invocation binding for '${opKey}' heartbeat adapter must be registered (${CLI_PROGRESS_ADAPTERS.join('|')})`);
+      }
+    } else if (progress.adapter !== undefined) {
+      add('error', 'CATALOG_BINDING_INVALID', `${path}.adapter`,
+        `cli_invocation binding for '${opKey}' progress.adapter is only valid with contract 'heartbeat'`);
+    }
+    const declaredTimeout = isObjectRecord(opSpec) ? opSpec.timeout_ms : undefined;
+    const timeout = declaredTimeout === 0
+      ? 0
+      : typeof declaredTimeout === 'number'
+        && Number.isInteger(declaredTimeout)
+        && declaredTimeout > 0
+        ? declaredTimeout
+        : catalogDefaultTimeoutMs;
+    if (typeof timeout === 'number' && timeout > 0
+      && typeof progress.stall_ms === 'number'
+      && progress.stall_ms >= timeout) {
+      add('error', 'CATALOG_BINDING_INVALID', `${path}.stall_ms`,
+        `cli_invocation binding for '${opKey}' progress.stall_ms must be less than its positive timeout_ms`);
+    }
+  } else {
+    // D-259 § 0.1.1 — a progress declaration without `stall_ms` was the
+    // IMPLICIT spelling of "do not cap me". `timeout_ms: 0` is the honest one,
+    // so the implicit spelling is out of the language rather than deprecated.
+    add('error', 'CLI_LEGACY_PROGRESS', path,
+      `cli_invocation binding for '${opKey}' progress requires stall_ms (and, for heartbeat, a registered adapter); to run without a wall deadline declare timeout_ms 0 alongside it`);
+  }
+
   const watchPath = progress.watch_path;
   if (watchPath !== undefined && !isNonEmptyStr(watchPath)) {
     add('error', 'CATALOG_BINDING_INVALID', `${path}.watch_path`,
@@ -2263,6 +2452,7 @@ const validateConnectorSurface = (
   add: AddFn,
   opKeys: Set<string>,
   operations: Record<string, unknown>,
+  catalogDefaultTimeoutMs: number,
 ): void => {
   let wireProtocol: string | undefined;
   const runtime = connector.runtime;
@@ -2592,7 +2782,35 @@ const validateConnectorSurface = (
           );
         }
         if (rawBinding.progress !== undefined) {
-          validateCliProgressSpec(rawBinding, opKey, `${bPath}.progress`, add);
+          validateCliProgressSpec(
+            rawBinding,
+            operations[opKey],
+            catalogDefaultTimeoutMs,
+            opKey,
+            `${bPath}.progress`,
+            add,
+          );
+        }
+        // D-259 § 0.3 R1 — `timeout_ms: 0` removes the wall deadline, so a
+        // progress declaration's `stall_ms` becomes the ONLY thing that can end
+        // a hung process. Unbounded AND blind has no bound at all: it runs until
+        // the owner notices and kills it from the Active list, which is a
+        // support ticket, not a design. An author who genuinely cannot observe
+        // progress should declare a long BOUNDED timeout instead.
+        //
+        // ⚠ Detached is exempt on purpose — a supervised service is governed by
+        // readiness + restart policy (§4), never by a deadline, and `progress`
+        // is rejected on a detached binding two blocks up.
+        if (rawBinding.progress === undefined
+          && rawBinding.detached === undefined
+          && isObjectRecord(operations[opKey])
+          && (operations[opKey] as Record<string, unknown>).timeout_ms === 0) {
+          add('error', 'CATALOG_BINDING_INVALID', `${bPath}.progress`,
+            `cli_invocation binding for '${opKey}' declares timeout_ms 0 (unbounded) so it must also declare progress — an unbounded op with no stall detection has no bound at all`);
+        }
+        if (rawBinding.detached !== undefined && rawBinding.output_capture !== undefined) {
+          add('error', 'CATALOG_BINDING_INVALID', `${bPath}.output_capture`,
+            `cli_invocation binding for '${opKey}' cannot combine detached with output_capture; detached services return readiness, not artifacts`);
         }
       } else if (wireProtocol === undefined) {
         // wire unresolved — still gate the binding kind so it isn't silently ok.
@@ -2640,6 +2858,7 @@ const validateProviderSurfaces = (
   add: AddFn,
   operations: Record<string, unknown>,
   opKeys: Set<string>,
+  catalogDefaultTimeoutMs: number,
 ): void => {
   const { api, connector, notification, records } = surfaces;
   for (const key of Object.keys(surfaces)) {
@@ -2663,7 +2882,13 @@ const validateProviderSurfaces = (
     if (!isObjectRecord(connector)) {
       add('error', 'CATALOG_SURFACE_INVALID', 'surfaces.connector', 'surfaces.connector must be an object');
     } else {
-      validateConnectorSurface(connector, add, opKeys, operations);
+      validateConnectorSurface(
+        connector,
+        add,
+        opKeys,
+        operations,
+        catalogDefaultTimeoutMs,
+      );
     }
   }
   if (notification !== undefined) {
@@ -3088,9 +3313,10 @@ const validateCatalogForm = (m: Record<string, unknown>, add: AddFn): void => {
     // timeout_ms — bounded [MIN, catalog default × MULT] (Invariant 6).
     if (spec.timeout_ms !== undefined) {
       const ceiling = catalogDefaultTimeout * CATALOG_OP_TIMEOUT_MULTIPLIER;
-      if (!isIntInRange(spec.timeout_ms, CATALOG_MIN_OP_TIMEOUT_MS, ceiling)) {
+      if (spec.timeout_ms !== 0
+        && !isIntInRange(spec.timeout_ms, CATALOG_MIN_OP_TIMEOUT_MS, ceiling)) {
         add('error', 'CATALOG_TIMEOUT_INVALID', `${path}.timeout_ms`,
-          `operation '${opKey}' timeout_ms must be an integer in [${CATALOG_MIN_OP_TIMEOUT_MS}, ${ceiling}] (catalog default × ${CATALOG_OP_TIMEOUT_MULTIPLIER})`);
+          `operation '${opKey}' timeout_ms must be 0 (unbounded) or an integer in [${CATALOG_MIN_OP_TIMEOUT_MS}, ${ceiling}] (catalog default × ${CATALOG_OP_TIMEOUT_MULTIPLIER})`);
       }
     }
     // cache_ttl_ms — Invariant 7: a positive TTL is read-tier only.
@@ -3218,7 +3444,13 @@ const validateCatalogForm = (m: Record<string, unknown>, add: AddFn): void => {
     add('error', 'CATALOG_SURFACE_INVALID', 'surfaces',
       'surfaces must be an object declaring at least one of api | connector | notification');
   } else if (hasSurfaces) {
-    validateProviderSurfaces(rawSurfaces as Record<string, unknown>, add, operations, opKeys);
+    validateProviderSurfaces(
+      rawSurfaces as Record<string, unknown>,
+      add,
+      operations,
+      opKeys,
+      catalogDefaultTimeout,
+    );
   }
 };
 

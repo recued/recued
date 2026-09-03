@@ -9,6 +9,8 @@ import {
 } from '@recued/contracts';
 import { createManifestRegistry } from '../manifest-loader.js';
 import { createRecipeStore } from '../recipe-store.js';
+import { InFlightRegistry } from '../execution/in-flight-registry.js';
+import { LaneSemaphore } from '../execution/lane-semaphore.js';
 
 /** D-166 Slice 4d.3 — the engine `ExecutionContext` gained an `actor`
  *  carrier field, threaded by `handleExecute` from
@@ -190,5 +192,34 @@ describe('D-166 4d.3 — handleExecute threads execution_source.actor onto ctx',
     // Must be undefined — NOT coerced to a default actor. An absent actor
     // matches no `contract.override` row (4d.4), so the floor is untouched.
     expect(actor).toBeUndefined();
+  });
+
+  it('reports engine phase liveness to the D-259 in-flight context', async () => {
+    const inFlightRegistry = new InFlightRegistry(new LaneSemaphore());
+    const reportProgress = vi.spyOn(inFlightRegistry, 'reportProgress');
+    let capturedRunId: string | undefined;
+    executeRecipeMock.mockImplementationOnce(async (ctx: ExecutionContext) => {
+      capturedRunId = ctx.run_id;
+      ctx.onProgress?.({
+        type: 'sequential_step_started',
+        step_id: 'noop',
+        index: 0,
+        total: 1,
+      });
+      return successResult();
+    });
+
+    await handleExecute({ ...makeDeps(), inFlightRegistry }, {
+      recipe_id: RECIPE_ID,
+      execution_source: {
+        channel: 'user',
+        actor: 'user_self',
+        user_id: 'u1',
+        client_token_id: 'client1',
+      },
+    });
+
+    expect(capturedRunId).toEqual(expect.any(String));
+    expect(reportProgress).toHaveBeenCalledWith(capturedRunId, 'provider-event');
   });
 });

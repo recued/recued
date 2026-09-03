@@ -39,6 +39,11 @@ export interface StallMonitorOptions {
   silentHardCapMs?: number;
   /** Override the `k` factor. */
   factorK?: number;
+  /** D-259 explicit stall thresholds kill attended work too. */
+  killOnNoProgress?: boolean;
+  /** Best-effort observer for a real semantic progress signal. It receives
+   *  only the signal timestamp; progress bytes never cross this seam. */
+  onSignal?: (at: number) => void;
   /** Poll cadence; default `DEFAULT_PROGRESS_POLL_MS`. */
   pollMs?: number;
   /** Injectable clock (tests). Default `Date.now`. */
@@ -56,6 +61,8 @@ export class StallMonitor {
   private readonly expectedIntervalMs?: number;
   private readonly silentHardCapMs?: number;
   private readonly factorK?: number;
+  private readonly killOnNoProgress?: boolean;
+  private readonly onSignal?: (at: number) => void;
   private readonly pollMs: number;
   private readonly now: () => number;
   private readonly setTimer: (fn: () => void, ms: number) => unknown;
@@ -75,6 +82,8 @@ export class StallMonitor {
     this.expectedIntervalMs = opts.expectedIntervalMs;
     this.silentHardCapMs = opts.silentHardCapMs;
     this.factorK = opts.factorK;
+    this.killOnNoProgress = opts.killOnNoProgress;
+    this.onSignal = opts.onSignal;
     this.pollMs = opts.pollMs ?? DEFAULT_PROGRESS_POLL_MS;
     this.now = opts.now ?? Date.now;
     this.setTimer = opts.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
@@ -87,6 +96,11 @@ export class StallMonitor {
   signal(): void {
     this.lastSignalAt = this.now();
     this.signals += 1;
+    try {
+      this.onSignal?.(this.lastSignalAt);
+    } catch {
+      /* telemetry/read-model observers never become execution authority */
+    }
   }
 
   /** Number of progress signals observed (telemetry — `progress_signal_count`). */
@@ -107,6 +121,7 @@ export class StallMonitor {
       ...(this.expectedIntervalMs !== undefined ? { expected_interval_ms: this.expectedIntervalMs } : {}),
       ...(this.factorK !== undefined ? { factor_k: this.factorK } : {}),
       ...(this.silentHardCapMs !== undefined ? { silent_hard_cap_ms: this.silentHardCapMs } : {}),
+      ...(this.killOnNoProgress !== undefined ? { kill_on_no_progress: this.killOnNoProgress } : {}),
     });
   }
 

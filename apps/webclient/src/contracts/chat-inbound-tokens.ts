@@ -301,6 +301,10 @@ const TIER1_TO_INGREDIENT_KIND: Readonly<Record<Tier1ToolName, IngredientKind>> 
   // D-172 P2 — file.search reads the data.file warehouse collection.
   'file.search': 'storage',
   'recipe.run': 'storage',
+  // D-259 § 7.4.3 — `recipe.stop` ends a run the caller started. Same home as
+  // `recipe.run`: it reaches the local in-flight registry and the engine, never
+  // a connection.
+  'recipe.stop': 'storage',
 } as const;
 
 export const inferChatInboundTokenToolKind = (

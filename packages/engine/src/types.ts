@@ -64,6 +64,14 @@ export interface CliInvocationCall {
   args: Record<string, unknown>;
   /** Foreground timeout. Detached jobs use the runtime launch handshake instead. */
   timeout_ms?: number;
+  /** Host-owned cancellation for owner kill and recipe-budget expiry. The CLI
+   * executor terminates its whole owned process tree before settling. */
+  signal?: AbortSignal;
+  /** Host-only recursion guard for the supervisor's raw detached spawn. The
+   * authored call was already classified before delegation; suppresses a
+   * second, false "unsupervised detach" compatibility event after the
+   * supervisor removes its declaration to reach the low-level launcher. */
+  supervisor_managed_launch?: true;
   stepMeta?: StepMeta;
 }
 

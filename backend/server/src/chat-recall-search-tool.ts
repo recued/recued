@@ -4,6 +4,7 @@
  * by MCP and the door grant catalog remains unchanged, so interaction recall
  * acquires no grant handle and cannot be discovered there. */
 
+import type { FtsMatchRung } from '@recued/fts';
 import {
   NON_RETAINABLE_RECALL_TOOL_NAMES,
   type ChatDispatchContext,
@@ -62,6 +63,15 @@ export interface InteractionRecallMatch {
   readonly lane_rank: number;
   readonly item_id: string;
   readonly kind: InteractionRecallKind;
+  /** ⛔ WHICH RUNG ADMITTED THIS ROW, AND IT IS NOT DECORATION. The lane was
+   *  AND-only until 2026-09-02; it now relaxes to content-terms and then to ANY
+   *  content term, which is the only reason a real question like "where did we
+   *  land on X for the renewal round" finds anything at all. But a `loose` row
+   *  shares SOME terms and may be about something else entirely, so shipping it
+   *  UNLABELLED would trade an empty answer for a confident wrong one — the
+   *  exact trade this surface already refused once (the `12% discount`
+   *  fabrication). `memory.search` reports the same field for the same reason. */
+  readonly match: FtsMatchRung;
   readonly session_relation: 'current' | 'prior';
   readonly timestamp: number;
   readonly content: string;
@@ -469,6 +479,7 @@ const interactionMatch = (
     lane_rank: laneRank,
     item_id: candidate.item_id,
     kind: candidate.kind,
+    match: candidate.match,
     session_relation:
       candidate.session_id === currentSessionId ? 'current' : 'prior',
     timestamp: candidate.timestamp,

@@ -471,6 +471,60 @@ describe('wrapWithCommitGateway', () => {
     });
   });
 
+  it('terminalizes a provider result observed after run abort as cancelled without output', async () => {
+    const controller = new AbortController();
+    let resolveInner!: (value: { delivered: true }) => void;
+    const innerResult = new Promise<{ delivered: true }>((resolve) => {
+      resolveInner = resolve;
+    });
+    const executor = wrapWithCommitGateway(() => innerResult, deps({
+      runAbortSignal: controller.signal,
+      genCommitId: sequence(['commit-abandoned']),
+      genIdempotencyKey: sequence(['idem-abandoned']),
+      now: sequence([650, 690]),
+    }));
+
+    const pending = executor('ai.generate', { prompt: 'slow' });
+    await vi.waitFor(async () => {
+      expect(await store.get('commit-abandoned')).toMatchObject({ status: 'pending' });
+    });
+    controller.abort();
+    resolveInner({ delivered: true });
+
+    await expect(pending).rejects.toMatchObject({ code: 'run_killed' });
+    const row = await store.get('commit-abandoned');
+    expect(row).toMatchObject({
+      commit_id: 'commit-abandoned',
+      status: 'cancelled',
+      completed_at: 690,
+      duration_ms: 40,
+    });
+    expect(row).not.toHaveProperty('output');
+  });
+
+  it('a pre-aborted run burns no use, writes no commit, and never dispatches', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const reserveDispatchUsage = vi.fn();
+    const recordDispatchUse = vi.fn();
+    const inner = vi.fn<GatewayInner>();
+    const executor = wrapWithCommitGateway(inner, deps({
+      runAbortSignal: controller.signal,
+      reserveDispatchUsage,
+      recordDispatchUse,
+      genCommitId: sequence(['commit-never-dispatched']),
+      genIdempotencyKey: sequence(['idem-never-dispatched']),
+      now: sequence([700]),
+    }));
+
+    await expect(executor('mail.send', { to: 'ada@example.com' }))
+      .rejects.toMatchObject({ code: 'run_killed' });
+    expect(reserveDispatchUsage).not.toHaveBeenCalled();
+    expect(recordDispatchUse).not.toHaveBeenCalled();
+    expect(inner).not.toHaveBeenCalled();
+    expect(await store.size()).toBe(0);
+  });
+
   it('records cached only when the inner marks the per-call probe cached', async () => {
     const cached = wrapWithCommitGateway(async (_slug, _input, _out, _opts, _meta, probe) => {
       probe.cached = true;

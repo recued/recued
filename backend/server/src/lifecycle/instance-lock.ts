@@ -35,7 +35,7 @@ import {
   unlinkSync,
   mkdirSync,
 } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 export interface LockInfo {
   pid: number;
@@ -177,4 +177,38 @@ export const createInstanceLock = (
       held = false;
     },
   };
+};
+
+/** `process.kill(pid, 0)` liveness. EPERM means the process is alive but owned
+ *  by somebody else; only ESRCH is an absent holder. */
+const pidAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+};
+
+/** Is a live server holding this realm, and which one?
+ *
+ *  ⛔⛔ THE ONE DEFINITION, AND IT LIVES BESIDE THE LOCK IT READS. The serve path
+ *  writes this lock next to the resolved database. A daemon pidfile would miss
+ *  foreground and supervised servers — it records only what `recued start`
+ *  launched — while a process-name scan would mix different realms together and
+ *  is unavailable on Windows.
+ *
+ *  🔑 IT SITS HERE RATHER THAN IN A CLI CONTEXT BECAUSE TWO PROFILES NEED IT.
+ *  `recued update` asks in order to REFUSE while a server is live; `recued stop`
+ *  asks in order to STOP that same server. Importing it across profiles is a
+ *  boundary violation (`bin-router` ratchets the per-profile module graph), and
+ *  copying it is how the two commands come to disagree about one machine — which
+ *  is exactly what happened: `update apply` could name the holder's pid and port
+ *  while `stop` announced it could not know, leaving a `serve`-started server
+ *  with no supported way to be stopped. */
+export const liveServerHolding = (dbPath: string): LockInfo | null => {
+  const lockPath = join(dirname(resolve(dbPath)), 'recued-server.lock');
+  const info = createInstanceLock({ lockPath }).inspect();
+  if (!info) return null;
+  return pidAlive(info.pid) ? info : null;
 };
