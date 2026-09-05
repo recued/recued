@@ -27,7 +27,7 @@ import {
   updateSellerSettings,
   upsertSellerManualTier,
 } from '../seller-overview-handler.js';
-import type { SellerStripeEntitlementProvider } from '../seller/stripe-entitlement-sync.js';
+import type { SellerProviderTierProvider } from '../seller/provider-tier-sync.js';
 import {
   createChatInboundTokenStore,
   ensureChatInboundTokenSchema,
@@ -490,6 +490,7 @@ describe('makeSellerOverviewHandlers', () => {
       'server.seller.reissueManualCustomerToken',
       'server.seller.bulkAdjustManualTierCustomers',
       'server.seller.synchronizeStripeEntitlements',
+      'server.seller.synchronizeProviderTiers',
     ]);
 
     const overview = await slice!.handlers['server.seller.getOverview'](
@@ -549,9 +550,12 @@ describe('makeSellerOverviewHandlers', () => {
   });
 
   it('routes Stripe synchronization through the owner-attributed provider seam', async () => {
-    const stripeEntitlementProvider: SellerStripeEntitlementProvider = {
-      listConnections: () => [{ name: 'stripe-main', display_name: 'Stripe Main' }],
-      listFeatures: vi.fn(async () => ({
+    // The shipped Stripe-only rpc adapts over the ONE tier-seed seam.
+    const providerTierProvider: SellerProviderTierProvider = {
+      listConnections: (provider) => provider === 'stripe'
+        ? [{ name: 'stripe-main', display_name: 'Stripe Main' }]
+        : [],
+      listRecords: vi.fn(async () => ({
         ok: true as const,
         records: [{
           id: 'feat_basic',
@@ -565,7 +569,7 @@ describe('makeSellerOverviewHandlers', () => {
     const slice = makeSellerOverviewHandlers({
       sellerStore,
       contractStore,
-      stripeEntitlementProvider,
+      providerTierProvider,
       now: () => NOW,
       newContractId: () => 'ct_stripe_basic',
       newTierId: () => 'tier_stripe_basic',
@@ -581,7 +585,8 @@ describe('makeSellerOverviewHandlers', () => {
       } as WsClient,
     );
 
-    expect(stripeEntitlementProvider.listFeatures).toHaveBeenCalledWith({
+    expect(providerTierProvider.listRecords).toHaveBeenCalledWith({
+      provider: 'stripe',
       connection_name: 'stripe-main',
       execution_source: {
         channel: 'user',
@@ -2218,5 +2223,90 @@ describe('manual customer lifecycle owner handlers', () => {
         status: 400,
       }),
     );
+  });
+});
+
+describe('D-196 consolidation — provider tier synchronization rpc', () => {
+  const tierProvider = (): SellerProviderTierProvider => ({
+    listConnections: (provider) => provider === 'paddle'
+      ? [{ name: 'paddle-main', display_name: 'Paddle Main' }]
+      : [{ name: 'ls-main', display_name: 'Lemon Squeezy Main' }],
+    listRecords: vi.fn(async (input) => ({
+      ok: true as const,
+      records: input.provider === 'paddle'
+        ? [{ id: 'pro_01hbasic', name: 'Basic', status: 'active' }]
+        : [{ type: 'products', id: '3001', attributes: { name: 'Basic', status: 'published' } }],
+    })),
+  });
+
+  it('routes a Paddle tier sync through the owner-attributed provider seam and mints product-keyed tiers', async () => {
+    const providerTierProvider = tierProvider();
+    const slice = makeSellerOverviewHandlers({
+      sellerStore,
+      contractStore,
+      providerTierProvider,
+      now: () => NOW,
+      newContractId: () => 'ct_paddle_basic',
+      newTierId: () => 'tier_paddle_basic',
+    });
+
+    const response = await slice!.handlers['server.seller.synchronizeProviderTiers'](
+      { provider: 'paddle', door_id: 'door-mcp', door_type: 'mcp' },
+      { user_id: 'owner-user', client_token_id: 'owner-client-token' } as WsClient,
+    );
+
+    expect(providerTierProvider.listRecords).toHaveBeenCalledWith({
+      provider: 'paddle',
+      connection_name: 'paddle-main',
+      execution_source: {
+        channel: 'user',
+        actor: 'user_self',
+        user_id: 'owner-user',
+        client_token_id: 'owner-client-token',
+      },
+    });
+    expect(response).toMatchObject({
+      provider: 'paddle',
+      connection_name: 'paddle-main',
+      records_seen: 1,
+      created_tier_ids: ['tier_paddle_basic'],
+      overview: { counts: { tiers: 1, active_tiers: 1 } },
+    });
+    // The tier is keyed on the PRODUCT id under the provider's own source.
+    expect(sellerStore.listTiers({ lifecycle_source: 'paddle' })).toMatchObject([
+      { tier_id: 'tier_paddle_basic', entitlement_key: 'pro_01hbasic', external_entitlement_id: 'pro_01hbasic' },
+    ]);
+    // Readiness now reports both product providers.
+    expect(response.overview.readiness.map((item) => [item.key, item.state])).toEqual(
+      expect.arrayContaining([['paddle_provider', 'ready'], ['lemonsqueezy_provider', 'ready']]),
+    );
+  });
+
+  it('refuses a Lemon Squeezy sync without its store id, and Paddle with one, as a bad request', async () => {
+    const slice = makeSellerOverviewHandlers({
+      sellerStore,
+      contractStore,
+      providerTierProvider: tierProvider(),
+      now: () => NOW,
+    });
+    const client = { user_id: 'owner-user', client_token_id: 'owner-client-token' } as WsClient;
+    await expect(slice!.handlers['server.seller.synchronizeProviderTiers'](
+      { provider: 'lemonsqueezy', door_id: 'door-mcp', door_type: 'mcp' },
+      client,
+    )).rejects.toMatchObject({ code: 'bad_request', status: 400 });
+    await expect(slice!.handlers['server.seller.synchronizeProviderTiers'](
+      { provider: 'paddle', door_id: 'door-mcp', door_type: 'mcp', store_id: '4242' },
+      client,
+    )).rejects.toMatchObject({ code: 'bad_request', status: 400 });
+  });
+
+  it('is not_configured without the provider seam, and reports the providers as not wired', async () => {
+    const slice = makeSellerOverviewHandlers({ sellerStore, contractStore, now: () => NOW });
+    await expect(slice!.handlers['server.seller.synchronizeProviderTiers'](
+      { provider: 'paddle', door_id: 'door-mcp', door_type: 'mcp' },
+      { user_id: 'owner-user' } as WsClient,
+    )).rejects.toMatchObject({ code: 'not_configured', status: 503 });
+    const overview = await slice!.handlers['server.seller.getOverview'](undefined as never, {} as WsClient);
+    expect(overview.readiness.find((item) => item.key === 'paddle_provider')?.state).toBe('not_wired');
   });
 });

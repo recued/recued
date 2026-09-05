@@ -1196,7 +1196,7 @@ describe('seller customer access lifecycle', () => {
     expect(inboundTokenStore.listTokens()).toHaveLength(0);
   });
 
-  it.each(['stripe', 'future_provider'] as const)(
+  it.each(['stripe', 'paddle'] as const)(
     'rejects open-ended %s issue without minting customer state',
     (lifecycle_source) => {
       putTemplate();

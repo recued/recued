@@ -119,8 +119,13 @@ describe('D-213 A0 — chat message recall-eligibility stamp', () => {
       model.model_id,
       Buffer.from([0]),
     );
+    // ⚠ BOTH indexes on the column, or the DROP COLUMN below fails. This is
+    // the downgrade SIMULATION, not the migration under test — the real
+    // `ensureChatSchema` adds the column before it creates either index, and
+    // that ordering is what the assertions after this block check.
     db.exec(`
       DROP INDEX idx_chat_messages_recall_eligibility;
+      DROP INDEX idx_chat_messages_recall_corpus;
       ALTER TABLE chat_messages DROP COLUMN recall_eligibility;
     `);
 
@@ -137,6 +142,14 @@ describe('D-213 A0 — chat message recall-eligibility stamp', () => {
       db.prepare(
         "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
       ).get('idx_chat_messages_recall_eligibility'),
+    ).toBeDefined();
+    // D-166 door corpus — the pair index has to come back on the same upgrade.
+    // Without it the contract half of the recall predicate is a RESIDUAL and a
+    // door corpus reads every owner row to find its own.
+    expect(
+      db.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+      ).get('idx_chat_messages_recall_corpus'),
     ).toBeDefined();
   });
 

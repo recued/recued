@@ -144,6 +144,9 @@ export type BatchAskState = 'open' | 'closing' | 'answered';
 export interface BatchAskMember extends BatchedApprovalItem {
   readonly checkpoint_id: string;
   readonly run_id: string;
+  /** Stable operation receipt. Optional for rows written before receipt
+   * support; never used as approval or dispatch authority. */
+  readonly action_ref?: string;
 }
 
 /** The durable batch-ask row. One row per

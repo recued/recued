@@ -56,6 +56,17 @@ export interface AskExtras {
   /** D-234 § 234.4f — the document the answerer opens to READ before deciding.
    *  Bounded at {@link ASK_BODY_MAX} on entry; the far side may have written it. */
   body?: string;
+  /** Host-reserved, cryptographically random ask capability for a durable
+   * idempotency mapping. Ordinary callers omit this and let the block mint.
+   * The caller MUST persist the value before invoking `ask`; the block then
+   * treats an exact replay as the same ask instead of minting a second owner
+   * decision. Never derive this from a public operation id. */
+  reserved_ask_id?: string;
+  /** Host-only durability hook. Runs after the PendingAsk is persisted and
+   * before any channel delivery (and again for an exact reserved-id replay).
+   * It is neither persisted nor passed to channel adapters. A throw leaves the
+   * ask open and undelivered so the caller or boot recovery can retry safely. */
+  on_persisted?: (ask_id: string) => void | Promise<void>;
 }
 
 /** ⚠ Mirrors `PEER_ASK_BODY_MAX`. A body that does not fit is TRUNCATED at

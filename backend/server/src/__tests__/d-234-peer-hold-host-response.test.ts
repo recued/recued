@@ -27,6 +27,8 @@
  *  The engine's own production of `awaiting_peer` is covered by `d-234-peer-ask-pause`; what
  *  is under test here is the HOST's handling of the result it hands back. */
 import type { Checkpoint, ExecutionSource, RecipeDefinition } from '@recued/contracts';
+import Database from 'better-sqlite3';
+import { canonicalRecipeDefinition, hashRecipe } from '@recued/recipes';
 import {
   createAuditLogStore,
   createInMemoryCollection,
@@ -39,8 +41,15 @@ import {
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { handleExecute, type ExecuteHandlerDeps } from '../execute-handler.js';
+import {
+  createGatedActionStore,
+  projectGatedActionReceipt,
+  type GatedActionRecord,
+  type GatedActionStore,
+} from '../gated-action-store.js';
 import { createManifestRegistry } from '../manifest-loader.js';
 import { createRecipeStore } from '../recipe-store.js';
+import { createPeerAskOutboxStore } from '../storage/peer-ask-outbox-store.js';
 
 const RECIPE_ID = 'd-234-peer-hold-host-response';
 
@@ -119,6 +128,7 @@ const checkpointStore = (): CheckpointStore => {
 interface Harness {
   readonly deps: ExecuteHandlerDeps;
   readonly auditLog: AuditLogStore;
+  readonly gatedActionStore: GatedActionStore;
   readonly emitted: Array<{ kind: string; op?: string }>;
   readonly dishSnapshotSet: ReturnType<typeof vi.fn>;
 }
@@ -135,12 +145,19 @@ const harness = (): Harness => {
   );
   const emitted: Array<{ kind: string; op?: string }> = [];
   const dishSnapshotSet = vi.fn();
+  const gatedActionStore = createGatedActionStore(
+    createInMemoryCollection<GatedActionRecord>(),
+    { now: () => 100, newActionRef: () => 'action-peer-1' },
+  );
+  const peerAskOutbox = createPeerAskOutboxStore(new Database(':memory:'));
   return {
     auditLog,
+    gatedActionStore,
     emitted,
     dishSnapshotSet,
     deps: {
       recipeStore,
+      gatedActionStore,
       executorConfig: { manifests: registry },
       baseVault: {},
       instanceId: 'server-test-1',
@@ -170,6 +187,35 @@ const harness = (): Harness => {
       } as unknown as CommitStore,
       auditLog,
       checkpointStore: checkpointStore(),
+      peerAskOutbox,
+      connectionStore: {
+        list: ({ kind }: { kind?: string } = {}) => kind === 'mcp'
+          ? [{
+              kind: 'mcp',
+              name: 'peer-bob',
+              subtype: 'sse',
+              publisher_id: 'peer-publisher-1',
+              config_json: JSON.stringify({
+                endpoint: 'http://127.0.0.1:9/mcp',
+                transport: 'sse',
+                peer_contract_id: 'peer-contract-1',
+              }),
+            }]
+          : [],
+        get: (kind: string, name: string) => kind === 'mcp' && name === 'peer-bob'
+          ? {
+              kind: 'mcp',
+              name: 'peer-bob',
+              subtype: 'sse',
+              publisher_id: 'peer-publisher-1',
+              config_json: JSON.stringify({
+                endpoint: 'http://127.0.0.1:9/mcp',
+                transport: 'sse',
+                peer_contract_id: 'peer-contract-1',
+              }),
+            }
+          : null,
+      },
       eventBus: {
         emit: (e: { kind: string; op?: string }) => { emitted.push(e); },
       },
@@ -182,6 +228,27 @@ const drive = (h: Harness) => handleExecute(h.deps, {
   trigger_source: 'manual',
   execution_source: chatSource,
 });
+
+const driveResumedPeer = (h: Harness, actionRef: string) => handleExecute(h.deps, {
+  recipe_id: RECIPE_ID,
+  trigger_source: 'manual',
+  execution_source: chatSource,
+}, {
+  run_id: 'run-peer-approved',
+  gated_action_ref: actionRef,
+  resume_from: { gated_step_id: 'verdict', step_state: {} },
+});
+
+const heldPeerAction = async (h: Harness) => {
+  const held = await h.gatedActionStore.createHeld({
+    run_id: 'run-peer-approved',
+    recipe_id: RECIPE_ID,
+    gated_step_id: 'verdict',
+    checkpoint_id: 'approved-checkpoint',
+  });
+  await h.gatedActionStore.markDispatching(held.action_ref);
+  return held;
+};
 
 /** A DISH-bound drive — `context.recipe.*` continuity only exists for one. */
 const driveDish = (h: Harness) => handleExecute(h.deps, {
@@ -240,6 +307,125 @@ describe('§ 234.4 — a durable PEER hold is a hold, to every consumer', () => 
     expect(entry.commit_status).toBe('awaiting_peer');
     expect(entry.checkpoint_id).toBeDefined();
   });
+
+  it('persists peer resume integrity, context, and PII state on the held pair', async () => {
+    const piiLedgers = {
+      sid: 1,
+      ledger_seq: 2,
+      handles: ['pii-ledger:1.1'],
+      by_kind_real_value: [],
+      by_kind_base_alias: [],
+      counters: [],
+      sibling_counters: [],
+      pre_scan_literals: [],
+    };
+    engineResult = baseEngineResult({
+      awaiting_peer: { ...PEER_PAUSE, pii_ledgers: piiLedgers },
+    });
+    const h = harness();
+
+    await handleExecute(h.deps, {
+      recipe_id: RECIPE_ID,
+      context: { case_id: 'case-1' },
+      trigger_source: 'manual',
+      execution_source: chatSource,
+    });
+
+    const [saved] = await h.deps.checkpointStore!.listByRun(
+      (await anchor(h)).run_id,
+    );
+    expect(saved).toMatchObject({
+      // ⚠ CANONICAL FORM. This fixture spells its output with the legacy
+      // `output.sidebar`, and `parseRecipe` rewrites that to `output.render` in
+      // place during the run — so the hash the host persists is the canonical
+      // one. Asserting `hashRecipe(recipe())` compared the as-authored SPELLING
+      // against a canonicalized value, and passed only while the persisted hash
+      // was equally un-canonical — which is the defect that made stored-recipe
+      // resume unreproducible.
+      recipe_source_hash: hashRecipe(canonicalRecipeDefinition(recipe())),
+      pii_ledgers: piiLedgers,
+    });
+    expect(await anchor(h)).toMatchObject({
+      commit_status: 'awaiting_peer',
+      context_snapshot: { case_id: 'case-1' },
+    });
+  });
+});
+
+describe('§ 234.4 — an approved peer ask requires durable outbox acceptance', () => {
+  it('does not deliver or retain a peer checkpoint when its awaiting anchor cannot persist', async () => {
+    engineResult = baseEngineResult({ awaiting_peer: PEER_PAUSE });
+    const h = harness();
+    const held = await heldPeerAction(h);
+    const activate = vi.spyOn(h.deps.peerAskOutbox!, 'activate');
+    vi.spyOn(h.auditLog, 'append').mockRejectedValueOnce(
+      new Error('awaiting-peer audit unavailable'),
+    );
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(driveResumedPeer(h, held.action_ref)).rejects.toThrow(
+      'awaiting-peer audit unavailable',
+    );
+
+    expect(activate).not.toHaveBeenCalled();
+    expect(h.deps.peerAskOutbox!.getDelivery(PEER_PAUSE.exchange_ref))
+      .toMatchObject({ delivery_state: 'staged' });
+    expect(await h.deps.checkpointStore!.list()).toEqual([]);
+    expect(await h.auditLog.get('run-peer-approved')).toBeNull();
+  });
+
+  it('terminally fails the operation receipt when the peer outbox is unavailable', async () => {
+    engineResult = baseEngineResult({ awaiting_peer: PEER_PAUSE });
+    const h = harness();
+    h.deps.peerAskOutbox = undefined;
+    const held = await heldPeerAction(h);
+
+    await driveResumedPeer(h, held.action_ref);
+
+    const record = await h.gatedActionStore.get(held.action_ref);
+    expect(record).not.toBeNull();
+    expect(projectGatedActionReceipt(record!)).toMatchObject({
+      action_ref: held.action_ref,
+      status: 'failed',
+      terminal: true,
+      result: {
+        exchange_ref: PEER_PAUSE.exchange_ref,
+        status: 'failed',
+        reason: 'peer_outbox_unavailable',
+      },
+    });
+    expect(record?.handoff).toBeUndefined();
+    expect(await anchor(h)).toMatchObject({
+      commit_status: 'failed',
+      errors: [expect.objectContaining({ code: 'INGREDIENT_ADAPTER_ALL_FAILED' })],
+    });
+    expect(await h.deps.checkpointStore!.list()).toEqual([]);
+  });
+
+  it('never writes an awaiting-peer anchor when the no-outbox terminal audit fails', async () => {
+    engineResult = baseEngineResult({ awaiting_peer: PEER_PAUSE });
+    const h = harness();
+    h.deps.peerAskOutbox = undefined;
+    const held = await heldPeerAction(h);
+    vi.spyOn(h.auditLog, 'append').mockRejectedValueOnce(
+      new Error('terminal audit unavailable'),
+    );
+
+    await driveResumedPeer(h, held.action_ref);
+
+    expect(projectGatedActionReceipt((await h.gatedActionStore.get(held.action_ref))!))
+      .toMatchObject({
+        status: 'failed',
+        terminal: true,
+        result: {
+          status: 'failed',
+          reason: 'peer_outbox_unavailable',
+        },
+      });
+    expect(await h.auditLog.get('run-peer-approved')).toBeNull();
+    expect(await h.deps.checkpointStore!.list()).toEqual([]);
+  });
+
 });
 
 describe('§ 234.4 — and the other two outcomes are untouched', () => {

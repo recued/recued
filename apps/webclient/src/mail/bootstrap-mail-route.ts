@@ -25,7 +25,6 @@
  *  surfaces as the dispatch error on the dialog's own banner, which is where
  *  the user is when it happens. */
 
-import { composeDialog } from '@recued/contracts';
 import { MAIL_COMPOSE_STYLES, FORM_RENDERER_STYLES } from '@recued/ui-shared';
 
 import {
@@ -47,6 +46,7 @@ export const MAIL_ROUTE_COMPOSE_ATTR = 'data-recued-mail-compose';
 export const MAIL_ROUTE_DIALOG_ATTR = 'data-recued-mail-dialog';
 export const MAIL_ROUTE_MAILBOX_ATTR = 'data-recued-mail-mailbox';
 export const MAIL_ROUTE_EMPTY_ATTR = 'data-recued-mail-empty';
+export const MAIL_ROUTE_RETRY_ATTR = 'data-recued-mail-retry';
 export const MAIL_ROUTE_STYLES_MARKER = 'data-recued-mail-styles';
 
 export const MAIL_ROUTE_STYLES = `
@@ -68,6 +68,8 @@ ${FILE_PICK_STYLES}
 [${MAIL_ROUTE_HOST_ATTR}] .mail-route-mailbox-email { flex: 1 1 auto; min-width: 0; }
 [${MAIL_ROUTE_HOST_ATTR}] .mail-route-mailbox-cap { font-size: 12px; color: var(--rx-muted, var(--fg-muted)); }
 [${MAIL_ROUTE_HOST_ATTR}] .mail-route-empty { margin: 0; color: var(--rx-muted, var(--fg-muted)); }
+[${MAIL_ROUTE_HOST_ATTR}] .mail-route-empty a,
+[${MAIL_ROUTE_HOST_ATTR}] .mail-route-empty button { margin-left: 4px; }
 `;
 
 export interface MailRouteOptions extends MailComposeDeps {
@@ -94,6 +96,9 @@ export interface MailRoute {
    *  into a prompt. */
   hasUnsavedChanges(): boolean;
   unsavedChangesPrompt(): string | null;
+  /** Keep the route mounted while a mail action or file choice is pending. */
+  hasInFlightWork(): boolean;
+  inFlightWorkPrompt(): string | null;
   /** Part of `RecoveryContextProbe` — resolves once the first roster read has
    *  settled, so the shell does not treat an in-flight mount as empty. */
   whenLoaded(): Promise<void>;
@@ -122,21 +127,6 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
   const dialogHost = root.querySelector<HTMLElement>(`[${MAIL_ROUTE_DIALOG_ATTR}]`)!;
   const composeButton = root.querySelector<HTMLButtonElement>(`[${MAIL_ROUTE_COMPOSE_ATTR}]`)!;
 
-  let mailboxes: ReadonlyArray<{
-    slug: string;
-    account_email: string;
-    send_capable: boolean;
-  }> = [];
-
-  // The route reads the roster for its own rendering AND hands the same caller
-  // to the compose host. One server read would be tidier, but two callers with
-  // one source is what keeps this file from owning the host's state.
-  const listMailInstances: MailComposeDeps['listMailInstances'] = async () => {
-    const listed = await options.listMailInstances();
-    mailboxes = listed.instances;
-    return listed;
-  };
-
   // The file half is wired ONLY when a search caller exists, so a host without
   // one leaves the Attach control inert instead of opening an empty chooser.
   const fileDeps: Pick<MailComposeDeps, 'listFiles' | 'pickFiles'> =
@@ -144,43 +134,56 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
       ? {}
       : {
         listFiles: () => listComposeFiles(options.searchFiles!),
-        pickFiles: async () => {
+        pickFiles: async (selected, signal) => {
           const inventory = await listComposeFiles(options.searchFiles!);
-          const dialog = composeDialog(compose.state());
-          return openFilePickPanel(doc, inventory, dialog?.values.attachments ?? []);
+          if (signal?.aborted === true) return [];
+          return openFilePickPanel(doc, inventory, selected, signal);
         },
       };
 
   const compose = mountMailCompose(dialogHost, {
     ...options,
     ...fileDeps,
-    listMailInstances,
   });
 
   const renderRoster = (): void => {
-    if (mailboxes.length === 0) {
-      roster.innerHTML = `<p class="mail-route-empty" ${MAIL_ROUTE_EMPTY_ATTR}="none">
-        No mail account is connected yet. Connect one in
-        <a href="${esc(serializeShellRoute('connections'))}">Settings → Connections</a>
-        to send from Recued.
+    const readiness = compose.readiness();
+    if (readiness.status === 'loading') {
+      roster.innerHTML = '<p class="mail-route-empty" role="status">Checking mail sending…</p>';
+      composeButton.disabled = true;
+      return;
+    }
+    if (readiness.status === 'unavailable') {
+      roster.innerHTML = `<p class="mail-route-empty" role="status" ${MAIL_ROUTE_EMPTY_ATTR}="unavailable">
+        Recued couldn’t check whether your mail can send right now.
+        <button type="button" ${MAIL_ROUTE_RETRY_ATTR}>Try again</button>
       </p>`;
       composeButton.disabled = true;
       return;
     }
-    const sendable = mailboxes.filter((m) => m.send_capable);
-    if (sendable.length === 0) {
+    if (readiness.status === 'none') {
+      roster.innerHTML = `<p class="mail-route-empty" ${MAIL_ROUTE_EMPTY_ATTR}="none">
+        Connect a mailbox to send mail with Recued.
+        <a href="${esc(serializeShellRoute('connections', 'mail'))}">Connect mail →</a>
+      </p>`;
+      composeButton.disabled = true;
+      return;
+    }
+    if (readiness.status === 'read_only') {
+      const mailboxes = readiness.mailboxes;
       roster.innerHTML = `<p class="mail-route-empty" ${MAIL_ROUTE_EMPTY_ATTR}="read-only">
-        Your mail ${mailboxes.length === 1 ? 'account is' : 'accounts are'} connected for reading only.
-        Sending needs SMTP, the <code>gmail.send</code> scope, or <code>Mail.Send</code> —
-        re-connect in <a href="${esc(serializeShellRoute('connections'))}">Settings → Connections</a>.
+        Your connected ${mailboxes.length === 1 ? 'mailbox can' : 'mailboxes can'} read mail, but
+        ${mailboxes.length === 1 ? 'it cannot' : 'they cannot'} send yet.
+        <a href="${esc(serializeShellRoute('connections', 'mail'))}">Fix mail connection →</a>
       </p>`;
       composeButton.disabled = true;
       return;
     }
     composeButton.disabled = false;
+    const mailboxes = readiness.mailboxes;
     roster.innerHTML = `<ul class="mail-route-mailboxes">${mailboxes
-      .map((m) => `<li class="mail-route-mailbox" ${MAIL_ROUTE_MAILBOX_ATTR}="${esc(m.slug)}">
-        <span class="mail-route-mailbox-email">${esc(m.account_email.length > 0 ? m.account_email : m.slug)}</span>
+      .map((m) => `<li class="mail-route-mailbox" ${MAIL_ROUTE_MAILBOX_ATTR}="${esc(m.mail_instance_slug)}">
+        <span class="mail-route-mailbox-email">${esc(m.account_email.length > 0 ? m.account_email : m.mail_instance_slug)}</span>
         <span class="mail-route-mailbox-cap">${m.send_capable ? 'can send' : 'read only'}</span>
       </li>`)
       .join('')}</ul>`;
@@ -189,42 +192,33 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
   const onClick = (event: Event): void => {
     const target = event.target;
     if (!(target instanceof Element)) return;
+    if (target.closest(`[${MAIL_ROUTE_RETRY_ATTR}]`) !== null) {
+      void refresh();
+      return;
+    }
     if (target.closest(`[${MAIL_ROUTE_COMPOSE_ATTR}]`) !== null) compose.openCreate();
   };
   root.addEventListener('click', onClick);
 
   const refresh = async (): Promise<void> => {
-    await compose.refresh();
+    const pending = compose.refresh();
+    renderRoster();
+    await pending;
     renderRoster();
   };
 
-  // Render the roster's own empty state immediately so the surface is never
-  // blank while the first read is in flight.
+  // Render an explicit loading state immediately. An empty roster is a server
+  // answer, never the placeholder for a read that has not settled yet.
   renderRoster();
   const loaded = refresh();
   // The mount must not reject; `whenLoaded` is the shell's freshness probe, not
-  // an error channel (`refresh` already swallows a failed read into an empty
-  // roster, which renders the "no account" state).
+  // an error channel (`refresh` translates a failed read into the distinct
+  // unavailable state rendered above).
   void loaded.catch(() => {});
 
-  /** Anything the person typed that would be lost. Values are compared against
-   *  the empty seed rather than checked for truthiness so a compose opened and
-   *  immediately abandoned does not prompt. ⚠ `sender_source` is deliberately
-   *  EXCLUDED: it is prefilled by the route, so counting it would make every
-   *  freshly-opened dialog look dirty. */
-  const hasUnsavedChanges = (): boolean => {
-    const dialog = composeDialog(compose.state());
-    if (dialog === null) return false;
-    const v = dialog.values;
-    return (
-      v.subject.trim().length > 0
-      || v.body.trim().length > 0
-      || v.to.length > 0
-      || v.cc.length > 0
-      || v.bcc.length > 0
-      || v.attachments.length > 0
-    );
-  };
+  // The compose mount performs the check after folding the live DOM into state;
+  // reading `compose.state()` here used to miss text typed since the last click.
+  const hasUnsavedChanges = (): boolean => compose.hasUnsavedChanges();
 
   return {
     refresh,
@@ -233,6 +227,11 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
     unsavedChangesPrompt: () =>
       hasUnsavedChanges()
         ? 'This message has not been sent. Leaving Mail discards it.'
+        : null,
+    hasInFlightWork: () => compose.hasInFlightWork(),
+    inFlightWorkPrompt: () =>
+      compose.hasInFlightWork()
+        ? 'A mail action is still in progress. Leave Mail anyway?'
         : null,
     whenLoaded: () => loaded,
     dispose() {

@@ -251,7 +251,11 @@ describe('startPostBaseStorageVaultRuntime', () => {
       publishedCleanup = cleanup;
     });
     const options = makePostBaseOptions({ publishDbCleanup: cleanupPublish });
-    const lateBound = { tag: 'late-bound' };
+    // ⚠ The boot site PUBLISHES into this bag (D-137's run-settled sink), so a
+    // bare tag object throws. The stub carries what the boot site calls; a `?.`
+    // at the call site would hide a real wiring failure instead — late results
+    // would silently stop being recallable.
+    const lateBound = { tag: 'late-bound', publishRunSettledSink: vi.fn() };
     const app = {
       cacheBlobs: { tag: 'cache-blobs' },
       warehouseBus: { tag: 'warehouse-bus' },
@@ -441,7 +445,7 @@ describe('startPostBaseStorageVaultRuntime', () => {
     });
 
     bridgeMocks.composeStorageContext.mockResolvedValue(storage);
-    bridgeMocks.createExecutionLateBoundRefs.mockReturnValue({ tag: 'late-bound' });
+    bridgeMocks.createExecutionLateBoundRefs.mockReturnValue({ tag: 'late-bound', publishRunSettledSink: vi.fn() });
     bridgeMocks.composeAppContext.mockReturnValue(app);
     bridgeMocks.startPostAppCollectionExecutionRuntime.mockResolvedValue({
       tag: 'post-app-result',
@@ -473,7 +477,11 @@ describe('startPostBaseStorageVaultRuntime', () => {
 describe('startPostStorageAppCollectionExecutionRuntime', () => {
   it('orders late-bound refs, app context, and post-app runtime while threading app-owned refs', async () => {
     const order: string[] = [];
-    const lateBound = { tag: 'late-bound' };
+    // ⚠ The boot site PUBLISHES into this bag (D-137's run-settled sink), so a
+    // bare tag object throws. The stub carries what the boot site calls; a `?.`
+    // at the call site would hide a real wiring failure instead — late results
+    // would silently stop being recallable.
+    const lateBound = { tag: 'late-bound', publishRunSettledSink: vi.fn() };
     const contactBackfillDone = Promise.resolve();
     const app = {
       cacheBlobs: { tag: 'cache-blobs' },

@@ -51,7 +51,7 @@
  *  Spec: D-157 § N.8 SHOULD/MAY + D-158
  *  staleness guard (P3 / O-5). */
 
-import { isHeldRunAnchorStatus } from '@recued/contracts';
+import { isGatedActionTerminal, isHeldRunAnchorStatus } from '@recued/contracts';
 import type { Checkpoint, RecipeError } from '@recued/contracts';
 import {
   buildAuditEntry,
@@ -59,6 +59,7 @@ import {
   type AuditLogStore,
   type CheckpointStore,
 } from '@recued/storage';
+import type { GatedActionRecord, GatedActionStore } from './gated-action-store.js';
 
 /** Fixed grace for the garbage-collection half — generous against any
  *  crash-window or in-flight pause write (checkpoint → raise → anchor
@@ -102,11 +103,25 @@ export interface CheckpointRetentionAskHooks {
   /** Race-safe terminal close of a still-`open` ask + close-broadcast
    *  across its delivered channels. `'not_open'` ⇒ an answer won. */
   cancelAsk(ask_id: string): Promise<'cancelled' | 'not_open'>;
+  /** Raw-op holds have no run anchor/ask pointer. Enumerating by the exact
+   * checkpoint payload distinguishes a live/answered ask from true residue. */
+  listUnresolvedAsks?(): Promise<Array<{
+    ask_id: string;
+    status: 'open' | 'answered' | 'handled';
+    handler_kind: string;
+    handler_payload: Record<string, unknown>;
+  }>>;
 }
 
 export interface CheckpointRetentionDeps {
   checkpointStore: CheckpointStore;
   auditLog: AuditLogStore;
+  /** Raw-op checkpoints intentionally have no run anchor. Their operation
+   * receipt is therefore the liveness/terminal authority for retention. */
+  gatedActionStore?: Pick<
+    GatedActionStore,
+    'createHeld' | 'get' | 'getByCheckpoint' | 'getBySubject' | 'linkApproval' | 'finish'
+  >;
   /** Ask-state hooks off the notification block. Absent ⇒ no block this
    *  process ⇒ no answer can arrive ⇒ expiry skips prompt bookkeeping. */
   askHooks?: CheckpointRetentionAskHooks;
@@ -226,6 +241,107 @@ export const createCheckpointRetention = (
     });
   };
 
+  /** Exact crash marker for an expiry whose terminal audit write committed but
+   * whose receipt settlement/checkpoint delete did not. A generic terminal run
+   * must never be projected into this operation receipt. */
+  const recordedApprovalTimeout = (
+    anchor: AuditEntry,
+    checkpoint: Checkpoint,
+  ): RecipeError | undefined => anchor.commit_status === 'failed'
+    ? anchor.errors?.find((error) =>
+        error.code === 'RECIPE_APPROVAL_TIMEOUT'
+          && error.error_id.startsWith('preflight-stale-')
+          && error.source?.step_id === checkpoint.gated_step_id
+          && error.details?.checkpoint_id === checkpoint.checkpoint_id)
+    : undefined;
+
+  const exactGatedAction = async (
+    checkpoint: Checkpoint,
+  ): Promise<GatedActionRecord | null> => {
+    const store = deps.gatedActionStore;
+    if (store === undefined) {
+      if (checkpoint.preflight_context?.gated_action_settlement_mode !== undefined) {
+        throw new Error(
+          `receipt-backed checkpoint has no gated-action store for run ${checkpoint.run_id}`,
+        );
+      }
+      return null;
+    }
+    let action = await store.getByCheckpoint(checkpoint.checkpoint_id);
+    if (action === null && checkpoint.gated_step_id !== undefined) {
+      const subject = await store.getBySubject(
+        checkpoint.run_id,
+        checkpoint.gated_step_id,
+      );
+      if (subject?.current_checkpoint_id === checkpoint.checkpoint_id) {
+        action = subject;
+      }
+    }
+    if (
+      action === null
+      && checkpoint.preflight_context?.gated_action_settlement_mode !== undefined
+    ) {
+      throw new Error(
+        `receipt-backed checkpoint has no exact gated action for run ${checkpoint.run_id}`,
+      );
+    }
+    return action;
+  };
+
+  /** Cancellation is part of expiry's durable commit, not an advisory owner
+   * projection. Verify the postcondition so commit-then-throw adapters converge
+   * without losing the checkpoint that makes retry possible. */
+  const settleExpiredGatedAction = async (
+    checkpoint: Checkpoint,
+    error: RecipeError,
+    knownAction?: GatedActionRecord | null,
+  ): Promise<void> => {
+    const store = deps.gatedActionStore;
+    const action = knownAction === undefined
+      ? await exactGatedAction(checkpoint)
+      : knownAction;
+    if (action === null || store === undefined) return;
+    if (action.status === 'cancelled') return;
+    if (isGatedActionTerminal(action.status)) {
+      throw new Error(
+        `expiry receipt conflict for run ${checkpoint.run_id}: status=${action.status}`,
+      );
+    }
+    if (action.status === 'dispatching') {
+      throw new Error(
+        `expiry cannot cancel dispatching action for run ${checkpoint.run_id}`,
+      );
+    }
+    const items = action.approved_bound?.requests
+      ?? checkpoint.foreach_progress?.source_length
+      ?? 1;
+    let settled: GatedActionRecord | null;
+    try {
+      settled = await store.finish(action.action_ref, {
+        status: 'cancelled',
+        status_message: error.message,
+        result: {
+          code: error.code,
+          checkpoint_id: checkpoint.checkpoint_id,
+          step_id: checkpoint.gated_step_id,
+        },
+        observed: { items, succeeded: 0, failed: 0 },
+      });
+    } catch (finishError) {
+      try {
+        settled = await store.get(action.action_ref);
+      } catch {
+        throw finishError;
+      }
+      if (settled?.status !== 'cancelled') throw finishError;
+    }
+    if (settled?.status !== 'cancelled') {
+      throw new Error(
+        `expiry receipt did not reach cancelled for run ${checkpoint.run_id}`,
+      );
+    }
+  };
+
   const runOnce = async (): Promise<CheckpointRetentionResult> => {
     const start = nowOf();
     const cfg = deps.config();
@@ -264,6 +380,153 @@ export const createCheckpointRetention = (
         continue;
       }
 
+      // A recipe-less raw operation deliberately has no AuditEntry anchor.
+      // Its exact operation receipt plus notification ask are the lifecycle
+      // authorities; classifying `anchor === null` as generic garbage would
+      // silently destroy a perfectly live approval after 24 hours.
+      if (checkpoint.raw_op !== undefined) {
+        try {
+          const actionStore = deps.gatedActionStore;
+          if (actionStore === undefined) {
+            // Legacy/db-less composition cannot prove whether an anchorless
+            // ask is live. Preserve it rather than erase a possible decision.
+            result.deferred++;
+            continue;
+          }
+
+          let unresolved: Awaited<
+            ReturnType<NonNullable<CheckpointRetentionAskHooks['listUnresolvedAsks']>>
+          > | undefined;
+          const findExactAsk = async () => {
+            if (unresolved === undefined) {
+              if (deps.askHooks?.listUnresolvedAsks === undefined) return undefined;
+              unresolved = await deps.askHooks.listUnresolvedAsks();
+            }
+            return unresolved.find((ask) =>
+              ask.handler_kind === 'gateway.preflight'
+              && ask.handler_payload.checkpoint_id === checkpoint.checkpoint_id);
+          };
+
+          let action = await actionStore.getByCheckpoint(checkpoint.checkpoint_id);
+          if (action === null) {
+            // Boot normally creates this first. Retention repeats the same
+            // idempotent repair so a missed/late boot pass cannot make a raw
+            // hold immortal or force it through the generic garbage branch.
+            action = await actionStore.createHeld({
+              run_id: checkpoint.run_id,
+              gated_step_id: 'raw_op',
+              checkpoint_id: checkpoint.checkpoint_id,
+              ingredient_slug: checkpoint.raw_op.catalog_slug,
+              operation_id: checkpoint.raw_op.operation,
+              ...(checkpoint.raw_op.connection_name !== ''
+                ? { connection_name: checkpoint.raw_op.connection_name }
+                : {}),
+              ...(checkpoint.preflight_context?.egress_bound !== undefined
+                ? { approved_bound: checkpoint.preflight_context.egress_bound }
+                : {}),
+              ...(checkpoint.preflight_context?.gated_action_settlement_mode !== undefined
+                ? {
+                    settlement_mode:
+                      checkpoint.preflight_context.gated_action_settlement_mode,
+                  }
+                : {}),
+            });
+            const recoveredAsk = await findExactAsk();
+            if (recoveredAsk !== undefined) {
+              const linked = await actionStore.linkApproval(
+                action.action_ref,
+                action.action_ref,
+                recoveredAsk.ask_id,
+              );
+              if (linked === null || linked.current_ask_id !== recoveredAsk.ask_id) {
+                throw new Error('raw-op receipt did not retain its recovered ask link');
+              }
+              action = linked;
+            }
+          }
+
+          const pointedAsk = action.current_ask_id !== undefined && deps.askHooks !== undefined
+            ? await deps.askHooks.getAsk(action.current_ask_id)
+            : null;
+          const ask = pointedAsk !== null && action.current_ask_id !== undefined
+            ? { ask_id: action.current_ask_id, ...pointedAsk }
+            : await findExactAsk();
+
+          if (isGatedActionTerminal(action.status)) {
+            if (age < GARBAGE_GRACE_MS) continue;
+            if (ask?.status === 'answered') {
+              result.deferred++;
+              continue;
+            }
+            if (ask?.status === 'open' && deps.askHooks !== undefined) {
+              const cancelled = await deps.askHooks.cancelAsk(ask.ask_id);
+              if (cancelled === 'not_open') {
+                result.deferred++;
+                continue;
+              }
+            }
+            await deps.checkpointStore.delete(checkpoint.checkpoint_id);
+            result.garbage_collected++;
+            continue;
+          }
+
+          // A claimed dispatch is no longer an unanswered approval. The raw
+          // resumer/boot repair owns its conservative terminalization.
+          if (action.status === 'dispatching') {
+            result.deferred++;
+            continue;
+          }
+          if (staleAfterMs === null || age < staleAfterMs) continue;
+          if (ask?.status === 'answered') {
+            result.deferred++;
+            continue;
+          }
+          if (ask?.status === 'open' && deps.askHooks !== undefined) {
+            const cancelled = await deps.askHooks.cancelAsk(ask.ask_id);
+            if (cancelled === 'not_open') {
+              result.deferred++;
+              continue;
+            }
+          }
+
+          const expiry = {
+            status: 'cancelled' as const,
+            status_message:
+              'The pending raw operation approval expired before it was answered. Re-run the operation to try again.',
+            result: {
+              code: 'RECIPE_APPROVAL_TIMEOUT',
+              checkpoint_id: checkpoint.checkpoint_id,
+              op_id: checkpoint.raw_op.op_id,
+            },
+            observed: { items: 1, succeeded: 0, failed: 0 },
+          };
+          let settled;
+          try {
+            settled = await actionStore.finish(action.action_ref, expiry);
+          } catch (error) {
+            try {
+              settled = await actionStore.get(action.action_ref);
+            } catch {
+              throw error;
+            }
+            if (settled === null || !isGatedActionTerminal(settled.status)) throw error;
+          }
+          if (settled === null || !isGatedActionTerminal(settled.status)) {
+            throw new Error('raw-op expiry receipt did not reach a terminal state');
+          }
+          await deps.checkpointStore.delete(checkpoint.checkpoint_id);
+          result.expired++;
+        } catch (e) {
+          console.warn(
+            `[checkpoint-retention] raw-op retention failed for checkpoint `
+              + `${checkpoint.checkpoint_id}: `
+              + (e instanceof Error ? e.message : String(e)),
+          );
+          result.failed++;
+        }
+        continue;
+      }
+
       let anchor: AuditEntry | null;
       try {
         anchor = await deps.auditLog.get(checkpoint.run_id);
@@ -274,6 +537,34 @@ export const createCheckpointRetention = (
         );
         result.failed++;
         continue;
+      }
+
+      // Crash recovery for the only split durability window in recipe expiry:
+      // audit append succeeded, receipt settlement or checkpoint delete did
+      // not. Repair the exact operation before generic terminal-anchor GC can
+      // discard the checkpoint that identifies it.
+      if (anchor !== null) {
+        const priorTimeout = recordedApprovalTimeout(anchor, checkpoint);
+        if (priorTimeout !== undefined) {
+          try {
+            await settleExpiredGatedAction(checkpoint, priorTimeout);
+            await deps.checkpointStore.delete(checkpoint.checkpoint_id);
+            result.expired++;
+            try {
+              await deps.onExpired?.(anchor);
+            } catch {
+              // The expiry is already durable. Advisory observers do not own
+              // receipt/checkpoint convergence.
+            }
+          } catch (e) {
+            console.warn(
+              `[checkpoint-retention] expiry recovery failed for run ${checkpoint.run_id}: `
+                + (e instanceof Error ? e.message : String(e)),
+            );
+            result.failed++;
+          }
+          continue;
+        }
       }
 
       // D-234 § 234.4 — ⛔⛔ THE PREDICATE, NOT THE LITERAL, AND THIS IS THE SITE
@@ -412,6 +703,14 @@ export const createCheckpointRetention = (
           result.deferred++;
           continue;
         }
+        const gatedAction = await exactGatedAction(checkpoint);
+        // A won dispatch claim is proof this is no longer an unanswered hold.
+        // Its resumer owns convergence and expiry must not overwrite it.
+        if (gatedAction?.status === 'dispatching'
+          || (gatedAction !== null && isGatedActionTerminal(gatedAction.status))) {
+          result.deferred++;
+          continue;
+        }
         const terminalEntry = buildExpiryEntry(
           anchor,
           checkpoint,
@@ -419,6 +718,11 @@ export const createCheckpointRetention = (
           start,
         );
         await deps.auditLog.append(terminalEntry);
+        await settleExpiredGatedAction(
+          checkpoint,
+          terminalEntry.errors![0]!,
+          gatedAction,
+        );
         await deps.checkpointStore.delete(checkpoint.checkpoint_id);
         result.expired++;
         try {

@@ -64,6 +64,9 @@ const listenerMocks = vi.hoisted(() => {
     readDefaultRouteGateway: vi.fn(() => '192.168.1.1'),
     createCertChainHolder: vi.fn(() => certChain),
     createProductionPathListenerCoordinator: vi.fn(() => coordinator),
+    reconcileInstalledPacksOnBoot: vi.fn(async () => ({ entries: [], updated: 0, held: 0 })),
+    checkInstalledManifestsOnBoot: vi.fn(() => []),
+    notifyUnrunnablePacks: vi.fn(async () => true),
   };
 });
 
@@ -92,6 +95,15 @@ vi.mock('@recued/server-tls', () => ({
 vi.mock('../network/path-listener-coordinator.js', () => ({
   createProductionPathListenerCoordinator:
     listenerMocks.createProductionPathListenerCoordinator,
+}));
+
+vi.mock('../pack-reconciliation.js', () => ({
+  reconcileInstalledPacksOnBoot: listenerMocks.reconcileInstalledPacksOnBoot,
+}));
+
+vi.mock('../ingredient-authoring/installed-manifest-boot-check.js', () => ({
+  checkInstalledManifestsOnBoot: listenerMocks.checkInstalledManifestsOnBoot,
+  notifyUnrunnablePacks: listenerMocks.notifyUnrunnablePacks,
 }));
 
 import {
@@ -173,6 +185,16 @@ const resetListenerMocks = (): void => {
   listenerMocks.createProductionPathListenerCoordinator.mockReturnValue(
     listenerMocks.coordinator,
   );
+  listenerMocks.reconcileInstalledPacksOnBoot.mockReset();
+  listenerMocks.reconcileInstalledPacksOnBoot.mockResolvedValue({
+    entries: [],
+    updated: 0,
+    held: 0,
+  });
+  listenerMocks.checkInstalledManifestsOnBoot.mockReset();
+  listenerMocks.checkInstalledManifestsOnBoot.mockReturnValue([]);
+  listenerMocks.notifyUnrunnablePacks.mockReset();
+  listenerMocks.notifyUnrunnablePacks.mockResolvedValue(true);
 };
 
 // D-173 INT-3 — `composeListeners` eagerly builds the SQLite-backed
@@ -293,6 +315,206 @@ const makeOptions = (
 }) as unknown as ComposeListenersOptions;
 
 describe('composeListeners', () => {
+  it('reconciles installed packs before composing any intake surface, then validates the result', async () => {
+    const contractStore = createContractStore(storageDb, { now: () => 1 });
+    contractStore.seedSchema(D165_CONTRACT_SCHEMA);
+    const base = makeOptions();
+    const localManifestStore = {
+      listManifests: vi.fn(() => []),
+    };
+
+    await composeListeners(makeOptions({
+      storage: {
+        ...(base.storage as unknown as Record<string, unknown>),
+        localManifestStore,
+      },
+      app: {
+        ...(base.app as unknown as Record<string, unknown>),
+        contractStoreRef: contractStore,
+      },
+    }));
+
+    expect(listenerMocks.reconcileInstalledPacksOnBoot).toHaveBeenCalledWith(
+      expect.objectContaining({ contractStore, localManifestStore }),
+    );
+    expect(listenerMocks.checkInstalledManifestsOnBoot).toHaveBeenCalledOnce();
+    expect(listenerMocks.reconcileInstalledPacksOnBoot.mock.invocationCallOrder[0])
+      .toBeLessThan(listenerMocks.checkInstalledManifestsOnBoot.mock.invocationCallOrder[0]!);
+    expect(listenerMocks.checkInstalledManifestsOnBoot.mock.invocationCallOrder[0])
+      .toBeLessThan(listenerMocks.composeWebhookAndHookListeners.mock.invocationCallOrder[0]!);
+    expect(listenerMocks.composeWebhookAndHookListeners.mock.invocationCallOrder[0])
+      .toBeLessThan(listenerMocks.createServerHandlerSet.mock.invocationCallOrder[0]!);
+  });
+
+  // ⛔ THE DELIVERY, NOT THE MESSAGE. A boot finding that only reaches
+  //    `console.warn` does not reach the unattended owner it exists for, and
+  //    this tree already carries two owner-ping producers marked "ready-to-wire,
+  //    boot wiring DEFERRED" that nothing calls. So what is pinned here is that
+  //    composeListeners INVOKES the ping — the half those two are missing.
+
+  it('notifies the owner when the boot check finds packs that no longer run', async () => {
+    const found = [{ slug: 'codex-pack', version: 1, codes: ['CLI_LEGACY_UNSUPERVISED_DETACH'], detail: 'x' }];
+    // ⚠ The hoisted `vi.fn(() => [])` infers `never[]`, so both the override and
+    //   the call-arg read need the real row shape named rather than inferred.
+    (listenerMocks.checkInstalledManifestsOnBoot as unknown as {
+      mockReturnValueOnce: (v: typeof found) => void;
+    }).mockReturnValueOnce(found);
+    const base = makeOptions();
+
+    await composeListeners(makeOptions({
+      storage: {
+        ...(base.storage as unknown as Record<string, unknown>),
+        localManifestStore: { listManifests: vi.fn(() => []) },
+      },
+      execution: {
+        ...(base.execution as unknown as Record<string, unknown>),
+        notificationBlock: {
+          ask: vi.fn(async () => ({ ask_id: 'ask-1' })),
+          listOpenAsks: vi.fn(async () => []),
+        },
+      },
+    }));
+
+    expect(listenerMocks.notifyUnrunnablePacks).toHaveBeenCalledOnce();
+    expect(
+      (listenerMocks.notifyUnrunnablePacks.mock.calls as unknown as ReadonlyArray<ReadonlyArray<unknown>>)[0]![0],
+    ).toEqual(found);
+  });
+
+  /** The third argument — the deep link. Pinned HERE and not only in the
+   *  builder's own unit test, because the composition root is where the base
+   *  URL and the "one pack or many?" choice actually meet; the builder alone
+   *  cannot be wrong about either. */
+  it('threads a pack-detail deep link when the server is publicly named', async () => {
+    const prior = process.env.RECUED_PUBLIC_BASE_URL;
+    process.env.RECUED_PUBLIC_BASE_URL = 'https://home.example.net';
+    try {
+      // The validator sees the persisted decomposed catalog (`codex`), not the
+      // owner-facing pack (`codex-pack`). The inventory join must cross that
+      // identity seam before constructing the detail route.
+      const found = [{ slug: 'codex', version: 1, codes: ['CLI_LEGACY_SUPERVISION'], detail: 'x' }];
+      (listenerMocks.checkInstalledManifestsOnBoot as unknown as {
+        mockReturnValueOnce: (v: typeof found) => void;
+      }).mockReturnValueOnce(found);
+      const contractStore = createContractStore(storageDb, { now: () => 1 });
+      contractStore.seedSchema(D165_CONTRACT_SCHEMA);
+      recordPackInventory(contractStore, {
+        pack_slug: 'codex-pack',
+        publisher: 'recued-core',
+        pack_version: 1,
+        contents: [],
+        local_catalogs: [{
+          ingredient_id: 'codex',
+          version: 1,
+          catalog_kind: 'official',
+        }],
+        installed_at: 1,
+      });
+      const base = makeOptions();
+      await composeListeners(makeOptions({
+        storage: {
+          ...(base.storage as unknown as Record<string, unknown>),
+          localManifestStore: { listManifests: vi.fn(() => []) },
+        },
+        app: {
+          ...(base.app as unknown as Record<string, unknown>),
+          contractStoreRef: contractStore,
+        },
+        execution: {
+          ...(base.execution as unknown as Record<string, unknown>),
+          notificationBlock: {
+            ask: vi.fn(async () => ({ ask_id: 'ask-1' })),
+            listOpenAsks: vi.fn(async () => []),
+          },
+        },
+      }));
+      expect(
+        (listenerMocks.notifyUnrunnablePacks.mock.calls as unknown as ReadonlyArray<ReadonlyArray<unknown>>)[0]![0],
+      ).toEqual([{ ...found[0], slug: 'codex-pack' }]);
+      expect(
+        (listenerMocks.notifyUnrunnablePacks.mock.calls as unknown as ReadonlyArray<ReadonlyArray<unknown>>)[0]![2],
+      ).toBe('https://home.example.net/#packs/codex-pack');
+    } finally {
+      if (prior === undefined) delete process.env.RECUED_PUBLIC_BASE_URL;
+      else process.env.RECUED_PUBLIC_BASE_URL = prior;
+    }
+  });
+
+  it('links to the LIST when several packs are unrunnable — no single destination', async () => {
+    const prior = process.env.RECUED_PUBLIC_BASE_URL;
+    process.env.RECUED_PUBLIC_BASE_URL = 'https://home.example.net';
+    try {
+      const found = [
+        { slug: 'codex-pack', version: 1, codes: ['CLI_LEGACY_SUPERVISION'], detail: 'x' },
+        { slug: 'rental-book', version: 1, codes: ['CLI_LEGACY_PROGRESS'], detail: 'y' },
+      ];
+      (listenerMocks.checkInstalledManifestsOnBoot as unknown as {
+        mockReturnValueOnce: (v: typeof found) => void;
+      }).mockReturnValueOnce(found);
+      const base = makeOptions();
+      await composeListeners(makeOptions({
+        storage: {
+          ...(base.storage as unknown as Record<string, unknown>),
+          localManifestStore: { listManifests: vi.fn(() => []) },
+        },
+        execution: {
+          ...(base.execution as unknown as Record<string, unknown>),
+          notificationBlock: {
+            ask: vi.fn(async () => ({ ask_id: 'ask-1' })),
+            listOpenAsks: vi.fn(async () => []),
+          },
+        },
+      }));
+      expect(
+        (listenerMocks.notifyUnrunnablePacks.mock.calls as unknown as ReadonlyArray<ReadonlyArray<unknown>>)[0]![2],
+      ).toBe('https://home.example.net/#packs');
+    } finally {
+      if (prior === undefined) delete process.env.RECUED_PUBLIC_BASE_URL;
+      else process.env.RECUED_PUBLIC_BASE_URL = prior;
+    }
+  });
+
+  it('passes NO link on a server with no public base URL', async () => {
+    const prior = process.env.RECUED_PUBLIC_BASE_URL;
+    delete process.env.RECUED_PUBLIC_BASE_URL;
+    try {
+      const found = [{ slug: 'codex-pack', version: 1, codes: ['CLI_LEGACY_SUPERVISION'], detail: 'x' }];
+      (listenerMocks.checkInstalledManifestsOnBoot as unknown as {
+        mockReturnValueOnce: (v: typeof found) => void;
+      }).mockReturnValueOnce(found);
+      const base = makeOptions();
+      await composeListeners(makeOptions({
+        storage: {
+          ...(base.storage as unknown as Record<string, unknown>),
+          localManifestStore: { listManifests: vi.fn(() => []) },
+        },
+        execution: {
+          ...(base.execution as unknown as Record<string, unknown>),
+          notificationBlock: {
+            ask: vi.fn(async () => ({ ask_id: 'ask-1' })),
+            listOpenAsks: vi.fn(async () => []),
+          },
+        },
+      }));
+      expect(
+        (listenerMocks.notifyUnrunnablePacks.mock.calls as unknown as ReadonlyArray<ReadonlyArray<unknown>>)[0]![2],
+      ).toBeUndefined();
+    } finally {
+      if (prior !== undefined) process.env.RECUED_PUBLIC_BASE_URL = prior;
+    }
+  });
+
+  it('stays silent on a healthy boot — an ask every start is an ask nobody reads', async () => {
+    const base = makeOptions();
+    await composeListeners(makeOptions({
+      storage: {
+        ...(base.storage as unknown as Record<string, unknown>),
+        localManifestStore: { listManifests: vi.fn(() => []) },
+      },
+    }));
+    expect(listenerMocks.notifyUnrunnablePacks).not.toHaveBeenCalled();
+  });
+
   it('stops listeners despite a sibling teardown failure and coalesces close', async () => {
     const failure = new Error('synthetic handler drain failure');
     listenerMocks.handlerSet.close.mockRejectedValueOnce(failure);

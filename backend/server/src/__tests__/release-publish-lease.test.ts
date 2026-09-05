@@ -59,6 +59,9 @@ const releaseArgs = (token: string, etag: string) => [
 
 /** The lock as it sits on disk, so an arm can assert the STATE transition
  *  rather than only the exit code. */
+/** The store root a fixture's env points at, so an arm can read the lock back. */
+const root = (env: NodeJS.ProcessEnv): string => env.RECUED_TEST_R2_STORE as string;
+
 const lockState = (root: string): string => JSON.parse(
   readFileSync(join(root, 'test-bucket', '.release-publish.lock'), 'utf8'),
 ).state;
@@ -112,7 +115,11 @@ describe('distributed R2 release publication lease', () => {
       '--etag', firstReceipt.etag,
     ], { env, encoding: 'utf8' });
     expect(staleRelease.status).not.toBe(0);
-    expect(staleRelease.stderr).toMatch(/ownership changed/);
+    // ⚠ NAME THE CONJUNCT. This used to assert `ownership changed`, which every
+    // release refusal printed. The displaced owner is rejected because somebody
+    // ELSE holds the lock — not because its etag moved — and only the specific
+    // message distinguishes those two, which is the whole reason for the split.
+    expect(staleRelease.stderr).toMatch(/held by a DIFFERENT owner/);
 
     const currentRelease = spawnSync(process.execPath, [
       LEASE,
@@ -141,7 +148,13 @@ describe('distributed R2 release publication lease', () => {
     const losers = recoveries.filter((result) => result.status !== 0);
     expect(winners).toHaveLength(1);
     expect(losers).toHaveLength(1);
-    expect(losers[0].stderr).toMatch(/changed during takeover|another release publisher owns/);
+    // ⚠ A GENUINE RACE HAS TWO LOSING SHAPES, and after the message split each
+    // says which: the loser either GETs before the winner's write and has its
+    // own conditional write refused, or GETs after and finds a different owner.
+    // The alternation is the race, not a vague assertion — but it must no longer
+    // accept the ABSENT or ALREADY-RELEASED wordings, which mean something else.
+    expect(losers[0].stderr).toMatch(/REFUSED the conditional write|held by a DIFFERENT owner|another release publisher owns/);
+    expect(losers[0].stderr).not.toMatch(/is ABSENT|already RELEASED/);
 
     const receipt = JSON.parse(winners[0].stdout) as { token: string; etag: string };
     const released = spawnSync(process.execPath, [
@@ -217,10 +230,18 @@ describe('distributed R2 release publication lease', () => {
   // value rather than their spelling is not the same as comparing them loosely:
   // a DIFFERENT representation must still refuse, or the lock stops being one.
   it.each([
-    ['a different etag entirely', '"0000000000000000000000000000beef"'],
-    ['the same shape, one hex digit apart', null],
-    ['an empty etag', '""'],
-  ])('still refuses to release against %s', (_label, override) => {
+    // ⚠ EACH CASE CARRIES THE MESSAGE IT SHOULD PRODUCE. A shared alternation
+    // would pass on any refusal and so could not tell a moved generation from a
+    // missing argument — the ambiguity this split exists to remove.
+    ['a different etag entirely', '"0000000000000000000000000000beef"', /object generation moved/],
+    ['the same shape, one hex digit apart', null, /object generation moved/],
+    // ⚠ `'""'` IS PRESENT BUT UNUSABLE, NOT MISSING. It is a two-character
+    // string, so the required-argument check passes; normalising strips the
+    // quotes to empty, and an empty validator never matches — fail-closed. So it
+    // reaches the generation conjunct rather than the usage error, which is the
+    // correct refusal for an argument that identifies no object.
+    ['a present but unusable empty etag', '""', /object generation moved/],
+  ])('still refuses to release against %s', (_label, override, expected) => {
     const { root, env } = fixture();
     const acquired = spawnSync(process.execPath, acquireArgs('publisher-a'), { env, encoding: 'utf8' });
     expect(acquired.status, acquired.stderr).toBe(0);
@@ -235,10 +256,64 @@ describe('distributed R2 release publication lease', () => {
       { env, encoding: 'utf8' },
     );
     expect(released.status).not.toBe(0);
-    expect(released.stderr).toMatch(/ownership changed|requires --etag/);
+    expect(released.stderr).toMatch(expected);
     // ⛔ THE EVIDENCE SURVIVES A REFUSED RELEASE — a lock that refused to
     // release is still held, not silently dropped.
     expect(lockState(root)).toBe('active');
+  });
+
+
+  // ⛔⛔ THE THREE SITUATIONS THAT USED TO SHARE ONE SENTENCE. A takeover can be
+  // refused because the lock is gone, because it is already released, or because
+  // the store declined the conditional write — three different actions, and for
+  // one release they were indistinguishable. The third is what actually blocked
+  // 26.9.3 while the message pointed at a stale inspection.
+  it('a takeover against an ABSENT lock says so, and says to drop the flag', () => {
+    const { env } = fixture();
+    const result = spawnSync(
+      process.execPath,
+      acquireArgs('publisher-a', '--break-token', 'a-token-nobody-holds'),
+      { env, encoding: 'utf8' },
+    );
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/is ABSENT/);
+    expect(result.stderr).toMatch(/WITHOUT --break-release-lease/);
+    // ⚠ It must not read as a stale-token or changed-object problem: those call
+    // for inspecting another operator, this calls for dropping a flag.
+    expect(result.stderr).not.toMatch(/REFUSED the conditional write/);
+    expect(result.stderr).not.toMatch(/already RELEASED/);
+  });
+
+  it('a takeover against an ALREADY-RELEASED lock says so, and names its token', () => {
+    const { env } = fixture();
+    const acquired = spawnSync(process.execPath, acquireArgs('publisher-a'), { env, encoding: 'utf8' });
+    expect(acquired.status, acquired.stderr).toBe(0);
+    const { etag } = JSON.parse(acquired.stdout) as { etag: string };
+    const released = spawnSync(process.execPath, releaseArgs('publisher-a', etag), { env, encoding: 'utf8' });
+    expect(released.status, released.stderr).toBe(0);
+
+    const takeover = spawnSync(
+      process.execPath,
+      acquireArgs('publisher-b', '--break-token', 'publisher-a'),
+      { env, encoding: 'utf8' },
+    );
+    expect(takeover.status).not.toBe(0);
+    expect(takeover.stderr).toMatch(/already RELEASED/);
+    expect(takeover.stderr).toMatch(/publisher-a/);
+    expect(takeover.stderr).not.toMatch(/is ABSENT/);
+  });
+
+  it('a plain acquire DOES claim a released lock — which is why the flag is wrong there', () => {
+    // The refusals above are only helpful if the advice they give works.
+    const { env } = fixture();
+    const first = spawnSync(process.execPath, acquireArgs('publisher-a'), { env, encoding: 'utf8' });
+    const { etag } = JSON.parse(first.stdout) as { etag: string };
+    spawnSync(process.execPath, releaseArgs('publisher-a', etag), { env, encoding: 'utf8' });
+
+    const second = spawnSync(process.execPath, acquireArgs('publisher-b'), { env, encoding: 'utf8' });
+    expect(second.status, second.stderr).toBe(0);
+    expect(lockState(root(env))).toBe('active');
   });
 
   it('refuses malformed lock metadata without overwriting the evidence', () => {

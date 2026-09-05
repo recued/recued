@@ -64,6 +64,11 @@ export interface UpdateLedgerEntry {
   snapshot_ref?: string;
   /** Free-form non-secret detail (e.g. a revert reason). */
   detail?: string;
+  /** Typed provenance for an `apply_reverted` terminal produced outside the
+   * server process. Older binaries encoded this only in `detail`; readers keep
+   * that legacy arm during the additive rollout, while new writers must not
+   * make owner-facing recovery semantics depend on mutable prose. */
+  recovery_source?: 'outer-supervisor';
   /** A pre-swap webclient promotion could not be compensated before this
    * `apply_reverted` terminal was written. The terminal still releases the
    * update operation; this durable bit tells pre-open recovery that the

@@ -40,16 +40,33 @@ describe('Seller hierarchical navigation contract', () => {
   });
 
   it('projects an address into the single mount selection shape', () => {
+    // ⚠ ENUMERATED, NOT SPREAD FROM `NO_SELECTION`. D-196 grew this shape with
+    // `create` / `setupSection` / `setupProvider` / `tab` when the seller screens
+    // became separately addressable, and spreading the base to absorb that would
+    // also absorb the NEXT field silently — which is the drift this pin exists to
+    // catch. Listing every key keeps "what a directory address selects" exact.
     expect(sellerAddressSelection({ kind: 'directory' })).toEqual({
       subpage: null,
       itemId: null,
       page: 1,
+      tab: null,
+      create: null,
+      setupSection: null,
+      setupProvider: null,
     });
     expect(sellerAddressSelection({
       kind: 'detail',
       subpage: 'tiers',
       itemId: 'tier-1',
-    })).toEqual({ subpage: 'tiers', itemId: 'tier-1', page: 1 });
+    })).toEqual({
+      subpage: 'tiers',
+      itemId: 'tier-1',
+      page: 1,
+      tab: null,
+      create: null,
+      setupSection: null,
+      setupProvider: null,
+    });
   });
 
   it('canonicalizes tolerated stale tails to the exact rendered parent', () => {

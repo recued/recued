@@ -20,6 +20,7 @@ import { SERVER_VERSION } from '../server-version.js';
 import { startDdnsUpdatePoller } from './start-ddns-update-poller.js';
 import { startHostnameReconciliationRunner } from './start-hostname-reconciliation-runner.js';
 import { startRetentionPruners } from './start-retention-pruners.js';
+import type { GatedActionStore } from '../gated-action-store.js';
 
 export type PostHousekeepingTailStorageContext = Pick<
   StorageContext,
@@ -78,8 +79,13 @@ export interface StartPostHousekeepingTailOptions {
    *  stale-checkpoint sweep (threaded from the execution context;
    *  undefined on db-less boots, where the sweep is skipped anyway). */
   readonly notificationBlock:
-    | Pick<NotificationBlock, 'getAsk' | 'cancelAsk' | 'pruneHandledAsks' | 'notify'>
+    | Pick<
+        NotificationBlock,
+        'getAsk' | 'listUnresolvedAsks' | 'cancelAsk' | 'pruneHandledAsks' | 'notify'
+      >
     | undefined;
+  /** Operation receipt authority for anchorless raw-op checkpoint retention. */
+  readonly gatedActionStore?: GatedActionStore | undefined;
   /** D-178 slice 4b — on-boot update reconcile (commit / auto-revert +
    *  ledger→audit replay). Invoked AFTER `installShutdown` runs markBooted,
    *  so a staged release that reached a serving state commits. Best-effort
@@ -109,6 +115,9 @@ export const startPostHousekeepingTail = (
     mcpRecipeCallbackTokenStore: options.app.chatInboundTokenStoreRef,
     checkpointStore: storage.checkpointStore,
     auditLog: storage.auditLog,
+    ...(options.gatedActionStore !== undefined
+      ? { gatedActionStore: options.gatedActionStore }
+      : {}),
     executionCaseLifecycle: options.app.executionCaseLifecycle,
     // D-219 — bound the capture-only argument buffer. Absent (db-less /
     // chat-less boot) ⇒ no sweep, because nothing captured either.

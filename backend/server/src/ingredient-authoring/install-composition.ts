@@ -93,6 +93,7 @@ import type {
   CatalogKind,
   CompositionIngredient,
   ConnectionVendorEntity,
+  EntitySchemaIngredientInput,
   IngredientInstallResult,
   IngredientManifest,
   InstallAccessTier,
@@ -200,6 +201,32 @@ export interface ProvisionAuthoredDeps {
    *  reconciles the selected customer contract's existing bearer grant map in
    *  lockstep; ordinary MCP token checklists remain untouched. */
   inboundTokenStore?: InstallAudienceInboundTokenStore;
+}
+
+/** Narrow reinstall controls for callers that have already proved the incoming
+ * body is authority-equivalent to the installed one. Ordinary owner-driven
+ * installs MUST leave this absent: they replace the pack-owned authority rows
+ * with the choices made in the current install review. */
+export interface ProvisionPackCompositionOptions {
+  /** Preserve every existing grant, connection binding, and audience fan-out
+   * row byte-for-byte while replacing only the pack body + the existing pack
+   * row's version field. Used by the closed launch-reconciliation ledger; never
+   * inferred from a manifest and never exposed through an RPC. */
+  preserveExistingAuthority?: boolean;
+  /** Compare-and-swap fence for boot reconciliation. Checked inside the SAME
+   * SQLite transaction, before the body write, so a concurrent uninstall or
+   * update cannot be silently resurrected/overwritten from an earlier scan. */
+  expectedInstalledState?: {
+    /** Exact row value observed by the reconciler. The update preserves every
+     * field except `version`, rather than rebuilding inventory metadata. */
+    installed_pack: Record<string, unknown>;
+    /** Exact catalog inventory row observed by the reconciler. It is not
+     * rewritten, but belongs in the CAS so a concurrent ownership change cannot
+     * turn the catalog into shared state before its body is replaced. */
+    installed_ingredient: Record<string, unknown>;
+    body: IngredientManifest;
+    entity_schemas: readonly EntitySchemaIngredientInput[];
+  };
 }
 
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
@@ -1809,9 +1836,14 @@ const commit = (
   recipes: readonly RecipeDefinition[] = [],
   recipePublisher = DEFAULT_AUTHOR,
   recipePackSlug?: string,
+  precondition?: () => void,
 ): void => {
   const orphaned: string[] = [];
   deps.contractStore.transaction(() => {
+    // Reconciliation's compare-and-swap fence belongs INSIDE the transaction
+    // and BEFORE the first write. A check at the caller would race another
+    // server process sharing this WAL database.
+    precondition?.();
     // Snapshot which prior ids were LOCAL composition catalogs (`private_byo`)
     // BEFORE `inventory()` can overwrite / GC their rows — only those are bodies
     // THIS pack provisioned, so only those may be orphan-cleaned on a rename /
@@ -2333,16 +2365,36 @@ export const provisionPackCompositionForBulkInstall = (
   byRefContents: readonly PackContentRef[],
   installScope?: InstallGrantSelection,
   // D-194 step 3a — owner's chosen connection (re-sources the grant; see
-  // `prepareComposedPack`). Optional + trailing, so the boot / foundation callers
+  // `prepareComposedPack`). Optional, so the boot / foundation callers
   // (`foundation-pack-pre-install.ts`) stay untouched and fall back to the
-  // authored literal.
+  // authored literal. Reconciliation controls remain one argument farther out
+  // and are never inferred from this owner choice.
   chosenConnection?: string,
+  options: ProvisionPackCompositionOptions = {},
 ): IngredientInstallResult => {
   // Defensive object guard (mirrors `provisionAuthoredArtifact`) — the rpc
   // caller passes `args.manifest: unknown`, already shape-validated upstream by
   // `parseBulkPackManifest`, but keep the provisioner safe to call directly.
   if (!isPlainObject(manifest)) {
     return { ok: false, code: 'validation_failed', message: 'manifest must be an object', issues: [] };
+  }
+  const preservingState = options.preserveExistingAuthority === true
+    ? options.expectedInstalledState
+    : undefined;
+  // Preserve mode is an internal compare-and-swap operation, never a relaxed
+  // form of ordinary install. Requiring both controls together prevents a new
+  // caller from silently skipping authority writes without pinning the state it
+  // intends to replace.
+  if (
+    (options.preserveExistingAuthority === true) !==
+    (options.expectedInstalledState !== undefined)
+  ) {
+    return {
+      ok: false,
+      code: 'validation_failed',
+      message: 'authority-preserving install requires an expected installed state',
+      issues: [],
+    };
   }
   const prep = prepareComposedPack(deps, manifest, chosenConnection);
   if (!prep.ok) return prep.result;
@@ -2383,41 +2435,118 @@ export const provisionPackCompositionForBulkInstall = (
     return { ok: false, code: 'validation_failed', message: resolvedRecipes.message, issues };
   }
 
+  if (
+    preservingState !== undefined
+    && (
+      preservingState.body.slug !== body.slug
+      || preservingState.installed_pack.publisher !== publisher
+      || !isDeepStrictEqual(preservingState.installed_pack.ingredient_ids, [body.slug])
+      || preservingState.installed_ingredient.ingredient_id !== body.slug
+      || preservingState.installed_ingredient.version !== String(bodyVersion)
+      || preservingState.installed_ingredient.source_pack_slug !== packSlug
+      || preservingState.installed_ingredient.catalog_kind !== catalogKindOf(body)
+      || byRefContents.length !== 0
+      || resolvedRecipes.recipes.length !== 0
+      || grantConnection !== undefined
+      || authoredGroupIds.size !== 0
+      || !isDeepStrictEqual(entitySchemas ?? [], preservingState.entity_schemas)
+      || (body.work_entity_sources?.length ?? 0) !== 0
+    )
+  ) {
+    return {
+      ok: false,
+      code: 'validation_failed',
+      message: 'authority-preserving install is limited to side-effect-free composition updates',
+      issues,
+    };
+  }
+
   // D-170 gap #2 live-reconcile — capture targets before commit (see `provisionPack`).
-  const reconcileTargets = connectionsToReconcileForInstall(deps, packSlug, grantConnection);
+  const reconcileTargets = options.preserveExistingAuthority
+    ? []
+    : connectionsToReconcileForInstall(deps, packSlug, grantConnection);
+
+  const assertExpectedInstalledState = (): void => {
+    const expected = preservingState;
+    if (expected === undefined) return;
+    const expectedPackSlug = expected.installed_pack.pack_slug;
+    const row = typeof expectedPackSlug === 'string'
+      ? deps.contractStore.get('installed_pack', [expectedPackSlug])
+      : null;
+    const ingredientRow = deps.contractStore.get('installed_ingredient', [expected.body.slug]);
+    const bodyAtCommit = deps.localManifestStore.getManifest(expected.body.slug);
+    const schemasAtCommit = deps.localManifestStore.getEntitySchemas(expected.body.slug);
+    const anotherPackClaimsCatalog = deps.contractStore.scan('installed_pack').some((candidate) => {
+      if (candidate.segments.length === 1 && candidate.segments[0] === packSlug) return false;
+      if (!isPlainObject(candidate.value) || !Array.isArray(candidate.value.ingredient_ids)) {
+        return false;
+      }
+      return candidate.value.ingredient_ids.includes(expected.body.slug);
+    });
+    if (
+      expectedPackSlug !== packSlug
+      || !isDeepStrictEqual(row?.value, expected.installed_pack)
+      || !isDeepStrictEqual(ingredientRow?.value, expected.installed_ingredient)
+      || !isDeepStrictEqual(bodyAtCommit, expected.body)
+      || !isDeepStrictEqual(schemasAtCommit, expected.entity_schemas)
+      || anotherPackClaimsCatalog
+    ) {
+      throw new Error('installed pack changed during reconciliation');
+    }
+  };
 
   try {
     commit(deps, body, entitySchemas, () => {
-      recordPackInventory(deps.contractStore, {
-        pack_slug: packSlug,
-        publisher,
-        pack_version: packVersion,
-        // By-ref marketplace ingredients keep their (absent) marketplace kind;
-        // recordPackInventory ignores every non-`ingredient` content (recipes,
-        // the composition itself). The composition catalog joins the SAME pack
-        // row via `local_catalogs` with `private_byo` (its body is local).
-        contents: byRefContents,
-        local_catalogs: [
-          { ingredient_id: body.slug, version: bodyVersion, catalog_kind: catalogKindOf(body) },
-        ],
-        installed_at: deps.now(),
-      });
-      // D-165 P3 — write the resolved grants pack-owned, atomic with the
-      // inventory. The bulk result carries no `warnings` field, so (unlike
-      // `provisionPack`) there's no effectiveness note — the rows are written the
-      // same way, and the packs.install handler no longer discloses them as deferred.
-      writePackGrants(deps, packSlug, grantWriteSet, grantConnection);
-      // D-170 gap #2 — the connection→catalog binding (resolvable + grantable).
-      writeConnectionBinding(deps, packSlug, body.slug, grantConnection);
-      // D-182 §7.2 / D-196 — per-door op-admission fan-out (REPLACE; see
-      // `provisionPack`). Same txn; writes only for non-owner scopes on
-      // connection-backed packs.
-      applyInstallOpAdmissionFanOut(deps, body, grantWriteSet, packSlug, installScope, grantConnection);
+      if (preservingState !== undefined) {
+        // The precondition above proved this exact row still exists. Change
+        // only its pack version: do not rewrite installed_at, authored identity,
+        // ingredient provenance, or any shared installed_ingredient row.
+        deps.contractStore.put('installed_pack', [packSlug], {
+          ...preservingState.installed_pack,
+          version: String(packVersion),
+        });
+      } else {
+        recordPackInventory(deps.contractStore, {
+          pack_slug: packSlug,
+          publisher,
+          pack_version: packVersion,
+          // By-ref marketplace ingredients keep their (absent) marketplace kind;
+          // recordPackInventory ignores every non-`ingredient` content (recipes,
+          // the composition itself). The composition catalog joins the SAME pack
+          // row via `local_catalogs` with `private_byo` (its body is local).
+          contents: byRefContents,
+          local_catalogs: [
+            { ingredient_id: body.slug, version: bodyVersion, catalog_kind: catalogKindOf(body) },
+          ],
+          installed_at: deps.now(),
+        });
+      }
+      if (!options.preserveExistingAuthority) {
+        // D-165 P3 — write the resolved grants pack-owned, atomic with the
+        // inventory. The bulk result carries no `warnings` field, so (unlike
+        // `provisionPack`) there's no effectiveness note — the rows are written the
+        // same way, and the packs.install handler no longer discloses them as deferred.
+        writePackGrants(deps, packSlug, grantWriteSet, grantConnection);
+        // D-170 gap #2 — the connection→catalog binding (resolvable + grantable).
+        writeConnectionBinding(deps, packSlug, body.slug, grantConnection);
+        // D-182 §7.2 / D-196 — per-door op-admission fan-out (REPLACE; see
+        // `provisionPack`). Same txn; writes only for non-owner scopes on
+        // connection-backed packs.
+        applyInstallOpAdmissionFanOut(
+          deps,
+          body,
+          grantWriteSet,
+          packSlug,
+          installScope,
+          grantConnection,
+        );
+      }
     },
       priorIds,
       resolvedRecipes.recipes,
       publisher,
       packSlug,
+      preservingState === undefined ? undefined : assertExpectedInstalledState,
     );
   } catch (e) {
     return { ok: false, code: 'unexpected', message: (e as Error).message ?? String(e), issues };

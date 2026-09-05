@@ -6,6 +6,7 @@ import {
   type IngredientExecutor,
 } from '@recued/engine';
 import {
+  PeerAnswerRequiredSignal,
   PreflightRequiredSignal,
   type NamespaceStores,
   type PiiLedgerStoreSnapshot,
@@ -214,6 +215,29 @@ describe('PII ledger checkpoint round-trip', () => {
     expect(result.awaiting_approval).toBeDefined();
     expect(result.awaiting_approval!.gated_step_id).toBe('ai');
     expect(result.awaiting_approval!).not.toHaveProperty('pii_ledgers');
+  });
+
+  it('carries the same PII ledger snapshot across a peer-answer pause', async () => {
+    const result = await executeRecipe(makeCtx(recipeWithRestore(), async (slug) => {
+      if (slug === 'profile-reader') return structuredClone(RAW);
+      if (slug === 'ai-prompt') {
+        throw new PeerAnswerRequiredSignal({
+          connection: 'peer-bob',
+          label: 'review',
+          question: 'Continue?',
+          options: [{ id: 'yes', label: 'Yes' }],
+          on_timeout: 'wait',
+          via: 'direct',
+        }, 'peer-exchange-1');
+      }
+      throw new Error(`unexpected ingredient: ${slug}`);
+    }));
+
+    expect(result.awaiting_peer).toBeDefined();
+    expect(result.awaiting_peer?.gated_step_id).toBe('ai');
+    expect(result.awaiting_peer?.pii_ledgers?.handles).toEqual([
+      'pii-ledger:1.1',
+    ]);
   });
 
   it('hydrates pii_ledgers on resume so explicit pii-restore returns real values', async () => {

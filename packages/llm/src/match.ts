@@ -284,6 +284,47 @@ const pickCandidate = (
  *    4. Exhausted → throw AI_LLM_UNAVAILABLE with a snapshot + details.
  *
  *  `forceLayer` (recipe/step override) restricts which layer can serve. */
+/** Every slot that COULD serve a request at this layer, as real `LLMSlot`s.
+ *
+ *  ⛔⛔ THIS LIVES HERE, BESIDE `collectCandidates`, FOR ONE REASON: it must
+ *  produce slots through the SAME `normalizeLLMSlot` /
+ *  `synthesizeSlotForPoolEntry` the matcher uses. A caller that rebuilt the
+ *  slot shape itself would compute a DIFFERENT `endpointFingerprint` for the
+ *  same endpoint, and every learned-capability lookup against it would miss
+ *  silently — a lookup that finds nothing is indistinguishable from an endpoint
+ *  that has learned nothing.
+ *
+ *  ⚠ DELIBERATELY WIDER THAN `collectCandidates`: no availability, capability
+ *  or reject-set filtering. Those are per-instant and this answers a question
+ *  about the SET ("what might serve this turn"), where a transiently-excluded
+ *  source must still count — it can come back before the call. For the one
+ *  consumer today (context budgeting, which takes a MINIMUM) a superset is the
+ *  conservative direction; a narrower set would be the unsafe one. */
+export const candidateSlotsForLayer = (
+  config: LLMConfig,
+  forceLayer: ForceLayer,
+  pinSlot?: PinnedSlot,
+): LLMSlot[] => {
+  const allowPool =
+    pinSlot === undefined && (forceLayer === 'any' || forceLayer === 'free');
+  const allowByok = forceLayer === 'any' || forceLayer === 'byok';
+  const out: LLMSlot[] = [];
+  if (allowByok) {
+    for (const slotKey of ['slot_1', 'slot_2'] as const) {
+      if (pinSlot !== undefined && pinSlot !== slotKey) continue;
+      const slot = normalizeLLMSlot(config[slotKey], slotKey);
+      if (slot) out.push(slot);
+    }
+  }
+  if (allowPool) {
+    for (const e of config.free_pool ?? []) {
+      if (e.type !== 'api') continue;
+      out.push(synthesizeSlotForPoolEntry(e));
+    }
+  }
+  return out;
+};
+
 export const matchLLM = (request: MatchRequest, deps: MatchDeps): Match => {
   const { requires } = request;
   const forceLayer: ForceLayer = request.forceLayer ?? 'any';

@@ -1,7 +1,7 @@
 /** D-196 S2 - Settings -> Seller page. */
 
 import { describe, expect, it, vi } from 'vitest';
-import { LLM_GATEWAY_PAID_ACK_VERSION } from '@recued/contracts';
+import { LLM_GATEWAY_PAID_ACK_VERSION, SELLER_DEFAULT_DOOR_ID } from '@recued/contracts';
 import type {
   SellerCreatePassTierResponse,
   SellerCustomer,
@@ -38,6 +38,17 @@ import {
   SELLER_PAGE_SUBPAGE_ATTR,
   SELLER_SUBPAGE_HEADER_ATTR,
   SELLER_BACK_ATTR,
+  SELLER_BREADCRUMB_LINK_ATTR,
+  SELLER_SUBNAV_LINK_ATTR,
+  SELLER_DETAIL_TAB_ATTR,
+  SELLER_CREATE_LINK_ATTR,
+  SELLER_CREATE_PAGE_ATTR,
+  SELLER_LIST_TOOLBAR_ATTR,
+  SELLER_SETUP_DIRECTORY_ATTR,
+  SELLER_SETUP_ROW_ATTR,
+  SELLER_SETUP_SECTION_ATTR,
+  SELLER_SETTINGS_ATTR,
+  SELLER_READINESS_SETUP_LINK_ATTR,
   SELLER_COLLECTION_DETAIL_ATTR,
   SELLER_COLLECTION_ITEM_LINK_ATTR,
   SELLER_COLLECTION_LIST_ATTR,
@@ -68,10 +79,11 @@ import {
   SELLER_SETTINGS_FORM_FIELD_ATTR,
   SELLER_SETTINGS_FORM_STATUS_ATTR,
   SELLER_SETTINGS_FORM_SUBMIT_ATTR,
-  SELLER_STRIPE_SYNC_FIELD_ATTR,
-  SELLER_STRIPE_SYNC_FORM_ATTR,
-  SELLER_STRIPE_SYNC_STATUS_ATTR,
-  SELLER_STRIPE_SYNC_SUBMIT_ATTR,
+  SELLER_PROVIDER_TIER_SYNC_FIELD_ATTR,
+  SELLER_PROVIDER_TIER_SYNC_FORM_ATTR,
+  SELLER_PROVIDER_TIER_SYNC_STATUS_ATTR,
+  SELLER_PROVIDER_TIER_SYNC_SUBMIT_ATTR,
+  type SellerProviderTierSynchronizeCaller,
   SELLER_TIER_FORM_ATTR,
   SELLER_TIER_FORM_FIELD_ATTR,
   SELLER_TIER_FORM_STATUS_ATTR,
@@ -1415,133 +1427,6 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     mount.dispose();
   });
 
-  it('initializes or synchronizes Stripe features and renders the refreshed overview', async () => {
-    const host = makeFakeElement('div');
-    const initial = overview({
-      readiness: [
-        ...overview().readiness,
-        {
-          key: 'stripe_provider',
-          state: 'ready',
-          label: 'Stripe provider',
-          detail: '1 Stripe connection ready for Initialize / Synchronize.',
-          href: null,
-        },
-      ],
-    });
-    const refreshed = overview({
-      ...initial,
-      counts: { ...initial.counts, tiers: 3, active_tiers: 3 },
-    });
-    const runSynchronizeStripeEntitlements: SellerStripeSynchronizeCaller = vi.fn(
-      async () => ({
-        connection_name: 'stripe-main',
-        features_seen: 2,
-        created_tier_ids: ['tier-stripe-basic', 'tier-stripe-pro'],
-        preserved_tier_ids: [],
-        recreated_template_tier_ids: [],
-        reactivated_tier_ids: [],
-        orphaned_tier_ids: [],
-        overview: refreshed,
-      }),
-    );
-    const mount = mountSellerPage({
-      host: host as unknown as HTMLElement,
-      document: makeFakeDocument() as unknown as Document,
-      initialSubpage: 'setup',
-      runGetOverview: async () => initial,
-      runSynchronizeStripeEntitlements,
-    });
-    await mount.whenLoaded();
-
-    expect(findByAttr(host, SELLER_STRIPE_SYNC_FORM_ATTR)).not.toBeNull();
-    const field = (name: string): FakeElement => {
-      const el = findByAttr(host, SELLER_STRIPE_SYNC_FIELD_ATTR, name);
-      if (el === null) throw new Error(`missing Stripe sync field ${name}`);
-      return el;
-    };
-    field('connection_name').value = 'stripe-main';
-    field('door_id').value = 'door-llm';
-    field('door_type').value = 'llm_gateway';
-    findByAttr(host, SELLER_STRIPE_SYNC_SUBMIT_ATTR)?.click();
-    await flushAsync();
-
-    expect(runSynchronizeStripeEntitlements).toHaveBeenCalledWith({
-      connection_name: 'stripe-main',
-      door_id: 'door-llm',
-      door_type: 'llm_gateway',
-    });
-    expect(textOf(findByAttr(host, SELLER_STRIPE_SYNC_STATUS_ATTR)!))
-      .toContain('Synchronized 2 Stripe features: 2 created');
-    expect(mount.getState().overview?.counts.tiers).toBe(3);
-  });
-
-  it('keeps Stripe synchronization disabled until provider readiness is ready', async () => {
-    const host = makeFakeElement('div');
-    const runSynchronizeStripeEntitlements = vi.fn<SellerStripeSynchronizeCaller>();
-    const pending = overview({
-      readiness: [
-        ...overview().readiness,
-        {
-          key: 'stripe_provider',
-          state: 'needs_setup',
-          label: 'Stripe provider',
-          detail: 'Install and enroll Stripe first.',
-          href: '#connections',
-        },
-      ],
-    });
-    const mount = mountSellerPage({
-      host: host as unknown as HTMLElement,
-      document: makeFakeDocument() as unknown as Document,
-      initialSubpage: 'setup',
-      runGetOverview: async () => pending,
-      runSynchronizeStripeEntitlements,
-    });
-    await mount.whenLoaded();
-
-    const submit = findByAttr(host, SELLER_STRIPE_SYNC_SUBMIT_ATTR);
-    expect(submit?.disabled).toBe(true);
-    submit?.click();
-    await flushAsync();
-    expect(runSynchronizeStripeEntitlements).not.toHaveBeenCalled();
-    expect(textOf(findByAttr(host, SELLER_STRIPE_SYNC_STATUS_ATTR)!))
-      .toContain('Install and enroll Stripe first.');
-  });
-
-  it('renders Stripe form validation errors without invoking the provider', async () => {
-    const host = makeFakeElement('div');
-    const ready = overview({
-      readiness: [
-        ...overview().readiness,
-        {
-          key: 'stripe_provider',
-          state: 'ready',
-          label: 'Stripe provider',
-          detail: '1 Stripe connection ready for Initialize / Synchronize.',
-          href: null,
-        },
-      ],
-    });
-    const runSynchronizeStripeEntitlements = vi.fn<SellerStripeSynchronizeCaller>();
-    const mount = mountSellerPage({
-      host: host as unknown as HTMLElement,
-      document: makeFakeDocument() as unknown as Document,
-      initialSubpage: 'setup',
-      runGetOverview: async () => ready,
-      runSynchronizeStripeEntitlements,
-    });
-    await mount.whenLoaded();
-
-    findByAttr(host, SELLER_STRIPE_SYNC_SUBMIT_ATTR)?.click();
-    await flushAsync();
-
-    expect(runSynchronizeStripeEntitlements).not.toHaveBeenCalled();
-    expect(findByAttr(host, SELLER_STRIPE_SYNC_SUBMIT_ATTR)?.disabled).toBe(false);
-    expect(textOf(findByAttr(host, SELLER_STRIPE_SYNC_STATUS_ATTR)!))
-      .toContain('Door ID is required');
-  });
-
   it('updates seller settings and renders the returned overview', async () => {
     const host = makeFakeElement('div');
     const updated = overview({
@@ -1565,7 +1450,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     const mount = mountSellerPage({
       host: host as unknown as HTMLElement,
       document: makeFakeDocument() as unknown as Document,
-      initialSubpage: 'setup',
+      initialAddress: { kind: 'setup', section: 'defaults' },
       runGetOverview: async () => overview(),
       runListMailInstances: async () => ({
         instances: [{
@@ -1638,7 +1523,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     const mount = mountSellerPage({
       host: host as unknown as HTMLElement,
       document: makeFakeDocument() as unknown as Document,
-      initialSubpage: 'setup',
+      initialAddress: { kind: 'setup', section: 'gateway' },
       runGetOverview: async () => overview(),
       runAcknowledgeLlmGatewayPaid: runAcknowledge,
     });
@@ -1688,7 +1573,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     const mount = mountSellerPage({
       host: host as unknown as HTMLElement,
       document: makeFakeDocument() as unknown as Document,
-      initialSubpage: 'setup',
+      initialAddress: { kind: 'setup', section: 'gateway' },
       runGetOverview: async () => alreadyAcked,
       runAcknowledgeLlmGatewayPaid: vi.fn(),
     });
@@ -1706,7 +1591,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     const mount = mountSellerPage({
       host: host as unknown as HTMLElement,
       document: makeFakeDocument() as unknown as Document,
-      initialSubpage: 'setup',
+      initialAddress: { kind: 'setup', section: 'gateway' },
       runGetOverview: async () => overview(),
     });
 
@@ -1737,7 +1622,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     const mount = mountSellerPage({
       host: host as unknown as HTMLElement,
       document: makeFakeDocument() as unknown as Document,
-      initialSubpage: 'setup',
+      initialAddress: { kind: 'setup', section: 'defaults' },
       runGetOverview: async () => overview({
         settings: {
           ...overview().settings,
@@ -1794,7 +1679,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     const mount = mountSellerPage({
       host: host as unknown as HTMLElement,
       document: makeFakeDocument() as unknown as Document,
-      initialSubpage: 'setup',
+      initialAddress: { kind: 'setup', section: 'defaults' },
       runGetOverview: async () => staleOverview,
       runListMailInstances: async () => ({
         instances: [{
@@ -1845,7 +1730,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     const mount = mountSellerPage({
       host: host as unknown as HTMLElement,
       document: makeFakeDocument() as unknown as Document,
-      initialSubpage: 'setup',
+      initialAddress: { kind: 'setup', section: 'defaults' },
       runGetOverview: async () => overview(),
       runListMailInstances,
       runUpdateSellerSettings: vi.fn(),
@@ -1871,7 +1756,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     const mount = mountSellerPage({
       host: host as unknown as HTMLElement,
       document: makeFakeDocument() as unknown as Document,
-      initialSubpage: 'setup',
+      initialAddress: { kind: 'setup', section: 'defaults' },
       runGetOverview: async () => overview({
         settings: { ...base.settings, sender_mail_instance_id: null },
       }),
@@ -1899,7 +1784,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     const mount = mountSellerPage({
       host: host as unknown as HTMLElement,
       document: makeFakeDocument() as unknown as Document,
-      initialSubpage: 'setup',
+      initialAddress: { kind: 'setup', section: 'defaults' },
       runGetOverview: async () => overview(),
       runUpdateSellerSettings,
     });
@@ -1967,7 +1852,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     const mount = mountSellerPage({
       host: host as unknown as HTMLElement,
       document: makeFakeDocument() as unknown as Document,
-      initialSubpage: 'tiers',
+      initialAddress: { kind: 'create', subpage: 'tiers', variant: 'manual' },
       runGetOverview: async () => overview({ tiers: [] }),
       runUpsertManualTier,
     });
@@ -2032,7 +1917,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     const mount = mountSellerPage({
       host: host as unknown as HTMLElement,
       document: makeFakeDocument() as unknown as Document,
-      initialSubpage: 'tiers',
+      initialAddress: { kind: 'create', subpage: 'tiers', variant: 'manual' },
       runGetOverview: async () => current,
       runUpsertManualTier,
     });
@@ -2113,7 +1998,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     const mount = mountSellerPage({
       host: host as unknown as HTMLElement,
       document: makeFakeDocument() as unknown as Document,
-      initialSubpage: 'tiers',
+      initialAddress: { kind: 'create', subpage: 'tiers', variant: 'pass' },
       runGetOverview: async () => overview({ tiers: [] }),
       runCreatePassTier,
     });
@@ -2170,7 +2055,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     const mount = mountSellerPage({
       host: host as unknown as HTMLElement,
       document: makeFakeDocument() as unknown as Document,
-      initialSubpage: 'tiers',
+      initialAddress: { kind: 'create', subpage: 'tiers', variant: 'pass' },
       runGetOverview: async () => overview({ tiers: [] }),
     });
     await mount.whenLoaded();
@@ -2215,8 +2100,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     const mount = mountSellerPage({
       host: host as unknown as HTMLElement,
       document: makeFakeDocument() as unknown as Document,
-      initialSubpage: 'tiers',
-      initialItemId: 'tier-1',
+      initialAddress: { kind: 'detail', subpage: 'tiers', itemId: 'tier-1', tab: 'customers' },
       runGetOverview: async () => base,
       runBulkAdjustManualTierCustomers,
     });
@@ -2274,8 +2158,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     const mount = mountSellerPage({
       host: host as unknown as HTMLElement,
       document: makeFakeDocument() as unknown as Document,
-      initialSubpage: 'tiers',
-      initialItemId: 'tier-1',
+      initialAddress: { kind: 'detail', subpage: 'tiers', itemId: 'tier-1', tab: 'customers' },
       runGetOverview: async () => overview(),
       runBulkAdjustManualTierCustomers,
     });
@@ -2365,7 +2248,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     const mount = mountSellerPage({
       host: host as unknown as HTMLElement,
       document: makeFakeDocument() as unknown as Document,
-      initialSubpage: 'customers',
+      initialAddress: { kind: 'create', subpage: 'customers', variant: 'manual' },
       runGetOverview: async () => overview(),
       runIssueManualCustomer,
     });
@@ -2441,7 +2324,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     const mount = mountSellerPage({
       host: host as unknown as HTMLElement,
       document: makeFakeDocument() as unknown as Document,
-      initialSubpage: 'customers',
+      initialAddress: { kind: 'create', subpage: 'customers', variant: 'manual' },
       runGetOverview: async () => base,
       runIssueManualCustomer,
     });
@@ -2865,7 +2748,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     const mount = mountSellerPage({
       host: host as unknown as HTMLElement,
       document: makeFakeDocument() as unknown as Document,
-      initialSubpage: 'tiers',
+      initialAddress: { kind: 'create', subpage: 'tiers', variant: 'manual' },
       runGetOverview: async () => overview({ tiers: [] }),
       runUpsertManualTier,
     });
@@ -3052,5 +2935,571 @@ describe('D-250 § D — tier usage limits', () => {
     await mount.whenLoaded();
     expect(findByAttr(host, SELLER_TIER_USAGE_FORM_ATTR)).toBeNull();
     expect(textOf(host)).toContain('no limit');
+  });
+});
+
+describe('D-196 consolidation — ONE provider tier synchronization form', () => {
+  const withProviders = (
+    states: Partial<Record<'stripe' | 'paddle' | 'lemonsqueezy', 'ready' | 'needs_setup'>>,
+  ): SellerOverview => overview({
+    readiness: [
+      ...overview().readiness,
+      { key: 'stripe_provider', state: states.stripe ?? 'needs_setup', label: 'Stripe provider', detail: 'Install and enroll Stripe first.', href: '#connections' },
+      { key: 'paddle_provider', state: states.paddle ?? 'needs_setup', label: 'Paddle provider', detail: 'Install and enroll Paddle first.', href: '#connections' },
+      { key: 'lemonsqueezy_provider', state: states.lemonsqueezy ?? 'needs_setup', label: 'Lemon Squeezy provider', detail: 'Install and enroll Lemon Squeezy first.', href: '#connections' },
+    ],
+  });
+  const tierResponse = (refreshed: SellerOverview, provider: 'stripe' | 'paddle' | 'lemonsqueezy', ids: string[]) => ({
+    provider, connection_name: `${provider}-main`, records_seen: ids.length,
+    created_tier_ids: ids, preserved_tier_ids: [], recreated_template_tier_ids: [], reactivated_tier_ids: [], orphaned_tier_ids: [],
+    overview: refreshed,
+  });
+  const mountWith = (opts: {
+    initial: SellerOverview;
+    runSynchronizeProviderTiers?: SellerProviderTierSynchronizeCaller;
+    runSynchronizeStripeEntitlements?: SellerStripeSynchronizeCaller;
+  }) => {
+    const host = makeFakeElement('div');
+    const mount = mountSellerPage({
+      host: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      initialAddress: { kind: 'setup', section: 'providers' },
+      runGetOverview: async () => opts.initial,
+      ...(opts.runSynchronizeProviderTiers ? { runSynchronizeProviderTiers: opts.runSynchronizeProviderTiers } : {}),
+      ...(opts.runSynchronizeStripeEntitlements ? { runSynchronizeStripeEntitlements: opts.runSynchronizeStripeEntitlements } : {}),
+    });
+    const field = (name: string): FakeElement => {
+      const el = findByAttr(host, SELLER_PROVIDER_TIER_SYNC_FIELD_ATTR, name);
+      if (el === null) throw new Error(`missing tier sync field ${name}`);
+      return el;
+    };
+    const choose = (provider: string): void => {
+      field('provider').value = provider;
+      for (const fn of field('provider').listeners.get('change') ?? []) fn({ target: field('provider') });
+    };
+    const submit = () => findByAttr(host, SELLER_PROVIDER_TIER_SYNC_SUBMIT_ATTR);
+    const statusText = () => textOf(findByAttr(host, SELLER_PROVIDER_TIER_SYNC_STATUS_ATTR)!);
+    return { host, mount, field, choose, submit, statusText };
+  };
+
+  it('seeds Stripe through the unified rpc and renders the refreshed overview', async () => {
+    const initial = withProviders({ stripe: 'ready' });
+    const refreshed = overview({ ...initial, counts: { ...initial.counts, tiers: 3, active_tiers: 3 } });
+    const runSynchronizeProviderTiers = vi.fn<SellerProviderTierSynchronizeCaller>(
+      async () => tierResponse(refreshed, 'stripe', ['tier-stripe-basic', 'tier-stripe-pro']),
+    );
+    const runSynchronizeStripeEntitlements = vi.fn<SellerStripeSynchronizeCaller>();
+    const t = mountWith({ initial, runSynchronizeProviderTiers, runSynchronizeStripeEntitlements });
+    await t.mount.whenLoaded();
+
+    expect(findByAttr(t.host, SELLER_PROVIDER_TIER_SYNC_FORM_ATTR)).not.toBeNull();
+    t.choose('stripe');
+    t.field('connection_name').value = 'stripe-main';
+    t.field('door_id').value = 'door-llm';
+    t.field('door_type').value = 'llm_gateway';
+    t.submit()?.click();
+    await flushAsync();
+
+    expect(runSynchronizeProviderTiers).toHaveBeenCalledWith({
+      provider: 'stripe', connection_name: 'stripe-main', door_id: 'door-llm', door_type: 'llm_gateway',
+    });
+    expect(runSynchronizeStripeEntitlements).not.toHaveBeenCalled();
+    expect(t.statusText()).toContain('Synchronized 2 Stripe features: 2 created');
+    expect(t.mount.getState().overview?.counts.tiers).toBe(3);
+  });
+
+  it('falls back to the shipped Stripe-only rpc when the paired server does not know the unified one', async () => {
+    const initial = withProviders({ stripe: 'ready' });
+    const refreshed = overview({ ...initial, counts: { ...initial.counts, tiers: 2 } });
+    const runSynchronizeProviderTiers = vi.fn<SellerProviderTierSynchronizeCaller>(async () => {
+      throw { code: 'unknown_method', message: 'Unknown rpc method: server.seller.synchronizeProviderTiers' };
+    });
+    const runSynchronizeStripeEntitlements = vi.fn<SellerStripeSynchronizeCaller>(async () => ({
+      connection_name: 'stripe-main', features_seen: 1,
+      created_tier_ids: ['tier-stripe-basic'], preserved_tier_ids: [], recreated_template_tier_ids: [], reactivated_tier_ids: [], orphaned_tier_ids: [],
+      overview: refreshed,
+    }));
+    const t = mountWith({ initial, runSynchronizeProviderTiers, runSynchronizeStripeEntitlements });
+    await t.mount.whenLoaded();
+    t.choose('stripe');
+    t.field('door_id').value = 'door-mcp';
+    t.field('door_type').value = 'mcp';
+    t.submit()?.click();
+    // Two rpc hops (the refused unified call, then the alias) — flush twice.
+    await flushAsync();
+    await flushAsync();
+
+    expect(runSynchronizeStripeEntitlements).toHaveBeenCalledWith({ door_id: 'door-mcp', door_type: 'mcp' });
+    expect(t.statusText()).toContain('Synchronized 1 Stripe feature: 1 created');
+    expect(t.mount.getState().overview?.counts.tiers).toBe(2);
+  });
+
+  it('on a legacy-only host Stripe seeds through the alias and the other providers say they need a newer server', async () => {
+    const initial = withProviders({ stripe: 'ready', paddle: 'ready' });
+    const runSynchronizeStripeEntitlements = vi.fn<SellerStripeSynchronizeCaller>(async () => ({
+      connection_name: 'stripe-main', features_seen: 1,
+      created_tier_ids: ['tier-stripe-basic'], preserved_tier_ids: [], recreated_template_tier_ids: [], reactivated_tier_ids: [], orphaned_tier_ids: [],
+      overview: initial,
+    }));
+    const t = mountWith({ initial, runSynchronizeStripeEntitlements });
+    await t.mount.whenLoaded();
+    t.choose('paddle');
+    expect(t.submit()?.disabled).toBe(true);
+    expect(t.statusText()).toContain('Paddle synchronization needs a newer paired server.');
+    t.choose('stripe');
+    expect(t.submit()?.disabled).toBe(false);
+    t.field('door_id').value = 'door-mcp';
+    t.field('door_type').value = 'mcp';
+    t.submit()?.click();
+    await flushAsync();
+    expect(runSynchronizeStripeEntitlements).toHaveBeenCalledWith({ door_id: 'door-mcp', door_type: 'mcp' });
+  });
+
+  it('stays disabled until the SELECTED provider is ready, and shows that provider\'s readiness detail', async () => {
+    const runSynchronizeProviderTiers = vi.fn<SellerProviderTierSynchronizeCaller>();
+    const t = mountWith({ initial: withProviders({ lemonsqueezy: 'ready' }), runSynchronizeProviderTiers });
+    await t.mount.whenLoaded();
+    t.choose('stripe');
+    expect(t.submit()?.disabled).toBe(true);
+    expect(t.statusText()).toContain('Install and enroll Stripe first.');
+    t.submit()?.click();
+    await flushAsync();
+    expect(runSynchronizeProviderTiers).not.toHaveBeenCalled();
+    t.choose('lemonsqueezy');
+    expect(t.submit()?.disabled).toBe(false);
+  });
+
+  it('renders validation errors without invoking the provider', async () => {
+    const runSynchronizeProviderTiers = vi.fn<SellerProviderTierSynchronizeCaller>();
+    const t = mountWith({ initial: withProviders({ stripe: 'ready' }), runSynchronizeProviderTiers });
+    await t.mount.whenLoaded();
+    t.choose('stripe');
+    // The category defaults, so clear it to reach the validation path.
+    t.field('door_id').value = '';
+    t.submit()?.click();
+    await flushAsync();
+    expect(runSynchronizeProviderTiers).not.toHaveBeenCalled();
+    expect(t.submit()?.disabled).toBe(false);
+    expect(t.statusText()).toContain('Category is required');
+  });
+
+  it('sends the default category when the owner never opens Advanced', async () => {
+    const initial = withProviders({ paddle: 'ready' });
+    const runSynchronizeProviderTiers = vi.fn<SellerProviderTierSynchronizeCaller>(
+      async (request) => tierResponse(initial, request.provider, ['tier-1']),
+    );
+    const t = mountWith({ initial, runSynchronizeProviderTiers });
+    await t.mount.whenLoaded();
+    t.choose('paddle');
+    t.field('door_type').value = 'mcp';
+    t.submit()?.click();
+    await flushAsync();
+    expect(runSynchronizeProviderTiers).toHaveBeenCalledWith({
+      provider: 'paddle', door_id: SELLER_DEFAULT_DOOR_ID, door_type: 'mcp',
+    });
+  });
+
+  it('a Lemon Squeezy seed carries the store id; a Paddle seed carries none', async () => {
+    const initial = withProviders({ paddle: 'ready', lemonsqueezy: 'ready' });
+    const runSynchronizeProviderTiers = vi.fn<SellerProviderTierSynchronizeCaller>(
+      async (request) => tierResponse(initial, request.provider, ['tier-1', 'tier-2']),
+    );
+    const t = mountWith({ initial, runSynchronizeProviderTiers });
+    await t.mount.whenLoaded();
+    t.choose('lemonsqueezy');
+    t.field('store_id').value = '4242';
+    t.field('connection_name').value = 'ls-main';
+    t.field('door_id').value = 'door-mcp';
+    t.field('door_type').value = 'mcp';
+    t.submit()?.click();
+    await flushAsync();
+    expect(runSynchronizeProviderTiers).toHaveBeenCalledWith({
+      provider: 'lemonsqueezy', connection_name: 'ls-main', door_id: 'door-mcp', door_type: 'mcp', store_id: '4242',
+    });
+    expect(t.statusText()).toContain('Synchronized 2 Lemon Squeezy products: 2 created');
+
+    const t2 = mountWith({ initial, runSynchronizeProviderTiers });
+    await t2.mount.whenLoaded();
+    t2.choose('paddle');
+    t2.field('store_id').value = '4242';
+    t2.field('door_id').value = 'door-mcp';
+    t2.field('door_type').value = 'mcp';
+    t2.submit()?.click();
+    await flushAsync();
+    expect(runSynchronizeProviderTiers).toHaveBeenLastCalledWith({ provider: 'paddle', door_id: 'door-mcp', door_type: 'mcp' });
+  });
+});
+
+describe('Seller polish (2026-09-03) — separate screens, every level addressable', () => {
+  const syncedTier = () => ({
+    ...overview().tiers[0]!,
+    tier_id: 'tier-stripe',
+    lifecycle_source: 'stripe' as const,
+    entitlement_key: 'pro',
+    display_name: 'Pro',
+    external_entitlement_id: 'feat_pro',
+    usage_policy_json: {},
+  });
+  const mountAt = (
+    address: Parameters<typeof mountSellerPage>[0]['initialAddress'],
+    extra: Partial<Parameters<typeof mountSellerPage>[0]> = {},
+    current: SellerOverview = overview(),
+  ) => {
+    const host = makeFakeElement('div');
+    const mount = mountSellerPage({
+      host: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      initialAddress: address,
+      runGetOverview: async () => current,
+      ...extra,
+    });
+    return { host, mount };
+  };
+  const hrefsOf = (host: FakeElement, attr: string): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const el of findAllByAttr(host, attr)) {
+      out[el.getAttribute(attr) ?? ''] = el.getAttribute('href') ?? '';
+    }
+    return out;
+  };
+
+  it('a record screen carries a breadcrumb of real addresses and a strip to every section', async () => {
+    const { host, mount } = mountAt({ kind: 'detail', subpage: 'tiers', itemId: 'tier-1' });
+    await mount.whenLoaded();
+    expect(hrefsOf(host, SELLER_BREADCRUMB_LINK_ATTR)).toEqual({
+      seller: '#settings/seller',
+      'section:tiers': '#settings/seller/tiers',
+    });
+    // Back is the nearest ancestor, named.
+    expect(findByAttr(host, SELLER_BACK_ATTR)?.getAttribute('href')).toBe('#settings/seller/tiers');
+    const subnav = hrefsOf(host, SELLER_SUBNAV_LINK_ATTR);
+    expect(Object.keys(subnav)).toEqual(['overview', 'offers', 'orders', 'tiers', 'customers', 'usage', 'setup']);
+    expect(subnav.setup).toBe('#settings/seller/setup');
+    expect(findByAttr(host, SELLER_SUBNAV_LINK_ATTR, 'tiers')?.getAttribute('aria-current')).toBe('page');
+    expect(findByAttr(host, SELLER_SUBNAV_LINK_ATTR, 'orders')?.getAttribute('aria-current')).toBeNull();
+    mount.dispose();
+  });
+
+  it('a tier record offers its edit and customers screens as addressed tabs only when they apply', async () => {
+    const manual = mountAt(
+      { kind: 'detail', subpage: 'tiers', itemId: 'tier-1', tab: 'edit' },
+      { runUpsertManualTier: vi.fn(), runBulkAdjustManualTierCustomers: vi.fn() },
+    );
+    await manual.mount.whenLoaded();
+    expect(hrefsOf(manual.host, SELLER_DETAIL_TAB_ATTR)).toEqual({
+      record: '#settings/seller/tiers/detail/tier-1',
+      edit: '#settings/seller/tiers/detail/tier-1/edit',
+      customers: '#settings/seller/tiers/detail/tier-1/customers',
+    });
+    expect(findByAttr(manual.host, SELLER_DETAIL_TAB_ATTR, 'edit')?.getAttribute('aria-current')).toBe('page');
+    // The edit tab IS the metadata form, prefilled from the record.
+    expect(findByAttr(manual.host, SELLER_TIER_FORM_FIELD_ATTR, 'tier_id')?.value).toBe('tier-1');
+    // The trail names the record and the tab; Back is the record.
+    expect(hrefsOf(manual.host, SELLER_BREADCRUMB_LINK_ATTR)['detail:tier-1']).toBe('#settings/seller/tiers/detail/tier-1');
+    expect(findByAttr(manual.host, SELLER_BACK_ATTR)?.getAttribute('href')).toBe('#settings/seller/tiers/detail/tier-1');
+    manual.mount.dispose();
+
+    // A provider-synchronized tier has one screen: nothing to edit by hand.
+    const synced = mountAt(
+      { kind: 'detail', subpage: 'tiers', itemId: 'tier-stripe' },
+      { runUpsertManualTier: vi.fn(), runBulkAdjustManualTierCustomers: vi.fn() },
+      overview({ tiers: [syncedTier()] }),
+    );
+    await synced.mount.whenLoaded();
+    expect(Object.keys(hrefsOf(synced.host, SELLER_DETAIL_TAB_ATTR))).toEqual(['record']);
+    synced.mount.dispose();
+  });
+
+  it('lists offer "new" links only for the screens the paired server can serve', async () => {
+    const wired = mountAt({ kind: 'list', subpage: 'tiers', page: 1 }, {
+      runUpsertManualTier: vi.fn(),
+      runCreatePassTier: vi.fn(),
+    });
+    await wired.mount.whenLoaded();
+    expect(hrefsOf(wired.host, SELLER_CREATE_LINK_ATTR)).toEqual({
+      'tiers:manual': '#settings/seller/tiers/new',
+      'tiers:pass': '#settings/seller/tiers/new/pass',
+    });
+    // The forms themselves are no longer on the list.
+    expect(findByAttr(wired.host, SELLER_TIER_FORM_ATTR)).toBeNull();
+    expect(findByAttr(wired.host, SELLER_PASS_TIER_FORM_ATTR)).toBeNull();
+    wired.mount.dispose();
+
+    const narrowed = mountAt({ kind: 'list', subpage: 'tiers', page: 1 });
+    await narrowed.mount.whenLoaded();
+    expect(findByAttr(narrowed.host, SELLER_LIST_TOOLBAR_ATTR)).toBeNull();
+    narrowed.mount.dispose();
+
+    const customers = mountAt({ kind: 'list', subpage: 'customers', page: 1 }, { runIssueManualCustomer: vi.fn() });
+    await customers.mount.whenLoaded();
+    expect(hrefsOf(customers.host, SELLER_CREATE_LINK_ATTR)).toEqual({ 'customers:manual': '#settings/seller/customers/new' });
+    customers.mount.dispose();
+  });
+
+  it('a create screen without its rpc says so instead of rendering a dead form', async () => {
+    const { host, mount } = mountAt({ kind: 'create', subpage: 'customers', variant: 'manual' });
+    await mount.whenLoaded();
+    expect(findByAttr(host, SELLER_CUSTOMER_FORM_ATTR)).toBeNull();
+    expect(textOf(host)).toContain('Issuing unavailable');
+    expect(findByAttr(host, SELLER_BACK_ATTR)?.getAttribute('href')).toBe('#settings/seller/customers');
+    mount.dispose();
+  });
+
+  it('the setup screen is a directory of three addressed areas with their live state', async () => {
+    const current = overview({
+      readiness: [
+        ...overview().readiness,
+        { key: 'paddle_provider', state: 'ready', label: 'Paddle provider', detail: '1 ready', href: null },
+      ],
+    });
+    const { host, mount } = mountAt({ kind: 'list', subpage: 'setup', page: 1 }, {}, current);
+    await mount.whenLoaded();
+    expect(findByAttr(host, SELLER_SETUP_DIRECTORY_ATTR)).not.toBeNull();
+    expect(hrefsOf(host, SELLER_SETUP_ROW_ATTR)).toEqual({
+      defaults: '#settings/seller/setup/defaults',
+      providers: '#settings/seller/setup/providers',
+      gateway: '#settings/seller/setup/gateway',
+    });
+    expect(textOf(findByAttr(host, SELLER_SETUP_ROW_ATTR, 'providers')!)).toContain('1 of 3 providers ready');
+    // None of the forms render on the directory itself.
+    expect(findByAttr(host, SELLER_SETTINGS_FORM_ATTR)).toBeNull();
+    expect(findByAttr(host, SELLER_PROVIDER_TIER_SYNC_FORM_ATTR)).toBeNull();
+    expect(findByAttr(host, SELLER_LLM_GATEWAY_ATTR)).toBeNull();
+    mount.dispose();
+  });
+
+  it('each setup area renders only itself, under its own breadcrumb', async () => {
+    const gateway = mountAt({ kind: 'setup', section: 'gateway' });
+    await gateway.mount.whenLoaded();
+    expect(findByAttr(gateway.host, SELLER_LLM_GATEWAY_ATTR)).not.toBeNull();
+    expect(findByAttr(gateway.host, SELLER_SETTINGS_ATTR)).toBeNull();
+    expect(findByAttr(gateway.host, SELLER_SETUP_SECTION_ATTR)?.getAttribute(SELLER_SETUP_SECTION_ATTR)).toBe('gateway');
+    expect(hrefsOf(gateway.host, SELLER_BREADCRUMB_LINK_ATTR)).toEqual({
+      seller: '#settings/seller',
+      'section:setup': '#settings/seller/setup',
+    });
+    expect(findByAttr(gateway.host, SELLER_BACK_ATTR)?.getAttribute('href')).toBe('#settings/seller/setup');
+    gateway.mount.dispose();
+
+    const defaults = mountAt({ kind: 'setup', section: 'defaults' });
+    await defaults.mount.whenLoaded();
+    expect(findByAttr(defaults.host, SELLER_SETTINGS_ATTR)).not.toBeNull();
+    expect(findByAttr(defaults.host, SELLER_LLM_GATEWAY_ATTR)).toBeNull();
+    defaults.mount.dispose();
+  });
+
+  it('a provider deep link opens the tier seed with that provider chosen, and the trail names it', async () => {
+    const current = overview({
+      readiness: [
+        ...overview().readiness,
+        { key: 'lemonsqueezy_provider', state: 'ready', label: 'Lemon Squeezy provider', detail: 'ready', href: null },
+      ],
+    });
+    const runSynchronizeProviderTiers = vi.fn<SellerProviderTierSynchronizeCaller>();
+    const { host, mount } = mountAt(
+      { kind: 'setup', section: 'providers', provider: 'lemonsqueezy' },
+      { runSynchronizeProviderTiers },
+      current,
+    );
+    await mount.whenLoaded();
+    expect(findByAttr(host, SELLER_PROVIDER_TIER_SYNC_FIELD_ATTR, 'provider')?.value).toBe('lemonsqueezy');
+    // Chosen AND ready: the button is live for that provider straight away.
+    expect(findByAttr(host, SELLER_PROVIDER_TIER_SYNC_SUBMIT_ATTR)?.disabled).toBe(false);
+    expect(hrefsOf(host, SELLER_BREADCRUMB_LINK_ATTR)['setup:providers']).toBe('#settings/seller/setup/providers');
+    expect(findByAttr(host, SELLER_BACK_ATTR)?.getAttribute('href')).toBe('#settings/seller/setup/providers');
+    mount.dispose();
+  });
+
+  it('overview readiness rows link into the setup screen that acts on them', async () => {
+    const current = overview({
+      readiness: [
+        ...overview().readiness,
+        { key: 'paddle_provider', state: 'needs_setup', label: 'Paddle provider', detail: 'Install and enroll Paddle first.', href: '#connections' },
+        { key: 'llm_gateway', state: 'needs_setup', label: 'LLM gateway route', detail: 'Configure a route.', href: null },
+      ],
+    });
+    const { host, mount } = mountAt({ kind: 'list', subpage: 'overview', page: 1 }, {}, current);
+    await mount.whenLoaded();
+    const links = hrefsOf(host, SELLER_READINESS_SETUP_LINK_ATTR);
+    expect(links.paddle_provider).toBe('#settings/seller/setup/providers/paddle');
+    expect(links.llm_gateway).toBe('#settings/seller/setup/gateway');
+    expect(links.mail_sender).toBe('#settings/seller/setup/defaults');
+    // The provider's own Configure link (to Connections) is kept beside it.
+    expect(textOf(findByAttr(host, SELLER_READINESS_ROW_ATTR, 'paddle_provider')!)).toContain('Configure');
+    mount.dispose();
+  });
+
+  it('a create screen is not a list: no list continuity is restored onto it', async () => {
+    const { host, mount } = mountAt({ kind: 'create', subpage: 'tiers', variant: 'manual' }, { runUpsertManualTier: vi.fn() });
+    await mount.whenLoaded();
+    expect(mount.getState()).toMatchObject({ subpage: 'tiers', selectedItemId: null, create: 'manual', tab: null });
+    expect(findByAttr(host, SELLER_CREATE_PAGE_ATTR)?.getAttribute(SELLER_CREATE_PAGE_ATTR)).toBe('tiers:manual');
+    expect(findByAttr(host, SELLER_TIER_FORM_ATTR)).not.toBeNull();
+    expect(findByAttr(host, SELLER_PAGER_ATTR)).toBeNull();
+    mount.dispose();
+  });
+});
+
+describe('Seller polish — a create screen shows what it just made', () => {
+  it('after a manual tier is created, its record card and link appear beneath the form', async () => {
+    const host = makeFakeElement('div');
+    const base = overview();
+    const created = { ...base.tiers[0]!, tier_id: 'tier-new', display_name: 'Consulting New' };
+    const runUpsertManualTier: SellerManualTierUpsertCaller = vi.fn(async () => ({
+      tier: created,
+      overview: overview({ tiers: [...base.tiers, created], counts: { ...base.counts, tiers: 2, active_tiers: 2 } }),
+    }));
+    const mount = mountSellerPage({
+      host: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      initialAddress: { kind: 'create', subpage: 'tiers', variant: 'manual' },
+      runGetOverview: async () => base,
+      runUpsertManualTier,
+    });
+    await mount.whenLoaded();
+    expect(findByAttr(host, SELLER_TIER_ROW_ATTR)).toBeNull();
+    const field = (name: string): FakeElement => findByAttr(host, SELLER_TIER_FORM_FIELD_ATTR, name)!;
+    field('tier_id').value = 'tier-new';
+    field('door_id').value = 'door-mcp';
+    field('entitlement_key').value = 'new';
+    field('display_name').value = 'Consulting New';
+    field('template_contract_id').value = 'contract-template-1';
+    findByAttr(host, SELLER_TIER_FORM_SUBMIT_ATTR)?.click();
+    await flushAsync();
+    expect(runUpsertManualTier).toHaveBeenCalled();
+    // Only the created record, linked to its own screen — not the whole list.
+    expect(findAllByAttr(host, SELLER_TIER_ROW_ATTR)).toHaveLength(1);
+    expect(findByAttr(host, SELLER_COLLECTION_ITEM_LINK_ATTR, 'tier-new')?.getAttribute('href'))
+      .toBe('#settings/seller/tiers/detail/tier-new');
+    expect(findByAttr(host, SELLER_PAGER_ATTR)).toBeNull();
+    mount.dispose();
+  });
+});
+
+describe('Seller category (2026-09-03) — door_id defaults, sits behind Advanced, follows the tier', () => {
+  it('a manual tier is created under the default category without the owner naming one', async () => {
+    const host = makeFakeElement('div');
+    const base = overview().tiers[0]!;
+    const created: SellerTier = { ...base, tier_id: 'tier-x', door_id: SELLER_DEFAULT_DOOR_ID, entitlement_key: 'x', display_name: 'X' };
+    const runUpsertManualTier: SellerManualTierUpsertCaller = vi.fn(async () => ({
+      tier: created,
+      overview: overview({ tiers: [created] }),
+    }));
+    const mount = mountSellerPage({
+      host: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      initialAddress: { kind: 'create', subpage: 'tiers', variant: 'manual' },
+      runGetOverview: async () => overview({ tiers: [] }),
+      runUpsertManualTier,
+    });
+    await mount.whenLoaded();
+    const field = (name: string): FakeElement => {
+      const el = findByAttr(host, SELLER_TIER_FORM_FIELD_ATTR, name);
+      if (el === null) throw new Error(`missing field ${name}`);
+      return el;
+    };
+    // The category is prefilled and lives inside the Advanced disclosure, not the main grid.
+    expect(field('door_id').value).toBe(SELLER_DEFAULT_DOOR_ID);
+    expect(field('door_id').parent?.parent?.className).toContain('seller-advanced-settings');
+    expect(textOf(host)).not.toContain('Door ID');
+    field('tier_id').value = 'tier-x';
+    field('entitlement_key').value = 'x';
+    field('display_name').value = 'X';
+    field('template_contract_id').value = 'contract-template-1';
+    findByAttr(host, SELLER_TIER_FORM_SUBMIT_ATTR)?.click();
+    await flushAsync();
+    expect(runUpsertManualTier).toHaveBeenCalledWith(expect.objectContaining({
+      tier_id: 'tier-x',
+      door_id: SELLER_DEFAULT_DOOR_ID,
+    }));
+    mount.dispose();
+  });
+
+  it('a pass tier is created under the default category too', async () => {
+    const host = makeFakeElement('div');
+    const base = overview().tiers[0]!;
+    const passTier: SellerTier = { ...base, tier_id: 'tier-day', door_id: SELLER_DEFAULT_DOOR_ID, entitlement_key: 'day-pass', display_name: 'Day pass', pass_duration_seconds: 86_400 };
+    const runCreatePassTier: SellerCreatePassTierCaller = vi.fn(
+      async (): Promise<SellerCreatePassTierResponse> => ({
+        tier: passTier,
+        template_contract_id: 'contract-pass-template',
+        overview: overview({ tiers: [passTier] }),
+      }),
+    );
+    const mount = mountSellerPage({
+      host: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      initialAddress: { kind: 'create', subpage: 'tiers', variant: 'pass' },
+      runGetOverview: async () => overview({ tiers: [] }),
+      runCreatePassTier,
+    });
+    await mount.whenLoaded();
+    const field = (name: string): FakeElement => {
+      const el = findByAttr(host, SELLER_PASS_TIER_FORM_FIELD_ATTR, name);
+      if (el === null) throw new Error(`missing pass-tier field ${name}`);
+      return el;
+    };
+    expect(field('door_id').value).toBe(SELLER_DEFAULT_DOOR_ID);
+    expect(textOf(host)).toContain('Access type');
+    expect(textOf(host)).not.toContain('Door type');
+    field('door_type').value = 'mcp';
+    field('entitlement_key').value = 'day-pass';
+    field('display_name').value = 'Day pass';
+    field('pass_duration_seconds').value = '86400';
+    findByAttr(host, SELLER_PASS_TIER_FORM_SUBMIT_ATTR)?.click();
+    await flushAsync();
+    expect(runCreatePassTier).toHaveBeenCalledWith(expect.objectContaining({
+      door_id: SELLER_DEFAULT_DOOR_ID,
+      door_type: 'mcp',
+      entitlement_key: 'day-pass',
+    }));
+    mount.dispose();
+  });
+
+  it('issuing a customer starts from a tier picker that fills the keys the rpc wants', async () => {
+    const host = makeFakeElement('div');
+    const base = overview().tiers[0]!;
+    const pro: SellerTier = { ...base, tier_id: 'tier-2', entitlement_key: 'consulting-pro', display_name: 'Consulting Pro' };
+    const runIssueManualCustomer: SellerManualCustomerIssueCaller = vi.fn(async () => ({
+      result: 'extended' as const,
+      customer: overview().customers[0]!,
+      claim: null,
+      claim_email_delivery: null,
+      overview: overview({ tiers: [base, pro] }),
+    }));
+    const mount = mountSellerPage({
+      host: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      initialAddress: { kind: 'create', subpage: 'customers', variant: 'manual' },
+      runGetOverview: async () => overview({ tiers: [base, pro] }),
+      runIssueManualCustomer,
+    });
+    await mount.whenLoaded();
+    const field = (name: string): FakeElement => {
+      const el = findByAttr(host, SELLER_CUSTOMER_FORM_FIELD_ATTR, name);
+      if (el === null) throw new Error(`missing field ${name}`);
+      return el;
+    };
+    const picker = field('tier');
+    expect(picker.children.map((o) => o.value)).toEqual(['tier-1', 'tier-2']);
+    // One category across the tiers, so the option text does not carry it.
+    expect(textOf(picker)).toContain('Consulting Pro · consulting-pro');
+    expect(textOf(picker)).not.toContain('door-mcp');
+    // The raw keys follow the pick and stay behind Advanced.
+    expect(field('entitlement_key').value).toBe('consulting-basic');
+    picker.value = 'tier-2';
+    for (const fn of picker.listeners.get('change') ?? []) fn({});
+    expect(field('door_id').value).toBe('door-mcp');
+    expect(field('entitlement_key').value).toBe('consulting-pro');
+    expect(field('door_id').parent?.parent?.className).toContain('seller-advanced-settings');
+    field('source_customer_id').value = 'cus-pro-1';
+    findByAttr(host, SELLER_CUSTOMER_FORM_SUBMIT_ATTR)?.click();
+    await flushAsync();
+    expect(runIssueManualCustomer).toHaveBeenCalledWith({
+      door_id: 'door-mcp',
+      entitlement_key: 'consulting-pro',
+      source_customer_id: 'cus-pro-1',
+    });
+    mount.dispose();
   });
 });

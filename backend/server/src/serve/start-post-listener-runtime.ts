@@ -38,7 +38,8 @@ import { composeGenericEngagementReconciliation } from './compose-generic-engage
 import { composeWorkEntitySourceSync } from './compose-work-entity-source-sync.js';
 import { composeContactSourceSync } from './compose-contact-source-sync.js';
 import { buildCanonicalPollDeps } from '../watch/canonical-poll-deps.js';
-import { handleExecute } from '../execute-handler.js';
+import { attemptPeerAskDelivery, handleExecute } from '../execute-handler.js';
+import { recoverPeerAskDeliveries } from '../peer-ask-delivery-recovery.js';
 import { classifyRunFailure } from '@recued/engine';
 import { composeExchangeRetry } from '../composition/bin/wire-exchange-retry.js';
 import { composePeerAskTimeoutSweep } from '../composition/bin/wire-peer-ask-timeout.js';
@@ -187,7 +188,12 @@ export interface StartPostListenerRuntimeOptions {
   readonly notificationBlock:
     | Pick<
         NotificationBlock,
-        'getAsk' | 'cancelAsk' | 'recoverPendingAsks' | 'pruneHandledAsks' | 'notify'
+        | 'getAsk'
+        | 'listUnresolvedAsks'
+        | 'cancelAsk'
+        | 'recoverPendingAsks'
+        | 'pruneHandledAsks'
+        | 'notify'
       >
     | undefined;
   /** D-178 slice 4b — on-boot update reconcile; the tail runs it after
@@ -627,6 +633,7 @@ export const startPostListenerRuntime = async (
     server: options.server,
     webclientServed: options.webclientServed,
     notificationBlock: options.notificationBlock,
+    gatedActionStore: options.executeDeps.gatedActionStore,
     runUpdateBootReconcile: options.runUpdateBootReconcile,
     // D-148 § A.5.6 — the last hop of the lapse-recovery wiring. Resolved
     // LAZILY: the cert stack fills `handleStateMachineRef` in `composeLate`,
@@ -697,11 +704,15 @@ export const startPostListenerRuntime = async (
         sweep: {
           outbox,
           answers: peerAnswers,
+          ...(executeDeps.gatedActionStore !== undefined
+            ? { gatedActions: executeDeps.gatedActionStore }
+            : {}),
           resume: async (target) => {
             await resumePeerHold(target, {
               getExecuteDeps: () => executeDeps,
               auditLog: auditLogForTimeout,
               checkpoints,
+              outbox,
             });
           },
           logActivity: (row) => {
@@ -710,6 +721,17 @@ export const startPostListenerRuntime = async (
             }).logActivity?.({ ...row, timestamp: Date.now() });
           },
         },
+        recoverDelivery: () => recoverPeerAskDeliveries({
+          outbox,
+          auditLog: auditLogForTimeout,
+          checkpoints,
+          answers: peerAnswers,
+          ...(executeDeps.gatedActionStore !== undefined
+            ? { gatedActions: executeDeps.gatedActionStore }
+            : {}),
+          deliver: (row, anchor) =>
+            attemptPeerAskDelivery(executeDeps, row, anchor),
+        }),
         // D-234 § 234.4n — the orphaned-hold half, on the same tick. ⚠ Gated on
         // the dish store: with no way to ask "is this dish still there", the
         // only safe answer is to abandon nothing.
@@ -718,6 +740,9 @@ export const startPostListenerRuntime = async (
               abandon: {
                 outbox,
                 answers: peerAnswers,
+                ...(executeDeps.gatedActionStore !== undefined
+                  ? { gatedActions: executeDeps.gatedActionStore }
+                  : {}),
                 auditLog: auditLogForTimeout,
                 dishes: executeDeps.dishStore,
                 // ⛔ BEST EFFORT, AND THE CALLER SWALLOWS THE REJECTION. This is

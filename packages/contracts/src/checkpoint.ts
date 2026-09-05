@@ -31,6 +31,8 @@ import {
 import type { PiiLedgerStoreSnapshot } from './pii-alias.js';
 import type { PreflightOverrideOffer } from './preflight-signal.js';
 import { isOperationSpecHash } from './owner-operation-override.js';
+import type { GatedActionSettlementMode } from './gated-action.js';
+import type { ForeachCheckpointProgress } from './foreach-checkpoint.js';
 
 // ────────────────────────────────────────────────────────────────
 // Checkpoint — the resumable state of a preflight-gated run
@@ -69,6 +71,12 @@ export interface PreflightCheckpointContext {
   connection_name?: string;
   risk_tier?: string;
   reason?: string;
+  /** Fixed amplification bound shown on the approval and copied to the
+   * operation receipt after restart recovery. */
+  egress_bound?: { readonly requests: number; readonly total_bytes: number };
+  /** Trusted host classification captured when the gate fires. Result JSON is
+   * never allowed to opt itself into asynchronous handoff semantics. */
+  gated_action_settlement_mode?: GatedActionSettlementMode;
   owner_override_offer?: PreflightOverrideOffer;
   approval_clamped_from?: OperationApproval;
   authorization_provenance?: AuthorizationProvenance;
@@ -224,6 +232,12 @@ export interface Checkpoint {
    *  guard requires it for a recipe-bound checkpoint (`raw_op` absent) and
    *  requires it ABSENT for a raw-op checkpoint — a clean partition both ways. */
   recipe_id?: string;
+  /** Hash of the recipe definition before connection lowering and automatic
+   * execution rewrites. New checkpoints always carry it. Stored-recipe resume
+   * compares the current definition against this value before an approved
+   * effect may dispatch, so an edit cannot inherit an old owner decision.
+   * Optional only for checkpoints written before this field existed. */
+  recipe_source_hash?: string;
   /** R2 step 6 — the recipe definition itself, for a run whose recipe
    *  is NOT in the recipe store: an INLINE dispatch (the R2 transient
    *  resolve-at-dispatch path — deliberately never persisted) or a
@@ -281,6 +295,12 @@ export interface Checkpoint {
    *  state a fresh execution re-seeds from. `{}` when the gate fires
    *  before any step has produced output. */
   step_state: Record<string, unknown>;
+  /** Present only when the gate fired during a foreach iteration. */
+  foreach_progress?: ForeachCheckpointProgress;
+  /** Previous operation receipt when this checkpoint starts a later approval
+   * segment in the same foreach step. This lets boot recovery recreate the
+   * new receipt without renewing the already-dispatched segment. */
+  gated_action_predecessor_ref?: string;
   /** § 7 follow-on (pii-ledger-in-checkpoint) — the run's serialized
    *  `PiiLedgerStore` at the moment the gate fired. Present ONLY when the
    *  run had minted pii-protect ledgers (authored or auto-synthesized
@@ -424,6 +444,9 @@ export const isCheckpoint = (value: unknown): value is Checkpoint => {
     if (!nonEmpty(v.recipe_id)) return false;
     if (!nonEmpty(v.gated_step_id)) return false;
   }
+  if (v.recipe_source_hash !== undefined) {
+    if (v.raw_op !== undefined || !nonEmpty(v.recipe_source_hash)) return false;
+  }
   // `recipe_snapshot` is optional (R2 step 6 — inline-run resume); when
   // present it must be a plain object. Content integrity is the
   // resumer's hash check against the anchor, not a shape concern.
@@ -441,6 +464,8 @@ export const isCheckpoint = (value: unknown): value is Checkpoint => {
   if (v.predecessor_commit_id !== undefined && !nonEmpty(v.predecessor_commit_id)) {
     return false;
   }
+  if (v.gated_action_predecessor_ref !== undefined
+    && !nonEmpty(v.gated_action_predecessor_ref)) return false;
   // `approved_target` is optional; when present it must be a plain object
   // whose present identity fields are strings (the catalog gate sets the
   // full triple, the simple-form gate only `ingredient_slug`; absent fields
@@ -470,6 +495,19 @@ export const isCheckpoint = (value: unknown): value is Checkpoint => {
     const c = v.preflight_context as Record<string, unknown>;
     for (const f of ['tool_slug', 'connection_name', 'risk_tier', 'reason'] as const) {
       if (c[f] !== undefined && typeof c[f] !== 'string') return false;
+    }
+    if (c.gated_action_settlement_mode !== undefined
+      && c.gated_action_settlement_mode !== 'returned_result'
+      && c.gated_action_settlement_mode !== 'durable_handoff') return false;
+    if (c.egress_bound !== undefined) {
+      if (typeof c.egress_bound !== 'object'
+        || c.egress_bound === null
+        || Array.isArray(c.egress_bound)) return false;
+      const bound = c.egress_bound as Record<string, unknown>;
+      if (!Number.isInteger(bound.requests)
+        || (bound.requests as number) < 1
+        || !Number.isFinite(bound.total_bytes)
+        || (bound.total_bytes as number) < 0) return false;
     }
     if (
       c.approval_clamped_from !== undefined
@@ -513,6 +551,34 @@ export const isCheckpoint = (value: unknown): value is Checkpoint => {
   ) {
     return false;
   }
+  if (v.foreach_progress !== undefined) {
+    if (v.raw_op !== undefined
+      || typeof v.foreach_progress !== 'object'
+      || v.foreach_progress === null
+      || Array.isArray(v.foreach_progress)) return false;
+    const progress = v.foreach_progress as Record<string, unknown>;
+    if (!nonEmpty(progress.step_id)
+      || progress.step_id !== v.gated_step_id
+      || !Number.isInteger(progress.next_index)
+      || (progress.next_index as number) < 0
+      || !Number.isInteger(progress.source_length)
+      || (progress.source_length as number) < 1
+      || typeof progress.source_hash !== 'string'
+      || !/^[0-9a-f]{64}$/.test(progress.source_hash)
+      || (progress.next_index as number) >= (progress.source_length as number)
+      || !Array.isArray(progress.results)
+      || progress.results.length !== progress.next_index) return false;
+    for (const entry of progress.results) {
+      if (entry === null
+        || typeof entry !== 'object'
+        || Array.isArray(entry)
+        || typeof (entry as { ok?: unknown }).ok !== 'boolean') return false;
+      if ((entry as { skipped?: unknown }).skipped !== undefined
+        && typeof (entry as { skipped?: unknown }).skipped !== 'boolean') return false;
+    }
+  }
+  if (v.gated_action_predecessor_ref !== undefined
+    && v.foreach_progress === undefined) return false;
   // § 7 follow-on — `pii_ledgers` is optional; when present it must be a
   // plain object (the serialized run ledger store). Contents stay
   // unconstrained at the guard — the hydrating store (`@recued/transforms`)

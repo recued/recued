@@ -149,6 +149,32 @@ describe('pack-discovery config', () => {
     expect(second.panel.getRenderedIdentities()).toEqual(['workflow-pack']);
     second.dispose();
   });
+  /** D-259 — the badge that replaced a durable ask.
+   *
+   *  ⛔ It is `danger` and it comes FIRST because it is the only badge here that
+   *  reports something WRONG; the others are provenance. Placing it after
+   *  "Included"/"Certified" would file a broken pack behind two reassurances. */
+  it('⛔ an unrunnable pack says so FIRST, in danger tone', () => {
+    const b = packBadges(
+      pr({ publisher_certified: true, service_kind: 'cli' }),
+      new Set(['p']),
+      new Set(['p']),
+    );
+    expect(b[0]).toMatchObject({ label: 'Needs update', tone: 'danger' });
+    expect(b[0]!.title).toContain('no longer runs');
+    // …and it does not displace the rest.
+    expect(b.map((x) => x.label)).toContain('✓ Certified');
+  });
+
+  it('says nothing about a pack that is not in the unrunnable set', () => {
+    expect(packBadges(pr({}), undefined, new Set(['someone-else'])).map((x) => x.label))
+      .not.toContain('Needs update');
+    // ⚠ And an ABSENT set is silence, never a clean bill: a host that does not
+    //   wire `packs.unrunnable` must not imply every pack is fine.
+    expect(packBadges(pr({}), undefined, undefined).map((x) => x.label))
+      .not.toContain('Needs update');
+  });
+
   it('badges: certified (accent) + humanized service_kind (muted)', () => {
     const b = packBadges(pr({ publisher_certified: true, service_kind: 'cli' }));
     expect(b[0]).toMatchObject({ label: '✓ Certified', tone: 'accent' });

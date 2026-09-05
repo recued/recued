@@ -61,6 +61,13 @@ describe('D-213 A1 — owner recall corpus scope', () => {
       governing_contract_id: OWNER_CONTRACT_ID,
       row_eligibility:
         CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT,
+      // D-166 door corpus — the storage discriminant. `null` here is not
+      // padding: the owner's rows are contract-free by construction, and the
+      // store compares with SQL `IS`, so a null scope selects exactly the rows
+      // whose `recall_contract_id` is NULL. `toEqual` is deliberately exact so
+      // a future field cannot be added to this scope without a decision about
+      // what it means for the predicate.
+      recall_contract_id: null,
     });
   });
 

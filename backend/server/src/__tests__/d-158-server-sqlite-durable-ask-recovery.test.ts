@@ -83,8 +83,12 @@ const zeroSweepResult = () => ({
   inspected: 0,
   raised: 0,
   alreadyPaired: 0,
+  leftPassive: 0,
   failed: 0,
   orphaned: 0,
+  superseded: 0,
+  heldForPeer: 0,
+  repairedPeerFailures: 0,
   terminal: 0,
 });
 

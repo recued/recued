@@ -41,8 +41,12 @@ import {
   type SellerSettingsUpdateResponse,
   type SellerStripeSynchronizeRequest,
   type SellerStripeSynchronizeResponse,
+  type SellerProviderTierSynchronizeRequest,
+  type SellerProviderTierSynchronizeResponse,
   type ServerRpcRegistry,
+  SELLER_PROVIDERS,
   SELLER_USAGE_KINDS,
+  type SellerProviderSpec,
   type SellerTierUsagePolicyRequest,
   type SellerTierUsagePolicyResponse,
 } from '@recued/contracts';
@@ -60,10 +64,14 @@ import {
 } from './seller/customer-claim-delivery.js';
 import { mintCustomerTemplateShell } from './seller/customer-template-shell.js';
 import {
-  SellerStripeSynchronizationError,
+  stripeEntitlementProviderFrom,
   synchronizeSellerStripeEntitlements as synchronizeStripeEntitlements,
-  type SellerStripeEntitlementProvider,
 } from './seller/stripe-entitlement-sync.js';
+import {
+  SellerProviderTierSynchronizationError,
+  synchronizeSellerProviderTiers as synchronizeProviderTiers,
+  type SellerProviderTierProvider,
+} from './seller/provider-tier-sync.js';
 import {
   PEER_HANDLE_CONFLICT_PREFIX,
   type ChatInboundTokenStore,
@@ -99,7 +107,8 @@ export type SellerOverviewMethods =
   | 'server.seller.closeManualCustomer'
   | 'server.seller.reissueManualCustomerToken'
   | 'server.seller.bulkAdjustManualTierCustomers'
-  | 'server.seller.synchronizeStripeEntitlements';
+  | 'server.seller.synchronizeStripeEntitlements'
+  | 'server.seller.synchronizeProviderTiers';
 
 export interface SellerOverviewHandlerDeps {
   readonly sellerStore: SellerStore;
@@ -119,9 +128,11 @@ export interface SellerOverviewHandlerDeps {
   readonly newContractId?: () => string;
   readonly newCustomerId?: () => string;
   readonly newTierId?: () => string;
-  /** Installed Stripe catalog reader. Absent keeps provider sync explicitly
-   *  unavailable while every manual Seller control remains usable. */
-  readonly stripeEntitlementProvider?: SellerStripeEntitlementProvider;
+  /** D-196 consolidation — the ONE tier-seed seam for every provider in
+   *  `SELLER_PROVIDERS` (the shipped Stripe-only rpc adapts over it). Absent on
+   *  a boot without the gateway, which leaves every Synchronize unavailable
+   *  while every manual Seller control remains usable. */
+  readonly providerTierProvider?: SellerProviderTierProvider;
   /** Resolve against the live collection registry. True only for a currently
    *  registered mail instance whose provider is send-capable. */
   readonly isLiveSendCapableMailInstance?: (instanceId: string) => boolean;
@@ -153,6 +164,8 @@ const SELLER_MANUAL_TIER_BULK_ADJUST_METHOD =
   'server.seller.bulkAdjustManualTierCustomers';
 const SELLER_STRIPE_SYNCHRONIZE_METHOD =
   'server.seller.synchronizeStripeEntitlements';
+const SELLER_PROVIDER_TIERS_SYNCHRONIZE_METHOD =
+  'server.seller.synchronizeProviderTiers';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -179,7 +192,7 @@ const badManualCustomerLifecycleRequest = (
 const sellerClaimNotConfigured = (method: SellerOverviewMethods): RpcError =>
   new RpcError(
     'not_configured',
-    `${method}: one-time customer claims require the sealed claim store, a public HTTPS Reception URL, and an MCP or LLM gateway customer door`,
+    `${method}: one-time customer claims require the sealed claim store, a public HTTPS Reception URL, and an MCP or LLM gateway customer access type`,
     503,
     method,
   );
@@ -500,16 +513,34 @@ const buildReadiness = (
   settings: SellerOverview['settings'],
   llm_gateway: SellerOverviewLlmGateway,
   senderReady: boolean,
-  stripeProvider: SellerStripeEntitlementProvider | undefined,
+  tierProvider: SellerProviderTierProvider | undefined,
 ): SellerOverviewReadinessItem[] => {
-  let stripeConnectionCount: number | null = null;
-  if (stripeProvider !== undefined) {
-    try {
-      stripeConnectionCount = stripeProvider.listConnections().length;
-    } catch {
-      stripeConnectionCount = 0;
+  // One readiness row per registry provider, all off the one seam: a row is
+  // `not_wired` when the seam is absent, `needs_setup` until a connection of
+  // that vendor is bound to its seller catalog with the tier-identity read
+  // granted, `ready` after.
+  const providerReadiness = (spec: SellerProviderSpec): SellerOverviewReadinessItem => {
+    let count: number | null = null;
+    if (tierProvider !== undefined) {
+      try {
+        count = tierProvider.listConnections(spec.source).length;
+      } catch {
+        count = 0;
+      }
     }
-  }
+    const identity = spec.tier_identity === 'entitlement_feature' ? 'entitlement read' : 'product read';
+    return {
+      key: spec.readiness_key,
+      state: count === null ? 'not_wired' : count > 0 ? 'ready' : 'needs_setup',
+      label: `${spec.label} provider`,
+      detail: count === null
+        ? `${spec.label} Initialize and Synchronize are unavailable on this server.`
+        : count === 0
+          ? `Install the ${spec.catalog_slug} pack, enroll a ${spec.label} API connection, and grant its ${identity} before synchronizing.`
+          : `${count} ${spec.label} connection${count === 1 ? '' : 's'} ready for Initialize / Synchronize.`,
+      href: count === 0 ? '#connections' : null,
+    };
+  };
   return [
   {
     key: 'manual_lifecycle',
@@ -518,21 +549,7 @@ const buildReadiness = (
     detail: 'Manual tiers and customers can be managed without a payment provider.',
     href: '#contracts',
   },
-  {
-    key: 'stripe_provider',
-    state: stripeConnectionCount === null
-      ? 'not_wired'
-      : stripeConnectionCount > 0
-        ? 'ready'
-        : 'needs_setup',
-    label: 'Stripe provider',
-    detail: stripeConnectionCount === null
-      ? 'Stripe Initialize and Synchronize are unavailable on this server.'
-      : stripeConnectionCount === 0
-        ? 'Install the Stripe pack, enroll a Stripe API connection, and grant its entitlement read before synchronizing.'
-        : `${stripeConnectionCount} Stripe connection${stripeConnectionCount === 1 ? '' : 's'} ready for Initialize / Synchronize.`,
-    href: stripeConnectionCount === 0 ? '#connections' : null,
-  },
+  ...SELLER_PROVIDERS.map(providerReadiness),
   {
     key: 'mail_sender',
     state: senderReady ? 'ready' : 'needs_setup',
@@ -610,7 +627,7 @@ export const buildSellerOverview = (
       settings,
       llm_gateway,
       senderReady,
-      deps.stripeEntitlementProvider,
+      deps.providerTierProvider,
     ),
     llm_gateway,
     offers,
@@ -1466,7 +1483,7 @@ export const synchronizeSellerStripeEntitlements = async (
   client: WsClient,
 ): Promise<SellerStripeSynchronizeResponse> => {
   const method = SELLER_STRIPE_SYNCHRONIZE_METHOD;
-  if (!deps.contractStore || !deps.stripeEntitlementProvider) {
+  if (!deps.contractStore || !deps.providerTierProvider) {
     throw new RpcError(
       'not_configured',
       `${method}: Stripe synchronization requires the contract store, installed Stripe catalog, and catalog gateway`,
@@ -1480,7 +1497,7 @@ export const synchronizeSellerStripeEntitlements = async (
       {
         sellerStore: deps.sellerStore,
         contractStore: deps.contractStore,
-        provider: deps.stripeEntitlementProvider,
+        provider: stripeEntitlementProviderFrom(deps.providerTierProvider),
         ...(deps.now ? { now: deps.now } : {}),
         ...(deps.newTierId ? { newTierId: deps.newTierId } : {}),
         ...(deps.newContractId ? { newContractId: deps.newContractId } : {}),
@@ -1491,7 +1508,60 @@ export const synchronizeSellerStripeEntitlements = async (
     );
     return { ...result, overview: buildSellerOverview(deps) };
   } catch (error) {
-    if (!(error instanceof SellerStripeSynchronizationError)) throw error;
+    if (!(error instanceof SellerProviderTierSynchronizationError)) throw error;
+    const status = error.kind === 'bad_request'
+      ? 400
+      : error.kind === 'policy'
+        ? 403
+        : error.kind === 'conflict'
+          ? 409
+          : error.kind === 'upstream'
+            ? 502
+            : 503;
+    const code = error.kind === 'policy'
+      ? 'forbidden'
+      : error.kind === 'upstream'
+        ? 'provider_error'
+        : error.kind;
+    throw new RpcError(code, `${method}: ${error.message}`, status, method);
+  }
+};
+
+/** D-196 consolidation — the ONE owner-clicked tier seed for every provider.
+ *  Same error mapping as the Stripe alias above; a different METHOD so an
+ *  older server rejects it outright rather than minting Stripe tiers for a
+ *  Paddle request. */
+export const synchronizeSellerProviderTiers = async (
+  deps: SellerOverviewHandlerDeps,
+  request: SellerProviderTierSynchronizeRequest,
+  client: WsClient,
+): Promise<SellerProviderTierSynchronizeResponse> => {
+  const method = SELLER_PROVIDER_TIERS_SYNCHRONIZE_METHOD;
+  if (!deps.contractStore || !deps.providerTierProvider) {
+    throw new RpcError(
+      'not_configured',
+      `${method}: tier synchronization requires the contract store, an installed seller catalog, and the catalog gateway`,
+      503,
+      method,
+    );
+  }
+  try {
+    const result = await synchronizeProviderTiers(
+      {
+        sellerStore: deps.sellerStore,
+        contractStore: deps.contractStore,
+        provider: deps.providerTierProvider,
+        ...(deps.now ? { now: deps.now } : {}),
+        ...(deps.newTierId ? { newTierId: deps.newTierId } : {}),
+        ...(deps.newContractId ? { newContractId: deps.newContractId } : {}),
+        mintedBy: deps.mintedBy ?? 'server:seller:provider-tier-sync',
+      },
+      request,
+      stripeSyncExecutionSource(client),
+    );
+    return { ...result, overview: buildSellerOverview(deps) };
+  } catch (error) {
+    if (!(error instanceof SellerProviderTierSynchronizationError)) throw error;
     const status = error.kind === 'bad_request'
       ? 400
       : error.kind === 'policy'
@@ -1531,6 +1601,7 @@ export const makeSellerOverviewHandlers = (
       'server.seller.reissueManualCustomerToken',
       'server.seller.bulkAdjustManualTierCustomers',
       'server.seller.synchronizeStripeEntitlements',
+      'server.seller.synchronizeProviderTiers',
     ],
     handlers: {
       'server.seller.getOverview': async () => buildSellerOverview(deps),
@@ -1562,6 +1633,8 @@ export const makeSellerOverviewHandlers = (
         bulkAdjustSellerManualTierCustomers(deps, request),
       'server.seller.synchronizeStripeEntitlements': async (request, client) =>
         synchronizeSellerStripeEntitlements(deps, request, client),
+      'server.seller.synchronizeProviderTiers': async (request, client) =>
+        synchronizeSellerProviderTiers(deps, request, client),
     },
   };
 };

@@ -146,6 +146,11 @@ const expectedBundleKeys = [
   // ratchet's `not.toBeUndefined()` sweep is what keeps it from riding as an
   // undefined key.
   'publishExecutionCaseOfferNotifier',
+  // D-137 — writes the RESULT half of a paired tool call when a held run
+  // settles, long after the turn that asked for it ended. This list is a
+  // deliberate ratchet on the bundle's surface: a new field is a decision, not
+  // a diff to wave through.
+  'runSettledSink',
   // D-219 — the capture-only argument buffer, surfaced ONLY so the retention
   // pruner can bound it. ⛔ No read path consumes it.
   'executionCaseArgumentStore',

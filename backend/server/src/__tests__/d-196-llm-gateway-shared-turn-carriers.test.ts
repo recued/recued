@@ -13,7 +13,7 @@ import {
   type ToolEntry,
 } from '@recued/contracts';
 import { piiEgress, planApproval } from '@recued/gateway';
-import { estimateConservativeMessagesTokens } from '@recued/llm';
+import { ESTIMATED_BYTES_PER_TOKEN, estimateConservativeMessagesTokens } from '@recued/llm';
 
 import {
   createChatOrchestrator,
@@ -160,6 +160,23 @@ const gatewayDispatchArgs = (meter: LlmGatewayToolUsageMeter) => ({
   contract_snapshot: SNAPSHOT,
   llm_gateway_tool_usage: meter,
 });
+
+/** Rescale a budget literal that was calibrated when the estimator returned one
+ *  token per UTF-8 BYTE.
+ *
+ *  ⛔ THE FIXTURE CONTENT IS UNCHANGED, so what these numbers have to preserve
+ *  is their RATIO to it — a budget just under an oversized turn, so eviction
+ *  fires. Fixing the estimator's divisor changed the scale of one side only:
+ *  at the raw literals the 12,000-char turn now costs 4,000 against an 8,000
+ *  budget, fits, and the test stops exercising compaction while still looking
+ *  like it does. Dividing by the same constant restores the ratio exactly, and
+ *  keeps these tied to the estimator if it is ever refined again.
+ *
+ *  ⚠ A budget literal is only safe as a literal when it is DERIVED from
+ *  measured content (see `baseTokens` below, and `MODEL_WINDOW_HISTORY_HEADROOM`
+ *  in `ports-llm-gateway-handler.test.ts`). Prefer that for new fixtures. */
+const BYTE_ERA = (literal: number): number =>
+  Math.ceil(literal / ESTIMATED_BYTES_PER_TOKEN);
 
 describe('D-196 llm_gateway shared-turn carriers', () => {
   it('runs the contracted gateway through the shared chat tool loop with a grant-filtered catalog', async () => {
@@ -622,7 +639,7 @@ describe('D-196 llm_gateway shared-turn carriers', () => {
         },
         correction_context: [],
         model_layer: 'byok',
-        input_token_budget: 8_000,
+        input_token_budget: BYTE_ERA(8_000),
       },
       {
         executeAiCall,
@@ -689,7 +706,7 @@ describe('D-196 llm_gateway shared-turn carriers', () => {
       now: () => 1_000,
     });
 
-    const budget = baseTokens + 400;
+    const budget = baseTokens + BYTE_ERA(400);
     const aiInputs: Record<string, unknown>[] = [];
     let aiRound = 0;
     await runChatTurn(

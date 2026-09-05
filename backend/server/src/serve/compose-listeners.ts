@@ -23,7 +23,11 @@ import {
   findReceptionHoldItem,
   handleReceptionInboxApprove,
 } from '../reception-inbox-handler.js';
-import { resolvePublicBaseUrl } from '../ask-landing-answer-link.js';
+import {
+  buildPacksSurfaceLink,
+  buildUpdatesSurfaceLink,
+  resolvePublicBaseUrl,
+} from '../ask-landing-answer-link.js';
 import { createWebhookProfileListener } from '../webhook-profile-listener.js';
 import { createWebhookProfileRuntimeRegistry } from '../webhook-profile-runtime.js';
 import {
@@ -158,6 +162,12 @@ import {
 // D-225 Slice 2 — the generated-pack install closure handed to connectionDeps.
 import { handlePacksInstall } from '../pack-install-handler.js';
 import { handlePacksUninstall } from '../pack-uninstall-handler.js';
+import { reconcileInstalledPacksOnBoot } from '../pack-reconciliation.js';
+import {
+  checkInstalledManifestsOnBoot,
+  notifyUnrunnablePacks,
+} from '../ingredient-authoring/installed-manifest-boot-check.js';
+import { projectUnrunnableFindingsToPacks } from '../unrunnable-pack-notice.js';
 import {
   decodeAuthFromStorage,
   firstMintGeneratedPack,
@@ -189,6 +199,7 @@ import type { InitialAcmeDomainIssuer } from '../keys/rotation/acme-domain-renew
 import { buildApplyOrchestratorDeps, buildReleaseCheckDeps, buildUpdateModeDeps } from '../update/release-config.js';
 import { buildUpdateReleaseEntry, updateAutoApplyRegistry } from '../update/auto-apply-registry.js';
 import { runUpdateBootReconcile as runUpdateBootReconcileImpl } from '../update/boot-reconcile.js';
+import { createUpdateOwnerAlertSink } from '../update/owner-alert.js';
 import { SERVER_VERSION } from '../server-version.js';
 import type { RpcContext } from './compose-rpc-context.js';
 import type { StorageContext } from './compose-storage-context.js';
@@ -558,6 +569,80 @@ export const composeListeners = async (
     mcpHttpDeps,
     llmGatewayDeps,
   } = options;
+
+  // D-259 launch gate — this is the FIRST stateful work in this composer. Repair
+  // only the hash-pinned, authority-equivalent CLI migrations before any mail,
+  // webhook, messenger, HTTP, or WebSocket listener/poller can accept work. The
+  // validator check runs AFTER the attempt, so it reports only packs still
+  // broken/held rather than warning about a body this boot just repaired.
+  if (app.contractStoreRef) {
+    await reconcileInstalledPacksOnBoot({
+      contractStore: app.contractStoreRef,
+      localManifestStore: storage.localManifestStore,
+      registry: execution.executorConfig.manifests,
+      now: rpc.packInstallDeps?.now ?? (() => Date.now()),
+      ...(rpc.packInstallDeps?.packDir !== undefined
+        ? { packDir: rpc.packInstallDeps.packDir }
+        : {}),
+      log: (message: string) => console.warn(message),
+    });
+  }
+  if (typeof storage.localManifestStore.listManifests === 'function') {
+    const unrunnable = checkInstalledManifestsOnBoot({
+      listManifests: () => storage.localManifestStore.listManifests(),
+      log: (message: string) => console.warn(message),
+    });
+    // ⛔ THE LOG LINE ABOVE REACHES NOBODY ON THE SERVER THIS EXISTS FOR.
+    //    An unattended owner is not tailing stdout, and after the reconciler
+    //    what survives to here is precisely what a machine DECLINED to fix —
+    //    the set a human has to see. So it also pings, with a link.
+    //
+    // ⚠ Two sibling producers in this tree (`pingReceptionInbox`,
+    //   `offerExecutionCase`) are marked "ready-to-wire, boot wiring
+    //   DEFERRED" and nothing calls either. A third unwired ping would be
+    //   the same non-delivery in a new file, so this one is wired here.
+    const notifier = execution.notificationBlock;
+    if (unrunnable.length > 0 && notifier !== undefined) {
+      // `local_manifest` stores the DECOMPOSED catalog (`codex`), while the
+      // surface the owner can update is keyed by the installed PACK
+      // (`codex-pack`). Join through installed_pack.ingredient_ids before
+      // naming or linking the notice. If that identity cannot be proved, the
+      // list remains safe; a guessed detail URL does not.
+      const notices = projectUnrunnableFindingsToPacks(
+        unrunnable,
+        app.contractStoreRef,
+      );
+      // D-259 — the deep link. `#packs/<slug>` is a real parsed webclient
+      // address, so the only open question was the ORIGIN, and the server has
+      // one whenever it is publicly named. Exactly one unrunnable pack has an
+      // unambiguous destination (its detail page); several do not, so they get
+      // the list. `buildPacksSurfaceLink` returns null on a non-public server
+      // and the ping then carries no link at all — deliberately, per
+      // `execute-handler.ts:3014`.
+      const packsLink = buildPacksSurfaceLink(
+        resolvePublicBaseUrl(process.env.RECUED_PUBLIC_BASE_URL),
+      );
+      const linkUrl =
+        packsLink === null
+          ? undefined
+          : packsLink(
+              notices.exact_pack_identities && notices.findings.length === 1
+                ? notices.findings[0]?.slug
+                : undefined,
+            );
+      // ⚠ NO RESTART DEDUP, AND NONE IS NEEDED. This is `notify`, not `ask`:
+      // fire-and-forget, persisting no row, so a restart cannot accumulate
+      // anything to deduplicate. The dedup this replaced existed only to stop
+      // an ASK minting a fresh open row every boot. Re-announcing a condition
+      // that is still true on a restart is what a notification is FOR; the
+      // durable half lives on the Packs surface (`packs.unrunnable`).
+      void notifyUnrunnablePacks(
+        notices.findings,
+        (message) => notifier.notify(message),
+        linkUrl,
+      ).catch(() => undefined);
+    }
+  }
 
   // WatchSource generalization — the push-source governance registry
   // (process-wide default; salesforce CometD boot + the reception
@@ -1096,6 +1181,20 @@ export const composeListeners = async (
   // + ledger→audit replay). Run AFTER markBooted (the server is serving, so a
   // staged release that reached here booted healthy → commit). Best-effort:
   // wrapped so a reconcile failure never blocks the boot it runs after.
+  //
+  // The owner alert is bound through `NotificationBlock.notify` ONLY. There is
+  // no answer to collect after the state machine has decided an outcome, and an
+  // ask with a lone Dismiss option would put an error report in the decision
+  // queue and let an answer clear it while the condition remained true. The
+  // update ledger/journal carries the durable condition; this is its heads-up.
+  const updateOwnerAlert = execution.notificationBlock
+    ? createUpdateOwnerAlertSink(
+        execution.notificationBlock,
+        buildUpdatesSurfaceLink(
+          resolvePublicBaseUrl(process.env.RECUED_PUBLIC_BASE_URL),
+        ) ?? undefined,
+      )
+    : undefined;
   const runUpdateBootReconcile =
     updateApplyDeps && releaseCheckDeps
       ? async (): Promise<void> => {
@@ -1105,7 +1204,12 @@ export const composeListeners = async (
               channel: releaseCheckDeps.channel === 'edge' ? 'edge' : 'stable',
               currentVersion: SERVER_VERSION_DEFINE,
               ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
-              notify: (m) => console.error(`[update] ${m}`),
+              ...(updateOwnerAlert ? { ownerAlert: updateOwnerAlert } : {}),
+              // The exact success/abandon result is known only after lifecycle
+              // has closed SQLite. Keep that late callback a local log; the
+              // owner notification begins before the drain through the port
+              // above, while its settings store is still usable.
+              postDrainLog: (m) => console.error(`[update] ${m}`),
             });
             if (outcome.action === 'manual-rollback-recovery-failed') {
               console.error(
@@ -2989,6 +3093,19 @@ export const composeListeners = async (
       : {}),
     ...(rpc.packListDeps
       ? { packListDeps: rpc.packListDeps }
+      : {}),
+    // D-259 — the durable half of the boot pack finding. Composed HERE rather
+    // than threaded through `rpc`, because both inputs are already in scope and
+    // both must be the SAME sources the boot check reads: if the rpc and the
+    // boot notification could disagree, the Packs surface would contradict the
+    // message that sent the owner to it.
+    ...(typeof storage.localManifestStore.listManifests === 'function'
+      ? {
+          packUnrunnableDeps: {
+            listManifests: () => storage.localManifestStore.listManifests!(),
+            getContractStore: () => app.contractStoreRef,
+          },
+        }
       : {}),
     ...(rpc.packUninstallDeps
       ? {

@@ -388,6 +388,8 @@ import type {
   SellerAcknowledgeLlmGatewayPaidResponse,
   SellerStripeSynchronizeRequest,
   SellerStripeSynchronizeResponse,
+  SellerProviderTierSynchronizeRequest,
+  SellerProviderTierSynchronizeResponse,
 } from '../seller.js';
 import type {
   SellerListOrdersRequest,
@@ -842,6 +844,12 @@ export interface ServerExecuteResponse {
   run_facts?: RecipeRunFacts;
   /** D-157 — run paused at the approval gate. Distinct from a terminal failure. */
   awaiting_approval?: boolean;
+  /** Durable operation-scoped receipt for the held gated step. Unlike run_id,
+   * this remains the same operation if its ask is re-rendered; a later
+   * approval segment in the same foreach step receives a new ref. */
+  action_ref?: string;
+  /** Run paused waiting on a peer response, not another owner decision. */
+  awaiting_peer?: boolean;
   /** D-181 — owner-initiated run termination, distinct from recipe failure. */
   run_terminated?: RunControlTermination;
   /** D-182 §10 step 8 / R1 — pre-run warnings for `core.crm.*`/`core.acct.*`
@@ -1588,6 +1596,19 @@ export type ServerRpcRegistry = {
     SellerStripeSynchronizeRequest,
     SellerStripeSynchronizeResponse
   >;
+  /** D-196 consolidation (2026-09-03) — the ONE owner-clicked tier seed for
+   *  every provider: reads the provider's tier identities (Stripe entitlement
+   *  features, Paddle / Lemon Squeezy products) through its bounded seller
+   *  catalog's gated read, mints one zero-grant template/tier shell per
+   *  identity, and orphan-flags tiers whose identity is gone.
+   *  `synchronizeStripeEntitlements` above stays as the Stripe-only alias
+   *  older webclients call. A NEW method rather than a `provider` field on
+   *  that alias: an older server rejects an unknown method outright, where an
+   *  ignored field would have minted Stripe tiers for a Paddle request. */
+  'server.seller.synchronizeProviderTiers': RpcMethodSpec<
+    SellerProviderTierSynchronizeRequest,
+    SellerProviderTierSynchronizeResponse
+  >;
 
   /** D-169 P1 — rich server status snapshot, sourced by the bridge's
    *  side panel section #1 (N.5) on mount + periodic refresh. The
@@ -1629,6 +1650,16 @@ export type ServerRpcRegistry = {
   'execution.get': RpcMethodSpec<
     ExecutionGetRequest,
     ExecutionGetResponse
+  >;
+  /** Owner-only durable receipt for one checkpointed gated operation. */
+  'execution.action.get': RpcMethodSpec<
+    import('../gated-action.js').GatedActionGetRequest,
+    import('../gated-action.js').GatedActionGetResponse
+  >;
+  /** Owner-only recent receipt list plus stable approval-group aggregates. */
+  'execution.action.list': RpcMethodSpec<
+    import('../gated-action.js').GatedActionListRequest,
+    import('../gated-action.js').GatedActionListResponse
   >;
   /** D-181 slice 4 — the live active-list snapshot (running runs + queued
    *  heavy calls + detached jobs + per-lane occupancy). Distinct from the
@@ -4691,6 +4722,24 @@ export type ServerRpcRegistry = {
     import('../bulk-pack.js').PacksListResult
   >;
 
+  /** D-259 — installed packs this server's CURRENT validator would refuse.
+   *
+   *  🔑 THE DURABLE HALF OF A BOOT FINDING. The boot check also fires a
+   *  best-effort `notify`, but a notification nobody was connected to receive
+   *  is gone. This is the same finding as a STANDING CONDITION: re-derived on
+   *  every call from the installed manifests, so it cannot go stale, cannot
+   *  accumulate, and cannot be dismissed while still true. It is why the boot
+   *  path does not need a durable ask (and why the restart-dedup an ask
+   *  required could be deleted).
+   *
+   *  `exact_pack_identities` is false when a finding could not be joined to an
+   *  installed pack — the caller may still show the row, but must not mint a
+   *  `#packs/<slug>` detail link it cannot prove resolves. */
+  'packs.unrunnable': RpcMethodSpec<
+    void,
+    import('../bulk-pack.js').PacksUnrunnableResult
+  >;
+
   /** D-145 PA10 follow-on Slice B — uninstall a bundled pack. Drops every
    *  pack-installed Standing Instruction row whose id starts with
    *  `<pack_slug>:` via `siStore.uninstallPack`, then deletes each
@@ -6952,6 +7001,7 @@ export const SERVER_RPC_METHODS = [
   'server.seller.reissueManualCustomerToken',
   'server.seller.bulkAdjustManualTierCustomers',
   'server.seller.synchronizeStripeEntitlements',
+  'server.seller.synchronizeProviderTiers',
   'pair.list',
   'pair.revoke',
   'pair.registerRecoveryKey',
@@ -7280,6 +7330,8 @@ export const SERVER_RPC_METHODS = [
   // D-174 Runs/Audit read seam for the webclient `#runs` route.
   'execution.list',
   'execution.get',
+  'execution.action.get',
+  'execution.action.list',
   // D-181 slice 4 — long-op live-control surface (active-list read + the
   // three queue/kill mutators). Owner-only; reserved out of MCP via the
   // `execution.` prefix in MCP_RESERVED_RPC_PREFIXES.
@@ -7315,6 +7367,7 @@ export const SERVER_RPC_METHODS = [
   // reserved-prefix gate keeps it off the MCP catalog.
   'packs.resolveBySlug',
   'packs.list',
+  'packs.unrunnable',
   'packs.uninstall',
   // D-170 — ingredient-authoring install / uninstall. Per-pair only;
   // `ingredient.` in MCP_RESERVED_RPC_PREFIXES so MCP-channel agents

@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { Checkpoint } from '../checkpoint.js';
 import { isCheckpoint } from '../checkpoint.js';
+import { hashForeachCheckpointSource } from '../foreach-checkpoint.js';
 import {
   COMMIT_STATUSES,
   RUN_ANCHOR_STATUSES,
@@ -48,6 +49,56 @@ const invalidStringFieldCandidates = (
 describe('Checkpoint', () => {
   it('isCheckpoint accepts a fully-valid checkpoint object', () => {
     expect(isCheckpoint(checkpoint())).toBe(true);
+  });
+
+  it('accepts recipe and foreach authority pins with valid shapes', () => {
+    const source = [{ email: 'a@example.test' }, { email: 'b@example.test' }];
+    expect(isCheckpoint(checkpoint({
+      recipe_source_hash: 'recipe-source-v1',
+      gated_action_predecessor_ref: 'action-segment-1',
+      foreach_progress: {
+        step_id: 'send-mail',
+        next_index: 1,
+        source_length: source.length,
+        source_hash: hashForeachCheckpointSource(source),
+        results: [{ ok: true, item: source[0], result: { sent: true } }],
+      },
+    }))).toBe(true);
+  });
+
+  it('rejects an empty or non-string gated-action segment predecessor', () => {
+    for (const gated_action_predecessor_ref of ['', 0, null, {}]) {
+      expect(isCheckpoint({
+        ...checkpoint(),
+        gated_action_predecessor_ref,
+      })).toBe(false);
+    }
+    expect(isCheckpoint(checkpoint({
+      gated_action_predecessor_ref: 'action-segment-1',
+    }))).toBe(false);
+  });
+
+  it('rejects a malformed or missing complete-source foreach pin', () => {
+    const base = {
+      step_id: 'send-mail',
+      next_index: 1,
+      source_length: 2,
+      source_hash: 'a'.repeat(64),
+      results: [{ ok: true, item: 'first' }],
+    };
+    for (const source_hash of [undefined, '', 'A'.repeat(64), 'a'.repeat(63)]) {
+      expect(isCheckpoint({
+        ...checkpoint(),
+        foreach_progress: { ...base, source_hash },
+      })).toBe(false);
+    }
+  });
+
+  it('keeps recipe_source_hash out of the raw-op checkpoint partition', () => {
+    expect(isCheckpoint({
+      ...rawOpCheckpoint(),
+      recipe_source_hash: 'recipe-source-v1',
+    })).toBe(false);
   });
 
   it('isCheckpoint accepts a checkpoint with approved_target identity fields', () => {

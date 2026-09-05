@@ -12,6 +12,7 @@ import {
   LLM_GATEWAY_PAID_ACK_VERSION,
   SELLER_ACCESS_STATES,
   SELLER_LIFECYCLE_SOURCES,
+  SELLER_RETIRED_LIFECYCLE_SOURCES,
   SELLER_OFFER_KINDS,
   SELLER_OFFER_ID_MAX_LENGTH,
   SELLER_OFFER_PRICING_KINDS,
@@ -311,6 +312,142 @@ const convergeSellerOrdersSchema = (db: Database.Database): void => {
   })();
 };
 
+/** The one emitter for the `seller_tiers` shape — the CREATE in
+ *  `ensureSellerSchema` and the drift-convergence rebuild both go through it,
+ *  so the two can never describe different tables. Mirrors `sellerOrdersCreateDdl`. */
+const sellerTiersCreateDdl = (table: string): string => `
+    CREATE TABLE IF NOT EXISTS ${table} (
+      tier_id                         TEXT PRIMARY KEY,
+      door_id                         TEXT NOT NULL,
+      lifecycle_source                TEXT NOT NULL CHECK (lifecycle_source IN (${sqlEnum(SELLER_LIFECYCLE_SOURCES)})),
+      entitlement_key                 TEXT NOT NULL,
+      display_name                    TEXT NOT NULL,
+      template_contract_id            TEXT NOT NULL,
+      external_entitlement_id         TEXT,
+      usage_policy_json               TEXT NOT NULL,
+      pass_duration_seconds           INTEGER,
+      customer_status_enabled_default INTEGER NOT NULL DEFAULT 0,
+      active                          INTEGER NOT NULL DEFAULT 1,
+      created_at                      INTEGER NOT NULL,
+      updated_at                      INTEGER NOT NULL,
+      UNIQUE (door_id, lifecycle_source, entitlement_key)
+    )`;
+
+const sellerTiersIndexDdl = (): string => `
+    CREATE INDEX IF NOT EXISTS idx_seller_tiers_source
+      ON ${SELLER_TIERS_TABLE} (lifecycle_source, entitlement_key);
+    CREATE INDEX IF NOT EXISTS idx_seller_tiers_template_contract
+      ON ${SELLER_TIERS_TABLE} (template_contract_id);`;
+
+/** The one emitter for the `seller_customers` shape. See `sellerTiersCreateDdl`. */
+const sellerCustomersCreateDdl = (table: string): string => `
+    CREATE TABLE IF NOT EXISTS ${table} (
+      customer_id              TEXT PRIMARY KEY,
+      lifecycle_source         TEXT NOT NULL CHECK (lifecycle_source IN (${sqlEnum(SELLER_LIFECYCLE_SOURCES)})),
+      source_customer_id       TEXT NOT NULL,
+      door_id                  TEXT NOT NULL,
+      email                    TEXT,
+      tier_id                  TEXT NOT NULL,
+      contract_id              TEXT NOT NULL,
+      inbound_token_id         TEXT,
+      mcp_token_id             TEXT,
+      external_subscription_id TEXT,
+      source_status            TEXT,
+      current_period_end       INTEGER,
+      grace_until              INTEGER,
+      access_state             TEXT NOT NULL CHECK (access_state IN (${sqlEnum(SELLER_ACCESS_STATES)})),
+      claim_email_sent_at      INTEGER,
+      claim_email_marker       TEXT,
+      status_email_sent_at     INTEGER,
+      status_email_marker      TEXT,
+      created_at               INTEGER NOT NULL,
+      updated_at               INTEGER NOT NULL,
+      UNIQUE (lifecycle_source, source_customer_id, door_id)
+    )`;
+
+const sellerCustomersIndexDdl = (): string => `
+    CREATE INDEX IF NOT EXISTS idx_seller_customers_email
+      ON ${SELLER_CUSTOMERS_TABLE} (email);
+    CREATE INDEX IF NOT EXISTS idx_seller_customers_contract
+      ON ${SELLER_CUSTOMERS_TABLE} (contract_id);
+    CREATE INDEX IF NOT EXISTS idx_seller_customers_tier
+      ON ${SELLER_CUSTOMERS_TABLE} (tier_id);`;
+
+/** ⛔ THE LIFECYCLE-SOURCE CHECK IS A DRIFT TRAP, exactly like the offers /
+ *  orders ones above: `CHECK (lifecycle_source IN (…))` is compiled from
+ *  `SELLER_LIFECYCLE_SOURCES` at CREATE and frozen in every existing database.
+ *  Adding `paddle` / `lemonsqueezy` to the const would otherwise change nothing
+ *  on a live server — every Paddle tier or customer row rejected by a CHECK that
+ *  only knows `manual` / `stripe` / the old placeholder, while a fresh-DB
+ *  suite stayed green. That is the INERT-vocabulary trap: the member exists in
+ *  code and is refused by the one store that matters.
+ *
+ *  Widens for new members and narrows for `SELLER_RETIRED_LIFECYCLE_SOURCES`
+ *  (refusing while a row still carries one), so the copy is verbatim. Two
+ *  guards the
+ *  older convergers do not carry: the live table must not hold a column the
+ *  emitter lacks (a rebuild would silently DROP that column's data — refuse
+ *  and let a human look), and the indexes are recreated in the same
+ *  transaction rather than on the next boot. */
+const convergeLifecycleSourceTable = (
+  db: Database.Database,
+  table: string,
+  createDdl: (name: string) => string,
+  indexDdl: () => string,
+): void => {
+  const existing = db
+    .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`)
+    .get(table) as { sql: string } | undefined;
+  // Absent: the CREATE just emitted it from the current consts. Nothing to do.
+  if (existing === undefined) return;
+  const declared = [...SELLER_LIFECYCLE_SOURCES, ...SELLER_ACCESS_STATES];
+  const missing = declared.some((member) => !existing.sql.includes(`'${member}'`));
+  // A CHECK compiled under an older list may still ADMIT a member the
+  // vocabulary has since retired; narrow it too, so the store refuses what the
+  // code no longer names. ⛔ Only after proving no live row still carries it —
+  // the copy below would fail the new CHECK, and the message should say why.
+  const retired = SELLER_RETIRED_LIFECYCLE_SOURCES.filter((member) =>
+    existing.sql.includes(`'${member}'`));
+  if (!missing && retired.length === 0) return;
+  for (const member of retired) {
+    const held = db
+      .prepare(`SELECT count(*) AS n FROM ${table} WHERE lifecycle_source = ?`)
+      .get(member) as { n: number };
+    if (held.n > 0) {
+      throw new Error(
+        `seller schema converge refused: ${table} still holds ${held.n} row(s) under `
+          + `retired lifecycle_source '${member}' — migrate or delete them before this boot`,
+      );
+    }
+  }
+
+  const rebuildTable = `${table}__converge`;
+  const columnNames = (name: string): readonly string[] =>
+    (db.prepare(`PRAGMA table_info(${name})`).all() as { name: string }[]).map(
+      (column) => column.name,
+    );
+  db.transaction(() => {
+    db.exec(`DROP TABLE IF EXISTS ${rebuildTable}`);
+    db.exec(createDdl(rebuildTable));
+    const liveColumns = columnNames(table);
+    const targetColumns = columnNames(rebuildTable);
+    const orphaned = liveColumns.filter((column) => !targetColumns.includes(column));
+    if (orphaned.length > 0) {
+      db.exec(`DROP TABLE ${rebuildTable}`);
+      throw new Error(
+        `seller schema converge refused: ${table} carries column(s) the current DDL `
+          + `does not — ${orphaned.join(', ')} — and a rebuild would drop their data`,
+      );
+    }
+    const carried = targetColumns.filter((column) => liveColumns.includes(column));
+    const columnList = carried.join(', ');
+    db.exec(`INSERT INTO ${rebuildTable} (${columnList}) SELECT ${columnList} FROM ${table}`);
+    db.exec(`DROP TABLE ${table}`);
+    db.exec(`ALTER TABLE ${rebuildTable} RENAME TO ${table}`);
+    db.exec(indexDdl());
+  })();
+};
+
 export const ensureSellerSchema = (db: Database.Database): void => {
   db.exec(`
     CREATE TABLE IF NOT EXISTS ${SELLER_SETTINGS_TABLE} (
@@ -339,56 +476,11 @@ export const ensureSellerSchema = (db: Database.Database): void => {
     CREATE INDEX IF NOT EXISTS idx_seller_orders_origin
       ON ${SELLER_ORDERS_TABLE} (origin_kind, origin_ref);
 
-    CREATE TABLE IF NOT EXISTS ${SELLER_TIERS_TABLE} (
-      tier_id                         TEXT PRIMARY KEY,
-      door_id                         TEXT NOT NULL,
-      lifecycle_source                TEXT NOT NULL CHECK (lifecycle_source IN (${sqlEnum(SELLER_LIFECYCLE_SOURCES)})),
-      entitlement_key                 TEXT NOT NULL,
-      display_name                    TEXT NOT NULL,
-      template_contract_id            TEXT NOT NULL,
-      external_entitlement_id         TEXT,
-      usage_policy_json               TEXT NOT NULL,
-      pass_duration_seconds           INTEGER,
-      customer_status_enabled_default INTEGER NOT NULL DEFAULT 0,
-      active                          INTEGER NOT NULL DEFAULT 1,
-      created_at                      INTEGER NOT NULL,
-      updated_at                      INTEGER NOT NULL,
-      UNIQUE (door_id, lifecycle_source, entitlement_key)
-    );
-    CREATE INDEX IF NOT EXISTS idx_seller_tiers_source
-      ON ${SELLER_TIERS_TABLE} (lifecycle_source, entitlement_key);
-    CREATE INDEX IF NOT EXISTS idx_seller_tiers_template_contract
-      ON ${SELLER_TIERS_TABLE} (template_contract_id);
+    ${sellerTiersCreateDdl(SELLER_TIERS_TABLE)};
+    ${sellerTiersIndexDdl()}
 
-    CREATE TABLE IF NOT EXISTS ${SELLER_CUSTOMERS_TABLE} (
-      customer_id              TEXT PRIMARY KEY,
-      lifecycle_source         TEXT NOT NULL CHECK (lifecycle_source IN (${sqlEnum(SELLER_LIFECYCLE_SOURCES)})),
-      source_customer_id       TEXT NOT NULL,
-      door_id                  TEXT NOT NULL,
-      email                    TEXT,
-      tier_id                  TEXT NOT NULL,
-      contract_id              TEXT NOT NULL,
-      inbound_token_id         TEXT,
-      mcp_token_id             TEXT,
-      external_subscription_id TEXT,
-      source_status            TEXT,
-      current_period_end       INTEGER,
-      grace_until              INTEGER,
-      access_state             TEXT NOT NULL CHECK (access_state IN (${sqlEnum(SELLER_ACCESS_STATES)})),
-      claim_email_sent_at      INTEGER,
-      claim_email_marker       TEXT,
-      status_email_sent_at     INTEGER,
-      status_email_marker      TEXT,
-      created_at               INTEGER NOT NULL,
-      updated_at               INTEGER NOT NULL,
-      UNIQUE (lifecycle_source, source_customer_id, door_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_seller_customers_email
-      ON ${SELLER_CUSTOMERS_TABLE} (email);
-    CREATE INDEX IF NOT EXISTS idx_seller_customers_contract
-      ON ${SELLER_CUSTOMERS_TABLE} (contract_id);
-    CREATE INDEX IF NOT EXISTS idx_seller_customers_tier
-      ON ${SELLER_CUSTOMERS_TABLE} (tier_id);
+    ${sellerCustomersCreateDdl(SELLER_CUSTOMERS_TABLE)};
+    ${sellerCustomersIndexDdl()}
 
     CREATE TABLE IF NOT EXISTS ${SELLER_CUSTOMER_USAGE_ROLLUPS_TABLE} (
       contract_id        TEXT NOT NULL,
@@ -479,6 +571,13 @@ export const ensureSellerSchema = (db: Database.Database): void => {
 
   convergeSellerOffersSchema(db);
   convergeSellerOrdersSchema(db);
+  convergeLifecycleSourceTable(db, SELLER_TIERS_TABLE, sellerTiersCreateDdl, sellerTiersIndexDdl);
+  convergeLifecycleSourceTable(
+    db,
+    SELLER_CUSTOMERS_TABLE,
+    sellerCustomersCreateDdl,
+    sellerCustomersIndexDdl,
+  );
 };
 
 export class SellerStoreValidationError extends Error {
@@ -684,7 +783,7 @@ export interface SellerStore {
    *    would burn a provider read per cycle to produce a throw.
    *  - `lifecycle_source = ?` — ⛔ the caller reads provider truth from ONE
    *    provider's API. A subscription id is only meaningful to the account that
-   *    issued it, so handing a `future_provider` (or hand-set `manual`) row's id
+   *    issued it, so handing another provider's (or a hand-set `manual`) row's id
    *    to the Stripe reader is at best a 404 and at worst convergence against
    *    the wrong account's subscription. The source is a required arg, never a
    *    default, so a new provider cannot be swept by an existing one's reader

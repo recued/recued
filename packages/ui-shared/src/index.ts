@@ -325,7 +325,7 @@ export {
   type BookingDetailProps,
 } from './work-entity-page/index.js';
 // D-145 PA7 — mail-compose substrate (compose dialog wrapping the
-// PA5 form-renderer + sender-Source picker + AI-assist sidebar stub).
+// PA5 form-renderer + sender-Source picker + governed AI rewrite controls).
 export {
   renderMailComposeDialog,
   renderAiAssistSidebar,

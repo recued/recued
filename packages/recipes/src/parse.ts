@@ -59,6 +59,35 @@ const normalizeOutputRenderAlias = (recipe: RecipeDefinition): void => {
   delete output.sidebar;
 };
 
+/** The recipe's canonical DEFINITION form, for identity hashing.
+ *
+ *  ⛔ WHY THIS IS NOT JUST `hashRecipe(recipe)`. `parseRecipe` normalizes the
+ *  D-195 `output.render` / legacy `output.sidebar` alias IN PLACE, on the same
+ *  reference the recipe store handed out. So a caller that hashes a recipe
+ *  BEFORE the run and compares against the stored recipe AFTER it is comparing
+ *  two spellings of one definition: `{sidebar: []}` then `{render: []}`, which
+ *  hash differently. The checkpoint integrity guard did exactly that and refused
+ *  every stored-recipe resume of a legacy-alias recipe with "the installed
+ *  recipe changed while this approval was pending" — on a recipe nobody touched.
+ *
+ *  ⚠ NOT folded into `hashRecipe`, deliberately. That is a STRUCTURAL hash over
+ *  `unknown` (it only sorts keys) and is used for cache keys and dedup identities
+ *  all over the tree; teaching it one schema's alias would change its contract —
+ *  and its result — for every caller. Canonicalization that is about what a
+ *  RECIPE means belongs with the parser that defines it.
+ *
+ *  Returns a shallow copy; the caller's recipe is never mutated. */
+export const canonicalRecipeDefinition = (recipe: RecipeDefinition): RecipeDefinition => {
+  const output = recipe.output as
+    | (RecipeDefinition['output'] & { render?: OutputSection[]; sidebar?: OutputSection[] })
+    | undefined
+    | null;
+  if (output === undefined || output === null) return recipe;
+  const copy = { ...recipe, output: { ...output } } as RecipeDefinition;
+  normalizeOutputRenderAlias(copy);
+  return copy;
+};
+
 /** Parse an unknown input as a recipe. On success, the returned recipe is
  *  the same reference as the input (no cloning). The parser normalizes the
  *  D-195 `output.render`/legacy `output.sidebar` alias in place so downstream

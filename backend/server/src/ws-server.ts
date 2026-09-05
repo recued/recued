@@ -193,6 +193,7 @@ import {
   makePackListHandlers,
   type PackListRpcDeps,
 } from './pack-list-handler.js';
+import { makePackUnrunnableHandlers, type PackUnrunnableRpcDeps } from './pack-unrunnable-handler.js';
 // D-145 PA10 follow-on Slice B — `packs.uninstall` rpc slice. Reverses
 // the install transaction (drops pack-installed SI rows by prefix +
 // deletes each recipe in the bundled manifest). Same `packs.`
@@ -434,7 +435,7 @@ import type {
   QuotaTracker,
 } from '@recued/llm';
 import { makeSellerOverviewHandlers } from './seller-overview-handler.js';
-import { createSellerStripeEntitlementProvider } from './seller/stripe-entitlement-sync.js';
+import { createSellerProviderTierProvider } from './seller/provider-tier-sync.js';
 import { createRpcDispatcher } from './rpc-dispatcher.js';
 import type { PairedInstancesStore } from './paired-instances-store.js';
 import type { ChatInboundTokenStore } from './storage/chat-inbound-token-store.js';
@@ -1161,6 +1162,8 @@ export interface AttachWebSocketOptions {
    *  low-risk, but the uniform private-prefix discipline keeps the
    *  `packs.*` surface a Settings-UI-only namespace). */
   packListDeps?: PackListRpcDeps;
+  /** D-259 — `packs.unrunnable` deps. */
+  packUnrunnableDeps?: PackUnrunnableRpcDeps;
   /** D-145 PA10 follow-on Slice B — `packs.uninstall` rpc. Reverses
    *  the install transaction: drops every `source = 'pack_installed'`
    *  SI row whose id begins with `<pack_slug>:`, then deletes each
@@ -1526,6 +1529,7 @@ const buildWsBinding = (
     executionFeedDeps,
     packInstallDeps,
     packListDeps,
+    packUnrunnableDeps,
     packUninstallDeps,
     ingredientAuthoringDeps,
     ingredientDraftDeps,
@@ -1665,8 +1669,10 @@ const buildWsBinding = (
   // undefined → the handler skips the emit). The bus stamps the cursor.
   // Mirrors the contract-handler `broadcast` discipline.
   const pairRosterBus = eventsDeps?.bus;
-  const stripeEntitlementProvider = executeDeps
-    ? createSellerStripeEntitlementProvider(executeDeps)
+  // D-196 — the ONE tier-seed seam for every seller provider (the shipped
+  // Stripe-only rpc adapts over it in the handler).
+  const providerTierProvider = executeDeps
+    ? createSellerProviderTierProvider(executeDeps)
     : undefined;
   const { handlers, wiredMethods } = composeHandlers<ServerRpcRegistry, WsClient>([
     makeExecuteHandlers(executeDeps),
@@ -1716,8 +1722,8 @@ const buildWsBinding = (
       ...(sellerContractStore ? { contractStore: sellerContractStore } : {}),
       ...(sellerInboundTokenStore ? { inboundTokenStore: sellerInboundTokenStore } : {}),
       ...(sellerClaimStore ? { sellerClaimStore } : {}),
-      ...(stripeEntitlementProvider && sellerContractStore
-        ? { stripeEntitlementProvider }
+      ...(providerTierProvider && sellerContractStore
+        ? { providerTierProvider }
         : {}),
       ...(receptionDeps ? { getPublicBaseUrl: receptionDeps.getShareBaseUrl } : {}),
       ...(llmConfigManager ? { llmManager: llmConfigManager } : {}),
@@ -1904,6 +1910,9 @@ const buildWsBinding = (
     // joins each with the per-pair `RecipeStore` to compute the
     // `installed` flag. Same `packs.` reserved-prefix gate.
     makePackListHandlers(packListDeps),
+    // D-259 — the durable half of the boot pack finding. Same `packs.`
+    // reserved-prefix gate; re-derived per call, never stored.
+    makePackUnrunnableHandlers(packUnrunnableDeps),
     // D-145 PA10 follow-on Slice B — Settings → Packs uninstall rpc.
     // Reverses the install transaction: drops pack-installed SI rows by
     // `<slug>:` prefix + deletes each recipe in the bundled manifest.

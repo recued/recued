@@ -150,6 +150,9 @@ const CHAT_NEW_SESSION = 'data-recued-chat-route-new-session';
 const CHAT_MODEL_PICKER = 'data-recued-chat-route-model-picker';
 const CHAT_COMPOSER_MORE = 'data-recued-chat-route-composer-more';
 const CHAT_COMPOSER_ACTION = 'data-recued-chat-route-composer-action';
+const CHAT_MAIL_NOTICE = 'data-recued-chat-route-mail-notice';
+const CHAT_MAIL_NOTICE_DISMISS = 'data-recued-chat-route-mail-notice-dismiss';
+const CHAT_MAIL_COMPOSE_PORTAL = 'data-recued-chat-route-mail-compose-portal';
 const CHAT_MESSAGE = 'data-recued-chat-route-message';
 const CHAT_THREAD = 'data-recued-chat-route-thread';
 const CHAT_THREAD_TITLE = 'data-recued-chat-route-thread-title';
@@ -8991,6 +8994,33 @@ test('the docked Chat composer action menu dismisses predictably', async ({ page
   await input.click();
   await expect(more).toHaveJSProperty('open', false);
   await expect(input).toBeFocused();
+});
+
+test('New mail reports a missing mailbox in Chat without asking Chat', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?chat=session#chat/session/chat_1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const mailReadsBefore = await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.mail.list'));
+  await page.locator(`[${CHAT_COMPOSER_ACTION}="mail"]`).click();
+
+  const notice = page.locator(`[${CHAT_MAIL_NOTICE}="none"]`);
+  await expect(notice).toBeVisible();
+  await expect(notice).toHaveAttribute('role', 'status');
+  await expect(notice).toContainText('Connect a mailbox');
+  await expect(notice.getByRole('link', { name: 'Connect mail' }))
+    .toHaveAttribute('href', '#connections/mail');
+  await expect(page.locator(`[${CHAT_MAIL_COMPOSE_PORTAL}] .mail-compose-dialog`))
+    .toHaveCount(0);
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('collection.mail.list'))).toBe(mailReadsBefore + 1);
+  expect(await page.evaluate(() => ({
+    asks: window.__app.rpcCallCount('chat.send'),
+    runs: window.__app.rpcCallCount('execute'),
+  }))).toEqual({ asks: 0, runs: 0 });
+
+  await page.locator(`[${CHAT_MAIL_NOTICE_DISMISS}]`).click();
+  await expect(notice).toHaveCount(0);
 });
 
 test('a docked Chat child overlay returns focus to the visible action trigger', async ({ page }) => {

@@ -85,6 +85,7 @@ const buildArchive = async (
     blobs?: string[];
     passportJson?: string;
     serverVaultBundleJson?: string;
+    gatedActionChangeSeq?: number;
   } = {},
 ): Promise<BuiltArchive> => {
   const srcDir = newDir();
@@ -111,6 +112,16 @@ const buildArchive = async (
   }
   db.exec('CREATE TABLE example (k TEXT PRIMARY KEY, v TEXT)');
   db.prepare('INSERT INTO example VALUES (?, ?)').run('hello', 'world');
+  if (opts.gatedActionChangeSeq !== undefined) {
+    db.exec(`CREATE TABLE gated_action_receipts (
+      key TEXT NOT NULL PRIMARY KEY,
+      data TEXT NOT NULL
+    )`);
+    db.prepare('INSERT INTO gated_action_receipts (key, data) VALUES (?, ?)').run(
+      'restored-action',
+      JSON.stringify({ change_seq: opts.gatedActionChangeSeq }),
+    );
+  }
 
   let configPath: string | undefined;
   if (opts.withConfig) {
@@ -221,6 +232,31 @@ describe('applyRestore', () => {
     expect(res.db_backup_path).toBeNull(); // fresh target — nothing to back up
     expect(res.restored_at).toBe(FIXED_NOW);
     expect(res.db_bytes).toBeGreaterThan(0);
+  });
+
+  it('rotates the receipt epoch above inherited rows before the staged db becomes live', async () => {
+    const built = await buildArchive(12, { gatedActionChangeSeq: 41 });
+    const tgt = newDir();
+    const dbPath = join(tgt, 'recued-server.db');
+
+    await applyRestore(
+      { dbPath, dataPath: tgt, configPath: null },
+      impOpts(built),
+      { now: () => FIXED_NOW },
+    );
+
+    const restoredDb = new Database(dbPath, { readonly: true });
+    try {
+      const clock = restoredDb.prepare(`
+        SELECT value, epoch, floor
+          FROM gated_action_change_sequence
+         WHERE singleton = 1
+      `).get() as { value: number; epoch: string; floor: number };
+      expect(clock.epoch).toMatch(/^[0-9a-f-]{36}$/);
+      expect(clock).toMatchObject({ value: 42, floor: 42 });
+    } finally {
+      restoredDb.close();
+    }
   });
 
   it('backs up an existing db + clears stale WAL/SHM before clobber', async () => {

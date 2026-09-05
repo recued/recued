@@ -157,7 +157,32 @@ describe('D-145 PA7 — renderMailComposeDialog', () => {
       sources: [senderRecued],
     });
     expect(html).toContain('mail-compose-ai-assist');
-    expect(html).toContain('data-stub="pa7"');
+    expect(html).toContain('data-action="mail-compose-ai-polish"');
+    expect(html).not.toContain('data-stub=');
+  });
+
+  it('prevents send and attachment changes while a rewrite is in flight', () => {
+    const html = renderMailComposeDialog({
+      definition: def,
+      state: baseState(),
+      sources: [senderRecued],
+      aiAssist: { busyAction: 'polish' },
+    });
+    expect(html).toMatch(/data-action="submit-mail-compose"\s+disabled/);
+    expect(html).toMatch(/data-action="mail-compose-attachment-add"[^>]*disabled/);
+    expect(html).toContain('Polishing…');
+  });
+
+  it('prevents send, attachment changes, and AI rewrites while resolving a file choice', () => {
+    const html = renderMailComposeDialog({
+      definition: def,
+      state: baseState(),
+      sources: [senderRecued],
+      attachmentBusy: true,
+    });
+    expect(html).toMatch(/data-action="submit-mail-compose"\s+disabled/);
+    expect(html).toMatch(/data-action="mail-compose-attachment-add"[^>]*disabled/);
+    expect(html).toMatch(/data-action="mail-compose-ai-polish"[^>]*disabled/);
   });
 
   it('escapes user-controlled values in the dialog', () => {

@@ -16,8 +16,8 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
     "slug": "mail-compose-foundation",
     "publisher": "recued-core",
     "name": "Mail — Compose",
-    "description": "Use Mail — Compose in Recued. It carries a message you wrote in the compose window to your own enrolled mail account. Sending stops at the approval gate first, and the approval names the recipients, the subject, and every attached file.",
-    "version": 1,
+    "description": "Use Mail — Compose in Recued. Draft, rewrite, and polish a message in the compose window, then carry the reviewed message to your enrolled mail account. Sending stops at the approval gate first, and the approval names the recipients, the subject, and every attached file.",
+    "version": 2,
     "pre_install": true,
     "recipes": [],
     "requires": [
@@ -35,6 +35,12 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
       {
         "type": "recipe",
         "slug": "send-composed-mail",
+        "version": 1,
+        "visible": false
+      },
+      {
+        "type": "recipe",
+        "slug": "rewrite-composed-mail",
         "version": 1,
         "visible": false
       }
@@ -2257,6 +2263,123 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         {
           "type": "summary",
           "source": "step.card"
+        }
+      ]
+    }
+  },
+  "rewrite-composed-mail": {
+    "recipe_id": "rewrite-composed-mail",
+    "chat_exposed": false,
+    "version": 1,
+    "ttl": 0,
+    "metadata": {
+      "name": "Rewrite a composed email",
+      "description": "Use “Rewrite a composed email” in Recued. Choose a formal, friendly, or polished rewrite of the message body, then review the result before sending. Recued leaves the subject, recipients, sender, attachments, and reply context unchanged, and protects known email addresses while the selected AI model works.",
+      "author": "recued-core",
+      "supported_platforms": [],
+      "budget_ms": 30000,
+      "tags": [
+        "mail",
+        "compose",
+        "ai",
+        "rewrite",
+        "draft"
+      ]
+    },
+    "variables": {
+      "body": {
+        "label": "Message body",
+        "type": "text",
+        "default": ""
+      },
+      "sender_email": {
+        "label": "Sender address",
+        "type": "string",
+        "default": ""
+      },
+      "to": {
+        "label": "To",
+        "type": "array",
+        "default": []
+      },
+      "cc": {
+        "label": "Cc",
+        "type": "array",
+        "default": []
+      },
+      "bcc": {
+        "label": "Bcc",
+        "type": "array",
+        "default": []
+      },
+      "style": {
+        "label": "Rewrite style",
+        "type": "string",
+        "default": "polished"
+      },
+      "instructions": {
+        "label": "Rewrite constraints",
+        "type": "text",
+        "default": "Return only the rewritten email body. Preserve meaning, factual claims, links, formatting intent, and the writer's level of detail. Do not invent names, dates, promises, prices, attachments, or a new subject line."
+      }
+    },
+    "prefetch_steps": [],
+    "steps": [
+      {
+        "id": "protect",
+        "transform": "pii-protect",
+        "data": {
+          "sender_email": "{{config.sender_email}}",
+          "to": "{{config.to}}",
+          "cc": "{{config.cc}}",
+          "bcc": "{{config.bcc}}",
+          "body": "{{config.body}}"
+        },
+        "fields": [
+          {
+            "path": "sender_email",
+            "kind": "email"
+          },
+          {
+            "path": "to",
+            "kind": "email"
+          },
+          {
+            "path": "cc",
+            "kind": "email"
+          },
+          {
+            "path": "bcc",
+            "kind": "email"
+          },
+          {
+            "path": "body",
+            "kind": "content"
+          }
+        ]
+      },
+      {
+        "id": "rewrite",
+        "op": "core.ai.rewrite",
+        "args": {
+          "llm.data": "{{step.protect.aliased.body}}",
+          "llm.style": "{{config.style}}",
+          "llm.instructions": "{{config.instructions}}",
+          "llm.model_hint": "fast"
+        }
+      },
+      {
+        "id": "restore",
+        "transform": "pii-restore",
+        "data": "{{step.rewrite.rewritten}}",
+        "ledger_handle": "{{step.protect.ledger_handle}}"
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "text",
+          "source": "step.restore.restored"
         }
       ]
     }

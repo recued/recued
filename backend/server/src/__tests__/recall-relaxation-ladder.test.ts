@@ -43,6 +43,7 @@ const ownerSource = (session_id: string): ExecutionSource => ({
 const SCOPE: OwnerRecallCorpusScope = {
   governing_contract_id: 'user_self',
   row_eligibility: CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT,
+  recall_contract_id: null,
 };
 
 /** The exact sentence the live bench planted at turn 1. */

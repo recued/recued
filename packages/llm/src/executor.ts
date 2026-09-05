@@ -38,13 +38,17 @@ import {
 import {
   demoteSystemMessages,
   hasSystemMessage,
+  isContextOverflowRejection,
   isJsonModeRejection,
   jsonModeUnsupported,
+  noteContextAccepted,
+  noteContextRefused,
   noteJsonModeUnsupported,
   noteSystemRoleUnsupported,
   isSystemRoleRejection,
   systemRoleUnsupported,
 } from './endpoint-capabilities.js';
+import { estimateConservativeMessagesTokens } from './context-budget.js';
 import { resolveLLMTimeoutMs } from './timeout.js';
 import { buildAvailability } from './availability.js';
 import { matchLLM, type ForceLayer, type PinnedSlot } from './match.js';
@@ -196,6 +200,41 @@ const completeWithJsonFallback = async (
  *  caller could put the trigger phrase in their own prompt text and make an
  *  unrelated bad request look like a role refusal. */
 export const completeWithFallbacks = async (
+  adapter: LLMAdapter,
+  slot: LLMSlot,
+  messages: LLMMessage[],
+  options: LLMCompletionOptions,
+): Promise<LLMCompletionResult> => {
+  // ⛔⛔ THE CONTEXT WINDOW IS LEARNED HERE, AND ONLY HERE, BECAUSE THIS IS THE
+  //   ONE PLACE THAT KNOWS WHICH ENDPOINT WAS ASKED. A context refusal is built
+  //   NON-retryable (`classifyProviderError`), so it does not cascade and it
+  //   surfaces out of `executeLLM` with no `usage` attached — meaning the
+  //   caller cannot tell which slot was tried, and an attempt to learn the
+  //   bound above this line either duplicates routing or learns nothing at all.
+  //   Down here the slot is simply in hand, on both outcomes.
+  //
+  // ⛔ BOTH NUMBERS COME FROM THE ESTIMATOR, NOT FROM `usage`. The temptation
+  //   is to take the floor from `result.usage.input_tokens` — it is right there
+  //   and it is exact. It is also a DIFFERENT MEASURE from the ceiling
+  //   (a refused call reports no usage, so that one can only be estimated), and
+  //   mixing them makes the floor/ceiling guard compare two scales. Worse, the
+  //   consumer — `promptFits` in `chat-turn-executor.ts` — asks
+  //   `estimateConservativeMessagesTokens(...) <= budget`, so a budget derived
+  //   from provider counts is measured against estimator counts on every check.
+  //   Keeping one unit end to end makes the loop self-consistent and lets the
+  //   estimator's conservatism cancel out on both sides.
+  const attempted = estimateConservativeMessagesTokens(messages);
+  try {
+    const result = await completeWithFallbacksInner(adapter, slot, messages, options);
+    noteContextAccepted(slot, attempted);
+    return result;
+  } catch (e) {
+    if (isContextOverflowRejection(e)) noteContextRefused(slot, attempted, e);
+    throw e;
+  }
+};
+
+const completeWithFallbacksInner = async (
   adapter: LLMAdapter,
   slot: LLMSlot,
   messages: LLMMessage[],

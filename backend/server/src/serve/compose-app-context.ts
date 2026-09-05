@@ -1,3 +1,4 @@
+import type { PreflightRunSettled } from '../preflight-resumer.js';
 import { dirname, join, resolve } from 'node:path';
 
 import type Database from 'better-sqlite3';
@@ -290,6 +291,11 @@ export interface ComposeAppContextOptions {
 }
 
 export interface AppContext extends LlmSubstrate {
+  /** D-137 — writes the RESULT half of a paired tool call when a held run
+   *  settles, long after the turn that asked for it ended. The BOOT SITE
+   *  publishes it into the execution refs bag, being the one place that holds
+   *  both this and the full bag. Absent on a db-less boot. */
+  readonly chatRunSettledSink?: (settled: PreflightRunSettled) => void;
   serverState: ServerStateStore | undefined;
   keys: KeyManager | undefined;
   /** Live vault-unlocked predicate. `true` when there is no vault
@@ -1616,6 +1622,11 @@ export const composeAppContext = (
     executionCaseSourcePruner: chatBundle?.executionCaseSourcePruner,
     internalRegistryRef: chatBundle?.internalRegistry,
     chatForwardedSenderIndexRef: chatBundle?.forwardedSenderIndex,
+    /** D-137 — writes the result half of a paired tool call when a held run
+     *  settles. The BOOT SITE publishes it into the execution refs bag; it
+     *  cannot be handed over at construction because the preflight resumer is
+     *  composed in the execution context, after this one. */
+    chatRunSettledSink: chatBundle?.runSettledSink,
     warehouseBus,
     stopWarehouseEventBridges,
     housekeepingConfigRef,

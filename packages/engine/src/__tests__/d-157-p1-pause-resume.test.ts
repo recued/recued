@@ -17,6 +17,7 @@ import {
   type IngredientExecutor,
 } from '@recued/engine';
 import {
+  hashForeachCheckpointSource,
   PreflightRequiredSignal,
   isPreflightRequiredSignal,
 } from '@recued/contracts';
@@ -395,17 +396,17 @@ describe('D-157 P1 slice 3 — engine resume (I-6, TR-5)', () => {
 });
 
 describe('D-157 P1 slice 3 — runForeach interaction', () => {
-  it('a preflight signal inside a foreach iteration propagates to the pause path', async () => {
-    let iterationsRun = 0;
-    const calls: string[] = [];
-    const gatingExec: IngredientExecutor = async (slug) => {
-      calls.push(slug);
-      iterationsRun++;
-      // Gate on the second iteration only.
-      if (iterationsRun === 2 && slug === 'gated-action') {
+  it('resumes at the exact gated item and returns one whole approved foreach result', async () => {
+    const pauseCalls: string[] = [];
+    const gatingExec: IngredientExecutor = async (slug, input) => {
+      const item = String(input.name);
+      pauseCalls.push(item);
+      // A data-dependent gate can arise after an earlier item already crossed
+      // the boundary. That completed prefix must never dispatch again.
+      if (item === 'b' && slug === 'gated-action') {
         throw new PreflightRequiredSignal();
       }
-      return { ok: true };
+      return { sent: item };
     };
 
     const foreachRecipe = makeRecipe(
@@ -413,7 +414,7 @@ describe('D-157 P1 slice 3 — runForeach interaction', () => {
         {
           id: 's_setup',
           transform: 'set',
-          source: { items: ['a', 'b', 'c'] },
+          source: { items: [{ name: 'a' }, { name: 'b' }, { name: 'c' }] },
           field: 'noop',
           value: null,
         },
@@ -421,7 +422,7 @@ describe('D-157 P1 slice 3 — runForeach interaction', () => {
           id: 'fan',
           ingredient: 'gated-action',
           foreach: '{{step.s_setup.items}}',
-          input: { item: '{{item}}' },
+          input: '{{item}}',
         },
       ]),
     );
@@ -431,26 +432,167 @@ describe('D-157 P1 slice 3 — runForeach interaction', () => {
     expect(result.success).toBe(false);
     expect(result.awaiting_approval).toBeDefined();
     expect(result.awaiting_approval!.gated_step_id).toBe('fan');
-    // The foreach iteration that threw aborted the loop — the third
-    // iteration did not run.
-    expect(iterationsRun).toBe(2);
-    expect(calls).toEqual(['gated-action', 'gated-action']);
-    // Observed artifact (DOCUMENTED LIMITATION): each foreach iteration's
-    // inner `runStep` writes to `ctx.stores.step.<step_id>` under the
-    // SAME step id, so `step.fan` carries the last-completed iteration's
-    // raw result at pause time (here: iteration 1's `{ ok: true }`) — NOT
-    // the array-of-results shape `runForeach` produces on a clean exit.
-    // On resume the foreach re-runs from scratch (gated_step_id === 'fan'
-    // is matched by `findIndex`, not by step_state presence); the
-    // pre-gate iteration's executor call therefore re-dispatches —
-    // partial side effects double-fire. The mid-foreach gate at
-    // iteration granularity is out of slice 3's scope (the spec talks
-    // about step-level gates); flagged for a later refinement.
+    expect(pauseCalls).toEqual(['a', 'b']);
+    expect(result.awaiting_approval!.foreach_progress).toEqual({
+      step_id: 'fan',
+      next_index: 1,
+      source_length: 3,
+      source_hash: hashForeachCheckpointSource([
+        { name: 'a' }, { name: 'b' }, { name: 'c' },
+      ]),
+      results: [{ ok: true, result: { sent: 'a' }, item: { name: 'a' } }],
+    });
     expect(result.awaiting_approval!.step_state).toHaveProperty('fan');
-    expect(result.awaiting_approval!.step_state.fan).toEqual({ ok: true });
+    expect(result.awaiting_approval!.step_state.fan).toEqual({ sent: 'a' });
     // The foreach `item` binding was cleaned up by the finally block
     // even on a re-throw (the finally restores `prevItem`/deletes the
     // binding regardless of how the loop exits).
     expect((ctx.stores as { item?: unknown }).item).toBeUndefined();
+
+    const resumedCalls: Array<{ item: string; admitted: boolean | undefined }> = [];
+    const resumeStores = baseStores();
+    resumeStores.step = structuredClone(result.awaiting_approval!.step_state);
+    const resumed = await executeRecipe({
+      recipe: foreachRecipe,
+      stores: resumeStores,
+      ingredientExecutor: async (_slug, input, _output, _options, meta) => {
+        const item = String(input.name);
+        resumedCalls.push({ item, admitted: meta?.preflight_admitted });
+        return { sent: item };
+      },
+      resumeFrom: {
+        gated_step_id: 'fan',
+        foreach_progress: result.awaiting_approval!.foreach_progress!,
+      },
+    });
+
+    expect(resumed.success).toBe(true);
+    // `a` is checkpointed; only b+c dispatch after approval. The one approval
+    // covers that bounded foreach operation, so both remaining calls carry the
+    // step-scoped admission marker.
+    expect(resumedCalls).toEqual([
+      { item: 'b', admitted: true },
+      { item: 'c', admitted: true },
+    ]);
+    expect(resumed.steps).toHaveLength(1);
+    expect(resumed.steps[0]!.result).toEqual([
+      { ok: true, result: { sent: 'a' }, item: { name: 'a' } },
+      { ok: true, result: { sent: 'b' }, item: { name: 'b' } },
+      { ok: true, result: { sent: 'c' }, item: { name: 'c' } },
+    ]);
+  });
+
+  it('spends a chunked approval on one foreach item and re-holds the next item', async () => {
+    const items = [{ name: 'a' }, { name: 'b' }];
+    const foreachRecipe = makeRecipe(asSteps([{
+      id: 'fan',
+      ingredient: 'gated-action',
+      foreach: '{{config.items}}',
+      input: '{{item}}',
+    }]));
+    const stores = baseStores();
+    stores.config = { items };
+    const calls: Array<{ item: string; admitted: boolean | undefined }> = [];
+    const resumed = await executeRecipe({
+      recipe: foreachRecipe,
+      stores,
+      ingredientExecutor: async (_slug, input, _output, _options, meta) => {
+        const item = String(input.name);
+        calls.push({ item, admitted: meta?.preflight_admitted });
+        if (meta?.preflight_admitted !== true) {
+          throw new PreflightRequiredSignal('next chunk needs its own bound', {
+            egress_bound: { requests: 4, total_bytes: 32 },
+          });
+        }
+        return { sent: item };
+      },
+      resumeFrom: {
+        gated_step_id: 'fan',
+        egress_bound: { requests: 4, total_bytes: 32 },
+        foreach_progress: {
+          step_id: 'fan',
+          next_index: 0,
+          source_length: items.length,
+          source_hash: hashForeachCheckpointSource(items),
+          results: [],
+        },
+      },
+    });
+
+    expect(resumed.success).toBe(false);
+    expect(calls).toEqual([
+      { item: 'a', admitted: true },
+      { item: 'b', admitted: undefined },
+    ]);
+    expect(resumed.awaiting_approval?.foreach_progress).toEqual({
+      step_id: 'fan',
+      next_index: 1,
+      source_length: 2,
+      source_hash: hashForeachCheckpointSource(items),
+      results: [{ ok: true, result: { sent: 'a' }, item: { name: 'a' } }],
+    });
+    expect(resumed.awaiting_approval?.egress_bound).toEqual({
+      requests: 4,
+      total_bytes: 32,
+    });
+  });
+
+  it('fails closed when a resumed foreach checkpoint lacks or mismatches item progress', async () => {
+    const foreachRecipe = makeRecipe(asSteps([
+      {
+        id: 'fan',
+        ingredient: 'gated-action',
+        foreach: '{{config.items}}',
+        input: '{{item}}',
+      },
+    ]));
+    for (const foreach_progress of [
+      undefined,
+      {
+        step_id: 'fan',
+        next_index: 1,
+        source_length: 2,
+        source_hash: hashForeachCheckpointSource([
+          { name: 'a' }, { name: 'b' },
+        ]),
+        results: [{ ok: true, result: { sent: 'different' }, item: { name: 'x' } }],
+      },
+      {
+        step_id: 'fan',
+        next_index: 1,
+        source_length: 2,
+        source_hash: hashForeachCheckpointSource([
+          { name: 'a' }, { name: 'changed-after-gate' },
+        ]),
+        results: [{ ok: true, result: { sent: 'a' }, item: { name: 'a' } }],
+      },
+    ]) {
+      let calls = 0;
+      const stores = baseStores();
+      stores.config = { items: [{ name: 'a' }, { name: 'b' }] };
+      const resumed = await executeRecipe({
+        recipe: foreachRecipe,
+        stores,
+        ingredientExecutor: async () => {
+          calls += 1;
+          return null;
+        },
+        resumeFrom: {
+          gated_step_id: 'fan',
+          ...(foreach_progress !== undefined ? { foreach_progress } : {}),
+        },
+      });
+
+      expect(resumed.success).toBe(false);
+      expect(resumed.errors[0]).toMatchObject({
+        code: 'RECIPE_VALIDATION_FAILED',
+        details: {
+          reason: foreach_progress === undefined
+            ? 'checkpoint_foreach_progress_missing'
+            : 'checkpoint_foreach_progress_mismatch',
+        },
+      });
+      expect(calls).toBe(0);
+    }
   });
 });

@@ -18,6 +18,8 @@
  *  doing.
  */
 
+import { tokenizeSearchQuery } from '@recued/contracts';
+
 import chunkData from './chat-doc-index.generated.json';
 
 /** One documentation section — the unit a search returns.
@@ -44,18 +46,21 @@ export const CHAT_DOC_CHUNKS: ReadonlyArray<ChatDocChunk> =
 
 /** ⛔ The same floor `searchToolCatalog` uses, for the same reason: a single
  *  character is a substring of almost everything and drags noise into the tail. */
-const MIN_QUERY_TERM_LENGTH = 2;
-
 /** ⛔ HARD CAP, and low on purpose. A question needs the section that answers
  *  it, not the five that mention the word — and doc hits share a packet with
  *  the tool matches that let the model actually DO the thing. */
 export const DOC_MATCH_LIMIT = 3;
 
-const tokenize = (query: string): string[] =>
-  query
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((token) => token.length >= MIN_QUERY_TERM_LENGTH);
+/** ⛔ THE SHARED TOKENIZER, NOT A LOCAL ONE. This file used to carry a
+ *  byte-identical copy (same split, same `MIN_QUERY_TERM_LENGTH = 2`) beside a
+ *  `scoreChunk` that already "mirrors `scoreToolEntry`'s shape deliberately" —
+ *  so the two paths agreed on the weights and would have DIVERGED on the
+ *  stopword fix, which is exactly the "two rules that happen to agree until
+ *  someone edits one" that `searchable-score.ts` exists to prevent. Docs were
+ *  never the visible offender only because they `slice(0, DOC_MATCH_LIMIT)`;
+ *  the same "or"-matches-84%-of-the-corpus defect was picking WHICH 3 sections
+ *  came back, out of an effectively random 90% pool. */
+const tokenize = tokenizeSearchQuery;
 
 /** Mirrors `scoreToolEntry`'s shape deliberately — heading beats grouping beats
  *  body, exactly as slug beats tag beats description — so one query cannot rank

@@ -1521,3 +1521,46 @@ describe('connection.api handler — SSRF redirect origin pinning', () => {
       .rejects.toMatchObject({ code: 'TOKEN_REFRESH_FAILED' });
   });
 });
+
+// ────────────────────────────────────────────────────────────────
+// Response decoding — JSON media types (RFC 6839 structured suffixes)
+// ────────────────────────────────────────────────────────────────
+
+describe('connection.api handler — a +json response is JSON, not text', () => {
+  const dispatch = async (contentType: string, body: string): Promise<unknown> => {
+    const { deps } = mkDeps({ type: 'none' }, () => new Response(body, {
+      status: 200,
+      headers: { 'content-type': contentType },
+    }));
+    const handler = createConnectionApiHandler(deps);
+    const out = await handler(mkRow(), { method: 'GET', path: '/x' }, mkCall()) as { result: unknown };
+    return out.result;
+  };
+
+  it('parses application/vnd.api+json — what every JSON:API vendor answers', async () => {
+    // ⛔ Before this, the body arrived as a STRING and every `result.data.…`
+    // read in a Lemon Squeezy / Klaviyo / Outreach / Rootly / Snyk recipe was
+    // undefined. Found by the semi-live Lemon Squeezy drive (2026-09-04).
+    const result = await dispatch('application/vnd.api+json', '{"data":{"type":"orders","id":"9001"}}');
+    expect(result).toEqual({ data: { type: 'orders', id: '9001' } });
+  });
+
+  it('parses application/problem+json and a parameterised application/json', async () => {
+    expect(await dispatch('application/problem+json', '{"title":"Not Found"}')).toEqual({ title: 'Not Found' });
+    expect(await dispatch('application/json; charset=utf-8', '{"ok":true}')).toEqual({ ok: true });
+    expect(await dispatch('text/json', '[1,2]')).toEqual([1, 2]);
+  });
+
+  it('still hands non-JSON media types through as text', async () => {
+    expect(await dispatch('text/plain', '{"looks":"like json"}')).toBe('{"looks":"like json"}');
+    expect(await dispatch('application/jsonp', 'cb({})')).toBe('cb({})');
+    expect(await dispatch('application/xml', '<a/>')).toBe('<a/>');
+  });
+
+  it('a +json body that is not valid JSON is a malformed-JSON failure, as for application/json', async () => {
+    await expect(dispatch('application/vnd.api+json', '{not json')).rejects.toMatchObject({
+      code: 'NETWORK_ERROR',
+      details: { response_body_failure: 'malformed_json' },
+    });
+  });
+});

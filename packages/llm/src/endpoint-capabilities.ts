@@ -135,6 +135,7 @@ export const systemRoleUnsupported = (slot: LLMSlot): boolean =>
 export const resetEndpointCapabilities = (): void => {
   unsupported.clear();
   jsonUnsupported.clear();
+  contextBounds.clear();
 };
 
 /** Drop everything learned about ONE endpoint, so the next call re-detects.
@@ -151,6 +152,11 @@ export const forgetEndpoint = (slot: LLMSlot): void => {
   const key = endpointFingerprint(slot);
   unsupported.delete(key);
   jsonUnsupported.delete(key);
+  // ⛔ The learned window is forgotten too. The module header's governing
+  // constraint is CLEARABILITY, and a bound is the one learned fact here that
+  // silently shrinks what the model can see — so it is the LAST thing that
+  // should survive an owner asking for a re-probe.
+  contextBounds.delete(key);
   // ⚠ ANNOUNCE THE FORGETTING TOO, or the clear lasts only until the next
   // boot. Storage is written from `snapshotEndpointCapabilities()`, and a
   // fully-forgotten fingerprint drops out of that snapshot — but only if
@@ -260,6 +266,225 @@ export const noteJsonModeUnsupported = (slot: LLMSlot): void => {
 
 export const jsonModeUnsupported = (slot: LLMSlot): boolean =>
   jsonUnsupported.has(endpointFingerprint(slot));
+
+// ── Context window ──────────────────────────────────────────────────
+//
+// ⛔⛔ THE THIRD CAPABILITY, AND THE SAME PROBLEM A THIRD TIME. `slot
+// .context_window_tokens` is OWNER-TYPED ONLY — a census of the tree
+// (2026-09-03) found it read in `llm-config.ts` and written back from settings,
+// and supplied by NOTHING else: no model table, no probe, no default. Two
+// surfaces then diverge on the absence, and BOTH are wrong:
+//
+//   · chat  — `input_token_budget` is undefined, `promptFits` short-circuits
+//             to true, and every trim in `chat-turn-executor.ts` is inert.
+//             That is why the tail-eviction loop carries the comment "Normal
+//             chat never enters this branch", why a 113,616-token request went
+//             out and was accepted, and why `ChatContextLength` appears ZERO
+//             times in 1,546 stored bench reports. The guard is correct and
+//             starved of its one input.
+//   · gateway — `resolveRouteContextBudget` REFUSES the call outright with
+//             `llm_gateway_context_window_not_configured`.
+//
+// 🔑 A STATIC `model -> window` MAP CANNOT FIX THAT, for the reason this whole
+// module exists: one adapter serves every openai-compatible server (its own
+// comment names Together, Groq, Ollama, vLLM) and `base_url` overrides the
+// endpoint, so the reachable set is open and the windows are often unpublished.
+// The endpoint is the only authority on its own limit — so learn it here,
+// beside the two capabilities already learned exactly this way.
+//
+// The record is two numbers, and BOTH are needed:
+//   · floor (`accepted`) — the largest input this endpoint has ACCEPTED. Free:
+//                          every success already reports `usage.input_tokens`.
+//   · ceiling (`refused`) — learned from one context-length refusal.
+//
+// ⚠ Nothing is learned until one exists, so an endpoint that has never refused
+// behaves byte-identically to today.
+
+interface ContextBounds {
+  /** Largest input observed to SUCCEED. A budget may never fall below it. */
+  accepted?: number;
+  /** Total context ceiling, learned from a refusal. */
+  refused?: number;
+}
+
+const contextBounds = new Map<string, ContextBounds>();
+
+/** Did the provider refuse because the INPUT was too large?
+ *
+ *  ⛔ DO NOT RE-DERIVE THIS FROM THE MESSAGE TEXT. `classifyProviderError`
+ *  already made this call at the HTTP boundary, where it had the STATUS CODE
+ *  (413, or `PROVIDER_CONTEXT_OVERFLOW_RE` against the body) — strictly more
+ *  evidence than a second regex over the rendered message would have. A
+ *  parallel classifier here would drift from that one and disagree with it.
+ *
+ *  ⛔ AND IT MUST NOT BE RETRYABLE. Auth, quota, 429 and 5xx are all built as
+ *  `retryable`, and a 429 body routinely says "too many tokens" — learning a
+ *  ceiling from a rate limit would cap the endpoint at whatever happened to be
+ *  in flight when the owner hit their quota. The retryable flag is the guard,
+ *  and it is set by the same function that recognised the overflow. */
+export const isContextOverflowRejection = (e: unknown): boolean =>
+  e instanceof LLMError && !e.retryable && e.code === 'AI_TOKEN_BUDGET_EXCEEDED';
+
+/** Raise the proven floor from a successful call. */
+export const noteContextAccepted = (slot: LLMSlot, inputTokens: number): void => {
+  if (!Number.isSafeInteger(inputTokens) || inputTokens <= 0) return;
+  const key = endpointFingerprint(slot);
+  const prev = contextBounds.get(key);
+  if (prev !== undefined && (prev.accepted ?? 0) >= inputTokens) return;
+  contextBounds.set(key, { ...prev, accepted: inputTokens });
+};
+
+/** Learn the ceiling from a refusal.
+ *
+ *  ⛔⛔ A CEILING AT OR BELOW A PROVEN FLOOR IS WRONG AND IS DISCARDED, AND
+ *  THIS GUARD IS THE WHOLE SAFETY ARGUMENT FOR LEARNING A NUMBER AT ALL. The
+ *  failure being fenced against is not "we fail to learn a limit" — it is
+ *  learning a WRONG one: a low ceiling caches, and the endpoint is over-trimmed
+ *  forever, silently, in the direction that LOSES context. That is worse than
+ *  the problem being solved.
+ *
+ *  If the candidate sits under an input this endpoint has already accepted, the
+ *  observation contradicts reality — a shared key routing elsewhere, a changed
+ *  model behind one name, a stated number that is not the window. The floor is
+ *  EVIDENCE; the candidate is INFERENCE; evidence wins.
+ *
+ *  ⚠ `attemptedInputTokens` is our own conservative ESTIMATE, not the
+ *  provider's count (a refused call reports no usage). It is therefore an upper
+ *  bound on nothing — it is only ever used to say "at least this much was too
+ *  much", which is why it becomes the ceiling rather than being trusted as one. */
+/** The provider's own ceiling, when it names one.
+ *
+ *  ⛔⛔ WITHOUT THIS THE FIRST BOUND IS USELESSLY LOOSE, AND THAT IS NOT A
+ *  ROUNDING ERROR — IT IS THE DIFFERENCE BETWEEN CONVERGING IN ONE TURN AND
+ *  CONVERGING IN SEVERAL VISIBLE FAILURES. The fallback ceiling is our estimate
+ *  of the prompt that was just refused, which is an upper bound on nothing
+ *  useful: send 500,000 tokens at an 8,192-token endpoint and the learned
+ *  ceiling is ~500,000, the next budget is still vastly over, and the turn
+ *  fails again. Each failure only ratchets down by however much the trim
+ *  happened to remove. The provider states the real number in the same body
+ *  `PROVIDER_CONTEXT_OVERFLOW_RE` already matched — taking it makes the very
+ *  next turn fit.
+ *
+ *  ⚠ BOTH UNITS ARE NOW TOKENS, and that was not always true. This figure is
+ *  the provider's own token count; the fallback below is
+ *  `estimateConservativeMessagesTokens`, which returned one token per UTF-8
+ *  BYTE until the divisor was fixed. While it did, the floor guard compared two
+ *  scales — an inflated proven-accepted floor could veto a TRUE stated limit
+ *  (accept 54,000 byte-units on a call the provider counted at ~13,500, then
+ *  discard a genuine 32,768 as "below the floor"). Keep both sides in the
+ *  estimator's tokens; a future exact tokenizer replaces the estimate without
+ *  reopening this.
+ *
+ *  ⛔ THE SMALLEST PLAUSIBLE NUMBER WINS, because these messages carry two
+ *  ("maximum context length is 128000 tokens, however you requested 130000")
+ *  and the limit is never the larger. Anything under 1,000 is discarded as a
+ *  model name, an error code, or a status. */
+const statedContextLimit = (error: unknown): number | undefined => {
+  const text = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  if (text.length === 0) return undefined;
+  // ⛔⛔ ADJACENCY IS THE WHOLE GUARD — A BARE DIGIT SCAN IS ACTIVELY UNSAFE.
+  //   "gpt-4o-2024-08-06: maximum context length is 128000 tokens" contains
+  //   `2024`, which passes any plausible magnitude filter and is SMALLER than
+  //   the real limit, so a smallest-wins rule would cache a 2,024-token ceiling
+  //   and over-trim that endpoint permanently. Model names carry dates and
+  //   version numbers; what they never carry is a following "tokens". Both
+  //   first-party phrasings put the figure immediately before `tokens` or
+  //   `maximum`, so require that.
+  const numbers = [...text.matchAll(/(\d[\d,_]{2,})\s*(?:tokens?\b|maximum\b)/gu)]
+    .map((m) => Number(m[1]!.replace(/[,_]/gu, '')))
+    // ⚠ The magnitude floor is belt-and-braces and is NOT load-bearing today:
+    // mutation testing (2026-09-03) shows removing it leaves every test green,
+    // because the adjacency requirement above already excludes the cases it was
+    // written for. It stays because the direction it guards is the unrecoverable
+    // one — a sub-1,000 ceiling would silently cripple an endpoint — but it is
+    // recorded here as unexercised rather than presented as verified.
+    .filter((n) => Number.isSafeInteger(n) && n >= 1_000);
+  return numbers.length > 0 ? Math.min(...numbers) : undefined;
+};
+
+export const noteContextRefused = (
+  slot: LLMSlot,
+  attemptedInputTokens: number | undefined,
+  error?: unknown,
+): void => {
+  const candidate = statedContextLimit(error)
+    ?? (Number.isSafeInteger(attemptedInputTokens ?? NaN) ? attemptedInputTokens : undefined);
+  if (candidate === undefined || candidate <= 0) return;
+  const key = endpointFingerprint(slot);
+  const prev = contextBounds.get(key);
+  const floor = prev?.accepted;
+  // ⚠ BOTH SIDES ARE TOKENS. That is load-bearing and was not always true:
+  //   while the estimator returned one token per UTF-8 byte, the floor was
+  //   ~3x inflated and could veto a genuine provider-stated ceiling that sat
+  //   below it. If the estimate ever drifts from the provider's scale again,
+  //   this guard silently stops learning rather than announcing anything.
+  //   Failing to learn is recoverable on the next refusal; a wrong bound is
+  //   not, which is why the guard errs this way and not the other.
+  if (floor !== undefined && candidate <= floor) return;
+  // A second, smaller refusal is better evidence than the first — keep the
+  // lowest ceiling seen, since everything above it is known to fail too.
+  if (prev?.refused !== undefined && prev.refused <= candidate) return;
+  contextBounds.set(key, { ...prev, refused: candidate });
+};
+
+/** The learned context window for this endpoint, or `undefined`.
+ *
+ *  ⛔ A FLOOR ALONE IS NOT A CEILING, and returns nothing. Knowing 113,616
+ *  tokens were accepted proves nothing about where the limit is, and trimming
+ *  on that guess would discard context that fits. Only a refusal bounds the
+ *  window from above, which is why the error path is the one that teaches. */
+export const learnedContextWindow = (slot: LLMSlot): number | undefined =>
+  contextBounds.get(endpointFingerprint(slot))?.refused;
+
+/** The largest input this endpoint is KNOWN to accept — the floor a computed
+ *  budget must never fall below. */
+export const provenAcceptedInput = (slot: LLMSlot): number | undefined =>
+  contextBounds.get(endpointFingerprint(slot))?.accepted;
+
+/** The window to budget against when ANY of `slots` might serve the turn.
+ *
+ *  ⛔⛔ WHY A MINIMUM, AND WHY THIS FUNCTION EXISTS AT ALL. The obvious design —
+ *  resolve the slot, then look up its window — CANNOT be done before the call:
+ *  `matchLLM` picks among candidates using `deps.rng` and live quota state, so a
+ *  pre-call match is a DIFFERENT DRAW from the one the call will make. Budgeting
+ *  to a slot that then loses the draw is not a smaller bug than not budgeting;
+ *  it is a prompt trimmed to the wrong endpoint's limit.
+ *
+ *  So the budget is taken over the whole candidate set, and the only figure that
+ *  is safe for every possible draw is the smallest known one.
+ *
+ *  ⚠ THIS IS A BOUND, NOT A GUARANTEE, AND THE GAP IS NAMED ON PURPOSE. A
+ *  candidate with NO learned window contributes nothing to the minimum, so if it
+ *  wins the draw and its true window is smaller, the prompt can still overflow —
+ *  and it then teaches its own bound, which is exactly the intended path. What
+ *  this rules out is the silent case: once ANY candidate is known to be small,
+ *  no turn is composed as though every candidate were large. */
+export const minLearnedContextWindow = (
+  slots: readonly LLMSlot[],
+): number | undefined => {
+  let min: number | undefined;
+  for (const slot of slots) {
+    const learned = learnedContextWindow(slot);
+    if (learned === undefined) continue;
+    if (min === undefined || learned < min) min = learned;
+  }
+  return min;
+};
+
+/** The floor a computed budget must never fall below, over the same candidate
+ *  set. The MAXIMUM proven-accepted input: trimming below a size some candidate
+ *  has already swallowed would discard context that demonstrably fits. */
+export const maxProvenAcceptedInput = (
+  slots: readonly LLMSlot[],
+): number | undefined => {
+  let max: number | undefined;
+  for (const slot of slots) {
+    const proven = provenAcceptedInput(slot);
+    if (proven === undefined) continue;
+    if (max === undefined || proven > max) max = proven;
+  }
+  return max;
+};
 
 export const hasSystemMessage = (messages: readonly LLMMessage[]): boolean =>
   messages.some((m) => m.role === 'system');

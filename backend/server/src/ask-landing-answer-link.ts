@@ -127,6 +127,45 @@ export const buildOwnerSurfaceLink = (
     `${base}/#recipes/${encodeURIComponent(recipe_id)}`;
 };
 
+/** D-259 — the same absolute-deep-link rule as {@link buildOwnerSurfaceLink},
+ *  pointed at the Packs surface. One slug lands on that pack's detail page;
+ *  no slug lands on the list, which is the honest target when a notice names
+ *  several packs and no single one is "the" destination.
+ *
+ *  🔑 WHY THIS IS A HOST CONCERN AND NOT A CALLER ONE — the same reason its
+ *  sibling exists: the CALLER knows which pack it means, the HOST knows where
+ *  this server lives, and `link_url` is a MULTI-CHANNEL field. A bare
+ *  `#packs/<slug>` resolves fine in the webclient that rendered the ask, but
+ *  the identical field is appended raw into email, passed through to remote
+ *  channels, and run through `safeHttpUrl` by the ask landing page — so a
+ *  relative hash is a dead link on three of the four roads it travels. Absolute
+ *  or nothing.
+ *
+ *  ⚠ Null on a non-public server, exactly like its sibling — an owner never
+ *  gets a link that cannot be opened from where the notification reached them.
+ *
+ *  ⚠ The hash route is the webclient's own (`serializeShellRoute('packs', slug)`
+ *  → `#packs/<slug>`, parsed back by `parsePacksAddress`); the slug is
+ *  URL-encoded because a pack slug may carry a `publisher/name` slash. */
+export const buildPacksSurfaceLink = (
+  baseUrl: string | null,
+): ((pack_slug?: string) => string) | null => {
+  if (baseUrl === null) return null;
+  const base = baseUrl;
+  return (pack_slug?: string): string =>
+    pack_slug === undefined || pack_slug.length === 0
+      ? `${base}/#packs`
+      : `${base}/#packs/${encodeURIComponent(pack_slug)}`;
+};
+
+/** The absolute Settings -> Updates destination used by owner notifications.
+ * Unlike a recipe/pack link this route has no caller-authored identity, so the
+ * host resolves one fixed URL. Null on a non-public server: `link_url` travels
+ * over email and remote channels, where a bare `#settings/updates` fragment is
+ * not actionable. */
+export const buildUpdatesSurfaceLink = (baseUrl: string | null): string | null =>
+  baseUrl === null ? null : `${baseUrl}/#settings/updates`;
+
 /** D-234 § 234.3 — the whole "does this ask get a link?" decision, in one place.
  *
  *  ⛔ THREE WAYS TO HAVE NO LINK, AND A LINK IS RETURNED ONLY WHEN NONE HOLD:

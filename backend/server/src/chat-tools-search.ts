@@ -67,7 +67,7 @@ export const TOOLS_SEARCH_TOOL_ENTRY: ToolEntry = {
   name: TOOLS_SEARCH_TOOL_NAME,
   tier: 1,
   description:
-    "Find installed recipe tools by capability. Recipe tools that \"available_tools\" does not fully show — listed with only a one-line summary and no argument schema (index mode), or not listed at all (lean-core mode) — are recovered here: pass a short `query` describing the capability (\"draft a follow-up email\", \"summarize a PDF\", \"find overdue invoices\") and it returns every matching tool, each with the `args_schema` you then call directly by `recipe_slug` (pass `limit` only if you want fewer). The always-listed core tools (contact / mail / calendar / memory / enrichment / deal / account / work search + read, recipe.run) are ALREADY fully defined — never search for those. This ALSO searches the documentation for THIS server and returns any matching sections as `doc_matches` — use it for \"how does X work\" / \"where do I set X up\" questions, which nothing in your own knowledge can answer about this product. If a search returns no match at all, do NOT retry with reworded queries: satisfy the request with the core tools, or tell the user that no matching recipe is installed and the documentation does not cover it.",
+    "Find installed recipe tools by capability. Recipe tools that \"available_tools\" does not fully show — listed with only a one-line summary and no argument schema (index mode), or not listed at all (lean-core mode) — are recovered here: pass a short `query` of KEYWORDS describing the capability — the nouns and verbs that name it, not the user's sentence (\"follow-up email draft\", \"summarize PDF\", \"overdue invoices\", \"buildings properties\") and it returns every matching tool, each with the `args_schema` you then call directly by `recipe_slug` (pass `limit` only if you want fewer). The always-listed core tools (contact / mail / calendar / memory / enrichment / deal / account / work search + read, recipe.run) are ALREADY fully defined — never search for those. This ALSO searches the documentation for THIS server and returns any matching sections as `doc_matches` — use it for \"how does X work\" / \"where do I set X up\" questions, which nothing in your own knowledge can answer about this product — but still search it by KEYWORDS (\"connection enrol\", \"pack version pin\"), not by typing the question in. If a search returns no match at all, do NOT retry with reworded queries: satisfy the request with the core tools, or tell the user that no matching recipe is installed and the documentation does not cover it.",
   arg_schema: {
     type: 'object',
     properties: {
@@ -130,6 +130,10 @@ export interface ToolsSearchWrapOptions {
   getScope: () => ChatToolCatalogScopeState | null;
   /** D-247 D9 — Tier-2 reachability for the turn's source. */
   tier2GrantFilter?: (source?: ExecutionSource) => (toolName: string) => boolean;
+  /** D-247 D9 — see `createChatOwnerCatalogGuard`. Refuses rather than filters:
+   *  `tools.search` reads the owner's registry, and a door reaching it is a
+   *  routing error. */
+  ownerCatalogGuard?: (source?: ExecutionSource) => void;
   /** D-247 D8 — the owner's unfiltered-then-granted Tier-2 set. */
   tier2OwnerCatalog?: (source?: ExecutionSource) => ReadonlyArray<ToolEntry> | null;
 }
@@ -156,8 +160,15 @@ const dispatchToolsSearch = (
    *  the owner granted has to be findable here too — otherwise the grant works in
    *  the catalog and silently does not in search. */
   tier2OwnerCatalog?: (source?: ExecutionSource) => ReadonlyArray<ToolEntry> | null,
+  /** D-247 D9 — refuse a non-owner-governed source outright. `tools.search`
+   *  reads the OWNER's registry, and `tier2GrantFilter` returns `() => true`
+   *  for a door by design, so the filter below cannot narrow one. */
+  ownerCatalogGuard?: (source?: ExecutionSource) => void,
 ): ((raw: unknown, ctx: ChatDispatchContext) => Promise<ChatDispatchResult>) =>
   async (raw, ctx) => {
+    // ⛔ FIRST, before the query is even parsed — a door must not learn what a
+    // malformed query looks like on a surface it may not read at all.
+    ownerCatalogGuard?.(ctx?.execution_source);
     const args = asObject(raw);
     if (!args) {
       return { ok: false, reason: 'invalid_args', detail: 'args must be an object' };
@@ -283,12 +294,21 @@ export const wrapChatRegistryForCatalogModes = (
    *  second of three Tier-2 exposure surfaces. */
   tier2GrantFilter?: (source?: ExecutionSource) => (toolName: string) => boolean,
   tier2OwnerCatalog?: (source?: ExecutionSource) => ReadonlyArray<ToolEntry> | null,
+  /** ⛔ POSITIONAL, AND IT HAS TO BE THREADED HERE. This is the ONLY
+   *  constructor of the `tools.search` surface — declaring the option on
+   *  `ToolsSearchWrapOptions` and wiring it at the orchestrator reaches
+   *  `buildCatalog` only, leaving search unguarded. That is the exact shape
+   *  this file already records once: `tier2GrantFilter` was "accepted and
+   *  threaded but UNREAD before 2026-08-20 — the grant worked in the catalog
+   *  and silently did not in search". */
+  ownerCatalogGuard?: (source?: ExecutionSource) => void,
 ): InternalToolRegistry =>
   wrapRegistryWithToolsSearch(inner, {
     enabled: anyCatalogModeUsesToolsSearch(modes),
     getScope,
     ...(tier2GrantFilter ? { tier2GrantFilter } : {}),
     ...(tier2OwnerCatalog ? { tier2OwnerCatalog } : {}),
+    ...(ownerCatalogGuard ? { ownerCatalogGuard } : {}),
   });
 
 export const wrapRegistryWithToolsSearch = (
@@ -299,6 +319,7 @@ export const wrapRegistryWithToolsSearch = (
   const entry = TOOLS_SEARCH_TOOL_ENTRY;
   const dispatchSearch = dispatchToolsSearch(
     inner, opts.getScope, opts.tier2GrantFilter, opts.tier2OwnerCatalog,
+    opts.ownerCatalogGuard,
   );
   return {
     list: () => insertToolEntryAfterTier1(inner.list(), entry),

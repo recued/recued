@@ -17,7 +17,7 @@
  *  substrate — both wrap the form-renderer + a dialog envelope, but
  *  compose adds reply-context prepopulation, a sender-Source picker
  *  scoped to send-capable mail Sources only, and an AI-assist sidebar
- *  slot (PA7 ships as a stub — engine integration lands in PB).
+ *  whose existing-body rewrite subset is backed by a governed hidden recipe.
  *
  *  Spec: D-145 § A.5 (Email compose UI). */
 
@@ -173,12 +173,10 @@ export interface MailSenderSourceOption {
   mail_instance_slug: string;
 }
 
-/** AI-assist sidebar action kinds. PA7 ships the data-action wiring +
- *  rendered controls only — the host fires these as no-ops; engine
- *  integration lands in PB (per spec § A.5.5). The closed list covers
- *  the three primary capabilities § A.5.5 names — compose / rewrite /
- *  polish — plus the reply-mode-specific draft-reply, plus the two
- *  tone variants the rewrite call expands into in practice. */
+/** AI-assist sidebar action kinds. The wider closed list preserves the PA7
+ * render contract; `MAIL_COMPOSE_REWRITE_ACTIONS` below is the launch-safe
+ * subset with a real host/recipe implementation. Compose-from-empty and draft
+ * reply remain out until they have grounded source/context semantics. */
 export const MAIL_COMPOSE_AI_ACTIONS = [
   'compose',
   'rewrite-formal',
@@ -187,3 +185,12 @@ export const MAIL_COMPOSE_AI_ACTIONS = [
   'draft-reply',
 ] as const;
 export type MailComposeAiAction = (typeof MAIL_COMPOSE_AI_ACTIONS)[number];
+
+/** Actions that transform an existing body and nothing else. */
+export const MAIL_COMPOSE_REWRITE_ACTIONS = [
+  'rewrite-formal',
+  'rewrite-friendly',
+  'polish',
+] as const satisfies readonly MailComposeAiAction[];
+export type MailComposeRewriteAction =
+  (typeof MAIL_COMPOSE_REWRITE_ACTIONS)[number];

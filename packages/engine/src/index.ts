@@ -109,4 +109,8 @@ export {
 // The same gate resolves policy (admit / deny / ask) and emits the
 // `connection_gateway` audit row, so the poll stays inside the D-153
 // enforcement boundary.
-export { runCatalogOperation, resolveCatalogRecordsPath } from './catalog-gateway.js';
+export {
+  catalogOperationUsesDetachedCli,
+  runCatalogOperation,
+  resolveCatalogRecordsPath,
+} from './catalog-gateway.js';

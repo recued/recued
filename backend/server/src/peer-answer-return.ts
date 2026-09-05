@@ -19,12 +19,21 @@
  *  any option outside the set WE offered, read back off our own outbox row.
  */
 import {
+  isGatedActionTerminal,
   parsePeerAnswer,
+  type GatedActionStatus,
   type PeerAnswer,
 } from '@recued/contracts';
 
-import type { PeerAskOutboxStore } from './storage/peer-ask-outbox-store.js';
-import type { PeerAnswerStore } from './storage/peer-answer-store.js';
+import type {
+  PeerAskOutboxRow,
+  PeerAskOutboxStore,
+} from './storage/peer-ask-outbox-store.js';
+import type {
+  PeerAnswerRecord,
+  PeerAnswerStore,
+} from './storage/peer-answer-store.js';
+import { isPeerHoldAbandonmentClaim } from './peer-hold-abandoner.js';
 
 /** The wire shape the answering server presents at the asker's door. */
 export interface InboundPeerAnswer {
@@ -89,21 +98,171 @@ export type PeerAnswerInboundResult =
 
 export interface PeerAnswerInboundDeps {
   readonly outbox: Pick<PeerAskOutboxStore, 'get' | 'close'>;
-  readonly answers: Pick<PeerAnswerStore, 'record'>;
+  readonly answers: Pick<PeerAnswerStore, 'record' | 'get'>;
   /** Resolve which peer contract a connection name is bound to. The answer must
    *  arrive from the contract we ADDRESSED, not merely from a known peer. */
   readonly contractForConnection: (connection: string) => string | undefined;
   /** Re-instantiate the held run past its peer gate. Best-effort: the answer is
    *  durable once recorded, so a failed resume is recoverable by re-resuming,
    *  where a refused answer would strand the conversation. */
-  readonly resume: (row: { run_id: string; gated_step_id: string }) => Promise<void>;
+  readonly resume: (row: {
+    run_id: string;
+    gated_step_id: string;
+    exchange_ref: string;
+  }) => Promise<void>;
+  readonly gatedActions?: PeerAnswerContinuationDeps['gatedActions'];
   readonly logActivity?: (row: {
     action: string; target: string; detail: string;
   }) => void;
   readonly now?: () => number;
 }
 
-/** a's door. Validate, record, close, resume. */
+/** The narrow receipt seam used by authenticated-answer reconciliation. The
+ * store owns all state/exchange checks; callers can only present the outbox's
+ * host-derived subject and exchange reference. */
+export interface PeerAnswerContinuationDeps {
+  readonly outbox: Pick<PeerAskOutboxStore, 'get' | 'close'>;
+  readonly resume: (row: {
+    run_id: string;
+    gated_step_id: string;
+    exchange_ref: string;
+  }) => Promise<void>;
+  readonly gatedActions?: {
+    get(action_ref: string): Promise<{
+      action_ref: string;
+      run_id: string;
+      gated_step_id: string;
+      current_checkpoint_id: string;
+    } | null>;
+    confirmPeerHandoff(action_ref: string, input: {
+      run_id: string;
+      gated_step_id: string;
+      exchange_ref: string;
+      status_message?: string;
+    }): Promise<{
+      status: GatedActionStatus;
+      handoff?: { kind: string; ref: string };
+    } | null>;
+  };
+}
+
+/** One process-local flight per durable exchange. This is not authority—the
+ * answer row and exact awaiting-peer anchor are—but it prevents the inbound
+ * request and periodic recovery tick from concurrently re-instantiating the
+ * same checkpoint. */
+const peerAnswerContinuationFlights = new Map<string, Promise<boolean>>();
+
+/** Reconcile the owner receipt, resume the exact held step, then close live
+ * conversation state. The outbox row remains present until every retryable
+ * side effect succeeds, so a crash or thrown resume has an enumerable recovery
+ * source on the next tick/boot. */
+export const continueRecordedPeerAnswer = (
+  row: PeerAskOutboxRow,
+  deps: PeerAnswerContinuationDeps,
+): Promise<boolean> => {
+  const existing = peerAnswerContinuationFlights.get(row.exchange_ref);
+  if (existing !== undefined) return existing;
+  const flight = (async (): Promise<boolean> => {
+    if (deps.gatedActions !== undefined && row.action_ref !== undefined) {
+      const action = await deps.gatedActions.get(row.action_ref);
+      // Legacy/expired receipts do not make the recipe checkpoint unusable.
+      // When one remains, however, authenticated arrival is the evidence that
+      // resolves a delivery-uncertain peer handoff before the recipe moves.
+      if (action !== null) {
+        // The outbox journal is the authority for WHICH approved operation this
+        // answer belongs to. Looking up the latest receipt by run/step can select
+        // a later foreach segment, while a legacy row with no action_ref must not
+        // borrow any receipt merely because its subject happens to match.
+        if (row.checkpoint_id === undefined
+          || action.action_ref !== row.action_ref
+          || action.run_id !== row.run_id
+          || action.gated_step_id !== row.gated_step_id
+          || action.current_checkpoint_id !== row.checkpoint_id) {
+          throw new Error('peer answer journal no longer owns its gated action receipt');
+        }
+        const confirmed = await deps.gatedActions.confirmPeerHandoff(row.action_ref, {
+          run_id: row.run_id,
+          gated_step_id: row.gated_step_id,
+          exchange_ref: row.exchange_ref,
+          status_message: 'The peer received the question and returned an authenticated answer.',
+        });
+        // Receipt terminality and peer-answer continuation are separate facts.
+        // A still-dispatching receipt is normally confirmed here; if boot
+        // already froze it as in_doubt (or another terminal result won), late
+        // authenticated substrate evidence must not rewrite it and must not
+        // strand the separately durable peer checkpoint.
+        if (confirmed !== null && !isGatedActionTerminal(confirmed.status)) {
+          throw new Error('authenticated peer answer could not reconcile its operation receipt');
+        }
+      }
+    }
+
+    await deps.resume({
+      run_id: row.run_id,
+      gated_step_id: row.gated_step_id,
+      exchange_ref: row.exchange_ref,
+    });
+
+    try {
+      const closed = deps.outbox.close(row.exchange_ref);
+      if (!closed && deps.outbox.get(row.exchange_ref) !== null) {
+        throw new Error('peer answer outbox row remained open after close');
+      }
+    } catch (error) {
+      // An adapter may report failure after its delete committed. Read-back is
+      // the postcondition; only a still-live row needs another retry.
+      try {
+        if (deps.outbox.get(row.exchange_ref) === null) return true;
+      } catch {
+        /* retain the original close error */
+      }
+      throw error;
+    }
+    return true;
+  })();
+  peerAnswerContinuationFlights.set(row.exchange_ref, flight);
+  void flight.finally(() => {
+    if (peerAnswerContinuationFlights.get(row.exchange_ref) === flight) {
+      peerAnswerContinuationFlights.delete(row.exchange_ref);
+    }
+  }).catch(() => undefined);
+  return flight;
+};
+
+const sameRecordedAnswer = (
+  existing: PeerAnswerRecord,
+  candidate: PeerAnswerRecord,
+  requireAt: boolean,
+): boolean => existing.peer_contract_id === candidate.peer_contract_id
+  && existing.answered === candidate.answered
+  && existing.option === candidate.option
+  && existing.note === candidate.note
+  && existing.unanswered_because === candidate.unanswered_because
+  && (!requireAt || existing.at === candidate.at);
+
+const rawCarriesExplicitAnswerTime = (raw: unknown): boolean => {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  const at = (raw as Record<string, unknown>).at;
+  return typeof at === 'number' && Number.isFinite(at);
+};
+
+const toPeerAnswerRecord = (
+  exchange_ref: string,
+  peer_contract_id: string,
+  answer: PeerAnswer,
+): PeerAnswerRecord => ({
+  exchange_ref,
+  peer_contract_id,
+  answered: answer.answered,
+  ...(answer.option !== undefined ? { option: answer.option } : {}),
+  ...(answer.note !== undefined ? { note: answer.note } : {}),
+  ...(answer.unanswered_because !== undefined
+    ? { unanswered_because: answer.unanswered_because }
+    : {}),
+  at: answer.at,
+});
+
+/** a's door. Validate, record, reconcile the receipt, resume, then close. */
 export const receiveAnswer = async (
   input: InboundPeerAnswer,
   deps: PeerAnswerInboundDeps,
@@ -111,10 +270,37 @@ export const receiveAnswer = async (
   const now = deps.now ?? Date.now;
   const open = deps.outbox.get(input.exchange_ref);
   if (open === null) {
+    // A completed continuation closes the outbox only after the exact held run
+    // resumed. The answer fact intentionally outlives that live route, so it can
+    // acknowledge an at-least-once retry whose first accepted response was lost.
+    // Match both the authenticated peer and the normalized answer; every other
+    // missing/mismatched ref keeps the same `not_solicited` response below.
+    const existingAnswer = deps.answers.get(input.exchange_ref);
+    if (existingAnswer !== null
+      && existingAnswer.peer_contract_id === input.peer_contract_id
+      && !isPeerHoldAbandonmentClaim(existingAnswer)) {
+      const replay = parsePeerAnswer(
+        input.raw,
+        existingAnswer.option !== undefined ? [existingAnswer.option] : [],
+        now(),
+      );
+      if (replay !== undefined
+        && sameRecordedAnswer(
+          existingAnswer,
+          toPeerAnswerRecord(input.exchange_ref, input.peer_contract_id, replay),
+          rawCarriesExplicitAnswerTime(input.raw),
+        )) {
+        return {
+          accepted: false,
+          refusal: 'already_answered',
+          reason: 'this exact answer was already recorded and its conversation completed',
+        };
+      }
+    }
     // ⚠ THE SAME CODE FOR "NEVER ASKED" AND "ALREADY CLOSED", deliberately. The
-    // two are one fact from the caller's side — there is no open conversation —
-    // and distinguishing them would tell an unknown caller whether a ref they
-    // guessed was ever real.
+    // two are one fact for every caller that cannot prove it authored the exact
+    // durable answer above, so an unknown caller still cannot discover whether a
+    // guessed ref was ever real.
     return {
       accepted: false,
       refusal: 'not_solicited',
@@ -149,18 +335,60 @@ export const receiveAnswer = async (
 
   console.warn(`[peer-answer] parsed note=${JSON.stringify(answer.note ?? null)}`);
   // First write wins — a duplicate delivery is not a second answer.
-  const recorded = deps.answers.record({
-    exchange_ref: input.exchange_ref,
-    peer_contract_id: input.peer_contract_id,
-    answered: answer.answered,
-    ...(answer.option !== undefined ? { option: answer.option } : {}),
-    ...(answer.note !== undefined ? { note: answer.note } : {}),
-    ...(answer.unanswered_because !== undefined
-      ? { unanswered_because: answer.unanswered_because }
-      : {}),
-    at: answer.at,
-  });
+  const candidate = toPeerAnswerRecord(
+    input.exchange_ref,
+    input.peer_contract_id,
+    answer,
+  );
+  const recorded = deps.answers.record(candidate);
   if (!recorded) {
+    const existingAnswer = deps.answers.get(input.exchange_ref);
+    // Refusal may have won the cross-process SQLite arbitration after our open
+    // read but before the conditional answer insert. No answer row in that case
+    // means the live route closed; do not misreport it as `already_answered`.
+    if (existingAnswer === null) {
+      return {
+        accepted: false,
+        refusal: 'not_solicited',
+        reason: 'no open conversation under that reference on this server',
+      };
+    }
+    // A local orphan-abandon claim owns a terminal transition and explicitly
+    // forbids recipe resumption. Leave its outbox row for the abandonment retry;
+    // neither an incoming conflict nor an exact-answer recovery may steal it.
+    if (isPeerHoldAbandonmentClaim(existingAnswer)) {
+      return {
+        accepted: false,
+        refusal: 'not_solicited',
+        reason: 'this server has stopped waiting on that conversation',
+      };
+    }
+    if (sameRecordedAnswer(
+      existingAnswer,
+      candidate,
+      rawCarriesExplicitAnswerTime(input.raw),
+    )) {
+      try {
+        await continueRecordedPeerAnswer(open, deps);
+        return { accepted: true, resumed: true };
+      } catch (error) {
+        console.warn(
+          `[peer-answer] existing answer continuation failed for ref '${input.exchange_ref}': `
+            + (error instanceof Error ? (error.stack ?? error.message) : String(error)),
+        );
+        return { accepted: true, resumed: false };
+      }
+    }
+    // Help the first durable answer finish even when the retry conflicts. The
+    // caller still receives `already_answered`; first-write-wins is unchanged.
+    try {
+      await continueRecordedPeerAnswer(open, deps);
+    } catch (error) {
+      console.warn(
+        `[peer-answer] winning answer continuation remains pending for ref '${input.exchange_ref}': `
+          + (error instanceof Error ? (error.stack ?? error.message) : String(error)),
+      );
+    }
     return {
       accepted: false,
       refusal: 'already_answered',
@@ -181,24 +409,16 @@ export const receiveAnswer = async (
     }),
   });
 
-  // ⚠ CLOSE BEFORE RESUME. The resumed step re-runs the op, which reads the
-  // recorded answer — it does not need the outbox row, and leaving one open
-  // across a resume would advertise a conversation that is over.
-  deps.outbox.close(input.exchange_ref);
-
   let resumed = false;
   try {
-    await deps.resume({ run_id: open.run_id, gated_step_id: open.gated_step_id });
-    resumed = true;
+    resumed = await continueRecordedPeerAnswer(open, deps);
   } catch (e) {
-    // ⛔ THE ANSWER STANDS EITHER WAY. It is recorded and durable; the held run
-    // finds it whenever it next resumes. Refusing the peer here would tell them
-    // their answer was rejected when we have in fact kept it, and they would
-    // reasonably send it again.
+    // The answer and outbox row both remain durable. An exact wire retry or the
+    // periodic/startup sweep re-enters this same continuation.
     console.warn(
       `[peer-answer] recorded but resume failed for ref '${input.exchange_ref}': `
       + (e instanceof Error ? (e.stack ?? e.message) : String(e))
-      + ' — the answer IS recorded; the held run finds it on its next resume.',
+      + ' — answer and retry anchor remain recorded.',
     );
   }
   return { accepted: true, resumed };

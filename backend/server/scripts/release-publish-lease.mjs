@@ -21,6 +21,14 @@
  * two recovery attempts cannot both win and a late recovery cannot steal a new
  * publisher it never inspected.
  *
+ * ⚠ MEASURED 2026-09-03, against this bucket, because two successive guesses
+ * about it were wrong: R2's PutObject DOES honour `If-Match`, and its PUT and
+ * GET return byte-identical ETags. A 412 here is therefore about the object
+ * generation, never about the store lacking the feature. (What WAS real: the
+ * ownership check compared those ETags verbatim and is now spelling-insensitive
+ * — that defect stranded 26.9.2's lock, and 26.9.3 released cleanly with it
+ * fixed.)
+ *
  * Production credentials are the standard R2 S3 credentials documented by
  * Cloudflare. The publisher continues using Wrangler for object transfer, but
  * conditional writes require this S3 surface because Wrangler's object command
@@ -304,7 +312,25 @@ try {
           );
         }
       } else if (expectedBreakToken) {
-        die('the recorded active release lease changed during takeover; no publish authority was granted');
+        // ⛔⛔ THREE DIFFERENT SITUATIONS USED TO PRINT ONE SENTENCE, and the
+        // ambiguity actively misled: a takeover refused because the lock was
+        // GONE read as a stale-token problem, while the real cause on 26.9.3 was
+        // the conditional PUT below. An operator cannot act on "it changed" —
+        // the three need different actions, so they need different messages.
+        if (current.kind === 'missing') {
+          die(
+            `there is no release lease at r2://${bucket}/${key} to take over — it is ABSENT.\n`
+              + '  A missing lock is acquired normally, so re-run WITHOUT --break-release-lease.\n'
+              + '  (If you inspected a lock here, it has been removed since — check with another\n'
+              + '  operator before publishing, because your inspection no longer describes the store.)',
+          );
+        }
+        die(
+          `the release lease at r2://${bucket}/${key} is already RELEASED `
+            + `(token ${prior?.token ?? '?'}, released_at ${prior?.released_at ?? '?'}).\n`
+            + '  Nothing holds it, so there is nothing to take over: re-run WITHOUT\n'
+            + '  --break-release-lease and the ordinary acquire will claim it.',
+        );
       }
 
       const result = current.kind === 'missing'
@@ -315,7 +341,36 @@ try {
         process.exit(0);
       }
       if (expectedBreakToken) {
-        die('the recorded active release lease changed during takeover; no publish authority was granted');
+        // ⛔ THE STORE REFUSED THE CONDITIONAL WRITE — a different failure from
+        // either branch above, and the one that blocked a 26.9.3 takeover. The
+        // lock was present, active, and carried exactly the inspected token;
+        // what failed was the `If-Match` PUT.
+        //
+        // ⚠ AND "THE STORE DOES NOT SUPPORT If-Match" IS NOT THE EXPLANATION —
+        // that was this comment's first guess and it is measured FALSE. Probed
+        // against this bucket 2026-09-03: PUT and GET return byte-identical
+        // ETags, and `If-Match` with the GET-returned value is ACCEPTED (200).
+        // The 26.9.3 release then completed its own `If-Match` transition
+        // cleanly. So a 412 here says something about THIS object generation,
+        // not about the store.
+        //
+        // 🔑 ONE OBSERVED CASE REMAINS UNEXPLAINED: a takeover of a lock written
+        // the previous day by a since-dead process, on an object nothing had
+        // rewritten. Recorded rather than theorised — the last two theories were
+        // both wrong, and a confident wrong cause here costs a release.
+        die(
+          `the store REFUSED the conditional write that would take over `
+            + `r2://${bucket}/${key} (HTTP 412 on If-Match: ${current.etag}).\n`
+            + '  The lock was present and carried the token you inspected, so this is not a\n'
+            + '  stale inspection, and the store DOES honour If-Match (measured).\n'
+            + '  Most likely another operator wrote this lock between the read and the write —\n'
+            + '  re-read it and find out who before retrying.\n'
+            + '  ⚠ If the recorded owner is unchanged and this repeats, you have hit the\n'
+            + '  unexplained case: clear the lock out of band (`wrangler r2 object delete\n'
+            + `  ${bucket}/${key} --remote\` — the --remote is NOT optional, without it\n`
+            + '  wrangler deletes from LOCAL storage and reports success) and publish\n'
+            + '  without --break-release-lease.',
+        );
       }
       await sleep(25 * (attempt + 1));
     }
@@ -325,16 +380,47 @@ try {
   if (!expectedEtag || !providedToken) die('release requires --etag and --token');
   const current = await readRemote();
   const held = parseLease(current);
-  if (
-    current.kind !== 'present'
-    || !etagMatches(current.etag, expectedEtag)
-    || held?.state !== 'active'
-    || held?.token !== ownerToken
-  ) {
-    die('release lease ownership changed; refusing to release a lock this process no longer owns');
+  // ⛔⛔ FOUR CONJUNCTS, ONE SENTENCE — and that is how a whole day went to the
+  // wrong cause. "ownership changed" was printed while the object was provably
+  // untouched, its state active and its token correct; only the etag differed.
+  // Naming the failing conjunct is the difference between a diagnosis and a
+  // guess, so each says what it found.
+  if (current.kind !== 'present') {
+    die(`the release lease at r2://${bucket}/${key} is GONE — it was removed while this `
+      + 'publisher held it. The release itself is unaffected; nothing was rolled back.');
+  }
+  if (held?.state !== 'active') {
+    die(`the release lease at r2://${bucket}/${key} is already ${held?.state ?? 'unreadable'}, `
+      + 'not active — somebody released it on this publisher\'s behalf.');
+  }
+  if (held?.token !== ownerToken) {
+    die(`the release lease at r2://${bucket}/${key} is held by a DIFFERENT owner now `
+      + `(${held?.token ?? '?'} rather than this process's). Refusing to release a lock `
+      + 'this process no longer owns.');
+  }
+  if (!etagMatches(current.etag, expectedEtag)) {
+    die(`the release lease at r2://${bucket}/${key} still names this process as owner, but its `
+      + `object generation moved (${expectedEtag} → ${current.etag}). The lock content is ours; `
+      + 'the generation is not, so the conditional release cannot be proven safe.');
   }
   const result = await conditionalPut(releasedBody(), { ifMatch: expectedEtag });
-  if (!result.ok) die('release lease changed during release; it remains owned by another state');
+  // ⛔ SAME REFUSAL AS THE TAKEOVER'S, AND THE SAME TWO CAUSES. Every conjunct
+  // above passed, so the lock is ours and unchanged; what failed is the store
+  // declining the conditional write. Say which, because "changed" sent a whole
+  // day to the wrong cause once.
+  if (!result.ok) {
+    die(
+      `the store REFUSED the conditional write that would release `
+        + `r2://${bucket}/${key} (HTTP 412 on If-Match: ${expectedEtag}).\n`
+        + '  ⚠ THE RELEASE ITSELF IS UNAFFECTED — whatever this publisher published is\n'
+        + '  live and correct; only the lock is stranded, and it blocks the NEXT publish.\n'
+        + '  The store DOES honour If-Match (measured 2026-09-03), and this transition has\n'
+        + '  completed cleanly in production, so the object generation genuinely differs\n'
+        + '  from the one this publisher acquired. Clear the lock out of band if it repeats:\n'
+        + `  \`wrangler r2 object delete ${bucket}/${key} --remote\` — the --remote is NOT\n`
+        + '  optional; without it wrangler deletes from LOCAL storage and prints success.',
+    );
+  }
   process.stdout.write(canonicalJson({ ok: true, released: true, etag: result.etag, key }));
 } catch (error) {
   die(error instanceof Error ? error.message : String(error));

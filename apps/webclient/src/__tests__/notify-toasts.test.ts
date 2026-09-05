@@ -316,6 +316,24 @@ describe('D-169 P2 Slice 5 notify toasts', () => {
     );
   });
 
+  it('accepts a durable owner status through push without a notify frame', () => {
+    const { host, fake, toasts } = mount();
+
+    toasts.push({
+      title: 'Approved action dispatched',
+      text: 'The export was handed off.',
+    });
+
+    expect(fake.calls.filter((c) => c.kind === 'notification.notify')).toHaveLength(1);
+    expect(toasts.getToasts()).toEqual([{
+      id: 'toast-1',
+      title: 'Approved action dispatched',
+      text: 'The export was handed off.',
+    }]);
+    expect(textOf(findAllByAttr(host, NOTIFY_TOAST_ATTR)[0]!))
+      .toContain('The export was handed off.');
+  });
+
   it('renders an untitled frame as text-only (no title element)', () => {
     const { host, fake } = mount();
     notifyListener(fake)(notifyEvent('Just a body'));

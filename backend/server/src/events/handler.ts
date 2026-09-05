@@ -45,6 +45,22 @@ export interface EventsHandlerDeps {
 
 export type EventsMethods = 'events.subscribe';
 
+/** The event ring contains owner-private invalidations (including gated-action
+ * topology). The WS dispatcher resolves a bearer-only webclient's currently
+ * valid paired identity onto `instance_id` before calling this handler, while
+ * a revoked or never-registered client arrives with no id. Keep the same
+ * registered-client boundary as the owner RPCs that consume those
+ * invalidations. */
+const requireRegisteredClient = (client: WsClient): void => {
+  if (!client.instance_id) {
+    throw new RpcError(
+      'unauthorized',
+      'events.subscribe requires a registered paired client',
+      401,
+    );
+  }
+};
+
 /** Thin wrapper around `bus.subscribe` that builds the per-client
  *  push closure. Exported so ws-server can also call it
  *  programmatically (e.g. for the auto-default-subscription on a
@@ -69,6 +85,7 @@ export const makeEventsHandlers = (
     methods: ['events.subscribe'],
     handlers: {
       'events.subscribe': async (args, client) => {
+        requireRegisteredClient(client);
         if (!args || typeof args !== 'object') {
           throw new RpcError('bad_request', 'events.subscribe: payload required', 400);
         }

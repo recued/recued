@@ -108,6 +108,12 @@ export interface MountPackDiscoveryOptions {
   /** Read-only card preview owned by the unified Packs surface. */
   onPreview?: (content: ListPreviewContent, opener: HTMLElement) => void;
   listInstalled: PackInstalledListCaller;
+  /** D-259 — `packs.unrunnable`: installed packs this server's CURRENT validator
+   *  would refuse. Optional; absent (or a failed read) ⇒ no "Needs update"
+   *  badge, never a false one. ⚠ Read ONCE per mount alongside the roster, not
+   *  per render: it is a server round-trip, and the condition only changes when
+   *  a pack is installed or updated — both of which already re-list. */
+  listUnrunnable?: () => Promise<{ findings: ReadonlyArray<{ slug: string }> }>;
   /** Server-side search (`/catalog/search?kind=pack`) — the browse path. When
    *  present the panel pages the catalogue from the server instead of
    *  downloading + reducing over the whole corpus; `fetchCatalog` becomes the
@@ -187,11 +193,28 @@ export { packSpec };
  *  they stop being pinned rows and arrive as ordinary catalog rows — so a badge
  *  read off the projection alone would vanish exactly when it publishes. The
  *  roster knows either way. */
+/** ⚠ `unrunnable` IS ALSO A SLUG SET, AND FOR A SHARPER REASON THAN `preInstall`.
+ *  It comes from `packs.unrunnable`, which RE-DERIVES the finding per call from
+ *  the installed manifests — it is never stored. That is the whole point: a pack
+ *  this server can no longer run is a STANDING CONDITION, true until fixed, so
+ *  it must not be carried by anything that can be answered, dismissed, or go
+ *  stale. D-259 previously delivered this as a durable ask; an answered ask
+ *  cleared the finding while the pack stayed broken. A badge cannot. */
 export const packBadges = (
   r: CatalogPackRow,
   preInstall?: ReadonlySet<string>,
+  unrunnable?: ReadonlySet<string>,
 ): DiscoverBadge[] => {
   const out: DiscoverBadge[] = [];
+  if (unrunnable?.has(r.slug) === true) {
+    // First, and `danger`: it is the only badge here that says something is
+    // WRONG rather than something is true. The others are provenance.
+    out.push({
+      label: 'Needs update',
+      tone: 'danger',
+      title: 'This pack no longer runs on this server — its actions fail until you update it.',
+    });
+  }
   if (preInstall?.has(r.slug) === true) {
     out.push({
       label: 'Included',
@@ -356,6 +379,26 @@ export const mountPackDiscovery = (
       })
     : null;
 
+  /** D-259 — installed packs the server's CURRENT validator would refuse.
+   *
+   *  ⚠ REFRESHED WITH THE ROSTER, NOT ONCE AT MOUNT, and awaited IN the same
+   *  load so the set is populated before the first rows render. A fire-and-
+   *  forget read set this after first paint, which meant the badge never
+   *  appeared on the render that mattered.
+   *
+   *  ⛔ A FAILED READ CLEARS NOTHING. On error the previous set is KEPT rather
+   *  than emptied: "I could not check" and "nothing is wrong" are different
+   *  facts, and only one of them should remove a warning the owner has already
+   *  seen. */
+  let unrunnableSlugs: ReadonlySet<string> = new Set();
+  const refreshUnrunnable = async (): Promise<void> => {
+    if (opts.listUnrunnable === undefined) return;
+    try {
+      const res = await opts.listUnrunnable();
+      unrunnableSlugs = new Set(res.findings.map((f) => f.slug));
+    } catch { /* keep the last-known set — see above */ }
+  };
+
   const applyRoster = (
     src: { packs: ReadonlyArray<RosterPack>; installed_versions?: ReadonlyArray<{ slug: string; version: number }> } | null,
   ): ReadonlyArray<RosterPack> => {
@@ -375,7 +418,10 @@ export const mountPackDiscovery = (
    *  `packs.list` failure falls back to the last-known snapshot — never to an
    *  empty roster, which would regress install-state on a refresh. */
   const refreshRoster = async (): Promise<ReadonlyArray<RosterPack>> => {
-    const rosterRes = await opts.listInstalled().catch(() => null);
+    const [rosterRes] = await Promise.all([
+      opts.listInstalled().catch(() => null),
+      refreshUnrunnable(),
+    ]);
     if (rosterRes !== null) lastRoster = rosterRes;
     return applyRoster(rosterRes ?? lastRoster);
   };
@@ -475,6 +521,7 @@ export const mountPackDiscovery = (
   const preInstallSlugs = (): ReadonlySet<string> =>
     new Set(bundledRoster.filter((p) => p.pre_install === true).map((p) => p.slug));
 
+
   const pinnedCandidates = (): CatalogPackRow[] => {
     const map = updates?.read();
     if (map === null || map === undefined) return [];
@@ -491,6 +538,7 @@ export const mountPackDiscovery = (
     const [catalogRes, rosterRes] = await Promise.all([
       fetchCatalog(opts.origin),
       opts.listInstalled().catch(() => null),
+      refreshUnrunnable(),
     ]);
     if (rosterRes !== null) lastRoster = rosterRes;
     const roster = applyRoster(rosterRes ?? lastRoster);
@@ -597,7 +645,7 @@ export const mountPackDiscovery = (
     },
     title: (r) => r.name,
     description: (r) => r.description,
-    badges: (r) => packBadges(r, preInstallSlugs()),
+    badges: (r) => packBadges(r, preInstallSlugs(), unrunnableSlugs),
     metaLine: packMeta,
     filterGroups: [
       { key: 'service_kind', label: 'Kind' },

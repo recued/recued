@@ -1037,6 +1037,31 @@ export interface PacksListResult {
   installed_versions?: ReadonlyArray<InstalledPackVersion>;
 }
 
+/** D-259 — one installed pack the CURRENT validator would refuse to run. */
+export interface UnrunnablePackRow {
+  /** Owner-facing pack slug — the `#packs/<slug>` key, NOT the catalog id the
+   *  validator reports. A composition pack persists its decomposed catalog, so
+   *  the validator says `codex` where the owner surface says `codex-pack`;
+   *  the server joins through installed-pack inventory before reporting. */
+  slug: string;
+  /** Installed version when the inventory recorded one. */
+  version?: number;
+  /** Validator error codes, e.g. `CLI_LEGACY_SUPERVISION`. */
+  codes: ReadonlyArray<string>;
+  /** Human-readable first failure, for the row's tooltip / detail line. */
+  detail: string;
+}
+
+/** D-259 — `packs.unrunnable` rpc result. Re-derived per call; never stored. */
+export interface PacksUnrunnableResult {
+  findings: ReadonlyArray<UnrunnablePackRow>;
+  /** False when at least one finding could not be joined to an installed pack.
+   *  The caller may still render the row, but must not link to a pack detail
+   *  page it cannot prove exists — a plausible-looking dead link reads as
+   *  "nothing here" and "couldn't find it" at once. */
+  exact_pack_identities: boolean;
+}
+
 /** Add-a-pack (2026-07-01) — `packs.resolveBySlug` rpc result: a manifest-only
  *  server fetch that populates the install consent dialog BEFORE the user
  *  commits (the trusted `packs.installBySlug` does the actual install on

@@ -57,6 +57,7 @@ import {
   isChatModelSourceId,
   isEntityFieldPrivacy,
   isExecutionSource,
+  executionSourceContractId,
 } from '@recued/contracts';
 import type { LLMConfig } from '@recued/llm';
 import {
@@ -216,6 +217,8 @@ export const ensureChatSchema = (db: Database.Database): void => {
       metadata_blob              TEXT,
       contributor                TEXT,
       recall_eligibility         TEXT NOT NULL DEFAULT 'ineligible',
+      recall_contract_id         TEXT,
+      pair_id                    TEXT,
       turn_id                    TEXT,
       FOREIGN KEY (session_id) REFERENCES chat_sessions (session_id) ON DELETE CASCADE
     );
@@ -277,6 +280,31 @@ export const ensureChatSchema = (db: Database.Database): void => {
   // would make an unknowable indistinguishable from a fact. Pre-column rows
   // stay NULL and read as `turn_id` absent, which the contract defines as
   // UNKNOWN rather than "no turn".
+  if (!messageCols.has('pair_id')) {
+    // ⛔⛔ ONE ROW PER EVENT, NOT PER CALL — and this column is what makes the
+    // two-event case representable. A SYNCHRONOUS tool call is one event (ask
+    // and answer at one instant) and gets one row carrying both halves.
+    // A HELD dispatch is two: "I asked" at T1 and "it answered" at T2, and
+    // those times genuinely disagree. Storing that as one row forces a choice
+    // between a timestamp that is chronologically honest and one that is
+    // cursor-safe — a trade that only exists if you insist on one row.
+    //
+    // 🔑 The pair is keyed on the run id, so a keyword match on EITHER half can
+    // return both: the args make the ask findable, the body makes the outcome
+    // findable, and neither is a truncated view of the other.
+    db.exec('ALTER TABLE chat_messages ADD COLUMN pair_id TEXT');
+  }
+  if (!messageCols.has('recall_contract_id')) {
+    // ⛔⛔ NULLABLE, AND LEGACY ROWS STAY NULL FOREVER. There is no backfill and
+    // there must not be one: a row written before this column existed has no
+    // recoverable governing contract, and inventing one would hand a door
+    // history it never wrote. The read predicate compares with `IS`, so NULL
+    // matches only a NULL scope — i.e. the owner corpus, whose rows are
+    // contract-free anyway and are already separated by `recall_eligibility`.
+    // A legacy CONTRACTED row is therefore reachable by nothing, which is the
+    // same place it was before this column: unreachable, and fail-closed.
+    db.exec('ALTER TABLE chat_messages ADD COLUMN recall_contract_id TEXT');
+  }
   if (!messageCols.has('turn_id')) {
     db.exec('ALTER TABLE chat_messages ADD COLUMN turn_id TEXT');
   }
@@ -298,6 +326,27 @@ export const ensureChatSchema = (db: Database.Database): void => {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_chat_messages_recall_eligibility
       ON chat_messages (recall_eligibility, ts DESC, message_id DESC);
+    -- ⛔⛔ THE CORPUS PAIR, and the index above stopped covering the scan the
+    -- moment "recall_contract_id" joined the predicate. Verified with EXPLAIN
+    -- QUERY PLAN: on the old index SQLite seeks "recall_eligibility=?" and
+    -- leaves the contract as a RESIDUAL, so a door corpus reads every OWNER row
+    -- to find its own few — and that cost grows with the owner's history, not
+    -- the customer's. With the pair it seeks
+    -- "recall_eligibility=? AND recall_contract_id=?".
+    --
+    -- ⚠ "IS" rather than "=" in the query is still indexable here (the plan
+    -- shows the seek), which is what lets ONE predicate serve both corpora
+    -- without a NULL branch.
+    --
+    -- ⚠ It matters more now that tool rows are written: a turn adds p50 2 of
+    -- them, so the corpus roughly doubles in rows, and the scan DECRYPTS every
+    -- row it visits. A residual filter is paid per row, in AEAD.
+    --
+    -- The old index is kept rather than dropped: "recall_eligibility" leads
+    -- both, so anything seeking on eligibility alone is still served, and
+    -- dropping an index that shipped is a migration with no upside here.
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_recall_corpus
+      ON chat_messages (recall_eligibility, recall_contract_id, ts DESC, message_id DESC);
     -- PARTIAL, and it has to be. reconcileAbandonedPending reads
     --   WHERE source_lifecycle = 'pending' AND (@session_id IS NULL OR ...)
     -- which had no index at all, so it SCANNED THE WHOLE MESSAGE TABLE -- once
@@ -1113,6 +1162,13 @@ export interface CreateSessionInput {
 /** Input shape for `chatStore.appendMessage`. The caller passes plain
  *  content; the store handles AEAD encryption before insert. */
 export interface AppendMessageInput {
+  /** D-137 — the pair key for a two-event tool call: the dispatch row and the
+   *  result row that eventually answers it share one `run_id`.
+   *
+   *  ⛔ ABSENT for a synchronous call, which is ONE event and pairs with
+   *  nothing. Setting it there would invite a sibling fetch that can never
+   *  succeed and would read, to whoever debugged it, as a missing row. */
+  readonly pair_id?: string;
   id: string;
   session_id: string;
   role: ChatMessageRole;
@@ -1196,6 +1252,17 @@ export const deriveChatMessageRecallEligibility = (
     : CHAT_MESSAGE_RECALL_ELIGIBILITY.UNAUTHENTICATED_CHAT;
 };
 
+/** One tool row the packet may ADVERTISE as recallable. Deliberately carries
+ *  the rendered row and nothing derived: the tool name is parsed where it is
+ *  rendered (`renderToolRow`'s own module), so the write and the read of that
+ *  format stay in one place and can be round-tripped by a single test. */
+export interface ChatRecallableToolPointer {
+  readonly item_id: string;
+  readonly content: string;
+  readonly turn_id: string | null;
+  readonly ts: number;
+}
+
 /** D-213 A2 — private storage cursor. It is authenticated and sealed before
  * becoming a public continuation and is never accepted directly from model
  * input. */
@@ -1212,7 +1279,7 @@ export type ChatRecallSourceRow =
       readonly readable: true;
       readonly item_id: string;
       readonly session_id: string;
-      readonly kind: 'user' | 'assistant';
+      readonly kind: 'user' | 'assistant' | 'tool';
       readonly timestamp: number;
       readonly content: string;
     }
@@ -1220,9 +1287,87 @@ export type ChatRecallSourceRow =
       readonly readable: false;
       readonly item_id: string;
       readonly session_id: string;
-      readonly kind: 'user' | 'assistant';
+      readonly kind: 'user' | 'assistant' | 'tool';
       readonly timestamp: number;
     };
+
+/** The storage-side corpus selector: WHICH bucket, and WHOSE rows within it.
+ *
+ *  ⛔⛔ THE PAIR TRAVELS TOGETHER ON PURPOSE. Splitting it — bucket here,
+ *  contract elsewhere — is what makes a contract-scoped read able to disagree
+ *  with itself: the eligibility says "written under a contract" and the id says
+ *  "which", and nothing then guarantees they describe the same dispatch.
+ *  Callers never author this; they hand over a resolved scope
+ *  (`chat-recall-scope.ts`) and it is projected here.
+ *
+ *  ⛔ `recall_contract_id: null` is legal ONLY for the owner bucket. The door
+ *  bucket with a null id would match every LEGACY row — those written before
+ *  the column existed, which carry NULL and have no recoverable owner. That is
+ *  the fail-open shape this whole design exists to avoid, so it is rejected at
+ *  runtime by {@link assertRecallCorpusSelector} rather than left to review. */
+export interface ChatRecallCorpusSelector {
+  /** D-137 — the session whose TOOL rows are in scope, or `null`.
+   *
+   *  ⚠ AND ONLY ITS TWO MOST RECENT TURNS, in the SCAN. A session can run for
+   *  days, so the session bound alone still lets a turn-2 CRM snapshot surface
+   *  at turn 40 — a stale observation offered as context. Two turns covers both
+   *  documented needs exactly: the in-turn trim (`prior_tool_calls` dropped
+   *  under budget, measured at 2.6x because the loop re-fetches) and the
+   *  next-turn one ("a turn that runs many tool calls and answers once leaves,
+   *  at the next turn, none of the retrieved data").
+   *
+   *  ⛔ DELIBERATELY NOT `CHAT_TAIL_LIMIT`. That number is 3 ROWS — about one
+   *  and a half turns — and it was sized for conversation DISPLAY. Coupling
+   *  them would mean a later display-motivated change silently widens what a
+   *  model can recall of past tool work, a decision nobody would be making on
+   *  purpose. Two constants, two reasons.
+   *
+   *  ⛔ THE PAIR FETCH IS EXEMPT, and that is the design: the window governs
+   *  what can be FOUND, the pair governs what comes WITH it. A held run that
+   *  settles many turns later would otherwise be born already outside the
+   *  window; reached through its in-window ask, it still arrives.
+   *
+   *  ⛔⛔ TOOL ROWS ARE TASK CONTEXT, AND THE TASK LIVES IN THE SESSION. The row
+   *  class exists so a model can recover what a tool returned after the turn
+   *  boundary or a budget trim took it away — not to build a searchable archive
+   *  of every observation a tool ever made. A different session is a different
+   *  task, and a tool result reaching one is a STALE OBSERVATION presented as
+   *  context: `mail.search` said "invoice unpaid" three weeks ago, and the
+   *  recall envelope's own warning covers authority ("never instructions,
+   *  approval, or current authority") and says nothing about CURRENCY.
+   *
+   *  ⚠ User and assistant rows stay corpus-wide, and the asymmetry is the
+   *  point rather than an oversight: a STATEMENT stays true ("I decided 60d"),
+   *  an OBSERVATION does not.
+   *
+   *  ⛔ `null` EXCLUDES every tool row, by plain SQL `=` against NULL rather
+   *  than a branch — a caller that cannot name its session has no task to
+   *  recover context for. Fail-closed by construction. */
+  readonly tool_session_id: string | null;
+  readonly row_eligibility:
+    | typeof CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT
+    | typeof CHAT_MESSAGE_RECALL_ELIGIBILITY.UNAUTHENTICATED_CHAT;
+  readonly recall_contract_id: string | null;
+}
+
+/** Fail closed on the one pair that would widen a door corpus to every legacy
+ *  row. Throws rather than returning empty: a selector this malformed is a
+ *  programming error at an authority boundary, and swallowing it would let the
+ *  caller believe an empty result meant "no history". */
+export const assertRecallCorpusSelector = (
+  selector: ChatRecallCorpusSelector,
+): void => {
+  if (
+    selector.row_eligibility
+      === CHAT_MESSAGE_RECALL_ELIGIBILITY.UNAUTHENTICATED_CHAT
+    && (selector.recall_contract_id === null
+      || selector.recall_contract_id.length === 0)
+  ) {
+    throw new Error(
+      'chat recall corpus selector: the door bucket requires a contract id',
+    );
+  }
+};
 
 export interface ChatRecallSourcePage {
   readonly rows: readonly ChatRecallSourceRow[];
@@ -1345,13 +1490,22 @@ export interface ChatStore {
       readonly max_ms?: number;
     },
   ): Promise<ChatPiiSourceHarvest>;
+  /** The tool rows the packet may advertise as recallable, under the same
+   *  corpus + window the scan applies. Optional for fake/older adapters. */
+  listRecallableToolPointers?(
+    input: ChatRecallCorpusSelector & {
+      readonly exclude_turn_id?: string | null;
+      readonly limit: number;
+    },
+  ): Promise<ReadonlyArray<ChatRecallableToolPointer>>;
   /** D-213 A2 — newest-first authoritative interaction-source page. Optional
    * only for rolling compatibility with fake/older adapters; production
    * `createChatStore` always implements it. */
   scanRecallMessagesPage?(
     input: {
-      readonly row_eligibility:
-        typeof CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT;
+      readonly row_eligibility: ChatRecallCorpusSelector['row_eligibility'];
+      readonly recall_contract_id: ChatRecallCorpusSelector['recall_contract_id'];
+      readonly tool_session_id: ChatRecallCorpusSelector['tool_session_id'];
       readonly after?: ChatRecallSourceCursor;
       readonly limit: number;
     },
@@ -1362,17 +1516,29 @@ export interface ChatStore {
    *  predicate as `getRecallMessage`, so it cannot widen recall's scope. */
   getRecallNeighbours?(
     input: {
-      readonly row_eligibility:
-        typeof CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT;
+      readonly row_eligibility: ChatRecallCorpusSelector['row_eligibility'];
+      readonly recall_contract_id: ChatRecallCorpusSelector['recall_contract_id'];
+      readonly tool_session_id: ChatRecallCorpusSelector['tool_session_id'];
       readonly item_id: string;
       readonly next?: number;
       readonly prev?: number;
     },
   ): Promise<ChatRecallSourceRow[]>;
+  /** D-137 — the paired half of a two-event tool call. Optional so a backend
+   *  without it degrades to unpaired matches rather than failing. */
+  getRecallPair?(
+    input: {
+      readonly row_eligibility: ChatRecallCorpusSelector['row_eligibility'];
+      readonly recall_contract_id: ChatRecallCorpusSelector['recall_contract_id'];
+      readonly tool_session_id: ChatRecallCorpusSelector['tool_session_id'];
+      readonly item_id: string;
+    },
+  ): Promise<ChatRecallSourceRow[]>;
   getRecallMessage?(
     input: {
-      readonly row_eligibility:
-        typeof CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT;
+      readonly row_eligibility: ChatRecallCorpusSelector['row_eligibility'];
+      readonly recall_contract_id: ChatRecallCorpusSelector['recall_contract_id'];
+      readonly tool_session_id: ChatRecallCorpusSelector['tool_session_id'];
       readonly item_id: string;
     },
   ): Promise<ChatRecallSourceRow | null>;
@@ -1406,6 +1572,27 @@ export interface ChatStore {
  *  `getDefaultModelPref` to resolve the persisted `source_id` to a concrete
  *  `{layer, model_hint}` at read time. Absent / returns undefined (db-less /
  *  locked) → every slot source falls back to the bare comfort layer. */
+/** The tool-row recall window, in TURNS, and the SQL that applies it.
+ *
+ *  ⛔ ONE RULE, TWO READERS. `scanRecallMessagesStmt` decides what a search can
+ *  FIND; `listToolPointersStmt` decides what the packet ADVERTISES as findable.
+ *  If those ever disagree the pointer names a row the scan cannot reach and the
+ *  model is sent looking for something that is not there -- strictly worse than
+ *  no pointer, because a fruitless search still costs a round trip and reads to
+ *  the model as "the store is empty". They therefore share this exact text
+ *  rather than each spelling out a `LIMIT 2`. */
+export const TOOL_ROW_RECALL_TURN_WINDOW = 2;
+
+const RECENT_TOOL_TURN_WINDOW_SQL = `
+           turn_id IN (
+             SELECT turn_id FROM chat_messages
+              WHERE session_id = @tool_session_id AND turn_id IS NOT NULL
+                AND recall_eligibility = @row_eligibility
+                AND recall_contract_id IS @recall_contract_id
+              GROUP BY turn_id ORDER BY MAX(ts) DESC
+              LIMIT ${TOOL_ROW_RECALL_TURN_WINDOW}
+           )`;
+
 export const createChatStore = (
   db: Database.Database,
   getKey?: ChatKeyProvider,
@@ -1507,13 +1694,13 @@ export const createChatStore = (
       picker_at_send_blob, model_used_provider, model_used_model_id,
       content_encrypted, tool_calls_blob, candidates_encrypted,
       source_lifecycle, provenance_blob, attachments_blob,
-      metadata_blob, contributor, recall_eligibility, turn_id
+      metadata_blob, contributor, recall_eligibility, recall_contract_id, pair_id, turn_id
     ) VALUES (
       @message_id, @session_id, @role, @ts, @target_server,
       @picker_at_send_blob, @model_used_provider, @model_used_model_id,
       @content_encrypted, @tool_calls_blob, @candidates_encrypted,
       @source_lifecycle, @provenance_blob, @attachments_blob,
-      @metadata_blob, @contributor, @recall_eligibility, @turn_id
+      @metadata_blob, @contributor, @recall_eligibility, @recall_contract_id, @pair_id, @turn_id
     )
   `);
   const bumpContentRevisionStmt = db.prepare(`
@@ -1548,13 +1735,25 @@ export const createChatStore = (
      WHERE source_lifecycle = 'pending'
        AND (@session_id IS NULL OR session_id = @session_id)
   `);
+  // ⚠ TOOL ROWS ARE HARVESTED, DELIBERATELY. This statement feeds BOTH the P9
+  // alias-slot ordering and the Track B candidate reharvest, and a tool row
+  // carries candidates like any other — excluding it would give the historical
+  // values inside a tool result allocation-order alias numbers instead of
+  // stable ones, and leave them unprotected when the row is recalled.
+  //
+  // ⛔ Safe for P9 because the walk is OLDEST-FIRST and tool rows only ever
+  // APPEND: a session that predates this class keeps its existing prefix, so
+  // nothing renumbers. (A row inserted MID-prefix would renumber everything
+  // after it — which is why the `pending` skip is the standing hazard here and
+  // a new row class at the tail is not.)
+  // ⚠ They do consume the harvest budget faster: ~7x a chat row at the median.
   const harvestPiiSourceRowsStmt = db.prepare(`
     SELECT message_id, session_id, role, ts, content_encrypted,
            candidates_encrypted, source_lifecycle
       FROM chat_messages
      WHERE session_id = @session_id
        AND recall_eligibility = @row_eligibility
-       AND role IN ('user', 'assistant')
+       AND role IN ('user', 'assistant', 'tool')
        AND (
          @after_ts IS NULL
          OR ts > @after_ts
@@ -1600,11 +1799,25 @@ export const createChatStore = (
       ORDER BY ts DESC, message_id DESC
       LIMIT @limit`,
   );
+  // The two-turn window is computed WITHIN the corpus, not across the session.
+  // The outer predicate already stops a door reading an owner row (P10), so a
+  // session-wide window leaks nothing -- it silently UNDER-reaches: whichever
+  // corpus is chattier takes both turn slots and the other stops finding its
+  // own recent tool rows, which reads exactly like "recall found nothing".
+  // Every corpus is therefore bounded by itself, on both filters.
   const scanRecallMessagesStmt = db.prepare(`
     SELECT message_id, session_id, role, ts, content_encrypted
       FROM chat_messages
      WHERE recall_eligibility = @row_eligibility
-       AND role IN ('user', 'assistant')
+       AND recall_contract_id IS @recall_contract_id
+       AND role IN ('user', 'assistant', 'tool')
+       AND (
+         role IN ('user', 'assistant')
+         OR (
+           session_id = @tool_session_id
+            AND ${RECENT_TOOL_TURN_WINDOW_SQL.trim()}
+         )
+       )
        AND (
          @after_ts IS NULL
          OR ts < @after_ts
@@ -1613,11 +1826,32 @@ export const createChatStore = (
      ORDER BY ts DESC, message_id DESC
      LIMIT @limit
   `);
+  // Pointer source. SAME corpus predicate and SAME window fragment as the scan
+  // above, plus `role = 'tool'` and an exclusion for the turn already carrying
+  // its calls in `prior_tool_calls` -- a pointer to what is in the packet is
+  // noise that competes with the content it points at.
+  const listToolPointersStmt = db.prepare(`
+    SELECT message_id, session_id, role, ts, turn_id, content_encrypted
+      FROM chat_messages
+     WHERE recall_eligibility = @row_eligibility
+       AND recall_contract_id IS @recall_contract_id
+       AND role = 'tool'
+       AND session_id = @tool_session_id
+       AND ${RECENT_TOOL_TURN_WINDOW_SQL.trim()}
+       AND (@exclude_turn_id IS NULL OR turn_id IS NOT @exclude_turn_id)
+     ORDER BY ts DESC, message_id DESC
+     LIMIT @limit
+  `);
   const getRecallMessageStmt = db.prepare(`
     SELECT message_id, session_id, role, ts, content_encrypted
       FROM chat_messages
      WHERE recall_eligibility = @row_eligibility
-       AND role IN ('user', 'assistant')
+       AND recall_contract_id IS @recall_contract_id
+       AND role IN ('user', 'assistant', 'tool')
+       AND (
+         role IN ('user', 'assistant')
+         OR session_id = @tool_session_id
+       )
        AND message_id = @item_id
   `);
   /** D-213 — messages adjacent to an anchor WITHIN ITS OWN SESSION.
@@ -1629,11 +1863,47 @@ export const createChatStore = (
    *
    *  Same `recall_eligibility` and role predicate as `getRecallMessageStmt`, so
    *  this can never widen what recall is allowed to see. */
+  /** D-137 — the OTHER half of a two-event tool call.
+   *
+   *  ⛔⛔ THE CORPUS PREDICATE IS HERE, NOT AT THE CALLER, AND THAT IS THE
+   *  WHOLE POINT. A sibling fetch keyed on `pair_id` alone is a scope bypass:
+   *  it would return a row from any corpus that happens to share a run id.
+   *  `neighbours` shipped with exactly that shape — it hardcoded the owner
+   *  bucket while `search` took a scope — and it was a cross-tenant leak the
+   *  moment a second corpus existed. Nothing forces this one; the predicate is
+   *  written in because the lesson was.
+   *
+   *  ⚠ The `message_id <> @item_id` clause is a COST saving, not a correctness
+   *  guard, and mutation testing says so: removing it leaves every test green,
+   *  because `expandPairs` de-duplicates on `item_id` anyway — and it has to,
+   *  since SQL cannot know which rows the score pass already returned when a
+   *  query matches BOTH halves. What the clause buys is not fetching and
+   *  AEAD-decrypting a row the caller is already holding. */
+  const recallPairStmt = db.prepare(`
+    SELECT message_id, session_id, role, ts, content_encrypted
+      FROM chat_messages
+     WHERE recall_eligibility = @row_eligibility
+       AND recall_contract_id IS @recall_contract_id
+       AND role IN ('user', 'assistant', 'tool')
+       AND (
+         role IN ('user', 'assistant')
+         OR session_id = @tool_session_id
+       )
+       AND pair_id IS NOT NULL
+       AND pair_id = @pair_id
+       AND message_id <> @item_id
+     ORDER BY ts ASC, message_id ASC
+     LIMIT @limit
+  `);
+  const recallPairKeyStmt = db.prepare(
+    'SELECT pair_id FROM chat_messages WHERE message_id = @item_id',
+  );
   const recallNeighboursNextStmt = db.prepare(`
     SELECT message_id, session_id, role, ts, content_encrypted
       FROM chat_messages
      WHERE recall_eligibility = @row_eligibility
-       AND role IN ('user', 'assistant')
+       AND recall_contract_id IS @recall_contract_id
+       AND role IN ('user', 'assistant', 'tool')
        AND session_id = @session_id
        AND ts > @ts
      ORDER BY ts ASC, message_id ASC
@@ -1643,7 +1913,8 @@ export const createChatStore = (
     SELECT message_id, session_id, role, ts, content_encrypted
       FROM chat_messages
      WHERE recall_eligibility = @row_eligibility
-       AND role IN ('user', 'assistant')
+       AND recall_contract_id IS @recall_contract_id
+       AND role IN ('user', 'assistant', 'tool')
        AND session_id = @session_id
        AND ts < @ts
      ORDER BY ts DESC, message_id DESC
@@ -1934,6 +2205,26 @@ export const createChatStore = (
     const recall_eligibility = deriveChatMessageRecallEligibility(
       input.execution_source,
     );
+    // D-166 door corpus — WHICH contract wrote this row, stamped beside the
+    // eligibility bucket and derived from the same server-held source.
+    //
+    // ⛔ THE RAW EXPLICIT ID, NOT THE LIVENESS-GATED ONE, AND THAT SPLIT IS THE
+    //   DESIGN. Write time records IDENTITY ("door X wrote this"); read time
+    //   applies AUTHORITY (`resolveContractRecallCorpusScope` asks the
+    //   liveness-gating resolver). Gating here would instead bake a moment's
+    //   liveness into a permanent row, so revoking a door and re-minting one
+    //   would change what old rows appear to be. Contract ids are minted fresh
+    //   and never reused, and revoke stamps `revoked_at` rather than deleting,
+    //   so a revoked door's rows keep its id and become unreachable — inherited
+    //   by nothing.
+    //
+    // ⚠ `undefined` for every contract-free source, which is exactly the owner
+    //   corpus plus any non-owner contract-free dispatch. The read predicate
+    //   compares with SQL `IS`, so those match only a `null` scope.
+    const recall_contract_id =
+      isExecutionSource(input.execution_source)
+        ? executionSourceContractId(input.execution_source) ?? null
+        : null;
     const source_lifecycle: RecallSourceLifecycle =
       input.source_lifecycle
       ?? (
@@ -2031,6 +2322,8 @@ export const createChatStore = (
         : null,
       contributor,
       recall_eligibility,
+      recall_contract_id,
+      pair_id: input.pair_id ?? null,
       turn_id: input.turn_id ?? null,
     };
     db.transaction(() => {
@@ -2120,6 +2413,14 @@ export const createChatStore = (
 
   const listRecentConversationalStmt = db.prepare<{ session_id: string; limit: number }>(
     `SELECT * FROM chat_messages
+      -- ⛔⛔ TOOL ROWS STAY OUT OF THE TAIL, AND THIS IS NOT AN OVERSIGHT.
+      -- Recall was widened to reach them (they are the point of the row class);
+      -- the TAIL must not be, for the reason stated at this statement's own
+      -- comment: it wants three CONVERSATIONAL rows, and a session heavy in
+      -- tool rows would need a much larger fetch to find them. Measured, a
+      -- tool result is ~7x a chat row at the median (490 vs 66 bytes) and a
+      -- turn writes p50 2 of them, so admitting them here would evict the
+      -- conversation from a tail sized for conversation.
       WHERE session_id = @session_id AND role IN ('user', 'assistant')
       ORDER BY ts DESC, message_id DESC
       LIMIT @limit`,
@@ -2431,9 +2732,19 @@ export const createChatStore = (
   const decodeRecallSourceRow = async (
     row: RecallMessageRow,
   ): Promise<ChatRecallSourceRow> => {
-    const kind = row.role === 'assistant' ? 'assistant' : 'user';
+    // ⛔ THE ROLE→KIND MAP HAS TO MOVE WITH THE SQL, and widening only the SQL
+    //   is why the first cut of the tool-row slice returned nothing: the scan
+    //   admitted `role: 'tool'`, this decoder threw on it, and every tool row
+    //   came back `readable: false` — a silent empty result that reads exactly
+    //   like "the corpus has nothing". Two filters, one question; the query is
+    //   only half of it.
+    const kind = row.role === 'assistant'
+      ? 'assistant'
+      : row.role === 'tool' ? 'tool' : 'user';
     try {
-      if (row.role !== 'user' && row.role !== 'assistant') {
+      if (
+        row.role !== 'user' && row.role !== 'assistant' && row.role !== 'tool'
+      ) {
         throw new Error('chat-store: invalid recall source role');
       }
       const stored = await decodeChatContentFromStorage(
@@ -2461,17 +2772,49 @@ export const createChatStore = (
     }
   };
 
+  const listRecallableToolPointers = async (
+    input: ChatRecallCorpusSelector & {
+      readonly exclude_turn_id?: string | null;
+      readonly limit: number;
+    },
+  ): Promise<ReadonlyArray<ChatRecallableToolPointer>> => {
+    assertRecallCorpusSelector(input);
+    const raw = listToolPointersStmt.all({
+      row_eligibility: input.row_eligibility,
+      recall_contract_id: input.recall_contract_id,
+      tool_session_id: input.tool_session_id,
+      exclude_turn_id: input.exclude_turn_id ?? null,
+      limit: Math.max(1, Math.min(Math.floor(input.limit), 32)),
+    }) as Array<RecallMessageRow & { turn_id: string | null }>;
+    const decoded = await Promise.all(raw.map(async (row) => {
+      const source = await decodeRecallSourceRow(row);
+      // An unreadable row is DROPPED, never pointed at. A pointer is a promise
+      // that the content can be fetched; one we could not read ourselves is a
+      // promise we already know is broken.
+      return source.readable
+        ? {
+            item_id: source.item_id,
+            content: source.content,
+            turn_id: row.turn_id,
+            ts: row.ts,
+          }
+        : undefined;
+    }));
+    return decoded.filter((d): d is ChatRecallableToolPointer => d !== undefined);
+  };
+
   const scanRecallMessagesPage = async (
-    input: {
-      readonly row_eligibility:
-        typeof CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT;
+    input: ChatRecallCorpusSelector & {
       readonly after?: ChatRecallSourceCursor;
       readonly limit: number;
     },
   ): Promise<ChatRecallSourcePage> => {
+    assertRecallCorpusSelector(input);
     const limit = Math.max(1, Math.min(Math.floor(input.limit), 256));
     const raw = scanRecallMessagesStmt.all({
       row_eligibility: input.row_eligibility,
+      recall_contract_id: input.recall_contract_id,
+      tool_session_id: input.tool_session_id,
       after_ts: input.after?.ts ?? null,
       after_message_id: input.after?.message_id ?? null,
       limit: limit + 1,
@@ -2494,27 +2837,53 @@ export const createChatStore = (
   };
 
   const getRecallMessage = async (
-    input: {
-      readonly row_eligibility:
-        typeof CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT;
-      readonly item_id: string;
-    },
+    input: ChatRecallCorpusSelector & { readonly item_id: string },
   ): Promise<ChatRecallSourceRow | null> => {
-    const row = getRecallMessageStmt.get(input) as RecallMessageRow | undefined;
+    assertRecallCorpusSelector(input);
+    const row = getRecallMessageStmt.get({
+      row_eligibility: input.row_eligibility,
+      recall_contract_id: input.recall_contract_id,
+      tool_session_id: input.tool_session_id,
+      item_id: input.item_id,
+    }) as RecallMessageRow | undefined;
     return row ? decodeRecallSourceRow(row) : null;
   };
 
+  /** The paired half of a two-event tool call, or `[]`.
+   *
+   *  ⛔ SCOPED, like every other recall read. See `recallPairStmt`. */
+  const getRecallPair = async (
+    input: ChatRecallCorpusSelector & { readonly item_id: string },
+  ): Promise<ChatRecallSourceRow[]> => {
+    assertRecallCorpusSelector(input);
+    const key = recallPairKeyStmt.get({ item_id: input.item_id }) as
+      | { pair_id: string | null }
+      | undefined;
+    if (!key?.pair_id) return [];
+    const rows = recallPairStmt.all({
+      row_eligibility: input.row_eligibility,
+      recall_contract_id: input.recall_contract_id,
+      tool_session_id: input.tool_session_id,
+      pair_id: key.pair_id,
+      item_id: input.item_id,
+      limit: 4,
+    }) as RecallMessageRow[];
+    return Promise.all(rows.map(decodeRecallSourceRow));
+  };
+
   const getRecallNeighbours = async (
-    input: {
-      readonly row_eligibility:
-        typeof CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT;
+    input: ChatRecallCorpusSelector & {
       readonly item_id: string;
       readonly next?: number;
       readonly prev?: number;
     },
   ): Promise<ChatRecallSourceRow[]> => {
+    assertRecallCorpusSelector(input);
     const anchor = getRecallMessageStmt.get({
-      row_eligibility: input.row_eligibility, item_id: input.item_id,
+      row_eligibility: input.row_eligibility,
+      recall_contract_id: input.recall_contract_id,
+      tool_session_id: input.tool_session_id,
+      item_id: input.item_id,
     }) as RecallMessageRow | undefined;
     if (!anchor) return [];
     const out: RecallMessageRow[] = [];
@@ -2522,6 +2891,8 @@ export const createChatStore = (
       if (limit <= 0) return;
       out.push(...stmt.all({
         row_eligibility: input.row_eligibility,
+        recall_contract_id: input.recall_contract_id,
+        tool_session_id: input.tool_session_id,
         session_id: anchor.session_id,
         ts: anchor.ts,
         limit,
@@ -2633,8 +3004,10 @@ export const createChatStore = (
     finalizeMessageSource,
     failMessageSource,
     harvestPiiSources,
+    listRecallableToolPointers,
     scanRecallMessagesPage,
     getRecallMessage,
+    getRecallPair,
     getRecallNeighbours,
     setDataDiagnosisResolution,
     appendEgress,

@@ -31,6 +31,13 @@ import {
   createSqliteMcpActionCompareAndSet,
   type McpActionRecord,
 } from '../mcp-action-store.js';
+import {
+  GATED_ACTION_TABLE,
+  createGatedActionStore,
+  createSqliteGatedActionChangeClock,
+  createSqliteGatedActionCompareAndSet,
+  type GatedActionRecord,
+} from '../gated-action-store.js';
 import { ensureAuditIndexes } from '../audit-indexes.js';
 import {
   ensureCheckpointSchema,
@@ -68,6 +75,8 @@ import { createContractGrantStore } from '../storage/contract-grant-store.js';
 import { createGatedReadGrantResolver } from '../read-grant-checker.js';
 import { createConnectionCatalogBindingStore } from '../storage/connection-catalog-binding-store.js';
 import { createLocalManifestStore } from '../ingredient-authoring/local-manifest-store.js';
+import { checkInstalledManifestsOnBoot } from '../ingredient-authoring/installed-manifest-boot-check.js';
+import { reconcileInstalledPacksOnBoot } from '../pack-reconciliation.js';
 import {
   deriveBoundCrmMirrorSources,
   liveVendorRegistry,
@@ -161,6 +170,15 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
     createSQLiteCollection<McpActionRecord>(db, MCP_ACTION_TABLE),
     { compareAndSet: createSqliteMcpActionCompareAndSet(db) },
   );
+  const gatedActionChangeClock = createSqliteGatedActionChangeClock(db);
+  const gatedActionStore = createGatedActionStore(
+    createSQLiteCollection<GatedActionRecord>(db, GATED_ACTION_TABLE),
+    {
+      compareAndSet: createSqliteGatedActionCompareAndSet(db),
+      nextChangeSeq: gatedActionChangeClock.nextChangeSeq,
+      changeClock: gatedActionChangeClock.snapshot,
+    },
+  );
 
   const bundleStore = createBundleStore(db);
   const serverBundleStore = createServerBundleStore(dbPath);
@@ -232,6 +250,28 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   // pack-composition vendors), so the agent (MCP → gateway) path binds a connected
   // `acct` / 3rd-party CRM vendor's family too — not just built-in HubSpot/Salesforce.
   const localManifestStore = createLocalManifestStore(db);
+  // D-165/D-166 — seed the contract schema into `contract.schema.*` rows at boot
+  // (idempotent; same db as the serve path). Gateway-read-only substrate.
+  // D-166 Slice 4d.1: RETAIN the handle (was discarded) for the 4d.4 catalog-gate
+  // resolver on this MCP boot path — mirrors the serve path's app.contractStoreRef.
+  // Read here by `seedSchema`; 4d.4 adds the resolver closure over this handle.
+  const contractStore = createContractStore(db);
+  contractStore.seedSchema(D165_CONTRACT_SCHEMA);
+  // D-259 — this standalone process does not pass through `composeListeners`.
+  // Reconcile before its registry is consumed or stdio dispatch starts, then
+  // run the same current-validator fallback as the serving profile. stderr only:
+  // stdout is the MCP protocol stream.
+  await reconcileInstalledPacksOnBoot({
+    contractStore,
+    localManifestStore,
+    registry: manifests,
+    now: () => Date.now(),
+    log: (message: string) => console.warn(message),
+  });
+  checkInstalledManifestsOnBoot({
+    listManifests: () => localManifestStore.listManifests(),
+    log: (message: string) => console.warn(message),
+  });
   // Register each installed local-composition manifest into the live registry
   // (mirrors the serve boot path's compose-storage-context loop). Without it R1's
   // merged registry would report a pack-composition op runnable while dispatch —
@@ -246,13 +286,6 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   // composition, so without this a pack-CRM ref run through MCP would resolve
   // against the frozen builtin. Lazy thunk → recompute-on-read.
   setVendorAliasRegistryResolver(() => liveVendorRegistry(localManifestStore));
-  // D-165/D-166 — seed the contract schema into `contract.schema.*` rows at boot
-  // (idempotent; same db as the serve path). Gateway-read-only substrate.
-  // D-166 Slice 4d.1: RETAIN the handle (was discarded) for the 4d.4 catalog-gate
-  // resolver on this MCP boot path — mirrors the serve path's app.contractStoreRef.
-  // Read here by `seedSchema`; 4d.4 adds the resolver closure over this handle.
-  const contractStore = createContractStore(db);
-  contractStore.seedSchema(D165_CONTRACT_SCHEMA);
   const sellerStore = createSellerStore(db);
   const sellerOrderStore = createSellerOrderStore(db);
   // D-187 AMENDMENT 3b — materialize the OWNER contract's grant rows (idempotent +
@@ -448,6 +481,7 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
     commitStore,
     checkpointStore,
     mcpActionStore,
+    gatedActionStore,
     annotationStore,
     // D-182 §10 step 8 / R1 (Fix 2) — the merged convention-family vendor registry
     // source, so the agent path's R1 pre-pass binds pack-composition CRM/acct vendors.

@@ -29,7 +29,7 @@ import {
 
 describe('D-196 seller substrate vocabulary', () => {
   it('pins lifecycle sources, access states, usage kinds, and period granularities', () => {
-    expect(SELLER_LIFECYCLE_SOURCES).toEqual(['manual', 'stripe', 'future_provider']);
+    expect(SELLER_LIFECYCLE_SOURCES).toEqual(['manual', 'stripe', 'paddle', 'lemonsqueezy']);
     expect(SELLER_ACCESS_STATES).toEqual(['active', 'grace', 'closed']);
     expect(SELLER_CUSTOMER_CLOSE_REASONS).toEqual([
       'cancelled',

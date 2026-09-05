@@ -41,6 +41,7 @@ import {
   RECORDS_RUNTIME_CANARY_OP,
   recipeTrustStateForPureWorkflow,
   RpcError,
+  SLUG_RE,
   validateRecipeBundlePublisher,
   type BulkPackInstallResultLike,
   type BulkPackManifest,
@@ -382,7 +383,7 @@ const filterPlanRecipeRefs = (
 
 /** Default community/packs directory resolution. Mirrors `packs.list` and
  *  `packs.uninstall` so list/install/uninstall agree on the bundled root. */
-const findCommunityPackDir = (): string => {
+export const findCommunityPackDir = (): string => {
   const projectRoot = resolve(import.meta.dirname ?? __dirname, '..', '..', '..');
   return join(projectRoot, 'community', 'packs');
 };
@@ -413,6 +414,24 @@ const resolveBundledPackManifest = (
     if (result.ok && result.manifest.slug === packSlug) return result.manifest;
   }
   return null;
+};
+
+/** Resolve the release layout's exact `<root>/<slug>.json` artifact. Unlike the
+ * recursive install resolver above, this is unambiguous and O(1): the closed
+ * boot-reconciliation ledger must never select a duplicate from elsewhere in a
+ * 1,000+ pack tree merely because directory enumeration reached it first. */
+export const resolveRootBundledPackManifest = (
+  packDir: string,
+  packSlug: string,
+): BulkPackManifest | null => {
+  if (!SLUG_RE.test(packSlug)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(join(packDir, `${packSlug}.json`), 'utf-8'));
+    const result = parseBulkPackManifest(parsed);
+    return result.ok && result.manifest.slug === packSlug ? result.manifest : null;
+  } catch {
+    return null;
+  }
 };
 
 const dependencyPreflightFailure = (

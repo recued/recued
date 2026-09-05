@@ -30,6 +30,8 @@ import { pipeline } from 'node:stream/promises';
 import { discardResponseBody, fetchOriginPinned } from '@recued/ingredients';
 import { verify } from '@recued/release';
 import { fsyncDir, fsyncFile } from '../durable-fs.js';
+import type Database from 'better-sqlite3';
+import { createSqliteGatedActionChangeClock } from '../gated-action-store.js';
 
 /** Detached-signature sidecar suffix written beside the binary on the volume so
  *  the D-178 thin `:managed` launcher can RE-VERIFY before exec (I-2 second
@@ -1052,16 +1054,148 @@ export const takeSnapshot = async (backup: DbBackupFn, snapshotPath: string): Pr
  *  (closes first), and `performAutoRevert` (defers to pre-open boot). The
  *  sibling that always did it right is `commitStagedRestore`, which runs after
  *  the restart drain's `close_db` step. */
+export const snapshotReceiptEpochMarkerPath = (dbPath: string): string =>
+  `${dbPath}.receipt-epoch-restore`;
+
+interface SnapshotReceiptEpochJournal {
+  schema: 1;
+  phase: 'prepared' | 'rotation_pending';
+  snapshot_path: string;
+  staged_path: string;
+  sidecars_present: string[];
+}
+
+const writeSnapshotReceiptEpochJournal = (
+  dbPath: string,
+  journal: SnapshotReceiptEpochJournal,
+): void => {
+  const marker = snapshotReceiptEpochMarkerPath(dbPath);
+  const stagedMarker = `${marker}.writing`;
+  writeFileSync(stagedMarker, `${JSON.stringify(journal)}\n`, 'utf8');
+  fsyncFile(stagedMarker);
+  renameSync(stagedMarker, marker);
+  fsyncDir(dirname(marker));
+};
+
+const readSnapshotReceiptEpochJournal = (
+  dbPath: string,
+): SnapshotReceiptEpochJournal | null => {
+  const marker = snapshotReceiptEpochMarkerPath(dbPath);
+  if (!existsSync(marker)) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(marker, 'utf8'));
+  } catch (error) {
+    throw new Error(
+      `snapshot receipt epoch journal is unreadable: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('snapshot receipt epoch journal is malformed');
+  }
+  const row = parsed as Partial<SnapshotReceiptEpochJournal>;
+  if (row.schema !== 1
+    || (row.phase !== 'prepared' && row.phase !== 'rotation_pending')
+    || typeof row.snapshot_path !== 'string'
+    || row.snapshot_path.length === 0
+    || typeof row.staged_path !== 'string'
+    || row.staged_path !== `${dbPath}.restoring`
+    || !Array.isArray(row.sidecars_present)
+    || row.sidecars_present.some((suffix) =>
+      suffix !== '-wal' && suffix !== '-shm' && suffix !== '-journal')) {
+    throw new Error('snapshot receipt epoch journal is malformed');
+  }
+  return row as SnapshotReceiptEpochJournal;
+};
+
+const clearSnapshotReceiptEpochJournal = (dbPath: string): void => {
+  rmSync(snapshotReceiptEpochMarkerPath(dbPath));
+  fsyncDir(dirname(dbPath));
+};
+
+/** Resolve the only ambiguous kill window before opening SQLite. A prepared
+ * staged file plus every originally-present sidecar means the database was not
+ * touched, so the abandoned attempt can be cleared. A missing staged file
+ * proves the rename landed; a missing original sidecar means WAL state may have
+ * rewound even if the rename did not, so both cases require an epoch rotation. */
+export const reconcileSnapshotReceiptEpochBeforeOpen = (
+  dbPath: string,
+): 'none' | 'unchanged' | 'rotation_pending' => {
+  const journal = readSnapshotReceiptEpochJournal(dbPath);
+  if (journal === null) return 'none';
+  if (journal.phase === 'rotation_pending') return 'rotation_pending';
+  const stagedStillPresent = existsSync(journal.staged_path);
+  const sidecarWasRemoved = journal.sidecars_present.some(
+    (suffix) => !existsSync(`${dbPath}${suffix}`),
+  );
+  if (!stagedStillPresent || sidecarWasRemoved) {
+    writeSnapshotReceiptEpochJournal(dbPath, {
+      ...journal,
+      phase: 'rotation_pending',
+    });
+    return 'rotation_pending';
+  }
+  rmSync(journal.staged_path);
+  clearSnapshotReceiptEpochJournal(dbPath);
+  return 'unchanged';
+};
+
+/** Complete a snapshot lineage change on the already-keyed production handle.
+ * Any throw leaves the journal intact, so boot fails closed and retries before
+ * receipt RPC composition on the next attempt. */
+export const completeSnapshotReceiptEpochAfterKeyedOpen = (
+  dbPath: string,
+  db: Database.Database,
+): boolean => {
+  const journal = readSnapshotReceiptEpochJournal(dbPath);
+  if (journal === null) return false;
+  if (journal.phase !== 'rotation_pending') {
+    throw new Error('snapshot receipt epoch rotation reached keyed open before pre-open reconciliation');
+  }
+  const previousBusyTimeout = db.pragma('busy_timeout', { simple: true });
+  try {
+    db.pragma('busy_timeout = 0');
+    const clock = createSqliteGatedActionChangeClock(db);
+    const rotated = clock.rotateEpoch();
+    const checkpoint = db.pragma('wal_checkpoint(TRUNCATE)') as
+      | Array<{ busy?: number }>
+      | { busy?: number };
+    const busy = Array.isArray(checkpoint) ? checkpoint[0]?.busy : checkpoint?.busy;
+    if (busy !== 0 || clock.snapshot().epoch !== rotated.epoch) {
+      throw new Error(
+        `snapshot receipt epoch checkpoint did not complete (busy=${String(busy)})`,
+      );
+    }
+    clearSnapshotReceiptEpochJournal(dbPath);
+    return true;
+  } finally {
+    if (typeof previousBusyTimeout === 'number'
+      && Number.isInteger(previousBusyTimeout)
+      && previousBusyTimeout >= 0) {
+      try { db.pragma(`busy_timeout = ${previousBusyTimeout}`); } catch { /* boot is closing on failure */ }
+    }
+  }
+};
+
 export const restoreSnapshot = (snapshotPath: string, dbPath: string, copyFile: (from: string, to: string) => void): void => {
   if (!existsSync(snapshotPath)) throw new Error('restoreSnapshot: snapshot missing');
   const staged = `${dbPath}.restoring`;
   copyFile(snapshotPath, staged);
   fsyncFile(staged);
+  const sidecars = ['-wal', '-shm', '-journal'];
+  const journal: SnapshotReceiptEpochJournal = {
+    schema: 1,
+    phase: 'prepared',
+    snapshot_path: snapshotPath,
+    staged_path: staged,
+    sidecars_present: sidecars.filter((suffix) => existsSync(`${dbPath}${suffix}`)),
+  };
+  writeSnapshotReceiptEpochJournal(dbPath, journal);
   // Drop the live WAL/SHM/journal sidecars BEFORE swapping the main file in. A
   // missing sidecar (non-WAL / already checkpointed) is fine and skipped; any
   // OTHER unlink failure is FATAL — proceeding would strand a migrated WAL beside
   // the old-schema main file, the exact corruption this guards against.
-  for (const suffix of ['-wal', '-shm', '-journal']) {
+  for (const suffix of sidecars) {
     try {
       rmSync(`${dbPath}${suffix}`);
     } catch (err) {
@@ -1070,6 +1204,10 @@ export const restoreSnapshot = (snapshotPath: string, dbPath: string, copyFile: 
   }
   renameSync(staged, dbPath);
   fsyncDir(dirname(dbPath));
+  writeSnapshotReceiptEpochJournal(dbPath, {
+    ...journal,
+    phase: 'rotation_pending',
+  });
 };
 
 /** The marker that carries a snapshot restore across a restart, so it can run at

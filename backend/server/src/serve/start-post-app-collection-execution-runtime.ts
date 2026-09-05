@@ -13,9 +13,19 @@ import {
   type PostExecutionBootstrapMaintenanceRuntimeResult,
   type StartPostExecutionBootstrapMaintenanceRuntimeOptions,
 } from './start-post-execution-bootstrap-maintenance-runtime.js';
+import { attemptPeerAskDelivery } from '../execute-handler.js';
+import {
+  journalOwnsInterruptedPeerDispatch,
+  recoverPeerAskDeliveries,
+} from '../peer-ask-delivery-recovery.js';
+import { createPeerAnswerStore } from '../storage/peer-answer-store.js';
 
 type CollectionContextKey = 'collection';
-type RecoveryRuntimeKeys = 'collection' | 'notificationBlock';
+type RecoveryRuntimeKeys =
+  | 'collection'
+  | 'notificationBlock'
+  | 'getBatch'
+  | 'reconcileOpenBatch';
 type PreListenerRuntimeKeys =
   | 'collection'
   | 'execution'
@@ -77,6 +87,42 @@ export const startPostAppCollectionExecutionRuntime = async (
     collection.supervisionStack?.bindExecutor(execution.executeDeps.cliInvocationExecutor);
   }
 
+  const peerOutbox = execution.executeDeps.peerAskOutbox;
+  const peerAuditLog = execution.executeDeps.auditLog;
+  const peerCheckpoints = execution.executeDeps.checkpointStore;
+  const peerDb = execution.executeDeps.db;
+  const peerDeliveryBoot = peerOutbox !== undefined
+    && peerAuditLog !== undefined
+    && peerCheckpoints !== undefined
+    && peerDb !== undefined
+    ? {
+        recoverPeerDeliveries: async (): Promise<void> => {
+          await recoverPeerAskDeliveries({
+            outbox: peerOutbox,
+            auditLog: peerAuditLog,
+            checkpoints: peerCheckpoints,
+            answers: createPeerAnswerStore(peerDb),
+            ...(execution.executeDeps.gatedActionStore !== undefined
+              ? { gatedActions: execution.executeDeps.gatedActionStore }
+              : {}),
+            deliver: (row, anchor) =>
+              attemptPeerAskDelivery(execution.executeDeps, row, anchor),
+            // The lifecycle lock is held and live traffic has not started, so
+            // a staged row without its exact awaiting-peer anchor cannot still
+            // be racing the append. Retire it rather than leave an immortal P2.
+            retireUnanchoredStaged: true,
+          });
+        },
+        preserveInterruptedDispatch: (
+          record: Parameters<typeof journalOwnsInterruptedPeerDispatch>[0],
+        ) => journalOwnsInterruptedPeerDispatch(record, {
+          outbox: peerOutbox,
+          auditLog: peerAuditLog,
+          checkpoints: peerCheckpoints,
+        }),
+      }
+    : undefined;
+
   const postExecution = await startPostExecutionBootstrapMaintenanceRuntime({
     ...options.postExecution,
     publishScheduleDeps: options.execution.lateBound.publishScheduleDeps,
@@ -100,6 +146,13 @@ export const startPostAppCollectionExecutionRuntime = async (
       recovery: {
         ...options.postExecution.runtime.recovery,
         notificationBlock: execution.notificationBlock,
+        ...(peerDeliveryBoot ?? {}),
+        ...(execution.getBatch !== undefined
+          ? { getBatch: execution.getBatch }
+          : {}),
+        ...(execution.reconcileOpenBatch !== undefined
+          ? { reconcileOpenBatch: execution.reconcileOpenBatch }
+          : {}),
         collection,
       },
       preListener: {

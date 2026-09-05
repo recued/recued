@@ -675,6 +675,7 @@ export const recordLedgerRevert = (ledgerPath: string, reason: string, now: numb
       trigger: 'revert',
       release_identity: inFlight.release_identity,
       migration: inFlight.migration ?? false,
+      recovery_source: 'outer-supervisor',
       detail: `supervisor revert: ${reason}`,
     });
     return true;

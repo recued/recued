@@ -75,11 +75,13 @@ export const FILE_PICK_STYLES = `
 
 /** Open the chooser. Resolves with the selected `data.file` record ids, or an
  *  empty array if the owner cancelled — the caller treats both the same, which
- *  is why cancel is not an error. */
+ *  is why cancel is not an error. Aborting retires the body-level panel and
+ *  resolves empty when the owning compose route closes. */
 export const openFilePickPanel = (
   doc: Document,
   files: ReadonlyArray<MailComposeAttachment>,
   alreadyAttached: ReadonlyArray<string>,
+  signal?: AbortSignal,
 ): Promise<readonly string[]> =>
   new Promise((resolve) => {
     const host = doc.createElement('div');
@@ -113,9 +115,20 @@ export const openFilePickPanel = (
     const close = (ids: readonly string[]): void => {
       if (settled) return;
       settled = true;
+      signal?.removeEventListener('abort', onAbort);
       host.remove();
       resolve(ids);
     };
+    const onAbort = (): void => close([]);
+
+    // A route can retire while its inventory read is still resolving. Its
+    // already-aborted signal must prevent this body-level portal from being
+    // appended after the owning compose surface is gone.
+    if (signal?.aborted === true) {
+      close([]);
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
 
     host.addEventListener('click', (event) => {
       const target = event.target;

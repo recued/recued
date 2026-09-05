@@ -193,10 +193,10 @@ export interface StepMeta {
    *  `uses_remaining` decrement in one synchronous write) — the claim IS
    *  the consumption (N.4): a member already claimed (an agent replay won
    *  the race) re-holds the dispatch, so total executions never exceed the
-   *  approved member count. Idempotent PER RUN at the host hooks (a
-   *  `foreach` gated step re-dispatches per iteration with the same
-   *  marker; one member covers the whole gated step exactly as one
-   *  approval does today). Engine-set only (`buildStepMeta` never copies
+   *  approved member count. Idempotent PER RUN at the host hooks (an
+   *  ordinary `foreach` gated step re-dispatches per iteration with the same
+   *  marker; one member covers that approval segment. A chunk-bounded resume
+   *  consumes its marker after one item). Engine-set only (`buildStepMeta` never copies
    *  arbitrary step fields); stripped before the inner executor like the
    *  sibling resume markers.
    *

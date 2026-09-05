@@ -40,6 +40,13 @@ import {
   type SellerSettingsUpdateResponse,
   type SellerStripeSynchronizeRequest,
   type SellerStripeSynchronizeResponse,
+  type SellerProviderTierSynchronizeRequest,
+  type SellerProviderTierSynchronizeResponse,
+  type SellerProviderSource,
+  SELLER_DEFAULT_DOOR_ID,
+  SELLER_PROVIDERS,
+  isSellerProviderSource,
+  sellerProviderFor,
   type SellerCustomer,
   type SellerCustomerUsageRollup,
   type SellerOverview,
@@ -57,7 +64,7 @@ import {
   formatClientDateTime,
 } from '@recued/ui-shared';
 
-import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
 import { serializeShellRoute } from '../shell/route.js';
 import {
   LIST_PREVIEW_STYLES,
@@ -69,23 +76,41 @@ import {
   updateListContinuity,
 } from '../shell/list-preview-continuity.js';
 import {
+  SELLER_SETUP_SECTIONS,
   SELLER_SUBPAGES,
   isSellerCollectionSubpage,
+  isSellerCreateSubpage,
   isSellerSubpage,
   sellerAddressSelection,
+  sellerCreateAddress,
   sellerDetailAddress,
   sellerDirectoryAddress,
   sellerListAddress,
+  sellerSetupAddress,
   type SellerAddress,
   type SellerCollectionSubpage,
+  type SellerCreateSubpage,
+  type SellerCreateVariant,
+  type SellerSetupSection,
   type SellerSubpage,
+  type SellerTierDetailTab,
 } from './seller-navigation.js';
 
 export {
+  SELLER_SETUP_SECTIONS,
   SELLER_SUBPAGES,
   isSellerSubpage,
+  sellerCreateAddress,
+  sellerDetailAddress,
+  sellerListAddress,
+  sellerSetupAddress,
 } from './seller-navigation.js';
-export type { SellerSubpage } from './seller-navigation.js';
+export type {
+  SellerCreateVariant,
+  SellerSetupSection,
+  SellerSubpage,
+  SellerTierDetailTab,
+} from './seller-navigation.js';
 
 export type SellerOverviewCaller = () => Promise<SellerOverview>;
 /** D-196 1d — the shared `execute` rpc caller, narrowed to what this page needs.
@@ -141,6 +166,10 @@ export type SellerManualTierBulkAdjustCaller = (
 export type SellerStripeSynchronizeCaller = (
   request: SellerStripeSynchronizeRequest,
 ) => Promise<SellerStripeSynchronizeResponse>;
+/** D-196 consolidation — the ONE tier seed for every provider. */
+export type SellerProviderTierSynchronizeCaller = (
+  request: SellerProviderTierSynchronizeRequest,
+) => Promise<SellerProviderTierSynchronizeResponse>;
 export type SellerAcknowledgeLlmGatewayPaidCaller = (
   request: SellerAcknowledgeLlmGatewayPaidRequest,
 ) => Promise<SellerAcknowledgeLlmGatewayPaidResponse>;
@@ -180,7 +209,64 @@ const SELLER_SUBPAGE_META: Readonly<Record<
   },
   setup: {
     label: 'Setup',
-    description: 'Configure delivery defaults and connect Stripe, mail, and paid model access.',
+    description: 'Defaults, payment providers, and paid model access - each on its own screen.',
+  },
+};
+
+/** The three setup screens, each its own address (`#settings/seller/setup/<section>`). */
+const SELLER_SETUP_SECTION_META: Readonly<Record<
+  SellerSetupSection,
+  { readonly label: string; readonly description: string }
+>> = {
+  defaults: {
+    label: 'Defaults',
+    description: 'Grace window, status and email policy, and the mail account that sends claim and status messages.',
+  },
+  providers: {
+    label: 'Providers',
+    description: 'Seed access tiers from a payment provider: Stripe entitlement features, or Paddle and Lemon Squeezy products.',
+  },
+  gateway: {
+    label: 'Paid model access',
+    description: 'The OpenAI-compatible route customers can buy, and its one-time paid-access acknowledgment.',
+  },
+};
+
+/** The create screens (`#settings/seller/<collection>/new[/<variant>]`). */
+const SELLER_CREATE_META: Readonly<Record<
+  SellerCreateSubpage,
+  Readonly<Record<string, { readonly label: string; readonly description: string }>>
+>> = {
+  tiers: {
+    manual: {
+      label: 'New manual tier',
+      description: 'Register a tier you run by hand, or load an existing manual tier by id to edit it.',
+    },
+    pass: {
+      label: 'New pass tier',
+      description: 'Mint a time-boxed pass with its own contract template.',
+    },
+  },
+  customers: {
+    manual: {
+      label: 'Issue customer',
+      description: 'Grant a customer access on a manual tier and hand over the one-time claim link.',
+    },
+  },
+};
+
+/** A tier record's screens beyond the record itself. */
+const SELLER_TIER_TAB_META: Readonly<Record<
+  SellerTierDetailTab,
+  { readonly label: string; readonly description: string }
+>> = {
+  edit: {
+    label: 'Edit',
+    description: 'Change this manual tier\'s name, template, limits, and status.',
+  },
+  customers: {
+    label: 'Customers',
+    description: 'Adjust every customer on this manual tier at once.',
   },
 };
 
@@ -205,6 +291,11 @@ export interface SellerPageState {
   readonly subpage: SellerSubpage | null;
   readonly selectedItemId: string | null;
   readonly page: number;
+  /** The deeper levels only an address names. */
+  readonly tab: SellerTierDetailTab | null;
+  readonly create: SellerCreateVariant | null;
+  readonly setupSection: SellerSetupSection | null;
+  readonly setupProvider: SellerProviderSource | null;
   readonly overview: SellerOverview | null;
   readonly error: string | null;
 }
@@ -260,7 +351,11 @@ export interface MountSellerPageOptions {
   runCloseManualCustomer?: SellerManualCustomerCloseCaller;
   runReissueManualCustomerToken?: SellerManualCustomerReissueTokenCaller;
   runBulkAdjustManualTierCustomers?: SellerManualTierBulkAdjustCaller;
+  /** The shipped Stripe-only seed rpc — kept as the fallback the unified form
+   *  uses against a paired server that predates `runSynchronizeProviderTiers`. */
   runSynchronizeStripeEntitlements?: SellerStripeSynchronizeCaller;
+  /** D-196 consolidation — the ONE tier seed for every provider. */
+  runSynchronizeProviderTiers?: SellerProviderTierSynchronizeCaller;
   /** D-196 §4.9 / I-7 — records the one-time paid-`llm_gateway` route-rights
    *  acknowledgment. When unwired (older paired servers / test hosts), the
    *  acknowledgment control is hidden and the read-only ack state still renders. */
@@ -292,6 +387,19 @@ export const SELLER_DIRECTORY_ATTR = 'data-recued-seller-directory';
 export const SELLER_DIRECTORY_ROW_ATTR = 'data-recued-seller-directory-row';
 export const SELLER_SUBPAGE_HEADER_ATTR = 'data-recued-seller-subpage-header';
 export const SELLER_BACK_ATTR = 'data-recued-seller-back';
+export const SELLER_BREADCRUMB_ATTR = 'data-recued-seller-breadcrumb';
+export const SELLER_BREADCRUMB_LINK_ATTR = 'data-recued-seller-breadcrumb-link';
+export const SELLER_SUBNAV_ATTR = 'data-recued-seller-subnav';
+export const SELLER_SUBNAV_LINK_ATTR = 'data-recued-seller-subnav-link';
+export const SELLER_LIST_TOOLBAR_ATTR = 'data-recued-seller-list-toolbar';
+export const SELLER_CREATE_LINK_ATTR = 'data-recued-seller-create-link';
+export const SELLER_CREATE_PAGE_ATTR = 'data-recued-seller-create-page';
+export const SELLER_DETAIL_TABS_ATTR = 'data-recued-seller-detail-tabs';
+export const SELLER_DETAIL_TAB_ATTR = 'data-recued-seller-detail-tab';
+export const SELLER_SETUP_DIRECTORY_ATTR = 'data-recued-seller-setup-directory';
+export const SELLER_SETUP_ROW_ATTR = 'data-recued-seller-setup-row';
+export const SELLER_SETUP_SECTION_ATTR = 'data-recued-seller-setup-section';
+export const SELLER_READINESS_SETUP_LINK_ATTR = 'data-recued-seller-readiness-setup-link';
 export const SELLER_COLLECTION_LIST_ATTR = 'data-recued-seller-collection-list';
 export const SELLER_COLLECTION_ITEM_LINK_ATTR =
   'data-recued-seller-collection-item-link';
@@ -394,10 +502,10 @@ export const SELLER_TIER_BULK_ADJUST_SUBMIT_ATTR =
   'data-recued-seller-tier-bulk-adjust-submit';
 export const SELLER_TIER_BULK_ADJUST_STATUS_ATTR =
   'data-recued-seller-tier-bulk-adjust-status';
-export const SELLER_STRIPE_SYNC_FORM_ATTR = 'data-recued-seller-stripe-sync-form';
-export const SELLER_STRIPE_SYNC_FIELD_ATTR = 'data-recued-seller-stripe-sync-field';
-export const SELLER_STRIPE_SYNC_SUBMIT_ATTR = 'data-recued-seller-stripe-sync-submit';
-export const SELLER_STRIPE_SYNC_STATUS_ATTR = 'data-recued-seller-stripe-sync-status';
+export const SELLER_PROVIDER_TIER_SYNC_FORM_ATTR = 'data-recued-seller-provider-tier-sync-form';
+export const SELLER_PROVIDER_TIER_SYNC_FIELD_ATTR = 'data-recued-seller-provider-tier-sync-field';
+export const SELLER_PROVIDER_TIER_SYNC_SUBMIT_ATTR = 'data-recued-seller-provider-tier-sync-submit';
+export const SELLER_PROVIDER_TIER_SYNC_STATUS_ATTR = 'data-recued-seller-provider-tier-sync-status';
 
 const clearChildren = (el: HTMLElement): void => {
   while (el.firstChild) el.removeChild(el.firstChild);
@@ -657,12 +765,27 @@ const appendContractId = (
   parent.appendChild(value);
 };
 
+/** `door_id` on the wire, "Category" to the owner (2026-09-03). It is the
+ *  owner's namespace for tiers and their customers — nothing resolves it —
+ *  so every form defaults it to {@link SELLER_DEFAULT_DOOR_ID} and keeps it
+ *  behind Advanced; only a seller with two products whose tier keys clash
+ *  ever changes it. */
+const CATEGORY_LABEL = 'Category';
+const CATEGORY_HELP = 'Groups tiers with their customers. Keep the default unless you '
+  + 'sell separate products whose tier keys would clash. It cannot change once '
+  + 'a tier exists.';
+
+const appendFieldHelp = (doc: Document, wrap: HTMLElement, text: string): void => {
+  const help = append(doc, wrap, 'span', 'seller-form-help');
+  help.textContent = text;
+};
+
 const appendField = (
   doc: Document,
   parent: HTMLElement,
   label: string,
   field: keyof SellerManualTierUpsertRequest,
-  opts: { type?: string; value?: string } = {},
+  opts: { type?: string; value?: string; help?: string } = {},
 ): HTMLInputElement => {
   const wrap = append(doc, parent, 'label', 'seller-form-field');
   appendText(doc, wrap, 'span', label);
@@ -671,6 +794,7 @@ const appendField = (
   input.value = opts.value ?? '';
   input.setAttribute(SELLER_TIER_FORM_FIELD_ATTR, String(field));
   wrap.appendChild(input);
+  if (opts.help !== undefined) appendFieldHelp(doc, wrap, opts.help);
   return input;
 };
 
@@ -835,7 +959,7 @@ const appendCustomerField = (
   parent: HTMLElement,
   label: string,
   field: keyof SellerManualCustomerIssueRequest,
-  opts: { type?: string; value?: string } = {},
+  opts: { type?: string; value?: string; help?: string } = {},
 ): HTMLInputElement => {
   const wrap = append(doc, parent, 'label', 'seller-form-field');
   appendText(doc, wrap, 'span', label);
@@ -844,6 +968,7 @@ const appendCustomerField = (
   input.value = opts.value ?? '';
   input.setAttribute(SELLER_CUSTOMER_FORM_FIELD_ATTR, String(field));
   wrap.appendChild(input);
+  if (opts.help !== undefined) appendFieldHelp(doc, wrap, opts.help);
   return input;
 };
 
@@ -1700,57 +1825,104 @@ const renderReadiness = (
       link.textContent = 'Configure';
       meta.appendChild(link);
     }
+    // The Seller screen that acts on this row, as its own address: a provider
+    // row opens the tier seed with that provider chosen.
+    const setupHash = readinessSetupHash(item.key);
+    if (setupHash !== null) {
+      const link = doc.createElement('a');
+      link.href = setupHash;
+      link.setAttribute('href', setupHash);
+      link.setAttribute(SELLER_READINESS_SETUP_LINK_ATTR, item.key);
+      link.textContent = 'Open setup';
+      meta.appendChild(link);
+    }
   }
 };
 
-const renderStripeSynchronizeForm = (
+/** Which setup screen a readiness row belongs to, if any. */
+const readinessSetupHash = (key: string): string | null => {
+  const provider = SELLER_PROVIDERS.find((spec) => spec.readiness_key === key);
+  if (provider !== undefined) return sellerSetupAddress('providers', provider.source).hash;
+  if (key === 'mail_sender') return sellerSetupAddress('defaults').hash;
+  if (key === 'llm_gateway') return sellerSetupAddress('gateway').hash;
+  return null;
+};
+
+/** D-196 consolidation — ONE Initialize / Synchronize form for every provider
+ *  in `SELLER_PROVIDERS`. The provider select decides which readiness row
+ *  gates the button and whether the store id (Lemon Squeezy) is asked for.
+ *  Stripe keeps working against an older paired server: when the unified rpc
+ *  is unknown there, the form falls back to the shipped Stripe-only rpc. */
+const renderProviderTierSynchronizeForm = (
   doc: Document,
   parent: HTMLElement,
   overview: SellerOverview,
-  runSynchronize: SellerStripeSynchronizeCaller,
+  runSynchronize: SellerProviderTierSynchronizeCaller | undefined,
+  runSynchronizeStripe: SellerStripeSynchronizeCaller | undefined,
   formMessage: SellerFormMessage | null,
-  applyResult: (
-    response: SellerStripeSynchronizeResponse,
-    message: SellerFormMessage,
-  ) => void,
+  applyResult: (refreshed: SellerOverview, message: SellerFormMessage) => void,
+  /** The provider a deep link chose (`#settings/seller/setup/providers/<provider>`). */
+  initialProvider: SellerProviderSource | null = null,
 ): void => {
-  const readiness = overview.readiness.find((item) => item.key === 'stripe_provider');
+  const readinessFor = (source: SellerProviderSource) =>
+    overview.readiness.find((item) => item.key === sellerProviderFor(source).readiness_key);
   const section = append(doc, parent, 'section', 'seller-section');
-  section.setAttribute(SELLER_STRIPE_SYNC_FORM_ATTR, '');
-  appendText(doc, section, 'h4', 'Stripe entitlements');
+  section.setAttribute(SELLER_PROVIDER_TIER_SYNC_FORM_ATTR, '');
+  appendText(doc, section, 'h4', 'Provider tiers');
   appendText(
     doc,
     section,
     'p',
-    'Import Stripe entitlement features as access tiers. New tiers start with '
-      + 'an empty contract template; existing grants and tier policy are left unchanged.',
+    'Import the provider\'s tier identities (Stripe entitlement features, Paddle or '
+      + 'Lemon Squeezy products) as access tiers. New tiers start with an empty '
+      + 'contract template; existing grants and tier policy are left unchanged.',
     'seller-section-copy',
   );
   const fields = append(doc, section, 'div', 'seller-settings-form-grid');
+  const providerWrap = append(doc, fields, 'label', 'seller-form-field');
+  appendText(doc, providerWrap, 'span', 'Provider');
+  const provider = doc.createElement('select');
+  provider.setAttribute(SELLER_PROVIDER_TIER_SYNC_FIELD_ATTR, 'provider');
+  for (const spec of SELLER_PROVIDERS) {
+    const option = doc.createElement('option');
+    option.value = spec.source;
+    option.textContent = spec.label;
+    if (initialProvider !== null && spec.source === initialProvider) option.selected = true;
+    provider.appendChild(option);
+  }
+  providerWrap.appendChild(provider);
+  if (initialProvider !== null) provider.value = initialProvider;
   const appendSyncInput = (
     label: string,
-    field: 'connection_name' | 'door_id',
+    field: 'connection_name' | 'door_id' | 'store_id',
     placeholder: string,
+    parent: HTMLElement = fields,
+    help?: string,
   ): HTMLInputElement => {
-    const wrap = append(doc, fields, 'label', 'seller-form-field');
+    const wrap = append(doc, parent, 'label', 'seller-form-field');
     appendText(doc, wrap, 'span', label);
     const input = doc.createElement('input');
     input.type = 'text';
     input.placeholder = placeholder;
-    input.setAttribute(SELLER_STRIPE_SYNC_FIELD_ATTR, field);
+    input.setAttribute(SELLER_PROVIDER_TIER_SYNC_FIELD_ATTR, field);
     wrap.appendChild(input);
+    if (help !== undefined) appendFieldHelp(doc, wrap, help);
     return input;
   };
   const connectionName = appendSyncInput(
-    'Stripe connection name',
+    'Connection name',
     'connection_name',
-    'Optional when only one Stripe connection is ready',
+    'Optional when only one connection of that provider is ready',
   );
-  const doorId = appendSyncInput('Door ID', 'door_id', 'door-mcp');
+  const storeId = appendSyncInput(
+    'Lemon Squeezy store id',
+    'store_id',
+    'Numeric store id (Lemon Squeezy only)',
+  );
   const doorTypeWrap = append(doc, fields, 'label', 'seller-form-field');
-  appendText(doc, doorTypeWrap, 'span', 'Door type');
+  appendText(doc, doorTypeWrap, 'span', 'Access type');
   const doorType = doc.createElement('select');
-  doorType.setAttribute(SELLER_STRIPE_SYNC_FIELD_ATTR, 'door_type');
+  doorType.setAttribute(SELLER_PROVIDER_TIER_SYNC_FIELD_ATTR, 'door_type');
   for (const [value, label] of [
     ['mcp', 'MCP tools'],
     ['mcp_chat', 'MCP chat'],
@@ -1762,46 +1934,106 @@ const renderStripeSynchronizeForm = (
     doorType.appendChild(option);
   }
   doorTypeWrap.appendChild(doorType);
+  const advanced = append(doc, section, 'details', 'seller-advanced-settings');
+  appendText(doc, advanced, 'summary', 'Advanced');
+  const doorId = appendSyncInput(CATEGORY_LABEL, 'door_id', '', advanced, CATEGORY_HELP);
+  doorId.value = SELLER_DEFAULT_DOOR_ID;
 
   const footer = append(doc, section, 'div', 'seller-form-footer');
   const status = append(doc, footer, 'div', 'seller-form-status');
-  status.setAttribute(SELLER_STRIPE_SYNC_STATUS_ATTR, '');
+  status.setAttribute(SELLER_PROVIDER_TIER_SYNC_STATUS_ATTR, '');
+  const selectedProvider = (): SellerProviderSource =>
+    isSellerProviderSource(provider.value) ? provider.value : 'stripe';
+  const selectedReady = (): boolean => readinessFor(selectedProvider())?.state === 'ready';
+  /** A provider the paired server can seed at all: the unified rpc, or for
+   *  Stripe the shipped alias an older server still answers. */
+  const selectedServable = (): boolean =>
+    runSynchronize !== undefined
+    || (selectedProvider() === 'stripe' && runSynchronizeStripe !== undefined);
+  const showReadiness = (): void => {
+    if (formMessage !== null) return;
+    status.removeAttribute('role');
+    status.removeAttribute('data-kind');
+    const spec = sellerProviderFor(selectedProvider());
+    const readiness = readinessFor(spec.source);
+    status.textContent = !selectedServable()
+      ? `${spec.label} synchronization needs a newer paired server.`
+      : readiness?.state === 'ready'
+        ? ''
+        : readiness?.detail ?? `${spec.label} provider readiness is unavailable.`;
+  };
   if (formMessage !== null) {
     status.textContent = formMessage.text;
     status.setAttribute('data-kind', formMessage.kind);
     if (formMessage.kind === 'error') status.setAttribute('role', 'alert');
-  } else if (readiness?.state !== 'ready') {
-    status.textContent = readiness?.detail ?? 'Stripe provider readiness is unavailable.';
+  } else {
+    showReadiness();
   }
+
+  /** Run the seed, falling back to the shipped Stripe-only rpc when the
+   *  unified one is unknown to an older paired server. */
+  const run = async (
+    payload: SellerProviderTierSynchronizeRequest,
+  ): Promise<Omit<SellerProviderTierSynchronizeResponse, 'provider'>> => {
+    if (runSynchronize !== undefined) {
+      try {
+        return await runSynchronize(payload);
+      } catch (err) {
+        if (
+          payload.provider !== 'stripe'
+          || runSynchronizeStripe === undefined
+          || classifyRpcError(err).code !== 'unknown_method'
+        ) {
+          throw err;
+        }
+      }
+    }
+    if (payload.provider !== 'stripe' || runSynchronizeStripe === undefined) {
+      throw new Error(`${sellerProviderFor(payload.provider).label} synchronization needs a newer paired server.`);
+    }
+    const { features_seen, ...legacy } = await runSynchronizeStripe({
+      ...(payload.connection_name !== undefined ? { connection_name: payload.connection_name } : {}),
+      door_id: payload.door_id,
+      door_type: payload.door_type,
+    });
+    return { ...legacy, records_seen: features_seen };
+  };
 
   let pending = false;
   const submit = appendButton(
     doc,
     footer,
-    'Synchronize Stripe',
+    'Synchronize tiers',
     () => {
-      if (pending || readiness?.state !== 'ready') return;
+      if (pending || !selectedReady() || !selectedServable()) return;
       pending = true;
       submit.disabled = true;
       status.removeAttribute('role');
       status.removeAttribute('data-kind');
-      status.textContent = 'Synchronizing Stripe entitlement features.';
-      const request = (): SellerStripeSynchronizeRequest => {
+      const chosen = selectedProvider();
+      const spec = sellerProviderFor(chosen);
+      const noun = spec.tier_identity === 'entitlement_feature' ? 'feature' : 'product';
+      status.textContent = `Synchronizing ${spec.label} ${noun}s.`;
+      const request = (): SellerProviderTierSynchronizeRequest => {
         const connection_name = connectionName.value.trim();
         return {
+          provider: chosen,
           ...(connection_name.length > 0 ? { connection_name } : {}),
-          door_id: requiredFieldValue(doorId, 'Door ID'),
-          door_type: doorType.value as SellerStripeSynchronizeRequest['door_type'],
+          door_id: requiredFieldValue(doorId, CATEGORY_LABEL),
+          door_type: doorType.value as SellerProviderTierSynchronizeRequest['door_type'],
+          ...(spec.tier_seed_requires_store_id
+            ? { store_id: requiredFieldValue(storeId, 'Lemon Squeezy store id') }
+            : {}),
         };
       };
       void Promise.resolve()
         .then(request)
-        .then((payload) => runSynchronize(payload))
+        .then((payload) => run(payload))
         .then((response) => {
-          applyResult(response, {
+          applyResult(response.overview, {
             kind: 'success',
             text:
-              `Synchronized ${response.features_seen} Stripe feature${response.features_seen === 1 ? '' : 's'}: `
+              `Synchronized ${response.records_seen} ${spec.label} ${noun}${response.records_seen === 1 ? '' : 's'}: `
               + `${response.created_tier_ids.length} created, `
               + `${response.recreated_template_tier_ids.length} template${response.recreated_template_tier_ids.length === 1 ? '' : 's'} recreated, `
               + `${response.reactivated_tier_ids.length} reactivated, `
@@ -1815,12 +2047,17 @@ const renderStripeSynchronizeForm = (
         })
         .finally(() => {
           pending = false;
-          submit.disabled = readiness?.state !== 'ready';
+          submit.disabled = !selectedReady() || !selectedServable();
         });
     },
-    [[SELLER_STRIPE_SYNC_SUBMIT_ATTR, '']],
+    [[SELLER_PROVIDER_TIER_SYNC_SUBMIT_ATTR, '']],
   );
-  submit.disabled = readiness?.state !== 'ready';
+  submit.disabled = !selectedReady() || !selectedServable();
+  provider.addEventListener('change', () => {
+    formMessage = null;
+    showReadiness();
+    submit.disabled = pending || !selectedReady() || !selectedServable();
+  });
 };
 
 const renderSettings = (
@@ -2143,7 +2380,7 @@ const renderTiers = (
         },
       },
       { label: 'Source', value: (tier) => titleCase(tier.lifecycle_source) },
-      { label: 'Door', value: (tier) => tier.door_id },
+      { label: CATEGORY_LABEL, value: (tier) => tier.door_id },
       { label: 'Entitlement', value: (tier) => tier.entitlement_key },
       {
         label: 'Template',
@@ -2202,6 +2439,9 @@ const renderTierUsagePolicyForm = (
     'details',
     'seller-section seller-action-disclosure',
   );
+  // This form is the whole screen behind its own address (2026-09-03), so it
+  // opens expanded; a collapsed disclosure on a screen named for the form hid it.
+  section.open = true;
   section.setAttribute(SELLER_TIER_USAGE_FORM_ATTR, tier.tier_id);
   appendText(doc, section, 'summary', 'Usage limits');
   appendText(
@@ -2349,6 +2589,9 @@ const renderManualTierBulkAdjustForm = (
     'details',
     'seller-section seller-action-disclosure',
   );
+  // This form is the whole screen behind its own address (2026-09-03), so it
+  // opens expanded; a collapsed disclosure on a screen named for the form hid it.
+  section.open = true;
   section.setAttribute(SELLER_TIER_BULK_ADJUST_FORM_ATTR, '');
   appendText(doc, section, 'summary', 'Apply tier changes to customers');
   appendText(
@@ -2464,13 +2707,16 @@ const renderCreatePassTierForm = (
     'details',
     'seller-section seller-action-disclosure',
   );
+  // This form is the whole screen behind its own address (2026-09-03), so it
+  // opens expanded; a collapsed disclosure on a screen named for the form hid it.
+  section.open = true;
   section.setAttribute(SELLER_PASS_TIER_FORM_ATTR, '');
   appendText(doc, section, 'summary', 'Create a pass tier');
   appendText(
     doc,
     section,
     'p',
-    'Mints an empty customer template for the door and binds a new pass tier '
+    'Mints an empty customer template for the chosen access type and binds a new pass tier '
       + 'to it in one step. Set the three pass axes — time (pass seconds), the '
       + 'LLM turn limit and tool-call limit (usage policy JSON). After it is '
       + 'created, open the template in Contracts to author which tools and data '
@@ -2481,18 +2727,20 @@ const renderCreatePassTierForm = (
     label: string,
     field: 'door_id' | 'entitlement_key' | 'display_name' | 'pass_duration_seconds',
     type = 'text',
+    parent: HTMLElement = fields,
+    help?: string,
   ): HTMLInputElement => {
-    const wrap = append(doc, fields, 'label', 'seller-form-field');
+    const wrap = append(doc, parent, 'label', 'seller-form-field');
     appendText(doc, wrap, 'span', label);
     const input = doc.createElement('input');
     input.type = type;
     input.setAttribute(SELLER_PASS_TIER_FORM_FIELD_ATTR, field);
     wrap.appendChild(input);
+    if (help !== undefined) appendFieldHelp(doc, wrap, help);
     return input;
   };
-  const doorId = appendPassField('Door ID', 'door_id');
   const doorTypeWrap = append(doc, fields, 'label', 'seller-form-field');
-  appendText(doc, doorTypeWrap, 'span', 'Door type');
+  appendText(doc, doorTypeWrap, 'span', 'Access type');
   const doorType = doc.createElement('select');
   doorType.setAttribute(SELLER_PASS_TIER_FORM_FIELD_ATTR, 'door_type');
   for (const [value, label] of [
@@ -2514,7 +2762,9 @@ const renderCreatePassTierForm = (
     'number',
   );
   const advanced = append(doc, section, 'details', 'seller-advanced-settings');
-  appendText(doc, advanced, 'summary', 'Advanced usage limits');
+  appendText(doc, advanced, 'summary', 'Advanced');
+  const doorId = appendPassField(CATEGORY_LABEL, 'door_id', 'text', advanced, CATEGORY_HELP);
+  doorId.value = SELLER_DEFAULT_DOOR_ID;
   const usagePolicyWrap = append(
     doc,
     advanced,
@@ -2555,7 +2805,7 @@ const renderCreatePassTierForm = (
       status.removeAttribute('data-kind');
       status.textContent = 'Creating pass tier.';
       const request = (): SellerCreatePassTierRequest => ({
-        door_id: requiredFieldValue(doorId, 'Door ID'),
+        door_id: requiredFieldValue(doorId, CATEGORY_LABEL),
         door_type: doorType.value as SellerCreatePassTierRequest['door_type'],
         entitlement_key: requiredFieldValue(entitlementKey, 'Entitlement key'),
         display_name: requiredFieldValue(displayName, 'Display name'),
@@ -2605,19 +2855,24 @@ const renderManualTierForm = (
     'details',
     'seller-section seller-action-disclosure',
   );
+  // This form is the whole screen behind its own address (2026-09-03), so it
+  // opens expanded; a collapsed disclosure on a screen named for the form hid it.
+  section.open = true;
   section.setAttribute(SELLER_TIER_FORM_ATTR, '');
-  appendText(doc, section, 'summary', 'Create or edit a manual tier');
+  appendText(doc, section, 'summary', 'Tier details');
   appendText(
     doc,
     section,
     'p',
-    'Use a stable Tier ID for a new access package, or enter an existing manual '
-      + 'Tier ID to load its editable fields. Door and entitlement cannot change later.',
+    initialTierId === undefined
+      ? 'Use a stable Tier ID for a new access package, or enter an existing manual '
+        + 'Tier ID to load its editable fields. The category and entitlement key cannot change later.'
+      : 'The category and entitlement key are fixed once a tier exists. Change the name, template, '
+        + 'pass duration, limits, or status, then save.',
     'seller-form-intro',
   );
   const fields = append(doc, section, 'div', 'seller-tier-form-grid');
   const tierId = appendField(doc, fields, 'Tier ID', 'tier_id');
-  const doorId = appendField(doc, fields, 'Door ID', 'door_id');
   const entitlementKey = appendField(
     doc,
     fields,
@@ -2639,7 +2894,11 @@ const renderManualTierForm = (
     { type: 'number' },
   );
   const advanced = append(doc, section, 'details', 'seller-advanced-settings');
-  appendText(doc, advanced, 'summary', 'Advanced usage policy');
+  appendText(doc, advanced, 'summary', 'Advanced');
+  const doorId = appendField(doc, advanced, CATEGORY_LABEL, 'door_id', {
+    value: SELLER_DEFAULT_DOOR_ID,
+    help: CATEGORY_HELP,
+  });
   const usagePolicy = appendJsonField(
     doc,
     advanced,
@@ -2705,7 +2964,7 @@ const renderManualTierForm = (
       status.textContent = 'Saving tier.';
       const request = (): SellerManualTierUpsertRequest => ({
         tier_id: requiredFieldValue(tierId, 'Tier ID'),
-        door_id: requiredFieldValue(doorId, 'Door ID'),
+        door_id: requiredFieldValue(doorId, CATEGORY_LABEL),
         entitlement_key: requiredFieldValue(entitlementKey, 'Entitlement key'),
         display_name: requiredFieldValue(displayName, 'Display name'),
         template_contract_id: requiredFieldValue(
@@ -2760,6 +3019,9 @@ const renderManualCustomerForm = (
     'details',
     'seller-section seller-action-disclosure',
   );
+  // This form is the whole screen behind its own address (2026-09-03), so it
+  // opens expanded; a collapsed disclosure on a screen named for the form hid it.
+  section.open = true;
   section.setAttribute(SELLER_CUSTOMER_FORM_ATTR, '');
   appendText(doc, section, 'summary', 'Issue customer access');
   appendText(
@@ -2771,16 +3033,21 @@ const renderManualCustomerForm = (
     'seller-form-intro',
   );
   const fields = append(doc, section, 'div', 'seller-customer-form-grid');
-  const doorId = appendCustomerField(doc, fields, 'Door ID', 'door_id', {
-    value: defaultTier.door_id,
-  });
-  const entitlementKey = appendCustomerField(
-    doc,
-    fields,
-    'Entitlement key',
-    'entitlement_key',
-    { value: defaultTier.entitlement_key },
-  );
+  // The owner picks a tier; the category and entitlement key the rpc wants
+  // follow from it and stay editable behind Advanced for a tier not listed.
+  const categories = new Set(manualTiers.map((tier) => tier.door_id));
+  const tierWrap = append(doc, fields, 'label', 'seller-form-field');
+  appendText(doc, tierWrap, 'span', 'Tier');
+  const tierSelect = doc.createElement('select');
+  tierSelect.setAttribute(SELLER_CUSTOMER_FORM_FIELD_ATTR, 'tier');
+  for (const tier of manualTiers) {
+    const option = doc.createElement('option');
+    option.value = tier.tier_id;
+    option.textContent = `${tier.display_name} · ${tier.entitlement_key}`
+      + (categories.size > 1 ? ` · ${tier.door_id}` : '');
+    tierSelect.appendChild(option);
+  }
+  tierWrap.appendChild(tierSelect);
   const sourceCustomerId = appendCustomerField(
     doc,
     fields,
@@ -2811,6 +3078,25 @@ const renderManualCustomerForm = (
     'Source status',
     'source_status',
   );
+  const advanced = append(doc, section, 'details', 'seller-advanced-settings');
+  appendText(doc, advanced, 'summary', 'Advanced');
+  const doorId = appendCustomerField(doc, advanced, CATEGORY_LABEL, 'door_id', {
+    value: defaultTier.door_id,
+    help: 'Set from the chosen tier. Change these only to issue against a tier that is not listed.',
+  });
+  const entitlementKey = appendCustomerField(
+    doc,
+    advanced,
+    'Entitlement key',
+    'entitlement_key',
+    { value: defaultTier.entitlement_key },
+  );
+  tierSelect.addEventListener('change', () => {
+    const chosen = manualTiers.find((tier) => tier.tier_id === tierSelect.value);
+    if (chosen === undefined) return;
+    doorId.value = chosen.door_id;
+    entitlementKey.value = chosen.entitlement_key;
+  });
   const footer = append(doc, section, 'div', 'seller-form-footer');
   const status = append(doc, footer, 'div', 'seller-form-status');
   status.setAttribute(SELLER_CUSTOMER_FORM_STATUS_ATTR, '');
@@ -2833,7 +3119,7 @@ const renderManualCustomerForm = (
       status.textContent = 'Issuing customer.';
       const request = (): SellerManualCustomerIssueRequest => {
         const payload: SellerManualCustomerIssueRequest = {
-          door_id: requiredFieldValue(doorId, 'Door ID'),
+          door_id: requiredFieldValue(doorId, CATEGORY_LABEL),
           entitlement_key: requiredFieldValue(entitlementKey, 'Entitlement key'),
           source_customer_id: requiredFieldValue(
             sourceCustomerId,
@@ -3635,6 +3921,110 @@ const renderUsage = (
   });
 };
 
+/** One anchor per "new" screen a list offers. Only the screens the paired
+ *  server can serve are shown: a link to a form whose rpc is unwired would
+ *  land on an "unavailable" notice. */
+const renderListToolbar = (
+  doc: Document,
+  parent: HTMLElement,
+  links: ReadonlyArray<{ readonly key: string; readonly label: string; readonly hash: string }>,
+): void => {
+  if (links.length === 0) return;
+  const toolbar = append(doc, parent, 'nav', 'seller-list-toolbar');
+  toolbar.setAttribute(SELLER_LIST_TOOLBAR_ATTR, '');
+  toolbar.setAttribute('aria-label', 'Create');
+  for (const entry of links) {
+    const link = doc.createElement('a');
+    link.setAttribute('href', entry.hash);
+    link.setAttribute(SELLER_CREATE_LINK_ATTR, entry.key);
+    link.textContent = entry.label;
+    toolbar.appendChild(link);
+  }
+};
+
+/** A record's screens as a tab strip of REAL addresses: each tab is a hash,
+ *  so Back, reload, and a pasted link all keep the tab. */
+const renderDetailTabs = (
+  doc: Document,
+  parent: HTMLElement,
+  tabs: ReadonlyArray<{
+    readonly key: string;
+    readonly label: string;
+    readonly hash: string;
+    readonly current: boolean;
+  }>,
+): void => {
+  const strip = append(doc, parent, 'nav', 'seller-detail-tabs');
+  strip.setAttribute(SELLER_DETAIL_TABS_ATTR, '');
+  strip.setAttribute('aria-label', 'Record screens');
+  for (const tab of tabs) {
+    const link = doc.createElement('a');
+    link.setAttribute('href', tab.hash);
+    link.setAttribute(SELLER_DETAIL_TAB_ATTR, tab.key);
+    if (tab.current) link.setAttribute('aria-current', 'page');
+    link.textContent = tab.label;
+    strip.appendChild(link);
+  }
+};
+
+const readyCount = (overview: SellerOverview, keys: readonly string[]): number =>
+  overview.readiness.filter((item) => keys.includes(item.key) && item.state === 'ready').length;
+
+/** The setup directory: three screens, each with its live state, each its own
+ *  address. What was one long scroll is now one choice. */
+const renderSetupDirectory = (
+  doc: Document,
+  parent: HTMLElement,
+  overview: SellerOverview,
+): void => {
+  const section = append(doc, parent, 'section', 'seller-directory');
+  section.setAttribute(SELLER_SETUP_DIRECTORY_ATTR, '');
+  appendText(doc, section, 'h4', 'Setup areas');
+  appendText(
+    doc,
+    section,
+    'p',
+    'Each area is its own screen. The state beside it is read from the server right now.',
+    'seller-section-copy',
+  );
+  const providerKeys = SELLER_PROVIDERS.map((spec) => spec.readiness_key as string);
+  const providersReady = readyCount(overview, providerKeys);
+  const senderReady = readyCount(overview, ['mail_sender']) === 1;
+  const meta: Readonly<Record<SellerSetupSection, { readonly text: string; readonly state: string }>> = {
+    defaults: {
+      text: `${overview.settings.default_grace_hours}h grace · sender ${senderReady ? 'ready' : 'not chosen'}`,
+      state: senderReady ? 'ready' : 'needs_setup',
+    },
+    providers: {
+      text: `${providersReady} of ${SELLER_PROVIDERS.length} providers ready`,
+      state: providersReady > 0 ? 'ready' : 'needs_setup',
+    },
+    gateway: {
+      text: !overview.llm_gateway.configured
+        ? 'No route configured'
+        : overview.llm_gateway.paid_acknowledged
+          ? 'Configured and acknowledged'
+          : 'Configured · paid access not acknowledged',
+      state: overview.llm_gateway.configured
+        ? overview.llm_gateway.paid_acknowledged ? 'ready' : 'needs_setup'
+        : 'not_wired',
+    },
+  };
+  const list = append(doc, section, 'ul', 'seller-directory-list');
+  for (const setupSection of SELLER_SETUP_SECTIONS) {
+    const item = append(doc, list, 'li');
+    const link = doc.createElement('a');
+    link.setAttribute('href', sellerSetupAddress(setupSection).hash);
+    link.setAttribute(SELLER_SETUP_ROW_ATTR, setupSection);
+    link.setAttribute('data-state', meta[setupSection].state);
+    const copy = append(doc, link, 'span', 'seller-directory-copy');
+    appendText(doc, copy, 'strong', SELLER_SETUP_SECTION_META[setupSection].label);
+    appendText(doc, copy, 'span', SELLER_SETUP_SECTION_META[setupSection].description);
+    appendText(doc, link, 'span', meta[setupSection].text, 'seller-directory-meta');
+    item.appendChild(link);
+  }
+};
+
 const sellerDirectoryMeta = (
   overview: SellerOverview,
   subpage: SellerSubpage,
@@ -3777,7 +4167,26 @@ export const mountSellerPage = (
     && initialItemId.trim().length > 0
     ? initialItemId.trim()
     : null;
-  const continuityKey = isSellerCollectionSubpage(subpage)
+  // The deeper levels only an address can name: a tier's detail tab, a create
+  // screen, a setup section (with the provider a deep link chose).
+  const detailTab: SellerTierDetailTab | null = subpage === 'tiers' && selectedItemId !== null
+    ? addressedSelection.tab
+    : null;
+  const createVariant: SellerCreateVariant | null = selectedItemId === null
+    && isSellerCreateSubpage(subpage)
+    ? addressedSelection.create
+    : null;
+  const setupSection: SellerSetupSection | null = subpage === 'setup'
+    ? addressedSelection.setupSection
+    : null;
+  const setupProvider: SellerProviderSource | null = setupSection === 'providers'
+    ? addressedSelection.setupProvider
+    : null;
+  /** A paged list is on screen: not a record, not a create screen. */
+  const isListView = isSellerCollectionSubpage(subpage)
+    && selectedItemId === null
+    && createVariant === null;
+  const continuityKey = isSellerCollectionSubpage(subpage) && createVariant === null
     ? `seller:${subpage}`
     : null;
   const rememberedList = continuityKey === null
@@ -3795,18 +4204,18 @@ export const mountSellerPage = (
         ? positiveWholeNumber(rememberedList?.page, 1)
         : positiveWholeNumber(opts.initialPage, 1)
     : rememberedList?.page ?? 1;
-  let pendingListRestore = selectedItemId === null && rememberedList !== null;
+  let pendingListRestore = isListView && rememberedList !== null;
   let phase: SellerPagePhase = 'loading';
   let overview: SellerOverview | null = null;
   let error: string | null = null;
   let mailInstances: readonly SellerMailInstanceOption[] | null = null;
-  let mailListLoading = subpage === 'setup'
+  let mailListLoading = setupSection === 'defaults'
     && opts.runListMailInstances !== undefined;
   let mailListError: string | null = null;
   let orders: readonly SellerOrder[] | null = null;
   let ordersTruncated = false;
   let ordersError: string | null = null;
-  let stripeSyncFormMessage: SellerFormMessage | null = null;
+  let tierSyncFormMessage: SellerFormMessage | null = null;
   let offerStateFormMessage: SellerFormMessage | null = null;
   let settingsFormMessage: SellerFormMessage | null = null;
   let tierFormMessage: SellerFormMessage | null = null;
@@ -3816,6 +4225,10 @@ export const mountSellerPage = (
   let tierUsageFormMessage: SellerFormMessage | null = null;
   let passTierFormMessage: SellerFormMessage | null = null;
   let passTierCreatedTemplateId: string | null = null;
+  // The record a create screen just made: shown beneath the form with a link
+  // to its own screen, so "what did I just create" needs no trip to the list.
+  let createdTierId: string | null = null;
+  let issuedCustomerId: string | null = null;
   let tierBulkAdjustFormMessage: SellerFormMessage | null = null;
   let customerFormMessage: SellerFormMessage | null = null;
   let customerLifecycleFormMessage: SellerFormMessage | null = null;
@@ -3919,6 +4332,106 @@ export const mountSellerPage = (
     );
   };
 
+  interface SellerCrumb { readonly key: string; readonly label: string; readonly hash: string }
+
+  /** The record's own name for the breadcrumb, once the overview is here. */
+  const itemLabel = (): string => {
+    if (selectedItemId === null || !isSellerCollectionSubpage(subpage) || overview === null) {
+      return selectedItemId ?? '';
+    }
+    switch (subpage) {
+      case 'tiers':
+        return overview.tiers.find((row) => row.tier_id === selectedItemId)?.display_name
+          ?? selectedItemId;
+      case 'customers': {
+        const customer = overview.customers.find((row) => row.customer_id === selectedItemId);
+        return customer?.email ?? customer?.source_customer_id ?? selectedItemId;
+      }
+      case 'offers':
+        return overview.offers?.find((row) => row.offer_id === selectedItemId)?.display_name
+          ?? selectedItemId;
+      case 'orders':
+      case 'usage':
+        return selectedItemId;
+    }
+  };
+
+  /** Every level above the current screen, each a real address. The last entry
+   *  is the screen itself; the one before it is what Back means here. */
+  const breadcrumbTrail = (): readonly SellerCrumb[] => {
+    const trail: SellerCrumb[] = [
+      { key: 'seller', label: 'Seller', hash: sellerDirectoryAddress().hash },
+    ];
+    if (subpage === null) return trail;
+    trail.push({
+      key: `section:${subpage}`,
+      label: SELLER_SUBPAGE_META[subpage].label,
+      hash: sellerListAddress(subpage, page).hash,
+    });
+    if (setupSection !== null) {
+      trail.push({
+        key: `setup:${setupSection}`,
+        label: SELLER_SETUP_SECTION_META[setupSection].label,
+        hash: sellerSetupAddress(setupSection).hash,
+      });
+      if (setupProvider !== null) {
+        trail.push({
+          key: `provider:${setupProvider}`,
+          label: sellerProviderFor(setupProvider).label,
+          hash: sellerSetupAddress('providers', setupProvider).hash,
+        });
+      }
+    } else if (createVariant !== null && isSellerCreateSubpage(subpage)) {
+      trail.push({
+        key: `create:${createVariant}`,
+        label: SELLER_CREATE_META[subpage][createVariant]?.label ?? 'New',
+        hash: sellerCreateAddress(subpage, createVariant).hash,
+      });
+    } else if (selectedItemId !== null && isSellerCollectionSubpage(subpage)) {
+      trail.push({
+        key: `detail:${selectedItemId}`,
+        label: itemLabel(),
+        hash: sellerDetailAddress(subpage, selectedItemId).hash,
+      });
+      if (detailTab !== null) {
+        trail.push({
+          key: `tab:${detailTab}`,
+          label: SELLER_TIER_TAB_META[detailTab].label,
+          hash: sellerDetailAddress('tiers', selectedItemId, detailTab).hash,
+        });
+      }
+    }
+    return trail;
+  };
+
+  const screenDescription = (): string => {
+    if (subpage === null) return 'Review seller activity or choose one area to manage.';
+    if (setupSection !== null) return SELLER_SETUP_SECTION_META[setupSection].description;
+    if (createVariant !== null && isSellerCreateSubpage(subpage)) {
+      return SELLER_CREATE_META[subpage][createVariant]?.description
+        ?? SELLER_SUBPAGE_META[subpage].description;
+    }
+    if (detailTab !== null) return SELLER_TIER_TAB_META[detailTab].description;
+    return SELLER_SUBPAGE_META[subpage].description;
+  };
+
+  const renderJustCreatedTier = (host: HTMLElement): void => {
+    if (createdTierId === null || overview === null) return;
+    const created = overview.tiers.find((row) => row.tier_id === createdTierId);
+    if (created === undefined) return;
+    appendText(doc, host, 'h4', 'Just created');
+    renderTiers(doc, host, [created], true);
+  };
+
+  const appendCreateHost = (
+    collection: SellerCreateSubpage,
+    variant: SellerCreateVariant,
+  ): HTMLElement => {
+    const host = append(doc, dynamicHost, 'section', 'seller-create');
+    host.setAttribute(SELLER_CREATE_PAGE_ATTR, `${collection}:${variant}`);
+    return host;
+  };
+
   const render = (): void => {
     wrapper.setAttribute(SELLER_PAGE_STATE_ATTR, phase);
     clearChildren(dynamicHost);
@@ -3926,37 +4439,36 @@ export const mountSellerPage = (
     const header = append(doc, dynamicHost, 'header', 'seller-subpage-header');
     header.setAttribute(SELLER_SUBPAGE_HEADER_ATTR, subpage ?? 'directory');
     const heading = append(doc, header, 'div', 'seller-subpage-heading');
+    const trail = breadcrumbTrail();
+    const current = trail[trail.length - 1]!;
     if (subpage !== null) {
+      // Back is the nearest ancestor; the trail is every ancestor. Both are
+      // real addresses, so history and a pasted link agree with the screen.
+      const parent = trail[trail.length - 2]!;
       const back = doc.createElement('a');
       back.setAttribute(SELLER_BACK_ATTR, '');
-      back.setAttribute(
-        'href',
-        selectedItemId === null
-          ? sellerDirectoryAddress().hash
-          : sellerListAddress(subpage, page).hash,
-      );
-      back.textContent = selectedItemId === null
-        ? '← Back to Seller'
-        : `← Back to ${SELLER_SUBPAGE_META[subpage].label}`;
+      back.setAttribute('href', parent.hash);
+      back.textContent = `← Back to ${parent.label}`;
       heading.appendChild(back);
+      const crumbs = append(doc, heading, 'nav', 'seller-breadcrumb');
+      crumbs.setAttribute(SELLER_BREADCRUMB_ATTR, '');
+      crumbs.setAttribute('aria-label', 'Seller location');
+      const crumbList = append(doc, crumbs, 'ol');
+      trail.forEach((crumb, index) => {
+        const item = append(doc, crumbList, 'li');
+        if (index === trail.length - 1) {
+          appendText(doc, item, 'span', crumb.label).setAttribute('aria-current', 'page');
+          return;
+        }
+        const link = doc.createElement('a');
+        link.setAttribute('href', crumb.hash);
+        link.setAttribute(SELLER_BREADCRUMB_LINK_ATTR, crumb.key);
+        link.textContent = crumb.label;
+        item.appendChild(link);
+      });
+      appendText(doc, heading, 'h3', current.label);
     }
-    if (subpage !== null) {
-      appendText(
-        doc,
-        heading,
-        'h3',
-        SELLER_SUBPAGE_META[subpage].label,
-      );
-    }
-    appendText(
-      doc,
-      heading,
-      'p',
-      subpage === null
-        ? 'Review seller activity or choose one area to manage.'
-        : SELLER_SUBPAGE_META[subpage].description,
-      'seller-subpage-description',
-    );
+    appendText(doc, heading, 'p', screenDescription(), 'seller-subpage-description');
     const toolbar = append(doc, header, 'div', 'seller-toolbar');
     const refreshButton = appendButton(
       doc,
@@ -3968,7 +4480,21 @@ export const mountSellerPage = (
       [[SELLER_REFRESH_ATTR, '']],
     );
     refreshButton.disabled = phase === 'loading';
-
+    // The section strip: every Seller area is one click away from every
+    // screen, the current one marked, no trip through the directory needed.
+    if (subpage !== null) {
+      const subnav = append(doc, header, 'nav', 'seller-subnav');
+      subnav.setAttribute(SELLER_SUBNAV_ATTR, '');
+      subnav.setAttribute('aria-label', 'Seller sections');
+      for (const section of SELLER_SUBPAGES) {
+        const link = doc.createElement('a');
+        link.setAttribute('href', sellerListAddress(section).hash);
+        link.setAttribute(SELLER_SUBNAV_LINK_ATTR, section);
+        if (section === subpage) link.setAttribute('aria-current', 'page');
+        link.textContent = SELLER_SUBPAGE_META[section].label;
+        subnav.appendChild(link);
+      }
+    }
     if (phase === 'loading') {
       appendText(
         doc,
@@ -4139,6 +4665,58 @@ export const mountSellerPage = (
           error = null;
           render();
         };
+        if (createVariant !== null) {
+          // Its own screen: `#settings/seller/tiers/new` / `…/new/pass`.
+          const create = appendCreateHost('tiers', createVariant);
+          if (createVariant === 'pass') {
+            if (opts.runCreatePassTier === undefined) {
+              renderUnavailable(
+                'Pass tiers unavailable',
+                'This paired server does not expose pass-tier creation. Update the server to use this screen.',
+              );
+              break;
+            }
+            renderCreatePassTierForm(
+              doc,
+              create,
+              opts.runCreatePassTier,
+              passTierFormMessage,
+              passTierCreatedTemplateId,
+              (response, message) => {
+                if (disposed) return;
+                passTierFormMessage = message;
+                passTierCreatedTemplateId = response.template_contract_id;
+                createdTierId = response.tier.tier_id;
+                overview = response.overview;
+                phase = 'ready';
+                error = null;
+                render();
+              },
+            );
+            renderJustCreatedTier(create);
+            break;
+          }
+          if (opts.runUpsertManualTier === undefined) {
+            renderUnavailable(
+              'Manual tiers unavailable',
+              'This paired server does not expose manual tier writes. Update the server to use this screen.',
+            );
+            break;
+          }
+          renderManualTierForm(
+            doc,
+            create,
+            overview.tiers,
+            opts.runUpsertManualTier,
+            tierFormMessage,
+            (response, message) => {
+              createdTierId = response.tier.tier_id;
+              applyTierResult(response, message);
+            },
+          );
+          renderJustCreatedTier(create);
+          break;
+        }
         if (selectedItemId !== null) {
           const tier = overview.tiers.find(
             (row) => row.tier_id === selectedItemId,
@@ -4148,9 +4726,80 @@ export const mountSellerPage = (
             break;
           }
           const detail = appendCollectionHost('tiers', selectedItemId);
+          // Three screens behind three addresses: the record with its usage
+          // limits, the metadata edit, and the bulk customer adjustment. The
+          // manual-only screens are offered only for a manual tier with the
+          // rpc wired; a Stripe / Paddle / Lemon Squeezy tier has one screen.
+          const manualEditable = tier.lifecycle_source === 'manual';
+          renderDetailTabs(doc, detail, [
+            {
+              key: 'record',
+              label: 'Record',
+              hash: sellerDetailAddress('tiers', tier.tier_id).hash,
+              current: detailTab === null,
+            },
+            ...(manualEditable && opts.runUpsertManualTier !== undefined
+              ? [{
+                  key: 'edit',
+                  label: SELLER_TIER_TAB_META.edit.label,
+                  hash: sellerDetailAddress('tiers', tier.tier_id, 'edit').hash,
+                  current: detailTab === 'edit',
+                }]
+              : []),
+            ...(manualEditable && opts.runBulkAdjustManualTierCustomers !== undefined
+              ? [{
+                  key: 'customers',
+                  label: SELLER_TIER_TAB_META.customers.label,
+                  hash: sellerDetailAddress('tiers', tier.tier_id, 'customers').hash,
+                  current: detailTab === 'customers',
+                }]
+              : []),
+          ]);
+          if (detailTab === 'edit') {
+            if (!manualEditable || opts.runUpsertManualTier === undefined) {
+              renderUnavailable(
+                'Edit unavailable',
+                manualEditable
+                  ? 'This paired server does not expose manual tier writes.'
+                  : 'A provider-synchronized tier is edited at the provider; only its usage limits are set here.',
+              );
+              break;
+            }
+            renderManualTierForm(
+              doc,
+              detail,
+              overview.tiers,
+              opts.runUpsertManualTier,
+              tierFormMessage,
+              applyTierResult,
+              tier.tier_id,
+            );
+            break;
+          }
+          if (detailTab === 'customers') {
+            if (!manualEditable || opts.runBulkAdjustManualTierCustomers === undefined) {
+              renderUnavailable(
+                'Bulk adjustment unavailable',
+                manualEditable
+                  ? 'This paired server does not expose the bulk adjustment.'
+                  : 'A provider-synchronized tier moves its customers through the provider\'s own events.',
+              );
+              break;
+            }
+            renderManualTierBulkAdjustForm(
+              doc,
+              detail,
+              overview,
+              opts.runBulkAdjustManualTierCustomers,
+              tierBulkAdjustFormMessage,
+              applyBulkResult,
+              tier.tier_id,
+            );
+            break;
+          }
           renderTiers(doc, detail, [tier]);
-          // D-250 § D — ⛔ NOT GATED ON `lifecycle_source`, unlike every form
-          // below it. A Stripe-synced tier is minted with an empty policy, i.e.
+          // D-250 § D — ⛔ NOT GATED ON `lifecycle_source`, unlike the two tabs
+          // above. A Stripe-synced tier is minted with an empty policy, i.e.
           // UNLIMITED, and the manual-tier form cannot touch it — so gating this
           // one the same way would leave exactly the unlimited tiers unreachable.
           if (opts.runSetTierUsagePolicy !== undefined) {
@@ -4163,39 +4812,19 @@ export const mountSellerPage = (
               applyTierUsageResult,
             );
           }
-          if (
-            tier.lifecycle_source === 'manual'
-            && opts.runUpsertManualTier !== undefined
-          ) {
-            renderManualTierForm(
-              doc,
-              detail,
-              overview.tiers,
-              opts.runUpsertManualTier,
-              tierFormMessage,
-              applyTierResult,
-              tier.tier_id,
-            );
-          }
-          if (
-            tier.lifecycle_source === 'manual'
-            && opts.runBulkAdjustManualTierCustomers !== undefined
-          ) {
-            renderManualTierBulkAdjustForm(
-              doc,
-              detail,
-              overview,
-              opts.runBulkAdjustManualTierCustomers,
-              tierBulkAdjustFormMessage,
-              applyBulkResult,
-              tier.tier_id,
-            );
-          }
           break;
         }
 
         const paged = localPage(overview.tiers);
         const list = appendCollectionHost('tiers', null);
+        renderListToolbar(doc, list, [
+          ...(opts.runUpsertManualTier !== undefined
+            ? [{ key: 'tiers:manual', label: 'New manual tier', hash: sellerCreateAddress('tiers', 'manual').hash }]
+            : []),
+          ...(opts.runCreatePassTier !== undefined
+            ? [{ key: 'tiers:pass', label: 'New pass tier', hash: sellerCreateAddress('tiers', 'pass').hash }]
+            : []),
+        ]);
         renderTiers(doc, list, paged.rows, true);
         renderSellerPager(doc, list, {
           subpage: 'tiers',
@@ -4206,34 +4835,6 @@ export const mountSellerPage = (
           hasPrevious: page > 1,
           hasNext: page * pageSize < paged.total,
         });
-        if (opts.runCreatePassTier !== undefined) {
-          renderCreatePassTierForm(
-            doc,
-            list,
-            opts.runCreatePassTier,
-            passTierFormMessage,
-            passTierCreatedTemplateId,
-            (response, message) => {
-              if (disposed) return;
-              passTierFormMessage = message;
-              passTierCreatedTemplateId = response.template_contract_id;
-              overview = response.overview;
-              phase = 'ready';
-              error = null;
-              render();
-            },
-          );
-        }
-        if (opts.runUpsertManualTier !== undefined) {
-          renderManualTierForm(
-            doc,
-            list,
-            overview.tiers,
-            opts.runUpsertManualTier,
-            tierFormMessage,
-            applyTierResult,
-          );
-        }
         break;
       }
 
@@ -4250,6 +4851,44 @@ export const mountSellerPage = (
           error = null;
           render();
         };
+        if (createVariant !== null) {
+          // Its own screen: `#settings/seller/customers/new`.
+          const create = appendCreateHost('customers', createVariant);
+          if (opts.runIssueManualCustomer === undefined) {
+            renderUnavailable(
+              'Issuing unavailable',
+              'This paired server does not expose manual customer issue. Update the server to use this screen.',
+            );
+            break;
+          }
+          renderManualCustomerForm(
+            doc,
+            create,
+            overview.tiers,
+            overview.readiness.some(
+              (item) => item.key === 'mail_sender' && item.state === 'ready',
+            ),
+            opts.runIssueManualCustomer,
+            customerFormMessage,
+            (response, message) => {
+              if (disposed) return;
+              customerFormMessage = message;
+              issuedCustomerId = response.customer.customer_id;
+              overview = response.overview;
+              phase = 'ready';
+              error = null;
+              render();
+            },
+          );
+          if (issuedCustomerId !== null) {
+            const issued = overview.customers.find((row) => row.customer_id === issuedCustomerId);
+            if (issued !== undefined) {
+              appendText(doc, create, 'h4', 'Just issued');
+              renderCustomers(doc, create, [issued], true);
+            }
+          }
+          break;
+        }
         if (selectedItemId !== null) {
           const customer = overview.customers.find(
             (row) => row.customer_id === selectedItemId,
@@ -4286,6 +4925,9 @@ export const mountSellerPage = (
 
         const paged = localPage(overview.customers);
         const list = appendCollectionHost('customers', null);
+        renderListToolbar(doc, list, opts.runIssueManualCustomer !== undefined
+          ? [{ key: 'customers:manual', label: 'Issue customer', hash: sellerCreateAddress('customers', 'manual').hash }]
+          : []);
         renderCustomers(doc, list, paged.rows, true);
         renderSellerPager(doc, list, {
           subpage: 'customers',
@@ -4296,26 +4938,6 @@ export const mountSellerPage = (
           hasPrevious: page > 1,
           hasNext: page * pageSize < paged.total,
         });
-        if (opts.runIssueManualCustomer !== undefined) {
-          renderManualCustomerForm(
-            doc,
-            list,
-            overview.tiers,
-            overview.readiness.some(
-              (item) => item.key === 'mail_sender' && item.state === 'ready',
-            ),
-            opts.runIssueManualCustomer,
-            customerFormMessage,
-            (response, message) => {
-              if (disposed) return;
-              customerFormMessage = message;
-              overview = response.overview;
-              phase = 'ready';
-              error = null;
-              render();
-            },
-          );
-        }
         break;
       }
 
@@ -4349,77 +4971,104 @@ export const mountSellerPage = (
       }
 
       case 'setup':
-        renderSettings(doc, dynamicHost, overview);
-        if (opts.runUpdateSellerSettings !== undefined) {
-          renderSettingsForm(
-            doc,
-            dynamicHost,
-            overview,
-            mailInstances,
-            {
-              callerAvailable: opts.runListMailInstances !== undefined,
-              loading: mailListLoading,
-              error: mailListError,
-            },
-            opts.runUpdateSellerSettings,
-            settingsFormMessage,
-            (response, message) => {
-              if (disposed) return;
-              settingsFormMessage = message;
-              overview = response.overview;
-              phase = 'ready';
-              error = null;
-              render();
-            },
-          );
+        // Three screens behind three addresses; the bare `setup` is their
+        // directory, not one long scroll.
+        if (setupSection === null) {
+          renderSetupDirectory(doc, dynamicHost, overview);
+          break;
         }
-        if (opts.runSynchronizeStripeEntitlements !== undefined) {
-          renderStripeSynchronizeForm(
-            doc,
-            dynamicHost,
-            overview,
-            opts.runSynchronizeStripeEntitlements,
-            stripeSyncFormMessage,
-            (response, message) => {
-              if (disposed) return;
-              stripeSyncFormMessage = message;
-              overview = response.overview;
-              phase = 'ready';
-              error = null;
-              render();
-            },
-          );
-        }
-        renderLlmGateway(doc, dynamicHost, overview);
-        // Surface the acknowledgment only at the monetization boundary: a
-        // configured route that has not yet been acknowledged.
-        if (
-          opts.runAcknowledgeLlmGatewayPaid !== undefined
-          && overview.llm_gateway.configured
-          && !overview.llm_gateway.paid_acknowledged
-        ) {
-          renderLlmGatewayAckForm(
-            doc,
-            dynamicHost,
-            opts.runAcknowledgeLlmGatewayPaid,
-            llmGatewayAckFormMessage,
-            (response, message) => {
-              if (disposed) return;
-              llmGatewayAckFormMessage = message;
-              overview = response.overview;
-              phase = 'ready';
-              error = null;
-              render();
-            },
-          );
+        {
+          const section = append(doc, dynamicHost, 'div', 'seller-setup-section');
+          section.setAttribute(SELLER_SETUP_SECTION_ATTR, setupSection);
+          switch (setupSection) {
+            case 'defaults':
+              renderSettings(doc, section, overview);
+              if (opts.runUpdateSellerSettings !== undefined) {
+                renderSettingsForm(
+                  doc,
+                  section,
+                  overview,
+                  mailInstances,
+                  {
+                    callerAvailable: opts.runListMailInstances !== undefined,
+                    loading: mailListLoading,
+                    error: mailListError,
+                  },
+                  opts.runUpdateSellerSettings,
+                  settingsFormMessage,
+                  (response, message) => {
+                    if (disposed) return;
+                    settingsFormMessage = message;
+                    overview = response.overview;
+                    phase = 'ready';
+                    error = null;
+                    render();
+                  },
+                );
+              }
+              break;
+            case 'providers':
+              if (
+                opts.runSynchronizeProviderTiers === undefined
+                && opts.runSynchronizeStripeEntitlements === undefined
+              ) {
+                renderUnavailable(
+                  'Provider tiers unavailable',
+                  'This paired server does not expose the provider tier seed. Update the server to use this screen.',
+                );
+                break;
+              }
+              renderProviderTierSynchronizeForm(
+                doc,
+                section,
+                overview,
+                opts.runSynchronizeProviderTiers,
+                opts.runSynchronizeStripeEntitlements,
+                tierSyncFormMessage,
+                (refreshed, message) => {
+                  if (disposed) return;
+                  tierSyncFormMessage = message;
+                  overview = refreshed;
+                  phase = 'ready';
+                  error = null;
+                  render();
+                },
+                setupProvider,
+              );
+              break;
+            case 'gateway':
+              renderLlmGateway(doc, section, overview);
+              // Surface the acknowledgment only at the monetization boundary: a
+              // configured route that has not yet been acknowledged.
+              if (
+                opts.runAcknowledgeLlmGatewayPaid !== undefined
+                && overview.llm_gateway.configured
+                && !overview.llm_gateway.paid_acknowledged
+              ) {
+                renderLlmGatewayAckForm(
+                  doc,
+                  section,
+                  opts.runAcknowledgeLlmGatewayPaid,
+                  llmGatewayAckFormMessage,
+                  (response, message) => {
+                    if (disposed) return;
+                    llmGatewayAckFormMessage = message;
+                    overview = response.overview;
+                    phase = 'ready';
+                    error = null;
+                    render();
+                  },
+                );
+              }
+              break;
+          }
         }
         break;
     }
     if (
       pendingListRestore
       && phase === 'ready'
-      && selectedItemId === null
-      && isSellerCollectionSubpage(subpage)
+      && isListView
     ) {
       pendingListRestore = false;
       const rememberedId = rememberedList?.focusedId;
@@ -4507,17 +5156,19 @@ export const mountSellerPage = (
     const ownGeneration = ++generation;
     phase = 'loading';
     error = null;
-    stripeSyncFormMessage = null;
+    tierSyncFormMessage = null;
     settingsFormMessage = null;
     offerStateFormMessage = null;
     tierFormMessage = null;
     passTierFormMessage = null;
     passTierCreatedTemplateId = null;
+    createdTierId = null;
+    issuedCustomerId = null;
     tierBulkAdjustFormMessage = null;
     customerFormMessage = null;
     customerLifecycleFormMessage = null;
     llmGatewayAckFormMessage = null;
-    mailListLoading = subpage === 'setup'
+    mailListLoading = setupSection === 'defaults'
       && opts.runListMailInstances !== undefined;
     mailListError = null;
     ordersError = null;
@@ -4533,7 +5184,7 @@ export const mountSellerPage = (
         error = humanizeRpcError(err);
       },
     );
-    const mailLoad = subpage !== 'setup' || opts.runListMailInstances === undefined
+    const mailLoad = setupSection !== 'defaults' || opts.runListMailInstances === undefined
       ? Promise.resolve()
       : Promise.resolve()
           .then(() => opts.runListMailInstances!())
@@ -4591,6 +5242,10 @@ export const mountSellerPage = (
       subpage,
       selectedItemId,
       page,
+      tab: detailTab,
+      create: createVariant,
+      setupSection,
+      setupProvider,
       overview,
       error,
     }),
@@ -4665,6 +5320,85 @@ ${LIST_PREVIEW_STYLES}
 }
 [${SELLER_PAGE_ATTR}] .seller-directory-meta {
   text-align: right;
+}
+[${SELLER_PAGE_ATTR}] .seller-breadcrumb ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+[${SELLER_PAGE_ATTR}] .seller-breadcrumb li + li::before {
+  content: '›';
+  margin-right: 4px;
+}
+[${SELLER_PAGE_ATTR}] .seller-breadcrumb a {
+  color: var(--accent);
+  text-decoration: none;
+}
+[${SELLER_PAGE_ATTR}] .seller-breadcrumb a:hover {
+  text-decoration: underline;
+}
+[${SELLER_PAGE_ATTR}] .seller-breadcrumb [aria-current='page'] {
+  color: var(--fg);
+  font-weight: 600;
+}
+[${SELLER_PAGE_ATTR}] .seller-subnav,
+[${SELLER_PAGE_ATTR}] .seller-detail-tabs,
+[${SELLER_PAGE_ATTR}] .seller-list-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+[${SELLER_PAGE_ATTR}] .seller-subnav a,
+[${SELLER_PAGE_ATTR}] .seller-detail-tabs a,
+[${SELLER_PAGE_ATTR}] .seller-list-toolbar a {
+  min-height: var(--wc-control-h);
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+}
+[${SELLER_PAGE_ATTR}] .seller-subnav a:hover,
+[${SELLER_PAGE_ATTR}] .seller-detail-tabs a:hover,
+[${SELLER_PAGE_ATTR}] .seller-list-toolbar a:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover, var(--bg));
+}
+[${SELLER_PAGE_ATTR}] .seller-subnav a[aria-current='page'],
+[${SELLER_PAGE_ATTR}] .seller-detail-tabs a[aria-current='page'] {
+  border-color: var(--accent);
+  background: var(--accent-weak);
+  color: var(--accent);
+}
+[${SELLER_PAGE_ATTR}] .seller-subnav a:focus-visible,
+[${SELLER_PAGE_ATTR}] .seller-detail-tabs a:focus-visible,
+[${SELLER_PAGE_ATTR}] .seller-list-toolbar a:focus-visible,
+[${SELLER_PAGE_ATTR}] .seller-breadcrumb a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+[${SELLER_PAGE_ATTR}] .seller-list-toolbar a::before {
+  content: '+';
+  margin-right: 6px;
+  font-weight: 700;
+}
+[${SELLER_PAGE_ATTR}] .seller-setup-section,
+[${SELLER_PAGE_ATTR}] .seller-create {
+  display: grid;
+  gap: 16px;
+}
+[${SELLER_PAGE_ATTR}] .seller-directory-list a[data-state='needs_setup'] .seller-directory-meta {
+  color: var(--warning, var(--fg));
 }
 [${SELLER_PAGE_ATTR}] [${SELLER_BACK_ATTR}] {
   box-sizing: border-box;

@@ -32,8 +32,14 @@
  *    Output — the response shape per spec § 4.1:
  *      `{ status: number, headers: Record<string, string>,
  *         result: <parsed body> }`.
- *      Body is JSON-parsed when content-type matches
- *      `application/json`; otherwise text.
+ *      Body is JSON-parsed when the content-type is a JSON media type —
+ *      `application/json`, `text/json`, or any `application/<name>+json`
+ *      structured-syntax suffix (RFC 6839: `application/vnd.api+json`,
+ *      `application/problem+json`, `application/hal+json`) — otherwise text.
+ *      ⛔ It used to match `application/json` alone, so every JSON:API vendor
+ *      (Lemon Squeezy, Klaviyo, Outreach, Rootly, Snyk, Autodesk APS, …)
+ *      handed its recipes the body as a STRING; found by the semi-live
+ *      Lemon Squeezy drive, 2026-09-04.
  *
  *  Auth injection — the only code path that touches the connection's
  *  decrypted token. `decodeAuth(row)` is called once per dispatch
@@ -619,7 +625,7 @@ const buildBody = (
   const decimalIntegerSpec = own(params, '__rc_json_decimal_integer_fields');
   if (decimalIntegerSpec !== undefined
     && contentType !== undefined
-    && contentType !== 'application/json') {
+    && !isJsonMediaType(contentType)) {
     throw new IngredientError(
       'INGREDIENT_OUTPUT_VALIDATION_FAILED',
       'connection.api: exact decimal-integer request serialization requires application/json',
@@ -788,7 +794,9 @@ const applyBodyFieldAuth = (
     );
   }
   const contentType = headers.get('Content-Type')?.split(';', 1)[0]?.trim().toLowerCase();
-  if (contentType !== undefined && contentType !== 'application/json') {
+  // The same JSON media-type rule as response decoding: a JSON:API vendor
+  // pins `application/vnd.api+json` on the request too, and its body is JSON.
+  if (contentType !== undefined && !isJsonMediaType(contentType)) {
     throw new IngredientError(
       'INGREDIENT_OUTPUT_VALIDATION_FAILED',
       // ⚠ Deliberately NOT worded like the parse failure below. The two are
@@ -1116,6 +1124,17 @@ const stringifyUnsafeJsonIntegers = (json: string): string => {
   return out;
 };
 
+/** RFC 6839 — a JSON media type is `application/json`, `text/json`, or any
+ *  `application/<name>+json` structured-syntax suffix. Parameters
+ *  (`; charset=utf-8`) are ignored; `application/jsonp` and `text/plain` are
+ *  not JSON. */
+export const isJsonMediaType = (contentType: string): boolean => {
+  const mediaType = contentType.split(';', 1)[0]?.trim().toLowerCase() ?? '';
+  return mediaType === 'application/json'
+    || mediaType === 'text/json'
+    || /^application\/[a-z0-9!#$&^_.-]+\+json$/.test(mediaType);
+};
+
 const parseResponseBody = async (
   response: Response,
   slug: string,
@@ -1125,7 +1144,7 @@ const parseResponseBody = async (
   let text: string;
   let byteLength: number;
   ({ text, byteLength } = await readBoundedResponseText(response));
-  if (contentType.includes('application/json')) {
+  if (isJsonMediaType(contentType)) {
     try {
       const value = JSON.parse(
         stringifyUnsafeIntegers ? stringifyUnsafeJsonIntegers(text) : text,
@@ -2573,6 +2592,8 @@ export const createConnectionApiHandler = (
       chunks_sent: run.chunks_sent,
       chunk_count: walkInput.count,
       requests: run.requests,
+      requests_succeeded: run.requests_succeeded,
+      requests_failed: run.requests_failed,
     });
 
     if (run.outcome === 'processing_failed') {

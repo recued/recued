@@ -4,13 +4,10 @@
  *  is record → close → resume in `sweepExpiredPeerAsks`. This file only decides
  *  WHEN, and answers two questions the sweeper itself cannot.
  *
- *  ⚠ NOT `fireImmediate`, AND THE REASON IS THE OPPOSITE OF `exchange-retry`'S.
- *  That one holds back so a restart loop cannot hammer a struggling peer. This
- *  one sends nothing outward — it resumes OUR OWN run — so hammering is not the
- *  hazard. It waits because `resumePeerHold` THROWS while `executeDeps` is still
- *  unpublished, and a synchronous fire at registration is guaranteed to land in
- *  that window. A deadline that already passed can wait one more minute; a
- *  guaranteed boot-time stack trace teaches every future reader to ignore it.
+ *  `fireImmediate` is required now that the outbox also enumerates recorded
+ *  answers whose continuation was interrupted. This composer runs after live
+ *  execute deps are published, so startup can safely finish those answers
+ *  without waiting a minute for the first interval.
  *
  *  ⛔ NOT REENTRANT. A tick resumes runs, and a run takes as long as it takes;
  *  a second pass entering while the first is mid-resume would find rows the first
@@ -27,6 +24,7 @@ import {
   sweepExpiredPeerAsks,
   type PeerAskTimeoutSweepDeps,
 } from '../../peer-ask-timeout-sweeper.js';
+import type { PeerAskDeliveryRecoveryResult } from '../../peer-ask-delivery-recovery.js';
 
 export interface PeerAskTimeoutWiringDeps {
   readonly registry: {
@@ -42,6 +40,9 @@ export interface PeerAskTimeoutWiringDeps {
   /** D-234 § 234.4n — the orphaned-hold half. Absent ⇒ only deadlines are swept,
    *  which is the honest posture on a host with no dish store. */
   readonly abandon?: Omit<PeerHoldAbandonDeps, 'log'>;
+  /** Retry exact journaled sends only after answers, deadlines, and orphan
+   * retirement had first claim on this tick. */
+  readonly recoverDelivery?: () => Promise<PeerAskDeliveryRecoveryResult>;
   readonly intervalMs?: number;
   readonly log?: (line: string) => void;
 }
@@ -80,6 +81,21 @@ export const composePeerAskTimeoutSweep = (deps: PeerAskTimeoutWiringDeps): void
           );
         }
       }
+      if (deps.recoverDelivery !== undefined) {
+        const delivery = await deps.recoverDelivery();
+        if (delivery.attempted > 0 || delivery.delivered > 0
+          || delivery.refused > 0 || delivery.deferred > 0
+          || delivery.failed > 0) {
+          log(
+            `[peer-ask-delivery] examined=${String(delivery.examined)}`
+            + ` attempted=${String(delivery.attempted)}`
+            + ` delivered=${String(delivery.delivered)}`
+            + ` refused=${String(delivery.refused)}`
+            + ` deferred=${String(delivery.deferred)}`
+            + ` failed=${String(delivery.failed)}`,
+          );
+        }
+      }
     } catch (e) {
       // The registry isolates throws already; this keeps the message specific.
       log(`[peer-ask-timeout] sweep failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -92,6 +108,6 @@ export const composePeerAskTimeoutSweep = (deps: PeerAskTimeoutWiringDeps): void
     name: 'peer-ask-timeout-sweep',
     intervalMs: deps.intervalMs ?? PEER_ASK_TIMEOUT_SWEEP_INTERVAL_MS,
     tick,
-    fireImmediate: false,
+    fireImmediate: true,
   });
 };

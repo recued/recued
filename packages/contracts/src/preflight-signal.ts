@@ -48,6 +48,7 @@ import type {
   AuthorizationProvenance,
   OperationApproval,
 } from './ingredient-catalog.js';
+import type { ForeachCheckpointProgress } from './foreach-checkpoint.js';
 
 /** Stable `name` marker for `PreflightRequiredSignal` — the value the
  *  `isPreflightRequiredSignal` guard tests for. Exported so the gateway
@@ -185,6 +186,8 @@ export class PreflightRequiredSignal extends Error {
    *  caller stringifies + reconstructs the error (e.g. via
    *  structured-clone on a worker boundary). */
   readonly name: string = PREFLIGHT_REQUIRED_SIGNAL_NAME;
+  /** Engine-authored only: exact progress when this signal crossed a foreach. */
+  foreach_progress?: ForeachCheckpointProgress;
 
   /** Optional structured fields the gateway attaches at raise time. The
    *  engine reads these out of the caught signal and surfaces them on

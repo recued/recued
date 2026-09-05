@@ -600,6 +600,7 @@ describe('recordLedgerRevert', () => {
     expect(terminal).toBeDefined();
     expect(terminal!.release_identity).toBe('stable:1.4.2');
     expect(terminal!.trigger).toBe('revert');
+    expect(terminal!.recovery_source).toBe('outer-supervisor');
   });
 
   it('is a no-op when nothing is in flight (server already recorded the terminal)', async () => {

@@ -1701,7 +1701,7 @@ describe('D-196 S2 - Settings route Seller section: wiring', () => {
   it('passes the optional Seller mail-list caller into the Seller page', async () => {
     let mailListCalls = 0;
     const { route } = mountRoute({
-      initialSellerSubpage: 'setup',
+      initialSellerAddress: { kind: 'setup', section: 'defaults' },
       sellerOverviewCaller: async () => sellerOverview(),
       sellerMailListCaller: async () => {
         mailListCalls += 1;
@@ -1723,7 +1723,7 @@ describe('D-196 S2 - Settings route Seller section: wiring', () => {
 
   it('passes the optional manual tier caller into the Seller page', async () => {
     const { host, route } = mountRoute({
-      initialSellerSubpage: 'tiers',
+      initialSellerAddress: { kind: 'create', subpage: 'tiers', variant: 'manual' },
       sellerOverviewCaller: async () => sellerOverview(),
       sellerManualTierUpsertCaller: async (input) => ({
         tier: {
@@ -1754,7 +1754,7 @@ describe('D-196 S2 - Settings route Seller section: wiring', () => {
 
   it('passes the optional seller settings caller into the Seller page', async () => {
     const { host, route } = mountRoute({
-      initialSellerSubpage: 'setup',
+      initialSellerAddress: { kind: 'setup', section: 'defaults' },
       sellerOverviewCaller: async () => sellerOverview(),
       sellerSettingsUpdateCaller: async () => ({
         settings: {
@@ -1773,8 +1773,8 @@ describe('D-196 S2 - Settings route Seller section: wiring', () => {
 
   it('passes the optional manual tier bulk-adjust caller into the Seller page', async () => {
     const { host, route } = mountRoute({
-      initialSellerSubpage: 'tiers',
-      initialSellerItemId: 'tier-1',
+      // The bulk adjustment is the tier record's own `customers` screen now.
+      initialSellerAddress: { kind: 'detail', subpage: 'tiers', itemId: 'tier-1', tab: 'customers' },
       sellerOverviewCaller: async () => ({
         ...sellerOverview(),
         tiers: [sellerTier()],

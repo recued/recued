@@ -43,6 +43,7 @@ import {
   isMailReconciliationId,
   isSellerCustomerCloseReason,
   isSellerLifecycleSource,
+  SELLER_LIFECYCLE_SOURCES,
   isSellerOfferKind,
   isSellerOrderOriginKind,
   isSellerOrderPhase,
@@ -5580,7 +5581,9 @@ const requireSellerLifecycleSource = (
   if (!isSellerLifecycleSource(value)) {
     throw new IngredientError(
       'BAD_INPUT',
-      `${customerAccessPrefix(slug)}: lifecycle_source must be manual, stripe, or future_provider`,
+      // Derived from the vocabulary so the message cannot go stale when a
+      // provider joins the list (it named three members while five existed).
+      `${customerAccessPrefix(slug)}: lifecycle_source must be one of ${SELLER_LIFECYCLE_SOURCES.join(', ')}`,
       { slug },
     );
   }

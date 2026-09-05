@@ -74,6 +74,11 @@
  *  `chat_message_sent` / `chat_tool_call` set from D-137 P1.
  */
 
+import { resolveRecallCorpusScopeForSource } from './chat-recall-scope.js';
+import { renderToolRow, toolNameFromRow } from './chat-tool-row.js';
+
+export { renderToolRow, toolNameFromRow } from './chat-tool-row.js';
+import type { ContractDefinitionStore } from './storage/contract-definition-store.js';
 import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 import {
@@ -154,9 +159,12 @@ import type {
 } from './llm-system-prompt.js';
 import type { AuditLogStore } from '@recued/storage';
 import {
+  CHAT_MESSAGE_RECALL_ELIGIBILITY,
+  deriveChatMessageRecallEligibility,
   ChatVaultLockedError,
   type ChatStore,
   type RetainedAliasCandidate,
+  type ChatRecallCorpusSelector,
 } from './storage/chat-store.js';
 import type { EventBus } from './events/bus.js';
 import {
@@ -174,6 +182,7 @@ import {
   runChatTurn,
   type RunChatTurnPromptContent,
   type RunChatTurnResult,
+  type ChatPriorToolPointers,
 } from './chat-turn-executor.js';
 import { createChatPiiSlotOrderingSeeder } from './chat-pii-slot-ordering.js';
 import {
@@ -202,6 +211,7 @@ import {
   type ChatTurnAfterInputs,
 } from './chat-stream-middleware.js';
 import { TOOLS_SEARCH_TOOL_NAME } from './chat-tools-search-name.js';
+import { fitCatalogModeToBudget } from './chat-context-budget.js';
 import { PROMPT_CACHE_MIDDLEWARE_ID } from '@recued/middleware-prompt-cache';
 // D-167 P5 S4 — the always-on PII bookend hooks + the wire-seam enactment.
 // `pii-protect` (first `prompt`) / `pii-restore` (last `update`) bracket the
@@ -839,6 +849,22 @@ export interface ChatOrchestratorDeps {
    *  degradation — a marker naming files it could not resolve would be the
    *  shape-without-values case the bench measured at ~5.5x fabrication odds. */
   resolveFileNames?: ChatFileNameResolver;
+  /** The input-token ceiling to compose this turn under, or `undefined` for
+   *  today's unbudgeted behaviour.
+   *
+   *  ⛔ INJECTED RATHER THAN COMPUTED HERE, because the answer depends on the
+   *  LLM config and on what the endpoints have been observed to refuse — and
+   *  `packages/llm` owns both. The orchestrator only knows the routing INTENT
+   *  (layer / hint / source id), which is what it passes.
+   *
+   *  ⚠ Absent, or returning `undefined`, leaves `promptFits` vacuously true and
+   *  every trim inert — the behaviour every install has today, because
+   *  `slot.context_window_tokens` is owner-typed and almost never set. */
+  resolveInputTokenBudget?: (route: {
+    readonly layer: ChatModelRoutingLayer;
+    readonly hint?: ChatModelHint;
+    readonly source_id?: ChatModelSourceId;
+  }) => number | undefined;
   /** D-177 N.11 rule 5 (5.d hot-path) — the per-session forwarded-sender
    *  candidate index. The orchestrator RECORDS into it right after
    *  durably persisting a CHAT user turn (`contributor: 'user'`);
@@ -872,6 +898,14 @@ export interface ChatOrchestratorDeps {
    * this turn's own channel session. It is dynamic tail context, never a tool
    * catalog or queue-management capability. */
   buildInFlightContext?: (source: ExecutionSource) => string | undefined;
+  /** D-213 pointer arm. Bound at the composition root (it needs the chat store
+   *  AND the contract definition store); absent everywhere it is not wired, so
+   *  the control arm is the natural default. */
+  buildPriorToolPointers?: (
+    source: ExecutionSource,
+    session_id: string,
+    turn_id: string | undefined,
+  ) => Promise<ChatPriorToolPointers | undefined>;
   /** D-214 §4.2 — late-bound durable root-request/span anchor deps. */
   getSpanAnchorDeps?: () => SpanAnchorDeps | undefined;
   /** D-214 §10.1/§10.4 — optional experiment-gated request augmentation. */
@@ -924,6 +958,10 @@ export interface ChatOrchestratorDeps {
    *  harness working. The FILTER decides fail-closed on an absent source, not
    *  this optionality. */
   tier2GrantFilter?: (source?: ExecutionSource) => (toolName: string) => boolean;
+  /** D-247 D9 — refuse the owner catalog to a non-owner-governed source. The
+   *  fail-CLOSED sibling of `tier2GrantFilter`, which deliberately returns
+   *  `() => true` for a door. See `createChatOwnerCatalogGuard`. */
+  ownerCatalogGuard?: (source?: ExecutionSource) => void;
   /** D-247 D8 — the OWNER's Tier-2 catalog, projected WITHOUT the `chat_exposed`
    *  filter and narrowed by the `recipe.*` grant instead.
    *
@@ -1316,6 +1354,194 @@ const LOCAL_CHAT_USER_ID = 'local';
  *  batched-approval origin unit can group same-turn holds
  *  (`deriveOriginUnit`: chat ⇒ `turn`). Optional — a source minted
  *  outside a turn boundary falls back to the `correlation_id` stand-in. */
+
+
+/** Per-VALUE elision for the neutral pointer's call rendering.
+ *
+ *  ⛔⛔ A CHARACTER CAP ON THE WHOLE SIGNATURE DOES NOT WORK, and the first cut
+ *  used one. Truncating `name({"to":…,"body":"<the note>"})` at N characters
+ *  ships the FIRST N characters of the payload — the beginning of the composed
+ *  body is exactly the part that identifies it, so the leak survives the cap.
+ *  Measured live before this: the model reproduced a composed note verbatim
+ *  WITHOUT calling recall, because the packet had handed it the text.
+ *
+ *  🔑 THE SPLIT IS SHORT VS LONG VALUES, which is the closest cheap proxy for
+ *  READ VS EFFECT — the distinction that actually matters and that the tool
+ *  surface does not expose. A read's argument is a query or an id: short, and
+ *  naming it is the whole value of the pointer ("this was already looked up").
+ *  An effect's argument IS the artifact: long, and reproducing it re-inlines
+ *  what the pointer exists to avoid carrying. Replace this with the real
+ *  classification if one ever lands. */
+const NEUTRAL_ARG_VALUE_LIMIT = 40;
+
+export const elideLongArgumentValues = (signature: string): string => {
+  const open = signature.indexOf('(');
+  if (open === -1 || !signature.endsWith(')')) return signature;
+  const name = signature.slice(0, open);
+  const raw = signature.slice(open + 1, -1);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // Unparseable args are dropped entirely rather than shown partially — a
+    // fragment is the one thing this function exists to prevent.
+    return name;
+  }
+  const prune = (node: unknown): unknown => {
+    if (typeof node === 'string') {
+      return node.length > NEUTRAL_ARG_VALUE_LIMIT ? '…' : node;
+    }
+    if (Array.isArray(node)) return node.map(prune);
+    if (node !== null && typeof node === 'object') {
+      return Object.fromEntries(
+        Object.entries(node as Record<string, unknown>).map(([k, v]) => [k, prune(v)]),
+      );
+    }
+    return node;
+  };
+  return `${name}(${JSON.stringify(prune(parsed))})`;
+};
+
+/** Env-gated (D-213 pointer arms). Unset = off, so the control arm is the
+ *  default and arms differ by exactly this flag.
+ *
+ *  `'1'`       DIRECTIVE — names the route and tells the model to take it.
+ *  `'neutral'` NEUTRAL   — states only that the calls happened, in the row's
+ *                          own rendered shape with the RESULT elided. No verb,
+ *                          no tool named, no instruction.
+ *
+ *  ⛔ THE TWO EXIST BECAUSE THE DIRECTIVE ONE AMPLIFIES IN BOTH DIRECTIONS.
+ *  Measured: it recovers a composed artifact nothing else holds (332→333), and
+ *  it also steers the model off a fresh read onto a stale snapshot, emailing a
+ *  maintenance window that had already changed (338 arm B). The question the
+ *  neutral wording asks is whether announcing EXISTENCE without prescribing a
+ *  ROUTE keeps the first effect and drops the second -- or merely weakens both,
+ *  which would be the more likely and less useful outcome. */
+type ToolPointerMode = 'off' | 'directive' | 'neutral';
+const toolPointerMode = (): ToolPointerMode => {
+  const raw = process.env.RECUED_CHAT_TOOL_POINTERS;
+  if (raw === '1') return 'directive';
+  if (raw === 'neutral') return 'neutral';
+  return 'off';
+};
+
+/** The `name(args)` half of a rendered tool row, result dropped.
+ *
+ *  ⚠ Scans for the paren that CLOSES the argument JSON rather than splitting on
+ *  the first `): ` -- args routinely contain both parens and `": "`, and a
+ *  naive split truncates mid-argument, which would put a HALF-QUOTED fragment
+ *  of the caller's data into the packet. String state is tracked so a bracket
+ *  inside a JSON string cannot move the depth. */
+export const toolCallSignatureFromRow = (content: string): string => {
+  const open = content.indexOf('(');
+  if (open === -1) return content.split(':')[0]?.trim() ?? content;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = open; i < content.length; i += 1) {
+    const ch = content[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === '\\') { escaped = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '(') depth += 1;
+    else if (ch === ')') {
+      depth -= 1;
+      if (depth === 0) return content.slice(0, i + 1);
+    }
+  }
+  return content.slice(0, open);
+};
+
+/** The pointer block: which tools ran in the recallable window whose content is
+ *  NOT in this packet. Names the ACT and the route, never the payload -- the
+ *  payload is the thing recall exists to fetch, and inlining it here would make
+ *  the pointer a second copy of the trim problem. */
+export const buildPriorToolPointers = async (
+  chatStore: ChatStore,
+  definitions: ContractDefinitionStore,
+  source: unknown,
+  session_id: string,
+  current_turn_id: string | undefined,
+  now: () => number = Date.now,
+): Promise<ChatPriorToolPointers | undefined> => {
+  const mode = toolPointerMode();
+  if (mode === 'off') return undefined;
+  if (chatStore.listRecallableToolPointers === undefined) return undefined;
+  try {
+    // The SAME resolver the recall tool uses, so the corpus advertised here and
+    // the corpus searchable there cannot drift apart.
+    const scope = resolveRecallCorpusScopeForSource(source, definitions, now);
+    if (scope === null) return undefined;
+    const rows = await chatStore.listRecallableToolPointers({
+      row_eligibility: scope.row_eligibility,
+      recall_contract_id: scope.recall_contract_id,
+      tool_session_id: session_id,
+      exclude_turn_id: current_turn_id ?? null,
+      limit: 8,
+    });
+    // ⛔⛔ THE HANDLE, NOT THE NAME, IS THE PROMISE. Measured while building
+    // this: a search for `mail.search` returns ZERO rows, while `mail` and
+    // `search` each return one -- the lexical index splits on the dot, so no
+    // DOTTED tool name (which is nearly all of them) is findable as itself.
+    // `renderToolRow` states the opposite in its own comment ("naming the tool
+    // makes the row findable by the ACT"), and that promise is already broken
+    // today, independent of this block. A pointer built on tool names would
+    // therefore send the model to search a string that cannot match, and an
+    // empty result reads to a model as "nothing is stored" -- the exact
+    // opposite of what the pointer is for. So the pointer carries the row's
+    // `item_id`, which `recall.search` accepts as an EXACT lookup, and the name
+    // rides along only to say WHAT happened.
+    const seen = new Set<string>();
+    const calls: Array<{ tool: string; item_id: string }> = [];
+    for (const r of rows) {
+      const tool = toolNameFromRow(r.content);
+      if (tool === undefined || seen.has(r.item_id)) continue;
+      seen.add(r.item_id);
+      calls.push({ tool, item_id: r.item_id });
+    }
+    if (calls.length === 0) return undefined;
+    if (mode === 'neutral') {
+      // The rows, elided. No note, no verb, no named route -- the same shape
+      // the model already reads in `prior_tool_calls`, with the result gone.
+      //
+      // ⛔⛔ THE ARGUMENTS ARE CAPPED, AND THE FIRST CUT WITHOUT THIS CAP WAS A
+      //   CONTENT LEAK, NOT A POINTER. For a READ the args are a query and
+      //   naming them is the whole value ("search for X" tells the model what
+      //   was already looked up). For an EFFECT THE ARGS ARE THE ARTIFACT: a
+      //   send's `body` IS the composed note, so rendering the call verbatim
+      //   re-inlines the exact payload the pointer exists to avoid carrying --
+      //   a second copy of the trim problem, and one that ships whatever the
+      //   args held (addresses, names, bodies) straight back into the packet.
+      //   Measured on a live drive before the cap: the model reproduced a
+      //   composed note WITHOUT calling recall at all, because the packet had
+      //   handed it the text.
+      // ⚠ A CHARACTER CAP IS A PROXY FOR THE DISTINCTION THAT MATTERS -- read
+      //   vs effect -- which the tool surface does not currently expose. It is
+      //   crude on purpose: a query survives, a composed body does not, and it
+      //   cannot silently pass a large payload through. Replace it with the
+      //   real classification if one ever lands.
+      return {
+        calls: rows.flatMap((r) => {
+          const sig = elideLongArgumentValues(toolCallSignatureFromRow(r.content));
+          if (sig.length === 0) return [];
+          return [{ tool: `${sig}: …`, item_id: r.item_id }];
+        }),
+      };
+    }
+    return {
+      note:
+        'Earlier tool calls in this conversation. Their arguments and results '
+        + 'are NOT in this packet. Fetch one with recall.search using its '
+        + 'item_id before relying on what it contained.',
+      calls,
+    };
+  } catch {
+    // A pointer is an optimisation, never a precondition for the turn.
+    return undefined;
+  }
+};
+
 const buildChatExecutionSource = (
   session_id: string,
   turn_id?: string,
@@ -2000,6 +2226,11 @@ export const createChatOrchestrator = (
   // at orchestrator construction, where no turn exists yet), so the raw-op half
   // of the catalog can be derived from the caller's contract.
   const buildCatalog: ChatCatalogBuilder = (picker_target, projection, source) => {
+    // ⛔ BEFORE ANY ENTRY IS READ. This surface serves ONE tenant — the owner —
+    // and a contracted source arriving here is a routing error, not a request
+    // for a narrower catalog. The `: registryEntries` fallthrough below is
+    // UNFILTERED, so without this a door would receive the whole registry.
+    deps.ownerCatalogGuard?.(source);
     // ⛔ D-228 slice 5 — no peer branch: `picker_target` can only be `'self'`
     // now, so the catalog is always this server's own registry.
     // D-247 D9 — Tier-2 membership reads the owner's `recipe.*` grant. Filtered
@@ -2867,6 +3098,18 @@ export const createChatOrchestrator = (
     getRetainedCandidates: () => readonly RetainedAliasCandidate[];
   } => {
     const { session_id, turn_id, picker_target, emit } = params;
+    // Resolved ONCE per turn, before any round composes a prompt, so every
+    // round of the turn is fitted against the same ceiling. Absent dep or an
+    // unlearned endpoint yields `undefined` — today's behaviour exactly.
+    const resolveTurnInputTokenBudget = (): number | undefined =>
+      deps.resolveInputTokenBudget?.({
+        layer: params.model_layer,
+        ...(params.model_hint !== undefined ? { hint: params.model_hint } : {}),
+        ...(params.model_source_id !== undefined
+          ? { source_id: params.model_source_id }
+          : {}),
+      });
+    const chatInputTokenBudget = resolveTurnInputTokenBudget();
     const streamState = new Map<string, unknown>();
     if (params.continuation_of_turn_id !== undefined) {
       streamState.set(SPAN_ANCHOR_EXPLICIT_CONTINUATION_STATE_KEY, {
@@ -2889,9 +3132,43 @@ export const createChatOrchestrator = (
     // the wrong source). The SAME object feeds the catalog build (via the seed
     // below) and the system-prompt `catalog_mode` (below) → presentation +
     // guidance agree; turn-fixed routing → turn-invariant (D-164 prefix-safe).
-    const perTurnProjection = resolveTurnProjection(
-      resolveCatalogSource(params.model_layer, params.model_source_id),
+    const catalogSource = resolveCatalogSource(
+      params.model_layer,
+      params.model_source_id,
     );
+    const requestedProjection = resolveTurnProjection(catalogSource);
+    // ⛔⛔ RUNG 0 — THE ONLY TRIM THAT CAN REACH THE CATALOG. Every rung in
+    //   `chat-turn-executor.ts` runs BELOW it: `composePrompt()` passes
+    //   `available_tools` through unchanged on all six recompositions, because
+    //   it is the D-164 cacheable prefix. So when the catalog alone exceeds the
+    //   budget, the ladder evicts the whole conversation, drops every tool
+    //   result, and still cannot fit — measured at 6 tail rows down to 1 with
+    //   the prompt still over. Deciding the MODE is the only lever that helps,
+    //   and this is the one place that knows both the budget and the catalog.
+    //
+    // ⚠ Costs nothing when there is no budget: `fitCatalogModeToBudget`
+    //   short-circuits before calling `measureCatalogTokens`, so an endpoint
+    //   that has never refused anything never builds a catalog twice.
+    const fittedMode = fitCatalogModeToBudget({
+      mode: requestedProjection.mode,
+      inputTokenBudget: chatInputTokenBudget,
+      measureCatalogTokens: (mode) => estimateConservativeMessagesTokens([{
+        role: 'user',
+        content: JSON.stringify(
+          // ⚠ `params.execution_source`, NOT `catalogSource`. Two different
+          // axes share the word "source": `catalogSource` is the MODEL source
+          // (which slot/pool the turn routes to, and so which projection
+          // applies), while `buildCatalog`'s third argument is the
+          // EXECUTION source, which decides Tier-2 grant filtering. Passing
+          // the wrong one measures a catalog the turn would never be shown.
+          buildCatalog(picker_target, { ...requestedProjection, mode }, params.execution_source),
+        ),
+      }]),
+    });
+    const perTurnProjection: ChatCatalogProjectionConfig =
+      fittedMode === requestedProjection.mode
+        ? requestedProjection
+        : { ...requestedProjection, mode: fittedMode };
     // DECIDE inputs → seed `state` for the `catalog` before-turn hook (A.8
     // step 4): it reads the per-turn picker target off the shared `state`,
     // assembles `available_tools` via the bound `buildCatalog`, and writes
@@ -2910,6 +3187,13 @@ export const createChatOrchestrator = (
     const egressPrompts: string[] = [];
     let plannerRounds = 0;
     const retainedCandidates = new Map<string, RetainedAliasCandidate>();
+    // ⛔ THE SAME PREFIX THE TURN-END WRITE USES, minted here because the
+    // mid-turn write happens FIRST. If these ever diverge the dedup set still
+    // suppresses the second write but under a DIFFERENT id, so the pointer's
+    // handle would name a row that the turn-end loop then wrote again under
+    // another name — two rows for one result, which is the one thing the
+    // dedup exists to prevent.
+
     const turnExecutor: TurnExecutor = async (ctx): Promise<TurnOutput> => {
       // ENACT (N.9): read the before-turn hooks' decisions. The
       // `correction-learning` hook contributed its flat "recent
@@ -2963,6 +3247,11 @@ export const createChatOrchestrator = (
           ).catch(() => undefined)
         : undefined;
       const inFlightContext = deps.buildInFlightContext?.(params.execution_source);
+      const priorToolPointers = await deps.buildPriorToolPointers?.(
+        params.execution_source,
+        params.session_id,
+        params.turn_id,
+      );
       const piiPlan = readPiiEgressPlan(ctx.state);
       // D-167 — collect the prompt-cache before-turn hook's STRUCTURED `entity`
       // parts (raw records + a `render`) but DON'T alias them here. They thread
@@ -3094,6 +3383,9 @@ export const createChatOrchestrator = (
           content,
           correction_context: correctionContext,
           ...(indexContext ? { index_context: indexContext } : {}),
+          ...(priorToolPointers
+            ? { prior_tool_pointers: priorToolPointers }
+            : {}),
           ...(inFlightContext ? { in_flight_context: inFlightContext } : {}),
           ...(executionCaseContext
             ? { execution_case_context: executionCaseContext }
@@ -3111,6 +3403,14 @@ export const createChatOrchestrator = (
             ? { model_source_id: params.model_source_id }
             : {}),
           ...(params.time_zone ? { time_zone: params.time_zone } : {}),
+          // Resolved from the SAME routing intent the three fields above
+          // carry, so the budget and the route can never describe different
+          // endpoints. The gateway supplies its own budget on its own path
+          // (it has a resolved slot); this is the chat + messenger half,
+          // which does not.
+          ...(chatInputTokenBudget !== undefined
+            ? { input_token_budget: chatInputTokenBudget }
+            : {}),
         },
         {
           ...(executeAiCallForTurn ? { executeAiCall: executeAiCallForTurn } : {}),
@@ -3134,6 +3434,11 @@ export const createChatOrchestrator = (
                   }) ?? Promise.resolve(null),
               }
             : {}),
+          // Re-read AFTER a failure: a context refusal is how the endpoint's
+          // window is learned, so this frequently returns the FIRST budget
+          // that has ever existed for it. That is what lets the turn recover
+          // in place instead of failing and recovering on the next message.
+          resolveInputTokenBudget: resolveTurnInputTokenBudget,
           emit,
           now,
         },
@@ -3371,6 +3676,13 @@ export const createChatOrchestrator = (
         // reconciliation if the durable transition itself failed.
       }
     };
+    // ⛔ HOISTED ABOVE THE TURN, and it has to be. Tool rows are now written
+    // MID-TURN under this prefix, and the mid-turn writer is a closure created
+    // before the turn runs — leaving the mint at its old spot (after the turn)
+    // put the const in its temporal dead zone for every one of those writes.
+    // The write is wrapped in try/catch, so the failure mode was not a crash
+    // but a silent "no handle on any marker": the feature off, tests green.
+    const assistantMessageId = mintId();
     let turnDriver: ReturnType<typeof buildTurnDriver>;
     try {
       turnDriver = buildTurnDriver({
@@ -3625,7 +3937,76 @@ export const createChatOrchestrator = (
       });
     }
 
-    const assistantMessageId = mintId();
+
+    // ⛔⛔ TOOL RESULTS BECOME DURABLE ROWS HERE, and this is the gap the
+    //   `role: 'tool'` enum has named since 2026-05-11 without a single writer.
+    //   `ChatMessageRole` includes `'tool'`, the contract comment says one row
+    //   per tool result, and `git log -S` finds the string only inside that
+    //   comment. Meanwhile `chat_tail` and the recall scan both filter tool
+    //   rows out WITH STATED RATIONALES, so the absence read as a settled
+    //   design rather than an unfinished one.
+    //
+    // ✅ MEASURED BEFORE BUILDING, because the gap doc's stated blocker was
+    //   cost — "100 tool calls in one turn is 100 encrypted rows". Across
+    //   29,256 real results in 14,107 stored bench packets: p50 **2** calls per
+    //   turn, p90 4, p99 9, max 21. Result bytes p50 490, p90 1,585. A median
+    //   turn writes two ~490-byte rows. The blocker was hypothetical.
+    //
+    // ⚠ EVERY CORPUS, INCLUDING A DOOR'S — and the earlier owner-only rule was
+    //   reasoned wrongly. It said a contracted turn's rows would be "new
+    //   durability and searchability" over owner-warehouse data. But the
+    //   ASSISTANT's reply routinely CONTAINS that same data (this doc's own
+    //   finding: the model's prose is the de facto persistence layer for
+    //   everything a tool returned), and assistant rows have always been
+    //   written and recalled per-door under P10. Refusing the tool row while
+    //   writing the prose that quotes it was an inconsistency, not a fence.
+    //
+    // 🔑 WHAT MADE THE REFUSAL FEEL RIGHT WAS THE ARCHIVE, and the session
+    //   scope removes it: tool rows are reachable only from the session that
+    //   produced them (`tool_session_id`), so nobody — owner or customer —
+    //   can mine across every result a tool ever returned. Recovering your own
+    //   context inside your own task is not a new capability; it is not losing
+    //   what `prior_tool_calls` already had.
+    //
+    // ⚠ THE CANDIDATES ARE THE TURN'S, AND THAT IS WHAT MAKES THIS SAFE TO
+    //   RECALL. Durable sources stay PRE-ALIAS (P6), so a recalled tool row is
+    //   re-aliased into the reading session's namespace by
+    //   `aliasReharvestCandidatesInPlace` — but only for values the candidate
+    //   list names. `getRetainedCandidates()` is turn-scoped and the PII
+    //   wrapper's pass already covers `prior_tool_calls` (they are dynamic
+    //   packet fields; only `available_tools` / `commitment_context` /
+    //   `current_date` are exempt). So the same list the assistant row carries
+    //   already describes the tool bodies. A row written WITHOUT it would recall
+    //   raw historical PII that the original turn had aliased.
+    if (turnResult.tool_results !== undefined) {
+      for (const [index, entry] of turnResult.tool_results.entries()) {
+        try {
+          await deps.chatStore.appendMessage({
+            id: `${assistantMessageId}:tool:${index}`,
+            session_id: input.session_id,
+            role: 'tool',
+            content: renderToolRow(entry.tool_name, entry.args, entry.result),
+            // ⛔ Present only on a half that can be COMPLETED by another row.
+            //   A synchronous call is one event and pairs with nothing; a
+            //   `pair_id` on it would invite a sibling fetch that can never
+            //   succeed.
+            ...(entry.pair_id !== undefined ? { pair_id: entry.pair_id } : {}),
+            target_server: picker_target,
+            picker_at_send: pickerAtSend,
+            model_used: modelUsed,
+            execution_source: executionSource,
+            turn_id,
+            ts: entry.ts,
+            retained_alias_candidates: getRetainedCandidates(),
+          });
+        } catch (err) {
+          // ⚠ BEST-EFFORT, like the egress capture beside it. A tool row is
+          // recall material, not the turn's outcome — failing the turn over one
+          // would trade a working answer for a storage detail.
+          console.error('[chat] tool-result row append failed', err);
+        }
+      }
+    }
     const assistantMessage = await deps.chatStore.appendMessage({
       id: assistantMessageId,
       session_id: input.session_id,
@@ -4161,6 +4542,12 @@ export const createChatOrchestrator = (
           ...(input.input_token_budget !== undefined
             ? { input_token_budget: input.input_token_budget }
             : {}),
+          // ⛔ STATED, NOT INFERRED. The branch this drives used to key off
+          // `input_token_budget` being set, which identified the gateway only
+          // because the gateway was the sole supplier. Chat supplies one now
+          // (from learned bounds), so the gateway's typed-error contract has
+          // to be declared here or chat silently inherits it.
+          propagate_typed_errors: true,
         },
         {
           executeAiCall: executeGatewayAiCall,

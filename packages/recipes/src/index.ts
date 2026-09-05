@@ -36,7 +36,7 @@ export type {
   VariableModification,
 } from './diff.js';
 
-export { parseRecipe, issuesBySeverity } from './parse.js';
+export { parseRecipe, issuesBySeverity, canonicalRecipeDefinition } from './parse.js';
 export type { ParseResult } from './parse.js';
 
 // D-200 Slice 6g.6 — bounded, side-effect-free submit-time pair mapper

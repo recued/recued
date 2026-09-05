@@ -9,16 +9,16 @@
  *  the next time a recipe calls it, as an error about a binding the owner never
  *  wrote and cannot see.
  *
- *  There is no automatic pack update — discovery is a client-side join in
- *  Discover and an upgrade is the owner reinstalling — so on an unattended
- *  server nothing ever notices. This is what notices.
+ *  The launch-safe boot reconciler repairs the closed, hash-pinned D-259
+ *  transition set before this check runs. This is the fallback for everything
+ *  it cannot prove safe: a malformed/tampered body, a non-ledger version, or a
+ *  future update that still needs owner review.
  *
- *  ⛔ IT CHECKS, IT DOES NOT FIX. Reinstalling a pack changes the operation set
- *  a grant was scoped for, which `pack-install-handler` calls "a different
- *  decision" and routes through the owner for exactly that reason. A boot path
- *  that silently re-scoped what an agent may do — with no human present — would
- *  contradict the thing the rest of this architecture is built to guarantee.
- *  So it reports and stops.
+ *  ⛔ THIS CHECK STILL DOES NOT FIX. A general reinstall can change the
+ *  operation set a grant was scoped for, which is the owner's decision. The
+ *  reconciler is allowed to act only after its separate transition ledger,
+ *  target hash, body class, and authority-equivalence checks all pass. Anything
+ *  else reaches this reporter and stops here.
  *
  *  🔑 IT CALLS THE VALIDATOR RATHER THAN RE-STATING ITS RULES. A second copy of
  *  "what counts as legacy" would drift from the first, and the drift would show
@@ -93,11 +93,16 @@ export const findUnrunnableInstalledManifests = (
 export const checkInstalledManifestsOnBoot = (
   ports: InstalledManifestBootCheckPorts,
 ): UnrunnableInstalledManifest[] => {
+  const log = (message: string): void => {
+    try {
+      ports.log?.(message);
+    } catch { /* reporting is evidence, never authority over boot */ }
+  };
   let found: UnrunnableInstalledManifest[] = [];
   try {
     found = findUnrunnableInstalledManifests(ports.listManifests());
   } catch (err) {
-    ports.log?.(
+    log(
       '[packs] installed-manifest boot check could not run: '
         + (err instanceof Error ? err.message : String(err)),
     );
@@ -107,14 +112,14 @@ export const checkInstalledManifestsOnBoot = (
 
   // The log line names the FIX, not just the fault: the owner cannot infer
   // "reinstall from Discover" from a validator code.
-  ports.log?.(
+  log(
     `[packs] ⛔ ${found.length} installed pack(s) declare shapes this server no `
       + 'longer runs. Their operations will fail when called. Update them in '
       + 'Discover (Settings → Packs) to the current version:',
   );
   for (const row of found) {
     const at = row.version === undefined ? '' : ` v${row.version}`;
-    ports.log?.(`[packs]    ${row.slug}${at} — ${row.codes.join(', ')}: ${row.detail}`);
+    log(`[packs]    ${row.slug}${at} — ${row.codes.join(', ')}: ${row.detail}`);
     try {
       ports.audit?.({ slug: row.slug, codes: row.codes, detail: row.detail });
     } catch { /* audit is evidence, never authority over boot */ }
@@ -127,4 +132,93 @@ export const checkInstalledManifestsOnBoot = (
     );
   } catch { /* best-effort */ }
   return found;
+};
+
+// ────────────────────────────────────────────────────────────────
+// Reaching the owner
+// ────────────────────────────────────────────────────────────────
+
+/** Deliver one owner-facing notification. Fire-and-forget by contract — the
+ *  block's `notify`, not its `ask`. */
+export type NotifyUnrunnablePacks = (
+  message: { title?: string; text: string; link_url?: string },
+) => Promise<void>;
+
+/** ⛔ A CONSOLE LINE IS NOT REACHING ANYONE. The check above writes to the
+ *  server log, which is exactly the wrong channel for the case it exists to
+ *  serve: an UNATTENDED server whose owner is not tailing logs. The reconciler
+ *  now repairs everything it can prove safe, so what survives to here is
+ *  precisely the set a machine declined to fix — the set a human must see.
+ *
+ *  🔑🔑 A NOTIFICATION, NOT AN ASK — AND THE DIFFERENCE IS NOT COSMETIC.
+ *  Nothing here is being approved. This shipped as an `ask` for ONE reason,
+ *  and it was the wrong reason: `ask` is the only DURABLE delivery on the
+ *  block (`notify` is fire-and-forget), so an ask was used to buy persistence
+ *  for a finding nobody may be connected to receive. That put an error report
+ *  in the owner's queue of pending DECISIONS, and it showed:
+ *    - open asks accumulate, so a restart-dedup had to be written to stop the
+ *      same finding minting a new row every boot;
+ *    - a one-option ask needed a no-op answer handler registered purely so a
+ *      dismissal could complete;
+ *    - and answering it CLEARED the finding while the packs stayed broken —
+ *      an ask is done when answered, but this condition is true until fixed.
+ *
+ *  🔑 THE DURABILITY BELONGS TO THE CONDITION, NOT THE MESSAGE. "These packs
+ *  will not run" is a STANDING STATE, re-derivable at any moment from
+ *  `findUnrunnableInstalledManifests` — so it is carried by the Packs surface
+ *  (`packs.unrunnable` rpc + the list's broken state), where it cannot drift,
+ *  cannot pile up, and cannot be dismissed while still true. This function is
+ *  then free to be what it always was: the heads-up.
+ *
+ *  Consent still happens later and better — at the moment the owner actually
+ *  updates, where `packs.install_preview` renders `owner_operation_review` and
+ *  the dialog asks them to re-rule any operation whose identity moved (D-211
+ *  slice 5). Asking here would be asking about a change they have not chosen.
+ *
+ *  ⚠ Returns false when nothing is wrong, so a healthy boot says NOTHING. */
+export const notifyUnrunnablePacks = async (
+  found: ReadonlyArray<UnrunnableInstalledManifest>,
+  notify: NotifyUnrunnablePacks,
+  /** ⚠ OPTIONAL BECAUSE THE BASE URL IS, NOT BECAUSE THE ROUTE IS.
+   *
+   *  🔑 An earlier revision of this comment claimed no URL could be built here
+   *  at all, reasoning from ONE helper (`buildOwnerSurfaceLink` is per-RECIPE)
+   *  instead of asking whether the server knows its own address. It does:
+   *  `#packs/<slug>` is a real parsed webclient address
+   *  (`serializeShellRoute('packs', slug)` → `parsePacksAddress`), and
+   *  `buildPacksSurfaceLink` mints it absolute from the same
+   *  `RECUED_PUBLIC_BASE_URL` its sibling uses — a boot-time fact available
+   *  well before this call site. The composition root passes one whenever the
+   *  server HAS a public base.
+   *
+   *  ⛔ Still absent on a non-public server, and that absence is deliberate, not
+   *  a gap: `execute-handler.ts:3014` — "a dead link in the only notification
+   *  the owner gets reads as 'nothing here' and as 'couldn't find it' at the
+   *  same time — no link at all is the honest version." The named packs still
+   *  say where to go. */
+  packs_link_url?: string,
+): Promise<boolean> => {
+  if (found.length === 0) return false;
+  const slugs = found.map((row) => row.slug);
+  // Name them. "Some packs need attention" sends the owner hunting through a
+  // list; naming them is the difference between a notice and an instruction.
+  const named = slugs.slice(0, 3).join(', ');
+  const rest = slugs.length > 3 ? ` and ${slugs.length - 3} more` : '';
+  try {
+    await notify({
+      title: 'Packs need updating',
+      text:
+        found.length === 1
+          ? `${named} no longer runs on this server. Its actions will fail until you update it.`
+          : `${named}${rest} no longer run on this server. Their actions will fail until you update them.`,
+      ...(packs_link_url !== undefined ? { link_url: packs_link_url } : {}),
+    });
+    return true;
+  } catch {
+    // ⚠ Best-effort, like every other boot-time notify. A notification stack
+    // that is not up yet must not turn a startup into a failed startup — the
+    // log line from the check above still stands, and the Packs surface holds
+    // the same finding durably.
+    return false;
+  }
 };

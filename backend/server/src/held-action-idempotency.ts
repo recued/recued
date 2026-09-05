@@ -16,26 +16,28 @@
  *  clean third-state, and a re-issued one is absorbed rather than
  *  duplicated.
  *
- *  ── Scope (why only chat + mcp) ───────────────────────────────────────
- *  The dedup fires ONLY for the two agent-resend surfaces named in the
- *  log — the chat tool-loop (`chat`) and MCP recipe paths (`mcp`). On
- *  those channels the agent's intent rides in `config` (the flat tool
- *  args), so (channel_session_id, recipe_id, recipe_hash, config_snapshot)
- *  fully captures the action. System / event channels are deliberately
- *  EXCLUDED: a `reactive` / `schedule` / `webhook` / `reception` dispatch
- *  keeps a STABLE channel_session_id across distinct fires while its
- *  per-fire input lives in `context.event.payload` (not `config`), so
- *  keying on config alone would wrongly collapse two different events onto
- *  one hold. (`handleExecute` adds a second belt — it also requires
- *  `internal.run_id === undefined`, which the reception-workflow dispatcher
- *  and the resumer both set — and skips the dedup when the caller supplied
- *  a per-intent `context` / `vault` the key does not cover.)
+ *  ── Scope (why chat + owner Messenger + MCP) ─────────────────────────
+ *  The dedup fires only for agent-resend surfaces whose intent rides in
+ *  `config` (the flat tool args): the chat tool-loop (`chat`), the shipped
+ *  owner Messenger lane (`messenger × user_self`), and MCP recipe paths
+ *  (`mcp`). System / event channels are deliberately EXCLUDED: a `reactive`
+ *  / `schedule` / `webhook` / `reception` dispatch keeps a STABLE
+ *  channel_session_id across distinct fires while its per-fire input lives in
+ *  `context.event.payload` (not `config`), so keying on config alone would
+ *  wrongly collapse two different events onto one hold. (`handleExecute` adds
+ *  a second belt — it also requires `internal.run_id === undefined`, which
+ *  the reception-workflow dispatcher and the resumer both set — and skips the
+ *  dedup when the caller supplied a per-intent `context` / `vault` the key
+ *  does not cover.)
  *
  *  ── Identity ──────────────────────────────────────────────────────────
- *  (channel_session_id, recipe_id, recipe_hash, config_snapshot):
+ *  (channel_session_id, authority, recipe_id, recipe_hash, config_snapshot):
  *   - `channel_session_id` scopes the dedup to one conversation / token
- *     (`chat:<conversation>`, `mcp:<token>`) so two distinct conversations
- *     with coincidentally-identical args never collide.
+ *     (`chat:<conversation>`, `messenger:<vendor>:<sender>`, `mcp:<token>`)
+ *     so two distinct sessions with coincidentally-identical args never
+ *     collide.
+ *   - `authority` binds the `(channel × actor × contract_id)` policy cell. A
+ *     conversation id alone does not prove that two runs share authority.
  *   - `recipe_id` + `recipe_hash` pin the exact recipe AND its shape — two
  *     different inline recipes sharing a recipe_id, or a recipe edited
  *     mid-session, do not collapse (`recipe_hash` is `hashRecipe(recipe)`,
@@ -53,7 +55,11 @@
  *  Best-effort: a lookup failure proceeds with a normal run.
  */
 
-import { canonicalArgHash, projectResolvedArgs } from '@recued/contracts';
+import {
+  canonicalArgHash,
+  executionSourceContractId,
+  projectResolvedArgs,
+} from '@recued/contracts';
 import type { ExecutionSource } from '@recued/contracts';
 import { extractVariableDefault } from '@recued/engine';
 import type { AuditEntry, AuditLogStore, CheckpointStore } from '@recued/storage';
@@ -61,28 +67,62 @@ import type { AuditEntry, AuditLogStore, CheckpointStore } from '@recued/storage
 import { stampExecuteResponseAuditRun } from './types.js';
 import type { ExecuteResponse } from './types.js';
 
-/** The agent-resend surfaces the held-action dedup applies to — the chat
- *  tool-loop + MCP recipe paths, the two surfaces the prompt-opt log
- *  names. On these, intent rides in `config`, so the dedup identity is
- *  complete. System / event channels (`reactive`, `schedule`, `webhook`,
- *  `reception`, …) are excluded — their per-fire input lives in
- *  `context.event.payload`, outside the key. */
+/** The agent-resend surfaces the held-action dedup applies to — the chat,
+ *  messenger, and MCP recipe paths. On these, intent rides in `config`, so
+ *  the dedup identity is complete. Messenger's channel-session identity also
+ *  includes both vendor and sender, keeping different correspondents apart.
+ *  System / event channels (`reactive`, `schedule`, `webhook`, `reception`,
+ *  …) are excluded — their per-fire input lives in `context.event.payload`,
+ *  outside the key. */
 export const HELD_DEDUP_CHANNELS: ReadonlySet<ExecutionSource['channel']> =
-  new Set(['chat', 'mcp']);
+  new Set(['chat', 'messenger', 'mcp']);
+
+/** Refines the channel allowlist where a channel admits more than one actor.
+ *  Messenger's shipped ingress is the owner (`user_self`) lane. Its dormant
+ *  `contracted_user` shape carries a contract snapshot that is not part of the
+ *  duplicate identity, so it must remain fail-closed until that authority is
+ *  bound into the key. */
+export const isHeldDedupEligibleSource = (source: ExecutionSource): boolean =>
+  HELD_DEDUP_CHANNELS.has(source.channel)
+  && (source.channel !== 'messenger' || source.actor === 'user_self');
+
+/** The policy cell that authorized an action. A channel session is a
+ *  conversation boundary, not an authority boundary: chat and messenger both
+ *  admit more than one actor shape, and a self-restricted chat source carries
+ *  a contract while keeping the same conversation id. Binding this tuple
+ *  prevents a duplicate lookup from crossing those cells. */
+export interface HeldActionAuthority {
+  channel: ExecutionSource['channel'];
+  actor: ExecutionSource['actor'];
+  contract_id?: string;
+}
+
+export const buildHeldActionAuthority = (
+  source: ExecutionSource,
+): HeldActionAuthority => {
+  const contractId = executionSourceContractId(source);
+  return {
+    channel: source.channel,
+    actor: source.actor,
+    ...(contractId !== undefined ? { contract_id: contractId } : {}),
+  };
+};
 
 /** Recent-window scan bound for the channel-session twin lookup. A held
  *  action is recent by nature (the user has not approved it yet) and a
  *  resend loop re-fires immediately, so a live twin is among the most
  *  recent rows of its channel session. Bounds the scan on a long-lived
- *  chat conversation / MCP token. */
+ *  chat conversation / messenger correspondent / MCP token. */
 export const HELD_TWIN_SCAN_LIMIT = 50;
 
 /** The content identity of an action that, if held, dedups against a
  *  prior live hold of the same identity in the same channel session. */
 export interface HeldActionIdentity {
   /** `deriveChannelSessionId(execution_source)` — the channel-owned
-   *  boundary (conversation / token). */
+   *  boundary (conversation / correspondent / token). */
   channel_session_id: string;
+  /** `(channel × actor × contract_id)` policy identity. */
+  authority: HeldActionAuthority;
   recipe_id: string;
   /** `hashRecipe(recipe)` — pins the recipe SHAPE so two inline recipes
    *  sharing a recipe_id (or a mid-session edit) do not collapse. */
@@ -160,13 +200,14 @@ export const buildHeldConfigSnapshot = (
 };
 
 /** Find a LIVE held twin of `identity` in the same channel session, or
- *  `null`. Live = an `awaiting_approval` anchor whose `recipe_id` +
- *  `recipe_hash` + `config_snapshot` match AND whose `checkpoint_id` still
- *  resolves to a persisted `Checkpoint`. The most-recent matching hold
- *  wins (the channel-session list is newest-first); any live identical
- *  twin is an equally-correct collapse target. Throws only on `auditLog`/
- *  `checkpointStore` I/O failure — the caller treats a throw as "no twin"
- *  and proceeds with a normal run. */
+ *  `null`. Live = an `awaiting_approval` anchor whose policy authority +
+ *  `recipe_id` + `recipe_hash` + `config_snapshot` match AND whose
+ *  `checkpoint_id` still resolves to a persisted `Checkpoint`. An anchor
+ *  without a source cannot prove authority and matches nothing. The
+ *  most-recent matching hold wins (the channel-session list is newest-first);
+ *  any live identical twin is an equally-correct collapse target. Throws only
+ *  on `auditLog`/`checkpointStore` I/O failure — the caller treats a throw as
+ *  "no twin" and proceeds with a normal run. */
 export const findLiveHeldTwin = async (
   deps: HeldTwinLookupDeps,
   identity: HeldActionIdentity,
@@ -180,6 +221,15 @@ export const findLiveHeldTwin = async (
     if (anchor.checkpoint_id === undefined) continue;
     if (anchor.recipe_id !== identity.recipe_id) continue;
     if (anchor.recipe_hash !== identity.recipe_hash) continue;
+    if (anchor.execution_source === undefined) continue;
+    const authority = buildHeldActionAuthority(anchor.execution_source);
+    if (
+      authority.channel !== identity.authority.channel
+      || authority.actor !== identity.authority.actor
+      || authority.contract_id !== identity.authority.contract_id
+    ) {
+      continue;
+    }
     if (!configSnapshotsEqual(anchor.config_snapshot, identity.config_snapshot)) {
       continue;
     }
@@ -262,7 +312,7 @@ export interface InflightHoldClaim {
 
 const inflightHolds = new Map<string, Promise<HoldOutcome>>();
 
-/** Stable identity key for the in-flight registry — the same four facets
+/** Stable identity key for the in-flight registry — the same five facets
  *  `findLiveHeldTwin` matches on, collapsed to the D-177 canonical identity
  *  hash (N.7: one canonicalization, two consumers). `null` when the
  *  identity's config snapshot cannot be canonicalized (`canonicalArgHash`
@@ -275,6 +325,7 @@ export const computeHeldActionKey = (
     return canonicalArgHash(
       projectResolvedArgs({
         channel_session_id: identity.channel_session_id,
+        authority: identity.authority,
         recipe_id: identity.recipe_id,
         recipe_hash: identity.recipe_hash,
         config_snapshot: identity.config_snapshot,

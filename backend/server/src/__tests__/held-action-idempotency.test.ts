@@ -1,6 +1,6 @@
 /** D-157 Part C - held-action idempotency unit coverage. */
 
-import type { Checkpoint } from '@recued/contracts';
+import type { Checkpoint, ExecutionSource } from '@recued/contracts';
 import {
   buildAuditEntry,
   createAuditLogStore,
@@ -15,6 +15,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   awaitInflightHold,
+  buildHeldActionAuthority,
   buildHeldConfigSnapshot,
   buildHeldTwinResponse,
   claimInflightHold,
@@ -22,6 +23,7 @@ import {
   computeHeldActionKey,
   findLiveHeldTwin,
   HELD_DEDUP_CHANNELS,
+  isHeldDedupEligibleSource,
   type HeldActionIdentity,
 } from '../held-action-idempotency.js';
 import {
@@ -35,8 +37,27 @@ const RECIPE_HASH = 'hash-held-action';
 const CHECKPOINT_ID = 'checkpoint-live-1';
 const FIXED_NOW = 1_750_000_000_000;
 
+const chatSource: ExecutionSource = {
+  channel: 'chat',
+  actor: 'user_self',
+  chat_session_id: 'chat-held-session',
+  user_id: 'user-1',
+};
+
+const contractedChatSource: ExecutionSource = {
+  ...chatSource,
+  actor: 'contracted_user',
+  contract_id: 'contract-1',
+};
+
+const selfRestrictedChatSource: ExecutionSource = {
+  ...chatSource,
+  contract_id: 'contract-1',
+};
+
 const identity: HeldActionIdentity = {
   channel_session_id: CHANNEL_SESSION_ID,
+  authority: buildHeldActionAuthority(chatSource),
   recipe_id: RECIPE_ID,
   recipe_hash: RECIPE_HASH,
   config_snapshot: {
@@ -87,6 +108,7 @@ const buildAnchor = (
     commit_status?: AuditEntry['commit_status'];
     checkpoint_id?: string | null;
     duration_ms?: number;
+    execution_source?: ExecutionSource | null;
   } = {},
 ): AuditEntry => {
   const checkpointId =
@@ -102,6 +124,9 @@ const buildAnchor = (
     errors: [],
     config_snapshot: overrides.config_snapshot ?? identity.config_snapshot,
     channel_session_id: overrides.channel_session_id ?? CHANNEL_SESSION_ID,
+    ...(overrides.execution_source !== null
+      ? { execution_source: overrides.execution_source ?? chatSource }
+      : {}),
     run_id: overrides.run_id ?? 'run-live-1',
     now: overrides.now ?? FIXED_NOW,
     ...(checkpointId !== undefined ? { checkpoint_id: checkpointId } : {}),
@@ -161,6 +186,7 @@ describe('computeHeldActionKey', () => {
       },
       recipe_id: RECIPE_ID,
       channel_session_id: CHANNEL_SESSION_ID,
+      authority: buildHeldActionAuthority(chatSource),
     };
 
     expect(computeHeldActionKey(reorderedIdentity)).toBe(
@@ -175,6 +201,14 @@ describe('computeHeldActionKey', () => {
     ],
     ['recipe_id', { ...identity, recipe_id: 'other-recipe' }],
     ['recipe_hash', { ...identity, recipe_hash: 'other-hash' }],
+    [
+      'authority actor',
+      { ...identity, authority: buildHeldActionAuthority(contractedChatSource) },
+    ],
+    [
+      'authority contract',
+      { ...identity, authority: buildHeldActionAuthority(selfRestrictedChatSource) },
+    ],
     [
       'config_snapshot',
       {
@@ -409,6 +443,33 @@ describe('findLiveHeldTwin', () => {
     ).resolves.toBeNull();
   });
 
+  it.each([
+    ['actor differs', contractedChatSource],
+    ['contract differs', selfRestrictedChatSource],
+  ] as const)('returns null when source authority %s', async (_label, source) => {
+    const log = auditLog();
+    await log.append(buildAnchor({ execution_source: source }));
+
+    await expect(
+      findLiveHeldTwin(
+        { auditLog: log, checkpointStore: checkpointStore(buildCheckpoint()) },
+        identity,
+      ),
+    ).resolves.toBeNull();
+  });
+
+  it('returns null when a legacy anchor has no source authority', async () => {
+    const log = auditLog();
+    await log.append(buildAnchor({ execution_source: null }));
+
+    await expect(
+      findLiveHeldTwin(
+        { auditLog: log, checkpointStore: checkpointStore(buildCheckpoint()) },
+        identity,
+      ),
+    ).resolves.toBeNull();
+  });
+
   it.each(['succeeded', 'failed', 'cancelled', 'in_doubt'] as const)(
     'returns null for terminal status %s',
     async (commit_status) => {
@@ -507,8 +568,9 @@ describe('buildHeldTwinResponse', () => {
 });
 
 describe('HELD_DEDUP_CHANNELS', () => {
-  it('includes only chat and mcp agent-resend channels', () => {
+  it('includes only chat, messenger, and mcp agent-resend channels', () => {
     expect(HELD_DEDUP_CHANNELS.has('chat')).toBe(true);
+    expect(HELD_DEDUP_CHANNELS.has('messenger')).toBe(true);
     expect(HELD_DEDUP_CHANNELS.has('mcp')).toBe(true);
 
     for (const channel of [
@@ -516,11 +578,29 @@ describe('HELD_DEDUP_CHANNELS', () => {
       'schedule',
       'webhook',
       'reception',
-      'messenger',
       'user',
       'housekeeping',
     ] as const) {
       expect(HELD_DEDUP_CHANNELS.has(channel)).toBe(false);
     }
+  });
+});
+
+describe('isHeldDedupEligibleSource', () => {
+  it('admits only the owner lane for messenger', () => {
+    const ownerSource: ExecutionSource = {
+      channel: 'messenger',
+      actor: 'user_self',
+      vendor: 'slack',
+      from: 'U-owner',
+    };
+    const contractedSource: ExecutionSource = {
+      ...ownerSource,
+      actor: 'contracted_user',
+      contract_id: 'contract-1',
+    };
+
+    expect(isHeldDedupEligibleSource(ownerSource)).toBe(true);
+    expect(isHeldDedupEligibleSource(contractedSource)).toBe(false);
   });
 });

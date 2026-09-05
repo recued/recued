@@ -96,6 +96,13 @@ describe('body_field auth — the opt-in decides, in both directions', () => {
     expect(body).toEqual({ access_token: 'access-sandbox-SECRET' });
   });
 
+  it('injects into a JSON:API request too — a pinned application/vnd.api+json body is JSON (RFC 6839)', async () => {
+    const { body } = await run({
+      method: 'POST', path: '/item/get', 'header.Content-Type': 'application/vnd.api+json', ...wants('access_token'),
+    });
+    expect(body).toEqual({ access_token: 'access-sandbox-SECRET' });
+  });
+
   it('⛔ leaves an operation that asked for NOTHING completely untouched', async () => {
     // This is the assertion the design turns on. `/link/token/create` carries no
     // access_token, and Plaid rejects the request outright if one appears.

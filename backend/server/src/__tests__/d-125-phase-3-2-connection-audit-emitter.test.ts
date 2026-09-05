@@ -22,7 +22,7 @@
  *       omitted when absent (P3.2 shell never sets them, but P4.x
  *       handlers will). */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { IngredientManifest } from '@recued/contracts';
 import type { ActivityEntry, AppendOptions, AuditEntry, AuditLogStore } from '@recued/storage';
 import type { ConnectionAuditEmission } from '@recued/ingredients';
@@ -128,6 +128,38 @@ const mkEmission = (overrides: Partial<ConnectionAuditEmission> = {}): Connectio
 // ────────────────────────────────────────────────────────────────
 
 describe('createConnectionAuditEmitter (D-125 P3.2)', () => {
+  it('delivers host-measured telemetry to a run-local observer without an audit store', async () => {
+    const registry = mkRegistry([]);
+    const observe = vi.fn();
+    const emission = mkEmission({
+      chunked_upload: {
+        outcome: 'failed',
+        chunks_sent: 2,
+        chunk_count: 4,
+        requests: 4,
+        requests_succeeded: 3,
+        requests_failed: 1,
+      },
+    });
+    const emit = createConnectionAuditEmitter(registry, undefined, observe);
+
+    await emit(emission);
+
+    expect(observe).toHaveBeenCalledWith(emission);
+  });
+
+  it('does not let a run-local observer suppress the durable audit row', async () => {
+    const { log, rows } = mkAuditLog();
+    const registry = mkRegistry([]);
+    const emit = createConnectionAuditEmitter(registry, log, () => {
+      throw new Error('observer unavailable');
+    });
+
+    await emit(mkEmission());
+
+    expect(rows).toHaveLength(1);
+  });
+
   it('maps kind → connection_<kind> action code per transport', async () => {
     const { log, rows } = mkAuditLog();
     const registry = mkRegistry([mkManifest({ slug: 'wrapper', permission: 'p' })]);
@@ -294,12 +326,14 @@ describe('createConnectionAuditEmitter (D-125 P3.2)', () => {
       bytes_out: 32,
       chunked_upload: {
         outcome: 'failed', chunks_sent: 2, chunk_count: 4, requests: 4,
+        requests_succeeded: 3, requests_failed: 1,
       },
     }));
 
     const detail = JSON.parse(rows[0]?.detail ?? '{}') as ConnectionAuditDetail;
     expect(detail.chunked_upload).toEqual({
       outcome: 'failed', chunks_sent: 2, chunk_count: 4, requests: 4,
+      requests_succeeded: 3, requests_failed: 1,
     });
     expect(detail.bytes_out).toBe(32);
   });

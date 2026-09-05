@@ -207,6 +207,7 @@ import {
   type SellerPageMount,
   type SellerSettingsUpdateCaller,
   type SellerStripeSynchronizeCaller,
+  type SellerProviderTierSynchronizeCaller,
 } from './seller-page.js';
 import type { SellerAddress } from './seller-navigation.js';
 import {
@@ -650,6 +651,7 @@ export interface BootstrapSettingsRouteOptions {
   sellerManualTierBulkAdjustCaller?: SellerManualTierBulkAdjustCaller;
   /** D-196 S4 — owner-clicked Stripe entitlement Initialize/Synchronize. */
   sellerStripeSynchronizeCaller?: SellerStripeSynchronizeCaller;
+  sellerProviderTierSynchronizeCaller?: SellerProviderTierSynchronizeCaller;
   /** D-196 §4.9 / I-7 — owner-clicked one-time paid-`llm_gateway` route-rights
    *  acknowledgment. Optional so older paired servers keep the gateway read-only. */
   sellerAcknowledgeLlmGatewayPaidCaller?: SellerAcknowledgeLlmGatewayPaidCaller;
@@ -1750,6 +1752,9 @@ export const bootstrapSettingsRoute = (
         : {}),
       ...(opts.sellerStripeSynchronizeCaller !== undefined
         ? { runSynchronizeStripeEntitlements: opts.sellerStripeSynchronizeCaller }
+        : {}),
+      ...(opts.sellerProviderTierSynchronizeCaller !== undefined
+        ? { runSynchronizeProviderTiers: opts.sellerProviderTierSynchronizeCaller }
         : {}),
       ...(opts.sellerAcknowledgeLlmGatewayPaidCaller !== undefined
         ? { runAcknowledgeLlmGatewayPaid: opts.sellerAcknowledgeLlmGatewayPaidCaller }

@@ -80,6 +80,7 @@ describe('M5 S3.1 — isLiveWarehouseEmpty (not-enrolled restore guard)', () => 
       'annotation',
       'commits',
       'checkpoints',
+      'gated_action_receipts',
       // M5 S3 — execution + user config/authoring, COUNTED (not boot-seeded)
       'audit_entries',
       'schedules',
@@ -113,7 +114,12 @@ describe('M5 S3.1 — isLiveWarehouseEmpty (not-enrolled restore guard)', () => 
     // Pin the membership so removing any of them turns this red. (That their
     // rows then don't count is the denylist's contract — proven end-to-end by
     // the `recipes` test below.)
-    for (const t of ['collection_instances', 'audit_activities', 'event_triggers']) {
+    for (const t of [
+      'collection_instances',
+      'audit_activities',
+      'event_triggers',
+      'gated_action_change_sequence',
+    ]) {
       expect(RESTORE_GUARD_NON_USER_TABLES.has(t)).toBe(true);
     }
     // And a fresh-composed db (these tables present) still reads empty.

@@ -25,6 +25,7 @@ import {
 } from './apply-orchestrator.js';
 import { releaseIdentityOf } from './release-check.js';
 import { unreplayedEntries, type UpdateLedger, type UpdateLedgerEntry } from './update-ledger.js';
+import type { UpdateOwnerAlertSink } from './owner-alert.js';
 
 /** The audit surface the replay needs — a narrow slice of the D-120 store. */
 export interface UpdateAuditSink {
@@ -45,8 +46,16 @@ export interface BootReconcilePorts {
   currentVersion: string;
   /** D-120 audit sink for the ledger→audit replay (absent → replay skipped). */
   auditLog?: UpdateAuditSink;
-  /** URGENT operator notify on an auto-revert (best-effort; never throws). */
-  notify?: (message: string) => void;
+  /** Owner-facing one-way notification. A committed update is surfaced when
+   * this healthy boot appends its terminal; a prospective auto-revert is
+   * surfaced while SQLite is still open, before lifecycle drains/restarts.
+   * Best-effort: a throwing sink is swallowed and can never veto reconciliation. */
+  ownerAlert?: UpdateOwnerAlertSink;
+  /** Local post-drain report. This is deliberately NOT the owner notification:
+   * the database and notification settings store are already closed inside the
+   * restart callback, so wiring `notificationBlock.notify` here would look live
+   * in tests and fail on the only production path that matters. */
+  postDrainLog?: (message: string) => void;
 }
 
 export type BootReconcileOutcome =
@@ -63,14 +72,51 @@ export type BootReconcileOutcome =
 /** Activity-id prefix so the replay can read back which ledger entries it has
  *  already mirrored (idempotency, I-3) — `update:<ledger-entry-id>`. */
 const REPLAY_ID_PREFIX = 'update:';
+const SUPERVISOR_REVERT_DETAIL_PREFIX = 'supervisor revert: ';
+
+/** Start a best-effort notification without giving it authority over boot or
+ * recovery. The production sink is fire-and-forget; this catch also protects
+ * unit/minimal compositions that supply a synchronous callback. */
+const signalOwnerAlert = (
+  ownerAlert: UpdateOwnerAlertSink | undefined,
+  alert: Parameters<UpdateOwnerAlertSink>[0],
+): void => {
+  try { ownerAlert?.(alert); } catch { /* reach must never become authority */ }
+};
+
+/** An `apply_reverted` is normally a pre-boot staging failure and stays only in
+ * the forensic ledger. The outer supervisor is the exception: it restored a
+ * release that could not launch at all, so its explicitly-labelled terminal is
+ * a user-meaningful rollback and the first healthy boot must surface it. */
+const isSupervisorRevert = (entry: UpdateLedgerEntry): boolean =>
+  entry.kind === 'apply_reverted'
+  && entry.trigger === 'revert'
+  && (
+    entry.recovery_source === 'outer-supervisor'
+    // Additive compatibility: a terminal may have been written by the previous
+    // binary immediately before this newly-updated binary first reads it.
+    || (
+      entry.recovery_source === undefined
+      && entry.detail?.startsWith(SUPERVISOR_REVERT_DETAIL_PREFIX) === true
+    )
+  );
 
 /** Replay the ledger's terminal apply/rollback events into the audit log,
- *  idempotent on the ledger entry id. Only `apply_committed` / `rolled_back`
- *  surface as user-meaningful version-history rows; the intermediate
- *  (`started` / `staged` / `reverted` / `snapshot_taken`) events stay in the
- *  ledger as the forensic source of truth. Best-effort: an audit write failure
- *  never blocks boot. */
-const replayLedgerIntoAudit = async (ledger: UpdateLedger, auditLog: UpdateAuditSink): Promise<void> => {
+ *  idempotent on the ledger entry id. `apply_committed`, `rolled_back`, and the
+ *  explicitly-labelled outer-supervisor `apply_reverted` terminal surface as
+ *  user-meaningful version-history rows; other intermediate/reverted events
+ *  stay only in the forensic ledger. An unreplayed supervisor terminal also
+ *  raises its one-way owner alert here, on the first healthy boot after the
+ *  previous binary was restored. A committed apply is deliberately not
+ *  announced from historical replay: after a later rollback restores an older
+ *  SQLite snapshot, its old audit row can be absent even though that release is
+ *  no longer live. The commit branch announces only the terminal it appends on
+ *  this healthy boot. Best-effort: an audit write failure never blocks boot. */
+const replayLedgerIntoAudit = async (
+  ledger: UpdateLedger,
+  auditLog: UpdateAuditSink,
+  ownerAlert?: UpdateOwnerAlertSink,
+): Promise<void> => {
   let seen: ReadonlySet<string>;
   try {
     const activities = await auditLog.listActivities();
@@ -84,8 +130,25 @@ const replayLedgerIntoAudit = async (ledger: UpdateLedger, auditLog: UpdateAudit
   }
   const fresh = unreplayedEntries(ledger, seen);
   for (const e of fresh) {
-    const action = e.kind === 'apply_committed' ? 'update_applied' : e.kind === 'rolled_back' ? 'update_rolled_back' : null;
+    const supervisorRevert = isSupervisorRevert(e);
+    const action = e.kind === 'apply_committed'
+      ? 'update_applied'
+      : e.kind === 'rolled_back' || supervisorRevert
+        ? 'update_rolled_back'
+        : null;
     if (!action) continue;
+    if (supervisorRevert) {
+      const reason = e.detail?.startsWith(SUPERVISOR_REVERT_DETAIL_PREFIX)
+        ? e.detail.slice(SUPERVISOR_REVERT_DETAIL_PREFIX.length)
+        : e.detail ?? 'the outer supervisor restored the previous release';
+      signalOwnerAlert(ownerAlert, {
+        kind: 'supervisor-revert-complete',
+        release_identity: e.release_identity,
+        from_version: e.from_version,
+        to_version: e.to_version,
+        reason,
+      });
+    }
     // `target` carries the release identity (`<channel>:<version>`); the full
     // version-range + channel + trigger attribution rides in a JSON `detail`
     // (the ActivityEntry shape has no dedicated fields — same convention as the
@@ -116,7 +179,9 @@ const replayLedgerIntoAudit = async (ledger: UpdateLedger, auditLog: UpdateAudit
 /** Perform the auto-revert mechanics: restore the pre-migration snapshot (when
  *  the staged apply migrated + a snapshot exists), swap `recued.old` back, append
  *  a `rolled_back` terminal (releases the in-flight lock), reset the boot-failure
- *  counter, URGENT-notify, and request a restart back into the prior binary. */
+ *  counter, report the exact local result, and request a restart back into the
+ *  prior binary. The owner-facing alert starts before this function is called,
+ *  while the notification block's SQLite-backed settings are still readable. */
 const performAutoRevert = (
   deps: BootReconcilePorts,
   staged: UpdateLedgerEntry,
@@ -158,8 +223,8 @@ const performAutoRevert = (
   // flight, and the failed revert was never retried. Reported with exactly that
   // reproduction (first=auto-revert, second=continue).
   //
-  // ⇒ The terminal, the counter reset and the notify all move INSIDE the
-  // callback and all depend on `drainOk`. On a failed drain the staged entry
+  // ⇒ The terminal, the counter reset and the exact-result log all move INSIDE
+  // the callback and all depend on `drainOk`. On a failed drain the staged entry
   // stays UNTERMINATED, which is what actually makes the next boot reconcile it.
   const performDiskRevert = (drainOk: boolean): void => {
     if (!drainOk) {
@@ -169,7 +234,7 @@ const performAutoRevert = (
         + 'stays in flight so the next boot reconciles it again.',
       );
       try {
-        deps.notify?.(
+        deps.postDrainLog?.(
           `Update to ${staged.to_version} failed boot health, but the automatic rollback could `
           + 'not complete safely (the restart drain did not finish). The server is still on the '
           + 'new release; it will try again on the next boot.',
@@ -205,7 +270,7 @@ const performAutoRevert = (
           + 'so the next boot reconciles it again.',
         );
         try {
-          deps.notify?.(
+          deps.postDrainLog?.(
             `Update to ${staged.to_version} failed boot health, but the automatic rollback could `
             + 'not start because another update is running on this install. The server is still '
             + 'on the new release; it will try again on the next boot.',
@@ -241,14 +306,15 @@ const performAutoRevert = (
     });
     ports.bootFailureCounter.reset();
     try {
-      deps.notify?.(
+      deps.postDrainLog?.(
         `Update to ${staged.to_version} failed boot health and was rolled back (${reason}). `
         + 'Restarting on the prior release.',
       );
     } catch { /* swallow — the revert is done; the restart is what matters */ }
   };
-  // Notify is best-effort and MUST NOT block the restart — a throwing notifier
-  // would otherwise leave a fully-reverted install that never restarts.
+  // The precise post-drain result can only be logged here. The owner-facing
+  // notification was started before this request so a closed SQLite handle
+  // cannot make a correctly-wired notification block inert.
   ports.requestRestart(performDiskRevert);
 };
 
@@ -276,7 +342,14 @@ export const runUpdateBootReconcile = async (deps: BootReconcilePorts): Promise<
           ? 'the live binary is unchanged but the durable manual rollback journal cannot prove whether its database snapshot was restored'
           : 'the live binary matches neither generation recorded by the durable manual rollback journal',
       };
-      if (deps.auditLog) await replayLedgerIntoAudit(ports.ledger, deps.auditLog);
+      signalOwnerAlert(deps.ownerAlert, {
+        kind: 'manual-rollback-recovery-failed',
+        release_identity: outcome.releaseIdentity,
+        reason: outcome.reason,
+      });
+      if (deps.auditLog) {
+        await replayLedgerIntoAudit(ports.ledger, deps.auditLog, deps.ownerAlert);
+      }
       return outcome;
     }
     if (!alreadyRecorded) {
@@ -323,7 +396,7 @@ export const runUpdateBootReconcile = async (deps: BootReconcilePorts): Promise<
       // in-flight `apply_started` is still the lock, so read it before the
       // commit resolves it).
       const staged = deriveInFlightEntry(ports.ledger);
-      ports.ledger.append({
+      const committed: UpdateLedgerEntry = {
         id: ports.newEntryId(),
         kind: 'apply_committed',
         at: ports.now(),
@@ -343,6 +416,20 @@ export const runUpdateBootReconcile = async (deps: BootReconcilePorts): Promise<
         // entry the replay ignores meant the audited half of "explicit, confirmed,
         // AUDITED" never reached the row an owner actually reads.
         ...(staged?.detail !== undefined ? { detail: staged.detail } : {}),
+      };
+      ports.ledger.append(committed);
+      // Announce only the terminal this healthy boot just made true. Audit
+      // replay can revisit old commits after a rollback restores an older
+      // SQLite snapshot; announcing those would misdescribe historical success
+      // as the current outcome. The durable terminal resolves the in-flight
+      // operation, so later boots do not enter this branch again.
+      signalOwnerAlert(deps.ownerAlert, {
+        kind: 'update-applied',
+        release_identity: committed.release_identity,
+        from_version: committed.from_version,
+        to_version: committed.to_version,
+        channel: committed.channel,
+        trigger: committed.trigger,
       });
       // ⛔⛔ THE OPERATION IS ONLY NOW OVER, so this is where the parked
       // generation goes. The swap kept it deliberately: until this boot proved
@@ -356,7 +443,20 @@ export const runUpdateBootReconcile = async (deps: BootReconcilePorts): Promise<
     }
     case 'auto-revert': {
       const staged = deriveInFlightEntry(ports.ledger);
-      if (staged) performAutoRevert(deps, staged, decision.reason);
+      if (staged) {
+        // ⛔ BEFORE requestRestart. Its drain closes SQLite before invoking the
+        // disk callback, and the notification block reads settings from that
+        // database. Starting the alert afterwards would be production-dead even
+        // though an injected unit notifier worked.
+        signalOwnerAlert(deps.ownerAlert, {
+          kind: 'auto-revert-starting',
+          release_identity: staged.release_identity,
+          from_version: staged.from_version,
+          to_version: staged.to_version,
+          reason: decision.reason,
+        });
+        performAutoRevert(deps, staged, decision.reason);
+      }
       outcome = { action: 'auto-revert', releaseIdentity: decision.releaseIdentity, reason: decision.reason };
       break;
     }
@@ -373,7 +473,8 @@ export const runUpdateBootReconcile = async (deps: BootReconcilePorts): Promise<
           trigger: 'revert',
           release_identity: staged.release_identity,
           migration: staged.migration ?? false,
-          detail: 'reconciled from disk: the previous binary is already live, so only the supervisor revert terminal was missing',
+          recovery_source: 'outer-supervisor',
+          detail: `${SUPERVISOR_REVERT_DETAIL_PREFIX}the previous binary was already live; repaired its missing recovery receipt`,
         });
       }
       try { ports.dropRevertJournal?.(); } catch { /* best-effort cleanup */ }
@@ -391,6 +492,11 @@ export const runUpdateBootReconcile = async (deps: BootReconcilePorts): Promise<
         releaseIdentity: decision.releaseIdentity,
         reason: decision.reason,
       };
+      signalOwnerAlert(deps.ownerAlert, {
+        kind: 'webclient-recovery-failed',
+        release_identity: outcome.releaseIdentity,
+        reason: outcome.reason,
+      });
       break;
     case 'continue':
       outcome = manualRecoveryOutcome ?? { action: 'continue' };
@@ -398,6 +504,8 @@ export const runUpdateBootReconcile = async (deps: BootReconcilePorts): Promise<
   }
 
   // Replay AFTER the decision so a commit/rollback this boot also mirrors out.
-  if (deps.auditLog) await replayLedgerIntoAudit(ports.ledger, deps.auditLog);
+  if (deps.auditLog) {
+    await replayLedgerIntoAudit(ports.ledger, deps.auditLog, deps.ownerAlert);
+  }
   return outcome;
 };

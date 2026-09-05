@@ -26,8 +26,10 @@ import {
   type RecallSearchBackend,
 } from './chat-recall-search.js';
 import {
+  resolveContractRecallCorpusScope,
+  resolveRecallCorpusScopeForSource,
   resolveOwnerRecallCorpusScope,
-  type OwnerRecallCorpusScope,
+  type RecallCorpusScope,
 } from './chat-recall-scope.js';
 import { insertToolEntryAfterTier1 } from './chat-tools-search.js';
 import type { ContractDefinitionStore } from './storage/contract-definition-store.js';
@@ -848,13 +850,24 @@ const createRecallSearchHandler = (
       args.sources ?? ['interaction', 'memory'],
     );
 
-    let interactionScope: OwnerRecallCorpusScope | null = null;
+    let interactionScope: RecallCorpusScope | null = null;
     try {
       const definitions = options.getContractDefinitionStore();
       // `state.turn_source`, never `ctx.execution_source` — the dispatch ctx
       // defaults an absent source to the owner (`registerRecallTurnSource`).
+      //
+      // ⛔ OWNER FIRST, AND THE ORDER IS LOAD-BEARING. The two resolvers are
+      //   mutually exclusive by construction — `resolveContractRecallCorpus-
+      //   Scope` rejects the owner sentinel and `resolveOwnerRecallCorpusScope`
+      //   requires it — so this cannot silently prefer the wrong corpus. Trying
+      //   the door first would still be correct, but stating the owner path
+      //   first keeps the pre-existing behaviour textually unchanged.
+      //
+      // ⚠ A caller that resolves to NEITHER (messenger, a dead door, an
+      //   anonymous public dispatch, a malformed source) gets `null` and the
+      //   lane stays closed — the same fail-closed default as before.
       interactionScope = definitions && state.turn_source !== undefined
-        ? resolveOwnerRecallCorpusScope(
+        ? resolveRecallCorpusScopeForSource(
             state.turn_source,
             definitions,
             options.now ?? Date.now,
@@ -884,6 +897,7 @@ const createRecallSearchHandler = (
       }
       const near = await options.backend.neighbours({
         anchor_id: nearId,
+        scope: interactionScope,
         ...(nearNext > 0 ? { next: nearNext } : {}),
         ...(nearPrev > 0 ? { prev: nearPrev } : {}),
       });
@@ -900,7 +914,9 @@ const createRecallSearchHandler = (
         let anchorExists = true;
         try {
           anchorExists =
-            (await options.backend.fetchExact(nearId, interactionScope)).status
+            (await options.backend.fetchExact(
+              nearId, interactionScope, ctx.session_id as string,
+            )).status
               !== 'not_found';
         } catch {
           anchorExists = true;
@@ -937,6 +953,7 @@ const createRecallSearchHandler = (
         exact = await options.backend.fetchExact(
           args.item_id,
           interactionScope,
+          ctx.session_id as string,
         );
       } catch {
         return incompleteEmpty();
@@ -971,11 +988,28 @@ const createRecallSearchHandler = (
       if (historical) {
         state.selected_historical_session_ids.add(exact.match.session_id);
       }
+      // The pair sibling rides back with the row that was asked for: reaching
+      // one half of a held dispatch must return both, on this path exactly as
+      // on the search path.
+      const sessionId = ctx.session_id as string;
+      const siblings = (exact.siblings ?? []).map((sibling) => {
+        const pp = interactionMatch(
+          sibling, 1, sessionId, RECALL_INTERACTION_EXACT_MAX_BYTES,
+        );
+        state.returned_item_ids.add(pp.item_id);
+        registerJoinedPiece(state, {
+          session_id: sibling.session_id,
+          ts: sibling.timestamp,
+          message_id: sibling.item_id,
+          content: pp.content,
+        });
+        return pp;
+      });
       return {
         ok: true,
         result: {
           ok: true,
-          matches: [projected],
+          matches: [projected, ...siblings],
           exhausted: true,
           partial: false,
         } satisfies RecallSearchResult,
@@ -1064,6 +1098,15 @@ const createRecallSearchHandler = (
         const backend = await options.backend.search({
           ...(normalizedQuery ? { query: normalizedQuery } : {}),
           scope: interactionScope,
+          // ⛔ TOOL ROWS ARE TASK CONTEXT, and the task is THIS session. The
+          //   class exists so a model can recover what a tool returned after a
+          //   turn boundary or a budget trim took it away — not so a later,
+          //   unrelated conversation can read a three-week-old `mail.search`
+          //   snapshot as if it were current. User/assistant rows stay
+          //   corpus-wide: a STATEMENT stays true, an OBSERVATION does not.
+          ...(typeof ctx.session_id === 'string' && ctx.session_id.length > 0
+            ? { tool_session_id: ctx.session_id }
+            : {}),
           ...(args.kinds !== undefined
             ? { kinds: new Set(args.kinds) }
             : {}),

@@ -13,8 +13,10 @@ import {
 } from '@recued/gateway';
 import type { NotificationBlock } from '@recued/notification';
 import {
+  buildAuditEntry,
   createAuditLogStore,
   createCheckpointStore,
+  createInMemoryCollection,
   type ActivityEntry,
   type AuditEntry,
   type AuditLogStore,
@@ -46,6 +48,11 @@ import {
   recoverNotificationBlockAtBoot,
 } from '../composition/bin/wire-notification-block.js';
 import type { ExecuteHandlerDeps } from '../execute-handler.js';
+import {
+  createGatedActionStore,
+  type GatedActionRecord,
+  type GatedActionStore,
+} from '../gated-action-store.js';
 import { createSQLiteCollection } from '../sqlite-collection.js';
 import { createBlobStore } from '../storage/blob-store.js';
 import {
@@ -59,8 +66,12 @@ const zeroSweepResult = () => ({
   inspected: 0,
   raised: 0,
   alreadyPaired: 0,
+  leftPassive: 0,
   failed: 0,
   orphaned: 0,
+  superseded: 0,
+  heldForPeer: 0,
+  repairedPeerFailures: 0,
   terminal: 0,
 });
 
@@ -139,6 +150,8 @@ const recoveryBlock = (
   recoverPendingAsks: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue(undefined),
 ): NotificationBlock & { recoverPendingAsks: ReturnType<typeof vi.fn> } => ({
   recoverPendingAsks,
+  listOpenAsks: vi.fn().mockResolvedValue([]),
+  listUnresolvedAsks: vi.fn().mockResolvedValue([]),
 }) as unknown as NotificationBlock & { recoverPendingAsks: ReturnType<typeof vi.fn> };
 
 const stubCheckpointStore = (): CheckpointStore =>
@@ -307,7 +320,13 @@ describe('composeNotificationBlock', () => {
     expect(getExecuteDeps).not.toHaveBeenCalled();
   });
 
-  it('registers both gateway handler kinds on the composed block', () => {
+  /** ⚠ The unrunnable-pack dismiss handler used to be asserted here too. It is
+   *  GONE, not forgotten: D-259's boot pack finding was an `ask` only to borrow
+   *  the ask store's durability, and a one-option ask needed a no-op answer
+   *  consumer registered purely so a dismissal could complete. It is a `notify`
+   *  now — nothing to answer, so nothing to register. The durable half moved to
+   *  `packs.unrunnable`, which re-derives the condition per call. */
+  it('registers the gateway handlers', () => {
     const { block } = composeHarness();
 
     expect(() => block.registerAskHandler(PREFLIGHT_HANDLER_KIND, vi.fn()))
@@ -354,6 +373,97 @@ describe('composeNotificationBlock', () => {
 });
 
 describe('recoverNotificationBlockAtBoot', () => {
+  it('freezes interrupted dispatches before replaying answered asks', async () => {
+    const order: string[] = [];
+    const block = recoveryBlock(vi.fn(async () => {
+      order.push('recover');
+    }));
+    const gatedActionStore = {
+      list: vi.fn(async () => [{ action_ref: 'action-1', status: 'dispatching' }]),
+      finish: vi.fn(async (_actionRef, input) => {
+        order.push('receipt');
+        return { status: input.status };
+      }),
+    } as unknown as GatedActionStore;
+    sweepAwaitingCheckpointsMock.mockImplementationOnce(async () => {
+      order.push('sweep');
+      return zeroSweepResult();
+    });
+
+    await recoverNotificationBlockAtBoot({
+      block,
+      checkpointStore: stubCheckpointStore(),
+      auditLog: stubAuditLog(),
+      gatedActionStore,
+    });
+
+    expect(order).toEqual(['receipt', 'recover', 'sweep']);
+    expect(gatedActionStore.finish).toHaveBeenCalledWith(
+      'action-1',
+      expect.objectContaining({ status: 'in_doubt' }),
+    );
+  });
+
+  it('repairs a terminal peer-delivery receipt before generic restart reconciliation', async () => {
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-peer-crash', now: () => NOW },
+    );
+    const held = await actions.createHeld({
+      run_id: 'run-peer-crash',
+      recipe_id: 'recipe-1',
+      gated_step_id: 'peer-step',
+      checkpoint_id: 'checkpoint-peer',
+    });
+    await actions.markDispatching(held.action_ref);
+    const log = stubAuditLog();
+    vi.mocked(log.get).mockResolvedValue(buildAuditEntry({
+      recipe_id: 'recipe-1',
+      recipe_hash: 'hash-1',
+      commit_status: 'failed',
+      duration_ms: 20,
+      errors: [{
+        error_id: 'peer-delivery-failed',
+        code: 'INGREDIENT_ADAPTER_ALL_FAILED',
+        message: 'The peer outbox was unavailable.',
+        severity: 'fatal',
+        source: {
+          recipe_id: 'recipe-1',
+          step_id: 'peer-step',
+          ingredient_slug: 'peer-ask',
+        },
+        details: {
+          exchange_ref: 'exchange-1',
+          reason: 'peer_outbox_unavailable',
+        },
+        timestamp: new Date(NOW).toISOString(),
+        retryable: false,
+      }],
+      config_snapshot: {},
+      trigger_url: null,
+      trigger_source: 'manual',
+      instance_id: 'server-1',
+      run_id: 'run-peer-crash',
+      now: NOW,
+    }));
+
+    await recoverNotificationBlockAtBoot({
+      block: recoveryBlock(),
+      checkpointStore: stubCheckpointStore(),
+      auditLog: log,
+      gatedActionStore: actions,
+    });
+
+    expect(await actions.get(held.action_ref)).toMatchObject({
+      status: 'failed',
+      result: {
+        exchange_ref: 'exchange-1',
+        reason: 'peer_outbox_unavailable',
+        status: 'failed',
+      },
+    });
+  });
+
   it('runs recoverPendingAsks before sweeping awaiting checkpoints', async () => {
     const order: string[] = [];
     const block = recoveryBlock(vi.fn(async () => {
@@ -378,7 +488,11 @@ describe('recoverNotificationBlockAtBoot', () => {
       checkpointStore: checkpoints,
       auditLog: log,
       notifier: block,
+      listUnresolvedAsks: expect.any(Function),
     });
+    const sweepDeps = sweepAwaitingCheckpointsMock.mock.calls[0]![0];
+    await sweepDeps.listUnresolvedAsks();
+    expect(block.listUnresolvedAsks).toHaveBeenCalledTimes(1);
   });
 
   it('swallows recoverPendingAsks failures and still runs the sweep', async () => {

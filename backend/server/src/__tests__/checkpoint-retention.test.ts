@@ -26,6 +26,11 @@ import {
   GARBAGE_GRACE_MS,
   type CheckpointRetentionAskHooks,
 } from '../checkpoint-retention.js';
+import {
+  createGatedActionStore,
+  type GatedActionRecord,
+  type GatedActionStore,
+} from '../gated-action-store.js';
 
 const NOW = Date.parse('2026-06-10T18:00:00.000Z');
 const DAY_MS = 86_400_000;
@@ -60,6 +65,32 @@ const anchor = (overrides: Partial<AuditEntry> = {}): AuditEntry => ({
   ...overrides,
 });
 
+const rawCheckpoint = (overrides: Partial<Checkpoint> = {}): Checkpoint => ({
+  checkpoint_id: 'cp-raw',
+  run_id: 'run-raw',
+  recipe_id: undefined,
+  gated_step_id: undefined,
+  step_state: {},
+  raw_op: {
+    op_id: 'seller.mail.send',
+    catalog_slug: 'mail',
+    operation: 'send',
+    connection_name: 'work-mail',
+    op_args: { to: 'team@example.test' },
+    execution_source: {
+      channel: 'mcp',
+      actor: 'contracted_user',
+      agent_id: 'agent-1',
+      tool_call_id: 'call-1',
+      mcp_token_id: 'token-1',
+      contract_id: 'contract-1',
+    },
+    risk_tier: 'write',
+  },
+  created_at: NOW - 25 * 3_600_000,
+  ...overrides,
+});
+
 interface Harness {
   retention: ReturnType<typeof createCheckpointRetention>;
   checkpointStore: ReturnType<typeof createCheckpointStore>;
@@ -67,6 +98,7 @@ interface Harness {
   activities: Collection<ActivityEntry>;
   getAsk: ReturnType<typeof vi.fn>;
   cancelAsk: ReturnType<typeof vi.fn>;
+  listUnresolvedAsks: ReturnType<typeof vi.fn>;
   anchorGetSpy: ReturnType<typeof vi.fn>;
 }
 
@@ -76,6 +108,13 @@ const harness = (opts: {
   askHooks?: CheckpointRetentionAskHooks | 'absent';
   staleAfterDays?: number | null;
   onExpired?: (entry: AuditEntry) => Promise<void> | void;
+  gatedActionStore?: GatedActionStore;
+  unresolvedAsks?: Array<{
+    ask_id: string;
+    status: 'open' | 'answered' | 'handled';
+    handler_kind: string;
+    handler_payload: Record<string, unknown>;
+  }>;
 } = {}): Harness => {
   const entries = createInMemoryCollection<AuditEntry>();
   const activities = createInMemoryCollection<ActivityEntry>();
@@ -91,13 +130,17 @@ const harness = (opts: {
       : opts.ask,
   );
   const cancelAsk = vi.fn().mockResolvedValue(opts.cancelOutcome ?? 'cancelled');
+  const listUnresolvedAsks = vi.fn().mockResolvedValue(opts.unresolvedAsks ?? []);
   const askHooks: CheckpointRetentionAskHooks | undefined =
     opts.askHooks === 'absent'
       ? undefined
-      : opts.askHooks ?? { getAsk, cancelAsk };
+      : opts.askHooks ?? { getAsk, cancelAsk, listUnresolvedAsks };
   const retention = createCheckpointRetention({
     checkpointStore,
     auditLog: spiedAuditLog,
+    ...(opts.gatedActionStore !== undefined
+      ? { gatedActionStore: opts.gatedActionStore }
+      : {}),
     ...(askHooks !== undefined ? { askHooks } : {}),
     now: () => NOW,
     config: () => ({
@@ -113,6 +156,7 @@ const harness = (opts: {
     activities,
     getAsk,
     cancelAsk,
+    listUnresolvedAsks,
     anchorGetSpy,
   };
 };
@@ -183,6 +227,95 @@ describe('checkpoint-retention — staleness guard', () => {
     expect(acts).toHaveLength(1);
     expect(acts[0]?.action).toBe('checkpoint_retention_prune');
     expect(acts[0]?.detail).toContain('expired=1');
+  });
+
+  it('terminalizes the exact owner receipt before deleting a stale recipe checkpoint', async () => {
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-recipe-expiry', now: () => NOW },
+    );
+    await actions.createHeld({
+      run_id: 'run-1',
+      recipe_id: 'recipe-1',
+      gated_step_id: 'gated_step',
+      checkpoint_id: 'cp-1',
+      settlement_mode: 'returned_result',
+    });
+    const h = harness({ gatedActionStore: actions });
+    await seed(h, [checkpoint({
+      preflight_context: { gated_action_settlement_mode: 'returned_result' },
+    })], [anchor()]);
+
+    const result = await h.retention.run();
+
+    expect(result).toMatchObject({ expired: 1, failed: 0 });
+    expect(await h.checkpointStore.get('cp-1')).toBeNull();
+    expect(await actions.get('action-recipe-expiry')).toMatchObject({
+      status: 'cancelled',
+      result: {
+        code: 'RECIPE_APPROVAL_TIMEOUT',
+        checkpoint_id: 'cp-1',
+        step_id: 'gated_step',
+      },
+      observed: { items: 1, succeeded: 0, failed: 0 },
+    });
+  });
+
+  it('repairs audit-first expiry after receipt settlement failed, then deletes the checkpoint', async () => {
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-recipe-repair', now: () => NOW },
+    );
+    await actions.createHeld({
+      run_id: 'run-1',
+      recipe_id: 'recipe-1',
+      gated_step_id: 'gated_step',
+      checkpoint_id: 'cp-1',
+      settlement_mode: 'returned_result',
+    });
+    vi.spyOn(actions, 'finish').mockRejectedValueOnce(new Error('receipt disk busy'));
+    const h = harness({ gatedActionStore: actions });
+    await seed(h, [checkpoint({
+      preflight_context: { gated_action_settlement_mode: 'returned_result' },
+    })], [anchor()]);
+
+    const first = await h.retention.run();
+
+    expect(first).toMatchObject({ expired: 0, failed: 1 });
+    expect((await h.auditLog.get('run-1'))?.errors?.[0]).toMatchObject({
+      code: 'RECIPE_APPROVAL_TIMEOUT',
+      details: { checkpoint_id: 'cp-1' },
+    });
+    expect(await h.checkpointStore.get('cp-1')).not.toBeNull();
+    expect(await actions.get('action-recipe-repair')).toMatchObject({
+      status: 'awaiting_approval',
+    });
+
+    const second = await h.retention.run();
+
+    expect(second).toMatchObject({ expired: 1, failed: 0 });
+    expect(await h.checkpointStore.get('cp-1')).toBeNull();
+    expect(await actions.get('action-recipe-repair')).toMatchObject({
+      status: 'cancelled',
+      result: { code: 'RECIPE_APPROVAL_TIMEOUT', checkpoint_id: 'cp-1' },
+    });
+  });
+
+  it('keeps a marked checkpoint when its exact receipt is missing', async () => {
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { now: () => NOW },
+    );
+    const h = harness({ gatedActionStore: actions });
+    await seed(h, [checkpoint({
+      preflight_context: { gated_action_settlement_mode: 'returned_result' },
+    })], [anchor()]);
+
+    const result = await h.retention.run();
+
+    expect(result).toMatchObject({ expired: 0, failed: 1 });
+    expect(await h.checkpointStore.get('cp-1')).not.toBeNull();
+    expect((await h.auditLog.get('run-1'))?.commit_status).toBe('awaiting_approval');
   });
 
   it('NEVER expires an answered ask, regardless of age — the answer path owns the checkpoint', async () => {
@@ -438,6 +571,77 @@ describe('checkpoint-retention — staleness guard', () => {
 
     expect(result).toMatchObject({ inspected: 1, expired: 0, deferred: 0 });
     expect(await h.checkpointStore.get('cp-1')).not.toBeNull();
+  });
+});
+
+describe('checkpoint-retention — anchorless raw-op holds', () => {
+  const rawAsk = (status: 'open' | 'answered') => ({
+    ask_id: 'ask-raw',
+    status,
+    handler_kind: 'gateway.preflight',
+    handler_payload: { checkpoint_id: 'cp-raw' },
+  });
+
+  it('keeps a live raw-op approval past the generic 24-hour garbage grace', async () => {
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-raw-live', now: () => NOW },
+    );
+    const h = harness({
+      gatedActionStore: actions,
+      unresolvedAsks: [rawAsk('open')],
+      ask: { status: 'open', handler_payload: { checkpoint_id: 'cp-raw' } },
+    });
+    await seed(h, [rawCheckpoint()], []);
+
+    const result = await h.retention.run();
+
+    expect(result).toMatchObject({ expired: 0, garbage_collected: 0, failed: 0 });
+    expect(await h.checkpointStore.get('cp-raw')).not.toBeNull();
+    expect(await actions.getByCheckpoint('cp-raw')).toMatchObject({
+      status: 'awaiting_approval', current_ask_id: 'ask-raw',
+    });
+    expect(h.cancelAsk).not.toHaveBeenCalled();
+  });
+
+  it('never expires a raw-op ask whose owner answer is awaiting dispatch', async () => {
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-raw-answered', now: () => NOW },
+    );
+    const h = harness({
+      gatedActionStore: actions,
+      unresolvedAsks: [rawAsk('answered')],
+      ask: { status: 'answered', handler_payload: { checkpoint_id: 'cp-raw' } },
+    });
+    await seed(h, [rawCheckpoint({ created_at: NOW - 40 * DAY_MS })], []);
+
+    const result = await h.retention.run();
+
+    expect(result).toMatchObject({ expired: 0, deferred: 1, failed: 0 });
+    expect(await h.checkpointStore.get('cp-raw')).not.toBeNull();
+    expect(await actions.getByCheckpoint('cp-raw')).toMatchObject({
+      status: 'awaiting_approval', current_ask_id: 'ask-raw',
+    });
+    expect(h.cancelAsk).not.toHaveBeenCalled();
+  });
+
+  it('expires a genuinely orphaned raw-op hold through its receipt, not garbage GC', async () => {
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-raw-orphan', now: () => NOW },
+    );
+    const h = harness({ gatedActionStore: actions, unresolvedAsks: [] });
+    await seed(h, [rawCheckpoint({ created_at: NOW - 40 * DAY_MS })], []);
+
+    const result = await h.retention.run();
+
+    expect(result).toMatchObject({ expired: 1, garbage_collected: 0, failed: 0 });
+    expect(await h.checkpointStore.get('cp-raw')).toBeNull();
+    expect(await actions.getBySubject('run-raw', 'raw_op')).toMatchObject({
+      status: 'cancelled',
+      result: { code: 'RECIPE_APPROVAL_TIMEOUT', op_id: 'seller.mail.send' },
+    });
   });
 });
 

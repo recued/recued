@@ -23,6 +23,7 @@ import type {
 import type {
   ReceptionLookupExpirySweepDeps,
 } from '../reception-lookup-expiry-sweep.js';
+import type { GatedActionStore } from '../gated-action-store.js';
 
 export interface StartRetentionPrunersOptions {
   readonly backgroundServices: BackgroundServiceRegistry;
@@ -50,9 +51,13 @@ export interface StartRetentionPrunersOptions {
    *  missing block skips prompt bookkeeping only). */
   readonly checkpointStore: CheckpointStore | undefined;
   readonly auditLog: AuditLogStore | undefined;
+  readonly gatedActionStore?: GatedActionStore | undefined;
   readonly executionCaseLifecycle: ExecutionCaseLifecycle | undefined;
   readonly notificationBlock:
-    | Pick<NotificationBlock, 'getAsk' | 'cancelAsk' | 'pruneHandledAsks' | 'notify'>
+    | Pick<
+        NotificationBlock,
+        'getAsk' | 'listUnresolvedAsks' | 'cancelAsk' | 'pruneHandledAsks' | 'notify'
+      >
     | undefined;
   /** D-240 slice 4 — the reception credential store (stamp + the purge that
    *  D-210 shipped without a caller) and the record-completion reader the stamp

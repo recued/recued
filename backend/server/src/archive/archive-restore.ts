@@ -98,6 +98,7 @@ import { stageRestoreProvenanceMarker } from './restore-provenance.js';
 import { restoreBlobScratchPath } from './archive-scratch.js';
 import { fsyncDir, fsyncFile } from '../durable-fs.js';
 import { resolveServerBundlePath } from '../server-bundle-store.js';
+import { createSqliteGatedActionChangeClock } from '../gated-action-store.js';
 import {
   commitPreparedServerBundleSwap,
   prepareServerBundleSwap,
@@ -745,6 +746,43 @@ const localizeRestoredServerBundle = async (
   return Buffer.from(serverBundleToJSON(rebound), 'utf8');
 };
 
+/** Give a fully authenticated staged database a new receipt lineage before
+ * any rename can make it live. The reserved floor is written into the same
+ * SQLite main file as the restored receipts, so a client holding a cursor from
+ * the displaced realm can distinguish restore rewind from an ordinary boot. */
+const rotateStagedGatedActionEpoch = async (
+  stagedDbPath: string,
+  serverBundle: ServerBundle | null,
+  recoveryEntropy: Uint8Array,
+): Promise<void> => {
+  const databaseKey = serverBundle
+    ? await deriveDatabaseKeyFromRecoveryEntropy(serverBundle, recoveryEntropy)
+    : null;
+  let db: Database.Database | undefined;
+  try {
+    db = await openDatabase(stagedDbPath, {
+      fileMustExist: true,
+      databaseKey,
+    });
+    db.pragma('busy_timeout = 0');
+    createSqliteGatedActionChangeClock(db).rotateEpoch();
+    const checkpoint = db.pragma('wal_checkpoint(TRUNCATE)') as
+      | Array<{ busy?: number }>
+      | { busy?: number };
+    const busy = Array.isArray(checkpoint) ? checkpoint[0]?.busy : checkpoint?.busy;
+    if (busy !== 0) {
+      throw new Error(
+        `staged-db gated-action epoch checkpoint did not complete (busy=${String(busy)})`,
+      );
+    }
+  } finally {
+    try { db?.close(); } finally { databaseKey?.fill(0); }
+    for (const suffix of ['-wal', '-shm']) {
+      try { unlinkSync(`${stagedDbPath}${suffix}`); } catch { /* absent — fine */ }
+    }
+  }
+};
+
 /** Drive `streamImportArchive` into `dataPath`: stream the db to
  *  `dbDestPath` (a SIDE path — temp offline, staging online), overlay each
  *  blob into the CAS, buffer the config. On ANY failure, tear down the db
@@ -883,6 +921,11 @@ const streamRestoreInto = async (
         'D212_REALM_DOWNGRADE_REFUSED: this archive carries no server vault bundle, but the realm it would replace is encrypted — restoring it would leave the database in plaintext',
       );
     }
+    await rotateStagedGatedActionEpoch(
+      dbDestPath,
+      serverBundle,
+      importOpts.recoveryKey,
+    );
     return {
       manifest: summary.manifest,
       config,

@@ -7,7 +7,9 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeypair, sign } from '@recued/release';
+import Database from 'better-sqlite3';
 import {
+  completeSnapshotReceiptEpochAfterKeyedOpen,
   defaultDownload,
   discardStaged,
   preserveAndSwap,
@@ -18,7 +20,9 @@ import {
   SIG_SIDECAR_SUFFIX,
   UpdateArtifactTooLargeError,
   reconcileInterruptedPairSwap,
+  reconcileSnapshotReceiptEpochBeforeOpen,
   restoreWebclientBundle,
+  snapshotReceiptEpochMarkerPath,
   dropApplyAside,
 } from '../update/binary-apply-executor.js';
 import { WEBCLIENT_ABSENT_MARKER } from '../update/webclient-sync.js';
@@ -517,6 +521,70 @@ describe('restoreSnapshot / discardStaged', () => {
     expect(existsSync(`${live}-wal`)).toBe(false); // stale WAL dropped
     expect(existsSync(`${live}-shm`)).toBe(false); // stale SHM dropped
     expect(existsSync(`${live}.restoring`)).toBe(false); // staging temp renamed away
+    expect(existsSync(snapshotReceiptEpochMarkerPath(live))).toBe(true);
+  });
+
+  it('rotates and durably clears a completed restore only on the keyed-open handle', () => {
+    const d = dir();
+    const snap = join(d, 'pre.db');
+    const live = join(d, 'live.db');
+    const source = new Database(snap);
+    source.exec(`CREATE TABLE gated_action_receipts (
+      key TEXT NOT NULL PRIMARY KEY,
+      data TEXT NOT NULL
+    )`);
+    source.prepare('INSERT INTO gated_action_receipts (key, data) VALUES (?, ?)').run(
+      'restored-action',
+      JSON.stringify({ change_seq: 9 }),
+    );
+    source.close();
+    const current = new Database(live);
+    current.exec('CREATE TABLE current_state (value TEXT)');
+    current.close();
+
+    restoreSnapshot(snap, live, (from, to) => copyFileSync(from, to));
+    expect(reconcileSnapshotReceiptEpochBeforeOpen(live)).toBe('rotation_pending');
+    const pendingJournal = readFileSync(snapshotReceiptEpochMarkerPath(live), 'utf8');
+    const restored = new Database(live);
+    let firstEpoch = '';
+    try {
+      expect(completeSnapshotReceiptEpochAfterKeyedOpen(live, restored)).toBe(true);
+      const clock = restored.prepare(`
+        SELECT value, floor, epoch
+          FROM gated_action_change_sequence
+         WHERE singleton = 1
+      `).get() as { value: number; floor: number; epoch: string };
+      expect(clock.value).toBe(10);
+      expect(clock.floor).toBe(10);
+      expect(clock.epoch).toMatch(/^[0-9a-f-]{36}$/);
+      firstEpoch = clock.epoch;
+    } finally {
+      restored.close();
+    }
+    expect(existsSync(snapshotReceiptEpochMarkerPath(live))).toBe(false);
+    // Model a kill after the checkpoint became durable but before marker
+    // deletion: retry rotates once more, preserving monotonicity and safety.
+    writeFileSync(snapshotReceiptEpochMarkerPath(live), pendingJournal, 'utf8');
+    const retry = new Database(live);
+    try {
+      expect(completeSnapshotReceiptEpochAfterKeyedOpen(live, retry)).toBe(true);
+      const clock = retry.prepare(`
+        SELECT value, floor, epoch
+          FROM gated_action_change_sequence
+         WHERE singleton = 1
+      `).get() as { value: number; floor: number; epoch: string };
+      expect(clock.value).toBe(11);
+      expect(clock.floor).toBe(11);
+      expect(clock.epoch).not.toBe(firstEpoch);
+    } finally {
+      retry.close();
+    }
+    const reopened = new Database(live);
+    try {
+      expect(completeSnapshotReceiptEpochAfterKeyedOpen(live, reopened)).toBe(false);
+    } finally {
+      reopened.close();
+    }
   });
 
   it('restoreSnapshot throws when the snapshot is gone', () => {
@@ -536,6 +604,24 @@ describe('restoreSnapshot / discardStaged', () => {
     mkdirSync(`${live}-wal`);
     expect(() => restoreSnapshot(snap, live, (from, to) => copyFileSync(from, to))).toThrow();
     expect(readFileSync(live, 'utf8')).toBe('mutated-bytes'); // live db untouched — fail closed
+    expect(reconcileSnapshotReceiptEpochBeforeOpen(live)).toBe('unchanged');
+    expect(existsSync(snapshotReceiptEpochMarkerPath(live))).toBe(false);
+  });
+
+  it('keeps rotation pending when a partial sidecar removal may rewind WAL state', () => {
+    const d = dir();
+    const snap = join(d, 'pre.db');
+    const live = join(d, 'live.db');
+    writeFileSync(snap, 'snapshot-bytes');
+    writeFileSync(live, 'mutated-bytes');
+    writeFileSync(`${live}-wal`, 'migrated-wal-frames');
+    mkdirSync(`${live}-shm`);
+
+    expect(() => restoreSnapshot(snap, live, (from, to) => copyFileSync(from, to))).toThrow();
+    expect(existsSync(`${live}-wal`)).toBe(false);
+    expect(existsSync(`${live}.restoring`)).toBe(true);
+    expect(reconcileSnapshotReceiptEpochBeforeOpen(live)).toBe('rotation_pending');
+    expect(existsSync(snapshotReceiptEpochMarkerPath(live))).toBe(true);
   });
 
   it('discardStaged removes a temp file and tolerates absence', () => {

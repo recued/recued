@@ -475,6 +475,7 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
       // loop and the run fails with an opaque error instead of pausing.
       if (isPeerAnswerRequiredSignal(e)) {
         fireProgress(ctx, { type: 'focus_update', phase: 'done', step_id: null });
+        const piiSnapshot = ctx.piiLedgerStore?.serialize();
         return {
           recipe_id: recipe.recipe_id,
           recipe_hash,
@@ -489,6 +490,10 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
             // Same structured clone the preflight pause takes — the host passes
             // it straight to `CheckpointStore.write` with no further copying.
             step_state: structuredClone(ctx.stores.step as Record<string, unknown>),
+            ...(e.foreach_progress !== undefined
+              ? { foreach_progress: structuredClone(e.foreach_progress) }
+              : {}),
+            ...(piiSnapshot !== undefined ? { pii_ledgers: piiSnapshot } : {}),
             exchange_ref: e.exchange_ref,
             spec: e.spec,
           },
@@ -519,6 +524,9 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
           awaiting_approval: {
             gated_step_id: stepId,
             step_state: structuredClone(ctx.stores.step as Record<string, unknown>),
+            ...(e.foreach_progress !== undefined
+              ? { foreach_progress: structuredClone(e.foreach_progress) }
+              : {}),
             ...(e.tool_slug !== undefined ? { tool_slug: e.tool_slug } : {}),
             ...(e.risk_tier !== undefined ? { risk_tier: e.risk_tier } : {}),
             ...(e.reason !== undefined ? { reason: e.reason } : {}),

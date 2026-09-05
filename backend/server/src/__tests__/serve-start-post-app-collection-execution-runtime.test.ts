@@ -10,6 +10,10 @@ const bridgeMocks = vi.hoisted(() => ({
   composeCollectionContext: vi.fn(),
   composeExecutionContext: vi.fn(),
   startPostExecutionBootstrapMaintenanceRuntime: vi.fn(),
+  attemptPeerAskDelivery: vi.fn(),
+  recoverPeerAskDeliveries: vi.fn(),
+  journalOwnsInterruptedPeerDispatch: vi.fn(),
+  createPeerAnswerStore: vi.fn(),
 }));
 
 vi.mock('../serve/compose-collection-context.js', () => ({
@@ -23,6 +27,20 @@ vi.mock('../serve/compose-execution-context.js', () => ({
 vi.mock('../serve/start-post-execution-bootstrap-maintenance-runtime.js', () => ({
   startPostExecutionBootstrapMaintenanceRuntime:
     bridgeMocks.startPostExecutionBootstrapMaintenanceRuntime,
+}));
+
+vi.mock('../execute-handler.js', () => ({
+  attemptPeerAskDelivery: bridgeMocks.attemptPeerAskDelivery,
+}));
+
+vi.mock('../peer-ask-delivery-recovery.js', () => ({
+  recoverPeerAskDeliveries: bridgeMocks.recoverPeerAskDeliveries,
+  journalOwnsInterruptedPeerDispatch:
+    bridgeMocks.journalOwnsInterruptedPeerDispatch,
+}));
+
+vi.mock('../storage/peer-answer-store.js', () => ({
+  createPeerAnswerStore: bridgeMocks.createPeerAnswerStore,
 }));
 
 import {
@@ -49,6 +67,10 @@ beforeEach(() => {
   bridgeMocks.composeCollectionContext.mockReset();
   bridgeMocks.composeExecutionContext.mockReset();
   bridgeMocks.startPostExecutionBootstrapMaintenanceRuntime.mockReset();
+  bridgeMocks.attemptPeerAskDelivery.mockReset();
+  bridgeMocks.recoverPeerAskDeliveries.mockReset();
+  bridgeMocks.journalOwnsInterruptedPeerDispatch.mockReset();
+  bridgeMocks.createPeerAnswerStore.mockReset();
 });
 
 const makeOptions = (
@@ -221,6 +243,79 @@ describe('startPostAppCollectionExecutionRuntime', () => {
       ...options.execution,
       collection,
     });
+  });
+
+  it('composes exact peer-delivery boot recovery and dispatch preservation', async () => {
+    const peerOutbox = { tag: 'peer-outbox' };
+    const peerAuditLog = { tag: 'peer-audit-log' };
+    const peerCheckpoints = { tag: 'peer-checkpoints' };
+    const peerDb = { tag: 'peer-db' };
+    const gatedActionStore = { tag: 'gated-actions' };
+    const peerAnswers = { tag: 'peer-answers' };
+    const executeDeps = {
+      peerAskOutbox: peerOutbox,
+      auditLog: peerAuditLog,
+      checkpointStore: peerCheckpoints,
+      db: peerDb,
+      gatedActionStore,
+    };
+    const execution = {
+      executorConfig: { tag: 'executor-config' },
+      executeDeps,
+      notificationBlock: { tag: 'notification-block' },
+      serverDisplayName: 'test-server',
+    };
+    bridgeMocks.composeCollectionContext.mockReturnValue({
+      collectionRegistry: { tag: 'collection-registry' },
+      startCollectionAdapters: vi.fn(async () => undefined),
+    });
+    bridgeMocks.composeExecutionContext.mockResolvedValue(execution);
+    bridgeMocks.createPeerAnswerStore.mockReturnValue(peerAnswers);
+    bridgeMocks.recoverPeerAskDeliveries.mockResolvedValue(undefined);
+    bridgeMocks.journalOwnsInterruptedPeerDispatch.mockResolvedValue(true);
+    bridgeMocks.startPostExecutionBootstrapMaintenanceRuntime.mockImplementation(
+      async (actualOptions) => {
+        const recovery = actualOptions.runtime.recovery;
+        expect(recovery.recoverPeerDeliveries).toEqual(expect.any(Function));
+        expect(recovery.preserveInterruptedDispatch).toEqual(expect.any(Function));
+
+        await recovery.recoverPeerDeliveries();
+        expect(bridgeMocks.createPeerAnswerStore).toHaveBeenCalledWith(peerDb);
+        expect(bridgeMocks.recoverPeerAskDeliveries).toHaveBeenCalledWith({
+          outbox: peerOutbox,
+          auditLog: peerAuditLog,
+          checkpoints: peerCheckpoints,
+          answers: peerAnswers,
+          gatedActions: gatedActionStore,
+          deliver: expect.any(Function),
+          retireUnanchoredStaged: true,
+        });
+
+        const record = { action_ref: 'action-1' };
+        await expect(recovery.preserveInterruptedDispatch(record)).resolves.toBe(true);
+        expect(bridgeMocks.journalOwnsInterruptedPeerDispatch).toHaveBeenCalledWith(
+          record,
+          {
+            outbox: peerOutbox,
+            auditLog: peerAuditLog,
+            checkpoints: peerCheckpoints,
+          },
+        );
+        return { runtime: { tag: 'runtime' }, schedulersBundle: { tag: 'schedulers' } };
+      },
+    );
+
+    await startPostAppCollectionExecutionRuntime(makeOptions());
+
+    const recoverCall = bridgeMocks.recoverPeerAskDeliveries.mock.calls[0]?.[0];
+    const row = { exchange_ref: 'exchange-1' };
+    const anchor = { run_id: 'run-1' };
+    await recoverCall.deliver(row, anchor);
+    expect(bridgeMocks.attemptPeerAskDelivery).toHaveBeenCalledWith(
+      executeDeps,
+      row,
+      anchor,
+    );
   });
 });
 

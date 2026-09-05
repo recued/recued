@@ -228,6 +228,9 @@ export interface BootstrapPacksRouteOptions {
   root: HTMLElement;
   document?: Document;
   packsListCaller?: PacksListCaller;
+  /** D-259 — `packs.unrunnable` caller. Optional: a host that does not wire it
+   *  simply shows no "Needs update" badge. */
+  packsUnrunnableCaller?: () => Promise<{ findings: ReadonlyArray<{ slug: string }> }>;
   packsInstallCaller?: PacksInstallCaller;
   packsUninstallCaller?: PacksUninstallCaller;
   /** Add-a-pack (2026-07-01) — resolve (server rpc) + install-by-slug callers for
@@ -535,6 +538,9 @@ export const bootstrapPacksRoute = (
           onSelect,
           onPreview,
           listInstalled: packsListCaller,
+          ...(opts.packsUnrunnableCaller !== undefined
+            ? { listUnrunnable: opts.packsUnrunnableCaller }
+            : {}),
           ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
         }),
       mountDetail: (host, onSelectSlug) => {

@@ -4,10 +4,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { peerLabelGrantEntry } from '@recued/contracts';
 
-import { receivePeerAsk } from '../peer-ask-inbound.js';
+import { receivePeerAsk, type PeerAskInboundDeps } from '../peer-ask-inbound.js';
 import type { InboundPeerAsk } from '../peer-ask-receiver.js';
 import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
 import { createContractStore } from '../storage/contract-store.js';
+import { createPeerAskInboxStore } from '../storage/peer-ask-inbox-store.js';
 
 /** D-234 § 234.4j — the one gate: `peer.label.<label>` on the caller's contract.
  *  The real store, so the KEY derivation is under test and not assumed. */
@@ -29,11 +30,17 @@ const ask = (over: Partial<InboundPeerAsk> = {}): InboundPeerAsk => ({
 
 const harness = (open = true) => {
   const rows: { action: string; target: string; detail: string }[] = [];
+  const inbox = createPeerAskInboxStore(new Database(':memory:'));
+  const notifierAsk = vi.fn<PeerAskInboundDeps['notifier']['ask']>(
+    async () => ({ ask_id: 'ask_7' }),
+  );
   return {
     rows,
     deps: {
       isLabelGranted: labelGrant(open),
-      notifier: { ask: vi.fn(async () => ({ ask_id: 'ask_7' })) },
+      notifier: { ask: notifierAsk },
+      inbox,
+      mintAskId: () => 'ask_7',
       logActivity: (r: { action: string; target: string; detail: string }) => { rows.push(r); },
     },
   };
@@ -48,6 +55,25 @@ describe('§ 234.4 — the inbound door', () => {
     expect(h.deps.notifier.ask).toHaveBeenCalledTimes(1);
     expect(h.rows.map((r) => r.action)).toEqual(['peer_ask_received']);
     expect(h.rows[0]!.target).toBe('ctr_alice/review');
+  });
+
+  it('marks the reciprocal inbox raised at the notifier persistence boundary', async () => {
+    const h = harness();
+    h.deps.notifier.ask = vi.fn(async (
+      _message,
+      _options,
+      _handler,
+      _channels,
+      extras,
+    ) => {
+      expect(h.deps.inbox.get('ctr_alice', 'ref_1')).toMatchObject({ state: 'reserved' });
+      await extras?.on_persisted?.('ask_7');
+      expect(h.deps.inbox.get('ctr_alice', 'ref_1')).toMatchObject({ state: 'raised' });
+      return { ask_id: 'ask_7' };
+    });
+
+    await expect(receivePeerAsk(ask(), h.deps))
+      .resolves.toEqual({ accepted: true, ask_id: 'ask_7' });
   });
 
   it('⛔ AN UNEXPOSED PEER RAISES NOTHING — and is still recorded', async () => {
@@ -90,5 +116,138 @@ describe('§ 234.4 — the inbound door', () => {
     expect(out).toEqual({ accepted: true, ask_id: 'ask_7' });
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it('replays one accepted exchange without raising a second owner ask', async () => {
+    const h = harness();
+
+    await expect(receivePeerAsk(ask(), h.deps))
+      .resolves.toEqual({ accepted: true, ask_id: 'ask_7' });
+    await expect(receivePeerAsk(ask(), h.deps))
+      .resolves.toEqual({ accepted: true, ask_id: 'ask_7' });
+
+    expect(h.deps.notifier.ask).toHaveBeenCalledTimes(1);
+    expect(h.rows.map((row) => row.action)).toEqual(['peer_ask_received']);
+  });
+
+  it('reuses a pre-raise reservation after a crash instead of minting again', async () => {
+    const h = harness();
+    const input = ask();
+    const { peerAskRequestFingerprint } = await import('../peer-ask-inbound.js');
+    h.deps.inbox.reserve({
+      peer_contract_id: input.peer_contract_id,
+      exchange_ref: input.exchange_ref,
+      request_fingerprint: peerAskRequestFingerprint(input),
+      connection_name: input.connection_name,
+      ask_id: 'ask_reserved',
+      created_at: 1,
+    });
+    const notifier = {
+      ask: vi.fn<PeerAskInboundDeps['notifier']['ask']>(
+        async () => ({ ask_id: 'ask_reserved' }),
+      ),
+    };
+
+    await expect(receivePeerAsk(
+      { ...input, connection_name: 'peer-alice-renamed-locally' },
+      { ...h.deps, notifier },
+    ))
+      .resolves.toEqual({ accepted: true, ask_id: 'ask_reserved' });
+    expect(notifier.ask).toHaveBeenCalledOnce();
+    expect(notifier.ask.mock.calls[0]?.[0]).toMatchObject({
+      text: 'peer-alice asks: Approve this?',
+    });
+    expect((notifier.ask.mock.calls[0] as unknown[] | undefined)?.[4]).toMatchObject({
+      reserved_ask_id: 'ask_reserved',
+    });
+  });
+
+  it('renders the first-writer connection name when another process wins reservation', async () => {
+    const h = harness();
+    const input = ask();
+    const { peerAskRequestFingerprint } = await import('../peer-ask-inbound.js');
+    const durableInbox = h.deps.inbox;
+    durableInbox.reserve({
+      peer_contract_id: input.peer_contract_id,
+      exchange_ref: input.exchange_ref,
+      request_fingerprint: peerAskRequestFingerprint(input),
+      connection_name: 'peer-alice-first-writer',
+      ask_id: 'ask_first_writer',
+      created_at: 1,
+    });
+    let firstRead = true;
+    const racedInbox = {
+      get(peerContractId: string, exchangeRef: string) {
+        if (firstRead) {
+          firstRead = false;
+          return null;
+        }
+        return durableInbox.get(peerContractId, exchangeRef);
+      },
+      reserve: durableInbox.reserve,
+      markRaised: durableInbox.markRaised,
+    };
+    const notifier = {
+      ask: vi.fn<PeerAskInboundDeps['notifier']['ask']>(
+        async () => ({ ask_id: 'ask_first_writer' }),
+      ),
+    };
+
+    await expect(receivePeerAsk(
+      { ...input, connection_name: 'peer-alice-racing-writer' },
+      { ...h.deps, inbox: racedInbox, notifier },
+    )).resolves.toEqual({ accepted: true, ask_id: 'ask_first_writer' });
+
+    expect(notifier.ask.mock.calls[0]?.[0]).toMatchObject({
+      text: 'peer-alice-first-writer asks: Approve this?',
+    });
+  });
+
+  it('joins a concurrent accepted reservation instead of returning a revoked-grant refusal', async () => {
+    const h = harness(false);
+    const input = ask();
+    const { peerAskRequestFingerprint } = await import('../peer-ask-inbound.js');
+    const durableInbox = h.deps.inbox;
+    durableInbox.reserve({
+      peer_contract_id: input.peer_contract_id,
+      exchange_ref: input.exchange_ref,
+      request_fingerprint: peerAskRequestFingerprint(input),
+      connection_name: input.connection_name,
+      ask_id: 'ask_concurrent_winner',
+      created_at: 1,
+    });
+    let reads = 0;
+    const racedInbox = {
+      get(peerContractId: string, exchangeRef: string) {
+        reads += 1;
+        return reads === 1 ? null : durableInbox.get(peerContractId, exchangeRef);
+      },
+      reserve: durableInbox.reserve,
+      markRaised: durableInbox.markRaised,
+    };
+    const notifier = {
+      ask: vi.fn<PeerAskInboundDeps['notifier']['ask']>(
+        async () => ({ ask_id: 'ask_concurrent_winner' }),
+      ),
+    };
+
+    await expect(receivePeerAsk(input, {
+      ...h.deps,
+      inbox: racedInbox,
+      notifier,
+    })).resolves.toEqual({ accepted: true, ask_id: 'ask_concurrent_winner' });
+
+    expect(notifier.ask).toHaveBeenCalledOnce();
+    expect(h.rows.map((row) => row.action)).toEqual(['peer_ask_received']);
+  });
+
+  it('refuses reuse of an exchange ref for different question content', async () => {
+    const h = harness();
+    await receivePeerAsk(ask(), h.deps);
+
+    const out = await receivePeerAsk(ask({ question: 'A different question?' }), h.deps);
+
+    expect(out).toMatchObject({ accepted: false, refusal: 'exchange_conflict' });
+    expect(h.deps.notifier.ask).toHaveBeenCalledTimes(1);
   });
 });

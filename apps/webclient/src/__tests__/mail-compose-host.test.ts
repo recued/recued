@@ -9,12 +9,145 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  EMPTY_MAIL_COMPOSE_VALUES,
+  MAIL_COMPOSE_REWRITE_ACTIONS,
+  REWRITE_COMPOSED_MAIL_RECIPE_ID,
   SEND_COMPOSED_MAIL_RECIPE_ID,
+  composeRewriteRecipeConfig,
   composePayloadToSendRecipeConfig,
   type ComposeMailSendPayload,
 } from '@recued/contracts';
 
-import { senderOptionFromInstance } from '../mail/mail-compose-host.js';
+import {
+  mailComposeSubmitOutcomeFromExecuteResponse,
+  mailSendReadinessFromInstances,
+  rewrittenMailBodyFromExecuteResponse,
+  senderOptionFromInstance,
+} from '../mail/mail-compose-host.js';
+
+describe('mail compose send dispatch result', () => {
+  it('distinguishes a durable approval hold from a completed send', () => {
+    expect(mailComposeSubmitOutcomeFromExecuteResponse({
+      success: false,
+      awaiting_approval: true,
+    })).toBe('held');
+    expect(mailComposeSubmitOutcomeFromExecuteResponse({
+      success: true,
+    })).toBe('sent');
+  });
+
+  it('fails closed on terminal failures and contradictory response shapes', () => {
+    for (const response of [
+      { success: false, errors: ['no checkpoint'] },
+      { success: true, awaiting_approval: true },
+      { awaiting_approval: true },
+      null,
+      [],
+    ]) {
+      expect(mailComposeSubmitOutcomeFromExecuteResponse(response)).toBeNull();
+    }
+  });
+});
+
+describe('mail compose governed body rewrite', () => {
+  it('maps each supported action to the hidden recipe without exposing non-body draft fields', () => {
+    const values = {
+      ...EMPTY_MAIL_COMPOSE_VALUES,
+      body: 'Hello bob@example.com',
+      subject: 'Private subject',
+      to: ['bob@example.com'],
+      cc: ['copy@example.com'],
+      bcc: ['blind@example.com'],
+      attachments: ['file:secret'],
+      in_reply_to: 'mail:thread',
+      sender_source: 'work',
+    };
+    for (const action of MAIL_COMPOSE_REWRITE_ACTIONS) {
+      const config = composeRewriteRecipeConfig({
+        values,
+        sender_email: 'owner@example.com',
+      }, action);
+      expect(config.body).toBe(values.body);
+      expect(config.sender_email).toBe('owner@example.com');
+      expect(config.to).toEqual(values.to);
+      expect(config.style).toEqual(expect.any(String));
+      expect(config.instructions).toContain('Return only the rewritten email body');
+      expect(config).not.toHaveProperty('subject');
+      expect(config).not.toHaveProperty('attachments');
+      expect(config).not.toHaveProperty('in_reply_to');
+      expect(config).not.toHaveProperty('sender_source');
+    }
+    expect(REWRITE_COMPOSED_MAIL_RECIPE_ID).toBe('rewrite-composed-mail');
+  });
+
+  it('copies recipient arrays before handing config to execute', () => {
+    const to = ['bob@example.com'];
+    const config = composeRewriteRecipeConfig({
+      values: { body: 'Hi', to, cc: [], bcc: [] },
+      sender_email: 'owner@example.com',
+    }, 'polish');
+    to.push('mutated@example.com');
+    expect(config.to).toEqual(['bob@example.com']);
+  });
+
+  it('accepts only non-empty text from a successful terminal execute response', () => {
+    expect(rewrittenMailBodyFromExecuteResponse({
+      success: true,
+      output: { render: [{ type: 'summary', data: {} }, { type: 'text', data: 'Better body' }] },
+    })).toBe('Better body');
+    expect(rewrittenMailBodyFromExecuteResponse({
+      success: true,
+      awaiting_approval: true,
+      output: { render: [{ type: 'text', data: 'not terminal' }] },
+    })).toBeNull();
+    expect(rewrittenMailBodyFromExecuteResponse({
+      success: false,
+      output: { render: [{ type: 'text', data: 'failed' }] },
+    })).toBeNull();
+    expect(rewrittenMailBodyFromExecuteResponse({
+      success: true,
+      output: { render: [{ type: 'text', data: '   ' }] },
+    })).toBeNull();
+  });
+});
+
+describe('mail compose send readiness', () => {
+  it('distinguishes no mailbox from connected read-only mail', () => {
+    expect(mailSendReadinessFromInstances([])).toEqual({ status: 'none' });
+
+    const readiness = mailSendReadinessFromInstances([{
+      slug: 'archive',
+      adapter_type: 'imap',
+      send_capable: false,
+      account_email: 'archive@example.com',
+    }]);
+    expect(readiness.status).toBe('read_only');
+    if (readiness.status === 'read_only') {
+      expect(readiness.mailboxes).toHaveLength(1);
+      expect(readiness.mailboxes[0]?.mail_instance_slug).toBe('archive');
+    }
+  });
+
+  it('is ready when at least one mailbox can send without hiding read-only peers', () => {
+    const readiness = mailSendReadinessFromInstances([
+      {
+        slug: 'archive', adapter_type: 'imap', send_capable: false,
+        account_email: 'archive@example.com',
+      },
+      {
+        slug: 'work', adapter_type: 'gmail', send_capable: true,
+        account_email: 'work@example.com',
+      },
+    ]);
+    expect(readiness.status).toBe('ready');
+    if (readiness.status === 'ready') {
+      expect(readiness.mailboxes.map((mailbox) => mailbox.id)).toEqual([
+        'archive',
+        'work',
+      ]);
+    }
+  });
+});
 
 describe('D-127 — mail instance row → sender option', () => {
   it('carries the row slug as mail_instance_slug', () => {

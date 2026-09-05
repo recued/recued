@@ -3801,6 +3801,51 @@ export const createChatTier2GrantFilter = (
   };
 };
 
+/** D-247 D9 — refuse to serve the OWNER'S catalog to a source that is not the
+ *  owner. The fail-CLOSED sibling of {@link createChatTier2GrantFilter}.
+ *
+ *  ⛔⛔ THE FILTER BESIDE THIS ONE DELIBERATELY RETURNS `() => true` FOR A DOOR,
+ *  and that is correct on the path it was written for: a door's recipe
+ *  authority is its inbound token, and the llm_gateway turn never calls
+ *  `buildCatalog` at all — it builds its own catalog from `allowed_tool_names`
+ *  and omits `tools.search` entirely. So today a door cannot reach these two
+ *  surfaces, and the `() => true` branch is unreached.
+ *
+ *  ⛔ WHICH MEANS THE ISOLATION IS STRUCTURAL, NOT ENFORCED — safe by ROUTING.
+ *  The day a contracted source reaches the ordinary chat path (an `mcp.chat`
+ *  driven by a non-`user_self` caller is exactly that change), both surfaces
+ *  hand over the owner's ENTIRE installed catalog — names, descriptions and arg
+ *  schemas — because `allowed_tools` gates dispatch on that path, not listing.
+ *  Nothing would be dispatchable and nothing would fail; the owner's whole
+ *  workflow inventory would simply be readable.
+ *
+ *  🔑 SO THIS IS A REFUSAL, NOT A FILTER. Adding filtering here would duplicate
+ *  the inbound token's job and invite the two to disagree. Refusing says the
+ *  truth: these surfaces serve one tenant, and a second one arriving is a
+ *  routing error, not a narrower catalog.
+ *
+ *  ⚠ It fires ONLY on an AFFIRMATIVELY non-owner-governed source. No gate
+ *  wired, or no source, proceeds exactly as today — so this cannot break a
+ *  dbless / partial harness, and it is a no-op on every path that works now.
+ *  ⚠ The precedent for throwing rather than returning an empty catalog is
+ *  `assertRecallCorpusSelector`: at an authority boundary a silent empty result
+ *  reads as "nothing is installed", which is a worse answer than a failure.
+ *
+ *  ⚠ THIS CLASS HAS FAILED HERE BEFORE. `tools.search` accepted and threaded
+ *  `tier2GrantFilter` but never READ it until 2026-08-20 — "the grant worked in
+ *  the catalog and silently did not in search". Three surfaces, one question,
+ *  and they fail independently. */
+export const createChatOwnerCatalogGuard = (
+  deps: ChatToolHandlerDeps,
+): ((source?: ExecutionSource) => void) => (source) => {
+  const gate = deps.getOpAdmissionGate?.();
+  if (!gate || !source) return;
+  if (gate.isOwnerGoverned(source)) return;
+  throw new Error(
+    'chat catalog: the owner tool catalog is not servable to a contracted source',
+  );
+};
+
 export const createChatRawOpSource = (
   deps: ChatToolHandlerDeps,
 ): ((source?: ExecutionSource) => RawOpToolEntry[]) => (source) => {
@@ -4068,6 +4113,7 @@ export const buildChatToolRegistryInputs = (deps: ChatToolHandlerDeps) => ({
   rawOpSource: createChatRawOpSource(deps),
   // D-247 D9 — shared by all three Tier-2 exposure surfaces.
   tier2GrantFilter: createChatTier2GrantFilter(deps),
+  ownerCatalogGuard: createChatOwnerCatalogGuard(deps),
   rawOpDispatch: createChatRawOpDispatch(deps),
 });
 

@@ -6,6 +6,8 @@
  */
 
 import {
+  FORM_RENDERER_STYLES,
+  MAIL_COMPOSE_STYLES,
   REFERENCE_PROVENANCE_STYLES,
   buildReferenceDisclosure,
   type Upload,
@@ -89,6 +91,12 @@ import {
   type CreateOverlayHandle,
 } from '../compose/create-overlay.js';
 import {
+  mountMailCompose,
+  type MailComposeDeps,
+  type MailComposeMount,
+} from '../mail/mail-compose-host.js';
+import { FILE_PICK_STYLES } from '../mail/file-pick-panel.js';
+import {
   connectedSourceConnectionHref,
   connectedSourceProviderLabel,
   connectedSourceStarterPrompt,
@@ -166,6 +174,17 @@ export const CHAT_ROUTE_EMPTY_ATTR = 'data-recued-chat-route-empty';
 /** UX-review flow-09 — cold-start "no AI model configured" banner. */
 export const CHAT_ROUTE_AI_UNAVAILABLE_ATTR =
   'data-recued-chat-route-ai-unavailable';
+/** Owner-facing result of the New mail readiness check. This is a status
+ * notification with a setup/repair handoff, never a Chat prompt. */
+export const CHAT_ROUTE_MAIL_NOTICE_ATTR =
+  'data-recued-chat-route-mail-notice';
+export const CHAT_ROUTE_MAIL_NOTICE_RETRY_ATTR =
+  'data-recued-chat-route-mail-notice-retry';
+export const CHAT_ROUTE_MAIL_NOTICE_DISMISS_ATTR =
+  'data-recued-chat-route-mail-notice-dismiss';
+/** Body-level portal that survives Chat's whole-route repaint. */
+export const CHAT_ROUTE_MAIL_COMPOSE_PORTAL_ATTR =
+  'data-recued-chat-route-mail-compose-portal';
 /** PB7 — per-turn failure notice painted under the failed turn's
  *  message (projected from § B.15 failure-class transparency events). */
 export const CHAT_ROUTE_TURN_FAILURE_ATTR =
@@ -1613,6 +1632,46 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   color: var(--muted);
   font-size: 13px;
 }
+[${CHAT_ROUTE_MAIL_NOTICE_ATTR}] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  border-top: 1px solid var(--border-subtle);
+  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-thread-hero [${CHAT_ROUTE_MAIL_NOTICE_ATTR}] {
+  width: min(100%, 620px);
+  box-sizing: border-box;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--chat-radius-control);
+  background: var(--surface-sunk, var(--surface));
+}
+[${CHAT_ROUTE_MAIL_NOTICE_ATTR}] a,
+[${CHAT_ROUTE_MAIL_NOTICE_ATTR}] button {
+  color: var(--accent);
+  font: inherit;
+  font-weight: 650;
+}
+[${CHAT_ROUTE_MAIL_NOTICE_ATTR}] a {
+  text-decoration: none;
+}
+[${CHAT_ROUTE_MAIL_NOTICE_ATTR}] a:hover {
+  text-decoration: underline;
+}
+[${CHAT_ROUTE_MAIL_NOTICE_ATTR}] button {
+  min-height: var(--wc-control-h, 38px);
+  border: 0;
+  background: transparent;
+  padding: 3px 5px;
+  cursor: pointer;
+}
+[${CHAT_ROUTE_MAIL_NOTICE_ATTR}] .chat-mail-notice-dismiss {
+  margin-left: auto;
+  color: var(--muted);
+}
 [${CHAT_ROUTE_ACTIVITY_ATTR}] {
   display: grid;
   gap: 2px;
@@ -2319,6 +2378,9 @@ export const CHAT_ROUTE_CHROME_STYLES = `
 export const CHAT_ROUTE_STYLES = [
   PRIMITIVE_STYLES,
   REFERENCE_PROVENANCE_STYLES,
+  FORM_RENDERER_STYLES,
+  MAIL_COMPOSE_STYLES,
+  FILE_PICK_STYLES,
   CHAT_ROUTE_CHROME_STYLES,
 ].join('\n');
 
@@ -2349,6 +2411,9 @@ export interface BootstrapChatRouteOptions {
    *  its contextual composer/activation entry, but no longer owns recipe
    *  inventory, action callers, portal lifetime, or leave guards. */
   openRunPalette?: () => void;
+  /** Owner-facing New mail action. Kept as the compose host's narrow callers
+   * so embedded/test Chat mounts do not grow mail RPC authority implicitly. */
+  mailCompose?: MailComposeDeps;
   /** Default-app first-run affordance. Kept explicit so narrower embedded/test
    *  chat mounts retain their existing empty state unless they opt in. */
   enableFirstRunActivation?: boolean;
@@ -5700,6 +5765,100 @@ export const bootstrapChatRoute = (
     return aiNotice;
   };
 
+  type MailNoticeStatus = 'checking' | 'none' | 'read_only' | 'unavailable';
+  let mailNoticeStatus: MailNoticeStatus | null = null;
+  let mailComposePortal: HTMLElement | null = null;
+  let mailComposeMount: MailComposeMount | null = null;
+  let mailComposeRequestGeneration = 0;
+
+  /** The compose host lives outside `routeRoot`: Chat rebuilds that subtree on
+   * every event, while a mail draft must survive an incoming token/broadcast. */
+  const ensureMailCompose = (): MailComposeMount | null => {
+    if (opts.mailCompose === undefined) return null;
+    if (mailComposeMount !== null) return mailComposeMount;
+    const portal = doc.createElement('div');
+    portal.setAttribute(CHAT_ROUTE_MAIL_COMPOSE_PORTAL_ATTR, '');
+    ((doc as { body?: HTMLElement }).body ?? routeRoot).appendChild(portal);
+    mailComposePortal = portal;
+    mailComposeMount = mountMailCompose(portal, opts.mailCompose);
+    return mailComposeMount;
+  };
+
+  const dismissMailNotice = (): void => {
+    mailComposeRequestGeneration += 1;
+    mailNoticeStatus = null;
+    render();
+  };
+
+  /** A New mail click performs a fresh capability read before opening. A
+   * missing/read-only mailbox produces guidance in Chat; it never seeds a
+   * question into the composer and never invokes the model. */
+  const openMailCompose = async (): Promise<void> => {
+    if (opts.mailCompose === undefined || disposed) return;
+    const generation = ++mailComposeRequestGeneration;
+    mailNoticeStatus = 'checking';
+    render();
+    const compose = ensureMailCompose();
+    if (compose === null) return;
+    const readiness = await compose.refresh();
+    if (disposed || generation !== mailComposeRequestGeneration) return;
+    if (readiness.status === 'ready') {
+      mailNoticeStatus = null;
+      render();
+      compose.openCreate();
+      return;
+    }
+    if (readiness.status !== 'loading') {
+      mailNoticeStatus = readiness.status;
+      render();
+    }
+  };
+
+  const buildMailNotice = (): HTMLElement | null => {
+    const status = mailNoticeStatus;
+    if (status === null) return null;
+    const notice = doc.createElement('div');
+    notice.setAttribute(CHAT_ROUTE_MAIL_NOTICE_ATTR, status);
+    notice.setAttribute('role', 'status');
+    notice.setAttribute('aria-live', 'polite');
+    notice.setAttribute('aria-atomic', 'true');
+    const message = doc.createElement('span');
+    message.textContent = status === 'checking'
+      ? 'Checking whether your mail can send…'
+      : status === 'none'
+        ? 'Connect a mailbox before sending mail with Recued.'
+        : status === 'read_only'
+          ? 'Your connected mailbox can read mail, but it cannot send yet.'
+          : 'Recued couldn’t check whether your mail can send right now.';
+    notice.appendChild(message);
+
+    if (status === 'none' || status === 'read_only') {
+      const handoff = doc.createElement('a');
+      handoff.setAttribute('href', serializeShellRoute('connections', 'mail'));
+      handoff.textContent = status === 'none'
+        ? 'Connect mail →'
+        : 'Fix mail connection →';
+      notice.appendChild(handoff);
+    } else if (status === 'unavailable') {
+      const retry = doc.createElement('button');
+      retry.type = 'button';
+      retry.setAttribute(CHAT_ROUTE_MAIL_NOTICE_RETRY_ATTR, '');
+      retry.textContent = 'Try again';
+      retry.addEventListener('click', () => { void openMailCompose(); });
+      notice.appendChild(retry);
+    }
+
+    const dismiss = doc.createElement('button');
+    dismiss.type = 'button';
+    dismiss.className = 'chat-mail-notice-dismiss';
+    dismiss.setAttribute(CHAT_ROUTE_MAIL_NOTICE_DISMISS_ATTR, '');
+    dismiss.setAttribute('aria-label', 'Dismiss mail notification');
+    dismiss.textContent = 'Dismiss';
+    dismiss.addEventListener('click', dismissMailNotice);
+    notice.appendChild(dismiss);
+    return notice;
+  };
+
   // ── Shell-frame Step 4 — the [✎ Create] overlay (§D.L1) ──
   interface ComposerAction {
     id: string;
@@ -5743,8 +5902,8 @@ export const bootstrapChatRoute = (
     });
   };
 
-  /** §D.L1 — the composer action list: [▶ Run a recipe] · [✎ Create]. Each
-   *  appears only when its callers are wired. */
+  /** §D.L1 — contextual owner actions. Each appears only when its callers are
+   * wired; New mail checks live send readiness before it opens anything. */
   const composerActions = (): ComposerAction[] => {
     const actions: ComposerAction[] = [];
     if (opts.openRunPalette !== undefined) {
@@ -5766,6 +5925,15 @@ export const bootstrapChatRoute = (
         accessibleLabel: 'Create',
         title: 'Capture a contact, task, note, or commitment',
         run: openCreateOverlay,
+      });
+    }
+    if (opts.mailCompose !== undefined) {
+      actions.push({
+        id: 'mail',
+        label: '✉ New mail',
+        accessibleLabel: 'New mail',
+        title: 'Compose a new email',
+        run: () => { void openMailCompose(); },
       });
     }
     return actions;
@@ -7575,6 +7743,7 @@ export const bootstrapChatRoute = (
     thread.setAttribute('data-empty', isEmpty ? 'true' : 'false');
 
     const aiNotice = state.aiAvailable === false ? buildAiNotice() : null;
+    const mailNotice = buildMailNotice();
     const showConnectedSourceHandoff =
       isEmpty
       && connectedSourceHandoffActive
@@ -7680,6 +7849,7 @@ export const bootstrapChatRoute = (
         actions.appendChild(startButton);
         landing.appendChild(actions);
         thread.appendChild(landing);
+        if (mailNotice !== null) thread.appendChild(mailNotice);
       } else {
         const hero = doc.createElement('div');
         hero.className = 'chat-thread-hero';
@@ -7699,6 +7869,7 @@ export const bootstrapChatRoute = (
             hero.appendChild(buildActivationPointer());
           }
         }
+        if (mailNotice !== null) hero.appendChild(mailNotice);
         // Empty hero — composer centered, the buttons expanded below it.
         hero.appendChild(buildComposer(false));
         // The activation cards already own the first-run actions; repeating the
@@ -7966,6 +8137,7 @@ export const bootstrapChatRoute = (
       thread.appendChild(messages);
       // UX-review flow-09 — cold-start nudge, docked above the composer.
       if (aiNotice !== null) thread.appendChild(aiNotice);
+      if (mailNotice !== null) thread.appendChild(mailNotice);
       // Docked — composer at the bottom; buttons collapse into its `+` menu.
       thread.appendChild(buildComposer(true));
     }
@@ -10379,16 +10551,19 @@ export const bootstrapChatRoute = (
       };
     },
     hasUnsavedChanges: () =>
-      createOverlay?.hasUnsavedChanges() === true
+      mailComposeMount?.hasUnsavedChanges() === true
+      || createOverlay?.hasUnsavedChanges() === true
       || (composerDraftProtected && composerDraft.trim().length > 0)
       || (
         pendingRecoveryDraft?.protected === true
         && pendingRecoveryDraft.text.trim().length > 0
       ),
     unsavedChangesPrompt: () =>
-      createOverlay?.hasUnsavedChanges() === true
-        ? 'Discard this unfinished Create item?'
-        : null,
+      mailComposeMount?.hasUnsavedChanges() === true
+        ? 'Discard this unfinished email?'
+        : createOverlay?.hasUnsavedChanges() === true
+          ? 'Discard this unfinished Create item?'
+          : null,
     hasInFlightWork: () => state.sending
       // A turn left running in another chat is still this tab's work.
       || turnsInFlightBySession.size > 0
@@ -10397,15 +10572,18 @@ export const bootstrapChatRoute = (
       || modelSourceWriteSessions.size > 0
       || sessionAction?.kind === 'export-busy'
       || sessionAction?.kind === 'delete-busy'
-      || createOverlay?.hasInFlightWork() === true,
+      || createOverlay?.hasInFlightWork() === true
+      || mailComposeMount?.hasInFlightWork() === true,
     inFlightWorkPrompt: () =>
-      createOverlay?.hasInFlightWork() === true
-        ? 'A Create save is still in progress. Leave Chat anyway?'
-        : modelSourceWriteSessions.size > 0
-          ? 'A Chat model change is still in progress. Leave Chat anyway?'
-          : historyActionInFlight()
-            ? 'A chat history action is still in progress. Leave Chat anyway?'
-            : null,
+      mailComposeMount?.hasInFlightWork() === true
+        ? 'A mail action is still in progress. Leave Chat anyway?'
+        : createOverlay?.hasInFlightWork() === true
+          ? 'A Create save is still in progress. Leave Chat anyway?'
+          : modelSourceWriteSessions.size > 0
+            ? 'A Chat model change is still in progress. Leave Chat anyway?'
+            : historyActionInFlight()
+              ? 'A chat history action is still in progress. Leave Chat anyway?'
+              : null,
     startNewChat: () => requestStartNewChat(),
     createSession: (title) => createSession(title),
     sendMessage: (message) => sendMessage(message),
@@ -10422,9 +10600,14 @@ export const bootstrapChatRoute = (
       );
       cancelConnectedSourcePoll();
       connectedSourceStatusGeneration += 1;
+      mailComposeRequestGeneration += 1;
       // The Create overlay is portaled to body — detach it. The Run palette is
       // shell-owned and outlives this route.
       closeCreateOverlay();
+      mailComposeMount?.destroy();
+      mailComposeMount = null;
+      mailComposePortal?.remove();
+      mailComposePortal = null;
       for (const unsub of unsubscribers) {
         try {
           unsub();

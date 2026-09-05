@@ -10,7 +10,10 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
+import Database from 'better-sqlite3';
 import { SELLER_CUSTOMER_CLOSE_REASONS } from '@recued/contracts';
+import { resolveSellerSourceStatusPolicyAction } from '../seller/customer-access-admission.js';
+import { createSellerStore } from '../storage/seller-store.js';
 
 import {
   providerStatusIsLive,
@@ -76,9 +79,41 @@ describe('D-196 §6.3 — seller access reconciler (the authority)', () => {
 
     it('⛔ an UNKNOWN provider status is left ALONE — a new vocabulary word must not revoke paying customers', () => {
       // The whole reason the ended-list is closed rather than `!== 'active'`.
-      // A provider adding `paused` must not silently close everyone.
-      for (const status of ['paused', 'incomplete', 'some_future_status', '']) {
+      // A provider adding a status we have never seen must not silently close
+      // everyone. (`paused` WAS the example here until Paddle and Lemon Squeezy
+      // gave it a meaning — see the next case.)
+      for (const status of ['incomplete', 'some_future_status', '']) {
         expect(reconcileOne(customer(), truth({ status })).action).toBe('skip');
+      }
+    });
+
+    it('paused and expired (Paddle / Lemon Squeezy) END the paid period — and paused defaults to GRACE, never a revoking close', () => {
+      for (const status of ['paused', 'expired']) {
+        const verdict = reconcileOne(customer(), truth({ status }));
+        expect(verdict.action).toBe('close');
+        expect(verdict.reason).toBe('cancelled');
+      }
+      // The half that keeps a resume possible: a close with source_status
+      // `paused` resolves to grace under the shipped default policy, so the row
+      // stays open for `subscription.resumed` / `subscription_unpaused` to
+      // extend. A revoked row cannot be re-opened by the extend path.
+      const db = new Database(':memory:');
+      try {
+        const settings = createSellerStore(db).getSettings();
+        for (const lifecycle_source of ['paddle', 'lemonsqueezy'] as const) {
+          expect(resolveSellerSourceStatusPolicyAction(
+            settings,
+            { lifecycle_source, source_status: 'paused', current_period_end: Date.UTC(2030, 0, 1) },
+            'cancelled',
+          )).toBe('grace');
+          expect(resolveSellerSourceStatusPolicyAction(
+            settings,
+            { lifecycle_source, source_status: 'expired', current_period_end: Date.UTC(2020, 0, 1) },
+            'cancelled',
+          )).toBe('close_now');
+        }
+      } finally {
+        db.close();
       }
     });
 

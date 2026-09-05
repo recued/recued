@@ -182,6 +182,25 @@ export const MAIL_COMPOSE_STYLES = `
   text-align: left;
 }
 
+.mail-compose-ai-error {
+  margin: 0;
+  color: var(--rx-error-fg, var(--danger));
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.mail-compose-ai-undo {
+  align-self: flex-start;
+  border: 0;
+  background: transparent;
+  color: var(--rx-accent, var(--accent));
+  padding: 4px 0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
 /* D-172 P2 — attachment picker. */
 .mail-compose-attachments {
   display: flex;

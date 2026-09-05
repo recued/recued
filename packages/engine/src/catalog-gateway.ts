@@ -224,6 +224,25 @@ const isCliInvocationOp = (
   manifest.surfaces?.connector?.executes?.[operationKey]?.kind === 'cli_invocation'
   && !apiBindingProducesDispatch(manifest, operationKey);
 
+/** Host-facing settlement classification for an already-resolved catalog op.
+ * This deliberately reuses dispatch precedence: a malformed dual-surface op
+ * that actually takes API dispatch cannot be mislabeled as detached merely
+ * because it also carries a CLI binding. `operationId` may be either the
+ * authored map key or its fully-qualified `OperationSpec.operation_id`. */
+export const catalogOperationUsesDetachedCli = (
+  manifest: IngredientManifest,
+  operationId: string,
+): boolean => {
+  const operationKey = Object.entries(manifest.operations ?? {}).find(
+    ([key, spec]) => key === operationId || spec.operation_id === operationId,
+  )?.[0];
+  if (operationKey === undefined || !isCliInvocationOp(manifest, operationKey)) {
+    return false;
+  }
+  const binding = manifest.surfaces?.connector?.executes?.[operationKey];
+  return binding?.kind === 'cli_invocation' && binding.detached !== undefined;
+};
+
 /** Best-effort gateway audit emission. Swallows sink exceptions — audit
  *  back-pressure must never break a recipe run (Invariant 5 is durable,
  *  but a thrown sink is the sink's bug, not the run's). */

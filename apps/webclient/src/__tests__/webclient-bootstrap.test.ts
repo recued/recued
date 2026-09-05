@@ -247,6 +247,7 @@ import {
   UPDATES_RECEIPT_RETRY_ATTR,
   UPDATES_ROLLBACK_BTN_ATTR,
 } from '../settings/updates-page.js';
+import { NOTIFY_TOASTS_HOST_ATTR } from '../notify-toasts.js';
 
 // ──────────────────────────────────────────────────────────────────
 // Fake element / document — same shape as the reception-bootstrap
@@ -325,6 +326,13 @@ const makeFakeElement = (tag: string): FakeElement => {
       child.parentRef = el as FakeElement;
       return child;
     }) as unknown as HTMLElement['appendChild'],
+    insertBefore: ((child: FakeElement, before: FakeElement | null): FakeElement => {
+      const index = before === null ? childList.length : childList.indexOf(before);
+      if (index < 0) throw new Error('insertBefore: reference is not a child');
+      childList.splice(index, 0, child);
+      child.parentRef = el as FakeElement;
+      return child;
+    }) as unknown as HTMLElement['insertBefore'],
     // Slice 114 — cert-pin panel's `clearChildren()` walks `firstChild`
     // + `removeChild`; without these the wrapper accumulates stale
     // panel elements across re-renders.
@@ -2311,7 +2319,7 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
 
   it('D-196 §4.7 wires Seller mail listing independently of Connections enrollment', async () => {
     const fixture = buildOpts();
-    fixture.hashSource.setHash('#settings/seller/setup');
+    fixture.hashSource.setHash('#settings/seller/setup/defaults');
     const handle = await bootstrapWebclient({
       ...fixture.opts,
       enableConnectionsEnrollPanel: false,
@@ -2335,7 +2343,7 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
 
   it('D-196 §4.7 does not wire Seller mail listing when Seller is disabled', async () => {
     const fixture = buildOpts();
-    fixture.hashSource.setHash('#settings/seller/setup');
+    fixture.hashSource.setHash('#settings/seller/setup/defaults');
     const handle = await bootstrapWebclient({
       ...fixture.opts,
       enableConnectionsEnrollPanel: false,
@@ -2472,7 +2480,7 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
 
   it('D-196 S2 wires Settings -> Seller settings update by default', async () => {
     const fixture = buildOpts();
-    fixture.hashSource.setHash('#settings/seller/setup');
+    fixture.hashSource.setHash('#settings/seller/setup/defaults');
     const handle = await bootstrapWebclient(fixture.opts);
     const sellerPage = handle.settingsRoute()?.sellerPage();
     expect(sellerPage).not.toBeNull();
@@ -2567,7 +2575,7 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
 
   it('D-196 S2 wires Settings -> Seller manual customer issue by default', async () => {
     const fixture = buildOpts();
-    fixture.hashSource.setHash('#settings/seller/customers');
+    fixture.hashSource.setHash('#settings/seller/customers/new');
     const handle = await bootstrapWebclient(fixture.opts);
     const sellerPage = handle.settingsRoute()?.sellerPage();
     expect(sellerPage).not.toBeNull();
@@ -2673,7 +2681,7 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
 
   it('D-196 S2 wires Settings -> Seller manual tier bulk adjust by default', async () => {
     const fixture = buildOpts();
-    fixture.hashSource.setHash('#settings/seller/tiers/detail/tier-basic');
+    fixture.hashSource.setHash('#settings/seller/tiers/detail/tier-basic/customers');
     const handle = await bootstrapWebclient(fixture.opts);
     const sellerPage = handle.settingsRoute()?.sellerPage();
     expect(sellerPage).not.toBeNull();
@@ -3774,6 +3782,356 @@ describe('D-148 § A.4 DD#8 — bootstrapWebclient: events.subscribe wiring', ()
     await flush();
     await flush();
     expect(handle.activeRoute()).toBe('reception');
+    await handle.dispose();
+  });
+
+  it('retries a failed events.subscribe while the same socket stays connected', async () => {
+    const fixture = buildOpts();
+    const errors: Error[] = [];
+    let retry: { handler: () => void; delayMs: number; cancelled: boolean } | undefined;
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      onSubscribeError: (error) => { errors.push(error); },
+      setEventsSubscribeRetryTimer: (handler, delayMs) => {
+        retry = { handler, delayMs, cancelled: false };
+        return { cancel: () => { if (retry !== undefined) retry.cancelled = true; } };
+      },
+    });
+    await flush();
+
+    const first = fixture.transportControls.sendCalls().find(
+      (call): call is { request_id: string } =>
+        call !== null
+        && typeof call === 'object'
+        && (call as { method?: unknown }).method === 'events.subscribe'
+        && typeof (call as { request_id?: unknown }).request_id === 'string',
+    );
+    expect(first).toBeDefined();
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: first!.request_id,
+      error: { code: 'unavailable', message: 'subscribe temporarily unavailable' },
+    });
+    await flush();
+
+    expect(errors).toHaveLength(1);
+    expect(retry).toMatchObject({ delayMs: 1_000, cancelled: false });
+    retry!.handler();
+    await flush();
+
+    const attempts = fixture.transportControls.sendCalls().filter(
+      (call) => (call as { method?: unknown })?.method === 'events.subscribe',
+    ) as Array<{ request_id: string }>;
+    expect(attempts).toHaveLength(2);
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: attempts[1]!.request_id,
+      result: { cursor: 11, replay_count: 0, fell_off_ring: false },
+    });
+    await flush();
+    await handle.dispose();
+  });
+
+  it('reads a durable action receipt before presenting its terminal owner outcome', async () => {
+    const fixture = buildOpts();
+    const handle = await bootstrapWebclient(fixture.opts);
+
+    fixture.transportControls.fireMessage({
+      type: 'server_event',
+      event: {
+        kind: 'execution',
+        recipe_id: 'send-composed-mail',
+        run_id: 'run-mail-1',
+        op: 'action_changed',
+        action_ref: 'action-mail-1',
+        approval_ref: 'action-mail-1',
+        action_revision: 3,
+        cursor: 42,
+      },
+    });
+    await flush();
+
+    const getCall = fixture.transportControls.sendCalls().find(
+      (call): call is { request_id: string; args: { action_ref: string } } =>
+        call !== null
+        && typeof call === 'object'
+        && (call as { method?: unknown }).method === 'execution.action.get'
+        && typeof (call as { request_id?: unknown }).request_id === 'string',
+    );
+    expect(getCall?.args).toEqual({ action_ref: 'action-mail-1' });
+    expect(subtreeText(
+      findChildByAttr(fixture.root, NOTIFY_TOASTS_HOST_ATTR)!,
+    )).not.toContain('Approved action completed');
+
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: getCall!.request_id,
+      result: {
+        receipt: {
+          action_ref: 'action-mail-1',
+          approval_ref: 'action-mail-1',
+          run_id: 'run-mail-1',
+          recipe_id: 'send-composed-mail',
+          gated_step_id: 'send',
+          operation_id: 'core.mail.send',
+          status: 'succeeded',
+          terminal: true,
+          status_message: 'The approved operation completed.',
+          created_at: 100,
+          updated_at: 300,
+          change_seq: 3,
+          revision: 3,
+          result: { message_id: 'message-1' },
+        },
+        group: {
+          approval_ref: 'action-mail-1',
+          status: 'succeeded',
+          terminal: true,
+          status_message: '1 approved item completed.',
+          action_refs: ['action-mail-1'],
+          items: 1,
+          succeeded: 1,
+          failed: 0,
+          dispatched: 0,
+          denied: 0,
+          cancelled: 0,
+          in_doubt: 0,
+          updated_at: 300,
+          change_seq: 3,
+        },
+      },
+    });
+    await flush();
+
+    // This event raced the first change-epoch read. The durable point read is
+    // terminal, but the follower deliberately waits for the list clock before
+    // rendering so a crash cannot store its delivery key under an old epoch.
+    expect(subtreeText(
+      findChildByAttr(fixture.root, NOTIFY_TOASTS_HOST_ATTR)!,
+    )).not.toContain('Approved action completed');
+    const subscribeCall = fixture.transportControls.sendCalls().find(
+      (call): call is { request_id: string } =>
+        (call as { method?: unknown })?.method === 'events.subscribe'
+        && typeof (call as { request_id?: unknown }).request_id === 'string',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: subscribeCall.request_id,
+      result: { cursor: 42, replay_count: 0, fell_off_ring: false },
+    });
+    await flush();
+    const listCall = fixture.transportControls.sendCalls().find(
+      (call): call is { request_id: string } =>
+        (call as { method?: unknown })?.method === 'execution.action.list'
+        && typeof (call as { request_id?: unknown }).request_id === 'string',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: listCall.request_id,
+      result: {
+        change_epoch: 'epoch-1',
+        change_floor: 0,
+        receipts: [],
+        groups: [{
+          approval_ref: 'action-mail-1',
+          status: 'succeeded',
+          terminal: true,
+          status_message: '1 approved item completed.',
+          action_refs: ['action-mail-1'],
+          items: 1,
+          succeeded: 1,
+          failed: 0,
+          dispatched: 0,
+          denied: 0,
+          cancelled: 0,
+          in_doubt: 0,
+          updated_at: 300,
+          change_seq: 3,
+        }],
+      },
+    });
+    await flush();
+
+    expect(subtreeText(
+      findChildByAttr(fixture.root, NOTIFY_TOASTS_HOST_ATTR)!,
+    )).toContain('Approved action completed1 approved item completed.');
+    await handle.dispose();
+  });
+
+  it('subscribes live before reconciling owner outcomes completed while offline', async () => {
+    const fixture = buildOpts();
+    const deliveryStorage = memorySessionStorage();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      actionReceiptDeliveryStorage: deliveryStorage,
+    });
+    await flush();
+
+    const subscribeCall = fixture.transportControls.sendCalls().find(
+      (call): call is { request_id: string } =>
+        call !== null
+        && typeof call === 'object'
+        && (call as { method?: unknown }).method === 'events.subscribe'
+        && typeof (call as { request_id?: unknown }).request_id === 'string',
+    );
+    expect(subscribeCall).toBeDefined();
+    expect(fixture.transportControls.sendCalls().some(
+      (call) => (call as { method?: unknown })?.method === 'execution.action.list',
+    )).toBe(false);
+
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: subscribeCall!.request_id,
+      result: { cursor: 10, replay_count: 0, fell_off_ring: false },
+    });
+    await flush();
+
+    const listCall = fixture.transportControls.sendCalls().find(
+      (call): call is { request_id: string; args: Record<string, unknown> } =>
+        call !== null
+        && typeof call === 'object'
+        && (call as { method?: unknown }).method === 'execution.action.list'
+        && typeof (call as { request_id?: unknown }).request_id === 'string',
+    );
+    expect(listCall?.args).toMatchObject({ limit: 200 });
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: listCall!.request_id,
+      result: {
+        change_epoch: 'epoch-1',
+        change_floor: 0,
+        receipts: [],
+        groups: [{
+          approval_ref: 'offline-action',
+          status: 'in_doubt',
+          terminal: true,
+          status_message: 'The outcome needs review after restart.',
+          action_refs: ['offline-action'],
+          items: 1,
+          succeeded: 0,
+          failed: 0,
+          dispatched: 0,
+          denied: 0,
+          cancelled: 0,
+          in_doubt: 1,
+          updated_at: 500,
+          change_seq: 5,
+        }],
+      },
+    });
+    await flush();
+
+    expect(subtreeText(
+      findChildByAttr(fixture.root, NOTIFY_TOASTS_HOST_ATTR)!,
+    )).toContain('Action outcome needs reviewThe outcome needs review after restart.');
+    expect(deliveryStorage.data.size).toBe(1);
+    await handle.dispose();
+  });
+
+  it('polls durable action outcomes while connected after the live-subscription barrier', async () => {
+    const fixture = buildOpts();
+    const timers: Array<{
+      handler: () => void;
+      delayMs: number;
+      cancelled: boolean;
+    }> = [];
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      actionReceiptReconcileIntervalMs: 23,
+      setActionReceiptReconcileTimer: (handler, delayMs) => {
+        const timer = { handler, delayMs, cancelled: false };
+        timers.push(timer);
+        return { cancel: () => { timer.cancelled = true; } };
+      },
+    });
+    await flush();
+
+    // Do not start durable reads or their recurring timer before the server has
+    // installed this socket's live subscription.
+    expect(timers).toHaveLength(0);
+    expect(fixture.transportControls.sendCalls().some(
+      (call) => (call as { method?: unknown })?.method === 'execution.action.list',
+    )).toBe(false);
+    const subscribeCall = fixture.transportControls.sendCalls().find(
+      (call): call is { request_id: string } =>
+        call !== null
+        && typeof call === 'object'
+        && (call as { method?: unknown }).method === 'events.subscribe'
+        && typeof (call as { request_id?: unknown }).request_id === 'string',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: subscribeCall.request_id,
+      result: { cursor: 1, replay_count: 0, fell_off_ring: false },
+    });
+    await flush();
+
+    const initialList = fixture.transportControls.sendCalls().find(
+      (call): call is { request_id: string } =>
+        call !== null
+        && typeof call === 'object'
+        && (call as { method?: unknown }).method === 'execution.action.list'
+        && typeof (call as { request_id?: unknown }).request_id === 'string',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: initialList.request_id,
+      result: {
+        change_epoch: 'epoch-1',
+        change_floor: 0,
+        receipts: [],
+        groups: [],
+      },
+    });
+    await flush();
+
+    expect(timers).toHaveLength(1);
+    expect(timers[0]).toMatchObject({ delayMs: 23, cancelled: false });
+    timers[0]!.handler();
+    await flush();
+
+    const listCalls = fixture.transportControls.sendCalls().filter(
+      (call): call is { request_id: string } =>
+        call !== null
+        && typeof call === 'object'
+        && (call as { method?: unknown }).method === 'execution.action.list'
+        && typeof (call as { request_id?: unknown }).request_id === 'string',
+    );
+    expect(listCalls).toHaveLength(2);
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: listCalls[1]!.request_id,
+      result: {
+        change_epoch: 'epoch-1',
+        change_floor: 0,
+        receipts: [],
+        groups: [{
+          approval_ref: 'external-action',
+          status: 'dispatched',
+          terminal: true,
+          status_message: 'The approved operation was handed off.',
+          action_refs: ['external-action'],
+          items: 1,
+          succeeded: 0,
+          failed: 0,
+          dispatched: 1,
+          denied: 0,
+          cancelled: 0,
+          in_doubt: 0,
+          updated_at: 500,
+          change_seq: 2,
+        }],
+      },
+    });
+    await flush();
+
+    expect(subtreeText(
+      findChildByAttr(fixture.root, NOTIFY_TOASTS_HOST_ATTR)!,
+    )).toContain('Approved action dispatchedThe approved operation was handed off.');
+    expect(timers).toHaveLength(2);
+
+    fixture.transportControls.fireState('reconnecting');
+    expect(timers[1]).toMatchObject({ cancelled: true });
     await handle.dispose();
   });
 });

@@ -15,8 +15,12 @@ import { performance } from 'node:perf_hooks';
 import { FTS_STOPWORDS, type FtsMatchRung } from '@recued/fts';
 
 import { CHAT_MESSAGE_RECALL_ELIGIBILITY } from './storage/chat-store.js';
+import { isSnapshotToolRow } from './chat-tool-row.js';
 
-import type { OwnerRecallCorpusScope } from './chat-recall-scope.js';
+import type {
+  OwnerRecallCorpusScope,
+  RecallCorpusScope,
+} from './chat-recall-scope.js';
 import type {
   ChatRecallSourceCursor,
   ChatRecallSourceRow,
@@ -44,7 +48,7 @@ const CONTINUATION_AAD = Buffer.from(
 );
 const CANONICAL_BASE64URL_SEGMENT = /^[A-Za-z0-9_-]+$/u;
 
-export type InteractionRecallKind = 'user' | 'assistant';
+export type InteractionRecallKind = 'user' | 'assistant' | 'tool';
 
 export interface NormalizedRecallQuery {
   /** Byte-capped, NFKC-normalized, lower-cased search phrase. */
@@ -74,6 +78,15 @@ export interface InteractionRecallCandidate {
 
 export interface RecallNeighbourQuery {
   readonly anchor_id: string;
+  /** ⛔ REQUIRED, and it was NOT here before. `neighbours` hardcoded the OWNER
+   *  bucket while `search` and `fetchExact` took a scope — harmless while the
+   *  owner corpus was the only one, and a cross-tenant leak the moment a second
+   *  one existed: a contracted caller's search would return its own rows and
+   *  then step to the OWNER's neighbours around them. The compiler found this
+   *  when the store's selector became mandatory; nothing else would have. */
+  readonly scope: RecallCorpusScope;
+  /** D-137 — see `RecallSearchBackend.search`. */
+  readonly tool_session_id?: string;
   readonly next?: number;
   readonly prev?: number;
 }
@@ -92,14 +105,31 @@ export interface RecallSearchBackendResult {
 }
 
 export type RecallExactFetchResult =
-  | { readonly status: 'ok'; readonly match: InteractionRecallCandidate }
+  | {
+      readonly status: 'ok';
+      readonly match: InteractionRecallCandidate;
+      /** ⛔ THE PAIR INVARIANT HOLDS ON THIS PATH TOO. A held dispatch is two
+       *  rows -- the ask (args) and the answer (result) -- and the design
+       *  premise is that reaching EITHER returns BOTH. `search` has always
+       *  expanded pairs; `fetchExact` did not, so an `item_id` fetch returned
+       *  half an exchange and WHICH half was luck. Measured on a live drive:
+       *  the model fetched a settle row, got `To`/`Subject` and no body, and
+       *  confidently re-sent different text -- a broken promise that reads as a
+       *  successful retrieval. */
+      readonly siblings?: readonly InteractionRecallCandidate[];
+    }
   | { readonly status: 'not_found' }
   | { readonly status: 'unreadable' };
 
 export interface RecallSearchBackend {
   search(input: {
     readonly query?: NormalizedRecallQuery;
-    readonly scope: OwnerRecallCorpusScope;
+    readonly scope: RecallCorpusScope;
+    /** D-137 — the session whose TOOL rows are in scope. Tool rows are TASK
+     *  context and a task lives in a session; user/assistant rows stay
+     *  corpus-wide. Absent ⇒ no tool row is reachable, which is the
+     *  fail-closed reading of "no task to recover context for". */
+    readonly tool_session_id?: string;
     readonly kinds?: ReadonlySet<InteractionRecallKind>;
     readonly excluded_item_ids?: ReadonlySet<string>;
     readonly continuation?: string;
@@ -107,13 +137,58 @@ export interface RecallSearchBackend {
   }): Promise<RecallSearchBackendResult>;
   fetchExact(
     item_id: string,
-    scope: OwnerRecallCorpusScope,
+    scope: RecallCorpusScope,
+    tool_session_id?: string,
   ): Promise<RecallExactFetchResult>;
   /** Messages adjacent to an anchor within its own session — the reply
    *  direction (`next`) or the context direction (`prev`). Optional so a
    *  backend without it degrades to search-only rather than failing. */
   neighbours?(query: RecallNeighbourQuery): Promise<InteractionRecallCandidate[]>;
 }
+
+/** Add the paired half of any matched two-event tool call.
+ *
+ *  ⚠ Bounded by `maxCandidates` like every other page, and de-duplicated: a
+ *  query that matched BOTH halves must not return either twice. Siblings are
+ *  appended rather than interleaved so the score order of the actual matches
+ *  survives — a pair is context for a hit, not a hit of its own, and giving it
+ *  a borrowed score would let it outrank rows that really matched. */
+/** An exact fetch returns the row asked for plus, at most, its pair sibling.
+ *  Two: an ask and its answer. */
+const RECALL_EXACT_PAIR_LIMIT = 2;
+
+const expandPairs = async (
+  store: Pick<ChatStore, 'getRecallPair'>,
+  scope: RecallCorpusScope,
+  toolSessionId: string | null,
+  matches: readonly InteractionRecallCandidate[],
+  maxCandidates: number,
+): Promise<InteractionRecallCandidate[]> => {
+  if (store.getRecallPair === undefined || matches.length === 0) return [...matches];
+  const seen = new Set(matches.map((m) => m.item_id));
+  const extras: InteractionRecallCandidate[] = [];
+  for (const match of matches) {
+    if (matches.length + extras.length >= maxCandidates) break;
+    let rows: Awaited<ReturnType<NonNullable<ChatStore['getRecallPair']>>>;
+    try {
+      rows = await store.getRecallPair({
+        row_eligibility: scope.row_eligibility,
+        recall_contract_id: scope.recall_contract_id,
+        tool_session_id: toolSessionId,
+        item_id: match.item_id,
+      });
+    } catch {
+      // A pair lookup is enrichment. Failing it must not fail the search.
+      continue;
+    }
+    for (const row of rows) {
+      if (!row.readable || seen.has(row.item_id)) continue;
+      seen.add(row.item_id);
+      extras.push(candidateFromSource(row, 0, 'exact'));
+    }
+  }
+  return [...matches, ...extras].slice(0, maxCandidates);
+};
 
 export const truncateRecallUtf8 = (
   value: string,
@@ -371,7 +446,8 @@ const candidateFromSource = (
 
 export const createRecallSearchBackend = (
   store: Pick<ChatStore,
-    'scanRecallMessagesPage' | 'getRecallMessage' | 'getRecallNeighbours'>,
+    'scanRecallMessagesPage' | 'getRecallMessage' | 'getRecallNeighbours'
+    | 'getRecallPair'>,
   options: {
     readonly now?: () => number;
     readonly continuation_secret?: Uint8Array;
@@ -411,7 +487,9 @@ export const createRecallSearchBackend = (
     async neighbours(input): Promise<InteractionRecallCandidate[]> {
       if (!store.getRecallNeighbours) return [];
       const rows = await store.getRecallNeighbours({
-        row_eligibility: CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT,
+        row_eligibility: input.scope.row_eligibility,
+        recall_contract_id: input.scope.recall_contract_id,
+        tool_session_id: input.tool_session_id ?? null,
         item_id: input.anchor_id,
         ...(input.next !== undefined ? { next: input.next } : {}),
         ...(input.prev !== undefined ? { prev: input.prev } : {}),
@@ -480,6 +558,8 @@ export const createRecallSearchBackend = (
         try {
           page = await store.scanRecallMessagesPage({
             row_eligibility: input.scope.row_eligibility,
+            recall_contract_id: input.scope.recall_contract_id,
+            tool_session_id: input.tool_session_id ?? null,
             ...(cursor ? { after: cursor } : {}),
             limit: pageSize,
           });
@@ -562,8 +642,44 @@ export const createRecallSearchBackend = (
         : [...matches.slice(0, Math.max(0, maxCandidates - missing.length)), ...missing]
             .slice(0, maxCandidates);
 
+      // ⛔⛔ A MATCH ON EITHER HALF RETURNS BOTH. A two-event tool call is a
+      //   dispatch row (the ask, with its args) and a result row (the outcome),
+      //   written at the two times that genuinely differ. Returning only the
+      //   half that matched is the failure the split exists to avoid: a query
+      //   naming the ARGS finds "I asked to email Pat" with no outcome, and a
+      //   query naming the RESULT finds an answer with nothing to say what was
+      //   asked for. Neither half is a truncated view of the other.
+      //
+      // ⚠ Scoped by construction: `getRecallPair` applies the same corpus
+      //   predicate as the scan. A sibling fetch keyed on the pair id alone
+      //   would return a row from any corpus sharing that run id — which is
+      //   exactly the shape `neighbours` shipped with, and exactly the leak it
+      //   became once a second corpus existed.
+      // ⛔⛔ A READ'S STORED RESULT IS A SNAPSHOT, AND RECALL MUST NOT SERVE IT.
+      //   Re-running the read is strictly better: it is fresher, and it is what
+      //   the model already does unprompted (measured 3/3 -- it re-ran
+      //   `deal.search` in a later turn rather than reaching for the stored
+      //   copy). Serving the snapshot instead is not merely redundant, it is
+      //   WRONG WHERE IT MATTERS: a live drive had the model fetch a stored
+      //   `memory.search` row and email a maintenance window that had already
+      //   been changed, with every layer reporting success.
+      //   EFFECT rows are kept: a send's composed `body` IS the artifact, it
+      //   cannot be re-derived by re-running (that would re-send), and its
+      //   consequence is not always in a domain store -- a denied run, or a
+      //   best-effort Sent append that failed, leaves the tool row as the only
+      //   copy.
+      // ⚠ The predicate reads `TIER1_CLASSIFICATIONS`; see `chat-tool-row.ts`
+      //   for why `'unknown'` is not `'read'` and why that is load-bearing.
+      const paired = store.getRecallPair === undefined
+        ? merged
+        : await expandPairs(
+          store, input.scope, input.tool_session_id ?? null, merged, maxCandidates,
+        );
+
       return {
-        matches: merged,
+        matches: paired.filter(
+          (m) => m.kind !== 'tool' || !isSnapshotToolRow(m.content),
+        ),
         complete: reachedEnd && !unreadable,
         ...(frontierCutoff && cursor
           ? { continuation: encodeContinuation(cursor, continuationKey) }
@@ -577,6 +693,7 @@ export const createRecallSearchBackend = (
     async fetchExact(
       item_id,
       scope,
+      tool_session_id,
     ): Promise<RecallExactFetchResult> {
       if (!store.getRecallMessage || item_id.length === 0 || item_id.length > 512) {
         return { status: 'not_found' };
@@ -585,6 +702,8 @@ export const createRecallSearchBackend = (
       try {
         source = await store.getRecallMessage({
           row_eligibility: scope.row_eligibility,
+          recall_contract_id: scope.recall_contract_id,
+          tool_session_id: tool_session_id ?? null,
           item_id,
         });
       } catch {
@@ -592,7 +711,27 @@ export const createRecallSearchBackend = (
       }
       if (source === null) return { status: 'not_found' };
       if (!source.readable) return { status: 'unreadable' };
-      return { status: 'ok', match: candidateFromSource(source, 0, 'exact') };
+      const match = candidateFromSource(source, 0, 'exact');
+      // ⛔ THE EXACT PATH IS GATED TOO, OR THE GATE IS DECORATION. An
+      //   `item_id` resolves whatever it names, so a handle held by anything --
+      //   a packet pointer, a model that saw the id earlier -- would walk
+      //   straight past a filter applied only to search.
+      if (match.kind === 'tool' && isSnapshotToolRow(match.content)) {
+        return { status: 'not_found' };
+      }
+      // Same helper the search path uses -- one rule, not a second expansion.
+      const expanded = await expandPairs(
+        store, scope, tool_session_id ?? null, [match], RECALL_EXACT_PAIR_LIMIT,
+      );
+      const siblings = expanded.filter(
+        (c) => c.item_id !== match.item_id
+          && (c.kind !== 'tool' || !isSnapshotToolRow(c.content)),
+      );
+      return {
+        status: 'ok',
+        match,
+        ...(siblings.length > 0 ? { siblings } : {}),
+      };
     },
   };
 };

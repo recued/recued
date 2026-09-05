@@ -83,6 +83,10 @@ import {
   CHAT_ROUTE_HISTORY_LANDING_ATTR,
   CHAT_ROUTE_HISTORY_SEARCH_ATTR,
   CHAT_ROUTE_INPUT_ATTR,
+  CHAT_ROUTE_MAIL_COMPOSE_PORTAL_ATTR,
+  CHAT_ROUTE_MAIL_NOTICE_DISMISS_ATTR,
+  CHAT_ROUTE_MAIL_NOTICE_ATTR,
+  CHAT_ROUTE_MAIL_NOTICE_RETRY_ATTR,
   CHAT_ROUTE_MESSAGE_ATTR,
   CHAT_ROUTE_MODEL_CONFIGURE_ATTR,
   CHAT_ROUTE_MODEL_PICKER_ATTR,
@@ -137,6 +141,7 @@ import {
 interface FakeEl {
   tagName: string;
   className: string;
+  innerHTML: string;
   textContent: string;
   type: string;
   open: boolean;
@@ -160,6 +165,10 @@ interface FakeEl {
     type: string,
     fn: (event?: FakeDomEvent) => void,
   ): void;
+  removeEventListener(
+    type: string,
+    fn: (event?: FakeDomEvent) => void,
+  ): void;
   click(): void;
   keydown(key: string): void;
   focus(): void;
@@ -178,6 +187,7 @@ interface FakeDomEvent {
 
 interface FakeDoc {
   styleElements: FakeEl[];
+  body?: FakeEl;
   activeElement: FakeEl | null;
   listeners: Map<string, Array<(event?: FakeDomEvent) => void>>;
   head: { querySelector(sel: string): FakeEl | null; appendChild(el: FakeEl): FakeEl };
@@ -199,6 +209,7 @@ const makeFakeEl = (
   const el: FakeEl = {
     tagName: tag.toUpperCase(),
     className: '',
+    innerHTML: '',
     textContent: '',
     type: '',
     open: false,
@@ -245,6 +256,10 @@ const makeFakeEl = (
       const list = el.listeners.get(type) ?? [];
       list.push(fn);
       el.listeners.set(type, list);
+    },
+    removeEventListener(type, fn) {
+      const list = el.listeners.get(type) ?? [];
+      el.listeners.set(type, list.filter((candidate) => candidate !== fn));
     },
     click() {
       if (el.disabled) return;
@@ -5496,6 +5511,201 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(openRunPalette).toHaveBeenCalledOnce();
     expect(composerActions.open).toBe(false);
     expect(doc.activeElement).toBe(trigger);
+    route.dispose();
+  });
+
+  it('reports a missing mailbox as a notification and never turns it into a Chat ask', async () => {
+    const doc = makeFakeDocument();
+    doc.body = doc.createElement('body');
+    const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const listMailInstances = vi.fn(async () => ({ instances: [] }));
+    const listFiles = vi.fn(async () => new Promise<never>(() => {}));
+    const runExecute = vi.fn(async () => ({}));
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({ calls }),
+      mailCompose: { listMailInstances, listFiles, runExecute },
+    });
+    await tick(8);
+
+    const mail = collectByAttr(root, CHAT_ROUTE_COMPOSER_ACTION_ATTR).find(
+      (action) => action.getAttribute(CHAT_ROUTE_COMPOSER_ACTION_ATTR) === 'mail',
+    )!;
+    expect(mail.getAttribute('aria-label')).toBe('New mail');
+    mail.click();
+    expect(collectByAttr(root, CHAT_ROUTE_MAIL_NOTICE_ATTR)[0]
+      ?.getAttribute(CHAT_ROUTE_MAIL_NOTICE_ATTR)).toBe('checking');
+
+    await tick(4);
+    const notice = collectByAttr(root, CHAT_ROUTE_MAIL_NOTICE_ATTR)[0]!;
+    expect(notice.getAttribute('role')).toBe('status');
+    expect(notice.getAttribute(CHAT_ROUTE_MAIL_NOTICE_ATTR)).toBe('none');
+    expect(allText(notice)).toContain('Connect a mailbox');
+    expect(collectByTag(notice, 'a')[0]?.getAttribute('href'))
+      .toBe('#connections/mail');
+    expect(calls.some((call) => call.method === 'chat.send')).toBe(false);
+    expect(runExecute).not.toHaveBeenCalled();
+    expect(listMailInstances).toHaveBeenCalledOnce();
+    // Readiness is only a mail capability check. An unrelated/stuck Data read
+    // must not delay the owner-facing connection reminder.
+    expect(listFiles).not.toHaveBeenCalled();
+    route.dispose();
+    expect(doc.body.children).toHaveLength(0);
+  });
+
+  it('keeps an unavailable mailbox check retryable, then opens compose only after ready', async () => {
+    const doc = makeFakeDocument();
+    doc.body = doc.createElement('body');
+    const root = doc.createElement('div');
+    let attempts = 0;
+    const listMailInstances = vi.fn(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('mail list unavailable');
+      return {
+        instances: [{
+          slug: 'work',
+          adapter_type: 'gmail',
+          send_capable: true,
+          account_email: 'owner@example.com',
+        }],
+      };
+    });
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn(),
+      mailCompose: {
+        listMailInstances,
+        runExecute: vi.fn(async () => ({})),
+      },
+    });
+    await tick(8);
+
+    collectByAttr(root, CHAT_ROUTE_COMPOSER_ACTION_ATTR).find(
+      (action) => action.getAttribute(CHAT_ROUTE_COMPOSER_ACTION_ATTR) === 'mail',
+    )!.click();
+    await tick(4);
+    const unavailable = collectByAttr(root, CHAT_ROUTE_MAIL_NOTICE_ATTR)[0]!;
+    expect(unavailable.getAttribute(CHAT_ROUTE_MAIL_NOTICE_ATTR))
+      .toBe('unavailable');
+    expect(allText(unavailable)).toContain('couldn’t check');
+
+    collectByAttr(unavailable, CHAT_ROUTE_MAIL_NOTICE_RETRY_ATTR)[0]!.click();
+    await tick(4);
+    expect(collectByAttr(root, CHAT_ROUTE_MAIL_NOTICE_ATTR)).toHaveLength(0);
+    expect(listMailInstances).toHaveBeenCalledTimes(2);
+    const portal = collectByAttr(
+      doc.body,
+      CHAT_ROUTE_MAIL_COMPOSE_PORTAL_ATTR,
+    )[0]!;
+    expect((portal as unknown as { innerHTML: string }).innerHTML)
+      .toContain('mail-compose-dialog');
+
+    route.dispose();
+    expect(doc.body.children).toHaveLength(0);
+  });
+
+  it('guides a read-only mailbox to repair without asking Chat or opening compose', async () => {
+    const doc = makeFakeDocument();
+    doc.body = doc.createElement('body');
+    const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const runExecute = vi.fn(async () => ({}));
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({ calls }),
+      mailCompose: {
+        listMailInstances: vi.fn(async () => ({
+          instances: [{
+            slug: 'archive',
+            adapter_type: 'imap',
+            send_capable: false,
+            account_email: 'owner@example.com',
+          }],
+        })),
+        runExecute,
+      },
+    });
+    await tick(8);
+
+    collectByAttr(root, CHAT_ROUTE_COMPOSER_ACTION_ATTR).find(
+      (action) => action.getAttribute(CHAT_ROUTE_COMPOSER_ACTION_ATTR) === 'mail',
+    )!.click();
+    await tick(4);
+
+    const notice = collectByAttr(root, CHAT_ROUTE_MAIL_NOTICE_ATTR)[0]!;
+    expect(notice.getAttribute(CHAT_ROUTE_MAIL_NOTICE_ATTR)).toBe('read_only');
+    expect(allText(notice)).toContain('cannot send yet');
+    expect(collectByTag(notice, 'a')[0]?.getAttribute('href'))
+      .toBe('#connections/mail');
+    expect(calls.some((call) => call.method === 'chat.send')).toBe(false);
+    expect(runExecute).not.toHaveBeenCalled();
+    expect(collectByAttr(
+      doc.body,
+      CHAT_ROUTE_MAIL_COMPOSE_PORTAL_ATTR,
+    )[0]!.innerHTML).toBe('');
+
+    route.dispose();
+  });
+
+  it('honors dismiss while mailbox readiness is pending and never opens late', async () => {
+    const doc = makeFakeDocument();
+    doc.body = doc.createElement('body');
+    const root = doc.createElement('div');
+    let resolveMail!: (value: {
+      instances: Array<{
+        slug: string;
+        adapter_type: string;
+        send_capable: boolean;
+        account_email: string;
+      }>;
+    }) => void;
+    const pendingMail = new Promise<{
+      instances: Array<{
+        slug: string;
+        adapter_type: string;
+        send_capable: boolean;
+        account_email: string;
+      }>;
+    }>((resolve) => {
+      resolveMail = resolve;
+    });
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn(),
+      mailCompose: {
+        listMailInstances: vi.fn(() => pendingMail),
+        runExecute: vi.fn(async () => ({})),
+      },
+    });
+    await tick(8);
+
+    collectByAttr(root, CHAT_ROUTE_COMPOSER_ACTION_ATTR).find(
+      (action) => action.getAttribute(CHAT_ROUTE_COMPOSER_ACTION_ATTR) === 'mail',
+    )!.click();
+    collectByAttr(root, CHAT_ROUTE_MAIL_NOTICE_DISMISS_ATTR)[0]!.click();
+    expect(collectByAttr(root, CHAT_ROUTE_MAIL_NOTICE_ATTR)).toHaveLength(0);
+
+    resolveMail({
+      instances: [{
+        slug: 'work',
+        adapter_type: 'gmail',
+        send_capable: true,
+        account_email: 'owner@example.com',
+      }],
+    });
+    await tick(4);
+
+    expect(collectByAttr(root, CHAT_ROUTE_MAIL_NOTICE_ATTR)).toHaveLength(0);
+    expect(collectByAttr(
+      doc.body,
+      CHAT_ROUTE_MAIL_COMPOSE_PORTAL_ATTR,
+    )[0]!.innerHTML).toBe('');
+
     route.dispose();
   });
 

@@ -40,6 +40,7 @@ import {
 } from '../execute-handler.js';
 import {
   awaitInflightHold,
+  buildHeldActionAuthority,
   buildHeldConfigSnapshot,
   computeHeldActionKey,
 } from '../held-action-idempotency.js';
@@ -80,6 +81,34 @@ const mcpSnapshot: ContractSnapshot = {
   approval_required: [],
   scope_restrictions: [],
   resolved_at: FIXED_NOW,
+};
+
+const messengerSource: ExecutionSource = {
+  channel: 'messenger',
+  actor: 'user_self',
+  vendor: 'slack',
+  from: 'U-messenger-owner',
+};
+
+const messengerOtherSenderSource: ExecutionSource = {
+  ...messengerSource,
+  from: 'U-messenger-other',
+};
+
+const messengerOtherVendorSource: ExecutionSource = {
+  ...messengerSource,
+  vendor: 'telegram',
+};
+
+const messengerContractedSource: ExecutionSource = {
+  ...messengerSource,
+  actor: 'contracted_user',
+  contract_id: 'contract-messenger-twin',
+};
+
+const messengerContractedSnapshot: ContractSnapshot = {
+  ...mcpSnapshot,
+  contract_id: messengerContractedSource.contract_id,
 };
 
 const reactiveSource: ExecutionSource = {
@@ -294,6 +323,7 @@ const heldActionKeyFor = (
 ): string => {
   const key = computeHeldActionKey({
     channel_session_id: deriveChannelSessionId(source),
+    authority: buildHeldActionAuthority(source),
     recipe_id: recipe.recipe_id,
     recipe_hash: hashRecipe(recipe),
     config_snapshot: buildHeldConfigSnapshot(
@@ -430,6 +460,76 @@ describe('handleExecute D-157 held-action idempotency guard', () => {
     expect(checkpoints.write).not.toHaveBeenCalled();
     expect(await log.size()).toBe(1);
     expect(await awaitingAnchors(log, chatSource, recipe)).toHaveLength(1);
+  });
+
+  it('collapses an identical messenger resend onto the seeded live held twin', async () => {
+    const recipe = buildRecipe('held-idempotency-messenger-collapse');
+    const log = auditLog();
+    const checkpoints = checkpointStore();
+    const seeded = await seedLiveHeldTwin({
+      log,
+      checkpoints,
+      recipe,
+      source: messengerSource,
+    });
+
+    const response = await handleExecute(
+      makeDeps(recipe, { auditLog: log, checkpointStore: checkpoints }),
+      {
+        recipe_id: recipe.recipe_id,
+        trigger_source: 'chat',
+        execution_source: messengerSource,
+        config: MATCHING_CONFIG,
+      },
+    );
+
+    expect(executeRecipeMock).not.toHaveBeenCalled();
+    expect(response).toMatchObject({
+      recipe_id: seeded.recipe_id,
+      recipe_hash: seeded.recipe_hash,
+      success: false,
+      steps: [],
+      errors: [],
+      awaiting_approval: true,
+    });
+    expect(response.output.render).toEqual([]);
+    expect(response.output.sidebar).toEqual([]);
+    expect(checkpoints.written.size).toBe(1);
+    expect(checkpoints.write).not.toHaveBeenCalled();
+    expect(await log.size()).toBe(1);
+    expect(await awaitingAnchors(log, messengerSource, recipe)).toHaveLength(1);
+  });
+
+  it('does not collapse an owner messenger resend onto a contracted held twin', async () => {
+    const recipe = buildRecipe('held-idempotency-messenger-actor-boundary');
+    const log = auditLog();
+    const checkpoints = checkpointStore();
+    await seedLiveHeldTwin({
+      log,
+      checkpoints,
+      recipe,
+      source: messengerContractedSource,
+    });
+    executeRecipeMock.mockResolvedValueOnce(pausedResult(recipe.recipe_id));
+
+    const response = await handleExecute(
+      makeDeps(recipe, { auditLog: log, checkpointStore: checkpoints }),
+      {
+        recipe_id: recipe.recipe_id,
+        trigger_source: 'chat',
+        execution_source: messengerSource,
+        config: MATCHING_CONFIG,
+      },
+    );
+
+    await expectRanNewHeldExecution({
+      response,
+      log,
+      checkpoints,
+      recipe,
+      source: messengerSource,
+      expectedAwaitingAnchors: 2,
+    });
   });
 
   it('collapses when the resend supplies only the ignored context.caller root', async () => {
@@ -1002,6 +1102,171 @@ describe('handleExecute D-259 running-action duplicate gate', () => {
     expect(executeResponseAuditRunId(followerResponse)).toBe(leaderRunId);
     expect(followerResponse).toBe(leaderResponse);
     expect(await log.size()).toBe(1);
+  });
+
+  it('attaches an exact concurrent messenger twin to one engine execution and run', async () => {
+    const recipe = buildRecipe('running-idempotency-messenger-collapse');
+    const log = auditLog();
+    const registry = new InFlightRegistry(new LaneSemaphore());
+    const deps = makeDeps(recipe, { auditLog: log, inFlightRegistry: registry });
+    const engineStarted = deferred<void>();
+    const engineRelease = deferred<ExecutionResult>();
+
+    executeRecipeMock.mockImplementationOnce(async () => {
+      engineStarted.resolve(undefined);
+      return engineRelease.promise;
+    });
+
+    const request = () => ({
+      recipe_id: recipe.recipe_id,
+      trigger_source: 'chat' as const,
+      execution_source: messengerSource,
+      config: MATCHING_CONFIG,
+    });
+
+    const leaderCall = handleExecute(deps, request());
+    await engineStarted.promise;
+    let followerSettled = false;
+    const followerCall = handleExecute(deps, request()).finally(() => {
+      followerSettled = true;
+    });
+    await flushMicrotasks();
+
+    expect(executeRecipeMock).toHaveBeenCalledTimes(1);
+    expect(followerSettled).toBe(false);
+
+    engineRelease.resolve(completedResult(recipe.recipe_id));
+    const [leaderResponse, followerResponse] = await Promise.all([
+      leaderCall,
+      followerCall,
+    ]);
+    const leaderRunId = executeResponseAuditRunId(leaderResponse);
+
+    expect(executeRecipeMock).toHaveBeenCalledTimes(1);
+    expect(leaderRunId).toBeDefined();
+    expect(executeResponseAuditRunId(followerResponse)).toBe(leaderRunId);
+    expect(followerResponse).toBe(leaderResponse);
+    expect(await log.size()).toBe(1);
+  });
+
+  it('never attaches a contracted messenger caller to an owner messenger run', async () => {
+    const recipe = buildRecipe('running-idempotency-messenger-actor-boundary');
+    const log = auditLog();
+    const registry = new InFlightRegistry(new LaneSemaphore());
+    const deps = makeDeps(recipe, { auditLog: log, inFlightRegistry: registry });
+    const bothStarted = deferred<void>();
+    const engineRelease = deferred<ExecutionResult>();
+    let engineCalls = 0;
+
+    executeRecipeMock.mockImplementation(async () => {
+      engineCalls += 1;
+      if (engineCalls === 2) bothStarted.resolve(undefined);
+      return engineRelease.promise;
+    });
+
+    const ownerCall = handleExecute(deps, {
+      recipe_id: recipe.recipe_id,
+      trigger_source: 'chat',
+      execution_source: messengerSource,
+      config: MATCHING_CONFIG,
+    });
+    const contractedCall = handleExecute(deps, {
+      recipe_id: recipe.recipe_id,
+      trigger_source: 'chat',
+      execution_source: messengerContractedSource,
+      contract_snapshot: messengerContractedSnapshot,
+      config: MATCHING_CONFIG,
+    });
+
+    await bothStarted.promise;
+    expect(executeRecipeMock).toHaveBeenCalledTimes(2);
+    engineRelease.resolve(completedResult(recipe.recipe_id));
+    const [ownerResponse, contractedResponse] = await Promise.all([
+      ownerCall,
+      contractedCall,
+    ]);
+
+    expect(ownerResponse.success).toBe(true);
+    expect(contractedResponse.success).toBe(true);
+    expect(executeResponseAuditRunId(contractedResponse)).not.toBe(
+      executeResponseAuditRunId(ownerResponse),
+    );
+    expect(await log.size()).toBe(2);
+  });
+
+  it('does not collapse messenger actions across sender or vendor boundaries', async () => {
+    const recipe = buildRecipe('running-idempotency-messenger-thread-boundary');
+    const log = auditLog();
+    const registry = new InFlightRegistry(new LaneSemaphore());
+    const deps = makeDeps(recipe, { auditLog: log, inFlightRegistry: registry });
+    const allStarted = deferred<void>();
+    const engineRelease = deferred<ExecutionResult>();
+    let engineCalls = 0;
+
+    executeRecipeMock.mockImplementation(async () => {
+      engineCalls += 1;
+      if (engineCalls === 3) allStarted.resolve(undefined);
+      return engineRelease.promise;
+    });
+
+    const sources = [
+      messengerSource,
+      messengerOtherSenderSource,
+      messengerOtherVendorSource,
+    ];
+    const calls = sources.map((executionSource) => handleExecute(deps, {
+      recipe_id: recipe.recipe_id,
+      trigger_source: 'chat',
+      execution_source: executionSource,
+      config: MATCHING_CONFIG,
+    }));
+
+    await allStarted.promise;
+    expect(executeRecipeMock).toHaveBeenCalledTimes(3);
+    engineRelease.resolve(completedResult(recipe.recipe_id));
+    const responses = await Promise.all(calls);
+
+    expect(new Set(responses.map(executeResponseAuditRunId)).size).toBe(3);
+    expect(await log.size()).toBe(3);
+  });
+
+  it('does not collapse messenger actions with different resolved config', async () => {
+    const recipe = buildRecipe('running-idempotency-messenger-config-boundary');
+    const log = auditLog();
+    const registry = new InFlightRegistry(new LaneSemaphore());
+    const deps = makeDeps(recipe, { auditLog: log, inFlightRegistry: registry });
+    const bothStarted = deferred<void>();
+    const engineRelease = deferred<ExecutionResult>();
+    let engineCalls = 0;
+
+    executeRecipeMock.mockImplementation(async () => {
+      engineCalls += 1;
+      if (engineCalls === 2) bothStarted.resolve(undefined);
+      return engineRelease.promise;
+    });
+
+    const firstCall = handleExecute(deps, {
+      recipe_id: recipe.recipe_id,
+      trigger_source: 'chat',
+      execution_source: messengerSource,
+      config: MATCHING_CONFIG,
+    });
+    const secondCall = handleExecute(deps, {
+      recipe_id: recipe.recipe_id,
+      trigger_source: 'chat',
+      execution_source: messengerSource,
+      config: DIFFERENT_CONFIG,
+    });
+
+    await bothStarted.promise;
+    expect(executeRecipeMock).toHaveBeenCalledTimes(2);
+    engineRelease.resolve(completedResult(recipe.recipe_id));
+    const [firstResponse, secondResponse] = await Promise.all([firstCall, secondCall]);
+
+    expect(executeResponseAuditRunId(firstResponse)).not.toBe(
+      executeResponseAuditRunId(secondResponse),
+    );
+    expect(await log.size()).toBe(2);
   });
 
   it('does not collapse concurrent chat actions with different resolved config', async () => {

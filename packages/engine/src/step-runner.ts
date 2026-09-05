@@ -8,6 +8,8 @@ import type {
   RecipeStep,
   StepMeta,
   PreflightApprovedTarget,
+  ForeachCheckpointProgress,
+  ForeachCheckpointResult,
 } from '@recued/contracts';
 import {
   cliFailureErrorCode,
@@ -21,6 +23,7 @@ import {
   isPeerAnswerRequiredSignal,
   isPreflightRequiredSignal,
   isRef,
+  hashForeachCheckpointSource,
   parseDataEntityRef,
   resolveDeep,
   resolveValue,
@@ -45,6 +48,7 @@ import {
 } from '@recued/provenance';
 import { prefetchSharedRefs } from './shared-prefetch.js';
 import { isPrototypeSensitiveKey, setNamespaceValue } from './store-safety.js';
+import { recipesEqual } from '@recued/recipes';
 
 /** Execute a single recipe step. Returns a StepLog.
  *
@@ -410,7 +414,66 @@ const runForeach = async (
   // no index-join transform, so without the echo an ingredient whose
   // output mapping drops its inputs (e.g. a search wrapper) loses the
   // association between what was asked and what came back.
-  const results: Array<{ ok: boolean; result?: unknown; error?: unknown; item?: unknown }> = [];
+  let results: ForeachCheckpointResult[] = [];
+  let startIndex = 0;
+  const progress = ctx.resumeFrom?.foreach_progress;
+  if (ctx.resumeFrom?.gated_step_id === id && progress === undefined) {
+    // Pre-progress checkpoints cannot identify which items already crossed the
+    // boundary. Starting again at index zero could repeat external effects;
+    // fail closed and require a fresh run instead.
+    const error = makeError(
+      ctx,
+      id,
+      'RECIPE_VALIDATION_FAILED',
+      `Checkpoint for foreach step '${id}' has no item progress — re-run the recipe.`,
+      { reason: 'checkpoint_foreach_progress_missing' },
+    );
+    setNamespaceValue(ctx.stores.step as Record<string, unknown>, id, null);
+    return {
+      id, type, skipped: false, result: null, error,
+      duration_ms: Date.now() - start,
+    };
+  }
+  if (progress !== undefined) {
+    let sourceHash: string | undefined;
+    try {
+      sourceHash = hashForeachCheckpointSource(resolved);
+    } catch {
+      sourceHash = undefined;
+    }
+    let prefixMatches = progress.step_id === id
+      && ctx.resumeFrom?.gated_step_id === id
+      && progress.source_length === resolved.length
+      && sourceHash !== undefined
+      && progress.source_hash === sourceHash
+      && progress.next_index === progress.results.length
+      && progress.next_index >= 0
+      && progress.next_index < resolved.length;
+    if (prefixMatches) {
+      try {
+        prefixMatches = progress.results.every((entry, index) =>
+          recipesEqual(entry.item, resolved[index]));
+      } catch {
+        prefixMatches = false;
+      }
+    }
+    if (!prefixMatches) {
+      const error = makeError(
+        ctx,
+        id,
+        'RECIPE_VALIDATION_FAILED',
+        `Checkpoint foreach progress no longer matches step '${id}' — re-run the recipe.`,
+        { reason: 'checkpoint_foreach_progress_mismatch' },
+      );
+      setNamespaceValue(ctx.stores.step as Record<string, unknown>, id, null);
+      return {
+        id, type, skipped: false, result: null, error,
+        duration_ms: Date.now() - start,
+      };
+    }
+    results = structuredClone(progress.results);
+    startIndex = progress.next_index;
+  }
 
   // D-120 Phase 3 — bracket inner-iteration link emission. Inner
   // steps see depth > 0 in `maybeEmitLinks` and skip emission;
@@ -420,14 +483,20 @@ const runForeach = async (
   // links by design.)
   enterForeach(ctx);
   try {
-    for (const item of resolved) {
+    for (let index = startIndex; index < resolved.length; index++) {
+      const item = resolved[index];
       storesMut.item = item;
       try {
         const log = await runStep(innerStep, ctx);
         if (log.error) {
           results.push({ ok: false, error: log.error, item });
         } else {
-          results.push({ ok: true, result: log.result, item });
+          results.push({
+            ok: true,
+            ...(log.skipped ? { skipped: true } : {}),
+            result: log.result,
+            item,
+          });
         }
       } catch (e) {
         // D-157 P1 slice 3 — same as `runStep`'s outer catch: a
@@ -435,12 +504,37 @@ const runForeach = async (
         // a per-iteration error; it has to reach the step loop. Skip
         // the `leaveForeach`/restore in `finally` is still correct —
         // the finally block runs on a re-throw too.
-        if (isPreflightRequiredSignal(e)) throw e;
+        if (isPreflightRequiredSignal(e) || isPeerAnswerRequiredSignal(e)) {
+          const foreachProgress: ForeachCheckpointProgress = {
+            step_id: id,
+            next_index: index,
+            source_length: resolved.length,
+            source_hash: hashForeachCheckpointSource(resolved),
+            results: structuredClone(results),
+          };
+          e.foreach_progress = foreachProgress;
+          throw e;
+        }
         results.push({
           ok: false,
           error: e instanceof Error ? e.message : String(e),
           item,
         });
+      }
+      // An ordinary foreach gate approves the remaining same-target aggregate,
+      // so its resume marker remains available to later iterations. A chunked
+      // gate is narrower: its request/byte bound was computed from THIS item.
+      // Once that item returns (successfully, skipped, or failed), consume the
+      // marker so the next item must be independently evaluated and, when the
+      // policy still says `ask`, held under a new bounded receipt. Clearing the
+      // whole marker is intentional: edits/grants/claims were approved for the
+      // same item and must not leak forward either. Engine phase selection was
+      // already fixed before this loop, and PII ledgers were hydrated at entry.
+      if (
+        ctx.resumeFrom?.gated_step_id === id
+        && ctx.resumeFrom.egress_bound !== undefined
+      ) {
+        ctx.resumeFrom = undefined;
       }
     }
   } finally {

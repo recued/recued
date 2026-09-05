@@ -203,6 +203,9 @@ describe('composeExecutionContext', () => {
       expect(context.executeDeps.serverName).toBe('Execution Test Server');
       expect(context.executeDeps.eventBus).toBe(storageContext.eventBus);
       expect(context.executeDeps.db).toBe(storageContext.db);
+      expect(context.executeDeps.gatedActionStore).toBe(
+        storageContext.gatedActionStore,
+      );
       expect(context.executeDeps.preflightNotifier).toBe(context.notificationBlock);
       expect(context.notificationBlock).toBeDefined();
 

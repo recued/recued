@@ -23,6 +23,7 @@ describe('D-196 seller overview rpc', () => {
       'server.seller.reissueManualCustomerToken',
       'server.seller.bulkAdjustManualTierCustomers',
       'server.seller.synchronizeStripeEntitlements',
+      'server.seller.synchronizeProviderTiers',
     ];
 
     for (const method of methods) {

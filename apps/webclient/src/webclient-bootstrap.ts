@@ -101,8 +101,9 @@
  *  broadcast bus has no subscription record for this client and fans
  *  nothing out (`backend/server/src/events/handler.ts` only adds the
  *  push closure when `events.subscribe` is invoked). The call is
- *  fire-and-forget — a failure leaves the page in its initial /
- *  cached-state view until the next `ws.connect()` retries. The
+ *  fire-and-forget — a failure is retried with bounded backoff while
+ *  the same socket stays connected, and every later `ws.connect()`
+ *  starts a fresh attempt immediately. The
  *  subscription set covers every kind the webclient cares about
  *  (`WEBCLIENT_DEFAULT_SUBSCRIPTIONS`), including `token.rotated`,
  *  reception, chat, warehouse, approvals, and the rest.
@@ -312,6 +313,10 @@ import {
   type ApprovalSubscribeCaller,
 } from './approvals/bootstrap-approvals-route.js';
 import { bootstrapMailRoute } from './mail/bootstrap-mail-route.js';
+import {
+  listComposeFiles,
+  openFilePickPanel,
+} from './mail/file-pick-panel.js';
 import {
   createPendingChatPlansStore,
   type PendingChatPlansStore,
@@ -568,6 +573,12 @@ import {
   type NotifyToastsMount,
 } from './notify-toasts.js';
 import {
+  ACTION_RECEIPT_DELIVERY_STORAGE_KEY,
+  followActionReceipts,
+  type ActionReceiptFollow,
+  type ActionReceiptDeliveryStorage,
+} from './action-receipt-follow.js';
+import {
   mountApprovalAttentionPopover,
   type AttentionInactiveConnectionRecoveryHint,
   type AttentionRecoveryExcursionReturn,
@@ -766,6 +777,7 @@ import type {
   SellerOverviewCaller,
   SellerSettingsUpdateCaller,
   SellerStripeSynchronizeCaller,
+  SellerProviderTierSynchronizeCaller,
 } from './settings/seller-page.js';
 import type {
   UpdateCheckCaller,
@@ -1927,10 +1939,19 @@ export interface BootstrapWebclientOptions {
   onCertPinError?: (err: Error, context: CertPinFailureContext) => void;
   /** Optional sink for the bootstrap's `events.subscribe` rpc failure
    *  (DD#8). The webclient depends on this round-trip to start
-   *  receiving broadcasts; a failure here means the page falls back
-   *  to its initial-state view until the next reconnect retries.
+   *  receiving broadcasts; failures retry with bounded backoff while
+   *  the socket remains connected and also retry on reconnect.
    *  Defaults to silent. */
   onSubscribeError?: (err: Error) => void;
+  /** Retry `events.subscribe` while the same socket remains connected. A
+   * transient rpc failure otherwise has no reconnect edge to re-arm live
+   * invalidations. Tests may inject a deterministic one-shot timer. */
+  setEventsSubscribeRetryTimer?: (
+    handler: () => void,
+    delayMs: number,
+  ) => { cancel: () => void };
+  eventsSubscribeRetryInitialMs?: number;
+  eventsSubscribeRetryMaxMs?: number;
   /** § A.4.1 — AES-GCM key store wiper, threaded through to the
    *  Settings → Privacy "Clear this browser" panel as
    *  `crypto_keys_wiper`. Production wires
@@ -2269,6 +2290,21 @@ export interface BootstrapWebclientOptions {
    *  (R31 delta D); `notification_fired` audit rows still persist server-side.
    *  Tests opt out by passing `false`. */
   enableNotifyToasts?: boolean;
+  /** Profile-scoped durable suppression + catch-up watermark for terminal
+   * gated-action outcomes. Defaults to browser localStorage; null disables
+   * persistence while preserving live and reconnect reads. Only opaque action
+   * group keys, timestamps, and aggregate counts are retained. */
+  actionReceiptDeliveryStorage?: ActionReceiptDeliveryStorage | null;
+  /** One-shot timer seam for connected durable action reconciliation. The
+   * follower re-arms it only after a complete scan, so standalone processes
+   * that share SQLite but not this server's event bus still reach the owner
+   * without overlapping list calls. */
+  setActionReceiptReconcileTimer?: (
+    handler: () => void,
+    delayMs: number,
+  ) => { cancel: () => void };
+  /** Connected durable-action polling cadence. Defaults to five seconds. */
+  actionReceiptReconcileIntervalMs?: number;
   /** Live connection indicator — when not explicitly `false` (the default is
    *  ON), the bootstrap mounts a screen-reader status announcer + the
    *  route-independent offline banner, both driven by the `connection-status`
@@ -2575,6 +2611,8 @@ export const deriveComposeReceptionStatusFromHostnames = (
  *  enough for the user-visible auto-hide, coarse enough that an idle
  *  page doesn't churn through redundant ticks. */
 export const CERT_PIN_POLL_INTERVAL_MS = 60_000;
+export const EVENTS_SUBSCRIBE_RETRY_INITIAL_MS = 1_000;
+export const EVENTS_SUBSCRIBE_RETRY_MAX_MS = 30_000;
 
 /** Real-interval implementation for the cert-pin polling seam (DD#10).
  *  Returns a cancel handle so the bootstrap's dispose() chain tears
@@ -2585,6 +2623,14 @@ const realCertPinPollTimer = (
 ): { cancel: () => void } => {
   const id = setInterval(handler, intervalMs);
   return { cancel: () => clearInterval(id) };
+};
+
+const realEventsSubscribeRetryTimer = (
+  handler: () => void,
+  delayMs: number,
+): { cancel: () => void } => {
+  const id = setTimeout(handler, delayMs);
+  return { cancel: () => clearTimeout(id) };
 };
 
 const hostnameFromHandle = (handle: string): string | null => {
@@ -2884,15 +2930,15 @@ export const bootstrapWebclient = async (
     );
   }
 
-  // 3.9. Notify toasts (D-169 P2 Slice 5, toast half). The route-
-  //      independent ephemeral pop on each `notification.notify` bus
-  //      frame, mounted at `options.root` so it survives route swaps (the
-  //      posture the retired re-pair banner used per DD#9). Bus-driven
-  //      only (no rpc) + additive to the Settings → Notifications feed,
-  //      which owns the durable record. Default ON; tests opt out via
-  //      `enableNotifyToasts: false`. Styles inject once into <head>,
-  //      marker-guarded (same discipline as the settings route's bundle).
+  // 3.9. Route-independent status toasts. `notification.notify` frames render
+  //      directly; gated-action changes are invalidations that first read the
+  //      durable owner-only receipt RPC and render only a terminal aggregate.
+  //      Both share one accessible stack mounted at `options.root`, so neither
+  //      is tied to a route and the receipt path never mints a second notify.
+  //      Default ON; tests opt out via `enableNotifyToasts: false`. Styles inject
+  //      once into <head>, marker-guarded.
   let notifyToasts: NotifyToastsMount | null = null;
+  let actionReceiptFollow: ActionReceiptFollow | null = null;
   if (options.enableNotifyToasts !== false) {
     if (
       doc.head !== undefined
@@ -2907,6 +2953,46 @@ export const bootstrapWebclient = async (
       host: options.root,
       document: doc,
       subscribe: subscriber.on,
+    });
+    let actionReceiptDeliveryStorage: ActionReceiptDeliveryStorage | undefined;
+    if (options.actionReceiptDeliveryStorage !== null) {
+      if (options.actionReceiptDeliveryStorage !== undefined) {
+        actionReceiptDeliveryStorage = options.actionReceiptDeliveryStorage;
+      } else {
+        try {
+          const candidate = (globalThis as {
+            localStorage?: ActionReceiptDeliveryStorage;
+          }).localStorage;
+          if (
+            candidate !== undefined
+            && typeof candidate.getItem === 'function'
+            && typeof candidate.setItem === 'function'
+          ) actionReceiptDeliveryStorage = candidate;
+        } catch {
+          // Privacy modes may expose a throwing localStorage getter. Durable
+          // server reads still reconcile this page; only reload de-dup degrades.
+        }
+      }
+    }
+    actionReceiptFollow = followActionReceipts({
+      subscribe: subscriber.on,
+      getAction: (args) => rpcConn.call('execution.action.get', args),
+      listActions: (args) => rpcConn.call('execution.action.list', args),
+      ...(actionReceiptDeliveryStorage !== undefined
+        ? {
+            deliveryStorage: actionReceiptDeliveryStorage,
+            deliveryStorageKey: `${ACTION_RECEIPT_DELIVERY_STORAGE_KEY}:${encodeURIComponent(
+              bootProfileId ?? pair.serverUrl,
+            )}`,
+          }
+        : {}),
+      ...(options.setActionReceiptReconcileTimer !== undefined
+        ? { setPollTimer: options.setActionReceiptReconcileTimer }
+        : {}),
+      ...(options.actionReceiptReconcileIntervalMs !== undefined
+        ? { pollIntervalMs: options.actionReceiptReconcileIntervalMs }
+        : {}),
+      present: (toast) => notifyToasts?.push(toast),
     });
   }
 
@@ -6417,6 +6503,12 @@ export const bootstrapWebclient = async (
     options.enablePacksPanel === false
       ? undefined
       : () => rpcConn.call('packs.list', undefined);
+  // D-259 — the durable half of the boot pack finding. Gated by the same flag as
+  // the rest of the packs surface: if Packs is off there is nowhere to show it.
+  const packsUnrunnableCaller: (() => Promise<{ findings: ReadonlyArray<{ slug: string }> }>) | undefined =
+    options.enablePacksPanel === false
+      ? undefined
+      : () => rpcConn.call('packs.unrunnable', undefined);
   const packsInstallCaller: PacksInstallCaller | undefined =
     options.enablePacksPanel === false
       ? undefined
@@ -8443,6 +8535,14 @@ export const bootstrapWebclient = async (
     options.enableSellerPage === false
       ? undefined
       : (args) => rpcConn.call('server.seller.synchronizeStripeEntitlements', args);
+  // D-196 consolidation — the ONE tier seed for every provider; the Stripe
+  // caller above stays as the form's fallback against an older paired server.
+  const sellerProviderTierSynchronizeCaller:
+    | SellerProviderTierSynchronizeCaller
+    | undefined =
+    options.enableSellerPage === false
+      ? undefined
+      : (args) => rpcConn.call('server.seller.synchronizeProviderTiers', args);
   // D-196 §4.9 / I-7 — owner-only paid-gateway acknowledgment (reserved out of MCP).
   const sellerAcknowledgeLlmGatewayPaidCaller:
     | SellerAcknowledgeLlmGatewayPaidCaller
@@ -9532,6 +9632,7 @@ export const bootstrapWebclient = async (
         root: appShell.contentRoot,
         ...(options.document !== undefined ? { document: options.document } : {}),
         ...(packsListCaller !== undefined ? { packsListCaller } : {}),
+        ...(packsUnrunnableCaller !== undefined ? { packsUnrunnableCaller } : {}),
         ...(packsInstallCaller !== undefined
           ? { packsInstallCaller: switchWorkTracker.track(packsInstallCaller) }
           : {}),
@@ -10234,6 +10335,22 @@ export const bootstrapWebclient = async (
         openRunPalette: () => {
           globalRunPalette?.open();
         },
+        // New mail is a Chat notification first: the reusable compose host
+        // performs a fresh mailbox-capability read and opens only when at least
+        // one Source can send. No mailbox/read-only/error stays in Chat with a
+        // direct Connections handoff rather than opening a dead dialog.
+        mailCompose: {
+          listMailInstances: () =>
+            rpcConn.call('collection.mail.list', undefined),
+          runExecute: (args) =>
+            rpcConn.call('execute', { ...args, trigger_source: 'manual' }),
+          listFiles: () => listComposeFiles(dataMirrorSearchCaller),
+          pickFiles: async (selected, signal) => {
+            const inventory = await listComposeFiles(dataMirrorSearchCaller);
+            if (signal?.aborted === true) return [];
+            return openFilePickPanel(doc, inventory, selected, signal);
+          },
+        },
         // The default landing owns the first-run activation surface. Embedded
         // chat mounts opt in explicitly so their established empty state stays
         // stable.
@@ -10764,6 +10881,13 @@ export const bootstrapWebclient = async (
           ? {
               sellerStripeSynchronizeCaller: switchWorkTracker.track(
                 sellerStripeSynchronizeCaller,
+              ),
+            }
+          : {}),
+        ...(sellerProviderTierSynchronizeCaller !== undefined
+          ? {
+              sellerProviderTierSynchronizeCaller: switchWorkTracker.track(
+                sellerProviderTierSynchronizeCaller,
               ),
             }
           : {}),
@@ -12888,7 +13012,8 @@ export const bootstrapWebclient = async (
   //      `WEBCLIENT_DEFAULT_SUBSCRIPTIONS` set so the Reception page,
   //      the rotation handler, and every future shell receives its
   //      events. The call is fire-and-forget — failures land in
-  //      `onSubscribeError` if supplied (best-effort telemetry sink).
+  //      `onSubscribeError` if supplied and retry with bounded backoff
+  //      while this socket remains connected.
   //
   //      Re-fired on EVERY (re)connect, not just the first. The server
   //      drops a client's bus subscription when its socket closes, and a
@@ -12897,27 +13022,100 @@ export const bootstrapWebclient = async (
   //      the moment the socket first drops, and live updates never
   //      resume. Driving it off the connection-status controller's
   //      `connected` transitions re-registers the bus on each reconnect.
-  const fireEventsSubscribe = (): void => {
-    void rpcConn
-      .call('events.subscribe', {
+  const setEventsSubscribeRetryTimer = options.setEventsSubscribeRetryTimer
+    ?? realEventsSubscribeRetryTimer;
+  const requestedEventsRetryInitial = options.eventsSubscribeRetryInitialMs;
+  const eventsSubscribeRetryInitialMs = requestedEventsRetryInitial !== undefined
+    && Number.isFinite(requestedEventsRetryInitial)
+    && requestedEventsRetryInitial >= 1
+    ? Math.floor(requestedEventsRetryInitial)
+    : EVENTS_SUBSCRIBE_RETRY_INITIAL_MS;
+  const requestedEventsRetryMax = options.eventsSubscribeRetryMaxMs;
+  const eventsSubscribeRetryMaxMs = Math.max(
+    eventsSubscribeRetryInitialMs,
+    requestedEventsRetryMax !== undefined
+      && Number.isFinite(requestedEventsRetryMax)
+      && requestedEventsRetryMax >= 1
+      ? Math.floor(requestedEventsRetryMax)
+      : EVENTS_SUBSCRIBE_RETRY_MAX_MS,
+  );
+  let eventsSubscribeRetryDelayMs = eventsSubscribeRetryInitialMs;
+  let eventsSubscribeRetryTimer: { cancel: () => void } | null = null;
+  let eventsSubscribeGeneration = 0;
+
+  const cancelEventsSubscribeRetry = (): void => {
+    eventsSubscribeRetryTimer?.cancel();
+    eventsSubscribeRetryTimer = null;
+  };
+
+  const reportSubscribeError = (err: unknown): void => {
+    if (!options.onSubscribeError) return;
+    const wrapped = err instanceof Error ? err : new Error(String(err));
+    try {
+      options.onSubscribeError(wrapped);
+    } catch {
+      /* failure-report sink must never re-enter the bootstrap */
+    }
+  };
+
+  const reconcileActionReceiptsAfterSubscribe = (generation: number): void => {
+    if (
+      generation !== eventsSubscribeGeneration
+      || connectionStatus.status() !== 'connected'
+    ) return;
+    actionReceiptFollow?.setConnected(true);
+    void actionReceiptFollow?.reconcile();
+  };
+
+  const fireEventsSubscribe = async (generation: number): Promise<void> => {
+    try {
+      await rpcConn.call('events.subscribe', {
         kinds: [...WEBCLIENT_DEFAULT_SUBSCRIPTIONS],
-      })
-      .catch((err: unknown) => {
-        if (!options.onSubscribeError) return;
-        const wrapped = err instanceof Error ? err : new Error(String(err));
-        try {
-          options.onSubscribeError(wrapped);
-        } catch {
-          /* failure-report sink must never re-enter the bootstrap */
-        }
       });
+      if (generation === eventsSubscribeGeneration) {
+        eventsSubscribeRetryDelayMs = eventsSubscribeRetryInitialMs;
+      }
+    } catch (err) {
+      reportSubscribeError(err);
+      if (
+        generation === eventsSubscribeGeneration
+        && connectionStatus.status() === 'connected'
+        && eventsSubscribeRetryTimer === null
+      ) {
+        const delayMs = eventsSubscribeRetryDelayMs;
+        eventsSubscribeRetryDelayMs = Math.min(
+          eventsSubscribeRetryMaxMs,
+          eventsSubscribeRetryDelayMs * 2,
+        );
+        eventsSubscribeRetryTimer = setEventsSubscribeRetryTimer(() => {
+          eventsSubscribeRetryTimer = null;
+          void fireEventsSubscribe(generation).finally(() => {
+            reconcileActionReceiptsAfterSubscribe(generation);
+          });
+        }, delayMs);
+      }
+    }
   };
   // Subscribed BEFORE `ws.connect()` so the controller's initial
   // `connecting → connected` transition (emitted during the connect
   // below) catches it + fires the first subscribe; every subsequent
   // reconnect re-fires it. Detached in dispose.
   const detachResubscribe = connectionStatus.onStatus((status) => {
-    if (status === 'connected') fireEventsSubscribe();
+    eventsSubscribeGeneration += 1;
+    cancelEventsSubscribeRetry();
+    eventsSubscribeRetryDelayMs = eventsSubscribeRetryInitialMs;
+    if (status !== 'connected') {
+      actionReceiptFollow?.setConnected(false);
+      return;
+    }
+    actionReceiptFollow?.prepareReconnect();
+    const generation = eventsSubscribeGeneration;
+    // Establish live invalidations first, then read the durable terminal
+    // snapshot. Anything before subscription is in the snapshot; anything
+    // after registration is both live and reconciliation-deduplicated.
+    void fireEventsSubscribe(generation).finally(() => {
+      reconcileActionReceiptsAfterSubscribe(generation);
+    });
   });
 
   // 6. Auto-connect the ws-client (DD#3).
@@ -13150,6 +13348,8 @@ export const bootstrapWebclient = async (
       // Detach the reconnect-driven `events.subscribe` re-fire BEFORE
       // `ws.disconnect()` so the dispose-fired `'closed'` transition
       // can't re-enter a torn-down rpcConn.
+      eventsSubscribeGeneration += 1;
+      cancelEventsSubscribeRetry();
       detachResubscribe();
       detachHash();
       if (typeof beforeUnloadView?.removeEventListener === 'function') {
@@ -13255,6 +13455,7 @@ export const bootstrapWebclient = async (
       // D-169 P2 Slice 5 (toast half) — drop the toast's bus subscription +
       // clear its pending auto-dismiss timers before `detachBroadcast()`
       // stops feeding the subscriber.
+      if (actionReceiptFollow !== null) actionReceiptFollow.dispose();
       if (notifyToasts !== null) notifyToasts.dispose();
       tokenRotation.dispose();
       rpcConn.dispose();

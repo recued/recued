@@ -72,10 +72,12 @@
  *  Spec: D-196 §6.3 (+ §6.2's event table, whose rows this
  *  backstops) + D-123 (idle cadence). */
 
-import type {
-  HousekeepingCursor,
-  HousekeepingStepResult,
-  SellerCustomerCloseReason,
+import {
+  SELLER_PROVIDER_LIVE_STATUS_ALIASES,
+  type HousekeepingCursor,
+  type HousekeepingStepResult,
+  type SellerCustomerCloseReason,
+  type SellerLifecycleSource,
 } from '@recued/contracts';
 
 import type {
@@ -89,6 +91,11 @@ export const SELLER_ACCESS_RECONCILE_TASK_ID = 'seller-access-reconcile';
  *  reads — the store's row is wider. */
 export interface ReconcilableCustomer {
   readonly customer_id: string;
+  /** Which provider's API the subscription id belongs to. Set by the wiring
+   *  that listed the row (`access-reconcile-deps.ts`), read by nothing in this
+   *  policy: the verdict is provider-neutral, only the READ is not. Optional so
+   *  a caller that sweeps one source (the v1 shape) need not name it. */
+  readonly lifecycle_source?: SellerLifecycleSource;
   /** The provider's subscription id (`seller_customers.external_subscription_id`).
    *  A customer without one is not subscription-backed (a one-time pass — its
    *  expiry does the work, §6.2) and is never swept. */
@@ -197,7 +204,26 @@ export const ACCESS_ENDED_STATUS_REASONS: Readonly<Record<string, SellerCustomer
   canceled: 'cancelled',
   incomplete_expired: 'payment_failed',
   unpaid: 'payment_failed',
+  // Paddle + Lemon Squeezy (2026-09-03). `paused`: billing stopped at the
+  // customer's or seller's hand and may resume; it ENDS the paid period, and
+  // the status policy defaults it to GRACE (not close_now) precisely so a
+  // later `subscription.resumed` / `subscription_unpaused` can extend the
+  // same row — a revoked row cannot be re-opened by the extend path.
+  // `expired`: Lemon Squeezy's terminal state after a cancelled subscription
+  // reaches `ends_at` (its `cancelled` is still paid until then and never
+  // reaches a close op; the lanes EXTEND to `ends_at` instead).
+  paused: 'cancelled',
+  expired: 'cancelled',
 };
+
+/** Provider status spellings that mean one of `ACCESS_LIVE_STATUSES` under
+ *  another name. Lemon Squeezy says `on_trial` where Stripe and Paddle say
+ *  `trialing`. Kept as an alias map rather than a fourth live member so the
+ *  Stripe swap lane's exhaustive liveness gate — pinned by the corpus test to
+ *  equal `ACCESS_LIVE_STATUSES` — does not have to learn a status its provider
+ *  can never emit. Lanes for the aliasing provider gate on the alias too. */
+export const PROVIDER_LIVE_STATUS_ALIASES: Readonly<Record<string, string>> =
+  SELLER_PROVIDER_LIVE_STATUS_ALIASES;
 
 /** Statuses where the subscription is alive and the paid period governs.
  *  `past_due` is deliberately HERE, not in the ended set: dunning is a grace
@@ -225,7 +251,8 @@ export const ACCESS_LIVE_STATUSES: ReadonlySet<string> = new Set([
  *  the two would disagree about `past_due` first.
  *  [[feedback_a_subset_typechecks_so_derive_the_closed_list]] */
 export const providerStatusIsLive = (status: string): boolean =>
-  ACCESS_LIVE_STATUSES.has(status);
+  ACCESS_LIVE_STATUSES.has(status)
+  || Object.hasOwn(PROVIDER_LIVE_STATUS_ALIASES, status);
 
 /** D-196 §6.2 — resolve which tier the provider currently says a customer holds,
  *  from their ACTIVE ENTITLEMENTS. Pure; the reader supplies the data.

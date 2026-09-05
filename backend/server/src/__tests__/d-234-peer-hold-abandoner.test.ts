@@ -11,6 +11,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 
 import { abandonOrphanedPeerHolds, isOrphanedHold } from '../peer-hold-abandoner.js';
+import { sweepExpiredPeerAsks } from '../peer-ask-timeout-sweeper.js';
 import { createPeerAskOutboxStore } from '../storage/peer-ask-outbox-store.js';
 import { createPeerAnswerStore } from '../storage/peer-answer-store.js';
 
@@ -220,6 +221,20 @@ describe('§ 234.4n — what abandoning does', () => {
     })).rejects.toThrow('offline');
     expect(h.outbox.get('ref_1')).not.toBeNull();
     expect(h.answers.get('ref_1')).toMatchObject({ unanswered_because: 'withdrawn' });
+
+    // Production runs answer/deadline recovery before the abandonment retry.
+    // Its local withdrawal claim must not be mistaken for a peer response and
+    // resume the recipe whose dish was deleted.
+    const resume = vi.fn(async (_target: { run_id: string; gated_step_id: string }) => {});
+    await expect(sweepExpiredPeerAsks({
+      outbox: h.outbox,
+      answers: h.answers,
+      resume,
+      now: h.now,
+      log: () => {},
+    })).resolves.toMatchObject({ alreadyAnswered: 1, resumed: 0 });
+    expect(resume).not.toHaveBeenCalled();
+    expect(h.outbox.get('ref_1')).not.toBeNull();
 
     expect(await abandonOrphanedPeerHolds({ ...h, log: () => {} }))
       .toMatchObject({ abandoned: 1 });

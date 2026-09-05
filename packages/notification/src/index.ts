@@ -227,6 +227,10 @@ export interface NotificationBlockDeps {
    *  Absent ⇒ no row. ⛔ Anything that PRUNES terminal asks depends on this
    *  being wired — see `AskStore.pruneHandled`. */
   recordAnswerAudit?: (record: AnswerAuditRecord) => Promise<void>;
+  /** Host reconciliation that must become durable before an open ask may be
+   * rendered after restart. A throw skips delivery for that ask and makes the
+   * recovery call reject after it has attempted the remaining rows. */
+  prepareRecoveredAsk?: (ask: PendingAsk) => void | Promise<void>;
   /** Clock — injectable for deterministic tests; defaults to
    *  `Date.now`. */
   now?: () => number;
@@ -344,6 +348,12 @@ export interface NotificationBlock {
    *  `countOutstandingAsks`). Slice 2 renders the result read-only;
    *  Slice 3 wires the interactive approval card + `submitAnswer`. */
   listOpenAsks(): Promise<PendingAsk[]>;
+
+  /** Boot/reconciliation read: asks whose durable workflow has not finished.
+   * Includes both user-actionable `open` rows and `answered` rows whose handler
+   * still must complete. This is deliberately separate from `listOpenAsks` so
+   * owner surfaces never render an already-made decision as actionable. */
+  listUnresolvedAsks(): Promise<PendingAsk[]>;
 
   /** D-157 N.8 — one ask row by id, or `null` when unknown. Backs the
    *  stale-checkpoint retention sweep's never-drop-a-decision check
@@ -617,6 +627,15 @@ export const createNotificationBlock = (
       .map((name) => allChannels.find((channel) => channel.name === name))
       .filter((channel): channel is Channel => channel !== undefined);
 
+  /** Strip host-only ask controls before crossing a channel boundary. */
+  const channelAskExtras = (extras: AskExtras | undefined): AskExtras | undefined => {
+    if (extras?.note_prompt === undefined && extras?.body === undefined) return undefined;
+    return {
+      ...(extras.note_prompt !== undefined ? { note_prompt: extras.note_prompt } : {}),
+      ...(extras.body !== undefined ? { body: extras.body } : {}),
+    };
+  };
+
   /** D-210 A.8 slice 3d — append the landing-page URL to an `inline` channel's
    *  ask text.
    *
@@ -666,7 +685,10 @@ export const createNotificationBlock = (
     for (const channel of targets) {
       try {
         await channel.deliverAsk(
-          ask_id, withAnswerLink(channel, ask_id, message), options, extras,
+          ask_id,
+          withAnswerLink(channel, ask_id, message),
+          options,
+          channelAskExtras(extras),
         );
       } catch {
         // best-effort — the ask stays durably `open`; the boot sweep
@@ -740,28 +762,69 @@ export const createNotificationBlock = (
     },
 
     async ask(message, options, handler, channels, extras) {
-      const ask_id = mint();
-      const { deliver, passiveNotify, bridgeAsk, bridgePassiveNotify } =
-        await resolveAskChannels(channels);
-      const fresh: NewPendingAsk = {
-        ask_id,
-        message,
-        options,
-        handler_kind: handler.kind,
-        handler_payload: handler.payload,
+      const reservedAskId = extras?.reserved_ask_id;
+      if (reservedAskId !== undefined && reservedAskId.length === 0) {
+        throw new Error('NotificationBlock.ask: reserved_ask_id must be non-empty');
+      }
+      const ask_id = reservedAskId ?? mint();
+      return serializer.run(ask_id, async () => {
+        const existing = await store.get(ask_id);
+        if (existing !== null) {
+          const same = reservedAskId !== undefined
+            && existing.message.title === message.title
+            && existing.message.text === message.text
+            && existing.message.link_url === message.link_url
+            && existing.handler_kind === handler.kind
+            && JSON.stringify(existing.handler_payload)
+              === JSON.stringify(handler.payload)
+            && JSON.stringify(existing.options) === JSON.stringify(options)
+            && existing.note_prompt === extras?.note_prompt
+            && existing.body === (
+              extras?.body !== undefined && extras.body !== ''
+                ? extras.body.slice(0, ASK_BODY_MAX)
+                : undefined
+            );
+          if (!same) {
+            throw new Error(
+              `NotificationBlock.ask: ask_id "${ask_id}" is already stored for a different ask`,
+            );
+          }
+          await extras?.on_persisted?.(ask_id);
+          // The hook may have failed after `store.create` but before original
+          // delivery. Once an exact reserved-id replay repairs the host anchor,
+          // retry the persisted target set. Channels reconcile by ask_id.
+          if (extras?.on_persisted !== undefined && existing.status === 'open') {
+            await fanOutAsk(
+              channelsForAsk(existing),
+              existing.ask_id,
+              existing.message,
+              existing.options,
+              extras,
+            );
+          }
+          return { ask_id };
+        }
+        const { deliver, passiveNotify, bridgeAsk, bridgePassiveNotify } =
+          await resolveAskChannels(channels);
+        const fresh: NewPendingAsk = {
+          ask_id,
+          message,
+          options: [...options],
+          handler_kind: handler.kind,
+          handler_payload: handler.payload,
         // D-234 § 234.4e — persisted WITH the ask, so the answer path can tell an
         // invited note from an uninvited one long after the raise site is gone.
         // Deriving it later from the handler kind would make the rule "some kinds
         // take notes", which is exactly the coupling the per-ask flag avoids.
-        ...(extras?.note_prompt !== undefined
-          ? { note_prompt: extras.note_prompt }
-          : {}),
+          ...(extras?.note_prompt !== undefined
+            ? { note_prompt: extras.note_prompt }
+            : {}),
         // D-234 § 234.4f — TRUNCATED at entry, not refused: the far side wrote
         // it, and a reviewer who can read four pages of five is better served
         // than one who gets an error where the draft should be.
-        ...(extras?.body !== undefined && extras.body !== ''
-          ? { body: extras.body.slice(0, ASK_BODY_MAX) }
-          : {}),
+          ...(extras?.body !== undefined && extras.body !== ''
+            ? { body: extras.body.slice(0, ASK_BODY_MAX) }
+            : {}),
         // The resolved fan-out target set, persisted with the ask
         // BEFORE any delivery: the close-broadcast set is then correct
         // the instant a card can be visible, with no post-delivery
@@ -772,21 +835,22 @@ export const createNotificationBlock = (
         // `'notify-only'`); the close-broadcast must never target them,
         // and the boot re-delivery sweep must never re-route an ask
         // through `deliverAsk` on them.
-        fanout_channels: deliver.map((c) => c.name),
-        created_at: now(),
-      };
+          fanout_channels: deliver.map((c) => c.name),
+          created_at: now(),
+        };
       // Persist BEFORE any delivery — the ask is durable the instant
       // `ask` can fail (D-158 I-2). A store failure rejects `ask`; a
       // delivery failure (handled inside `fanOutAsk` /
       // `firePassiveNotify`) does not.
-      await store.create(fresh);
-      await fanOutAsk(deliver, ask_id, message, options, extras);
+        await store.create(fresh);
+        await extras?.on_persisted?.(ask_id);
+        await fanOutAsk(deliver, ask_id, message, options, extras);
       // D-163 N.3 / I-3 — passive notify to notify-only channels so
       // the user learns approval is pending on those surfaces (e.g.
       // OS notification via Bridge). Best-effort per channel; a
       // failure leaves the ask durably `open` for normal answer paths.
-      const passiveBody = composePassiveAskBody(message);
-      await firePassiveNotify(passiveNotify, passiveBody);
+        const passiveBody = composePassiveAskBody(message);
+        await firePassiveNotify(passiveNotify, passiveBody);
       // D-169 Slice 4 — per-bridge bridge fan-out over the single bridge
       // adapter: one `deliverAsk` per approval-mode-ON paired bridge, one
       // passive `deliverNotify` per notification-only bridge (both-off
@@ -797,26 +861,32 @@ export const createNotificationBlock = (
       // deliberately NOT in `fanout_channels` (above) — its close + boot
       // re-delivery ride the `ui`/bus path, and its adapter `closeAsk` /
       // re-`deliverAsk` are no-ops.
-      if (bridgeChannel) {
-        for (let i = 0; i < bridgeAsk; i += 1) {
-          try {
-            await bridgeChannel.deliverAsk(ask_id, message, options, extras);
-          } catch {
-            // best-effort — the ask stays durably `open` on its inbound
-            // channels; the bridge surface converges via the bus.
+        if (bridgeChannel) {
+          for (let i = 0; i < bridgeAsk; i += 1) {
+            try {
+              await bridgeChannel.deliverAsk(
+                ask_id,
+                message,
+                options,
+                channelAskExtras(extras),
+              );
+            } catch {
+              // best-effort — the ask stays durably `open` on its inbound
+              // channels; the bridge surface converges via the bus.
+            }
+          }
+          for (let i = 0; i < bridgePassiveNotify; i += 1) {
+            try {
+              await bridgeChannel.deliverNotify(passiveBody);
+            } catch {
+              // best-effort — passive awareness only.
+            }
           }
         }
-        for (let i = 0; i < bridgePassiveNotify; i += 1) {
-          try {
-            await bridgeChannel.deliverNotify(passiveBody);
-          } catch {
-            // best-effort — passive awareness only.
-          }
-        }
-      }
-      // Resolve with the ask_id — before any answer, never an awaited
-      // answer (I-3).
-      return { ask_id };
+        // Resolve with the ask_id — before any answer, never an awaited
+        // answer (I-3).
+        return { ask_id };
+      });
     },
 
     registerAskHandler(kind, handler) {
@@ -934,6 +1004,7 @@ export const createNotificationBlock = (
     },
 
     async recoverPendingAsks() {
+      let firstPreparationError: unknown;
       // `open` — re-deliver. A crash before / during the original
       // fan-out left the ask undelivered or partially delivered;
       // `Channel.deliverAsk` is idempotent per `ask_id`, so re-
@@ -946,22 +1017,36 @@ export const createNotificationBlock = (
       // would leave a prompt the close-broadcast (also `fanout_
       // channels`-keyed) can never resolve.
       for (const ask of await store.listByStatus('open')) {
-        await fanOutAsk(
-          channelsForAsk(ask),
-          ask.ask_id,
-          ask.message,
-          ask.options,
-          // ⚠ OFF THE PERSISTED ROW, not a caller argument — this is the BOOT
-          // re-delivery path, where the raise site is long gone. An ask that
-          // invited a reason must still invite one after a restart, and the
-          // document must still be there to read.
-          {
-            ...(ask.note_prompt !== undefined
-              ? { note_prompt: ask.note_prompt }
-              : {}),
-            ...(ask.body !== undefined ? { body: ask.body } : {}),
-          },
-        );
+        // The list row is only a candidate. A live answer/cancel may close it
+        // before recovery reaches this iteration; serialize with those paths
+        // and re-read under the lock so a close broadcast can never be followed
+        // by a stale recovered render of the same decision.
+        await serializer.run(ask.ask_id, async () => {
+          const current = await store.get(ask.ask_id);
+          if (current === null || current.status !== 'open') return;
+          try {
+            await deps.prepareRecoveredAsk?.(current);
+          } catch (error) {
+            firstPreparationError ??= error;
+            return;
+          }
+          await fanOutAsk(
+            channelsForAsk(current),
+            current.ask_id,
+            current.message,
+            current.options,
+            // ⚠ OFF THE PERSISTED ROW, not a caller argument — this is the BOOT
+            // re-delivery path, where the raise site is long gone. An ask that
+            // invited a reason must still invite one after a restart, and the
+            // document must still be there to read.
+            {
+              ...(current.note_prompt !== undefined
+                ? { note_prompt: current.note_prompt }
+                : {}),
+              ...(current.body !== undefined ? { body: current.body } : {}),
+            },
+          );
+        });
       }
       // `answered` — finish the post-answer steps a crash interrupted.
       // A crash between `recordAnswer` (A.2 step 6) and the close-
@@ -972,13 +1057,26 @@ export const createNotificationBlock = (
       // unregistered or throwing handler leaves the ask `answered` for
       // a later boot.
       for (const ask of await store.listByStatus('answered')) {
-        await closeOnAllChannels(ask);
-        try {
-          await dispatchAnswer({ registry, store, ask });
-        } catch {
-          // handler threw again — stays `answered`, next boot retries.
-        }
+        // Use the same per-ask critical section as live `submitAnswer`. Recovery
+        // is also kicked on vault unlock, so two recovery passes (or recovery
+        // and the live reply that just recorded this answer) can overlap in one
+        // process. The list row is only a candidate: re-read after taking the
+        // lock so a preceding pass that already marked it handled cannot invoke
+        // the at-least-once handler a second time in the same live generation.
+        await serializer.run(ask.ask_id, async () => {
+          const current = await store.get(ask.ask_id);
+          if (current === null
+            || current.status !== 'answered'
+            || current.answer === undefined) return;
+          await closeOnAllChannels(current);
+          try {
+            await dispatchAnswer({ registry, store, ask: current });
+          } catch {
+            // handler threw again — stays `answered`, next boot/unlock retries.
+          }
+        });
       }
+      if (firstPreparationError !== undefined) throw firstPreparationError;
     },
 
     countOutstandingAsks() {
@@ -1014,6 +1112,17 @@ export const createNotificationBlock = (
 
     listOpenAsks() {
       return store.listByStatus('open');
+    },
+
+    async listUnresolvedAsks() {
+      const rows = (
+        await Promise.all([
+          store.listByStatus('open'),
+          store.listByStatus('answered'),
+        ])
+      ).flat();
+      return rows.sort((a, b) =>
+        a.created_at - b.created_at || a.ask_id.localeCompare(b.ask_id));
     },
 
     getAsk(ask_id) {

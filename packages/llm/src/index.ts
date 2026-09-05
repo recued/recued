@@ -23,6 +23,7 @@ export {
   DEFAULT_CONTEXT_SAFETY_MARGIN_TOKENS,
   LLM_TEXT_MESSAGE_OVERHEAD_TOKENS,
   computeContextInputTokenBudget,
+  ESTIMATED_BYTES_PER_TOKEN,
   estimateConservativeTextTokens,
   estimateConservativeMessageTokens,
   estimateConservativeMessagesTokens,
@@ -77,7 +78,7 @@ export type { LlmProviderEntry, ChatAdapterBuildDeps } from './providers/registr
 // Availability / match / preflight
 export { buildAvailability } from './availability.js';
 export type { BuildAvailabilityDeps } from './availability.js';
-export { matchLLM, SPEED_RANK } from './match.js';
+export { matchLLM, SPEED_RANK, candidateSlotsForLayer } from './match.js';
 export type { MatchRequest, MatchDeps, MatchFailureDetails, ForceLayer, PinnedSlot } from './match.js';
 export { preflightMatch } from './preflight.js';
 export type { PreflightResult, PreflightStepMeta, PreflightIssue, PreflightDeps } from './preflight.js';
@@ -105,6 +106,13 @@ export {
   resetEndpointCapabilities,
   snapshotEndpointCapabilities,
   systemRoleUnsupported,
+  isContextOverflowRejection,
+  noteContextAccepted,
+  noteContextRefused,
+  learnedContextWindow,
+  provenAcceptedInput,
+  minLearnedContextWindow,
+  maxProvenAcceptedInput,
 } from './endpoint-capabilities.js';
 export type { EndpointCapabilityNote } from './endpoint-capabilities.js';
 // Test connection — one real call, reported in terms the owner can act on.

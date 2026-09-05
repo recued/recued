@@ -163,6 +163,11 @@ export const RESTORE_GUARD_NON_USER_TABLES: ReadonlySet<string> = new Set<string
   // connecting an FTS migration marker to a restore guard. The guard worked; the
   // habit it warns about is the durable finding.
   'fts_content_format',
+  // Boot-created by the gated-action receipt clock. This singleton carries
+  // only the current epoch and monotonic sequence allocator; the actual
+  // owner activity remains in `gated_action_receipts`, which is deliberately
+  // NOT denylisted and therefore still blocks a destructive pre-pair restore.
+  'gated_action_change_sequence',
   // 2. SERVER identity / config / networking / system state — populated by
   //    SETUP (identity, hostnames, TLS, exposure, operator config), never by user
   //    activity. Empty on the empty-config fresh-baseline yet non-empty on a

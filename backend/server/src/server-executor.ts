@@ -133,6 +133,12 @@ export interface ServerExecutorConfig {
    *  Absent → adapter emits nothing (silent no-op); recipe execution
    *  unaffected. */
   auditLog?: AuditLogStore;
+  /** Synchronous, run-local observation of the same host-measured connection
+   * telemetry sent to the durable audit log. Used by gated-action settlement
+   * to count multi-request acts without trusting provider result JSON. The
+   * observer is isolated from dispatch and from the durable audit sink: a
+   * throw is swallowed and cannot suppress either one. */
+  observeConnectionAudit?: (emission: ConnectionAuditEmission) => void;
   /** D-125 P4.1 — `connection.api` per-kind handler deps. Boot site
    *  (`bin.ts`) closes over `decodeAuthFromStorage` + `encodeAuthForStorage`
    *  + the connection sub-DEK to build `decodeAuth` / `persistAuth`
@@ -276,9 +282,17 @@ const newConnectionAuditId = (now: number): string =>
  *  Emission → ActivityEntry) without spinning up the whole executor. */
 export const createConnectionAuditEmitter = (
   manifests: ManifestRegistry,
-  auditLog: AuditLogStore,
+  auditLog?: AuditLogStore,
+  observe?: (emission: ConnectionAuditEmission) => void,
 ): (emission: ConnectionAuditEmission) => Promise<void> =>
   async (emission) => {
+    try {
+      observe?.(emission);
+    } catch {
+      // A projection observer is no more authoritative over dispatch than the
+      // audit store. Keep it from suppressing the durable row as well.
+    }
+    if (auditLog === undefined) return;
     const action = ACTION_FOR_CONNECTION_KIND[emission.kind];
     const manifest = manifests.get(emission.slug);
     const intent = (manifest as { permission?: string } | undefined)?.permission ?? '';
@@ -709,8 +723,14 @@ export const createServerExecutor = (
     connection: config.connectionStore
       ? createConnectionAdapter({
           store: config.connectionStore,
-          ...(config.auditLog
-            ? { emitAudit: createConnectionAuditEmitter(config.manifests, config.auditLog) }
+          ...(config.auditLog || config.observeConnectionAudit
+            ? {
+                emitAudit: createConnectionAuditEmitter(
+                  config.manifests,
+                  config.auditLog,
+                  config.observeConnectionAudit,
+                ),
+              }
             : {}),
           // D-177 P2b — per-tool classification gate for the kernel
           // connection-mcp-{read,write} dispatch surfaces (no-op for
@@ -836,8 +856,14 @@ export const createBoundExecutor = (
     connection: config.connectionStore
       ? createConnectionAdapter({
           store: config.connectionStore,
-          ...(config.auditLog
-            ? { emitAudit: createConnectionAuditEmitter(config.manifests, config.auditLog) }
+          ...(config.auditLog || config.observeConnectionAudit
+            ? {
+                emitAudit: createConnectionAuditEmitter(
+                  config.manifests,
+                  config.auditLog,
+                  config.observeConnectionAudit,
+                ),
+              }
             : {}),
           // D-177 P2b — per-tool classification gate for the kernel
           // connection-mcp-{read,write} dispatch surfaces (no-op for

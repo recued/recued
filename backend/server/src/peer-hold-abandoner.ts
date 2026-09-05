@@ -48,14 +48,35 @@ import { isEphemeralDishId } from '@recued/contracts';
 import type { Dish, RecipeError } from '@recued/contracts';
 
 import type { PeerAskOutboxRow, PeerAskOutboxStore } from './storage/peer-ask-outbox-store.js';
-import type { PeerAnswerStore } from './storage/peer-answer-store.js';
+import type { PeerAnswerRecord, PeerAnswerStore } from './storage/peer-answer-store.js';
+import type { GatedActionStore } from './gated-action-store.js';
+import { settleLocallyEndedPeerDeliveryReceipt } from './peer-ask-delivery-recovery.js';
 
-const PEER_HOLD_ABANDONER = '__peer_hold_abandoner__';
+/** Durable ownership marker for the local, terminal abandon transition. It is
+ * not an authenticated peer answer and must never enter the resume path. */
+export const PEER_HOLD_ABANDONER = '__peer_hold_abandoner__' as const;
+
+export type PeerHoldAbandonmentClaim = PeerAnswerRecord & {
+  readonly peer_contract_id: typeof PEER_HOLD_ABANDONER;
+  readonly answered: false;
+  readonly unanswered_because: 'withdrawn';
+};
+
+export const isPeerHoldAbandonmentClaim = (
+  answer: PeerAnswerRecord | null,
+): answer is PeerHoldAbandonmentClaim => answer !== null
+  && answer.peer_contract_id === PEER_HOLD_ABANDONER
+  && answer.answered === false
+  && answer.unanswered_because === 'withdrawn';
 
 export interface PeerHoldAbandonDeps {
   readonly outbox: Pick<PeerAskOutboxStore, 'list' | 'close'>;
   /** First-write-wins ownership shared with real answers and timeouts. */
   readonly answers: Pick<PeerAnswerStore, 'record' | 'get'>;
+  readonly gatedActions?: Pick<
+    GatedActionStore,
+    'get' | 'finish' | 'confirmPeerHandoff'
+  >;
   readonly auditLog: Pick<AuditLogStore, 'get' | 'append'>;
   /** `null` ⇒ the dish is gone. ⚠ Must be the LIVE store, not a snapshot: a
    *  cached list taken at boot would abandon holds whose dish was recreated. */
@@ -209,6 +230,12 @@ export const abandonOrphanedPeerHolds = async (
       if (existing?.peer_contract_id !== PEER_HOLD_ABANDONER
         || existing.unanswered_because !== 'withdrawn') continue;
     }
+
+    await settleLocallyEndedPeerDeliveryReceipt(
+      row,
+      'abandoned',
+      deps.gatedActions,
+    );
 
     // Audit BEFORE deleting the live row. If this write fails, the next sweep
     // sees the outbox row and retries; the durable withdrawal claim prevents a

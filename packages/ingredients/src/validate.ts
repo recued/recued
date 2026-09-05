@@ -1390,18 +1390,26 @@ const validateCliProgressSpec = (
   }
   const contract = progress.contract;
   const isD259 = hasOwn(progress, 'stall_ms');
-  if (typeof contract !== 'string' || !PROGRESS_CONTRACT_SET.has(contract)) {
+  // ⛔ A cli binding has exactly TWO contracts. D-259 § 0.1.1 collapsed
+  //    `CliProgressSpec` to `heartbeat | file-growth`, so `silent` and
+  //    `provider-event` are no longer REPRESENTABLE here — they belong to the
+  //    MANIFEST-level `progress_contract` vocabulary (`PROGRESS_CONTRACT_SET`,
+  //    still used for that above) and were never cli shapes.
+  //
+  //    ⚠ This check used to accept anything in that wider set and then fail the
+  //    author again on a later rule, while the message ADVERTISED `silent` as a
+  //    valid choice. Following your own error into a second, unrelated failure
+  //    is worse than being told the real rule once — so the gate and the copy
+  //    now agree, and `provider-event` keeps its specific message because
+  //    "wrong surface" is more useful than "not in the list".
+  if (contract === 'provider-event') {
     add('error', 'CATALOG_BINDING_INVALID', `${path}.contract`,
-      `cli_invocation binding for '${opKey}' progress.contract must be one of heartbeat|file-growth|silent`);
-  } else if (contract === 'provider-event') {
+      `cli_invocation binding for '${opKey}' progress.contract 'provider-event' is for http/streaming ops, not a local subprocess — use heartbeat or file-growth`);
+  } else if (contract !== 'heartbeat' && contract !== 'file-growth') {
     add('error', 'CATALOG_BINDING_INVALID', `${path}.contract`,
-      `cli_invocation binding for '${opKey}' progress.contract 'provider-event' is for http/streaming ops, not a local subprocess (use heartbeat|file-growth|silent)`);
+      `cli_invocation binding for '${opKey}' progress.contract must be 'heartbeat' or 'file-growth'`);
   }
   if (isD259) {
-    if (contract !== 'heartbeat' && contract !== 'file-growth') {
-      add('error', 'CATALOG_BINDING_INVALID', `${path}.contract`,
-        `cli_invocation binding for '${opKey}' D-259 progress.contract must be heartbeat or file-growth`);
-    }
     if (typeof progress.stall_ms !== 'number'
       || !Number.isInteger(progress.stall_ms)
       || progress.stall_ms <= 0) {

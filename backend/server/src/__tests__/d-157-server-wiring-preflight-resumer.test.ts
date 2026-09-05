@@ -23,6 +23,12 @@ import {
   createMcpActionStore,
   type McpActionRecord,
 } from '../mcp-action-store.js';
+import {
+  createGatedActionStore,
+  reconcileInterruptedGatedActionsAtBoot,
+  type GatedActionRecord,
+  type GatedActionStore,
+} from '../gated-action-store.js';
 import { RUN_INGREDIENT_RECIPE } from '../run-ingredient-recipe.js';
 
 const handleExecuteMock = vi.hoisted(() => vi.fn());
@@ -179,6 +185,28 @@ describe('PreflightResumer.resumeRun', () => {
     });
   });
 
+  it('threads the checkpointed egress bound into the engine-only resume channel', async () => {
+    const log = auditLog();
+    await append(log, pausedAnchor());
+    const deps = executeDeps();
+    const resumer = createPreflightResumer({
+      auditLog: log,
+      getExecuteDeps: () => deps,
+    });
+
+    await resumer.resumeRun(checkpoint({
+      preflight_context: {
+        egress_bound: { requests: 6, total_bytes: 4096 },
+      },
+    }), askContext());
+
+    expect(handleExecuteMock.mock.calls[0]![2]).toMatchObject({
+      resume_from: {
+        egress_bound: { requests: 6, total_bytes: 4096 },
+      },
+    });
+  });
+
   it('settles the durable MCP action with the exact resumed result', async () => {
     const log = auditLog();
     await append(log, pausedAnchor());
@@ -293,6 +321,112 @@ describe('PreflightResumer.resumeRun', () => {
     });
   });
 
+  it.each(['gated input', 'post-gate body'] as const)(
+    'refuses a stored recipe whose %s changed while approval was open',
+    async (changedPart) => {
+      const approved: RecipeDefinition = {
+        recipe_id: 'recipe-1',
+        version: 1,
+        ttl: 60,
+        metadata: {
+          name: 'Approved recipe',
+          description: 'source hash fixture',
+          author: 'test',
+          supported_platforms: ['test'],
+        },
+        variables: {},
+        prefetch_steps: [],
+        steps: [
+          { id: 'gated_step', ingredient: 'mail', input: { to: 'a@example.test' } },
+          { id: 'after', transform: 'concat', values: ['approved'] },
+        ] as unknown as RecipeDefinition['steps'],
+        output: { sidebar: [] },
+      };
+      const edited = structuredClone(approved);
+      if (changedPart === 'gated input') {
+        (edited.steps[0] as unknown as { input: { to: string } }).input.to = 'b@example.test';
+      } else {
+        (edited.steps[1] as unknown as { values: string[] }).values = ['changed'];
+      }
+      const log = auditLog();
+      await append(log, pausedAnchor());
+      const actions = createGatedActionStore(
+        createInMemoryCollection<GatedActionRecord>(),
+        { newActionRef: () => `action-stored-drift-${changedPart}` },
+      );
+      const held = await actions.createHeld({
+        run_id: 'run-1',
+        recipe_id: 'recipe-1',
+        gated_step_id: 'gated_step',
+        checkpoint_id: 'checkpoint-1',
+        settlement_mode: 'returned_result',
+      });
+      const deps = { ...executeDeps(), gatedActionStore: actions };
+      vi.mocked(deps.recipeStore.get).mockReturnValue(edited);
+      const resumer = createPreflightResumer({
+        auditLog: log,
+        gatedActionStore: actions,
+        getExecuteDeps: () => deps,
+      });
+
+      await resumer.resumeRun(checkpoint({
+        recipe_source_hash: hashRecipe(approved),
+        preflight_context: { gated_action_settlement_mode: 'returned_result' },
+      }), askContext());
+
+      expect(handleExecuteMock).not.toHaveBeenCalled();
+      expect(await log.get('run-1')).toMatchObject({
+        commit_status: 'failed',
+        errors: [{
+          code: 'RECIPE_VALIDATION_FAILED',
+          details: { reason: 'checkpoint_integrity_failed' },
+        }],
+      });
+      expect(await actions.get(held.action_ref)).toMatchObject({
+        status: 'failed',
+        result: { code: 'checkpoint_integrity_failed' },
+      });
+    },
+  );
+
+  it('repairs a tampered-checkpoint receipt before consuming a terminal-anchor retry', async () => {
+    const log = auditLog();
+    await append(log, pausedAnchor());
+    const base = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-integrity-retry' },
+    );
+    const held = await base.createHeld({
+      run_id: 'run-1', recipe_id: 'recipe-1', gated_step_id: 'gated_step',
+      checkpoint_id: 'checkpoint-1',
+    });
+    const finish = vi.fn()
+      .mockRejectedValueOnce(new Error('receipt store unavailable'))
+      .mockImplementation((...args: Parameters<GatedActionStore['finish']>) =>
+        base.finish(...args));
+    const actions = { ...base, finish } as GatedActionStore;
+    const deps = { ...executeDeps(), gatedActionStore: actions };
+    const resumer = createPreflightResumer({
+      auditLog: log, gatedActionStore: actions, getExecuteDeps: () => deps,
+    });
+    const saved = checkpoint({
+      recipe_snapshot: RUN_INGREDIENT_RECIPE as unknown as Record<string, unknown>,
+    });
+
+    await expect(resumer.resumeRun(saved, askContext()))
+      .rejects.toThrow('receipt store unavailable');
+    expect(await log.get('run-1')).toMatchObject({ commit_status: 'failed' });
+    expect(await base.get(held.action_ref)).toMatchObject({ status: 'awaiting_approval' });
+
+    await resumer.resumeRun(saved, askContext());
+    expect(handleExecuteMock).not.toHaveBeenCalled();
+    expect(await base.get(held.action_ref)).toMatchObject({
+      status: 'failed',
+      result: { code: 'RECIPE_VALIDATION_FAILED' },
+    });
+    expect(finish).toHaveBeenCalledTimes(2);
+  });
+
   it('terminalizes the audit anchor for forged compensation provenance', async () => {
     const log = auditLog();
     const compensation = {
@@ -322,6 +456,52 @@ describe('PreflightResumer.resumeRun', () => {
         details: { reason: 'checkpoint_provenance_failed' },
       }],
     });
+  });
+
+  it('repairs a forged-provenance receipt before consuming a terminal-anchor retry', async () => {
+    const log = auditLog();
+    const compensation = {
+      ...RUN_INGREDIENT_RECIPE,
+      recipe_id: 'saga-undo-commit-approved',
+    } as RecipeDefinition;
+    await append(log, pausedAnchor({
+      recipe_id: compensation.recipe_id,
+      recipe_hash: hashRecipe(compensation),
+    }));
+    const base = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-provenance-retry' },
+    );
+    const held = await base.createHeld({
+      run_id: 'run-1', recipe_id: compensation.recipe_id, gated_step_id: 'gated_step',
+      checkpoint_id: 'checkpoint-1',
+    });
+    const finish = vi.fn()
+      .mockRejectedValueOnce(new Error('receipt store unavailable'))
+      .mockImplementation((...args: Parameters<GatedActionStore['finish']>) =>
+        base.finish(...args));
+    const actions = { ...base, finish } as GatedActionStore;
+    const deps = { ...executeDeps(), gatedActionStore: actions };
+    const resumer = createPreflightResumer({
+      auditLog: log, gatedActionStore: actions, getExecuteDeps: () => deps,
+    });
+    const saved = checkpoint({
+      recipe_id: compensation.recipe_id,
+      recipe_snapshot: compensation as unknown as Record<string, unknown>,
+      predecessor_commit_id: 'commit-forged',
+    });
+
+    await expect(resumer.resumeRun(saved, askContext()))
+      .rejects.toThrow('receipt store unavailable');
+    expect(await base.get(held.action_ref)).toMatchObject({ status: 'awaiting_approval' });
+
+    await resumer.resumeRun(saved, askContext());
+    expect(handleExecuteMock).not.toHaveBeenCalled();
+    expect(await base.get(held.action_ref)).toMatchObject({
+      status: 'failed',
+      result: { code: 'RECIPE_VALIDATION_FAILED' },
+    });
+    expect(finish).toHaveBeenCalledTimes(2);
   });
 
   it('D-196 R2 replaces the persisted source snapshot with freshly resolved authority', async () => {
@@ -434,6 +614,52 @@ describe('PreflightResumer.resumeRun', () => {
       code: 'RECIPE_POLICY_DENIED',
       details: { authority_reason: 'bearer_inactive' },
     });
+  });
+
+  it('repairs a live-authority failure receipt before consuming a terminal-anchor retry', async () => {
+    const log = auditLog();
+    const source: ExecutionSource = {
+      channel: 'mcp', actor: 'contracted_user', agent_id: 'agent-1',
+      tool_call_id: 'call-1', mcp_token_id: 'tok-1', contract_id: 'contract-1',
+    };
+    await append(log, pausedAnchor({ execution_source: source }));
+    const base = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-authority-retry' },
+    );
+    const held = await base.createHeld({
+      run_id: 'run-1', recipe_id: 'recipe-1', gated_step_id: 'gated_step',
+      checkpoint_id: 'checkpoint-1',
+    });
+    const finish = vi.fn()
+      .mockRejectedValueOnce(new Error('receipt store unavailable'))
+      .mockImplementation((...args: Parameters<GatedActionStore['finish']>) =>
+        base.finish(...args));
+    const actions = { ...base, finish } as GatedActionStore;
+    const deps = { ...executeDeps(), gatedActionStore: actions };
+    deps.approvalResumeAuthority = {
+      resolve: vi.fn(() => ({
+        admitted: false as const,
+        reason: 'bearer_inactive' as const,
+        detail: 'bearer was revoked while held',
+      })),
+    };
+    const resumer = createPreflightResumer({
+      auditLog: log, gatedActionStore: actions, getExecuteDeps: () => deps,
+    });
+    const saved = checkpoint({ approved_target: { ingredient_slug: 'admin-tool' } });
+
+    await expect(resumer.resumeRun(saved, askContext()))
+      .rejects.toThrow('receipt store unavailable');
+    expect(await base.get(held.action_ref)).toMatchObject({ status: 'awaiting_approval' });
+
+    await resumer.resumeRun(saved, askContext());
+    expect(handleExecuteMock).not.toHaveBeenCalled();
+    expect(await base.get(held.action_ref)).toMatchObject({
+      status: 'failed',
+      result: { code: 'RECIPE_POLICY_DENIED' },
+    });
+    expect(finish).toHaveBeenCalledTimes(2);
   });
 
   it('D-196 R2 fails closed when a bearer-backed resume has no live resolver', async () => {
@@ -721,6 +947,191 @@ describe('PreflightResumer.resumeRun', () => {
       approval_round: 1,
     });
   });
+
+  it('never redispatches a receipt claim left behind by a power cut', async () => {
+    const log = auditLog();
+    await append(log, pausedAnchor());
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-power-cut' },
+    );
+    const held = await actions.createHeld({
+      run_id: 'run-1', recipe_id: 'recipe-1', gated_step_id: 'gated_step',
+      checkpoint_id: 'checkpoint-1',
+    });
+    await actions.claimDispatch(held.action_ref, {
+      checkpoint_id: 'checkpoint-1', attempt_id: 'attempt-before-crash',
+    });
+    await reconcileInterruptedGatedActionsAtBoot(actions);
+    const deps = { ...executeDeps(), gatedActionStore: actions };
+    const resumer = createPreflightResumer({
+      auditLog: log, gatedActionStore: actions, getExecuteDeps: () => deps,
+    });
+
+    await resumer.resumeRun(checkpoint(), askContext());
+
+    expect(handleExecuteMock).not.toHaveBeenCalled();
+    expect(await actions.get(held.action_ref)).toMatchObject({ status: 'in_doubt' });
+    expect(await log.get('run-1')).toMatchObject({
+      commit_status: 'in_doubt',
+      errors: [{ code: 'ACTION_DELIVERY_UNCERTAIN' }],
+    });
+  });
+
+  it('converges an already-dispatching replay unless an exact journal owns it', async () => {
+    const makeCase = async (journalOwned: boolean) => {
+      const log = auditLog();
+      await append(log, pausedAnchor());
+      const actions = createGatedActionStore(
+        createInMemoryCollection<GatedActionRecord>(),
+        { newActionRef: () => `action-${journalOwned ? 'journal' : 'orphan'}` },
+      );
+      const held = await actions.createHeld({
+        run_id: 'run-1', recipe_id: 'recipe-1', gated_step_id: 'gated_step',
+        checkpoint_id: 'checkpoint-1',
+      });
+      await actions.claimDispatch(held.action_ref, {
+        checkpoint_id: 'checkpoint-1', attempt_id: 'prior-attempt',
+      });
+      const preserveClaimedDispatch = vi.fn(async (record: GatedActionRecord) =>
+        journalOwned && record.action_ref === held.action_ref);
+      const deps = { ...executeDeps(), gatedActionStore: actions };
+      const resumer = createPreflightResumer({
+        auditLog: log,
+        gatedActionStore: actions,
+        preserveClaimedDispatch,
+        getExecuteDeps: () => deps,
+      });
+      await resumer.resumeRun(checkpoint(), askContext());
+      return { actions, held, log, preserveClaimedDispatch };
+    };
+
+    const orphan = await makeCase(false);
+    expect(await orphan.actions.get(orphan.held.action_ref)).toMatchObject({
+      status: 'in_doubt',
+    });
+    expect(await orphan.log.get('run-1')).toMatchObject({ commit_status: 'in_doubt' });
+
+    const journal = await makeCase(true);
+    expect(await journal.actions.get(journal.held.action_ref)).toMatchObject({
+      status: 'dispatching',
+    });
+    expect(await journal.log.get('run-1')).toMatchObject({
+      commit_status: 'awaiting_approval', checkpoint_id: 'checkpoint-1',
+    });
+    expect(handleExecuteMock).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when a marked receipt-backed checkpoint loses its receipt', async () => {
+    const log = auditLog();
+    await append(log, pausedAnchor());
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+    );
+    const deps = { ...executeDeps(), gatedActionStore: actions };
+    const resumer = createPreflightResumer({
+      auditLog: log, gatedActionStore: actions, getExecuteDeps: () => deps,
+    });
+
+    await expect(resumer.resumeRun(checkpoint({
+      preflight_context: { gated_action_settlement_mode: 'returned_result' },
+    }), askContext())).rejects.toThrow(/receipt-backed checkpoint has no valid gated action/);
+    expect(handleExecuteMock).not.toHaveBeenCalled();
+  });
+
+  it('repairs an audit split without replaying an already-terminal operation receipt', async () => {
+    const log = auditLog();
+    await append(log, pausedAnchor());
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-receipt-first' },
+    );
+    const held = await actions.createHeld({
+      run_id: 'run-1', recipe_id: 'recipe-1', gated_step_id: 'gated_step',
+      checkpoint_id: 'checkpoint-1',
+    });
+    await actions.finish(held.action_ref, {
+      status: 'succeeded',
+      status_message: 'The approved operation completed.',
+      result: { message_id: 'mail-1' },
+      observed: { items: 1, succeeded: 1, failed: 0 },
+    });
+    const deps = { ...executeDeps(), gatedActionStore: actions };
+    const resumer = createPreflightResumer({
+      auditLog: log, gatedActionStore: actions, getExecuteDeps: () => deps,
+    });
+
+    await resumer.resumeRun(checkpoint(), askContext());
+
+    expect(handleExecuteMock).not.toHaveBeenCalled();
+    expect(await actions.get(held.action_ref)).toMatchObject({
+      status: 'succeeded', result: { message_id: 'mail-1' },
+    });
+    expect(await log.get('run-1')).toMatchObject({ commit_status: 'in_doubt' });
+  });
+
+  it('terminalizes a claimed receipt and audit when resumed execution throws', async () => {
+    const log = auditLog();
+    await append(log, pausedAnchor());
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-throw-after-claim' },
+    );
+    const held = await actions.createHeld({
+      run_id: 'run-1', recipe_id: 'recipe-1', gated_step_id: 'gated_step',
+      checkpoint_id: 'checkpoint-1',
+    });
+    handleExecuteMock.mockRejectedValueOnce(new Error('process interrupted'));
+    const deps = { ...executeDeps(), gatedActionStore: actions };
+    const resumer = createPreflightResumer({
+      auditLog: log, gatedActionStore: actions, getExecuteDeps: () => deps,
+    });
+
+    await resumer.resumeRun(checkpoint(), askContext());
+
+    expect(handleExecuteMock).toHaveBeenCalledTimes(1);
+    expect(await actions.get(held.action_ref)).toMatchObject({
+      status: 'in_doubt',
+      result: { reason: 'approved_recipe_dispatch_interrupted' },
+    });
+    expect(await log.get('run-1')).toMatchObject({ commit_status: 'in_doubt' });
+  });
+
+  it('applies the same claim guard to a batch member and preserves a later gate anchor', async () => {
+    const log = auditLog();
+    await append(log, pausedAnchor());
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-batch-member' },
+    );
+    const held = await actions.createHeld({
+      run_id: 'run-1', recipe_id: 'recipe-1', gated_step_id: 'gated_step',
+      checkpoint_id: 'checkpoint-1',
+    });
+    handleExecuteMock.mockImplementationOnce(async () => {
+      await append(log, pausedAnchor({ checkpoint_id: 'checkpoint-2' }));
+      throw new Error('crashed after downstream gate anchor');
+    });
+    const deps = { ...executeDeps(), gatedActionStore: actions };
+    const resumer = createPreflightResumer({
+      auditLog: log, gatedActionStore: actions, getExecuteDeps: () => deps,
+    });
+
+    await resumer.resumeRun(checkpoint(), askContext({
+      batch_claim: { contract_id: 'batch-1', member_id: 'member-1' },
+    }));
+
+    expect(handleExecuteMock).toHaveBeenCalledTimes(1);
+    expect(handleExecuteMock.mock.calls[0]![2]).toMatchObject({
+      resume_from: {
+        batch_claim: { contract_id: 'batch-1', member_id: 'member-1' },
+      },
+    });
+    expect(await actions.get(held.action_ref)).toMatchObject({ status: 'in_doubt' });
+    expect(await log.get('run-1')).toMatchObject({
+      commit_status: 'awaiting_approval', checkpoint_id: 'checkpoint-2',
+    });
+  });
 });
 
 describe('PreflightResumer.denyRun', () => {
@@ -780,6 +1191,127 @@ describe('PreflightResumer.denyRun', () => {
       action_ref: 'mcpact-denied',
       status: 'denied',
       result: { status: 'denied', denied: true },
+    });
+  });
+
+  it('retries a committed denial until its operation receipt is durably denied', async () => {
+    const log = auditLog();
+    await append(log, pausedAnchor());
+    const base = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-denial-retry' },
+    );
+    const held = await base.createHeld({
+      run_id: 'run-1',
+      recipe_id: 'recipe-1',
+      gated_step_id: 'gated_step',
+      checkpoint_id: 'checkpoint-1',
+    });
+    const finish = vi.fn()
+      .mockRejectedValueOnce(new Error('receipt store unavailable'))
+      .mockImplementation((...args: Parameters<GatedActionStore['finish']>) =>
+        base.finish(...args));
+    const actions = { ...base, finish } as GatedActionStore;
+    const resumer = createPreflightResumer({
+      auditLog: log,
+      gatedActionStore: actions,
+      getExecuteDeps: () => undefined,
+    });
+
+    await expect(resumer.denyRun(checkpoint(), askContext()))
+      .rejects.toThrow('receipt store unavailable');
+    expect(await log.get('run-1')).toMatchObject({ commit_status: 'failed' });
+    expect(await base.get(held.action_ref)).toMatchObject({
+      status: 'awaiting_approval',
+    });
+
+    // The retry sees the terminal audit marker, repairs only the exact
+    // host-stamped owner denial, and never tries to append a second denial row.
+    await resumer.denyRun(checkpoint(), askContext());
+    expect(await base.get(held.action_ref)).toMatchObject({
+      status: 'denied',
+      result: { denied: true },
+    });
+    expect(finish).toHaveBeenCalledTimes(2);
+  });
+
+  it('repairs the denial receipt after the audit append commits then reports failure', async () => {
+    const log = auditLog();
+    await append(log, pausedAnchor());
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-audit-commit-error' },
+    );
+    const held = await actions.createHeld({
+      run_id: 'run-1',
+      recipe_id: 'recipe-1',
+      gated_step_id: 'gated_step',
+      checkpoint_id: 'checkpoint-1',
+    });
+    const appendOriginal = log.append.bind(log);
+    vi.spyOn(log, 'append').mockImplementationOnce(async (entry) => {
+      await appendOriginal(entry);
+      throw new Error('audit adapter reported after commit');
+    });
+    const resumer = createPreflightResumer({
+      auditLog: log,
+      gatedActionStore: actions,
+      getExecuteDeps: () => undefined,
+    });
+
+    await expect(resumer.denyRun(checkpoint(), askContext()))
+      .rejects.toThrow('audit adapter reported after commit');
+    expect(await log.get('run-1')).toMatchObject({ commit_status: 'failed' });
+    expect(await actions.get(held.action_ref)).toMatchObject({
+      status: 'awaiting_approval',
+    });
+
+    await resumer.denyRun(checkpoint(), askContext());
+    expect(await actions.get(held.action_ref)).toMatchObject({
+      status: 'denied',
+      result: { denied: true },
+    });
+  });
+
+  it('does not relabel a different terminal policy failure as the owner denial', async () => {
+    const log = auditLog();
+    await append(log, pausedAnchor({
+      commit_status: 'failed',
+      errors: [{
+        error_id: 'resume-policy-recheck-failed',
+        code: 'RECIPE_POLICY_DENIED',
+        message: 'Live policy no longer authorizes this operation.',
+        severity: 'fatal',
+        source: {
+          recipe_id: 'recipe-1',
+          step_id: 'gated_step',
+          ingredient_slug: 'admin-tool',
+        },
+        details: {},
+        timestamp: new Date(NOW).toISOString(),
+        retryable: false,
+      }],
+    }));
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-other-policy-failure' },
+    );
+    const held = await actions.createHeld({
+      run_id: 'run-1',
+      recipe_id: 'recipe-1',
+      gated_step_id: 'gated_step',
+      checkpoint_id: 'checkpoint-1',
+    });
+    const resumer = createPreflightResumer({
+      auditLog: log,
+      gatedActionStore: actions,
+      getExecuteDeps: () => undefined,
+    });
+
+    await resumer.denyRun(checkpoint(), askContext());
+
+    expect(await actions.get(held.action_ref)).toMatchObject({
+      status: 'awaiting_approval',
     });
   });
 

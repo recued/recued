@@ -23,6 +23,8 @@
  *
  *  Spec: internal design notes D-234 § 234.4. */
 
+import type { ForeachCheckpointProgress } from './foreach-checkpoint.js';
+
 /** One answer choice.
  *
  *  ⚠ MIRRORS `AskOption` from `@recued/notification` RATHER THAN IMPORTING IT —
@@ -449,6 +451,8 @@ export const PEER_ANSWER_REQUIRED_SIGNAL_NAME = 'PeerAnswerRequiredSignal';
  *  across a worker boundary. */
 export class PeerAnswerRequiredSignal extends Error {
   readonly name: string = PEER_ANSWER_REQUIRED_SIGNAL_NAME;
+  /** Engine-authored only: exact progress when this signal crossed a foreach. */
+  foreach_progress?: ForeachCheckpointProgress;
   readonly spec: PeerAskSpec;
   /** Deterministic conversation id, minted by the op from the run + step + spec.
    *  The reply is correlated back on this. */

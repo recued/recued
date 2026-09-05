@@ -189,13 +189,38 @@ export interface SellerOfferStateTransitionResult {
   readonly offer: SellerOffer;
 }
 
+/** Who drives a customer's access lifecycle. `manual` is the seller by hand;
+ *  each provider member is a payment provider whose webhooks + read-backs
+ *  issue, extend, swap and close access through the `core.seller.*` ops.
+ *
+ *  ⛔ WIDENING THIS LIST IS NOT ENOUGH ON ITS OWN. `seller_tiers` and
+ *  `seller_customers` carry a `CHECK (lifecycle_source IN (…))` compiled from
+ *  this const at CREATE time and frozen in every existing database — SQLite
+ *  cannot ALTER a CHECK. `ensureSellerSchema` converges both tables onto the
+ *  current list (a widening rebuild), which is what makes a new member REAL
+ *  on a live server rather than a fresh-DB-only truth. Add the member here,
+ *  and the converger admits it everywhere; retire one by moving it to
+ *  `SELLER_RETIRED_LIFECYCLE_SOURCES`, and the converger narrows the CHECK
+ *  (refusing, intact, a database that still holds a row under that source).
+ *  Every provider member also has a row in `SELLER_PROVIDERS`
+ *  (`seller-providers.ts`) — that registry is where its catalog, webhook
+ *  profile, and tier identity live. */
 export const SELLER_LIFECYCLE_SOURCES = [
   'manual',
   'stripe',
-  'future_provider',
+  'paddle',
+  'lemonsqueezy',
 ] as const;
 
+/** Members the vocabulary once carried. `future_provider` was the placeholder
+ *  that proved the seam before a real second provider existed; the third
+ *  provider retired it (2026-09-03). Listed so the schema converger can
+ *  recognise a CHECK compiled under an older list and narrow it. */
+export const SELLER_RETIRED_LIFECYCLE_SOURCES = ['future_provider'] as const;
+
 export type SellerLifecycleSource = (typeof SELLER_LIFECYCLE_SOURCES)[number];
+/** A lifecycle source backed by a payment provider — everything but `manual`. */
+export type SellerProviderSource = Exclude<SellerLifecycleSource, 'manual'>;
 
 export const isSellerLifecycleSource = (
   value: unknown,
@@ -290,8 +315,24 @@ export const isLlmGatewayPaidAcknowledged = (
   settings.llm_gateway_paid_ack_at !== null
   && settings.llm_gateway_paid_ack_version === LLM_GATEWAY_PAID_ACK_VERSION;
 
+/** The `door_id` every seller row carries when the owner does not choose one.
+ *
+ *  A door id is the OWNER'S NAMESPACE, not a reference: nothing at runtime
+ *  looks a door up by it (verified 2026-09-03 — the handlers take it as a
+ *  string, the store column is plain TEXT, and the only gate a customer token
+ *  passes is the template's `door_types`). It partitions tier identity
+ *  `(door_id, lifecycle_source, entitlement_key)` and customer identity
+ *  `(lifecycle_source, source_customer_id, door_id)` so one server can sell
+ *  two products whose tier keys clash. The webclient presents it as
+ *  "Category", defaults it to this value, and keeps it behind Advanced; the
+ *  provider packs ship the same default on their `door_id` variable. Keep the
+ *  two in step — a pack answering a different category than the tiers were
+ *  created under never finds its tier. */
+export const SELLER_DEFAULT_DOOR_ID = 'main';
+
 export interface SellerTier {
   readonly tier_id: string;
+  /** Owner namespace — see {@link SELLER_DEFAULT_DOOR_ID}. */
   readonly door_id: string;
   readonly lifecycle_source: SellerLifecycleSource;
   readonly entitlement_key: string;
@@ -421,6 +462,11 @@ export interface SellerCustomerUsageRollup {
 export type SellerOverviewReadinessKey =
   | 'manual_lifecycle'
   | 'stripe_provider'
+  // D-196 Paddle + Lemon Squeezy (2026-09-03) — one readiness row per
+  // product-synchronizing provider; a client that predates them renders
+  // the row from its label/detail like any other.
+  | 'paddle_provider'
+  | 'lemonsqueezy_provider'
   | 'mail_sender'
   | 'llm_gateway';
 
@@ -690,6 +736,38 @@ export interface SellerStripeSynchronizeRequest {
   readonly connection_name?: string;
   readonly door_id: string;
   readonly door_type: DoorType;
+}
+
+/** D-196 consolidation (2026-09-03) — the ONE owner-clicked tier seed for
+ *  every provider in `SELLER_PROVIDERS`. Reads the provider's tier identities
+ *  (Stripe: entitlement features; Paddle / Lemon Squeezy: products) through
+ *  its bounded seller catalog and folds them into tiers keyed on that
+ *  identity. Same posture for every provider: `connection_name` may be
+ *  omitted only when exactly one synchronization-ready connection of that
+ *  provider exists; `store_id` is required where the registry says the seed is
+ *  store-scoped (Lemon Squeezy) and refused elsewhere. The older
+ *  `SellerStripeSynchronizeRequest` rpc stays as a Stripe-only alias of this. */
+export interface SellerProviderTierSynchronizeRequest {
+  readonly provider: SellerProviderSource;
+  readonly connection_name?: string;
+  readonly door_id: string;
+  readonly door_type: DoorType;
+  readonly store_id?: string;
+}
+
+/** Incremental classification: existing template authority is never
+ *  rewritten, ids classify only tier/template lifecycle effects. */
+export interface SellerProviderTierSynchronizeResponse {
+  readonly provider: SellerProviderSource;
+  readonly connection_name: string;
+  /** Tier identities the provider reported (active features / products). */
+  readonly records_seen: number;
+  readonly created_tier_ids: readonly string[];
+  readonly preserved_tier_ids: readonly string[];
+  readonly recreated_template_tier_ids: readonly string[];
+  readonly reactivated_tier_ids: readonly string[];
+  readonly orphaned_tier_ids: readonly string[];
+  readonly overview: SellerOverview;
 }
 
 /** Incremental synchronization result. Existing template authority is never

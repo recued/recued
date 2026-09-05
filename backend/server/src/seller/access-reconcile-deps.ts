@@ -69,11 +69,13 @@
  *
  *  Spec: D-196 §6.2 (the event table) + §6.3 (the reconciler). */
 
-import type {
-  IngredientManifest,
-  RecipeDefinition,
-  SellerCustomerCloseReason,
-  SellerLifecycleSource,
+import {
+  SELLER_PROVIDERS,
+  type IngredientManifest,
+  type RecipeDefinition,
+  type SellerCustomerCloseReason,
+  type SellerLifecycleSource,
+  type SellerProviderSource,
 } from '@recued/contracts';
 
 import {
@@ -96,11 +98,6 @@ import type { SellerClaimStore } from '../storage/seller-claim-store.js';
 import type { SellerStore } from '../storage/seller-store.js';
 import { createSellerCustomerAccessLifecycle } from './customer-access-lifecycle.js';
 
-/** The lifecycle source v1 converges. A single-source constant rather than a
- *  parameter: the reader below speaks exactly one provider's API, and the pair
- *  must move together. */
-export const SELLER_RECONCILE_LIFECYCLE_SOURCE: SellerLifecycleSource = 'stripe';
-
 export const SELLER_STRIPE_CATALOG_SLUG = 'seller-stripe';
 export const SELLER_STRIPE_SUBSCRIPTION_READ_OPERATION = 'subscription.read';
 /** The canonical operations the pack compiles to
@@ -115,6 +112,208 @@ export const SELLER_STRIPE_SUBSCRIPTION_READ_OPERATION_ID =
 export const SELLER_STRIPE_ENTITLEMENT_SEARCH_OPERATION = 'active_entitlement.search';
 export const SELLER_STRIPE_ENTITLEMENT_SEARCH_OPERATION_ID =
   'recued-core/seller-stripe.active_entitlement.search';
+
+/** D-196 Paddle + Lemon Squeezy (2026-09-03) — the second and third readers.
+ *  Same look-alike pin as Stripe's: the op id the bounded catalog compiles to. */
+export const SELLER_PADDLE_CATALOG_SLUG = 'seller-paddle';
+export const SELLER_PADDLE_SUBSCRIPTION_READ_OPERATION_ID =
+  'recued-core/seller-paddle.subscription.read';
+export const SELLER_LEMONSQUEEZY_CATALOG_SLUG = 'seller-lemonsqueezy';
+export const SELLER_LEMONSQUEEZY_SUBSCRIPTION_READ_OPERATION_ID =
+  'recued-core/seller-lemonsqueezy.subscription.read';
+
+/** Where a provider's TIER AXIS comes from — the keys compared against door
+ *  tiers to detect a plan change.
+ *  - `same_read`: the subscription object already names it (Paddle's and Lemon
+ *    Squeezy's tiers are keyed on product id, and the product rides the
+ *    subscription) — no second provider call.
+ *  - `second_read`: a customer-scoped read (Stripe's ACTIVE ENTITLEMENTS, see
+ *    the header) that degrades on its own: when the op is not declared or not
+ *    granted, `tier_id` stays absent and the swap lane sleeps while extend and
+ *    close keep working. */
+export type SellerReconcileTierAxis =
+  | {
+      readonly kind: 'same_read';
+      readonly parseKeys: (raw: unknown) => string[];
+    }
+  | {
+      readonly kind: 'second_read';
+      readonly operation: string;
+      readonly operation_id: string;
+      readonly args: (raw: unknown) => Record<string, unknown> | null;
+      readonly parseKeys: (raw: unknown) => string[];
+    };
+
+/** One provider the sweep can read. The policy (`reconcileOne`) is
+ *  provider-neutral; everything provider-shaped lives in a row of this table,
+ *  and the identity half (vendor, catalog, source) comes from the contracts
+ *  registry (`SELLER_PROVIDERS`) so it is declared once. What stays here is
+ *  the part only the server knows: how to narrow the provider's object to
+ *  `ProviderSubscriptionTruth`, and where the tier axis comes from. */
+export interface SellerReconcileProvider {
+  readonly source: SellerLifecycleSource;
+  readonly vendor: string;
+  readonly catalog_slug: string;
+  readonly subscription_read_operation: string;
+  readonly subscription_read_operation_id: string;
+  readonly parseTruth: (
+    raw: unknown,
+    expected_subscription_id: string,
+    now: number,
+  ) => ProviderSubscriptionTruth | null;
+  readonly tier_axis: SellerReconcileTierAxis;
+}
+
+/** RFC 3339 → epoch ms, or undefined for anything not a real instant. Both
+ *  providers stamp periods as RFC 3339 strings (Paddle
+ *  `current_billing_period.ends_at`, Lemon Squeezy `renews_at` / `ends_at`);
+ *  a NaN here would read as "already converged" downstream, so refuse it. */
+const rfc3339ToMs = (value: unknown): number | undefined => {
+  if (typeof value !== 'string' || value.length === 0) return undefined;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) && ms > 0 ? ms : undefined;
+};
+
+/** Paddle: no `object` discriminator exists, so the `sub_` id shape plus the
+ *  exact id match stand in for it. Status travels verbatim (`active`,
+ *  `trialing`, `past_due`, `paused`, `canceled` — the policy knows each). */
+export const parsePaddleSubscriptionTruth = (
+  raw: unknown,
+  expected_subscription_id: string,
+): ProviderSubscriptionTruth | null => {
+  const envelope = asRecord(raw);
+  const result = asRecord(envelope?.result) ?? envelope;
+  if (!result) return null;
+  if (!expected_subscription_id.startsWith('sub_')) return null;
+  if (result.id !== expected_subscription_id) return null;
+  if (typeof result.status !== 'string' || result.status.length === 0) return null;
+  const current_period_end_ms = rfc3339ToMs(
+    asRecord(result.current_billing_period)?.ends_at,
+  );
+  return {
+    status: result.status,
+    ...(current_period_end_ms !== undefined ? { current_period_end_ms } : {}),
+  };
+};
+
+/** The product ids on a Paddle subscription's LIVE items — the swap axis. A
+ *  Paddle tier's entitlement key is its product id, so these are compared to
+ *  door tiers directly. Inactive items are the plan the customer left. */
+export const parsePaddleProductIds = (raw: unknown): string[] => {
+  const envelope = asRecord(raw);
+  const result = asRecord(envelope?.result) ?? envelope;
+  const items = Array.isArray(result?.items) ? result.items : [];
+  return items.flatMap((item) => {
+    const row = asRecord(item);
+    const status = row?.status;
+    if (status !== 'active' && status !== 'trialing' && status !== 'past_due') return [];
+    const product = asRecord(row?.price)?.product_id;
+    return typeof product === 'string' && product.length > 0 ? [product] : [];
+  });
+};
+
+/** Lemon Squeezy: a JSON:API resource, so `type` IS the discriminator and the
+ *  id is a numeric string. Two provider words need a clock:
+ *  - `cancelled` is still PAID until `ends_at` (the lanes extend to it), so the
+ *    period reported is `ends_at`, not `renews_at`;
+ *  - once `ends_at` has passed the provider's own word becomes `expired` — and
+ *    when that notification was missed, this reader says it for the provider,
+ *    so the sweep closes the row instead of skipping a status it cannot place. */
+export const parseLemonSqueezySubscriptionTruth = (
+  raw: unknown,
+  expected_subscription_id: string,
+  now: number,
+): ProviderSubscriptionTruth | null => {
+  const envelope = asRecord(raw);
+  const result = asRecord(envelope?.result) ?? envelope;
+  if (!result) return null;
+  if (result.type !== 'subscriptions') return null;
+  if (String(result.id) !== expected_subscription_id) return null;
+  const attributes = asRecord(result.attributes);
+  if (!attributes) return null;
+  const status = attributes.status;
+  if (typeof status !== 'string' || status.length === 0) return null;
+  if (status === 'cancelled') {
+    const ends_at_ms = rfc3339ToMs(attributes.ends_at);
+    if (ends_at_ms !== undefined && ends_at_ms <= now) return { status: 'expired' };
+    return {
+      status,
+      ...(ends_at_ms !== undefined ? { current_period_end_ms: ends_at_ms } : {}),
+    };
+  }
+  const renews_at_ms = rfc3339ToMs(attributes.renews_at);
+  return {
+    status,
+    ...(renews_at_ms !== undefined ? { current_period_end_ms: renews_at_ms } : {}),
+  };
+};
+
+/** The product on a Lemon Squeezy subscription — one per subscription, and a
+ *  NUMBER in the JSON:API attributes where our entitlement keys are strings. */
+export const parseLemonSqueezyProductIds = (raw: unknown): string[] => {
+  const envelope = asRecord(raw);
+  const result = asRecord(envelope?.result) ?? envelope;
+  const product = asRecord(result?.attributes)?.product_id;
+  return typeof product === 'number' && Number.isInteger(product) && product > 0
+    ? [String(product)]
+    : typeof product === 'string' && /^[0-9]+$/.test(product)
+      ? [product]
+      : [];
+};
+
+/** The server-side half per source; the registry supplies the identity half. */
+const RECONCILE_READERS: Readonly<Record<SellerProviderSource, Pick<
+  SellerReconcileProvider,
+  'subscription_read_operation' | 'parseTruth' | 'tier_axis'
+>>> = {
+  stripe: {
+    subscription_read_operation: SELLER_STRIPE_SUBSCRIPTION_READ_OPERATION,
+    parseTruth: (raw, expected) => parseSubscriptionTruth(raw, expected),
+    tier_axis: {
+      kind: 'second_read',
+      operation: SELLER_STRIPE_ENTITLEMENT_SEARCH_OPERATION,
+      operation_id: SELLER_STRIPE_ENTITLEMENT_SEARCH_OPERATION_ID,
+      // The customer id comes from the SAME read that proved the subscription's
+      // identity, so it cannot drift from it. Not a `cus_` string ⇒ no read.
+      args: (raw) => {
+        const customer = parseSubscriptionCustomerId(raw);
+        return customer === undefined ? null : { 'query.customer': customer };
+      },
+      // Declared below this table; call lazily so module init has no TDZ.
+      parseKeys: (raw) => parseActiveEntitlementKeys(raw),
+    },
+  },
+  paddle: {
+    subscription_read_operation: 'subscription.read',
+    parseTruth: (raw, expected) => parsePaddleSubscriptionTruth(raw, expected),
+    tier_axis: { kind: 'same_read', parseKeys: parsePaddleProductIds },
+  },
+  lemonsqueezy: {
+    subscription_read_operation: 'subscription.read',
+    parseTruth: parseLemonSqueezySubscriptionTruth,
+    tier_axis: { kind: 'same_read', parseKeys: parseLemonSqueezyProductIds },
+  },
+};
+
+export const SELLER_RECONCILE_PROVIDERS: readonly SellerReconcileProvider[] =
+  SELLER_PROVIDERS.map((spec) => {
+    const reader = RECONCILE_READERS[spec.source];
+    return {
+      source: spec.source,
+      vendor: spec.vendor,
+      catalog_slug: spec.catalog_slug,
+      subscription_read_operation: reader.subscription_read_operation,
+      // The look-alike pin: the op id the bounded catalog compiles to
+      // (`decomposer.ts`: `${author}/${slug}.${op}`).
+      subscription_read_operation_id:
+        `recued-core/${spec.catalog_slug}.${reader.subscription_read_operation}`,
+      parseTruth: reader.parseTruth,
+      tier_axis: reader.tier_axis,
+    };
+  });
+const STRIPE_RECONCILE_PROVIDER = SELLER_RECONCILE_PROVIDERS.find(
+  (provider) => provider.source === 'stripe',
+)!;
 
 /** Synthetic audit identity for the reconciler's provider reads — the same
  *  device `stripe-entitlement-sync.ts` uses for its owner-clicked read. This is
@@ -298,12 +497,14 @@ export const createSellerAccessReconcileDeps = (
   });
 
   /** The installed catalog, only if it is really the pack we mean. */
-  const canonicalManifest = (): IngredientManifest | null => {
+  const canonicalManifest = (
+    provider: SellerReconcileProvider,
+  ): IngredientManifest | null => {
     const manifest = deps.executorConfig.manifests.get(
-      SELLER_STRIPE_CATALOG_SLUG,
+      provider.catalog_slug,
     ) as IngredientManifest | null | undefined;
-    return manifest?.operations?.[SELLER_STRIPE_SUBSCRIPTION_READ_OPERATION]
-      ?.operation_id === SELLER_STRIPE_SUBSCRIPTION_READ_OPERATION_ID
+    return manifest?.operations?.[provider.subscription_read_operation]
+      ?.operation_id === provider.subscription_read_operation_id
       ? manifest
       : null;
   };
@@ -315,38 +516,49 @@ export const createSellerAccessReconcileDeps = (
    *  ⛔ Gates on `subscription.read` ALONE — the sweep's floor. The s2c
    *  entitlement read is checked separately (`entitlementReadAvailable`) so its
    *  absence costs only the swap lane, never the whole sweep. */
-  const readyConnections = (): { name: string }[] => {
-    if (!canonicalManifest()) return [];
+  const readyConnections = (
+    provider: SellerReconcileProvider,
+  ): { name: string }[] => {
+    if (!canonicalManifest(provider)) return [];
     return deps.connectionStore
       .list({ kind: 'api' })
       .filter((row) => {
-        if (resolveConnectionVendor(row) !== 'stripe') return false;
+        if (resolveConnectionVendor(row) !== provider.vendor) return false;
         const profile = deps.connectionOperationProfiles.get(row.name);
-        return profile?.catalog_slug === SELLER_STRIPE_CATALOG_SLUG
+        return profile?.catalog_slug === provider.catalog_slug
           && profile.allowed_operations.includes(
-            SELLER_STRIPE_SUBSCRIPTION_READ_OPERATION,
+            provider.subscription_read_operation,
           );
       })
       .map((row) => ({ name: row.name }))
       .sort((a, b) => a.name.localeCompare(b.name));
   };
 
-  /** Is the s2c swap lane's read both DECLARED by the installed pack and GRANTED
-   *  on the connection? Same look-alike pin as the subscription read. */
-  const entitlementReadAvailable = (): boolean => {
-    const manifest = canonicalManifest();
-    if (
-      manifest?.operations?.[SELLER_STRIPE_ENTITLEMENT_SEARCH_OPERATION]
-        ?.operation_id !== SELLER_STRIPE_ENTITLEMENT_SEARCH_OPERATION_ID
-    ) {
+  /** The provider a listed row belongs to. Rows the sweep lists always carry
+   *  their source; the v1 default keeps a hand-built `ReconcilableCustomer`
+   *  (tests, the Stripe integration harness) on the reader it always had. */
+  const providerOf = (local: ReconcilableCustomer): SellerReconcileProvider =>
+    SELLER_RECONCILE_PROVIDERS.find(
+      (candidate) => candidate.source === (local.lifecycle_source ?? 'stripe'),
+    ) ?? STRIPE_RECONCILE_PROVIDER;
+
+  /** Is a provider's second-read tier axis both DECLARED by the installed pack
+   *  and GRANTED on the connection? Same look-alike pin as the subscription
+   *  read. A `same_read` axis needs nothing beyond the read already made. */
+  const tierAxisAvailable = (
+    provider: SellerReconcileProvider,
+    connection_name: string,
+  ): boolean => {
+    const axis = provider.tier_axis;
+    if (axis.kind === 'same_read') return true;
+    const manifest = canonicalManifest(provider);
+    if (manifest?.operations?.[axis.operation]?.operation_id !== axis.operation_id) {
       return false;
     }
-    const connection_name = selectReconcileConnection(readyConnections());
-    if (connection_name === null) return false;
     return deps.connectionOperationProfiles
       .get(connection_name)
       ?.allowed_operations
-      .includes(SELLER_STRIPE_ENTITLEMENT_SEARCH_OPERATION) ?? false;
+      .includes(axis.operation) ?? false;
   };
 
   /** One gated provider read. The gateway-call shape lives here once so the two
@@ -355,6 +567,7 @@ export const createSellerAccessReconcileDeps = (
   const gatedRead = (input: {
     connection_name: string;
     manifest: IngredientManifest;
+    catalogSlug: string;
     operationKey: string;
     stepId: string;
     args: Record<string, unknown>;
@@ -373,7 +586,7 @@ export const createSellerAccessReconcileDeps = (
       {
         connection_name: input.connection_name,
         manifest: input.manifest,
-        catalogSlug: SELLER_STRIPE_CATALOG_SLUG,
+        catalogSlug: input.catalogSlug,
         operationKey: input.operationKey,
         args: input.args,
         auditRecipe: SELLER_ACCESS_RECONCILE_RECIPE,
@@ -390,36 +603,41 @@ export const createSellerAccessReconcileDeps = (
       // A sweep that lists customers it can never read would count every one of
       // them `unreadable` forever, which reads as breakage rather than as
       // "this server does not sell through Stripe".
-      if (selectReconcileConnection(readyConnections()) === null) return [];
-      return deps.sellerStore
-        .listOpenSubscriptionCustomers({
-          lifecycle_source: SELLER_RECONCILE_LIFECYCLE_SOURCE,
-        })
-        .flatMap((row) =>
-          row.external_subscription_id === null
-            ? []
-            : [{
-                customer_id: row.customer_id,
-                external_subscription_id: row.external_subscription_id,
-                tier_id: row.tier_id,
-                ...(row.current_period_end !== null
-                  ? { access_expires_at: row.current_period_end }
-                  : {}),
-              }],
-        );
+      // One provider at a time, each behind its own readiness gate, so a
+      // seller on Paddle alone is swept and a seller on nothing is not.
+      return SELLER_RECONCILE_PROVIDERS.flatMap((provider) => {
+        if (selectReconcileConnection(readyConnections(provider)) === null) return [];
+        return deps.sellerStore
+          .listOpenSubscriptionCustomers({ lifecycle_source: provider.source })
+          .flatMap((row): ReconcilableCustomer[] =>
+            row.external_subscription_id === null
+              ? []
+              : [{
+                  customer_id: row.customer_id,
+                  lifecycle_source: provider.source,
+                  external_subscription_id: row.external_subscription_id,
+                  tier_id: row.tier_id,
+                  ...(row.current_period_end !== null
+                    ? { access_expires_at: row.current_period_end }
+                    : {}),
+                }],
+          );
+      });
     },
 
     async readProviderTruth(
       local: ReconcilableCustomer,
     ): Promise<ProviderSubscriptionTruth | null> {
-      const manifest = canonicalManifest();
-      const connection_name = selectReconcileConnection(readyConnections());
+      const provider = providerOf(local);
+      const manifest = canonicalManifest(provider);
+      const connection_name = selectReconcileConnection(readyConnections(provider));
       if (!manifest || connection_name === null) return null;
 
       const invoked = await gatedRead({
         connection_name,
         manifest,
-        operationKey: SELLER_STRIPE_SUBSCRIPTION_READ_OPERATION,
+        catalogSlug: provider.catalog_slug,
+        operationKey: provider.subscription_read_operation,
         stepId: 'subscription_read',
         args: { subscription_id: local.external_subscription_id },
       });
@@ -427,7 +645,7 @@ export const createSellerAccessReconcileDeps = (
       // UNREADABLE, i.e. leave the customer alone. A gateway `deny` is emphatically
       // not evidence that a subscription ended.
       if (!invoked.ok) return null;
-      const truth = parseSubscriptionTruth(invoked.raw, local.external_subscription_id);
+      const truth = provider.parseTruth(invoked.raw, local.external_subscription_id, now());
       if (truth === null) return null;
 
       // ── s2c: the swap axis. Only for a LIVE subscription: a customer about to
@@ -435,39 +653,46 @@ export const createSellerAccessReconcileDeps = (
       // cycle on them buys nothing. `providerStatusIsLive` is imported from the
       // policy rather than re-listed here — one status vocabulary, one owner.
       if (!providerStatusIsLive(truth.status)) return truth;
-      // The swap lane degrades on its own: an ungranted / undeclared entitlement
-      // read leaves `tier_id` absent, so the swap branch cannot fire while extend
-      // and close keep working. ⛔ Do NOT hoist this into `readyConnections()` —
-      // that would make a seller who granted only `subscription.read` lose the
-      // WHOLE sweep rather than just its newest lane.
-      if (!entitlementReadAvailable()) return truth;
-      const stripe_customer_id = parseSubscriptionCustomerId(invoked.raw);
-      if (stripe_customer_id === undefined) return truth;
-
-      const entitlements = await gatedRead({
-        connection_name,
-        manifest,
-        operationKey: SELLER_STRIPE_ENTITLEMENT_SEARCH_OPERATION,
-        stepId: 'active_entitlement_search',
-        args: { 'query.customer': stripe_customer_id },
-      });
-      // Same posture: an unreadable entitlement list is not evidence of anything.
-      // Keep the status/period truth we DID prove and leave the tier unresolved.
-      if (!entitlements.ok) return truth;
 
       const tier = local.tier_id !== undefined
         ? deps.sellerStore.getTier(local.tier_id)
         : null;
       if (!tier) return truth;
+
+      // The tier axis. A `same_read` axis rode the subscription read; a
+      // `second_read` axis degrades on its own: an ungranted / undeclared read
+      // leaves `tier_id` absent, so the swap branch cannot fire while extend
+      // and close keep working. ⛔ Do NOT hoist that gate into
+      // `readyConnections()` — a seller who granted only `subscription.read`
+      // would lose the WHOLE sweep rather than just its newest lane.
+      const axis = provider.tier_axis;
+      let axisRaw: unknown = invoked.raw;
+      if (axis.kind === 'second_read') {
+        if (!tierAxisAvailable(provider, connection_name)) return truth;
+        const args = axis.args(invoked.raw);
+        if (args === null) return truth;
+        const second = await gatedRead({
+          connection_name,
+          manifest,
+          catalogSlug: provider.catalog_slug,
+          operationKey: axis.operation,
+          stepId: axis.operation.replace(/\./g, '_'),
+          args,
+        });
+        // Same posture: an unreadable axis is not evidence of anything. Keep
+        // the status/period truth we DID prove and leave the tier unresolved.
+        if (!second.ok) return truth;
+        axisRaw = second.raw;
+      }
       const tier_id = resolveProviderTierId({
         local_tier_id: local.tier_id,
         local_entitlement_key: tier.entitlement_key,
-        active_entitlement_keys: parseActiveEntitlementKeys(entitlements.raw),
-        // Narrow to the customer's OWN door: the entitlement read is
-        // CUSTOMER-scoped, so it spans every door this Stripe customer is on.
+        active_entitlement_keys: axis.parseKeys(axisRaw),
+        // Narrow to the customer's OWN door: a customer-scoped read spans every
+        // door this provider customer is on.
         door_tiers: deps.sellerStore.listTiers({
           door_id: tier.door_id,
-          lifecycle_source: SELLER_RECONCILE_LIFECYCLE_SOURCE,
+          lifecycle_source: provider.source,
         }),
       });
       return tier_id !== undefined ? { ...truth, tier_id } : truth;

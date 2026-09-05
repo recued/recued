@@ -993,20 +993,37 @@ describe('createLlmGatewayPortHandler', () => {
     });
   });
 
+  /** Four of the eight groups' worth of headroom: enough that compaction keeps
+   *  some history and drops some, which is the only state where the
+   *  whole-group retention rule below is actually being tested. */
+  const MODEL_WINDOW_HISTORY_GROUP_TOKENS = estimateConservativeMessagesTokens([
+    { role: 'user', content: `model-window-user-0 ${'u'.repeat(120)}` },
+    { role: 'assistant', content: `model-window-assistant-0 ${'a'.repeat(120)}` },
+  ]);
+  const MODEL_WINDOW_HISTORY_HEADROOM = MODEL_WINDOW_HISTORY_GROUP_TOKENS * 4;
+
   it('uses the selected model context window, not only the legacy character cap', async () => {
     const provider = makeProvider();
     const config = baseConfig({
       slot_1: {
         ...baseConfig().slot_1!,
         // The input budget is `ctx − reserved output (4,000 for the fast hint)
-        // − safety margin`. Size the window so ~1,900 input tokens survive
-        // Recued's own prompt: enough for several of the 330-token history
-        // groups but not all eight, so compaction MUST run. Derived from the
-        // prompt for the same reason as the char cap above — at the old literal
-        // 6,000 the budget is 1,744 and the prompt alone is 1,735, so the test
-        // would silently stop testing compaction and start testing overflow.
+        // − safety margin`. Size the window so a few history groups survive
+        // Recued's own prompt, but not all eight, so compaction MUST run.
+        // Derived from the prompt for the same reason as the char cap above —
+        // at the old literal 6,000 the budget was 1,744 and the prompt alone
+        // 1,735, so the test would silently stop testing compaction and start
+        // testing overflow.
+        //
+        // ⛔ THE HEADROOM IS DERIVED FROM A MEASURED GROUP, NOT LITERAL. It was
+        // `1_900`, chosen when a group cost ~330 because the estimator counted
+        // one token per UTF-8 BYTE. Fixing that divisor made a group ~1/3 the
+        // size, 1,900 admitted all eight, and this test silently stopped
+        // exercising compaction while still passing every assertion below
+        // except the one that noticed. A fixture pinned to the estimator's
+        // scale has to be COMPUTED from it.
         context_window_tokens:
-          GATEWAY_SYSTEM_PROMPT_TOKENS + 4_000 + 256 + 1_900,
+          GATEWAY_SYSTEM_PROMPT_TOKENS + 4_000 + 256 + MODEL_WINDOW_HISTORY_HEADROOM,
       },
     });
     const deps = makeDeps({ provider, config });
@@ -2236,5 +2253,148 @@ describe("the owner's caller-system policy, end to end through the real handler"
     const nonceOf = (turn: LlmGatewayTurnInput): string =>
       /<<<CALLER_INSTRUCTIONS ([^>]+)>>>/.exec(turn.system_prompt ?? '')![1]!;
     expect(nonceOf(a)).not.toBe(nonceOf(b));
+  });
+});
+
+/** X3 — the gateway's tool allowlist is DERIVED FROM THE TOKEN, fails CLOSED,
+ *  and is RE-DERIVED at the provider boundary.
+ *
+ *  ⛔⛔ WHY THIS IS A RATCHET AND NOT A REVIEW NOTE. This is the FOURTH exposure
+ *  path. `buildCatalog`'s own comment names three — chat catalog /
+ *  `tools.search` / the MCP door's `tools/list`, "and they fail independently"
+ *  — and the gateway's `contractCatalog` is not among them. Audited 2026-09-03
+ *  and found correct, but what makes it correct is THREE separate properties
+ *  inside one function, each of which a refactor could undo quietly and none of
+ *  which any invariant named:
+ *
+ *    1. `resolveAllowedToolNames(deps, token)` takes the TOKEN RECORD, never
+ *       the request body.
+ *    2. Its `catch` returns `[]` — a resolution failure yields an EMPTY
+ *       allowlist. That is the OPPOSITE default from `buildCatalog`, whose last
+ *       branch is an unfiltered `registryEntries`; falling open here would hand
+ *       a customer the owner's whole installed catalog.
+ *    3. It is recomputed from a freshly re-authorized token at the provider
+ *       boundary, and the request is refused if it differs.
+ *
+ *  ⚠ These assert the PROPERTY, not the code. `resolveAllowedToolNames` is
+ *  module-private on purpose; calling it directly would pin an implementation
+ *  and still not prove the handler consults it. */
+describe('X3 — gateway allowlist authority', () => {
+  const drive = async (over: {
+    listContractCallableChatToolNames?: LlmGatewayHandlerDeps['listContractCallableChatToolNames'];
+    body?: Record<string, unknown>;
+  }) => {
+    const provider = makeProvider();
+    const token = makeToken({ grants: { 'acme/granted': true } });
+    const deps = makeDeps({
+      provider,
+      token,
+      ...(over.listContractCallableChatToolNames
+        ? { listContractCallableChatToolNames: over.listContractCallableChatToolNames }
+        : {}),
+    });
+    const res = new FakeRes();
+    await createLlmGatewayPortHandler(deps)(
+      buildReq({ body: makeBody(over.body ?? {}) }),
+      res as unknown as ServerResponse,
+    );
+    return { provider, token, res };
+  };
+
+  it('⛔ consults the TOKEN RECORD, and the request body cannot widen it', async () => {
+    const listContractCallableChatToolNames = vi.fn(() => ['acme/granted']);
+    const { res, token } = await drive({
+      listContractCallableChatToolNames,
+      // Tool-shaped content in the request. If the allowlist were
+      // request-influenced at all, this is where it would enter.
+      body: { tools: [{ function: { name: 'acme/forbidden' } }] },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(listContractCallableChatToolNames).toHaveBeenCalled();
+    // ⛔ The exact token record. A resolver handed anything request-shaped is
+    // precisely the drift this row exists to catch.
+    expect(
+      (listContractCallableChatToolNames.mock.calls as unknown[][])[0]?.[0],
+    ).toBe(token);
+  });
+
+  it('⛔⛔ FAILS CLOSED — a throwing resolver yields NO tools, not every tool', async () => {
+    const { res, provider } = await drive({
+      listContractCallableChatToolNames: vi.fn(() => {
+        throw new Error('contract view unavailable');
+      }),
+    });
+    // The turn still runs; what must not happen is a catalog appearing.
+    expect(res.statusCode).toBe(200);
+    // ⚠ ASSERT THE ALLOWLIST, NOT A STRINGIFIED CALL. The first version
+    // searched the whole serialized provider input for the tool name and
+    // failed — the name is in the TOKEN's own `grants` blob, which travels
+    // with the call. Matching that proves nothing about what was exposed.
+    const input = firstProviderInput(provider) as unknown as {
+      allowed_tool_names?: readonly string[];
+      system_tools_allowed?: boolean;
+    };
+    expect(input.allowed_tool_names ?? []).toEqual([]);
+    // And the derived gate follows the empty list rather than defaulting on.
+    expect(input.system_tools_allowed).toBe(false);
+  });
+
+  it('⛔⛔ the CONTRACT view changing mid-request is refused, with the token unchanged', async () => {
+    // ⚠ THIS IS THE CASE THAT ISOLATES THE ALLOWLIST COMPARE, and the
+    // grants-change test below does NOT. When grants move, the TOKEN AUTHORITY
+    // KEY moves too and refuses on its own — so deleting
+    // `JSON.stringify(providerAllowedToolNames) !== JSON.stringify(...)` left
+    // that test green. The compare earns its place only when the callable set
+    // changes while the token record does not, which is exactly the seller
+    // case: a customer's tier or entitlement moving mid-request.
+    let call = 0;
+    const provider = makeProvider();
+    const deps = makeDeps({
+      provider,
+      listContractCallableChatToolNames: vi.fn(() => {
+        call += 1;
+        return call < 2 ? ['acme/granted'] : ['acme/granted', 'acme/widened'];
+      }),
+    });
+    const res = new FakeRes();
+    await createLlmGatewayPortHandler(deps)(
+      buildReq({ body: makeBody() }),
+      res as unknown as ServerResponse,
+    );
+    expect(res.statusCode).not.toBe(200);
+  });
+
+  it('⛔ a token whose grants CHANGE mid-request is refused, not served stale', async () => {
+    // Property 3. The handler re-authorizes before calling the provider and
+    // compares the re-derived allowlist against the one the turn was composed
+    // under; divergence must abort rather than proceed on the earlier
+    // authority.
+    let call = 0;
+    const provider = makeProvider();
+    const deps = makeDeps({
+      provider,
+      inboundTokenStore: {
+        // ⚠ THE COMPARED PAIR IS THE LAST TWO AUTHORIZATIONS, NOT THE FIRST
+        // TWO. `verifyBearer` runs three times — a pre-body auth, the
+        // post-body auth the turn is composed under, and the provider-boundary
+        // re-auth — and the handler compares the last two. The first version
+        // of this test diverged after call 1, so calls 2 and 3 matched and the
+        // request correctly proceeded: a green test asserting nothing.
+        verifyBearer: vi.fn(() => {
+          call += 1;
+          return makeToken({
+            grants: call < 3
+              ? { 'acme/granted': true }
+              : { 'acme/granted': true, 'acme/added-later': true },
+          });
+        }),
+      },
+    });
+    const res = new FakeRes();
+    await createLlmGatewayPortHandler(deps)(
+      buildReq({ body: makeBody() }),
+      res as unknown as ServerResponse,
+    );
+    expect(res.statusCode).not.toBe(200);
   });
 });

@@ -75,6 +75,7 @@ import type {
 import {
   buildPreflightAsk,
   NEVER_ASK_OPERATION_OPTION_ID,
+  PREFLIGHT_HANDLER_KIND,
   readPreflightOverrideOffer,
   readSessionGrantPayload,
   RELAX_OPERATION_TO_ASK_OPTION_ID,
@@ -90,6 +91,7 @@ import type { BatchAskStore, CheckpointStore } from '@recued/storage';
 import { randomUUID } from 'node:crypto';
 
 import type { SessionGrantResolver } from './session-grant-resolver.js';
+import type { GatedActionStore } from './gated-action-store.js';
 
 /** Everything the hold site knows about one freshly-checkpointed hold.
  *  The coordinator derives the origin unit (`deriveOriginUnit`) and the
@@ -97,6 +99,8 @@ import type { SessionGrantResolver } from './session-grant-resolver.js';
 export interface BatchHoldRegistration {
   readonly source: ExecutionSource;
   readonly run_id: string;
+  /** Operation receipt to group under the stable batch id. */
+  readonly action_ref?: string;
   readonly correlation_id: string;
   readonly channel_session_id: string;
   readonly ingredient_slug: string;
@@ -142,12 +146,28 @@ export interface BatchHoldRegistration {
 }
 
 export type RegisterHoldResult =
-  | { kind: 'registered'; ask_id: string }
+  | { kind: 'registered'; ask_id: string; approval_ref: string }
   /** The hold cannot batch — the caller raises today's per-hold ask. */
   | { kind: 'fallback' };
 
+export interface UnresolvedBatchAsk {
+  readonly ask_id: string;
+  readonly handler_kind: string;
+  readonly handler_payload: Record<string, unknown>;
+}
+
+export type ReconcileOpenBatchResult =
+  | { kind: 'reconciled'; ask_id: string; raised: boolean }
+  | { kind: 'not_open' };
+
+export type OpenBatchSelector = string | { readonly checkpoint_id: string };
+
 export interface BatchApprovalCoordinator {
   registerHold(reg: BatchHoldRegistration): Promise<RegisterHoldResult>;
+  /** Repair one durable open decision group after a crash between its row/
+   * receipt writes and the corresponding notification ask. Never degrades to
+   * per-member asks. */
+  reconcileOpenBatch(selector: OpenBatchSelector): Promise<ReconcileOpenBatchResult>;
   readonly hooks: PreflightBatchAnswerHooks;
 }
 
@@ -156,12 +176,18 @@ export interface CreateBatchApprovalCoordinatorDeps {
   readonly checkpointStore: CheckpointStore;
   readonly resumer: PreflightResumer;
   readonly notifier: PreflightNotifier;
+  /** Durable open + answered-but-unhandled ask index. Recovery validates the
+   * row's exact payload version before trusting any render. */
+  readonly listUnresolvedAsks: () => Promise<ReadonlyArray<UnresolvedBatchAsk>>;
   /** `NotificationBlock.cancelAsk` — retires the superseded version's
    *  ask on JOIN. */
   readonly cancelAsk: (ask_id: string) => Promise<'cancelled' | 'not_open'>;
   /** The batch mint + (transitively) the member-claim substrate. Absent
    *  (dbless harness) ⇒ approves degrade to plain marker resumes. */
   readonly sessionGrantResolver?: SessionGrantResolver;
+  /** Owner-facing receipt projection. Metadata linking is best-effort and
+   * never participates in the batch grant or member-claim authority. */
+  readonly gatedActionStore?: GatedActionStore;
   /** D-211 — authoritative standing-ruling writer. The coordinator owns
    *  this side effect for batch answers so its version guard runs first. */
   readonly upsertOverride?: (
@@ -169,6 +195,13 @@ export interface CreateBatchApprovalCoordinatorDeps {
   ) => Promise<void>;
   readonly now?: () => number;
   readonly newBatchId?: () => string;
+}
+
+class ReceiptGroupingUnavailableError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'ReceiptGroupingUnavailableError';
+  }
 }
 
 /** Read the batch identity off a persisted handler payload. */
@@ -201,6 +234,134 @@ export const createBatchApprovalCoordinator = (
     const next = chain.then(fn, fn);
     chain = next.catch(() => undefined);
     return next;
+  };
+
+  const linkBatchReceipts = async (
+    row: BatchAskRecord,
+    currentAskId?: string,
+    required = false,
+  ): Promise<void> => {
+    if (deps.gatedActionStore === undefined) return;
+    for (const member of row.members) {
+      if (member.action_ref === undefined) continue;
+      try {
+        let linked: Awaited<ReturnType<GatedActionStore['linkApproval']>>;
+        try {
+          linked = await deps.gatedActionStore.linkApproval(
+            member.action_ref,
+            row.batch_id,
+            currentAskId,
+          );
+        } catch (error) {
+          // A storage adapter can surface an error after its write committed.
+          // Verify the requested group before treating the transition as lost.
+          try {
+            linked = await deps.gatedActionStore.get(member.action_ref);
+          } catch {
+            throw error;
+          }
+          if (linked === null
+            || linked.approval_ref !== row.batch_id
+            || (currentAskId !== undefined
+              && linked.current_ask_id !== currentAskId)) throw error;
+        }
+        if (linked === null
+          || linked.approval_ref !== row.batch_id
+          || (currentAskId !== undefined
+            && linked.current_ask_id !== currentAskId)) {
+          throw new Error('receipt did not retain the requested batch link');
+        }
+      } catch (error) {
+        if (required) {
+          throw new ReceiptGroupingUnavailableError(
+            `batch receipt link failed for '${member.action_ref}'`,
+            { cause: error },
+          );
+        }
+        console.warn(
+          `[batch-approval] receipt link failed for '${member.action_ref}': `
+            + (error instanceof Error ? error.message : String(error)),
+        );
+      }
+    }
+  };
+
+  const restoreStandaloneReceipt = async (actionRef: string | undefined): Promise<void> => {
+    if (deps.gatedActionStore === undefined || actionRef === undefined) return;
+    try {
+      // The caller raises the fallback ask only after registerHold returns, so
+      // restore the standalone decision group before that ask can be answered.
+      let linked: Awaited<ReturnType<GatedActionStore['linkApproval']>>;
+      try {
+        linked = await deps.gatedActionStore.linkApproval(actionRef, actionRef, null);
+      } catch (error) {
+        try {
+          linked = await deps.gatedActionStore.get(actionRef);
+        } catch {
+          throw error;
+        }
+        if (linked === null
+          || linked.approval_ref !== actionRef
+          || linked.current_ask_id !== undefined) throw error;
+      }
+      if (linked === null
+        || linked.approval_ref !== actionRef
+        || linked.current_ask_id !== undefined) {
+        throw new Error('receipt did not return to its standalone decision group');
+      }
+    } catch (error) {
+      throw new ReceiptGroupingUnavailableError(
+        `standalone receipt rollback failed for '${actionRef}'`,
+        { cause: error },
+      );
+    }
+  };
+
+  const retireFreshBatch = async (batchId: string): Promise<void> => {
+    try {
+      try {
+        await deps.batchAskStore.terminalize(batchId);
+      } catch (error) {
+        const observed = await deps.batchAskStore.get(batchId);
+        if (observed?.state === 'open') throw error;
+      }
+      if ((await deps.batchAskStore.get(batchId))?.state === 'open') {
+        throw new Error('fresh batch remained open after terminalization');
+      }
+    } catch (error) {
+      throw new ReceiptGroupingUnavailableError(
+        `fresh batch '${batchId}' could not be retired`,
+        { cause: error },
+      );
+    }
+  };
+
+  const rollBackJoinedMember = async (
+    joined: Extract<Awaited<ReturnType<BatchAskStore['addMember']>>, { kind: 'joined' }>,
+    previous: BatchAskRecord,
+  ): Promise<void> => {
+    try {
+      try {
+        if (await deps.batchAskStore.removeMember(
+          joined.row.batch_id,
+          joined.member_id,
+        ) !== 'rolled_back') {
+          throw new Error('batch store refused the member rollback');
+        }
+      } catch (error) {
+        const observed = await deps.batchAskStore.get(joined.row.batch_id);
+        const restored = observed !== null
+          && observed.state === 'open'
+          && observed.payload_version === previous.payload_version
+          && !observed.members.some((member) => member.member_id === joined.member_id);
+        if (!restored) throw error;
+      }
+    } catch (error) {
+      throw new ReceiptGroupingUnavailableError(
+        `joined batch member '${joined.member_id}' could not be rolled back`,
+        { cause: error },
+      );
+    }
   };
 
   /** Raise (or re-raise) the row's ask at its CURRENT version. The
@@ -272,10 +433,175 @@ export const createBatchApprovalCoordinator = (
       checkpoint,
       context,
     });
-    const { ask_id } = await deps.notifier.ask(message, options, handler);
-    await deps.batchAskStore.setCurrentAsk(row.batch_id, ask_id);
+    // Establish the stable decision group before the ask can be answered. An
+    // immediate answer must never surface one member as a standalone result
+    // just before the remaining receipts are linked into the same batch.
+    await linkBatchReceipts(row, undefined, true);
+    let ask_id: string;
+    try {
+      ({ ask_id } = await deps.notifier.ask(message, options, handler));
+    } catch (error) {
+      // `ask` is a durable write followed by an acknowledgement. The write may
+      // commit before the adapter reports failure, so falling back immediately
+      // could expose a standalone ask beside this exact batch decision. Prove
+      // absence first; when the exact render exists, adopt it as authoritative.
+      let unresolved: ReadonlyArray<UnresolvedBatchAsk>;
+      try {
+        unresolved = await deps.listUnresolvedAsks();
+      } catch (readError) {
+        throw new ReceiptGroupingUnavailableError(
+          `batch '${row.batch_id}' ask outcome could not be reconciled`,
+          { cause: readError },
+        );
+      }
+      const exact = unresolved.filter((ask) => {
+        if (ask.handler_kind !== PREFLIGHT_HANDLER_KIND) return false;
+        const batch = readBatchPayload(ask.handler_payload);
+        return batch?.batch_id === row.batch_id
+          && batch.payload_version === row.payload_version;
+      });
+      const retained = exact.find((ask) => ask.ask_id === row.current_ask_id)
+        ?? exact[0];
+      if (retained === undefined) throw error;
+      ask_id = retained.ask_id;
+      console.warn(
+        `[batch-approval] adopted durable ask '${ask_id}' after its raise acknowledgement failed`,
+      );
+      for (const duplicate of exact) {
+        if (duplicate.ask_id === ask_id) continue;
+        try {
+          await deps.cancelAsk(duplicate.ask_id);
+        } catch {
+          /* version guards remain authoritative; cancellation is presentation */
+        }
+      }
+    }
+    // The ask is durable now. Pointer writes are presentation metadata; a
+    // failure cannot be reinterpreted as "the ask never raised" or the caller
+    // would expose a second standalone decision beside this one.
+    try {
+      await deps.batchAskStore.setCurrentAsk(row.batch_id, ask_id);
+    } catch (error) {
+      console.warn(
+        `[batch-approval] current ask pointer failed for '${row.batch_id}': `
+          + (error instanceof Error ? error.message : String(error)),
+      );
+    }
+    await linkBatchReceipts(row, ask_id);
     return ask_id;
   };
+
+  const requireCurrentAsk = async (
+    row: BatchAskRecord,
+    askId: string,
+  ): Promise<void> => {
+    try {
+      await deps.batchAskStore.setCurrentAsk(row.batch_id, askId);
+    } catch (error) {
+      const observed = await deps.batchAskStore.get(row.batch_id);
+      if (observed?.state !== 'open'
+        || observed.payload_version !== row.payload_version
+        || observed.current_ask_id !== askId) throw error;
+    }
+    const observed = await deps.batchAskStore.get(row.batch_id);
+    if (observed?.state !== 'open'
+      || observed.payload_version !== row.payload_version
+      || observed.current_ask_id !== askId) {
+      throw new ReceiptGroupingUnavailableError(
+        `batch '${row.batch_id}' did not retain ask '${askId}' at version ${row.payload_version}`,
+      );
+    }
+  };
+
+  const cancelSupersededBatchAsks = async (
+    row: BatchAskRecord,
+    unresolved: ReadonlyArray<UnresolvedBatchAsk>,
+    retainedAskId: string,
+  ): Promise<void> => {
+    const stale = new Set<string>();
+    if (row.current_ask_id.length > 0 && row.current_ask_id !== retainedAskId) {
+      stale.add(row.current_ask_id);
+    }
+    for (const ask of unresolved) {
+      const batch = ask.handler_kind === PREFLIGHT_HANDLER_KIND
+        ? readBatchPayload(ask.handler_payload)
+        : undefined;
+      if (batch?.batch_id === row.batch_id && ask.ask_id !== retainedAskId) {
+        stale.add(ask.ask_id);
+      }
+    }
+    for (const askId of stale) {
+      try {
+        await deps.cancelAsk(askId);
+      } catch {
+        /* version guards remain authoritative; cancellation is presentation */
+      }
+    }
+  };
+
+  const reconcileOpenBatch = (
+    selector: OpenBatchSelector,
+  ): Promise<ReconcileOpenBatchResult> =>
+    serialize(async (): Promise<ReconcileOpenBatchResult> => {
+      const row = typeof selector === 'string'
+        ? await deps.batchAskStore.get(selector)
+        : (await deps.batchAskStore.list()).find((candidate) =>
+            candidate.state === 'open'
+            && candidate.members.some((member) =>
+              member.checkpoint_id === selector.checkpoint_id)) ?? null;
+      if (row === null || row.state !== 'open') return { kind: 'not_open' };
+
+      const unresolved = await deps.listUnresolvedAsks();
+      const exact = unresolved.filter((ask) => {
+        if (ask.handler_kind !== PREFLIGHT_HANDLER_KIND) return false;
+        const batch = readBatchPayload(ask.handler_payload);
+        return batch?.batch_id === row.batch_id
+          && batch.payload_version === row.payload_version;
+      });
+      const retained = exact.find((ask) => ask.ask_id === row.current_ask_id)
+        ?? exact[0];
+
+      let askId: string;
+      let raised = false;
+      if (retained !== undefined) {
+        askId = retained.ask_id;
+      } else {
+        let checkpoint: Checkpoint | null = null;
+        for (const member of row.members) {
+          checkpoint = await deps.checkpointStore.get(member.checkpoint_id);
+          if (checkpoint !== null) break;
+        }
+        if (checkpoint === null) {
+          throw new Error(
+            `batch '${row.batch_id}' has no durable member checkpoint to re-render`,
+          );
+        }
+        const saved = checkpoint.preflight_context;
+        askId = await raiseBatchAsk(row, checkpoint, {
+          tool_slug: saved?.tool_slug ?? row.ingredient_slug,
+          risk_tier: saved?.risk_tier ?? row.risk_tier,
+          ...(saved?.reason !== undefined ? { reason: saved.reason } : {}),
+          ...(saved?.owner_override_offer !== undefined
+            ? { owner_override_offer: saved.owner_override_offer }
+            : {}),
+          ...(saved?.approval_clamped_from !== undefined
+            ? { approval_clamped_from: saved.approval_clamped_from }
+            : {}),
+          ...(saved?.authorization_provenance !== undefined
+            ? { authorization_provenance: saved.authorization_provenance }
+            : {}),
+        }, undefined);
+        raised = true;
+      }
+
+      // Unlike the live raise path, boot recovery verifies every presentation
+      // pointer. If an adapter reported an error after committing, the reads
+      // below prove the desired state and avoid minting another ask next boot.
+      await requireCurrentAsk(row, askId);
+      await linkBatchReceipts(row, askId, true);
+      await cancelSupersededBatchAsks(row, unresolved, askId);
+      return { kind: 'reconciled', ask_id: askId, raised };
+    });
 
   const registerHold = (reg: BatchHoldRegistration): Promise<RegisterHoldResult> =>
     serialize(async (): Promise<RegisterHoldResult> => {
@@ -318,6 +644,7 @@ export const createBatchApprovalCoordinator = (
         const member = {
           checkpoint_id: reg.checkpoint.checkpoint_id,
           run_id: reg.run_id,
+          ...(reg.action_ref !== undefined ? { action_ref: reg.action_ref } : {}),
           canonical_payload_hash: reg.canonical_payload_hash,
           summary: summarizeArgsPreview(reg.args_preview),
           ...(reg.args_preview !== undefined
@@ -359,16 +686,13 @@ export const createBatchApprovalCoordinator = (
               reg.ask_context,
               reg.session_grant_offer,
             );
-            return { kind: 'registered', ask_id };
+            return { kind: 'registered', ask_id, approval_ref: row.batch_id };
           } catch (e) {
             // codex MEDIUM fold — the v1 ask never raised: terminalize the
             // fresh row so it can never absorb future joins, then fall
             // back to the legacy per-hold ask for this hold.
-            try {
-              await deps.batchAskStore.terminalize(row.batch_id);
-            } catch {
-              /* best-effort — an open orphan only self-heals via joins */
-            }
+            await retireFreshBatch(row.batch_id);
+            await restoreStandaloneReceipt(reg.action_ref);
             console.warn(
               '[batch-approval] v1 batch ask raise failed; row terminalized, '
                 + 'falling back to per-hold ask: '
@@ -416,16 +740,10 @@ export const createBatchApprovalCoordinator = (
             // Re-render raise failed: ROLL BACK the join (pop the member,
             // restore the prior version) so the still-live previous ask
             // pins coherently again, and fall back to a per-hold ask for
-            // this hold. A failed rollback leaves the row to the
-            // self-healing paths (next join re-renders everything).
-            try {
-              await deps.batchAskStore.removeMember(
-                joined.row.batch_id,
-                joined.member_id,
-              );
-            } catch {
-              /* best-effort */
-            }
+            // this hold. Both rollback and standalone restoration are verified;
+            // if either cannot be proven, fail closed with no second ask.
+            await rollBackJoinedMember(joined, open);
+            await restoreStandaloneReceipt(reg.action_ref);
             console.warn(
               '[batch-approval] join re-render raise failed; member rolled '
                 + 'back, falling back to per-hold ask: '
@@ -439,10 +757,15 @@ export const createBatchApprovalCoordinator = (
           } catch {
             /* best-effort — the version guard is the correctness half */
           }
-          return { kind: 'registered', ask_id };
+          return {
+            kind: 'registered',
+            ask_id,
+            approval_ref: joined.row.batch_id,
+          };
         }
         return createFresh();
       } catch (e) {
+        if (e instanceof ReceiptGroupingUnavailableError) throw e;
         // Any store/raise failure degrades to the legacy per-hold ask —
         // strictly additive, never a lost review.
         console.warn(
@@ -644,5 +967,5 @@ export const createBatchApprovalCoordinator = (
       }),
   };
 
-  return { registerHold, hooks };
+  return { registerHold, reconcileOpenBatch, hooks };
 };

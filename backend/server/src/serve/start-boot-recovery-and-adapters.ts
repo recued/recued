@@ -5,6 +5,7 @@ import type { Lifecycle } from '../lifecycle/index.js';
 import {
   raiseInDoubtForSweptCommits,
   recoverNotificationBlockAtBoot,
+  type NotificationBlockBootRecoveryDeps,
 } from '../composition/bin/wire-notification-block.js';
 import { createPassportAuditEmitter } from '../passport/index.js';
 import { commitRestoreProvenanceAtBoot } from '../archive/restore-provenance.js';
@@ -21,6 +22,8 @@ import type { FileStack } from '../collections/file/compose.js';
 import type { CollectionContext } from './compose-collection-context.js';
 
 import type { ReceptionInboxFanoutMode } from '@recued/contracts';
+import type { GatedActionStore } from '../gated-action-store.js';
+import type { PreflightBootSweepDeps } from '../preflight-boot-sweep.js';
 
 export interface StartBootRecoveryAndAdaptersOptions {
   readonly lifecycle: Lifecycle | undefined;
@@ -29,6 +32,15 @@ export interface StartBootRecoveryAndAdaptersOptions {
   readonly checkpointStore: CheckpointStore | undefined;
   readonly auditLog: AuditLogStore | undefined;
   readonly commitStore: CommitStore | undefined;
+  readonly gatedActionStore?: GatedActionStore;
+  readonly getBatch?: PreflightBootSweepDeps['getBatch'];
+  readonly reconcileOpenBatch?: PreflightBootSweepDeps['reconcileOpenBatch'];
+  /** Exact peer-delivery journal recovery runs before generic dispatch-claim
+   * reconciliation and before answered approvals are replayed. */
+  readonly recoverPeerDeliveries?:
+    NotificationBlockBootRecoveryDeps['recoverPeerDeliveries'];
+  readonly preserveInterruptedDispatch?:
+    NotificationBlockBootRecoveryDeps['preserveInterruptedDispatch'];
   readonly fileStack: FileStack | undefined;
   readonly collection: Pick<CollectionContext, 'startCollectionAdapters'>;
   /** Absolute server db path. `dirname(dbPath)` is the data dir holding the
@@ -71,6 +83,7 @@ export const startBootRecoveryAndAdapters = async (
     checkpointStore,
     auditLog,
     commitStore,
+    gatedActionStore,
     fileStack,
     collection,
     dbPath,
@@ -160,6 +173,17 @@ export const startBootRecoveryAndAdapters = async (
         block: notificationBlock,
         checkpointStore,
         auditLog,
+        ...(gatedActionStore !== undefined ? { gatedActionStore } : {}),
+        ...(options.getBatch !== undefined ? { getBatch: options.getBatch } : {}),
+        ...(options.reconcileOpenBatch !== undefined
+          ? { reconcileOpenBatch: options.reconcileOpenBatch }
+          : {}),
+        ...(options.recoverPeerDeliveries !== undefined
+          ? { recoverPeerDeliveries: options.recoverPeerDeliveries }
+          : {}),
+        ...(options.preserveInterruptedDispatch !== undefined
+          ? { preserveInterruptedDispatch: options.preserveInterruptedDispatch }
+          : {}),
         ...(options.resolveInboxFanoutMode !== undefined
           ? { resolveInboxFanoutMode: options.resolveInboxFanoutMode }
           : {}),

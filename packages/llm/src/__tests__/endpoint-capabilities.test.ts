@@ -25,8 +25,16 @@ import {
   isSystemRoleRejection,
   resetEndpointCapabilities,
   systemRoleUnsupported,
+  isContextOverflowRejection,
+  learnedContextWindow,
+  maxProvenAcceptedInput,
+  minLearnedContextWindow,
+  noteContextAccepted,
+  noteContextRefused,
+  provenAcceptedInput,
 } from '../index.js';
 import { classifyProviderError } from '../adapters/anthropic.js';
+import { estimateConservativeMessagesTokens } from '../context-budget.js';
 import { LLMError } from '../types.js';
 import type {
   LLMAdapter,
@@ -482,5 +490,220 @@ describe('durable endpoint capabilities', () => {
       { role: 'system', content: 'S' },
       { role: 'user', content: 'U' },
     ], OPTIONS)).resolves.toEqual(OK);
+  });
+});
+
+// ── Learned context window ──────────────────────────────────────────
+//
+// ⛔ THE FAILURE FENCED AGAINST is not "we fail to learn a limit". It is
+// learning a WRONG one: a low ceiling caches and the endpoint is over-trimmed
+// forever, silently, in the direction that LOSES context. So the tests that
+// matter here are the ones about REFUSING to learn.
+describe('learned context window', () => {
+  beforeEach(() => { resetEndpointCapabilities(); });
+
+  it('⛔ nothing is learned until a REFUSAL — a floor alone is not a ceiling', () => {
+    noteContextAccepted(slot(), 113_616);
+    expect(provenAcceptedInput(slot())).toBe(113_616);
+    // Knowing what fit says nothing about where the limit is; trimming on that
+    // guess would discard context that demonstrably fits.
+    expect(learnedContextWindow(slot())).toBeUndefined();
+  });
+
+  it('a refusal sets the ceiling, and the bound is per ENDPOINT not per slot key', () => {
+    noteContextRefused(slot(), 130_000);
+    expect(learnedContextWindow(slot())).toBe(130_000);
+    // Same endpoint reached through a different api_key is the same endpoint —
+    // `endpointFingerprint` deliberately excludes the credential.
+    expect(learnedContextWindow(slot({ api_key: 'other' }))).toBe(130_000);
+    expect(learnedContextWindow(slot({ model: 'other' }))).toBeUndefined();
+    expect(learnedContextWindow(slot({ base_url: 'https://b.test' }))).toBeUndefined();
+  });
+
+  it('⛔⛔ DISCARDS a ceiling at or below a PROVEN floor', () => {
+    // 113,616 was accepted, so a "limit" of 30,000 is not a limit — it is a
+    // shared key routing elsewhere, or a changed model behind one name.
+    // Evidence beats inference.
+    noteContextAccepted(slot(), 113_616);
+    noteContextRefused(slot(), 30_000);
+    expect(learnedContextWindow(slot())).toBeUndefined();
+    noteContextRefused(slot(), 113_616);
+    expect(learnedContextWindow(slot())).toBeUndefined();
+    noteContextRefused(slot(), 120_000);
+    expect(learnedContextWindow(slot())).toBe(120_000);
+  });
+
+  it('keeps the LOWEST ceiling seen — everything above a known failure fails too', () => {
+    noteContextRefused(slot(), 130_000);
+    noteContextRefused(slot(), 90_000);
+    expect(learnedContextWindow(slot())).toBe(90_000);
+    noteContextRefused(slot(), 200_000);
+    expect(learnedContextWindow(slot())).toBe(90_000);
+  });
+
+  it('rejects nonsense sizes rather than caching them', () => {
+    noteContextRefused(slot(), 0);
+    noteContextRefused(slot(), -1);
+    noteContextRefused(slot(), undefined);
+    noteContextRefused(slot(), 1.5);
+    expect(learnedContextWindow(slot())).toBeUndefined();
+    noteContextAccepted(slot(), 0);
+    expect(provenAcceptedInput(slot())).toBeUndefined();
+  });
+
+  it('⛔ only a NON-retryable AI_TOKEN_BUDGET_EXCEEDED counts as an overflow', () => {
+    // A 429 body routinely says "too many tokens"; learning a ceiling from a
+    // rate limit would cap the endpoint at whatever was in flight when the
+    // owner hit their quota. `classifyProviderError` builds those retryable.
+    expect(isContextOverflowRejection(
+      new LLMError('AI_TOKEN_BUDGET_EXCEEDED', 'LLM input too large (413): ...'),
+    )).toBe(true);
+    expect(isContextOverflowRejection(
+      new LLMError('AI_TOKEN_BUDGET_EXCEEDED', 'too many tokens', {}, true),
+    )).toBe(false);
+    expect(isContextOverflowRejection(
+      new LLMError('AI_LLM_UNAVAILABLE', 'LLM rate limited (429): too many tokens', {}, true),
+    )).toBe(false);
+    expect(isContextOverflowRejection(new Error('maximum context length is 128000'))).toBe(false);
+    expect(isContextOverflowRejection(undefined)).toBe(false);
+  });
+
+  it('⛔ forgetEndpoint clears the learned window — clearability is the constraint', () => {
+    noteContextRefused(slot(), 90_000);
+    noteContextAccepted(slot(), 50_000);
+    forgetEndpoint(slot());
+    expect(learnedContextWindow(slot())).toBeUndefined();
+    expect(provenAcceptedInput(slot())).toBeUndefined();
+  });
+
+  /** ⛔⛔ THIS IS THE TEST THAT MATTERS. Everything above drives the note/read
+   *  primitives directly, which proves they compute correctly and NOTHING about
+   *  whether any call path reaches them. `noteContextRefused` sat one edit away
+   *  from being dead code the whole time those passed. This one goes through
+   *  `completeWithFallbacks` — the single seam every adapter invocation uses —
+   *  with the REAL classifier producing the refusal, so it fails if the wiring
+   *  is removed, if the classifier stops recognising an overflow, or if the
+   *  guard rejects a legitimate bound. */
+  describe('through completeWithFallbacks — the wiring, not the primitives', () => {
+    const OVERFLOW_BODY = JSON.stringify({
+      error: {
+        message: "This model's maximum context length is 8192 tokens, however you requested 90000 tokens.",
+        code: 'context_length_exceeded',
+      },
+    });
+
+    it('⛔ takes the PROVIDER\'S stated limit, not the size we happened to send', async () => {
+      // This is the difference between converging in one turn and converging
+      // over several visible failures: the prompt was ~100,000 estimated
+      // tokens and the endpoint's real window is 8,192. Learning ~100,000
+      // would leave the next turn just as over-sized.
+      const s = slot();
+      const big: LLMMessage[] = [{ role: 'user', content: 'x'.repeat(400_000) }];
+      const { adapter } = adapterThat(() => { throw rejection(OVERFLOW_BODY); });
+      await expect(completeWithFallbacks(adapter, s, big, OPTIONS)).rejects.toThrow();
+
+      expect(learnedContextWindow(s)).toBe(8_192);
+      expect(estimateConservativeMessagesTokens(big)).toBeGreaterThan(50_000);
+
+    });
+
+    it('⛔⛔ a DATE IN THE MODEL NAME must not become the ceiling', async () => {
+      // The failure mode this rules out: `2024` is smaller than the real limit
+      // and passes any magnitude filter, so a bare digit scan caches a
+      // 2,024-token ceiling and over-trims that endpoint forever. Nothing
+      // reports it — the turns just quietly carry less.
+      const s = slot();
+      const { adapter } = adapterThat(() => {
+        throw rejection(JSON.stringify({ error: {
+          message: "gpt-4o-2024-08-06: maximum context length is 128000 tokens, however you requested 130000 tokens.",
+          code: 'context_length_exceeded',
+        } }));
+      });
+      await expect(
+        completeWithFallbacks(adapter, s, [{ role: 'user', content: 'x' }], OPTIONS),
+      ).rejects.toThrow();
+      expect(learnedContextWindow(s)).toBe(128_000);
+    });
+
+    it('reads the Anthropic phrasing too', async () => {
+      const s = slot();
+      const { adapter } = adapterThat(() => {
+        throw classifyProviderError(
+          400, 'prompt is too long: 210000 tokens > 200000 maximum', null);
+      });
+      await expect(
+        completeWithFallbacks(adapter, s, [{ role: 'user', content: 'x' }], OPTIONS),
+      ).rejects.toThrow();
+      expect(learnedContextWindow(s)).toBe(200_000);
+    });
+
+    it('falls back to the attempted size when the provider names no number', async () => {
+      const s = slot();
+      const big: LLMMessage[] = [{ role: 'user', content: 'x'.repeat(40_000) }];
+      const { adapter } = adapterThat(() => {
+        throw classifyProviderError(400, 'context_length_exceeded', null);
+      });
+      await expect(completeWithFallbacks(adapter, s, big, OPTIONS)).rejects.toThrow();
+      expect(learnedContextWindow(s)).toBe(estimateConservativeMessagesTokens(big));
+    });
+
+    it('records the floor from a success', async () => {
+      const s = slot();
+      const small: LLMMessage[] = [{ role: 'user', content: 'hi' }];
+      const { adapter: ok } = adapterThat(() => OK);
+      await completeWithFallbacks(ok, s, small, OPTIONS);
+      expect(provenAcceptedInput(s)).toBe(estimateConservativeMessagesTokens(small));
+    });
+
+    it('⛔ a 429 through the same seam teaches NOTHING', async () => {
+      const s = slot();
+      const { adapter } = adapterThat(() => {
+        throw classifyProviderError(429, 'Rate limit reached: too many tokens', null);
+      });
+      await expect(
+        completeWithFallbacks(adapter, s, [{ role: 'user', content: 'x' }], OPTIONS),
+      ).rejects.toThrow();
+      expect(learnedContextWindow(s)).toBeUndefined();
+    });
+
+    it('⛔ a system-role retry that SUCCEEDS still records the floor, not a failure', async () => {
+      const s = slot();
+      const msgs: LLMMessage[] = [
+        { role: 'system', content: 'be brief' },
+        { role: 'user', content: 'hello' },
+      ];
+      const { adapter } = refusesSystem();
+      await completeWithFallbacks(adapter, s, msgs, OPTIONS);
+      expect(learnedContextWindow(s)).toBeUndefined();
+      // Estimated from what the CALLER handed in, so one call teaches one
+      // number regardless of how many degradations it took internally.
+      expect(provenAcceptedInput(s)).toBe(estimateConservativeMessagesTokens(msgs));
+    });
+  });
+
+  describe('over a candidate set', () => {
+    const a = slot({ base_url: 'https://a.test' });
+    const b = slot({ base_url: 'https://b.test' });
+    const c = slot({ base_url: 'https://c.test' });
+
+    it('⛔ takes the MINIMUM, because routing picks among candidates at random', () => {
+      noteContextRefused(a, 128_000);
+      noteContextRefused(b, 32_000);
+      expect(minLearnedContextWindow([a, b])).toBe(32_000);
+    });
+
+    it('⚠ an UNLEARNED candidate contributes nothing — a bound, not a guarantee', () => {
+      noteContextRefused(a, 128_000);
+      expect(minLearnedContextWindow([a, c])).toBe(128_000);
+      expect(minLearnedContextWindow([c])).toBeUndefined();
+      expect(minLearnedContextWindow([])).toBeUndefined();
+    });
+
+    it('the floor is the MAXIMUM proven input — never trim below what fits', () => {
+      noteContextAccepted(a, 40_000);
+      noteContextAccepted(b, 90_000);
+      expect(maxProvenAcceptedInput([a, b, c])).toBe(90_000);
+      expect(maxProvenAcceptedInput([c])).toBeUndefined();
+    });
   });
 });

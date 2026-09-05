@@ -3426,11 +3426,13 @@ const handleToolCall = async (
         { receivePeerAsk },
         { createContractStore },
         { createContractGrantEntryStore },
+        { createPeerAskInboxStore },
         { peerLabelGrantEntry },
       ] = await Promise.all([
         import('./peer-ask-inbound.js'),
         import('./storage/contract-store.js'),
         import('./storage/contract-grant-entry-store.js'),
+        import('./storage/peer-ask-inbox-store.js'),
         import('@recued/contracts'),
       ]);
       // D-234 § 234.4h/j — THE gate: the owner grants `peer.label.<label>` on the
@@ -3469,6 +3471,7 @@ const handleToolCall = async (
           isLabelGranted: (contract_id, label) =>
             peerGrantEntries.get(contract_id, peerLabelGrantEntry(label)) === true,
           notifier: deps.preflightNotifier as never,
+          inbox: createPeerAskInboxStore(deps.db),
           ...(deps.auditLog !== undefined
             ? {
                 logActivity: (row: { action: string; target: string; detail: string }) => {
@@ -3486,7 +3489,7 @@ const handleToolCall = async (
       // forever. The shape is the answer.
       // ⚠ A REFUSAL IS A RESULT, NOT AN ERROR ENVELOPE — see the note above.
       console.warn(`[peer-ask:inbound] ${JSON.stringify(received)}`);
-      return { content: [{ type: 'text', text: JSON.stringify(received) }] };
+      return text(received);
     }
     // ── peerAnswer ─────────────────────────────────────────
     case PEER_RECEIVE_ANSWER_TOOL: {
@@ -3524,6 +3527,9 @@ const handleToolCall = async (
         {
           outbox: outboxStore,
           answers: createPeerAnswerStore(deps.db),
+          ...(deps.gatedActionStore !== undefined
+            ? { gatedActions: deps.gatedActionStore }
+            : {}),
           // ⚠ The INVERSE of the ask door's `peerConnectionNameFor`: there we ask
           // "which connection reaches this contract", here "which contract is
           // this connection bound to". Same `config.peer_contract_id` field,
@@ -3544,6 +3550,7 @@ const handleToolCall = async (
               getExecuteDeps: () => deps,
               auditLog: deps.auditLog!,
               checkpoints: deps.checkpointStore!,
+              outbox: outboxStore,
             });
           },
           ...(deps.auditLog !== undefined

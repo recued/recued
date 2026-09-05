@@ -1,4 +1,4 @@
-/** D-169 P2 Slice 5 (toast half) — webclient ephemeral notify toasts.
+/** Route-independent webclient status-toast stack.
  *
  *  The live, transient pop for a one-way D-158 `notify` — the webclient peer
  *  of the bridge's OS notification. On each `notification.notify` bus frame a
@@ -15,12 +15,14 @@
  *  bootstrap mounts this once at `options.root` (the same posture as the
  *  reauth banner), independent of `mountedRouteHandle`.
  *
- *  ── Bus-only; no rpc, no link ───────────────────────────────────────────
- *  The toast consumes the `notification.notify` bus payload DIRECTLY — it's
+ *  ── Notify input is bus-only; no rpc, no link ───────────────────────────
+ *  The stack consumes each `notification.notify` bus payload DIRECTLY — it's
  *  ephemeral, so there's no `notification.recent` round-trip. The bus frame is
  *  `{ title?, text, cursor }` — it carries NO `link_url`, so a toast renders
  *  title + text + a dismiss control and nothing clickable; a `javascript:`
- *  href risk can't arise here.
+ *  href risk can't arise here. The public `push` seam lets other durable,
+ *  owner-only projections reuse the same accessible presentation without
+ *  minting a fake `notification.notify` event.
  *
  *  ── Render model: DOM nodes, not innerHTML ──────────────────────────────
  *  `createElement` + `textContent` for every new card — unsanitised notify
@@ -81,6 +83,10 @@ export interface NotifyToastsMount {
   /** Dismiss a toast by id (cancels its auto-dismiss timer). No-op on an
    *  unknown / already-dismissed id. */
   dismiss(id: string): void;
+  /** Present another route-independent status through the same accessible
+   * stack. Used by durable action-receipt invalidations; it does not turn the
+   * source event into a `notification.notify`. */
+  push(toast: { title?: string; text: string }): void;
   /** Tear down: clear every timer, drop the subscription, remove the
    *  container. Idempotent. */
   dispose(): void;
@@ -326,6 +332,10 @@ export const mountNotifyToasts = (
       text: t.text,
     })),
     dismiss: (id) => dismiss_(id),
+    push: (toast) => {
+      if (typeof toast.text !== 'string') return;
+      push(nonBlankTitle(toast.title), toast.text);
+    },
     dispose: () => {
       if (disposed) return;
       disposed = true;

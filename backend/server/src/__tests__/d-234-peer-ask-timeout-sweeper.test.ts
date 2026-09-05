@@ -10,14 +10,20 @@ import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 
 import { validatePeerAskSpec } from '@recued/contracts';
+import { createInMemoryCollection } from '@recued/storage';
 
 import {
   PEER_ASK_NO_ANSWERER,
   isPeerAskExpired,
   sweepExpiredPeerAsks,
 } from '../peer-ask-timeout-sweeper.js';
+import { PEER_HOLD_ABANDONER } from '../peer-hold-abandoner.js';
 import { createPeerAnswerStore } from '../storage/peer-answer-store.js';
 import { createPeerAskOutboxStore } from '../storage/peer-ask-outbox-store.js';
+import {
+  createGatedActionStore,
+  type GatedActionRecord,
+} from '../gated-action-store.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -87,6 +93,68 @@ describe('§ 234.4m — which asks expire', () => {
 });
 
 describe('§ 234.4m — what the sweep does', () => {
+  it('settles an unverified approved handoff before an expired journal closes', async () => {
+    const db = new Database(':memory:');
+    const outbox = createPeerAskOutboxStore(db);
+    const answers = createPeerAnswerStore(db);
+    const gatedActions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { now: () => NOW, newActionRef: () => 'action-timeout' },
+    );
+    const held = await gatedActions.createHeld({
+      run_id: 'run-timeout',
+      recipe_id: 'recipe-timeout',
+      gated_step_id: 'verdict',
+      checkpoint_id: 'approval-checkpoint',
+    });
+    await gatedActions.markDispatching(held.action_ref);
+    await gatedActions.bindDispatchCheckpoint(held.action_ref, 'peer-checkpoint');
+    outbox.stage({
+      exchange_ref: 'ref-timeout',
+      run_id: 'run-timeout',
+      gated_step_id: 'verdict',
+      checkpoint_id: 'peer-checkpoint',
+      action_ref: held.action_ref,
+      connection: 'peer-bob',
+      label: 'review',
+      offered: ['yes'],
+      deadline_at: NOW - 1,
+      created_at: NOW - 10,
+      delivery: {
+        recipient_fingerprint: 'peer-fingerprint',
+        spec: {
+          connection: 'peer-bob',
+          label: 'review',
+          question: 'Ship it?',
+          options: [{ id: 'yes', label: 'Yes' }],
+          deadline_at: NOW - 1,
+          on_timeout: 'stop',
+          via: 'direct',
+        },
+      },
+    });
+    outbox.activate('ref-timeout');
+    const resume = vi.fn(async () => {});
+
+    await sweepExpiredPeerAsks({
+      outbox,
+      answers,
+      gatedActions,
+      resume,
+      now: () => NOW,
+      log: () => {},
+    });
+
+    expect(await gatedActions.get(held.action_ref)).toMatchObject({
+      status: 'in_doubt',
+      result: { reason: 'peer_timeout_before_verified_delivery' },
+    });
+    expect(outbox.getDelivery('ref-timeout')).toBeNull();
+    expect(resume).toHaveBeenCalledWith(expect.objectContaining({
+      exchange_ref: 'ref-timeout',
+    }));
+  });
+
   it('✅ records a readable non-answer and RESUMES the held run', async () => {
     const h = harness([{ ref: 'ref_late', deadline_at: NOW - 1 }]);
     const r = await sweepExpiredPeerAsks({ ...h, log: () => {} });
@@ -94,7 +162,11 @@ describe('§ 234.4m — what the sweep does', () => {
     expect(r).toMatchObject({ examined: 1, expired: 1, resumed: 1, alreadyAnswered: 0, failed: 0 });
     // ⛔ THE RESUME IS THE POINT. Recording without resuming leaves the run held
     // until something else happens to re-run it, which for a timeout may be never.
-    expect(h.resume).toHaveBeenCalledWith({ run_id: 'run_ref_late', gated_step_id: 'verdict' });
+    expect(h.resume).toHaveBeenCalledWith({
+      run_id: 'run_ref_late',
+      gated_step_id: 'verdict',
+      exchange_ref: 'ref_late',
+    });
 
     const recorded = h.answers.get('ref_late');
     expect(recorded).toMatchObject({
@@ -127,7 +199,7 @@ describe('§ 234.4m — what the sweep does', () => {
     expect(h.outbox.get('ref_forever')).not.toBeNull();
   });
 
-  it('⛔⛔ LOSES THE RACE TO A REAL ANSWER — and does NOT resume behind it', async () => {
+  it('recovers a real answer that won the record race before resumption', async () => {
     // The peer answered a moment before the tick. `record` is first-write-wins,
     // so the sweep must find the run already moving and keep its hands off: a
     // second resume would re-run a step the answer path is already re-running.
@@ -142,12 +214,67 @@ describe('§ 234.4m — what the sweep does', () => {
 
     const r = await sweepExpiredPeerAsks({ ...h, log: () => {} });
 
-    expect(r).toMatchObject({ expired: 1, alreadyAnswered: 1, resumed: 0 });
-    expect(h.resume).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ expired: 1, alreadyAnswered: 1, resumed: 1 });
+    expect(h.resume).toHaveBeenCalledOnce();
     // ⛔ THE REAL ANSWER SURVIVES INTACT. If the timeout overwrote it, a peer's
     // approval would silently become a timeout and the run would take the wrong
     // branch while every row looked plausible.
     expect(h.answers.get('ref_raced')).toMatchObject({ answered: true, option: 'approved' });
+    expect(h.outbox.get('ref_raced')).toBeNull();
+  });
+
+  it('recovers a recorded answer before its deadline instead of waiting for expiry', async () => {
+    const h = harness([{ ref: 'ref_recorded', deadline_at: NOW + 60_000 }]);
+    h.answers.record({
+      exchange_ref: 'ref_recorded',
+      peer_contract_id: 'ctr_bob',
+      answered: true,
+      option: 'approved',
+      at: NOW - 2,
+    });
+
+    const r = await sweepExpiredPeerAsks({ ...h, log: () => {} });
+
+    expect(r).toMatchObject({
+      examined: 1,
+      expired: 0,
+      alreadyAnswered: 1,
+      resumed: 1,
+      failed: 0,
+    });
+    expect(h.resume).toHaveBeenCalledWith({
+      run_id: 'run_ref_recorded',
+      gated_step_id: 'verdict',
+      exchange_ref: 'ref_recorded',
+    });
+    expect(h.outbox.get('ref_recorded')).toBeNull();
+  });
+
+  it('leaves a local abandonment claim for the terminal abandon retry', async () => {
+    const h = harness([{ ref: 'ref_abandon', deadline_at: NOW - 1 }]);
+    h.answers.record({
+      exchange_ref: 'ref_abandon',
+      peer_contract_id: PEER_HOLD_ABANDONER,
+      answered: false,
+      unanswered_because: 'withdrawn',
+      at: NOW - 2,
+    });
+
+    const r = await sweepExpiredPeerAsks({ ...h, log: () => {} });
+
+    expect(r).toMatchObject({
+      examined: 1,
+      expired: 1,
+      alreadyAnswered: 1,
+      resumed: 0,
+      failed: 0,
+    });
+    expect(h.resume).not.toHaveBeenCalled();
+    expect(h.outbox.get('ref_abandon')).not.toBeNull();
+    expect(h.answers.get('ref_abandon')).toMatchObject({
+      peer_contract_id: PEER_HOLD_ABANDONER,
+      unanswered_because: 'withdrawn',
+    });
   });
 
   it('⛔ ONE UNRESUMABLE HOLD DOES NOT STRAND THE ROWS BEHIND IT', async () => {
@@ -164,6 +291,8 @@ describe('§ 234.4m — what the sweep does', () => {
     // it next resumes, exactly as it would find a real answer.
     expect(h.answers.get('ref_a')).toMatchObject({ unanswered_because: 'timed_out' });
     expect(h.answers.get('ref_b')).toMatchObject({ unanswered_because: 'timed_out' });
+    expect(h.outbox.get('ref_a')).not.toBeNull();
+    expect(h.outbox.get('ref_b')).toBeNull();
   });
 
   it('sweeps the expired and skips the live in the same pass', async () => {

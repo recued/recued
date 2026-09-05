@@ -29,6 +29,12 @@ import type { PeerAskUnansweredReason } from '@recued/contracts';
 
 import type { PeerAnswerStore } from './storage/peer-answer-store.js';
 import type { PeerAskOutboxRow, PeerAskOutboxStore } from './storage/peer-ask-outbox-store.js';
+import {
+  continueRecordedPeerAnswer,
+} from './peer-answer-return.js';
+import { isPeerHoldAbandonmentClaim } from './peer-hold-abandoner.js';
+import type { GatedActionStore } from './gated-action-store.js';
+import { settleLocallyEndedPeerDeliveryReceipt } from './peer-ask-delivery-recovery.js';
 
 /** ⚠ A deadline is user-scale — hours, days. Minute granularity is ample, and a
  *  tighter loop would only re-read the same rows. */
@@ -46,12 +52,20 @@ export const PEER_ASK_NO_ANSWERER = '(deadline — no peer answered)';
 const TIMED_OUT: PeerAskUnansweredReason = 'timed_out';
 
 export interface PeerAskTimeoutSweepDeps {
-  readonly outbox: Pick<PeerAskOutboxStore, 'list' | 'close'>;
-  readonly answers: Pick<PeerAnswerStore, 'record'>;
+  readonly outbox: Pick<PeerAskOutboxStore, 'list' | 'get' | 'close'>;
+  readonly answers: Pick<PeerAnswerStore, 'record' | 'get'>;
   /** Re-instantiate the held run past its gate. The gated step re-runs and
    *  `dispatchPeerAsk` finds the recorded non-answer — there is no injection
    *  path here for the same reason there is none in `peer-hold-resumer`. */
-  readonly resume: (target: { run_id: string; gated_step_id: string }) => Promise<void>;
+  readonly resume: (target: {
+    run_id: string;
+    gated_step_id: string;
+    exchange_ref: string;
+  }) => Promise<void>;
+  readonly gatedActions?: Pick<
+    GatedActionStore,
+    'get' | 'finish' | 'confirmPeerHandoff'
+  >;
   readonly now?: () => number;
   readonly logActivity?: (row: { action: string; target: string; detail: string }) => void;
   readonly log?: (line: string) => void;
@@ -62,10 +76,12 @@ export interface PeerAskTimeoutSweepResult {
   readonly examined: number;
   /** Past their deadline. */
   readonly expired: number;
-  /** Recorded as timed out AND handed to the resumer without throwing. */
+  /** A durable answer (new timeout or previously-recorded peer answer) was
+   * handed to the resumer and its outbox row closed without throwing. */
   readonly resumed: number;
-  /** Lost the race to a real answer that landed first — the run is already
-   *  moving, and this sweep must not touch it. */
+  /** An answer was already durable when this pass reached the row. The pass
+   * joins/retries its continuation rather than assuming another process moved
+   * the run. */
   readonly alreadyAnswered: number;
   /** Recorded, but the resume threw. The non-answer is durable; the run finds it
    *  on its next resume or at the next boot. */
@@ -98,15 +114,66 @@ export const sweepExpiredPeerAsks = async (
   let alreadyAnswered = 0;
   let failed = 0;
 
+  const continueAnswer = async (
+    row: PeerAskOutboxRow,
+    authenticatedPeerAnswer: boolean,
+  ): Promise<void> => {
+    try {
+      if (!authenticatedPeerAnswer) {
+        await settleLocallyEndedPeerDeliveryReceipt(
+          row,
+          'timed_out',
+          deps.gatedActions,
+        );
+      }
+      await continueRecordedPeerAnswer(row, {
+        outbox: deps.outbox,
+        resume: deps.resume,
+        ...(authenticatedPeerAnswer && deps.gatedActions !== undefined
+          ? { gatedActions: deps.gatedActions }
+          : {}),
+      });
+      resumed += 1;
+    } catch (e) {
+      failed += 1;
+      log(
+        `[peer-ask-timeout] ${row.exchange_ref.slice(0, 12)}… answer recorded but continuation failed: `
+        + (e instanceof Error ? (e.stack ?? e.message) : String(e))
+        + ' — the outbox row remains retryable.',
+      );
+    }
+  };
+
   for (const row of open) {
-    if (!isPeerAskExpired(row, at)) continue;
+    const expiredNow = isPeerAskExpired(row, at);
+    // A crash can leave answer + outbox between first-write-wins persistence
+    // and recipe resumption. Recover that state regardless of deadline; the
+    // outbox is now an enumerable continuation queue, not merely UI state.
+    const existingAnswer = deps.answers.get(row.exchange_ref);
+    if (existingAnswer !== null) {
+      if (expiredNow) expired += 1;
+      alreadyAnswered += 1;
+      // The orphan-abandoner claims first, then writes the terminal audit row.
+      // If that second write failed or the process crashed, this open row is its
+      // retry source. It is explicitly not a recipe answer: leave it for the
+      // abandonment pass that follows this sweep instead of resuming a deleted
+      // dish's remaining steps.
+      if (isPeerHoldAbandonmentClaim(existingAnswer)) continue;
+      await continueAnswer(
+        row,
+        existingAnswer.peer_contract_id !== PEER_ASK_NO_ANSWERER,
+      );
+      continue;
+    }
+    if (!expiredNow) continue;
     expired += 1;
 
-    // ⛔⛔ RECORD → CLOSE → RESUME, THE SAME ORDER `receiveAnswer` USES, AND THE
-    // ORDER IS THE RACE GUARD. `answers.record` is first-write-wins: if the
-    // peer's real answer landed a moment ago, this returns false and the sweep
-    // leaves the run entirely alone — it is already being resumed by the answer
-    // path, and a second resume would re-run a step that is already running.
+    // ⛔⛔ RECORD → CONTINUE, THE SAME ORDER `receiveAnswer` USES, AND THE
+    // FIRST WRITE IS THE RACE GUARD. Continuation owns receipt reconciliation,
+    // exact-step resume, and only then outbox closure. `answers.record` is
+    // first-write-wins: if the peer's real answer landed a moment ago, this
+    // returns false and the sweep joins/retries that winning continuation rather
+    // than inventing a second outcome.
     // ⚠ The converse is also correct: when the timeout wins, the peer's later
     // answer is refused `already_answered`. That is not a lost answer, it is a
     // deadline that passed — which is exactly what `on_timeout: 'stop'` asked
@@ -120,10 +187,19 @@ export const sweepExpiredPeerAsks = async (
     });
     if (!recorded) {
       alreadyAnswered += 1;
-      // ⚠ CLOSE IT ANYWAY. The conversation is over — the answer path closes the
-      // row too, and if it has not yet, an open row here would advertise a
-      // question that has been answered.
-      deps.outbox.close(row.exchange_ref);
+      const winner = deps.answers.get(row.exchange_ref);
+      if (winner === null) {
+        failed += 1;
+        log(
+          `[peer-ask-timeout] ${row.exchange_ref.slice(0, 12)}… answer race lost but the winning row could not be read; leaving outbox retryable`,
+        );
+        continue;
+      }
+      if (isPeerHoldAbandonmentClaim(winner)) continue;
+      await continueAnswer(
+        row,
+        winner.peer_contract_id !== PEER_ASK_NO_ANSWERER,
+      );
       continue;
     }
 
@@ -137,28 +213,9 @@ export const sweepExpiredPeerAsks = async (
       }),
     });
 
-    // ⚠ CLOSE BEFORE RESUME, matching `receiveAnswer`: the resumed step reads the
-    // recorded answer and does not need the row. It also SELF-LIMITS this sweep —
-    // a run whose anchor is missing or already terminal comes back `skipped` from
-    // the resumer, and with the row already closed it is not re-swept every
-    // minute forever.
-    deps.outbox.close(row.exchange_ref);
-
-    try {
-      await deps.resume({ run_id: row.run_id, gated_step_id: row.gated_step_id });
-      resumed += 1;
+    await continueAnswer(row, false);
+    if (deps.outbox.get(row.exchange_ref) === null) {
       log(`[peer-ask-timeout] ${row.exchange_ref.slice(0, 12)}… timed out; run resumed`);
-    } catch (e) {
-      // ⛔ ONE ROW'S FAILURE MUST NOT STOP THE SWEEP — the next row is a different
-      // run, and one unresumable hold must not strand everyone behind it. The
-      // non-answer IS recorded and durable either way; the held run finds it
-      // whenever it next resumes, exactly as a real answer would.
-      failed += 1;
-      log(
-        `[peer-ask-timeout] ${row.exchange_ref.slice(0, 12)}… recorded but resume failed: `
-        + (e instanceof Error ? (e.stack ?? e.message) : String(e))
-        + ' — the timeout IS recorded; the held run finds it on its next resume.',
-      );
     }
   }
 

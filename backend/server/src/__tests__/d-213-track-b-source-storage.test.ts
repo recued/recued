@@ -228,6 +228,8 @@ describe('D-213 Track B — split encrypted source storage', () => {
     const recall = await store.getRecallMessage!({
       row_eligibility:
         CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT,
+      recall_contract_id: null,
+      tool_session_id: null,
       item_id: 'u1',
     });
     expect(recall).toMatchObject({
@@ -347,6 +349,8 @@ describe('D-213 Track B — split encrypted source storage', () => {
     const recall = await store.getRecallMessage!({
       row_eligibility:
         CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT,
+      recall_contract_id: null,
+      tool_session_id: null,
       item_id: 'u1',
     });
     expect(recall).toMatchObject({ readable: false });
@@ -376,6 +380,8 @@ describe('D-213 Track B — split encrypted source storage', () => {
     await expect(store.getRecallMessage!({
       row_eligibility:
         CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT,
+      recall_contract_id: null,
+      tool_session_id: null,
       item_id: 'u1',
     })).resolves.toMatchObject({ readable: false });
   });
@@ -398,6 +404,8 @@ describe('D-213 Track B — split encrypted source storage', () => {
     await expect(store.getRecallMessage!({
       row_eligibility:
         CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT,
+      recall_contract_id: null,
+      tool_session_id: null,
       item_id: 'u1',
     })).resolves.toMatchObject({ readable: false });
     await expect(store.harvestPiiSources!({
@@ -490,6 +498,8 @@ describe('D-213 Track B — split encrypted source storage', () => {
     const recall = await store.getRecallMessage!({
       row_eligibility:
         CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT,
+      recall_contract_id: null,
+      tool_session_id: null,
       item_id: 'u1',
     });
     expect(recall).toMatchObject({

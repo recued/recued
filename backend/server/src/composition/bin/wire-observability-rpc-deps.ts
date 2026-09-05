@@ -65,6 +65,7 @@ import type {
 } from '../../approval-handler.js';
 import type { AuditExportRpcDeps } from '../../audit-export-handler.js';
 import type { ExecutionFeedRpcDeps } from '../../execution-feed-handler.js';
+import type { GatedActionStore } from '../../gated-action-store.js';
 import type { EventBus } from '../../events/bus.js';
 import type { PairingManager } from '../../pairing.js';
 import type { RecipeListHandlerDeps } from '../../recipe-list-handler.js';
@@ -94,6 +95,8 @@ export interface ComposeObservabilityRpcDepsInput {
   /** D-153 commit store. Gates `executionFeedDeps` so Runs can read
    *  real per-call Gateway trace rows by run id. */
   commitStore: CommitStore | undefined;
+  /** Operation-scoped approval outcome receipts. */
+  gatedActionStore?: GatedActionStore;
   /** Pair-instance id. Surfaces in the audit-export envelope's
    *  `instance_id` field + optionally the status page header. Always
    *  defined in bin.ts (initialised to `'server'` then overwritten on
@@ -157,6 +160,7 @@ export const composeObservabilityRpcDeps = (
     auditLog,
     checkpointStore,
     commitStore,
+    gatedActionStore,
     serverInstanceId,
     pairing,
     circuitStore,
@@ -189,7 +193,14 @@ export const composeObservabilityRpcDeps = (
 
   const executionFeedDeps: ExecutionFeedRpcDeps | undefined =
     db && auditLog && checkpointStore && commitStore
-      ? { db, auditLog, checkpointStore, commitStore, serverInstanceId }
+      ? {
+          db,
+          auditLog,
+          checkpointStore,
+          commitStore,
+          serverInstanceId,
+          ...(gatedActionStore !== undefined ? { gatedActionStore } : {}),
+        }
       : undefined;
 
   const statusPageDeps: StatusPageDeps | undefined =

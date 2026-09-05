@@ -538,13 +538,19 @@ describe('D-174 execution.get', () => {
 });
 
 describe('D-174 execution.* slice posture', () => {
-  it('registers the two methods and keeps them out of MCP_TOOL_CATALOG', () => {
+  it('registers the owner execution methods and keeps them out of MCP_TOOL_CATALOG', () => {
     expect(SERVER_RPC_METHOD_SET.has('execution.list')).toBe(true);
     expect(SERVER_RPC_METHOD_SET.has('execution.get')).toBe(true);
+    expect(SERVER_RPC_METHOD_SET.has('execution.action.get')).toBe(true);
+    expect(SERVER_RPC_METHOD_SET.has('execution.action.list')).toBe(true);
     expect(MCP_TOOL_CATALOG).not.toContain('execution.list');
     expect(MCP_TOOL_CATALOG).not.toContain('execution.get');
+    expect(MCP_TOOL_CATALOG).not.toContain('execution.action.get');
+    expect(MCP_TOOL_CATALOG).not.toContain('execution.action.list');
     expect(isMcpToolName('execution.list')).toBe(false);
     expect(isMcpToolName('execution.get')).toBe(false);
+    expect(isMcpToolName('execution.action.get')).toBe(false);
+    expect(isMcpToolName('execution.action.list')).toBe(false);
   });
 
   it('rejects an unregistered caller before reading the stores', async () => {
@@ -555,10 +561,15 @@ describe('D-174 execution.* slice posture', () => {
     expect((r as { error: { code: string } }).error.code).toBe('unauthorized');
   });
 
-  it('allows a registered caller and claims exactly the two methods', async () => {
+  it('allows a registered caller and claims the run and action methods', async () => {
     await append('registered-run', 100);
     const slice = makeExecutionFeedHandlers(deps)!;
-    expect(slice.methods).toEqual(['execution.list', 'execution.get']);
+    expect(slice.methods).toEqual([
+      'execution.list',
+      'execution.get',
+      'execution.action.get',
+      'execution.action.list',
+    ]);
     const dispatch = createRpcDispatcher(slice.handlers as never, {});
     const r = await dispatch('execution.list', {}, ctx('webclient-1'));
     expect(r.ok).toBe(true);

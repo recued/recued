@@ -37,6 +37,15 @@ const OWNER: ExecutionSource = {
 };
 const PICKER = { display_name: 'self', signature: 'sig' } as never;
 
+/** The owner corpus, spelled out rather than imported from a resolver, so this
+ *  test keeps exercising the BACKEND rather than the scope rules (which
+ *  `chat-recall-contract-corpus.test.ts` owns). */
+const OWNER_RECALL_TEST_SCOPE = {
+  governing_contract_id: 'user_self',
+  row_eligibility: 'chat:owner_authenticated',
+  recall_contract_id: null,
+} as const;
+
 describe('recall neighbours (end to end)', () => {
   let db: Database.Database;
   let store: ChatStore;
@@ -64,6 +73,8 @@ describe('recall neighbours (end to end)', () => {
   it('the anchor is recall-eligible (otherwise the rest is vacuous)', async () => {
     const row = await store.getRecallMessage?.({
       row_eligibility: CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT,
+        recall_contract_id: null,
+      tool_session_id: null,
       item_id: 'm1',
     });
     expect(row, 'seed must be eligible or every assertion below passes trivially')
@@ -73,6 +84,8 @@ describe('recall neighbours (end to end)', () => {
   it('steps FORWARD to the reply the question cannot find', async () => {
     const rows = await store.getRecallNeighbours?.({
       row_eligibility: CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT,
+        recall_contract_id: null,
+      tool_session_id: null,
       item_id: 'm1', next: 2,
     });
     expect(rows?.map((r) => r.item_id)).toEqual(['m2', 'm3']);
@@ -81,6 +94,8 @@ describe('recall neighbours (end to end)', () => {
   it('steps BACKWARD for context', async () => {
     const rows = await store.getRecallNeighbours?.({
       row_eligibility: CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT,
+        recall_contract_id: null,
+      tool_session_id: null,
       item_id: 'm3', prev: 1,
     });
     expect(rows?.map((r) => r.item_id)).toEqual(['m2']);
@@ -89,6 +104,8 @@ describe('recall neighbours (end to end)', () => {
   it('carries CONTENT — the mail path returned rows with no body', async () => {
     const rows = await store.getRecallNeighbours?.({
       row_eligibility: CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT,
+        recall_contract_id: null,
+      tool_session_id: null,
       item_id: 'm1', next: 1,
     });
     const first = rows?.[0] as { readable: boolean; content?: string } | undefined;
@@ -101,7 +118,15 @@ describe('recall neighbours (end to end)', () => {
     expect(typeof backend.neighbours,
       '`neighbours()` existed on CollectionTable but not the wrapper the handler iterated')
       .toBe('function');
-    const got = await backend.neighbours?.({ anchor_id: 'm1', next: 1 });
+    // ⚠ `scope` is REQUIRED now, and it was not when this test was written.
+    // `neighbours` used to hardcode the owner bucket while `search` and
+    // `fetchExact` took a scope — harmless while the owner corpus was the only
+    // one, and a cross-tenant leak once a door corpus existed: a contracted
+    // caller's search would return its own rows and then step to the OWNER's
+    // neighbours around them.
+    const got = await backend.neighbours?.({
+      anchor_id: 'm1', next: 1, scope: OWNER_RECALL_TEST_SCOPE,
+    });
     expect(got?.[0]?.content).toContain('60d');
     expect(got?.[0]?.score, 'stepped rows matched nothing and must not outrank a real hit')
       .toBe(0);
@@ -117,6 +142,8 @@ describe('recall neighbours (end to end)', () => {
     });
     const rows = await store.getRecallNeighbours?.({
       row_eligibility: CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT,
+        recall_contract_id: null,
+      tool_session_id: null,
       item_id: 'm1', next: 5,
     });
     expect(rows?.map((r) => r.item_id)).not.toContain('other');

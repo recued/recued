@@ -898,6 +898,13 @@ export interface ChunkedUploadAuditInfo {
   readonly chunk_count: number;
   /** Every request performed, phases included. */
   readonly requests: number;
+  /** Requests that returned successfully. Optional only for audit rows written
+   * before request-outcome accounting shipped. New emitters always provide
+   * both counters and their sum equals `requests`. */
+  readonly requests_succeeded?: number;
+  /** Requests that were attempted and threw. A locally-refused phase is not a
+   * request and therefore increments neither this counter nor `requests`. */
+  readonly requests_failed?: number;
 }
 
 /** Overall wall-clock bound for ONE chunked walk, checked before each phase.

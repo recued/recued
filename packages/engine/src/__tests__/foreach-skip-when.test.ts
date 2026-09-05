@@ -82,6 +82,11 @@ describe('⛔ an ITEM-scoped skip_when still filters INSIDE the loop', () => {
         template: 'x{{item.n}}', skip_when: '{{item.drop}} equal true' },
     ]);
     expect(values(out.get('mapped'))).toEqual([null, 'x2']);
+    expect((out.get('mapped') as Array<Record<string, unknown>>)[0]).toMatchObject({
+      ok: true,
+      skipped: true,
+      result: null,
+    });
   });
 
   it('⚠ a bare {{item}} counts as item-scoped too', async () => {

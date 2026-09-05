@@ -1,6 +1,9 @@
 import { hostname } from 'node:os';
 
 import { canBindHostname } from '@recued/contracts';
+import type { BatchAskRecord } from '@recued/contracts';
+import type { PreflightRunSettled } from '../preflight-resumer.js';
+import type { BatchApprovalCoordinator } from '../batch-approval.js';
 import type { BridgeSink, Channel, NotificationBlock, RemoteChannel } from '@recued/notification';
 
 import type { CollectionRegistry } from '../collections/registry.js';
@@ -75,7 +78,24 @@ export interface ExecutionLateBoundRefs extends AppContextChatLateBoundGetters {
    *  before publish surface `ROLE_RESTRICTION`. */
   publishBridgeDispatcher: (dispatcher: BridgeDispatcher | undefined) => void;
   getBridgeDispatcher: () => BridgeDispatcher | undefined;
+  /** D-137 — the chat side's "a run settled LATER" writer.
+   *
+   *  ⛔ LATE-BOUND FOR THE SAME REASON EVERY REF HERE IS: chat is composed in
+   *  the app context and the preflight resumer in the execution context, and
+   *  the second cannot name the first at construction time. Threading a
+   *  callback through the four composition layers between them would work and
+   *  would be four more places to forget it.
+   *
+   *  ⚠ Absent ⇒ late results simply are not recallable, which is the behaviour
+   *  before this — so a boot that never publishes one degrades rather than
+   *  breaks. */
+  publishRunSettledSink: (sink: RunSettledSink | undefined) => void;
+  getRunSettledSink: () => RunSettledSink | undefined;
 }
+
+/** D-137 — a held run reached a terminal outcome after the turn that asked for
+ *  it had ended. */
+export type RunSettledSink = (settled: PreflightRunSettled) => void;
 
 export const createExecutionLateBoundRefs = (): ExecutionLateBoundRefs => {
   let collectionRegistryRef: CollectionRegistry | undefined;
@@ -83,6 +103,7 @@ export const createExecutionLateBoundRefs = (): ExecutionLateBoundRefs => {
   let executeDepsRef: ExecuteHandlerDeps | undefined;
   let scheduleDepsRef: ScheduleHandlerDeps | undefined;
   let bridgeDispatcherRef: BridgeDispatcher | undefined;
+  let runSettledSinkRef: RunSettledSink | undefined;
 
   return {
     getCollectionRegistry: () => collectionRegistryRef,
@@ -90,6 +111,8 @@ export const createExecutionLateBoundRefs = (): ExecutionLateBoundRefs => {
     getExecuteDeps: () => executeDepsRef,
     getScheduleDeps: () => scheduleDepsRef,
     getBridgeDispatcher: () => bridgeDispatcherRef,
+    publishRunSettledSink: (sink) => { runSettledSinkRef = sink; },
+    getRunSettledSink: () => runSettledSinkRef,
     publishCollectionRegistry: (registry) => {
       collectionRegistryRef = registry;
     },
@@ -121,6 +144,7 @@ export interface ComposeExecutionContextOptions {
     | 'commitStore'
     | 'checkpointStore'
     | 'mcpActionStore'
+    | 'gatedActionStore'
     | 'fileStack'
     | 'workEntityStoreRef'
     // Accepted intake responses are promoted in the shared preflight-resume
@@ -219,7 +243,11 @@ export interface ExecutionContext {
   /** Narrow LIVE batch-membership read — see `ExecuteDepsBundle.getBatch`. The
    *  `/ask` landing gates its detail rendering on the CURRENT member count. */
   getBatch:
-    | ((batch_id: string) => Promise<{ members: readonly unknown[] } | null>)
+    | ((batch_id: string) => Promise<Pick<BatchAskRecord,
+      'state' | 'current_ask_id' | 'members' | 'answer_option'> | null>)
+    | undefined;
+  reconcileOpenBatch:
+    | BatchApprovalCoordinator['reconcileOpenBatch']
     | undefined;
   /** D-210 Phase C — the DECORATED preflight resumer, surfaced so the Reception
    *  inbox can release a hold that carries no durable ask (notify-mode fanout,
@@ -639,6 +667,9 @@ export const composeExecutionContext = async (
       })
     : undefined;
   const executeDepsBundle = composeExecuteDeps({
+    // D-137 — the late-bound chat sink for a run that settles after its turn.
+    // Read through the refs bag, so it resolves whenever chat published it.
+    getRunSettledSink: () => lateBound.getRunSettledSink(),
     // D-210 A.8 slice 3d — the SAME resolved link the email channel got above,
     // deliberately not re-resolved: one public-base-URL decision, so a
     // deployment can never end up with a link on one surface and not the other.
@@ -664,6 +695,7 @@ export const composeExecutionContext = async (
     commitStore: storage.commitStore,
     checkpointStore: storage.checkpointStore,
     mcpActionStore: storage.mcpActionStore,
+    gatedActionStore: storage.gatedActionStore,
     annotationStore: app.annotationStoreRef,
     // D-182 §10 step 8 / R1 (Fix 2) — installed-manifest store so the run-path R1
     // pre-pass builds the merged convention-family vendor registry (built-ins +
@@ -808,6 +840,7 @@ export const composeExecutionContext = async (
     executeDeps,
     notificationBlock: executeDepsBundle.notificationBlock,
     getBatch: executeDepsBundle.getBatch,
+    reconcileOpenBatch: executeDepsBundle.reconcileOpenBatch,
     preflightResumer: executeDepsBundle.preflightResumer,
     // D-207 slice 1c — the contract substrate a reception door is minted into. Surfaced
     // from the SAME bundle the Gateway's verdict path was built from, so the mint's grant

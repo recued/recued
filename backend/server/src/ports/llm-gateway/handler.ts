@@ -79,6 +79,7 @@ import type {
 } from '@recued/contracts';
 import { extractBearerToken } from '../common/bearer.js';
 import { writeJson } from '../common/respond.js';
+import { openLlmGatewayStream, type LlmGatewayOpenStream } from './streaming.js';
 
 const DEFAULT_MODEL_ALIAS = 'recued-seller';
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
@@ -1302,6 +1303,11 @@ const parseMessages = (
 interface ChatCompletionRequest {
   readonly messages: LLMMessage[];
   readonly requested_model?: string;
+  /** `stream: true` — answer as `text/event-stream` chunks (see `streaming.ts`
+   *  for what that does and does not promise). Default false. */
+  readonly stream: boolean;
+  /** `stream_options.include_usage` — add the OpenAI-shaped final usage chunk. */
+  readonly include_usage: boolean;
 }
 
 const parseChatCompletionRequest = (
@@ -1311,8 +1317,26 @@ const parseChatCompletionRequest = (
     return { ok: false, message: 'request body must be a JSON object.' };
   }
   const record = body as Record<string, unknown>;
-  if (record.stream === true) {
-    return { ok: false, message: 'streaming chat completions are not supported by this gateway version.' };
+  if (record.stream !== undefined && typeof record.stream !== 'boolean') {
+    return { ok: false, message: 'stream must be a boolean.' };
+  }
+  const stream = record.stream === true;
+  let includeUsage = false;
+  if (record.stream_options !== undefined) {
+    // OpenAI refuses the same combination, and a client that sends it is
+    // usually confused about which mode it is in.
+    if (!stream) {
+      return { ok: false, message: 'stream_options is only allowed when stream is true.' };
+    }
+    const options = record.stream_options;
+    if (!options || typeof options !== 'object' || Array.isArray(options)) {
+      return { ok: false, message: 'stream_options must be an object.' };
+    }
+    const includeUsageRaw = (options as Record<string, unknown>).include_usage;
+    if (includeUsageRaw !== undefined && typeof includeUsageRaw !== 'boolean') {
+      return { ok: false, message: 'stream_options.include_usage must be a boolean.' };
+    }
+    includeUsage = includeUsageRaw === true;
   }
   const messages = parseMessages(record.messages);
   if (!messages.ok) return messages;
@@ -1325,7 +1349,38 @@ const parseChatCompletionRequest = (
     value: {
       messages: messages.messages,
       ...(requestedModel ? { requested_model: requestedModel } : {}),
+      stream,
+      include_usage: includeUsage,
     },
+  };
+};
+
+/** One description of a failed provider call, for both wire shapes: the JSON
+ *  path writes it as a status code, the streaming path as an in-band SSE
+ *  error event (the headers are already out). Keeping the mapping in one
+ *  place is what stops the two shapes from disagreeing about the same error. */
+const describeCompletionFailure = (
+  e: unknown,
+): { status: number; code: string; message: string; type: OpenAiErrorType } => {
+  if (
+    e instanceof ChatContextLengthError
+    || (e instanceof LLMError && e.code === 'AI_TOKEN_BUDGET_EXCEEDED')
+  ) {
+    return {
+      status: 400,
+      code: 'context_length_exceeded',
+      message: e.message,
+      type: 'invalid_request_error',
+    };
+  }
+  if (e instanceof LlmGatewayLiveAuthorityError) {
+    return { status: e.status, code: e.public_code, message: e.message, type: e.type };
+  }
+  return {
+    status: 502,
+    code: 'llm_gateway_provider_failed',
+    message: e instanceof Error ? e.message : 'LLM gateway provider failed.',
+    type: 'server_error',
   };
 };
 
@@ -2305,6 +2360,16 @@ export const createLlmGatewayPortHandler = (
           })
         : undefined;
 
+    // D-196 v1.x — a streaming request opens the response HERE: after every
+    // admission step, authority re-check, preflight and the `chat_turn`
+    // reservation, and before the provider call. Nothing above this line
+    // differs between the two wire shapes, so every refusal above is still a
+    // status code. `streaming.ts` says what the open stream does and does not
+    // promise.
+    const stream: LlmGatewayOpenStream | null = parsed.value.stream
+      ? openLlmGatewayStream(res)
+      : null;
+
     let completion: LlmGatewayCompletionResult;
     try {
       completion = await deps.completionProvider.complete({
@@ -2317,30 +2382,12 @@ export const createLlmGatewayPortHandler = (
       if (chatTurnReservation && gatewayUsageReservations) {
         gatewayUsageReservations.cancel(chatTurnReservation);
       }
-      if (
-        e instanceof ChatContextLengthError
-        || (e instanceof LLMError && e.code === 'AI_TOKEN_BUDGET_EXCEEDED')
-      ) {
-        writeOpenAiError(
-          res,
-          400,
-          'context_length_exceeded',
-          e.message,
-          'invalid_request_error',
-        );
+      const failure = describeCompletionFailure(e);
+      if (stream) {
+        stream.fail({ message: failure.message, type: failure.type, code: failure.code });
         return;
       }
-      if (e instanceof LlmGatewayLiveAuthorityError) {
-        writeOpenAiError(res, e.status, e.public_code, e.message, e.type);
-        return;
-      }
-      writeOpenAiError(
-        res,
-        502,
-        'llm_gateway_provider_failed',
-        e instanceof Error ? e.message : 'LLM gateway provider failed.',
-        'server_error',
-      );
+      writeOpenAiError(res, failure.status, failure.code, failure.message, failure.type);
       return;
     }
 
@@ -2360,8 +2407,24 @@ export const createLlmGatewayPortHandler = (
     }
 
     const created = Math.floor(completionInput.now / 1000);
+    const completionId = completion.id ?? `chatcmpl_${randomUUID().replace(/-/g, '')}`;
+    if (stream) {
+      stream.complete(
+        { id: completionId, created, model: route.alias },
+        {
+          content: completion.content,
+          finish_reason: completion.finish_reason ?? 'stop',
+          usage: responseUsage(completion.usage),
+          include_usage: parsed.value.include_usage,
+          ...(completion.post_effect_outcome !== undefined
+            ? { recued_outcome: completion.post_effect_outcome }
+            : {}),
+        },
+      );
+      return;
+    }
     writeJson(res, 200, {
-      id: completion.id ?? `chatcmpl_${randomUUID().replace(/-/g, '')}`,
+      id: completionId,
       object: 'chat.completion',
       created,
       model: route.alias,

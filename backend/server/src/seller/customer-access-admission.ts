@@ -81,12 +81,19 @@ const CLOSE_NOW_STATUSES = new Set([
   'disputed',
   'refund',
   'refunded',
+  // Lemon Squeezy's terminal state: the cancelled subscription reached `ends_at`.
+  'expired',
 ]);
 
 const GRACE_STATUSES = new Set([
   'past_due',
   'payment_failed',
   'unpaid',
+  // Paddle / Lemon Squeezy `paused`: not paying, may resume. Grace keeps the
+  // row open so a resume can extend it; a close_now would revoke the token
+  // and the extend path refuses a closed customer. A seller who wants pause to
+  // cut access at once sets `<source>:paused` to `close_now` in the policy.
+  'paused',
 ]);
 
 const cleanStatus = (value: string | null): string | null => {

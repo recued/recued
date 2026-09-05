@@ -10,6 +10,7 @@
 import type Database from 'better-sqlite3';
 import {
   ACTORS,
+  GATED_ACTION_STATUSES,
   RUN_ANCHOR_STATUSES,
   RpcError,
   isCliFailureDetail,
@@ -23,6 +24,12 @@ import {
   type CommitStatus,
   type ExecutionGetRequest,
   type ExecutionGetResponse,
+  type GatedActionGetRequest,
+  type GatedActionGetResponse,
+  type GatedActionListCursor,
+  type GatedActionListRequest,
+  type GatedActionListResponse,
+  type GatedActionStatus,
   type ExecutionListCursor,
   type ExecutionListQuery,
   type ExecutionListResponse,
@@ -53,6 +60,11 @@ import {
   type AuditExportRpcDeps,
 } from './audit-export-handler.js';
 import type { WsClient } from './ws-server.js';
+import {
+  projectGatedActionApprovalGroup,
+  projectGatedActionReceipt,
+  type GatedActionStore,
+} from './gated-action-store.js';
 
 export interface ExecutionFeedRpcDeps {
   db: Database.Database;
@@ -60,6 +72,7 @@ export interface ExecutionFeedRpcDeps {
   checkpointStore: CheckpointStore;
   commitStore: CommitStore;
   serverInstanceId: string;
+  gatedActionStore?: GatedActionStore;
 }
 
 interface ValidatedExecutionListQuery {
@@ -125,6 +138,34 @@ const optionalFiniteNumber = (
     throw new RpcError('bad_request', `${method}: ${name} must be a finite number`, 400);
   }
   return value;
+};
+
+const optionalGatedActionCursor = (
+  method: string,
+  value: unknown,
+): GatedActionListCursor | undefined => {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new RpcError('bad_request', `${method}: before must be an object`, 400);
+  }
+  const obj = value as Record<string, unknown>;
+  if (
+    typeof obj.change_seq !== 'number'
+    || !Number.isInteger(obj.change_seq)
+    || obj.change_seq < 1
+    || typeof obj.action_ref !== 'string'
+    || obj.action_ref.length === 0
+  ) {
+    throw new RpcError(
+      'bad_request',
+      `${method}: before must carry change_seq and action_ref`,
+      400,
+    );
+  }
+  return {
+    change_seq: obj.change_seq,
+    action_ref: obj.action_ref,
+  };
 };
 
 const optionalCursor = (
@@ -565,14 +606,181 @@ export const handleExecutionGet = async (
   return { run: detail };
 };
 
-type ExecutionFeedMethods = 'execution.list' | 'execution.get';
+const GATED_ACTION_STATUS_SET: ReadonlySet<string> = new Set(
+  GATED_ACTION_STATUSES,
+);
+
+const requireGatedActionStore = (deps: ExecutionFeedRpcDeps): GatedActionStore => {
+  if (deps.gatedActionStore === undefined) {
+    throw new RpcError(
+      'not_configured',
+      'operation receipts are not configured on this server',
+      503,
+    );
+  }
+  return deps.gatedActionStore;
+};
+
+export const handleGatedActionGet = async (
+  deps: ExecutionFeedRpcDeps,
+  raw: GatedActionGetRequest,
+): Promise<GatedActionGetResponse> => {
+  const args = asObject('execution.action.get', raw);
+  if (typeof args.action_ref !== 'string' || args.action_ref.length === 0) {
+    throw new RpcError(
+      'bad_request',
+      'execution.action.get: action_ref is required',
+      400,
+    );
+  }
+  const store = requireGatedActionStore(deps);
+  // One snapshot owns both projections. Reading the point row and then a
+  // separate list allowed an approval-link transition between them to leave
+  // the requested receipt absent from its own selected group.
+  const records = await store.list();
+  const record = records.find((candidate) => candidate.action_ref === args.action_ref) ?? null;
+  if (record === null) {
+    throw new RpcError(
+      'not_found',
+      `execution.action.get: action '${args.action_ref}' not found`,
+      404,
+    );
+  }
+  const receipt = projectGatedActionReceipt(record);
+  const groupReceipts = records
+    .filter((candidate) => candidate.approval_ref === record.approval_ref)
+    .map((candidate) => projectGatedActionReceipt(candidate, { includeResult: false }));
+  return {
+    receipt,
+    group: projectGatedActionApprovalGroup(groupReceipts),
+  };
+};
+
+export const handleGatedActionList = async (
+  deps: ExecutionFeedRpcDeps,
+  raw: GatedActionListRequest,
+): Promise<GatedActionListResponse> => {
+  const args = asObject('execution.action.list', raw);
+  const since = optionalFiniteNumber(
+    'execution.action.list',
+    args.since,
+    'since',
+  );
+  const sinceChangeSeq = optionalFiniteNumber(
+    'execution.action.list',
+    args.since_change_seq,
+    'since_change_seq',
+  );
+  if (sinceChangeSeq !== undefined
+    && (!Number.isInteger(sinceChangeSeq) || sinceChangeSeq < 0)) {
+    throw new RpcError(
+      'bad_request',
+      'execution.action.list: since_change_seq must be a non-negative integer',
+      400,
+    );
+  }
+  const sinceChangeEpoch = optionalString(
+    'execution.action.list',
+    args.since_change_epoch,
+    'since_change_epoch',
+  );
+  const before = optionalGatedActionCursor(
+    'execution.action.list',
+    args.before,
+  );
+  const limit = clampLimit(args.limit);
+  let statuses: GatedActionStatus[] | undefined;
+  if (args.status !== undefined) {
+    if (!Array.isArray(args.status)) {
+      throw new RpcError(
+        'bad_request',
+        'execution.action.list: status must be an array',
+        400,
+      );
+    }
+    statuses = args.status.map((status) => {
+      if (typeof status !== 'string' || !GATED_ACTION_STATUS_SET.has(status)) {
+        throw new RpcError(
+          'bad_request',
+          `execution.action.list: unknown status '${String(status)}'`,
+          400,
+        );
+      }
+      return status as GatedActionStatus;
+    });
+  }
+  const store = requireGatedActionStore(deps);
+  const changeClock = store.changeClock();
+  const effectiveSinceChangeSeq = sinceChangeSeq === undefined
+    ? undefined
+    : sinceChangeEpoch === undefined
+      ? undefined
+      : sinceChangeEpoch === changeClock.epoch
+        ? sinceChangeSeq
+        : changeClock.floor;
+  const allRecords = await store.list();
+  const eligible = allRecords
+    .filter((record) => since === undefined || record.updated_at >= since)
+    .filter((record) => effectiveSinceChangeSeq === undefined
+      || record.change_seq >= effectiveSinceChangeSeq)
+    .filter((record) => statuses === undefined || statuses.includes(record.status))
+    .filter((record) => before === undefined
+      || record.change_seq < before.change_seq
+      || (record.change_seq === before.change_seq
+        && record.action_ref.localeCompare(before.action_ref) < 0));
+  const records = eligible.slice(0, limit);
+  // Lists are summaries. A retained result may be as large as 1 MiB and belongs
+  // on the one-receipt get path, never multiplied across a 200-row page.
+  const receipts = records.map((record) =>
+    projectGatedActionReceipt(record, { includeResult: false }),
+  );
+  const selectedApprovalRefs = new Set(
+    receipts.map((receipt) => receipt.approval_ref),
+  );
+  const grouped = new Map<string, typeof receipts>();
+  for (const record of allRecords) {
+    if (!selectedApprovalRefs.has(record.approval_ref)) continue;
+    const receipt = projectGatedActionReceipt(record, { includeResult: false });
+    const group = grouped.get(receipt.approval_ref);
+    if (group === undefined) grouped.set(receipt.approval_ref, [receipt]);
+    else group.push(receipt);
+  }
+  const nextCursor = eligible.length > limit
+    ? records.at(-1)
+    : undefined;
+  return {
+    change_epoch: changeClock.epoch,
+    change_floor: changeClock.floor,
+    receipts,
+    groups: [...grouped.values()].map(projectGatedActionApprovalGroup),
+    ...(nextCursor !== undefined
+      ? {
+          next_cursor: {
+            change_seq: nextCursor.change_seq,
+            action_ref: nextCursor.action_ref,
+          },
+        }
+      : {}),
+  };
+};
+
+type ExecutionFeedMethods =
+  | 'execution.list'
+  | 'execution.get'
+  | 'execution.action.get'
+  | 'execution.action.list';
 
 export const makeExecutionFeedHandlers = (
   deps: ExecutionFeedRpcDeps | undefined,
 ): HandlerSlice<ServerRpcRegistry, ExecutionFeedMethods, WsClient> | undefined => {
   if (!deps) return undefined;
   return {
-    methods: ['execution.list', 'execution.get'],
+    methods: [
+      'execution.list',
+      'execution.get',
+      'execution.action.get',
+      'execution.action.list',
+    ],
     handlers: {
       'execution.list': async (args, client) => {
         requireRegisteredClient(client);
@@ -581,6 +789,14 @@ export const makeExecutionFeedHandlers = (
       'execution.get': async (args, client) => {
         requireRegisteredClient(client);
         return handleExecutionGet(deps, args as ExecutionGetRequest);
+      },
+      'execution.action.get': async (args, client) => {
+        requireRegisteredClient(client);
+        return handleGatedActionGet(deps, args as GatedActionGetRequest);
+      },
+      'execution.action.list': async (args, client) => {
+        requireRegisteredClient(client);
+        return handleGatedActionList(deps, args as GatedActionListRequest);
       },
     },
   };

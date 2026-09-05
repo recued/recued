@@ -23,11 +23,28 @@
  *  the first answer, and § 234.2's correlation admission is single-solicitation
  *  by the same reasoning.
  */
-import type { Database } from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 
 import type { PeerAnswer, PeerAskUnansweredReason } from '@recued/contracts';
 
-const TABLE = 'peer_answers';
+export const PEER_ANSWER_TABLE = 'peer_answers';
+
+/** Shared because peer-delivery refusal and answer insertion form one SQLite
+ * arbitration. Both stores must be able to prepare a statement against the
+ * answer table before either side has received its first message. */
+export const ensurePeerAnswerTable = (db: Database.Database): void => {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ${PEER_ANSWER_TABLE} (
+      exchange_ref       TEXT PRIMARY KEY,
+      peer_contract_id   TEXT NOT NULL,
+      answered           INTEGER NOT NULL,
+      option             TEXT,
+      note               TEXT,
+      unanswered_because TEXT,
+      at                 INTEGER NOT NULL
+    );
+  `);
+};
 
 export interface PeerAnswerRecord extends PeerAnswer {
   readonly exchange_ref: string;
@@ -44,35 +61,56 @@ export interface PeerAnswerStore {
   get(exchange_ref: string): PeerAnswerRecord | null;
 }
 
-export const createPeerAnswerStore = (db: Database): PeerAnswerStore => {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS ${TABLE} (
-      exchange_ref       TEXT PRIMARY KEY,
-      peer_contract_id   TEXT NOT NULL,
-      answered           INTEGER NOT NULL,
-      option             TEXT,
-      note               TEXT,
-      unanswered_because TEXT,
-      at                 INTEGER NOT NULL
-    );
-  `);
+export const createPeerAnswerStore = (db: Database.Database): PeerAnswerStore => {
+  ensurePeerAnswerTable(db);
+
+  // When the outbox exists, an answer and a delivery refusal must claim the
+  // exchange in mutually-exclusive single statements. SQLite serializes the
+  // competing writers even when the daemon and stdio server use separate WAL
+  // connections: either this INSERT lands first and refusal observes it, or
+  // refusal lands first and this INSERT's WHERE clause observes the closed row.
+  // Standalone/kernel-only answer stores have no outbox and retain the original
+  // first-write-wins behavior.
+  const hasOutboxArbiter = db.prepare(
+    `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'peer_ask_outbox'`,
+  );
 
   // ⚠ `INSERT OR IGNORE`, not `REPLACE`: first write wins in ONE statement, so
   // two answers racing in cannot both believe they landed.
-  const insert = db.prepare(
-    `INSERT OR IGNORE INTO ${TABLE}
+  const legacyInsert = db.prepare(
+    `INSERT OR IGNORE INTO ${PEER_ANSWER_TABLE}
        (exchange_ref, peer_contract_id, answered, option, note, unanswered_because, at)
      VALUES (@exchange_ref, @peer_contract_id, @answered, @option, @note,
              @unanswered_because, @at)`,
   );
-  const select = db.prepare(`SELECT * FROM ${TABLE} WHERE exchange_ref = ?`);
+  let guardedInsert: Database.Statement | undefined;
+  const select = db.prepare(
+    `SELECT * FROM ${PEER_ANSWER_TABLE} WHERE exchange_ref = ?`,
+  );
 
   return {
     record(row) {
       if (row.exchange_ref === '') {
         throw new Error('peer answer: exchange_ref is required — it is the only key');
       }
-      return insert.run({
+      // The answer store can be composed before the execute/outbox stack on a
+      // second MCP process. Re-evaluate table presence at write time rather
+      // than pinning that boot order forever; once the journal exists every
+      // answer participates in the same SQLite compare-and-set as refusal.
+      if (guardedInsert === undefined && hasOutboxArbiter.get() !== undefined) {
+        guardedInsert = db.prepare(
+          `INSERT OR IGNORE INTO ${PEER_ANSWER_TABLE}
+             (exchange_ref, peer_contract_id, answered, option, note, unanswered_because, at)
+           SELECT @exchange_ref, @peer_contract_id, @answered, @option, @note,
+                  @unanswered_because, @at
+            WHERE EXISTS (
+              SELECT 1 FROM peer_ask_outbox
+               WHERE exchange_ref = @exchange_ref
+                 AND delivery_state IN ('pending', 'delivered')
+            )`,
+        );
+      }
+      return (guardedInsert ?? legacyInsert).run({
         exchange_ref: row.exchange_ref,
         peer_contract_id: row.peer_contract_id,
         answered: row.answered ? 1 : 0,

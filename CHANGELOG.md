@@ -7,6 +7,54 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.9.5 — 2026-09-05
+
+You can now sell through Paddle and Lemon Squeezy, not just Stripe. The other
+half of this release is about Recued's memory in a conversation: it was throwing
+away the results of its own tools and then, a few messages later, redoing the
+work or quietly making something up instead. It now keeps them, and knows they
+are there.
+
+### Added
+
+- **Paddle and Lemon Squeezy as payment providers.** Subscriptions, one-time
+  passes, refunds, and the customer lifecycle, alongside the Stripe support that
+  already existed. Your product catalogue seeds the tiers, so you set prices
+  where you already set them. Settings → Seller is now a set of separate pages
+  rather than one long form, and each one has its own address you can link to.
+- **Writing an email with Recued's help.** Ask it to rewrite a draft and it
+  changes the body only, never the recipients or the subject, with an undo that
+  is safe even if you have kept typing. Drafts survive a send that fails, and
+  Recued tells you up front if no mailbox is set up to send at all.
+- **Your server tells you when an update finished** — and when it recovered
+  itself after a bad one, rather than leaving you to notice.
+
+### Fixed
+
+- **Recued stops forgetting what its own tools just told it.** Results from
+  tools it ran were not being kept, so a few messages later it could not look
+  back at them. In testing it would re-send a message with different wording
+  while its own notes said "same as before". Results are kept now, tied to the
+  request that produced them, and Recued is told they are available.
+- **Long conversations are trimmed sensibly.** Recued was deciding what to drop
+  without actually knowing how much the model could accept — it now learns each
+  model's limit. If it cannot trim enough to fit, it says so and stops instead of
+  sending something that will fail, and when it refuses it tells you what you can
+  change.
+- **Search returns fewer irrelevant things.** A word that appears in almost
+  everything was pulling in almost everything; those words are now ignored rather
+  than everything being cut off at an arbitrary number.
+- **A pack that can no longer run tells you at startup**, with a link straight to
+  it, instead of only writing a line in the log.
+
+### Improved
+
+- **The documentation is rewritten.** All 36 pages, in plain English, and
+  organised around the address you actually use. Two install methods that were
+  described but did not exist yet — a container image and one-click VPS setup —
+  have been removed until they do; a documented path that is not there is worse
+  than no documentation, because you only find out at the point of trying it.
+
 ## 26.9.3 — 2026-09-03
 
 Recued can now stop a job it started for you. Ask it to run something, change

@@ -40,6 +40,14 @@ import {
   executeLLM,
   createDefaultTranscriptionRegistry,
 } from '@recued/llm';
+import { resolveChatInputTokenBudget } from '../../chat-context-budget.js';
+import type { PreflightRunSettled } from '../../preflight-resumer.js';
+import { renderToolRow, buildPriorToolPointers } from '../../chat-orchestrator.js';
+import { planRunSettledRow } from '../../chat-run-settled-sink.js';
+import {
+  CHAT_MESSAGE_RECALL_ELIGIBILITY,
+  deriveChatMessageRecallEligibility,
+} from '../../storage/chat-store.js';
 import type {
   AdapterRegistry as LLMAdapterRegistry,
   LLMConfig,
@@ -321,6 +329,11 @@ export interface ComposeChatOrchestratorDeps {
 
 /** Everything `bin.ts` retains on the module-scope `let`-bindings. */
 export interface ChatOrchestratorBundle {
+  /** D-137 — writes the RESULT half of a paired tool call when a held run
+   *  settles, long after the turn that asked for it ended. Published into the
+   *  execution refs bag at boot; see `publishRunSettledSink`. */
+  readonly runSettledSink: (settled: PreflightRunSettled) => void;
+
   chatStore: ChatStore;
   toolCatalogStore: ChatToolCatalogStore;
   connectionMcpStore: ChatConnectionMcpStore;
@@ -1054,6 +1067,7 @@ export const composeChatOrchestrator = (
       () => toolCatalogStore.getScope() ?? null,
       chatToolRegistryInputs.tier2GrantFilter,
       tier2OwnerCatalog,
+      chatToolRegistryInputs.ownerCatalogGuard,
     ),
     {
       backend: createRecallSearchBackend(chatStore),
@@ -1228,6 +1242,25 @@ export const composeChatOrchestrator = (
     // D-259 §7.4.2 — read the singleton registry at TURN time. The source is
     // host-minted; deriving the same channel-session key used at registration
     // keeps a concurrent chat/messenger turn scoped to its own live work.
+    // D-213 pointer arm — env-gated inside `buildPriorToolPointers`, so leaving
+    // it bound here costs nothing when the flag is unset. Resolves the contract
+    // store LAZILY for the same reason the recall lane above does: the contract
+    // substrate boots after chat composition.
+    buildPriorToolPointers: async (
+      source: ExecutionSource,
+      session_id: string,
+      turn_id: string | undefined,
+    ) => {
+      const store = getContractStore?.();
+      if (!store) return undefined;
+      return buildPriorToolPointers(
+        chatStore,
+        createContractDefinitionStore(store),
+        source,
+        session_id,
+        turn_id,
+      );
+    },
     buildInFlightContext: (source: ExecutionSource) =>
       getExecuteDeps()?.inFlightRegistry?.promptContext(
         deriveChannelSessionId(source),
@@ -1375,6 +1408,28 @@ export const composeChatOrchestrator = (
       }
       return names;
     },
+    /** The learned-bounds half of context fitting.
+     *
+     *  ⛔⛔ WHY THIS EXISTS AT ALL. `input_token_budget` is the one input to
+     *  every trim in `chat-turn-executor.ts`, and a census (2026-09-03) found
+     *  its only source, `slot.context_window_tokens`, is OWNER-TYPED ONLY — no
+     *  model table, no probe, no default — and that the ONLY code that ever
+     *  supplied the budget was the llm_gateway handler. So on ordinary chat it
+     *  was undefined, `promptFits` short-circuited to true, and the whole
+     *  fitting path was inert: hence the tail-eviction loop's own comment
+     *  ("Normal chat never enters this branch"), a 113,616-token request that
+     *  went out and was accepted, and ZERO `ChatContextLength` occurrences in
+     *  1,546 stored bench reports. The guard was correct and starved.
+     *
+     *  ⛔ THE MINIMUM OVER CANDIDATES IS NOT TIMIDITY, IT IS THE ONLY SOUND
+     *  ANSWER HERE. `matchLLM` picks among candidates using `deps.rng` and live
+     *  quota, so resolving "the" slot before the call is a DIFFERENT DRAW from
+     *  the one the call makes — budgeting to a slot that then loses the draw
+     *  trims the prompt to the wrong endpoint's limit. Only the smallest known
+     *  window is safe for every draw. An endpoint with nothing learned
+     *  contributes nothing, so a fresh install stays exactly as it is today. */
+    resolveInputTokenBudget: (route) =>
+      resolveChatInputTokenBudget(getLlmConfig(), route),
     forwardedSenderIndex,
     getScopedGrantParseDeps,
     getSpanAnchorDeps,
@@ -1417,6 +1472,7 @@ export const composeChatOrchestrator = (
     // D-247 D9 — the Tier-2 reachability predicate, shared by `tools.search`
     // and the dispatch re-check.
     tier2GrantFilter: chatToolRegistryInputs.tier2GrantFilter,
+    ownerCatalogGuard: chatToolRegistryInputs.ownerCatalogGuard,
     // ⛔⛔ D-247 D8 — THE OWNER'S TIER-2 CATALOG IS PROJECTED WITHOUT THE
     // `chat_exposed` FILTER, AND THIS IS THE WHOLE POINT OF THE DECISION.
     //
@@ -2085,6 +2141,51 @@ export const composeChatOrchestrator = (
 
   return {
     chatStore,
+    // ⛔⛔ THE RESULT HALF OF A PAIRED TOOL CALL, written when the run SETTLES
+    //   rather than when the turn that asked for it ended. The dispatch row was
+    //   written at T1 carrying the ask; this is T2. Without it the pair only
+    //   ever has one half for a held run, and `recall.search` can find "I asked
+    //   to email Pat" with no outcome forever.
+    //
+    // ⛔ THE ORIGINATING SOURCE DECIDES THE CORPUS, not the approver's. The
+    //   resumer recovers `execution_source` off the paused audit anchor
+    //   precisely so a resume runs under the authority that ASKED — and a row
+    //   written under whoever clicked approve would land in the wrong corpus,
+    //   which for a door is a cross-tenant write.
+    //
+    // ⚠ Owner corpus only, matching the dispatch half. A door's tool results
+    //   are not written at all (see `chat-orchestrator.ts`), so writing the
+    //   settle half for one would mint an unpaired orphan in a corpus that has
+    //   no first half.
+    runSettledSink: (settled: PreflightRunSettled): void => {
+      const plan = planRunSettledRow(settled);
+      if (plan === null) return;
+      // ⚠ Fire-and-forget with a swallowed rejection: the run has ALREADY
+      //   completed and its outcome is already durable in the audit trail. A
+      //   recall row is searchability, not the record — failing the settle over
+      //   one would trade a finished run for an index entry.
+      void chatStore.appendMessage({
+        id: `settle:${plan.pair_id}`,
+        session_id: plan.session_id,
+        role: 'tool',
+        content: renderToolRow(plan.tool_name, undefined, plan.result),
+        // ⚠ The routing fields describe a MODEL CALL, and a settle is not one.
+        //   They are required by `appendMessage` and carry no meaning here; the
+        //   row's meaning is its content, its `pair_id` and its `ts`.
+        target_server: 'self',
+        picker_at_send: { display_name: 'self', signature: selfSignature },
+        model_used: { provider: 'recued', model_id: 'run-settled' },
+        execution_source: plan.execution_source,
+        ts: plan.ts,
+        // ⛔ The ORIGINATING turn, so the pair stays together under a
+        //   turn-scoped recall. Without it the ask is in window and its answer
+        //   is not.
+        ...(plan.turn_id !== null ? { turn_id: plan.turn_id } : {}),
+        pair_id: plan.pair_id,
+      }).catch((err: unknown) => {
+        console.error('[chat] run-settled tool row append failed', err);
+      });
+    },
     toolCatalogStore,
     connectionMcpStore,
     inboundTokenStore,

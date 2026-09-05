@@ -693,6 +693,9 @@ export type {
   // D-145 PA10 follow-on — `packs.list` rpc surface
   PackListEntry,
   PacksListResult,
+  // D-259 — `packs.unrunnable` rpc surface
+  UnrunnablePackRow,
+  PacksUnrunnableResult,
   // Add-a-pack (2026-07-01) — `packs.resolveBySlug` manifest-preview result
   PacksResolveResult,
   // D-145 PA10 follow-on Slice B — `packs.uninstall` rpc result
@@ -1155,6 +1158,9 @@ export type {
   SellerManualTierBulkAdjustResponse,
   SellerStripeSynchronizeRequest,
   SellerStripeSynchronizeResponse,
+  SellerProviderSource,
+  SellerProviderTierSynchronizeRequest,
+  SellerProviderTierSynchronizeResponse,
   SellerAcknowledgeLlmGatewayPaidRequest,
   SellerAcknowledgeLlmGatewayPaidResponse,
   SellerCustomerIssueOutcome,
@@ -1173,6 +1179,8 @@ export {
   SELLER_OFFER_STATES,
   SELLER_OFFER_STATE_TRANSITIONS,
   SELLER_LIFECYCLE_SOURCES,
+  SELLER_DEFAULT_DOOR_ID,
+  SELLER_RETIRED_LIFECYCLE_SOURCES,
   SELLER_ACCESS_STATES,
   SELLER_CUSTOMER_CLOSE_REASONS,
   SELLER_USAGE_KINDS,
@@ -1191,6 +1199,21 @@ export {
   LLM_GATEWAY_PAID_ACK_VERSION,
   isLlmGatewayPaidAcknowledged,
 } from './seller.js';
+// D-196 consolidation (2026-09-03) — the ONE seller provider registry. Server
+// tables, readiness, the Settings form, the corpus ratchets, and the recipe
+// generator's parity test all derive from it.
+export {
+  SELLER_PROVIDERS,
+  SELLER_PROVIDER_SOURCES,
+  SELLER_PROVIDER_LIVE_STATUS_ALIASES,
+  isSellerProviderSource,
+  sellerProviderFor,
+} from './seller-providers.js';
+export type {
+  SellerProviderSpec,
+  SellerProviderTierIdentity,
+} from './seller-providers.js';
+
 // D-207 §4.2–4.3 — `core.seller.order`, the money leg.
 export type {
   SellerOrder,
@@ -1817,6 +1840,11 @@ export type {
   PreflightApprovedTarget,
   PreflightCheckpointContext,
 } from './checkpoint.js';
+export type {
+  ForeachCheckpointProgress,
+  ForeachCheckpointResult,
+} from './foreach-checkpoint.js';
+export { hashForeachCheckpointSource } from './foreach-checkpoint.js';
 // D-157 P1 — preflight pause signal. Thrown from an `ingredientExecutor`
 // when the policy matrix yields `'ask'`; the engine catches it distinctly
 // from a normal step error, snapshots `step.*`, and ends the run with
@@ -5434,15 +5462,18 @@ export type {
   MailReplyContext,
   MailSenderSourceOption,
   MailComposeAiAction,
+  MailComposeRewriteAction,
   MailComposeAttachment,
   ComposeDispatchResult,
   ComposeMailSendPayload,
   ComposeDispatchHooks,
+  ComposeRewriteRecipeInput,
 } from './mail-compose/index.js';
 export {
   MAIL_COMPOSE_MODES,
   EMPTY_MAIL_COMPOSE_VALUES,
   MAIL_COMPOSE_AI_ACTIONS,
+  MAIL_COMPOSE_REWRITE_ACTIONS,
   MAIL_COMPOSE_MAX_ATTACHMENTS,
   initialMailComposeState,
   openCreateComposeTransition,
@@ -5461,6 +5492,8 @@ export {
   composeStateToSendPayload,
   composePayloadToSendRecipeConfig,
   SEND_COMPOSED_MAIL_RECIPE_ID,
+  composeRewriteRecipeConfig,
+  REWRITE_COMPOSED_MAIL_RECIPE_ID,
 } from './mail-compose/index.js';
 
 // D-145 PA5 — form renderer substrate (types, generators, validators).
@@ -6293,6 +6326,9 @@ export * from './stall-detection.js';
 // LaneStatus / KillDescriptor / HeavyOpErrorCategory / LiveControlCapability +
 // the `execution.{active,kill,cancel,promote}` rpc shapes).
 export * from './execution-control.js';
+// Durable operation-scoped approval outcomes. A recipe run may own several;
+// one approval group may cover several receipts.
+export * from './gated-action.js';
 // D-214 execution cases — request → flow precedent, harvested at the governed
 // boundary and fed back as ADVISORY evidence (OutcomeReport / RequestShape /
 // FlowPattern / ExecutionCase / ExecutionCaseCard / CaseCandidateSource).

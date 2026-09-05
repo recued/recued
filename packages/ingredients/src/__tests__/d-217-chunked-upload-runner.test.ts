@@ -825,6 +825,7 @@ describe('D-217 § 6.3 — the audit records what the act DID, not what was inte
     await run(deps, walkArg(baseSpec()), {}, ctx);
     expect(seen).toEqual([{
       outcome: 'committed', chunks_sent: 4, chunk_count: 4, requests: 6,
+      requests_succeeded: 6, requests_failed: 0,
     }]);
   });
 
@@ -837,6 +838,7 @@ describe('D-217 § 6.3 — the audit records what the act DID, not what was inte
     await refused(deps, walkArg(baseSpec()), ctx);
     expect(seen).toEqual([{
       outcome: 'failed', chunks_sent: 2, chunk_count: 4, requests: 4,
+      requests_succeeded: 3, requests_failed: 1,
     }]);
   });
 

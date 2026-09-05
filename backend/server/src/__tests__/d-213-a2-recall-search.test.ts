@@ -52,6 +52,10 @@ const SCOPE: OwnerRecallCorpusScope = {
   governing_contract_id: 'user_self',
   row_eligibility:
     CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT,
+  // D-166 door corpus — `null` selects the contract-free owner rows. The store
+  // compares with SQL `IS`, so this is not padding: it is the half of the
+  // selector that says WHOSE rows, and the bucket alone does not.
+  recall_contract_id: null,
 };
 
 describe('D-213 A2 — interaction decrypt-and-scan', () => {

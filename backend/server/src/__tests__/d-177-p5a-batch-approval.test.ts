@@ -29,8 +29,14 @@ import {
   createBatchApprovalCoordinator,
   type BatchApprovalCoordinator,
   type BatchHoldRegistration,
+  type UnresolvedBatchAsk,
 } from '../batch-approval.js';
 import type { SessionGrantResolver } from '../session-grant-resolver.js';
+import {
+  createGatedActionStore,
+  type GatedActionRecord,
+  type GatedActionStore,
+} from '../gated-action-store.js';
 
 const NOW = Date.parse('2026-06-10T12:00:00.000Z');
 
@@ -191,6 +197,10 @@ const harness = (
     order?: string[];
     sessionGrantResolver?: ReturnType<typeof fakeSessionGrantResolver>;
     upsertOverride?: ReturnType<typeof fakeOverrideWriter>;
+    gatedActionStore?: GatedActionStore;
+    listUnresolvedAsks?: ReturnType<typeof vi.fn<
+      () => Promise<ReadonlyArray<UnresolvedBatchAsk>>
+    >>;
   } = {},
 ): {
   coordinator: BatchApprovalCoordinator;
@@ -201,6 +211,9 @@ const harness = (
   cancelAsk: ReturnType<typeof vi.fn>;
   sessionGrantResolver: ReturnType<typeof fakeSessionGrantResolver>;
   upsertOverride: ReturnType<typeof fakeOverrideWriter>;
+  listUnresolvedAsks: ReturnType<typeof vi.fn<
+    () => Promise<ReadonlyArray<UnresolvedBatchAsk>>
+  >>;
 } => {
   const batchAskStore = createBatchAskStore(createInMemoryCollection());
   const checkpointStore = fakeCheckpointStore(opts.checkpoints ?? []);
@@ -212,6 +225,8 @@ const harness = (
   });
   const sessionGrantResolver = opts.sessionGrantResolver ?? fakeSessionGrantResolver();
   const upsertOverride = opts.upsertOverride ?? fakeOverrideWriter(opts.order);
+  const listUnresolvedAsks = opts.listUnresolvedAsks
+    ?? vi.fn<() => Promise<ReadonlyArray<UnresolvedBatchAsk>>>().mockResolvedValue([]);
   let batchSeq = 0;
   let now = NOW;
   const coordinator = createBatchApprovalCoordinator({
@@ -219,9 +234,13 @@ const harness = (
     checkpointStore,
     resumer,
     notifier,
+    listUnresolvedAsks,
     cancelAsk,
     sessionGrantResolver,
     upsertOverride,
+    ...(opts.gatedActionStore !== undefined
+      ? { gatedActionStore: opts.gatedActionStore }
+      : {}),
     now: () => {
       now += 1_000;
       return now;
@@ -240,6 +259,7 @@ const harness = (
     cancelAsk,
     sessionGrantResolver,
     upsertOverride,
+    listUnresolvedAsks,
   };
 };
 
@@ -249,13 +269,189 @@ const payloadFromAsk = (
 ): Record<string, unknown> =>
   notifier.ask.mock.calls[callIndex]![2].payload as Record<string, unknown>;
 
+const createCrashBatch = async (
+  h: ReturnType<typeof harness>,
+  registrations: readonly BatchHoldRegistration[],
+  currentAskId = '',
+): Promise<void> => {
+  const first = registrations[0]!;
+  const row = await h.batchAskStore.create({
+    batch_id: 'batch-crash',
+    unit_kind: 'turn',
+    unit_id: first.channel_session_id,
+    ingredient_slug: first.ingredient_slug,
+    ...(first.operation_id !== undefined ? { operation_id: first.operation_id } : {}),
+    ...(first.connection_name !== undefined ? { connection_name: first.connection_name } : {}),
+    channel: first.source.channel,
+    actor: first.source.actor,
+    channel_session_id: first.channel_session_id,
+    risk_tier: first.risk_tier,
+    recipe_id: first.recipe_id,
+    recipe_hash: first.recipe_hash,
+    arg_shape_hash: first.arg_shape_hash,
+    source: first.source,
+    current_ask_id: currentAskId,
+    created_at: NOW,
+  }, {
+    checkpoint_id: first.checkpoint.checkpoint_id,
+    run_id: first.run_id,
+    ...(first.action_ref !== undefined ? { action_ref: first.action_ref } : {}),
+    canonical_payload_hash: first.canonical_payload_hash,
+    summary: typeof first.args_preview?.to === 'string'
+      ? first.args_preview.to
+      : 'held action',
+    ...(first.args_preview !== undefined ? { args_preview: first.args_preview } : {}),
+  });
+  for (const registration of registrations.slice(1)) {
+    await h.batchAskStore.addMember(row.batch_id, {
+      checkpoint_id: registration.checkpoint.checkpoint_id,
+      run_id: registration.run_id,
+      ...(registration.action_ref !== undefined
+        ? { action_ref: registration.action_ref }
+        : {}),
+      canonical_payload_hash: registration.canonical_payload_hash,
+      summary: typeof registration.args_preview?.to === 'string'
+        ? registration.args_preview.to
+        : 'held action',
+      ...(registration.args_preview !== undefined
+        ? { args_preview: registration.args_preview }
+        : {}),
+    }, NOW + 1);
+  }
+};
+
 describe('createBatchApprovalCoordinator registerHold', () => {
+  it('re-renders one ask for a fresh open row whose v1 ask never persisted', async () => {
+    const cp = checkpoint(1);
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-fresh-crash', now: () => NOW },
+    );
+    const action = await actions.createHeld({
+      run_id: cp.run_id,
+      gated_step_id: cp.gated_step_id!,
+      checkpoint_id: cp.checkpoint_id,
+    });
+    const h = harness({ checkpoints: [cp], gatedActionStore: actions });
+    await createCrashBatch(h, [hold(1, { checkpoint: cp, action_ref: action.action_ref })]);
+
+    await expect(h.coordinator.reconcileOpenBatch({
+      checkpoint_id: cp.checkpoint_id,
+    })).resolves.toEqual({
+      kind: 'reconciled', ask_id: 'ask-1', raised: true,
+    });
+
+    expect(h.notifier.ask).toHaveBeenCalledTimes(1);
+    expect(payloadFromAsk(h.notifier, 0)).toMatchObject({
+      batch_id: 'batch-crash', payload_version: 1,
+    });
+    expect(await h.batchAskStore.get('batch-crash')).toMatchObject({
+      state: 'open', payload_version: 1, current_ask_id: 'ask-1',
+    });
+    expect(await actions.get(action.action_ref)).toMatchObject({
+      approval_ref: 'batch-crash', current_ask_id: 'ask-1',
+    });
+  });
+
+  it('adopts an exact-version durable ask instead of rendering a duplicate', async () => {
+    const cp = checkpoint(1);
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-surviving-ask', now: () => NOW },
+    );
+    const action = await actions.createHeld({
+      run_id: cp.run_id,
+      gated_step_id: cp.gated_step_id!,
+      checkpoint_id: cp.checkpoint_id,
+    });
+    const exactAsk = {
+      ask_id: 'ask-surviving-v1',
+      handler_kind: 'gateway.preflight',
+      handler_payload: { batch_id: 'batch-crash', payload_version: 1 },
+    };
+    const h = harness({
+      checkpoints: [cp],
+      gatedActionStore: actions,
+      listUnresolvedAsks: vi.fn<
+        () => Promise<ReadonlyArray<UnresolvedBatchAsk>>
+      >().mockResolvedValue([exactAsk]),
+    });
+    await createCrashBatch(h, [hold(1, { checkpoint: cp, action_ref: action.action_ref })]);
+
+    await expect(h.coordinator.reconcileOpenBatch({
+      checkpoint_id: cp.checkpoint_id,
+    })).resolves.toEqual({
+      kind: 'reconciled', ask_id: exactAsk.ask_id, raised: false,
+    });
+
+    expect(h.notifier.ask).not.toHaveBeenCalled();
+    expect(await h.batchAskStore.get('batch-crash')).toMatchObject({
+      current_ask_id: exactAsk.ask_id,
+    });
+    expect(await actions.get(action.action_ref)).toMatchObject({
+      approval_ref: 'batch-crash', current_ask_id: exactAsk.ask_id,
+    });
+  });
+
+  it('re-renders the bumped JOIN version, repairs every receipt, and cancels the stale ask', async () => {
+    const cp1 = checkpoint(1);
+    const cp2 = checkpoint(2);
+    let actionSeq = 0;
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => `action-join-${actionSeq += 1}`, now: () => NOW },
+    );
+    const first = await actions.createHeld({
+      run_id: cp1.run_id, gated_step_id: cp1.gated_step_id!, checkpoint_id: cp1.checkpoint_id,
+    });
+    const second = await actions.createHeld({
+      run_id: cp2.run_id, gated_step_id: cp2.gated_step_id!, checkpoint_id: cp2.checkpoint_id,
+    });
+    const oldAsk = {
+      ask_id: 'ask-v1-stale',
+      handler_kind: 'gateway.preflight',
+      handler_payload: { batch_id: 'batch-crash', payload_version: 1 },
+    };
+    const h = harness({
+      checkpoints: [cp1, cp2],
+      gatedActionStore: actions,
+      listUnresolvedAsks: vi.fn<
+        () => Promise<ReadonlyArray<UnresolvedBatchAsk>>
+      >().mockResolvedValue([oldAsk]),
+    });
+    await createCrashBatch(h, [
+      hold(1, { checkpoint: cp1, action_ref: first.action_ref }),
+      hold(2, { checkpoint: cp2, action_ref: second.action_ref }),
+    ], oldAsk.ask_id);
+    await actions.linkApproval(first.action_ref, 'batch-crash', oldAsk.ask_id);
+
+    await expect(h.coordinator.reconcileOpenBatch({
+      checkpoint_id: cp2.checkpoint_id,
+    })).resolves.toEqual({
+      kind: 'reconciled', ask_id: 'ask-1', raised: true,
+    });
+
+    expect(payloadFromAsk(h.notifier, 0)).toMatchObject({
+      batch_id: 'batch-crash', payload_version: 2,
+    });
+    expect(h.cancelAsk).toHaveBeenCalledTimes(1);
+    expect(h.cancelAsk).toHaveBeenCalledWith('ask-v1-stale');
+    expect(await Promise.all([
+      actions.get(first.action_ref),
+      actions.get(second.action_ref),
+    ])).toEqual([
+      expect.objectContaining({ approval_ref: 'batch-crash', current_ask_id: 'ask-1' }),
+      expect.objectContaining({ approval_ref: 'batch-crash', current_ask_id: 'ask-1' }),
+    ]);
+  });
+
   it('creates a row and raises a v1 ask with batch payload, session grant offer, and legacy fields', async () => {
     const h = harness();
 
     await expect(h.coordinator.registerHold(hold())).resolves.toEqual({
       kind: 'registered',
       ask_id: 'ask-1',
+      approval_ref: 'batch-1',
     });
 
     expect(h.notifier.ask).toHaveBeenCalledTimes(1);
@@ -306,6 +502,7 @@ describe('createBatchApprovalCoordinator registerHold', () => {
     await expect(h.coordinator.registerHold(hold(2))).resolves.toEqual({
       kind: 'registered',
       ask_id: 'ask-2',
+      approval_ref: 'batch-1',
     });
 
     expect(order).toEqual(['ask:ask-1', 'ask:ask-2', 'cancel:ask-1']);
@@ -324,6 +521,66 @@ describe('createBatchApprovalCoordinator registerHold', () => {
       members: [
         expect.objectContaining({ member_id: 'm1' }),
         expect.objectContaining({ member_id: 'm2', checkpoint_id: 'checkpoint-2' }),
+      ],
+    });
+  });
+
+  it('links every member receipt to one stable batch while ask ids re-render', async () => {
+    const order: string[] = [];
+    let actionSequence = 0;
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      {
+        newActionRef: () => `action-${actionSequence += 1}`,
+        now: () => NOW,
+      },
+    );
+    const linkApproval = actions.linkApproval.bind(actions);
+    vi.spyOn(actions, 'linkApproval').mockImplementation(async (
+      actionRef,
+      approvalRef,
+      currentAskId,
+    ) => {
+      order.push(`link:${actionRef}:${approvalRef}:${currentAskId ?? 'pending'}`);
+      return linkApproval(actionRef, approvalRef, currentAskId);
+    });
+    const first = await actions.createHeld({
+      run_id: 'run-1',
+      gated_step_id: 'gated-step-1',
+      checkpoint_id: 'checkpoint-1',
+    });
+    const second = await actions.createHeld({
+      run_id: 'run-2',
+      gated_step_id: 'gated-step-2',
+      checkpoint_id: 'checkpoint-2',
+    });
+    const h = harness({ gatedActionStore: actions, order });
+
+    await h.coordinator.registerHold(hold(1, { action_ref: first.action_ref }));
+    expect(order.slice(0, 3)).toEqual([
+      'link:action-1:batch-1:pending',
+      'ask:ask-1',
+      'link:action-1:batch-1:ask-1',
+    ]);
+    expect(await actions.get(first.action_ref)).toMatchObject({
+      approval_ref: 'batch-1',
+      current_ask_id: 'ask-1',
+    });
+
+    await h.coordinator.registerHold(hold(2, { action_ref: second.action_ref }));
+
+    expect(await actions.get(first.action_ref)).toMatchObject({
+      approval_ref: 'batch-1',
+      current_ask_id: 'ask-2',
+    });
+    expect(await actions.get(second.action_ref)).toMatchObject({
+      approval_ref: 'batch-1',
+      current_ask_id: 'ask-2',
+    });
+    expect(await h.batchAskStore.get('batch-1')).toMatchObject({
+      members: [
+        expect.objectContaining({ action_ref: first.action_ref }),
+        expect.objectContaining({ action_ref: second.action_ref }),
       ],
     });
   });
@@ -395,10 +652,21 @@ describe('createBatchApprovalCoordinator registerHold', () => {
 
   it('terminalizes a fresh row and falls back when the v1 raise fails', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const h = harness();
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-fresh-fallback', now: () => NOW },
+    );
+    const held = await actions.createHeld({
+      run_id: 'run-1',
+      gated_step_id: 'gated-step-1',
+      checkpoint_id: 'checkpoint-1',
+    });
+    const h = harness({ gatedActionStore: actions });
     h.notifier.ask.mockRejectedValueOnce(new Error('notification unavailable'));
 
-    await expect(h.coordinator.registerHold(hold())).resolves.toEqual({
+    await expect(h.coordinator.registerHold(hold(1, {
+      action_ref: held.action_ref,
+    }))).resolves.toEqual({
       kind: 'fallback',
     });
 
@@ -406,17 +674,153 @@ describe('createBatchApprovalCoordinator registerHold', () => {
       state: 'answered',
       payload_version: 1,
     });
+    expect(await actions.get(held.action_ref)).toMatchObject({
+      approval_ref: held.action_ref,
+    });
+    expect(await actions.get(held.action_ref)).not.toHaveProperty('current_ask_id');
     expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it('adopts a fresh batch ask that persisted before its raise acknowledgement failed', async () => {
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-fresh-adopted', now: () => NOW },
+    );
+    const held = await actions.createHeld({
+      run_id: 'run-1',
+      gated_step_id: 'gated-step-1',
+      checkpoint_id: 'checkpoint-1',
+    });
+    const listUnresolvedAsks = vi.fn<
+      () => Promise<ReadonlyArray<UnresolvedBatchAsk>>
+    >().mockResolvedValue([{
+      ask_id: 'ask-persisted-v1',
+      handler_kind: 'gateway.preflight',
+      handler_payload: { batch_id: 'batch-1', payload_version: 1 },
+    }]);
+    const h = harness({ gatedActionStore: actions, listUnresolvedAsks });
+    h.notifier.ask.mockRejectedValueOnce(new Error('lost acknowledgement after commit'));
+
+    await expect(h.coordinator.registerHold(hold(1, {
+      action_ref: held.action_ref,
+    }))).resolves.toEqual({
+      kind: 'registered',
+      ask_id: 'ask-persisted-v1',
+      approval_ref: 'batch-1',
+    });
+
+    expect(await h.batchAskStore.get('batch-1')).toMatchObject({
+      state: 'open',
+      payload_version: 1,
+      current_ask_id: 'ask-persisted-v1',
+    });
+    expect(await actions.get(held.action_ref)).toMatchObject({
+      approval_ref: 'batch-1',
+      current_ask_id: 'ask-persisted-v1',
+    });
+  });
+
+  it('verifies cleanup before fallback when a batch receipt link commits then throws', async () => {
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-ambiguous-link', now: () => NOW },
+    );
+    const held = await actions.createHeld({
+      run_id: 'run-1',
+      gated_step_id: 'gated-step-1',
+      checkpoint_id: 'checkpoint-1',
+    });
+    const link = actions.linkApproval.bind(actions);
+    const get = actions.get.bind(actions);
+    let linkCalls = 0;
+    vi.spyOn(actions, 'linkApproval').mockImplementation(async (...args) => {
+      linkCalls += 1;
+      const result = await link(...args);
+      if (linkCalls === 1) throw new Error('adapter failed after commit');
+      return result;
+    });
+    vi.spyOn(actions, 'get')
+      .mockRejectedValueOnce(new Error('read-back unavailable'))
+      .mockImplementation(get);
+    const h = harness({ gatedActionStore: actions });
+
+    await expect(h.coordinator.registerHold(hold(1, {
+      action_ref: held.action_ref,
+    }))).resolves.toEqual({ kind: 'fallback' });
+
+    expect(h.notifier.ask).not.toHaveBeenCalled();
+    expect(await h.batchAskStore.get('batch-1')).toMatchObject({ state: 'answered' });
+    expect(await get(held.action_ref)).toMatchObject({
+      approval_ref: held.action_ref,
+    });
+  });
+
+  it('rejects without exposing an ask when standalone receipt rollback cannot be proven', async () => {
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-reset-fails', now: () => NOW },
+    );
+    const held = await actions.createHeld({
+      run_id: 'run-1',
+      gated_step_id: 'gated-step-1',
+      checkpoint_id: 'checkpoint-1',
+    });
+    const link = actions.linkApproval.bind(actions);
+    const get = actions.get.bind(actions);
+    let linkCalls = 0;
+    vi.spyOn(actions, 'linkApproval').mockImplementation(async (...args) => {
+      linkCalls += 1;
+      if (linkCalls === 1) {
+        await link(...args);
+        throw new Error('batch link outcome unavailable');
+      }
+      throw new Error('standalone reset unavailable');
+    });
+    let getCalls = 0;
+    vi.spyOn(actions, 'get').mockImplementation(async (actionRef) => {
+      getCalls += 1;
+      if (getCalls === 1) throw new Error('first read-back unavailable');
+      return get(actionRef);
+    });
+    const h = harness({ gatedActionStore: actions });
+
+    await expect(h.coordinator.registerHold(hold(1, {
+      action_ref: held.action_ref,
+    }))).rejects.toThrow(/standalone receipt rollback failed/);
+
+    expect(h.notifier.ask).not.toHaveBeenCalled();
+    expect(await h.batchAskStore.get('batch-1')).toMatchObject({ state: 'answered' });
+    expect(await get(held.action_ref)).toMatchObject({ approval_ref: 'batch-1' });
   });
 
   it('rolls back a joined member and falls back when the join re-raise fails', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const h = harness();
+    let actionSequence = 0;
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      {
+        newActionRef: () => `action-rerender-${actionSequence += 1}`,
+        now: () => NOW,
+      },
+    );
+    const first = await actions.createHeld({
+      run_id: 'run-1',
+      gated_step_id: 'gated-step-1',
+      checkpoint_id: 'checkpoint-1',
+    });
+    const second = await actions.createHeld({
+      run_id: 'run-2',
+      gated_step_id: 'gated-step-2',
+      checkpoint_id: 'checkpoint-2',
+    });
+    const h = harness({ gatedActionStore: actions });
     h.notifier.ask.mockResolvedValueOnce({ ask_id: 'ask-1' });
     h.notifier.ask.mockRejectedValueOnce(new Error('rerender failed'));
 
-    await h.coordinator.registerHold(hold(1));
-    await expect(h.coordinator.registerHold(hold(2))).resolves.toEqual({
+    await h.coordinator.registerHold(hold(1, { action_ref: first.action_ref }));
+    await expect(h.coordinator.registerHold(hold(2, {
+      action_ref: second.action_ref,
+    }))).resolves.toEqual({
       kind: 'fallback',
     });
 
@@ -427,7 +831,152 @@ describe('createBatchApprovalCoordinator registerHold', () => {
       current_ask_id: 'ask-1',
       members: [expect.objectContaining({ member_id: 'm1' })],
     });
+    expect(await actions.get(first.action_ref)).toMatchObject({
+      approval_ref: 'batch-1',
+      current_ask_id: 'ask-1',
+    });
+    expect(await actions.get(second.action_ref)).toMatchObject({
+      approval_ref: second.action_ref,
+    });
+    expect(await actions.get(second.action_ref)).not.toHaveProperty('current_ask_id');
     expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it('adopts a joined batch re-render that persisted before its raise acknowledgement failed', async () => {
+    let actionSequence = 0;
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      {
+        newActionRef: () => `action-rerender-adopted-${actionSequence += 1}`,
+        now: () => NOW,
+      },
+    );
+    const first = await actions.createHeld({
+      run_id: 'run-1', gated_step_id: 'gated-step-1', checkpoint_id: 'checkpoint-1',
+    });
+    const second = await actions.createHeld({
+      run_id: 'run-2', gated_step_id: 'gated-step-2', checkpoint_id: 'checkpoint-2',
+    });
+    const listUnresolvedAsks = vi.fn<
+      () => Promise<ReadonlyArray<UnresolvedBatchAsk>>
+    >().mockResolvedValue([
+      {
+        ask_id: 'ask-1',
+        handler_kind: 'gateway.preflight',
+        handler_payload: { batch_id: 'batch-1', payload_version: 1 },
+      },
+      {
+        ask_id: 'ask-persisted-v2',
+        handler_kind: 'gateway.preflight',
+        handler_payload: { batch_id: 'batch-1', payload_version: 2 },
+      },
+    ]);
+    const h = harness({ gatedActionStore: actions, listUnresolvedAsks });
+    h.notifier.ask
+      .mockResolvedValueOnce({ ask_id: 'ask-1' })
+      .mockRejectedValueOnce(new Error('lost rerender acknowledgement after commit'));
+
+    await h.coordinator.registerHold(hold(1, { action_ref: first.action_ref }));
+    await expect(h.coordinator.registerHold(hold(2, {
+      action_ref: second.action_ref,
+    }))).resolves.toEqual({
+      kind: 'registered',
+      ask_id: 'ask-persisted-v2',
+      approval_ref: 'batch-1',
+    });
+
+    expect(await h.batchAskStore.get('batch-1')).toMatchObject({
+      state: 'open',
+      payload_version: 2,
+      current_ask_id: 'ask-persisted-v2',
+      members: [
+        expect.objectContaining({ action_ref: first.action_ref }),
+        expect.objectContaining({ action_ref: second.action_ref }),
+      ],
+    });
+    expect(await actions.get(first.action_ref)).toMatchObject({
+      approval_ref: 'batch-1', current_ask_id: 'ask-persisted-v2',
+    });
+    expect(await actions.get(second.action_ref)).toMatchObject({
+      approval_ref: 'batch-1', current_ask_id: 'ask-persisted-v2',
+    });
+    expect(h.cancelAsk).toHaveBeenCalledWith('ask-1');
+  });
+
+  it('does not expose a fallback ask when a joined-member rollback is refused', async () => {
+    let actionSequence = 0;
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      {
+        newActionRef: () => `action-rollback-${actionSequence += 1}`,
+        now: () => NOW,
+      },
+    );
+    const first = await actions.createHeld({
+      run_id: 'run-1', gated_step_id: 'gated-step-1', checkpoint_id: 'checkpoint-1',
+    });
+    const second = await actions.createHeld({
+      run_id: 'run-2', gated_step_id: 'gated-step-2', checkpoint_id: 'checkpoint-2',
+    });
+    const h = harness({ gatedActionStore: actions });
+    await h.coordinator.registerHold(hold(1, { action_ref: first.action_ref }));
+
+    const link = actions.linkApproval.bind(actions);
+    vi.spyOn(actions, 'linkApproval').mockImplementation(async (
+      actionRef,
+      approvalRef,
+      currentAskId,
+    ) => {
+      if (actionRef === second.action_ref && approvalRef === 'batch-1') {
+        throw new Error('second member cannot link');
+      }
+      return link(actionRef, approvalRef, currentAskId);
+    });
+    vi.spyOn(h.batchAskStore, 'removeMember').mockResolvedValue('not_rolled_back');
+
+    await expect(h.coordinator.registerHold(hold(2, {
+      action_ref: second.action_ref,
+    }))).rejects.toThrow(/could not be rolled back/);
+
+    expect(h.notifier.ask).toHaveBeenCalledTimes(1);
+    expect(await h.batchAskStore.get('batch-1')).toMatchObject({
+      payload_version: 2,
+      members: [
+        expect.objectContaining({ action_ref: first.action_ref }),
+        expect.objectContaining({ action_ref: second.action_ref }),
+      ],
+    });
+  });
+
+  it('keeps a raised batch ask authoritative when its presentation pointer write fails', async () => {
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-pointer-fails', now: () => NOW },
+    );
+    const held = await actions.createHeld({
+      run_id: 'run-1', gated_step_id: 'gated-step-1', checkpoint_id: 'checkpoint-1',
+    });
+    const h = harness({ gatedActionStore: actions });
+    vi.spyOn(h.batchAskStore, 'setCurrentAsk')
+      .mockRejectedValue(new Error('pointer store unavailable'));
+
+    await expect(h.coordinator.registerHold(hold(1, {
+      action_ref: held.action_ref,
+    }))).resolves.toEqual({
+      kind: 'registered',
+      ask_id: 'ask-1',
+      approval_ref: 'batch-1',
+    });
+
+    expect(h.notifier.ask).toHaveBeenCalledTimes(1);
+    expect(await actions.get(held.action_ref)).toMatchObject({
+      approval_ref: 'batch-1',
+      current_ask_id: 'ask-1',
+    });
+    expect(await h.batchAskStore.get('batch-1')).toMatchObject({
+      state: 'open',
+      current_ask_id: '',
+    });
   });
 });
 

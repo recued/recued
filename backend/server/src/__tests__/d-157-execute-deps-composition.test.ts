@@ -291,6 +291,7 @@ const importComposerWithNotificationSpy = async () => {
     // D-177 P5a — the bundle carries the batch-approval coordinator.
     batchApprovals: {
       registerHold: vi.fn(async () => ({ kind: 'fallback' as const })),
+      reconcileOpenBatch: vi.fn(async () => ({ kind: 'not_open' as const })),
       hooks: { handleAnswer: vi.fn(async () => 'fallback' as const) },
     },
     // The `/ask` landing's live batch-membership read. REQUIRED on the bundle
@@ -298,6 +299,7 @@ const importComposerWithNotificationSpy = async () => {
     // page's detail block off for every reception hold, so the type is the
     // fence rather than a runtime surprise.
     getBatch: vi.fn(async () => null),
+    reconcileOpenBatch: vi.fn(async () => ({ kind: 'not_open' as const })),
   }));
 
   vi.doMock('../composition/bin/wire-notification-block.js', () => ({
@@ -345,6 +347,7 @@ describe('composeExecuteDeps bundle shape', () => {
       // queue / batch / boot recovery is what keeps approval semantics
       // identical on every surface.
       'preflightResumer',
+      'reconcileOpenBatch',
     ]);
     expect('executeDeps' in bundle).toBe(true);
     expect('notificationBlock' in bundle).toBe(true);
@@ -377,6 +380,7 @@ describe('composeExecuteDeps bundle shape', () => {
       // queue / batch / boot recovery is what keeps approval semantics
       // identical on every surface.
       'preflightResumer',
+      'reconcileOpenBatch',
     ]);
     expect(bundle.notificationBlock).toEqual(
       expect.objectContaining(notificationBlockShape()),

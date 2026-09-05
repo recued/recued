@@ -228,6 +228,7 @@ export type RawOpDispatchDeps = Pick<
   | 'checkpointStore'
   | 'preflightNotifier'
   | 'sessionGrantResolver'
+  | 'gatedActionStore'
 > & {
   /** Test seam — substitute the IO executor UNDER the gateway (mirrors
    *  `CanonicalPollDeps.buildExecutor`): tests script wire responses while the
@@ -1116,8 +1117,11 @@ const resolveRawOpOffer = (
  *  held call (the `raw_op` discriminant), persist it, and raise the D-158 ask.
  *  Returns `held` on success. Degrades to the not-wired `ask` stub when the
  *  hold substrate is unwired or the checkpoint write fails (anti-loop — never
- *  silently dispatch a write). If the ask raise throws after the checkpoint was
- *  written, the orphan checkpoint is deleted so no stale hold lingers. */
+ *  silently dispatch a write). In receipt-backed composition an ask-raise
+ *  failure leaves the checkpoint + receipt live: the ask may already have
+ *  committed before the error, and boot recovery either relinks that exact ask
+ *  or safely raises the missing one. Legacy composition without receipts keeps
+ *  its historical cleanup behavior. */
 const buildRawOpHold = async (
   deps: RawOpDispatchDeps,
   hold: RawOpHoldInput,
@@ -1146,6 +1150,10 @@ const buildRawOpHold = async (
       connection_name: hold.connectionName,
       risk_tier: ctx.risk_tier,
       reason: ctx.reason,
+      // Raw-op exposure fences CLI/service execution, so a returned value is
+      // always the completed provider result. Persist the trusted fact rather
+      // than inferring from provider-controlled JSON on resume.
+      gated_action_settlement_mode: 'returned_result',
       ...(ctx.owner_override_offer !== undefined
         ? { owner_override_offer: ctx.owner_override_offer }
         : {}),
@@ -1190,6 +1198,34 @@ const buildRawOpHold = async (
     );
     return { kind: 'ask', op_id: hold.opId, message: approvalNotWiredAsk(hold.opId, ctx.reason) };
   }
+  let actionRef: string | undefined;
+  if (deps.gatedActionStore !== undefined) {
+    try {
+      const receipt = await deps.gatedActionStore.createHeld({
+        run_id,
+        gated_step_id: RAW_OP_STEP_ID,
+        checkpoint_id: checkpoint.checkpoint_id,
+        ingredient_slug: hold.catalogSlug,
+        operation_id: hold.operation,
+        settlement_mode: 'returned_result',
+        ...(hold.connectionName !== ''
+          ? { connection_name: hold.connectionName }
+          : {}),
+      });
+      actionRef = receipt.action_ref;
+    } catch (error) {
+      console.warn(
+        `[raw-op-hold] receipt write failed for '${hold.opId}': `
+          + (error instanceof Error ? error.message : String(error)),
+      );
+    }
+    if (actionRef === undefined) {
+      // The checkpoint is the retry source. Do not expose an owner decision
+      // without the receipt identity that will carry its eventual outcome;
+      // boot recovery creates the receipt before re-raising the ask.
+      return { kind: 'held', op_id: hold.opId, run_id };
+    }
+  }
   const offer = resolveRawOpOffer(
     deps,
     hold.executionSource,
@@ -1215,10 +1251,35 @@ const buildRawOpHold = async (
       : {}),
   };
   try {
-    await raisePreflightAsk(deps.preflightNotifier, { checkpoint, context: askContext });
+    const { ask_id } = await raisePreflightAsk(
+      deps.preflightNotifier,
+      { checkpoint, context: askContext },
+    );
+    if (actionRef !== undefined) {
+      try {
+        await deps.gatedActionStore?.linkApproval(actionRef, actionRef, ask_id);
+      } catch (error) {
+        console.warn(
+          `[raw-op-hold] receipt ask link failed for '${hold.opId}': `
+            + (error instanceof Error ? error.message : String(error)),
+        );
+      }
+    }
   } catch (e) {
-    // The ask could not be raised — delete the orphan checkpoint and degrade to
-    // the stub (do NOT dispatch the write).
+    if (actionRef !== undefined) {
+      // `NotificationBlock.ask` persists before its host hooks and delivery. A
+      // rejection therefore does not prove that no ask exists. Keep the durable
+      // operation identity and its checkpoint paired; boot recovery consults the
+      // unresolved-ask index before it creates another render. Cancelling here
+      // would orphan a potentially actionable approval and erase its result path.
+      console.warn(
+        `[raw-op-hold] ask raise failed for '${hold.opId}'; leaving the durable hold for recovery: `
+          + (e instanceof Error ? e.message : String(e)),
+      );
+      return { kind: 'held', op_id: hold.opId, run_id };
+    }
+    // Legacy, receipt-less composition has no operation record for recovery.
+    // Delete the orphan checkpoint and degrade to the stub (never dispatch).
     try {
       await deps.checkpointStore.delete(checkpoint.checkpoint_id);
     } catch {

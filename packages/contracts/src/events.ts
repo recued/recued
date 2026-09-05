@@ -122,7 +122,10 @@ export type ServerEvent =
         | 'promoted'
         | 'cancelled'
         | 'killed'
-        | 'retired';
+        | 'retired'
+        /** Durable gated-operation receipt changed. The frame is only an
+         * invalidation; clients fetch the owner-only receipt RPC for content. */
+        | 'action_changed';
       /** Present on the queue-lifecycle ops (`queued` / `slot_acquired` /
        *  `promoted` / `cancelled`) so a delta can identify the queued entry
        *  without a full re-list. Absent on the run-lifecycle ops. */
@@ -130,6 +133,13 @@ export type ServerEvent =
       /** The governor lane the entry occupies / waits on; present on the
        *  long-op ops, absent on the run-lifecycle ops. */
       lane?: ExecutionLane;
+      /** Present only for `action_changed`. Neither the result nor held args
+       * ride the broadcast bus. */
+      action_ref?: string;
+      /** Stable decision group (a batch_id for grouped approvals). */
+      approval_ref?: string;
+      /** Monotonic receipt revision, useful for client-side de-duplication. */
+      action_revision?: number;
       cursor: number;
     }
   | {

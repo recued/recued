@@ -24,7 +24,7 @@ import type { SellerStore } from '../storage/seller-store.js';
 export class SellerCustomerClaimConfigurationError extends Error {
   constructor() {
     super(
-      'one-time customer claims require the sealed claim store, a public HTTPS Reception URL, and an MCP or LLM gateway customer door',
+      'one-time customer claims require the sealed claim store, a public HTTPS Reception URL, and an MCP or LLM gateway customer access type',
     );
     this.name = 'SellerCustomerClaimConfigurationError';
   }

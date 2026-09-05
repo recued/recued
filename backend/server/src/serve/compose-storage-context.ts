@@ -24,6 +24,14 @@ import {
   type McpActionRecord,
   type McpActionStore,
 } from '../mcp-action-store.js';
+import {
+  GATED_ACTION_TABLE,
+  createGatedActionStore,
+  createSqliteGatedActionChangeClock,
+  createSqliteGatedActionCompareAndSet,
+  type GatedActionRecord,
+  type GatedActionStore,
+} from '../gated-action-store.js';
 
 import type { ServerAccountStore } from '../account-store.js';
 import { createServerAccountStore } from '../account-store.js';
@@ -42,8 +50,10 @@ import {
   writeReleaseGenerationTransition,
 } from '../update/realm-generation-snapshot.js';
 import {
+  completeSnapshotReceiptEpochAfterKeyedOpen,
   consumePendingSnapshotRestore,
   markSnapshotRestorePending,
+  reconcileSnapshotReceiptEpochBeforeOpen,
 } from '../update/binary-apply-executor.js';
 import { resolveUpdateBinaryPath } from '../update/install-paths.js';
 import { createUpdateLedger, UPDATE_LEDGER_FILE } from '../update/update-ledger.js';
@@ -100,7 +110,6 @@ import {
   createLocalManifestStore,
   type LocalManifestStore,
 } from '../ingredient-authoring/local-manifest-store.js';
-import { checkInstalledManifestsOnBoot } from '../ingredient-authoring/installed-manifest-boot-check.js';
 import {
   createDraftStore,
   type DraftStore,
@@ -248,6 +257,8 @@ export interface StorageContext {
   checkpointStore: CheckpointStore | undefined;
   /** One generic JSON table carrying token-bound deferred MCP results. */
   mcpActionStore: McpActionStore;
+  /** Owner-facing, operation-scoped receipts for checkpointed gated steps. */
+  gatedActionStore: GatedActionStore;
   workEntityStoreRef: PerPairStore<'workEntityStore'>;
   s2sPreviewStoreRef: PerPairStore<'s2sPreviewStore'>;
   correctionEventsStoreRef: PerPairStore<'correctionEventsStore'>;
@@ -303,6 +314,11 @@ export const composeStorageContext = async (
   options: ComposeStorageContextOptions,
 ): Promise<StorageContext> => {
   const { dbPath, bootTrace, runtimeConfig, vaultQuotas, getVaultKey } = options;
+
+  // A snapshot restore can rewind receipt change sequences. Its two-phase
+  // journal is reconciled before the first handle, then completed only after
+  // the canonical encrypted/keyless open has supplied the correct key.
+  reconcileSnapshotReceiptEpochBeforeOpen(dbPath);
 
   // ⛔ BEFORE THE FIRST DATABASE HANDLE. A rollback swaps the host executable,
   // not one realm, so a realm that did not initiate it may still hold the newer
@@ -385,6 +401,12 @@ export const composeStorageContext = async (
   const db = await openDatabase(dbPath, {
     restoreJournalReconciled: options.restoreJournalReconciled === true,
   });
+  try {
+    completeSnapshotReceiptEpochAfterKeyedOpen(dbPath, db);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
   db.pragma('journal_mode = WAL');
   // D-212 slice 0 — the page-cache ceiling. Ships independently of the rest of
   // the at-rest-encryption arc because it is a free win TODAY and it is what
@@ -438,23 +460,10 @@ export const composeStorageContext = async (
   for (const manifest of localManifestStore.listManifests()) {
     manifests.register(manifest);
   }
-  // D-259 § 0.1.1 — the same manifests, judged against the CURRENT validator.
-  //
-  // ⛔ REGISTERING A MANIFEST IS NOT CHECKING IT. The loop above makes an
-  // installed pack callable; it does not ask whether this server still RUNS the
-  // shapes it declares. Deleting the legacy CLI decoders made three of them
-  // rejected rather than tolerated, and a pack installed before that release
-  // keeps its old body on disk — so the op does not break at update time, it
-  // breaks the next time a recipe calls it, as an error about a binding the
-  // owner never wrote. There is no automatic pack update to catch it and, on an
-  // unattended server, no human opening Discover either.
-  //
-  // ⚠ It REPORTS and stops. Reinstalling changes the operation set a grant was
-  // scoped for, which is the owner's decision, not a boot path's.
-  checkInstalledManifestsOnBoot({
-    listManifests: () => localManifestStore.listManifests(),
-    log: (message: string) => console.warn(message),
-  });
+  // D-259 launch reconciliation + the current-validator check run later in
+  // `composeListeners`, after the contract store and composition provisioner
+  // exist but before listener construction. Checking here would warn about a
+  // legacy body moments before that safe reconciliation repairs it.
   // D-170 N.4 / N.15 — draft store shares the per-pair db. No boot-register
   // step: a draft is an in-progress composition, not an installed capability.
   const draftStore = createDraftStore(db);
@@ -787,6 +796,28 @@ export const composeStorageContext = async (
     createSQLiteCollection<McpActionRecord>(db, MCP_ACTION_TABLE),
     { compareAndSet: createSqliteMcpActionCompareAndSet(db) },
   );
+  const gatedActionChangeClock = createSqliteGatedActionChangeClock(db);
+  const gatedActionStore = createGatedActionStore(
+    createSQLiteCollection<GatedActionRecord>(db, GATED_ACTION_TABLE),
+    {
+      compareAndSet: createSqliteGatedActionCompareAndSet(db),
+      nextChangeSeq: gatedActionChangeClock.nextChangeSeq,
+      changeClock: gatedActionChangeClock.snapshot,
+    },
+  );
+  // Receipt content stays in the owner-only RPC. The bus frame only wakes
+  // paired surfaces so reconnect/replay remains safe and bounded.
+  gatedActionStore.subscribe(({ record }) => {
+    eventBus.emit({
+      kind: 'execution',
+      recipe_id: record.recipe_id ?? 'raw-op',
+      run_id: record.run_id,
+      op: 'action_changed',
+      action_ref: record.action_ref,
+      approval_ref: record.approval_ref,
+      action_revision: record.revision,
+    });
+  });
 
   const perPairStores = await composePerPairStores({ db });
   const workEntityStoreRef = perPairStores?.workEntityStore;
@@ -975,6 +1006,7 @@ export const composeStorageContext = async (
     commitStore,
     checkpointStore,
     mcpActionStore,
+    gatedActionStore,
     workEntityStoreRef,
     s2sPreviewStoreRef,
     correctionEventsStoreRef,

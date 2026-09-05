@@ -91,6 +91,10 @@ export interface ChunkedUploadRunResult {
   /** Requests actually performed, every phase included. The APPEND count alone
    *  is `chunks_sent`. */
   readonly requests: number;
+  /** Exact partition of performed requests. A phase rejected locally before
+   * dispatch increments neither side. */
+  readonly requests_succeeded: number;
+  readonly requests_failed: number;
   readonly chunks_sent: number;
   /** Chunk bytes in APPENDs that COMPLETED.
    *
@@ -346,6 +350,8 @@ export const runChunkedUpload = async (args: {
 
   let state = startChunkedWalk(input.spec, plan);
   let requests = 0;
+  let requestsSucceeded = 0;
+  let requestsFailed = 0;
   let finalizeResult: unknown;
   let failedPhase: 'init' | 'append' | 'finalize' | 'status' | undefined;
   let failedError: IngredientError | undefined;
@@ -356,6 +362,8 @@ export const runChunkedUpload = async (args: {
       return {
         outcome: action.outcome,
         requests,
+        requests_succeeded: requestsSucceeded,
+        requests_failed: requestsFailed,
         chunks_sent: action.chunks_sent,
         bytes_sent: action.bytes_sent,
         bytes_out: bytesOut,
@@ -416,7 +424,11 @@ export const runChunkedUpload = async (args: {
       performPhase,
       ctx: accumulating,
     });
-    if (result.performed) requests += 1;
+    if (result.performed) {
+      requests += 1;
+      if (result.outcome.ok) requestsSucceeded += 1;
+      else requestsFailed += 1;
+    }
     if (result.outcome.ok) {
       if (phaseName === 'finalize') finalizeResult = result.outcome.response;
     } else {

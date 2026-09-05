@@ -126,6 +126,7 @@ describe('runUpdateBootReconcile', () => {
 
   it('leaves an unrecognized manual rollback generation journal intact', async () => {
     const dropManualRollbackJournal = vi.fn();
+    const ownerAlert = vi.fn();
     const p = ports({
       inspectManualRollbackJournal: () => ({
         disk: 'unknown',
@@ -150,8 +151,15 @@ describe('runUpdateBootReconcile', () => {
       ports: p,
       channel: 'stable',
       currentVersion: '9.9.9',
+      ownerAlert,
     });
     expect(out.action).toBe('manual-rollback-recovery-failed');
+    expect(ownerAlert).toHaveBeenCalledOnce();
+    expect(ownerAlert).toHaveBeenCalledWith({
+      kind: 'manual-rollback-recovery-failed',
+      release_identity: 'stable:1.4.0',
+      reason: 'the live binary matches neither generation recorded by the durable manual rollback journal',
+    });
     expect(dropManualRollbackJournal).not.toHaveBeenCalled();
     expect(p.ledger.readAll()).toHaveLength(0);
   });
@@ -199,11 +207,30 @@ describe('runUpdateBootReconcile', () => {
     ]);
     const { rows, sink } = memAudit();
     const p = ports({ ledger: led });
-    const out = await runUpdateBootReconcile({ ports: p, channel: 'stable', currentVersion: '1.4.0', auditLog: sink });
+    const ownerAlert = vi.fn();
+    const deps = {
+      ports: p,
+      channel: 'stable' as const,
+      currentVersion: '1.4.0',
+      auditLog: sink,
+      ownerAlert,
+    };
+    const out = await runUpdateBootReconcile(deps);
     expect(out).toMatchObject({ action: 'commit', releaseIdentity: 'stable:1.4.0' });
     expect(led.rows.some((r) => r.kind === 'apply_committed')).toBe(true);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ action: 'update_applied', target: 'stable:1.4.0' });
+    expect(ownerAlert).toHaveBeenCalledWith({
+      kind: 'update-applied',
+      release_identity: 'stable:1.4.0',
+      from_version: '1.3.0',
+      to_version: '1.4.0',
+      channel: 'stable',
+      trigger: 'manual',
+    });
+
+    await runUpdateBootReconcile(deps);
+    expect(ownerAlert, 'the commit terminal prevents another success alert').toHaveBeenCalledOnce();
   });
 
   it('auto-reverts a staged release that failed boot health (binary swap + rolled_back + restart)', async () => {
@@ -212,12 +239,36 @@ describe('runUpdateBootReconcile', () => {
       entry({ kind: 'apply_staged', id: 'b', migration: true }),
     ]);
     const { rows, sink } = memAudit();
+    const order: string[] = [];
+    const ownerAlert = vi.fn(() => { order.push('alert'); });
+    const requestRestart = vi.fn((onDrained?: (ok: boolean) => void | Promise<void>) => {
+      order.push('restart');
+      void onDrained?.(true);
+    });
     // Counter already at the threshold-minus-one for this release; this boot
     // reports a DIFFERENT current identity (the staged binary didn't take) →
     // increment trips auto-revert.
-    const p = ports({ ledger: led, bootFailureCounter: memCounter({ count: 2, release: 'stable:1.4.0' }) });
-    const out = await runUpdateBootReconcile({ ports: p, channel: 'stable', currentVersion: '1.3.0', auditLog: sink });
+    const p = ports({
+      ledger: led,
+      bootFailureCounter: memCounter({ count: 2, release: 'stable:1.4.0' }),
+      requestRestart,
+    });
+    const out = await runUpdateBootReconcile({
+      ports: p,
+      channel: 'stable',
+      currentVersion: '1.3.0',
+      auditLog: sink,
+      ownerAlert,
+    });
     expect(out.action).toBe('auto-revert');
+    expect(ownerAlert).toHaveBeenCalledWith({
+      kind: 'auto-revert-starting',
+      release_identity: 'stable:1.4.0',
+      from_version: '1.3.0',
+      to_version: '1.4.0',
+      reason: 'boot health failed 3 times',
+    });
+    expect(order, 'notification must begin before lifecycle closes SQLite').toEqual(['alert', 'restart']);
     expect(p.restoreSnapshot).toHaveBeenCalledOnce(); // migration + snapshot present
     expect(p.rollbackSwap).toHaveBeenCalledOnce();
     expect(p.requestRestart).toHaveBeenCalledOnce();
@@ -231,6 +282,8 @@ describe('runUpdateBootReconcile', () => {
       entry({ kind: 'apply_staged', id: 'b' }),
     ]);
     const dropRevertJournal = vi.fn();
+    const ownerAlert = vi.fn();
+    const { rows, sink } = memAudit();
     const p = ports({
       ledger: led,
       revertJournalMatchesCurrent: () => true,
@@ -240,11 +293,102 @@ describe('runUpdateBootReconcile', () => {
       ports: p,
       channel: 'stable',
       currentVersion: '1.3.0',
+      auditLog: sink,
+      ownerAlert,
     });
     expect(out).toMatchObject({ action: 'revert-complete' });
     expect(p.rollbackSwap, 'a second swap would roll back two generations').not.toHaveBeenCalled();
     expect(led.rows.at(-1)?.kind).toBe('apply_reverted');
+    expect(led.rows.at(-1)?.recovery_source).toBe('outer-supervisor');
     expect(dropRevertJournal).toHaveBeenCalledOnce();
+    expect(ownerAlert).toHaveBeenCalledWith({
+      kind: 'supervisor-revert-complete',
+      release_identity: 'stable:1.4.0',
+      from_version: '1.3.0',
+      to_version: '1.4.0',
+      reason: 'the previous binary was already live; repaired its missing recovery receipt',
+    });
+    expect(rows).toContainEqual(expect.objectContaining({
+      action: 'update_rolled_back',
+      target: 'stable:1.4.0',
+    }));
+  });
+
+  it('classifies a typed outer-supervisor terminal independently of its human detail', async () => {
+    const led = memLedger([
+      entry({ kind: 'apply_started', id: 'a' }),
+      entry({ kind: 'apply_staged', id: 'b' }),
+      entry({
+        kind: 'apply_reverted',
+        id: 'typed-outer-revert',
+        trigger: 'revert',
+        recovery_source: 'outer-supervisor',
+        detail: 'launcher restored a verified fallback after exit 126',
+      }),
+    ]);
+    const ownerAlert = vi.fn();
+    const { rows, sink } = memAudit();
+
+    await expect(runUpdateBootReconcile({
+      ports: ports({ ledger: led }),
+      channel: 'stable',
+      currentVersion: '1.3.0',
+      auditLog: sink,
+      ownerAlert,
+    })).resolves.toEqual({ action: 'continue' });
+
+    expect(ownerAlert).toHaveBeenCalledWith({
+      kind: 'supervisor-revert-complete',
+      release_identity: 'stable:1.4.0',
+      from_version: '1.3.0',
+      to_version: '1.4.0',
+      reason: 'launcher restored a verified fallback after exit 126',
+    });
+    expect(rows).toContainEqual(expect.objectContaining({
+      activity_id: 'update:typed-outer-revert',
+      action: 'update_rolled_back',
+    }));
+  });
+
+  it('recognizes and announces a legacy outer-supervisor terminal once', async () => {
+    const led = memLedger([
+      entry({ kind: 'apply_started', id: 'a' }),
+      entry({ kind: 'apply_staged', id: 'b' }),
+      entry({
+        kind: 'apply_reverted',
+        id: 'outer-revert',
+        trigger: 'revert',
+        // Pre-feature binaries carried the origin only in prose. Keep this
+        // fixture field-less to pin additive cross-version recovery.
+        detail: 'supervisor revert: boot health failed 3 times (payload exited 126, never started)',
+      }),
+    ]);
+    const ownerAlert = vi.fn();
+    const { rows, sink } = memAudit();
+    const p = ports({ ledger: led });
+    const deps = {
+      ports: p,
+      channel: 'stable' as const,
+      currentVersion: '1.3.0',
+      auditLog: sink,
+      ownerAlert,
+    };
+
+    await expect(runUpdateBootReconcile(deps)).resolves.toEqual({ action: 'continue' });
+    expect(ownerAlert).toHaveBeenCalledWith({
+      kind: 'supervisor-revert-complete',
+      release_identity: 'stable:1.4.0',
+      from_version: '1.3.0',
+      to_version: '1.4.0',
+      reason: 'boot health failed 3 times (payload exited 126, never started)',
+    });
+    expect(rows).toContainEqual(expect.objectContaining({
+      activity_id: 'update:outer-revert',
+      action: 'update_rolled_back',
+    }));
+
+    await runUpdateBootReconcile(deps);
+    expect(ownerAlert, 'the audit replay id deduplicates a completed event').toHaveBeenCalledOnce();
   });
 
   it('treats a started-but-never-staged leftover as staging-aborted (no replay row)', async () => {
@@ -258,10 +402,18 @@ describe('runUpdateBootReconcile', () => {
     const { rows, sink } = memAudit();
     const recoverAbortedWebclient = vi.fn(() => true);
     const p = ports({ ledger: led, recoverAbortedWebclient });
-    const out = await runUpdateBootReconcile({ ports: p, channel: 'stable', currentVersion: '1.3.0', auditLog: sink });
+    const ownerAlert = vi.fn();
+    const out = await runUpdateBootReconcile({
+      ports: p,
+      channel: 'stable',
+      currentVersion: '1.3.0',
+      auditLog: sink,
+      ownerAlert,
+    });
     expect(out.action).toBe('staging-aborted');
     expect(led.rows.some((r) => r.kind === 'apply_reverted')).toBe(true);
     expect(rows).toHaveLength(0); // apply_reverted is not a user-facing replay row
+    expect(ownerAlert, 'an ordinary pre-swap abort is not an owner-facing outcome').not.toHaveBeenCalled();
     expect(recoverAbortedWebclient).toHaveBeenCalledWith({
       releaseIdentity: 'stable:1.4.0',
       operationId: 'a',
@@ -271,14 +423,43 @@ describe('runUpdateBootReconcile', () => {
   it('leaves the apply open when its pre-swap webclient journal cannot be recovered', async () => {
     const led = memLedger([entry({ kind: 'apply_started', id: 'a' })]);
     const p = ports({ ledger: led, recoverAbortedWebclient: () => false });
+    const ownerAlert = vi.fn();
     const out = await runUpdateBootReconcile({
       ports: p,
       channel: 'stable',
       currentVersion: '1.3.0',
+      ownerAlert,
     });
     expect(out).toMatchObject({ action: 'webclient-recovery-failed' });
+    expect(ownerAlert).toHaveBeenCalledWith({
+      kind: 'webclient-recovery-failed',
+      release_identity: 'stable:1.4.0',
+      reason: 'the durable webclient apply journal was malformed, belonged to another operation, or could not be restored',
+    });
     expect(p.discardStaged).not.toHaveBeenCalled();
     expect(led.rows).toHaveLength(1);
+  });
+
+  it('does not let a throwing owner notification veto automatic rollback', async () => {
+    const led = memLedger([
+      entry({ kind: 'apply_started', id: 'a' }),
+      entry({ kind: 'apply_staged', id: 'b' }),
+    ]);
+    const p = ports({
+      ledger: led,
+      bootFailureCounter: memCounter({ count: 2, release: 'stable:1.4.0' }),
+    });
+
+    await expect(runUpdateBootReconcile({
+      ports: p,
+      channel: 'stable',
+      currentVersion: '1.3.0',
+      ownerAlert: () => { throw new Error('notification transport is down'); },
+    })).resolves.toMatchObject({ action: 'auto-revert' });
+
+    expect(p.requestRestart).toHaveBeenCalledOnce();
+    expect(p.rollbackSwap).toHaveBeenCalledOnce();
+    expect(led.rows.at(-1)?.kind).toBe('rolled_back');
   });
 
   it('⛔ a swap whose ledger write was LOST is reconciled from the disk, not undone', async () => {
@@ -337,22 +518,65 @@ describe('runUpdateBootReconcile', () => {
     const { rows, sink } = memAudit();
     rows.push({ activity_id: 'update:done', action: 'update_applied', target: 'stable:1.4.0' });
     const p = ports({ ledger: led });
-    await runUpdateBootReconcile({ ports: p, channel: 'stable', currentVersion: '1.4.0', auditLog: sink });
-    // The pre-seeded 'done' entry is not duplicated; only the fresh commit row
-    // from THIS boot is appended.
+    const ownerAlert = vi.fn();
+    await runUpdateBootReconcile({
+      ports: p,
+      channel: 'stable',
+      currentVersion: '1.4.0',
+      auditLog: sink,
+      ownerAlert,
+    });
+    // The pre-seeded terminal was already surfaced, so neither its audit row nor
+    // its owner notification is duplicated.
     expect(rows.filter((r) => r.activity_id === 'update:done')).toHaveLength(1);
+    expect(ownerAlert).not.toHaveBeenCalled();
+  });
+
+  it('replays an unaudited historical commit without announcing it as a new success', async () => {
+    const committed = entry({ kind: 'apply_committed', id: 'historical-commit' });
+    const led = memLedger([
+      entry({ kind: 'apply_started', id: 'a' }),
+      entry({ kind: 'apply_staged', id: 'b' }),
+      committed,
+    ]);
+    const { rows, sink } = memAudit();
+    const ownerAlert = vi.fn();
+
+    await runUpdateBootReconcile({
+      ports: ports({ ledger: led }),
+      channel: 'stable',
+      currentVersion: '1.4.0',
+      auditLog: sink,
+      ownerAlert,
+    });
+
+    expect(rows).toContainEqual(expect.objectContaining({
+      activity_id: 'update:historical-commit',
+      action: 'update_applied',
+    }));
+    expect(ownerAlert).not.toHaveBeenCalled();
   });
 });
 
 describe('production boot-reconcile composition', () => {
+  const source = readFileSync(
+    resolve(import.meta.dirname, '../serve/compose-listeners.ts'),
+    'utf8',
+  );
+
+  it('binds update owner alerts to the production notification block and forwards the port', () => {
+    expect(source).toMatch(
+      /createUpdateOwnerAlertSink\(\s*execution\.notificationBlock,\s*buildUpdatesSurfaceLink/,
+    );
+    expect(source).toMatch(
+      /runUpdateBootReconcileImpl\(\{[\s\S]*ownerAlert: updateOwnerAlert/,
+    );
+  });
+
   it('surfaces a retained manual-rollback recovery failure to the operator', () => {
     // The orchestrator returns this outcome rather than throwing so the realm can
     // still boot. That makes inspecting the union member a caller obligation;
     // awaiting and discarding it turns a serious ambiguous-disk state silent.
-    const source = readFileSync(
-      resolve(import.meta.dirname, '../serve/compose-listeners.ts'),
-      'utf8',
-    );
     expect(source).toMatch(
       /const outcome = await runUpdateBootReconcileImpl[\s\S]*outcome\.action === 'manual-rollback-recovery-failed'[\s\S]*journal was retained/,
     );

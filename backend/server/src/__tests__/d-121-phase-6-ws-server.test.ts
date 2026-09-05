@@ -104,6 +104,20 @@ describe('D-121 Phase 6 — WS events.subscribe rpc integration', () => {
     ws.close();
   });
 
+  it('rejects an unregistered socket without installing a bus subscription', async () => {
+    // Let the preceding test's close callback remove its registered listener;
+    // this assertion is about the new socket never increasing the count.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const before = bus.subscriberCount();
+    expect(before).toBe(0);
+    const ws = await connectWs(server.port);
+    const reply = await callRpc(ws, 'events.subscribe', { kinds: ['execution'] });
+
+    expect(reply.error?.code).toBe('unauthorized');
+    expect(bus.subscriberCount()).toBe(before);
+    ws.close();
+  });
+
   it('rejects empty kinds with bad_request', async () => {
     const ws = await registerClient('ext-sub-2');
     const reply = await callRpc(ws, 'events.subscribe', { kinds: [] });

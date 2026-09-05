@@ -29,9 +29,12 @@
  */
 
 import type Database from 'better-sqlite3';
+import type { PreflightRunSettled } from '../../preflight-resumer.js';
 import { createPeerAskOutboxStore } from '../../storage/peer-ask-outbox-store.js';
+import { journalOwnsClaimedPeerDispatch } from '../../peer-ask-delivery-recovery.js';
 import { createPeerAdmissionStore } from '../../storage/peer-admission-store.js';
 import type {
+  BatchAskRecord,
   Checkpoint,
   ExecutionLane,
   OwnerOperationPolicyInput,
@@ -59,6 +62,7 @@ import type { PreflightAskContext, PreflightResumer } from '@recued/gateway';
 import type { ReceptionInboxFanoutMode } from '@recued/contracts';
 import type { ExecuteHandlerDeps } from '../../execute-handler.js';
 import type { McpActionStore } from '../../mcp-action-store.js';
+import type { GatedActionStore } from '../../gated-action-store.js';
 import type { WorkEntitySourceWriteExecutor } from '../../work-entity-write-executor.js';
 import type { EventBus } from '../../events/bus.js';
 import type { RecipeStore } from '../../recipe-store.js';
@@ -133,6 +137,12 @@ import { upsertOwnerOperationOverride } from '../../contract-handler.js';
  *  (`db`, `enrichmentStore`, `commitStore`,
  *  `checkpointStore`, plus the resumer-derived `preflightNotifier`). */
 export interface ComposeExecuteDepsDeps {
+  /** D-137 — late-bound chat sink for a run that settled after its turn.
+   *  A GETTER because chat composes in the app context and this in the
+   *  execution context; the sink does not exist when this runs. */
+  readonly getRunSettledSink?: () =>
+    ((settled: PreflightRunSettled) => void) | undefined;
+
   /** D-210 A.8 slice 3d — forwarded verbatim to the notification block so
    *  `inline` channel asks carry the `/ask/<ask_id>` link. Pass-through only;
    *  nothing here resolves it (the public base URL is not in scope at this
@@ -167,6 +177,7 @@ export interface ComposeExecuteDepsDeps {
   commitStore: CommitStore | undefined;
   checkpointStore: CheckpointStore | undefined;
   mcpActionStore?: McpActionStore;
+  gatedActionStore?: GatedActionStore;
   /** Notification-block prereq beyond the four executeDeps shares above
    *  (db / auditLog / checkpointStore). Helper composes the block only
    *  when all four are present together. ALSO forwarded onto
@@ -353,7 +364,11 @@ export interface ExecuteDepsBundle {
    *  batch-registered hold's values as the approval. Undefined alongside
    *  `notificationBlock`. */
   getBatch:
-    | ((batch_id: string) => Promise<{ members: readonly unknown[] } | null>)
+    | ((batch_id: string) => Promise<Pick<BatchAskRecord,
+      'state' | 'current_ask_id' | 'members' | 'answer_option'> | null>)
+    | undefined;
+  reconcileOpenBatch:
+    | BatchApprovalCoordinator['reconcileOpenBatch']
     | undefined;
   /** D-210 Phase C — the DECORATED preflight resumer (the one
    *  `withBeforePreflightResume` wrapped), surfaced so the Reception inbox
@@ -497,6 +512,24 @@ export const composeExecuteDeps = (
       }
     : undefined;
 
+  // One process-wide handle for both execute and reconciliation. Construct it
+  // before the notification block so an answered approval that finds its
+  // receipt already dispatching can prove an exact staged peer checkpoint and
+  // avoid replaying around the journal.
+  const peerAskOutbox = deps.db
+    ? createPeerAskOutboxStore(deps.db)
+    : undefined;
+  const preserveClaimedPeerDispatch = peerAskOutbox
+    && deps.auditLog
+    && deps.checkpointStore
+    ? (record: Parameters<typeof journalOwnsClaimedPeerDispatch>[0]) =>
+        journalOwnsClaimedPeerDispatch(record, {
+          outbox: peerAskOutbox,
+          auditLog: deps.auditLog!,
+          checkpoints: deps.checkpointStore!,
+        })
+    : undefined;
+
   // D-157 server-wiring — compose the D-158 notification block ahead of
   // executeDeps so the block can thread as `preflightNotifier`.
   // Construction needs four pieces: `db` (SQLite collections),
@@ -509,8 +542,10 @@ export const composeExecuteDeps = (
   // prompt (matching pre-wire posture).
   let notificationBlock: NotificationBlock | undefined;
   let getBatch:
-    | ((batch_id: string) => Promise<{ members: readonly unknown[] } | null>)
+    | ((batch_id: string) => Promise<Pick<BatchAskRecord,
+      'state' | 'current_ask_id' | 'members' | 'answer_option'> | null>)
     | undefined;
+  let reconcileOpenBatch: BatchApprovalCoordinator['reconcileOpenBatch'] | undefined;
   let batchApprovals: BatchApprovalCoordinator | undefined;
   // D-210 Phase C — retained for the inbox's no-ask release path.
   let preflightResumer: PreflightResumer | undefined;
@@ -520,9 +555,17 @@ export const composeExecuteDeps = (
       auditLog: deps.auditLog,
       checkpointStore: deps.checkpointStore,
       ...(deps.mcpActionStore ? { mcpActionStore: deps.mcpActionStore } : {}),
+      ...(deps.gatedActionStore ? { gatedActionStore: deps.gatedActionStore } : {}),
+      ...(preserveClaimedPeerDispatch !== undefined
+        ? { preserveClaimedDispatch: preserveClaimedPeerDispatch }
+        : {}),
       annotationStore: deps.annotationStore,
       eventBus: deps.eventBus,
       getExecuteDeps: deps.getExecuteDeps,
+      // D-137 — pass the getter, not the sink: chat publishes it later.
+      ...(deps.getRunSettledSink !== undefined
+        ? { getRunSettledSink: deps.getRunSettledSink }
+        : {}),
       ...(deps.askAnswerLink !== undefined ? { askAnswerLink: deps.askAnswerLink } : {}),
       ...(deps.beforePreflightResume
         ? { beforePreflightResume: deps.beforePreflightResume }
@@ -561,6 +604,7 @@ export const composeExecuteDeps = (
     });
     notificationBlock = bundle.block;
     getBatch = bundle.getBatch;
+    reconcileOpenBatch = bundle.reconcileOpenBatch;
     batchApprovals = bundle.batchApprovals;
     preflightResumer = bundle.resumer;
   }
@@ -905,8 +949,9 @@ export const composeExecuteDeps = (
     // carries the OFFERED option set the inbound answer is validated against.
     // Absent (dbless) ⇒ questions still go and their answers refuse as
     // unsolicited, which is where an undelivered ask already leaves the hold.
-    ...(deps.db ? { peerAskOutbox: createPeerAskOutboxStore(deps.db) } : {}),
+    ...(peerAskOutbox ? { peerAskOutbox } : {}),
     ...(deps.mcpActionStore ? { mcpActionStore: deps.mcpActionStore } : {}),
+    ...(deps.gatedActionStore ? { gatedActionStore: deps.gatedActionStore } : {}),
     // D-157 server-wiring — the D-158 notification block, threaded as
     // the preflight notifier. `execute-handler` calls `raisePreflightAsk`
     // on this dep when the engine pauses on a policy `ask`; the
@@ -997,6 +1042,7 @@ export const composeExecuteDeps = (
     executeDeps,
     notificationBlock,
     getBatch,
+    reconcileOpenBatch,
     preflightResumer,
     inFlightRegistry,
     contractDefinitionStore,

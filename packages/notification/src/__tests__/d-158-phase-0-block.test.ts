@@ -6,6 +6,7 @@ import {
   createNotificationSettingsStore,
   createUiChannel,
   type AskOption,
+  type AskExtras,
   type Channel,
   type ChannelCapability,
   type ChannelName,
@@ -37,6 +38,7 @@ interface RecordedAskDelivery {
   ask_id: string;
   message: NotificationMessage;
   options: readonly AskOption[];
+  extras?: AskExtras;
 }
 
 interface RecordedChannel extends Channel {
@@ -51,6 +53,7 @@ interface ChannelHooks {
     ask_id: string,
     message: NotificationMessage,
     options: readonly AskOption[],
+    extras?: AskExtras,
   ) => void | Promise<void>;
   closeAsk?: (ask_id: string) => void | Promise<void>;
 }
@@ -82,13 +85,14 @@ const createRecordedChannel = (
       channel.notifyMessages.push(nextMessage);
       await hooks.deliverNotify?.(nextMessage);
     },
-    async deliverAsk(ask_id, nextMessage, nextOptions) {
+    async deliverAsk(ask_id, nextMessage, nextOptions, extras) {
       channel.askDeliveries.push({
         ask_id,
         message: nextMessage,
         options: nextOptions,
+        ...(extras !== undefined ? { extras } : {}),
       });
-      await hooks.deliverAsk?.(ask_id, nextMessage, nextOptions);
+      await hooks.deliverAsk?.(ask_id, nextMessage, nextOptions, extras);
     },
     async closeAsk(ask_id) {
       channel.closes.push(ask_id);
@@ -236,6 +240,111 @@ describe('D-158 P0 NotificationBlock ask', () => {
       status: 'open',
       fanout_channels: ['ui'],
     });
+  });
+
+  it('reuses an exact host-reserved ask id without raising a second decision', async () => {
+    const store = createAskStore(createInMemoryCollection<PendingAsk>());
+    const ui = createRecordedChannel('ui');
+    const block = createNotificationBlock({
+      askStore: store,
+      channels: [ui],
+      settingsStore: await settingsWith(),
+      now: () => 4444,
+      mintAskId: () => 'ask-must-not-be-minted',
+    });
+    const extras = { reserved_ask_id: 'ask-reserved-capability' } as const;
+
+    await expect(Promise.all([
+      block.ask(message, options, handlerRef, undefined, extras),
+      block.ask(message, options, handlerRef, undefined, extras),
+    ])).resolves.toEqual([
+      { ask_id: 'ask-reserved-capability' },
+      { ask_id: 'ask-reserved-capability' },
+    ]);
+
+    expect(ui.askDeliveries).toHaveLength(1);
+    expect(await store.get('ask-reserved-capability')).toMatchObject({
+      status: 'open',
+      message,
+    });
+  });
+
+  it('rejects a reserved ask id replay carrying different content', async () => {
+    const block = createNotificationBlock({
+      askStore: createAskStore(createInMemoryCollection<PendingAsk>()),
+      channels: [createRecordedChannel('ui')],
+      settingsStore: await settingsWith(),
+      now: () => 5555,
+    });
+    const extras = { reserved_ask_id: 'ask-reserved-conflict' } as const;
+    await block.ask(message, options, handlerRef, undefined, extras);
+
+    await expect(block.ask(
+      { ...message, text: 'Different decision' },
+      options,
+      handlerRef,
+      undefined,
+      extras,
+    )).rejects.toThrow(/different ask/);
+  });
+
+  it('runs a host persistence hook before delivery and strips host controls from channels', async () => {
+    let anchored = false;
+    const delivered = vi.fn((
+      _askId: string,
+      _message: NotificationMessage,
+      _options: readonly AskOption[],
+      extras?: AskExtras,
+    ) => {
+      expect(anchored).toBe(true);
+      expect(extras).toEqual({ note_prompt: 'optional', body: 'Review body' });
+    });
+    const block = createNotificationBlock({
+      askStore: createAskStore(createInMemoryCollection<PendingAsk>()),
+      channels: [createRecordedChannel('ui', { deliverAsk: delivered })],
+      settingsStore: await settingsWith(),
+      now: () => 5556,
+    });
+
+    await block.ask(message, options, handlerRef, undefined, {
+      reserved_ask_id: 'ask-host-owned',
+      note_prompt: 'optional',
+      body: 'Review body',
+      on_persisted: (askId) => {
+        expect(askId).toBe('ask-host-owned');
+        anchored = true;
+      },
+    });
+
+    expect(delivered).toHaveBeenCalledOnce();
+  });
+
+  it('retries an exact reserved ask after the pre-delivery persistence hook fails', async () => {
+    const store = createAskStore(createInMemoryCollection<PendingAsk>());
+    const ui = createRecordedChannel('ui');
+    const hook = vi.fn()
+      .mockRejectedValueOnce(new Error('inbox unavailable'))
+      .mockResolvedValueOnce(undefined);
+    const block = createNotificationBlock({
+      askStore: store,
+      channels: [ui],
+      settingsStore: await settingsWith(),
+      now: () => 5557,
+    });
+    const extras = {
+      reserved_ask_id: 'ask-hook-retry',
+      on_persisted: hook,
+    } as const;
+
+    await expect(block.ask(message, options, handlerRef, undefined, extras))
+      .rejects.toThrow(/inbox unavailable/);
+    expect(await store.get('ask-hook-retry')).toMatchObject({ status: 'open' });
+    expect(ui.askDeliveries).toEqual([]);
+
+    await expect(block.ask(message, options, handlerRef, undefined, extras))
+      .resolves.toEqual({ ask_id: 'ask-hook-retry' });
+    expect(hook).toHaveBeenCalledTimes(2);
+    expect(ui.askDeliveries).toHaveLength(1);
   });
 });
 
@@ -554,6 +663,139 @@ describe('D-158 P0 NotificationBlock restart and recovery', () => {
     });
   });
 
+  it('prepares every recovered open ask before re-delivery and retries failures', async () => {
+    const collection = createInMemoryCollection<PendingAsk>();
+    const store = createAskStore(collection);
+    const blockA = createNotificationBlock({
+      askStore: store,
+      channels: [createRecordedChannel('ui')],
+      settingsStore: await settingsWith(),
+      now: () => 1000,
+      mintAskId: () => 'ask-prepare-recovery',
+    });
+    await blockA.ask(message, options, handlerRef);
+
+    const ui = createRecordedChannel('ui');
+    const prepare = vi.fn()
+      .mockRejectedValueOnce(new Error('inbox mismatch'))
+      .mockResolvedValueOnce(undefined);
+    const blockB = createNotificationBlock({
+      askStore: createAskStore(collection),
+      channels: [ui],
+      settingsStore: await settingsWith(),
+      prepareRecoveredAsk: prepare,
+    });
+
+    await expect(blockB.recoverPendingAsks()).rejects.toThrow(/inbox mismatch/);
+    expect(ui.askDeliveries).toEqual([]);
+    await expect(blockB.recoverPendingAsks()).resolves.toBeUndefined();
+    expect(ui.askDeliveries).toHaveLength(1);
+    expect(prepare).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not re-deliver an open candidate after a concurrent answer closes it', async () => {
+    const collection = createInMemoryCollection<PendingAsk>();
+    const store = createAskStore(collection);
+    const trace: string[] = [];
+    const ui = createRecordedChannel('ui', {
+      deliverAsk: () => { trace.push('deliver'); },
+      closeAsk: () => { trace.push('close'); },
+    });
+    const block = createNotificationBlock({
+      askStore: store,
+      channels: [ui],
+      settingsStore: await settingsWith(),
+      now: () => 2000,
+      mintAskId: () => 'ask-open-answer-race',
+    });
+    block.registerAskHandler(handlerRef.kind, vi.fn());
+    await block.ask(message, options, handlerRef);
+    trace.length = 0;
+
+    const originalListByStatus = store.listByStatus.bind(store);
+    let reportOpenCaptured!: () => void;
+    const openCaptured = new Promise<void>((resolve) => {
+      reportOpenCaptured = resolve;
+    });
+    let releaseOpenList!: () => void;
+    const openListReleased = new Promise<void>((resolve) => {
+      releaseOpenList = resolve;
+    });
+    vi.spyOn(store, 'listByStatus').mockImplementation(async (status) => {
+      const rows = await originalListByStatus(status);
+      if (status === 'open') {
+        reportOpenCaptured();
+        await openListReleased;
+      }
+      return rows;
+    });
+
+    const recovery = block.recoverPendingAsks();
+    await openCaptured;
+    await block.submitAnswer({
+      ask_id: 'ask-open-answer-race',
+      option: 'approve',
+      via: 'ui',
+    });
+    expect(trace).toEqual(['close']);
+    releaseOpenList();
+    await recovery;
+
+    expect(trace).toEqual(['close']);
+    expect(await store.get('ask-open-answer-race')).toMatchObject({
+      status: 'handled',
+    });
+  });
+
+  it('does not re-deliver an open candidate after a concurrent cancel closes it', async () => {
+    const collection = createInMemoryCollection<PendingAsk>();
+    const store = createAskStore(collection);
+    const trace: string[] = [];
+    const ui = createRecordedChannel('ui', {
+      deliverAsk: () => { trace.push('deliver'); },
+      closeAsk: () => { trace.push('close'); },
+    });
+    const block = createNotificationBlock({
+      askStore: store,
+      channels: [ui],
+      settingsStore: await settingsWith(),
+      now: () => 2000,
+      mintAskId: () => 'ask-open-cancel-race',
+    });
+    await block.ask(message, options, handlerRef);
+    trace.length = 0;
+
+    const originalListByStatus = store.listByStatus.bind(store);
+    let reportOpenCaptured!: () => void;
+    const openCaptured = new Promise<void>((resolve) => {
+      reportOpenCaptured = resolve;
+    });
+    let releaseOpenList!: () => void;
+    const openListReleased = new Promise<void>((resolve) => {
+      releaseOpenList = resolve;
+    });
+    vi.spyOn(store, 'listByStatus').mockImplementation(async (status) => {
+      const rows = await originalListByStatus(status);
+      if (status === 'open') {
+        reportOpenCaptured();
+        await openListReleased;
+      }
+      return rows;
+    });
+
+    const recovery = block.recoverPendingAsks();
+    await openCaptured;
+    await expect(block.cancelAsk('ask-open-cancel-race')).resolves.toBe('cancelled');
+    expect(trace).toEqual(['close']);
+    releaseOpenList();
+    await recovery;
+
+    expect(trace).toEqual(['close']);
+    expect(await store.get('ask-open-cancel-race')).toMatchObject({
+      status: 'handled',
+    });
+  });
+
   it('recoverPendingAsks re-closes answered asks before re-dispatching their handler', async () => {
     const collection = createInMemoryCollection<PendingAsk>();
     const storeA = createAskStore(collection);
@@ -597,9 +839,161 @@ describe('D-158 P0 NotificationBlock restart and recovery', () => {
       status: 'handled',
     });
   });
+
+  it('serializes overlapping recovery passes for the same answered ask', async () => {
+    const collection = createInMemoryCollection<PendingAsk>();
+    const store = createAskStore(collection);
+    const block = createNotificationBlock({
+      askStore: store,
+      channels: [createRecordedChannel('ui')],
+      settingsStore: await settingsWith(),
+      now: () => 1000,
+      mintAskId: () => 'ask-overlapping-recovery',
+    });
+    await block.ask(message, options, handlerRef);
+    await store.recordAnswer(
+      'ask-overlapping-recovery',
+      { option: 'approve', answered_at: 2000 },
+      'ui',
+    );
+    const originalListByStatus = store.listByStatus.bind(store);
+    let answeredListReads = 0;
+    let reportSecondAnsweredList!: () => void;
+    const secondAnsweredList = new Promise<void>((resolve) => {
+      reportSecondAnsweredList = resolve;
+    });
+    vi.spyOn(store, 'listByStatus').mockImplementation(async (status) => {
+      const rows = await originalListByStatus(status);
+      if (status === 'answered' && ++answeredListReads === 2) {
+        reportSecondAnsweredList();
+      }
+      return rows;
+    });
+
+    let releaseHandler!: () => void;
+    const handlerReleased = new Promise<void>((resolve) => {
+      releaseHandler = resolve;
+    });
+    let reportHandlerStarted!: () => void;
+    const handlerStarted = new Promise<void>((resolve) => {
+      reportHandlerStarted = resolve;
+    });
+    const handler = vi.fn(async () => {
+      reportHandlerStarted();
+      await handlerReleased;
+    });
+    block.registerAskHandler(handlerRef.kind, handler);
+
+    const first = block.recoverPendingAsks();
+    await handlerStarted;
+    const second = block.recoverPendingAsks();
+    // Prove the second pass captured the same answered candidate before the
+    // first handler returns. One macrotask lets an unserialized implementation
+    // enter that handler, making this a regression test rather than a timing bet.
+    await secondAnsweredList;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseHandler();
+    await Promise.all([first, second]);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(await store.get('ask-overlapping-recovery')).toMatchObject({
+      status: 'handled',
+    });
+  });
+
+  it('does not replay a live answer handler when recovery overlaps its dispatch', async () => {
+    const collection = createInMemoryCollection<PendingAsk>();
+    const store = createAskStore(collection);
+    const ui = createRecordedChannel('ui');
+    const block = createNotificationBlock({
+      askStore: store,
+      channels: [ui],
+      settingsStore: await settingsWith(),
+      now: () => 2000,
+      mintAskId: () => 'ask-live-recovery-race',
+    });
+    await block.ask(message, options, handlerRef);
+    const originalListByStatus = store.listByStatus.bind(store);
+    let reportAnsweredList!: () => void;
+    const answeredList = new Promise<void>((resolve) => {
+      reportAnsweredList = resolve;
+    });
+    vi.spyOn(store, 'listByStatus').mockImplementation(async (status) => {
+      const rows = await originalListByStatus(status);
+      if (status === 'answered') reportAnsweredList();
+      return rows;
+    });
+
+    let releaseHandler!: () => void;
+    const handlerReleased = new Promise<void>((resolve) => {
+      releaseHandler = resolve;
+    });
+    let reportHandlerStarted!: () => void;
+    const handlerStarted = new Promise<void>((resolve) => {
+      reportHandlerStarted = resolve;
+    });
+    const handler = vi.fn(async () => {
+      reportHandlerStarted();
+      await handlerReleased;
+    });
+    block.registerAskHandler(handlerRef.kind, handler);
+
+    const live = block.submitAnswer({
+      ask_id: 'ask-live-recovery-race',
+      option: 'approve',
+      via: 'ui',
+    });
+    await handlerStarted;
+    const recovery = block.recoverPendingAsks();
+    await answeredList;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseHandler();
+    await Promise.all([live, recovery]);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(ui.closes).toEqual(['ask-live-recovery-race']);
+    expect(await store.get('ask-live-recovery-race')).toMatchObject({
+      status: 'handled',
+    });
+  });
 });
 
 describe('D-158 P0 NotificationBlock remaining invariants', () => {
+  it('lists open and answered-but-unhandled asks only for boot reconciliation', async () => {
+    const collection = createInMemoryCollection<PendingAsk>();
+    const store = createAskStore(collection);
+    const block = createNotificationBlock({
+      askStore: store,
+      channels: [createRecordedChannel('ui')],
+      settingsStore: await settingsWith(),
+      now: nowSequence([1000, 1001, 1002]),
+      mintAskId: mintSequence(['ask-open', 'ask-answered', 'ask-handled']),
+    });
+
+    await block.ask(message, options, handlerRef);
+    await block.ask(message, options, handlerRef);
+    await block.ask(message, options, handlerRef);
+    await store.recordAnswer(
+      'ask-answered',
+      { option: 'approve', answered_at: 2000 },
+      'ui',
+    );
+    await store.recordAnswer(
+      'ask-handled',
+      { option: 'approve', answered_at: 2001 },
+      'ui',
+    );
+    await store.markHandled('ask-handled');
+
+    expect((await block.listOpenAsks()).map((ask) => ask.ask_id)).toEqual([
+      'ask-open',
+    ]);
+    expect((await block.listUnresolvedAsks()).map((ask) => ask.ask_id)).toEqual([
+      'ask-open',
+      'ask-answered',
+    ]);
+  });
+
   it('keeps an old open ask answerable after an arbitrary clock advance', async () => {
     const collection = createInMemoryCollection<PendingAsk>();
     const store = createAskStore(collection);

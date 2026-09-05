@@ -40,6 +40,7 @@
  *  Spec: D-160 § N.9 + A.8.
  */
 
+import { resolveContextSlice, type ContextSliceRequest } from './chat-context-slice.js';
 import {
   groundingCorpusFromPacket,
   ungroundedArgumentsInCall,
@@ -81,7 +82,7 @@ import {
   isTier1ToolName,
 } from '@recued/contracts';
 import { dispatchToolCalls } from '@recued/middleware';
-import { estimateConservativeMessagesTokens } from '@recued/llm';
+import { estimateConservativeMessagesTokens, isContextOverflowRejection } from '@recued/llm';
 import type { LLMMessageRole } from '@recued/llm';
 import type {
   BroadcastChatEvent,
@@ -245,6 +246,32 @@ export const recordProvenanceFromSearchResult = (
  *  from the no-executor boot window, which stays silent. */
 const NO_LLM_SOURCE_MESSAGE =
   'No AI model is available for your current model preference. Open Settings → AI / Models and choose a source — your configured provider, the free pool, or a local model.';
+/** Fail-loud message when the provider refused the turn for SIZE.
+ *
+ *  ⛔⛔ WITHOUT THIS THE TURN IS SILENTLY EMPTY. `assistantContent` is only
+ *  replaced on the no-source path, and a context refusal surfaces as
+ *  `AI_TOKEN_BUDGET_EXCEEDED`, which `NO_LLM_SOURCE_DETAIL_RE` does not match —
+ *  so it lands in the generic `provider_failure` bucket and the user reads a
+ *  blank assistant turn. Same rationale as {@link NO_LLM_SOURCE_MESSAGE}, and
+ *  it applies MORE strongly here: a provider outage is not something the owner
+ *  can act on, and this is. It also repeats every turn until something changes,
+ *  because the packet size is dominated by the tool catalog, not by the
+ *  conversation — so "try a shorter message" is advice that would not work, and
+ *  is deliberately not offered.
+ *
+ *  ⛔ IT NO LONGER TELLS THE OWNER TO THIN THE CATALOG, because rung 0 has
+ *  ALREADY DONE THAT by the time this is reachable: `fitCatalogModeToBudget`
+ *  steps `full` → `index` → `lean-core` before the turn starts whenever the
+ *  catalog alone would not fit. Advising a change the system already made is
+ *  worse than saying nothing — the owner opens Settings, finds the control, and
+ *  learns nothing about why their turn failed. What is left is genuinely the
+ *  model.
+ *
+ *  ⚠ The named lever is reachable, verified in
+ *  `apps/webclient/src/settings/ai-models-page.ts`: the per-source
+ *  context-window field on the AI / Models page. */
+const CONTEXT_TOO_LARGE_MESSAGE =
+  'This turn was too large for the selected model\'s context window, even after reducing the tool catalog it sends. Open Settings → AI / Models and pick a model with a larger context window, or set a larger one for this model if its window is declared too low.';
 /** Fail-loud message when the model returned an EMPTY AIOutput (nothing to
  *  render, nothing to do) twice in a row — once raw, once after explicit
  *  feedback (see `buildEmptyAiOutputFeedback`). Same rationale as
@@ -310,6 +337,90 @@ const decoderUnavailableReason = (failure: {
     : failure.validation_issues !== undefined
       ? 'invalid_output'
       : 'provider_failure';
+/** Is this dispatch result an acknowledgement rather than an outcome?
+ *
+ *  ⛔ KEYS ON THE MARKER `projectRunResultForAgent` SETS, not on a status
+ *  string of its own invention. `awaiting_approval: true` is the third-state
+ *  projection every agent surface already routes through, and the bench's
+ *  held-detection reads the same field — so this cannot drift from what the
+ *  model was told without the bench noticing too. */
+/** The run address a held dispatch carries, which is the PAIR KEY.
+ *
+ *  ⚠ `undefined` means only that the halves CANNOT BE JOINED — not that the
+ *  call was terminal. Whether a result is stored is decided by
+ *  {@link isNonTerminalToolResult} alone; conflating the two is what let a
+ *  run-id-less hold store its acknowledgement as an answer. */
+export const runIdOf = (result: unknown): string | undefined => {
+  if (result === null || typeof result !== 'object') return undefined;
+  const id = (result as { run_id?: unknown }).run_id;
+  return typeof id === 'string' && id.length > 0 ? id : undefined;
+};
+
+export const isNonTerminalToolResult = (result: unknown): boolean => {
+  if (result === null || typeof result !== 'object') return false;
+  const envelope = result as {
+    run_held?: unknown;
+    awaiting_approval?: unknown;
+    result?: unknown;
+  };
+  // ⛔⛔ `run_held` IS THE ENGINE'S OWN MARKER AND IT IS THE OUTER ONE. The
+  //   first cut checked only `awaiting_approval` on the top level, and the real
+  //   dispatch envelope is
+  //     { ok, result: { status:'awaiting_approval', awaiting_approval:true, … },
+  //       run_held: { kind:'approval' }, run_id }
+  //   so the marker sits one level DEEPER than it looked for and the check
+  //   never fired. Every unit test passed, because I wrote the fixtures from
+  //   the same wrong assumption as the code — a bench drive against the real
+  //   binary is what found it, on its first honest run.
+  if (envelope.run_held !== undefined && envelope.run_held !== null) return true;
+  if (envelope.awaiting_approval === true) return true;
+  // ⚠ And the agent-facing projection, wherever it rides. `run_held` is the
+  //   engine's word; `awaiting_approval` is what `projectRunResultForAgent`
+  //   shows the model. Reading both means a change to either shape degrades to
+  //   "do not store a result", which is the safe direction.
+  const inner = envelope.result;
+  return inner !== null
+    && typeof inner === 'object'
+    && (inner as { awaiting_approval?: unknown }).awaiting_approval === true;
+};
+
+/** ⚗ BENCH-ONLY IN-TURN RETENTION (`RECUED_CHAT_PRIOR_TOOL_CALLS_KEEP`).
+ *
+ *  ⛔⛔ THE CURRENT ROUND IS NEVER CUT, AND THAT IS THE WHOLE FIX. The first
+ *  version of this knob truncated inside `composeChatMainTurnPromptParts`,
+ *  which cannot see round boundaries — so a model that had just asked for three
+ *  tools was handed ONE of its own results and told to synthesise. That is
+ *  precisely what `promptFits`'s guard below already refuses to do on the
+ *  context-length path: *"Never reinvoke the model after deleting the
+ *  newest/only result it is meant to synthesize."* The shipped code knew; the
+ *  knob did it unconditionally.
+ *
+ *  🔑 MEASURED CONSEQUENCE — the treatment broke the instrument, monotonically.
+ *  Provider-fault rate across two batches (bench-wide base rate 2.2%):
+ *  keep=ALL 10% · keep=3 78% · keep=2 78% · keep=1 100%. Every retention number
+ *  from those batches is void; the surviving runs were survivorship, not a
+ *  sample.
+ *
+ *  So retention applies ONLY to results from EARLIER rounds. `keep` counts
+ *  those; the current round rides in full, always.
+ *  ⛔ NOT A PRODUCT KNOB. Absent or invalid keeps everything. */
+export const retainForReinvoke = (
+  all: readonly ChatPriorToolCall[],
+  roundStart: number,
+): ChatPriorToolCall[] => {
+  const raw = process.env.RECUED_CHAT_PRIOR_TOOL_CALLS_KEEP;
+  if (raw === undefined) return all.slice();
+  const keep = Number.parseInt(raw, 10);
+  if (!Number.isInteger(keep) || keep < 0) return all.slice();
+  const older = all.slice(0, roundStart);
+  const current = all.slice(roundStart);
+  // ⛔ `older.slice(-keep)` IS WRONG AT keep=0: `slice(-0)` is `slice(0)`, i.e.
+  //   the WHOLE array, so a cap of zero silently kept everything. Caught by
+  //   `retain-for-reinvoke.test.ts` before it reached a batch — the previous
+  //   version of this knob had no test and cost two.
+  return [...older.slice(Math.max(0, older.length - keep)), ...current];
+};
+
 /** Fail-loud message for the mid-loop ABORT exit — a tool-loop reinvoke
  *  FAILED (provider / network / validation error) after at least one
  *  dispatch round ran (the loop's first reinvoke always follows the first
@@ -900,6 +1011,23 @@ export interface RunChatTurnPromptContent {
  *  main-turn call carries no prior dispatches; serialising `[]` would waste
  *  tokens AND risk the AI hallucinating that it had already called zero
  *  tools. */
+/** The one tool the executor answers itself. Named as a tool because that is
+ *  the only verb the model has; it is not in any catalog and never reaches the
+ *  registry. */
+export const CONTEXT_SLICE_TOOL = 'context.slice';
+
+/** D-213 pointer arm — the "these ran, their content is elsewhere" block.
+ *  A DYNAMIC TAIL field: it changes as turns accumulate, so it must never join
+ *  the cacheable prefix. */
+export interface ChatPriorToolPointers {
+  /** Absent in the NEUTRAL arm: that wording carries no instruction at all. */
+  readonly note?: string;
+  readonly calls: ReadonlyArray<{
+    readonly tool: string;
+    readonly item_id: string;
+  }>;
+}
+
 /** D-164 prompt-cache restructure — the chat main-turn prompt packet
  *  `composeChatMainTurnPromptParts` consumes. */
 interface ChatMainTurnPromptPacket {
@@ -937,6 +1065,7 @@ interface ChatMainTurnPromptPacket {
    *  stores match titles (9/10 vs 9/10) and beat no-index (1/10) on the
    *  two-referent case, and 9/10 vs 4/10 on multi-store spread. */
   readonly index_context?: string;
+  readonly prior_tool_pointers?: ChatPriorToolPointers;
   /** D-259 §7.4.2 — one bounded declaration-only line per live run in this
    * caller's session, plus the conflict-avoidance steering sentence. */
   readonly in_flight_context?: string;
@@ -1349,6 +1478,9 @@ export const composeChatMainTurnPromptParts = (
     ...(packet.prior_working_unverified
       ? { prior_working_unverified: packet.prior_working_unverified }
       : {}),
+    ...(packet.prior_tool_pointers
+      ? { prior_tool_pointers: packet.prior_tool_pointers }
+      : {}),
     ...(prior.length > 0 ? { prior_tool_calls: prior } : {}),
     ...(packet.output_feedback ? { output_feedback: packet.output_feedback } : {}),
     ...(packet.draft_for_review ? { draft_for_review: packet.draft_for_review } : {}),
@@ -1513,8 +1645,32 @@ export interface RunChatTurnInputs {
    *  constructor-captured) so concurrent surfaces cannot share metering state. */
   readonly llm_gateway_tool_usage?: LlmGatewayToolUsageMeter;
   /** Selected-model input allowance after reserving output + provider framing.
-   * Gateway-only today; absent keeps every normal-chat byte unchanged. */
+   *
+   *  Two suppliers now. The gateway computes it from `route.slot
+   *  .context_window_tokens` (a resolved slot, so an exact figure). Chat
+   *  supplies it from LEARNED bounds — `resolveChatInputTokenBudget`, the
+   *  minimum window observed across the candidate set — and still resolves to
+   *  `undefined` on any endpoint that has never refused, which is every
+   *  endpoint on a fresh install. Absent leaves `promptFits` vacuously true and
+   *  every trim below inert, exactly as before.
+   *
+   *  ⛔⛔ DO NOT REINTRODUCE `input_token_budget !== undefined` AS A TEST FOR
+   *  "IS THIS THE GATEWAY". It read as one for as long as the gateway was the
+   *  only supplier, and one branch below (typed-error propagation) was written
+   *  against that reading — so the moment chat began supplying a budget, chat
+   *  silently inherited the gateway's error contract. That is what
+   *  {@link ChatMainTurnInputs.propagate_typed_errors} exists to separate. */
   readonly input_token_budget?: number;
+  /** Surface a typed context/authority failure to the CALLER instead of
+   *  converting it to an in-turn `{ kind: 'failed' }` assistant message.
+   *
+   *  ⛔ TRUE ONLY FOR THE llm_gateway, which owns a truthful 400 mapping its
+   *  API clients depend on. Normal chat and messenger fail IN the turn — the
+   *  user gets an assistant message, not a transport error — and that
+   *  behaviour is historical and load-bearing. This was previously inferred
+   *  from `input_token_budget` being set; it is stated now because that
+   *  inference stopped being true. */
+  readonly propagate_typed_errors?: boolean;
   /** The turn's I-7 hop token (`ChannelInbound.dispatch_depth`) — rides
    *  beside the source onto every dispatch (D-160 P3) so the Gateway's
    *  loop ceiling sees re-entrant messenger fires truthfully. Optional
@@ -1531,6 +1687,7 @@ export interface RunChatTurnInputs {
    *  orchestrator gathered (Tier 2/3 gates already applied). */
   readonly available_tools: ReadonlyArray<ChatMainTurnTool>;
   readonly index_context?: string;
+  readonly prior_tool_pointers?: ChatPriorToolPointers;
   readonly in_flight_context?: string;
   /** The assembled content prompt parts (`chat_tail` + current
    *  `user_message`) after the before-turn gather. The model packet keeps
@@ -1612,6 +1769,17 @@ export interface RunChatTurnDeps {
    *  via `ctx.out.token` after this function returns. */
   readonly emit: (event: BroadcastChatEvent) => void;
   readonly now: () => number;
+  /** Re-read the input-token budget AFTER a call has failed.
+   *
+   *  ⛔ THE POINT IS THAT THE ANSWER CHANGES. A context-overflow refusal is how
+   *  an endpoint's window is learned (`endpoint-capabilities.ts`), so the
+   *  budget that exists after the failure is frequently the FIRST budget that
+   *  has ever existed for that endpoint — the turn's own value, resolved before
+   *  the call, was `undefined`. Re-resolving is what makes the retry below a
+   *  materially different request rather than a repeat.
+   *
+   *  ⚠ Absent ⇒ no retry, which is the historical behaviour. */
+  readonly resolveInputTokenBudget?: () => number | undefined;
 }
 
 /** What the turn produced. Chat-SHAPED (Stage 1b); maps cleanly onto
@@ -1621,6 +1789,25 @@ export interface RunChatTurnDeps {
 export interface RunChatTurnResult {
   readonly assistant_content: string;
   readonly tool_calls?: ChatToolCall[];
+  /** D-137 — what each dispatch RETURNED, so the orchestrator can persist it.
+   *
+   *  ⛔ `tool_calls` is the PROVENANCE shape: it carries an opaque `result_ref`
+   *  and no body, and its doc comment claims "the orchestrator persists the raw
+   *  result keyed on this id" — which nothing has ever done (`result_ref` is a
+   *  composed `session:turn:tool` string with no backing store). So the results
+   *  lived only in the per-turn `prior_tool_calls` accumulator and were
+   *  discarded at the turn boundary. This is the field that lets them out. */
+  readonly tool_results?: ReadonlyArray<{
+    readonly tool_name: string;
+    readonly args: unknown;
+    /** Absent on a DISPATCH row — the run was acknowledged, not answered. */
+    readonly result?: unknown;
+    readonly ts: number;
+    /** ⛔ The pair key, present only when the call can settle LATER. A
+     *  synchronous tool has nothing to pair with: its ask and its answer are
+     *  one event at one instant. */
+    readonly pair_id?: string;
+  }>;
   /** Bounded, locator-only local records returned by successful source
    * searches during this turn. */
   readonly provenance?: ChatProvenanceRef[];
@@ -1673,6 +1860,27 @@ export const runChatTurn = async (
   let carriedWorking: string | undefined;
   // EXPERIMENT — the verify pass runs at most once per turn (see the loop exit).
   let verifyPassUsed = false;
+  // ⚠ MUTABLE ON PURPOSE, and the only writer is the context-overflow retry
+  // below. The turn resolves its budget once, before any call; a refusal is the
+  // one event that can create or shrink one mid-turn, because the refusal IS
+  // how the endpoint's window gets learned.
+  let activeInputTokenBudget = inputs.input_token_budget;
+  /** Set by `tryMainTurn`'s catch when the provider refused for size. Read
+   *  once, by the retry gate. */
+  let lastFailureWasContextOverflow = false;
+
+  // What the trim ladder dropped, for the length of THIS turn only. The value
+  // is the executor's own pre-egress copy, so a slice of it re-enters the
+  // packet as an ordinary tool result and is aliased by the same egress pass as
+  // any other — which is precisely what a durable-row handle could not do, and
+  // why that route was removed rather than repaired.
+  const elidedValues = new Map<string, unknown>();
+  // Stable ref per (call, field). The ladder re-composes many times — the
+  // preview binary search alone runs ~log2(preview) rounds — and minting per
+  // composition would hand the model a different ref for the same value on
+  // every pass.
+  const elidedRefs = new WeakMap<object, Map<string, string>>();
+
   const tryMainTurn = async (
     prior_tool_calls?: ReadonlyArray<ChatPriorToolCall>,
     output_feedback?: string,
@@ -1721,6 +1929,9 @@ export const runChatTurn = async (
         content: contentForPrompt(),
         current_date: currentDate,
         ...(inputs.index_context ? { index_context: inputs.index_context } : {}),
+        ...(inputs.prior_tool_pointers
+          ? { prior_tool_pointers: inputs.prior_tool_pointers }
+          : {}),
         ...(inputs.in_flight_context
           ? { in_flight_context: inputs.in_flight_context }
           : {}),
@@ -1746,16 +1957,57 @@ export const runChatTurn = async (
     // Estimate against the role we will ACTUALLY send under — an owner who
     // re-roles the prompt to `user` must not get a budget computed for a
     // `system` message that never ships.
+    /** What to do when the trim has run out of things to remove.
+     *
+     *  ⛔⛔ THIS IS A TYPED ERROR THE GATEWAY'S CLIENTS DEPEND ON AND CHAT HAS
+     *  NEVER BEEN ABLE TO PRODUCE. It was unreachable on the chat path for the
+     *  same reason the whole trim was: no budget. Wiring learned bounds into
+     *  chat made it reachable — and it throws from PROMPT COMPOSITION, outside
+     *  the `try` that converts a failed call into an in-turn assistant message,
+     *  so it would have escaped `runChatTurn` and reached a chat user as a
+     *  transport error instead of a reply. That is a new failure mode, not a
+     *  better one.
+     *
+     *  ⛔ CHAT SENDS IT ANYWAY, ON PURPOSE. The budget it could not meet is
+     *  LEARNED — our conservative estimate against a ceiling inferred from one
+     *  refusal — so refusing locally means declining a call the endpoint might
+     *  well accept, on our own arithmetic. The trim has already minimised the
+     *  prompt; the provider is the authority on whether it fits, and if it
+     *  refuses, chat fails in-turn exactly as it always has. The gateway, whose
+     *  budget comes from a DECLARED window and whose clients want the 400,
+     *  keeps the throw. */
+    const failIfContextExhausted = (): void => {
+      if (inputs.propagate_typed_errors === true) throw new ChatContextLengthError();
+    };
     const promptFits = (parts: ChatMainTurnPromptParts): boolean =>
-      inputs.input_token_budget === undefined
+      activeInputTokenBudget === undefined
       || estimateConservativeMessagesTokens([
         { role: systemRole, content: systemPrompt },
         { role: 'user', content: parts.body },
-      ]) <= inputs.input_token_budget;
+      ]) <= activeInputTokenBudget;
     let promptParts = composePrompt();
-    if (inputs.input_token_budget !== undefined) {
-      // Gateway context is caller-history-authoritative: evict the oldest
-      // complete user-turn group first. Normal chat never enters this branch.
+    // ⛔⛔ THE UNTRIMMED COMPOSITION, KEPT SO A TRIM THAT ACHIEVES NOTHING CAN BE
+    //   ABANDONED. The rungs below are only worth their cost if they reach fit;
+    //   see `abandonUnfittableTrim` at the end of the ladder.
+    const untrimmedTail = fittedChatTail;
+    const untrimmedPriorToolCalls = fittedPriorToolCalls;
+    if (activeInputTokenBudget !== undefined) {
+      // Evict the oldest complete user-turn group first (gateway context is
+      // caller-history-authoritative; chat's tail is the same shape).
+      //
+      // ⚠ "Normal chat never enters this branch" WAS TRUE AND IS NO LONGER.
+      // It held because `input_token_budget` had exactly one supplier, the
+      // gateway. Chat now supplies one from learned context bounds, so this
+      // loop and the `prior_tool_calls` fitting below are live on the chat
+      // path too — but only for an endpoint that has actually refused
+      // something. On an endpoint that never has, the budget is undefined and
+      // this branch is as unreachable as the comment claimed.
+      //
+      // ⚠ The omission marker the model then sees is still named
+      // `llm_gateway_context_omitted`. That name is now wrong for half its
+      // audience; it is left alone deliberately because it is a SHIPPED
+      // model-facing string, and renaming it is a prompt change, not a
+      // cleanup.
       while (!promptFits(promptParts) && fittedChatTail.length > 0) {
         let nextUser = -1;
         for (let i = 1; i < fittedChatTail.length; i += 1) {
@@ -1787,16 +2039,68 @@ export const runChatTurn = async (
           calls: ReadonlyArray<ChatPriorToolCall>,
           previewChars: number,
           forceMarker = false,
-        ): ChatPriorToolCall[] => calls.map((call) => {
+        ): ChatPriorToolCall[] => {
+          // ⛔⛔ THE ROUTE IS STATED ONCE PER COMPOSITION, NOT PER MARKER, AND
+          //   THE PER-MARKER VERSION WAS A REGRESSION. `recover_with` is a
+          //   27-char constant; repeating it on every omission raises the
+          //   ladder's IRREDUCIBLE FLOOR — the size of a fully-elided packet —
+          //   and a floor above budget makes the ladder abandon and send
+          //   UNTRIMMED. Caught by an existing gateway test tuned to a 1,287
+          //   token budget: it went from fitting to 11,167 tokens, i.e. the
+          //   20 KB payload passed through whole. A marker that costs bytes to
+          //   describe its own escape hatch can defeat the trim it belongs to.
+          let routeStated = false;
+          return calls.map((call) => {
           const record = call as ChatPriorToolCall & {
             readonly args?: unknown;
             readonly result?: unknown;
           };
-          const bound = (value: unknown): unknown => {
+          // The durable row this call was written to, when it has one. This is
+          // the whole point of the mid-turn persist: a marker that says only
+          // "something was here" leaves the model stuck, while one carrying a
+          // handle lets it fetch back exactly what the trim took.
+          // ⚠ Absent on a result trimmed the FIRST time it is composed — it has
+          //   not been through an egress pass yet, so it cannot be persisted
+          //   safely (see `persistToolResultsForRecall`). It gains an id after
+          //   that round and is fetchable from the next one on.
+          const bound = (field: string, value: unknown): unknown => {
             const serialized = serialize(value);
             if (!forceMarker && serialized.length <= previewChars) return value;
+            let fields = elidedRefs.get(call as object);
+            if (fields === undefined) {
+              fields = new Map<string, string>();
+              elidedRefs.set(call as object, fields);
+            }
+            let ref = fields.get(field);
+            if (ref === undefined) {
+              ref = `ctx_${String(elidedValues.size + 1)}`;
+              fields.set(field, ref);
+            }
+            elidedValues.set(ref, value);
+            // ⛔⛔ THE RECOVERY AFFORDANCE IS A LUXURY; FITTING IS NOT. At
+            //   `previewChars === 0` the ladder is on its last rung and the
+            //   model is already being told nothing about this value, so the
+            //   ref and the route are dropped too: they are pure bytes at the
+            //   exact moment bytes are what is missing.
+            //   Measured, and it is why this guard exists: carrying them at
+            //   rung 0 raised the IRREDUCIBLE FLOOR — the size of a
+            //   fully-elided packet — past a 1,287-token budget, so the search
+            //   walked all the way to 0, still did not fit, ABANDONED, and sent
+            //   a 20 KB payload through whole at 11,167 tokens. A marker that
+            //   spends bytes describing its own escape hatch can defeat the
+            //   trim it belongs to.
+            const affordable = previewChars > 0;
             return {
               llm_gateway_context_omitted: true,
+              // The model is mid-task and has just lost something it was using.
+              // The ref is useless without saying what opens it, and this is the
+              // one place in the packet where that is not a standing directive:
+              // it appears exactly where the gap is, only when there is one.
+              ...(affordable ? { context_ref: ref } : {}),
+              ...(affordable && !routeStated
+                ? ((routeStated = true),
+                  { recover_with: 'context.slice({ref, query})' })
+                : {}),
               ...(previewChars > 0
                 ? { preview: serialized.slice(0, previewChars) }
                 : {}),
@@ -1805,13 +2109,14 @@ export const runChatTurn = async (
           return {
             ...call,
             ...(Object.prototype.hasOwnProperty.call(record, 'args')
-              ? { args: bound(record.args) }
+              ? { args: bound('args', record.args) }
               : {}),
             ...(Object.prototype.hasOwnProperty.call(record, 'result')
-              ? { result: bound(record.result) }
+              ? { result: bound('result', record.result) }
               : {}),
           } as ChatPriorToolCall;
-        });
+          });
+        };
         omittedContext = true;
         fittedPriorToolCalls = boundToolCalls(
           sourceToolCalls,
@@ -1852,15 +2157,56 @@ export const runChatTurn = async (
               high = previewChars - 1;
             }
           }
-          if (best === null) throw new ChatContextLengthError();
-          fittedPriorToolCalls = best.calls;
-          promptParts = best.parts;
+          if (best === null) failIfContextExhausted();
+          if (best !== null) {
+            fittedPriorToolCalls = best.calls;
+            promptParts = best.parts;
+          }
         }
       }
       // Never reinvoke the model after deleting the newest/only result it is
       // meant to synthesize. If its call envelope plus zero-preview omission
       // marker cannot fit, fail truthfully instead of inviting a blind repeat.
-      if (!promptFits(promptParts)) throw new ChatContextLengthError();
+      if (!promptFits(promptParts)) {
+        // Gateway: a declared window and a client that wants the 400.
+        failIfContextExhausted();
+        // ⛔⛔ CHAT: ABANDON THE WHOLE TRIM. A TRIM THAT DOES NOT REACH FIT IS
+        //   PURE LOSS, AND SHIPPING ONE IS WORSE THAN NOT TRIMMING AT ALL.
+        //   Measured on a 60-tool catalog with a 24,512 budget (a 32,768-token
+        //   endpoint): the ladder evicted 6 chat_tail rows down to 1 and the
+        //   prompt was STILL 27,940 — over budget, with the conversation gone.
+        //   The model then answers from a destroyed context and the turn reports
+        //   SUCCESS, because the estimator (UTF-8 BYTES — roughly 4x a real
+        //   tokenizer on ASCII) said 27,940 while the provider counted ~7,000
+        //   and accepted it. Silent, permanent, every turn.
+        //
+        //   The rungs exist to make the call SUCCEED. When none of them can,
+        //   the choice is not "trim more" but "trim nothing": our budget is a
+        //   deliberate OVER-count, so the untrimmed prompt frequently fits in
+        //   reality, and the provider is the authority on that — not our
+        //   estimate. If it does refuse, chat fails in-turn exactly as it did
+        //   before any of this existed.
+        //
+        // ⚠ The trim is abandoned WHOLE, tail included. A partial keep would
+        //   ship the arbitrary state the binary search happened to stop on:
+        //   when it finds no fitting preview size, `fittedPriorToolCalls` holds
+        //   its LAST PROBE while `promptParts` holds the earlier drop-oldest
+        //   composition — two different trims, and the pair was never meant to
+        //   be observed, because reaching here used to always throw.
+        //
+        // ⚠ RESTORE THE INPUTS AND RECOMPOSE, rather than restoring the saved
+        //   `promptParts` alongside them. Only `promptParts` is read after this
+        //   block (it becomes `llm.prompt` AND the grounding corpus at
+        //   `lastPacketBody`), so assigning the saved copy would work while
+        //   leaving the three locals free to disagree with what was actually
+        //   sent — and the grounding corpus disagreeing with the prompt is
+        //   precisely how a result the model never saw gets credited to it.
+        //   Recomposing makes one state the single source of both.
+        fittedChatTail = untrimmedTail;
+        fittedPriorToolCalls = untrimmedPriorToolCalls;
+        omittedContext = false;
+        promptParts = composePrompt();
+      }
     }
     const layer: ChatModelRoutingLayer = inputs.model_layer;
     const forceLayer = chatModelLayerToForceLayer(layer);
@@ -1971,8 +2317,9 @@ export const runChatTurn = async (
         ...(result.usage !== undefined ? { usage: result.usage } : {}),
       };
     } catch (e) {
+      lastFailureWasContextOverflow = isContextOverflowRejection(e);
       if (
-        inputs.input_token_budget !== undefined
+        inputs.propagate_typed_errors === true
         && e !== null
         && typeof e === 'object'
         && (
@@ -1983,8 +2330,9 @@ export const runChatTurn = async (
       ) {
         // The OpenAI-compatible gateway owns a truthful 400 mapping for
         // provider-reported context overflow. Keep normal chat's historical
-        // fail-in-turn behavior byte-for-byte by propagating only on the
-        // gateway-only budgeted path.
+        // fail-in-turn behavior byte-for-byte by propagating only where the
+        // caller has ASKED for typed errors — never by inferring it from a
+        // budget being present, which is now true on the chat path too.
         throw e;
       }
       return {
@@ -2014,6 +2362,12 @@ export const runChatTurn = async (
   //       stay silent (the empty body is the renderer's signal).
   let assistantContent = '';
   let assistantToolCalls: ChatToolCall[] | undefined;
+  let assistantToolResults:
+    | Array<{
+      tool_name: string; args: unknown; result?: unknown;
+      ts: number; pair_id?: string;
+    }>
+    | undefined;
   const assistantProvenance: ChatProvenanceRef[] = [];
   const assistantProvenanceKeys = new Set<string>();
   let totalUsage: TokenUsageReport | undefined;
@@ -2043,6 +2397,45 @@ export const runChatTurn = async (
   // ⚠ Gated identically: only a DECODE failure retries (`validation_issues`
   // present); a provider outage still fails immediately rather than spending a
   // second call on the same outage. One retry, its own budget.
+  // ⛔⛔ THE CONTEXT-OVERFLOW CARVE-OUT, and it is a carve-out from the rule
+  // stated just above ("a provider outage still fails immediately rather than
+  // spending a second call on the same outage"). The rule is right; this is not
+  // that case, for two reasons that have to BOTH hold or the retry is waste:
+  //
+  //   1. THE SECOND REQUEST IS MATERIALLY DIFFERENT. A refusal for size is how
+  //      the endpoint's window is LEARNED — before it, `resolveInputTokenBudget`
+  //      had nothing to return and the prompt was composed unbudgeted; after
+  //      it, there is a real ceiling and the trim actually runs. Re-resolving
+  //      is what makes this a different call rather than a repeat of the same
+  //      one, which is why the budget is re-read rather than reused.
+  //   2. IT COST NOTHING. A context refusal lands at the REQUEST boundary with
+  //      zero completion tokens billed — the same argument
+  //      `completeWithJsonFallback` and the system-role fallback already make
+  //      for retrying once, verbatim. So the zero-retry policy ("one SUCCESSFUL
+  //      call = one billing event") is untouched.
+  //
+  // ⛔ BOUNDED BY CONSTRUCTION, NOT BY A COUNTER. The retry only fires when the
+  // re-resolved budget is STRICTLY SMALLER than what the turn was already
+  // composing under. A second overflow re-learns nothing new (the ceiling is
+  // already at or below that size, and `noteContextRefused` keeps the lowest),
+  // so the condition cannot hold twice — there is no loop to cap.
+  if (
+    initialResult.kind === 'failed'
+    && lastFailureWasContextOverflow
+    && deps.resolveInputTokenBudget !== undefined
+  ) {
+    const relearned = deps.resolveInputTokenBudget();
+    if (
+      relearned !== undefined
+      && (activeInputTokenBudget === undefined || relearned < activeInputTokenBudget)
+    ) {
+      activeInputTokenBudget = relearned;
+      const fitted = await tryMainTurn();
+      totalUsage = aggregateTokenUsageReports(totalUsage, fitted.usage);
+      initialResult = fitted;
+    }
+  }
+
   if (
     initialResult.kind === 'failed'
     && initialResult.validation_issues !== undefined
@@ -2071,6 +2464,13 @@ export const runChatTurn = async (
         NO_LLM_SOURCE_DETAIL_RE.test(initialResult.detail)
       ) {
         assistantContent = NO_LLM_SOURCE_MESSAGE;
+      } else if (lastFailureWasContextOverflow) {
+        // ⛔ Read from the CLASSIFIED failure, not from the detail string. The
+        // flag is set by `isContextOverflowRejection`, which keys on the typed
+        // code the provider adapter already assigned at the HTTP boundary — a
+        // second regex over the rendered message would be a weaker copy of a
+        // decision that was already made with the status code in hand.
+        assistantContent = CONTEXT_TOO_LARGE_MESSAGE;
       }
       deps.emit({
         kind: 'chat.transparency',
@@ -2194,6 +2594,13 @@ export const runChatTurn = async (
       // the chat broadcast bus so the renderer can paint per-round
       // progress. Capped by `CHAT_MAIN_TURN_TOOL_LOOP_CAP` (contract).
       const toolCallsAccum: ChatToolCall[] = [];
+      // Beside `toolCallsAccum` (provenance, persisted) and `priorToolCalls`
+      // (the model-facing accumulator, discarded at the turn boundary). This is
+      // the third view: the durable body.
+      const toolResultsAccum: Array<{
+        tool_name: string; args: unknown; result?: unknown;
+        ts: number; pair_id?: string;
+      }> = [];
       const priorToolCalls: ChatPriorToolCall[] = [];
       let nextToolCalls: ReadonlyArray<ToolCall> = currentAiOutput.tool_calls;
       let roundIndex = 0;
@@ -2353,6 +2760,37 @@ export const runChatTurn = async (
           })),
           executeOne: async (tc) => {
             const started_at = now();
+            // ⛔⛔ ANSWERED BY THE TURN, NEVER DISPATCHED. The value lives in
+            //   this executor's memory and nowhere else — there is no store to
+            //   read, no registry entry to grant, and no authority boundary to
+            //   cross, because nothing leaves the turn that was not already in
+            //   it. Routing this through the dispatcher would invent all three.
+            // ⚠ It therefore also bypasses argument grounding, which is correct
+            //   here for the one reason grounding exists: `ref` is a value the
+            //   model was HANDED, in the marker, in this same packet.
+            if (tc.tool === CONTEXT_SLICE_TOOL) {
+              const completed_at = now();
+              // ⚠ WRAPPED AS A DISPATCH ENVELOPE, not returned bare. The entry
+              //   builder reads `result.result` for the payload and `result.ok`
+              //   for the status, so a bare outcome renders as a SUCCESSFUL
+              //   call carrying nothing — the model is told the fetch worked
+              //   and handed no data.
+              const outcome = resolveContextSlice(
+                (tc.args ?? {}) as ContextSliceRequest,
+                elidedValues,
+              );
+              return {
+                result: outcome.ok
+                  ? { ok: true as const, result: outcome }
+                  : {
+                      ok: false as const,
+                      reason: outcome.reason,
+                      detail: outcome.detail,
+                    },
+                started_at,
+                completed_at,
+              } as ToolCallExecution;
+            }
             // ⛔⛔ REFUSE AN ARGUMENT THE MODEL COULD NOT HAVE READ, before it
             // reaches the dispatcher. Measured across 246 live turns: when a
             // model is given a multi-step job it emits the whole job in ONE
@@ -2449,6 +2887,9 @@ export const runChatTurn = async (
             return { result, started_at, completed_at };
           },
         });
+        // ⚗ Where THIS round's results begin. Retention below must never cut
+        //   below it — see `retainForReinvoke`.
+        const roundStart = priorToolCalls.length;
         let toolCallsExecuted = 0;
         for (let i = 0; i < nextToolCalls.length; i += 1) {
           const tc = nextToolCalls[i]!;
@@ -2498,6 +2939,62 @@ export const runChatTurn = async (
             // the chat_messages table.
             dispatchPeerName !== null ? 3 : undefined,
           ));
+          // ⛔⛔ ONLY A TERMINAL RESULT BECOMES A DURABLE ROW. D-259 decoupled
+          //   dispatch from completion: a run HELD for approval is
+          //   acknowledged in THIS turn and finishes in a later one, or never.
+          //   `execution.result` here is then the `awaiting_approval`
+          //   projection — a message saying the work is pending — and storing
+          //   that as the tool's RESULT is worse than storing nothing, because
+          //   recall would later surface "queued" as the answer to whatever the
+          //   model asked. Assurance-shaped non-assurance.
+          //
+          // ⚠ A FAILED run IS terminal and IS recorded: "it failed" is a true
+          //   answer, and a later turn asking "did that send go out" deserves
+          //   to find it.
+          //
+          // ⚠ SO A LATE RESULT IS CURRENTLY NOT RECALLABLE AT ALL, and that is
+          //   a known gap rather than a handled case. Writing it when the run
+          //   actually completes needs a completion hook on the in-flight
+          //   registry that knows the originating session — D-259 gives the
+          //   model VISIBILITY of in-flight work (`in_flight_context`, read at
+          //   turn start) but no write-back when it settles.
+          // ⛔⛔ ONE ROW PER EVENT, NOT PER CALL. A SYNCHRONOUS dispatch is
+          //   one event — ask and answer at one instant — so it is one row
+          //   carrying both halves. A HELD dispatch is TWO: "I asked" now, and
+          //   "it answered" whenever it settles. Their times genuinely
+          //   disagree, which is precisely why one row cannot represent it:
+          //   the single `ts` would have to be either chronologically honest
+          //   or cursor-safe, and it cannot be both.
+          //
+          // ⚠ The dispatch row is written WITHOUT a result, deliberately. The
+          //   earlier cut stored the `awaiting_approval` projection AS the
+          //   result, so recall would answer a later question with "queued";
+          //   this records the ASK, which is true, and leaves the answer to
+          //   the row that will carry it.
+          // ⛔⛔ HELD DECIDES WHETHER A RESULT IS STORED; THE RUN ID ONLY
+          //   DECIDES WHETHER IT CAN PAIR. Those are two questions and the
+          //   first cut folded them into one: `heldRunId === undefined ?
+          //   { result } : { pair_id }` meant a hold that carried NO run id
+          //   fell into the result branch and stored the "queued" projection as
+          //   the answer — reintroducing, for that shape, exactly the defect
+          //   the `isNonTerminalToolResult` check exists to prevent. I had even
+          //   written the folding down as deliberate ("unpairable, so treated
+          //   as terminal"), which was the wrong call: unpairable means a
+          //   dispatch row with no result, never an acknowledgement standing in
+          //   for one.
+          const held = isNonTerminalToolResult(execution.result);
+          const heldRunId = held ? runIdOf(execution.result) : undefined;
+          toolResultsAccum.push({
+            tool_name: tc.tool,
+            args: tc.args,
+            // ⚠ A held run has no answer YET. The row records the ask.
+            ...(held ? {} : { result: execution.result }),
+            // ⚠ And pairs only if it can. An unpairable hold still earns its
+            //   ask row — "asked, not yet answered" is true either way; what it
+            //   loses is the ability to be joined to an answer later.
+            ...(heldRunId !== undefined ? { pair_id: heldRunId } : {}),
+            ts: execution.completed_at ?? execution.started_at,
+          });
           priorToolCalls.push(priorToolCallEntry(
             tc,
             execution.result,
@@ -2520,7 +3017,9 @@ export const runChatTurn = async (
         // to the AI. Later rounds keep mutating the live array;
         // passing the live reference would let those mutations leak
         // into the earlier round's wire input.
-        const reinvokeResult = await tryMainTurn(priorToolCalls.slice());
+        const reinvokeResult = await tryMainTurn(
+          retainForReinvoke(priorToolCalls, roundStart),
+        );
         totalUsage = aggregateTokenUsageReports(totalUsage, reinvokeResult.usage);
 
         let effectiveReinvoke = reinvokeResult;
@@ -2813,6 +3312,9 @@ export const runChatTurn = async (
       if (toolCallsAccum.length > 0) {
         assistantToolCalls = toolCallsAccum;
       }
+      if (toolResultsAccum.length > 0) {
+        assistantToolResults = toolResultsAccum;
+      }
     }
 
     // The orchestrator runs its after-turn gathers over this FINAL
@@ -2824,6 +3326,7 @@ export const runChatTurn = async (
   return {
     assistant_content: assistantContent,
     ...(assistantToolCalls ? { tool_calls: assistantToolCalls } : {}),
+    ...(assistantToolResults ? { tool_results: assistantToolResults } : {}),
     ...(assistantProvenance.length > 0
       ? { provenance: assistantProvenance }
       : {}),

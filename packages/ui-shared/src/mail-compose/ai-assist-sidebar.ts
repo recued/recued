@@ -1,62 +1,67 @@
-/** D-145 PA7 — AI-assist sidebar (STUB).
+/** Mail-compose body rewrite controls.
  *
- *  Per spec § A.5.5 — AI-assist (compose / rewrite / polish) lands as
- *  a sidebar feature in the form renderer. PA7 ships the rendered
- *  controls + data-action wiring only. The host fires the actions as
- *  no-ops; engine integration via `ai.synthesize` lands in PB.
- *
- *  Each control carries `data-action="mail-compose-ai-<kind>"` —
- *  closed list per `MAIL_COMPOSE_AI_ACTIONS`. Hosts that haven't
- *  wired the engine yet should hide the sidebar via CSS rather than
- *  removing the markup, so the render contract stays stable across
- *  PA7 + PB.
- *
- *  Spec: D-145 § A.5.5 (AI-assist sidebar). */
+ * Only transformations of an existing body render here. “Compose” and “Draft
+ * reply” remain in the broader contract vocabulary, but exposing either before
+ * grounding and source-context semantics exist would invite invented mail. */
 
-import { MAIL_COMPOSE_AI_ACTIONS, type MailComposeAiAction } from '@recued/contracts';
+import {
+  MAIL_COMPOSE_REWRITE_ACTIONS,
+  type MailComposeRewriteAction,
+} from '@recued/contracts';
 import { e } from '../template.js';
 
 export interface AiAssistSidebarProps {
-  /** Mirror of `MailComposeDialogState.submitting` — the sidebar
-   *  controls disable while the rpc is in flight, so the user can't
-   *  request another transformation mid-send. */
+  /** Sending and rewriting are mutually exclusive draft mutations. */
   submitting: boolean;
+  /** The one transformation awaiting its governed execute response. */
+  busyAction?: MailComposeRewriteAction | null;
+  /** Owner-facing failure/local conflict copy. */
+  error?: string | null;
+  /** Whether the host still holds a safely-applicable one-step undo. */
+  canUndo?: boolean;
 }
 
-const AI_ACTION_LABELS: Readonly<Record<MailComposeAiAction, string>> = {
-  compose: 'Compose',
-  'rewrite-formal': 'Rewrite (formal)',
-  'rewrite-friendly': 'Rewrite (friendly)',
+const AI_ACTION_LABELS: Readonly<Record<MailComposeRewriteAction, string>> = {
+  'rewrite-formal': 'Make formal',
+  'rewrite-friendly': 'Make friendly',
   polish: 'Polish',
-  'draft-reply': 'Draft reply',
 };
 
+const busyLabel = (action: MailComposeRewriteAction): string =>
+  action === 'polish' ? 'Polishing…' : 'Rewriting…';
+
 export const renderAiAssistSidebar = (props: AiAssistSidebarProps): string => {
-  const disabled = props.submitting === true;
+  const busyAction = props.busyAction ?? null;
+  const disabled = props.submitting === true || busyAction !== null;
   const disabledAttr = disabled ? ' disabled aria-disabled="true"' : '';
-  const buttons = MAIL_COMPOSE_AI_ACTIONS.map((action) => {
-    const label = AI_ACTION_LABELS[action];
+  const buttons = MAIL_COMPOSE_REWRITE_ACTIONS.map((action) => {
+    const active = busyAction === action;
+    const ariaBusy = active ? ' aria-busy="true"' : '';
     return `
       <button
         type="button"
         class="mail-compose-ai-action"
-        data-action="mail-compose-ai-${e(action)}"${disabledAttr}
-      >${e(label)}</button>
+        data-action="mail-compose-ai-${e(action)}"${disabledAttr}${ariaBusy}
+      >${e(active ? busyLabel(action) : AI_ACTION_LABELS[action])}</button>
     `;
   }).join('');
+  const error = props.error
+    ? `<p class="mail-compose-ai-error" role="alert">${e(props.error)}</p>`
+    : '';
+  const undo = props.canUndo === true
+    ? `<button type="button" class="mail-compose-ai-undo" data-action="mail-compose-ai-undo"${disabledAttr}>Undo last rewrite</button>`
+    : '';
   return `
-    <aside
-      class="mail-compose-ai-assist"
-      aria-label="AI assist"
-      data-stub="pa7"
-    >
+    <aside class="mail-compose-ai-assist" aria-label="AI assist">
       <h3 class="mail-compose-ai-title">AI assist</h3>
       <p class="mail-compose-ai-help">
-        Coming soon.
+        Rewrite the current message body. You review every change before sending.
       </p>
       <div class="mail-compose-ai-actions">
         ${buttons}
       </div>
+      ${error}
+      ${undo}
     </aside>
   `;
 };

@@ -29,6 +29,7 @@ import type {
 import { e } from '../template.js';
 import { renderForm } from '../form-renderer/render.js';
 import { renderAiAssistSidebar } from './ai-assist-sidebar.js';
+import type { AiAssistSidebarProps } from './ai-assist-sidebar.js';
 import { renderMailComposeAttachmentPicker } from './attachment-picker.js';
 
 /** Drop the `sender_source` ref input from the form-renderer's view of
@@ -87,6 +88,11 @@ export interface MailComposeDialogProps {
    *  an id) renders that chip unresolved rather than dropping it, so a host
    *  that has not wired an inventory read still shows what is attached. */
   attachments?: readonly MailComposeAttachment[];
+  /** Host-owned async rewrite state. Omitted keeps the controls idle. */
+  aiAssist?: Omit<AiAssistSidebarProps, 'submitting'>;
+  /** The host is resolving an attachment choice. Sending and AI rewriting stay
+   * locked until the chosen ids are reflected in the draft. */
+  attachmentBusy?: boolean;
 }
 
 const dialogTitle = (mode: MailComposeDialogState['mode']): string =>
@@ -104,7 +110,13 @@ export const renderMailComposeDialog = (
   // regardless of submitting state (defense-in-depth — page-level
   // gate normally hides the compose entry point in this state).
   const cannotSubmit = sendCapable.length === 0;
-  const submitDisabled = props.state.submitting === true || cannotSubmit;
+  const assistBusy = props.aiAssist?.busyAction !== undefined
+    && props.aiAssist.busyAction !== null;
+  const attachmentBusy = props.attachmentBusy === true;
+  const submitDisabled = props.state.submitting === true
+    || cannotSubmit
+    || assistBusy
+    || attachmentBusy;
   const submittingAttr = submitDisabled ? ' disabled' : '';
   const submitLabel = props.state.submitting === true ? 'Sending…' : 'Send';
   const submitError = props.state.submit_error
@@ -146,7 +158,7 @@ export const renderMailComposeDialog = (
             ${renderMailComposeAttachmentPicker({
               attachment_ids: props.state.values.attachments,
               known: props.attachments ?? [],
-              submitting: props.state.submitting,
+              submitting: props.state.submitting || assistBusy || attachmentBusy,
             })}
             ${submitError}
             <footer class="mail-compose-actions">
@@ -162,7 +174,10 @@ export const renderMailComposeDialog = (
               >${e(submitLabel)}</button>
             </footer>
           </form>
-          ${renderAiAssistSidebar({ submitting: props.state.submitting })}
+          ${renderAiAssistSidebar({
+            submitting: props.state.submitting || attachmentBusy,
+            ...props.aiAssist,
+          })}
         </div>
       </div>
     </div>

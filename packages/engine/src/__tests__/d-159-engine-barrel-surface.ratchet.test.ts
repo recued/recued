@@ -100,6 +100,15 @@ const EXPECTED_RUNTIME_EXPORTS = [
   'isPrototypeSensitiveKey',
   // Poll-manager / G6 — see the catalog-gateway keep-list note above.
   'runCatalogOperation',
+  // D-259 held-action settlement — the host classifies an already-resolved
+  // catalog op as `durable_handoff` vs `returned_result`, and this is the
+  // classifier. HOST-FACING BY CONSTRUCTION (its own docstring says so): it
+  // reuses the engine's dispatch precedence so a malformed dual-surface op that
+  // really takes API dispatch cannot be mislabeled detached merely for also
+  // carrying a CLI binding. Re-deriving that in the server would agree until a
+  // pack declares both surfaces and then disagree SILENTLY — the same failure
+  // `resolveCatalogRecordsPath` below is exported to prevent.
+  'catalogOperationUsesDetachedCli',
   // D-254 slice 2 — the records-path resolver, exported for ONE reason: the
   // raw-op door composes routable ids from the returned records and must not
   // re-derive where they sit. The leading `result` segment is an executor-envelope

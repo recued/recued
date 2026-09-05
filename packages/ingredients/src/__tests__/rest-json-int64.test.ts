@@ -100,6 +100,27 @@ describe('connection.api exact REST JSON integer modes', () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
+  it('serializes exact integers under a pinned application/vnd.api+json too — a JSON:API body is JSON (RFC 6839)', async () => {
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(init?.body).toBe('{"person_id":9007199254741623}');
+      return new Response('{"data":{}}', {
+        status: 200,
+        headers: { 'content-type': 'application/vnd.api+json' },
+      });
+    }) as unknown as typeof fetch;
+    const handler = handlerFor(fetchImpl);
+
+    await handler(row, {
+      method: 'POST',
+      path: '/123/example.json',
+      'header.Content-Type': 'application/vnd.api+json',
+      'body.person_id': '9007199254741623',
+      __rc_json_decimal_integer_fields: '["person_id"]',
+    }, call('write'));
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it('fails closed before dispatch when a selected request integer is not exact decimal text', async () => {
     const fetchImpl = vi.fn() as unknown as typeof fetch;
     const handler = handlerFor(fetchImpl);

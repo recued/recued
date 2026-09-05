@@ -9,21 +9,22 @@
  *  this" from "that is not one of the options", and collapsing them is the § 30
  *  mistake this arc has now made once already. */
 import Database from 'better-sqlite3';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { receiveAnswer } from '../peer-answer-return.js';
+import { PEER_HOLD_ABANDONER } from '../peer-hold-abandoner.js';
 import { createPeerAnswerStore } from '../storage/peer-answer-store.js';
 import { createPeerAskOutboxStore } from '../storage/peer-ask-outbox-store.js';
 
 const REF = 'ref-1';
 const PEER = 'ctr_bob';
 
-const setup = (over: { openRow?: boolean } = {}) => {
+const setup = (over: { openRow?: boolean; actionRef?: string } = {}) => {
   const db = new Database(':memory:');
   const outbox = createPeerAskOutboxStore(db);
   const answers = createPeerAnswerStore(db);
   if (over.openRow !== false) {
-    outbox.open({
+    const row = {
       exchange_ref: REF,
       run_id: 'run_1',
       gated_step_id: 'verdict',
@@ -31,7 +32,32 @@ const setup = (over: { openRow?: boolean } = {}) => {
       label: 'review:contract',
       offered: ['yes', 'no'],
       created_at: 1,
-    });
+    } as const;
+    if (over.actionRef === undefined) {
+      outbox.open(row);
+    } else {
+      outbox.stage({
+        ...row,
+        checkpoint_id: 'peer-checkpoint-1',
+        action_ref: over.actionRef,
+        delivery: {
+          recipient_fingerprint: 'peer-bob-fingerprint',
+          spec: {
+            connection: row.connection,
+            label: row.label,
+            question: 'Approve this?',
+            options: [
+              { id: 'yes', label: 'Yes' },
+              { id: 'no', label: 'No' },
+            ],
+            on_timeout: 'wait',
+            via: 'direct',
+          },
+        },
+      });
+      outbox.activate(REF);
+      outbox.markDelivered(REF);
+    }
   }
   const resumed: { run_id: string; gated_step_id: string }[] = [];
   return {
@@ -51,7 +77,7 @@ const setup = (over: { openRow?: boolean } = {}) => {
 };
 
 describe('§ 234.4 — an answer coming home', () => {
-  it('accepts the answer we asked for, records it, closes the conversation, and resumes', async () => {
+  it('accepts the answer we asked for, records it, resumes, and closes the conversation', async () => {
     const s = setup();
     const r = await receiveAnswer(
       { peer_contract_id: PEER, exchange_ref: REF, raw: { answered: true, option: 'yes' } },
@@ -62,7 +88,52 @@ describe('§ 234.4 — an answer coming home', () => {
     // ⛔ CLOSED — a conversation that has been answered must stop advertising
     // itself as open, or the "what am I waiting on" surface lies.
     expect(s.outbox.get(REF)).toBeNull();
-    expect(s.resumed).toEqual([{ run_id: 'run_1', gated_step_id: 'verdict' }]);
+    expect(s.resumed).toEqual([{
+      run_id: 'run_1',
+      gated_step_id: 'verdict',
+      exchange_ref: REF,
+    }]);
+  });
+
+  it('acknowledges an exact durable replay after the completed route is closed', async () => {
+    const s = setup();
+    const input = {
+      peer_contract_id: PEER,
+      exchange_ref: REF,
+      raw: { answered: true, option: 'yes', note: 'same words', at: 50 },
+    };
+    await expect(receiveAnswer(input, s.deps)).resolves.toEqual({
+      accepted: true,
+      resumed: true,
+    });
+    expect(s.outbox.get(REF)).toBeNull();
+
+    await expect(receiveAnswer(input, s.deps)).resolves.toMatchObject({
+      accepted: false,
+      refusal: 'already_answered',
+    });
+    expect(s.resumed).toHaveLength(1);
+  });
+
+  it('keeps every non-identical missing-route answer indistinguishable as not solicited', async () => {
+    const s = setup();
+    await receiveAnswer(
+      { peer_contract_id: PEER, exchange_ref: REF, raw: { answered: true, option: 'yes', at: 50 } },
+      s.deps,
+    );
+
+    for (const input of [
+      { peer_contract_id: 'ctr_mallory', exchange_ref: REF, raw: { answered: true, option: 'yes', at: 50 } },
+      { peer_contract_id: PEER, exchange_ref: REF, raw: { answered: true, option: 'no', at: 50 } },
+      { peer_contract_id: PEER, exchange_ref: REF, raw: { answered: true, option: 'yes', at: 51 } },
+      { peer_contract_id: PEER, exchange_ref: 'never-opened', raw: { answered: true, option: 'yes', at: 50 } },
+    ]) {
+      await expect(receiveAnswer(input, s.deps)).resolves.toMatchObject({
+        accepted: false,
+        refusal: 'not_solicited',
+      });
+    }
+    expect(s.resumed).toHaveLength(1);
   });
 
   it('⛔ REFUSES A REF WE NEVER OPENED — nothing recorded, nothing resumed', async () => {
@@ -158,13 +229,9 @@ describe('§ 234.4 — an answer coming home', () => {
     const s = setup();
     await receiveAnswer(
       { peer_contract_id: PEER, exchange_ref: REF, raw: { answered: true, option: 'yes' } },
-      s.deps,
+      { ...s.deps, resume: async () => { throw new Error('interrupted'); } },
     );
-    // Re-open the row to simulate a redelivery racing the close.
-    s.outbox.open({
-      exchange_ref: REF, run_id: 'run_1', gated_step_id: 'verdict',
-      connection: 'peer-bob', label: 'review:contract', offered: ['yes', 'no'], created_at: 1,
-    });
+    // The retry anchor remains open because the first continuation failed.
     const again = await receiveAnswer(
       { peer_contract_id: PEER, exchange_ref: REF, raw: { answered: true, option: 'no' } },
       s.deps,
@@ -174,7 +241,7 @@ describe('§ 234.4 — an answer coming home', () => {
     expect(s.resumed).toHaveLength(1);
   });
 
-  it('⚠ a failed resume still ACCEPTS — the answer is durable either way', async () => {
+  it('keeps the outbox retry anchor after resume failure and an exact replay finishes it', async () => {
     // Refusing here would tell the peer their answer was rejected when we have
     // in fact kept it, and they would reasonably send it again.
     const s = setup();
@@ -184,5 +251,216 @@ describe('§ 234.4 — an answer coming home', () => {
     );
     expect(r).toEqual({ accepted: true, resumed: false });
     expect(s.answers.get(REF)?.option).toBe('yes');
+    expect(s.outbox.get(REF)).not.toBeNull();
+
+    const retried = await receiveAnswer(
+      { peer_contract_id: PEER, exchange_ref: REF, raw: { answered: true, option: 'yes' } },
+      s.deps,
+    );
+    expect(retried).toEqual({ accepted: true, resumed: true });
+    expect(s.resumed).toEqual([{
+      run_id: 'run_1',
+      gated_step_id: 'verdict',
+      exchange_ref: REF,
+    }]);
+    expect(s.outbox.get(REF)).toBeNull();
+  });
+
+  it('single-flights concurrent exact deliveries into one resume', async () => {
+    const s = setup();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const resume = vi.fn(async () => { await held; });
+    const deps = { ...s.deps, resume };
+
+    const first = receiveAnswer(
+      { peer_contract_id: PEER, exchange_ref: REF, raw: { answered: true, option: 'yes', at: 50 } },
+      deps,
+    );
+    await vi.waitFor(() => expect(resume).toHaveBeenCalledTimes(1));
+    const second = receiveAnswer(
+      { peer_contract_id: PEER, exchange_ref: REF, raw: { answered: true, option: 'yes', at: 50 } },
+      deps,
+    );
+    await Promise.resolve();
+    expect(resume).toHaveBeenCalledTimes(1);
+    release();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { accepted: true, resumed: true },
+      { accepted: true, resumed: true },
+    ]);
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(s.outbox.get(REF)).toBeNull();
+  });
+
+  it('reconciles the peer handoff receipt before resuming and closing', async () => {
+    const s = setup({ actionRef: 'action-1' });
+    const order: string[] = [];
+    const gatedActions = {
+      get: vi.fn(async () => ({
+        action_ref: 'action-1',
+        run_id: 'run_1',
+        gated_step_id: 'verdict',
+        current_checkpoint_id: 'peer-checkpoint-1',
+      })),
+      confirmPeerHandoff: vi.fn(async () => {
+        order.push('receipt');
+        return {
+          status: 'dispatched' as const,
+          handoff: { kind: 'peer_exchange', ref: REF },
+        };
+      }),
+    };
+    const originalClose = s.outbox.close.bind(s.outbox);
+    vi.spyOn(s.outbox, 'close').mockImplementation((ref) => {
+      order.push('close');
+      return originalClose(ref);
+    });
+
+    const r = await receiveAnswer(
+      { peer_contract_id: PEER, exchange_ref: REF, raw: { answered: true, option: 'yes' } },
+      {
+        ...s.deps,
+        gatedActions,
+        resume: async () => { order.push('resume'); },
+      },
+    );
+
+    expect(r).toEqual({ accepted: true, resumed: true });
+    expect(order).toEqual(['receipt', 'resume', 'close']);
+    expect(gatedActions.get).toHaveBeenCalledWith('action-1');
+    expect(gatedActions.confirmPeerHandoff).toHaveBeenCalledWith('action-1', {
+      run_id: 'run_1',
+      gated_step_id: 'verdict',
+      exchange_ref: REF,
+      status_message: expect.any(String),
+    });
+  });
+
+  it('continues a late authenticated answer without rewriting a terminal receipt', async () => {
+    const s = setup({ actionRef: 'action-1' });
+    const resume = vi.fn(async () => undefined);
+
+    const r = await receiveAnswer(
+      { peer_contract_id: PEER, exchange_ref: REF, raw: { answered: true, option: 'yes' } },
+      {
+        ...s.deps,
+        resume,
+        gatedActions: {
+          get: async () => ({
+            action_ref: 'action-1',
+            run_id: 'run_1',
+            gated_step_id: 'verdict',
+            current_checkpoint_id: 'peer-checkpoint-1',
+          }),
+          confirmPeerHandoff: async () => ({ status: 'in_doubt' }),
+        },
+      },
+    );
+
+    expect(r).toEqual({ accepted: true, resumed: true });
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(s.outbox.get(REF)).toBeNull();
+  });
+
+  it('retains the retry anchor when receipt reconciliation remains nonterminal', async () => {
+    const s = setup({ actionRef: 'action-1' });
+    const resume = vi.fn(async () => undefined);
+
+    const r = await receiveAnswer(
+      { peer_contract_id: PEER, exchange_ref: REF, raw: { answered: true, option: 'yes' } },
+      {
+        ...s.deps,
+        resume,
+        gatedActions: {
+          get: async () => ({
+            action_ref: 'action-1',
+            run_id: 'run_1',
+            gated_step_id: 'verdict',
+            current_checkpoint_id: 'peer-checkpoint-1',
+          }),
+          confirmPeerHandoff: async () => ({ status: 'dispatching' }),
+        },
+      },
+    );
+
+    expect(r).toEqual({ accepted: true, resumed: false });
+    expect(resume).not.toHaveBeenCalled();
+    expect(s.outbox.get(REF)).not.toBeNull();
+  });
+
+  it('does not reconcile or resume through a receipt owned by another checkpoint', async () => {
+    const s = setup({ actionRef: 'action-1' });
+    const resume = vi.fn(async () => undefined);
+    const confirmPeerHandoff = vi.fn(async () => ({ status: 'dispatched' as const }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const r = await receiveAnswer(
+      { peer_contract_id: PEER, exchange_ref: REF, raw: { answered: true, option: 'yes' } },
+      {
+        ...s.deps,
+        resume,
+        gatedActions: {
+          get: async () => ({
+            action_ref: 'action-1',
+            run_id: 'run_1',
+            gated_step_id: 'verdict',
+            current_checkpoint_id: 'later-checkpoint',
+          }),
+          confirmPeerHandoff,
+        },
+      },
+    );
+
+    expect(r).toEqual({ accepted: true, resumed: false });
+    expect(confirmPeerHandoff).not.toHaveBeenCalled();
+    expect(resume).not.toHaveBeenCalled();
+    expect(s.outbox.get(REF)).not.toBeNull();
+    warn.mockRestore();
+  });
+
+  it('does not borrow a same-subject receipt for a legacy row with no action ref', async () => {
+    const s = setup();
+    const get = vi.fn(async () => ({
+      action_ref: 'later-action',
+      run_id: 'run_1',
+      gated_step_id: 'verdict',
+      current_checkpoint_id: 'later-checkpoint',
+    }));
+    const confirmPeerHandoff = vi.fn(async () => ({ status: 'dispatched' as const }));
+
+    await expect(receiveAnswer(
+      { peer_contract_id: PEER, exchange_ref: REF, raw: { answered: true, option: 'yes' } },
+      { ...s.deps, gatedActions: { get, confirmPeerHandoff } },
+    )).resolves.toEqual({ accepted: true, resumed: true });
+
+    expect(get).not.toHaveBeenCalled();
+    expect(confirmPeerHandoff).not.toHaveBeenCalled();
+    expect(s.outbox.get(REF)).toBeNull();
+  });
+
+  it('does not steal a local abandonment claim or resume its deleted dish', async () => {
+    const s = setup();
+    s.answers.record({
+      exchange_ref: REF,
+      peer_contract_id: PEER_HOLD_ABANDONER,
+      answered: false,
+      unanswered_because: 'withdrawn',
+      at: 90,
+    });
+
+    const r = await receiveAnswer(
+      { peer_contract_id: PEER, exchange_ref: REF, raw: { answered: true, option: 'yes' } },
+      s.deps,
+    );
+
+    expect(r).toMatchObject({ accepted: false, refusal: 'not_solicited' });
+    expect(s.resumed).toHaveLength(0);
+    expect(s.outbox.get(REF)).not.toBeNull();
+    expect(s.answers.get(REF)).toMatchObject({
+      peer_contract_id: PEER_HOLD_ABANDONER,
+      unanswered_because: 'withdrawn',
+    });
   });
 });

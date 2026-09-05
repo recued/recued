@@ -283,10 +283,17 @@ type FakeBatchApprovals = BatchApprovalCoordinator & {
 };
 
 const fakeBatchApprovals = (
-  result: RegisterHoldResult = { kind: 'registered', ask_id: 'batch-ask-1' },
+  result: RegisterHoldResult = {
+    kind: 'registered',
+    ask_id: 'batch-ask-1',
+    approval_ref: 'batch-1',
+  },
 ): FakeBatchApprovals => ({
   registerHold: vi.fn<BatchApprovalCoordinator['registerHold']>(
     async () => result,
+  ),
+  reconcileOpenBatch: vi.fn<BatchApprovalCoordinator['reconcileOpenBatch']>(
+    async () => ({ kind: 'not_open' as const }),
   ),
   hooks: {
     handleAnswer: vi.fn(async () => 'handled' as const),

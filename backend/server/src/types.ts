@@ -10,6 +10,7 @@
 import type {
   ContainerPickDetail,
   CreatePlanDetail,
+  ForeachCheckpointProgress,
   PiiLedgerStoreSnapshot,
   PreflightApprovedTarget,
   RunControlTermination,
@@ -144,6 +145,10 @@ export interface InternalExecuteOverrides {
    *  the paused anchor's `run_id` so the resumed run transitions the
    *  same execution-request anchor in place. */
   run_id?: string;
+  /** Stable receipt for the checkpointed gated STEP being resumed. It is not
+   * the run id (a run can gate more than once) and not an ask id (one ask can
+   * cover many steps and be re-rendered). Populated only by the host resumer. */
+  gated_action_ref?: string;
   /** R2 step 6 (write-saga) — set ONLY by the saga compensation
    *  dispatcher (`saga-server-wiring.ts`): this run COMPENSATES the
    *  named commit, and every commit it dispatches carries the link as
@@ -170,6 +175,11 @@ export interface InternalExecuteOverrides {
   resume_from?: {
     gated_step_id: string;
     step_state: Record<string, unknown>;
+    foreach_progress?: ForeachCheckpointProgress;
+    /** Host-recorded amplification bound for the approved dispatch. A
+     * resumed foreach may spend this authority on only its current item; the
+     * engine clears admission before advancing to another item. */
+    egress_bound?: { readonly requests: number; readonly total_bytes: number };
     /** D-165 follow-on (op-identity binding) — the consumed checkpoint's
      *  `approved_target`, threaded onto `ExecutionContext.resumeFrom` so the
      *  catalog gate can re-verify the resumed call against the approved
@@ -327,6 +337,8 @@ export interface ExecuteResponse {
    *  action is awaiting approval instead of mistaking the bare `success:
    *  false` for a silent failure and retrying. */
   awaiting_approval?: boolean;
+  /** Durable operation-scoped receipt for the checkpointed gated step. */
+  action_ref?: string;
   /** D-234 § 234.4 — the run is durably PAUSED waiting on a PEER'S answer. Same
    *  shape of fact as `awaiting_approval` above and the same third state:
    *  `success` is `false`, the run is queued, not failed.

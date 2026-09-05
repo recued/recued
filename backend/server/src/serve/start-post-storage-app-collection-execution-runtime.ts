@@ -366,6 +366,7 @@ export const startPostBaseStorageVaultRuntime = async (
             checkpointStore: storageContext.checkpointStore,
             auditLog: storageContext.auditLog,
             commitStore: storageContext.commitStore,
+            gatedActionStore: storageContext.gatedActionStore,
             fileStack: storageContext.fileStack,
             // D-210 Phase C — so the boot sweep does not re-raise the
             // actionable ask for a notify-mode reception hold that is
@@ -437,6 +438,12 @@ export const startPostStorageAppCollectionExecutionRuntime = async (
     kind: 'emitter',
     stop: app.stopWarehouseEventBridges,
   });
+  // ⛔ PUBLISHED HERE because this is the one place holding BOTH halves: the
+  //   full refs bag (`lateBound`) and the composed app. `composeAppContext`
+  //   receives only the GETTERS half by type (`AppContextChatLateBoundGetters`)
+  //   and so cannot publish; the execution context is composed after this line
+  //   and reads the sink through the same bag at settle time.
+  lateBound.publishRunSettledSink(app.chatRunSettledSink);
   const contactBackfillDone = app.contactBackfillDone;
   if (contactBackfillDone !== undefined) {
     options.postApp.postExecution.maintenance.backgroundServices.register({

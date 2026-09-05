@@ -170,6 +170,7 @@ describe('composeRpcContext', () => {
         auditLog: storageContext.auditLog,
         checkpointStore: storageContext.checkpointStore,
         commitStore: storageContext.commitStore,
+        gatedActionStore: storageContext.gatedActionStore,
         serverInstanceId: storageContext.serverInstanceId,
       });
       expect(context.observabilityBundle.statusPageDeps?.realmToken).toBe(

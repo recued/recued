@@ -65,6 +65,7 @@ const makeOptions = (
     checkpointStore: { tag: 'checkpoint-store' },
     auditLog: { tag: 'audit-log' },
     commitStore: { sweepPendingToInDoubt: vi.fn(async () => []) },
+    gatedActionStore: { tag: 'gated-action-store' },
     fileStack: { startAll: vi.fn(async () => undefined) },
     collection: { startCollectionAdapters: vi.fn(async () => undefined) },
     warn: vi.fn(),
@@ -106,6 +107,10 @@ describe('startBootRecoveryAndAdapters', () => {
       order.push('warn');
     });
     const options = makeOptions({
+      getBatch: vi.fn(async () => null),
+      reconcileOpenBatch: vi.fn(async () => ({ kind: 'not_open' as const })),
+      recoverPeerDeliveries: vi.fn(async () => undefined),
+      preserveInterruptedDispatch: vi.fn(async () => true),
       bootSigningIdentity: vi.fn(async () => {
         order.push('identity');
       }),
@@ -143,6 +148,11 @@ describe('startBootRecoveryAndAdapters', () => {
       block: options.notificationBlock,
       checkpointStore: options.checkpointStore,
       auditLog: options.auditLog,
+      gatedActionStore: options.gatedActionStore,
+      getBatch: options.getBatch,
+      reconcileOpenBatch: options.reconcileOpenBatch,
+      recoverPeerDeliveries: options.recoverPeerDeliveries,
+      preserveInterruptedDispatch: options.preserveInterruptedDispatch,
     });
     expect(warn).toHaveBeenCalledWith(
       '[commits] crash recovery — 1 non-terminal commit(s) from a prior run marked in_doubt',

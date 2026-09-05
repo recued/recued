@@ -18,6 +18,7 @@ import type {
   GatewayCallAudit,
   PiiLedgerStoreSnapshot,
   PreflightApprovedTarget,
+  ForeachCheckpointProgress,
   PreflightOverrideOffer,
   OperationApproval,
   AuthorizationProvenance,
@@ -819,6 +820,12 @@ export interface ExecutionContext {
      *  `CHECKPOINT_STEP_NOT_FOUND` error (the recipe drifted out from
      *  under the checkpoint between pause and resume). */
     gated_step_id: string;
+    /** Exact foreach item/progress when the gate was raised mid-loop. */
+    foreach_progress?: ForeachCheckpointProgress;
+    /** Exact chunked-request budget approved for the resumed dispatch. In a
+     * foreach this admits only the current item; a following item must raise
+     * its own bounded approval. */
+    egress_bound?: { readonly requests: number; readonly total_bytes: number };
     /** D-165 follow-on (op-identity binding) — the identity the user
      *  approved (`Checkpoint.approved_target`). The engine threads it onto
      *  the resumed gated step's `StepMeta.preflight_approved_target`; the
@@ -1051,6 +1058,8 @@ export interface ExecutionResult {
      *  fires before any sequential step has produced output (e.g. the
      *  first step in the recipe gates). */
     step_state: Record<string, unknown>;
+    /** Completed foreach items plus the exact paused index, when applicable. */
+    foreach_progress?: ForeachCheckpointProgress;
     /** D-157 server-wiring — gateway-attached structured fields read
      *  off the caught `PreflightRequiredSignal`. Surfaced verbatim so
      *  the host can populate `PreflightAskContext` and the
@@ -1143,6 +1152,11 @@ export interface ExecutionResult {
     gated_step_id: string;
     /** Cloned snapshot of `ctx.stores.step` at the pause. */
     step_state: Record<string, unknown>;
+    /** Completed foreach items plus the exact paused index, when applicable. */
+    foreach_progress?: ForeachCheckpointProgress;
+    /** Run-local PII alias ledger snapshot. The host persists this verbatim on
+     * the peer checkpoint so a later answer can restore aliases safely. */
+    pii_ledgers?: PiiLedgerStoreSnapshot;
     /** The conversation id the answer will correlate on. Deterministic, minted
      *  by the op so a re-run of the same step in the same run reproduces it. */
     exchange_ref: string;

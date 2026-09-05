@@ -34,13 +34,15 @@
  *  callers instead of hand-building requests. */
 
 import {
-  EMPTY_MAIL_COMPOSE_VALUES,
   MAIL_MESSAGE_SCHEMA,
+  MAIL_COMPOSE_REWRITE_ACTIONS,
+  REWRITE_COMPOSED_MAIL_RECIPE_ID,
   SEND_COMPOSED_MAIL_RECIPE_ID,
   addComposeAttachmentsTransition,
   closeComposeTransition,
   composeDialog,
   composePayloadToSendRecipeConfig,
+  composeRewriteRecipeConfig,
   composeStateToSendPayload,
   formFromCanonicalSchema,
   initialMailComposeState,
@@ -54,6 +56,7 @@ import {
   type MailComposeAttachment,
   type MailComposeState,
   type MailReplyContext,
+  type MailComposeRewriteAction,
   type MailSenderSourceOption,
 } from '@recued/contracts';
 import { renderMailComposeDialog } from '@recued/ui-shared';
@@ -63,15 +66,32 @@ import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 // Caller seams
 // ════════════════════════════════════════════════════════════════
 
+/** One `collection.mail.list` row — enough to identify the mailbox and decide
+ * whether the compose surface may honestly open. */
+export interface MailInstanceSummary {
+  slug: string;
+  adapter_type: string;
+  send_capable: boolean;
+  account_email: string;
+}
+
 /** `collection.mail.list` — enrolled mail instances with send capability. */
 export type MailInstanceListCaller = () => Promise<{
-  instances: ReadonlyArray<{
-    slug: string;
-    adapter_type: string;
-    send_capable: boolean;
-    account_email: string;
-  }>;
+  instances: ReadonlyArray<MailInstanceSummary>;
 }>;
+
+/** The closed readiness answer shared by every compose entry point.
+ *
+ * `none` and `unavailable` must never collapse together: the former authorizes
+ * a setup suggestion, while the latter proves only that Recued could not check.
+ * Likewise, a read-only mailbox deserves a repair path rather than the new-
+ * account path. */
+export type MailSendReadiness =
+  | { status: 'loading' }
+  | { status: 'none' }
+  | { status: 'read_only'; mailboxes: readonly MailSenderSourceOption[] }
+  | { status: 'ready'; mailboxes: readonly MailSenderSourceOption[] }
+  | { status: 'unavailable' };
 
 /** `execute` — narrowed to the two fields this surface sets. */
 export type MailComposeExecuteCaller = (args: {
@@ -88,8 +108,12 @@ export type MailComposeFileInventoryCaller = () => Promise<
 
 /** Prompt the owner for files to attach. The host does not own a file browser;
  *  the route supplies one and returns the chosen `data.file` record ids.
- *  Returning `[]` (or the caller being absent) means "nothing picked". */
-export type MailComposeFilePickCaller = () => Promise<readonly string[]>;
+ *  Returning `[]` (or the caller being absent) means "nothing picked". The
+ *  optional signal retires a body-level chooser when its compose owner closes. */
+export type MailComposeFilePickCaller = (
+  selected: readonly string[],
+  signal?: AbortSignal,
+) => Promise<readonly string[]>;
 
 export interface MailComposeDeps {
   listMailInstances: MailInstanceListCaller;
@@ -112,13 +136,19 @@ export type MailComposeSubmitOutcome = 'held' | 'sent';
 
 export interface MailComposeMount {
   /** Open a blank compose. */
-  openCreate(): void;
+  openCreate(): boolean;
   /** Open a compose prefilled from a thread. */
-  openReply(context: MailReplyContext): void;
+  openReply(context: MailReplyContext): boolean;
   /** Current state — exposed for the route's own empty-state decisions. */
   state(): MailComposeState;
-  /** Re-read mail instances + file inventory from the server. */
-  refresh(): Promise<void>;
+  /** Current send-readiness projection. */
+  readiness(): MailSendReadiness;
+  /** Re-read mail instances from the server. */
+  refresh(): Promise<MailSendReadiness>;
+  /** Live-DOM-aware draft check for shell leave guards. */
+  hasUnsavedChanges(): boolean;
+  /** A send, file choice, or rewrite action that has not settled yet. */
+  hasInFlightWork(): boolean;
   /** Last dispatch outcome, or null if none has completed. */
   lastOutcome(): MailComposeSubmitOutcome | null;
   destroy(): void;
@@ -155,6 +185,62 @@ export const senderOptionFromInstance = (row: {
     send_capable: row.send_capable,
     mail_instance_slug: row.slug,
   };
+};
+
+/** Project a successful mailbox roster read into the one readiness vocabulary
+ * every entry point consumes. This is deliberately pure so the no-mailbox and
+ * read-only distinctions stay pinned without a browser harness. */
+export const mailSendReadinessFromInstances = (
+  instances: readonly MailInstanceSummary[],
+): MailSendReadiness => {
+  if (instances.length === 0) return { status: 'none' };
+  const mailboxes = instances.map(senderOptionFromInstance);
+  return mailboxes.some((mailbox) => mailbox.send_capable)
+    ? { status: 'ready', mailboxes }
+    : { status: 'read_only', mailboxes };
+};
+
+/** Classify the execute response without treating transport success as mail
+ * success. A durable approval pause is accepted but not sent; only a terminal
+ * successful run is sent. Any contradictory or incomplete shape fails closed
+ * so the draft stays open instead of reporting an outcome Recued cannot prove. */
+export const mailComposeSubmitOutcomeFromExecuteResponse = (
+  response: unknown,
+): MailComposeSubmitOutcome | null => {
+  if (response === null || typeof response !== 'object' || Array.isArray(response)) {
+    return null;
+  }
+  const record = response as Record<string, unknown>;
+  if (record.success === false && record.awaiting_approval === true) return 'held';
+  if (record.success === true && record.awaiting_approval !== true) return 'sent';
+  return null;
+};
+
+/** Read the hidden rewrite recipe's single text output without trusting a
+ * loosely-shaped execute response. Approval pauses and non-success responses
+ * are never draft text, and blank model output must not erase the message. */
+export const rewrittenMailBodyFromExecuteResponse = (
+  response: unknown,
+): string | null => {
+  if (response === null || typeof response !== 'object' || Array.isArray(response)) {
+    return null;
+  }
+  const record = response as Record<string, unknown>;
+  if (record.success !== true || record.awaiting_approval === true) return null;
+  const output = record.output;
+  if (output === null || typeof output !== 'object' || Array.isArray(output)) return null;
+  const render = (output as Record<string, unknown>).render;
+  if (!Array.isArray(render)) return null;
+  for (const section of render) {
+    if (section === null || typeof section !== 'object' || Array.isArray(section)) continue;
+    const row = section as Record<string, unknown>;
+    if (
+      row.type === 'text'
+      && typeof row.data === 'string'
+      && row.data.trim().length > 0
+    ) return row.data;
+  }
+  return null;
 };
 
 /** Default recipient resolution: accept a bare address, reject anything else.
@@ -225,6 +311,18 @@ export const mountMailCompose = (
   let state: MailComposeState = initialMailComposeState();
   let sources: MailSenderSourceOption[] = [];
   let files: MailComposeAttachment[] = [];
+  let readinessState: MailSendReadiness = { status: 'loading' };
+  let refreshGeneration = 0;
+  let draftGeneration = 0;
+  let attachmentGeneration = 0;
+  let attachmentAbort: AbortController | null = null;
+  let attachmentBusy = false;
+  let assistGeneration = 0;
+  let assistState: {
+    busyAction: MailComposeRewriteAction | null;
+    error: string | null;
+    undo: { previous: string; applied: string } | null;
+  } = { busyAction: null, error: null, undo: null };
   let outcome: MailComposeSubmitOutcome | null = null;
   let destroyed = false;
 
@@ -246,6 +344,12 @@ export const mountMailCompose = (
       // inventory would leak every filename the owner has into the markup of
       // a dialog that shows four of them.
       attachments: files.filter((f) => dialog.values.attachments.includes(f.id)),
+      aiAssist: {
+        busyAction: assistState.busyAction,
+        error: assistState.error,
+        canUndo: assistState.undo !== null,
+      },
+      attachmentBusy,
     });
   };
 
@@ -274,7 +378,12 @@ export const mountMailCompose = (
   const submit = async (): Promise<void> => {
     syncFromDom();
     const dialog = composeDialog(state);
-    if (dialog === null || dialog.submitting) return;
+    if (
+      dialog === null
+      || dialog.submitting
+      || attachmentBusy
+      || assistState.busyAction !== null
+    ) return;
 
     const result = composeStateToSendPayload(withoutBlankRecipients(dialog.values), {
       resolveContactEmail,
@@ -287,34 +396,227 @@ export const mountMailCompose = (
 
     setState(setComposeErrorsTransition(state, {}));
     setState(setComposeSubmittingTransition(state, true));
+    const generation = draftGeneration;
     try {
-      await deps.runExecute({
+      const response = await deps.runExecute({
         recipe_id: SEND_COMPOSED_MAIL_RECIPE_ID,
         config: composePayloadToSendRecipeConfig(result.payload),
       });
-      // ⚠ The run was ACCEPTED. Whether the message left is the gate's answer,
-      // not ours — see the header. `held` is the honest default.
-      outcome = 'held';
+      if (destroyed || generation !== draftGeneration) return;
+      const nextOutcome = mailComposeSubmitOutcomeFromExecuteResponse(response);
+      if (nextOutcome === null) {
+        setState(setComposeSubmitErrorTransition(
+          state,
+          'Mail could not be queued. Your draft is unchanged.',
+        ));
+        return;
+      }
+      outcome = nextOutcome;
       setState(setComposeSubmittingTransition(state, false));
       setState(closeComposeTransition(state));
     } catch (err) {
+      if (destroyed || generation !== draftGeneration) return;
       setState(setComposeSubmitErrorTransition(state, humanizeRpcError(err)));
     }
   };
 
   const attach = async (): Promise<void> => {
-    if (deps.pickFiles === undefined) return;
-    const picked = await deps.pickFiles();
-    if (picked.length === 0) return;
-    // Refresh labels so a just-uploaded file does not render "size unknown".
-    if (deps.listFiles !== undefined) {
-      try {
-        files = [...(await deps.listFiles())];
-      } catch {
-        /* labels degrade; the attachment itself is unaffected */
+    const dialog = composeDialog(state);
+    if (
+      deps.pickFiles === undefined
+      || dialog === null
+      || dialog.submitting
+      || attachmentBusy
+      || assistState.busyAction !== null
+    ) return;
+    const selected = dialog.values.attachments;
+    const draft = draftGeneration;
+    const generation = ++attachmentGeneration;
+    const controller = new AbortController();
+    attachmentAbort = controller;
+    attachmentBusy = true;
+    render();
+    try {
+      const picked = await deps.pickFiles(selected, controller.signal);
+      if (
+        destroyed
+        || controller.signal.aborted
+        || draft !== draftGeneration
+        || generation !== attachmentGeneration
+      ) return;
+      if (picked.length === 0) return;
+      // Refresh labels so a just-uploaded file does not render "size unknown".
+      if (deps.listFiles !== undefined) {
+        try {
+          files = [...(await deps.listFiles())];
+        } catch {
+          /* labels degrade; the attachment itself is unaffected */
+        }
+      }
+      if (
+        destroyed
+        || controller.signal.aborted
+        || draft !== draftGeneration
+        || generation !== attachmentGeneration
+      ) return;
+      // The owner can resume typing after the picker closes while the label
+      // refresh is still in flight. Fold those edits before repainting chips.
+      syncFromDom();
+      setState(addComposeAttachmentsTransition(state, picked));
+    } catch (err) {
+      if (
+        destroyed
+        || controller.signal.aborted
+        || draft !== draftGeneration
+        || generation !== attachmentGeneration
+      ) return;
+      syncFromDom();
+      setState(setComposeSubmitErrorTransition(
+        state,
+        `Couldn’t open files. ${humanizeRpcError(err)}`,
+      ));
+    } finally {
+      if (generation === attachmentGeneration) {
+        attachmentAbort = null;
+        attachmentBusy = false;
+        render();
       }
     }
-    setState(addComposeAttachmentsTransition(state, picked));
+  };
+
+  const retireAttachment = (): void => {
+    attachmentGeneration += 1;
+    attachmentAbort?.abort();
+    attachmentAbort = null;
+    attachmentBusy = false;
+  };
+
+  const resetAssist = (): void => {
+    assistGeneration += 1;
+    assistState = { busyAction: null, error: null, undo: null };
+  };
+
+  const close = (): void => {
+    const next = closeComposeTransition(state);
+    if (next === state) return;
+    draftGeneration += 1;
+    retireAttachment();
+    resetAssist();
+    setState(next);
+  };
+
+  const runAssist = async (action: MailComposeRewriteAction): Promise<void> => {
+    syncFromDom();
+    const dialog = composeDialog(state);
+    if (
+      dialog === null
+      || dialog.submitting
+      || attachmentBusy
+      || assistState.busyAction !== null
+    ) return;
+    if (dialog.values.body.trim().length === 0) {
+      assistState = {
+        busyAction: null,
+        error: 'Write a message before asking AI to rewrite it.',
+        undo: null,
+      };
+      render();
+      return;
+    }
+
+    const source = sources.find(
+      (candidate) => candidate.id === dialog.values.sender_source,
+    );
+    const baseline = dialog.values.body;
+    const generation = ++assistGeneration;
+    assistState = { busyAction: action, error: null, undo: null };
+    render();
+    try {
+      const response = await deps.runExecute({
+        recipe_id: REWRITE_COMPOSED_MAIL_RECIPE_ID,
+        config: composeRewriteRecipeConfig({
+          values: {
+            ...dialog.values,
+            // Recipient slots can carry contact refs. Seed the privacy ledger
+            // with resolved addresses when the host knows them, so an address
+            // repeated in the body is still aliased before model egress.
+            to: dialog.values.to.map(
+              (ref) => resolveContactEmail(ref) ?? ref,
+            ),
+            cc: dialog.values.cc.map(
+              (ref) => resolveContactEmail(ref) ?? ref,
+            ),
+            bcc: dialog.values.bcc.map(
+              (ref) => resolveContactEmail(ref) ?? ref,
+            ),
+          },
+          sender_email: source?.account_email ?? '',
+        }, action),
+      });
+      if (destroyed || generation !== assistGeneration) return;
+      syncFromDom();
+      const current = composeDialog(state);
+      if (current === null) return;
+      if (current.values.body !== baseline) {
+        assistState = {
+          busyAction: null,
+          error: 'The message changed while AI was working, so Recued left your newer text untouched.',
+          undo: null,
+        };
+        render();
+        return;
+      }
+      const rewritten = rewrittenMailBodyFromExecuteResponse(response);
+      if (rewritten === null) {
+        assistState = {
+          busyAction: null,
+          error: 'AI did not return a usable rewrite. Your message is unchanged.',
+          undo: null,
+        };
+        render();
+        return;
+      }
+      assistState = {
+        busyAction: null,
+        error: null,
+        undo: { previous: baseline, applied: rewritten },
+      };
+      setState(setComposeValuesTransition(state, { body: rewritten }));
+    } catch (err) {
+      if (destroyed || generation !== assistGeneration) return;
+      // The body stays editable while the read-only AI call runs. Preserve any
+      // newer typing before painting the failure banner.
+      syncFromDom();
+      assistState = {
+        busyAction: null,
+        error: humanizeRpcError(err),
+        undo: null,
+      };
+      render();
+    }
+  };
+
+  const undoAssist = (): void => {
+    syncFromDom();
+    const dialog = composeDialog(state);
+    const undo = assistState.undo;
+    if (
+      dialog === null
+      || dialog.submitting
+      || undo === null
+      || assistState.busyAction !== null
+    ) return;
+    if (dialog.values.body !== undo.applied) {
+      assistState = {
+        busyAction: null,
+        error: 'Undo was not applied because the message changed after the rewrite.',
+        undo: null,
+      };
+      render();
+      return;
+    }
+    assistState = { busyAction: null, error: null, undo: null };
+    setState(setComposeValuesTransition(state, { body: undo.previous }));
   };
 
   /** ⛔⛔ THE FORM RENDERER'S Add / Remove BUTTONS ARE INERT MARKUP. `renderForm`
@@ -383,11 +685,11 @@ export const mountMailCompose = (
     // dialog and discard the draft (the PA6 P1 fold, replicated here).
     if (action === 'close-mail-compose-on-backdrop') {
       if (event.target !== event.currentTarget && target !== actionEl) return;
-      if (target === actionEl) setState(closeComposeTransition(state));
+      if (target === actionEl) close();
       return;
     }
     if (action === 'close-mail-compose') {
-      setState(closeComposeTransition(state));
+      close();
       return;
     }
     if (action === 'submit-mail-compose') {
@@ -405,9 +707,16 @@ export const mountMailCompose = (
       }
       return;
     }
-    // `mail-compose-ai-*` are PA7 stubs with no engine behind them. Swallowing
-    // them silently would read as a broken button, so they are simply not
-    // handled here and the sidebar keeps saying "Coming soon".
+    if (action === 'mail-compose-ai-undo') {
+      undoAssist();
+      return;
+    }
+    const rewriteAction = MAIL_COMPOSE_REWRITE_ACTIONS.find(
+      (candidate) => action === `mail-compose-ai-${candidate}`,
+    );
+    if (rewriteAction !== undefined) {
+      void runAssist(rewriteAction);
+    }
   };
 
   const onChange = (event: Event): void => {
@@ -422,40 +731,88 @@ export const mountMailCompose = (
   host.addEventListener('click', onClick);
   host.addEventListener('change', onChange);
 
-  const refresh = async (): Promise<void> => {
+  const refresh = async (): Promise<MailSendReadiness> => {
+    const generation = ++refreshGeneration;
+    readinessState = { status: 'loading' };
     try {
       const listed = await deps.listMailInstances();
+      if (destroyed || generation !== refreshGeneration) return readinessState;
       sources = listed.instances.map(senderOptionFromInstance);
+      readinessState = mailSendReadinessFromInstances(listed.instances);
     } catch {
+      if (destroyed || generation !== refreshGeneration) return readinessState;
       sources = [];
+      readinessState = { status: 'unavailable' };
     }
-    if (deps.listFiles !== undefined) {
-      try {
-        files = [...(await deps.listFiles())];
-      } catch {
-        files = [];
-      }
-    }
+    if (destroyed || generation !== refreshGeneration) return readinessState;
     render();
+    return readinessState;
   };
 
   return {
     openCreate() {
       const first = sendCapable()[0];
+      const dialog = composeDialog(state);
+      if (
+        readinessState.status !== 'ready'
+        || first === undefined
+        || dialog?.submitting === true
+        || attachmentBusy
+        || assistState.busyAction !== null
+      ) return false;
+      draftGeneration += 1;
+      retireAttachment();
+      resetAssist();
       setState(
         openCreateComposeTransition(state, {
-          default_sender_source_id: first?.id ?? EMPTY_MAIL_COMPOSE_VALUES.sender_source,
+          default_sender_source_id: first.id,
         }),
       );
+      return true;
     },
     openReply(context) {
+      const dialog = composeDialog(state);
+      if (
+        readinessState.status !== 'ready'
+        || !sendCapable().some((source) => source.id === context.original_source_id)
+        || dialog?.submitting === true
+        || attachmentBusy
+        || assistState.busyAction !== null
+      ) {
+        return false;
+      }
+      draftGeneration += 1;
+      retireAttachment();
+      resetAssist();
       setState(openReplyComposeTransition(state, context));
+      return true;
     },
     state: () => state,
+    readiness: () => readinessState,
     refresh,
+    hasUnsavedChanges: () => {
+      syncFromDom();
+      const dialog = composeDialog(state);
+      if (dialog === null) return false;
+      const values = dialog.values;
+      return values.subject.trim().length > 0
+        || values.body.trim().length > 0
+        || values.to.length > 0
+        || values.cc.length > 0
+        || values.bcc.length > 0
+        || values.attachments.length > 0;
+    },
+    hasInFlightWork: () =>
+      composeDialog(state)?.submitting === true
+      || attachmentBusy
+      || assistState.busyAction !== null,
     lastOutcome: () => outcome,
     destroy() {
       destroyed = true;
+      draftGeneration += 1;
+      refreshGeneration += 1;
+      retireAttachment();
+      assistGeneration += 1;
       host.removeEventListener('click', onClick);
       host.removeEventListener('change', onChange);
       host.innerHTML = '';

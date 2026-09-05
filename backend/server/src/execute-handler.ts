@@ -8,13 +8,24 @@
  *  ingredients will fail with INGREDIENT_ADAPTER_ALL_FAILED.
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { connectionBaseUrlFromConfig } from './connection-base-url.js';
 import { createRecordsReadStepClassifier } from './audit-exempt-records-read.js';
 import { PEER_RECEIVE_ASK_TOOL } from './peer-receive-ask-recipe.js';
+import { createPeerAnswerStore } from './storage/peer-answer-store.js';
+import type {
+  PeerAskDeliveryPlan,
+  PeerAskOutboxRow,
+  PeerAskOutboxStageRow,
+} from './storage/peer-ask-outbox-store.js';
+import {
+  recoverPeerAskDelivery,
+  type PeerAskDeliveryOutcome,
+} from './peer-ask-delivery-recovery.js';
 import { RUN_INGREDIENT_RECIPE } from './run-ingredient-recipe.js';
 import {
   executeRecipe,
+  catalogOperationUsesDetachedCli,
   deriveRunMode,
   assignOwnSafe,
   extendHeldRecipes,
@@ -55,6 +66,8 @@ import { isReceptionOriginSource } from './reception-inbox-handler.js';
 import type { ReceptionInboxFanoutMode } from '@recued/contracts';
 import type {
   AdmissionDecision,
+  ChunkedUploadAuditInfo,
+  GatedActionSettlementMode,
   LaneGovernor,
   OpDurationClassifier,
   QualityDelegationMatchContext,
@@ -100,6 +113,7 @@ import {
   executionSourceContractId,
   executionSourceHasContract,
   isDoorDispatchSource,
+  isGatedActionTerminal,
   isAIBatchMode,
   isBatchCapableAISlug,
   isCanonicalOpStep,
@@ -159,6 +173,7 @@ import { cleanupRunScratch } from './execution/run-scratch.js';
 import { mergeManifestStepInput } from '@recued/ingredients';
 import {
   applyKernelOpRunnability,
+  canonicalRecipeDefinition,
   deriveCompensation,
   flattenRecipe,
   hashRecipe,
@@ -178,6 +193,11 @@ import {
   stampExecuteResponseStandingDish,
 } from './types.js';
 import type { McpActionStore } from './mcp-action-store.js';
+import {
+  gatedActionHandoffFromResult,
+  type FinishGatedActionInput,
+  type GatedActionStore,
+} from './gated-action-store.js';
 import type {
   ExecuteRequest,
   ExecuteResponse,
@@ -201,13 +221,14 @@ import {
 // write) so an agent loop that resends a held action is harmless.
 import {
   awaitInflightHold,
+  buildHeldActionAuthority,
   buildHeldConfigSnapshot,
   buildHeldResponseForRecipe,
   buildHeldTwinResponse,
   claimInflightHold,
   computeHeldActionKey,
   findLiveHeldTwin,
-  HELD_DEDUP_CHANNELS,
+  isHeldDedupEligibleSource,
   type HeldActionIdentity,
   type InflightHoldClaim,
 } from './held-action-idempotency.js';
@@ -539,6 +560,386 @@ const logRunObservabilityWriteFailure = (opts: {
   });
 };
 
+/** Ordinary gated-action projection updates remain best-effort. The operation
+ * this invocation resumed is settled through the verified helper below because
+ * its answered checkpoint cannot retire with a nonterminal receipt. */
+const updateGatedActionReceipt = async (
+  store: GatedActionStore | undefined,
+  actionRef: string | undefined,
+  operation: (store: GatedActionStore, actionRef: string) => Promise<unknown>,
+): Promise<void> => {
+  if (store === undefined || actionRef === undefined) return;
+  try {
+    await operation(store, actionRef);
+  } catch (error) {
+    console.warn(
+      `[execute-handler] gated action update failed for action_ref=${actionRef}: `
+        + (error instanceof Error ? error.message : String(error)),
+    );
+  }
+};
+
+/** Terminal settlement for the operation this invocation resumed is part of
+ * the durable answer transaction. A storage adapter may throw after commit,
+ * so verify the readback before deciding the checkpoint may retire. */
+const finishResumedGatedActionReceipt = async (
+  store: GatedActionStore | undefined,
+  actionRef: string | undefined,
+  input: FinishGatedActionInput,
+): Promise<void> => {
+  if (store === undefined || actionRef === undefined) return;
+  let settled;
+  try {
+    settled = await store.finish(actionRef, input);
+  } catch (error) {
+    try {
+      settled = await store.get(actionRef);
+    } catch {
+      throw error;
+    }
+    if (settled === null || !isGatedActionTerminal(settled.status)) throw error;
+  }
+  if (settled === null) {
+    throw new Error(`resumed gated action receipt disappeared: ${actionRef}`);
+  }
+  if (!isGatedActionTerminal(settled.status)) {
+    throw new Error(`resumed gated action receipt did not settle: ${actionRef}`);
+  }
+};
+
+const settleCompletedGatedStep = async (
+  store: GatedActionStore | undefined,
+  actionRef: string | undefined,
+  step: ExecutionResult['steps'][number],
+  chunkedUploads: readonly ChunkedUploadAuditInfo[] = [],
+  foreachSegment?: { start_index: number; end_index?: number },
+): Promise<void> => {
+  if (store === undefined || actionRef === undefined) return;
+  let receiptStep = step;
+  if (step.foreach !== undefined && foreachSegment !== undefined) {
+    const entries = Array.isArray(step.result) ? step.result : undefined;
+    const endIndex = foreachSegment.end_index ?? entries?.length;
+    const validRange = entries !== undefined
+      && Number.isInteger(foreachSegment.start_index)
+      && foreachSegment.start_index >= 0
+      && endIndex !== undefined
+      && Number.isInteger(endIndex)
+      && endIndex >= foreachSegment.start_index
+      && endIndex <= entries.length;
+    if (!validRange || endIndex === undefined || entries === undefined) {
+      await finishResumedGatedActionReceipt(store, actionRef, {
+        status: 'in_doubt',
+        status_message: 'The approved foreach segment could not be reconciled with its checkpoint progress. Inspect Logs before retrying.',
+        result: step.result,
+        observed: { items: 0, succeeded: 0, failed: 0 },
+      });
+      return;
+    }
+    const segmentEntries = entries.slice(foreachSegment.start_index, endIndex);
+    receiptStep = {
+      ...step,
+      result: segmentEntries,
+      foreach: {
+        items: segmentEntries.length,
+        failed: segmentEntries.filter((entry) => entry !== null
+          && typeof entry === 'object'
+          && !Array.isArray(entry)
+          && (entry as { ok?: unknown }).ok === false).length,
+      },
+    };
+  }
+  const input = await (async (): Promise<FinishGatedActionInput> => {
+    if (receiptStep.skipped) {
+      return {
+        status: 'cancelled',
+        status_message: 'The approved operation was skipped before dispatch.',
+        result: receiptStep.result,
+        observed: { items: 0, succeeded: 0, failed: 0 },
+      };
+    }
+    const record = await store.get(actionRef);
+    if (record?.approved_bound !== undefined || chunkedUploads.length > 0) {
+      const resultEntries = receiptStep.foreach !== undefined
+        && Array.isArray(receiptStep.result)
+        ? receiptStep.result
+        : undefined;
+      const iterationError = resultEntries?.find((entry) => entry !== null
+        && typeof entry === 'object'
+        && !Array.isArray(entry)
+        && (entry as { ok?: unknown }).ok === false) as
+          | { error?: unknown }
+          | undefined;
+      const effectiveError = receiptStep.error ?? iterationError?.error;
+      const result = {
+        ...(effectiveError !== null && effectiveError !== undefined
+          ? { error: effectiveError }
+          : {}),
+        result: receiptStep.result,
+        chunked_upload: chunkedUploads.length === 1
+          ? chunkedUploads[0]
+          : chunkedUploads,
+      };
+      // An approval carrying an egress bound is a chunked act. Its result can
+      // be output-mapped (or provider-controlled), so absence of the adapter's
+      // host-measured telemetry can never be interpreted as one successful
+      // call. Absence cannot distinguish a true pre-dispatch refusal from an
+      // adapter failure after egress, so even an error remains in doubt.
+      if (chunkedUploads.length === 0) {
+        return {
+          status: 'in_doubt',
+          status_message: 'The approved upload returned without trusted request telemetry. Inspect Logs before retrying.',
+          result,
+          observed: { items: 0, succeeded: 0, failed: 0 },
+        };
+      }
+      // One non-foreach ingredient dispatch produces exactly one connection
+      // audit emission. More than one would make it impossible to prove which
+      // act the approval bought, so retain every safe count but stop in doubt.
+      const validCount = (value: unknown): value is number =>
+        Number.isInteger(value) && (value as number) >= 0;
+      const partitionsValid = chunkedUploads.every((entry) =>
+        validCount(entry.requests)
+        && validCount(entry.requests_succeeded)
+        && validCount(entry.requests_failed)
+        && entry.requests_succeeded + entry.requests_failed === entry.requests);
+      const requests = partitionsValid
+        ? chunkedUploads.reduce((total, entry) => total + entry.requests, 0)
+        : 0;
+      const succeeded = partitionsValid
+        ? chunkedUploads.reduce((total, entry) => total + entry.requests_succeeded!, 0)
+        : 0;
+      const failed = partitionsValid
+        ? chunkedUploads.reduce((total, entry) => total + entry.requests_failed!, 0)
+        : 0;
+      const exceedsApproval = record?.approved_bound !== undefined
+        && requests > record.approved_bound.requests;
+      const segmentCardinalityValid = receiptStep.foreach === undefined
+        || receiptStep.foreach.items === 1;
+      if (!partitionsValid
+        || chunkedUploads.length !== 1
+        || exceedsApproval
+        || !segmentCardinalityValid) {
+        return {
+          status: 'in_doubt',
+          status_message: 'Trusted upload telemetry did not reconcile with the approved request bound. Inspect Logs before retrying.',
+          result,
+          observed: { items: requests, succeeded: 0, failed: 0 },
+        };
+      }
+      const telemetry = chunkedUploads[0]!;
+      if (requests === 0) {
+        return telemetry.outcome === 'failed' && effectiveError !== null
+          && effectiveError !== undefined
+          ? {
+              status: 'failed',
+              status_message: 'The approved upload failed before any provider request was attempted.',
+              result,
+              observed: { items: 0, succeeded: 0, failed: 0 },
+            }
+          : {
+              status: 'in_doubt',
+              status_message: 'Trusted upload telemetry reported completion without a provider request. Inspect Logs before retrying.',
+              result,
+              observed: { items: 0, succeeded: 0, failed: 0 },
+            };
+      }
+      const plural = requests === 1 ? 'request' : 'requests';
+      if ((telemetry.outcome === 'failed' || telemetry.outcome === 'processing_failed')
+        && (effectiveError === null || effectiveError === undefined)) {
+        return {
+          status: 'in_doubt',
+          status_message: 'The upload telemetry and recipe outcome disagree. Inspect Logs before retrying.',
+          result,
+          observed: { items: requests, succeeded: 0, failed: 0 },
+        };
+      }
+      if (telemetry.outcome === 'committed') {
+        return {
+          status: 'succeeded',
+          status_message: `The approved upload completed across ${requests} provider ${plural}.`,
+          result,
+          // A committed act is successful as a whole even if a non-essential
+          // status poll failed along the way. Preserve that request in the
+          // exact partition while the receipt state remains authoritative.
+          observed: { items: requests, succeeded, failed },
+        };
+      }
+      if (telemetry.outcome === 'committed_unconfirmed') {
+        return {
+          status: 'succeeded',
+          status_message: `The approved upload was committed across ${requests} provider ${plural}; processing remains unconfirmed.`,
+          result,
+          observed: { items: requests, succeeded, failed },
+        };
+      }
+      if (telemetry.outcome === 'processing_failed') {
+        return {
+          status: 'partial',
+          status_message: `The provider accepted ${requests} upload ${plural}, but reported terminal processing failure.`,
+          result,
+          observed: { items: requests, succeeded, failed },
+        };
+      }
+      if (effectiveError !== null
+        && typeof effectiveError === 'object'
+        && !Array.isArray(effectiveError)
+        && (effectiveError as { code?: unknown }).code === 'ACTION_DELIVERY_UNCERTAIN') {
+        return {
+          status: 'in_doubt',
+          status_message: 'The approved upload commit has an uncertain outcome. Inspect the target before retrying.',
+          result,
+          // The uncertain commit request is intentionally left unclassified.
+          observed: { items: requests, succeeded, failed: 0 },
+        };
+      }
+      return {
+        status: succeeded > 0 ? 'partial' : 'failed',
+        status_message: succeeded > 0
+          ? `${succeeded} of ${requests} provider ${plural} completed before the upload failed; no asset was committed.`
+          : 'The approved upload failed before any provider request completed.',
+        result,
+        observed: { items: requests, succeeded, failed },
+      };
+    }
+    if (receiptStep.error !== null) {
+      return {
+        status: 'failed',
+        status_message: receiptStep.error.message ?? 'The approved operation failed.',
+        result: { error: receiptStep.error, result: receiptStep.result },
+        observed: { items: 1, succeeded: 0, failed: 1 },
+      };
+    }
+    const settlementMode = record?.settlement_mode ?? 'returned_result';
+    if (receiptStep.foreach !== undefined) {
+      const sourceItems = Math.max(0, Math.floor(receiptStep.foreach.items));
+      // `foreach.items` is source cardinality. Per-item `skip_when` entries
+      // crossed no provider boundary, so they remain in the exact aggregate
+      // result but do not inflate the receipt's provider-attempt counts.
+      const resultEntries = Array.isArray(receiptStep.result) ? receiptStep.result : undefined;
+      const skipped = resultEntries?.filter((entry) => entry !== null
+        && typeof entry === 'object'
+        && !Array.isArray(entry)
+        && (entry as { skipped?: unknown }).skipped === true).length ?? 0;
+      const items = Math.max(0, sourceItems - Math.min(sourceItems, skipped));
+      const failed = Math.min(
+        items,
+        Math.max(0, Math.floor(receiptStep.foreach.failed)),
+      );
+      const observed = {
+        items,
+        succeeded: items - failed,
+        failed,
+      };
+      if (settlementMode === 'durable_handoff') {
+        // No accepted iteration means there is no asynchronous continuation
+        // to prove. Preserve the ordinary foreach outcome for empty/all-failed
+        // batches instead of inventing a handoff for the aggregate receipt.
+        if (observed.succeeded === 0) {
+          const status = observed.failed === 0 ? 'succeeded' : 'failed';
+          return {
+            status,
+            status_message: status === 'succeeded'
+              ? 'No approved items required dispatch.'
+              : `All ${observed.items} approved items failed before handoff.`,
+            result: receiptStep.result,
+            observed,
+          };
+        }
+        if (resultEntries === undefined) {
+          return {
+            status: 'in_doubt',
+            status_message: 'The approved asynchronous batch returned without verifiable per-item handoffs.',
+            result: receiptStep.result,
+            observed: { items, succeeded: 0, failed, dispatched: 0 },
+          };
+        }
+        const attempted = resultEntries.filter((entry) => !(entry !== null
+          && typeof entry === 'object'
+          && !Array.isArray(entry)
+          && (entry as { skipped?: unknown }).skipped === true));
+        const successful = attempted.filter((entry): entry is {
+          ok: true;
+          result: unknown;
+        } => entry !== null
+          && typeof entry === 'object'
+          && !Array.isArray(entry)
+          && (entry as { ok?: unknown }).ok === true);
+        const handoffs = successful.map((entry) =>
+          gatedActionHandoffFromResult(entry.result, actionRef, settlementMode));
+        const dispatched = Math.min(
+          observed.succeeded,
+          handoffs.filter((handoff) => handoff !== undefined).length,
+        );
+        if (
+          attempted.length !== items
+          || successful.length !== observed.succeeded
+          || dispatched !== observed.succeeded
+        ) {
+          return {
+            status: 'in_doubt',
+            status_message: 'At least one approved asynchronous item returned without a verifiable durable handoff.',
+            result: receiptStep.result,
+            observed: { items, succeeded: 0, failed, dispatched },
+          };
+        }
+        return {
+          status: failed === 0 ? 'dispatched' : 'partial',
+          status_message: failed === 0
+            ? `All ${items} approved items were handed off for asynchronous execution.`
+            : `${dispatched} of ${items} approved items were handed off; ${failed} failed.`,
+          result: receiptStep.result,
+          observed: { items, succeeded: 0, failed, dispatched },
+          handoff: dispatched === 1
+            ? handoffs[0]!
+            : { kind: 'deferred_execution', ref: actionRef },
+        };
+      }
+      const status = observed.failed === 0
+        ? 'succeeded'
+        : observed.succeeded === 0
+          ? 'failed'
+          : 'partial';
+      return {
+        status,
+        status_message: status === 'succeeded'
+          ? `All ${observed.items} approved items completed.`
+          : status === 'failed'
+            ? `All ${observed.items} approved items failed.`
+            : `${observed.succeeded} of ${observed.items} approved items completed.`,
+        // Retain the exact approval segment, bounded by the store. For the
+        // ordinary one-ask batch this is the whole remaining foreach; a later
+        // same-step ask or per-item chunk bound supplies a narrower slice.
+        result: receiptStep.result,
+        observed,
+      };
+    }
+    const handoff = gatedActionHandoffFromResult(receiptStep.result, actionRef, settlementMode);
+    if (settlementMode === 'durable_handoff' && handoff === undefined) {
+      return {
+        status: 'in_doubt',
+        status_message: 'The approved asynchronous operation returned without a verifiable durable handoff.',
+        result: receiptStep.result,
+        observed: { items: 1, succeeded: 0, failed: 0 },
+      };
+    }
+    return handoff === undefined
+      ? {
+          status: 'succeeded',
+          status_message: 'The approved operation completed.',
+          result: receiptStep.result,
+          observed: { items: 1, succeeded: 1, failed: 0 },
+        }
+      : {
+          status: 'dispatched',
+          status_message: 'The approved operation was handed off for asynchronous execution.',
+          result: receiptStep.result,
+          observed: { items: 1, succeeded: 0, failed: 0, dispatched: 1 },
+          handoff,
+        };
+  })();
+  await finishResumedGatedActionReceipt(store, actionRef, input);
+};
+
 /** D-145 engine-wiring (D-153 P1) — process-lived correlation tracker.
  *  One instance per server process: the ~1-min intent-burst heuristic
  *  has to observe successive `handleExecute` calls to group them, so
@@ -571,6 +972,9 @@ export interface ExecuteHandlerDeps {
    * approval gate. The execution engine never reads this store; the MCP wire
    * creates the action and the host resumer settles it after re-instantiation. */
   mcpActionStore?: McpActionStore;
+  /** Durable owner projection per checkpointed gated step. This is distinct
+   * from the MCP invocation-level continuation above. */
+  gatedActionStore?: GatedActionStore;
   /** D-221 — namespaced Records storage and execution authority. Optional for
    * old/dbless harnesses; a Records catalog call fails closed when absent. */
   recordsStore?: RecordsStore;
@@ -1195,6 +1599,132 @@ const peerAckFromCarrierOutput = (
   return undefined;
 };
 
+type PeerAskDeliveryVerdict =
+  | { readonly kind: 'accepted'; readonly ask_id: string }
+  | { readonly kind: 'refused'; readonly refusal: string; readonly reason: string }
+  | { readonly kind: 'unrecognised' };
+
+const peerAskDeliveryObject = (value: unknown): Record<string, unknown> | undefined =>
+  value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+
+const parsePeerAskDeliveryJson = (value: unknown): Record<string, unknown> | undefined => {
+  if (typeof value !== 'string') return undefined;
+  try {
+    return peerAskDeliveryObject(JSON.parse(value));
+  } catch {
+    return undefined;
+  }
+};
+
+/** Read the receiving server's explicit acceptance. Transport success alone
+ * is not enough: the peer may have refused the label or failed before its
+ * owner ask became durable. Every hop stays closed under malformed data. */
+const readPeerAskDeliveryVerdict = (value: unknown): PeerAskDeliveryVerdict => {
+  const envelope = peerAskDeliveryObject(value);
+  if (envelope === undefined) return { kind: 'unrecognised' };
+
+  let candidate: Record<string, unknown> | undefined;
+  if (Object.hasOwn(envelope, 'status')) {
+    if (envelope.status !== 'ok') return { kind: 'unrecognised' };
+    const toolResult = peerAskDeliveryObject(envelope.result);
+    if (toolResult === undefined || toolResult.isError === true) {
+      return { kind: 'unrecognised' };
+    }
+    candidate = peerAskDeliveryObject(toolResult.structuredContent);
+    if (candidate === undefined && Array.isArray(toolResult.content)) {
+      for (const part of toolResult.content) {
+        const row = peerAskDeliveryObject(part);
+        if (row?.type !== 'text') continue;
+        candidate = parsePeerAskDeliveryJson(row.text);
+        if (candidate !== undefined) break;
+      }
+    }
+  } else if (Object.hasOwn(envelope, 'structuredContent')
+    || Object.hasOwn(envelope, 'content')) {
+    candidate = peerAskDeliveryObject(envelope.structuredContent);
+    if (candidate === undefined && Array.isArray(envelope.content)) {
+      for (const part of envelope.content) {
+        const row = peerAskDeliveryObject(part);
+        if (row?.type !== 'text') continue;
+        candidate = parsePeerAskDeliveryJson(row.text);
+        if (candidate !== undefined) break;
+      }
+    }
+  } else {
+    candidate = envelope;
+  }
+
+  if (candidate?.accepted === true
+    && typeof candidate.ask_id === 'string'
+    && candidate.ask_id.length > 0) {
+    return { kind: 'accepted', ask_id: candidate.ask_id };
+  }
+  if (candidate?.accepted === false
+    && typeof candidate.refusal === 'string'
+    && candidate.refusal.length > 0
+    && typeof candidate.reason === 'string'
+    && candidate.reason.length > 0) {
+    return {
+      kind: 'refused',
+      refusal: candidate.refusal,
+      reason: candidate.reason,
+    };
+  }
+  return { kind: 'unrecognised' };
+};
+
+const peerAskDeliveryVerdictFromCarrier = (
+  output: ExecuteResponse['output'] | undefined,
+): PeerAskDeliveryVerdict => {
+  for (const section of output?.render ?? []) {
+    const verdict = readPeerAskDeliveryVerdict(
+      (section as { data?: unknown }).data,
+    );
+    if (verdict.kind !== 'unrecognised') return verdict;
+  }
+  return { kind: 'unrecognised' };
+};
+
+const peerAskDeliveryOutcome = (
+  exchangeRef: string,
+  verdict: PeerAskDeliveryVerdict,
+): PeerAskDeliveryOutcome => {
+  if (verdict.kind === 'accepted') {
+    return {
+      kind: 'dispatched',
+      status_message: 'The approved question was handed off to the peer exchange.',
+      result: {
+        exchange_ref: exchangeRef,
+        peer_ask_id: verdict.ask_id,
+        status: 'dispatched',
+      },
+    };
+  }
+  if (verdict.kind === 'refused') {
+    return {
+      kind: 'failed',
+      status_message: `The peer refused the approved question: ${verdict.reason}`,
+      result: {
+        exchange_ref: exchangeRef,
+        status: 'failed',
+        refusal: verdict.refusal,
+        reason: verdict.reason,
+      },
+    };
+  }
+  return {
+    kind: 'in_doubt',
+    status_message: 'The approved question left Recued, but the peer did not return a verifiable durable-ask receipt.',
+    result: {
+      exchange_ref: exchangeRef,
+      status: 'in_doubt',
+      reason: 'peer_acceptance_unverified',
+    },
+  };
+};
+
 /** D-232 § 20.17 — WHICH CONNECTION REACHES THE PEER THAT JUST CALLED US.
  *
  *  ⛔ THE RETURN PATH IS NOT IN THE MESSAGE, AND MUST NOT BE. A peer naming the
@@ -1370,6 +1900,205 @@ const resolveExchangeFireTarget = (
     );
   }
   return { slug: candidates[0]!.slug, operation_key: candidates[0]!.operation_key };
+};
+
+const canonicalPeerDeliveryJson = (value: unknown): string => {
+  if (value === undefined) return 'null';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalPeerDeliveryJson).join(',')}]`;
+  }
+  return `{${Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, child]) => `${JSON.stringify(key)}:${canonicalPeerDeliveryJson(child)}`)
+    .join(',')}}`;
+};
+
+const peerDeliveryFingerprint = (value: unknown): string => createHash('sha256')
+  .update(canonicalPeerDeliveryJson(value))
+  .digest('hex');
+
+/** Bind a pending send to the enrolled relationship, not just its editable
+ * connection name. Credentials and health live outside config_json and do not
+ * alter this fingerprint. Every config mutation is conservatively identity-
+ * relevant (endpoint, transport, peer contract, stdio process, or a future
+ * routing field); parsing + canonical key order avoids false drift from a JSON
+ * rewrite while recovery refuses rather than guess which fields matter. */
+const peerRecipientFingerprint = (
+  deps: ExecuteHandlerDeps,
+  connection: string,
+): string => {
+  const row = deps.connectionStore?.get('mcp', connection);
+  if (row === undefined || row === null) {
+    throw new Error(`peer connection '${connection}' is not durably enrolled`);
+  }
+  let config: unknown;
+  try {
+    config = JSON.parse(row.config_json);
+  } catch {
+    throw new Error(`peer connection '${connection}' has malformed durable config`);
+  }
+  return peerDeliveryFingerprint({
+    kind: row.kind,
+    name: row.name,
+    subtype: row.subtype ?? null,
+    publisher_id: row.publisher_id ?? null,
+    config,
+  });
+};
+
+const peerCarrierBindingFingerprint = (
+  deps: ExecuteHandlerDeps,
+  target: ExchangeFireTarget,
+): string => {
+  const binding = deps.executorConfig.manifests.get(target.slug)
+    ?.surfaces?.api?.executes?.[target.operation_key];
+  if (binding?.kind !== 'mcp') {
+    throw new Error(
+      `peer carrier '${target.slug}.${target.operation_key}' is no longer an mcp binding`,
+    );
+  }
+  return peerDeliveryFingerprint(binding);
+};
+
+const buildPeerAskDeliveryPlan = (
+  deps: ExecuteHandlerDeps,
+  spec: NonNullable<ExecutionResult['awaiting_peer']>['spec'],
+): PeerAskDeliveryPlan => {
+  const recipient_fingerprint = peerRecipientFingerprint(deps, spec.connection);
+  if (spec.via === 'direct') return { spec, recipient_fingerprint };
+  const target = resolveExchangeFireTarget(
+    deps.executorConfig.manifests,
+    spec.deliver_to ?? PEER_RECEIVE_ASK_TOOL,
+  );
+  return {
+    spec,
+    recipient_fingerprint,
+    carrier: {
+      ...target,
+      binding_fingerprint: peerCarrierBindingFingerprint(deps, target),
+    },
+  };
+};
+
+/** One transport attempt for an already-activated journal row. It consumes no
+ * live recipe args: wire text/options, frozen carrier and original authority
+ * all come from durable state. Journal transition/receipt settlement belongs
+ * to `recoverPeerAskDelivery`, so a power cut at any await leaves this exact
+ * attempt retryable under the receiver's exchange_ref dedup. */
+export const attemptPeerAskDelivery = async (
+  deps: ExecuteHandlerDeps,
+  row: PeerAskOutboxRow,
+  anchor: AuditEntry,
+): Promise<PeerAskDeliveryOutcome> => {
+  const plan = row.delivery;
+  if (plan === undefined) {
+    return {
+      kind: 'in_doubt',
+      status_message: 'The durable peer-delivery plan is unreadable; nothing was sent.',
+      result: {
+        exchange_ref: row.exchange_ref,
+        status: 'in_doubt',
+        reason: 'peer_delivery_plan_unreadable',
+      },
+    };
+  }
+  const spec = plan.spec;
+  try {
+    const currentRecipient = peerRecipientFingerprint(deps, spec.connection);
+    if (currentRecipient !== plan.recipient_fingerprint) {
+      return {
+        kind: 'in_doubt',
+        status_message: 'The peer connection changed after approval; the held question was not rerouted.',
+        result: {
+          exchange_ref: row.exchange_ref,
+          status: 'in_doubt',
+          reason: 'peer_recipient_binding_changed',
+        },
+      };
+    }
+
+    const wireArgs: Record<string, unknown> = {
+      exchange_ref: row.exchange_ref,
+      label: spec.label,
+      question: spec.question,
+      options: spec.options,
+      ...(spec.deadline_at !== undefined ? { deadline_at: spec.deadline_at } : {}),
+      on_timeout: spec.on_timeout,
+      ...(spec.note_prompt !== undefined ? { note_prompt: spec.note_prompt } : {}),
+      ...(spec.body !== undefined ? { body: spec.body } : {}),
+    };
+
+    if (spec.via === 'direct') {
+      const direct = await createServerExecutor(deps.executorConfig)(
+        CONNECTION_DIRECT_SLUG,
+        {
+          connection_kind: 'mcp',
+          connection: spec.connection,
+          tool: PEER_RECEIVE_ASK_TOOL,
+          args: wireArgs,
+        },
+      );
+      return peerAskDeliveryOutcome(
+        row.exchange_ref,
+        readPeerAskDeliveryVerdict(direct),
+      );
+    }
+
+    const carrier = plan.carrier;
+    if (carrier === undefined
+      || peerCarrierBindingFingerprint(deps, carrier) !== carrier.binding_fingerprint) {
+      return {
+        kind: 'in_doubt',
+        status_message: 'The installed peer carrier changed after approval; the held question was not rerouted.',
+        result: {
+          exchange_ref: row.exchange_ref,
+          status: 'in_doubt',
+          reason: 'peer_carrier_binding_changed',
+        },
+      };
+    }
+    const carrierRun = await handleExecute(deps, {
+      recipe: RUN_INGREDIENT_RECIPE as unknown as Record<string, unknown>,
+      config: {
+        ingredient_slug: carrier.slug,
+        input: {
+          operation: carrier.operation_key,
+          args: wireArgs,
+          connection: spec.connection,
+        },
+      },
+      ...(anchor.execution_source !== undefined
+        ? { execution_source: anchor.execution_source }
+        : {}),
+      ...(anchor.contract_snapshot !== undefined
+        ? { contract_snapshot: anchor.contract_snapshot }
+        : {}),
+    } as never) as {
+      success?: boolean;
+      output?: ExecuteResponse['output'];
+    };
+    const verdict = carrierRun.success === true
+      ? peerAskDeliveryVerdictFromCarrier(carrierRun.output)
+      : { kind: 'unrecognised' } as const;
+    return peerAskDeliveryOutcome(row.exchange_ref, verdict);
+  } catch (error) {
+    console.warn(
+      `[peer-ask] delivery failed for ref '${row.exchange_ref}' on connection `
+      + `'${spec.connection}': `
+      + (error instanceof Error ? error.message : String(error))
+      + ' — the durable plan remains retryable.',
+    );
+    return {
+      kind: 'in_doubt',
+      status_message: 'The approved question may have left Recued, but peer delivery could not be confirmed.',
+      result: {
+        exchange_ref: row.exchange_ref,
+        status: 'in_doubt',
+        reason: 'peer_delivery_threw',
+      },
+    };
+  }
 };
 
 /** D-232 § 20.6 — what actually goes on the wire.
@@ -1621,7 +2350,16 @@ export const handleExecute = async (
   // lowering can affect the request. The caller supplies only its stored hash
   // + section index; fields, hidden definitions, and the allowlist all come
   // from the recipe store.
-  authoredRecipeHash = hashRecipe(recipe);
+  // ⛔ CANONICAL FORM, NOT THE AS-SUBMITTED ONE. `recipe` here may still spell
+  // its output with the legacy `output.sidebar` alias; `parseRecipe` rewrites
+  // that to `output.render` IN PLACE later in the run, on this very object,
+  // because the store hands out the reference rather than a copy. Hashing the
+  // pre-normalization spelling wrote a `recipe_source_hash` no resume could ever
+  // reproduce — the checkpoint guard then read the normalized store recipe,
+  // saw a different hash, and refused with "the installed recipe changed while
+  // this approval was pending" on a recipe nobody had touched. Both sides must
+  // hash the same canonical DEFINITION; only the reader's side was ever able to.
+  authoredRecipeHash = hashRecipe(canonicalRecipeDefinition(recipe));
   if (request.invocation !== undefined) {
     const invocation = request.invocation !== null
       && typeof request.invocation === 'object'
@@ -2150,10 +2888,14 @@ export const handleExecute = async (
   //     under the paused run's own still-`awaiting_approval` anchor and
   //     would otherwise collapse onto itself) AND the reception-workflow
   //     dispatcher (a fresh `reactive` fire per event).
-  //   - channel ∈ {chat, mcp} — only the agent-resend surfaces, where the
-  //     intent rides in `config`. System / event channels keep a stable
-  //     channel_session_id across distinct fires whose input lives in
-  //     `context.event.payload` (outside the key) → would false-collapse.
+  //   - channel ∈ {chat, owner-messenger, mcp} — only the agent-resend
+  //     surfaces where intent rides in `config`; Messenger's session key also
+  //     includes vendor + sender. Its unshipped contracted-user lane stays
+  //     excluded because its full contract snapshot is outside this identity
+  //     (the keyed policy tuple covers channel + actor + contract id). System
+  //     / event channels keep a stable session id
+  //     across distinct fires whose input lives in `context.event.payload`
+  //     (outside the key) → would false-collapse.
   //   - no caller-supplied `context` / `vault` — per-intent inputs the
   //     identity does not cover (the engine-injected `context.server` is
   //     added later, so a config-only resend still dedups).
@@ -2171,9 +2913,10 @@ export const handleExecute = async (
     && request.context === undefined
     && request.vault === undefined
     && request.execution_source !== undefined
-    && HELD_DEDUP_CHANNELS.has(request.execution_source.channel)
+    && isHeldDedupEligibleSource(request.execution_source)
       ? {
           channel_session_id: deriveChannelSessionId(request.execution_source),
+          authority: buildHeldActionAuthority(request.execution_source),
           recipe_id: recipe.recipe_id,
           recipe_hash: hashRecipe(recipe),
           config_snapshot: buildHeldConfigSnapshot(
@@ -3746,16 +4489,17 @@ export const handleExecute = async (
   // Gateway's quality dep is omitted and every `ask` holds exactly as pre-D-202.
   const qualityGateResolverForRun = deps.qualityGateResolver;
   let runRecipeHashMemo: string | undefined;
-  // D-177 P3 — at-most-one-grant-per-approval: a `foreach` gated step
+  // D-177 P3 — at-most-one-grant-per-approval: an ordinary `foreach` gated step
   // re-dispatches per iteration, each carrying the same resume markers, and
   // the one upstream approval mints exactly one grant — the FIRST iteration's
   // envelope (the only coherent `'exact'`-mode choice; multi-item coverage is
   // P5a's batch mode). Per-run closure state, so a fresh run never inherits it.
   let sessionGrantMinted = false;
-  // D-177 P5a — per-run claim memo: a `foreach` gated step re-dispatches
+  // D-177 P5a — per-run claim memo: an ordinary `foreach` gated step re-dispatches
   // per iteration, each carrying the SAME `preflight_batch_claim` marker;
   // one member covers the whole gated step (exactly as one approval does
-  // today), so the first iteration claims durably and the rest ride it.
+  // today), so the first iteration claims durably and the rest ride it. A
+  // chunk-bounded resume clears the marker after its current item.
   // Per-run closure state — a fresh run (or an agent replay, which is a
   // separate run) never inherits the memo and must claim for itself.
   const claimedBatchMembers = new Set<string>();
@@ -4260,9 +5004,31 @@ export const handleExecute = async (
   // L1-served call `cached`. Inert when no cacheStore is configured.
   // D-172 P5 / N.8 — `fileRead` injected (per-request) onto the LLM adapter
   // only when the gate above produced one; absent ⇒ overload inert.
+  // D-217 — retain the adapter's run-local, host-measured account of a
+  // multi-request upload. Provider output may be mapped away or shaped to look
+  // like telemetry, so only this connection-adapter seam may settle the
+  // receipt's request counts. The map is request-local and step-keyed; another
+  // run cannot contribute an emission.
+  const chunkedUploadsByStep = new Map<string, ChunkedUploadAuditInfo[]>();
+  const inheritedConnectionObserver = deps.executorConfig.observeConnectionAudit;
+  const observeConnectionAudit: NonNullable<ServerExecutorConfig['observeConnectionAudit']> =
+    (emission) => {
+      if (
+        emission.recipe_id === recipe.recipe_id
+        && typeof emission.step_id === 'string'
+        && emission.step_id.length > 0
+        && emission.chunked_upload !== undefined
+      ) {
+        const current = chunkedUploadsByStep.get(emission.step_id) ?? [];
+        current.push(structuredClone(emission.chunked_upload));
+        chunkedUploadsByStep.set(emission.step_id, current);
+      }
+      inheritedConnectionObserver?.(emission);
+    };
   const ingredientExecutor = createBoundExecutor(
     {
       ...deps.executorConfig,
+      observeConnectionAudit,
       ...(gatedFileRead ? { fileRead: gatedFileRead } : {}),
     },
     stores,
@@ -5177,6 +5943,12 @@ export const handleExecute = async (
         ? {
             resumeFrom: {
               gated_step_id: internal.resume_from.gated_step_id,
+              ...(internal.resume_from.foreach_progress !== undefined
+                ? { foreach_progress: internal.resume_from.foreach_progress }
+                : {}),
+              ...(internal.resume_from.egress_bound !== undefined
+                ? { egress_bound: internal.resume_from.egress_bound }
+                : {}),
               // D-165 follow-on (op-identity binding) — carry the approved
               // identity onto the resumed gated step so the catalog gate
               // re-verifies it before honoring `preflight_admitted`.
@@ -5272,6 +6044,111 @@ export const handleExecute = async (
       success: result.success,
       errors: result.errors,
     });
+    // Settle the operation that THIS invocation resumed from its own step log,
+    // never from the recipe's overall response. A later step—or a later
+    // target/bound segment in this foreach—may immediately raise another ask;
+    // that is a different action receipt.
+    let resumedPeerActionPending = false;
+    let gatedActionSegmentPredecessorRef: string | undefined;
+    let pendingForeachSegmentSettlement: {
+      action_ref: string;
+      step: ExecutionResult['steps'][number];
+      start_index: number;
+      end_index: number;
+    } | undefined;
+    if (internal.gated_action_ref !== undefined && internal.resume_from !== undefined) {
+      const resumedStep = result.steps.find(
+        (step) => step.id === internal.resume_from!.gated_step_id,
+      );
+      if (resumedStep !== undefined) {
+        const resumedUploads = chunkedUploadsByStep.get(resumedStep.id) ?? [];
+        const boundedForeachStart = internal.resume_from.foreach_progress?.next_index;
+        const boundedForeach = resumedStep.foreach !== undefined
+          && boundedForeachStart !== undefined
+          && internal.resume_from.egress_bound !== undefined;
+        await settleCompletedGatedStep(
+          deps.gatedActionStore,
+          internal.gated_action_ref,
+          resumedStep,
+          boundedForeach ? resumedUploads.slice(0, 1) : resumedUploads,
+          boundedForeachStart !== undefined && resumedStep.foreach !== undefined
+            ? {
+                start_index: boundedForeachStart,
+                ...(boundedForeach
+                  ? { end_index: boundedForeachStart + 1 }
+                  : {}),
+              }
+            : undefined,
+        );
+      } else if (runTermination !== undefined) {
+        await finishResumedGatedActionReceipt(
+          deps.gatedActionStore,
+          internal.gated_action_ref,
+          {
+            status: 'cancelled',
+            status_message: 'The owner cancelled the approved operation before it completed.',
+            result: { run_terminated: runTermination },
+            observed: { items: 1, succeeded: 0, failed: 0 },
+          },
+        );
+      } else if (
+        result.awaiting_peer?.gated_step_id === internal.resume_from.gated_step_id
+      ) {
+        // `core.peer.ask` is terminal for THIS approval once its exchange is
+        // handed off. The peer's eventual reply continues under exchange_ref.
+        resumedPeerActionPending = true;
+      } else if (
+        result.awaiting_approval?.gated_step_id === internal.resume_from.gated_step_id
+      ) {
+        const previous = internal.resume_from.foreach_progress;
+        const next = result.awaiting_approval.foreach_progress;
+        const progressed = previous !== undefined
+          && next !== undefined
+          && previous.step_id === internal.resume_from.gated_step_id
+          && next.step_id === previous.step_id
+          && next.source_length === previous.source_length
+          && next.source_hash === previous.source_hash
+          && next.next_index > previous.next_index
+          && next.next_index === next.results.length;
+        if (progressed && previous !== undefined && next !== undefined) {
+          pendingForeachSegmentSettlement = {
+            action_ref: internal.gated_action_ref,
+            step: {
+              id: next.step_id,
+              type: 'ingredient',
+              skipped: false,
+              result: next.results,
+              error: null,
+              duration_ms: 0,
+              foreach: {
+                items: next.results.length,
+                failed: next.results.filter((entry) => !entry.ok).length,
+              },
+            },
+            start_index: previous.next_index,
+            end_index: internal.resume_from.egress_bound !== undefined
+              ? previous.next_index + 1
+              : next.next_index,
+          };
+          gatedActionSegmentPredecessorRef = internal.gated_action_ref;
+        }
+        // No progress means the same act re-held before dispatch (for example
+        // a failed grant claim). It renews the current receipt. Once at least
+        // one item completed, the next ask is a distinct operation segment;
+        // its predecessor settles only after the new checkpoint/receipt exist.
+      } else {
+        await finishResumedGatedActionReceipt(
+          deps.gatedActionStore,
+          internal.gated_action_ref,
+          {
+            status: 'in_doubt',
+            status_message: 'The resumed operation produced no step result. Inspect Logs before retrying.',
+            result: { errors: result.errors },
+            observed: { items: 1, succeeded: 0, failed: 0 },
+          },
+        );
+      }
+    }
     const resultDegraded: RunDegradation[] = [...(result.degraded ?? [])];
     const markResultDegraded = (reason: RunDegradation): RunDegradation[] => {
       const degraded = recordRunDegradation(resultDegraded, reason);
@@ -5465,18 +6342,42 @@ export const handleExecute = async (
     // the deferred D-157 server-wiring slice).
     let checkpointId: string | undefined;
     let askId: string | undefined;
+    let heldActionReceiptRef: string | undefined;
+    let heldApprovalRef: string | undefined;
+    let heldActionSettlementMode: GatedActionSettlementMode | undefined;
     let pauseFailureError: RecipeError | undefined;
+    // A known peer-delivery refusal may replace the awaiting anchor inside the
+    // journal worker. If that terminalization cannot be verified, propagate so
+    // the answered approval remains retryable and the journal is not hidden.
+    let peerDeliveryTerminalizationError: unknown;
+    // Delivery is forbidden until the peer hold's own anchor is durable. If
+    // that first append fails, retire the unsent peer checkpoint and propagate
+    // so the original answered approval/checkpoint remains the retry source.
+    let peerHoldPersistenceError: unknown;
     let raisePreflightAskAfterAnchor: (() => Promise<void>) | undefined;
     /** D-234 § 234.4 — deferred delivery, for the SAME reason its sibling above
      *  is deferred: the durable anchor is the boundary, and nothing may leave
      *  this server before it exists. */
-    let deliverPeerAskAfterAnchor: (() => Promise<void>) | undefined;
+    let deliverPeerAskAfterAnchor: (() => Promise<PeerAskDeliveryOutcome>) | undefined;
+    /** Exact pre-anchor delivery journal row. It is staged (not answerable) at
+     * this point and activated only by `recoverPeerAskDelivery` after the
+     * awaiting-peer anchor is durably readable. */
+    let stagedPeerAsk: PeerAskOutboxRow | undefined;
     // Owner termination wins over an engine pause observed in the same turn.
     // A killed run is terminal: it must not leave a resumable checkpoint or
     // surface both `run_terminated` and `awaiting_approval` to callers.
     if (result.awaiting_approval && runTermination === undefined) {
       const awaitingApproval = result.awaiting_approval;
       const gated_step_id = awaitingApproval.gated_step_id;
+      const heldManifest = awaitingApproval.ingredient_slug === undefined
+        ? null
+        : deps.executorConfig.manifests.get(awaitingApproval.ingredient_slug);
+      heldActionSettlementMode = heldManifest !== null
+        && heldManifest !== undefined
+        && awaitingApproval.operation_id !== undefined
+        && catalogOperationUsesDetachedCli(heldManifest, awaitingApproval.operation_id)
+        ? 'durable_handoff'
+        : 'returned_result';
       // ── D-157 Part C — concurrent TOCTOU backstop ────────────────────
       // The entry check collapses a SEQUENTIAL resend; this collapses a
       // CONCURRENT one — two parallel identical sends both passed the entry
@@ -5531,10 +6432,18 @@ export const handleExecute = async (
           break;
         }
         if (collapse) {
-          const response = stampExecuteResponseAuditRun(
-            buildHeldResponseForRecipe(recipe.recipe_id, result.recipe_hash),
-            collapsedRunId,
-          );
+          const collapsedReceipt = collapsedRunId === undefined
+            ? null
+            : await deps.gatedActionStore?.getBySubject(
+                collapsedRunId,
+                gated_step_id,
+              ) ?? null;
+          const response = stampExecuteResponseAuditRun({
+            ...buildHeldResponseForRecipe(recipe.recipe_id, result.recipe_hash),
+            ...(collapsedReceipt !== null
+              ? { action_ref: collapsedReceipt.action_ref }
+              : {}),
+          }, collapsedRunId);
           if (runningTwinLeader) {
             deps.inFlightRegistry!.settleRunningTwin(run_id, {
               status: 'completed',
@@ -5582,6 +6491,7 @@ export const handleExecute = async (
             ...(awaitingApproval.egress_bound !== undefined
               ? { egress_bound: awaitingApproval.egress_bound }
               : {}),
+            gated_action_settlement_mode: heldActionSettlementMode,
             ...(awaitingApproval.owner_override_offer !== undefined
               ? { owner_override_offer: awaitingApproval.owner_override_offer }
               : {}),
@@ -5599,6 +6509,7 @@ export const handleExecute = async (
             checkpoint_id: randomUUID(),
             run_id,
             recipe_id: recipe.recipe_id,
+            recipe_source_hash: authoredRecipeHash,
             gated_step_id,
             // D-165 follow-on (op-identity binding) — capture the resolved
             // identity the user is approving so resume re-verifies the call
@@ -5621,6 +6532,15 @@ export const handleExecute = async (
               ? { preflight_context: preflightContext }
               : {}),
             step_state: awaitingApproval.step_state,
+            ...(awaitingApproval.foreach_progress !== undefined
+              ? { foreach_progress: awaitingApproval.foreach_progress }
+              : {}),
+            ...(gatedActionSegmentPredecessorRef !== undefined
+              ? {
+                  gated_action_predecessor_ref:
+                    gatedActionSegmentPredecessorRef,
+                }
+              : {}),
             // D-202 Slice 1b — persist the quality-relevance marker so the
             // answer-path resumer can record the owner's reject-driven quality
             // signal (approve → `quality_good`, reject → `quality_bad`) for this
@@ -5670,6 +6590,17 @@ export const handleExecute = async (
             // resumer skips it and consumes the checkpoint.
             raisePreflightAskAfterAnchor = async () => {
               try {
+                if (deps.gatedActionStore !== undefined
+                  && heldActionReceiptRef === undefined) {
+                  // Receipt-backed deployments expose the durable operation
+                  // identity before any owner decision surface. The checkpoint
+                  // and anchor remain ask-less so boot recovery can create the
+                  // receipt first and only then raise or batch the ask.
+                  console.warn(
+                    `[execute-handler] gated action receipt is unavailable for run ${run_id}; leaving the durable hold ask-less for boot recovery`,
+                  );
+                  return;
+                }
                 // D-157 server-wiring — the engine surfaces the gateway-
                 // attached `(tool_slug, risk_tier, reason)` trio on
                 // `awaiting_approval`; forward each field that's present
@@ -5836,6 +6767,9 @@ export const handleExecute = async (
                   const registered = await deps.batchApprovals.registerHold({
                     source: executionSource,
                     run_id,
+                    ...(heldActionReceiptRef !== undefined
+                      ? { action_ref: heldActionReceiptRef }
+                      : {}),
                     correlation_id: runIdentity.correlation_id,
                     channel_session_id: runIdentity.channel_session_id,
                     ingredient_slug: awaitingApproval.ingredient_slug,
@@ -5910,6 +6844,7 @@ export const handleExecute = async (
                   });
                   if (registered.kind === 'registered') {
                     batchAskId = registered.ask_id;
+                    heldApprovalRef = registered.approval_ref;
                   }
                 }
                 if (batchAskId !== undefined) {
@@ -6028,8 +6963,15 @@ export const handleExecute = async (
             checkpoint_id: randomUUID(),
             run_id,
             recipe_id: recipe.recipe_id,
+            recipe_source_hash: authoredRecipeHash,
             gated_step_id: awaitingPeer.gated_step_id,
             step_state: awaitingPeer.step_state,
+            ...(awaitingPeer.foreach_progress !== undefined
+              ? { foreach_progress: awaitingPeer.foreach_progress }
+              : {}),
+            ...(awaitingPeer.pii_ledgers !== undefined
+              ? { pii_ledgers: awaitingPeer.pii_ledgers }
+              : {}),
             // ⚠ Same reason the approval branch snapshots it: an INLINE run's
             // recipe is nowhere the resumer could load it from.
             ...(preEngineRecipeSnapshot !== undefined
@@ -6060,238 +7002,163 @@ export const handleExecute = async (
           // delivery leaves a run legitimately waiting on a conversation the peer
           // has not seen — recoverable by re-delivering, where a discarded hold
           // is not.
-          deliverPeerAskAfterAnchor = async () => {
-            // ⚠ INSTRUMENTATION, and it exists because four readings of this
-            // code were wrong. Reporting only on THROW makes "never invoked" and
-            // "invoked, carrier came back held" indistinguishable from outside —
-            // the exact shape that defeated each guess. `via` joins it because
-            // the two routes fail in different places and the log line is the
-            // only thing that says which one was taken.
-            console.warn(`[peer-ask] delivering ref '${awaitingPeer.exchange_ref}' `
-              + `to '${awaitingPeer.spec.connection}' via ${awaitingPeer.spec.via}`);
-            // ⛔⛔ THE OUTBOX ROW GOES DOWN BEFORE THE QUESTION GOES OUT, and the
-            // order is the whole correctness argument. The answer can come back
-            // at any moment after the send — a peer's owner may be sitting on
-            // their phone — and an answer that arrives before its outbox row is
-            // an answer to a question this server cannot prove it asked, which
-            // `receiveAnswer` refuses. Writing it after the send would make that
-            // a live race rather than an impossible state. Same shape as
-            // "raise first, ledger second" on the receiving side, pointed the
-            // other way: there, the ask must exist before it is recorded; here,
-            // the record must exist before the ask can be answered.
-            //
-            // ⚠ Best-effort like the delivery around it: no store (dbless) ⇒ the
-            // question still goes, and the answer is refused as unsolicited when
-            // it returns. That degrades to today's behaviour — a durable hold
-            // nobody can close — rather than to a silent accept.
-            try {
-              deps.peerAskOutbox?.open({
-                exchange_ref: awaitingPeer.exchange_ref,
-                run_id,
-                gated_step_id: awaitingPeer.gated_step_id,
-                connection: awaitingPeer.spec.connection,
-                label: awaitingPeer.spec.label,
-                offered: awaitingPeer.spec.options.map((o) => o.id),
-                ...(awaitingPeer.spec.deadline_at !== undefined
-                  ? { deadline_at: awaitingPeer.spec.deadline_at }
-                  : {}),
-                created_at: Date.now(),
-              });
-            } catch (e) {
-              console.warn('[peer-ask] outbox write failed for ref '
-                + `'${awaitingPeer.exchange_ref}': `
-                + (e instanceof Error ? e.message : String(e))
-                + ' — the question still goes; its answer will be refused as '
-                + 'unsolicited.');
-            }
-            // ⛔ ONE WIRE SHAPE, BUILT ONCE, SPENT BY BOTH ROUTES. The two carry
-            // the SAME question, and writing the object twice is precisely how a
-            // field added to one path goes missing on the other with no type
-            // error to say so — `exchangeFireArgs` a few thousand lines up
-            // carries a note about the third field it lost that way.
-            const wireArgs: Record<string, unknown> = {
+          // ── DURABLE DELIVERY PLAN, BEFORE THE ANCHOR ──────────────────
+          // Staging performs no I/O and does not make the exchange answerable.
+          // Its only job is to close both power-cut windows around the
+          // post-anchor closure: once this write lands, boot can reconstruct
+          // the exact bytes, recipient and carrier the owner approved.
+          const outbox = deps.peerAskOutbox;
+          if (outbox !== undefined) {
+            const stage: PeerAskOutboxStageRow = {
               exchange_ref: awaitingPeer.exchange_ref,
+              run_id,
+              gated_step_id: awaitingPeer.gated_step_id,
+              checkpoint_id: peerCheckpoint.checkpoint_id,
+              ...(resumedPeerActionPending && internal.gated_action_ref !== undefined
+                ? { action_ref: internal.gated_action_ref }
+                : {}),
+              connection: awaitingPeer.spec.connection,
               label: awaitingPeer.spec.label,
-              question: awaitingPeer.spec.question,
-              options: awaitingPeer.spec.options,
+              offered: awaitingPeer.spec.options.map((option) => option.id),
               ...(awaitingPeer.spec.deadline_at !== undefined
                 ? { deadline_at: awaitingPeer.spec.deadline_at }
                 : {}),
-              on_timeout: awaitingPeer.spec.on_timeout,
-              // D-234 § 234.4e — the note prompt travels WITH the question. The
-              // receiver installs nothing, so the wire is the only way their
-              // surface can learn a written reason is wanted.
-              ...(awaitingPeer.spec.note_prompt !== undefined
-                ? { note_prompt: awaitingPeer.spec.note_prompt }
-                : {}),
-              // D-234 § 234.4f — the document travels server→server on the
-              // already-authenticated connection, NOT in the notification. It
-              // lands on the receiver's ask record and is readable only through
-              // their own paired surfaces.
-              ...(awaitingPeer.spec.body !== undefined
-                ? { body: awaitingPeer.spec.body }
-                : {}),
+              created_at: Date.now(),
+              delivery: buildPeerAskDeliveryPlan(deps, awaitingPeer.spec),
             };
             try {
-              // ── DIRECT (§ 234.4a) — THE HOST CALLS THE PEER ITSELF ──────
-              //
-              // 🔑🔑 AND THE REASON IT ESCAPES THE DOUBLE-PROMPT IS THAT
-              // PREFLIGHT IS A PROPERTY OF THE RUN, NOT OF THE CALL. The
-              // approval gate is composed per-run in `handleExecute` (the commit
-              // Gateway + `evaluateAdmission`, ~1700 lines up) around a bound
-              // executor; `createServerExecutor` builds the SAME adapter
-              // registry — the same connection adapter, the same MCP transport —
-              // with none of that wrapping. So there is no second run to gate,
-              // and the one approval the owner already gave when `core.peer.ask`
-              // (write risk) paused this run stands as the only one.
-              //
-              // ⛔ NOT `createBoundExecutor`: that one closes `resolveRefs` over
-              // the run's stores, and the question is ALREADY RESOLVED text. A
-              // question that happened to contain `{{…}}` would be re-resolved
-              // against empty stores and silently mangled on its way to a person.
-              //
-              // ⛔ THE TOOL NAME IS A LITERAL AND THE KIND IS PINNED. The author
-              // names a CONNECTION and never a tool on someone else's server —
-              // the same property the carrier's catalog binding gives the recipe
-              // route, kept here rather than dropped with it.
-              if (awaitingPeer.spec.via === 'direct') {
-                const direct = await createServerExecutor(deps.executorConfig)(
-                  CONNECTION_DIRECT_SLUG,
-                  {
-                    connection_kind: 'mcp',
-                    connection: awaitingPeer.spec.connection,
-                    tool: PEER_RECEIVE_ASK_TOOL,
-                    args: wireArgs,
-                  },
-                );
-                console.warn(
-                  `[peer-ask] direct ${JSON.stringify(direct ?? null).slice(0, 240)}`,
-                );
-                return;
-              }
-              // ── RECIPE (§ 234.4a) — THE § 232 CARRIER ───────────────────
-              //
-              // ⛔⛔ DO NOT DELETE THIS BRANCH AS DEAD WEIGHT. I concluded twice
-              // in one session that it was redundant and was wrong both times.
-              // § 234.4a's separating rule — does the receiver do anything other
-              // than answer? — is what picks between the two, not which one is
-              // newer. ⚠ What HAS gone is the "its second approval is correct
-              // here" rationale that used to sit in this comment: § 234.4o put
-              // the one approval on the `core.peer.ask` op-step for BOTH roads,
-              // so this carrier is delivery machinery for an already-approved
-              // question, not a second act to authorize.
-              // ⛔⛔ D-234 § 234.4p Step 1 — THE DESTINATION IS DATA NOW, AND
-              // THIS WAS THE HARDCODED HALF OF A FUNCTION THAT ALREADY TOOK ONE.
-              // Its § 232 sibling a few thousand lines up passes
-              // `payload.deliver_to`; this caller passed a literal, so every ask
-              // could only ever land on the receiver's native door — attention,
-              // never a recipe. The narrowings that make a data-driven name safe
-              // are INSIDE `resolveExchangeFireTarget` and were already
-              // owner-ratified for a peer-supplied one: it must match an
-              // INSTALLED binding, the binding must be `mcp`, and AMBIGUITY
-              // REFUSES. So this line inherits all three by passing the field.
-              //
-              // ⛔ `?? `, AND IT IS SAFE HERE FOR THE ONE REASON § 28 CARES
-              // ABOUT: `parsePeerAskArgs` has already collapsed all three
-              // spellings of unset (`undefined` / `null` / `''`) to ABSENT, so
-              // the empty string cannot reach this operator. A `??` over a raw
-              // authored value is what routed a peer answer LOCAL once; a `??`
-              // over a field a parser guarantees is absent-or-real is not the
-              // same expression.
-              const target = resolveExchangeFireTarget(
-                deps.executorConfig.manifests,
-                awaitingPeer.spec.deliver_to ?? PEER_RECEIVE_ASK_TOOL,
-              );
-              console.warn(`[peer-ask] target ${target.slug} / ${target.operation_key}`
-                + ` (deliver_to=${awaitingPeer.spec.deliver_to ?? '(native door)'})`);
-              const carrier = await handleExecute(deps, {
-                recipe: RUN_INGREDIENT_RECIPE as unknown as Record<string, unknown>,
-                config: {
-                  ingredient_slug: target.slug,
-                  input: {
-                    operation: target.operation_key,
-                    args: wireArgs,
-                    // ⛔ `!== ''`, NOT `??`. § 28 records that `??` here once
-                    // routed a peer answer LOCAL and the server answered itself,
-                    // reporting success: an unset config var resolves to the
-                    // empty string, not undefined.
-                    ...(awaitingPeer.spec.connection !== ''
-                      ? { connection: awaitingPeer.spec.connection }
-                      : {}),
-                  },
-                },
-                // ⛔⛔ D-234 § 234.4o — THE CARRIER INHERITS THE DECLARING RUN'S
-                // AUTHORIZATION CONTEXT, AND ITS ABSENCE HERE WAS AN OMISSION
-                // RATHER THAN A DESIGN. The § 232 exchange-fire carrier a few
-                // thousand lines up passes exactly these two fields; this one
-                // never did, so its nested run was SOURCE-LESS — and a
-                // source-less run has three consequences nobody intended:
-                //   1. no trust ceiling, so the catalog `ask.send` sat at the
-                //      `write` RISK FLOOR and prompted a second time for a
-                //      question the owner had already approved;
-                //   2. `resolveSessionGrantOffer` is gated on
-                //      `executionSource !== undefined`, so that prompt carried
-                //      NO `allow_session` — the one prompt on this road was the
-                //      only UNLEARNABLE approval in the feature;
-                //   3. it was not an op-step of the owner's run at all, so it
-                //      showed a wire-shaped catalog send where the direct road
-                //      shows the question.
-                // ⇒ Inheriting the source relaxes the send at the owner's
-                // `admin` ceiling, which is what leaves § 234.4o's ONE approval
-                // where the ruling put it: on `core.peer.ask`, learnable, on
-                // both roads. ⚠ `contract_snapshot` travels WITH it and is not
-                // optional — `evaluatePreflightAdmission` THROWS for a
-                // contract-bearing source with no snapshot.
-                ...(executionSource !== undefined
-                  ? { execution_source: executionSource }
-                  : {}),
-                ...(request.contract_snapshot !== undefined
-                  ? { contract_snapshot: request.contract_snapshot }
-                  : {}),
-              } as never) as { success?: boolean; awaiting_approval?: unknown;
-                errors?: unknown[] };
-              // ⚠ `=== true`, NOT `!== undefined`. `awaiting_approval` is a
-              // BOOLEAN present on every execute result, so the old expression
-              // would print `held=true` for a run that had SUCCEEDED and merely
-              // carried `false`. Latent rather than active: on this path the
-              // value is genuinely `true`, so both expressions happened to
-              // agree — which is exactly why it survived. Fixed anyway.
-              //
-              // ⛔⛔⛔ AND THE THING THIS LINE REPORTS IS NOT UNDERSTOOD. Driven
-              // 2026-08-11 with timestamps on both servers: the carrier returns
-              // `{success:false, errors:[], awaiting_approval:true}` after 3ms —
-              // a genuine hold, too fast to have crossed the wire — and bob's
-              // `recued_peerAsk` door is nonetheless entered ~57ms LATER, with
-              // no second approval answered on this side (the drive's 8k2 probe
-              // read alice's queue as EMPTY at that point). So the question
-              // arrives AFTER the send reported itself held, by a path this
-              // session did not identify. It is not the § 24 exchange-retry
-              // sweep — those refs do not match. ⇒ Either the hold is not
-              // preventing the dispatch, or something resumes it unattended;
-              // both are worth knowing before `via: 'recipe'` is trusted with
-              // anything whose send the owner must authorize. See
-              // decisions-log § 234.4c.
-              // ⚠ 500, NOT 200, AND THE OLD WIDTH HID THE ANSWER. § 234.4p Step 1
-              // drove a destination whose far side refused; the gateway's
-              // `MCP_TOOL_ERROR` says WHICH tool it invoked and what came back,
-              // and both sat past character 200 — so the one line written to
-              // explain a failed carrier truncated exactly where it started
-              // explaining. Same lesson as never `head`-ing a command you will
-              // claim from, applied to a log this code writes itself.
-              console.warn('[peer-ask] carrier '
-                + `success=${String(carrier?.success)} `
-                + `held=${carrier?.awaiting_approval === true} `
-                + `errors=${JSON.stringify(carrier?.errors ?? []).slice(0, 500)}`);
-            } catch (e) {
+              outbox.stage(stage);
+            } catch (error) {
+              // A SQLite adapter may commit then lose its acknowledgement; the
+              // exact durable row below is the postcondition, not the return.
               console.warn(
-                `[peer-ask] delivery failed for ref '${awaitingPeer.exchange_ref}' on `
-                + `connection '${awaitingPeer.spec.connection}': `
-                + (e instanceof Error ? e.message : String(e))
-                + ' — the hold is durable; re-deliver to reach them.',
+                `[peer-ask] delivery-plan stage reported an error for '${stage.exchange_ref}': `
+                + (error instanceof Error ? error.message : String(error)),
               );
             }
-          };
+            const persisted = outbox.getDelivery(stage.exchange_ref);
+            const same = persisted !== null
+              && persisted.delivery !== undefined
+              && persisted.run_id === stage.run_id
+              && persisted.gated_step_id === stage.gated_step_id
+              && persisted.checkpoint_id === stage.checkpoint_id
+              && persisted.action_ref === stage.action_ref
+              && persisted.connection === stage.connection
+              && persisted.label === stage.label
+              && persisted.deadline_at === stage.deadline_at
+              && JSON.stringify(persisted.offered) === JSON.stringify(stage.offered)
+              && JSON.stringify(persisted.delivery) === JSON.stringify(stage.delivery);
+            if (!same) {
+              throw new Error(
+                `peer delivery plan '${stage.exchange_ref}' conflicts with durable outbox state`,
+              );
+            }
+            stagedPeerAsk = persisted;
+            // Bind only AFTER the resend plan exists. A crash before staging
+            // leaves the original approval checkpoint authoritative; a crash
+            // after staging is explicitly recoverable/retirable from this row.
+            if (resumedPeerActionPending
+              && internal.gated_action_ref !== undefined
+              && deps.gatedActionStore !== undefined) {
+              const rebound = await deps.gatedActionStore.bindDispatchCheckpoint(
+                internal.gated_action_ref,
+                peerCheckpoint.checkpoint_id,
+              );
+              if (rebound === null
+                || rebound.status !== 'dispatching'
+                || rebound.current_checkpoint_id !== peerCheckpoint.checkpoint_id) {
+                throw new Error('approved peer action could not bind its peer checkpoint');
+              }
+            }
+            deliverPeerAskAfterAnchor = async () => {
+              console.warn(
+                `[peer-ask] recovering ref '${persisted.exchange_ref}' to `
+                + `'${persisted.connection}' via ${persisted.delivery!.spec.via}`,
+              );
+              const recovered = await recoverPeerAskDelivery(persisted, {
+                outbox,
+                auditLog: deps.auditLog!,
+                checkpoints: deps.checkpointStore!,
+                ...(deps.db !== undefined
+                  ? { answers: createPeerAnswerStore(deps.db) }
+                  : {}),
+                ...(deps.gatedActionStore !== undefined
+                  ? { gatedActions: deps.gatedActionStore }
+                  : {}),
+                deliver: (row, anchor) => attemptPeerAskDelivery(deps, row, anchor),
+              });
+              if (recovered.kind === 'delivered' || recovered.kind === 'refused'
+                || recovered.kind === 'deferred') return recovered.outcome;
+              return {
+                kind: 'in_doubt',
+                status_message: 'The approved question is durably queued for peer delivery.',
+                result: {
+                  exchange_ref: persisted.exchange_ref,
+                  status: 'in_doubt',
+                  reason: 'peer_delivery_queued',
+                },
+              };
+            };
+          } else {
+            // No journal means no recoverable answer route. Downgrade BEFORE
+            // writing an awaiting-peer anchor: otherwise a power cut between
+            // that anchor and a post-anchor failure rewrite would create an
+            // immortal hold which boot has no row with which to repair it.
+            const at = Date.now();
+            const outcome = {
+              exchange_ref: awaitingPeer.exchange_ref,
+              status: 'failed',
+              reason: 'peer_outbox_unavailable',
+            } as const;
+            pauseFailureError = {
+              error_id: `peer-delivery-${at.toString(36)}-${run_id}`,
+              code: 'INGREDIENT_ADAPTER_ALL_FAILED',
+              message:
+                'The approved question was not sent because durable peer delivery is unavailable.',
+              severity: 'fatal',
+              source: {
+                recipe_id: recipe.recipe_id,
+                step_id: awaitingPeer.gated_step_id,
+                ingredient_slug: 'peer-ask',
+              },
+              details: outcome,
+              timestamp: new Date(at).toISOString(),
+              retryable: false,
+            };
+            await finishResumedGatedActionReceipt(
+              deps.gatedActionStore,
+              internal.gated_action_ref,
+              {
+                status: 'failed',
+                status_message: pauseFailureError.message,
+                result: outcome,
+                observed: { items: 1, succeeded: 0, failed: 1 },
+              },
+            );
+            resumedPeerActionPending = false;
+            const unsendableCheckpointId = checkpointId;
+            checkpointId = undefined;
+            if (unsendableCheckpointId !== undefined) {
+              try {
+                await deps.checkpointStore.delete(unsendableCheckpointId);
+              } catch (error) {
+                console.warn(
+                  `[peer-ask] failed to delete unsendable checkpoint ${unsendableCheckpointId}: `
+                    + (error instanceof Error ? error.message : String(error)),
+                );
+              }
+            }
+          }
         } catch (e) {
+          const strandedCheckpointId = checkpointId;
+          checkpointId = undefined;
+          if (stagedPeerAsk !== undefined) {
+            try { deps.peerAskOutbox?.close(stagedPeerAsk.exchange_ref); } catch { /* boot retires */ }
+            stagedPeerAsk = undefined;
+          }
+          if (strandedCheckpointId !== undefined) {
+            try { await deps.checkpointStore.delete(strandedCheckpointId); } catch { /* retention */ }
+          }
           pauseFailureError = buildPauseFailureError(
             recipe.recipe_id,
             awaitingPeer.gated_step_id,
@@ -6476,7 +7343,7 @@ export const handleExecute = async (
           // (or `{{context.event...}}`) must dispatch against the
           // approved values, not undefined. Paused anchors only —
           // terminal rows never carry caller context (page text etc.).
-          ...(result.awaiting_approval
+          ...((result.awaiting_approval || result.awaiting_peer)
             && checkpointId !== undefined
             && request.context !== undefined
             && Object.keys(request.context).length > 0
@@ -6566,6 +7433,96 @@ export const handleExecute = async (
         });
         await deps.auditLog.append(entry);
         auditAnchorWritten = true;
+        if (
+          entry.commit_status === 'awaiting_approval'
+          && checkpointId !== undefined
+          && result.awaiting_approval !== undefined
+          && deps.gatedActionStore !== undefined
+        ) {
+          try {
+            const held = await deps.gatedActionStore.createHeld({
+              run_id,
+              recipe_id: recipe.recipe_id,
+              gated_step_id: result.awaiting_approval.gated_step_id,
+              checkpoint_id: checkpointId,
+              ...(gatedActionSegmentPredecessorRef !== undefined
+                ? {
+                    predecessor_action_ref:
+                      gatedActionSegmentPredecessorRef,
+                  }
+                : {}),
+              ...(result.awaiting_approval.ingredient_slug !== undefined
+                ? { ingredient_slug: result.awaiting_approval.ingredient_slug }
+                : {}),
+              ...(result.awaiting_approval.operation_id !== undefined
+                ? { operation_id: result.awaiting_approval.operation_id }
+                : {}),
+              ...(result.awaiting_approval.connection_name !== undefined
+                ? { connection_name: result.awaiting_approval.connection_name }
+                : {}),
+              ...(result.awaiting_approval.egress_bound !== undefined
+                ? { approved_bound: result.awaiting_approval.egress_bound }
+                : {}),
+              ...(heldActionSettlementMode !== undefined
+                ? { settlement_mode: heldActionSettlementMode }
+                : {}),
+            });
+            heldActionReceiptRef = held.action_ref;
+          } catch (error) {
+            console.warn(
+              `[execute-handler] failed to create gated action receipt for run ${run_id}: `
+                + (error instanceof Error ? error.message : String(error)),
+            );
+          }
+          if (
+            heldActionReceiptRef !== undefined
+            && pendingForeachSegmentSettlement !== undefined
+          ) {
+            // Load-bearing ordering: the next segment is now durable, so the
+            // preceding receipt can close without risking a crash that loses
+            // both the completed result and the newly pending operation. A
+            // failed settlement stops ask delivery; boot recovery will mark an
+            // interrupted predecessor in doubt before surfacing this hold.
+            try {
+              await settleCompletedGatedStep(
+                deps.gatedActionStore,
+                pendingForeachSegmentSettlement.action_ref,
+                pendingForeachSegmentSettlement.step,
+                internal.resume_from?.egress_bound !== undefined
+                  ? (chunkedUploadsByStep.get(
+                      pendingForeachSegmentSettlement.step.id,
+                    ) ?? []).slice(0, 1)
+                  : chunkedUploadsByStep.get(
+                      pendingForeachSegmentSettlement.step.id,
+                    ) ?? [],
+                {
+                  start_index: pendingForeachSegmentSettlement.start_index,
+                  end_index: pendingForeachSegmentSettlement.end_index,
+                },
+              );
+            } catch (error) {
+              // Preserve liveness when exact projection failed but the receipt
+              // store recovered: close the previous segment conservatively,
+              // then the already-durable next hold may still be surfaced. If
+              // this fallback also cannot verify a terminal row, it throws and
+              // the ask remains hidden for boot recovery.
+              await finishResumedGatedActionReceipt(
+                deps.gatedActionStore,
+                pendingForeachSegmentSettlement.action_ref,
+                {
+                  status: 'in_doubt',
+                  status_message: 'The previous approved foreach segment completed, but its exact outcome could not be recorded. Inspect Logs before retrying.',
+                  result: {
+                    reason: 'foreach_segment_settlement_failed',
+                    error: error instanceof Error ? error.message : String(error),
+                  },
+                  observed: { items: 1, succeeded: 0, failed: 0 },
+                },
+              );
+            }
+            pendingForeachSegmentSettlement = undefined;
+          }
+        }
         // D-157 Part C — the awaiting anchor is now durable, so
         // `findLiveHeldTwin` will see it: a concurrent follower of this
         // leader can safely collapse. (Settled `status: 'durable'` in the outer
@@ -6575,7 +7532,55 @@ export const handleExecute = async (
         // same reason: the question may only leave once the hold that will catch
         // its answer is durable.
         if (entry.commit_status === 'awaiting_peer') {
-          await deliverPeerAskAfterAnchor?.();
+          const delivery = await deliverPeerAskAfterAnchor?.() ?? {
+            kind: 'in_doubt' as const,
+            status_message: 'The approved question is held, but no peer-delivery attempt was available.',
+            result: {
+              exchange_ref: result.awaiting_peer?.exchange_ref ?? '',
+              status: 'in_doubt',
+              reason: 'peer_delivery_not_available',
+            },
+          };
+          if (stagedPeerAsk !== undefined) {
+            // The journal worker owns receipt settlement. In particular an
+            // unconfirmed transport remains dispatching + retryable instead of
+            // being frozen `in_doubt` while the exact send plan still exists.
+            resumedPeerActionPending = false;
+            if (delivery.kind === 'failed') {
+              const terminal = await deps.auditLog.get(entry.run_id);
+              if (terminal?.commit_status !== 'failed') {
+                throw new Error('peer refusal did not retain its terminal run anchor');
+              }
+              entry = terminal;
+              pauseFailureError = terminal.errors?.[0];
+              checkpointId = undefined;
+            }
+          } else if (resumedPeerActionPending && result.awaiting_peer !== undefined) {
+            await updateGatedActionReceipt(
+              deps.gatedActionStore,
+              internal.gated_action_ref,
+              (actions, ref) => actions.finish(ref, {
+                status: delivery.kind,
+                status_message: delivery.status_message,
+                result: delivery.result,
+                observed: {
+                  items: 1,
+                  succeeded: 0,
+                  failed: delivery.kind === 'failed' ? 1 : 0,
+                  ...(delivery.kind === 'dispatched' ? { dispatched: 1 } : {}),
+                },
+                ...(delivery.kind === 'dispatched'
+                  ? {
+                      handoff: {
+                        kind: 'peer_exchange' as const,
+                        ref: result.awaiting_peer!.exchange_ref,
+                      },
+                    }
+                  : {}),
+              }),
+            );
+            resumedPeerActionPending = false;
+          }
         }
         if (entry.commit_status === 'awaiting_approval') {
           heldActionDurable = true;
@@ -6585,6 +7590,17 @@ export const handleExecute = async (
           // the already-durable checkpoint + anchor remain safely resumable and
           // the boot sweep can reconcile the missing pointer.
           await raisePreflightAskAfterAnchor?.();
+          if (heldActionReceiptRef !== undefined && askId !== undefined) {
+            await updateGatedActionReceipt(
+              deps.gatedActionStore,
+              heldActionReceiptRef,
+              (actions, ref) => actions.linkApproval(
+                ref,
+                heldApprovalRef ?? ref,
+                askId,
+              ),
+            );
+          }
           if (askId !== undefined) {
             const entryWithAsk = { ...entry, ask_id: askId };
             try {
@@ -6672,6 +7688,15 @@ export const handleExecute = async (
           all_degraded: degraded,
           error: e,
         });
+        if (result.awaiting_peer !== undefined
+          && stagedPeerAsk !== undefined
+          && auditAnchorWritten) {
+          // Delivery/refusal recovery owns this still-durable journal. Do not
+          // let the generic tail freeze its dispatching receipt in_doubt; make
+          // the caller retry while boot/periodic recovery retains the same plan.
+          resumedPeerActionPending = false;
+          peerDeliveryTerminalizationError = e;
+        }
         if (
           result.awaiting_approval !== undefined
           && checkpointId !== undefined
@@ -6702,9 +7727,32 @@ export const handleExecute = async (
             );
           }
         }
+        if (
+          result.awaiting_peer !== undefined
+          && checkpointId !== undefined
+          && !auditAnchorWritten
+        ) {
+          const unsentCheckpointId = checkpointId;
+          checkpointId = undefined;
+          peerHoldPersistenceError = e;
+          try {
+            await deps.checkpointStore?.delete(unsentCheckpointId);
+          } catch (cleanupError) {
+            console.warn(
+              `[peer-ask] failed to delete unsent checkpoint ${unsentCheckpointId} after awaiting-peer anchor write failure: `
+                + (cleanupError instanceof Error ? cleanupError.message : String(cleanupError)),
+            );
+          }
+        }
       }
     }
 
+    if (peerHoldPersistenceError !== undefined) {
+      throw peerHoldPersistenceError;
+    }
+    if (peerDeliveryTerminalizationError !== undefined) {
+      throw peerDeliveryTerminalizationError;
+    }
     // D-121 Phase 6 — execution `complete` (or `error` when the
     // result captured engine errors). Skipped runs (trigger gate
     // short-circuit) emit nothing — same convention as audit log.
@@ -6749,6 +7797,22 @@ export const handleExecute = async (
     // to pair, so resolving to the peer status would strand that ask"*). The peer
     // pause block at § 234.4 above is itself skipped when `awaiting_approval` is
     // set, so only the approval checkpoint exists in that case.
+    if (resumedPeerActionPending) {
+      await updateGatedActionReceipt(
+        deps.gatedActionStore,
+        internal.gated_action_ref,
+        (actions, ref) => actions.finish(ref, {
+          status: 'in_doubt',
+          status_message: 'The peer exchange could not be durably handed off. Inspect Logs before retrying.',
+          result: {
+            status: 'in_doubt',
+            ...(pauseFailureError !== undefined ? { error: pauseFailureError } : {}),
+          },
+          observed: { items: 1, succeeded: 0, failed: 0 },
+        }),
+      );
+      resumedPeerActionPending = false;
+    }
     const durablePauseMarker: { awaiting_approval: true } | { awaiting_peer: true } | undefined =
       runTermination !== undefined || pauseFailureError !== undefined
         ? undefined
@@ -6907,6 +7971,11 @@ export const handleExecute = async (
       // decided the run was paused at all, so the flag and the predicate cannot
       // disagree about the same run.
       ...(durablePauseMarker ?? {}),
+      ...(result.awaiting_approval !== undefined
+        && durablePauseMarker !== undefined
+        && heldActionReceiptRef !== undefined
+        ? { action_ref: heldActionReceiptRef }
+        : {}),
       // D-232 § 19.3 — the exchange receipt, and NOTE WHERE IT IS: inside the
       // enumerating copier the comment above warns about. The engine derived
       // this so no recipe could forget it; naming it here is what stops the
@@ -7359,6 +8428,10 @@ export const _testing = {
   withRecipeRunFacts,
   customerControlsD162Batch,
   customerControlledD162ExtraUnits,
+  readPeerAskDeliveryVerdict,
+  peerAskDeliveryVerdictFromCarrier,
+  peerAskDeliveryOutcome,
+  settleCompletedGatedStep,
   /** D-145 engine-wiring (D-153 P1) — the process-lived correlation
    *  tracker. Suites that drive `handleExecute` repeatedly call
    *  `.reset()` in `beforeEach` so intent-burst grouping doesn't

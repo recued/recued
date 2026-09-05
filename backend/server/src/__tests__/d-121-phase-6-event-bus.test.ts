@@ -25,6 +25,8 @@ import {
 import { createWarehouseEventBus } from '@recued/warehouse-events';
 import { wireEventSubscription, makeEventsHandlers } from '../events/handler.js';
 
+const registeredClient = { instance_id: 'paired-client' } as never;
+
 describe('EventBus.emit + cursor', () => {
   it('cursor starts at 0 and increments per emit', () => {
     const bus = createEventBus();
@@ -293,7 +295,7 @@ describe('events handler — subscribe rpc', () => {
     bus.emit({ kind: 'memory', subkind: 'audit', id: 'r1' });
 
     const sent: unknown[] = [];
-    const fakeClient = {} as never;
+    const fakeClient = registeredClient;
     const slice = makeEventsHandlers({
       bus,
       pushToClient: (_c, payload) => sent.push(payload),
@@ -322,7 +324,7 @@ describe('events handler — subscribe rpc', () => {
       subscriberId: () => 'c',
     })!;
     await expect(
-      slice.handlers['events.subscribe']({ kinds: [] }, {} as never),
+      slice.handlers['events.subscribe']({ kinds: [] }, registeredClient),
     ).rejects.toThrow(/kinds/);
   });
 
@@ -340,15 +342,47 @@ describe('events handler — subscribe rpc', () => {
     await expect(
       slice.handlers['events.subscribe'](
         { kinds: ['session'] as never },
-        {} as never,
+        registeredClient,
       ),
     ).rejects.toThrow(/unknown kind 'session'/);
     await expect(
       slice.handlers['events.subscribe'](
         { kinds: ['memory', 'not_a_kind'] as never },
-        {} as never,
+        registeredClient,
       ),
     ).rejects.toThrow(/unknown kind 'not_a_kind'/);
+  });
+
+  it('rejects unregistered and revoked callers without installing a subscription', async () => {
+    const bus = createEventBus();
+    const pushToClient = vi.fn();
+    const slice = makeEventsHandlers({
+      bus,
+      pushToClient,
+      subscriberId: () => 'untrusted-client',
+    })!;
+
+    await expect(
+      slice.handlers['events.subscribe'](
+        { kinds: ['execution'] },
+        { instance_id: null } as never,
+      ),
+    ).rejects.toMatchObject({ code: 'unauthorized', status: 401 });
+    // A surviving bearer from a revoked pair is deliberately not authority:
+    // the WS identity resolver leaves both paired ids null before dispatch.
+    await expect(
+      slice.handlers['events.subscribe'](
+        { kinds: ['execution'], cursor_since: 0 },
+        {
+          instance_id: null,
+          token_instance_id: null,
+          client_token_id: 'surviving-revoked-token',
+        } as never,
+      ),
+    ).rejects.toMatchObject({ code: 'unauthorized', status: 401 });
+
+    expect(bus.subscriberCount()).toBe(0);
+    expect(pushToClient).not.toHaveBeenCalled();
   });
 
   it('returns undefined when deps are absent', () => {

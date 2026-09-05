@@ -23,9 +23,9 @@
  *  (D-158 N.3). Both callbacks defend against double-execution by
  *  inspecting the paused anchor's `commit_status` at entry:
  *
- *    - `'succeeded'` / `'failed'` (terminal)  → no-op return (the run
- *      already completed on a prior attempt; let the leaf consume the
- *      checkpoint).
+ *    - `'succeeded'` / `'failed'` (terminal)  → never re-dispatch. An exact
+ *      host-stamped owner-denial row may first repair its operation receipt;
+ *      every other terminal result is a no-op before checkpoint consumption.
  *    - `'awaiting_approval'` with a DIFFERENT `checkpoint_id` than the
  *      one this answer is for → no-op return (a later resume already
  *      wrote a newer awaiting state; the older checkpoint is stale).
@@ -40,11 +40,16 @@
  *  contract is `packages/gateway/src/preflight-reconciliation.ts`.
  */
 
-import { COMPENSATION_RECIPE_ID_PREFIX, hashRecipe } from '@recued/recipes';
+import { randomUUID } from 'node:crypto';
+import {
+  canonicalRecipeDefinition,
+  COMPENSATION_RECIPE_ID_PREFIX,
+  hashRecipe,
+} from '@recued/recipes';
 import type { Checkpoint, RecipeDefinition, RecipeError } from '@recued/contracts';
 import {
-  MCP_INGREDIENT_TOOL_PREFIX,
   executionSourceHasContract,
+  isGatedActionTerminal,
   isEphemeralDishId,
 } from '@recued/contracts';
 import type { PreflightAskContext, PreflightResumer } from '@recued/gateway';
@@ -63,13 +68,36 @@ import {
 } from './raw-op-dispatch.js';
 import { projectRunResultForAgent } from './run-result-agent-projection.js';
 import type { McpActionStore } from './mcp-action-store.js';
-import { RUN_INGREDIENT_RECIPE } from './run-ingredient-recipe.js';
+import {
+  gatedActionHandoffFromResult,
+  type GatedActionRecord,
+  type GatedActionStore,
+} from './gated-action-store.js';
+import { requiredResumeBearerToolNames } from './recipe-resume-authority.js';
 import type { QualityDelegationSignalStore } from './storage/quality-delegation-signal-store.js';
 import type { ExecuteRequest, ExecuteResponse } from './types.js';
 
 /** What this implementation needs from the surrounding server. The
  *  three dependencies are wired by `bin.ts` after `executeDeps` exists. */
+/** D-137 — a run reached a terminal outcome, LATER than the turn that asked
+ *  for it. The chat orchestrator uses this to write the result half of the
+ *  paired tool rows; anything else may ignore it.
+ *
+ *  ⚠ `execution_source` is the ORIGINATING one, recovered from the paused
+ *  anchor — not the approver's. A row written under the approver would land in
+ *  the wrong corpus, and for a door that is a cross-tenant write. */
+export interface PreflightRunSettled {
+  readonly execution_source: unknown;
+  readonly run_id: string;
+  readonly tool_name: string;
+  readonly result: unknown;
+  readonly ts: number;
+}
+
 export interface CreatePreflightResumerDeps {
+  /** D-137 — see {@link PreflightRunSettled}. Optional: absent means late
+   *  results simply are not recallable, which is the behaviour before this. */
+  readonly onRunSettled?: (settled: PreflightRunSettled) => void;
   /** Lazy accessor for `executeDeps`. The resumer is constructed
    *  BEFORE `executeDeps` is built (because the notification block,
    *  which threads as `executeDeps.preflightNotifier`, takes the
@@ -86,6 +114,14 @@ export interface CreatePreflightResumerDeps {
   /** Storage is available before executeDeps is late-bound, so denial can
    * settle a continuation even during boot recovery. */
   mcpActionStore?: McpActionStore;
+  /** Operation-scoped owner receipt; deliberately independent of the MCP
+   * invocation-level continuation above. */
+  gatedActionStore?: GatedActionStore;
+  /** Exact durable ownership check for dispatches transferred to a replayable
+   * substrate (currently the peer-delivery journal). */
+  preserveClaimedDispatch?: (
+    record: GatedActionRecord,
+  ) => boolean | Promise<boolean>;
   /** D-202 Slice 1b — the durable quality VERDICT store. When wired, a resolved
    *  QUALITY-relevant ask (`Checkpoint.quality_relevant`) records one
    *  `QualityDelegationSignal` (approve → `quality_good`, deny → `quality_bad`)
@@ -112,6 +148,200 @@ const updateMcpAction = async (
         + (error instanceof Error ? error.message : String(error)),
     );
   }
+};
+
+/** Denial is the one terminal receipt transition that can safely remain
+ * load-bearing for answer handling: no provider effect ran, so retaining the
+ * answered ask + checkpoint for retry cannot duplicate work. Verify the
+ * postcondition as well as the returned promise because a storage adapter may
+ * report an error after committing. */
+const settleDeniedGatedAction = async (
+  store: GatedActionStore | undefined,
+  checkpoint: Checkpoint,
+  input: { status_message: string; result: unknown },
+): Promise<void> => {
+  if (store === undefined) return;
+  const action = await store.getByCheckpoint(checkpoint.checkpoint_id);
+  // Additive compatibility: a legacy hold created before receipt support has
+  // no row to settle. Its audit/checkpoint behavior remains unchanged.
+  if (action === null) return;
+  let settled;
+  try {
+    settled = await store.finish(action.action_ref, {
+      status: 'denied',
+      status_message: input.status_message,
+      result: input.result,
+      observed: { items: 1, succeeded: 0, failed: 0 },
+    });
+  } catch (error) {
+    try {
+      settled = await store.get(action.action_ref);
+    } catch {
+      throw error;
+    }
+    if (settled?.status !== 'denied') throw error;
+  }
+  if (settled === null) {
+    throw new Error(
+      `[preflight-resumer] denial receipt disappeared for run_id=${checkpoint.run_id}`,
+    );
+  }
+  if (settled.status === 'denied') return;
+  // A different terminal result already won its immutable CAS. Never rewrite
+  // it as a denial; the conflict is observable but not retryable.
+  if (isGatedActionTerminal(settled.status)) {
+    console.warn(
+      `[preflight-resumer] denial receipt conflict for run_id=${checkpoint.run_id}: `
+        + `receipt is already terminal with status='${settled.status}'`,
+    );
+    return;
+  }
+  throw new Error(
+    `[preflight-resumer] denial receipt did not reach terminal status for run_id=${checkpoint.run_id}`,
+  );
+};
+
+/** Validation and live-authority failures happen before an approved effect is
+ * dispatched, but their run anchor is written before the owner receipt. Keep
+ * the checkpoint retryable until this exact terminal receipt is verifiably
+ * durable; a write may commit and then lose its acknowledgement. */
+const settleFailedGatedAction = async (
+  store: GatedActionStore | undefined,
+  checkpoint: Checkpoint,
+  input: { status_message: string; result: unknown },
+): Promise<void> => {
+  if (store === undefined) return;
+  const action = await store.getByCheckpoint(checkpoint.checkpoint_id);
+  if (action === null) {
+    if (checkpoint.preflight_context?.gated_action_settlement_mode !== undefined) {
+      throw new Error(
+        `[preflight-resumer] receipt-backed checkpoint has no valid gated action for run_id=${checkpoint.run_id}`,
+      );
+    }
+    return;
+  }
+  let settled;
+  try {
+    settled = await store.finish(action.action_ref, {
+      status: 'failed',
+      status_message: input.status_message,
+      result: input.result,
+      observed: { items: 1, succeeded: 0, failed: 1 },
+    });
+  } catch (error) {
+    try {
+      settled = await store.get(action.action_ref);
+    } catch {
+      throw error;
+    }
+    if (settled?.status !== 'failed') throw error;
+  }
+  if (settled === null) {
+    throw new Error(
+      `[preflight-resumer] failed receipt disappeared for run_id=${checkpoint.run_id}`,
+    );
+  }
+  if (settled.status === 'failed') return;
+  if (isGatedActionTerminal(settled.status)) {
+    console.warn(
+      `[preflight-resumer] failed receipt conflict for run_id=${checkpoint.run_id}: `
+        + `receipt is already terminal with status='${settled.status}'`,
+    );
+    return;
+  }
+  throw new Error(
+    `[preflight-resumer] failed receipt did not reach terminal status for run_id=${checkpoint.run_id}`,
+  );
+};
+
+type RecipeDispatchClaim =
+  | { kind: 'legacy_without_receipt' }
+  | { kind: 'claimed'; action: GatedActionRecord }
+  | { kind: 'already_terminal'; action: GatedActionRecord }
+  | { kind: 'already_dispatching'; action: GatedActionRecord }
+  | { kind: 'superseded'; action: GatedActionRecord };
+
+/** A receipt-backed recipe checkpoint may cross the provider boundary only
+ * after winning its durable attempt token. Absence remains compatible with
+ * checkpoints minted before gated-action receipts existed; a subject row with
+ * a different checkpoint is evidence of supersession, not legacy absence. */
+const claimRecipeDispatch = async (
+  store: GatedActionStore | undefined,
+  checkpoint: Checkpoint,
+): Promise<RecipeDispatchClaim> => {
+  if (store === undefined) return { kind: 'legacy_without_receipt' };
+  let action = await store.getByCheckpoint(checkpoint.checkpoint_id);
+  if (action === null && checkpoint.gated_step_id !== undefined) {
+    action = await store.getBySubject(checkpoint.run_id, checkpoint.gated_step_id);
+  }
+  if (action === null) {
+    if (checkpoint.preflight_context?.gated_action_settlement_mode !== undefined) {
+      throw new Error(
+        `[preflight-resumer] receipt-backed checkpoint has no valid gated action for run_id=${checkpoint.run_id}`,
+      );
+    }
+    return { kind: 'legacy_without_receipt' };
+  }
+  if (action.current_checkpoint_id !== checkpoint.checkpoint_id) {
+    return { kind: 'superseded', action };
+  }
+  const claimed = await store.claimDispatch(action.action_ref, {
+    checkpoint_id: checkpoint.checkpoint_id,
+    attempt_id: randomUUID(),
+  });
+  if (claimed.kind === 'claimed') return { kind: 'claimed', action: claimed.record };
+  if (claimed.record === null) {
+    throw new Error(
+      `[preflight-resumer] gated action disappeared while claiming dispatch for run_id=${checkpoint.run_id}`,
+    );
+  }
+  if (isGatedActionTerminal(claimed.record.status)) {
+    return { kind: 'already_terminal', action: claimed.record };
+  }
+  if (claimed.record.status === 'dispatching') {
+    return { kind: 'already_dispatching', action: claimed.record };
+  }
+  return { kind: 'superseded', action: claimed.record };
+};
+
+/** Conservatively close a claimed recipe operation after the host lost the
+ * ability to prove its outcome. A different terminal winner remains immutable.
+ * Readback verification handles adapters that throw after committing. */
+const settleInterruptedGatedAction = async (
+  store: GatedActionStore,
+  action: GatedActionRecord,
+  checkpoint: Checkpoint,
+  cause: unknown,
+): Promise<GatedActionRecord> => {
+  if (isGatedActionTerminal(action.status)) return action;
+  const input = {
+    status: 'in_doubt' as const,
+    status_message:
+      'Recued could not prove the final outcome of this approved operation. Inspect Logs before retrying.',
+    result: {
+      reason: 'approved_recipe_dispatch_interrupted',
+      checkpoint_id: checkpoint.checkpoint_id,
+      error: cause instanceof Error ? cause.message : String(cause),
+    },
+    observed: { items: 1, succeeded: 0, failed: 0 },
+  };
+  let settled;
+  try {
+    settled = await store.finish(action.action_ref, input);
+  } catch (error) {
+    try {
+      settled = await store.get(action.action_ref);
+    } catch {
+      throw error;
+    }
+    if (settled === null || !isGatedActionTerminal(settled.status)) throw error;
+  }
+  if (settled === null || !isGatedActionTerminal(settled.status)) {
+    throw new Error(
+      `[preflight-resumer] interrupted gated action did not settle for run_id=${checkpoint.run_id}`,
+    );
+  }
+  return settled;
 };
 
 const settleRawMcpAction = async (
@@ -171,6 +401,137 @@ const settleRawMcpAction = async (
   });
 };
 
+type RawGatedActionStart =
+  | { kind: 'legacy_without_receipt' }
+  | { kind: 'dispatch'; action: GatedActionRecord }
+  | { kind: 'already_dispatching'; action: GatedActionRecord }
+  | { kind: 'already_terminal'; action: GatedActionRecord };
+
+const markRawGatedActionDispatching = async (
+  store: GatedActionStore | undefined,
+  checkpoint: Checkpoint,
+): Promise<RawGatedActionStart> => {
+  if (store === undefined) return { kind: 'legacy_without_receipt' };
+  const action = await store.getByCheckpoint(checkpoint.checkpoint_id);
+  if (action === null) {
+    if (checkpoint.preflight_context?.gated_action_settlement_mode !== undefined) {
+      throw new Error(
+        `[preflight-resumer] receipt-backed raw checkpoint has no valid gated action for run_id=${checkpoint.run_id}`,
+      );
+    }
+    return { kind: 'legacy_without_receipt' };
+  }
+  if (isGatedActionTerminal(action.status)) return { kind: 'already_terminal', action };
+  if (action.status === 'dispatching') {
+    return { kind: 'already_dispatching', action };
+  }
+  const claim = await store.claimDispatch(action.action_ref, {
+    checkpoint_id: checkpoint.checkpoint_id,
+    attempt_id: randomUUID(),
+    status_message: 'Approved; claiming the held raw operation for dispatch.',
+  });
+  const marked = claim.record;
+  if (marked === null) {
+    throw new Error(
+      `[preflight-resumer] raw gated action disappeared before dispatch for run_id=${checkpoint.run_id}`,
+    );
+  }
+  if (isGatedActionTerminal(marked.status)) return { kind: 'already_terminal', action: marked };
+  if (claim.kind !== 'claimed' && marked.status === 'dispatching') {
+    return { kind: 'already_dispatching', action: marked };
+  }
+  if (marked.status !== 'dispatching'
+    || marked.current_checkpoint_id !== checkpoint.checkpoint_id) {
+    throw new Error(
+      `[preflight-resumer] raw gated action did not enter dispatching for run_id=${checkpoint.run_id}`,
+    );
+  }
+  return { kind: 'dispatch', action: marked };
+};
+
+const settleRawGatedAction = async (
+  store: GatedActionStore | undefined,
+  action: GatedActionRecord | undefined,
+  checkpoint: Checkpoint,
+  outcome: RawOpResumeOutcome,
+): Promise<void> => {
+  if (store === undefined || action === undefined) return;
+  if (outcome.kind === 'skipped' && outcome.reason === 'resume_already_in_flight') return;
+  const input = await (async () => {
+    switch (outcome.kind) {
+      case 'completed': {
+        const current = await store.get(action.action_ref);
+        const settlementMode = current?.settlement_mode
+          ?? checkpoint.preflight_context?.gated_action_settlement_mode
+          ?? 'returned_result';
+        const handoff = gatedActionHandoffFromResult(
+          outcome.result,
+          action.action_ref,
+          settlementMode,
+        );
+        return settlementMode === 'durable_handoff' && handoff === undefined
+          ? {
+              status: 'in_doubt' as const,
+              status_message: 'The approved asynchronous operation returned without a verifiable durable handoff.',
+              result: outcome.result,
+              observed: { items: 1, succeeded: 0, failed: 0 },
+            }
+          : handoff === undefined
+            ? {
+                status: 'succeeded' as const,
+                status_message: 'The approved operation completed.',
+                result: outcome.result,
+                observed: { items: 1, succeeded: 1, failed: 0 },
+              }
+            : {
+                status: 'dispatched' as const,
+                status_message: 'The approved operation was handed off for asynchronous execution.',
+                result: outcome.result,
+                observed: { items: 1, succeeded: 0, failed: 0, dispatched: 1 },
+                handoff,
+              };
+      }
+      case 'failed':
+        return {
+          status: 'failed' as const,
+          status_message: outcome.message,
+          result: { code: outcome.code, message: outcome.message },
+          observed: { items: 1, succeeded: 0, failed: 1 },
+        };
+      case 'in_doubt':
+        return {
+          status: 'in_doubt' as const,
+          status_message: outcome.message,
+          result: { code: outcome.code, message: outcome.message },
+          observed: { items: 1, succeeded: 0, failed: 0 },
+        };
+      case 'skipped':
+        return {
+          status: 'in_doubt' as const,
+          status_message: 'The checkpoint was consumed but the provider outcome is unavailable.',
+          result: { code: outcome.reason },
+          observed: { items: 1, succeeded: 0, failed: 0 },
+        };
+    }
+  })();
+  let settled;
+  try {
+    settled = await store.finish(action.action_ref, input);
+  } catch (error) {
+    try {
+      settled = await store.get(action.action_ref);
+    } catch {
+      throw error;
+    }
+    if (settled === null || !isGatedActionTerminal(settled.status)) throw error;
+  }
+  if (settled === null || !isGatedActionTerminal(settled.status)) {
+    throw new Error(
+      `[preflight-resumer] raw gated action did not settle for run_id=${checkpoint.run_id}`,
+    );
+  }
+};
+
 const settleRecipeMcpAction = async (
   store: McpActionStore | undefined,
   auditLog: AuditLogStore,
@@ -222,7 +583,44 @@ const TERMINAL_RUN_ANCHOR_STATUSES = new Set<AuditEntry['commit_status']>([
 /** Decision encoded by the at-entry idempotency guard. */
 type IdempotencyDecision =
   | { kind: 'proceed'; anchor: AuditEntry }
-  | { kind: 'skip'; reason: string };
+  | { kind: 'skip'; reason: string; anchor?: AuditEntry };
+
+/** Host-stamped marker for a denial written by this callback. A generic
+ * `RECIPE_POLICY_DENIED` can also come from a fresh-policy recheck after an
+ * approval; only the exact preflight-deny error for this gated step proves that
+ * a retry should repair the receipt as `denied`. */
+const recordedOwnerDenial = (
+  anchor: AuditEntry,
+  checkpoint: Checkpoint,
+): RecipeError | undefined => anchor.commit_status === 'failed'
+  ? anchor.errors?.find((error) =>
+      error.code === 'RECIPE_POLICY_DENIED'
+        && error.error_id.startsWith('preflight-deny-')
+        && error.source?.step_id === checkpoint.gated_step_id)
+  : undefined;
+
+/** Only these exact host-authored failures are safe for a terminal-anchor
+ * retry to project into the operation receipt. Other failed run anchors may
+ * describe a different step or a post-dispatch outcome. */
+const recordedApprovalResumeFailure = (
+  anchor: AuditEntry,
+  checkpoint: Checkpoint,
+): RecipeError | undefined => anchor.commit_status === 'failed'
+  ? anchor.errors?.find((error) => {
+      if (error.source?.step_id !== checkpoint.gated_step_id) return false;
+      if (error.error_id.startsWith('checkpoint-integrity-')) {
+        return error.code === 'RECIPE_VALIDATION_FAILED'
+          && error.details?.reason === 'checkpoint_integrity_failed';
+      }
+      if (error.error_id.startsWith('checkpoint-provenance-')) {
+        return error.code === 'RECIPE_VALIDATION_FAILED'
+          && error.details?.reason === 'checkpoint_provenance_failed';
+      }
+      return error.error_id.startsWith('approval-resume-authority-')
+        && error.code === 'RECIPE_POLICY_DENIED'
+        && typeof error.details?.authority_reason === 'string';
+    })
+  : undefined;
 
 /** D-173 N.5 §4 — one changed arg's old→new pair. `old` is the gated
  *  step's authored/prefilled value (or `undefined` for an override that
@@ -233,107 +631,6 @@ export interface ArgEditDiff {
   old: unknown;
   new: unknown;
 }
-
-/** Reconstruct the live bearer grant(s) that can currently authorize this
- * recipe on the surface that created the hold. The checkpoint does not get to
- * assert that grant: installed publisher metadata + the approved ingredient
- * identity are evidence used to name the current token-store lookup.
- *
- * llm_gateway exposes Tier-2 recipes only, so its exact
- * `<publisher>/<recipe_id>` grant is required. Direct MCP can authorize the
- * same recipe through its exact Tier-2 entry, the generic runRecipe surface,
- * or — for the inline kernel `run-ingredient` recipe only — the exact
- * direct-ingredient wire tool. The fresh snapshot independently proves recipe
- * dependencies; a dependency grant never substitutes for top-level recipe
- * authority. */
-const requiredResumeBearerToolNames = (
-  checkpoint: Checkpoint,
-  anchor: AuditEntry,
-  executeDeps: ExecuteHandlerDeps,
-): ReadonlyArray<string> | undefined => {
-  const source = anchor.execution_source;
-  if (!source) return undefined;
-
-  const recipeId = checkpoint.recipe_id ?? anchor.recipe_id;
-  const inlineRecipe = checkpoint.recipe_snapshot !== undefined;
-  const recipe = checkpoint.recipe_snapshot ?? executeDeps.recipeStore.get(recipeId);
-  const stored = inlineRecipe
-    ? undefined
-    : executeDeps.recipeStore.getStored?.(recipeId);
-  const publisher =
-    stored?.publisher_id
-    ?? (recipe as { metadata?: { author?: unknown } } | null | undefined)
-      ?.metadata?.author;
-  const qualified =
-    typeof publisher === 'string' && publisher.length > 0
-      ? `${publisher}/${recipeId}`
-      : undefined;
-
-  if (
-    source.channel === 'chat'
-    && source.actor === 'contracted_user'
-    && source.chat_session_id.startsWith('llm_gateway:')
-  ) {
-    // The LLM gateway exposes only pinned, store-resident Tier-2 recipes. An
-    // inline snapshot cannot borrow a publisher-qualified grant merely by
-    // claiming matching metadata.
-    return !inlineRecipe && qualified ? [qualified] : [];
-  }
-  if (source.channel === 'mcp') {
-    // ── D-232 § 20.19 — A RECORDED GRANT IS AN EXACT REQUIREMENT ──
-    // Hoisted above BOTH arms below. When the anchor says this run's steps rode
-    // a specific recipe grant, that grant — not a substitute — must still be
-    // held. Without the hoist a door holding both `recued-core/X` and the
-    // generic `recipe.run` could have `recued-core/X` revoked mid-ask and still
-    // resume, because the Tier-2 arm accepts ANY of its names and the umbrella
-    // would stand in. Strictly tightening: a run whose coverage came from
-    // `recued-core/X` alone required that name already.
-    const grantedBy = anchor.granted_by_recipe;
-    if (typeof grantedBy === 'string' && grantedBy.length > 0) return [grantedBy];
-    // The inline kernel run-ingredient recipe is reachable ONLY through the
-    // exact per-ingredient wire tool. A generic recipe-run grant cannot load it
-    // from RecipeStore, and a bare ingredient dependency grant is snapshot
-    // authority rather than top-level call authority. Keep this arm exact so a
-    // revoked `recued_ingredient_<slug>` cannot be substituted by either.
-    if (recipeId === 'run-ingredient' && inlineRecipe) {
-      if (hashRecipe(recipe) !== hashRecipe(RUN_INGREDIENT_RECIPE)) return [];
-      // ── D-232 § 20.19 — A HOST-DISPATCHED CARRIER IS NOT A WIRE CALL ──
-      //
-      // The arm below is correct for what it was written for: a door that
-      // called `run-ingredient` ITSELF, over the wire, to dispatch one
-      // ingredient. That door must still hold the exact per-ingredient grant.
-      //
-      // An exchange fire's carrier is the other thing wearing the same recipe
-      // id. The door never called it — the HOST dispatched it to carry a
-      // granted recipe's own `output.exchange`, and no door can hold a grant on
-      // `run-ingredient` because it is kernel plumbing, absent from the
-      // marketplace and from `installRegistry`. Requiring the per-ingredient
-      // wire grant here denied every approved answer at resume:
-      // `bearer_grant_revoked` for a grant that was never grantable.
-      //
-      // ⛔ THIS IS NOT A DOWNGRADE TO "REQUIRE NOTHING". It substitutes the
-      // grant that ACTUALLY justified the run — the declaring recipe's wire
-      // name, recorded on the anchor at dispatch — so revoking THAT grant while
-      // the ask is outstanding still denies the resume. The kill-switch keeps
-      // its full strength; it just points at the real key.
-      //
-      // Reachable only from the host: `granted_by_recipe` is written by
-      // `handleExecute` from a coverage it resolved itself, never from request
-      // input (see `ExecuteInternal.granted_by_recipe`). The substitution
-      // happens at the top of this branch, above both arms.
-      const ingredient = checkpoint.approved_target?.ingredient_slug;
-      return ingredient
-        ? [`${MCP_INGREDIENT_TOOL_PREFIX}${ingredient}`]
-        : [];
-    }
-    const names = new Set<string>(['recued_runRecipe', 'recipe.run']);
-    // A qualified Tier-2 entry loads its recipe from RecipeStore. It cannot
-    // authorize an arbitrary inline snapshot that copies the same author/id.
-    if (!inlineRecipe && qualified) names.add(qualified);
-    return [...names];
-  }
-  return undefined;
-};
 
 /** D-173 N.5 §4 — compute the changed-key diff between a gated step's
  *  authored/prefilled args and the inbox `arg_overrides` the admin applied
@@ -379,6 +676,10 @@ export const createPreflightResumer = (
 ): PreflightResumer => {
   const actionStoreFor = (executeDeps?: ExecuteHandlerDeps): McpActionStore | undefined =>
     executeDeps?.mcpActionStore ?? deps.mcpActionStore;
+  const gatedActionStoreFor = (
+    executeDeps?: ExecuteHandlerDeps,
+  ): GatedActionStore | undefined =>
+    executeDeps?.gatedActionStore ?? deps.gatedActionStore;
   /** At-entry idempotency check. Returns `proceed` only when the
    *  paused anchor is still `'awaiting_approval'` AND the audit row's
    *  `checkpoint_id` matches the one the leaf handed us. Every other
@@ -402,6 +703,7 @@ export const createPreflightResumer = (
     if (TERMINAL_RUN_ANCHOR_STATUSES.has(anchor.commit_status)) {
       return {
         kind: 'skip',
+        anchor,
         reason:
           `paused anchor run_id=${checkpoint.run_id} is already terminal `
             + `(commit_status='${anchor.commit_status}') — answer is a retry of a completed run`,
@@ -463,6 +765,12 @@ export const createPreflightResumer = (
       grant_mode?: string;
     },
     batchClaim?: { contract_id: string; member_id: string },
+    /** The stored recipe was edited while this approval was pending, so the
+     *  prior approval must not be honoured. Withholding `approved_target` makes
+     *  the catalog gate treat the resume as unapproved and re-ask with the
+     *  CURRENT identity — see the guard in `resumeRun` for why that beats
+     *  refusing the resume outright. */
+    requireFreshApproval?: boolean,
   ): { request: ExecuteRequest; internal: NonNullable<Parameters<typeof handleExecute>[2]> } => {
     const request: ExecuteRequest = {
       // R2 step 6 — an inline run (R2 transient dispatch / derived saga
@@ -568,11 +876,17 @@ export const createPreflightResumer = (
         resume_from: {
           gated_step_id: checkpoint.gated_step_id!,
           step_state: checkpoint.step_state,
+          ...(checkpoint.foreach_progress !== undefined
+            ? { foreach_progress: checkpoint.foreach_progress }
+            : {}),
+          ...(checkpoint.preflight_context?.egress_bound !== undefined
+            ? { egress_bound: checkpoint.preflight_context.egress_bound }
+            : {}),
           // D-165 follow-on (op-identity binding) — feed the approved
           // identity back so the catalog gate re-verifies the resumed call
           // still targets it (a `{{config.*}}` connection that changed while
           // paused re-asks instead of silently dispatching against the drift).
-          ...(checkpoint.approved_target !== undefined
+          ...(checkpoint.approved_target !== undefined && requireFreshApproval !== true
             ? { approved_target: checkpoint.approved_target }
             : {}),
           // D-173 N.5 — feed the consumed checkpoint's editable-args
@@ -668,6 +982,95 @@ export const createPreflightResumer = (
     await deps.auditLog.append(entry);
   };
 
+  const runAnchorClosedOrSuperseded = (
+    anchor: AuditEntry,
+    checkpoint: Checkpoint,
+  ): boolean => TERMINAL_RUN_ANCHOR_STATUSES.has(anchor.commit_status)
+    || anchor.commit_status === 'awaiting_peer'
+    || (anchor.commit_status === 'awaiting_approval'
+      && anchor.checkpoint_id !== undefined
+      && anchor.checkpoint_id !== checkpoint.checkpoint_id);
+
+  /** Close only the still-current approval anchor. A later owner/peer gate is
+   * durable continuation state and must survive failure while the original
+   * answer is being retired. */
+  const appendInDoubtAnchorUnlessSuperseded = async (
+    checkpoint: Checkpoint,
+    cause: unknown,
+  ): Promise<void> => {
+    const current = await deps.auditLog.get(checkpoint.run_id);
+    if (current === null) {
+      throw new Error(
+        `[preflight-resumer] run anchor disappeared during interruption recovery for run_id=${checkpoint.run_id}`,
+      );
+    }
+    if (runAnchorClosedOrSuperseded(current, checkpoint)) return;
+    if (current.commit_status !== 'awaiting_approval') {
+      throw new Error(
+        `[preflight-resumer] cannot reconcile unexpected run state '${current.commit_status}' for run_id=${checkpoint.run_id}`,
+      );
+    }
+    const finishedAt = Date.now();
+    const terminal: AuditEntry = {
+      ...current,
+      commit_status: 'in_doubt',
+      finished_at: finishedAt,
+      duration_ms: Math.max(0, finishedAt - current.started_at),
+      errors: [{
+        error_id: `approval-resume-interrupted-${finishedAt.toString(36)}-${checkpoint.run_id}`,
+        code: 'ACTION_DELIVERY_UNCERTAIN',
+        message:
+          'The approved operation may have run, but Recued could not prove the complete resumed run outcome.',
+        severity: 'fatal',
+        source: {
+          recipe_id: current.recipe_id,
+          step_id: checkpoint.gated_step_id ?? null,
+          ingredient_slug: checkpoint.preflight_context?.tool_slug ?? null,
+        },
+        details: {
+          reason: 'approved_recipe_dispatch_interrupted',
+          error: cause instanceof Error ? cause.message : String(cause),
+        },
+        timestamp: new Date(finishedAt).toISOString(),
+        retryable: false,
+      }],
+    };
+    delete terminal.checkpoint_id;
+    delete terminal.ask_id;
+    delete terminal.context_snapshot;
+    try {
+      await deps.auditLog.append(terminal);
+    } catch (error) {
+      const observed = await deps.auditLog.get(checkpoint.run_id);
+      if (observed !== null && runAnchorClosedOrSuperseded(observed, checkpoint)) return;
+      throw error;
+    }
+    const observed = await deps.auditLog.get(checkpoint.run_id);
+    if (observed === null || !runAnchorClosedOrSuperseded(observed, checkpoint)) {
+      throw new Error(
+        `[preflight-resumer] interrupted run audit did not settle for run_id=${checkpoint.run_id}`,
+      );
+    }
+  };
+
+  const reconcileClaimedRecipeResume = async (
+    store: GatedActionStore,
+    action: GatedActionRecord,
+    checkpoint: Checkpoint,
+    cause: unknown,
+  ): Promise<void> => {
+    const current = await store.get(action.action_ref);
+    if (current === null) {
+      throw new Error(
+        `[preflight-resumer] claimed gated action disappeared for run_id=${checkpoint.run_id}`,
+      );
+    }
+    if (current.status === 'dispatching'
+      && await deps.preserveClaimedDispatch?.(current)) return;
+    await settleInterruptedGatedAction(store, current, checkpoint, cause);
+    await appendInDoubtAnchorUnlessSuperseded(checkpoint, cause);
+  };
+
   return {
     async resumeRun(
       checkpoint: Checkpoint,
@@ -675,9 +1078,9 @@ export const createPreflightResumer = (
     ): Promise<void> {
       // D-182 §8 — a recipe-LESS raw-op door hold resumes through its own path:
       // there is no run anchor to `decide()` against, and the held op is
-      // re-dispatched directly (not via `executeRecipe`). The at-most-once claim
-      // + op re-resolve + admission + dispatch + grant mint all live in
-      // `resumeRawOp`. An absent `executeDeps` is transient (bootstrap) — throw
+      // re-dispatched directly (not via `executeRecipe`). The gated receipt CAS
+      // is won here before `resumeRawOp` performs op re-resolve + admission +
+      // dispatch + grant mint. An absent `executeDeps` is transient (bootstrap) — throw
       // so the leaf leaves the ask answered for the next boot's retry (the claim
       // is inside `resumeRawOp`, after this point, so no double-act).
       if (checkpoint.raw_op !== undefined) {
@@ -693,16 +1096,44 @@ export const createPreflightResumer = (
           checkpoint.run_id,
           (actions) => actions.markRunning(checkpoint.run_id),
         );
+        const rawGatedAction = await markRawGatedActionDispatching(
+          gatedActionStoreFor(executeDeps),
+          checkpoint,
+        );
+        if (rawGatedAction.kind === 'already_terminal'
+          || rawGatedAction.kind === 'already_dispatching') return;
         const outcome = await resumeRawOp(executeDeps, checkpoint, {
           ...(context.session_grant !== undefined
             ? { session_grant: context.session_grant }
             : {}),
         });
         await settleRawMcpAction(actionStoreFor(executeDeps), checkpoint, outcome);
+        await settleRawGatedAction(
+          gatedActionStoreFor(executeDeps),
+          rawGatedAction.kind === 'dispatch' ? rawGatedAction.action : undefined,
+          checkpoint,
+          outcome,
+        );
         return;
       }
       const decision = await decide(checkpoint);
       if (decision.kind === 'skip') {
+        if (decision.anchor !== undefined) {
+          const priorFailure = recordedApprovalResumeFailure(
+            decision.anchor,
+            checkpoint,
+          );
+          if (priorFailure !== undefined) {
+            await settleFailedGatedAction(
+              gatedActionStoreFor(deps.getExecuteDeps()),
+              checkpoint,
+              {
+                status_message: priorFailure.message,
+                result: { code: priorFailure.code, message: priorFailure.message },
+              },
+            );
+          }
+        }
         // No-op return — codex BLOCKER 1 fold makes this the
         // idempotency boundary. The leaf consumes the checkpoint and
         // the at-least-once retry cycle terminates.
@@ -742,65 +1173,141 @@ export const createPreflightResumer = (
         checkpoint.run_id,
         (actions) => actions.markRunning(checkpoint.run_id),
       );
-      // R2 step 6 — inline-run snapshot integrity. The checkpoint's
-      // `recipe_snapshot` is a PRE-ENGINE deep copy of the resolved recipe
-      // the paused run executed, captured at the same state the anchor's
-      // `recipe_hash` was stamped from (engine entry, before the engine's
-      // in-place `output` alias normalization) — so an untampered pair
-      // hashes equal. A mismatch means the on-disk checkpoint was tampered
-      // with (or corrupted) while paused — re-instantiating it would
-      // dispatch a recipe the user never approved. Fail closed and replace
-      // the awaiting anchor with a terminal audit row before the answer leaf
-      // consumes the checkpoint; the user must re-run.
+      // Bind the approval to the exact recipe body that raised it. Inline runs
+      // carry the executable pre-engine snapshot and verify it against the
+      // anchor. Stored runs carry the original source-definition hash and
+      // compare it with the recipe store NOW, before the dispatch claim: an
+      // edit/removal cannot inherit an old decision merely by retaining the
+      // same step, ingredient, operation, and connection identifiers.
+      let integrityFailure:
+        | { message: string; diagnostic: string }
+        | undefined;
+      let requireFreshApproval = false;
       if (checkpoint.recipe_snapshot !== undefined) {
         const snapshotHash = hashRecipe(
           checkpoint.recipe_snapshot as unknown as RecipeDefinition,
         );
         if (snapshotHash !== decision.anchor.recipe_hash) {
-          const integrityError: RecipeError = {
-            error_id:
-              `checkpoint-integrity-${Date.now().toString(36)}-`
-              + checkpoint.run_id,
-            code: 'RECIPE_VALIDATION_FAILED',
-            message:
-              'The saved resume checkpoint no longer matches the approved recipe.',
-            severity: 'fatal',
-            source: {
-              recipe_id: decision.anchor.recipe_id,
-              step_id: checkpoint.gated_step_id ?? null,
-              ingredient_slug: context.tool_slug ?? null,
-            },
-            details: { reason: 'checkpoint_integrity_failed' },
-            timestamp: new Date().toISOString(),
-            retryable: false,
+          integrityFailure = {
+            message: 'The saved resume checkpoint no longer matches the approved recipe.',
+            diagnostic:
+              `checkpoint recipe_snapshot hash '${snapshotHash}' does not match the paused `
+              + `anchor's recipe_hash '${decision.anchor.recipe_hash}' — tampered/corrupt checkpoint`,
           };
-          console.warn(
-            `[preflight-resumer] resumeRun refused: checkpoint recipe_snapshot hash `
-              + `'${snapshotHash}' does not match the paused anchor's recipe_hash `
-              + `'${decision.anchor.recipe_hash}' (run_id=${checkpoint.run_id}) — `
-              + `tampered/corrupt checkpoint; re-run the recipe`,
-          );
-          await appendFailedAnchor({
-            checkpoint,
-            anchor: decision.anchor,
-            recipe_hash: decision.anchor.recipe_hash,
-            error: integrityError,
-          });
-          await updateMcpAction(
-            actionStoreFor(executeDeps),
-            checkpoint.run_id,
-            (actions) => actions.finish(checkpoint.run_id, {
-              status: 'failed',
-              status_message: 'The saved resume checkpoint failed its integrity check.',
-              result: {
-                status: 'failed',
-                code: 'checkpoint_integrity_failed',
-                message: integrityError.message,
-              },
-            }),
-          );
-          return;
         }
+      } else if (checkpoint.recipe_source_hash !== undefined) {
+        const currentRecipe = executeDeps.recipeStore.get(checkpoint.recipe_id!);
+        // ⛔ CANONICAL ON BOTH SIDES OR NEITHER. The writer hashes the
+        // canonical definition, so this must too — and it cannot simply assume
+        // the store's copy is already normalized. `parseRecipe` normalizes in
+        // place, but only for recipes that went THROUGH it; a recipe registered
+        // directly still carries the legacy `output.sidebar` spelling here, and
+        // hashing that raw would reproduce the original defect with the sides
+        // reversed — refusing a resume because the STORE had not been parsed yet.
+        const currentHash = currentRecipe === null
+          ? null
+          : hashRecipe(canonicalRecipeDefinition(currentRecipe));
+        if (currentHash !== checkpoint.recipe_source_hash) {
+          // ⛔ THIS GUARD REFUSES ONLY WITHIN ITS OWN STATED SCOPE — an edit
+          // that inherits a decision "merely by RETAINING the same step,
+          // ingredient, operation, and connection identifiers" (the comment
+          // above). Implemented as a blanket refusal it also swallowed the case
+          // where those identifiers DID change, which is D-165's entire subject
+          // and was already answered, better, one layer down: the catalog gate
+          // re-resolves (ingredient_slug, operation_id, connection_name), and on
+          // a mismatch "or an absent target" re-raises with the CURRENT identity,
+          // minting a fresh checkpoint + ask (fail closed). Withholding
+          // `approved_target` is that documented path, so drift re-asks — the
+          // owner reviews the new action — instead of dead-ending on "re-run the
+          // recipe". `617fc33fb` added this guard and never ran either suite it
+          // broke; D-165's re-ask is the incumbent behaviour, not a casualty.
+          //
+          // 🔑 DEMONSTRABLE DRIFT ONLY, AND FAIL CLOSED OTHERWISE. Deferring is
+          // earned by an authored identity field that provably MOVED; anything
+          // unresolvable here (a `{{config.*}}` connection, an absent approved
+          // target, a missing step) still refuses, because this layer cannot
+          // resolve templates and must not guess. The operation literal is left
+          // out on purpose: comparing an authored key against a fully-qualified
+          // `operation_id` is not a like-for-like comparison, and getting it
+          // wrong would open the guard rather than close it.
+          const gatedStep = (currentRecipe?.steps as
+            | readonly Record<string, unknown>[]
+            | undefined)?.find((step) => step.id === checkpoint.gated_step_id);
+          const approved = checkpoint.approved_target;
+          const movedField = (authored: unknown, approvedValue: string | undefined): boolean =>
+            typeof authored === 'string'
+            && !authored.includes('{{')
+            && approvedValue !== undefined
+            && authored !== approvedValue;
+          const identityDrifted = gatedStep !== undefined && approved !== undefined
+            && (movedField(gatedStep.ingredient, approved.ingredient_slug)
+              || movedField(gatedStep.connection, approved.connection_name));
+          if (identityDrifted) {
+            requireFreshApproval = true;
+            console.warn(
+              `[preflight-resumer] recipe re-authored to a different target while its approval `
+                + `was pending — re-asking with the current identity (run_id=${checkpoint.run_id})`,
+            );
+          } else {
+            integrityFailure = {
+              message:
+                'The installed recipe changed while this approval was pending. Re-run it and review the new action.',
+              diagnostic:
+                `stored recipe source hash '${currentHash ?? '<missing>'}' does not match the `
+                + `approved source hash '${checkpoint.recipe_source_hash}'`,
+            };
+          }
+        }
+      }
+      if (integrityFailure !== undefined) {
+        const integrityError: RecipeError = {
+          error_id:
+            `checkpoint-integrity-${Date.now().toString(36)}-`
+            + checkpoint.run_id,
+          code: 'RECIPE_VALIDATION_FAILED',
+          message: integrityFailure.message,
+          severity: 'fatal',
+          source: {
+            recipe_id: decision.anchor.recipe_id,
+            step_id: checkpoint.gated_step_id ?? null,
+            ingredient_slug: context.tool_slug ?? null,
+          },
+          details: { reason: 'checkpoint_integrity_failed' },
+          timestamp: new Date().toISOString(),
+          retryable: false,
+        };
+        console.warn(
+          `[preflight-resumer] resumeRun refused: ${integrityFailure.diagnostic} `
+            + `(run_id=${checkpoint.run_id}); re-run the recipe`,
+        );
+        await appendFailedAnchor({
+          checkpoint,
+          anchor: decision.anchor,
+          recipe_hash: decision.anchor.recipe_hash,
+          error: integrityError,
+        });
+        await updateMcpAction(
+          actionStoreFor(executeDeps),
+          checkpoint.run_id,
+          (actions) => actions.finish(checkpoint.run_id, {
+            status: 'failed',
+            status_message: 'The saved resume checkpoint failed its integrity check.',
+            result: {
+              status: 'failed',
+              code: 'checkpoint_integrity_failed',
+              message: integrityError.message,
+            },
+          }),
+        );
+        await settleFailedGatedAction(
+          gatedActionStoreFor(executeDeps),
+          checkpoint,
+          {
+            status_message: integrityError.message,
+            result: { code: 'checkpoint_integrity_failed', message: integrityError.message },
+          },
+        );
+        return;
       }
       // R2 step 6 (codex HIGH fold) — predecessor provenance integrity.
       // `predecessor_commit_id` is NOT independently trusted off the
@@ -868,6 +1375,14 @@ export const createPreflightResumer = (
                 message: provenanceError.message,
               },
             }),
+          );
+          await settleFailedGatedAction(
+            gatedActionStoreFor(executeDeps),
+            checkpoint,
+            {
+              status_message: provenanceError.message,
+              result: { code: 'checkpoint_provenance_failed', message: provenanceError.message },
+            },
           );
           return;
         }
@@ -1004,6 +1519,14 @@ export const createPreflightResumer = (
               },
             }),
           );
+          await settleFailedGatedAction(
+            gatedActionStoreFor(executeDeps),
+            checkpoint,
+            {
+              status_message: authorityError.message,
+              result: { code: authorityError.code, message: authorityError.message },
+            },
+          );
           return;
         }
         resumeAnchor = { ...decision.anchor };
@@ -1019,30 +1542,88 @@ export const createPreflightResumer = (
         resumeAnchor,
         context.session_grant,
         context.batch_claim,
+        requireFreshApproval,
       );
+      const gatedStore = gatedActionStoreFor(executeDeps);
+      const dispatchClaim = await claimRecipeDispatch(gatedStore, checkpoint);
+      if (dispatchClaim.kind === 'superseded') {
+        console.warn(
+          `[preflight-resumer] resumeRun skipped: gated action now points at checkpoint `
+            + `'${dispatchClaim.action.current_checkpoint_id}', not '${checkpoint.checkpoint_id}' `
+            + `(run_id=${checkpoint.run_id})`,
+        );
+        return;
+      }
+      if (dispatchClaim.kind === 'already_dispatching') {
+        await reconcileClaimedRecipeResume(
+          gatedStore!,
+          dispatchClaim.action,
+          checkpoint,
+          'a prior durable dispatch claim has no retained terminal outcome',
+        );
+        return;
+      }
+      if (dispatchClaim.kind === 'already_terminal') {
+        await appendInDoubtAnchorUnlessSuperseded(
+          checkpoint,
+          `receipt already terminal with status '${dispatchClaim.action.status}'`,
+        );
+        return;
+      }
+      if (dispatchClaim.kind === 'claimed') {
+        internal.gated_action_ref = dispatchClaim.action.action_ref;
+      }
       // Dispatch through the normal handler with the internal
-      // overrides. A throw propagates out — the leaf leaves the ask
-      // `'answered'` and the next boot retries; the at-entry guard
-      // above keeps the retry idempotent (a partially-successful run
-      // that crashed before checkpoint deletion will appear terminal
-      // on retry and walk away).
+      // overrides. Once a receipt-backed dispatch claim wins, a throw no longer
+      // retries the effect: receipt + run audit converge conservatively to
+      // in_doubt before the answered checkpoint retires. Legacy checkpoints
+      // without a receipt retain the old retry behavior.
       let response: ExecuteResponse;
       try {
         response = await handleExecute(executeDeps, request, internal);
       } catch (error) {
-        // The established answer-retry path still owns recovery. Put the action
-        // back into a waiting state so a transient host failure never reads as a
-        // terminal provider failure or invites the MCP caller to resend.
+        if (dispatchClaim.kind === 'legacy_without_receipt') {
+          // Additive compatibility only: old checkpoints have no durable claim,
+          // so retain their established retry behavior.
+          await updateMcpAction(
+            actionStoreFor(executeDeps),
+            checkpoint.run_id,
+            (actions) => actions.markAwaiting(
+              checkpoint.run_id,
+              checkpoint.checkpoint_id,
+              'Resume was interrupted before a terminal result; Recued will retry from the durable checkpoint.',
+            ),
+          );
+          throw error;
+        }
+        await reconcileClaimedRecipeResume(
+          gatedStore!,
+          dispatchClaim.action,
+          checkpoint,
+          error,
+        );
         await updateMcpAction(
           actionStoreFor(executeDeps),
           checkpoint.run_id,
-          (actions) => actions.markAwaiting(
-            checkpoint.run_id,
-            checkpoint.checkpoint_id,
-            'Resume was interrupted before a terminal result; Recued will retry from the durable checkpoint.',
-          ),
+          (actions) => actions.finish(checkpoint.run_id, {
+            status: 'in_doubt',
+            status_message:
+              'The approved operation was interrupted after dispatch began. Inspect Logs before retrying.',
+            result: { status: 'in_doubt', message: String(error) },
+          }),
         );
-        throw error;
+        return;
+      }
+      if (dispatchClaim.kind === 'claimed') {
+        // `handleExecute` owns the exact per-operation result. This postcondition
+        // only closes a torn receipt/audit split; it never substitutes the whole
+        // recipe response for the operation result.
+        await reconcileClaimedRecipeResume(
+          gatedStore!,
+          dispatchClaim.action,
+          checkpoint,
+          'resumed handler returned without a durable terminal receipt and run anchor',
+        );
       }
       // If the resumed run paused again (a second gate downstream),
       // the host has already written a fresh `'awaiting_approval'` row
@@ -1054,6 +1635,34 @@ export const createPreflightResumer = (
         checkpoint,
         response,
       );
+      // ⛔⛔ THE RESULT HALF OF A TWO-EVENT TOOL CALL, AND THIS IS THE ONLY
+      //   PLACE THAT CAN WRITE IT. The chat turn that dispatched this run ended
+      //   long ago; it recorded the ASK ("I asked" at T1) and could not record
+      //   the answer, because there was none yet. This is T2 — the moment the
+      //   run actually settles — and everything the row needs is in hand: the
+      //   pair key (`checkpoint.run_id`), the recipe that ran, the outcome, and
+      //   the ORIGINATING execution source, which the resumer recovers off the
+      //   paused audit anchor precisely so a resume runs under the authority
+      //   that asked rather than the one that approved.
+      //
+      // ⚠ BEST-EFFORT, and after `settleRecipeMcpAction`. The run has already
+      //   completed and its outcome is already durable; a recall row is
+      //   searchability, not the record. Failing the resume over one would
+      //   trade a completed run for an index entry.
+      try {
+        const settledSource = resumeAnchor?.execution_source;
+        if (settledSource !== undefined) {
+          deps.onRunSettled?.({
+            execution_source: settledSource,
+            run_id: checkpoint.run_id,
+            tool_name: checkpoint.recipe_id ?? 'recipe.run',
+            result: response,
+            ts: Date.now(),
+          });
+        }
+      } catch {
+        // See above: never fail a settled run over its recall row.
+      }
     },
 
     async denyRun(
@@ -1076,10 +1685,43 @@ export const createPreflightResumer = (
               message: 'The owner denied the pending operation; no provider call was dispatched.',
             },
           }));
+        await settleDeniedGatedAction(
+          gatedActionStoreFor(deps.getExecuteDeps()),
+          checkpoint,
+          {
+            status_message: 'The owner denied the pending operation.',
+            result: { denied: true },
+          },
+        );
         return;
       }
       const decision = await decide(checkpoint);
       if (decision.kind === 'skip') {
+        const priorDenial = decision.anchor === undefined
+          ? undefined
+          : recordedOwnerDenial(decision.anchor, checkpoint);
+        if (priorDenial !== undefined) {
+          // The audit transition won on a prior attempt but its receipt did
+          // not. Repair it before the answer handler consumes the checkpoint.
+          await settleDeniedGatedAction(
+            gatedActionStoreFor(deps.getExecuteDeps()),
+            checkpoint,
+            {
+              status_message: 'The owner denied the pending action.',
+              result: { denied: true, message: priorDenial.message },
+            },
+          );
+          await updateMcpAction(actionStoreFor(deps.getExecuteDeps()), checkpoint.run_id, (actions) =>
+            actions.finish(checkpoint.run_id, {
+              status: 'denied',
+              status_message: 'The owner denied the pending action.',
+              result: {
+                status: 'denied',
+                denied: true,
+                message: priorDenial.message,
+              },
+            }));
+        }
         console.warn(`[preflight-resumer] denyRun skipped: ${decision.reason}`);
         return;
       }
@@ -1173,6 +1815,37 @@ export const createPreflightResumer = (
             message: denyError.message,
           },
         }));
+      await settleDeniedGatedAction(
+        gatedActionStoreFor(deps.getExecuteDeps()),
+        checkpoint,
+        {
+          status_message: 'The owner denied the pending action.',
+          result: { denied: true, message: denyError.message },
+        },
+      );
+      // ⛔⛔ A DENIAL IS TERMINAL AND MUST CLOSE THE PAIR. Only `resumeRun` was
+      //   hooked at first, so a run the owner REJECTED kept nothing but its
+      //   dispatch row — and recall would report "I asked to email Pat"
+      //   indefinitely, which reads as STILL PENDING. The model could tell the
+      //   owner something is awaiting their approval that they declined weeks
+      //   ago: a stale answer, not a missing one, which is the worse failure.
+      //
+      // ⚠ Same source rule as the approve path: the ORIGINATING
+      //   `execution_source` off the paused anchor, never the denier's.
+      try {
+        const deniedSource = anchor.execution_source;
+        if (deniedSource !== undefined) {
+          deps.onRunSettled?.({
+            execution_source: deniedSource,
+            run_id: checkpoint.run_id,
+            tool_name: anchor.recipe_id,
+            result: { denied: true, message: denyError.message },
+            ts: Date.now(),
+          });
+        }
+      } catch {
+        // The denial is already durable; a recall row is searchability.
+      }
     },
   };
 };

@@ -29,6 +29,7 @@ import type {
   Commit,
   PreflightOverrideOffer,
 } from '@recued/contracts';
+import type { PreflightRunSettled } from '../../preflight-resumer.js';
 import { createBatchAskStore } from '@recued/storage';
 import type { ActivityAction, ActivityEntry, AuditLogStore, CheckpointStore } from '@recued/storage';
 import {
@@ -70,6 +71,11 @@ import {
 import type { SessionGrantResolver } from '../../session-grant-resolver.js';
 import type { QualityDelegationSignalStore } from '../../storage/quality-delegation-signal-store.js';
 import type { McpActionStore } from '../../mcp-action-store.js';
+import {
+  reconcileInterruptedGatedActionsAtBoot,
+  type GatedActionRecord,
+  type GatedActionStore,
+} from '../../gated-action-store.js';
 import { createInDoubtAnnotationWriter } from '../../in-doubt-annotation-writer.js';
 import { registerSagaReconciliation } from '../../saga-server-wiring.js';
 import { registerPickResolution } from '../../pick-server-wiring.js';
@@ -77,12 +83,16 @@ import { registerContainerPickResolution } from '../../work-entity-container-pic
 import { registerPeerAdmissionHandler } from '../../peer-admission-ask.js';
 import { registerPeerAnswerHandler } from '../../peer-answer-return.js';
 import { PEER_ASK_HANDLER_KIND } from '../../peer-ask-receiver.js';
+import { createPeerAskInboxStore } from '../../storage/peer-ask-inbox-store.js';
 import { PEER_RECEIVE_ANSWER_TOOL } from '../../peer-receive-ask-recipe.js';
 import { createPeerAdmissionStore } from '../../storage/peer-admission-store.js';
 import { registerCreatePlanResolution } from '../../work-entity-create-plan-wiring.js';
 import type { WorkEntitySourceWriteExecutor } from '../../work-entity-write-executor.js';
 import { createSourceDependencyEntityStore } from '../../storage/source-dependency-entity-store.js';
-import { sweepAwaitingCheckpoints } from '../../preflight-boot-sweep.js';
+import {
+  sweepAwaitingCheckpoints,
+  type PreflightBootSweepDeps,
+} from '../../preflight-boot-sweep.js';
 import type { ReceptionInboxFanoutMode } from '@recued/contracts';
 
 /** Dependencies the notification-block composition needs. All five are
@@ -90,6 +100,9 @@ import type { ReceptionInboxFanoutMode } from '@recued/contracts';
  *  prerequisites (`db`, `auditLog`, `checkpointStore`,
  *  `annotationStore`) being defined before calling in. */
 export interface ComposeNotificationBlockDeps {
+  /** D-137 — late-bound chat sink for a run that settled after its turn.
+   *  Absent ⇒ late results are not recallable, the behaviour before this. */
+  readonly getRunSettledSink?: () => ((settled: PreflightRunSettled) => void) | undefined;
   /** D-210 A.8 slice 3d — builds `/ask/<ask_id>` for `inline` channel asks.
    *  Resolved once in `compose-execution-context` (the only place the public
    *  base URL is in scope) and shared with the email channel. Absent on a
@@ -99,6 +112,10 @@ export interface ComposeNotificationBlockDeps {
   auditLog: AuditLogStore;
   checkpointStore: CheckpointStore;
   mcpActionStore?: McpActionStore;
+  gatedActionStore?: GatedActionStore;
+  preserveClaimedDispatch?: (
+    record: GatedActionRecord,
+  ) => boolean | Promise<boolean>;
   annotationStore: AnnotationStore;
   eventBus: EventBus;
   /** Lazy accessor for `executeDeps`. Construction runs BEFORE
@@ -219,7 +236,11 @@ export interface NotificationBlockBundle {
    *  batch row, and a caller that only needs the count must not be handed
    *  `close` / `create` to reach it. Read at render time because an `open`
    *  batch accumulates members. */
-  getBatch: (batch_id: string) => Promise<{ members: readonly unknown[] } | null>;
+  getBatch: (
+    batch_id: string,
+  ) => Promise<Pick<BatchAskRecord,
+    'state' | 'current_ask_id' | 'members' | 'answer_option'> | null>;
+  reconcileOpenBatch: BatchApprovalCoordinator['reconcileOpenBatch'];
 }
 
 /** Decorate the one host resumer used by both the legacy single-checkpoint
@@ -568,6 +589,24 @@ export const composeNotificationBlock = (
     channels: allChannels,
     readinessProbe,
     bridgeRosterProbe,
+    prepareRecoveredAsk: (ask) => {
+      if (ask.handler_kind !== PEER_ASK_HANDLER_KIND) return;
+      const peerContractId = ask.handler_payload.peer_contract_id;
+      const exchangeRef = ask.handler_payload.exchange_ref;
+      if (typeof peerContractId !== 'string' || peerContractId.length === 0
+        || typeof exchangeRef !== 'string' || exchangeRef.length === 0) {
+        throw new Error('persisted peer ask has malformed inbox correlation');
+      }
+      const inbox = createPeerAskInboxStore(db);
+      const row = inbox.get(peerContractId, exchangeRef);
+      // Legacy peer asks predate the reciprocal inbox. Do not strand an already
+      // durable owner decision during migration; new asks always have a row.
+      if (row === null) return;
+      const marked = inbox.markRaised(peerContractId, exchangeRef, ask.ask_id);
+      if (marked === 'mismatch') {
+        throw new Error('persisted peer ask disagrees with its inbox reservation');
+      }
+    },
     // D-210 A.8 slice 3d — the `/ask/<ask_id>` URL for `inline` channels. Same
     // builder the email channel already uses, so a deployment either has a
     // public base URL and BOTH surfaces carry a link, or has none and neither
@@ -593,8 +632,18 @@ export const composeNotificationBlock = (
   const baseResumer = createPreflightResumer({
     getExecuteDeps,
     auditLog,
+    // D-137 — resolved AT SETTLE TIME, not at construction: chat is composed
+    // in the app context and this resumer in the execution context, so the
+    // sink does not exist yet when this runs.
+    onRunSettled: (settled) => { deps.getRunSettledSink?.()?.(settled); },
     ...(deps.mcpActionStore !== undefined
       ? { mcpActionStore: deps.mcpActionStore }
+      : {}),
+    ...(deps.gatedActionStore !== undefined
+      ? { gatedActionStore: deps.gatedActionStore }
+      : {}),
+    ...(deps.preserveClaimedDispatch !== undefined
+      ? { preserveClaimedDispatch: deps.preserveClaimedDispatch }
       : {}),
     // D-202 Slice 1b — record the owner's approve/deny on a quality-relevant ask
     // as a reject-driven learner signal. Absent ⇒ no signal (dbless / no
@@ -621,12 +670,16 @@ export const composeNotificationBlock = (
     checkpointStore,
     resumer,
     notifier: block,
+    listUnresolvedAsks: () => block.listUnresolvedAsks(),
     cancelAsk: (ask_id) => block.cancelAsk(ask_id),
     ...(deps.sessionGrantResolver !== undefined
       ? { sessionGrantResolver: deps.sessionGrantResolver }
       : {}),
     ...(deps.upsertOverride !== undefined
       ? { upsertOverride: deps.upsertOverride }
+      : {}),
+    ...(deps.gatedActionStore !== undefined
+      ? { gatedActionStore: deps.gatedActionStore }
       : {}),
   });
 
@@ -738,6 +791,8 @@ export const composeNotificationBlock = (
     resumer,
     batchApprovals,
     getBatch: async (batch_id: string) => await batchAskStore.get(batch_id),
+    reconcileOpenBatch: (batch_id: string) =>
+      batchApprovals.reconcileOpenBatch(batch_id),
   };
 };
 
@@ -748,27 +803,155 @@ export interface NotificationBlockBootRecoveryDeps {
   block: NotificationBlock;
   checkpointStore: CheckpointStore;
   auditLog: AuditLogStore;
+  gatedActionStore?: GatedActionStore;
+  /** Replay exactly journaled peer deliveries before generic dispatch claims
+   * are frozen. The journal remains the authority if this retry throws. */
+  recoverPeerDeliveries?: () => Promise<void>;
+  /** Exempt dispatches backed by an exactly replayable durable substrate. */
+  preserveInterruptedDispatch?: (
+    record: GatedActionRecord,
+  ) => boolean | Promise<boolean>;
+  /** Narrow batch read used to keep an ask-less checkpoint attached to its
+   * one durable group instead of minting a rogue standalone approval. */
+  getBatch?: PreflightBootSweepDeps['getBatch'];
+  reconcileOpenBatch?: PreflightBootSweepDeps['reconcileOpenBatch'];
   /** D-210 Phase C — threaded to the sweep so a notify-mode reception
    *  hold, which is ask-less BY DESIGN, is not re-raised as an
    *  actionable card on the next boot. */
   resolveInboxFanoutMode?: () => ReceptionInboxFanoutMode;
 }
 
-/** Re-deliver outstanding asks across a restart, then re-raise asks
+const BOOT_PEER_FAILURE_REASONS: ReadonlySet<string> = new Set([
+  'peer_outbox_unavailable',
+  'peer_outbox_conflict',
+  'peer_outbox_write_failed',
+]);
+
+const peerFailureFromTerminalAnchor = (
+  action: GatedActionRecord,
+  anchor: Awaited<ReturnType<AuditLogStore['get']>>,
+): { status_message: string; result: Record<string, unknown> } | null => {
+  if (anchor?.commit_status !== 'failed') return null;
+  for (const error of anchor.errors ?? []) {
+    if (error.source?.step_id !== action.gated_step_id
+      || error.source.ingredient_slug !== 'peer-ask') continue;
+    const details = error.details !== null
+      && typeof error.details === 'object'
+      && !Array.isArray(error.details)
+      ? error.details as Record<string, unknown>
+      : undefined;
+    if (details === undefined
+      || typeof details.exchange_ref !== 'string'
+      || details.exchange_ref.length === 0) continue;
+    const recognized = (typeof details.refusal === 'string'
+        && details.refusal.length > 0)
+      || (typeof details.reason === 'string'
+        && BOOT_PEER_FAILURE_REASONS.has(details.reason));
+    if (!recognized) continue;
+    return {
+      status_message: error.message,
+      result: { ...details, status: 'failed' },
+    };
+  }
+  return null;
+};
+
+/** Repair the inverse crash window: the terminal peer-delivery audit landed
+ * but its receipt settlement did not. This runs before generic dispatching ->
+ * in_doubt reconciliation so the durable run outcome, when narrowly matched
+ * to its step and peer exchange, is not overwritten by a generic restart fact. */
+const repairTerminalPeerFailureReceiptsAtBoot = async (
+  store: GatedActionStore,
+  auditLog: AuditLogStore,
+): Promise<number> => {
+  let repaired = 0;
+  for (const action of await store.list()) {
+    if (action.status !== 'dispatching') continue;
+    try {
+      const failure = peerFailureFromTerminalAnchor(
+        action,
+        await auditLog.get(action.run_id),
+      );
+      if (failure === null) continue;
+      const settled = await store.finish(action.action_ref, {
+        status: 'failed',
+        status_message: failure.status_message,
+        result: failure.result,
+        observed: { items: 1, succeeded: 0, failed: 1 },
+      });
+      if (settled?.status === 'failed') repaired += 1;
+    } catch (error) {
+      console.warn(
+        `[gated-action] terminal peer receipt repair failed for ${action.action_ref}: `
+          + (error instanceof Error ? error.message : String(error)),
+      );
+    }
+  }
+  return repaired;
+};
+
+/** Freeze interrupted dispatch claims, re-deliver outstanding asks, then re-raise asks
  *  for any `awaiting_approval` audit anchors whose `ask_id` is
  *  missing. Runs once at boot BEFORE live traffic so the bus replay
  *  reaches paired clients ahead of any new event. Best-effort
  *  per-failure — a thrown call surfaces as a `console.warn` so the
  *  daemon boot proceeds.
  *
- *  Ordering (codex MAJOR 4 fold from D-157 server-wiring review):
- *  `recoverPendingAsks` runs FIRST. A fresh raise before recovery
- *  would re-deliver the just-persisted asks, doubling the UI render
- *  path through the block's per-`ask_id` idempotency. */
+ *  Ordering: peer-specific terminal repair and generic interrupted-claim
+ *  reconciliation run BEFORE answered asks replay. A recipe receipt left
+ *  `dispatching` across restart has lost its only live owner; freezing it as
+ *  `in_doubt` is what prevents the surviving answered ask from dispatching the
+ *  effect again. Exactly replayable peer-journal dispatches are exempted by the
+ *  reconciler predicate. The checkpoint sweep remains last so it cannot mint a
+ *  replacement before persisted asks replay. */
 export const recoverNotificationBlockAtBoot = async (
   deps: NotificationBlockBootRecoveryDeps,
 ): Promise<void> => {
   const { block, checkpointStore, auditLog } = deps;
+
+  if (deps.gatedActionStore !== undefined) {
+    try {
+      const repaired = await repairTerminalPeerFailureReceiptsAtBoot(
+        deps.gatedActionStore,
+        auditLog,
+      );
+      if (repaired > 0) {
+        console.warn(
+          `[gated-action] repaired ${repaired} terminal peer delivery failure receipt${repaired === 1 ? '' : 's'} at boot`,
+        );
+      }
+    } catch (e) {
+      console.warn(
+        '[gated-action] terminal peer receipt repair failed at boot: '
+          + (e instanceof Error ? e.message : String(e)),
+      );
+    }
+    try {
+      await deps.recoverPeerDeliveries?.();
+    } catch (e) {
+      console.warn(
+        '[peer-delivery] journal recovery failed at boot; durable deliveries remain pending: '
+          + (e instanceof Error ? e.message : String(e)),
+      );
+    }
+    try {
+      const reconciled = await reconcileInterruptedGatedActionsAtBoot(
+        deps.gatedActionStore,
+        { preserve: deps.preserveInterruptedDispatch },
+      );
+      if (reconciled > 0) {
+        console.warn(
+          `[gated-action] marked ${reconciled} interrupted dispatch${reconciled === 1 ? '' : 'es'} in doubt at boot`,
+        );
+      }
+    } catch (e) {
+      console.warn(
+        '[gated-action] boot reconciliation failed; interrupted dispatch receipts '
+          + 'will be retried on the next boot: '
+          + (e instanceof Error ? e.message : String(e)),
+      );
+    }
+  }
 
   try {
     await block.recoverPendingAsks();
@@ -785,16 +968,33 @@ export const recoverNotificationBlockAtBoot = async (
       checkpointStore,
       auditLog,
       notifier: block,
+      // Answered-but-unhandled asks remain the authority for their checkpoint:
+      // if replay failed, the sweep must not mint a second approval beside the
+      // already-recorded decision.
+      listUnresolvedAsks: () => block.listUnresolvedAsks(),
+      ...(deps.gatedActionStore !== undefined
+        ? { gatedActionStore: deps.gatedActionStore }
+        : {}),
+      ...(deps.getBatch !== undefined ? { getBatch: deps.getBatch } : {}),
+      ...(deps.reconcileOpenBatch !== undefined
+        ? { reconcileOpenBatch: deps.reconcileOpenBatch }
+        : {}),
       ...(deps.resolveInboxFanoutMode !== undefined
         ? { resolveInboxFanoutMode: deps.resolveInboxFanoutMode }
         : {}),
     });
-    if (sweepResult.raised > 0 || sweepResult.failed > 0 || sweepResult.orphaned > 0) {
+    if (sweepResult.raised > 0
+      || sweepResult.repairedPeerFailures > 0
+      || sweepResult.failed > 0
+      || sweepResult.orphaned > 0) {
       console.warn(
         '[preflight] awaiting-checkpoint sweep — '
           + `inspected=${sweepResult.inspected} raised=${sweepResult.raised} `
           + `alreadyPaired=${sweepResult.alreadyPaired} failed=${sweepResult.failed} `
           + `orphaned=${sweepResult.orphaned} terminal=${sweepResult.terminal} `
+          + `superseded=${sweepResult.superseded} `
+          + `heldForPeer=${sweepResult.heldForPeer} `
+          + `repairedPeerFailures=${sweepResult.repairedPeerFailures} `
           + `leftPassive=${sweepResult.leftPassive}`,
       );
     }

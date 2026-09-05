@@ -70,6 +70,7 @@ import {
   runReceptionLookupExpirySweep,
   type ReceptionLookupExpirySweepDeps,
 } from '../../reception-lookup-expiry-sweep.js';
+import type { GatedActionStore } from '../../gated-action-store.js';
 
 export interface ComposeRetentionPrunersDeps {
   readonly backgroundServices: BackgroundServiceRegistry;
@@ -103,6 +104,7 @@ export interface ComposeRetentionPrunersDeps {
    *  anchors); absent on the db-less harness. */
   readonly checkpointStore?: CheckpointStore | undefined;
   readonly auditLog?: AuditLogStore | undefined;
+  readonly gatedActionStore?: GatedActionStore | undefined;
   /** D-214 closure observer for D-157 approval expiries. */
   readonly executionCaseLifecycle?: ExecutionCaseLifecycle | undefined;
   /** D-240 slice 4 — the reception credential store, for TWO passes:
@@ -139,7 +141,10 @@ export interface ComposeRetentionPrunersDeps {
    *  present to answer, which is the exact loop this notice exists to report
    *  the end of. */
   readonly notificationBlock?:
-    | Pick<NotificationBlock, 'getAsk' | 'cancelAsk' | 'pruneHandledAsks' | 'notify'>
+    | Pick<
+        NotificationBlock,
+        'getAsk' | 'listUnresolvedAsks' | 'cancelAsk' | 'pruneHandledAsks' | 'notify'
+      >
     | undefined;
   /** Time source for `pruneExpired` / `pruneOlderThan`. Defaults to
    *  `Date.now`. Test seam. */
@@ -358,11 +363,15 @@ export const composeRetentionPruners = (
     const retention = createCheckpointRetention({
       checkpointStore: deps.checkpointStore,
       auditLog: deps.auditLog,
+      ...(deps.gatedActionStore !== undefined
+        ? { gatedActionStore: deps.gatedActionStore }
+        : {}),
       ...(block !== undefined
         ? {
             askHooks: {
               getAsk: (ask_id) => block.getAsk(ask_id),
               cancelAsk: (ask_id) => block.cancelAsk(ask_id),
+              listUnresolvedAsks: () => block.listUnresolvedAsks(),
             },
           }
         : {}),
